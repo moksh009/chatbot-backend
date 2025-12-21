@@ -1,0 +1,245 @@
+[
+  {
+    "date": "2025-07-26",
+    "dayName": "Saturday, 26 Jul 2025",
+    "dayOfWeek": "Saturday",
+    "bookedSlots": [
+      {
+        "eventId": "7cu9v5q3p2tbgo971j9g1f4t4h",
+        "summary": "No title",
+        "description": "",
+        "startTime": "06:00 am",
+        "endTime": "10:30 am",
+        "startISO": "2025-07-26T03:00:00.000Z",
+        "endISO": "2025-07-26T07:30:00.000Z",
+        "duration": 270,
+        "attendees": [],
+        "location": "",
+        "htmlLink": "https://www.google.com/calendar/event?eid=N2N1OXY1cTNwMnRiZ285NzFqOWcxZjR0NGggYTIwOWQ2YWNlNDdmNjNlOWFlNjM5NjExOTI0NGZmZTgzZWI3NjI3MTI1MGJkNWFlY2IxZTA5M2MxY2U1YTMyOEBn",
+        "createdAt": "2025-07-26T07:50:04.000Z",
+        "updatedAt": "2025-07-26T07:50:04.674Z",
+        "status": "confirmed",
+        "patientInfo": {
+          "name": "",
+          "phone": "",
+          "service": "",
+          "doctor": "",
+          "email": ""
+        }
+      },
+      {
+        "eventId": "24f9q5bsdcg0sgs4t5b8pu5ind",
+        "summary": "No title",
+        "description": "",
+        "startTime": "10:30 am",
+        "endTime": "02:30 pm",
+        "startISO": "2025-07-26T07:30:00.000Z",
+        "endISO": "2025-07-26T11:30:00.000Z",
+        "duration": 240,
+        "attendees": [],
+        "location": "",
+        "htmlLink": "https://www.google.com/calendar/event?eid=MjRmOXE1YnNkY2cwc2dzNHQ1YjhwdTVpbmQgYTIwOWQ2YWNlNDdmNjNlOWFlNjM5NjExOTI0NGZmZTgzZWI3NjI3MTI1MGJkNWFlY2IxZTA5M2MxY2U1YTMyOEBn",
+        "createdAt": "2025-07-26T07:50:22.000Z",
+        "updatedAt": "2025-07-26T07:50:22.263Z",
+        "status": "confirmed",
+        "patientInfo": {
+          "name": "",
+          "phone": "",
+          "service": "",
+          "doctor": "",
+          "email": ""
+        }
+      },
+      {
+        "eventId": "3taed0cbk8bniv6cpc3g9r3tef",
+        "summary": "No title",
+        "description": "",
+        "startTime": "02:30 pm",
+        "endTime": "08:30 pm",
+        "startISO": "2025-07-26T11:30:00.000Z",
+        "endISO": "2025-07-26T17:30:00.000Z",
+        "duration": 360,
+        "attendees": [],
+        "location": "",
+        "htmlLink": "https://www.google.com/calendar/event?eid=M3RhZWQwY2JrOGJuaXY2Y3BjM2c5cjN0ZWYgYTIwOWQ2YWNlNDdmNjNlOWFlNjM5NjExOTI0NGZmZTgzZWI3NjI3MTI1MGJkNWFlY2IxZTA5M2MxY2U1YTMyOEBn",
+        "createdAt": "2025-07-26T07:50:31.000Z",
+        "updatedAt": "2025-07-26T07:50:31.179Z",
+        "status": "confirmed",
+        "patientInfo": {
+          "name": "",
+          "phone": "",
+          "service": "",
+          "doctor": "",
+          "email": ""
+        }
+      }
+    ],
+    "totalSlots": 3,
+    "totalDuration": 870
+  },
+  {
+    "date": "2025-07-27",
+    "dayName": "Sunday, 27 Jul 2025",
+    "dayOfWeek": "Sunday",
+    "bookedSlots": [
+      {
+        "eventId": "k6jaqf10hq3sjs00gpl9s0g60s",
+        "summary": "Test Appointment - API Test",
+        "description": "This is a test appointment to verify Google Calendar API integration",
+        "startTime": "07:30 pm",
+        "endTime": "08:30 pm",
+        "startISO": "2025-07-27T16:30:00.000Z",
+        "endISO": "2025-07-27T17:30:00.000Z",
+        "duration": 60,
+        "attendees": [],
+        "location": "",
+        "htmlLink": "https://www.google.com/calendar/event?eid=azZqYXFmMTBocTNzanMwMGdwbDlzMGc2MHMgYTIwOWQ2YWNlNDdmNjNlOWFlNjM5NjExOTI0NGZmZTgzZWI3NjI3MTI1MGJkNWFlY2IxZTA5M2MxY2U1YTMyOEBn",
+        "createdAt": "2025-07-26T05:39:21.000Z",
+        "updatedAt": "2025-07-26T05:39:21.102Z",
+        "status": "confirmed",
+        "patientInfo": {
+          "name": "",
+          "phone": "",
+          "service": "",
+          "doctor": "",
+          "email": ""
+        }
+      }
+    ],
+    "totalSlots": 1,
+    "totalDuration": 60
+  },
+  {
+    "date": "2025-07-28",
+    "dayName": "Monday, 28 Jul 2025",
+    "dayOfWeek": "Monday",
+    "bookedSlots": [
+      {
+        "eventId": "rr13jo0m6dgghshjrgt53vt4q4",
+        "summary": "Appointment: Test Patient - General Consultation with Dr. Steven Mugabe",
+        "description": "Name: Test Patient\nPhone: 1234567890\nService: General Consultation\nDoctor: Dr. Steven Mugabe\nDate: Saturday, 27 Jul\nTime: 7:30 PM\nBooked via WhatsApp Test",
+        "startTime": "09:30 am",
+        "endTime": "10:30 am",
+        "startISO": "2025-07-28T06:30:00.000Z",
+        "endISO": "2025-07-28T07:30:00.000Z",
+        "duration": 60,
+        "attendees": [],
+        "location": "",
+        "htmlLink": "https://www.google.com/calendar/event?eid=cnIxM2pvMG02ZGdnaHNoanJndDUzdnQ0cTQgYTIwOWQ2YWNlNDdmNjNlOWFlNjM5NjExOTI0NGZmZTgzZWI3NjI3MTI1MGJkNWFlY2IxZTA5M2MxY2U1YTMyOEBn",
+        "createdAt": "2025-07-26T05:39:34.000Z",
+        "updatedAt": "2025-07-26T06:21:23.775Z",
+        "status": "confirmed",
+        "patientInfo": {
+          "name": "Test Patient",
+          "phone": "1234567890",
+          "service": "General Consultation",
+          "doctor": "Dr. Steven Mugabe",
+          "email": ""
+        }
+      },
+      {
+        "eventId": "7kjmgb6g3pdrehgn15oll2ae2c",
+        "summary": "Appointment: Test Patient 2 - Teeth Cleaning with Dr. Steven Mugabe",
+        "description": "Name: Test Patient 2\nPhone: 9876543210\nService: Teeth Cleaning\nDoctor: Dr. Steven Mugabe\nDate: Saturday, 27 Jul 2025\nTime: 7:30 PM\nBooked via WhatsApp Test",
+        "startTime": "10:45 am",
+        "endTime": "11:45 am",
+        "startISO": "2025-07-28T07:45:00.000Z",
+        "endISO": "2025-07-28T08:45:00.000Z",
+        "duration": 60,
+        "attendees": [],
+        "location": "",
+        "htmlLink": "https://www.google.com/calendar/event?eid=N2tqbWdiNmczcGRyZWhnbjE1b2xsMmFlMmMgYTIwOWQ2YWNlNDdmNjNlOWFlNjM5NjExOTI0NGZmZTgzZWI3NjI3MTI1MGJkNWFlY2IxZTA5M2MxY2U1YTMyOEBn",
+        "createdAt": "2025-07-26T05:39:35.000Z",
+        "updatedAt": "2025-07-26T06:21:27.122Z",
+        "status": "confirmed",
+        "patientInfo": {
+          "name": "Test Patient 2",
+          "phone": "9876543210",
+          "service": "Teeth Cleaning",
+          "doctor": "Dr. Steven Mugabe",
+          "email": ""
+        }
+      }
+    ],
+    "totalSlots": 2,
+    "totalDuration": 120
+  },
+  {
+    "date": "2025-07-29",
+    "dayName": "Tuesday, 29 Jul 2025",
+    "dayOfWeek": "Tuesday",
+    "bookedSlots": [
+      {
+        "eventId": "3f6fub8pfvo5f5p5j59bv7c1h4",
+        "summary": "Appointment: Shubhufgnt - Teeth Cleaning with Dr. Steven Mugabe",
+        "description": "Name: Shubhufgnt\nPhone: 7577655678\nService: Teeth Cleaning\nDoctor: Dr. Steven Mugabe\nDate: Friday, 01 Aug 2025\nTime: 3:00 PM\nBooked via WhatsApp",
+        "startTime": "09:30 am",
+        "endTime": "10:30 am",
+        "startISO": "2025-07-29T06:30:00.000Z",
+        "endISO": "2025-07-29T07:30:00.000Z",
+        "duration": 60,
+        "attendees": [],
+        "location": "",
+        "htmlLink": "https://www.google.com/calendar/event?eid=M2Y2ZnViOHBmdm81ZjVwNWo1OWJ2N2MxaDQgYTIwOWQ2YWNlNDdmNjNlOWFlNjM5NjExOTI0NGZmZTgzZWI3NjI3MTI1MGJkNWFlY2IxZTA5M2MxY2U1YTMyOEBn",
+        "createdAt": "2025-07-26T06:16:27.000Z",
+        "updatedAt": "2025-07-26T06:21:35.948Z",
+        "status": "confirmed",
+        "patientInfo": {
+          "name": "Shubhufgnt",
+          "phone": "7577655678",
+          "service": "Teeth Cleaning",
+          "doctor": "Dr. Steven Mugabe",
+          "email": ""
+        }
+      },
+      {
+        "eventId": "5hi9udprflhss1apvakr1dantg",
+        "summary": "Appointment: Ghfgh - Teeth Cleaning with Dr. Steven Mugabe",
+        "description": "Name: Ghfgh\nPhone: 6355411809\nService: Teeth Cleaning\nDoctor: Dr. Steven Mugabe\nDate: Friday, 01 Aug 2025\nTime: 10:00 AM\nBooked via WhatsApp",
+        "startTime": "10:30 am",
+        "endTime": "11:30 am",
+        "startISO": "2025-07-29T07:30:00.000Z",
+        "endISO": "2025-07-29T08:30:00.000Z",
+        "duration": 60,
+        "attendees": [],
+        "location": "",
+        "htmlLink": "https://www.google.com/calendar/event?eid=NWhpOXVkcHJmbGhzczFhcHZha3IxZGFudGcgYTIwOWQ2YWNlNDdmNjNlOWFlNjM5NjExOTI0NGZmZTgzZWI3NjI3MTI1MGJkNWFlY2IxZTA5M2MxY2U1YTMyOEBn",
+        "createdAt": "2025-07-26T06:11:26.000Z",
+        "updatedAt": "2025-07-26T06:21:38.937Z",
+        "status": "confirmed",
+        "patientInfo": {
+          "name": "Ghfgh",
+          "phone": "6355411809",
+          "service": "Teeth Cleaning",
+          "doctor": "Dr. Steven Mugabe",
+          "email": ""
+        }
+      },
+      {
+        "eventId": "0tvjqvbep2bsevtf4isbbgj7s5",
+        "summary": "No title",
+        "description": "",
+        "startTime": "09:30 pm",
+        "endTime": "08:30 pm",
+        "startISO": "2025-07-29T18:30:00.000Z",
+        "endISO": "2025-07-30T17:30:00.000Z",
+        "duration": 1380,
+        "attendees": [],
+        "location": "",
+        "htmlLink": "https://www.google.com/calendar/event?eid=MHR2anF2YmVwMmJzZXZ0ZjRpc2JiZ2o3czUgYTIwOWQ2YWNlNDdmNjNlOWFlNjM5NjExOTI0NGZmZTgzZWI3NjI3MTI1MGJkNWFlY2IxZTA5M2MxY2U1YTMyOEBn",
+        "createdAt": "2025-07-26T07:09:37.000Z",
+        "updatedAt": "2025-07-26T07:09:38.070Z",
+        "status": "confirmed",
+        "patientInfo": {
+          "name": "",
+          "phone": "",
+          "service": "",
+          "doctor": "",
+          "email": ""
+        }
+      }
+    ],
+    "totalSlots": 3,
+    "totalDuration": 1500
+  }
+]

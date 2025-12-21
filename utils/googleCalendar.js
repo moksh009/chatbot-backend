@@ -1,0 +1,501 @@
+const { google } = require('googleapis');
+const dotenv = require('dotenv');
+
+// Load environment variables from the current directory
+const envPath = require('path').resolve(__dirname, '../.env');
+console.log(`🔍 Looking for .env file at: ${envPath}`);
+
+// Manually load the .env file
+const fs = require('fs');
+if (fs.existsSync(envPath)) {
+  const envFile = fs.readFileSync(envPath, 'utf8');
+  const envVars = {};
+  envFile.split('\n').forEach(line => {
+    const match = line.match(/^([^=]+)=(.*)$/);
+    if (match) {
+      const key = match[1].trim();
+      const value = match[2].trim().replace(/^['"](.*)['"]$/, '$1');
+      process.env[key] = value;
+      console.log(`✅ Loaded ${key}=${value.replace(/[^\s]{0,10}.*/, '*****')}`);
+    }
+  });
+} else {
+  console.warn(`⚠️  .env file not found at: ${envPath}`);
+}
+
+const calendar = google.calendar('v3');
+
+// Initialize OAuth2 client with auto-refresh
+let oAuth2Client;
+
+// Function to initialize and configure the OAuth2 client
+function initializeOAuth2Client() {
+  try {
+    // Read environment variables
+    const CLIENT_ID = process.env.GCAL_CLIENT_ID || '';
+    const CLIENT_SECRET = process.env.GCAL_CLIENT_SECRET || '';
+    const REDIRECT_URI = process.env.GCAL_REDIRECT_URI || 'http://localhost:3000/oauth2callback';
+    const REFRESH_TOKEN = process.env.GCAL_REFRESH_TOKEN || '';
+    const ACCESS_TOKEN = process.env.GCAL_ACCESS_TOKEN || '';
+    
+    // Log environment variables (remove this in production)
+    console.log('🔍 Google OAuth2 Config:', {
+      hasClientId: !!CLIENT_ID,
+      hasClientSecret: !!CLIENT_SECRET,
+      hasRefreshToken: !!REFRESH_TOKEN,
+      redirectUri: REDIRECT_URI
+    });
+    
+    // Validate required environment variables
+    if (!CLIENT_ID || !CLIENT_SECRET || !REFRESH_TOKEN) {
+      const missing = [];
+      if (!CLIENT_ID) missing.push('GCAL_CLIENT_ID');
+      if (!CLIENT_SECRET) missing.push('GCAL_CLIENT_SECRET');
+      if (!REFRESH_TOKEN) missing.push('GCAL_REFRESH_TOKEN');
+      
+      throw new Error(`Missing required Google OAuth2 configuration: ${missing.join(', ')}. Please check your environment variables.`);
+    }
+    
+    // Create new OAuth2 client if it doesn't exist
+    if (!oAuth2Client) {
+      oAuth2Client = new google.auth.OAuth2(
+        CLIENT_ID,
+        CLIENT_SECRET,
+        REDIRECT_URI
+      );
+      
+      // Set credentials with both access and refresh tokens
+      oAuth2Client.setCredentials({
+        refresh_token: REFRESH_TOKEN,
+        access_token: ACCESS_TOKEN
+      });
+      
+      // Set up auto-refresh of access token
+      oAuth2Client.on('tokens', (tokens) => {
+        if (tokens.refresh_token) {
+          // Store the refresh token in environment variables
+          process.env.GCAL_REFRESH_TOKEN = tokens.refresh_token;
+        }
+        if (tokens.access_token) {
+          process.env.GCAL_ACCESS_TOKEN = tokens.access_token;
+        }
+      });
+    }
+    
+    return oAuth2Client;
+    
+  } catch (error) {
+    console.error('❌ Error initializing Google OAuth2 client:', error.message);
+    throw new Error('Failed to initialize Google Calendar client. Please check your configuration.');
+  }
+}
+
+// Initialize the client immediately when this module is loaded
+initializeOAuth2Client();
+
+async function createEvent({ summary, description, start, end, attendees, calendarId }) {
+  try {
+    // Validate required parameters
+    if (!calendarId) {
+      throw new Error('calendarId argument is required');
+    }
+    
+    // Initialize OAuth2 client
+    const auth = initializeOAuth2Client();
+    
+    // Create event object
+    const event = {
+      summary,
+      description: description || 'Appointment created via WhatsApp Bot',
+      start: { 
+        dateTime: start, 
+        timeZone: 'Africa/Nairobi' 
+      },
+      end: { 
+        dateTime: end, 
+        timeZone: 'Africa/Nairobi' 
+      },
+      attendees: attendees && attendees.length > 0 
+        ? attendees.map(email => ({ email, responseStatus: 'needsAction' })) 
+        : undefined,
+      reminders: {
+        useDefault: true
+      }
+    };
+    
+    console.log(`Creating calendar event: ${summary} from ${start} to ${end}`);
+    
+    // Insert event into calendar
+    const res = await calendar.events.insert({
+      auth,
+      calendarId,
+      resource: event,
+      conferenceDataVersion: 1,
+      sendUpdates: 'all'
+    });
+    
+    console.log("✅ Event created successfully:", res.data.htmlLink);
+    return {
+      success: true,
+      eventId: res.data.id,
+      htmlLink: res.data.htmlLink,
+      hangoutLink: res.data.hangoutLink || null,
+      start: res.data.start,
+      end: res.data.end
+    };
+    
+  } catch (error) {
+    console.error('❌ Error creating Google Calendar event:', error.message);
+    
+    // Handle specific error cases
+    if (error.code === 401) {
+      // Clear stored tokens to force re-authentication
+      delete process.env.GCAL_ACCESS_TOKEN;
+      delete process.env.GCAL_REFRESH_TOKEN;
+      throw new Error('Authentication failed. Please re-authenticate with Google Calendar.');
+    } else if (error.code === 403) {
+      throw new Error('Insufficient permissions to create calendar events.');
+    } else if (error.code === 404) {
+      throw new Error('Calendar not found. Please check the calendar ID.');
+    } else {
+      // For other errors, include more details
+      const errorMessage = error.errors && error.errors[0] 
+        ? `${error.message} (${error.errors[0].message})` 
+        : error.message;
+      throw new Error(`Failed to create event: ${errorMessage}`);
+    }
+  }
+}
+
+async function updateEvent({ eventId, summary, description, start, end, attendees, calendarId }) {
+  try {
+    // Validate required parameters
+    if (!calendarId || !eventId) {
+      throw new Error('Both calendarId and eventId arguments are required');
+    }
+    
+    // Initialize OAuth2 client
+    const auth = initializeOAuth2Client();
+    
+    // Prepare event update
+    const event = {
+      summary,
+      description: description || 'Updated appointment via WhatsApp Bot',
+      start: { 
+        dateTime: start, 
+        timeZone: 'Africa/Nairobi' 
+      },
+      end: { 
+        dateTime: end, 
+        timeZone: 'Africa/Nairobi' 
+      },
+      attendees: attendees && attendees.length > 0 
+        ? attendees.map(email => ({ email, responseStatus: 'needsAction' })) 
+        : undefined
+    };
+    
+    console.log(`Updating calendar event ${eventId}: ${summary || 'No title'}`);
+    
+    // Update the event
+    const res = await calendar.events.patch({
+      auth,
+      calendarId,
+      eventId,
+      resource: event,
+      sendUpdates: 'all'
+    });
+    
+    console.log(`✅ Event updated successfully: ${res.data.htmlLink}`);
+    return {
+      success: true,
+      eventId: res.data.id,
+      htmlLink: res.data.htmlLink,
+      updated: res.data.updated,
+      hangoutLink: res.data.hangoutLink || null
+    };
+    
+  } catch (error) {
+    console.error('❌ Error updating Google Calendar event:', error.message);
+    
+    // Handle specific error cases
+    if (error.code === 401) {
+      delete process.env.GCAL_ACCESS_TOKEN;
+      delete process.env.GCAL_REFRESH_TOKEN;
+      throw new Error('Authentication failed. Please re-authenticate with Google Calendar.');
+    } else if (error.code === 403) {
+      throw new Error('Insufficient permissions to update calendar events.');
+    } else if (error.code === 404) {
+      throw new Error('Event not found. It may have been deleted.');
+    } else {
+      const errorMessage = error.errors && error.errors[0] 
+        ? `${error.message} (${error.errors[0].message})` 
+        : error.message;
+      throw new Error(`Failed to update event: ${errorMessage}`);
+    }
+  }
+}
+
+async function deleteEvent(eventId, calendarId) {
+  try {
+    // Validate required parameters
+    if (!calendarId || !eventId) {
+      throw new Error('Both calendarId and eventId arguments are required');
+    }
+    
+    // Initialize OAuth2 client
+    const auth = initializeOAuth2Client();
+    
+    console.log(`Deleting calendar event ${eventId} from calendar ${calendarId}`);
+    
+    // Delete the event
+    await calendar.events.delete({
+      auth,
+      calendarId,
+      eventId,
+      sendUpdates: 'all'
+    });
+    
+    console.log(`✅ Event ${eventId} deleted successfully`);
+    return {
+      success: true,
+      message: 'Event deleted successfully',
+      eventId,
+      calendarId,
+      deletedAt: new Date().toISOString()
+    };
+    
+  } catch (error) {
+    console.error('❌ Error deleting Google Calendar event:', error.message);
+    
+    // Handle specific error cases
+    if (error.code === 401) {
+      delete process.env.GCAL_ACCESS_TOKEN;
+      delete process.env.GCAL_REFRESH_TOKEN;
+      throw new Error('Authentication failed. Please re-authenticate with Google Calendar.');
+    } else if (error.code === 403) {
+      throw new Error('Insufficient permissions to delete calendar events.');
+    } else if (error.code === 404) {
+      // Event not found - might have been already deleted
+      console.log('⚠️ Event not found during deletion - may have been already removed');
+      return {
+        success: true,
+        message: 'Event not found - may have been already removed',
+        eventId,
+        alreadyDeleted: true
+      };
+    } else if (error.code === 410) {
+      // Resource has been deleted
+      console.log('ℹ️ Event was already deleted');
+      return {
+        success: true,
+        message: 'Event was already deleted',
+        eventId,
+        alreadyDeleted: true
+      };
+    } else {
+      const errorMessage = error.errors && error.errors[0] 
+        ? `${error.message} (${error.errors[0].message})` 
+        : error.message;
+      throw new Error(`Failed to delete event: ${errorMessage}`);
+    }
+  }
+}
+
+/**
+ * Get available time slots for a given date from Google Calendar.
+ * @param {Object} options
+ * @param {string} options.date - Date in 'YYYY-MM-DD' format
+ * @param {string} options.startTime - Working day start time, e.g. '09:00'
+ * @param {string} options.endTime - Working day end time, e.g. '18:00'
+ * @param {number} options.slotMinutes - Slot duration in minutes (default 60)
+ * @param {string} options.calendarId - Calendar ID to query
+ * @returns {Promise<Array<{start: string, end: string}>>} Array of available slots in ISO format
+ */
+async function getAvailableTimeSlots({ date, startTime, endTime, slotMinutes = 60, calendarId }) {
+  // Use East African Time (UTC+3) for all slot calculations
+  const tz = 'Africa/Nairobi';
+  // Build start/end datetime in East African Time
+  const startDateTimeEAT = new Date(`${date}T${startTime}:00+03:00`);
+  const endDateTimeEAT = new Date(`${date}T${endTime}:00+03:00`);
+  const startDateTime = startDateTimeEAT.toISOString();
+  const endDateTime = endDateTimeEAT.toISOString();
+
+  // Query busy times from Google Calendar
+  if (!calendarId) throw new Error('calendarId argument is required');
+  const auth = initializeOAuth2Client();
+  const freebusyRes = await calendar.freebusy.query({
+    auth: auth,
+    requestBody: {
+      timeMin: startDateTime,
+      timeMax: endDateTime,
+      timeZone: tz,
+      items: [{ id: calendarId }],
+    },
+  });
+  const busy = (freebusyRes.data.calendars[calendarId]?.busy || []).map(b => ({
+    start: new Date(b.start),
+    end: new Date(b.end),
+  }));
+
+  // Generate all possible slots in East African Time
+  const slots = [];
+  let slotStart = new Date(startDateTimeEAT);
+  const slotEnd = new Date(endDateTimeEAT);
+  while (slotStart < slotEnd) {
+    const slotFinish = new Date(slotStart.getTime() + slotMinutes * 60000);
+    if (slotFinish > slotEnd) break;
+    // Check if slot is within business hours (09:00 to 23:00 EAT)
+    const hour = slotStart.toLocaleString('en-US', { hour: '2-digit', hour12: false, timeZone: tz });
+    if (parseInt(hour, 10) < 9 || parseInt(hour, 10) >= 23) {
+      slotStart = slotFinish;
+      continue;
+    }
+    // Check if slot overlaps with any busy period
+    const overlaps = busy.some(b =>
+      (slotStart < b.end && slotFinish > b.start)
+    );
+    if (!overlaps) {
+      slots.push({
+        start: slotStart.toISOString(),
+        end: slotFinish.toISOString(),
+      });
+    }
+    slotStart = slotFinish;
+  }
+  return slots;
+}
+
+/**
+ * Find a calendar event by attendee email and time window.
+ * @param {Object} options
+ * @param {string} options.email - Attendee email
+ * @param {string} options.date - Date in 'YYYY-MM-DD' format
+ * @param {string} options.time - Time in 'HH:mm' 24h format (start of slot)
+ * @param {string} options.calendarId - Calendar ID to query
+ * @returns {Promise<{eventId: string, event: object}|null>} Event info or null
+ */
+async function findEventByEmailAndTime({ email, date, time, calendarId }) {
+  // Build timeMin/timeMax for 1-hour window
+  const tz = 'Africa/Nairobi';
+  if (!calendarId) throw new Error('calendarId argument is required');
+  const startDateTime = new Date(`${date}T${time}:00+03:00`).toISOString();
+  const endDateTime = new Date(new Date(`${date}T${time}:00+03:00`).getTime() + 60 * 60000).toISOString();
+  const auth = initializeOAuth2Client();
+  const res = await calendar.events.list({
+    auth: auth,
+    calendarId,
+    timeMin: startDateTime,
+    timeMax: endDateTime,
+    singleEvents: true,
+    orderBy: 'startTime',
+    q: email // search in description/attendees
+  });
+  const events = res.data.items || [];
+  for (const event of events) {
+    // Check if attendee matches
+    if (event.attendees && event.attendees.some(a => a.email === email)) {
+      return { eventId: event.id, event };
+    }
+    // Fallback: check if email in description
+    if (event.description && event.description.includes(email)) {
+      return { eventId: event.id, event };
+    }
+  }
+  return null;
+}
+
+/**
+ * Find calendar events by phone number in description for a date range.
+ * @param {Object} options
+ * @param {string} options.phone - Phone number to search for
+ * @param {string} options.startDate - Start date in 'YYYY-MM-DD' format
+ * @param {string} options.endDate - End date in 'YYYY-MM-DD' format
+ * @param {string} options.calendarId - Calendar ID to query
+ * @returns {Promise<Array<{eventId: string, summary: string, date: string, time: string}>>}
+ */
+async function findEventsByPhoneNumber({ phone, startDate, endDate, calendarId }) {
+  const tz = 'Africa/Nairobi';
+  if (!calendarId) throw new Error('calendarId argument is required');
+  const startDateTime = new Date(`${startDate}T00:00:00+03:00`).toISOString();
+  const endDateTime = new Date(`${endDate}T23:59:59+03:00`).toISOString();
+  const auth = initializeOAuth2Client();
+  const res = await calendar.events.list({
+    auth: auth,
+    calendarId,
+    timeMin: startDateTime,
+    timeMax: endDateTime,
+    singleEvents: true,
+    orderBy: 'startTime',
+    q: phone // search in description
+  });
+  const events = res.data.items || [];
+  const results = [];
+  for (const event of events) {
+    if (event.description && event.description.includes(phone)) {
+      const start = event.start?.dateTime || event.start?.date;
+      const dateObj = new Date(start);
+      // Convert to East African Time for display
+      const date = dateObj.toLocaleDateString('en-GB', { 
+        weekday: 'long', 
+        day: '2-digit', 
+        month: 'short',
+        timeZone: 'Africa/Nairobi'
+      });
+      const time = dateObj.toLocaleTimeString('en-GB', { 
+        hour: '2-digit', 
+        minute: '2-digit', 
+        hour12: true,
+        timeZone: 'Africa/Nairobi'
+      });
+      results.push({
+        eventId: event.id,
+        summary: event.summary,
+        date,
+        time
+      });
+    }
+  }
+  return results;
+}
+
+/**
+ * List calendar events for a given time range.
+ * @param {string} timeMin - Start time in ISO format
+ * @param {string} timeMax - End time in ISO format
+ * @param {string} calendarId - Calendar ID to query
+ * @returns {Promise<Array>} Array of calendar events
+ */
+async function listEvents(timeMin, timeMax, calendarId) {
+  try {
+    // Validate required parameters
+    if (!calendarId) {
+      throw new Error('calendarId argument is required');
+    }
+    
+    // Initialize OAuth2 client
+    const auth = initializeOAuth2Client();
+    
+    console.log(`📅 Fetching events from calendar ${calendarId} from ${timeMin} to ${timeMax}`);
+    
+    // List events from calendar
+    const res = await calendar.events.list({
+      auth: auth,
+      calendarId,
+      timeMin: timeMin,
+      timeMax: timeMax,
+      singleEvents: true,
+      orderBy: 'startTime'
+    });
+    
+    const events = res.data.items || [];
+    console.log(`✅ Found ${events.length} events in calendar ${calendarId}`);
+    
+    return events;
+    
+  } catch (error) {
+    console.error('❌ Error listing calendar events:', error.message);
+    throw error;
+  }
+}
+
+module.exports = { createEvent, updateEvent, deleteEvent, getAvailableTimeSlots, findEventByEmailAndTime, findEventsByPhoneNumber, listEvents };
