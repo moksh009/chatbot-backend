@@ -1,5 +1,8 @@
 const axios = require('axios');
 const BirthdayUser = require('../models/BirthdayUser');
+const Conversation = require('../models/Conversation');
+const Message = require('../models/Message');
+const Client = require('../models/Client');
 
 // 📤 Send WhatsApp birthday wish with consent check
 async function sendBirthdayWishWithImage(recipientPhone, accessToken, phoneNumberId) {
@@ -57,7 +60,28 @@ async function sendBirthdayWishWithImage(recipientPhone, accessToken, phoneNumbe
         }
       );
 
-    console.log(`✅ Birthday message sent to ${recipientPhone}`);
+    try {
+      const client = await Client.findOne({ phoneNumberId });
+      const clientId = client ? client.clientId : 'code_clinic_v1';
+      let conversation = await Conversation.findOne({ phone: recipientPhone, clientId });
+      if (!conversation) {
+        conversation = await Conversation.create({ phone: recipientPhone, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+      }
+      const saved = await Message.create({
+        clientId,
+        conversationId: conversation._id,
+        from: 'bot',
+        to: recipientPhone,
+        content: 'Birthday wish',
+        type: 'template',
+        direction: 'outgoing',
+        status: 'sent'
+      });
+      conversation.lastMessage = 'Birthday wish';
+      conversation.lastMessageAt = new Date();
+      await conversation.save();
+    } catch {}
+
     return { success: true };
   } catch (error) {
     console.error(`❌ Failed to send birthday message to ${recipientPhone}:`, error.response?.data || error.message);

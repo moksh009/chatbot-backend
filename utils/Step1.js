@@ -1,5 +1,8 @@
 const axios = require('axios');
 
+const Conversation = require('../models/Conversation');
+const Message = require('../models/Message');
+const Client = require('../models/Client');
 async function sendAdminLeaveDateList({ phoneNumberId, to, isFullDayLeave }) {
   const apiVersion = process.env.API_VERSION || 'v18.0';
   const token = process.env.WHATSAPP_TOKEN;
@@ -71,7 +74,28 @@ async function sendAdminLeaveDateList({ phoneNumberId, to, isFullDayLeave }) {
         Authorization: `Bearer ${token}`
       }
     });
-    console.log('Leave list message sent:', response.data);
+    try {
+      const client = await Client.findOne({ phoneNumberId });
+      const clientId = client ? client.clientId : 'code_clinic_v1';
+      let conversation = await Conversation.findOne({ phone: to, clientId });
+      if (!conversation) {
+        conversation = await Conversation.create({ phone: to, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+      }
+      const content = data.interactive.header.text;
+      const saved = await Message.create({
+        clientId,
+        conversationId: conversation._id,
+        from: 'bot',
+        to,
+        content,
+        type: 'interactive',
+        direction: 'outgoing',
+        status: 'sent'
+      });
+      conversation.lastMessage = content;
+      conversation.lastMessageAt = new Date();
+      await conversation.save();
+    } catch {}
   } catch (error) {
     console.error(
       'Error sending leave list message:',
@@ -127,7 +151,28 @@ async function sendAdminInitialButtons({ phoneNumberId, to }) {
           Authorization: `Bearer ${token}`
         }
       });
-      console.log('Admin button message sent:', response.data);
+      try {
+        const client = await Client.findOne({ phoneNumberId });
+        const clientId = client ? client.clientId : 'code_clinic_v1';
+        let conversation = await Conversation.findOne({ phone: to, clientId });
+        if (!conversation) {
+          conversation = await Conversation.create({ phone: to, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+        }
+        const content = data.interactive.header.text;
+        const saved = await Message.create({
+          clientId,
+          conversationId: conversation._id,
+          from: 'bot',
+          to,
+          content,
+          type: 'interactive',
+          direction: 'outgoing',
+          status: 'sent'
+        });
+        conversation.lastMessage = content;
+        conversation.lastMessageAt = new Date();
+        await conversation.save();
+      } catch {}
     } catch (error) {
       console.error(
         'Error sending admin button message:',

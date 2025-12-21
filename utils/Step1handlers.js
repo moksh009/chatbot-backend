@@ -67,6 +67,9 @@ const axios = require('axios');
 // }
 
 // Function to send a chatbot info button message
+const Conversation = require('../models/Conversation');
+const Message = require('../models/Message');
+const Client = require('../models/Client');
 async function sendChatbotMessage({ phoneNumberId, to }) {
   const apiVersion = process.env.API_VERSION || 'v18.0';
   const token = process.env.WHATSAPP_TOKEN;
@@ -124,7 +127,27 @@ async function sendChatbotMessage({ phoneNumberId, to }) {
         Authorization: `Bearer ${token}`
       }
     });
-    console.log('Chatbot info button message sent:', response.data);
+    try {
+      const client = await Client.findOne({ phoneNumberId });
+      const clientId = client ? client.clientId : 'code_clinic_v1';
+      let conversation = await Conversation.findOne({ phone: to, clientId });
+      if (!conversation) {
+        conversation = await Conversation.create({ phone: to, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+      }
+      const saved = await Message.create({
+        clientId,
+        conversationId: conversation._id,
+        from: 'bot',
+        to,
+        content: data.interactive.body.text,
+        type: 'interactive',
+        direction: 'outgoing',
+        status: 'sent'
+      });
+      conversation.lastMessage = data.interactive.body.text;
+      conversation.lastMessageAt = new Date();
+      await conversation.save();
+    } catch {}
   } catch (error) {
     console.error('Error sending chatbot info button message:', error.response ? error.response.data : error.message);
   }
@@ -188,7 +211,27 @@ async function sendAICallerMessage({ phoneNumberId, to }) {
         Authorization: `Bearer ${token}`
       }
     });
-    console.log('AI Caller info button message sent:', response.data);
+    try {
+      const client = await Client.findOne({ phoneNumberId });
+      const clientId = client ? client.clientId : 'code_clinic_v1';
+      let conversation = await Conversation.findOne({ phone: to, clientId });
+      if (!conversation) {
+        conversation = await Conversation.create({ phone: to, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+      }
+      const saved = await Message.create({
+        clientId,
+        conversationId: conversation._id,
+        from: 'bot',
+        to,
+        content: data.interactive.body.text,
+        type: 'interactive',
+        direction: 'outgoing',
+        status: 'sent'
+      });
+      conversation.lastMessage = data.interactive.body.text;
+      conversation.lastMessageAt = new Date();
+      await conversation.save();
+    } catch {}
   } catch (error) {
     console.error('Error sending AI Caller info button message:', error.response ? error.response.data : error.message);
   }
@@ -263,7 +306,28 @@ async function sendBookDemoMessage({ phoneNumberId, to }) {
         Authorization: `Bearer ${token}`
       }
     });
-    console.log('Book demo list message sent:', response.data);
+    try {
+      const client = await Client.findOne({ phoneNumberId });
+      const clientId = client ? client.clientId : 'code_clinic_v1';
+      let conversation = await Conversation.findOne({ phone: to, clientId });
+      if (!conversation) {
+        conversation = await Conversation.create({ phone: to, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+      }
+      const content = data.interactive.header.text;
+      const saved = await Message.create({
+        clientId,
+        conversationId: conversation._id,
+        from: 'bot',
+        to,
+        content,
+        type: 'interactive',
+        direction: 'outgoing',
+        status: 'sent'
+      });
+      conversation.lastMessage = content;
+      conversation.lastMessageAt = new Date();
+      await conversation.save();
+    } catch {}
   } catch (error) {
     console.error('Error sending book demo list message:', error.response ? error.response.data : error.message);
   }

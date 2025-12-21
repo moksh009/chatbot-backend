@@ -2,6 +2,9 @@ const { DateTime } = require('luxon');
 const axios = require('axios');
 const { listEvents } = require('./googleCalendar');
 const BirthdayUser = require('../models/BirthdayUser');
+const Conversation = require('../models/Conversation');
+const Message = require('../models/Message');
+const Client = require('../models/Client');
 
 // Timezone for Uganda (EAT - East Africa Time)
 const TIMEZONE = 'Africa/Kampala';
@@ -81,10 +84,30 @@ async function sendAppointmentReminder(phoneNumberId, accessToken, recipientPhon
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json'
       },
-      validateStatus: (status) => status < 500 // Don't throw for 4xx errors
+      validateStatus: (status) => status < 500
     });
 
-    console.log('WhatsApp API Response:', JSON.stringify(response.data, null, 2));
+    try {
+      const client = await Client.findOne({ phoneNumberId });
+      const clientId = client ? client.clientId : 'code_clinic_v1';
+      let conversation = await Conversation.findOne({ phone: recipientPhone, clientId });
+      if (!conversation) {
+        conversation = await Conversation.create({ phone: recipientPhone, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+      }
+      const saved = await Message.create({
+        clientId,
+        conversationId: conversation._id,
+        from: 'bot',
+        to: recipientPhone,
+        content: 'Appointment reminder',
+        type: 'template',
+        direction: 'outgoing',
+        status: 'sent'
+      });
+      conversation.lastMessage = 'Appointment reminder';
+      conversation.lastMessageAt = new Date();
+      await conversation.save();
+    } catch {}
     return response.data;
   } catch (error) {
     console.error('Error sending appointment reminder:', error.response?.data || error.message);

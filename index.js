@@ -101,12 +101,38 @@ async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons })
   // Remove undefined header if not set
   if (!header) delete data.interactive.header;
   try {
-    await axios.post(url, data, {
+    const resp = await axios.post(url, data, {
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`
       }
     });
+    try {
+      const io = app.get('socketio');
+      const client = await Client.findOne({ phoneNumberId });
+      const resolvedClientId = client ? client.clientId : 'code_clinic_v1';
+      let conversation = await Conversation.findOne({ phone: to, clientId: resolvedClientId });
+      if (!conversation) {
+        conversation = await Conversation.create({ phone: to, clientId: resolvedClientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+      }
+      const savedMessage = await Message.create({
+        clientId: resolvedClientId,
+        conversationId: conversation._id,
+        from: 'bot',
+        to,
+        content: body,
+        type: 'interactive',
+        direction: 'outgoing',
+        status: 'sent'
+      });
+      conversation.lastMessage = body;
+      conversation.lastMessageAt = new Date();
+      await conversation.save();
+      if (io) {
+        io.to(`client_${resolvedClientId}`).emit('new_message', savedMessage);
+        io.to(`client_${resolvedClientId}`).emit('conversation_update', conversation);
+      }
+    } catch {}
   } catch (err) {
     console.error('Error sending WhatsApp buttons:', err.response?.data || err.message);
   }
@@ -146,12 +172,39 @@ async function sendWhatsAppList({ phoneNumberId, to, header, body, button, rows 
   };
   if (!header) delete data.interactive.header;
   try {
-    await axios.post(url, data, {
+    const resp = await axios.post(url, data, {
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`
       }
     });
+    try {
+      const io = app.get('socketio');
+      const client = await Client.findOne({ phoneNumberId });
+      const resolvedClientId = client ? client.clientId : 'code_clinic_v1';
+      let conversation = await Conversation.findOne({ phone: to, clientId: resolvedClientId });
+      if (!conversation) {
+        conversation = await Conversation.create({ phone: to, clientId: resolvedClientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+      }
+      const content = body || 'List';
+      const savedMessage = await Message.create({
+        clientId: resolvedClientId,
+        conversationId: conversation._id,
+        from: 'bot',
+        to,
+        content,
+        type: 'interactive',
+        direction: 'outgoing',
+        status: 'sent'
+      });
+      conversation.lastMessage = content;
+      conversation.lastMessageAt = new Date();
+      await conversation.save();
+      if (io) {
+        io.to(`client_${resolvedClientId}`).emit('new_message', savedMessage);
+        io.to(`client_${resolvedClientId}`).emit('conversation_update', conversation);
+      }
+    } catch {}
   } catch (err) {
     console.error('Error sending WhatsApp list:', err.response?.data || err.message);
   }
@@ -169,12 +222,38 @@ async function sendWhatsAppText({ phoneNumberId, to, body }) {
     text: { body }
   };
   try {
-    await axios.post(url, data, {
+    const resp = await axios.post(url, data, {
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`
       }
     });
+    try {
+      const io = app.get('socketio');
+      const client = await Client.findOne({ phoneNumberId });
+      const resolvedClientId = client ? client.clientId : 'code_clinic_v1';
+      let conversation = await Conversation.findOne({ phone: to, clientId: resolvedClientId });
+      if (!conversation) {
+        conversation = await Conversation.create({ phone: to, clientId: resolvedClientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+      }
+      const savedMessage = await Message.create({
+        clientId: resolvedClientId,
+        conversationId: conversation._id,
+        from: 'bot',
+        to,
+        content: body,
+        type: 'text',
+        direction: 'outgoing',
+        status: 'sent'
+      });
+      conversation.lastMessage = body;
+      conversation.lastMessageAt = new Date();
+      await conversation.save();
+      if (io) {
+        io.to(`client_${resolvedClientId}`).emit('new_message', savedMessage);
+        io.to(`client_${resolvedClientId}`).emit('conversation_update', conversation);
+      }
+    } catch {}
   } catch (err) {
     console.error('Error sending WhatsApp text:', err.response?.data || err.message);
   }

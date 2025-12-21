@@ -1,5 +1,8 @@
 const axios = require('axios');
 
+const Conversation = require('../models/Conversation');
+const Message = require('../models/Message');
+const Client = require('../models/Client');
 async function sendLeaveConfirmationAndMenu({ phoneNumberId, to, date }) {
   const apiVersion = process.env.API_VERSION || 'v18.0';
   const token      = process.env.WHATSAPP_TOKEN;
@@ -36,12 +39,34 @@ async function sendLeaveConfirmationAndMenu({ phoneNumberId, to, date }) {
   };
 
   try {
-    await axios.post(url, data, {
+    const resp = await axios.post(url, data, {
       headers: {
         'Content-Type':  'application/json',
         Authorization:   `Bearer ${token}`
       }
     });
+    try {
+      const client = await Client.findOne({ phoneNumberId });
+      const clientId = client ? client.clientId : 'code_clinic_v1';
+      let conversation = await Conversation.findOne({ phone: to, clientId });
+      if (!conversation) {
+        conversation = await Conversation.create({ phone: to, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+      }
+      const content = data.interactive.header.text;
+      const saved = await Message.create({
+        clientId,
+        conversationId: conversation._id,
+        from: 'bot',
+        to,
+        content,
+        type: 'interactive',
+        direction: 'outgoing',
+        status: 'sent'
+      });
+      conversation.lastMessage = content;
+      conversation.lastMessageAt = new Date();
+      await conversation.save();
+    } catch {}
   } catch (err) {
     console.error('Error sending leave confirmation:', err.response?.data || err.message);
   }
@@ -65,12 +90,33 @@ async function sendPromptForTimeSlots({ phoneNumberId, to, date }) {
   };
 
   try {
-    await axios.post(url, data, {
+    const resp = await axios.post(url, data, {
       headers: {
         'Content-Type': 'application/json',
         Authorization:  `Bearer ${token}`
       }
     });
+    try {
+      const client = await Client.findOne({ phoneNumberId });
+      const clientId = client ? client.clientId : 'code_clinic_v1';
+      let conversation = await Conversation.findOne({ phone: to, clientId });
+      if (!conversation) {
+        conversation = await Conversation.create({ phone: to, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+      }
+      const saved = await Message.create({
+        clientId,
+        conversationId: conversation._id,
+        from: 'bot',
+        to,
+        content: data.text.body,
+        type: 'text',
+        direction: 'outgoing',
+        status: 'sent'
+      });
+      conversation.lastMessage = data.text.body;
+      conversation.lastMessageAt = new Date();
+      await conversation.save();
+    } catch {}
   } catch (err) {
     console.error('Error sending time-slot prompt:', err.response?.data || err.message);
   }
@@ -109,12 +155,34 @@ async function sendPartialConfirmationAndMenu({ phoneNumberId, to, date, timeSlo
   };
 
   try {
-    await axios.post(url, data, {
+    const resp = await axios.post(url, data, {
       headers: {
         'Content-Type': 'application/json',
         Authorization:  `Bearer ${token}`
       }
     });
+    try {
+      const client = await Client.findOne({ phoneNumberId });
+      const clientId = client ? client.clientId : 'code_clinic_v1';
+      let conversation = await Conversation.findOne({ phone: to, clientId });
+      if (!conversation) {
+        conversation = await Conversation.create({ phone: to, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+      }
+      const content = data.interactive.header.text;
+      const saved = await Message.create({
+        clientId,
+        conversationId: conversation._id,
+        from: 'bot',
+        to,
+        content,
+        type: 'interactive',
+        direction: 'outgoing',
+        status: 'sent'
+      });
+      conversation.lastMessage = content;
+      conversation.lastMessageAt = new Date();
+      await conversation.save();
+    } catch {}
   } catch (err) {
     console.error('Error sending partial confirm:', err.response?.data || err.message);
   }
