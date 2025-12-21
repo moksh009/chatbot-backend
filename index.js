@@ -12,6 +12,9 @@ const { getAvailableTimeSlots, createEvent, updateEvent, deleteEvent, findEventB
 const { getAvailableDates } = require('./utils/getAvailableDates');
 const { getAvailableSlots } = require('./utils/getAvailableSlots');
 const Appointment = require('./models/Appointment');
+const Conversation = require('./models/Conversation');
+const Message = require('./models/Message');
+const Client = require('./models/Client');
 const path = require('path');
 const cron = require('node-cron');
 const { DateTime } = require('luxon');
@@ -2228,7 +2231,17 @@ app.post('/', async (req, res) => {
     }
 
     // --- DASHBOARD LOGIC START ---
-    const clientId = 'code_clinic_v1'; // Hardcoded for now, or fetch from DB based on phoneNumberId
+    let clientId = 'code_clinic_v1';
+    try {
+      if (phoneNumberId) {
+        const client = await Client.findOne({ phoneNumberId });
+        if (client) {
+          clientId = client.clientId;
+        }
+      }
+    } catch (e) {
+      console.error('Client lookup failed:', e.message);
+    }
     const io = app.get('socketio');
 
     // 1. Find or Create Conversation
