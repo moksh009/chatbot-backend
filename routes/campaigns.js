@@ -77,8 +77,14 @@ router.post('/start', protect, async (req, res) => {
     campaign.status = 'SENDING';
     await campaign.save();
 
-    const client = await Client.findOne({ clientId: req.user.clientId });
-    const phoneNumberId = req.body.phoneNumberId || client?.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
+    const clientById = await Client.findOne({ clientId: req.user.clientId });
+    let anyClient = clientById || await Client.findOne();
+    if (!anyClient && process.env.WHATSAPP_PHONENUMBER_ID) {
+      try {
+        anyClient = await Client.create({ clientId: req.user.clientId, phoneNumberId: process.env.WHATSAPP_PHONENUMBER_ID });
+      } catch {}
+    }
+    const phoneNumberId = req.body.phoneNumberId || anyClient?.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
     const accessToken = req.body.accessToken || process.env.WHATSAPP_TOKEN;
     if (!phoneNumberId || !accessToken) {
       return res.status(500).json({ message: 'Messaging credentials not configured' });
