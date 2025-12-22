@@ -24,24 +24,26 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
   }
 
   try {
+    const rows = [];
+    await new Promise((resolve, reject) => {
+      fs.createReadStream(req.file.path)
+        .pipe(csv())
+        .on('data', (data) => rows.push(data))
+        .on('end', resolve)
+        .on('error', reject);
+    });
+    const validCount = rows.reduce((acc, row) => {
+      const phone = (row.phone || row.number || row.mobile || row.recipient || '').toString().trim();
+      return phone ? acc + 1 : acc;
+    }, 0);
     const campaign = await Campaign.create({
       clientId: req.user.clientId,
       name: req.body.name,
       templateName: req.body.templateName,
       status: 'DRAFT',
-      csvFile: req.file.path
+      csvFile: req.file.path,
+      audienceCount: validCount
     });
-
-    // Parse CSV to get audience count (async background process ideally)
-    const results = [];
-    fs.createReadStream(req.file.path)
-      .pipe(csv())
-      .on('data', (data) => results.push(data))
-      .on('end', async () => {
-        campaign.audienceCount = results.length;
-        await campaign.save();
-      });
-
     res.json(campaign);
   } catch (error) {
     res.status(500).json({ message: 'Server Error', error: error.message });
