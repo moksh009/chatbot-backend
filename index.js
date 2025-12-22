@@ -85,8 +85,8 @@ const userSessions = {};
 
 // Doctor to Calendar ID mapping
 const doctorCalendars = {
-  'Dr. Steven Mugabe': process.env.GCAL_CALENDAR_ID,
-  'Dr. Angella Kissa': process.env.GCAL_CALENDAR_ID2,
+  'Turf 1': process.env.GCAL_CALENDAR_ID,
+  'Turf 2': process.env.GCAL_CALENDAR_ID2,
 };
 
 // Helper to get or initialize user session

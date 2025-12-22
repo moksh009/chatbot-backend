@@ -26,4 +26,7 @@ AppointmentSchema.pre('save', function(next) {
   next();
 });
 
+// Prevent double bookings for same turf/date/time
+AppointmentSchema.index({ doctor: 1, date: 1, time: 1 }, { unique: true });
+
 module.exports = mongoose.model('Appointment', AppointmentSchema); 

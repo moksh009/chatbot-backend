@@ -17,7 +17,11 @@ try {
 
 function normalizePhone(p) {
   if (!p) return '';
-  return String(p).replace(/[^\d]/g, '');
+  const digits = String(p).replace(/[^\d]/g, '');
+  if (!digits) return '';
+  const cc = process.env.DEFAULT_COUNTRY_CODE || '91';
+  if (digits.length === 10) return cc + digits;
+  return digits;
 }
 
 // @route   POST /api/campaigns
@@ -89,8 +93,8 @@ router.post('/start', protect, async (req, res) => {
         anyClient = await Client.create({ clientId: req.user.clientId, phoneNumberId: process.env.WHATSAPP_PHONENUMBER_ID });
       } catch {}
     }
-    const phoneNumberId = req.body.phoneNumberId || anyClient?.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
-    const accessToken = req.body.accessToken || process.env.WHATSAPP_TOKEN;
+    const phoneNumberId = req.body.phoneNumberId || anyClient?.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID || process.env.WHATSAPP_PHONE_NUMBER_ID;
+    const accessToken = req.body.accessToken || process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_ACCESS_TOKEN;
     if (!phoneNumberId || !accessToken) {
       return res.status(500).json({ message: 'Messaging credentials not configured' });
     }
@@ -148,7 +152,8 @@ router.post('/start', protect, async (req, res) => {
           failed++;
         }
         await new Promise(r => setTimeout(r, 500));
-      } catch {
+      } catch (err) {
+        console.error('Campaign send error:', err.response?.data || err.message);
         failed++;
       }
     }
