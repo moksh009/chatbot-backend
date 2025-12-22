@@ -12,6 +12,7 @@ const { getAvailableTimeSlots, createEvent, updateEvent, deleteEvent, findEventB
 const { getAvailableDates } = require('./utils/getAvailableDates');
 const { getAvailableSlots } = require('./utils/getAvailableSlots');
 const Appointment = require('./models/Appointment');
+const DailyStat = require('./models/DailyStat');
 const Conversation = require('./models/Conversation');
 const Message = require('./models/Message');
 const Client = require('./models/Client');
@@ -29,6 +30,7 @@ const authRoutes = require('./routes/auth');
 const conversationRoutes = require('./routes/conversations');
 const appointmentRoutes = require('./routes/appointments');
 const analyticsRoutes = require('./routes/analytics');
+const campaignsRoutes = require('./routes/campaigns');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -43,6 +45,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/conversations', conversationRoutes);
 app.use('/api/appointments', appointmentRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/campaigns', campaignsRoutes);
 
 const OpenAI = require('openai');
 const BirthdayUser = require('./models/BirthdayUser');
@@ -1328,6 +1331,12 @@ Provide a SHORT, PRECISE response:`;
         });
         
         await Appointment.create(appointmentData);
+        try {
+          const io = app.get('socketio');
+          if (io) {
+            io.to(`client_${clientId}`).emit('appointments_update', { type: 'created' });
+          }
+        } catch {}
         
         console.log('✅ Appointment saved successfully to database');
         
@@ -1637,6 +1646,12 @@ Provide a SHORT, PRECISE response:`;
         });
         
         await Appointment.create(appointmentData);
+        try {
+          const io = app.get('socketio');
+          if (io) {
+            io.to(`client_${clientId}`).emit('appointments_update', { type: 'created' });
+          }
+        } catch {}
         
         console.log('✅ Appointment saved successfully to database');
         
@@ -1993,6 +2008,15 @@ Provide a SHORT, PRECISE response:`;
           to: from,
           body: 'Your booking has been cancelled. The slot is now free and available for others to book.'
         });
+        try {
+          await Appointment.findOneAndDelete({ eventId: session.data.cancelEventId, clientId });
+          const io = app.get('socketio');
+          if (io) {
+            io.to(`client_${clientId}`).emit('appointments_update', { type: 'deleted', eventId: session.data.cancelEventId });
+          }
+        } catch (err) {
+          console.error('Error deleting appointment from DB:', err.message);
+        }
       } catch (err) {
         console.error('Error cancelling booking:', err);
         await sendWhatsAppText({
@@ -2058,6 +2082,15 @@ Provide a SHORT, PRECISE response:`;
           to: from,
           body: 'Your previous booking has been cancelled and the slot is now free for others.'
         });
+        try {
+          await Appointment.findOneAndDelete({ eventId: session.data.cancelEventId, clientId });
+          const io = app.get('socketio');
+          if (io) {
+            io.to(`client_${clientId}`).emit('appointments_update', { type: 'deleted', eventId: session.data.cancelEventId });
+          }
+        } catch (err) {
+          console.error('Error deleting appointment from DB (reschedule):', err.message);
+        }
         // Reset session data for new booking, but keep phone for convenience
         const userPhone = session.data.cancelReschedulePhoneValue;
         session.data = { phone: userPhone };
@@ -2529,12 +2562,23 @@ cron.schedule('0 6 * * *', async () => {
 
     let successCount = 0;
     let failureCount = 0;
+    const clientRec = await Client.findOne({ phoneNumberId: phoneid });
+    const resolvedClientId = clientRec ? clientRec.clientId : 'code_clinic_v1';
+    async function incDaily(field) {
+      const dateStr = eatNow.toISODate();
+      await DailyStat.updateOne(
+        { clientId: resolvedClientId, date: dateStr },
+        { $inc: { [field]: 1 }, $setOnInsert: { clientId: resolvedClientId, date: dateStr } },
+        { upsert: true }
+      );
+    }
 
     for (const user of todaysBirthdays) {
       try {
         const result = await sendBirthdayWishWithImage(user.number, token, phoneid);
         if (result.success) {
           successCount++;
+          await incDaily('birthdayRemindersSent');
         } else {
           failureCount++;
           console.log(`❌ Birthday message failed for ${user.number}: ${result.reason || result.error}`);
@@ -2634,6 +2678,16 @@ cron.schedule('0 7 * * *', async () => {
         });
 
         console.log(`✅ Appointment reminder sent to ${phoneNumber} for ${time}`);
+        try {
+          const clientRec = await Client.findOne({ phoneNumberId: phoneid });
+          const resolvedClientId = clientRec ? clientRec.clientId : 'code_clinic_v1';
+          const dateStr = eatNow.toISODate();
+          await DailyStat.updateOne(
+            { clientId: resolvedClientId, date: dateStr },
+            { $inc: { appointmentRemindersSent: 1 }, $setOnInsert: { clientId: resolvedClientId, date: dateStr } },
+            { upsert: true }
+          );
+        } catch {}
         
         // Add delay to avoid rate limiting
         await new Promise(resolve => setTimeout(resolve, 1000));

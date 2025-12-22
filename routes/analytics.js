@@ -3,6 +3,7 @@ const router = express.Router();
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Appointment = require('../models/Appointment');
+const DailyStat = require('../models/DailyStat');
 const { protect } = require('../middleware/auth');
 
 router.get('/', protect, async (req, res) => {
@@ -83,19 +84,27 @@ router.get('/', protect, async (req, res) => {
       }
     ]);
 
+    // 5. DailyStat for reminders
+    const reminderStats = await DailyStat.find({ clientId, date: { $gte: dates[0], $lte: dates[dates.length - 1] } });
+
     // Merge Data
     const stats = dates.map(date => {
       const chatCount = chatsStarted.find(c => c._id === date)?.count || 0;
       const userCount = activeUsers.find(c => c._id === date)?.count || 0;
       const apptCount = appointments.find(c => c._id === date)?.count || 0;
       const msgCount = messages.find(c => c._id === date)?.count || 0;
+      const dayReminder = reminderStats.find(r => r.date === date);
+      const bdayCount = dayReminder?.birthdayRemindersSent || 0;
+      const apptRemCount = dayReminder?.appointmentRemindersSent || 0;
 
       return {
         date,
         totalChats: chatCount,
         uniqueUsers: userCount,
         appointmentsBooked: apptCount,
-        totalMessagesExchanged: msgCount
+        totalMessagesExchanged: msgCount,
+        birthdayRemindersSent: bdayCount,
+        appointmentRemindersSent: apptRemCount
       };
     });
 
