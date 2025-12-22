@@ -15,6 +15,11 @@ try {
   fs.mkdirSync('uploads', { recursive: true });
 } catch {}
 
+function normalizePhone(p) {
+  if (!p) return '';
+  return String(p).replace(/[^\d]/g, '');
+}
+
 // @route   POST /api/campaigns
 // @desc    Create a new campaign (upload CSV)
 // @access  Private
@@ -33,7 +38,7 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
         .on('error', reject);
     });
     const validCount = rows.reduce((acc, row) => {
-      const phone = (row.phone || row.number || row.mobile || row.recipient || '').toString().trim();
+      const phone = normalizePhone(row.phone || row.number || row.mobile || row.recipient || '');
       return phone ? acc + 1 : acc;
     }, 0);
     const campaign = await Campaign.create({
@@ -105,7 +110,7 @@ router.post('/start', protect, async (req, res) => {
 
     total = rows.length;
     for (const row of rows) {
-      const recipientPhone = row.phone || row.number || row.mobile || row.recipient || '';
+      const recipientPhone = normalizePhone(row.phone || row.number || row.mobile || row.recipient || '');
       if (!recipientPhone) {
         failed++;
         continue;

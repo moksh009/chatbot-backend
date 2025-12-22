@@ -35,6 +35,27 @@ const campaignsRoutes = require('./routes/campaigns');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// WhatsApp Cloud API env validation (hard fail if missing)
+function resolveWhatsAppConfig() {
+  const token = process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_ACCESS_TOKEN;
+  const phoneId = process.env.WHATSAPP_PHONENUMBER_ID || process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const apiVersion = process.env.API_VERSION || process.env.WHATSAPP_API_VERSION || 'v18.0';
+  return { token, phoneId, apiVersion };
+}
+(() => {
+  const { token, phoneId } = resolveWhatsAppConfig();
+  const required = [
+    ['WHATSAPP_TOKEN', 'WHATSAPP_ACCESS_TOKEN'],
+    ['WHATSAPP_PHONENUMBER_ID', 'WHATSAPP_PHONE_NUMBER_ID']
+  ];
+  const missing = [];
+  if (!token) missing.push('WHATSAPP_TOKEN|WHATSAPP_ACCESS_TOKEN');
+  if (!phoneId) missing.push('WHATSAPP_PHONENUMBER_ID|WHATSAPP_PHONE_NUMBER_ID');
+  if (missing.length) {
+    throw new Error(`Missing WhatsApp config: ${missing.join(', ')}`);
+  }
+})();
+
 // Middleware
 app.use(cors());
 app.use(express.json());

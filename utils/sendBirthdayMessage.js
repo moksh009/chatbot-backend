@@ -7,6 +7,8 @@ const Client = require('../models/Client');
 // 📤 Send WhatsApp birthday wish with consent check
 async function sendBirthdayWishWithImage(recipientPhone, accessToken, phoneNumberId) {
   try {
+    const apiVersion = process.env.API_VERSION || process.env.WHATSAPP_API_VERSION || 'v18.0';
+    const templateLang = process.env.WHATSAPP_TEMPLATE_LANG || 'en_US';
     // Check if user has consented to birthday messages
     const birthdayUser = await BirthdayUser.findOne({ 
       number: recipientPhone,
@@ -18,15 +20,16 @@ async function sendBirthdayWishWithImage(recipientPhone, accessToken, phoneNumbe
       return { success: false, reason: 'not_consented' };
     }
 
+    const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
     const response = await axios.post(
-        `https://graph.facebook.com/v23.0/${phoneNumberId}/messages`,
+        url,
         {
           messaging_product: "whatsapp",
           to: recipientPhone,
           type: "template",
           template: {
             name: "happy_birthday_wish_1", // must match exactly
-            language: { code: "en" },
+            language: { code: templateLang },
             components: [
               {
                 type: "header",
@@ -59,6 +62,7 @@ async function sendBirthdayWishWithImage(recipientPhone, accessToken, phoneNumbe
           }
         }
       );
+    console.log('Birthday API response:', response.status, response.data);
 
     try {
       const client = await Client.findOne({ phoneNumberId });

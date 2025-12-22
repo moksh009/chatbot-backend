@@ -14,6 +14,8 @@ const TIMEZONE = 'Africa/Kampala';
  */
 async function sendAppointmentReminder(phoneNumberId, accessToken, recipientPhone, appointmentDetails) {
   try {
+    const apiVersion = process.env.API_VERSION || process.env.WHATSAPP_API_VERSION || 'v18.0';
+    const templateLang = process.env.WHATSAPP_TEMPLATE_LANG || 'en_US';
     const { summary, start, doctor, date, time } = appointmentDetails;
     
     // Extract patient name from summary (format: "Appointment: Name - Service with Doctor")
@@ -28,7 +30,7 @@ async function sendAppointmentReminder(phoneNumberId, accessToken, recipientPhon
       type: 'template',
       template: {
         name: 'appointment_reminder_1',
-        language: { code: 'en' },
+        language: { code: templateLang },
         components: [
           // Body parameters
           {
@@ -75,7 +77,7 @@ async function sendAppointmentReminder(phoneNumberId, accessToken, recipientPhon
       }
     };
 
-    const url = `https://graph.facebook.com/v17.0/${phoneNumberId}/messages`;
+    const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
     console.log('Sending message to:', url);
     console.log('Message payload:', JSON.stringify(message, null, 2));
     
@@ -86,6 +88,7 @@ async function sendAppointmentReminder(phoneNumberId, accessToken, recipientPhon
       },
       validateStatus: (status) => status < 500
     });
+    console.log('Appointment API response:', response.status, response.data);
 
     try {
       const client = await Client.findOne({ phoneNumberId });
