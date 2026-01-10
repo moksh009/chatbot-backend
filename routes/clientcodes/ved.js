@@ -150,7 +150,10 @@ async function getAIResponse(query) {
     return completion.choices[0].message.content;
   } catch (err) {
     console.error('AI Error:', err);
-    return "I apologize, I'm having trouble processing that request right now.";
+    if (err.status === 429) {
+         return "I am currently experiencing high traffic. Please browse our products using the menu below.";
+    }
+    return "I apologize, I'm having trouble processing that request right now. Please select an option from the menu.";
   }
 }
 
@@ -197,24 +200,33 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io })
         const shopifyBaseUrl = 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-5mp'; 
         const shopifyUrl = `${shopifyBaseUrl}?uid=${lead._id}`;
 
-        // Send Image with Caption and "View Website" CTA (Simulated via text for now or button if template)
-        // Since we can't send URL buttons in session messages, we send an image with caption containing link
-        // AND a menu for other options.
-        
-        await sendWhatsAppImage({
+        // Send Interactive Message with Image Header
+        await sendWhatsAppInteractive({
             phoneNumberId,
             to: from,
-            imageUrl: 'https://delitechsmarthome.in/cdn/shop/files/1_1.png', // Assuming this exists or use placeholder
-            caption: `Welcome to Delitech Smart Home! 🏠\n\nHere is the Wireless Video Doorbell you are interested in.\n\n� *Buy Now*: ${shopifyUrl}`,
+            body: `Welcome to Delitech Smart Home! 🏠\n\nHere is the Wireless Video Doorbell you are interested in.\n\n🛒 *Buy Now*: ${shopifyUrl}`,
+            interactive: {
+                type: 'button',
+                header: {
+                    type: 'image',
+                    image: {
+                        link: 'https://delitechsmarthome.in/cdn/shop/files/1_1.png'
+                    }
+                },
+                action: {
+                    buttons: [
+                        { type: 'reply', reply: { id: 'btn_products', title: 'View More Products' } },
+                        { type: 'reply', reply: { id: 'btn_agent', title: 'Talk to Agent' } }
+                    ]
+                }
+            },
             io
         });
 
-        // Send Main Menu immediately after
-        await sendMainMenu({ phoneNumberId, to: from, io });
 
       } catch (err) {
           console.error('Error in ad flow:', err);
-          await sendWhatsAppText({ phoneNumberId, to: from, body: 'Welcome! How can we help you today?', io });
+          await sendMainMenu({ phoneNumberId, to: from, io });
       }
       return res.status(200).end();
   }
@@ -270,7 +282,10 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io })
   if (userMsgType === 'text') {
       const aiReply = await getAIResponse(userMsg);
       await sendWhatsAppText({ phoneNumberId, to: from, body: aiReply, io });
-      // Optionally show menu again? No, let them converse.
+      
+      if (aiReply.includes("menu below") || aiReply.includes("trouble processing")) {
+          await sendMainMenu({ phoneNumberId, to: from, io });
+      }
   }
 
   res.status(200).end();
@@ -337,11 +352,25 @@ async function sendProductDetail({ phoneNumberId, to, io, name, img, url }) {
     const uid = lead ? lead._id : 'general';
     const finalUrl = `${url}?uid=${uid}`;
 
-    await sendWhatsAppImage({
+    await sendWhatsAppInteractive({
         phoneNumberId,
         to,
-        imageUrl: img,
-        caption: `*${name}*\n\nTop quality smart home security.\n\n👉 *Buy Now*: ${finalUrl}`,
+        body: `*${name}*\n\nTop quality smart home security.\n\n� *Buy Now*: ${finalUrl}`,
+        interactive: {
+            type: 'button',
+            header: {
+                type: 'image',
+                image: {
+                    link: img
+                }
+            },
+            action: {
+                buttons: [
+                    { type: 'reply', reply: { id: 'btn_products', title: 'Other Products' } },
+                    { type: 'reply', reply: { id: 'btn_main_menu', title: 'Main Menu' } }
+                ]
+            }
+        },
         io
     });
 }
