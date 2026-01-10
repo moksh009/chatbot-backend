@@ -1,0 +1,30 @@
+DELITECH SMART HOME KNOWLEDGE BASE
+
+1. Brand Information
+- Brand Name: Delitech Smart Home
+- Core Product: Wireless Video Doorbell with Camera
+- Website: https://delitechsmarthome.in/
+
+2. Product: Delitech Smart Wireless Video Doorbell (5MP)
+- Resolution: 5MP HD Video
+- Features:
+  - Wireless connectivity (Wi-Fi)
+  - Two-way audio (Talk to visitors from your phone)
+  - Night Vision
+  - Motion Detection
+  - Rechargeable Battery
+  - Easy Installation (No wiring required)
+  - App Control (View live feed from anywhere)
+
+3. FAQs
+- "How do I install it?" -> It's a wireless doorbell. You can mount it using the provided adhesive or screws. No electrical wiring is needed.
+- "Does it work with my phone?" -> Yes, it connects to our mobile app (iOS and Android).
+- "Is it waterproof?" -> Yes, it is designed for outdoor use and is weather-resistant.
+- "How long does the battery last?" -> The battery lasts 1-3 months on a single charge depending on usage.
+- "Do I need a subscription?" -> No, basic features work without a subscription. Cloud storage may require a plan.
+- "What happens when someone rings the bell?" -> You get an instant video call/notification on your phone.
+- "Is there a warranty?" -> Yes, we offer a 1-year warranty on manufacturing defects.
+
+4. Contact
+- Support Email: support@delitechsmarthome.in
+- Phone: [Insert Admin Number]
