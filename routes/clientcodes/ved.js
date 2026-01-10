@@ -29,7 +29,7 @@ async function sendWhatsAppText({ phoneNumberId, to, body, io }) {
     // Save outgoing message to DB and emit socket event
     try {
       const client = await Client.findOne({ phoneNumberId });
-      const resolvedClientId = client ? client.clientId : 'code_clinic_v1';
+      const resolvedClientId = client ? client.clientId : 'delitech_smarthomes';
       let conversation = await Conversation.findOne({ phone: to, clientId: resolvedClientId });
       if (!conversation) {
         conversation = await Conversation.create({ phone: to, clientId: resolvedClientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
@@ -116,7 +116,7 @@ router.post('/', async (req, res) => {
 
     // --- DASHBOARD LOGIC START ---
     // (Preserved as requested to keep conversation saving and human AI takeover logic)
-    let clientId = 'code_clinic_v1';
+    let clientId = 'delitech_smarthomes';
     try {
       if (phoneNumberId) {
         const client = await Client.findOne({ phoneNumberId });
