@@ -19,6 +19,7 @@ const appointmentRoutes = require('./routes/appointments');
 const analyticsRoutes = require('./routes/analytics');
 const campaignsRoutes = require('./routes/campaigns');
 const turfClientRoutes = require('./routes/clientcodes/turf');
+const vedClientRoutes = require('./routes/clientcodes/ved');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -58,6 +59,7 @@ app.use('/api/campaigns', campaignsRoutes);
 
 
 app.use('/api/client/0001', turfClientRoutes);
+app.use('/api/client/0002', vedClientRoutes);
 
 // Homepage endpoint
 app.get('/homepage', (req, res) => {
