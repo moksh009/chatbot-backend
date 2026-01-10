@@ -33,7 +33,7 @@ async function sendWhatsAppText({ phoneNumberId, to, body }) {
       }
     });
     try {
-      const io = app.get('socketio');
+      const io = req.app.get('socketio');
       const client = await Client.findOne({ phoneNumberId });
       const resolvedClientId = client ? client.clientId : 'code_clinic_v1';
       let conversation = await Conversation.findOne({ phone: to, clientId: resolvedClientId });
@@ -283,7 +283,7 @@ async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons })
       }
     });
     try {
-      const io = app.get('socketio');
+      const io = req.app.get('socketio');
       const client = await Client.findOne({ phoneNumberId });
       const resolvedClientId = client ? client.clientId : 'code_clinic_v1';
       let conversation = await Conversation.findOne({ phone: to, clientId: resolvedClientId });
@@ -354,7 +354,7 @@ async function sendWhatsAppList({ phoneNumberId, to, header, body, button, rows 
       }
     });
     try {
-      const io = app.get('socketio');
+      const io = req.app.get('socketio');
       const client = await Client.findOne({ phoneNumberId });
       const resolvedClientId = client ? client.clientId : 'code_clinic_v1';
       let conversation = await Conversation.findOne({ phone: to, clientId: resolvedClientId });
@@ -1298,7 +1298,7 @@ Provide a SHORT, PRECISE response:`;
         
         await Appointment.create(appointmentData);
         try {
-          const io = app.get('socketio');
+          const io = req.app.get('socketio');
           if (io) {
             io.to(`client_${clientId}`).emit('appointments_update', { type: 'created' });
           }
@@ -1613,7 +1613,7 @@ Provide a SHORT, PRECISE response:`;
         
         await Appointment.create(appointmentData);
         try {
-          const io = app.get('socketio');
+          const io = req.app.get('socketio');
           if (io) {
             io.to(`client_${clientId}`).emit('appointments_update', { type: 'created' });
           }
@@ -1976,7 +1976,7 @@ Provide a SHORT, PRECISE response:`;
         });
         try {
           await Appointment.findOneAndDelete({ eventId: session.data.cancelEventId, clientId });
-          const io = app.get('socketio');
+          const io = req.app.get('socketio');
           if (io) {
             io.to(`client_${clientId}`).emit('appointments_update', { type: 'deleted', eventId: session.data.cancelEventId });
           }
@@ -2050,7 +2050,7 @@ Provide a SHORT, PRECISE response:`;
         });
         try {
           await Appointment.findOneAndDelete({ eventId: session.data.cancelEventId, clientId });
-          const io = app.get('socketio');
+          const io = req.app.get('socketio');
           if (io) {
             io.to(`client_${clientId}`).emit('appointments_update', { type: 'deleted', eventId: session.data.cancelEventId });
           }
@@ -2294,7 +2294,7 @@ router.post('/', async (req, res) => {
     } catch (e) {
       console.error('Client lookup failed:', e.message);
     }
-    const io = app.get('socketio');
+    const io = req.app.get('socketio');
 
     // 1. Find or Create Conversation
     let conversation = await Conversation.findOne({ phone: from, clientId });
