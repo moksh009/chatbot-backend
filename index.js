@@ -10,7 +10,14 @@ const { DateTime } = require('luxon');
 const birthdayData = require('./birthdays.json');
 const { sendBirthdayWishWithImage } = require('./utils/sendBirthdayMessage');
 // Load environment variables
-dotenv.config();
+// dotenv.config();
+// Silence .env missing warning
+const dotenvResult = dotenv.config();
+if (dotenvResult.error && dotenvResult.error.code !== 'ENOENT') {
+  console.error("Dotenv Error:", dotenvResult.error);
+}
+// If ENOENT, it just means no file, which is fine if envs are injected otherwise.
+
 
 const cors = require('cors');
 const authRoutes = require('./routes/auth');

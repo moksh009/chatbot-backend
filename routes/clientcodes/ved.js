@@ -159,6 +159,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io })
 
   if (userMsgType === 'text') {
       userMsg = messages.text.body;
+      console.log(`📩 Received TEXT from ${from}: "${userMsg}"`);
   } else if (userMsgType === 'interactive') {
       if (messages.interactive.type === 'button_reply') {
           interactiveId = messages.interactive.button_reply.id;
@@ -167,14 +168,15 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io })
           interactiveId = messages.interactive.list_reply.id;
           userMsg = messages.interactive.list_reply.title;
       }
+      console.log(`📩 Received INTERACTIVE from ${from}: ID="${interactiveId}" Title="${userMsg}"`);
   }
 
-  // 1. AD TRIGGER FLOW (Fixed Regex & DB logic)
+  // 1. AD TRIGGER FLOW
   // Matches "details on this product", "know details on product", "want details", etc.
   const adMessagePattern = /(details|know).*product/i; 
   if (userMsgType === 'text' && adMessagePattern.test(userMsg)) {
+      console.log(`🎯 Triggering AD FLOW for ${from}`);
       try {
-        console.log(`Ad Trigger hit for ${from}`);
         // Use findOneAndUpdate with upsert to prevent "Duplicate Key" errors
         const lead = await AdLead.findOneAndUpdate(
             { phoneNumber: from },
@@ -185,17 +187,18 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io })
         const shopifyBaseUrl = 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-5mp'; 
         const shopifyUrl = `${shopifyBaseUrl}?uid=${lead._id}`;
 
-        // Try sending the Rich Media message
-        const sent = await sendWhatsAppInteractive({
+        // Send Text-Only Message as requested for stability
+        await sendWhatsAppInteractive({
             phoneNumberId,
             to: from,
             body: `Welcome to Delitech Smart Home! 🏠\n\nHere is the Wireless Video Doorbell you are interested in.\n\n🛒 *Buy Now*: ${shopifyUrl}`,
             interactive: {
                 type: 'button',
-                header: {
-                    type: 'image',
-                    image: { link: 'https://delitechsmarthome.in/cdn/shop/files/1_1.png' }
-                },
+                // Header removed for stability as per user request
+                // header: {
+                //     type: 'image',
+                //     image: { link: 'https://delitechsmarthome.in/cdn/shop/files/1_1.png' }
+                // },
                 action: {
                     buttons: [
                         { type: 'reply', reply: { id: 'btn_products', title: 'View More Products' } },
@@ -206,20 +209,8 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io })
             io
         });
 
-        // FALLBACK: If image message failed (API error), send text link + menu
-        if (!sent) {
-            console.log("Interactive Ad message failed, sending fallback text.");
-            await sendWhatsAppText({ 
-                phoneNumberId, 
-                to: from, 
-                body: `Welcome to Delitech Smart Home! 🏠\n\nHere is the link to the Wireless Video Doorbell:\n${shopifyUrl}`, 
-                io 
-            });
-            await sendMainMenu({ phoneNumberId, to: from, io });
-        }
-
       } catch (err) {
-          console.error('Critical Error in ad flow:', err);
+          console.error('❌ Error in ad flow:', err);
           await sendMainMenu({ phoneNumberId, to: from, io });
       }
       return res.status(200).end();
@@ -228,6 +219,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io })
   // 2. GREETING FLOW
   const greetingPattern = /^(hi|hello|hey|hola)/i;
   if (userMsgType === 'text' && greetingPattern.test(userMsg)) {
+      console.log(`👋 Triggering GREETING FLOW for ${from}`);
       await sendMainMenu({ phoneNumberId, to: from, io });
       return res.status(200).end();
   }
@@ -275,7 +267,9 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io })
 
   // 4. AI FALLBACK
   if (userMsgType === 'text') {
+      console.log(`🧠 Calling AI for: "${userMsg}"`);
       const aiReply = await getAIResponse(userMsg);
+      console.log(`🤖 AI Reply: "${aiReply}"`);
       await sendWhatsAppText({ phoneNumberId, to: from, body: aiReply, io });
       
       if (aiReply.includes("menu below") || aiReply.includes("trouble processing")) {
