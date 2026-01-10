@@ -13,6 +13,10 @@ const { parseDateFromId } = require('../../utils/helpers');
 const Conversation = require('../../models/Conversation');
 const Message = require('../../models/Message');
 const path = require('path');
+const Appointment = require('../../models/Appointment');
+const DailyStat = require('../../models/DailyStat');
+const Client = require('../../models/Client');
+const { DateTime } = require('luxon');
 
 // Helper to send plain WhatsApp text message
 async function sendWhatsAppText({ phoneNumberId, to, body }) {
