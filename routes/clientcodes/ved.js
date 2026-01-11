@@ -14,7 +14,7 @@ const PRODUCTS = {
         name: 'Delitech Wireless Doorbell (3MP)',
         price: '₹5,999',
         desc: '3MP 2K HD Video, 130° Wide View, Night Vision, 2-Way Audio, Motion Detection. Includes Chime.',
-        img: 'https://delitechsmarthome.in/cdn/shop/files/1_1.png', // Ensure this is a valid public image URL
+        img: 'https://delitechsmarthome.in/cdn/shop/files/Delitech_Main_photoswq.png?v=1760635732&width=1346', // Ensure this is a valid public image URL
         url: 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-3mp'
     },
     '5mp': {
@@ -22,7 +22,7 @@ const PRODUCTS = {
         name: 'Delitech Doorbell Pro (5MP)',
         price: '₹6,499',
         desc: 'Ultra HD 5MP, Color Night Vision, Advanced AI Detection, Anti-Theft Siren. Best Clarity.',
-        img: 'https://delitechsmarthome.in/cdn/shop/files/1_1.png', // Update if there is a specific 5MP image
+        img: 'https://delitechsmarthome.in/cdn/shop/files/my1.png?v=1759746759&width=1346', // Update if there is a specific 5MP image
         url: 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-5mp'
     }
 };
@@ -253,18 +253,29 @@ async function sendProductSelection({ phoneNumberId, to, io }) {
 }
 
 async function sendProductCard({ phoneNumberId, to, io, productKey, isAd = false }) {
+    console.log(`🛍️ Sending Product Card (${productKey}) to ${to}`);
     // 1. Get Product Data
     const product = PRODUCTS[productKey];
+    if (!product) {
+        console.error(`❌ Product key '${productKey}' not found!`);
+        return;
+    }
     
     // 2. Track Lead (Get UID)
-    const lead = await AdLead.findOneAndUpdate(
-        { phoneNumber: to },
-        { $setOnInsert: { phoneNumber: to, createdAt: new Date() }, $set: { lastInteraction: new Date() } },
-        { upsert: true, new: true }
-    );
+    let uid = 'general';
+    try {
+        const lead = await AdLead.findOneAndUpdate(
+            { phoneNumber: to },
+            { $setOnInsert: { phoneNumber: to, createdAt: new Date() }, $set: { lastInteraction: new Date() } },
+            { upsert: true, new: true }
+        );
+        if (lead) uid = lead._id;
+    } catch (e) {
+        console.error("⚠️ Lead Tracking Error:", e.message);
+    }
     
     // 3. Construct Tracking URL
-    const trackingUrl = `${product.url}?uid=${lead._id}`;
+    const trackingUrl = `${product.url}?uid=${uid}`;
 
     // 4. Construct Message Body
     // NOTE: WhatsApp does not allow URLs in buttons. We put it BOLD in the body.
@@ -275,7 +286,7 @@ async function sendProductCard({ phoneNumberId, to, io, productKey, isAd = false
     bodyText += `👇 *CLICK LINK TO BUY NOW:*\n${trackingUrl}`;
 
     // 5. Send Interactive Message with Image Header
-    await sendWhatsAppInteractive({
+    const sent = await sendWhatsAppInteractive({
         phoneNumberId,
         to,
         body: bodyText,
@@ -287,13 +298,26 @@ async function sendProductCard({ phoneNumberId, to, io, productKey, isAd = false
             },
             action: {
                 buttons: [
-                    { type: 'reply', reply: { id: isAd ? 'menu_products' : 'menu_products', title: 'View Other Models' } },
+                    { type: 'reply', reply: { id: 'menu_products', title: 'View Other Models' } },
                     { type: 'reply', reply: { id: 'menu_agent', title: 'Talk to Agent' } }
                 ]
             }
         },
         io
     });
+
+    // Fallback if interactive fails (often due to image issues)
+    if (!sent) {
+        console.log("⚠️ Interactive failed, sending text fallback.");
+        await sendWhatsAppText({ phoneNumberId, to, body: bodyText, io });
+        await sendWhatsAppInteractive({
+            phoneNumberId, to, body: "Select an option:",
+            interactive: {
+                type: 'button',
+                action: { buttons: [{ type: 'reply', reply: { id: 'menu_products', title: 'View Other Models' } }] }
+            }, io
+        });
+    }
 }
 
 async function sendFeatureComparison({ phoneNumberId, to, io }) {
