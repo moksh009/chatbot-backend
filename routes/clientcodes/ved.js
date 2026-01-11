@@ -286,27 +286,46 @@ async function handleAgentRequest({ phoneNumberId, to, context, io, clientId }) 
 
 async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientId }) {
     const product = PRODUCTS[productKey];
-    let uid = 'general';
+    
+    // 1. Track the Link Click (Purchase Intent) Immediately
     try {
-        // Upsert to avoid crash
         const lead = await AdLead.findOneAndUpdate(
             { phoneNumber: to, clientId },
-            { $setOnInsert: { phoneNumber: to, clientId, createdAt: new Date() }, $set: { lastInteraction: new Date() } },
+            { 
+                $inc: { linkClicks: 1 }, 
+                $set: { lastInteraction: new Date() },
+                $setOnInsert: { 
+                    phoneNumber: to, 
+                    clientId, 
+                    createdAt: new Date(),
+                    source: 'WhatsApp'
+                }
+            },
             { upsert: true, new: true }
         );
-        if (lead) uid = lead._id;
-    } catch(e) { console.error("Lead Error", e); }
 
-    // Use tracking URL
-    // Ensure BACKEND_URL is set or assume localhost/production URL
-    const baseUrl = process.env.BACKEND_URL || 'http://localhost:3000'; // Fallback
-    const link = `${baseUrl}/r/${uid}/${productKey}`;
+        // 2. Emit Real-Time Event to Dashboard
+        if (lead && io) {
+            io.to(`client_${clientId}`).emit('stats_update', {
+                type: 'link_click',
+                leadId: lead._id,
+                productId: productKey
+            });
+        }
+    } catch(e) { console.error("Lead Tracking Error", e); }
+
+    // 3. Send Direct URL (No Redirects)
+    // We append UTM parameters so you can still track source in Shopify Analytics if needed
+    const directUrl = product.url; // already contains full path
+    const urlObj = new URL(directUrl);
+    urlObj.searchParams.set('utm_source', 'whatsapp');
+    urlObj.searchParams.set('utm_medium', 'chatbot');
     
-    // Send high-converting text message with link
+    // Send high-converting text message with the direct link
     await sendWhatsAppText({ 
         phoneNumberId, 
         to, 
-        body: `⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 ${link}\n\n_Cash on Delivery Available_`, 
+        body: `⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 ${urlObj.toString()}\n\n_Cash on Delivery Available_`, 
         io 
     });
 }
