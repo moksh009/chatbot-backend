@@ -7,7 +7,7 @@ const Conversation = require('../../models/Conversation');
 const Message = require('../../models/Message');
 const Client = require('../../models/Client');
 
-// --- 1. ASSETS & DATA ---
+// --- 1. ASSETS & DATA (Polished) ---
 const IMAGES = {
     hero_3mp: 'https://delitechsmarthome.in/cdn/shop/files/Delitech_Main_photoswq.png?v=1760635732&width=1346',
     hero_5mp: 'https://delitechsmarthome.in/cdn/shop/files/my1.png?v=1759746759&width=1346',
@@ -19,8 +19,10 @@ const PRODUCTS = {
         id: 'prod_3mp',
         name: 'Delitech Doorbell (3MP)',
         price: '₹5,999',
-        desc: '📹 *2K HD Video* | 🌙 *Night Vision*\n🔋 *Wireless* | 🏃 *Motion Detect*',
-        full_desc: 'The best value smart doorbell in India.\n\n✅ *3MP HD Camera*\n✅ *Two-Way Audio*\n✅ *Instant Mobile Alerts*\n✅ *Free Indoor Chime Included*',
+        // Short desc for list view
+        short_desc: '2K HD Video • Night Vision • 2-Way Talk',
+        // Rich desc for product card
+        full_desc: 'The best value smart doorbell in India.\n\n📹 *2K HD Video* (Clear 3MP)\n🌙 *Night Vision* (See in dark)\n🗣️ *2-Way Audio* (Talk to visitors)\n🔋 *Wireless* (Rechargeable Battery)\n🔔 *Free Chime Included*',
         img: IMAGES.hero_3mp,
         url: 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-3mp'
     },
@@ -28,8 +30,8 @@ const PRODUCTS = {
         id: 'prod_5mp',
         name: 'Delitech Pro (5MP)',
         price: '₹6,499',
-        desc: '💎 *5MP Ultra HD* | 🌈 *Color Night Vision*\n🤖 *AI Detection* | 🚨 *Anti-Theft*',
-        full_desc: 'Our most advanced security solution.\n\n✅ *5MP Crystal Clear Video*\n✅ *Color Night Vision (See in color at night)*\n✅ *AI Human Detection (No false alerts)*\n✅ *Anti-Theft Siren Alarm*',
+        short_desc: '5MP Ultra HD • Color Night Vision • AI Detect',
+        full_desc: 'Our most advanced security solution.\n\n💎 *5MP Ultra Clarity* (Best in class)\n🌈 *Color Night Vision*\n🤖 *AI Human Detection* (No false alerts)\n🚨 *Anti-Theft Siren Alarm*\n☁️ *Free Cloud Storage*',
         img: IMAGES.hero_5mp,
         url: 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-5mp'
     }
@@ -86,8 +88,9 @@ async function notifyAdmin({ phoneNumberId, userPhone, context, io }) {
     const adminPhone = process.env.ADMIN_PHONE_NUMBER;
     if (!adminPhone) return;
 
+    // Creates a clickable link for the admin to immediately chat with the user
     const leadLink = `https://wa.me/${userPhone}`;
-    const alertBody = `🔥 *HOT LEAD ALERT* 🔥\n\n👤 *Customer:* +${userPhone}\n💭 *Interest:* ${context}\n\n👇 *Tap to Chat:* \n${leadLink}`;
+    const alertBody = `🔥 *HOT LEAD ALERT* 🔥\n\n👤 *Customer:* +${userPhone}\n💭 *Interest:* ${context}\n\n👇 *Tap link to chat:* \n${leadLink}`;
 
     await sendWhatsAppText({ phoneNumberId, to: adminPhone, body: alertBody, preview_url: true, io });
 }
@@ -108,9 +111,11 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io })
   console.log(`User: ${from} | Msg: ${userMsg} | ID: ${interactiveId}`);
 
   // A. AD LEAD INTENT (Priority)
-  // Catches: "details on this product", "price", "info"
+  // Matches "details on this product", "price", "info", "tell me more"
   const adIntentRegex = /(details|know|about|price|info).*product|tell me more/i;
+  
   if (userMsgType === 'text' && adIntentRegex.test(userMsg)) {
+      // Direct flow: Show 5MP Pro card immediately
       await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', isAd: true });
       return res.status(200).end();
   }
@@ -125,17 +130,16 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io })
   // C. INTERACTIVE HANDLERS
   if (interactiveId) {
       switch (interactiveId) {
-          // Main Navigation
+          // --- Navigation ---
           case 'menu_products': await sendProductSelection({ phoneNumberId, to: from, io }); break;
           case 'menu_features': await sendFeatureComparison({ phoneNumberId, to: from, io }); break;
           case 'menu_faqs':     await sendFAQMenu({ phoneNumberId, to: from, io }); break;
+          case 'btn_back_menu': await sendMainMenu({ phoneNumberId, to: from, io }); break;
           
-          // Agent Request (Global)
+          // --- Agent Requests ---
           case 'menu_agent': 
               await handleAgentRequest({ phoneNumberId, to: from, context: 'General Enquiry', io });
               break;
-
-          // Agent Request (Specific Product)
           case 'agent_5mp':
               await handleAgentRequest({ phoneNumberId, to: from, context: 'Interested in 5MP Pro', io });
               break;
@@ -143,20 +147,18 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io })
               await handleAgentRequest({ phoneNumberId, to: from, context: 'Interested in 3MP', io });
               break;
 
-          // Product Cards
+          // --- Product Selections ---
           case 'sel_3mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp' }); break;
           case 'sel_5mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp' }); break;
 
-          // Buy Actions
+          // --- Buy Actions ---
           case 'buy_3mp': await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '3mp' }); break;
           case 'buy_5mp': await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '5mp' }); break;
 
-          // FAQs
+          // --- FAQs ---
           case 'faq_install': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'install' }); break;
           case 'faq_battery': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'battery' }); break;
           case 'faq_warranty': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'warranty' }); break;
-
-          case 'btn_back_menu': await sendMainMenu({ phoneNumberId, to: from, io }); break;
           
           default: await sendMainMenu({ phoneNumberId, to: from, io });
       }
@@ -222,6 +224,7 @@ async function sendProductSelection({ phoneNumberId, to, io }) {
 async function sendProductCard({ phoneNumberId, to, io, productKey, isAd = false }) {
     const product = PRODUCTS[productKey];
     
+    // We use 3 Buttons: Buy, Call Me, View Other
     const sent = await sendWhatsAppInteractive({
         phoneNumberId, to,
         body: `🛡️ *${product.name}*\n\n${product.full_desc}\n\n💰 *Offer Price:* ${product.price}\n✅ 1 Year Warranty | 🚚 Free Shipping`,
@@ -231,13 +234,14 @@ async function sendProductCard({ phoneNumberId, to, io, productKey, isAd = false
             action: {
                 buttons: [
                     { type: 'reply', reply: { id: `buy_${productKey}`, title: '🛒 Buy Now' } },
-                    { type: 'reply', reply: { id: `agent_${productKey}`, title: '📞 Call Me' } }, // Contextual Call Me
+                    { type: 'reply', reply: { id: `agent_${productKey}`, title: '📞 Call Me' } },
                     { type: 'reply', reply: { id: 'menu_products', title: 'View Other' } }
                 ]
             }
         }, io
     });
 
+    // Fallback if image/interactive fails
     if (!sent) {
         await sendPurchaseLink({ phoneNumberId, to, io, productKey });
     }
@@ -260,20 +264,22 @@ async function sendPurchaseLink({ phoneNumberId, to, io, productKey }) {
     const product = PRODUCTS[productKey];
     let uid = 'general';
     try {
+        // Upsert to avoid crash
         const lead = await AdLead.findOneAndUpdate(
             { phoneNumber: to },
             { $setOnInsert: { phoneNumber: to, createdAt: new Date() }, $set: { lastInteraction: new Date() } },
             { upsert: true, new: true }
         );
         if (lead) uid = lead._id;
-    } catch(e) {}
+    } catch(e) { console.error("Lead Error", e); }
 
     const link = `${product.url}?uid=${uid}`;
     
+    // Send high-converting text message with link
     await sendWhatsAppText({ 
         phoneNumberId, 
         to, 
-        body: `⚡ *Excellent Choice!* ⚡\n\nSecure your home today. Click the link below to order:\n\n👉 ${link}\n\n_Cash on Delivery Available_`, 
+        body: `⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 ${link}\n\n_Cash on Delivery Available_`, 
         io 
     });
 }
@@ -284,11 +290,11 @@ async function sendFeatureComparison({ phoneNumberId, to, io }) {
         body: `🌟 *Why Choose Delitech?*\n\n🔋 *100% Wireless*\nNo wiring headaches. 5 min setup.\n\n🗣️ *2-Way Talk*\nSpeak to visitors from anywhere.\n\n🌙 *Night Vision*\nCrystal clear video in pitch dark.\n\n💾 *Secure Storage*\nSupports SD Card & Cloud.`,
         interactive: {
             type: 'button',
-            header: { type: 'image', image: { link: IMAGES.features } },
+            header: { type: 'image', image: { link: IMAGES.features } }, // New Feature Image
             action: {
                 buttons: [
                     { type: 'reply', reply: { id: 'menu_products', title: 'Shop Now' } },
-                    { type: 'reply', reply: { id: 'menu_agent', title: '📞 Talk to Agent' } }
+                    { type: 'reply', reply: { id: 'btn_back_menu', title: 'Main Menu' } }
                 ]
             }
         }, io
