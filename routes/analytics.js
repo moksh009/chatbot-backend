@@ -10,20 +10,25 @@ const { protect } = require('../middleware/auth');
 
 router.get('/realtime', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    let clientId = req.user.clientId;
+    // Fallback/Merge for development: If user is on legacy default, show Delitech data
+    const query = (clientId === 'code_clinic_v1') 
+        ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
+        : { clientId };
+
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
     // 1. Leads Count (Total & Today)
-    const totalLeads = await AdLead.countDocuments({ clientId });
+    const totalLeads = await AdLead.countDocuments(query);
     const newLeadsToday = await AdLead.countDocuments({ 
-        clientId, 
+        ...query,
         createdAt: { $gte: today } 
     });
 
     // 2. Orders & Revenue (Today)
     const ordersToday = await Order.find({ 
-        clientId, 
+        ...query,
         createdAt: { $gte: today } 
     });
     
@@ -32,15 +37,18 @@ router.get('/realtime', protect, async (req, res) => {
 
     // 3. Link Clicks (Total)
     const linkClicksResult = await AdLead.aggregate([
-        { $match: { clientId } },
+        { $match: query },
         { $group: { _id: null, totalClicks: { $sum: "$linkClicks" } } }
     ]);
     const totalLinkClicks = linkClicksResult[0]?.totalClicks || 0;
 
     // 4. Agent Requests (Today)
     const todayStr = today.toISOString().split('T')[0];
-    const dailyStat = await DailyStat.findOne({ clientId, date: todayStr });
-    const agentRequestsToday = dailyStat?.agentRequests || 0;
+    const dailyStats = await DailyStat.find({ 
+        ...query,
+        date: todayStr 
+    });
+    const agentRequestsToday = dailyStats.reduce((sum, ds) => sum + (ds.agentRequests || 0), 0);
 
     res.json({
         leads: { total: totalLeads, newToday: newLeadsToday },
@@ -57,17 +65,21 @@ router.get('/realtime', protect, async (req, res) => {
 
 router.get('/leads', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    let clientId = req.user.clientId;
+    const query = (clientId === 'code_clinic_v1') 
+        ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
+        : { clientId };
+
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    const leads = await AdLead.find({ clientId })
+    const leads = await AdLead.find(query)
         .sort({ lastInteraction: -1 })
         .skip(skip)
         .limit(limit);
 
-    const total = await AdLead.countDocuments({ clientId });
+    const total = await AdLead.countDocuments(query);
 
     res.json({
         leads,

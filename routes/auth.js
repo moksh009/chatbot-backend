@@ -55,7 +55,7 @@ router.post('/register', async (req, res) => {
       password,
       role: role || 'CLIENT_ADMIN',
       business_type: req.body.business_type || 'clinic',
-      clientId: clientId || 'code_clinic_v1' // Default for now
+      clientId: clientId || 'delitech_smarthomes' // Updated default for Delitech project
     });
 
     if (user) {

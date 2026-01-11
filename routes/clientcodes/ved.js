@@ -415,9 +415,24 @@ router.post('/', async (req, res) => {
 
     const userMsgContent = messages.type === 'text' ? messages.text.body : (messages.interactive?.button_reply?.title || messages.interactive?.list_reply?.title || `[${messages.type}]`);
 
+    // --- SAVE INCOMING USER MESSAGE (Fix for Live Chat visibility) ---
+    // We save every user message to the database so it appears in the dashboard
+    const savedMsg = await Message.create({ 
+        clientId, 
+        conversationId: conversation._id, 
+        from: messages.from, 
+        to: 'bot', 
+        content: userMsgContent, 
+        type: messages.type, 
+        direction: 'incoming', 
+        status: 'received',
+        timestamp: new Date()
+    });
+    
+    // Emit to dashboard immediately
+    if (io) io.to(`client_${clientId}`).emit('new_message', savedMsg);
+
     if (conversation.status === 'HUMAN_TAKEOVER') {
-        const savedMsg = await Message.create({ clientId, conversationId: conversation._id, from: messages.from, to: 'bot', content: userMsgContent, type: messages.type, direction: 'incoming', status: 'received' });
-        if (io) io.to(`client_${clientId}`).emit('new_message', savedMsg);
         return res.status(200).end();
     }
 
