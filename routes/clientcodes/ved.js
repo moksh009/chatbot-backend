@@ -6,6 +6,7 @@ const AdLead = require('../../models/AdLead');
 const Conversation = require('../../models/Conversation');
 const Message = require('../../models/Message');
 const Client = require('../../models/Client');
+const DailyStat = require('../../models/DailyStat');
 
 // --- 1. ASSETS & DATA (Polished) ---
 const IMAGES = {
@@ -97,7 +98,7 @@ async function notifyAdmin({ phoneNumberId, userPhone, context, io }) {
 
 // --- 4. FLOW CONTROLLER ---
 
-async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io }) {
+async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, clientId }) {
   const userMsgType = messages.type;
   let userMsg = '';
   let interactiveId = '';
@@ -116,7 +117,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io })
   
   if (userMsgType === 'text' && adIntentRegex.test(userMsg)) {
       // Direct flow: Show 5MP Pro card immediately
-      await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', isAd: true });
+      await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', isAd: true, clientId });
       return res.status(200).end();
   }
 
@@ -138,22 +139,22 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io })
           
           // --- Agent Requests ---
           case 'menu_agent': 
-              await handleAgentRequest({ phoneNumberId, to: from, context: 'General Enquiry', io });
+              await handleAgentRequest({ phoneNumberId, to: from, context: 'General Enquiry', io, clientId });
               break;
           case 'agent_5mp':
-              await handleAgentRequest({ phoneNumberId, to: from, context: 'Interested in 5MP Pro', io });
+              await handleAgentRequest({ phoneNumberId, to: from, context: 'Interested in 5MP Pro', io, clientId });
               break;
           case 'agent_3mp':
-              await handleAgentRequest({ phoneNumberId, to: from, context: 'Interested in 3MP', io });
+              await handleAgentRequest({ phoneNumberId, to: from, context: 'Interested in 3MP', io, clientId });
               break;
 
           // --- Product Selections ---
-          case 'sel_3mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp' }); break;
-          case 'sel_5mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp' }); break;
+          case 'sel_3mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp', clientId }); break;
+          case 'sel_5mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', clientId }); break;
 
           // --- Buy Actions ---
-          case 'buy_3mp': await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '3mp' }); break;
-          case 'buy_5mp': await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '5mp' }); break;
+          case 'buy_3mp': await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '3mp', clientId }); break;
+          case 'buy_5mp': await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '5mp', clientId }); break;
 
           // --- FAQs ---
           case 'faq_install': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'install' }); break;
@@ -221,7 +222,7 @@ async function sendProductSelection({ phoneNumberId, to, io }) {
     });
 }
 
-async function sendProductCard({ phoneNumberId, to, io, productKey, isAd = false }) {
+async function sendProductCard({ phoneNumberId, to, io, productKey, isAd = false, clientId }) {
     const product = PRODUCTS[productKey];
     
     // We use 3 Buttons: Buy, Call Me, View Other
@@ -243,11 +244,11 @@ async function sendProductCard({ phoneNumberId, to, io, productKey, isAd = false
 
     // Fallback if image/interactive fails
     if (!sent) {
-        await sendPurchaseLink({ phoneNumberId, to, io, productKey });
+        await sendPurchaseLink({ phoneNumberId, to, io, productKey, clientId });
     }
 }
 
-async function handleAgentRequest({ phoneNumberId, to, context, io }) {
+async function handleAgentRequest({ phoneNumberId, to, context, io, clientId }) {
     // 1. Notify User (Warm, Reassuring)
     await sendWhatsAppText({ 
         phoneNumberId, 
@@ -258,22 +259,48 @@ async function handleAgentRequest({ phoneNumberId, to, context, io }) {
 
     // 2. Notify Admin (Actionable)
     await notifyAdmin({ phoneNumberId, userPhone: to, context, io });
+
+    // 3. Track Stat & Emit
+    try {
+        const today = new Date().toISOString().split('T')[0];
+        // Increment daily stats
+        await DailyStat.updateOne(
+            { clientId, date: today },
+            { 
+                $inc: { agentRequests: 1 },
+                $setOnInsert: { clientId, date: today }
+            },
+            { upsert: true }
+        );
+        
+        // Emit socket event for real-time dashboard update
+        if (io) {
+             io.to(`client_${clientId}`).emit('stats_update', { 
+                 type: 'agent_request', 
+                 phone: to,
+                 context
+             });
+        }
+    } catch(e) { console.error('Agent Request Track Error:', e); }
 }
 
-async function sendPurchaseLink({ phoneNumberId, to, io, productKey }) {
+async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientId }) {
     const product = PRODUCTS[productKey];
     let uid = 'general';
     try {
         // Upsert to avoid crash
         const lead = await AdLead.findOneAndUpdate(
-            { phoneNumber: to },
-            { $setOnInsert: { phoneNumber: to, createdAt: new Date() }, $set: { lastInteraction: new Date() } },
+            { phoneNumber: to, clientId },
+            { $setOnInsert: { phoneNumber: to, clientId, createdAt: new Date() }, $set: { lastInteraction: new Date() } },
             { upsert: true, new: true }
         );
         if (lead) uid = lead._id;
     } catch(e) { console.error("Lead Error", e); }
 
-    const link = `${product.url}?uid=${uid}`;
+    // Use tracking URL
+    // Ensure BACKEND_URL is set or assume localhost/production URL
+    const baseUrl = process.env.BACKEND_URL || 'http://localhost:3000'; // Fallback
+    const link = `${baseUrl}/r/${uid}/${productKey}`;
     
     // Send high-converting text message with link
     await sendWhatsAppText({ 
@@ -375,7 +402,34 @@ router.post('/', async (req, res) => {
         return res.status(200).end();
     }
 
-    await handleUserChatbotFlow({ from: messages.from, phoneNumberId: value.metadata.phone_number_id, messages, res, io });
+    // --- LEAD CAPTURE ---
+    try {
+        const updatedLead = await AdLead.findOneAndUpdate(
+            { phoneNumber: messages.from, clientId },
+            { 
+                $set: { 
+                    lastInteraction: new Date(),
+                    chatSummary: userMsgContent.substring(0, 50) 
+                },
+                $setOnInsert: { 
+                    phoneNumber: messages.from, 
+                    clientId, 
+                    createdAt: new Date(),
+                    source: 'WhatsApp'
+                }
+            },
+            { upsert: true, new: true }
+        );
+        
+        if (io) {
+            io.to(`client_${clientId}`).emit('stats_update', { 
+                type: 'lead_activity', 
+                lead: updatedLead 
+            });
+        }
+    } catch (e) { console.error('Lead Capture Error:', e); }
+
+    await handleUserChatbotFlow({ from: messages.from, phoneNumberId: value.metadata.phone_number_id, messages, res, io, clientId });
     
   } catch (err) { console.error('Webhook Error:', err.message); res.status(200).end(); }
 });
