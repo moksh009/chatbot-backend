@@ -49,12 +49,21 @@ router.get('/realtime', protect, async (req, res) => {
         date: todayStr 
     });
     const agentRequestsToday = dailyStats.reduce((sum, ds) => sum + (ds.agentRequests || 0), 0);
+    
+    // 5. Add to Cart (Total from Leads)
+    // We aggregate all addToCartCount from leads
+    const cartResult = await AdLead.aggregate([
+        { $match: query },
+        { $group: { _id: null, totalCarts: { $sum: "$addToCartCount" } } }
+    ]);
+    const totalAddCarts = cartResult[0]?.totalCarts || 0;
 
     res.json({
         leads: { total: totalLeads, newToday: newLeadsToday },
         orders: { count: orderCountToday, revenue: revenueToday },
         linkClicks: totalLinkClicks,
-        agentRequests: agentRequestsToday
+        agentRequests: agentRequestsToday,
+        addToCarts: totalAddCarts
     });
 
   } catch (error) {
@@ -92,6 +101,29 @@ router.get('/leads', protect, async (req, res) => {
     console.error('Leads Fetch Error:', error);
     res.status(500).json({ message: 'Server Error' });
   }
+});
+
+// GET /api/analytics/lead/:id (Detailed Lead View)
+router.get('/lead/:id', protect, async (req, res) => {
+    try {
+        const lead = await AdLead.findById(req.params.id);
+        if (!lead) return res.status(404).json({ message: 'Lead not found' });
+        
+        // Fetch related orders
+        const orders = await Order.find({ phone: lead.phoneNumber, clientId: lead.clientId });
+        
+        // Fetch conversation summary
+        const conversation = await Conversation.findOne({ phone: lead.phoneNumber, clientId: lead.clientId });
+
+        res.json({
+            lead,
+            orders,
+            conversation
+        });
+    } catch (error) {
+        console.error('Lead Detail Error:', error);
+        res.status(500).json({ message: 'Server Error' });
+    }
 });
 
 router.get('/', protect, async (req, res) => {

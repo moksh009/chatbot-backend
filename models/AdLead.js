@@ -23,6 +23,23 @@ const adLeadSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  addToCartCount: {
+    type: Number,
+    default: 0
+  },
+  ordersCount: {
+    type: Number,
+    default: 0
+  },
+  totalSpent: {
+    type: Number,
+    default: 0
+  },
+  activityLog: [{
+    action: String, // 'link_click', 'add_to_cart', 'order_placed'
+    details: String,
+    timestamp: { type: Date, default: Date.now }
+  }],
   isOrderPlaced: {
     type: Boolean,
     default: false
