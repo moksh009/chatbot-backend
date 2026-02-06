@@ -51,7 +51,9 @@ function resolveWhatsAppConfig() {
   if (!token) missing.push('WHATSAPP_TOKEN|WHATSAPP_ACCESS_TOKEN');
   if (!phoneId) missing.push('WHATSAPP_PHONENUMBER_ID|WHATSAPP_PHONE_NUMBER_ID');
   if (missing.length) {
-    throw new Error(`Missing WhatsApp config: ${missing.join(', ')}`);
+    console.warn(`⚠️  WARNING: Missing default WhatsApp config: ${missing.join(', ')}`);
+    console.warn(`ℹ️  Server will rely on Client Database Configuration for WhatsApp credentials.`);
+    // throw new Error(`Missing WhatsApp config: ${missing.join(', ')}`);
   }
 })();
 
