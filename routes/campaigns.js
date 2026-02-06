@@ -144,7 +144,7 @@ router.post('/start', protect, async (req, res) => {
         } else if (templateType === 'appointment') {
           const appointmentDetails = {
             summary: row.summary || `Appointment: ${row.name || 'Patient'} - Service`,
-            doctor: row.doctor || '',
+            doctor: row.doctor || row.stylist || row.therapist || row.coach || '',
             date: row.date || '',
             time: row.time || ''
           };
