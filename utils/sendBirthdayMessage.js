@@ -94,6 +94,7 @@ async function sendBirthdayWishWithImage(recipientPhone, accessToken, phoneNumbe
         }
       );
     console.log('Birthday API response:', response.status, response.data);
+    const waMessageId = response.data?.messages?.[0]?.id;
 
     try {
       // Use provided clientId or fallback
@@ -122,7 +123,15 @@ async function sendBirthdayWishWithImage(recipientPhone, accessToken, phoneNumbe
 
     return { success: true };
   } catch (error) {
-    console.error(`❌ Failed to send birthday message to ${recipientPhone}:`, error.response?.data || error.message);
+    const errorData = error.response?.data || error.message;
+    console.error(`❌ Failed to send birthday message to ${recipientPhone}:`, errorData);
+
+    // Add helpful hint for OAuth errors
+    if (error.response?.data?.error?.code === 190) {
+        console.error(`💡 HINT: The WhatsApp Access Token for client '${clientId}' has expired.`);
+        console.error(`👉 Run: node scripts/update_client_token.js <NEW_TOKEN>`);
+    }
+
     return { success: false, error: error.message };
   }
 }
