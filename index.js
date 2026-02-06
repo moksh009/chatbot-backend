@@ -4,6 +4,7 @@ const connectDB = require('./db');
 const Appointment = require('./models/Appointment');
 const DailyStat = require('./models/DailyStat');
 const Client = require('./models/Client');
+const BirthdayUser = require('./models/BirthdayUser');
 const cron = require('node-cron');
 const { DateTime } = require('luxon');
 // Load birthday data
@@ -25,8 +26,9 @@ const conversationRoutes = require('./routes/conversations');
 const appointmentRoutes = require('./routes/appointments');
 const analyticsRoutes = require('./routes/analytics');
 const campaignsRoutes = require('./routes/campaigns');
-const turfClientRoutes = require('./routes/clientcodes/turf');
-const vedClientRoutes = require('./routes/clientcodes/ved');
+// const turfClientRoutes = require('./routes/clientcodes/turf'); // Deprecated in favor of dynamic router
+// const vedClientRoutes = require('./routes/clientcodes/ved');   // Deprecated in favor of dynamic router
+const dynamicClientRouter = require('./routes/dynamicClientRouter');
 const trackingRoutes = require('./routes/tracking.js');
 
 const app = express();
@@ -66,8 +68,12 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/campaigns', campaignsRoutes);
 
 
-app.use('/api/client/0001', turfClientRoutes);
-app.use('/api/client/0002', vedClientRoutes);
+// Dynamic Client Router (Replaces hardcoded client routes)
+// Handles /api/client/:clientId/webhook
+app.use('/api/client/:clientId', dynamicClientRouter);
+
+// app.use('/api/client/0001', turfClientRoutes);
+// app.use('/api/client/0002', vedClientRoutes);
 app.use('/r', trackingRoutes);
 
 // Homepage endpoint
@@ -89,55 +95,76 @@ cron.schedule('0 6 * * *', async () => {
   const eatNow = DateTime.utc().setZone('Africa/ahmedabad');
   const currentDay = eatNow.day;
   const currentMonth = eatNow.month;
-  const token = process.env.WHATSAPP_TOKEN;
-  const phoneid = process.env.WHATSAPP_PHONENUMBER_ID;
 
   console.log(`⏰ It's 6:00 AM EAT — Running birthday check...`);
 
   try {
-    // Send birthday messages to users who have consented
-    const todaysBirthdays = await BirthdayUser.find({
-      day: currentDay,
-      month: currentMonth,
-      isOpted: true,
-    });
+    const clients = await Client.find({});
+    
+    for (const client of clients) {
+      const token = client.whatsappToken || process.env.WHATSAPP_TOKEN;
+      const phoneid = client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
+      const clientId = client.clientId;
 
-    console.log(`🎉 Found ${todaysBirthdays.length} birthday(s) to process`);
-
-    let successCount = 0;
-    let failureCount = 0;
-    const clientRec = await Client.findOne({ phoneNumberId: phoneid });
-    const resolvedClientId = clientRec ? clientRec.clientId : 'code_clinic_v1';
-    async function incDaily(field) {
-      const dateStr = eatNow.toISODate();
-      await DailyStat.updateOne(
-        { clientId: resolvedClientId, date: dateStr },
-        { $inc: { [field]: 1 }, $setOnInsert: { clientId: resolvedClientId, date: dateStr } },
-        { upsert: true }
-      );
-    }
-
-    for (const user of todaysBirthdays) {
-      try {
-        const result = await sendBirthdayWishWithImage(user.number, token, phoneid);
-        if (result.success) {
-          successCount++;
-          await incDaily('birthdayRemindersSent');
-        } else {
-          failureCount++;
-          console.log(`❌ Birthday message failed for ${user.number}: ${result.reason || result.error}`);
-        }
-        
-        // Add delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-      } catch (error) {
-        console.error(`❌ Error sending birthday message to ${user.number}:`, error.message);
-        failureCount++;
+      if (!token || !phoneid) {
+        console.log(`⚠️ Skipping birthday check for client ${clientId} - missing WhatsApp credentials`);
+        continue;
       }
-    }
 
-    console.log(`🎂 Birthday messages completed: ${successCount} sent, ${failureCount} failed`);
+      // Find birthday users for this client
+      // Handle legacy data (no clientId) by assigning it to 'code_clinic_v1'
+      let clientQuery = {
+        day: currentDay,
+        month: currentMonth,
+        isOpted: true
+      };
+
+      if (clientId === 'code_clinic_v1') {
+        clientQuery.$or = [{ clientId: clientId }, { clientId: { $exists: false } }];
+      } else {
+        clientQuery.clientId = clientId;
+      }
+
+      const todaysBirthdays = await BirthdayUser.find(clientQuery);
+
+      if (todaysBirthdays.length === 0) continue;
+
+      console.log(`🎉 Found ${todaysBirthdays.length} birthday(s) for client ${clientId}`);
+
+      let successCount = 0;
+      let failureCount = 0;
+
+      async function incDaily(field) {
+        const dateStr = eatNow.toISODate();
+        await DailyStat.updateOne(
+          { clientId: clientId, date: dateStr },
+          { $inc: { [field]: 1 }, $setOnInsert: { clientId: clientId, date: dateStr } },
+          { upsert: true }
+        );
+      }
+
+      for (const user of todaysBirthdays) {
+        try {
+          const result = await sendBirthdayWishWithImage(user.number, token, phoneid, clientId);
+          if (result.success) {
+            successCount++;
+            await incDaily('birthdayRemindersSent');
+          } else {
+            failureCount++;
+            console.log(`❌ Birthday message failed for ${user.number}: ${result.reason || result.error}`);
+          }
+          
+          // Add delay to avoid rate limiting
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+        } catch (error) {
+          console.error(`❌ Error sending birthday message to ${user.number}:`, error.message);
+          failureCount++;
+        }
+      }
+
+      console.log(`🎂 Birthday messages for ${clientId} completed: ${successCount} sent, ${failureCount} failed`);
+    }
 
   } catch (error) {
     console.error('❌ Error in birthday cron job:', error.message);
@@ -148,100 +175,118 @@ cron.schedule('0 6 * * *', async () => {
 cron.schedule('0 7 * * *', async () => {
   const eatNow = DateTime.utc().setZone('Africa/ahmedabad');
   const today = eatNow.toFormat('EEEE, dd MMM');
-  const token = process.env.WHATSAPP_TOKEN;
-  const phoneid = process.env.WHATSAPP_PHONENUMBER_ID;
 
   console.log(`⏰ Running appointment reminder check for today (${today})...`);
 
   try {
-    // Get all events from Google Calendar for today
-    const startOfDay = eatNow.startOf('day').toISO();
-    const endOfDay = eatNow.endOf('day').toISO();
-    
-    // Get events from both doctor calendars
-    const calendarIds = [process.env.GCAL_CALENDAR_ID, process.env.GCAL_CALENDAR_ID2];
+    const clients = await Client.find({});
     const { listEvents } = require('./utils/googleCalendar');
-    
-    let allTodayEvents = [];
-    
-    for (const calendarId of calendarIds) {
-      try {
-        const events = await listEvents(startOfDay, endOfDay, calendarId);
-        allTodayEvents = allTodayEvents.concat(events);
-      } catch (error) {
-        console.error(`❌ Error fetching events from calendar ${calendarId}:`, error.message);
+    const { sendAppointmentReminder } = require('./utils/sendAppointmentReminder');
+
+    for (const client of clients) {
+      const token = client.whatsappToken || process.env.WHATSAPP_TOKEN;
+      const phoneid = client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
+      const clientId = client.clientId;
+
+      if (!token || !phoneid) continue;
+
+      // Get events from both doctor calendars and main calendar
+      const calendarIds = [];
+      if (client.googleCalendarId) calendarIds.push(client.googleCalendarId);
+      if (client.config && client.config.calendars) {
+        calendarIds.push(...Object.values(client.config.calendars));
       }
-    }
+      
+      // Fallback for legacy Code Clinic if no specific calendars configured
+      if (clientId === 'code_clinic_v1' && calendarIds.length === 0) {
+        if (process.env.GCAL_CALENDAR_ID) calendarIds.push(process.env.GCAL_CALENDAR_ID);
+        if (process.env.GCAL_CALENDAR_ID2) calendarIds.push(process.env.GCAL_CALENDAR_ID2);
+      }
 
-    console.log(`📅 Found ${allTodayEvents.length} events in Google Calendar for today`);
+      if (calendarIds.length === 0) continue;
 
-    // Process each event and send reminders to users who have consented
-    for (const event of allTodayEvents) {
-      try {
-        // Extract phone number from event description
-        const phoneMatch = event.description?.match(/Phone:\s*([^\n]+)/);
-        if (!phoneMatch) {
-          console.log(`⚠️ No phone number found in event: ${event.summary}`);
-          continue;
-        }
-        
-        const phoneNumber = phoneMatch[1].trim();
-        
-        // Check if user has consented to appointment reminders
-        const userAppointments = await Appointment.find({ 
-          phone: phoneNumber,
-          'consent.appointmentReminders': true 
-        });
-        
-        if (userAppointments.length === 0) {
-          console.log(`❌ Skipping reminder for ${phoneNumber} - user has not consented to reminders`);
-          continue;
-        }
-
-        // Extract appointment details from event
-        const nameMatch = event.description?.match(/Name:\s*([^\n]+)/);
-        const serviceMatch = event.description?.match(/Service:\s*([^\n]+)/);
-        const doctorMatch = event.description?.match(/Doctor:\s*([^\n]+)/);
-        
-        const patientName = nameMatch ? nameMatch[1].trim() : "Valued Player";
-        const service = serviceMatch ? serviceMatch[1].trim() : "Dental Service";
-        const doctor = doctorMatch ? doctorMatch[1].trim() : "Our Doctor";
-
-        // Format appointment time
-        const eventTime = DateTime.fromISO(event.start.dateTime).setZone('Africa/ahmedabad');
-        const time = eventTime.toFormat('h:mm a');
-
-        // Send appointment reminder using template
-        const { sendAppointmentReminder } = require('./utils/sendAppointmentReminder');
-        await sendAppointmentReminder(phoneid, token, phoneNumber, {
-          summary: event.summary,
-          start: event.start.dateTime,
-          doctor: doctor,
-          date: today,
-          time: time
-        });
-
-        console.log(`✅ Appointment reminder sent to ${phoneNumber} for ${time}`);
+      const startOfDay = eatNow.startOf('day').toISO();
+      const endOfDay = eatNow.endOf('day').toISO();
+      
+      let allTodayEvents = [];
+      
+      for (const calendarId of calendarIds) {
         try {
-          const clientRec = await Client.findOne({ phoneNumberId: phoneid });
-          const resolvedClientId = clientRec ? clientRec.clientId : 'code_clinic_v1';
-          const dateStr = eatNow.toISODate();
-          await DailyStat.updateOne(
-            { clientId: resolvedClientId, date: dateStr },
-            { $inc: { appointmentRemindersSent: 1 }, $setOnInsert: { clientId: resolvedClientId, date: dateStr } },
-            { upsert: true }
-          );
-        } catch {}
-        
-        // Add delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-      } catch (error) {
-        console.error(`❌ Error processing appointment reminder for event ${event.id}:`, error.message);
+          const events = await listEvents(startOfDay, endOfDay, calendarId);
+          allTodayEvents = allTodayEvents.concat(events);
+        } catch (error) {
+          console.error(`❌ Error fetching events from calendar ${calendarId} for client ${clientId}:`, error.message);
+        }
       }
-    }
 
-    console.log(`🎯 Appointment reminders completed for ${today}`);
+      if (allTodayEvents.length === 0) continue;
+
+      console.log(`📅 Found ${allTodayEvents.length} events for client ${clientId}`);
+
+      // Process each event and send reminders to users who have consented
+      for (const event of allTodayEvents) {
+        try {
+          // Extract phone number from event description
+          const phoneMatch = event.description?.match(/Phone:\s*([^\n]+)/);
+          if (!phoneMatch) {
+            // console.log(`⚠️ No phone number found in event: ${event.summary}`);
+            continue;
+          }
+          
+          const phoneNumber = phoneMatch[1].trim();
+          
+          // Check if user has consented to appointment reminders
+          // Note: We search by phone. In future, we might want to verify they are associated with this client.
+          const userAppointments = await Appointment.find({ 
+            phone: phoneNumber,
+            'consent.appointmentReminders': true 
+          });
+          
+          if (userAppointments.length === 0) {
+            // console.log(`❌ Skipping reminder for ${phoneNumber} - user has not consented to reminders`);
+            continue;
+          }
+
+          // Extract appointment details from event
+          const nameMatch = event.description?.match(/Name:\s*([^\n]+)/);
+          const serviceMatch = event.description?.match(/Service:\s*([^\n]+)/);
+          const doctorMatch = event.description?.match(/Doctor:\s*([^\n]+)/);
+          
+          const patientName = nameMatch ? nameMatch[1].trim() : "Valued Customer";
+          const service = serviceMatch ? serviceMatch[1].trim() : "Service";
+          const doctor = doctorMatch ? doctorMatch[1].trim() : "Our Professional";
+
+          // Format appointment time
+          const eventTime = DateTime.fromISO(event.start.dateTime).setZone('Africa/ahmedabad');
+          const time = eventTime.toFormat('h:mm a');
+
+          await sendAppointmentReminder(phoneid, token, phoneNumber, {
+            summary: event.summary || `Appointment: ${patientName} - ${service} with ${doctor}`,
+            start: event.start.dateTime,
+            doctor: doctor,
+            date: today,
+            time: time
+          }, clientId);
+
+          console.log(`✅ Appointment reminder sent to ${phoneNumber} for ${time}`);
+          try {
+            const dateStr = eatNow.toISODate();
+            await DailyStat.updateOne(
+              { clientId: clientId, date: dateStr },
+              { $inc: { appointmentRemindersSent: 1 }, $setOnInsert: { clientId: clientId, date: dateStr } },
+              { upsert: true }
+            );
+          } catch {}
+          
+          // Add delay to avoid rate limiting
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+        } catch (error) {
+          console.error(`❌ Error processing appointment reminder for event ${event.id}:`, error.message);
+        }
+      }
+      console.log(`🎯 Appointment reminders completed for client ${clientId}`);
+    }
 
   } catch (err) {
     console.error('❌ Error in appointment reminder cron job:', err);

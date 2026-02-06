@@ -86,17 +86,25 @@ router.post('/start', protect, async (req, res) => {
     campaign.status = 'SENDING';
     await campaign.save();
 
-    const clientById = await Client.findOne({ clientId: req.user.clientId });
-    let anyClient = clientById || await Client.findOne();
-    if (!anyClient && process.env.WHATSAPP_PHONENUMBER_ID) {
-      try {
-        anyClient = await Client.create({ clientId: req.user.clientId, phoneNumberId: process.env.WHATSAPP_PHONENUMBER_ID });
-      } catch {}
+    // Fetch client configuration
+    const client = await Client.findOne({ clientId: req.user.clientId });
+    if (!client) {
+        return res.status(404).json({ message: 'Client configuration not found' });
     }
-    const phoneNumberId = req.body.phoneNumberId || anyClient?.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID || process.env.WHATSAPP_PHONE_NUMBER_ID;
-    const accessToken = req.body.accessToken || process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_ACCESS_TOKEN;
+
+    const phoneNumberId = client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
+    const accessToken = client.whatsappToken || process.env.WHATSAPP_TOKEN;
+
     if (!phoneNumberId || !accessToken) {
-      return res.status(500).json({ message: 'Messaging credentials not configured' });
+      return res.status(500).json({ message: 'Messaging credentials not configured for this client' });
+    }
+
+    // Determine actual template name from client config
+    let actualTemplateName = null;
+    if (templateType === 'birthday') {
+        actualTemplateName = client.config?.templates?.birthday || 'happy_birthday_wish_1';
+    } else if (templateType === 'appointment') {
+        actualTemplateName = client.config?.templates?.appointment || 'appointment_reminder_1';
     }
 
     let total = 0;
@@ -121,7 +129,7 @@ router.post('/start', protect, async (req, res) => {
       }
       try {
         if (templateType === 'birthday') {
-          const resp = await sendBirthdayWishWithImage(recipientPhone, accessToken, phoneNumberId);
+          const resp = await sendBirthdayWishWithImage(recipientPhone, accessToken, phoneNumberId, req.user.clientId, actualTemplateName);
           if (resp?.success) {
             sent++;
             const dateStr = new Date().toISOString().split('T')[0];
@@ -140,7 +148,7 @@ router.post('/start', protect, async (req, res) => {
             date: row.date || '',
             time: row.time || ''
           };
-          await sendAppointmentReminder(phoneNumberId, accessToken, recipientPhone, appointmentDetails);
+          await sendAppointmentReminder(phoneNumberId, accessToken, recipientPhone, appointmentDetails, req.user.clientId, actualTemplateName);
           sent++;
           const dateStr = new Date().toISOString().split('T')[0];
           await DailyStat.updateOne(

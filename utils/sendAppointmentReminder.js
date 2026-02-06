@@ -12,7 +12,7 @@ const TIMEZONE = 'Africa/Kampala';
 /**
  * Sends a WhatsApp reminder for an upcoming appointment
  */
-async function sendAppointmentReminder(phoneNumberId, accessToken, recipientPhone, appointmentDetails) {
+async function sendAppointmentReminder(phoneNumberId, accessToken, recipientPhone, appointmentDetails, clientId, templateNameOverride = null) {
   try {
     const apiVersion = process.env.API_VERSION || process.env.WHATSAPP_API_VERSION || 'v18.0';
     const templateLang = process.env.WHATSAPP_TEMPLATE_LANG || 'en_US';
@@ -21,6 +21,19 @@ async function sendAppointmentReminder(phoneNumberId, accessToken, recipientPhon
     // Extract patient name from summary (format: "Appointment: Name - Service with Doctor")
     const patientName = summary.split(':')[1]?.split('-')[0]?.trim() || "Valued Patient";
     const serviceName = summary.split('-')[1]?.split('with')[0]?.trim() || "Dental Service";
+
+    // Determine template name
+    // Priority: Override > Client Config > Default
+    let templateName = templateNameOverride || "appointment_reminder_1";
+    
+    if (!templateNameOverride && clientId && clientId !== 'code_clinic_v1') {
+       try {
+         const client = await Client.findOne({ clientId });
+         if (client?.config?.templates?.appointment) {
+           templateName = client.config.templates.appointment;
+         }
+       } catch (e) { console.error('Error fetching client config for template:', e); }
+    }
     
     // Format the reminder message according to the template
     const message = {
@@ -29,7 +42,7 @@ async function sendAppointmentReminder(phoneNumberId, accessToken, recipientPhon
       to: recipientPhone,
       type: 'template',
       template: {
-        name: 'appointment_reminder_1',
+        name: templateName,
         language: { code: templateLang },
         components: [
           // Body parameters
@@ -91,14 +104,13 @@ async function sendAppointmentReminder(phoneNumberId, accessToken, recipientPhon
     console.log('Appointment API response:', response.status, response.data);
 
     try {
-      const client = await Client.findOne({ phoneNumberId });
-      const clientId = client ? client.clientId : 'code_clinic_v1';
-      let conversation = await Conversation.findOne({ phone: recipientPhone, clientId });
+      const finalClientId = clientId || 'code_clinic_v1';
+      let conversation = await Conversation.findOne({ phone: recipientPhone, clientId: finalClientId });
       if (!conversation) {
-        conversation = await Conversation.create({ phone: recipientPhone, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+        conversation = await Conversation.create({ phone: recipientPhone, clientId: finalClientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
       }
       const saved = await Message.create({
-        clientId,
+        clientId: finalClientId,
         conversationId: conversation._id,
         from: 'bot',
         to: recipientPhone,

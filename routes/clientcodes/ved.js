@@ -46,35 +46,34 @@ const FAQS = {
 
 // --- 2. API WRAPPERS ---
 
-async function sendWhatsAppText({ phoneNumberId, to, body, preview_url = false, io }) {
-  const token = process.env.WHATSAPP_TOKEN;
+async function sendWhatsAppText({ phoneNumberId, to, body, preview_url = false, io, clientConfig }) {
+  const token = clientConfig.whatsappToken;
   try {
     await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
       messaging_product: 'whatsapp',
       to, type: 'text', text: { body, preview_url }
     }, { headers: { Authorization: `Bearer ${token}` } });
-    await saveAndEmitMessage({ phoneNumberId, to, body, type: 'text', io });
+    await saveAndEmitMessage({ phoneNumberId, to, body, type: 'text', io, clientConfig });
     return true;
   } catch (err) { console.error('Text Error:', err.message); return false; }
 }
 
-async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, io }) {
-  const token = process.env.WHATSAPP_TOKEN;
+async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, io, clientConfig }) {
+  const token = clientConfig.whatsappToken;
   const data = { messaging_product: 'whatsapp', to, type: 'interactive', interactive: { type: interactive.type, body: { text: body }, action: interactive.action } };
   if (interactive.header) data.interactive.header = interactive.header;
   if (interactive.footer) data.interactive.footer = interactive.footer;
 
   try {
     await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
-    await saveAndEmitMessage({ phoneNumberId, to, body: `[Interactive] ${body}`, type: 'interactive', io });
+    await saveAndEmitMessage({ phoneNumberId, to, body: `[Interactive] ${body}`, type: 'interactive', io, clientConfig });
     return true;
   } catch (err) { console.error('Interactive Error:', err.message); return false; }
 }
 
-async function saveAndEmitMessage({ phoneNumberId, to, body, type, io }) {
+async function saveAndEmitMessage({ phoneNumberId, to, body, type, io, clientConfig }) {
     try {
-      const client = await Client.findOne({ phoneNumberId });
-      const resolvedClientId = client ? client.clientId : 'delitech_smarthomes';
+      const resolvedClientId = clientConfig.clientId;
       let conversation = await Conversation.findOne({ phone: to, clientId: resolvedClientId });
       if (!conversation) conversation = await Conversation.create({ phone: to, clientId: resolvedClientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
       
@@ -85,20 +84,20 @@ async function saveAndEmitMessage({ phoneNumberId, to, body, type, io }) {
 }
 
 // --- 3. ADVANCED ADMIN NOTIFICATION ---
-async function notifyAdmin({ phoneNumberId, userPhone, context, io }) {
-    const adminPhone = process.env.ADMIN_PHONE_NUMBER;
+async function notifyAdmin({ phoneNumberId, userPhone, context, io, clientConfig }) {
+    const adminPhone = clientConfig.adminPhoneNumber;
     if (!adminPhone) return;
 
     // Creates a clickable link for the admin to immediately chat with the user
     const leadLink = `https://wa.me/${userPhone}`;
     const alertBody = `🔥 *HOT LEAD ALERT* 🔥\n\n👤 *Customer:* +${userPhone}\n💭 *Interest:* ${context}\n\n👇 *Tap link to chat:* \n${leadLink}`;
 
-    await sendWhatsAppText({ phoneNumberId, to: adminPhone, body: alertBody, preview_url: true, io });
+    await sendWhatsAppText({ phoneNumberId, to: adminPhone, body: alertBody, preview_url: true, io, clientConfig });
 }
 
 // --- 4. FLOW CONTROLLER ---
 
-async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, clientId }) {
+async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, clientConfig }) {
   const userMsgType = messages.type;
   let userMsg = '';
   let interactiveId = '';
@@ -117,14 +116,14 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
   
   if (userMsgType === 'text' && adIntentRegex.test(userMsg)) {
       // Direct flow: Show 5MP Pro card immediately
-      await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', isAd: true, clientId });
+      await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', isAd: true, clientConfig });
       return res.status(200).end();
   }
 
   // B. GREETING INTENT
   const greetingRegex = /^(hi|hello|hey|hola|start|menu)/i;
   if (userMsgType === 'text' && greetingRegex.test(userMsg)) {
-      await sendMainMenu({ phoneNumberId, to: from, io });
+      await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
       return res.status(200).end();
   }
 
@@ -132,50 +131,50 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
   if (interactiveId) {
       switch (interactiveId) {
           // --- Navigation ---
-          case 'menu_products': await sendProductSelection({ phoneNumberId, to: from, io }); break;
-          case 'menu_features': await sendFeatureComparison({ phoneNumberId, to: from, io }); break;
-          case 'menu_faqs':     await sendFAQMenu({ phoneNumberId, to: from, io }); break;
-          case 'btn_back_menu': await sendMainMenu({ phoneNumberId, to: from, io }); break;
+          case 'menu_products': await sendProductSelection({ phoneNumberId, to: from, io, clientConfig }); break;
+          case 'menu_features': await sendFeatureComparison({ phoneNumberId, to: from, io, clientConfig }); break;
+          case 'menu_faqs':     await sendFAQMenu({ phoneNumberId, to: from, io, clientConfig }); break;
+          case 'btn_back_menu': await sendMainMenu({ phoneNumberId, to: from, io, clientConfig }); break;
           
           // --- Agent Requests ---
           case 'menu_agent': 
-              await handleAgentRequest({ phoneNumberId, to: from, context: 'General Enquiry', io, clientId });
+              await handleAgentRequest({ phoneNumberId, to: from, context: 'General Enquiry', io, clientConfig });
               break;
           case 'agent_5mp':
-              await handleAgentRequest({ phoneNumberId, to: from, context: 'Interested in 5MP Pro', io, clientId });
+              await handleAgentRequest({ phoneNumberId, to: from, context: 'Interested in 5MP Pro', io, clientConfig });
               break;
           case 'agent_3mp':
-              await handleAgentRequest({ phoneNumberId, to: from, context: 'Interested in 3MP', io, clientId });
+              await handleAgentRequest({ phoneNumberId, to: from, context: 'Interested in 3MP', io, clientConfig });
               break;
 
           // --- Product Selections ---
-          case 'sel_3mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp', clientId }); break;
-          case 'sel_5mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', clientId }); break;
+          case 'sel_3mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp', clientConfig }); break;
+          case 'sel_5mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', clientConfig }); break;
 
           // --- Buy Actions ---
-          case 'buy_3mp': await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '3mp', clientId }); break;
-          case 'buy_5mp': await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '5mp', clientId }); break;
+          case 'buy_3mp': await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '3mp', clientConfig }); break;
+          case 'buy_5mp': await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '5mp', clientConfig }); break;
 
           // --- FAQs ---
-          case 'faq_install': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'install' }); break;
-          case 'faq_battery': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'battery' }); break;
-          case 'faq_warranty': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'warranty' }); break;
+          case 'faq_install': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'install', clientConfig }); break;
+          case 'faq_battery': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'battery', clientConfig }); break;
+          case 'faq_warranty': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'warranty', clientConfig }); break;
           
-          default: await sendMainMenu({ phoneNumberId, to: from, io });
+          default: await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
       }
       return res.status(200).end();
   }
 
   // D. FALLBACK
   if (userMsgType === 'text') {
-      await sendMainMenu({ phoneNumberId, to: from, io });
+      await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
   }
   res.status(200).end();
 }
 
 // --- 5. RESPONSE TEMPLATES ---
 
-async function sendMainMenu({ phoneNumberId, to, io }) {
+async function sendMainMenu({ phoneNumberId, to, io, clientConfig }) {
     await sendWhatsAppInteractive({
         phoneNumberId, to,
         body: "👋 Welcome to *Delitech Smart Home*!\n\nSecure your home with India's #1 Wireless Video Doorbell. No wiring, just safety! 🏠✨\n\nChoose an option:",
@@ -189,11 +188,11 @@ async function sendMainMenu({ phoneNumberId, to, io }) {
                     { type: 'reply', reply: { id: 'menu_faqs', title: '❓ FAQs' } }
                 ]
             }
-        }, io
+        }, io, clientConfig
     });
 }
 
-async function sendProductSelection({ phoneNumberId, to, io }) {
+async function sendProductSelection({ phoneNumberId, to, io, clientConfig }) {
     await sendWhatsAppInteractive({
         phoneNumberId, to,
         body: "Select a model to view photos & pricing:",
@@ -218,11 +217,11 @@ async function sendProductSelection({ phoneNumberId, to, io }) {
                     }
                 ]
             }
-        }, io
+        }, io, clientConfig
     });
 }
 
-async function sendProductCard({ phoneNumberId, to, io, productKey, isAd = false, clientId }) {
+async function sendProductCard({ phoneNumberId, to, io, productKey, isAd = false, clientConfig }) {
     const product = PRODUCTS[productKey];
     
     // We use 3 Buttons: Buy, Call Me, View Other
@@ -239,43 +238,44 @@ async function sendProductCard({ phoneNumberId, to, io, productKey, isAd = false
                     { type: 'reply', reply: { id: 'menu_products', title: 'View Other' } }
                 ]
             }
-        }, io
+        }, io, clientConfig
     });
 
     // Fallback if image/interactive fails
     if (!sent) {
-        await sendPurchaseLink({ phoneNumberId, to, io, productKey, clientId });
+        await sendPurchaseLink({ phoneNumberId, to, io, productKey, clientConfig });
     }
 }
 
-async function handleAgentRequest({ phoneNumberId, to, context, io, clientId }) {
+async function handleAgentRequest({ phoneNumberId, to, context, io, clientConfig }) {
     // 1. Notify User (Warm, Reassuring)
     await sendWhatsAppText({ 
         phoneNumberId, 
         to, 
         body: `✅ *Request Received!* \n\nOur security expert has been notified. They will call you shortly on this number to assist you with *${context}*.\n\nIn the meantime, feel free to browse our features!`, 
-        io 
+        io,
+        clientConfig
     });
 
     // 2. Notify Admin (Actionable)
-    await notifyAdmin({ phoneNumberId, userPhone: to, context, io });
+    await notifyAdmin({ phoneNumberId, userPhone: to, context, io, clientConfig });
 
     // 3. Track Stat & Emit
     try {
         const today = new Date().toISOString().split('T')[0];
         // Increment daily stats
         await DailyStat.updateOne(
-            { clientId, date: today },
+            { clientId: clientConfig.clientId, date: today },
             { 
                 $inc: { agentRequests: 1 },
-                $setOnInsert: { clientId, date: today }
+                $setOnInsert: { clientId: clientConfig.clientId, date: today }
             },
             { upsert: true }
         );
         
         // Emit socket event for real-time dashboard update
         if (io) {
-             io.to(`client_${clientId}`).emit('stats_update', { 
+             io.to(`client_${clientConfig.clientId}`).emit('stats_update', { 
                  type: 'agent_request', 
                  phone: to,
                  context
@@ -284,19 +284,19 @@ async function handleAgentRequest({ phoneNumberId, to, context, io, clientId }) 
     } catch(e) { console.error('Agent Request Track Error:', e); }
 }
 
-async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientId }) {
+async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientConfig }) {
     const product = PRODUCTS[productKey];
     
     // 1. Track the Link Click (Purchase Intent) Immediately
     try {
         const lead = await AdLead.findOneAndUpdate(
-            { phoneNumber: to, clientId },
+            { phoneNumber: to, clientId: clientConfig.clientId },
             { 
                 $inc: { linkClicks: 1 }, 
                 $set: { lastInteraction: new Date() },
                 $setOnInsert: { 
                     phoneNumber: to, 
-                    clientId, 
+                    clientId: clientConfig.clientId, 
                     createdAt: new Date(),
                     source: 'WhatsApp'
                 }
@@ -306,7 +306,7 @@ async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientId })
 
         // 2. Emit Real-Time Event to Dashboard
         if (lead && io) {
-            io.to(`client_${clientId}`).emit('stats_update', {
+            io.to(`client_${clientConfig.clientId}`).emit('stats_update', {
                 type: 'link_click',
                 leadId: lead._id,
                 productId: productKey
@@ -326,11 +326,12 @@ async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientId })
         phoneNumberId, 
         to, 
         body: `⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 ${urlObj.toString()}\n\n_Cash on Delivery Available_`, 
-        io 
+        io,
+        clientConfig
     });
 }
 
-async function sendFeatureComparison({ phoneNumberId, to, io }) {
+async function sendFeatureComparison({ phoneNumberId, to, io, clientConfig }) {
     await sendWhatsAppInteractive({
         phoneNumberId, to,
         body: `🌟 *Why Choose Delitech?*\n\n🔋 *100% Wireless*\nNo wiring headaches. 5 min setup.\n\n🗣️ *2-Way Talk*\nSpeak to visitors from anywhere.\n\n🌙 *Night Vision*\nCrystal clear video in pitch dark.\n\n💾 *Secure Storage*\nSupports SD Card & Cloud.`,
@@ -343,11 +344,11 @@ async function sendFeatureComparison({ phoneNumberId, to, io }) {
                     { type: 'reply', reply: { id: 'btn_back_menu', title: 'Main Menu' } }
                 ]
             }
-        }, io
+        }, io, clientConfig
     });
 }
 
-async function sendFAQMenu({ phoneNumberId, to, io }) {
+async function sendFAQMenu({ phoneNumberId, to, io, clientConfig }) {
     await sendWhatsAppInteractive({
         phoneNumberId, to,
         body: "🤖 *Common Questions*\nSelect a topic to get an instant answer:",
@@ -373,12 +374,12 @@ async function sendFAQMenu({ phoneNumberId, to, io }) {
                     }
                 ]
             }
-        }, io
+        }, io, clientConfig
     });
 }
 
-async function sendFAQAnswer({ phoneNumberId, to, io, key }) {
-    await sendWhatsAppText({ phoneNumberId, to, body: FAQS[key], io });
+async function sendFAQAnswer({ phoneNumberId, to, io, key, clientConfig }) {
+    await sendWhatsAppText({ phoneNumberId, to, body: FAQS[key], io, clientConfig });
     // Follow up
     await sendWhatsAppInteractive({
         phoneNumberId, to, body: "Does that help?",
@@ -390,24 +391,21 @@ async function sendFAQAnswer({ phoneNumberId, to, io, key }) {
                     { type: 'reply', reply: { id: 'menu_agent', title: 'No, Talk to Agent' } }
                 ]
             }
-        }, io
+        }, io, clientConfig
     });
 }
 
-// --- ROUTER ---
+// --- ROUTER REPLACEMENT ---
 
-router.post('/', async (req, res) => {
+const handleWebhook = async (req, res) => {
   try {
     const entry = req.body.entry?.[0];
     const value = entry?.changes?.[0]?.value;
     const messages = value?.messages?.[0];
     if (!messages) return res.status(200).end();
 
-    let clientId = 'delitech_smarthomes';
-    try {
-        const client = await Client.findOne({ phoneNumberId: value.metadata.phone_number_id });
-        if (client) clientId = client.clientId;
-    } catch(e) {}
+    const clientConfig = req.clientConfig;
+    const clientId = clientConfig.clientId;
     const io = req.app.get('socketio');
 
     let conversation = await Conversation.findOne({ phone: messages.from, clientId });
@@ -463,15 +461,9 @@ router.post('/', async (req, res) => {
         }
     } catch (e) { console.error('Lead Capture Error:', e); }
 
-    await handleUserChatbotFlow({ from: messages.from, phoneNumberId: value.metadata.phone_number_id, messages, res, io, clientId });
+    await handleUserChatbotFlow({ from: messages.from, phoneNumberId: value.metadata.phone_number_id, messages, res, io, clientConfig });
     
   } catch (err) { console.error('Webhook Error:', err.message); res.status(200).end(); }
-});
+};
 
-router.post("/shopify-webhook/link-opened", async (req,res) => { res.status(200).end(); });
-router.get('/', (req, res) => {
-  if (req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === process.env.VERIFY_TOKEN) res.status(200).send(req.query['hub.challenge']);
-  else res.status(403).end();
-});
-
-module.exports = router;
+module.exports = { handleWebhook };

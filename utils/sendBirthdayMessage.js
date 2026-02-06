@@ -5,19 +5,43 @@ const Message = require('../models/Message');
 const Client = require('../models/Client');
 
 // 📤 Send WhatsApp birthday wish with consent check
-async function sendBirthdayWishWithImage(recipientPhone, accessToken, phoneNumberId) {
+async function sendBirthdayWishWithImage(recipientPhone, accessToken, phoneNumberId, clientId, templateNameOverride = null) {
   try {
     const apiVersion = process.env.API_VERSION || process.env.WHATSAPP_API_VERSION || 'v18.0';
     const templateLang = process.env.WHATSAPP_TEMPLATE_LANG || 'en_US';
-    // Check if user has consented to birthday messages
-    const birthdayUser = await BirthdayUser.findOne({ 
+    
+    // Check if user has consented to birthday messages for this client
+    let query = { 
       number: recipientPhone,
       isOpted: true 
-    });
+    };
+
+    if (clientId) {
+        if (clientId === 'code_clinic_v1') {
+            query.$or = [{ clientId: clientId }, { clientId: { $exists: false } }];
+        } else {
+            query.clientId = clientId;
+        }
+    }
+
+    const birthdayUser = await BirthdayUser.findOne(query);
     
     if (!birthdayUser) {
-      console.log(`🎂 Skipping birthday message for ${recipientPhone} - user has not consented to birthday messages`);
+      console.log(`🎂 Skipping birthday message for ${recipientPhone} - user has not consented to birthday messages for client ${clientId}`);
       return { success: false, reason: 'not_consented' };
+    }
+
+    // Determine template name
+    // Priority: Override > Client Config > Default
+    let templateName = templateNameOverride || "happy_birthday_wish_1";
+    
+    if (!templateNameOverride && clientId && clientId !== 'code_clinic_v1') {
+       try {
+         const client = await Client.findOne({ clientId });
+         if (client?.config?.templates?.birthday) {
+           templateName = client.config.templates.birthday;
+         }
+       } catch (e) { console.error('Error fetching client config for template:', e); }
     }
 
     const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
@@ -28,7 +52,7 @@ async function sendBirthdayWishWithImage(recipientPhone, accessToken, phoneNumbe
           to: recipientPhone,
           type: "template",
           template: {
-            name: "happy_birthday_wish_1", // must match exactly
+            name: templateName, // Dynamic template name
             language: { code: templateLang },
             components: [
               {
@@ -65,14 +89,15 @@ async function sendBirthdayWishWithImage(recipientPhone, accessToken, phoneNumbe
     console.log('Birthday API response:', response.status, response.data);
 
     try {
-      const client = await Client.findOne({ phoneNumberId });
-      const clientId = client ? client.clientId : 'code_clinic_v1';
-      let conversation = await Conversation.findOne({ phone: recipientPhone, clientId });
+      // Use provided clientId or fallback
+      const finalClientId = clientId || 'code_clinic_v1';
+      
+      let conversation = await Conversation.findOne({ phone: recipientPhone, clientId: finalClientId });
       if (!conversation) {
-        conversation = await Conversation.create({ phone: recipientPhone, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+        conversation = await Conversation.create({ phone: recipientPhone, clientId: finalClientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
       }
       const saved = await Message.create({
-        clientId,
+        clientId: finalClientId,
         conversationId: conversation._id,
         from: 'bot',
         to: recipientPhone,
@@ -84,7 +109,9 @@ async function sendBirthdayWishWithImage(recipientPhone, accessToken, phoneNumbe
       conversation.lastMessage = 'Birthday wish';
       conversation.lastMessageAt = new Date();
       await conversation.save();
-    } catch {}
+    } catch (err) {
+        console.error('Error saving conversation/message:', err);
+    }
 
     return { success: true };
   } catch (error) {
