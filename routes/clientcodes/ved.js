@@ -68,7 +68,16 @@ async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, i
     await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
     await saveAndEmitMessage({ phoneNumberId, to, body: `[Interactive] ${body}`, type: 'interactive', io, clientConfig });
     return true;
-  } catch (err) { console.error('Interactive Error:', err.message); return false; }
+  } catch (err) {
+    // Detailed error logging for debugging 401
+    if (err.response) {
+       console.error(`Interactive Error: Status ${err.response.status}`);
+       console.error(`Data:`, JSON.stringify(err.response.data, null, 2));
+    } else {
+       console.error('Interactive Error:', err.message);
+    }
+    return false;
+  }
 }
 
 async function saveAndEmitMessage({ phoneNumberId, to, body, type, io, clientConfig }) {

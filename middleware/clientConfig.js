@@ -31,13 +31,13 @@ const loadClientConfig = async (req, res, next) => {
       businessType: client.businessType || 'other',
       phoneNumberId: client.phoneNumberId,
       // Add phone number for message direction logic (incoming vs outgoing)
-      phoneNumber: client.config?.phoneNumber || process.env[`PHONE_NUMBER${envSuffix}`], 
-      adminPhoneNumber: client.config?.adminPhoneNumber || process.env[`ADMIN_PHONE_NUMBER${envSuffix}`],
+      phoneNumber: client.config?.phoneNumber || process.env[`PHONE_NUMBER${envSuffix}`] || process.env.PHONE_NUMBER,
+      adminPhoneNumber: client.config?.adminPhoneNumber || process.env[`ADMIN_PHONE_NUMBER${envSuffix}`] || process.env.ADMIN_PHONE_NUMBER,
       
-      whatsappToken: client.whatsappToken || process.env[`WHATSAPP_TOKEN${envSuffix}`], 
-      verifyToken: client.verifyToken || process.env[`VERIFY_TOKEN${envSuffix}`],
-      googleCalendarId: client.googleCalendarId || process.env[`GOOGLE_CALENDAR_ID${envSuffix}`],
-      openaiApiKey: client.openaiApiKey || process.env[`OPENAI_API_KEY${envSuffix}`],
+      whatsappToken: client.whatsappToken || process.env[`WHATSAPP_TOKEN${envSuffix}`] || process.env.WHATSAPP_TOKEN, 
+      verifyToken: client.verifyToken || process.env[`VERIFY_TOKEN${envSuffix}`] || process.env.WHATSAPP_VERIFY_TOKEN,
+      googleCalendarId: client.googleCalendarId || process.env[`GOOGLE_CALENDAR_ID${envSuffix}`] || process.env.GOOGLE_CALENDAR_ID,
+      openaiApiKey: client.openaiApiKey || process.env[`OPENAI_API_KEY${envSuffix}`] || process.env.OPENAI_API_KEY,
       config: client.config || {}
     };
 
