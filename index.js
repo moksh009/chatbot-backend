@@ -62,6 +62,12 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Debug Middleware: Log all incoming requests
+app.use((req, res, next) => {
+  console.log(`📨 ${req.method} ${req.originalUrl}`);
+  next();
+});
+
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/conversations', conversationRoutes);

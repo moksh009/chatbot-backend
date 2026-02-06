@@ -14,8 +14,11 @@ const loadClientConfig = async (req, res, next) => {
     const client = await Client.findOne({ clientId });
 
     if (!client) {
+      console.warn(`⚠️  ClientConfig: Client not found for ID '${clientId}'`);
       return res.status(404).json({ error: 'Client not found' });
     }
+
+    // console.log(`🔍 ClientConfig loaded for: ${clientId} (${client.businessType})`);
 
     // Attach client config to request
     // Allow overriding via environment variables for specific clients (e.g. WHATSAPP_TOKEN_0001)
