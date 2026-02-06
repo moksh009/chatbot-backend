@@ -11,24 +11,31 @@ async function sendBirthdayWishWithImage(recipientPhone, accessToken, phoneNumbe
     const templateLang = process.env.WHATSAPP_TEMPLATE_LANG || 'en_US';
     
     // Check if user has consented to birthday messages for this client
-    let query = { 
-      number: recipientPhone,
-      isOpted: true 
-    };
-
-    if (clientId) {
-        if (clientId === 'code_clinic_v1') {
-            query.$or = [{ clientId: clientId }, { clientId: { $exists: false } }];
-        } else {
-            query.clientId = clientId;
-        }
-    }
-
-    const birthdayUser = await BirthdayUser.findOne(query);
+    // BYPASS for specific clients who don't have consent flows
+    const BYPASS_CONSENT_CLIENTS = ['delitech_smarthomes'];
     
-    if (!birthdayUser) {
-      console.log(`🎂 Skipping birthday message for ${recipientPhone} - user has not consented to birthday messages for client ${clientId}`);
-      return { success: false, reason: 'not_consented' };
+    if (!BYPASS_CONSENT_CLIENTS.includes(clientId)) {
+        let query = { 
+          number: recipientPhone,
+          isOpted: true 
+        };
+
+        if (clientId) {
+            if (clientId === 'code_clinic_v1') {
+                query.$or = [{ clientId: clientId }, { clientId: { $exists: false } }];
+            } else {
+                query.clientId = clientId;
+            }
+        }
+
+        const birthdayUser = await BirthdayUser.findOne(query);
+        
+        if (!birthdayUser) {
+          console.log(`🎂 Skipping birthday message for ${recipientPhone} - user has not consented to birthday messages for client ${clientId}`);
+          return { success: false, reason: 'not_consented' };
+        }
+    } else {
+        console.log(`🎂 Bypassing consent check for ${recipientPhone} (Client: ${clientId})`);
     }
 
     // Determine template name

@@ -66,7 +66,9 @@ Upload a CSV file with the following headers:
 - `name`: (Optional) Recipient's name for personalization.
 - `date`: (Optional) For appointment reminders.
 - `time`: (Optional) For appointment reminders.
-- `doctor` / `stylist`: (Optional) For appointment reminders.
+- `doctor` / `stylist` / `coach`: (Optional) Provider name, depends on business type.
+
+**For detailed CSV examples and business-specific column names, see [CSV_GUIDE.md](./CSV_GUIDE.md).**
 
 ### Template Configuration
 Map the internal template names to the actual template names created in WhatsApp Manager:

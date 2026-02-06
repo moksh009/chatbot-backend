@@ -112,12 +112,16 @@ router.get('/lead/:id', protect, async (req, res) => {
         // Fetch related orders
         const orders = await Order.find({ phone: lead.phoneNumber, clientId: lead.clientId });
         
+        // Fetch related appointments
+        const appointments = await Appointment.find({ phone: lead.phoneNumber, clientId: lead.clientId });
+
         // Fetch conversation summary
         const conversation = await Conversation.findOne({ phone: lead.phoneNumber, clientId: lead.clientId });
 
         res.json({
             lead,
             orders,
+            appointments,
             conversation
         });
     } catch (error) {
