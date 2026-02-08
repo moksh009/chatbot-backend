@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
+const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
 const axios = require('axios');
 
@@ -138,6 +139,11 @@ router.post('/:id/messages', protect, async (req, res) => {
 // @access  Private
 router.put('/:id/takeover', protect, async (req, res) => {
   try {
+    const client = await Client.findOne({ clientId: req.user.clientId });
+    if (!client || client.subscriptionPlan === 'v1') {
+      return res.status(403).json({ message: 'Human Handoff is locked for CX Agent (v1). Please upgrade to v2.' });
+    }
+
     const conversation = await Conversation.findOne({ 
       _id: req.params.id, 
       clientId: req.user.clientId 

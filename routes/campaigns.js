@@ -33,6 +33,14 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
   }
 
   try {
+    // Check subscription plan
+    const client = await Client.findOne({ clientId: req.user.clientId });
+    if (!client || client.subscriptionPlan === 'v1') {
+      // Clean up uploaded file
+      try { fs.unlinkSync(req.file.path); } catch {}
+      return res.status(403).json({ message: 'Marketing Broadcasting (CSV Upload) is locked for CX Agent (v1). Please upgrade to v2.' });
+    }
+
     const rows = [];
     await new Promise((resolve, reject) => {
       fs.createReadStream(req.file.path)
@@ -90,6 +98,10 @@ router.post('/start', protect, async (req, res) => {
     const client = await Client.findOne({ clientId: req.user.clientId });
     if (!client) {
         return res.status(404).json({ message: 'Client configuration not found' });
+    }
+
+    if (client.subscriptionPlan === 'v1') {
+      return res.status(403).json({ message: 'Marketing Broadcasting is locked for CX Agent (v1). Please upgrade to v2.' });
     }
 
     const phoneNumberId = client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;

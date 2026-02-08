@@ -8,6 +8,11 @@ const ClientSchema = new mongoose.Schema({
     enum: ['ecommerce', 'salon', 'turf', 'clinic', 'other'],
     default: 'other'
   },
+  subscriptionPlan: {
+    type: String,
+    enum: ['v1', 'v2'],
+    default: 'v2' // Defaulting to v2 for now to preserve existing functionality, migration script will handle specifics
+  },
   phoneNumberId: { type: String, required: true, unique: true },
   whatsappToken: { type: String }, // Store the client's specific WhatsApp token
   verifyToken: { type: String }, // Store the client's specific Webhook Verify Token

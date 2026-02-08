@@ -10,6 +10,25 @@ const AppointmentSchema = new mongoose.Schema({
   date: { type: String, required: true }, // e.g., 'Tuesday, 23 Jul'
   time: { type: String, required: true }, // e.g., '11:00 AM'
   eventId: { type: String }, // Google Calendar event ID
+  bookingSource: { 
+    type: String, 
+    enum: ['chatbot', 'manual'], 
+    default: 'chatbot' 
+  },
+  status: {
+    type: String,
+    enum: ['confirmed', 'cancelled', 'completed'],
+    default: 'confirmed'
+  },
+  cancelledAt: { type: Date },
+  cancelledBy: { type: String }, // User ID or 'chatbot'
+  logs: [{
+    action: String, // 'create', 'update', 'cancel'
+    changedBy: String,
+    changedAt: { type: Date, default: Date.now },
+    source: String, // 'dashboard', 'chatbot'
+    details: String
+  }],
   consent: {
     appointmentReminders: { type: Boolean, default: true },
     birthdayMessages: { type: Boolean, default: true },
