@@ -53,6 +53,9 @@ router.get('/calendar', protect, async (req, res) => {
     }
 
     const client = await Client.findOne({ clientId: req.user.clientId });
+    if (!client) {
+        return res.status(404).json({ message: 'Client not found' });
+    }
     const calendarId = client.googleCalendarId || 'primary';
 
     // 1. Fetch Google Calendar Events
@@ -118,17 +121,27 @@ router.post('/', protect, async (req, res) => {
     const { name, phone, email, service, doctor, start, end, notes } = req.body;
     
     const client = await Client.findOne({ clientId: req.user.clientId });
+    if (!client) {
+        return res.status(404).json({ message: 'Client not found' });
+    }
     const calendarId = client.googleCalendarId || 'primary';
 
-    // 1. Create in Google Calendar
-    const gCalEvent = await createEvent({
-      summary: `${name} - ${service}`,
-      description: `${notes || ''}\nPhone: ${phone}\nSource: Manual Dashboard Booking`,
-      start,
-      end,
-      attendees: email ? [email] : [],
-      calendarId
-    });
+    // 1. Create in Google Calendar (Fail-safe)
+    let eventId = null;
+    try {
+        const gCalEvent = await createEvent({
+            summary: `${name} - ${service}`,
+            description: `${notes || ''}\nPhone: ${phone}\nSource: Manual Dashboard Booking`,
+            start,
+            end,
+            attendees: email ? [email] : [],
+            calendarId
+        });
+        eventId = gCalEvent.eventId;
+    } catch (gError) {
+        console.error('Google Calendar Sync Failed (Create):', gError.message);
+        // Proceed without Google Calendar event
+    }
 
     // 2. Create in DB
     const { date, time } = formatDateTime(start);
@@ -142,13 +155,13 @@ router.post('/', protect, async (req, res) => {
       doctor: doctor || 'Unassigned',
       date,
       time,
-      eventId: gCalEvent.eventId,
+      eventId: eventId, // Can be null
       bookingSource: 'manual',
       logs: [{
         action: 'create',
         changedBy: req.user._id || 'dashboard_user',
         source: 'dashboard',
-        details: 'Created via manual booking'
+        details: eventId ? 'Created via manual booking' : 'Created (Local only - GCal Sync Failed)'
       }]
     });
 
@@ -179,18 +192,26 @@ router.put('/:id', protect, async (req, res) => {
     if (!appointment) return res.status(404).json({ message: 'Not found' });
 
     const client = await Client.findOne({ clientId: req.user.clientId });
+    if (!client) {
+        return res.status(404).json({ message: 'Client not found' });
+    }
     const calendarId = client.googleCalendarId || 'primary';
 
-    // 1. Update Google Calendar
+    // 1. Update Google Calendar (Fail-safe)
     if (appointment.eventId) {
-      await updateEvent({
-        eventId: appointment.eventId,
-        calendarId,
-        summary: `${name || appointment.name} - ${service || appointment.service}`,
-        description: notes,
-        start,
-        end
-      });
+      try {
+        await updateEvent({
+          eventId: appointment.eventId,
+          calendarId,
+          summary: `${name || appointment.name} - ${service || appointment.service}`,
+          description: notes,
+          start,
+          end
+        });
+      } catch (gError) {
+        console.error('Google Calendar Sync Failed (Update):', gError.message);
+        // Continue to update DB
+      }
     }
 
     // 2. Update DB
