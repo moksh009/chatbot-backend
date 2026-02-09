@@ -478,7 +478,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       );
       
       await sendWhatsAppText({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         body: '✅ You have been unsubscribed from all appointment reminders and birthday messages. You will no longer receive any messages from us. If you change your mind, you can opt back in by sending "START" to this number.'
       });
@@ -490,7 +490,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     } catch (err) {
       console.error('Error processing unsubscribe request:', err);
       await sendWhatsAppText({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         body: '⚠️ We encountered an error processing your request. Please try again later or contact support.'
       });
@@ -528,7 +528,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       );
       
       await sendWhatsAppText({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         body: '✅ You have been successfully resubscribed to appointment reminders and birthday messages. Welcome back! 🎉'
       });
@@ -540,7 +540,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     } catch (err) {
       console.error('Error processing subscribe request:', err);
       await sendWhatsAppText({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         body: '⚠️ We encountered an error processing your request. Please try again later or contact support.'
       });
@@ -552,7 +552,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   // If user sends a greeting, always show the main menu WhatsApp List
   if (userMsgType === 'text' && userMsg && GREETING_WORDS.some(w => userMsg.trim().toLowerCase().startsWith(w))) {
     await sendWhatsAppList({
-      phoneNumberId,
+      ...helperParams,
       to: from,
       header: 'Welcome to Choice Salon! 💇‍♀️',
       body: 'Hi 👋\n\nI’m your virtual assistant for Choice Salon. How can I help you today? Please select an option below:',
@@ -584,7 +584,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       // Start the booking flow directly
       const paginatedServices = getPaginatedServices(0);
       await sendWhatsAppList({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         header: 'Book Appointment 💇‍♀️',
         body: 'Perfect! I’d be happy to help you book an appointment. 😊 Which service do you need?',
