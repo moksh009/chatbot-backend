@@ -41,10 +41,10 @@ const userSessions = {};
 
 // Salon services
 const salonServices = [
-  { id: 'service_haircut', title: 'Haircut' },
-  { id: 'service_spa', title: 'Spa' },
-  { id: 'service_facial', title: 'Facial' },
-  { id: 'service_massage', title: 'Massage' }
+  { id: 'service_haircut', title: 'Haircut', price: '500' },
+  { id: 'service_spa', title: 'Spa', price: '1500' },
+  { id: 'service_facial', title: 'Facial', price: '1200' },
+  { id: 'service_massage', title: 'Massage', price: '2000' }
 ];
 
 // Real stylists
