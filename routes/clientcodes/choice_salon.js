@@ -31,6 +31,32 @@ const QUESTION_TOPICS = [
   { id: 'ask_other', title: 'Something else' }
 ];
 
+const FAQ_DATA = {
+  'ask_services': [
+    { id: 'faq_serv_types', title: 'What services do you offer?', answer: 'We offer a wide range of services including Haircuts, Shaving, Facials, Massage, Hair Color, and Spa treatments. 💇‍♂️💆‍♂️' },
+    { id: 'faq_serv_kids', title: 'Do you do kids haircuts?', answer: 'Yes! We provide haircuts for children of all ages. 👶' },
+    { id: 'faq_serv_color', title: 'Do you do hair color?', answer: 'Yes, we offer professional hair coloring services starting at ₹1000. 🎨' },
+    { id: 'faq_serv_massage', title: 'Do you offer massage?', answer: 'Yes, we offer relaxing massage therapies starting at ₹2000. 💆‍♂️' }
+  ],
+  'ask_pricing': [
+    { id: 'faq_price_haircut', title: 'How much is a haircut?', answer: 'Our standard haircut is ₹500. ✂️' },
+    { id: 'faq_price_shave', title: 'How much is a shave?', answer: 'Shaving services are ₹300. 🪒' },
+    { id: 'faq_price_list', title: 'Full Price List', answer: 'Here are our popular services:\n• Haircut: ₹500\n• Shaving: ₹300\n• Facial: ₹1200\n• Massage: ₹2000\n• Hair Color: ₹1000\n• Spa: ₹1500' },
+    { id: 'faq_price_payment', title: 'Payment Methods', answer: 'We accept Cash, UPI, and all major Credit/Debit cards. 💳' }
+  ],
+  'ask_appointments': [
+    { id: 'faq_appt_book', title: 'How do I book?', answer: 'You can book an appointment directly here! Just select "Book Appointment" from the main menu. 🗓️' },
+    { id: 'faq_appt_cancel', title: 'Cancel/Reschedule?', answer: 'To cancel or reschedule, please contact us directly at +91 98244 74547. 📞' },
+    { id: 'faq_appt_hours', title: 'Opening Hours?', answer: 'We are open Monday to Sunday, from 10:00 AM to 8:00 PM. 🕙' },
+    { id: 'faq_appt_advance', title: 'Do I need to book ahead?', answer: 'We recommend booking at least 2 hours in advance to ensure your preferred stylist is available. ⏳' }
+  ],
+  'ask_other': [
+    { id: 'faq_other_loc', title: 'Where are you located?', answer: 'We are located in Ahmedabad. Please call us for the exact directions! 📍' },
+    { id: 'faq_other_contact', title: 'Contact Number?', answer: 'You can reach us at +91 98244 74547 for any queries. ☎️' },
+    { id: 'faq_other_safety', title: 'Safety Measures?', answer: 'We follow strict hygiene protocols, including sanitization of tools and stations after every client. 🛡️' }
+  ]
+};
+
 const BirthdayUser = require('../../models/BirthdayUser');
 
 // Load knowledge base for OpenAI
@@ -42,23 +68,35 @@ const userSessions = {};
 // Salon services
 const salonServices = [
   { id: 'service_haircut', title: 'Haircut', price: '500' },
-  { id: 'service_spa', title: 'Spa', price: '1500' },
+  { id: 'service_shaving', title: 'Shaving', price: '300' },
   { id: 'service_facial', title: 'Facial', price: '1200' },
-  { id: 'service_massage', title: 'Massage', price: '2000' }
+  { id: 'service_massage', title: 'Massage', price: '2000' },
+  { id: 'service_hair_color', title: 'Hair Color', price: '1000' },
+  { id: 'service_spa', title: 'Spa', price: '1500' }
 ];
 
 // Real stylists
 const salonStylists = [
-  { id: 'stylist_sarah', title: 'Stylist Sarah' },
-  { id: 'stylist_mike', title: 'Stylist Mike' }
+  { id: 'stylist_shubhashbhai', title: 'Shubhashbhai' },
+  { id: 'stylist_moksh', title: 'Moksh' }
 ];
+
+// Map stylists to their specific Google Calendar IDs
+const stylistCalendars = {
+  'Shubhashbhai': process.env.GCAL_CALENDAR_ID,
+  'Moksh': process.env.GCAL_CALENDAR_ID,
+  'Stylist Sarah': process.env.GCAL_CALENDAR_ID, // Legacy support
+  'Stylist Mike': process.env.GCAL_CALENDAR_ID   // Legacy support
+};
 
 // Helper: get pricing info
 const salonPricing = [
   { service: 'Haircut', price: '500' },
-  { service: 'Spa', price: '1500' },
+  { service: 'Shaving', price: '300' },
   { service: 'Facial', price: '1200' },
-  { service: 'Massage', price: '2000' }
+  { service: 'Massage', price: '2000' },
+  { service: 'Hair Color', price: '1000' },
+  { service: 'Spa', price: '1500' }
 ];
 
 // Helper to get or initialize user session
@@ -583,7 +621,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       body: 'Hi 👋\n\nI’m your virtual assistant for Choice Salon. How can I help you today? Please select an option below:',
       button: 'Menu',
       rows: [
-        { id: 'user_schedule_appt', title: 'Book Appointment 🗓️' },
+        { id: 'user_schedule_appt', title: 'Book Appointment 📅' },
         { id: 'user_pricing', title: 'Pricing 💰' },
         { id: 'user_ask_question', title: 'Ask a Question ❓' }
       ]
@@ -591,6 +629,116 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     session.step = 'home_waiting';
     res.status(200).end();
     return;
+  }
+
+  // -----------------------------------------------------------
+  // FAQ FLOW HANDLERS (Pre-filled Questions)
+  // -----------------------------------------------------------
+
+  // Step: User selected a FAQ Topic (e.g., 'ask_services')
+  if (session.step === 'ask_question_topic') {
+    const topicKey = userMsg;
+    
+    // Check if valid topic (button click)
+    if (FAQ_DATA[topicKey]) {
+      const questions = FAQ_DATA[topicKey];
+      await sendWhatsAppList({
+        ...helperParams,
+        to: from,
+        header: 'Frequently Asked Questions',
+        body: `Here are some common questions about ${QUESTION_TOPICS.find(t => t.id === topicKey)?.title || 'this topic'}. Select one to see the answer:`,
+        button: 'Select Question',
+        rows: questions.map(q => ({ id: q.id, title: q.title }))
+      });
+      session.step = 'faq_question_select';
+      session.data.faqTopic = topicKey;
+      res.status(200).end();
+      return;
+    }
+    
+    // If user typed text or sent invalid input, guide them back
+    await sendWhatsAppList({
+      ...helperParams,
+      to: from,
+      header: 'Ask a Question ❓',
+      body: 'Please select a topic from the list below to get the best answer:',
+      button: 'Select Topic',
+      rows: QUESTION_TOPICS
+    });
+    // Keep step as ask_question_topic
+    res.status(200).end();
+    return;
+  }
+
+  // Step: User selected a specific Question
+  if (session.step === 'faq_question_select') {
+    // Find the answer
+    let answer = null;
+    let questionTitle = '';
+    
+    // Search in current topic or all
+    for (const key in FAQ_DATA) {
+        const q = FAQ_DATA[key].find(item => item.id === userMsg);
+        if (q) {
+            answer = q.answer;
+            questionTitle = q.title;
+            break;
+        }
+    }
+
+    if (answer) {
+        // Send answer
+        await sendWhatsAppText({
+            ...helperParams,
+            to: from,
+            body: `*${questionTitle}*\n\n${answer}`
+        });
+        
+        // Follow up
+        await sendSmartButtonsOrList({
+            ...helperParams,
+            to: from,
+            header: undefined,
+            body: 'Is there anything else I can help you with?',
+            buttons: [
+                { id: 'user_ask_question', title: 'Ask Another Question' },
+                { id: 'user_schedule_appt', title: 'Book Appointment' },
+                { id: 'user_home', title: 'Main Menu' }
+            ]
+        });
+        session.step = 'home_waiting';
+        res.status(200).end();
+        return;
+    }
+    
+    // Invalid selection or text - re-show questions for the topic
+    const topicKey = session.data.faqTopic;
+    if (topicKey && FAQ_DATA[topicKey]) {
+      const questions = FAQ_DATA[topicKey];
+      await sendWhatsAppList({
+        ...helperParams,
+        to: from,
+        header: 'Select a Question',
+        body: 'Please select one of the questions below:',
+        button: 'Select Question',
+        rows: questions.map(q => ({ id: q.id, title: q.title }))
+      });
+      res.status(200).end();
+      return;
+    } else {
+        // Fallback to topics if state is lost
+        await sendWhatsAppList({
+            ...helperParams,
+            to: from,
+            header: 'Ask a Question ❓',
+            body: 'Please select a topic:',
+            button: 'Select Topic',
+            rows: QUESTION_TOPICS
+        });
+        session.step = 'ask_question_topic';
+        res.status(200).end();
+        return;
+    }
   }
 
       // AI-powered free-text handling (not a button/list reply)
