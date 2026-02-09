@@ -234,7 +234,11 @@ async function sendWhatsAppList({ phoneNumberId, to, header, body, button, rows,
         sections: [
           {
             title: 'Available Days',
-            rows: safeRows
+            rows: safeRows.map(r => {
+              const row = { id: r.id, title: r.title };
+              if (r.description) row.description = r.description;
+              return row;
+            })
           }
         ]
       }

@@ -111,9 +111,13 @@ async function sendWhatsAppList({ phoneNumberId, to, header, body, button, rows 
         button,
         sections: [
           {
-            title: 'Available Days',
-            rows: safeRows
-          }
+              title: 'Available Days',
+              rows: safeRows.map(r => {
+                const row = { id: r.id, title: r.title };
+                if (r.description) row.description = r.description;
+                return row;
+              })
+            }
         ]
       }
     }
