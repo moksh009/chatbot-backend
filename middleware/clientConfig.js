@@ -34,8 +34,10 @@ const loadClientConfig = async (req, res, next) => {
       phoneNumber: client.config?.phoneNumber || process.env[`PHONE_NUMBER${envSuffix}`] || process.env.PHONE_NUMBER,
       adminPhoneNumber: client.config?.adminPhoneNumber || process.env[`ADMIN_PHONE_NUMBER${envSuffix}`] || process.env.ADMIN_PHONE_NUMBER,
       
-      whatsappToken: client.whatsappToken || process.env[`WHATSAPP_TOKEN${envSuffix}`] || process.env.WHATSAPP_TOKEN, 
-      verifyToken: client.verifyToken || process.env[`VERIFY_TOKEN${envSuffix}`] || process.env.WHATSAPP_VERIFY_TOKEN,
+      // Prioritize environment variable if set, otherwise use DB value, then fallback to global env
+      // This allows local .env to override DB for testing if needed, OR relies on DB if env is missing
+      whatsappToken: process.env[`WHATSAPP_TOKEN${envSuffix}`] || client.whatsappToken || process.env.WHATSAPP_TOKEN, 
+      verifyToken: process.env[`VERIFY_TOKEN${envSuffix}`] || client.verifyToken || process.env.WHATSAPP_VERIFY_TOKEN,
       googleCalendarId: client.googleCalendarId || process.env[`GOOGLE_CALENDAR_ID${envSuffix}`] || process.env.GOOGLE_CALENDAR_ID,
       openaiApiKey: client.openaiApiKey || process.env[`OPENAI_API_KEY${envSuffix}`] || process.env.OPENAI_API_KEY,
       config: client.config || {}
