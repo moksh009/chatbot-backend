@@ -35,6 +35,10 @@ const adLeadSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  appointmentsBooked: {
+    type: Number,
+    default: 0
+  },
   activityLog: [{
     action: String, // 'link_click', 'add_to_cart', 'order_placed'
     details: String,
@@ -74,6 +78,7 @@ adLeadSchema.pre('save', function(next) {
   
   // Base activity points
   score += (this.ordersCount || 0) * 50;
+  score += (this.appointmentsBooked || 0) * 50; // Points for booking
   score += (this.addToCartCount || 0) * 20;
   score += (this.linkClicks || 0) * 5;
   

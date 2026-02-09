@@ -6,6 +6,8 @@ const Appointment = require('../models/Appointment');
 const DailyStat = require('../models/DailyStat');
 const AdLead = require('../models/AdLead');
 const Order = require('../models/Order');
+const Client = require('../models/Client');
+const { listEvents } = require('../utils/googleCalendar');
 const { protect } = require('../middleware/auth');
 
 router.get('/realtime', protect, async (req, res) => {
@@ -159,17 +161,110 @@ router.get('/receptionist-overview', protect, async (req, res) => {
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
 
-        // 1. Today's Appointments
-        const appointments = await Appointment.find({
+        // Fetch client for Google Calendar IDs
+        const client = await Client.findOne({ clientId });
+        
+        // Collect all calendar IDs
+        const calendarIds = new Set();
+        if (client?.googleCalendarId) calendarIds.add(client.googleCalendarId);
+        
+        // Add stylist calendars from config
+        if (client?.config?.calendars) {
+            Object.values(client.config.calendars).forEach(id => calendarIds.add(id));
+        }
+        
+        // Default to 'primary' if no calendars found
+        if (calendarIds.size === 0) calendarIds.add('primary');
+
+        // 1. Fetch Google Calendar Events for Today (from ALL calendars)
+        let googleEvents = [];
+        try {
+             const calendarPromises = Array.from(calendarIds).map(calId => 
+                listEvents(today.toISOString(), tomorrow.toISOString(), calId)
+                    .catch(err => {
+                        console.error(`GCal fetch error for ${calId}:`, err.message);
+                        return [];
+                    })
+             );
+             
+             const results = await Promise.all(calendarPromises);
+             // Flatten results
+             googleEvents = results.flat();
+             
+             // Remove duplicates based on event ID (just in case)
+             const uniqueEvents = new Map();
+             googleEvents.forEach(e => uniqueEvents.set(e.id, e));
+             googleEvents = Array.from(uniqueEvents.values());
+             
+        } catch (gErr) {
+             console.error('GCal fetch error in receptionist-overview:', gErr.message);
+        }
+
+        // 2. Fetch DB Appointments for today
+        // Construct date string matching DB format: "Monday, 09 Feb" (Africa/Nairobi timezone used in creation)
+        const dateOptions = { weekday: 'long', day: '2-digit', month: 'short', timeZone: 'Africa/Nairobi' };
+        const todayDateString = today.toLocaleDateString('en-GB', dateOptions); 
+        
+        const dbAppointments = await Appointment.find({
             clientId,
-            start: { $gte: today, $lt: tomorrow },
+            date: todayDateString,
             status: { $ne: 'cancelled' }
-        }).sort({ start: 1 });
+        });
+
+        // 3. Merge Events
+        const mergedAppointments = googleEvents.map(event => {
+            const dbAppt = dbAppointments.find(a => a.eventId === event.id);
+            const startDateTime = event.start.dateTime || event.start.date;
+            
+            return {
+                _id: dbAppt?._id || event.id,
+                customerName: dbAppt?.name || event.summary || 'Unknown Client',
+                customerPhone: dbAppt?.phone || '',
+                date: startDateTime, 
+                serviceType: dbAppt?.service || event.description || 'External Booking',
+                status: dbAppt?.status || 'confirmed',
+                source: dbAppt ? 'chatbot' : 'external'
+            };
+        });
+        
+        // Add DB-only appointments (not in GCal)
+        const gcalEventIds = new Set(googleEvents.map(e => e.id));
+        
+        dbAppointments.forEach(appt => {
+            if (!appt.eventId || !gcalEventIds.has(appt.eventId)) {
+                 // Construct ISO date from time string
+                 let startISO = new Date().toISOString(); 
+                 try {
+                    const timeParts = appt.time.match(/(\d+):(\d+)\s*(AM|PM)/i);
+                    if (timeParts) {
+                        let hours = parseInt(timeParts[1]);
+                        const minutes = parseInt(timeParts[2]);
+                        const ampm = timeParts[3].toUpperCase();
+                        if (ampm === 'PM' && hours < 12) hours += 12;
+                        if (ampm === 'AM' && hours === 12) hours = 0;
+                        
+                        const d = new Date(today);
+                        d.setHours(hours, minutes, 0, 0);
+                        startISO = d.toISOString();
+                    }
+                 } catch (e) {}
+
+                 mergedAppointments.push({
+                     _id: appt._id,
+                     customerName: appt.name,
+                     customerPhone: appt.phone,
+                     date: startISO,
+                     serviceType: appt.service,
+                     status: appt.status,
+                     source: 'chatbot'
+                 });
+            }
+        });
+        
+        // Sort by date
+        mergedAppointments.sort((a, b) => new Date(a.date) - new Date(b.date));
 
         // 2. Pending Agent Requests
-        // Assuming DailyStat or Conversation tracks pending requests. 
-        // If not, we might need to check Conversations with needsAgent=true (if that field exists)
-        // For now, let's look for recent conversations that might need attention
         const recentChats = await Conversation.find({
             clientId,
             updatedAt: { $gte: today }
@@ -183,7 +278,7 @@ router.get('/receptionist-overview', protect, async (req, res) => {
         }).select('name phoneNumber leadScore tags');
 
         res.json({
-            appointments,
+            appointments: mergedAppointments,
             recentChats,
             activeVIPs
         });

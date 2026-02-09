@@ -317,8 +317,10 @@ async function sendSmartButtonsOrList({ phoneNumberId, to, header, body, buttons
 // Helper: get available booking days (dynamic, based on Google Calendar availability)
 async function getAvailableBookingDays(stylist, calendars) {
   try {
-    const calendarId = calendars[stylist];
-    console.log('🔍 Fetching dynamic available dates from Google Calendar...', calendarId);
+    // Normalize stylist name
+    const stylistKey = stylist.toLowerCase().replace(/\s+/g, '_');
+    const calendarId = calendars[stylistKey] || calendars[stylist];
+    console.log(`🔍 Fetching dynamic available dates from Google Calendar for ${stylist} (key: ${stylistKey})...`, calendarId);
     
     if (!calendarId) {
        console.log('❌ No calendar ID found for stylist:', stylist);
@@ -383,11 +385,13 @@ function getPaginatedServices(page = 0) {
 // Helper: get available time slots for a given date with pagination
 async function fetchRealTimeSlots(dateStr, page = 0, stylist, calendars) {
   try {
-    const calendarId = calendars[stylist];
-    console.log(`🔍 Fetching available slots for ${dateStr} (page ${page}) with stylist ${stylist}...`);
+    // Normalize stylist name
+    const stylistKey = stylist.toLowerCase().replace(/\s+/g, '_');
+    const calendarId = calendars[stylistKey] || calendars[stylist];
+    console.log(`🔍 Fetching available slots for ${dateStr} (page ${page}) with stylist ${stylist} (key: ${stylistKey})...`);
     
     if (!calendarId) {
-        console.error(`No calendar ID configured for stylist: ${stylist}`);
+        console.error(`No calendar ID configured for stylist: ${stylist} (key: ${stylistKey})`);
         return { slots: [], totalSlots: 0, currentPage: 0, totalPages: 0, hasMore: false };
     }
 
@@ -1567,7 +1571,8 @@ Provide a SHORT, PRECISE response:`;
           endISO
         });
         const stylist = session.data.stylist;
-        const calendarId = calendars[stylist] || process.env.GCAL_CALENDAR_ID;
+        const stylistKey = stylist.toLowerCase().replace(/\s+/g, '_');
+        const calendarId = calendars[stylistKey] || calendars[stylist] || process.env.GCAL_CALENDAR_ID;
         
         // Check if an event already exists for this time slot to prevent duplicates
         try {

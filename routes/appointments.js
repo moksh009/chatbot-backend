@@ -56,15 +56,41 @@ router.get('/calendar', protect, async (req, res) => {
     if (!client) {
         return res.status(404).json({ message: 'Client not found' });
     }
-    const calendarId = client.googleCalendarId || 'primary';
+    
+    // Collect all calendar IDs
+    const calendarIds = new Set();
+    if (client.googleCalendarId) calendarIds.add(client.googleCalendarId);
+    
+    // Add stylist calendars from config
+    if (client.config?.calendars) {
+        Object.values(client.config.calendars).forEach(id => calendarIds.add(id));
+    }
+    
+    // Default to 'primary' if no calendars found
+    if (calendarIds.size === 0) calendarIds.add('primary');
 
-    // 1. Fetch Google Calendar Events
+    // 1. Fetch Google Calendar Events from ALL calendars
     let googleEvents = [];
     try {
-      googleEvents = await listEvents(start, end, calendarId);
+      const calendarPromises = Array.from(calendarIds).map(calId => 
+         listEvents(start, end, calId)
+             .catch(err => {
+                 console.error(`GCal fetch error for ${calId}:`, err.message);
+                 return [];
+             })
+      );
+      
+      const results = await Promise.all(calendarPromises);
+      googleEvents = results.flat();
+      
+      // Remove duplicates based on event ID
+      const uniqueEvents = new Map();
+      googleEvents.forEach(e => uniqueEvents.set(e.id, e));
+      googleEvents = Array.from(uniqueEvents.values());
+
     } catch (err) {
       console.error('Google Calendar listEvents failed:', err.message);
-      // Fallback: return empty list, or handle gracefully
+      // Fallback: return empty list
     }
 
     // 2. Fetch DB Appointments for this client (to enrich)
@@ -81,6 +107,7 @@ router.get('/calendar', protect, async (req, res) => {
       let source = 'external';
       if (dbAppt) {
         source = dbAppt.bookingSource || 'chatbot'; // Default to chatbot if field missing
+        dbMap.delete(event.id); // Remove from map to track processed ones
       }
 
       // Safe access to date/time
@@ -100,9 +127,63 @@ router.get('/calendar', protect, async (req, res) => {
           clientName: dbAppt?.name,
           phone: dbAppt?.phone,
           dbId: dbAppt?._id,
-          doctor: dbAppt?.doctor
+          doctor: dbAppt?.doctor,
+          status: dbAppt?.status || 'confirmed'
         }
       };
+    });
+
+    // 4. Add remaining DB appointments (not in Google Calendar)
+    dbMap.forEach(appt => {
+      // Reconstruct ISO date from DB string (Africa/Nairobi)
+      // Note: This is a best-effort conversion.
+      // Ideally DB should store ISO start/end.
+      let startISO = new Date().toISOString(); 
+      let endISO = new Date().toISOString();
+
+      try {
+         const todayYear = new Date().getFullYear();
+         // Parse "Monday, 09 Feb" -> "09 Feb"
+         const datePart = appt.date.split(',')[1]?.trim(); 
+         if (datePart && appt.time) {
+             const timeParts = appt.time.match(/(\d+):(\d+)\s*(AM|PM)/i);
+             if (timeParts) {
+                 let hours = parseInt(timeParts[1]);
+                 const minutes = parseInt(timeParts[2]);
+                 const ampm = timeParts[3].toUpperCase();
+                 if (ampm === 'PM' && hours < 12) hours += 12;
+                 if (ampm === 'AM' && hours === 12) hours = 0;
+                 
+                 const d = new Date(`${datePart} ${todayYear} ${hours}:${minutes}:00`);
+                 // Basic validation
+                 if (!isNaN(d.getTime())) {
+                     startISO = d.toISOString();
+                     d.setHours(d.getHours() + 1); // Default 1 hour duration
+                     endISO = d.toISOString();
+                 }
+             }
+         }
+      } catch (e) {
+          console.error('Date parsing error for DB appointment:', e);
+      }
+
+      mergedEvents.push({
+        id: appt.eventId || `db_${appt._id}`,
+        title: `${appt.name} - ${appt.service}`,
+        start: startISO,
+        end: endISO,
+        allDay: false,
+        source: appt.bookingSource || 'chatbot',
+        extendedProps: {
+          description: 'Synced from Database',
+          service: appt.service,
+          clientName: appt.name,
+          phone: appt.phone,
+          dbId: appt._id,
+          doctor: appt.doctor,
+          status: appt.status || 'confirmed'
+        }
+      });
     });
 
     res.json(mergedEvents);

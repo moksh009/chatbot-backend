@@ -322,8 +322,10 @@ async function sendSmartButtonsOrList({ phoneNumberId, to, header, body, buttons
 // Helper: get available booking days (dynamic, based on Google Calendar availability)
 async function getAvailableBookingDays(stylist, calendars) {
   try {
-    const calendarId = calendars[stylist];
-    console.log('🔍 Fetching dynamic available dates from Google Calendar...', calendarId);
+    // Normalize stylist name to match config keys (e.g., "Stylist Sarah" -> "stylist_sarah")
+    const stylistKey = stylist.toLowerCase().replace(/\s+/g, '_');
+    const calendarId = calendars[stylistKey] || calendars[stylist];
+    console.log(`🔍 Fetching dynamic available dates from Google Calendar for ${stylist} (key: ${stylistKey})...`, calendarId);
     
     if (!calendarId) {
        console.log('❌ No calendar ID found for stylist:', stylist);
@@ -388,11 +390,13 @@ function getPaginatedServices(page = 0) {
 // Helper: get available time slots for a given date with pagination
 async function fetchRealTimeSlots(dateStr, page = 0, stylist, calendars) {
   try {
-    const calendarId = calendars[stylist];
-    console.log(`🔍 Fetching available slots for ${dateStr} (page ${page}) with stylist ${stylist}...`);
+    // Normalize stylist name
+    const stylistKey = stylist.toLowerCase().replace(/\s+/g, '_');
+    const calendarId = calendars[stylistKey] || calendars[stylist];
+    console.log(`🔍 Fetching available slots for ${dateStr} (page ${page}) with stylist ${stylist} (key: ${stylistKey})...`);
     
     if (!calendarId) {
-        console.error(`No calendar ID configured for stylist: ${stylist}`);
+        console.error(`No calendar ID configured for stylist: ${stylist} (key: ${stylistKey})`);
         return { slots: [], totalSlots: 0, currentPage: 0, totalPages: 0, hasMore: false };
     }
 
@@ -451,6 +455,23 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 
   // Pass common params to helpers
   const helperParams = { phoneNumberId, token, io, clientId };
+
+  // Track lead interaction for Active Leads display
+   try {
+       await AdLead.updateOne(
+           { clientId, phoneNumber: from },
+           { 
+               $set: { 
+                   lastInteraction: new Date(),
+                   chatSummary: userMsg ? userMsg.substring(0, 50) : 'Interaction'
+               },
+               $setOnInsert: { source: 'WhatsApp', leadScore: 10 } 
+           },
+           { upsert: true }
+       );
+   } catch (e) {
+       console.error('AdLead update error:', e);
+   }
 
   // Handle STOP/UNSUBSCRIBE commands
   if (userMsgType === 'text' && userMsg && (userMsg.trim().toLowerCase() === 'stop' || userMsg.trim().toLowerCase() === 'unsubscribe')) {
@@ -1355,6 +1376,25 @@ Provide a SHORT, PRECISE response:`;
         });
         
         await Appointment.create(appointmentData);
+
+        // Update AdLead with booking points
+        try {
+          await AdLead.updateOne(
+            { clientId, phoneNumber: session.data.phone },
+            { 
+              $inc: { appointmentsBooked: 1 }, 
+              $set: { 
+                lastInteraction: new Date(),
+                name: session.data.name // Ensure name is up to date
+              } 
+            },
+            { upsert: true }
+          );
+          console.log('✅ AdLead updated with booking points for:', session.data.phone);
+        } catch (adErr) {
+          console.error('❌ Error updating AdLead:', adErr);
+        }
+
         try {
           const io = req.app.get('socketio');
           if (io) {
@@ -1567,7 +1607,8 @@ Provide a SHORT, PRECISE response:`;
           endISO
         });
         const stylist = session.data.stylist;
-        const calendarId = calendars[stylist] || process.env.GCAL_CALENDAR_ID;
+        const stylistKey = stylist.toLowerCase().replace(/\s+/g, '_');
+        const calendarId = calendars[stylistKey] || calendars[stylist] || process.env.GCAL_CALENDAR_ID;
         
         // Check if an event already exists for this time slot to prevent duplicates
         try {
