@@ -99,6 +99,11 @@ async function saveAndEmitMessage({ clientId, from, to, body, type, direction, s
 
 // Helper to send plain WhatsApp text message
 async function sendWhatsAppText({ phoneNumberId, to, body, token, io, clientId }) {
+  // DEBUG TOKEN
+  if (clientId === 'choice_salon') {
+      console.log(`[DEBUG sendWhatsAppText] Token: '${token ? token.substring(0, 15) + '...' : 'undefined'}' (Length: ${token ? token.length : 0})`);
+  }
+
   const apiVersion = process.env.API_VERSION || 'v18.0';
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
   const data = {
