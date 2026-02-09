@@ -13,7 +13,7 @@ const ClientSchema = new mongoose.Schema({
     enum: ['v1', 'v2'],
     default: 'v2' // Defaulting to v2 for now to preserve existing functionality, migration script will handle specifics
   },
-  phoneNumberId: { type: String, required: true, unique: true },
+  phoneNumberId: { type: String, required: true }, // Removed unique: true to allow multiple clients (e.g. testing) on same number
   whatsappToken: { type: String }, // Store the client's specific WhatsApp token
   verifyToken: { type: String }, // Store the client's specific Webhook Verify Token
   googleCalendarId: { type: String }, // Store the client's specific Google Calendar ID
