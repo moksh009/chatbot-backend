@@ -24,6 +24,36 @@ const loadClientConfig = async (req, res, next) => {
     // Allow overriding via environment variables for specific clients (e.g. WHATSAPP_TOKEN_0001)
     const envSuffix = `_${client.clientId}`;
     
+    // Check if token exists in env
+    const envToken = process.env[`WHATSAPP_TOKEN${envSuffix}`];
+    const clientToken = client.whatsappToken;
+    const clientConfigToken = client.config?.whatsappToken; // Check nested config just in case
+    const globalToken = process.env.WHATSAPP_TOKEN;
+    
+    // Determine token source (Priority: DB > Env > Global)
+    // User explicitly requested to prioritize MongoDB and ignore expired Env
+    let finalToken = clientToken || clientConfigToken;
+    
+    if (!finalToken) {
+        if (envToken) {
+             finalToken = envToken;
+             console.log(`⚠️ Using ENV token for ${clientId} (DB token missing)`);
+        } else if (globalToken) {
+             finalToken = globalToken;
+             console.log(`⚠️ Using GLOBAL token for ${clientId} (DB & Specific Env missing)`);
+        }
+    }
+
+    // Debug logging for token selection
+    if (clientId === 'choice_salon') {
+      console.log(`[DEBUG] Token Selection for ${clientId}:`);
+      console.log(`- DB Token (root): ${clientToken ? clientToken.substring(0, 10) + '...' : 'Missing'}`);
+      console.log(`- DB Token (config): ${clientConfigToken ? clientConfigToken.substring(0, 10) + '...' : 'Missing'}`);
+      console.log(`- Env Token: ${envToken ? 'Exists' : 'Missing'}`);
+      console.log(`- Global Token: ${globalToken ? 'Exists' : 'Missing'}`);
+      console.log(`=> FINAL TOKEN USED: ${finalToken ? finalToken.substring(0, 10) + '...' : 'NONE'}`);
+    }
+
     req.clientConfig = {
       _id: client._id,
       clientId: client.clientId,
@@ -34,9 +64,8 @@ const loadClientConfig = async (req, res, next) => {
       phoneNumber: client.config?.phoneNumber || process.env[`PHONE_NUMBER${envSuffix}`] || process.env.PHONE_NUMBER,
       adminPhoneNumber: client.config?.adminPhoneNumber || process.env[`ADMIN_PHONE_NUMBER${envSuffix}`] || process.env.ADMIN_PHONE_NUMBER,
       
-      // Prioritize environment variable if set, otherwise use DB value, then fallback to global env
-      // This allows local .env to override DB for testing if needed, OR relies on DB if env is missing
-      whatsappToken: process.env[`WHATSAPP_TOKEN${envSuffix}`] || client.whatsappToken || process.env.WHATSAPP_TOKEN, 
+      // Use the resolved finalToken
+      whatsappToken: finalToken, 
       verifyToken: process.env[`VERIFY_TOKEN${envSuffix}`] || client.verifyToken || process.env.WHATSAPP_VERIFY_TOKEN,
       googleCalendarId: client.googleCalendarId || process.env[`GOOGLE_CALENDAR_ID${envSuffix}`] || process.env.GOOGLE_CALENDAR_ID,
       openaiApiKey: client.openaiApiKey || process.env[`OPENAI_API_KEY${envSuffix}`] || process.env.OPENAI_API_KEY,
