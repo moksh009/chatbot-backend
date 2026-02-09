@@ -483,7 +483,8 @@ async function notifyAdmins({ phoneNumberId, message, adminNumbers, token, clien
 async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clientConfig, io }) {
   // Extract client config
   const { whatsappToken: token, openaiApiKey, config, clientId } = clientConfig;
-  const calendars = config.calendars || {}; 
+  // Merge DB config calendars with local hardcoded/env calendars
+  const calendars = { ...stylistCalendars, ...(config.calendars || {}) };
   const adminNumbers = config.adminPhones || (config.adminPhone ? [config.adminPhone] : []);
   const openai = new OpenAI({ apiKey: openaiApiKey || process.env.OPENAI_API_KEY });
 
