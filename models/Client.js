@@ -5,7 +5,7 @@ const ClientSchema = new mongoose.Schema({
   name: { type: String },
   businessType: { 
     type: String, 
-    enum: ['ecommerce', 'salon', 'turf', 'clinic', 'other'],
+    enum: ['ecommerce', 'salon', 'turf', 'clinic', 'choice_salon', 'other'],
     default: 'other'
   },
   subscriptionPlan: {

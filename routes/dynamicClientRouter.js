@@ -6,6 +6,7 @@ const loadClientConfig = require('../middleware/clientConfig');
 const turfController = require('./clientcodes/turf');
 const vedController = require('./clientcodes/ved');
 const salonController = require('./clientcodes/salon');
+const choiceSalonController = require('./clientcodes/choice_salon');
 
 // Middleware to load client config
 router.use(loadClientConfig);
@@ -45,6 +46,8 @@ router.post('/webhook', async (req, res) => {
       await salonController.handleWebhook(req, res);
     } else if (businessType === 'ecommerce') {
       await vedController.handleWebhook(req, res);
+    } else if (businessType === 'choice_salon') {
+      await choiceSalonController.handleWebhook(req, res);
     } else {
       console.log(`Unknown or unhandled business type: ${businessType}`);
       res.sendStatus(200); // Acknowledge to avoid retries

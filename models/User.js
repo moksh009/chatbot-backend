@@ -12,7 +12,7 @@ const UserSchema = new mongoose.Schema({
   },
   business_type: {
     type: String,
-    enum: ['clinic', 'ecommerce', 'salon', 'turf'],
+    enum: ['clinic', 'ecommerce', 'salon', 'turf', 'choice_salon'],
     default: 'clinic'
   },
   clientId: { type: String, required: true }, // Tenant ID
