@@ -649,7 +649,7 @@ Provide a SHORT, PRECISE response:`;
     
     // Always append the two main buttons
     await sendSmartButtonsOrList({
-      phoneNumberId,
+      ...helperParams,
       to: from,
       header: undefined,
       body: aiResponse,
@@ -674,7 +674,7 @@ Provide a SHORT, PRECISE response:`;
   if (!session.step || session.step === 'home') {
     // WhatsApp allows only 3 buttons, so use a List for 4+ options
     await sendWhatsAppList({
-      phoneNumberId,
+      ...helperParams,
       to: from,
       header: 'Welcome to Choice Salon! 💇‍♀️',
       body: 'Hi 👋\n\nI’m your virtual assistant for Choice Salon. How can I help you today? Please select an option below:',
@@ -696,7 +696,7 @@ Provide a SHORT, PRECISE response:`;
       // Always start with service selection - first page
       const paginatedServices = getPaginatedServices(0);
       await sendWhatsAppList({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         header: 'Book Appointment 💇‍♀️',
       body: 'Which service would you like to book?',
@@ -718,7 +718,7 @@ Provide a SHORT, PRECISE response:`;
       return;
     } else if (userMsg === 'user_ask_question' || session.step === 'ask_question_topic') {
       await sendWhatsAppList({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         header: 'Ask a Question ❓',
         body: 'Please select a topic for your question:',
@@ -955,7 +955,7 @@ Provide a SHORT, PRECISE response:`;
       } catch (err) {
         console.error('Error fetching slots:', err);
         await sendWhatsAppText({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           body: 'Sorry, we could not fetch available slots from our calendar. Please try again later.'
         });
@@ -977,7 +977,7 @@ Provide a SHORT, PRECISE response:`;
       }
       buttons.push({ id: 'back_date', title: '🔙 Back' });
       await sendSmartButtonsOrList({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         header: `Available time slots for ${selectedDate}:`,
         body: 'Pick a time:',
@@ -991,7 +991,7 @@ Provide a SHORT, PRECISE response:`;
     } else {
       // fallback: show calendar days again
       await sendWhatsAppList({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         header: 'Pick a date',
         body: 'Please select a day for your appointment:',
@@ -1047,7 +1047,7 @@ Provide a SHORT, PRECISE response:`;
       session.data.time = time;
       session.data.selectedSlot = selectedSlot; // Store the full slot data for booking
       await sendWhatsAppText({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         body: `Perfect! You've chosen\n📅 ${session.data.date}, 🕐 ${time}\n\nJust a few quick details to lock it in 👇\n\nWhat's your full name?`
       });
@@ -1059,7 +1059,7 @@ Provide a SHORT, PRECISE response:`;
       const slotResult = session.data.slotResult;
       if (!slotResult || !slotResult.slots) {
         await sendWhatsAppText({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           body: 'Sorry, no slots available. Please try a different date.'
         });
@@ -1081,7 +1081,7 @@ Provide a SHORT, PRECISE response:`;
       }
       buttons.push({ id: 'back_date', title: '🔙 Back' });
       await sendSmartButtonsOrList({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         header: `Available time slots for ${session.data.date}:`,
         body: 'Pick a time:',
@@ -1139,7 +1139,7 @@ Provide a SHORT, PRECISE response:`;
             
             // Send direct confirmation with previous consent
             await sendWhatsAppButtons({
-              phoneNumberId,
+              ...helperParams,
               to: from,
               header: '📋 Confirm Booking',
               body: confirmationBody,
@@ -1156,7 +1156,7 @@ Provide a SHORT, PRECISE response:`;
         
         // No previous consent or first-time user - show consent options
         await sendWhatsAppButtons({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           header: '📋 Booking Summary',
           body: `*Booking Details:*\n\n👤 *Name:* ${session.data.name}\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n�‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n💅 *Service:* ${session.data.chosenService || 'General Salon Session'}\n\n📱 *Phone:* ${session.data.phone}\n\n🔔 *Communication Preferences:*\nWe'd like to send you:\n• Booking reminders\n• Birthday wishes\n\nPlease choose your preference:`,
@@ -1174,7 +1174,7 @@ Provide a SHORT, PRECISE response:`;
         console.error('Error checking previous consent:', error);
         // Fallback to showing consent options
         await sendWhatsAppButtons({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           header: '📋 Booking Summary',
           body: `*Booking Details:*\n\n👤 *Name:* ${session.data.name}\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n�‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n💅 *Service:* ${session.data.chosenService || 'General Salon Session'}\n\n📱 *Phone:* ${session.data.phone}\n\n🔔 *Communication Preferences:*\nWe'd like to send you:\n• Booking reminders\n• Birthday wishes\n\nPlease choose your preference:`,
@@ -1190,7 +1190,7 @@ Provide a SHORT, PRECISE response:`;
       }
     } else {
       await sendWhatsAppText({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         body: `Please type your full name to continue.`
       });
@@ -1210,7 +1210,7 @@ Provide a SHORT, PRECISE response:`;
       if (session.data.isProcessing) {
         console.log('Appointment already being processed for user:', from);
         await sendWhatsAppText({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           body: 'Your appointment is being processed. Please wait...'
         });
@@ -1310,7 +1310,7 @@ Provide a SHORT, PRECISE response:`;
           stylist: session.data.stylist
         });
         await sendWhatsAppText({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           body: 'Sorry, there was an error booking your appointment. Please try again or contact support.'
         });
@@ -1374,7 +1374,7 @@ Provide a SHORT, PRECISE response:`;
         }
         
         await sendWhatsAppText({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           body: 'Sorry, there was an error saving your appointment. Please try again or contact support.'
         });
@@ -1424,7 +1424,7 @@ Provide a SHORT, PRECISE response:`;
       }
       
       const adminMsg = `*New Booking*\nName: ${session.data.name}\nPhone: ${session.data.phone}\nService: ${session.data.chosenService || ''}\nStylist: ${session.data.stylist || ''}\nDate: ${session.data.date}\nTime: ${session.data.time}\n${consentStatus}`;
-      await notifyAdmins({ phoneNumberId, message: adminMsg });
+      await notifyAdmins({ ...helperParams, message: adminMsg, adminNumbers });
       
       // Send confirmation to user based on consent
       let confirmationBody = `✅ *Booking Confirmed*\n\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n�‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n\n📍 *Location:* Salon Location\n🗺️ *Map:* https://maps.google.com/?q=Salon+Location\n\n⏰ *Please arrive 15 minutes early* for your appointment.`;
@@ -1439,7 +1439,7 @@ Provide a SHORT, PRECISE response:`;
       }
       
       await sendWhatsAppButtons({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         header: 'Got it 👍',
         body: confirmationBody,
@@ -1462,7 +1462,7 @@ Provide a SHORT, PRECISE response:`;
     } else if (userMsg === 'change_consent_preferences') {
       // User wants to change preferences - show consent options
       await sendWhatsAppButtons({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         header: '📋 Change Communication Preferences',
         body: `*Appointment Details:*\n\n👤 *Name:* ${session.data.name}\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n�‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n💅 *Service:* ${session.data.chosenService || 'General Salon Session'}\n\n📱 *Phone:* ${session.data.phone}\n\n🔔 *Communication Preferences:*\nWe'd like to send you:\n• Appointment reminders\n• Birthday wishes\n\nPlease choose your preference:`,
@@ -1478,7 +1478,7 @@ Provide a SHORT, PRECISE response:`;
     } else {
       // Invalid input - show confirmation again
       await sendWhatsAppButtons({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         header: '📋 Confirm Appointment',
         body: `Please confirm your appointment or change your communication preferences.`,
@@ -1501,7 +1501,7 @@ Provide a SHORT, PRECISE response:`;
       if (session.data.isProcessing) {
         console.log('Appointment already being processed for user:', from);
         await sendWhatsAppText({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           body: 'Your appointment is being processed. Please wait...'
         });
@@ -1626,7 +1626,7 @@ Provide a SHORT, PRECISE response:`;
           stylist: session.data.stylist
         });
         await sendWhatsAppText({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           body: 'Sorry, there was an error booking your appointment. Please try again or contact support.'
         });
@@ -1689,7 +1689,7 @@ Provide a SHORT, PRECISE response:`;
         }
         
         await sendWhatsAppText({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           body: 'Sorry, there was an error saving your appointment. Please try again or contact support.'
         });
@@ -1739,7 +1739,7 @@ Provide a SHORT, PRECISE response:`;
       }
       
       const adminMsg = `*New Booking*\nName: ${session.data.name}\nPhone: ${session.data.phone}\nService: ${session.data.chosenService || ''}\nStylist: ${session.data.stylist || ''}\nDate: ${session.data.date}\nTime: ${session.data.time}\n${consentStatus}`;
-      await notifyAdmins({ phoneNumberId, message: adminMsg });
+      await notifyAdmins({ ...helperParams, message: adminMsg, adminNumbers });
       
       // Send confirmation to user based on consent
       let confirmationBody = `✅ *Appointment Confirmed*\n\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n�‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n\n📍 *Location:* Salon Location\n🗺️ *Map:* https://maps.google.com/?q=Salon+Location\n\n⏰ *Please arrive 15 minutes early* for your appointment.`;
@@ -1754,7 +1754,7 @@ Provide a SHORT, PRECISE response:`;
       }
       
       await sendWhatsAppButtons({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         header: 'Got it 👍',
         body: confirmationBody,
@@ -1775,7 +1775,7 @@ Provide a SHORT, PRECISE response:`;
       return;
     } else {
       await sendWhatsAppButtons({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         header: '📋 Appointment Summary',
         body: `*Appointment Details:*\n\n👤 *Name:* ${session.data.name}\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n�‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n💅 *Service:* ${session.data.chosenService || 'General Salon Session'}\n\n📱 *Phone:* ${session.data.phone}\n\n🔔 *Communication Preferences:*\nWe'd like to send you:\n• Appointment reminders\n• Birthday wishes\n\nPlease choose your preference:`,
@@ -1805,7 +1805,7 @@ Provide a SHORT, PRECISE response:`;
       // Respond to each FAQ option with a valid button set (max 3)
       if (userMsg === 'faq_hours') {
         await sendSmartButtonsOrList({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           header: '⏰ Turf Hours',
           body: 'Great question! We\'re here to help you Monday through Saturday from 10:00 AM to 6:00 PM. We\'re closed on Sundays to give our team a well-deserved rest.\n\nIs there anything else I can help you with today? 😊',
@@ -1817,7 +1817,7 @@ Provide a SHORT, PRECISE response:`;
         });
       } else if (userMsg === 'faq_payment') {
         await sendSmartButtonsOrList({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           header: '💳 Payment Options',
           body: 'We make it easy to pay! We accept all major credit and debit cards, cash payments, and UPI transfers. We also work with select insurance providers to help cover your treatment costs.\n\nReady to schedule your appointment?',
@@ -1829,7 +1829,7 @@ Provide a SHORT, PRECISE response:`;
         });
       } else if (userMsg === 'faq_services') {
         await sendSmartButtonsOrList({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           header: '🦷 Our Services',
           body: 'We offer comprehensive turf services including field bookings, coaching sessions, equipment rentals, tournaments, and much more! Our experienced team is here to take care of all your turf needs.\n\nWould you like to know more about a specific service or book a turf session?',
@@ -1841,7 +1841,7 @@ Provide a SHORT, PRECISE response:`;
         });
       } else if (userMsg === 'faq_human') {
         await sendSmartButtonsOrList({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           header: '👨‍⚕ Talk to Our Team',
           body: 'Sure! I’ve noted your request.\n👨‍⚕ One of our team members will reach out to you shortly.\n\nIn the meantime, you can:',
@@ -1862,7 +1862,7 @@ Provide a SHORT, PRECISE response:`;
     } else {
       // Fallback for unexpected input in FAQ (use list again)
       await sendSmartButtonsOrList({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         header: 'Oops! I didn’t catch that 🙈',
         body: 'Please use the options below so I can guide you better:',
@@ -1924,7 +1924,7 @@ Provide a SHORT, PRECISE response:`;
           session.data.cancelCalendarId = foundAppt.calendarId;
           session.data.cancelStylist = foundAppt.stylist;
           await sendWhatsAppButtons({
-            phoneNumberId,
+            ...helperParams,
             to: from,
             header: 'Confirm Action',
             body: `Found your booking:\n${foundAppt.summary}\nDate: ${foundAppt.date}\nTime: ${foundAppt.time}\nDo you want to ${session.step === 'cancel_lookup' ? 'cancel' : 'reschedule'} this appointment?`,
@@ -1951,7 +1951,7 @@ Provide a SHORT, PRECISE response:`;
             msg += `${idx + 1}️⃣ ${ev.summary} with ${ev.stylist}\n    📅 ${ev.date}   ⏰ ${ev.time}\n\n`;
           });
           await sendWhatsAppText({
-            phoneNumberId,
+            ...helperParams,
             to: from,
             body: msg
           });
@@ -1960,7 +1960,7 @@ Provide a SHORT, PRECISE response:`;
           return;
         } else {
           await sendWhatsAppText({
-            phoneNumberId,
+            ...helperParams,
             to: from,
             body: 'No booking found for your WhatsApp number. Please check and try again.'
           });
@@ -1971,7 +1971,7 @@ Provide a SHORT, PRECISE response:`;
       } catch (err) {
         console.error('Error searching booking:', err);
         await sendWhatsAppText({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           body: 'Sorry, there was an error searching for your booking. Please try again later.'
         });
@@ -1994,7 +1994,7 @@ Provide a SHORT, PRECISE response:`;
       session.data.cancelCalendarId = foundEvent.calendarId;
       session.data.cancelStylist = foundEvent.stylist;
       await sendWhatsAppButtons({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         header: 'Confirm Action',
         body: `You selected:\n${foundEvent.summary}\nDate: ${foundEvent.date}\nTime: ${foundEvent.time}\nStylist: ${foundEvent.stylist}\nDo you want to ${session.step === 'cancel_pick_event' ? 'cancel' : 'reschedule'} this appointment?`,
@@ -2008,7 +2008,7 @@ Provide a SHORT, PRECISE response:`;
       return;
     } else {
       await sendWhatsAppText({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         body: 'Invalid selection. Please reply with the number of the booking you want to select.'
       });
@@ -2022,7 +2022,7 @@ Provide a SHORT, PRECISE response:`;
         // Delete from Google Calendar using the correct calendar ID
         await deleteEvent(session.data.cancelEventId, session.data.cancelCalendarId);
         await sendWhatsAppText({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           body: 'Your booking has been cancelled. The slot is now free and available for others to book.'
         });
@@ -2038,7 +2038,7 @@ Provide a SHORT, PRECISE response:`;
       } catch (err) {
         console.error('Error cancelling booking:', err);
         await sendWhatsAppText({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           body: 'There was an error cancelling your booking. Please try again or contact support.'
         });
@@ -2058,7 +2058,7 @@ Provide a SHORT, PRECISE response:`;
       return;
     } else if (userMsg === 'confirm_no') {
       await sendWhatsAppText({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         body: 'Cancellation aborted. Your appointment is still active.'
       });
@@ -2077,7 +2077,7 @@ Provide a SHORT, PRECISE response:`;
     } else {
       // Fallback for unexpected input
       await sendWhatsAppButtons({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         header: 'Confirm Action',
         body: `Found your booking:\n${session.data.cancelEventSummary}\nDate: ${session.data.cancelEventDate}\nTime: ${session.data.cancelEventTime}\nDoctor: ${session.data.cancelDoctor}\nDo you want to cancel this booking?`,
@@ -2096,7 +2096,7 @@ Provide a SHORT, PRECISE response:`;
         // Delete from Google Calendar using the correct calendar ID
         await deleteEvent(session.data.cancelEventId, session.data.cancelCalendarId);
         await sendWhatsAppText({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           body: 'Your previous booking has been cancelled and the slot is now free for others.'
         });
@@ -2115,7 +2115,7 @@ Provide a SHORT, PRECISE response:`;
         // Send the same initial message as "Book Appointment" flow
         const paginatedServices = getPaginatedServices(0);
         await sendWhatsAppList({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           header: 'Book Turf ⚽',
           body: 'Which service do you need?',
@@ -2129,7 +2129,7 @@ Provide a SHORT, PRECISE response:`;
       } catch (err) {
         console.error('Error rescheduling appointment:', err);
         await sendWhatsAppText({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           body: 'There was an error rescheduling your appointment. Please try again or contact support.'
         });
@@ -2139,7 +2139,7 @@ Provide a SHORT, PRECISE response:`;
       }
     } else if (userMsg === 'confirm_no') {
       await sendWhatsAppText({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         body: 'Reschedule aborted. Your booking is still active.'
       });
@@ -2158,7 +2158,7 @@ Provide a SHORT, PRECISE response:`;
     } else {
       // Fallback for unexpected input
       await sendWhatsAppButtons({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         header: 'Confirm Action',
         body: `Found your booking:\n${session.data.cancelEventSummary}\nDate: ${session.data.cancelEventDate}\nTime: ${session.data.cancelEventTime}\nDoctor: ${session.data.cancelDoctor}\nDo you want to reschedule this booking?`,
@@ -2181,7 +2181,7 @@ Provide a SHORT, PRECISE response:`;
       // Start the booking flow directly
       const paginatedServices = getPaginatedServices(0);
       await sendWhatsAppList({
-        phoneNumberId,
+        ...helperParams,
         to: from,
         header: 'Book Turf ⚽',
         body: 'Perfect! I\'d be happy to help you book an turf. 😊 Which service do you need?',
@@ -2245,7 +2245,7 @@ Please provide a helpful, human-like response:`;
     }
     
     await sendSmartButtonsOrList({
-      phoneNumberId,
+      ...helperParams,
       to: from,
       header: undefined,
       body: aiResponse,
@@ -2266,7 +2266,7 @@ Please provide a helpful, human-like response:`;
       session.data.questionTopic = topic.title;
       if (topic.id === 'ask_other') {
         await sendWhatsAppText({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           body: 'Sure! 😊 What would you like to know? Feel free to ask me anything about our services, pricing, hours, or anything else!'
         });
@@ -2275,7 +2275,7 @@ Please provide a helpful, human-like response:`;
         return;
       } else {
         await sendWhatsAppText({
-          phoneNumberId,
+          ...helperParams,
           to: from,
           body: `Great! I'd be happy to help you with ${topic.title} questions! 😊 What specific information are you looking for?`
         });
@@ -2288,7 +2288,7 @@ Please provide a helpful, human-like response:`;
 
   // Fallback for any other unexpected input
   await sendSmartButtonsOrList({
-    phoneNumberId,
+    ...helperParams,
     to: from,
     header: 'Oops! I didn’t catch that 🙈',
     body: 'Please use the buttons below so I can guide you better:',
@@ -2303,17 +2303,7 @@ Please provide a helpful, human-like response:`;
   return;
 }
 
-// Helper: notify admins of new booking
-async function notifyAdmins({ phoneNumberId, message }) {
-  const adminNumbers = ['919313045439', '919484607042'];
-  for (const adminNumber of adminNumbers) {
-    await sendWhatsAppText({
-      phoneNumberId,
-      to: adminNumber,
-      body: message
-    });
-  }
-}
+
 
 const handleWebhook = async (req, res) => {
   const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -2422,7 +2412,7 @@ const handleWebhook = async (req, res) => {
           console.log(`✅ ${result.modifiedCount} record(s) updated for user ${from}`);
     
           await sendWhatsAppText({
-            phoneNumberId,
+            ...helperParams,
             to: from,
             body:
               'You have successfully opted out of birthday greetings. You will no longer receive birthday messages from us. If you change your mind, please contact our support team.',
@@ -2447,9 +2437,9 @@ const handleWebhook = async (req, res) => {
         if (itf?.type === 'button_reply') {
           const buttonId = itf?.button_reply?.id;
           if (buttonId === '01_set_full_day_leave') {
-            await sendAdminLeaveDateList({ phoneNumberId, to: messages.from, isFullDayLeave: true });
+            await sendAdminLeaveDateList({ ...helperParams, to: messages.from, isFullDayLeave: true });
           } else if (buttonId === '01_set_partial_leave') {
-            await sendAdminLeaveDateList({ phoneNumberId, to: messages.from, isFullDayLeave: false });
+            await sendAdminLeaveDateList({ ...helperParams, to: messages.from, isFullDayLeave: false });
           }
         } else if (itf?.type === 'list_reply') {
           const selectedId = itf?.list_reply?.id;
@@ -2460,13 +2450,13 @@ const handleWebhook = async (req, res) => {
               // Save to MongoDB
               await DoctorScheduleOverride.create({ date, type: 'leave' });
               // Confirm and show menu again
-              await sendLeaveConfirmationAndMenu({ phoneNumberId, to: from, date });
+              await sendLeaveConfirmationAndMenu({ ...helperParams, to: from, date });
             } catch (err) {
               console.error('DB save error:', err);
             }
           } else if (selectedId.startsWith('02partial')) {
             partialDate = parseDateFromId(selectedId, '02partial');
-            await sendPromptForTimeSlots({ phoneNumberId, to: from, date: partialDate });
+            await sendPromptForTimeSlots({ ...helperParams, to: from, date: partialDate });
             waitingForPartial = true;
           }
         }
@@ -2500,7 +2490,7 @@ const handleWebhook = async (req, res) => {
               timeSlots
             });
             await sendPartialConfirmationAndMenu({
-              phoneNumberId, to: from,
+              ...helperParams, to: from,
               date: partialDate, timeSlots
             });
           } catch (err) {
@@ -2510,7 +2500,7 @@ const handleWebhook = async (req, res) => {
             partialDate = '';
           }
         } else if (!waitingForPartial) {
-          await sendAdminInitialButtons({ phoneNumberId, to: messages.from });
+          await sendAdminInitialButtons({ ...helperParams, to: messages.from });
         }
       }
       return res.sendStatus(200);

@@ -3,9 +3,9 @@ const axios = require('axios');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Client = require('../models/Client');
-async function sendLeaveConfirmationAndMenu({ phoneNumberId, to, date }) {
+async function sendLeaveConfirmationAndMenu({ phoneNumberId, to, date, token }) {
   const apiVersion = process.env.API_VERSION || 'v18.0';
-  const token      = process.env.WHATSAPP_TOKEN;
+  const accessToken = token || process.env.WHATSAPP_TOKEN;
   const url        = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
 
   const data = {
@@ -42,7 +42,7 @@ async function sendLeaveConfirmationAndMenu({ phoneNumberId, to, date }) {
     const resp = await axios.post(url, data, {
       headers: {
         'Content-Type':  'application/json',
-        Authorization:   `Bearer ${token}`
+        Authorization:   `Bearer ${accessToken}`
       }
     });
     try {
@@ -71,9 +71,9 @@ async function sendLeaveConfirmationAndMenu({ phoneNumberId, to, date }) {
     console.error('Error sending leave confirmation:', err.response?.data || err.message);
   }
 }
-async function sendPromptForTimeSlots({ phoneNumberId, to, date }) {
+async function sendPromptForTimeSlots({ phoneNumberId, to, date, token }) {
   const apiVersion = process.env.API_VERSION || 'v18.0';
-  const token      = process.env.WHATSAPP_TOKEN;
+  const accessToken = token || process.env.WHATSAPP_TOKEN;
   const url        = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
 
   const text = 
@@ -93,7 +93,7 @@ async function sendPromptForTimeSlots({ phoneNumberId, to, date }) {
     const resp = await axios.post(url, data, {
       headers: {
         'Content-Type': 'application/json',
-        Authorization:  `Bearer ${token}`
+        Authorization:  `Bearer ${accessToken}`
       }
     });
     try {
@@ -121,9 +121,9 @@ async function sendPromptForTimeSlots({ phoneNumberId, to, date }) {
     console.error('Error sending time-slot prompt:', err.response?.data || err.message);
   }
 }
-async function sendPartialConfirmationAndMenu({ phoneNumberId, to, date, timeSlots }) {
+async function sendPartialConfirmationAndMenu({ phoneNumberId, to, date, timeSlots, token }) {
   const apiVersion = process.env.API_VERSION || 'v18.0';
-  const token      = process.env.WHATSAPP_TOKEN;
+  const accessToken = token || process.env.WHATSAPP_TOKEN;
   const url        = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
 
   const slotsText = timeSlots
@@ -158,7 +158,7 @@ async function sendPartialConfirmationAndMenu({ phoneNumberId, to, date, timeSlo
     const resp = await axios.post(url, data, {
       headers: {
         'Content-Type': 'application/json',
-        Authorization:  `Bearer ${token}`
+        Authorization:  `Bearer ${accessToken}`
       }
     });
     try {

@@ -3,9 +3,9 @@ const axios = require('axios');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Client = require('../models/Client');
-async function sendAdminLeaveDateList({ phoneNumberId, to, isFullDayLeave }) {
+async function sendAdminLeaveDateList({ phoneNumberId, to, isFullDayLeave, token }) {
   const apiVersion = process.env.API_VERSION || 'v18.0';
-  const token = process.env.WHATSAPP_TOKEN;
+  const accessToken = token || process.env.WHATSAPP_TOKEN;
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
 
   function getOrdinal(n) {
@@ -71,7 +71,7 @@ async function sendAdminLeaveDateList({ phoneNumberId, to, isFullDayLeave }) {
     const response = await axios.post(url, data, {
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`
+        Authorization: `Bearer ${accessToken}`
       }
     });
     try {
@@ -104,9 +104,9 @@ async function sendAdminLeaveDateList({ phoneNumberId, to, isFullDayLeave }) {
   }
 }
 
-async function sendAdminInitialButtons({ phoneNumberId, to }) {
+async function sendAdminInitialButtons({ phoneNumberId, to, token }) {
     const apiVersion = process.env.API_VERSION || 'v18.0';
-    const token = process.env.WHATSAPP_TOKEN;
+    const accessToken = token || process.env.WHATSAPP_TOKEN;
     const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
   
     const data = {
@@ -148,7 +148,7 @@ async function sendAdminInitialButtons({ phoneNumberId, to }) {
       const response = await axios.post(url, data, {
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
+          Authorization: `Bearer ${accessToken}`
         }
       });
       try {

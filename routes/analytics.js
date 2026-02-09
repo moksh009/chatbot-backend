@@ -130,6 +130,69 @@ router.get('/lead/:id', protect, async (req, res) => {
     }
 });
 
+// GET /api/analytics/top-leads
+router.get('/top-leads', protect, async (req, res) => {
+    try {
+        const clientId = req.user.clientId;
+        const query = (clientId === 'code_clinic_v1') 
+            ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
+            : { clientId };
+
+        const leads = await AdLead.find(query)
+            .sort({ leadScore: -1 })
+            .limit(20)
+            .select('name phoneNumber leadScore tags lastInteraction ordersCount totalSpent');
+
+        res.json(leads);
+    } catch (error) {
+        console.error('Top Leads Error:', error);
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+// GET /api/analytics/receptionist-overview
+router.get('/receptionist-overview', protect, async (req, res) => {
+    try {
+        const clientId = req.user.clientId;
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+
+        // 1. Today's Appointments
+        const appointments = await Appointment.find({
+            clientId,
+            start: { $gte: today, $lt: tomorrow },
+            status: { $ne: 'cancelled' }
+        }).sort({ start: 1 });
+
+        // 2. Pending Agent Requests
+        // Assuming DailyStat or Conversation tracks pending requests. 
+        // If not, we might need to check Conversations with needsAgent=true (if that field exists)
+        // For now, let's look for recent conversations that might need attention
+        const recentChats = await Conversation.find({
+            clientId,
+            updatedAt: { $gte: today }
+        }).sort({ updatedAt: -1 }).limit(10);
+
+        // 3. High Value Leads active today
+        const activeVIPs = await AdLead.find({
+            clientId,
+            lastInteraction: { $gte: today },
+            leadScore: { $gt: 50 }
+        }).select('name phoneNumber leadScore tags');
+
+        res.json({
+            appointments,
+            recentChats,
+            activeVIPs
+        });
+    } catch (error) {
+        console.error('Receptionist Overview Error:', error);
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
 router.get('/', protect, async (req, res) => {
   try {
     const clientId = req.user.clientId;

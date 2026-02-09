@@ -177,6 +177,9 @@ router.post('/', protect, async (req, res) => {
 
   } catch (error) {
     console.error('Create appointment error:', error);
+    if (error.code === 11000) {
+        return res.status(409).json({ message: 'This time slot is already booked for the selected provider.' });
+    }
     res.status(500).json({ message: 'Failed to create appointment', error: error.message });
   }
 });
