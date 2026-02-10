@@ -119,12 +119,19 @@ router.get('/lead/:id', protect, async (req, res) => {
 
         // Fetch conversation summary
         const conversation = await Conversation.findOne({ phone: lead.phoneNumber, clientId: lead.clientId });
+        
+        // Fetch recent messages
+        let messages = [];
+        if (conversation) {
+            messages = await Message.find({ conversationId: conversation._id }).sort({ timestamp: -1 }).limit(50);
+        }
 
         res.json({
             lead,
             orders,
             appointments,
-            conversation
+            conversation,
+            messages
         });
     } catch (error) {
         console.error('Lead Detail Error:', error);
@@ -156,10 +163,13 @@ router.get('/top-leads', protect, async (req, res) => {
 router.get('/receptionist-overview', protect, async (req, res) => {
     try {
         const clientId = req.user.clientId;
+        const daysToFetch = parseInt(req.query.days) || 1; // Default to 1 day (today)
+        
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        const tomorrow = new Date(today);
-        tomorrow.setDate(tomorrow.getDate() + 1);
+        
+        const endDate = new Date(today);
+        endDate.setDate(endDate.getDate() + daysToFetch); // Fetch for N days
 
         // Fetch client for Google Calendar IDs
         const client = await Client.findOne({ clientId });
@@ -176,11 +186,11 @@ router.get('/receptionist-overview', protect, async (req, res) => {
         // Default to 'primary' if no calendars found
         if (calendarIds.size === 0) calendarIds.add('primary');
 
-        // 1. Fetch Google Calendar Events for Today (from ALL calendars)
+        // 1. Fetch Google Calendar Events for Range
         let googleEvents = [];
         try {
              const calendarPromises = Array.from(calendarIds).map(calId => 
-                listEvents(today.toISOString(), tomorrow.toISOString(), calId)
+                listEvents(today.toISOString(), endDate.toISOString(), calId)
                     .catch(err => {
                         console.error(`GCal fetch error for ${calId}:`, err.message);
                         return [];
@@ -188,10 +198,9 @@ router.get('/receptionist-overview', protect, async (req, res) => {
              );
              
              const results = await Promise.all(calendarPromises);
-             // Flatten results
              googleEvents = results.flat();
              
-             // Remove duplicates based on event ID (just in case)
+             // Remove duplicates
              const uniqueEvents = new Map();
              googleEvents.forEach(e => uniqueEvents.set(e.id, e));
              googleEvents = Array.from(uniqueEvents.values());
@@ -200,14 +209,16 @@ router.get('/receptionist-overview', protect, async (req, res) => {
              console.error('GCal fetch error in receptionist-overview:', gErr.message);
         }
 
-        // 2. Fetch DB Appointments for today
-        // Construct date string matching DB format: "Monday, 09 Feb" (Africa/Nairobi timezone used in creation)
-        const dateOptions = { weekday: 'long', day: '2-digit', month: 'short', timeZone: 'Africa/Nairobi' };
-        const todayDateString = today.toLocaleDateString('en-GB', dateOptions); 
+        // 2. Fetch DB Appointments for Range
+        // We need to match the date string format used in DB: "Monday, 09 Feb"
+        // This is tricky for a range. Better to fetch all future appointments and filter in memory or use ISO check if possible.
+        // However, the DB stores `date` as a string (e.g., "Monday, 09 Feb"). 
+        // We will fetch ALL appointments for this client that are not cancelled, and then filter/merge.
+        // Ideally, we should migrate DB to use ISO dates, but for now we rely on the GCal sync.
         
+        // Fetch DB appointments created/for this client
         const dbAppointments = await Appointment.find({
             clientId,
-            date: todayDateString,
             status: { $ne: 'cancelled' }
         });
 
@@ -227,50 +238,60 @@ router.get('/receptionist-overview', protect, async (req, res) => {
             };
         });
         
-        // Add DB-only appointments (not in GCal)
+        // Add DB-only appointments (if any, though they should be in GCal)
         const gcalEventIds = new Set(googleEvents.map(e => e.id));
         
+        // Filter DB appointments that fall within the requested range
+        const rangeStart = today.getTime();
+        const rangeEnd = endDate.getTime();
+
         dbAppointments.forEach(appt => {
             if (!appt.eventId || !gcalEventIds.has(appt.eventId)) {
-                 // Construct ISO date from time string
-                 let startISO = new Date().toISOString(); 
+                 // Try to parse date
                  try {
-                    const timeParts = appt.time.match(/(\d+):(\d+)\s*(AM|PM)/i);
-                    if (timeParts) {
-                        let hours = parseInt(timeParts[1]);
-                        const minutes = parseInt(timeParts[2]);
-                        const ampm = timeParts[3].toUpperCase();
-                        if (ampm === 'PM' && hours < 12) hours += 12;
-                        if (ampm === 'AM' && hours === 12) hours = 0;
-                        
-                        const d = new Date(today);
-                        d.setHours(hours, minutes, 0, 0);
-                        startISO = d.toISOString();
-                    }
+                    // This parsing is fragile without Year, but assuming current/next year
+                    // If appt.date is "Monday, 09 Feb", we need to guess year.
+                    // For now, we skip complex parsing and rely on GCal for accurate scheduling.
+                    // Or we check if `createdAt` or `date` matches.
+                    // Let's rely on GCal primarily as requested ("calculate from google calendar only").
                  } catch (e) {}
-
-                 mergedAppointments.push({
-                     _id: appt._id,
-                     customerName: appt.name,
-                     customerPhone: appt.phone,
-                     date: startISO,
-                     serviceType: appt.service,
-                     status: appt.status,
-                     source: 'chatbot'
-                 });
             }
         });
         
         // Sort by date
         mergedAppointments.sort((a, b) => new Date(a.date) - new Date(b.date));
 
-        // 2. Pending Agent Requests
+        // 4. Calculate Total Upcoming Appointments (Future from Now)
+        // We fetch a wider range from GCal to get the total count, OR we just trust the DB count if synced?
+        // The user wants "calculate from google calendar only".
+        // So we should fetch ALL future events from GCal.
+        // Fetching "all future" might be expensive. Let's fetch next 30 days for the "Bookings" count.
+        
+        let totalUpcomingCount = 0;
+        try {
+            const futureEnd = new Date(today);
+            futureEnd.setDate(futureEnd.getDate() + 30); // Look ahead 30 days
+            
+            const futurePromises = Array.from(calendarIds).map(calId => 
+                listEvents(today.toISOString(), futureEnd.toISOString(), calId)
+                    .catch(() => [])
+            );
+            const futureResults = await Promise.all(futurePromises);
+            const allFutureEvents = futureResults.flat();
+            // Dedup
+            const uniqueFuture = new Set(allFutureEvents.map(e => e.id));
+            totalUpcomingCount = uniqueFuture.size;
+        } catch (e) {
+            console.error('Error fetching future counts:', e);
+        }
+
+        // 5. Pending Agent Requests
         const recentChats = await Conversation.find({
             clientId,
             updatedAt: { $gte: today }
         }).sort({ updatedAt: -1 }).limit(10);
 
-        // 3. High Value Leads active today
+        // 6. High Value Leads active today
         const activeVIPs = await AdLead.find({
             clientId,
             lastInteraction: { $gte: today },
@@ -279,6 +300,7 @@ router.get('/receptionist-overview', protect, async (req, res) => {
 
         res.json({
             appointments: mergedAppointments,
+            totalUpcomingAppointments: totalUpcomingCount,
             recentChats,
             activeVIPs
         });
@@ -301,6 +323,37 @@ router.get('/', protect, async (req, res) => {
     for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
       dates.push(d.toISOString().split('T')[0]);
     }
+
+    // --- FETCH GCAL EVENTS FOR APPOINTMENTS ---
+    const client = await Client.findOne({ clientId });
+    const calendarIds = new Set();
+    if (client?.googleCalendarId) calendarIds.add(client.googleCalendarId);
+    if (client?.config?.calendars) {
+        Object.values(client.config.calendars).forEach(id => calendarIds.add(id));
+    }
+    if (calendarIds.size === 0) calendarIds.add('primary');
+
+    let gcalCounts = {};
+    try {
+        const calendarPromises = Array.from(calendarIds).map(calId => 
+            listEvents(startDate.toISOString(), endDate.toISOString(), calId)
+                .catch(() => [])
+        );
+        const results = await Promise.all(calendarPromises);
+        const allEvents = results.flat();
+        
+        // Group by date
+        allEvents.forEach(event => {
+            const start = event.start.dateTime || event.start.date;
+            if (start) {
+                const dateStr = start.split('T')[0];
+                gcalCounts[dateStr] = (gcalCounts[dateStr] || 0) + 1;
+            }
+        });
+    } catch (e) {
+        console.error('Analytics GCal Fetch Error:', e);
+    }
+    // ------------------------------------------
 
     // 1. Aggregation for Conversations (Started per day)
     const chatsStarted = await Conversation.aggregate([
@@ -390,7 +443,8 @@ router.get('/', protect, async (req, res) => {
     const stats = dates.map(date => {
       const chatCount = chatsStarted.find(c => c._id === date)?.count || 0;
       const userCount = activeUsers.find(c => c._id === date)?.count || 0;
-      const apptCount = appointments.find(c => c._id === date)?.count || 0;
+      // Use GCal count instead of DB aggregation
+      const apptCount = gcalCounts[date] || 0; 
       const msgCount = messages.find(c => c._id === date)?.count || 0;
       const dayReminder = reminderStats.find(r => r.date === date);
       const bdayCount = dayReminder?.birthdayRemindersSent || 0;

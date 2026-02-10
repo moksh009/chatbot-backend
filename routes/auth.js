@@ -30,6 +30,7 @@ router.get('/me', protect, async (req, res) => {
         role: user.role,
         business_type: user.business_type,
         clientId: user.clientId,
+        clientName: client ? client.name : null, // Add client name
         subscriptionPlan: client ? client.subscriptionPlan || 'v2' : 'v2', // Add subscription plan
         clientConfig: client ? client.config : {},
         clientTemplates: client && client.config && client.config.templates ? client.config.templates : null
@@ -61,6 +62,7 @@ router.post('/login', async (req, res) => {
         business_type: user.business_type,
         clientId: user.clientId,
         token: generateToken(user._id),
+        clientName: client ? client.name : null, // Add client name
         subscriptionPlan: client ? client.subscriptionPlan || 'v2' : 'v2',
         clientConfig: client ? client.config : {},
         clientTemplates: client && client.config && client.config.templates ? client.config.templates : null

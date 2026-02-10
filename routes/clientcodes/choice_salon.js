@@ -1506,7 +1506,8 @@ Provide a SHORT, PRECISE response:`;
           date: session.data.date,
           time: session.data.time,
           eventId,
-          consent: session.data.consent
+          consent: session.data.consent,
+          clientId // Add clientId to link appointment to the correct business
         };
         
         // Validate required fields before saving

@@ -7,20 +7,28 @@ const { listEvents, createEvent, updateEvent, deleteEvent } = require('../utils/
 
 // Helper to format date/time for legacy schema
 const formatDateTime = (isoDateString) => {
-  const dateObj = new Date(isoDateString);
-  const date = dateObj.toLocaleDateString('en-GB', { 
-    weekday: 'long', 
-    day: '2-digit', 
-    month: 'short',
-    timeZone: 'Africa/Nairobi'
-  }); // "Tuesday, 23 Jul"
-  const time = dateObj.toLocaleTimeString('en-US', { 
-    hour: '2-digit', 
-    minute: '2-digit', 
-    hour12: true,
-    timeZone: 'Africa/Nairobi'
-  }); // "11:00 AM"
-  return { date, time };
+  try {
+    const dateObj = new Date(isoDateString);
+    if (isNaN(dateObj.getTime())) {
+        throw new Error('Invalid date string: ' + isoDateString);
+    }
+    const date = dateObj.toLocaleDateString('en-GB', { 
+      weekday: 'long', 
+      day: '2-digit', 
+      month: 'short',
+      timeZone: 'Africa/Nairobi'
+    }); // "Tuesday, 23 Jul"
+    const time = dateObj.toLocaleTimeString('en-US', { 
+      hour: '2-digit', 
+      minute: '2-digit', 
+      hour12: true,
+      timeZone: 'Africa/Nairobi'
+    }); // "11:00 AM"
+    return { date, time };
+  } catch (e) {
+      console.error('Date formatting error:', e.message);
+      return { date: 'Invalid Date', time: 'Invalid Time' };
+  }
 };
 
 // @route   GET /api/appointments
