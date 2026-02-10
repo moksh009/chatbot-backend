@@ -109,11 +109,11 @@ async function createEvent({ summary, description, start, end, attendees, calend
       description: description || 'Appointment created via WhatsApp Bot',
       start: { 
         dateTime: start, 
-        timeZone: 'Africa/Nairobi' 
+        timeZone: 'Asia/Kolkata' 
       },
       end: { 
         dateTime: end, 
-        timeZone: 'Africa/Nairobi' 
+        timeZone: 'Asia/Kolkata' 
       },
       attendees: attendees && attendees.length > 0 
         ? attendees.map(email => ({ email, responseStatus: 'needsAction' })) 
@@ -183,11 +183,11 @@ async function updateEvent({ eventId, summary, description, start, end, attendee
       description: description || 'Updated appointment via WhatsApp Bot',
       start: { 
         dateTime: start, 
-        timeZone: 'Africa/Nairobi' 
+        timeZone: 'Asia/Kolkata' 
       },
       end: { 
         dateTime: end, 
-        timeZone: 'Africa/Nairobi' 
+        timeZone: 'Asia/Kolkata' 
       },
       attendees: attendees && attendees.length > 0 
         ? attendees.map(email => ({ email, responseStatus: 'needsAction' })) 
@@ -312,13 +312,13 @@ async function deleteEvent(eventId, calendarId) {
  * @returns {Promise<Array<{start: string, end: string}>>} Array of available slots in ISO format
  */
 async function getAvailableTimeSlots({ date, startTime, endTime, slotMinutes = 60, calendarId }) {
-  // Use East African Time (UTC+3) for all slot calculations
-  const tz = 'Africa/Nairobi';
-  // Build start/end datetime in East African Time
-  const startDateTimeEAT = new Date(`${date}T${startTime}:00+03:00`);
-  const endDateTimeEAT = new Date(`${date}T${endTime}:00+03:00`);
-  const startDateTime = startDateTimeEAT.toISOString();
-  const endDateTime = endDateTimeEAT.toISOString();
+  // Use Indian Standard Time (UTC+5:30) for all slot calculations
+  const tz = 'Asia/Kolkata';
+  // Build start/end datetime in IST
+  const startDateTimeIST = new Date(`${date}T${startTime}:00+05:30`);
+  const endDateTimeIST = new Date(`${date}T${endTime}:00+05:30`);
+  const startDateTime = startDateTimeIST.toISOString();
+  const endDateTime = endDateTimeIST.toISOString();
 
   // Query busy times from Google Calendar
   if (!calendarId) throw new Error('calendarId argument is required');
@@ -337,10 +337,10 @@ async function getAvailableTimeSlots({ date, startTime, endTime, slotMinutes = 6
     end: new Date(b.end),
   }));
 
-  // Generate all possible slots in East African Time
+  // Generate all possible slots in IST
   const slots = [];
-  let slotStart = new Date(startDateTimeEAT);
-  const slotEnd = new Date(endDateTimeEAT);
+  let slotStart = new Date(startDateTimeIST);
+  const slotEnd = new Date(endDateTimeIST);
   while (slotStart < slotEnd) {
     const slotFinish = new Date(slotStart.getTime() + slotMinutes * 60000);
     if (slotFinish > slotEnd) break;
@@ -376,10 +376,10 @@ async function getAvailableTimeSlots({ date, startTime, endTime, slotMinutes = 6
  */
 async function findEventByEmailAndTime({ email, date, time, calendarId }) {
   // Build timeMin/timeMax for 1-hour window
-  const tz = 'Africa/Nairobi';
+  const tz = 'Asia/Kolkata';
   if (!calendarId) throw new Error('calendarId argument is required');
-  const startDateTime = new Date(`${date}T${time}:00+03:00`).toISOString();
-  const endDateTime = new Date(new Date(`${date}T${time}:00+03:00`).getTime() + 60 * 60000).toISOString();
+  const startDateTime = new Date(`${date}T${time}:00+05:30`).toISOString();
+  const endDateTime = new Date(new Date(`${date}T${time}:00+05:30`).getTime() + 60 * 60000).toISOString();
   const auth = initializeOAuth2Client();
   const res = await calendar.events.list({
     auth: auth,
@@ -414,10 +414,10 @@ async function findEventByEmailAndTime({ email, date, time, calendarId }) {
  * @returns {Promise<Array<{eventId: string, summary: string, date: string, time: string}>>}
  */
 async function findEventsByPhoneNumber({ phone, startDate, endDate, calendarId }) {
-  const tz = 'Africa/Nairobi';
+  const tz = 'Asia/Kolkata';
   if (!calendarId) throw new Error('calendarId argument is required');
-  const startDateTime = new Date(`${startDate}T00:00:00+03:00`).toISOString();
-  const endDateTime = new Date(`${endDate}T23:59:59+03:00`).toISOString();
+  const startDateTime = new Date(`${startDate}T00:00:00+05:30`).toISOString();
+  const endDateTime = new Date(`${endDate}T23:59:59+05:30`).toISOString();
   const auth = initializeOAuth2Client();
   const res = await calendar.events.list({
     auth: auth,
@@ -434,18 +434,18 @@ async function findEventsByPhoneNumber({ phone, startDate, endDate, calendarId }
     if (event.description && event.description.includes(phone)) {
       const start = event.start?.dateTime || event.start?.date;
       const dateObj = new Date(start);
-      // Convert to East African Time for display
+      // Convert to IST for display
       const date = dateObj.toLocaleDateString('en-GB', { 
         weekday: 'long', 
         day: '2-digit', 
         month: 'short',
-        timeZone: 'Africa/Nairobi'
+        timeZone: 'Asia/Kolkata'
       });
       const time = dateObj.toLocaleTimeString('en-GB', { 
         hour: '2-digit', 
         minute: '2-digit', 
         hour12: true,
-        timeZone: 'Africa/Nairobi'
+        timeZone: 'Asia/Kolkata'
       });
       results.push({
         eventId: event.id,

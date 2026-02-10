@@ -6,12 +6,12 @@ const { processUpcomingAppointments } = require('./utils/sendAppointmentReminder
 const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 
-// Time to run the job (7 AM Uganda time)
+// Time to run the job (7 AM IST)
 const REMINDER_TIME = '0 7 * * *';
 
-console.log('Scheduler started. Waiting for the next run at 7 AM EAT...');
+console.log('Scheduler started. Waiting for the next run at 7 AM IST...');
 
-// Schedule the job to run daily at 7 AM Uganda time
+// Schedule the job to run daily at 7 AM IST
 cron.schedule(REMINDER_TIME, async () => {
   try {
     console.log('Running appointment reminder job...');
@@ -22,7 +22,7 @@ cron.schedule(REMINDER_TIME, async () => {
   }
 }, {
   scheduled: true,
-  timezone: 'Africa/Kampala' // Uganda timezone (EAT)
+  timezone: 'Asia/Kolkata' // IST
 });
 
 // For testing: Run immediately when started (comment out in production)

@@ -30,13 +30,13 @@ function getWorkingHours(dayOfWeek) {
 }
 
 // Generate all possible 30-minute slots for a given day using Luxon
-function generateTimeSlots(dateEAT, workingHours) {
+function generateTimeSlots(dateIST, workingHours) {
   if (!workingHours.isOpen) return [];
   const slots = [];
   const [startHour, startMinute] = workingHours.start.split(':').map(Number);
   const [endHour, endMinute] = workingHours.end.split(':').map(Number);
-  let slotStart = dateEAT.set({ hour: startHour, minute: startMinute, second: 0, millisecond: 0 });
-  const endOfDay = dateEAT.set({ hour: endHour, minute: endMinute, second: 0, millisecond: 0 });
+  let slotStart = dateIST.set({ hour: startHour, minute: startMinute, second: 0, millisecond: 0 });
+  const endOfDay = dateIST.set({ hour: endHour, minute: endMinute, second: 0, millisecond: 0 });
   while (slotStart < endOfDay) {
     let slotEnd = slotStart.plus({ minutes: 30 });
     if (slotEnd > endOfDay) break;
@@ -65,16 +65,16 @@ function isSlotAvailable(slot, bookedAppointments) {
 }
 
 // Get booked appointments for a specific date (returns Luxon DateTime for start/end)
-async function getBookedAppointments(dateEAT, calendarId) {
+async function getBookedAppointments(dateIST, calendarId) {
   try {
     const calendar = google.calendar({ version: 'v3', auth: initializeOAuth2Client() });
     if (!calendarId) throw new Error('calendarId argument is required');
-    // Get start and end of day in EAT
-    const startOfDayEAT = dateEAT.startOf('day');
-    const endOfDayEAT = dateEAT.endOf('day');
+    // Get start and end of day in IST
+    const startOfDayIST = dateIST.startOf('day');
+    const endOfDayIST = dateIST.endOf('day');
     // Convert to UTC ISO for Google Calendar API
-    const startUTC = startOfDayEAT.toUTC().toISO();
-    const endUTC = endOfDayEAT.toUTC().toISO();
+    const startUTC = startOfDayIST.toUTC().toISO();
+    const endUTC = endOfDayIST.toUTC().toISO();
     const response = await calendar.events.list({
       calendarId,
       timeMin: startUTC,
@@ -88,8 +88,8 @@ async function getBookedAppointments(dateEAT, calendarId) {
       const end = event.end?.dateTime || event.end?.date;
       return {
         ...event,
-        start: DateTime.fromISO(start, { zone: 'Africa/Kampala' }),
-        end: DateTime.fromISO(end, { zone: 'Africa/Kampala' })
+        start: DateTime.fromISO(start, { zone: 'Asia/Kolkata' }),
+        end: DateTime.fromISO(end, { zone: 'Asia/Kolkata' })
       };
     });
   } catch (error) {
@@ -99,21 +99,21 @@ async function getBookedAppointments(dateEAT, calendarId) {
 }
 
 // Check if a day has any available slots
-async function hasAvailableSlots(dateEAT, calendarId) {
-  const dayOfWeek = dateEAT.weekday % 7; // Luxon: Monday=1, Sunday=7
+async function hasAvailableSlots(dateIST, calendarId) {
+  const dayOfWeek = dateIST.weekday % 7; // Luxon: Monday=1, Sunday=7
   const workingHours = getWorkingHours(dayOfWeek);
   if (!workingHours.isOpen) return false;
-  const allSlots = generateTimeSlots(dateEAT, workingHours);
+  const allSlots = generateTimeSlots(dateIST, workingHours);
   if (allSlots.length === 0) return false;
-  const bookedAppointments = await getBookedAppointments(dateEAT, calendarId);
+  const bookedAppointments = await getBookedAppointments(dateIST, calendarId);
   
-  // Get current time in EAT
-  const nowEAT = DateTime.now().setZone('Africa/Kampala');
+  // Get current time in IST
+  const nowIST = DateTime.now().setZone('Asia/Kolkata');
   
   // Check if this is today
-  const isToday = dateEAT.hasSame(nowEAT, 'day');
+  const isToday = dateIST.hasSame(nowIST, 'day');
   if (isToday) {
-    console.log(`🕐 Current time: ${nowEAT.toFormat('HH:mm:ss')}`);
+    console.log(`🕐 Current time: ${nowIST.toFormat('HH:mm:ss')}`);
     console.log(`📊 Total slots for today: ${allSlots.length}`);
   }
   
@@ -121,7 +121,7 @@ async function hasAvailableSlots(dateEAT, calendarId) {
     // Check if slot is in the past (for today's date)
     if (isToday) {
       // If it's today, check if the slot has already passed
-      if (slot.start <= nowEAT) {
+      if (slot.start <= nowIST) {
         console.log(`⏰ Skipping past slot: ${slot.startTime} - ${slot.endTime}`);
         continue; // Skip past slots
       }
@@ -142,9 +142,9 @@ async function hasAvailableSlots(dateEAT, calendarId) {
   return false;
 }
 
-// Format date for display (EAT timezone)
-function formatDateForDisplay(dateEAT) {
-  return dateEAT.setZone('Africa/Kampala').toFormat('cccc, dd LLL yyyy');
+// Format date for display (IST timezone)
+function formatDateForDisplay(dateIST) {
+  return dateIST.setZone('Asia/Kolkata').toFormat('cccc, dd LLL yyyy');
 }
 
 // Main function to get available dates
@@ -155,7 +155,7 @@ async function getAvailableDates(maxDays = 8, calendarId) {
     console.log('⏰ Working Hours: Mon-Fri 7 AM – 6 PM, Sat 7 AM – 2 PM, Sun Closed');
     console.log('');
     const availableDates = [];
-    let currentDate = DateTime.utc().setZone('Africa/Kampala').startOf('day');
+    let currentDate = DateTime.utc().setZone('Asia/Kolkata').startOf('day');
     let daysChecked = 0;
     const maxDaysToCheck = 30;
     while (availableDates.length < maxDays && daysChecked < maxDaysToCheck) {
@@ -231,4 +231,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { getAvailableDates, getWorkingHours, generateTimeSlots }; 
+module.exports = { getAvailableDates, getWorkingHours, generateTimeSlots };

@@ -6,8 +6,8 @@ const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Client = require('../models/Client');
 
-// Timezone for Uganda (EAT - East Africa Time)
-const TIMEZONE = 'Africa/Kampala';
+// Timezone for India (IST - Indian Standard Time)
+const TIMEZONE = 'Asia/Kolkata';
 
 /**
  * Sends a WhatsApp reminder for an upcoming appointment

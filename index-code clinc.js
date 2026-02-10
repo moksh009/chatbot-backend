@@ -211,7 +211,7 @@ async function getAvailableBookingDays() {
     console.error('❌ Error getting available dates:', error);
     // Fallback to static dates if dynamic fetch fails
     const days = [];
-    const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Africa/Kampala' }));
+    const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
     const businessStart = new Date(now);
     businessStart.setHours(7, 0, 0, 0);
     const businessEnd = new Date(now);
@@ -835,8 +835,8 @@ Provide a SHORT, PRECISE response:`;
         slotResult = await fetchRealTimeSlots(selectedDate, page, session.data.doctor);
         if (!slotResult.slots || slotResult.slots.length === 0) {
           // Check if this is today and provide a more helpful message
-          const nowEAT = new Date().toLocaleString('en-US', { timeZone: 'Africa/Kampala' });
-          const today = new Date(nowEAT).toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'short', year: 'numeric' });
+          const nowIST = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
+          const today = new Date(nowIST).toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'short', year: 'numeric' });
           
           if (selectedDate.toLowerCase().includes(today.toLowerCase())) {
             await sendWhatsAppText({
@@ -2369,13 +2369,13 @@ app.post('/keepalive-ping', (req, res) => {
 
 // Cron job for birthday messages and appointment reminders
 cron.schedule('0 6 * * *', async () => {
-  const eatNow = DateTime.utc().setZone('Africa/Kampala');
-  const currentDay = eatNow.day;
-  const currentMonth = eatNow.month;
+  const istNow = DateTime.utc().setZone('Asia/Kolkata');
+  const currentDay = istNow.day;
+  const currentMonth = istNow.month;
   const token = process.env.WHATSAPP_TOKEN;
   const phoneid = process.env.WHATSAPP_PHONENUMBER_ID;
 
-  console.log(`⏰ It's 6:00 AM EAT — Running birthday check...`);
+  console.log(`⏰ It's 6:00 AM IST — Running birthday check...`);
 
   try {
     // Send birthday messages to users who have consented
@@ -2418,8 +2418,8 @@ cron.schedule('0 6 * * *', async () => {
 
 // Cron job for appointment reminders (run daily at 7 AM)
 cron.schedule('0 7 * * *', async () => {
-  const eatNow = DateTime.utc().setZone('Africa/Kampala');
-  const today = eatNow.toFormat('EEEE, dd MMM');
+  const istNow = DateTime.utc().setZone('Asia/Kolkata');
+  const today = istNow.toFormat('EEEE, dd MMM');
   const token = process.env.WHATSAPP_TOKEN;
   const phoneid = process.env.WHATSAPP_PHONENUMBER_ID;
 
@@ -2427,8 +2427,8 @@ cron.schedule('0 7 * * *', async () => {
 
   try {
     // Get all events from Google Calendar for today
-    const startOfDay = eatNow.startOf('day').toISO();
-    const endOfDay = eatNow.endOf('day').toISO();
+    const startOfDay = istNow.startOf('day').toISO();
+    const endOfDay = istNow.endOf('day').toISO();
     
     // Get events from both doctor calendars
     const calendarIds = [process.env.GCAL_CALENDAR_ID, process.env.GCAL_CALENDAR_ID2];
@@ -2480,7 +2480,7 @@ cron.schedule('0 7 * * *', async () => {
         const doctor = doctorMatch ? doctorMatch[1].trim() : "Our Doctor";
 
         // Format appointment time
-        const eventTime = DateTime.fromISO(event.start.dateTime).setZone('Africa/Kampala');
+        const eventTime = DateTime.fromISO(event.start.dateTime).setZone('Asia/Kolkata');
         const time = eventTime.toFormat('h:mm a');
 
         // Send appointment reminder using template

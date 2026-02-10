@@ -62,7 +62,7 @@ function formatDate(date) {
     year: 'numeric', 
     month: 'long', 
     day: 'numeric',
-    timeZone: 'Africa/Nairobi'
+    timeZone: 'Asia/Kolkata'
   };
   return date.toLocaleDateString('en-US', options);
 }
@@ -195,7 +195,7 @@ async function getUpcomingAppointments() {
               hour: 'numeric', 
               minute: '2-digit',
               hour12: true,
-              timeZone: 'Africa/Nairobi'
+              timeZone: 'Asia/Kolkata'
             });
             const summary = apt.summary || 'No title';
             console.log(`      ⏰ ${time} - ${summary}`);
@@ -210,7 +210,7 @@ async function getUpcomingAppointments() {
               hour: 'numeric', 
               minute: '2-digit',
               hour12: true,
-              timeZone: 'Africa/Nairobi'
+              timeZone: 'Asia/Kolkata'
             });
             const summary = apt.summary || 'No title';
             console.log(`      ⏰ ${time} - ${summary}`);

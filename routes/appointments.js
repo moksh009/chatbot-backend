@@ -16,13 +16,13 @@ const formatDateTime = (isoDateString) => {
       weekday: 'long', 
       day: '2-digit', 
       month: 'short',
-      timeZone: 'Africa/Nairobi'
+      timeZone: 'Asia/Kolkata'
     }); // "Tuesday, 23 Jul"
     const time = dateObj.toLocaleTimeString('en-US', { 
       hour: '2-digit', 
       minute: '2-digit', 
       hour12: true,
-      timeZone: 'Africa/Nairobi'
+      timeZone: 'Asia/Kolkata'
     }); // "11:00 AM"
     return { date, time };
   } catch (e) {
@@ -134,6 +134,7 @@ router.get('/calendar', protect, async (req, res) => {
           service: dbAppt?.service,
           clientName: dbAppt?.name,
           phone: dbAppt?.phone,
+          email: dbAppt?.email,
           dbId: dbAppt?._id,
           doctor: dbAppt?.doctor,
           status: dbAppt?.status || 'confirmed'
@@ -143,7 +144,7 @@ router.get('/calendar', protect, async (req, res) => {
 
     // 4. Add remaining DB appointments (not in Google Calendar)
     dbMap.forEach(appt => {
-      // Reconstruct ISO date from DB string (Africa/Nairobi)
+      // Reconstruct ISO date from DB string (Asia/Kolkata)
       // Note: This is a best-effort conversion.
       // Ideally DB should store ISO start/end.
       let startISO = new Date().toISOString(); 
@@ -244,17 +245,33 @@ router.post('/', protect, async (req, res) => {
       doctor: doctor || 'Unassigned',
       date,
       time,
-      eventId: eventId, // Can be null
-      bookingSource: 'manual',
+      eventId: eventId || req.body.existingEventId, // Use existing ID if provided (converting external/chatbot event)
+      bookingSource: req.body.existingEventId ? 'chatbot' : 'manual', // If converting, assume it's from chatbot/external
       logs: [{
         action: 'create',
         changedBy: req.user._id || 'dashboard_user',
         source: 'dashboard',
-        details: eventId ? 'Created via manual booking' : 'Created (Local only - GCal Sync Failed)'
+        details: eventId ? 'Created via manual booking' : (req.body.existingEventId ? 'Converted from external/chatbot event' : 'Created (Local only - GCal Sync Failed)')
       }]
     });
 
     await appointment.save();
+
+    // If converting an existing event, we might want to update its description/title in GCal to match our format
+    if (req.body.existingEventId) {
+        try {
+            await updateEvent({
+                eventId: req.body.existingEventId,
+                calendarId,
+                summary: `${name} - ${service}`,
+                description: `${notes || ''}\nPhone: ${phone}\nSource: Dashboard (Converted)`,
+                start,
+                end
+            });
+        } catch (gError) {
+            console.error('Failed to update converted GCal event:', gError.message);
+        }
+    }
 
     // Emit socket event for real-time update
     const io = req.app.get('socketio');
@@ -278,7 +295,7 @@ router.post('/', protect, async (req, res) => {
 // @access  Private
 router.put('/:id', protect, async (req, res) => {
   try {
-    const { start, end, name, service, notes } = req.body;
+    const { start, end, name, service, notes, email, phone } = req.body;
     const appointment = await Appointment.findOne({ _id: req.params.id, clientId: req.user.clientId });
     
     if (!appointment) return res.status(404).json({ message: 'Not found' });
@@ -296,7 +313,7 @@ router.put('/:id', protect, async (req, res) => {
           eventId: appointment.eventId,
           calendarId,
           summary: `${name || appointment.name} - ${service || appointment.service}`,
-          description: notes,
+          description: `${notes || ''}\nPhone: ${phone || appointment.phone}\nSource: Dashboard (Updated)`,
           start,
           end
         });
@@ -309,6 +326,8 @@ router.put('/:id', protect, async (req, res) => {
     // 2. Update DB
     if (name) appointment.name = name;
     if (service) appointment.service = service;
+    if (email) appointment.email = email;
+    if (phone) appointment.phone = phone;
     if (start) {
       const { date, time } = formatDateTime(start);
       appointment.date = date;
@@ -388,6 +407,34 @@ router.delete('/:id', protect, async (req, res) => {
     res.json({ message: 'Appointment cancelled' });
   } catch (error) {
     console.error('Delete error:', error);
+    res.status(500).json({ message: 'Server Error' });
+  }
+});
+
+// @route   DELETE /api/appointments/external/:eventId
+// @desc    Delete external GCal event (not in DB)
+// @access  Private
+router.delete('/external/:eventId', protect, async (req, res) => {
+  try {
+    const client = await Client.findOne({ clientId: req.user.clientId });
+    
+    // Subscription Check
+    if (!client || client.subscriptionPlan === 'v1') {
+      return res.status(403).json({ message: 'Cancellation is locked for CX Agent (v1). Please upgrade to v2.' });
+    }
+
+    const calendarId = client.googleCalendarId || 'primary';
+    const eventId = req.params.eventId;
+
+    try {
+      await deleteEvent(eventId, calendarId);
+      res.json({ message: 'External appointment cancelled' });
+    } catch (gError) {
+      console.error('Google Calendar delete failed:', gError.message);
+      res.status(500).json({ message: 'Failed to delete external event' });
+    }
+  } catch (error) {
+    console.error('External delete error:', error);
     res.status(500).json({ message: 'Server Error' });
   }
 });

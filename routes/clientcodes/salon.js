@@ -340,7 +340,7 @@ async function getAvailableBookingDays(stylist, calendars) {
     console.error('❌ Error getting available dates:', error);
     // Fallback to static dates if dynamic fetch fails
     const days = [];
-    const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Africa/Kampala' }));
+    const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
     const businessStart = new Date(now);
     businessStart.setHours(7, 0, 0, 0);
     const businessEnd = new Date(now);
@@ -940,8 +940,8 @@ Provide a SHORT, PRECISE response:`;
         slotResult = await fetchRealTimeSlots(selectedDate, page, session.data.stylist, calendars);
         if (!slotResult.slots || slotResult.slots.length === 0) {
           // Check if this is today and provide a more helpful message
-          const nowEAT = new Date().toLocaleString('en-US', { timeZone: 'Africa/Kampala' });
-          const today = new Date(nowEAT).toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'short', year: 'numeric' });
+          const nowIST = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
+          const today = new Date(nowIST).toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'short', year: 'numeric' });
           
           if (selectedDate.toLowerCase().includes(today.toLowerCase())) {
             await sendWhatsAppText({
@@ -1240,7 +1240,7 @@ Provide a SHORT, PRECISE response:`;
         if (!selectedSlot || !selectedSlot.slot) {
           throw new Error('No slot data available');
         }
-        // Get start and end times from the selected slot (already in EAT)
+        // Get start and end times from the selected slot (already in IST)
         const slotStart = selectedSlot.slot.start;
         const slotEnd = selectedSlot.slot.end;
         // Convert to UTC ISO for Google Calendar API
@@ -1557,7 +1557,7 @@ Provide a SHORT, PRECISE response:`;
         if (!selectedSlot || !selectedSlot.slot) {
           throw new Error('No slot data available');
         }
-        // Get start and end times from the selected slot (already in EAT)
+        // Get start and end times from the selected slot (already in IST)
         const slotStart = selectedSlot.slot.start;
         const slotEnd = selectedSlot.slot.end;
         // Convert to UTC ISO for Google Calendar API

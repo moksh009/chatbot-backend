@@ -2,7 +2,7 @@ const { getAvailableSlots, getWorkingHours } = require('./getAvailableSlots');
 const { DateTime } = require('luxon');
 
 async function listAvailableSlotsForNext10WorkingDays() {
-  let currentDate = DateTime.utc().setZone('Africa/Kampala').startOf('day');
+  let currentDate = DateTime.utc().setZone('Asia/Kolkata').startOf('day');
   let workingDaysFound = 0;
   const maxWorkingDays = 10;
 
@@ -15,7 +15,7 @@ async function listAvailableSlotsForNext10WorkingDays() {
       currentDate = currentDate.plus({ days: 1 });
       continue;
     }
-    const dateStr = currentDate.setZone('Africa/Kampala').toFormat('cccc, dd LLL yyyy');
+    const dateStr = currentDate.setZone('Asia/Kolkata').toFormat('cccc, dd LLL yyyy');
     const result = await getAvailableSlots(dateStr, 0);
     console.log(`📅 ${dateStr} (${workingHours.start} - ${workingHours.end})`);
     if (result.totalSlots === 0) {

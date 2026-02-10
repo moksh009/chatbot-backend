@@ -39,9 +39,9 @@ async function getBookedSlots(startDate = null, endDate = null) {
 
     console.log(`📅 Fetching booked slots from ${startDate} to ${endDate}...`);
 
-    // Convert dates to ISO strings with timezone (EAT: UTC+3)
-    const startDateTime = new Date(`${startDate}T00:00:00+03:00`).toISOString();
-    const endDateTime = new Date(`${endDate}T23:59:59+03:00`).toISOString();
+    // Convert dates to ISO strings with timezone (IST: UTC+5:30)
+    const startDateTime = new Date(`${startDate}T00:00:00+05:30`).toISOString();
+    const endDateTime = new Date(`${endDate}T23:59:59+05:30`).toISOString();
 
     const response = await calendar.events.list({
       auth: oAuth2Client,
@@ -93,13 +93,13 @@ async function getBookedSlots(startDate = null, endDate = null) {
           hour: '2-digit', 
           minute: '2-digit', 
           hour12: true,
-          timeZone: 'Africa/Nairobi'
+          timeZone: 'Asia/Kolkata'
         }),
         endTime: endTime.toLocaleTimeString('en-GB', { 
           hour: '2-digit', 
           minute: '2-digit', 
           hour12: true,
-          timeZone: 'Africa/Nairobi'
+          timeZone: 'Asia/Kolkata'
         }),
         startISO: startTime.toISOString(),
         endISO: endTime.toISOString(),

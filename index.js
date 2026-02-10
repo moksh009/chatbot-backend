@@ -100,11 +100,11 @@ app.post('/keepalive-ping', (req, res) => {
 
 // Cron job for birthday messages and appointment reminders
 cron.schedule('0 6 * * *', async () => {
-  const eatNow = DateTime.utc().setZone('Africa/ahmedabad');
-  const currentDay = eatNow.day;
-  const currentMonth = eatNow.month;
+  const istNow = DateTime.utc().setZone('Asia/Kolkata');
+  const currentDay = istNow.day;
+  const currentMonth = istNow.month;
 
-  console.log(`⏰ It's 6:00 AM EAT — Running birthday check...`);
+  console.log(`⏰ It's 6:00 AM IST — Running birthday check...`);
 
   try {
     const clients = await Client.find({});
@@ -143,7 +143,7 @@ cron.schedule('0 6 * * *', async () => {
       let failureCount = 0;
 
       async function incDaily(field) {
-        const dateStr = eatNow.toISODate();
+        const dateStr = istNow.toISODate();
         await DailyStat.updateOne(
           { clientId: clientId, date: dateStr },
           { $inc: { [field]: 1 }, $setOnInsert: { clientId: clientId, date: dateStr } },
@@ -181,8 +181,8 @@ cron.schedule('0 6 * * *', async () => {
 
 // Cron job for appointment reminders (run daily at 7 AM)
 cron.schedule('0 7 * * *', async () => {
-  const eatNow = DateTime.utc().setZone('Africa/ahmedabad');
-  const today = eatNow.toFormat('EEEE, dd MMM');
+  const istNow = DateTime.utc().setZone('Asia/Kolkata');
+  const today = istNow.toFormat('EEEE, dd MMM');
 
   console.log(`⏰ Running appointment reminder check for today (${today})...`);
 
@@ -213,8 +213,8 @@ cron.schedule('0 7 * * *', async () => {
 
       if (calendarIds.length === 0) continue;
 
-      const startOfDay = eatNow.startOf('day').toISO();
-      const endOfDay = eatNow.endOf('day').toISO();
+      const startOfDay = istNow.startOf('day').toISO();
+      const endOfDay = istNow.endOf('day').toISO();
       
       let allTodayEvents = [];
       
@@ -265,7 +265,7 @@ cron.schedule('0 7 * * *', async () => {
           const doctor = doctorMatch ? doctorMatch[1].trim() : "Our Professional";
 
           // Format appointment time
-          const eventTime = DateTime.fromISO(event.start.dateTime).setZone('Africa/ahmedabad');
+          const eventTime = DateTime.fromISO(event.start.dateTime).setZone('Asia/Kolkata');
           const time = eventTime.toFormat('h:mm a');
 
           await sendAppointmentReminder(phoneid, token, phoneNumber, {
@@ -278,7 +278,7 @@ cron.schedule('0 7 * * *', async () => {
 
           console.log(`✅ Appointment reminder sent to ${phoneNumber} for ${time}`);
           try {
-            const dateStr = eatNow.toISODate();
+            const dateStr = istNow.toISODate();
             await DailyStat.updateOne(
               { clientId: clientId, date: dateStr },
               { $inc: { appointmentRemindersSent: 1 }, $setOnInsert: { clientId: clientId, date: dateStr } },

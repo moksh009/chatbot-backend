@@ -30,23 +30,23 @@ function getWorkingHours(dayOfWeek) {
 }
 
 // Generate all possible 30-minute slots for a given day using Luxon
-function generateAllTimeSlots(dateEAT, workingHours) {
+function generateAllTimeSlots(dateIST, workingHours) {
   if (!workingHours.isOpen) return [];
   
   const slots = [];
   const [startHour, startMinute] = workingHours.start.split(':').map(Number);
   const [endHour, endMinute] = workingHours.end.split(':').map(Number);
   
-  let slotStart = dateEAT.set({ hour: startHour, minute: startMinute, second: 0, millisecond: 0 });
-  const endOfDay = dateEAT.set({ hour: endHour, minute: endMinute, second: 0, millisecond: 0 });
+  let slotStart = dateIST.set({ hour: startHour, minute: startMinute, second: 0, millisecond: 0 });
+  const endOfDay = dateIST.set({ hour: endHour, minute: endMinute, second: 0, millisecond: 0 });
   
-  // Get current time in EAT
-  const nowEAT = DateTime.now().setZone('Africa/Kampala');
+  // Get current time in IST
+  const nowIST = DateTime.now().setZone('Asia/Kolkata');
   
   // If this is today, start from the next available slot after current time
-  if (dateEAT.hasSame(nowEAT, 'day')) {
+  if (dateIST.hasSame(nowIST, 'day')) {
     // Add buffer time (e.g., 30 minutes from now) to allow for booking process
-    const bufferTime = nowEAT.plus({ minutes: 30 });
+    const bufferTime = nowIST.plus({ minutes: 30 });
     
     // If buffer time is after the working hours start, use buffer time
     if (bufferTime > slotStart) {
@@ -79,16 +79,16 @@ function generateAllTimeSlots(dateEAT, workingHours) {
 }
 
 // Get booked appointments for a specific date (returns Luxon DateTime for start/end)
-async function getBookedAppointments(dateEAT, calendarId) {
+async function getBookedAppointments(dateIST, calendarId) {
   try {
     const calendar = google.calendar({ version: 'v3', auth: initializeOAuth2Client() });
     if (!calendarId) throw new Error('calendarId argument is required');
-    // Get start and end of day in EAT
-    const startOfDayEAT = dateEAT.startOf('day');
-    const endOfDayEAT = dateEAT.endOf('day');
+    // Get start and end of day in IST
+    const startOfDayIST = dateIST.startOf('day');
+    const endOfDayIST = dateIST.endOf('day');
     // Convert to UTC ISO for Google Calendar API
-    const startUTC = startOfDayEAT.toUTC().toISO();
-    const endUTC = endOfDayEAT.toUTC().toISO();
+    const startUTC = startOfDayIST.toUTC().toISO();
+    const endUTC = endOfDayIST.toUTC().toISO();
     const response = await calendar.events.list({
       calendarId,
       timeMin: startUTC,
@@ -102,8 +102,8 @@ async function getBookedAppointments(dateEAT, calendarId) {
       const end = event.end?.dateTime || event.end?.date;
       return {
         ...event,
-        start: DateTime.fromISO(start, { zone: 'Africa/Kampala' }),
-        end: DateTime.fromISO(end, { zone: 'Africa/Kampala' })
+        start: DateTime.fromISO(start, { zone: 'Asia/Kolkata' }),
+        end: DateTime.fromISO(end, { zone: 'Asia/Kolkata' })
       };
     });
   } catch (error) {
@@ -145,11 +145,11 @@ async function getAvailableSlots(dateStr, page = 0, calendarId) {
     if (monthIndex === -1) {
       throw new Error('Invalid month');
     }
-    const dateEAT = DateTime.fromObject(
+    const dateIST = DateTime.fromObject(
       { year, month: monthIndex + 1, day },
-      { zone: 'Africa/Kampala' }
+      { zone: 'Asia/Kolkata' }
     );
-    const dayOfWeekNum = dateEAT.weekday % 7; // Luxon: Monday=1, Sunday=7
+    const dayOfWeekNum = dateIST.weekday % 7; // Luxon: Monday=1, Sunday=7
     const workingHours = getWorkingHours(dayOfWeekNum);
     if (!workingHours.isOpen) {
       return {
@@ -160,15 +160,15 @@ async function getAvailableSlots(dateStr, page = 0, calendarId) {
         hasMore: false
       };
     }
-    const allSlots = generateAllTimeSlots(dateEAT, workingHours);
-    const bookedAppointments = await getBookedAppointments(dateEAT, calendarId);
+    const allSlots = generateAllTimeSlots(dateIST, workingHours);
+    const bookedAppointments = await getBookedAppointments(dateIST, calendarId);
     
-    // Get current time in EAT
-    const nowEAT = DateTime.now().setZone('Africa/Kampala');
-    const isToday = dateEAT.hasSame(nowEAT, 'day');
+    // Get current time in IST
+    const nowIST = DateTime.now().setZone('Asia/Kolkata');
+    const isToday = dateIST.hasSame(nowIST, 'day');
     
-    console.log(`🕐 Current time (EAT): ${nowEAT.toFormat('yyyy-MM-dd HH:mm:ss')}`);
-    console.log(`📅 Target date (EAT): ${dateEAT.toFormat('yyyy-MM-dd HH:mm:ss')}`);
+    console.log(`🕐 Current time (IST): ${nowIST.toFormat('yyyy-MM-dd HH:mm:ss')}`);
+    console.log(`📅 Target date (IST): ${dateIST.toFormat('yyyy-MM-dd HH:mm:ss')}`);
     console.log(`📊 Total slots before filtering: ${allSlots.length}`);
     console.log(`📅 Is today: ${isToday}`);
     
@@ -177,11 +177,11 @@ async function getAvailableSlots(dateStr, page = 0, calendarId) {
       // Check if slot is in the past (for today's date)
       if (isToday) {
         // Add buffer time (30 minutes) to allow for booking process
-        const bufferTime = nowEAT.plus({ minutes: 30 });
+        const bufferTime = nowIST.plus({ minutes: 30 });
         
         // If it's today, check if the slot has already passed (including buffer)
         if (slot.start <= bufferTime) {
-          console.log(`⏰ Filtering out past/too-close slot: ${slot.displayTime} (${slot.start.toFormat('HH:mm:ss')}) - Current: ${nowEAT.toFormat('HH:mm:ss')}, Buffer: ${bufferTime.toFormat('HH:mm:ss')}`);
+          console.log(`⏰ Filtering out past/too-close slot: ${slot.displayTime} (${slot.start.toFormat('HH:mm:ss')}) - Current: ${nowIST.toFormat('HH:mm:ss')}, Buffer: ${bufferTime.toFormat('HH:mm:ss')}`);
           return false; // Slot is in the past or too close to current time
         }
       }
@@ -198,7 +198,7 @@ async function getAvailableSlots(dateStr, page = 0, calendarId) {
     
     // If no slots available for today, log a helpful message
     if (isToday && availableSlots.length === 0) {
-      console.log(`⚠️ No available slots for today (${dateEAT.toFormat('EEEE, dd MMM yyyy')}) - all slots are either in the past or too close to current time`);
+      console.log(`⚠️ No available slots for today (${dateIST.toFormat('EEEE, dd MMM yyyy')}) - all slots are either in the past or too close to current time`);
     }
     
     const slotsPerPage = 9; // WhatsApp allows max 10 rows, so 9 slots + 1 "Show more"
@@ -284,19 +284,19 @@ function testTimeFilteringLogic() {
   
   const { DateTime } = require('luxon');
   
-  // Get current time in EAT
-  const nowEAT = DateTime.now().setZone('Africa/Kampala');
-  console.log(`🕐 Current time (EAT): ${nowEAT.toFormat('yyyy-MM-dd HH:mm:ss')}`);
+  // Get current time in IST
+  const nowIST = DateTime.now().setZone('Asia/Kolkata');
+  console.log(`🕐 Current time (IST): ${nowIST.toFormat('yyyy-MM-dd HH:mm:ss')}`);
   
   // Create a test date for today
-  const todayEAT = nowEAT.startOf('day');
-  console.log(`📅 Today's date: ${todayEAT.toFormat('yyyy-MM-dd')}`);
+  const todayIST = nowIST.startOf('day');
+  console.log(`📅 Today's date: ${todayIST.toFormat('yyyy-MM-dd')}`);
   
   // Generate some test slots
   const testSlots = [];
   for (let hour = 7; hour <= 18; hour++) {
     for (let minute = 0; minute < 60; minute += 30) {
-      const slotStart = todayEAT.set({ hour, minute, second: 0, millisecond: 0 });
+      const slotStart = todayIST.set({ hour, minute, second: 0, millisecond: 0 });
       const slotEnd = slotStart.plus({ minutes: 30 });
       
       testSlots.push({
@@ -313,7 +313,7 @@ function testTimeFilteringLogic() {
   
   // Filter out past slots
   const availableSlots = testSlots.filter(slot => {
-    if (slot.start <= nowEAT) {
+    if (slot.start <= nowIST) {
       console.log(`⏰ Filtering out past slot: ${slot.displayTime} (${slot.start.toFormat('HH:mm:ss')})`);
       return false;
     }
@@ -331,7 +331,7 @@ function testTimeFilteringLogic() {
   
   // Test with simulated earlier time (e.g., 10:00 AM)
   console.log('\n🧪 Testing with simulated 10:00 AM time...');
-  const simulatedTime = todayEAT.set({ hour: 10, minute: 0, second: 0, millisecond: 0 });
+  const simulatedTime = todayIST.set({ hour: 10, minute: 0, second: 0, millisecond: 0 });
   console.log(`🕐 Simulated time: ${simulatedTime.toFormat('HH:mm:ss')}`);
   
   const availableSlotsSimulated = testSlots.filter(slot => {
@@ -367,4 +367,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { getAvailableSlots, getWorkingHours, generateAllTimeSlots }; 
+module.exports = { getAvailableSlots, getWorkingHours, generateAllTimeSlots };
