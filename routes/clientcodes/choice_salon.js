@@ -51,7 +51,7 @@ const FAQ_DATA = {
     { id: 'faq_appt_advance', title: 'Do I need to book ahead?', answer: 'We recommend booking at least 2 hours in advance to ensure your preferred stylist is available. ⏳' }
   ],
   'ask_other': [
-    { id: 'faq_other_loc', title: 'Where are you located?', answer: 'We are located in Ahmedabad. Please call us for the exact directions! 📍' },
+    { id: 'faq_other_loc', title: 'Where are you located?', answer: 'We are located at: Second Floor, Raspan Arcade, 6-7, Raspan Cross Rd, opp. Gokul Party Plot, New India Colony, Nikol, Ahmedabad. 📍' },
     { id: 'faq_other_contact', title: 'Contact Number?', answer: 'You can reach us at +91 98244 74547 for any queries. ☎️' },
     { id: 'faq_other_safety', title: 'Safety Measures?', answer: 'We follow strict hygiene protocols, including sanitization of tools and stations after every client. 🛡️' }
   ]
@@ -67,18 +67,20 @@ const userSessions = {};
 
 // Salon services
 const salonServices = [
-  { id: 'service_haircut', title: 'Haircut', price: '500' },
-  { id: 'service_shaving', title: 'Shaving', price: '300' },
-  { id: 'service_facial', title: 'Facial', price: '1200' },
-  { id: 'service_massage', title: 'Massage', price: '2000' },
-  { id: 'service_hair_color', title: 'Hair Color', price: '1000' },
-  { id: 'service_spa', title: 'Spa', price: '1500' }
+  { id: 'service_haircut', title: '✂️ Precision Haircut', price: '500', description: 'Expert styling & finish' },
+  { id: 'service_shaving', title: '🪒 Royal Shave', price: '300', description: 'Classic straight razor experience' },
+  { id: 'service_facial', title: '✨ Advanced Facial', price: '1200', description: 'Deep skin rejuvenation' },
+  { id: 'service_massage', title: '💆‍♂️ Stress Relief Massage', price: '2000', description: 'Full body relaxation' },
+  { id: 'service_hair_color', title: '🎨 Signature Color', price: '1000', description: 'Professional ammonia-free dye' },
+  { id: 'service_spa', title: '🛁 Luxury Hair Spa', price: '1500', description: 'Nourishing scalp treatment' },
+  { id: 'service_beard', title: '🧔 Beard Sculpting', price: '400', description: 'Perfect shape & trim' },
+  { id: 'service_pedicure', title: '🦶 Refreshing Pedicure', price: '800', description: 'Clean & relaxed feet' }
 ];
 
 // Real stylists
 const salonStylists = [
-  { id: 'stylist_shubhashbhai', title: 'Shubhashbhai' },
-  { id: 'stylist_moksh', title: 'Moksh' }
+  { id: 'stylist_shubhashbhai', title: 'Shubhashbhai', description: 'Master Stylist (15+ yrs exp)' },
+  { id: 'stylist_moksh', title: 'Moksh', description: 'Creative Director' }
 ];
 
 // Map stylists to their specific Google Calendar IDs
@@ -845,6 +847,44 @@ Provide a SHORT, PRECISE response:`;
   }
 
   // Home menu (step: 'home')
+  // Handle global buttons (Home, Book Another, Ask Question)
+  if (userMsg === 'user_home' || userMsg === 'home') {
+    session.step = 'home';
+    session.data = {};
+    await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res });
+    return;
+  }
+
+  if (userMsg === 'book_another') {
+    session.step = 'choose_service';
+    session.data = { servicePage: 0 };
+    const paginatedServices = getPaginatedServices(0);
+    await sendWhatsAppList({
+      ...helperParams,
+      to: from,
+      header: 'Book Appointment 💇‍♀️',
+      body: 'Which service would you like to book?',
+      button: 'Select Service',
+      rows: paginatedServices.services
+    });
+    res.status(200).end();
+    return;
+  }
+
+  if (userMsg === 'user_ask_question') {
+    await sendWhatsAppList({
+      ...helperParams,
+      to: from,
+      header: 'Ask a Question ❓',
+      body: 'Please select a topic for your question:',
+      button: 'Select Topic',
+      rows: QUESTION_TOPICS
+    });
+    session.step = 'ask_question_topic';
+    res.status(200).end();
+    return;
+  }
+
   if (!session.step || session.step === 'home') {
     // WhatsApp allows only 3 buttons, so use a List for 4+ options
     await sendWhatsAppList({
@@ -1621,7 +1661,14 @@ Provide a SHORT, PRECISE response:`;
       await notifyAdmins({ ...helperParams, message: adminMsg, adminNumbers });
       
       // Send confirmation to user based on consent
-      let confirmationBody = `✅ *Booking Confirmed*\n\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n💇‍♂️ *Stylist:* ${session.data.stylist || 'Not specified'}\n\n📍 *Location:* Choice Salon, Nikol\n🗺️ *Map:* https://maps.google.com/?q=Choice+Salon+Nikol+Ahmedabad\n\n🎁 *SPECIAL OFFER FOR YOU!*\nHelp us grow by leaving a review on Google and get *10% OFF* your next service! 🌟\n\n👉 *Leave Review Here:* https://search.google.com/local/writereview?placeid=ChIJt_WD-2yHXjkRxNf22cHgX78\n\nShow this message at the counter to claim your discount! 🎟️\n\n⏰ *Please arrive 15 minutes early* for your appointment.`;
+      let confirmationBody = `✅ *Booking Confirmed*\n\n` +
+                             `📅 *Date:* ${session.data.date}\n` +
+                             `🕒 *Time:* ${session.data.time}\n` +
+                             `💇‍♂️ *Stylist:* ${session.data.stylist || 'Not specified'}\n\n` +
+                             `📍 *Location:* Choice Salon, Nikol\n` +
+                             `🏢 *Address:* 2nd Floor, Raspan Arcade, 6-7, Raspan Cross Rd, Nikol, Ahmedabad\n` +
+                             `🗺️ *Map:* https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
+                             `⏰ *Please arrive 15 minutes early* for your appointment.`;
       
       // Add consent-specific confirmation message
       if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
@@ -1639,9 +1686,29 @@ Provide a SHORT, PRECISE response:`;
         body: confirmationBody,
         buttons: [
           { id: 'book_another', title: '📅 Book Another' },
+          { id: 'user_ask_question', title: '❓ Ask Question' },
           { id: 'home', title: '🏠 Home' }
         ]
       });
+
+      // Send review/offer message after 10 seconds
+      setTimeout(async () => {
+        try {
+          const reviewMsg = `🎁 *SPECIAL OFFER FOR YOU!*\n\n` +
+                           `Help us grow by leaving a review on Google and get *10% OFF* your next service! 🌟\n\n` +
+                           `👉 *Leave Review Here:* https://search.google.com/local/writereview?placeid=ChIJt_WD-2yHXjkRxNf22cHgX78\n\n` +
+                           `Show this message at the counter to claim your discount! 🎟️`;
+          
+          await sendWhatsAppText({
+            ...helperParams,
+            to: from,
+            body: reviewMsg
+          });
+          console.log(`✅ Delayed review message sent to ${from}`);
+        } catch (err) {
+          console.error(`❌ Error sending delayed review message to ${from}:`, err);
+        }
+      }, 10000);
       
       // Reset processing flag and clear session data
       session.data.isProcessing = false;
@@ -1937,7 +2004,14 @@ Provide a SHORT, PRECISE response:`;
       await notifyAdmins({ ...helperParams, message: adminMsg, adminNumbers });
       
       // Send confirmation to user based on consent
-      let confirmationBody = `✅ *Appointment Confirmed*\n\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n💇‍♂️ *Stylist:* ${session.data.stylist || 'Not specified'}\n\n📍 *Location:* Choice Salon, Nikol\n🗺️ *Map:* https://maps.google.com/?q=Choice+Salon+Nikol+Ahmedabad\n\n🎁 *SPECIAL OFFER FOR YOU!*\nHelp us grow by leaving a review on Google and get *10% OFF* your next service! 🌟\n\n👉 *Leave Review Here:* https://search.google.com/local/writereview?placeid=ChIJt_WD-2yHXjkRxNf22cHgX78\n\nShow this message at the counter to claim your discount! 🎟️\n\n⏰ *Please arrive 15 minutes early* for your appointment.`;
+      let confirmationBody = `✅ *Appointment Confirmed*\n\n` +
+                             `📅 *Date:* ${session.data.date}\n` +
+                             `🕒 *Time:* ${session.data.time}\n` +
+                             `💇‍♂️ *Stylist:* ${session.data.stylist || 'Not specified'}\n\n` +
+                             `📍 *Location:* Choice Salon, Nikol\n` +
+                             `🏢 *Address:* 2nd Floor, Raspan Arcade, 6-7, Raspan Cross Rd, Nikol, Ahmedabad\n` +
+                             `🗺️ *Map:* https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
+                             `⏰ *Please arrive 15 minutes early* for your appointment.`;
       
       // Add consent-specific confirmation message
       if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
@@ -1955,9 +2029,29 @@ Provide a SHORT, PRECISE response:`;
         body: confirmationBody,
         buttons: [
           { id: 'book_another', title: '📅 Book Another' },
+          { id: 'user_ask_question', title: '❓ Ask Question' },
           { id: 'home', title: '🏠 Home' }
         ]
       });
+
+      // Send review/offer message after 10 seconds
+      setTimeout(async () => {
+        try {
+          const reviewMsg = `🎁 *SPECIAL OFFER FOR YOU!*\n\n` +
+                           `Help us grow by leaving a review on Google and get *10% OFF* your next service! 🌟\n\n` +
+                           `👉 *Leave Review Here:* https://search.google.com/local/writereview?placeid=ChIJt_WD-2yHXjkRxNf22cHgX78\n\n` +
+                           `Show this message at the counter to claim your discount! 🎟️`;
+          
+          await sendWhatsAppText({
+            ...helperParams,
+            to: from,
+            body: reviewMsg
+          });
+          console.log(`✅ Delayed review message sent to ${from}`);
+        } catch (err) {
+          console.error(`❌ Error sending delayed review message to ${from}:`, err);
+        }
+      }, 10000);
       
       // Reset processing flag and clear session data
       session.data.isProcessing = false;
