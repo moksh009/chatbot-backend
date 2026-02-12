@@ -1621,16 +1621,16 @@ Provide a SHORT, PRECISE response:`;
       await notifyAdmins({ ...helperParams, message: adminMsg, adminNumbers });
       
       // Send confirmation to user based on consent
-      let confirmationBody = `✅ *Booking Confirmed*\n\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n�‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n\n📍 *Location:* Salon Location\n🗺️ *Map:* https://maps.google.com/?q=Salon+Location\n\n⏰ *Please arrive 15 minutes early* for your appointment.`;
+      let confirmationBody = `✅ *Booking Confirmed*\n\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n💇‍♂️ *Stylist:* ${session.data.stylist || 'Not specified'}\n\n📍 *Location:* Choice Salon, Nikol\n🗺️ *Map:* https://maps.google.com/?q=Choice+Salon+Nikol+Ahmedabad\n\n🎁 *SPECIAL OFFER FOR YOU!*\nHelp us grow by leaving a review on Google and get *10% OFF* your next service! 🌟\n\n👉 *Leave Review Here:* https://search.google.com/local/writereview?placeid=ChIJt_WD-2yHXjkRxNf22cHgX78\n\nShow this message at the counter to claim your discount! 🎟️\n\n⏰ *Please arrive 15 minutes early* for your appointment.`;
       
       // Add consent-specific confirmation message
       if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
-        confirmationBody += `\n\n🔔 *Appointment Reminders & Birthday Wishes:* You'll receive reminders before your appointments and birthday messages.\n\n❌ To stop receiving messages, reply with "STOP" at any time.`;
+        confirmationBody += `\n\n🔔 *Reminders:* You'll receive updates before your appointment.`;
       } else if (session.data.consent.appointmentReminders) {
-        confirmationBody += `\n\n📅 *Appointment Reminders Only:* You'll receive reminders before your appointments.\n\n❌ To stop receiving messages, reply with "STOP" at any time.`;
-      } else {
-        confirmationBody += `\n\n📱 *No Communications:* You've opted out of all messages.`;
+        confirmationBody += `\n\n📅 *Reminders:* You'll receive updates before your appointment.`;
       }
+      
+      confirmationBody += `\n\n❌ To stop receiving messages, reply with "STOP" at any time.`;
       
       await sendWhatsAppButtons({
         ...helperParams,
@@ -1937,16 +1937,16 @@ Provide a SHORT, PRECISE response:`;
       await notifyAdmins({ ...helperParams, message: adminMsg, adminNumbers });
       
       // Send confirmation to user based on consent
-      let confirmationBody = `✅ *Appointment Confirmed*\n\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n�‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n\n📍 *Location:* Salon Location\n🗺️ *Map:* https://maps.google.com/?q=Salon+Location\n\n⏰ *Please arrive 15 minutes early* for your appointment.`;
+      let confirmationBody = `✅ *Appointment Confirmed*\n\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n💇‍♂️ *Stylist:* ${session.data.stylist || 'Not specified'}\n\n📍 *Location:* Choice Salon, Nikol\n🗺️ *Map:* https://maps.google.com/?q=Choice+Salon+Nikol+Ahmedabad\n\n🎁 *SPECIAL OFFER FOR YOU!*\nHelp us grow by leaving a review on Google and get *10% OFF* your next service! 🌟\n\n👉 *Leave Review Here:* https://search.google.com/local/writereview?placeid=ChIJt_WD-2yHXjkRxNf22cHgX78\n\nShow this message at the counter to claim your discount! 🎟️\n\n⏰ *Please arrive 15 minutes early* for your appointment.`;
       
       // Add consent-specific confirmation message
       if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
-        confirmationBody += `\n\n🔔 *Appointment Reminders & Birthday Wishes:* You'll receive reminders before your appointments and birthday messages.\n\n❌ To stop receiving messages, reply with "STOP" at any time.`;
+        confirmationBody += `\n\n🔔 *Reminders:* You'll receive updates before your appointment.`;
       } else if (session.data.consent.appointmentReminders) {
-        confirmationBody += `\n\n📅 *Appointment Reminders Only:* You'll receive reminders before your appointments.\n\n❌ To stop receiving messages, reply with "STOP" at any time.`;
-      } else {
-        confirmationBody += `\n\n📱 *No Communications:* You've opted out of all messages.`;
+        confirmationBody += `\n\n📅 *Reminders:* You'll receive updates before your appointment.`;
       }
+      
+      confirmationBody += `\n\n❌ To stop receiving messages, reply with "STOP" at any time.`;
       
       await sendWhatsAppButtons({
         ...helperParams,
