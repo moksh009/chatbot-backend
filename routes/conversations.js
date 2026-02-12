@@ -140,7 +140,8 @@ router.post('/:id/messages', protect, async (req, res) => {
 router.put('/:id/takeover', protect, async (req, res) => {
   try {
     const client = await Client.findOne({ clientId: req.user.clientId });
-    if (!client || client.subscriptionPlan === 'v1') {
+    // If client doesn't exist, we default to v2 behavior (consistent with /auth/me)
+    if (client && client.subscriptionPlan === 'v1') {
       return res.status(403).json({ message: 'Human Handoff is locked for CX Agent (v1). Please upgrade to v2.' });
     }
 
