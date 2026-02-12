@@ -70,11 +70,11 @@ const salonServices = [
   { id: 'service_haircut', title: '✂️ Precision Haircut', price: '500', description: 'Expert styling & finish' },
   { id: 'service_shaving', title: '🪒 Royal Shave', price: '300', description: 'Classic straight razor experience' },
   { id: 'service_facial', title: '✨ Advanced Facial', price: '1200', description: 'Deep skin rejuvenation' },
-  { id: 'service_massage', title: '💆‍♂️ Stress Relief Massage', price: '2000', description: 'Full body relaxation' },
+  { id: 'service_massage', title: '💆‍♂️ Stress Relief', price: '2000', description: 'Full body relaxation' },
   { id: 'service_hair_color', title: '🎨 Signature Color', price: '1000', description: 'Professional ammonia-free dye' },
   { id: 'service_spa', title: '🛁 Luxury Hair Spa', price: '1500', description: 'Nourishing scalp treatment' },
   { id: 'service_beard', title: '🧔 Beard Sculpting', price: '400', description: 'Perfect shape & trim' },
-  { id: 'service_pedicure', title: '🦶 Refreshing Pedicure', price: '800', description: 'Clean & relaxed feet' }
+  { id: 'service_pedicure', title: '🦶 Refreshing Pedic.', price: '800', description: 'Clean & relaxed feet' }
 ];
 
 // Real stylists
@@ -278,9 +278,14 @@ async function sendWhatsAppList({ phoneNumberId, to, header, body, button, rows,
         button,
         sections: [
           {
-            title: 'Available Days',
+            title: 'Available Options',
             rows: safeRows.map(r => {
-              const row = { id: r.id, title: r.title };
+              // WhatsApp limit for row title is 24 characters
+              let finalTitle = r.title || '';
+              if (finalTitle.length > 24) {
+                finalTitle = finalTitle.substring(0, 21) + '...';
+              }
+              const row = { id: r.id, title: finalTitle };
               if (r.description) row.description = r.description;
               return row;
             })
