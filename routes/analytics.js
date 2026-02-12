@@ -234,7 +234,7 @@ router.get('/receptionist-overview', protect, async (req, res) => {
                 date: startDateTime, 
                 serviceType: dbAppt?.service || event.description || 'External Booking',
                 status: dbAppt?.status || 'confirmed',
-                source: dbAppt ? 'chatbot' : 'external'
+                source: dbAppt ? 'chatbot' : 'chatbot'
             };
         });
         

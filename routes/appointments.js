@@ -112,7 +112,7 @@ router.get('/calendar', protect, async (req, res) => {
     const mergedEvents = googleEvents.map(event => {
       const dbAppt = dbMap.get(event.id);
       
-      let source = 'external';
+      let source = 'chatbot';
       if (dbAppt) {
         source = dbAppt.bookingSource || 'chatbot'; // Default to chatbot if field missing
         dbMap.delete(event.id); // Remove from map to track processed ones
