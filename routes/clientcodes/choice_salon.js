@@ -85,8 +85,12 @@ const salonStylists = [
 
 // Map stylists to their specific Google Calendar IDs
 const stylistCalendars = {
-  'Shubhashbhai': process.env.GCAL_CALENDAR_ID,
+  'Shubhashbhai': process.env.GCAL_CALENDAR_ID2,
   'Moksh': process.env.GCAL_CALENDAR_ID,
+  'shubhashbhai': process.env.GCAL_CALENDAR_ID2,
+  'moksh': process.env.GCAL_CALENDAR_ID,
+  'stylist_shubhashbhai': process.env.GCAL_CALENDAR_ID2,
+  'stylist_moksh': process.env.GCAL_CALENDAR_ID,
   'Stylist Sarah': process.env.GCAL_CALENDAR_ID, // Legacy support
   'Stylist Mike': process.env.GCAL_CALENDAR_ID   // Legacy support
 };
