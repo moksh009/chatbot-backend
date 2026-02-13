@@ -4,6 +4,85 @@ const Appointment = require('../models/Appointment');
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
 const { listEvents, createEvent, updateEvent, deleteEvent } = require('../utils/googleCalendar');
+const { DateTime } = require('luxon');
+
+// Helper to check for overlapping appointments
+const checkOverlap = async (clientId, doctor, start, end, excludeId = null) => {
+  const newStart = new Date(start);
+  const newEnd = new Date(end);
+
+  // 1. Check DB for conflicts
+  const query = {
+    clientId,
+    doctor,
+    status: { $ne: 'cancelled' }
+  };
+  
+  if (excludeId) {
+    query._id = { $ne: excludeId };
+  }
+
+  const dbAppointments = await Appointment.find(query);
+  
+  const hasDbConflict = dbAppointments.some(appt => {
+    // Reconstruct start/end from DB date/time if possible, 
+    // but Appointment model should ideally store ISO strings.
+    // For now, let's check based on the 'date' and 'time' fields if they match exactly
+    // as a fallback, but we should really use Google Calendar as the source of truth for availability.
+    return false; // DB check is tricky with the current string-based date/time schema
+  });
+
+  // 2. Check Google Calendar (The source of truth)
+  const client = await Client.findOne({ clientId });
+  if (!client) return false;
+
+  // Find the correct calendar ID for the doctor
+  let calendarId = client.googleCalendarId || 'primary';
+  if (client.config?.calendars && doctor) {
+    const doctorKey = doctor.toLowerCase().replace(/\s+/g, '');
+    if (client.config.calendars[doctorKey]) {
+      calendarId = client.config.calendars[doctorKey];
+    }
+  }
+
+  // Fetch events for that day
+  const dayStart = DateTime.fromJSDate(newStart).startOf('day').toISO();
+  const dayEnd = DateTime.fromJSDate(newStart).endOf('day').toISO();
+  const events = await listEvents(dayStart, dayEnd, calendarId);
+
+  const conflict = events.find(event => {
+    if (excludeId && event.id === excludeId) return false;
+    
+    const eventStart = new Date(event.start.dateTime || event.start.date);
+    const eventEnd = new Date(event.end.dateTime || event.end.date);
+    
+    // Overlap logic: (StartA < EndB) and (EndA > StartB)
+    return (newStart < eventEnd && newEnd > eventStart);
+  });
+
+  return conflict ? {
+    name: conflict.summary,
+    start: conflict.start.dateTime || conflict.start.date,
+    end: conflict.end.dateTime || conflict.end.date
+  } : null;
+};
+
+// @route   POST /api/appointments/check-conflict
+// @desc    Check if a time slot is available
+// @access  Private
+router.post('/check-conflict', protect, async (req, res) => {
+  try {
+    const { doctor, start, end, excludeId } = req.body;
+    if (!start || !end) {
+      return res.status(400).json({ message: 'Start and end times are required' });
+    }
+
+    const conflict = await checkOverlap(req.user.clientId, doctor, start, end, excludeId);
+    res.json({ hasConflict: !!conflict, conflict });
+  } catch (error) {
+    res.status(500).json({ message: 'Error checking availability', error: error.message });
+  }
+});
 
 // Helper to format date/time for legacy schema
 const formatDateTime = (isoDateString) => {
@@ -222,6 +301,15 @@ router.post('/', protect, async (req, res) => {
   try {
     const { name, phone, email, service, doctor, start, end, notes } = req.body;
     
+    // Check for conflicts before creating
+    const conflict = await checkOverlap(req.user.clientId, doctor, start, end);
+    if (conflict) {
+        return res.status(409).json({ 
+            message: 'This time slot is already booked for the selected provider.',
+            conflict 
+        });
+    }
+
     const client = await Client.findOne({ clientId: req.user.clientId });
     if (!client) {
         return res.status(404).json({ message: 'Client not found' });
@@ -307,10 +395,32 @@ router.post('/', protect, async (req, res) => {
 // @access  Private
 router.put('/:id', protect, async (req, res) => {
   try {
-    const { start, end, name, service, notes, email, phone } = req.body;
+    const { start, end, name, service, notes, email, phone, doctor } = req.body;
     const appointment = await Appointment.findOne({ _id: req.params.id, clientId: req.user.clientId });
     
     if (!appointment) return res.status(404).json({ message: 'Not found' });
+
+    // Check for conflicts if time or doctor changes
+    if (start || end || doctor) {
+      const checkStart = start || appointment.start; // Assuming start is available or we need to derive it
+      const checkEnd = end || appointment.end;
+      const checkDoctor = doctor || appointment.doctor;
+      
+      const conflict = await checkOverlap(
+        req.user.clientId, 
+        checkDoctor, 
+        checkStart, 
+        checkEnd, 
+        appointment.eventId // Exclude current GCal event
+      );
+      
+      if (conflict) {
+        return res.status(409).json({ 
+          message: 'The new time slot is already booked for this provider.',
+          conflict 
+        });
+      }
+    }
 
     const client = await Client.findOne({ clientId: req.user.clientId });
     if (!client) {
