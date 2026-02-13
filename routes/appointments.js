@@ -479,6 +479,61 @@ router.put('/:id', protect, async (req, res) => {
   }
 });
 
+// @route   PATCH /api/appointments/:id/status
+// @desc    Update appointment status (e.g., cancel, complete)
+// @access  Private
+router.patch('/:id/status', protect, async (req, res) => {
+  try {
+    const { status } = req.body;
+    const client = await Client.findOne({ clientId: req.user.clientId });
+    
+    // Subscription Check for cancellation
+    if (status === 'cancelled' && (!client || client.subscriptionPlan === 'v1')) {
+      return res.status(403).json({ message: 'Cancellation is locked for CX Agent (v1). Please upgrade to v2.' });
+    }
+
+    const appointment = await Appointment.findOne({ _id: req.params.id, clientId: req.user.clientId });
+    if (!appointment) return res.status(404).json({ message: 'Not found' });
+
+    appointment.status = status;
+    if (status === 'cancelled') {
+        appointment.cancelledAt = new Date();
+        appointment.cancelledBy = req.user._id || 'dashboard_user';
+        
+        // Also delete from GCal if linked
+        if (appointment.eventId) {
+            try {
+                const calendarId = client.googleCalendarId || 'primary';
+                await deleteEvent(appointment.eventId, calendarId);
+                appointment.eventId = null;
+            } catch (gError) {
+                console.warn('GCal delete failed during status update:', gError.message);
+            }
+        }
+    }
+
+    appointment.logs.push({
+      action: 'status_update',
+      changedBy: req.user._id || 'dashboard_user',
+      source: 'dashboard',
+      details: `Status changed to ${status}`
+    });
+
+    await appointment.save();
+
+    // Emit socket event
+    const io = req.app.get('socketio');
+    if (io) {
+        io.to(`client_${req.user.clientId}`).emit('appointments_update');
+    }
+
+    res.json(appointment);
+  } catch (error) {
+    console.error('Status update error:', error);
+    res.status(500).json({ message: 'Server Error' });
+  }
+});
+
 // @route   DELETE /api/appointments/:id
 // @desc    Cancel appointment
 // @access  Private
