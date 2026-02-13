@@ -122,6 +122,16 @@ router.get('/calendar', protect, async (req, res) => {
       const startDateTime = event.start.dateTime || event.start.date;
       const endDateTime = event.end.dateTime || event.end.date;
 
+      // Determine color based on doctor/stylist
+      let color = dbAppt?.doctor?.toLowerCase() === 'shubhashbhai' ? '#ff9f89' : (dbAppt?.doctor?.toLowerCase() === 'moksh' ? '#89c4ff' : undefined);
+      
+      // Fallback: check summary if no DB appointment link found
+      if (!color && event.summary) {
+        const summary = event.summary.toLowerCase();
+        if (summary.includes('shubhashbhai')) color = '#ff9f89';
+        else if (summary.includes('moksh')) color = '#89c4ff';
+      }
+
       return {
         id: event.id,
         title: event.summary || 'No Title',
@@ -129,6 +139,7 @@ router.get('/calendar', protect, async (req, res) => {
         end: endDateTime,
         allDay: !event.start.dateTime,
         source: source,
+        color: color,
         extendedProps: {
           description: event.description,
           service: dbAppt?.service,
@@ -183,6 +194,7 @@ router.get('/calendar', protect, async (req, res) => {
         end: endISO,
         allDay: false,
         source: appt.bookingSource || 'chatbot',
+        color: appt.doctor?.toLowerCase() === 'shubhashbhai' ? '#ff9f89' : (appt.doctor?.toLowerCase() === 'moksh' ? '#89c4ff' : undefined),
         extendedProps: {
           description: 'Synced from Database',
           service: appt.service,

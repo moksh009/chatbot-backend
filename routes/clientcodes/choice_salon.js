@@ -1055,22 +1055,22 @@ Provide a SHORT, PRECISE response:`;
       return;
     }
     
-    // Handle regular service selection
-    const chosen = salonServices.find(s => s.id === userMsg || s.title.toLowerCase() === (userMsg || '').toLowerCase());
-    if (chosen) {
-      session.data.chosenService = chosen.title;
-      // Step 3: Doctor selection
-      await sendSmartButtonsOrList({
-        ...helperParams,
-        to: from,
-        header: `Great! Which stylist would you prefer?`,
-        body: 'Choose your stylist:',
-        buttons: salonStylists
-      });
-      session.step = 'choose_stylist';
-      res.status(200).end();
-      return;
-    } else {
+  // Handle regular service selection
+  const chosen = salonServices.find(s => s.id === userMsg || s.title.toLowerCase() === (userMsg || '').toLowerCase());
+  if (chosen) {
+    session.data.chosenService = chosen.title;
+    // Step 3: Stylist selection
+    await sendSmartButtonsOrList({
+      ...helperParams,
+      to: from,
+      header: `Great! Which stylist would you prefer?`,
+      body: 'Choose your stylist:',
+      buttons: salonStylists.map(s => ({ id: s.id, title: s.title }))
+    });
+    session.step = 'choose_stylist';
+    res.status(200).end();
+    return;
+  } else {
       // Fallback: show current page of services again
       const currentPage = session.data.servicePage || 0;
       const paginatedServices = getPaginatedServices(currentPage);
@@ -1093,8 +1093,9 @@ Provide a SHORT, PRECISE response:`;
     const chosen = salonStylists.find(d => d.id === userMsg || d.title.toLowerCase() === (userMsg || '').toLowerCase());
     if (chosen) {
       session.data.stylist = chosen.title;
+      session.data.stylistId = chosen.id; // Store ID for calendar lookup
       // Step 4: Date selection
-      const days = await getAvailableBookingDays(session.data.stylist, calendars);
+      const days = await getAvailableBookingDays(session.data.stylistId, calendars);
       
       // Clean up the days array to only include WhatsApp-compatible properties
       const cleanDays = days.map(day => ({
@@ -1121,7 +1122,7 @@ Provide a SHORT, PRECISE response:`;
         to: from,
         header: `Great! Which stylist would you prefer?`,
         body: 'Choose your stylist:',
-        buttons: salonStylists
+        buttons: salonStylists.map(s => ({ id: s.id, title: s.title }))
        });
        session.step = 'choose_stylist';
       res.status(200).end();
@@ -1152,7 +1153,7 @@ Provide a SHORT, PRECISE response:`;
       let slotResult = [];
       try {
         const page = session.data.slotPage || 0;
-        slotResult = await fetchRealTimeSlots(selectedDate, page, session.data.stylist, calendars);
+        slotResult = await fetchRealTimeSlots(selectedDate, page, session.data.stylistId || session.data.stylist, calendars);
         if (!slotResult.slots || slotResult.slots.length === 0) {
           // Check if this is today and provide a more helpful message
           const nowIST = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
@@ -1469,8 +1470,8 @@ Provide a SHORT, PRECISE response:`;
           startISO,
           endISO
         });
-        const stylist = session.data.stylist;
-        const calendarId = stylistCalendars[stylist] || process.env.GCAL_CALENDAR_ID;
+        const stylistId = session.data.stylistId || session.data.stylist;
+        const calendarId = calendars[stylistId] || calendars[session.data.stylist] || process.env.GCAL_CALENDAR_ID;
         
         // Check if an event already exists for this time slot to prevent duplicates
         try {
@@ -1832,9 +1833,8 @@ Provide a SHORT, PRECISE response:`;
           startISO,
           endISO
         });
-        const stylist = session.data.stylist;
-        const stylistKey = stylist.toLowerCase().replace(/\s+/g, '_');
-        const calendarId = calendars[stylistKey] || calendars[stylist] || process.env.GCAL_CALENDAR_ID;
+        const stylistId = session.data.stylistId || session.data.stylist;
+        const calendarId = calendars[stylistId] || calendars[session.data.stylist] || process.env.GCAL_CALENDAR_ID;
         
         // Check if an event already exists for this time slot to prevent duplicates
         try {
@@ -1918,7 +1918,8 @@ Provide a SHORT, PRECISE response:`;
           date: session.data.date,
           time: session.data.time,
           eventId,
-          consent: session.data.consent
+          consent: session.data.consent,
+          clientId // Add clientId to link appointment to the correct business
         };
         
         // Validate required fields before saving
