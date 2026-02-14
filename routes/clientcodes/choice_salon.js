@@ -33,26 +33,26 @@ const QUESTION_TOPICS = [
 
 const FAQ_DATA = {
   'ask_services': [
-    { id: 'faq_serv_types', title: 'What services do you offer?', answer: 'We offer a wide range of premium services for ladies, including Haircuts, Facials, Luxury Hair Spa, Hair Color, Pedicures, Threading, Waxing, and specialized Skin Treatments. 💇‍♀️✨' },
-    { id: 'faq_serv_kids', title: 'Do you do kids haircuts?', answer: 'Yes! We provide haircuts for girls of all ages. 👧' },
-    { id: 'faq_serv_color', title: 'Do you do hair color?', answer: 'Yes, we offer professional hair coloring and highlights starting at ₹1000. 🎨' },
-    { id: 'faq_serv_spa', title: 'Do you offer hair spa?', answer: 'Yes, we offer nourishing luxury hair spa treatments starting at ₹1500. 🛁' }
+    { id: 'faq_serv_types', title: 'What services do you offer?', answer: 'We offer a wide range of premium services for ladies, including haircuts, facials, luxury hair spa, hair color, pedicures, threading, waxing, and specialized skin treatments.' },
+    { id: 'faq_serv_kids', title: 'Do you do kids haircuts?', answer: 'Yes. We provide haircuts for girls of all ages.' },
+    { id: 'faq_serv_color', title: 'Do you do hair color?', answer: 'Yes. We offer professional hair coloring and highlights starting at ₹1000.' },
+    { id: 'faq_serv_spa', title: 'Do you offer hair spa?', answer: 'Yes. We offer nourishing luxury hair spa treatments starting at ₹1500.' }
   ],
   'ask_pricing': [
-    { id: 'faq_price_haircut', title: 'How much is a haircut?', answer: 'Our precision haircut for ladies is ₹500. ✂️' },
+    { id: 'faq_price_haircut', title: 'How much is a haircut?', answer: 'Our precision haircut for ladies is ₹500.' },
     { id: 'faq_price_list', title: 'Full Price List', answer: 'Here are our popular services for ladies:\n• Precision Haircut: ₹500\n• Advanced Facial: ₹1200\n• Luxury Hair Spa: ₹1500\n• Signature Color: ₹1000\n• Refreshing Pedicure: ₹800\n• Threading (Eyebrows): ₹100' },
-    { id: 'faq_price_payment', title: 'Payment Methods', answer: 'We accept Cash, UPI, and all major Credit/Debit cards. 💳' }
+    { id: 'faq_price_payment', title: 'Payment Methods', answer: 'We accept Cash, UPI, and all major Credit/Debit cards.' }
   ],
   'ask_appointments': [
-    { id: 'faq_appt_book', title: 'How do I book?', answer: 'You can book an appointment directly here! Just select "Book Appointment" from the main menu. 🗓️' },
-    { id: 'faq_appt_cancel', title: 'Cancel/Reschedule?', answer: 'To cancel or reschedule, please contact us directly at +91 98244 74547. 📞' },
-    { id: 'faq_appt_hours', title: 'Opening Hours?', answer: 'We are open Monday to Sunday, from 10:00 AM to 8:00 PM. 🕙' },
-    { id: 'faq_appt_advance', title: 'Do I need to book ahead?', answer: 'We recommend booking at least 2 hours in advance to ensure your preferred stylist is available. ⏳' }
+    { id: 'faq_appt_book', title: 'How do I book?', answer: 'You can book an appointment directly here. Select "Book Appointment" from the main menu.' },
+    { id: 'faq_appt_cancel', title: 'Cancel/Reschedule?', answer: 'To cancel or reschedule, please contact us directly at +91 98244 74547.' },
+    { id: 'faq_appt_hours', title: 'Opening Hours?', answer: 'We are open Monday to Sunday, from 10:00 AM to 8:00 PM.' },
+    { id: 'faq_appt_advance', title: 'Do I need to book ahead?', answer: 'We recommend booking at least 2 hours in advance to ensure your preferred stylist is available.' }
   ],
   'ask_other': [
-    { id: 'faq_other_loc', title: 'Where are you located?', answer: 'We are located at: Second Floor, Raspan Arcade, 6-7, Raspan Cross Rd, opp. Gokul Party Plot, New India Colony, Nikol, Ahmedabad. 📍' },
-    { id: 'faq_other_contact', title: 'Contact Number?', answer: 'You can reach us at +91 98244 74547 for any queries. ☎️' },
-    { id: 'faq_other_safety', title: 'Safety Measures?', answer: 'We follow strict hygiene protocols, including sanitization of tools and stations after every client. 🛡️' }
+    { id: 'faq_other_loc', title: 'Where are you located?', answer: 'We are at Second Floor, Raspan Arcade, 6-7, Raspan Cross Rd, opp. Gokul Party Plot, New India Colony, Nikol, Ahmedabad.' },
+    { id: 'faq_other_contact', title: 'Contact Number?', answer: 'You can reach us at +91 98244 74547 for any queries.' },
+    { id: 'faq_other_safety', title: 'Safety Measures?', answer: 'We follow strict hygiene protocols, including sanitization of tools and stations after every client.' }
   ]
 };
 
@@ -66,14 +66,14 @@ const userSessions = {};
 
 // Salon services (Ladies Only)
 const salonServices = [
-  { id: 'service_haircut', title: '✂️ Precision Haircut', price: '500', description: 'Expert styling & finish' },
-  { id: 'service_hair_spa', title: '🛁 Luxury Hair Spa', price: '1500', description: 'Nourishing scalp treatment' },
-  { id: 'service_facial', title: '✨ Advanced Facial', price: '1200', description: 'Deep skin rejuvenation' },
-  { id: 'service_hair_color', title: '🎨 Signature Color', price: '1000', description: 'Professional ammonia-free dye' },
-  { id: 'service_pedicure', title: '🦶 Refreshing Pedic.', price: '800', description: 'Clean & relaxed feet' },
-  { id: 'service_massage', title: '💆‍♀️ Stress Relief', price: '2000', description: 'Full body relaxation' },
-  { id: 'service_threading', title: '🧵 Threading', price: '100', description: 'Eyebrows & upper lip' },
-  { id: 'service_waxing', title: '🍯 Waxing', price: '600', description: 'Smooth skin experience' }
+  { id: 'service_haircut', title: 'Precision Haircut', price: '500', description: 'Expert styling & finish' },
+  { id: 'service_hair_spa', title: 'Luxury Hair Spa', price: '1500', description: 'Nourishing scalp treatment' },
+  { id: 'service_facial', title: 'Advanced Facial', price: '1200', description: 'Deep skin rejuvenation' },
+  { id: 'service_hair_color', title: 'Signature Color', price: '1000', description: 'Professional ammonia-free dye' },
+  { id: 'service_pedicure', title: 'Refreshing Pedic.', price: '800', description: 'Clean & relaxed feet' },
+  { id: 'service_massage', title: 'Stress Relief', price: '2000', description: 'Full body relaxation' },
+  { id: 'service_threading', title: 'Threading', price: '100', description: 'Eyebrows & upper lip' },
+  { id: 'service_waxing', title: 'Waxing', price: '600', description: 'Smooth skin experience' }
 ];
 
 // Real stylists (Female focused)
@@ -479,7 +479,7 @@ async function notifyAdmins({ phoneNumberId, message, adminNumbers, token, clien
   for (const adminPhone of adminNumbers) {
     await sendWhatsAppText({
       phoneNumberId,
-      to: adminPhone,
+      to: madminPhone,
       body: message,
       token,
       io,
@@ -1004,7 +1004,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         await sendWhatsAppList({
           ...helperParams,
           to: from,
-          header: 'Book Appointment 💇‍♀️',
+        header: 'Book Appointment',
           body: 'Choose from more services:',
           button: 'Select Service',
           rows: servicesWithBack
@@ -1024,7 +1024,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       await sendWhatsAppList({
         ...helperParams,
         to: from,
-        header: 'Book Appointment 💇‍♀️',
+        header: 'Book Appointment',
         body: prevPage === 0 ? 'Which service do you need?' : 'Choose from services:',
         button: 'Select Service',
         rows: paginatedServices.services
@@ -1040,7 +1040,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       await sendWhatsAppText({
         ...helperParams,
         to: from,
-        body: 'Great choice! 😊 I\'ll connect you with our stylist for a personalized session. Please provide your name and we\'ll schedule it for you.'
+        body: 'I\'ll connect you with our stylist for a personalized session. Please provide your name and we\'ll schedule it for you.'
       });
       session.data.chosenService = 'Stylist Session';
       session.step = 'appt_name';
@@ -1070,7 +1070,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       await sendWhatsAppList({
         ...helperParams,
         to: from,
-        header: 'Book Appointment 💇‍♀️',
+        header: 'Book Appointment',
         body: 'Please select a service:',
         button: 'What to book?',
         rows: paginatedServices.services
@@ -1187,12 +1187,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       }));
       // Add navigation buttons
       if (slotResult.hasMore) {
-        buttons.push({ id: 'slot_next', title: '📄 Show More Slots' });
+        buttons.push({ id: 'slot_next', title: 'Show More Slots' });
       }
       if (page > 0) {
-        buttons.unshift({ id: 'slot_prev', title: '⏮️ Previous' });
+        buttons.unshift({ id: 'slot_prev', title: 'Previous' });
       }
-      buttons.push({ id: 'back_date', title: '🔙 Back' });
+      buttons.push({ id: 'back_date', title: 'Back' });
       await sendSmartButtonsOrList({
         ...helperParams,
         to: from,
@@ -1266,7 +1266,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       await sendWhatsAppText({
         ...helperParams,
         to: from,
-        body: `Perfect! You've chosen\n📅 ${session.data.date}, 🕐 ${time}\n\nJust a few quick details to lock it in 👇\n\nWhat's your full name?`
+        body: `You chose:\nDate: ${session.data.date}\nTime: ${time}\n\nPlease share your full name to confirm the booking.`
       });
       session.step = 'appt_name';
       res.status(200).end();
@@ -1291,12 +1291,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       }));
       // Add navigation buttons
       if (slotResult.hasMore) {
-        buttons.push({ id: 'slot_next', title: '📄 Show More Slots' });
+        buttons.push({ id: 'slot_next', title: 'Show More Slots' });
       }
       if (session.data.slotPage > 0) {
-        buttons.unshift({ id: 'slot_prev', title: '⏮️ Previous' });
+        buttons.unshift({ id: 'slot_prev', title: 'Previous' });
       }
-      buttons.push({ id: 'back_date', title: '🔙 Back' });
+      buttons.push({ id: 'back_date', title: 'Back' });
       await sendSmartButtonsOrList({
         ...helperParams,
         to: from,
@@ -1358,11 +1358,11 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
             await sendWhatsAppButtons({
               ...helperParams,
               to: from,
-              header: '📋 Confirm Booking',
+              header: 'Confirm Booking',
               body: confirmationBody,
               buttons: [
-                { id: 'confirm_with_previous_consent', title: '✅ Confirm' },
-                { id: 'change_consent_preferences', title: '🔄 Change' }
+                { id: 'confirm_with_previous_consent', title: 'Confirm' },
+                { id: 'change_consent_preferences', title: 'Change' }
               ]
             });
             session.step = 'appt_confirm_with_previous_consent';
@@ -1375,12 +1375,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         await sendWhatsAppButtons({
           ...helperParams,
           to: from,
-          header: '📋 Booking Summary',
-          body: `*Booking Details:*\n\n👤 *Name:* ${session.data.name}\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n�‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n💅 *Service:* ${session.data.chosenService || 'General Salon Session'}\n\n📱 *Phone:* ${session.data.phone}\n\n🔔 *Communication Preferences:*\nWe'd like to send you:\n• Booking reminders\n• Birthday wishes\n\nPlease choose your preference:`,
+          header: 'Booking Summary',
+          body: `Booking Details:\n\nName: ${session.data.name}\nDate: ${session.data.date}\nTime: ${session.data.time}\nStylist: ${session.data.stylist || 'Not specified'}\nService: ${session.data.chosenService || 'General Salon Session'}\n\nPhone: ${session.data.phone}\n\nCommunication Preferences:\nWe can send you:\n• Booking reminders\n• Birthday wishes\n\nPlease choose your preference:`,
           buttons: [
-            { id: 'consent_confirm_all', title: '✅ Accept All' },
-            { id: 'consent_reminders_only', title: '📅 Reminders Only' },
-            { id: 'consent_none', title: '❌ No Thanks' }
+            { id: 'consent_confirm_all', title: 'Accept All' },
+            { id: 'consent_reminders_only', title: 'Reminders Only' },
+            { id: 'consent_none', title: 'No Thanks' }
           ]
         });
         session.step = 'appt_consent';
@@ -1393,12 +1393,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         await sendWhatsAppButtons({
           ...helperParams,
           to: from,
-          header: '📋 Booking Summary',
-          body: `*Booking Details:*\n\n👤 *Name:* ${session.data.name}\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n�‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n💅 *Service:* ${session.data.chosenService || 'General Salon Session'}\n\n📱 *Phone:* ${session.data.phone}\n\n🔔 *Communication Preferences:*\nWe'd like to send you:\n• Booking reminders\n• Birthday wishes\n\nPlease choose your preference:`,
+          header: 'Booking Summary',
+          body: `Booking Details:\n\nName: ${session.data.name}\nDate: ${session.data.date}\nTime: ${session.data.time}\nStylist: ${session.data.stylist || 'Not specified'}\nService: ${session.data.chosenService || 'General Salon Session'}\n\nPhone: ${session.data.phone}\n\nCommunication Preferences:\nWe can send you:\n• Booking reminders\n• Birthday wishes\n\nPlease choose your preference:`,
           buttons: [
-            { id: 'consent_confirm_all', title: '✅ Accept All' },
-            { id: 'consent_reminders_only', title: '📅 Reminders Only' },
-            { id: 'consent_none', title: '❌ No Thanks' }
+            { id: 'consent_confirm_all', title: 'Accept All' },
+            { id: 'consent_reminders_only', title: 'Reminders Only' },
+            { id: 'consent_none', title: 'No Thanks' }
           ]
         });
         session.step = 'appt_consent';
@@ -2015,51 +2015,51 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       // Notify admins of new booking with detailed consent status
       let consentStatus = '';
       if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
-        consentStatus = '✅ Consented to appointment reminders and birthday messages';
+        consentStatus = 'Consented to appointment reminders and birthday messages';
       } else if (session.data.consent.appointmentReminders) {
-        consentStatus = '📅 Consented to appointment reminders only';
+        consentStatus = 'Consented to appointment reminders only';
       } else {
-        consentStatus = '❌ Opted out of all communications';
+        consentStatus = 'Opted out of all communications';
       }
       
-      const adminMsg = `🚨 *New Appointment Booked*\n\n` +
-                       `👤 *User Name:* ${session.data.name}\n` +
-                       `📱 *User Phone:* ${session.data.phone}\n` +
-                       `💇‍♀️ *Service:* ${session.data.chosenService || 'General Session'}\n` +
-                       `🎨 *Stylist:* ${session.data.stylist || 'Any'}\n` +
-                       `📅 *Date:* ${session.data.date}\n` +
-                       `🕒 *Time:* ${session.data.time}\n\n` +
-                       `📋 *Status:* ${consentStatus}`;
+      const adminMsg = `New Appointment Booked\n\n` +
+                       `User Name: ${session.data.name}\n` +
+                       `User Phone: ${session.data.phone}\n` +
+                       `Service: ${session.data.chosenService || 'General Session'}\n` +
+                       `Stylist: ${session.data.stylist || 'Any'}\n` +
+                       `Date: ${session.data.date}\n` +
+                       `Time: ${session.data.time}\n\n` +
+                       `Status: ${consentStatus}`;
       await notifyAdmins({ ...helperParams, message: adminMsg, adminNumbers });
       
       // Send confirmation to user based on consent
-      let confirmationBody = `✅ *Appointment Confirmed*\n\n` +
-                             `📅 *Date:* ${session.data.date}\n` +
-                             `🕒 *Time:* ${session.data.time}\n` +
-                             `💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n\n` +
-                             `📍 *Location:* Choice Salon for Ladies, Nikol\n` +
-                             `🏢 *Address:* 2nd Floor, Raspan Arcade, 6-7, Raspan Cross Rd, Nikol, Ahmedabad\n` +
-                             `🗺️ *Map:* https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
-                             `⏰ *Please arrive 15 minutes early* for your appointment.`;
+      let confirmationBody = `Appointment Confirmed\n\n` +
+                             `Date: ${session.data.date}\n` +
+                             `Time: ${session.data.time}\n` +
+                             `Stylist: ${session.data.stylist || 'Not specified'}\n\n` +
+                             `Location: Choice Salon for Ladies, Nikol\n` +
+                             `Address: 2nd Floor, Raspan Arcade, 6-7, Raspan Cross Rd, Nikol, Ahmedabad\n` +
+                             `Map: https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
+                             `Please arrive 15 minutes early for your appointment.`;
       
       // Add consent-specific confirmation message
       if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
-        confirmationBody += `\n\n🔔 *Reminders:* You'll receive updates before your appointment.`;
+        confirmationBody += `\n\nReminders: You'll receive updates before your appointment.`;
       } else if (session.data.consent.appointmentReminders) {
-        confirmationBody += `\n\n📅 *Reminders:* You'll receive updates before your appointment.`;
+        confirmationBody += `\n\nReminders: You'll receive updates before your appointment.`;
       }
       
-      confirmationBody += `\n\n❌ To stop receiving messages, reply with "STOP" at any time.`;
+      confirmationBody += `\n\nTo stop receiving messages, reply with "STOP" at any time.`;
       
       await sendWhatsAppButtons({
         ...helperParams,
         to: from,
-        header: 'Got it 👍',
+        header: 'Got it',
         body: confirmationBody,
         buttons: [
-          { id: 'book_another', title: '📅 Book Another' },
-          { id: 'user_ask_question', title: '❓ Ask Question' },
-          { id: 'home', title: '🏠 Home' }
+          { id: 'book_another', title: 'Book Another' },
+          { id: 'user_ask_question', title: 'Ask Question' },
+          { id: 'home', title: 'Home' }
         ]
       });
 
@@ -2070,16 +2070,16 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           const chosenService = (session.data.chosenService || '').toLowerCase();
           
           if (chosenService.includes('haircut')) {
-            upsellMsg = `✨ *Exclusive Upgrade for You!* ✨\n\n` +
-                        `Since you've booked a Haircut, would you like to add a *Luxury Hair Spa* or a *Deep Conditioning Treatment*? 🛁\n\n` +
-                        `These treatments are perfect for keeping your hair healthy and shiny! ✨\n\n` +
-                        `🎁 *SPECIAL OFFER:* Get *10% OFF* if you add any treatment to your haircut today! 🎟️\n\n` +
+            upsellMsg = `Exclusive Upgrade for You\n\n` +
+                        `Since you've booked a Haircut, would you like to add a Luxury Hair Spa or a Deep Conditioning Treatment?\n\n` +
+                        `These treatments help keep your hair healthy and shiny.\n\n` +
+                        `SPECIAL OFFER: Get 10% OFF if you add any treatment to your haircut today.\n\n` +
                         `Reply "YES" if you'd like to add this to your booking.`;
           } else {
             // General upsell for other services
-            upsellMsg = `✨ *Complete Your Glow-Up!* ✨\n\n` +
-                        `Would you like to add a *Refreshing Pedicure* or *Threading* to your visit? 🦶🧶\n\n` +
-                        `🎁 *SPECIAL OFFER:* Book an additional service now and get *10% OFF* on the add-on! 🎟️\n\n` +
+            upsellMsg = `Complete Your Visit\n\n` +
+                        `Would you like to add a Refreshing Pedicure or Threading to your visit?\n\n` +
+                        `SPECIAL OFFER: Book an additional service now and get 10% OFF on the add-on.\n\n` +
                         `Reply with the service name if you're interested!`;
           }
           
@@ -2107,12 +2107,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       await sendWhatsAppButtons({
         ...helperParams,
         to: from,
-        header: '📋 Appointment Summary',
-        body: `*Appointment Details:*\n\n👤 *Name:* ${session.data.name}\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n�‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n💅 *Service:* ${session.data.chosenService || 'General Salon Session'}\n\n📱 *Phone:* ${session.data.phone}\n\n🔔 *Communication Preferences:*\nWe'd like to send you:\n• Appointment reminders\n• Birthday wishes\n\nPlease choose your preference:`,
+        header: 'Appointment Summary',
+        body: `Appointment Details:\n\nName: ${session.data.name}\nDate: ${session.data.date}\nTime: ${session.data.time}\nStylist: ${session.data.stylist || 'Not specified'}\nService: ${session.data.chosenService || 'General Salon Session'}\n\nPhone: ${session.data.phone}\n\nCommunication Preferences:\nWe can send you:\n• Appointment reminders\n• Birthday wishes\n\nPlease choose your preference:`,
         buttons: [
-          { id: 'consent_confirm_all', title: '✅ Accept All' },
-          { id: 'consent_reminders_only', title: '📅 Reminders Only' },
-          { id: 'consent_none', title: '❌ No Thanks' }
+          { id: 'consent_confirm_all', title: 'Accept All' },
+          { id: 'consent_reminders_only', title: 'Reminders Only' },
+          { id: 'consent_none', title: 'No Thanks' }
         ]
       });
       session.step = 'appt_consent';
@@ -2137,8 +2137,8 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         await sendSmartButtonsOrList({
           ...helperParams,
           to: from,
-          header: '⏰ Turf Hours',
-          body: 'Great question! We\'re here to help you Monday through Saturday from 10:00 AM to 6:00 PM. We\'re closed on Sundays to give our team a well-deserved rest.\n\nIs there anything else I can help you with today? 😊',
+          header: 'Hours',
+          body: 'We\'re here Monday through Saturday from 10:00 AM to 6:00 PM. We\'re closed on Sundays.\n\nIs there anything else I can help you with today?',
           buttons: [
             { id: 'user_schedule_appt', title: 'Book Turf' },
             { id: 'user_ask_question', title: 'Ask Question' },
@@ -2149,7 +2149,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         await sendSmartButtonsOrList({
           ...helperParams,
           to: from,
-          header: '💳 Payment Options',
+          header: 'Payment Options',
           body: 'We make it easy to pay! We accept all major credit and debit cards, cash payments, and UPI transfers. We also work with select insurance providers to help cover your treatment costs.\n\nReady to schedule your appointment?',
           buttons: [
             { id: 'user_schedule_appt', title: 'Book Turf' },
@@ -2161,7 +2161,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         await sendSmartButtonsOrList({
           ...helperParams,
           to: from,
-          header: '🦷 Our Services',
+          header: 'Our Services',
           body: 'We offer comprehensive turf services including field bookings, coaching sessions, equipment rentals, tournaments, and much more! Our experienced team is here to take care of all your turf needs.\n\nWould you like to know more about a specific service or book a turf session?',
           buttons: [
             { id: 'user_schedule_appt', title: 'Book Turf' },
@@ -2173,8 +2173,8 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         await sendSmartButtonsOrList({
           ...helperParams,
           to: from,
-          header: '👨‍⚕ Talk to Our Team',
-          body: 'Sure! I’ve noted your request.\n👨‍⚕ One of our team members will reach out to you shortly.\n\nIn the meantime, you can:',
+          header: 'Talk to Our Team',
+          body: 'I’ve noted your request.\nOne of our team members will reach out to you shortly.\n\nIn the meantime, you can:',
           buttons: [
             { id: 'user_schedule_appt', title: 'Book Turf' },
             { id: 'user_ask_question', title: 'Ask Question' },
@@ -2194,7 +2194,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       await sendSmartButtonsOrList({
         ...helperParams,
         to: from,
-        header: 'Oops! I didn’t catch that 🙈',
+        header: 'I didn’t catch that',
         body: 'Please use the options below so I can guide you better:',
         buttons: [
           { id: 'faq_hours', title: 'Turf Hours' },
@@ -2865,4 +2865,3 @@ router.get('/', (req, res) => {
 
 router.handleWebhook = handleWebhook;
 module.exports = router;
-
