@@ -2670,6 +2670,9 @@ const handleWebhook = async (req, res) => {
     }
 
     const io = req.app.get('socketio');
+    const token = req.clientConfig?.whatsappToken || process.env.WHATSAPP_TOKEN;
+    const openai = new OpenAI({ apiKey: (req.clientConfig?.openaiApiKey || process.env.OPENAI_API_KEY) });
+    const helperParams = { phoneNumberId, token, io, clientId };
 
     // 1. Find or Create Conversation
     let conversation = await Conversation.findOne({ phone: from, clientId });
