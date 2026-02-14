@@ -489,7 +489,7 @@ async function notifyAdmins({ phoneNumberId, message, adminNumbers, token, clien
   for (const adminPhone of adminNumbers) {
     await sendWhatsAppText({
       phoneNumberId,
-      to: madminPhone,
+      to: adminPhone,
       body: message,
       token,
       io,
