@@ -33,15 +33,14 @@ const QUESTION_TOPICS = [
 
 const FAQ_DATA = {
   'ask_services': [
-    { id: 'faq_serv_types', title: 'What services do you offer?', answer: 'We offer a wide range of services including Haircuts, Shaving, Facials, Massage, Hair Color, and Spa treatments. 💇‍♂️💆‍♂️' },
-    { id: 'faq_serv_kids', title: 'Do you do kids haircuts?', answer: 'Yes! We provide haircuts for children of all ages. 👶' },
-    { id: 'faq_serv_color', title: 'Do you do hair color?', answer: 'Yes, we offer professional hair coloring services starting at ₹1000. 🎨' },
-    { id: 'faq_serv_massage', title: 'Do you offer massage?', answer: 'Yes, we offer relaxing massage therapies starting at ₹2000. 💆‍♂️' }
+    { id: 'faq_serv_types', title: 'What services do you offer?', answer: 'We offer a wide range of premium services for ladies, including Haircuts, Facials, Luxury Hair Spa, Hair Color, Pedicures, Threading, Waxing, and specialized Skin Treatments. 💇‍♀️✨' },
+    { id: 'faq_serv_kids', title: 'Do you do kids haircuts?', answer: 'Yes! We provide haircuts for girls of all ages. 👧' },
+    { id: 'faq_serv_color', title: 'Do you do hair color?', answer: 'Yes, we offer professional hair coloring and highlights starting at ₹1000. 🎨' },
+    { id: 'faq_serv_spa', title: 'Do you offer hair spa?', answer: 'Yes, we offer nourishing luxury hair spa treatments starting at ₹1500. 🛁' }
   ],
   'ask_pricing': [
-    { id: 'faq_price_haircut', title: 'How much is a haircut?', answer: 'Our standard haircut is ₹500. ✂️' },
-    { id: 'faq_price_shave', title: 'How much is a shave?', answer: 'Shaving services are ₹300. 🪒' },
-    { id: 'faq_price_list', title: 'Full Price List', answer: 'Here are our popular services:\n• Haircut: ₹500\n• Shaving: ₹300\n• Facial: ₹1200\n• Massage: ₹2000\n• Hair Color: ₹1000\n• Spa: ₹1500' },
+    { id: 'faq_price_haircut', title: 'How much is a haircut?', answer: 'Our precision haircut for ladies is ₹500. ✂️' },
+    { id: 'faq_price_list', title: 'Full Price List', answer: 'Here are our popular services for ladies:\n• Precision Haircut: ₹500\n• Advanced Facial: ₹1200\n• Luxury Hair Spa: ₹1500\n• Signature Color: ₹1000\n• Refreshing Pedicure: ₹800\n• Threading (Eyebrows): ₹100' },
     { id: 'faq_price_payment', title: 'Payment Methods', answer: 'We accept Cash, UPI, and all major Credit/Debit cards. 💳' }
   ],
   'ask_appointments': [
@@ -65,44 +64,42 @@ const knowledgeBase = fs.readFileSync(path.join(__dirname, '..', '..', 'utils', 
 // In-memory state store for user sessions (for MVP; replace with Redis/DB for production)
 const userSessions = {};
 
-// Salon services
+// Salon services (Ladies Only)
 const salonServices = [
   { id: 'service_haircut', title: '✂️ Precision Haircut', price: '500', description: 'Expert styling & finish' },
-  { id: 'service_shaving', title: '🪒 Royal Shave', price: '300', description: 'Classic straight razor experience' },
+  { id: 'service_hair_spa', title: '🛁 Luxury Hair Spa', price: '1500', description: 'Nourishing scalp treatment' },
   { id: 'service_facial', title: '✨ Advanced Facial', price: '1200', description: 'Deep skin rejuvenation' },
-  { id: 'service_massage', title: '💆‍♂️ Stress Relief', price: '2000', description: 'Full body relaxation' },
   { id: 'service_hair_color', title: '🎨 Signature Color', price: '1000', description: 'Professional ammonia-free dye' },
-  { id: 'service_spa', title: '🛁 Luxury Hair Spa', price: '1500', description: 'Nourishing scalp treatment' },
-  { id: 'service_beard', title: '🧔 Beard Sculpting', price: '400', description: 'Perfect shape & trim' },
-  { id: 'service_pedicure', title: '🦶 Refreshing Pedic.', price: '800', description: 'Clean & relaxed feet' }
+  { id: 'service_pedicure', title: '🦶 Refreshing Pedic.', price: '800', description: 'Clean & relaxed feet' },
+  { id: 'service_massage', title: '💆‍♀️ Stress Relief', price: '2000', description: 'Full body relaxation' },
+  { id: 'service_threading', title: '🧵 Threading', price: '100', description: 'Eyebrows & upper lip' },
+  { id: 'service_waxing', title: '🍯 Waxing', price: '600', description: 'Smooth skin experience' }
 ];
 
-// Real stylists
+// Real stylists (Female focused)
 const salonStylists = [
   { id: 'stylist_shubhashbhai', title: 'Shubhashbhai', description: 'Master Stylist (15+ yrs exp)' },
-  { id: 'stylist_moksh', title: 'Moksh', description: 'Creative Director' }
+  { id: 'stylist_sarah', title: 'Sarah', description: 'Senior Hair Specialist' }
 ];
 
 // Map stylists to their specific Google Calendar IDs
 const stylistCalendars = {
   'Shubhashbhai': process.env.GCAL_CALENDAR_ID2,
-  'Moksh': process.env.GCAL_CALENDAR_ID,
+  'Sarah': process.env.GCAL_CALENDAR_ID,
   'shubhashbhai': process.env.GCAL_CALENDAR_ID2,
-  'moksh': process.env.GCAL_CALENDAR_ID,
+  'sarah': process.env.GCAL_CALENDAR_ID,
   'stylist_shubhashbhai': process.env.GCAL_CALENDAR_ID2,
-  'stylist_moksh': process.env.GCAL_CALENDAR_ID,
-  'Stylist Sarah': process.env.GCAL_CALENDAR_ID, // Legacy support
-  'Stylist Mike': process.env.GCAL_CALENDAR_ID   // Legacy support
+  'stylist_sarah': process.env.GCAL_CALENDAR_ID
 };
 
 // Helper: get pricing info
 const salonPricing = [
-  { service: 'Haircut', price: '500' },
-  { service: 'Shaving', price: '300' },
-  { service: 'Facial', price: '1200' },
-  { service: 'Massage', price: '2000' },
-  { service: 'Hair Color', price: '1000' },
-  { service: 'Spa', price: '1500' }
+  { service: 'Precision Haircut', price: '500' },
+  { service: 'Luxury Hair Spa', price: '1500' },
+  { service: 'Advanced Facial', price: '1200' },
+  { service: 'Signature Color', price: '1000' },
+  { service: 'Refreshing Pedicure', price: '800' },
+  { service: 'Threading', price: '100' }
 ];
 
 // Helper to get or initialize user session
@@ -624,15 +621,14 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     }
   }
 
-  // If user sends a greeting, always show the main menu WhatsApp List
+  // If user sends a greeting, always show the main menu with buttons
   if (userMsgType === 'text' && userMsg && GREETING_WORDS.some(w => userMsg.trim().toLowerCase().startsWith(w))) {
-    await sendWhatsAppList({
+    await sendWhatsAppButtons({
       ...helperParams,
       to: from,
-      header: 'Welcome to Choice Salon! 💇‍♀️',
-      body: 'Hi 👋\n\nI’m your virtual assistant for Choice Salon. How can I help you today? Please select an option below:',
-      button: 'Menu',
-      rows: [
+      header: 'Choice Salon for Ladies 💅',
+      body: 'Hi 👋\n\nWelcome to Choice Salon! I’m your virtual assistant. How can I help you today? ✨',
+      buttons: [
         { id: 'user_schedule_appt', title: 'Book Appointment 📅' },
         { id: 'user_pricing', title: 'Pricing 💰' },
         { id: 'user_ask_question', title: 'Ask a Question ❓' }
@@ -781,27 +777,26 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       res.status(200).end();
       return;
     }
-    // Enhanced OpenAI prompt for precise, human-like responses
-    const prompt = `You are moksh, a friendly salon appointment assistant for SALON APPOINTMENT in ahmedabad, Uganda.
-
-IMPORTANT INSTRUCTIONS:
-1. Use the knowledge base below to provide accurate, helpful information
-2. Keep responses SHORT and PRECISE (max 2-3 sentences)
-3. Be conversational and warm, but direct to the point
-4. Use 1-2 relevant emojis maximum
-4. If asked about software/technology: "We use modern booking software for salon management and scheduling."
-5. If asked about pricing: Mention 2-3 top services only
-6. If asked about hours: "We're open Monday-Sunday, 10 AM to 8 PM"
-7. If question is NOT about salon services: Politely redirect to salon topics
-8. If unsure: "I'd be happy to connect you with our team for specific questions"
-9. End with a simple "Need anything else?" or "How can I help?"
-
-KNOWLEDGE BASE:
-${knowledgeBase}
-
-USER QUESTION: ${userMsg}
-
-Provide a SHORT, PRECISE response:`;
+    // Enhanced OpenAI prompt for precise, human-like responses (Ladies Only Salon)
+    const prompt = `You are Sarah, a friendly and professional salon assistant for Choice Salon for Ladies in Ahmedabad.
+    
+    IMPORTANT INSTRUCTIONS:
+    1. Choice Salon is EXCLUSIVELY for ladies. Do NOT mention or offer any male services (like shaving, beard trimming, etc.).
+    2. Use the knowledge base below to provide accurate, helpful information.
+    3. Keep responses SHORT and PRECISE (max 2-3 sentences).
+    4. Be conversational, warm, and feminine in tone. Use 1-2 relevant emojis ✨💇‍♀️.
+    5. If asked about services: Mention Haircuts, Hair Spa, Facials, Color, Pedicure, Threading, and Waxing.
+    6. If asked about pricing: Mention 2-3 top services (e.g., Haircut ₹500, Hair Spa ₹1500).
+    7. If asked about hours: "We're open Monday-Sunday, 10 AM to 8 PM".
+    8. If question is NOT about salon services: Politely redirect to salon topics.
+    9. End with a simple "How else can I pamper you today? ✨" or "Need help booking? 😊"
+    
+    KNOWLEDGE BASE:
+    ${knowledgeBase}
+    
+    USER QUESTION: ${userMsg}
+    
+    Provide a SHORT, PRECISE response:`;
     
     let aiResponse = '';
     try {
@@ -812,7 +807,7 @@ Provide a SHORT, PRECISE response:`;
         messages: [
           { 
             role: 'system', 
-            content: 'You are moksh, a friendly salon appointment assistant for Salon Appointment in ahmedabad. Be conversational, warm, and helpful. Use natural language, appropriate emojis, and always sound like a real person. Reference the knowledge base for accurate information.' 
+            content: 'You are Sarah, a friendly salon appointment assistant for Choice Salon for Ladies in Ahmedabad. Be conversational, warm, and helpful. Use natural language, appropriate emojis, and always sound like a real person. Reference the knowledge base for accurate information.' 
           },
           { role: 'user', content: prompt }
         ]
@@ -895,15 +890,13 @@ Provide a SHORT, PRECISE response:`;
   }
 
   if (!session.step || session.step === 'home') {
-    // WhatsApp allows only 3 buttons, so use a List for 4+ options
-    await sendWhatsAppList({
+    await sendWhatsAppButtons({
       ...helperParams,
       to: from,
-      header: 'Welcome to Choice Salon! 💇‍♀️',
-      body: 'Hi 👋\n\nI’m your virtual assistant for Choice Salon. How can I help you today? Please select an option below:',
-      button: 'Menu',
-      rows: [
-        { id: 'user_schedule_appt', title: 'Book Appointment �️' },
+      header: 'Choice Salon for Ladies 💅',
+      body: 'Hi 👋\n\nWelcome to Choice Salon! I’m your virtual assistant. How can I help you today? ✨',
+      buttons: [
+        { id: 'user_schedule_appt', title: 'Book Appointment 📅' },
         { id: 'user_pricing', title: 'Pricing 💰' },
         { id: 'user_ask_question', title: 'Ask a Question ❓' }
       ]
@@ -1031,7 +1024,7 @@ Provide a SHORT, PRECISE response:`;
       await sendWhatsAppList({
         ...helperParams,
         to: from,
-        header: 'Book Appointment ⚽',
+        header: 'Book Appointment 💇‍♀️',
         body: prevPage === 0 ? 'Which service do you need?' : 'Choose from services:',
         button: 'Select Service',
         rows: paginatedServices.services
@@ -1667,15 +1660,22 @@ Provide a SHORT, PRECISE response:`;
         consentStatus = '❌ Opted out of all communications (reused from previous)';
       }
       
-      const adminMsg = `*New Booking*\nName: ${session.data.name}\nPhone: ${session.data.phone}\nService: ${session.data.chosenService || ''}\nStylist: ${session.data.stylist || ''}\nDate: ${session.data.date}\nTime: ${session.data.time}\n${consentStatus}`;
+      const adminMsg = `🚨 *New Appointment Booked*\n\n` +
+                       `👤 *User Name:* ${session.data.name}\n` +
+                       `📱 *User Phone:* ${session.data.phone}\n` +
+                       `💇‍♀️ *Service:* ${session.data.chosenService || 'General Session'}\n` +
+                       `🎨 *Stylist:* ${session.data.stylist || 'Any'}\n` +
+                       `📅 *Date:* ${session.data.date}\n` +
+                       `🕒 *Time:* ${session.data.time}\n\n` +
+                       `📋 *Status:* ${consentStatus}`;
       await notifyAdmins({ ...helperParams, message: adminMsg, adminNumbers });
       
       // Send confirmation to user based on consent
       let confirmationBody = `✅ *Booking Confirmed*\n\n` +
                              `📅 *Date:* ${session.data.date}\n` +
                              `🕒 *Time:* ${session.data.time}\n` +
-                             `💇‍♂️ *Stylist:* ${session.data.stylist || 'Not specified'}\n\n` +
-                             `📍 *Location:* Choice Salon, Nikol\n` +
+                             `💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n\n` +
+                             `📍 *Location:* Choice Salon for Ladies, Nikol\n` +
                              `🏢 *Address:* 2nd Floor, Raspan Arcade, 6-7, Raspan Cross Rd, Nikol, Ahmedabad\n` +
                              `🗺️ *Map:* https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
                              `⏰ *Please arrive 15 minutes early* for your appointment.`;
@@ -1701,24 +1701,36 @@ Provide a SHORT, PRECISE response:`;
         ]
       });
 
-      // Send review/offer message after 10 seconds
+      // Send Upsell message after 5 minutes (300,000 ms)
       setTimeout(async () => {
         try {
-          const reviewMsg = `🎁 *SPECIAL OFFER FOR YOU!*\n\n` +
-                           `Help us grow by leaving a review on Google and get *10% OFF* your next service! 🌟\n\n` +
-                           `👉 *Leave Review Here:* https://search.google.com/local/writereview?placeid=ChIJt_WD-2yHXjkRxNf22cHgX78\n\n` +
-                           `Show this message at the counter to claim your discount! 🎟️`;
+          let upsellMsg = '';
+          const chosenService = (session.data.chosenService || '').toLowerCase();
+          
+          if (chosenService.includes('haircut')) {
+            upsellMsg = `✨ *Exclusive Upgrade for You!* ✨\n\n` +
+                        `Since you've booked a Haircut, would you like to add a *Luxury Hair Spa* or a *Deep Conditioning Treatment*? 🛁\n\n` +
+                        `These treatments are perfect for keeping your hair healthy and shiny! ✨\n\n` +
+                        `🎁 *SPECIAL OFFER:* Get *10% OFF* if you add any treatment to your haircut today! 🎟️\n\n` +
+                        `Reply "YES" if you'd like to add this to your booking.`;
+          } else {
+            // General upsell for other services
+            upsellMsg = `✨ *Complete Your Glow-Up!* ✨\n\n` +
+                        `Would you like to add a *Refreshing Pedicure* or *Threading* to your visit? 🦶🧶\n\n` +
+                        `🎁 *SPECIAL OFFER:* Book an additional service now and get *10% OFF* on the add-on! 🎟️\n\n` +
+                        `Reply with the service name if you're interested!`;
+          }
           
           await sendWhatsAppText({
             ...helperParams,
             to: from,
-            body: reviewMsg
+            body: upsellMsg
           });
-          console.log(`✅ Delayed review message sent to ${from}`);
+          console.log(`✅ Delayed upsell message sent to ${from}`);
         } catch (err) {
-          console.error(`❌ Error sending delayed review message to ${from}:`, err);
+          console.error(`❌ Error sending delayed upsell message to ${from}:`, err);
         }
-      }, 10000);
+      }, 300000);
       
       // Reset processing flag and clear session data
       session.data.isProcessing = false;
@@ -2010,15 +2022,22 @@ Provide a SHORT, PRECISE response:`;
         consentStatus = '❌ Opted out of all communications';
       }
       
-      const adminMsg = `*New Booking*\nName: ${session.data.name}\nPhone: ${session.data.phone}\nService: ${session.data.chosenService || ''}\nStylist: ${session.data.stylist || ''}\nDate: ${session.data.date}\nTime: ${session.data.time}\n${consentStatus}`;
+      const adminMsg = `🚨 *New Appointment Booked*\n\n` +
+                       `👤 *User Name:* ${session.data.name}\n` +
+                       `📱 *User Phone:* ${session.data.phone}\n` +
+                       `💇‍♀️ *Service:* ${session.data.chosenService || 'General Session'}\n` +
+                       `🎨 *Stylist:* ${session.data.stylist || 'Any'}\n` +
+                       `📅 *Date:* ${session.data.date}\n` +
+                       `🕒 *Time:* ${session.data.time}\n\n` +
+                       `📋 *Status:* ${consentStatus}`;
       await notifyAdmins({ ...helperParams, message: adminMsg, adminNumbers });
       
       // Send confirmation to user based on consent
       let confirmationBody = `✅ *Appointment Confirmed*\n\n` +
                              `📅 *Date:* ${session.data.date}\n` +
                              `🕒 *Time:* ${session.data.time}\n` +
-                             `💇‍♂️ *Stylist:* ${session.data.stylist || 'Not specified'}\n\n` +
-                             `📍 *Location:* Choice Salon, Nikol\n` +
+                             `💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n\n` +
+                             `📍 *Location:* Choice Salon for Ladies, Nikol\n` +
                              `🏢 *Address:* 2nd Floor, Raspan Arcade, 6-7, Raspan Cross Rd, Nikol, Ahmedabad\n` +
                              `🗺️ *Map:* https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
                              `⏰ *Please arrive 15 minutes early* for your appointment.`;
@@ -2044,24 +2063,36 @@ Provide a SHORT, PRECISE response:`;
         ]
       });
 
-      // Send review/offer message after 10 seconds
+      // Send Upsell message after 5 minutes (300,000 ms)
       setTimeout(async () => {
         try {
-          const reviewMsg = `🎁 *SPECIAL OFFER FOR YOU!*\n\n` +
-                           `Help us grow by leaving a review on Google and get *10% OFF* your next service! 🌟\n\n` +
-                           `👉 *Leave Review Here:* https://search.google.com/local/writereview?placeid=ChIJt_WD-2yHXjkRxNf22cHgX78\n\n` +
-                           `Show this message at the counter to claim your discount! 🎟️`;
+          let upsellMsg = '';
+          const chosenService = (session.data.chosenService || '').toLowerCase();
+          
+          if (chosenService.includes('haircut')) {
+            upsellMsg = `✨ *Exclusive Upgrade for You!* ✨\n\n` +
+                        `Since you've booked a Haircut, would you like to add a *Luxury Hair Spa* or a *Deep Conditioning Treatment*? 🛁\n\n` +
+                        `These treatments are perfect for keeping your hair healthy and shiny! ✨\n\n` +
+                        `🎁 *SPECIAL OFFER:* Get *10% OFF* if you add any treatment to your haircut today! 🎟️\n\n` +
+                        `Reply "YES" if you'd like to add this to your booking.`;
+          } else {
+            // General upsell for other services
+            upsellMsg = `✨ *Complete Your Glow-Up!* ✨\n\n` +
+                        `Would you like to add a *Refreshing Pedicure* or *Threading* to your visit? 🦶🧶\n\n` +
+                        `🎁 *SPECIAL OFFER:* Book an additional service now and get *10% OFF* on the add-on! 🎟️\n\n` +
+                        `Reply with the service name if you're interested!`;
+          }
           
           await sendWhatsAppText({
             ...helperParams,
             to: from,
-            body: reviewMsg
+            body: upsellMsg
           });
-          console.log(`✅ Delayed review message sent to ${from}`);
+          console.log(`✅ Delayed upsell message sent to ${from}`);
         } catch (err) {
-          console.error(`❌ Error sending delayed review message to ${from}:`, err);
+          console.error(`❌ Error sending delayed upsell message to ${from}:`, err);
         }
-      }, 10000);
+      }, 300000);
       
       // Reset processing flag and clear session data
       session.data.isProcessing = false;
