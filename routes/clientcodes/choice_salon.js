@@ -64,6 +64,9 @@ const knowledgeBase = fs.readFileSync(path.join(__dirname, '..', '..', 'utils', 
 // In-memory state store for user sessions (for MVP; replace with Redis/DB for production)
 const userSessions = {};
 
+let waitingForPartial = false;
+let partialDate = '';
+
 // Salon services (Ladies Only)
 const salonServices = [
   { id: 'service_haircut', title: 'Precision Haircut', price: '500', description: 'Expert styling & finish' },
