@@ -67,6 +67,13 @@ const userSessions = {};
 let waitingForPartial = false;
 let partialDate = '';
 
+async function generateWithGemini(apiKey, prompt) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+  const payload = { contents: [{ role: 'user', parts: [{ text: prompt }]}] };
+  const resp = await axios.post(url, payload, { headers: { 'Content-Type': 'application/json' } });
+  const text = resp.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  return text.trim();
+}
 // Salon services (Ladies Only)
 const salonServices = [
   { id: 'service_haircut', title: 'Precision Haircut', price: '500', description: 'Expert styling & finish' },
@@ -493,11 +500,11 @@ async function notifyAdmins({ phoneNumberId, message, adminNumbers, token, clien
 
 async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clientConfig, io }) {
   // Extract client config
-  const { whatsappToken: token, openaiApiKey, config, clientId } = clientConfig;
+  const { whatsappToken: token, geminiApikey, config, clientId } = clientConfig;
   // Merge DB config calendars with local hardcoded/env calendars
   const calendars = { ...stylistCalendars, ...(config.calendars || {}) };
   const adminNumbers = config.adminPhones || (config.adminPhone ? [config.adminPhone] : []);
-  const openai = new OpenAI({ apiKey: openaiApiKey || process.env.OPENAI_API_KEY });
+  const geminiKey = geminiApikey || process.env.GEMINI_API_KEY;
 
   const session = getUserSession(from);
   const userMsgType = messages.type;
@@ -803,31 +810,16 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     
     let aiResponse = '';
     try {
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-3.5-turbo',
-        temperature: 0.8,
-        max_tokens: 500,
-        messages: [
-          { 
-            role: 'system', 
-            content: 'You are Sarah, a friendly salon appointment assistant for Choice Salon for Ladies in Ahmedabad. Be conversational, warm, and helpful. Use natural language, appropriate emojis, and always sound like a real person. Reference the knowledge base for accurate information.' 
-          },
-          { role: 'user', content: prompt }
-        ]
-      });
-      aiResponse = completion.choices[0].message.content.trim();
-      
-      // Ensure the response ends with a friendly closing if it doesn't already
+      aiResponse = await generateWithGemini(geminiKey, prompt);
       if (!aiResponse.toLowerCase().includes('need anything else') && 
           !aiResponse.toLowerCase().includes('anything else') &&
           !aiResponse.toLowerCase().includes('help you') &&
           !aiResponse.toLowerCase().includes('assistance')) {
-        aiResponse += '\n\nNeed anything else I can help you with? 😊';
+        aiResponse += '\n\nNeed anything else I can help you with?';
       }
-      
     } catch (err) {
-      console.error('OpenAI API error:', err);
-      aiResponse = "Hi there! 😊 I'm having a bit of trouble accessing my information right now. Could you try asking your question again, or feel free to use the buttons below to get help!";
+      console.error('Gemini API error:', err);
+      aiResponse = "I'm having trouble accessing information right now. Please try again, or use the buttons below.";
     }
     
     // Always append the two main buttons
@@ -2550,31 +2542,16 @@ Please provide a helpful, human-like response:`;
     
     let aiResponse = '';
     try {
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-3.5-turbo',
-        temperature: 0.8,
-        max_tokens: 500,
-        messages: [
-          { 
-            role: 'system', 
-            content: 'You are Ava, a friendly turf booking assistant for Turf Booking in ahmedabad. Be conversational, warm, and helpful. Use natural language, appropriate emojis, and always sound like a real person. Reference the knowledge base for accurate information.' 
-          },
-          { role: 'user', content: prompt }
-        ]
-      });
-      aiResponse = completion.choices[0].message.content.trim();
-      
-      // Ensure the response ends with a friendly closing if it doesn't already
+      aiResponse = await generateWithGemini(geminiKey, prompt);
       if (!aiResponse.toLowerCase().includes('need anything else') && 
           !aiResponse.toLowerCase().includes('anything else') &&
           !aiResponse.toLowerCase().includes('help you') &&
           !aiResponse.toLowerCase().includes('assistance')) {
-        aiResponse += '\n\nNeed anything else I can help you with? 😊';
+        aiResponse += '\n\nNeed anything else I can help you with?';
       }
-      
     } catch (err) {
-      console.error('OpenAI API error:', err);
-      aiResponse = "Hi there! 😊 I'm having a bit of trouble accessing my information right now. Could you try asking your question again, or feel free to use the buttons below to get help!";
+      console.error('Gemini API error:', err);
+      aiResponse = "I'm having trouble accessing information right now. Please try again, or use the buttons below.";
     }
     
     await sendSmartButtonsOrList({
@@ -2763,89 +2740,10 @@ const handleWebhook = async (req, res) => {
       return res.status(200).end();
     }
 
-    // Admin logic: if from admin number, use Step1.js flow
-    const adminPhones = (req.clientConfig?.config?.adminPhones || ['919313045438', '919484607043']).map(p => String(p).replace(/\+/g, ''));
-    
-    if (adminPhones.includes(from.replace(/\+/g, ''))) {
-      console.log('Admin logic triggered for', from);
-      if (messages?.type === 'interactive') {
-        const itf = messages.interactive;
-        if (itf?.type === 'button_reply') {
-          const buttonId = itf?.button_reply?.id;
-          if (buttonId === '01_set_full_day_leave') {
-            await sendAdminLeaveDateList({ ...helperParams, to: messages.from, isFullDayLeave: true });
-          } else if (buttonId === '01_set_partial_leave') {
-            await sendAdminLeaveDateList({ ...helperParams, to: messages.from, isFullDayLeave: false });
-          }
-        } else if (itf?.type === 'list_reply') {
-          const selectedId = itf?.list_reply?.id;
-          if (selectedId.startsWith('02full')) {
-            // Full day leave selected for specific date
-            const date = parseDateFromId(selectedId, '02full');
-            try {
-              // Save to MongoDB
-              await DoctorScheduleOverride.create({ date, type: 'leave' });
-              // Confirm and show menu again
-              await sendLeaveConfirmationAndMenu({ ...helperParams, to: from, date });
-            } catch (err) {
-              console.error('DB save error:', err);
-            }
-          } else if (selectedId.startsWith('02partial')) {
-            partialDate = parseDateFromId(selectedId, '02partial');
-            await sendPromptForTimeSlots({ ...helperParams, to: from, date: partialDate });
-            waitingForPartial = true;
-          }
-        }
-      } else {
-        if (waitingForPartial && messages.type === 'text') {
-          const userText = messages.text.body;
-          const prompt = `
-            You are a time slot parser. Your job is to extract availability time ranges from a user's message and return them in a strict JSON format.
-            Only respond with a valid JSON array of objects. Each object must have a start and end field in 24-hour format (HH:mm), no seconds.
-            Do not include any text or explanation. Only return the array.
-            Example input: I am available from 9am to 11am and again from 3pm to 6pm.
-            Output:
-            [
-              { "start": "09:00", "end": "11:00" },
-              { "start": "15:00", "end": "18:00" }
-            ]
-            Now extract from this input:
-            "${userText}"
-          `.trim();
-          try {
-            const resp = await openai.chat.completions.create({
-              model: 'gpt-3.5-turbo',
-              temperature: 0,
-              messages: [{ role: 'user', content: prompt }]
-            });
-            const jsonString = resp.choices[0].message.content;
-            const timeSlots = JSON.parse(jsonString);
-            await DoctorScheduleOverride.create({
-              date: partialDate,
-              type: 'custom_time',
-              timeSlots
-            });
-            await sendPartialConfirmationAndMenu({
-              ...helperParams, to: from,
-              date: partialDate, timeSlots
-            });
-          } catch (err) {
-            console.error('Error parsing/saving partial slots:', err);
-          } finally {
-            waitingForPartial = false;
-            partialDate = '';
-          }
-        } else if (!waitingForPartial) {
-          await sendAdminInitialButtons({ ...helperParams, to: messages.from });
-        }
-      }
-      return res.sendStatus(200);
-    } else {
-      // All other users: user flow
-      console.log('User logic (SALON BOOKING flow) triggered for', from);
-      await handleUserChatbotFlow({ from, phoneNumberId, messages, res, clientConfig: req.clientConfig, io });
-      return;
-    }
+    // Admin leave management disabled for Choice Salon; route admins to user flow
+    console.log('User logic (SALON BOOKING flow) triggered for', from);
+    await handleUserChatbotFlow({ from, phoneNumberId, messages, res, clientConfig: req.clientConfig, io });
+    return;
   } catch (err) {
     console.error('Error extracting data from webhook payload:', err);
   }
