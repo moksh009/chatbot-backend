@@ -355,34 +355,26 @@ router.get('/', protect, async (req, res) => {
     }
     // ------------------------------------------
 
-    // 1. Aggregation for Conversations (Started per day)
-    const chatsStarted = await Conversation.aggregate([
-      { 
-        $match: { 
-          clientId, 
-          createdAt: { $gte: startDate, $lte: endDate } 
-        } 
-      },
+    // 1. Aggregation for Conversations active per day (based on messages)
+    const conversationActivity = await Message.aggregate([
       {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
-          count: { $sum: 1 }
+        $match: {
+          clientId,
+          timestamp: { $gte: startDate, $lte: endDate }
         }
-      }
-    ]);
-
-    // 2. Aggregation for Unique Users (Active per day - using updatedAt)
-    const activeUsers = await Conversation.aggregate([
-      { 
-        $match: { 
-          clientId, 
-          updatedAt: { $gte: startDate, $lte: endDate } 
-        } 
       },
       {
         $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$updatedAt" } },
-          count: { $sum: 1 } // Approximate "Unique Users active"
+          _id: {
+            date: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } },
+            conversationId: '$conversationId'
+          }
+        }
+      },
+      {
+        $group: {
+          _id: '$_id.date',
+          count: { $sum: 1 }
         }
       }
     ]);
@@ -441,8 +433,9 @@ router.get('/', protect, async (req, res) => {
 
     // Merge Data
     const stats = dates.map(date => {
-      const chatCount = chatsStarted.find(c => c._id === date)?.count || 0;
-      const userCount = activeUsers.find(c => c._id === date)?.count || 0;
+      const convActivityForDay = conversationActivity.find(c => c._id === date)?.count || 0;
+      const chatCount = convActivityForDay;
+      const userCount = convActivityForDay;
       // Use GCal count instead of DB aggregation
       const apptCount = gcalCounts[date] || 0; 
       const msgCount = messages.find(c => c._id === date)?.count || 0;
