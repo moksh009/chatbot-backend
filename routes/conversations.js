@@ -79,6 +79,20 @@ router.post('/:id/messages', protect, async (req, res) => {
   const { content } = req.body;
   
   try {
+    // Resolve client-specific WhatsApp credentials
+    const client = await Client.findOne({ clientId: req.user.clientId });
+
+    const phoneNumberId =
+      client?.phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || process.env.WHATSAPP_PHONENUMBER_ID;
+    const token =
+      client?.whatsappToken || process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_ACCESS_TOKEN;
+
+    if (!phoneNumberId || !token) {
+      return res.status(500).json({
+        message: 'WhatsApp credentials not configured for this client',
+      });
+    }
+
     const conversation = await Conversation.findOne({ 
       _id: req.params.id, 
       clientId: req.user.clientId 
@@ -89,8 +103,6 @@ router.post('/:id/messages', protect, async (req, res) => {
     }
 
     // Send to WhatsApp API
-    const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-    const token = process.env.WHATSAPP_TOKEN;
     const url = `https://graph.facebook.com/${process.env.API_VERSION || 'v18.0'}/${phoneNumberId}/messages`;
 
     await axios.post(url, {
