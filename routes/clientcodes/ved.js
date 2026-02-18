@@ -505,4 +505,20 @@ const handleShopifyLinkOpenedWebhook = async (req, res) => {
     }
 };
 
-module.exports = { handleWebhook, handleShopifyLinkOpenedWebhook };
+const handleShopifyCartUpdatedWebhook = async (req, res) => {
+    try {
+        console.log("TODO: integrate this in analytics below is the fully updated list of current cart items in given user.");
+        const lead = await AdLead.findById(req.body.uid);
+        console.log("this cart update detail is for lead phone number: ",lead.phoneNumber);
+        console.log("currently cart has: ",req.body.cartitems);
+        // cartitems is an array of string holding product names as below : 
+        /**
+         currently cart has:  (3) ['delitech-smart-wireless-video-door-phone', 'delitech-smart-wireless-video-doorbell-2mp', 'delitech-smart-wireless-video-doorbell-3mp']
+         */
+
+    } catch (error) {
+        
+    }
+};
+
+module.exports = { handleWebhook, handleShopifyLinkOpenedWebhook, handleShopifyCartUpdatedWebhook };

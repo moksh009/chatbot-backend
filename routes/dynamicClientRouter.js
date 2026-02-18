@@ -70,4 +70,16 @@ router.post('/webhook/shopify/link-opened', async (req, res) => {
   }
 });
 
+router.post('/webhook/shopify/cart-update', async (req, res) => {
+  try {
+    const { businessType } = req.clientConfig;
+    if (businessType === 'ecommerce') {
+      await vedController.handleShopifyCartUpdatedWebhook(req, res);
+    }
+  } catch (error) {
+    console.error('Error in dynamic webhook handler:', error);
+    res.sendStatus(500);
+  }
+});
+
 module.exports = router;
