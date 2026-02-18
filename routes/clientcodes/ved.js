@@ -314,6 +314,7 @@ async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientConfi
     const product = PRODUCTS[productKey];
     
     // 1. Track the Link Click (Purchase Intent) Immediately
+    var leadid="";
     try {
         const lead = await AdLead.findOneAndUpdate(
             { phoneNumber: to, clientId: clientConfig.clientId },
@@ -332,6 +333,7 @@ async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientConfi
 
         // 2. Emit Real-Time Event to Dashboard
         if (lead && io) {
+            leadid=lead._id.toString();
             io.to(`client_${clientConfig.clientId}`).emit('stats_update', {
                 type: 'link_click',
                 leadId: lead._id,
@@ -346,7 +348,7 @@ async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientConfi
     const urlObj = new URL(directUrl);
     urlObj.searchParams.set('utm_source', 'whatsapp');
     urlObj.searchParams.set('utm_medium', 'chatbot');
-    urlObj.searchParams.set('uid', lead._id.toString());
+    urlObj.searchParams.set('uid', leadid);
     
     // Send high-converting text message with the direct link
     await sendWhatsAppText({ 
