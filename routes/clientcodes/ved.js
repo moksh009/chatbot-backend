@@ -497,8 +497,8 @@ const handleWebhook = async (req, res) => {
 
 const handleShopifyLinkOpenedWebhook = async (req, res) => {
     try {
-        const lead = await AdLead.findById(req.uid);
-        lead.linkClicks += lead.linkClicks;
+        const lead = await AdLead.findById(req.body.uid);
+        lead.linkClicks += 1;
         await lead.save();
     } catch (error) {
         
