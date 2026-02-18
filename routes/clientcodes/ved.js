@@ -342,10 +342,11 @@ async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientConfi
 
     // 3. Send Direct URL (No Redirects)
     // We append UTM parameters so you can still track source in Shopify Analytics if needed
-    const directUrl = product.url + "?q=" + btoa(to.toString()); // already contains full path
+    const directUrl = product.url;
     const urlObj = new URL(directUrl);
     urlObj.searchParams.set('utm_source', 'whatsapp');
     urlObj.searchParams.set('utm_medium', 'chatbot');
+    urlObj.searchParams.set('q', btoa(to.toString()));
     
     // Send high-converting text message with the direct link
     await sendWhatsAppText({ 
