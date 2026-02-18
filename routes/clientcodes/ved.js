@@ -346,7 +346,7 @@ async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientConfi
     const urlObj = new URL(directUrl);
     urlObj.searchParams.set('utm_source', 'whatsapp');
     urlObj.searchParams.set('utm_medium', 'chatbot');
-    urlObj.searchParams.set('q', btoa(to.toString()));
+    urlObj.searchParams.set('uid', lead._id.toString());
     
     // Send high-converting text message with the direct link
     await sendWhatsAppText({ 
