@@ -495,4 +495,14 @@ const handleWebhook = async (req, res) => {
   } catch (err) { console.error('Webhook Error:', err.message); res.status(200).end(); }
 };
 
-module.exports = { handleWebhook };
+const handleShopifyLinkOpenedWebhook = async (req, res) => {
+    try {
+        const lead = await AdLead.findById(req.uid);
+        lead.linkClicks += lead.linkClicks;
+        await lead.save();
+    } catch (error) {
+        
+    }
+};
+
+module.exports = { handleWebhook, handleShopifyLinkOpenedWebhook };
