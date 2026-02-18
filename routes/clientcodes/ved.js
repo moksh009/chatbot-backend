@@ -500,8 +500,9 @@ const handleShopifyLinkOpenedWebhook = async (req, res) => {
         const lead = await AdLead.findById(req.body.uid);
         lead.linkClicks += 1;
         await lead.save();
+        return res.status(200).end();
     } catch (error) {
-        
+        return res.status(200).end();
     }
 };
 
@@ -515,9 +516,9 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
         /**
          currently cart has:  (3) ['delitech-smart-wireless-video-door-phone', 'delitech-smart-wireless-video-doorbell-2mp', 'delitech-smart-wireless-video-doorbell-3mp']
          */
-
+        return res.status(200).end();
     } catch (error) {
-        
+        return res.status(200).end();
     }
 };
 
