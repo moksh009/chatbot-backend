@@ -44,6 +44,14 @@ const adLeadSchema = new mongoose.Schema({
     details: String,
     timestamp: { type: Date, default: Date.now }
   }],
+  cartSnapshot: {
+    handles: [String],
+    titles: [String],
+    updatedAt: {
+      type: Date,
+      default: Date.now
+    }
+  },
   isOrderPlaced: {
     type: Boolean,
     default: false

@@ -431,6 +431,30 @@ router.get('/', protect, async (req, res) => {
       }
     ]);
 
+    // 7. Aggregation for Add to Cart Events (per day)
+    const cartEvents = await AdLead.aggregate([
+      { 
+        $match: { 
+          clientId,
+          'activityLog.action': 'add_to_cart',
+          'activityLog.timestamp': { $gte: startDate, $lte: endDate }
+        } 
+      },
+      { $unwind: '$activityLog' },
+      { 
+        $match: { 
+          'activityLog.action': 'add_to_cart',
+          'activityLog.timestamp': { $gte: startDate, $lte: endDate }
+        } 
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$activityLog.timestamp" } },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
     // Merge Data
     const stats = dates.map(date => {
       const convActivityForDay = conversationActivity.find(c => c._id === date)?.count || 0;
@@ -445,6 +469,7 @@ router.get('/', protect, async (req, res) => {
       const dayOrder = orders.find(c => c._id === date);
       const orderCount = dayOrder?.count || 0;
       const orderRevenue = dayOrder?.revenue || 0;
+      const cartCount = cartEvents.find(c => c._id === date)?.count || 0;
 
       return {
         date,
@@ -455,7 +480,8 @@ router.get('/', protect, async (req, res) => {
         birthdayRemindersSent: bdayCount,
         appointmentRemindersSent: apptRemCount,
         orders: orderCount,
-        revenue: orderRevenue
+        revenue: orderRevenue,
+        addToCarts: cartCount
       };
     });
 

@@ -508,16 +508,129 @@ const handleShopifyLinkOpenedWebhook = async (req, res) => {
 
 const handleShopifyCartUpdatedWebhook = async (req, res) => {
     try {
-        console.log("TODO: integrate this in analytics below is the fully updated list of current cart items in given user.");
-        const lead = await AdLead.findById(req.body.uid);
-        console.log("this cart update detail is for lead phone number: ",lead.phoneNumber);
-        console.log("currently cart has: ",req.body.cartitems);
-        // cartitems is an array of string holding product names as below : 
-        /**
-         currently cart has:  (3) ['delitech-smart-wireless-video-door-phone', 'delitech-smart-wireless-video-doorbell-2mp', 'delitech-smart-wireless-video-doorbell-3mp']
-         */
+        const { uid, cartitems, product_titles, page } = req.body;
+        const clientConfig = req.clientConfig;
+        const io = req.app.get('socketio');
+
+        if (!uid) {
+            console.log("Shopify cart update received without uid");
+            return res.status(200).end();
+        }
+
+        const lead = await AdLead.findById(uid);
+        if (!lead) {
+            console.log("Shopify cart update: lead not found for uid:", uid);
+            return res.status(200).end();
+        }
+
+        const newHandles = Array.isArray(cartitems) ? cartitems : [];
+        const newTitles = Array.isArray(product_titles) ? product_titles : [];
+        const now = new Date();
+
+        const prevHandles = Array.isArray(lead.cartSnapshot?.handles) ? lead.cartSnapshot.handles : [];
+        const prevTitles = Array.isArray(lead.cartSnapshot?.titles) ? lead.cartSnapshot.titles : [];
+
+        const prevMap = {};
+        prevHandles.forEach((h, idx) => {
+            prevMap[h] = prevTitles[idx] || h;
+        });
+
+        const newMap = {};
+        newHandles.forEach((h, idx) => {
+            newMap[h] = newTitles[idx] || h;
+        });
+
+        const added = newHandles.filter(h => !prevHandles.includes(h));
+        const removed = prevHandles.filter(h => !newHandles.includes(h));
+
+        console.log("Shopify cart update for lead phone number:", lead.phoneNumber);
+        console.log("Cart handles:", newHandles);
+
+        const activityEntries = [];
+
+        if (added.length) {
+            activityEntries.push({
+                action: 'add_to_cart',
+                details: `added: ${added.map(h => newMap[h]).join(', ')} | page: ${page || '/cart'}`
+            });
+        }
+
+        if (removed.length) {
+            activityEntries.push({
+                action: 'remove_from_cart',
+                details: `removed: ${removed.map(h => prevMap[h]).join(', ')} | page: ${page || '/cart'}`
+            });
+        }
+
+        if (!activityEntries.length) {
+            activityEntries.push({
+                action: 'add_to_cart',
+                details: `cart updated | items: ${(newTitles.length ? newTitles : newHandles).join(', ')} | page: ${page || '/cart'}`
+            });
+        }
+
+        const addCountIncrement = added.length || (activityEntries.length ? 1 : 0);
+
+        const update = {
+            $set: {
+                lastInteraction: now,
+                cartSnapshot: {
+                    handles: newHandles,
+                    titles: newTitles.length === newHandles.length ? newTitles : newHandles,
+                    updatedAt: now
+                }
+            }
+        };
+
+        if (addCountIncrement > 0) {
+            update.$inc = { addToCartCount: addCountIncrement };
+        }
+
+        if (activityEntries.length) {
+            update.$push = {
+                activityLog: {
+                    $each: activityEntries.map(entry => ({
+                        action: entry.action,
+                        details: entry.details,
+                        timestamp: now
+                    }))
+                }
+            };
+        }
+
+        const updatedLead = await AdLead.findOneAndUpdate(
+            { _id: uid },
+            update,
+            { new: true }
+        );
+
+        if (updatedLead && io) {
+            io.to(`client_${updatedLead.clientId}`).emit('stats_update', {
+                type: 'add_to_cart',
+                leadId: updatedLead._id,
+                cartitems: newHandles,
+                product_titles: newTitles
+            });
+        }
+
+        if (clientConfig && clientConfig.phoneNumberId && added.length) {
+            const context = `Added to cart: ${added.map(h => newMap[h]).join(', ')} | page: ${page || '/cart'}`;
+            try {
+                await notifyAdmin({
+                    phoneNumberId: clientConfig.phoneNumberId,
+                    userPhone: lead.phoneNumber,
+                    context,
+                    io,
+                    clientConfig
+                });
+            } catch (e) {
+                console.error("Cart admin notify error:", e);
+            }
+        }
+
         return res.status(200).end();
     } catch (error) {
+        console.error("Shopify cart update error:", error);
         return res.status(200).end();
     }
 };
