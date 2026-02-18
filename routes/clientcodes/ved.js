@@ -23,7 +23,7 @@ const PRODUCTS = {
         // Short desc for list view
         short_desc: '2K HD Video • Night Vision • 2-Way Talk',
         // Rich desc for product card
-        full_desc: 'The best value smart doorbell in India.\n\n📹 *2K HD Video* (Clear 3MP)\n🌙 *Night Vision* (See in dark)\n🗣️ *2-Way Audio* (Talk to visitors)\n🔋 *Wireless* (Rechargeable Battery)\n🔔 *Free Chime Included*',
+        full_desc: 'The best value smart doorbell in India.\n\n📹 *2K HD Video* (Clear 3MP)\n🌙 *Night Vision* (See in dark)\n🗣️ *2-Way Audio* (Talk to visitors)\n🔋 *Wireless* (Rechargeable Battery)\n🔔 *Free Installation*',
         img: IMAGES.hero_3mp,
         url: 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-3mp'
     },
@@ -32,7 +32,7 @@ const PRODUCTS = {
         name: 'Delitech Pro (5MP)',
         price: '₹6,499',
         short_desc: '5MP Ultra HD • Color Night Vision • AI Detect',
-        full_desc: 'Our most advanced security solution.\n\n💎 *5MP Ultra Clarity* (Best in class)\n🌈 *Color Night Vision*\n🤖 *AI Human Detection* (No false alerts)\n🚨 *Anti-Theft Siren Alarm*\n☁️ *Free Cloud Storage*',
+        full_desc: 'Our most advanced security solution.\n\n💎 *5MP Ultra Clarity* (Best in class)\n🌈 *Color Night Vision*\n🤖 *AI Human Detection* (No false alerts)\n🚨 *Anti-Theft Siren Alarm*\n💾 *Free SD Card + Free Installation*',
         img: IMAGES.hero_5mp,
         url: 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-5mp'
     }

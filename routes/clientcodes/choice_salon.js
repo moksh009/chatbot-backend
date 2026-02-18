@@ -40,7 +40,7 @@ const FAQ_DATA = {
   ],
   'ask_pricing': [
     { id: 'faq_price_haircut', title: 'How much is a haircut?', answer: 'Our Haircut is ₹500 and Advance Haircut is ₹700 for ladies.' },
-    { id: 'faq_price_list', title: 'Full Price List', answer: 'Here is an overview of our pricing:\n\nHaircut: from ₹500\nHair Spa: from ₹1,000\nHair Treatments (Protein / Straight): from ₹2,500\nColour (Global / Roots): from ₹1,000\nHighlights: from ₹2,000\n\nFor full details, tap on Pricing 💰 in the main menu.' },
+    { id: 'faq_price_list', title: 'Full Price List', answer: 'Here is our latest price list:\n\nHaircut\n• Haircut: ₹500/-\n• Advance Haircut: ₹700/-\n\nHair Spa\n• Normal Spa: ₹1,000/-\n• Loreal Spa: ₹1,200/-\n• Silk Protein Spa: ₹1,500/-\n• Shea Butter Spa: ₹2,000/-\n• Permanent Spa: ₹2,000/-\n\nHair Treatment\n• Nano Therapy: ₹3,500/-\n• Brazil Therapy: ₹3,000/-\n• Botox: ₹2,800/-\n• Keratin: ₹2,500/-\n• Mirror Shine Boto Smooth: ₹4,000/-\n• Loreal Straightening: ₹3,500/-\n\nColour\n• Global Color: ₹2,000/-\n• Root Touch Up: ₹1,000/-\n• Balayage Highlight: ₹2,500/-\n• Classic Highlight: ₹2,000/-' },
     { id: 'faq_price_payment', title: 'Payment Methods', answer: 'We accept Cash, UPI, and all major Credit/Debit cards.' }
   ],
   'ask_appointments': [
@@ -166,9 +166,7 @@ async function saveAndEmitMessage({ clientId, from, to, body, type, direction, s
   }
 }
 
-// Helper to send plain WhatsApp text message
 async function sendWhatsAppText({ phoneNumberId, to, body, token, io, clientId }) {
-  // DEBUG TOKEN
   if (clientId === 'choice_salon') {
       console.log(`[DEBUG sendWhatsAppText] Token: '${token ? token.substring(0, 15) + '...' : 'undefined'}' (Length: ${token ? token.length : 0})`);
   }
@@ -189,13 +187,11 @@ async function sendWhatsAppText({ phoneNumberId, to, body, token, io, clientId }
       }
     });
 
-    // Find conversation to attach message
     let conversation = await Conversation.findOne({ phone: to, clientId });
     if (!conversation) {
       conversation = await Conversation.create({ phone: to, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
     }
 
-    // Update conversation
     conversation.lastMessage = body;
     conversation.lastMessageAt = new Date();
     await conversation.save();
@@ -204,7 +200,6 @@ async function sendWhatsAppText({ phoneNumberId, to, body, token, io, clientId }
         io.to(`client_${clientId}`).emit('conversation_update', conversation);
     }
 
-    // Save and emit message
     await saveAndEmitMessage({
       clientId,
       from: 'bot',
@@ -219,6 +214,59 @@ async function sendWhatsAppText({ phoneNumberId, to, body, token, io, clientId }
 
   } catch (err) {
     console.error('Error sending WhatsApp text:', err.response?.data || err.message);
+  }
+}
+
+async function sendWhatsAppImage({ phoneNumberId, to, imageUrl, caption, token, io, clientId }) {
+  const apiVersion = process.env.API_VERSION || 'v18.0';
+  const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
+  const data = {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'image',
+    image: {
+      link: imageUrl
+    }
+  };
+  if (caption) {
+    data.image.caption = caption;
+  }
+  try {
+    await axios.post(url, data, {
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      }
+    });
+
+    let conversation = await Conversation.findOne({ phone: to, clientId });
+    if (!conversation) {
+      conversation = await Conversation.create({ phone: to, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+    }
+
+    const lastBody = caption || '[Image]';
+    conversation.lastMessage = lastBody;
+    conversation.lastMessageAt = new Date();
+    await conversation.save();
+
+    if (io) {
+        io.to(`client_${clientId}`).emit('conversation_update', conversation);
+    }
+
+    await saveAndEmitMessage({
+      clientId,
+      from: 'bot',
+      to,
+      body: lastBody,
+      type: 'image',
+      direction: 'outgoing',
+      status: 'sent',
+      conversationId: conversation._id,
+      io
+    });
+
+  } catch (err) {
+    console.error('Error sending WhatsApp image:', err.response?.data || err.message);
   }
 }
 
@@ -976,32 +1024,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       res.status(200).end();
       return;
     } else if (userMsg === 'user_pricing') {
-      let pricingMsg = '💰 *Choice Salon Services & Pricing*\n';
-      let currentCategory = '';
-      salonPricing.forEach(item => {
-        if (item.category !== currentCategory) {
-          currentCategory = item.category;
-          pricingMsg += `\n${currentCategory}\n`;
-        }
-        pricingMsg += `• ${item.service}: ${item.price}\n`;
-      });
-      pricingMsg += '\nMany of our guests love to pair haircuts with Hair Spa or Protein Treatments for the best results.\n\nReady to book your appointment? I can help you schedule right away. 😊';
-      await sendWhatsAppText({
+      await sendWhatsAppImage({
         ...helperParams,
         to: from,
-        body: pricingMsg
+        imageUrl: 'https://i.ibb.co/RpDZnkrZ/choice-salon.png',
+        caption: 'Choice Salon Services & Pricing'
       });
-      await sendSmartButtonsOrList({
-        ...helperParams,
-        to: from,
-        header: undefined,
-        body: 'What would you like to do next?',
-        buttons: [
-          { id: 'user_schedule_appt', title: 'Book Appointment' },
-          { id: 'user_home', title: 'Back to Menu' }
-        ]
-      });
-      session.step = 'home_waiting';
       res.status(200).end();
       return;
     } else {
