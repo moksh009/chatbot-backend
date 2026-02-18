@@ -60,9 +60,7 @@ router.post('/webhook', async (req, res) => {
 
 router.post('/webhook/shopify/link-opened', async (req, res) => {
   try {
-    const { businessType } = req.clienttype;
-
-    if (businessType === 'ved') {
+    if (req.clienttype === 'ved') {
       await vedController.handleShopifyLinkOpenedWebhook(req, res);
     }
   } catch (error) {
