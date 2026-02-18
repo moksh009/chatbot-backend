@@ -33,14 +33,14 @@ const QUESTION_TOPICS = [
 
 const FAQ_DATA = {
   'ask_services': [
-    { id: 'faq_serv_types', title: 'What services do you offer?', answer: 'We offer a wide range of premium services for ladies, including haircuts, facials, luxury hair spa, hair color, pedicures, threading, waxing, and specialized skin treatments.' },
+    { id: 'faq_serv_types', title: 'What services do you offer?', answer: 'We offer ladies haircuts, advanced hair spa, protein and straightening treatments, global color, highlights, and more.' },
     { id: 'faq_serv_kids', title: 'Do you do kids haircuts?', answer: 'Yes. We provide haircuts for girls of all ages.' },
-    { id: 'faq_serv_color', title: 'Do you do hair color?', answer: 'Yes. We offer professional hair coloring and highlights starting at ₹1000.' },
-    { id: 'faq_serv_spa', title: 'Do you offer hair spa?', answer: 'Yes. We offer nourishing luxury hair spa treatments starting at ₹1500.' }
+    { id: 'faq_serv_color', title: 'Do you do hair color?', answer: 'Yes. We offer professional global color and highlights with proper hair care guidance.' },
+    { id: 'faq_serv_spa', title: 'Do you offer hair spa?', answer: 'Yes. We have multiple hair spa options including Normal Spa, Loreal Spa, Silk Protein Spa, Shea Butter Spa, and Permanent Spa.' }
   ],
   'ask_pricing': [
-    { id: 'faq_price_haircut', title: 'How much is a haircut?', answer: 'Our precision haircut for ladies is ₹500.' },
-    { id: 'faq_price_list', title: 'Full Price List', answer: 'Here are our popular services for ladies:\n• Precision Haircut: ₹500\n• Advanced Facial: ₹1200\n• Luxury Hair Spa: ₹1500\n• Signature Color: ₹1000\n• Refreshing Pedicure: ₹800\n• Threading (Eyebrows): ₹100' },
+    { id: 'faq_price_haircut', title: 'How much is a haircut?', answer: 'Our Haircut is ₹500 and Advance Haircut is ₹700 for ladies.' },
+    { id: 'faq_price_list', title: 'Full Price List', answer: 'Here is an overview of our pricing:\n\nHaircut: from ₹500\nHair Spa: from ₹1,000\nHair Treatments (Protein / Straight): from ₹2,500\nColour (Global / Roots): from ₹1,000\nHighlights: from ₹2,000\n\nFor full details, tap on Pricing 💰 in the main menu.' },
     { id: 'faq_price_payment', title: 'Payment Methods', answer: 'We accept Cash, UPI, and all major Credit/Debit cards.' }
   ],
   'ask_appointments': [
@@ -74,16 +74,24 @@ async function generateWithGemini(apiKey, prompt) {
   const text = resp.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
   return text.trim();
 }
-// Salon services (Ladies Only)
 const salonServices = [
-  { id: 'service_haircut', title: 'Precision Haircut', price: '500', description: 'Expert styling & finish' },
-  { id: 'service_hair_spa', title: 'Luxury Hair Spa', price: '1500', description: 'Nourishing scalp treatment' },
-  { id: 'service_facial', title: 'Advanced Facial', price: '1200', description: 'Deep skin rejuvenation' },
-  { id: 'service_hair_color', title: 'Signature Color', price: '1000', description: 'Professional ammonia-free dye' },
-  { id: 'service_pedicure', title: 'Refreshing Pedic.', price: '800', description: 'Clean & relaxed feet' },
-  { id: 'service_massage', title: 'Stress Relief', price: '2000', description: 'Full body relaxation' },
-  { id: 'service_threading', title: 'Threading', price: '100', description: 'Eyebrows & upper lip' },
-  { id: 'service_waxing', title: 'Waxing', price: '600', description: 'Smooth skin experience' }
+  { id: 'svc_haircut_basic', title: 'Haircut', price: '500/-', description: 'Clean ladies haircut with styling', category: 'Haircut' },
+  { id: 'svc_haircut_advance', title: 'Advance Haircut', price: '700/-', description: 'Advanced cut with extra styling', category: 'Haircut' },
+  { id: 'svc_spa_normal', title: 'Normal Spa', price: '1,000/-', description: 'Relaxing basic hair spa', category: 'Hair Spa' },
+  { id: 'svc_spa_loreal', title: 'Loreal Spa', price: '1,200/-', description: 'Loreal nourishing spa', category: 'Hair Spa' },
+  { id: 'svc_spa_silk', title: 'Silk Protein Spa', price: '1,500/-', description: 'Protein-rich repair spa', category: 'Hair Spa' },
+  { id: 'svc_spa_shea', title: 'Shea Butter Spa', price: '2,000/-', description: 'Deep moisture shea spa', category: 'Hair Spa' },
+  { id: 'svc_spa_perm', title: 'Permanent Spa', price: '2,000/-', description: 'Longer-lasting spa care', category: 'Hair Spa' },
+  { id: 'svc_treat_nano', title: 'Nano Therapy', price: '3,500/-', description: 'Intense protein nano therapy', category: 'Hair Treatment' },
+  { id: 'svc_treat_brazil', title: 'Brazil Therapy', price: '3,000/-', description: 'Brazilian smoothening therapy', category: 'Hair Treatment' },
+  { id: 'svc_treat_botox', title: 'Botox', price: '2,800/-', description: 'Botox repair for damaged hair', category: 'Hair Treatment' },
+  { id: 'svc_treat_keratin', title: 'Keratin', price: '2,500/-', description: 'Keratin treatment for frizz-free hair', category: 'Hair Treatment' },
+  { id: 'svc_treat_mirror', title: 'Mirror Shine Boto Smooth', price: '4,000/-', description: 'Shiny straight hair finish', category: 'Hair Treatment' },
+  { id: 'svc_treat_loreal_straight', title: 'Loreal Straightening', price: '3,500/-', description: 'Loreal straightening service', category: 'Hair Treatment' },
+  { id: 'svc_color_global', title: 'Global Color', price: '2,000/-', description: 'Full hair global color', category: 'Colour' },
+  { id: 'svc_color_roots', title: 'Root Touch Up', price: '1,000/-', description: 'Root touch up for regrowth', category: 'Colour' },
+  { id: 'svc_color_balayage', title: 'Balayage Highlight', price: '2,500/-', description: 'Balayage highlights', category: 'Colour' },
+  { id: 'svc_color_classic', title: 'Classic Highlight', price: '2,000/-', description: 'Classic streak highlights', category: 'Colour' }
 ];
 
 // Real stylists (Female focused)
@@ -102,14 +110,24 @@ const stylistCalendars = {
   'stylist_sarah': process.env.GCAL_CALENDAR_ID
 };
 
-// Helper: get pricing info
 const salonPricing = [
-  { service: 'Precision Haircut', price: '500' },
-  { service: 'Luxury Hair Spa', price: '1500' },
-  { service: 'Advanced Facial', price: '1200' },
-  { service: 'Signature Color', price: '1000' },
-  { service: 'Refreshing Pedicure', price: '800' },
-  { service: 'Threading', price: '100' }
+  { category: 'Haircut', service: 'Haircut', price: '500/-' },
+  { category: 'Haircut', service: 'Advance Haircut', price: '700/-' },
+  { category: 'Hair Spa', service: 'Normal Spa', price: '1,000/-' },
+  { category: 'Hair Spa', service: 'Loreal Spa', price: '1,200/-' },
+  { category: 'Hair Spa', service: 'Silk Protein Spa', price: '1,500/-' },
+  { category: 'Hair Spa', service: 'Shea Butter Spa', price: '2,000/-' },
+  { category: 'Hair Spa', service: 'Permanent Spa', price: '2,000/-' },
+  { category: 'Hair Treatment', service: 'Nano Therapy', price: '3,500/-' },
+  { category: 'Hair Treatment', service: 'Brazil Therapy', price: '3,000/-' },
+  { category: 'Hair Treatment', service: 'Botox', price: '2,800/-' },
+  { category: 'Hair Treatment', service: 'Keratin', price: '2,500/-' },
+  { category: 'Hair Treatment', service: 'Mirror Shine Boto Smooth', price: '4,000/-' },
+  { category: 'Hair Treatment', service: 'Loreal Straightening', price: '3,500/-' },
+  { category: 'Colour', service: 'Global Color', price: '2,000/-' },
+  { category: 'Colour', service: 'Root Touch Up', price: '1,000/-' },
+  { category: 'Colour', service: 'Balayage Highlight', price: '2,500/-' },
+  { category: 'Colour', service: 'Classic Highlight', price: '2,000/-' }
 ];
 
 // Helper to get or initialize user session
@@ -940,12 +958,16 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       res.status(200).end();
       return;
     } else if (userMsg === 'user_pricing') {
-      // Show pricing info with better formatting
-      let pricingMsg = '💰 *Our Services & Pricing*\n\n';
-      salonPricing.forEach(item => { // Salon pricing, see array for details
+      let pricingMsg = '💰 *Choice Salon Services & Pricing*\n';
+      let currentCategory = '';
+      salonPricing.forEach(item => {
+        if (item.category !== currentCategory) {
+          currentCategory = item.category;
+          pricingMsg += `\n${currentCategory}\n`;
+        }
         pricingMsg += `• ${item.service}: ${item.price}\n`;
       });
-      pricingMsg += '\nReady to book your appointment? I can help you schedule right away! 😊';
+      pricingMsg += '\nMany of our guests love to pair haircuts with Hair Spa or Protein Treatments for the best results.\n\nReady to book your appointment? I can help you schedule right away. 😊';
       await sendWhatsAppText({
         ...helperParams,
         to: from,
@@ -983,7 +1005,6 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     }
   }
 
-  // Step 2: Service selection
   if (session.step === 'choose_service') {
     // Handle pagination for services
     if (userMsg === 'service_more') {
@@ -1043,15 +1064,32 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       return;
     }
     
-  // Handle regular service selection
   const chosen = salonServices.find(s => s.id === userMsg || s.title.toLowerCase() === (userMsg || '').toLowerCase());
   if (chosen) {
     session.data.chosenService = chosen.title;
-    // Step 3: Stylist selection
+    session.data.chosenCategory = chosen.category;
+    session.data.chosenPrice = chosen.price;
+    let upsellText = '';
+    if (chosen.category === 'Haircut') {
+      upsellText = `You selected: ${chosen.title} (${chosen.price}).\n\nMany guests love to add a Hair Spa or Protein Treatment with their haircut for smoother, healthier hair.`;
+    } else if (chosen.category === 'Hair Spa') {
+      upsellText = `You selected: ${chosen.title} (${chosen.price}).\n\nFor deeper repair, many guests also take a Protein Treatment or Keratin along with spa.`;
+    } else if (chosen.category === 'Hair Treatment') {
+      upsellText = `You selected: ${chosen.title} (${chosen.price}).\n\nFor a perfect finish, you can pair this with a fresh Haircut or Global Color.`;
+    } else if (chosen.category === 'Colour') {
+      upsellText = `You selected: ${chosen.title} (${chosen.price}).\n\nTo keep coloured hair healthy, we recommend adding a Hair Spa or Protein Treatment.`;
+    } else {
+      upsellText = `You selected: ${chosen.title} (${chosen.price}).`;
+    }
+    await sendWhatsAppText({
+      ...helperParams,
+      to: from,
+      body: upsellText
+    });
     await sendSmartButtonsOrList({
       ...helperParams,
       to: from,
-      header: `Great! Which stylist would you prefer?`,
+      header: 'Great! Which stylist would you prefer?',
       body: 'Choose your stylist:',
       buttons: salonStylists.map(s => ({ id: s.id, title: s.title }))
     });

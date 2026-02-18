@@ -119,6 +119,23 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
 
   console.log(`User: ${from} | Msg: ${userMsg} | ID: ${interactiveId}`);
 
+  const normalizedMsg = userMsg.toLowerCase();
+
+  if (userMsgType === 'text') {
+    if (normalizedMsg.includes('5mp doorbell details') || normalizedMsg.includes('5mp doorbell') || normalizedMsg.includes('5mp details')) {
+      await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', isAd: true, clientConfig });
+      return res.status(200).end();
+    }
+    if (normalizedMsg.includes('3mp doorbell details') || normalizedMsg.includes('3mp doorbell') || normalizedMsg.includes('3mp details')) {
+      await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp', isAd: true, clientConfig });
+      return res.status(200).end();
+    }
+    if (normalizedMsg.includes('want to know more')) {
+      await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
+      return res.status(200).end();
+    }
+  }
+
   // A. AD LEAD INTENT (Priority)
   // Matches "details on this product", "price", "info", "tell me more"
   const adIntentRegex = /(details|know|about|price|info).*product|tell me more/i;
