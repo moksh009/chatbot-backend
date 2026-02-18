@@ -44,15 +44,13 @@ const loadClientConfig = async (req, res, next) => {
         }
     }
 
-    // Debug logging for token selection
-    if (clientId === 'choice_salon') {
-      console.log(`[DEBUG] Token Selection for ${clientId}:`);
-      console.log(`- DB Token (root): ${clientToken ? clientToken.substring(0, 10) + '...' : 'Missing'}`);
-      console.log(`- DB Token (config): ${clientConfigToken ? clientConfigToken.substring(0, 10) + '...' : 'Missing'}`);
-      console.log(`- Env Token: ${envToken ? 'Exists' : 'Missing'}`);
-      console.log(`- Global Token: ${globalToken ? 'Exists' : 'Missing'}`);
-      console.log(`=> FINAL TOKEN USED: ${finalToken ? finalToken.substring(0, 10) + '...' : 'NONE'}`);
-    }
+    // Debug logging for token selection (all clients)
+    console.log(`[DEBUG] Token Selection for ${clientId}:`);
+    console.log(`- DB Token (root): ${clientToken ? clientToken.substring(0, 10) + '...' : 'Missing'}`);
+    console.log(`- DB Token (config): ${clientConfigToken ? clientConfigToken.substring(0, 10) + '...' : 'Missing'}`);
+    console.log(`- Env Token: ${envToken ? 'Exists' : 'Missing'}`);
+    console.log(`- Global Token: ${globalToken ? 'Exists' : 'Missing'}`);
+    console.log(`=> FINAL TOKEN USED: ${finalToken ? finalToken.substring(0, 10) + '...' : 'NONE'}`);
 
     req.clientConfig = {
       _id: client._id,
