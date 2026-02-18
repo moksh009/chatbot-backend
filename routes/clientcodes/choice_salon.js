@@ -21,7 +21,7 @@ const { DateTime } = require('luxon');
 const OpenAI = require('openai');
 
 // Detect greeting words
-const GREETING_WORDS = ['hi', 'hello', 'hey', 'hii', 'good morning', 'good afternoon', 'good evening', 'greetings'];
+const GREETING_WORDS = ['hi', 'hello', 'hey', 'hii', 'good morning', 'good afternoon', 'good evening', 'greetings', 'kem cho', 'namaste'];
 
 // Add at the top for topic list
 const QUESTION_TOPICS = [
@@ -75,23 +75,23 @@ async function generateWithGemini(apiKey, prompt) {
   return text.trim();
 }
 const salonServices = [
-  { id: 'svc_haircut_basic', title: 'Haircut', price: '500/-', description: 'Clean ladies haircut with styling', category: 'Haircut' },
-  { id: 'svc_haircut_advance', title: 'Advance Haircut', price: '700/-', description: 'Advanced cut with extra styling', category: 'Haircut' },
-  { id: 'svc_spa_normal', title: 'Normal Spa', price: '1,000/-', description: 'Relaxing basic hair spa', category: 'Hair Spa' },
-  { id: 'svc_spa_loreal', title: 'Loreal Spa', price: '1,200/-', description: 'Loreal nourishing spa', category: 'Hair Spa' },
-  { id: 'svc_spa_silk', title: 'Silk Protein Spa', price: '1,500/-', description: 'Protein-rich repair spa', category: 'Hair Spa' },
-  { id: 'svc_spa_shea', title: 'Shea Butter Spa', price: '2,000/-', description: 'Deep moisture shea spa', category: 'Hair Spa' },
-  { id: 'svc_spa_perm', title: 'Permanent Spa', price: '2,000/-', description: 'Longer-lasting spa care', category: 'Hair Spa' },
-  { id: 'svc_treat_nano', title: 'Nano Therapy', price: '3,500/-', description: 'Intense protein nano therapy', category: 'Hair Treatment' },
-  { id: 'svc_treat_brazil', title: 'Brazil Therapy', price: '3,000/-', description: 'Brazilian smoothening therapy', category: 'Hair Treatment' },
-  { id: 'svc_treat_botox', title: 'Botox', price: '2,800/-', description: 'Botox repair for damaged hair', category: 'Hair Treatment' },
-  { id: 'svc_treat_keratin', title: 'Keratin', price: '2,500/-', description: 'Keratin treatment for frizz-free hair', category: 'Hair Treatment' },
-  { id: 'svc_treat_mirror', title: 'Mirror Shine Boto Smooth', price: '4,000/-', description: 'Shiny straight hair finish', category: 'Hair Treatment' },
-  { id: 'svc_treat_loreal_straight', title: 'Loreal Straightening', price: '3,500/-', description: 'Loreal straightening service', category: 'Hair Treatment' },
-  { id: 'svc_color_global', title: 'Global Color', price: '2,000/-', description: 'Full hair global color', category: 'Colour' },
-  { id: 'svc_color_roots', title: 'Root Touch Up', price: '1,000/-', description: 'Root touch up for regrowth', category: 'Colour' },
-  { id: 'svc_color_balayage', title: 'Balayage Highlight', price: '2,500/-', description: 'Balayage highlights', category: 'Colour' },
-  { id: 'svc_color_classic', title: 'Classic Highlight', price: '2,000/-', description: 'Classic streak highlights', category: 'Colour' }
+  { id: 'svc_haircut_basic', title: 'Haircut', price: '₹500/-', description: '₹500/-', category: 'Haircut' },
+  { id: 'svc_haircut_advance', title: 'Advance Haircut', price: '₹700/-', description: '₹700/-', category: 'Haircut' },
+  { id: 'svc_spa_normal', title: 'Normal Spa', price: '₹1,000/-', description: '₹1,000/-', category: 'Hair Spa' },
+  { id: 'svc_spa_loreal', title: 'Loreal Spa', price: '₹1,200/-', description: '₹1,200/-', category: 'Hair Spa' },
+  { id: 'svc_spa_silk', title: 'Silk Protein Spa', price: '₹1,500/-', description: '₹1,500/-', category: 'Hair Spa' },
+  { id: 'svc_spa_shea', title: 'Shea Butter Spa', price: '₹2,000/-', description: '₹2,000/-', category: 'Hair Spa' },
+  { id: 'svc_spa_perm', title: 'Permanent Spa', price: '₹2,000/-', description: '₹2,000/-', category: 'Hair Spa' },
+  { id: 'svc_treat_nano', title: 'Nano Therapy', price: '₹3,500/-', description: '₹3,500/-', category: 'Hair Treatment' },
+  { id: 'svc_treat_brazil', title: 'Brazil Therapy', price: '₹3,000/-', description: '₹3,000/-', category: 'Hair Treatment' },
+  { id: 'svc_treat_botox', title: 'Botox', price: '₹2,800/-', description: '₹2,800/-', category: 'Hair Treatment' },
+  { id: 'svc_treat_keratin', title: 'Keratin', price: '₹2,500/-', description: '₹2,500/-', category: 'Hair Treatment' },
+  { id: 'svc_treat_mirror', title: 'Mirror Shine Boto Smooth', price: '₹4,000/-', description: '₹4,000/-', category: 'Hair Treatment' },
+  { id: 'svc_treat_loreal_straight', title: 'Loreal Straightening', price: '₹3,500/-', description: '₹3,500/-', category: 'Hair Treatment' },
+  { id: 'svc_color_global', title: 'Global Color', price: '₹2,000/-', description: '₹2,000/-', category: 'Colour' },
+  { id: 'svc_color_roots', title: 'Root Touch Up', price: '₹1,000/-', description: '₹1,000/-', category: 'Colour' },
+  { id: 'svc_color_balayage', title: 'Balayage Highlight', price: '₹2,500/-', description: '₹2,500/-', category: 'Colour' },
+  { id: 'svc_color_classic', title: 'Classic Highlight', price: '₹2,000/-', description: '₹2,000/-', category: 'Colour' }
 ];
 
 // Real stylists (Female focused)
@@ -781,7 +781,25 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   if (userMsgType === 'text' && (!session.step || session.step === 'home' || session.step === 'home_waiting' || session.step === 'faq_menu' || session.step === 'appt_day' || session.step === 'appt_pick_day_waiting' || session.step === 'appt_time_waiting' || session.step === 'ask_question_topic' || session.step === 'faq_await')) {
     
     // Check if user is explicitly trying to book an appointment via text
-    const bookingKeywords = ['book appointment', 'make appointment', 'schedule appointment', 'book visit', 'see stylist', 'book salon session'];
+    const bookingKeywords = [
+      'book appointment',
+      'make appointment',
+      'schedule appointment',
+      'book visit',
+      'see stylist',
+      'book salon session',
+      'appointment book kar',
+      'book karvu',
+      'booking kar',
+      'time book',
+      'slot book',
+      'haircut karvu',
+      'spa karvu',
+      'color karvu',
+      'treatment karvu',
+      'appoinment',
+      'booking chhe'
+    ];
     const userMsgLower = userMsg.toLowerCase();
     const isExplicitBooking = bookingKeywords.some(keyword => userMsgLower.includes(keyword));
     
@@ -1069,28 +1087,11 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     session.data.chosenService = chosen.title;
     session.data.chosenCategory = chosen.category;
     session.data.chosenPrice = chosen.price;
-    let upsellText = '';
-    if (chosen.category === 'Haircut') {
-      upsellText = `You selected: ${chosen.title} (${chosen.price}).\n\nMany guests love to add a Hair Spa or Protein Treatment with their haircut for smoother, healthier hair.`;
-    } else if (chosen.category === 'Hair Spa') {
-      upsellText = `You selected: ${chosen.title} (${chosen.price}).\n\nFor deeper repair, many guests also take a Protein Treatment or Keratin along with spa.`;
-    } else if (chosen.category === 'Hair Treatment') {
-      upsellText = `You selected: ${chosen.title} (${chosen.price}).\n\nFor a perfect finish, you can pair this with a fresh Haircut or Global Color.`;
-    } else if (chosen.category === 'Colour') {
-      upsellText = `You selected: ${chosen.title} (${chosen.price}).\n\nTo keep coloured hair healthy, we recommend adding a Hair Spa or Protein Treatment.`;
-    } else {
-      upsellText = `You selected: ${chosen.title} (${chosen.price}).`;
-    }
-    await sendWhatsAppText({
-      ...helperParams,
-      to: from,
-      body: upsellText
-    });
     await sendSmartButtonsOrList({
       ...helperParams,
       to: from,
-      header: 'Great! Which stylist would you prefer?',
-      body: 'Choose your stylist:',
+      header: `${chosen.title} – ${chosen.price}`,
+      body: `For ${chosen.title}, from which stylist would you prefer?`,
       buttons: salonStylists.map(s => ({ id: s.id, title: s.title }))
     });
     session.step = 'choose_stylist';
