@@ -5,12 +5,14 @@ const MessageSchema = new mongoose.Schema({
   conversationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Conversation' },
   from: { type: String, required: true },
   to: { type: String, required: true },
-  content: { type: String, required: false }, // Text content or button ID
-  type: { type: String, required: true }, // 'text', 'interactive', 'image', 'template', etc.
+  content: { type: String, required: false },
+  type: { type: String, required: true },
   direction: { type: String, enum: ['incoming', 'outgoing'], required: true },
   timestamp: { type: Date, default: Date.now },
-  messageId: { type: String }, // WhatsApp Message ID
-  status: { type: String, default: 'sent' } // sent, delivered, read, failed (for outgoing)
+  messageId: { type: String },
+  status: { type: String, default: 'sent' },
+  mediaUrl: { type: String },
+  metadata: { type: mongoose.Schema.Types.Mixed }
 });
 
 module.exports = mongoose.model('Message', MessageSchema);

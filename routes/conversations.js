@@ -76,8 +76,8 @@ router.get('/:id/messages', protect, async (req, res) => {
 // @desc    Send a message (Agent reply)
 // @access  Private
 router.post('/:id/messages', protect, async (req, res) => {
-  const { content } = req.body;
-  
+  const { content, mediaUrl, mediaType } = req.body;
+ 
   try {
     // Resolve client-specific WhatsApp credentials
     const client = await Client.findOne({ clientId: req.user.clientId });
@@ -102,16 +102,47 @@ router.post('/:id/messages', protect, async (req, res) => {
       return res.status(404).json({ message: 'Conversation not found' });
     }
 
-    // Send to WhatsApp API
     const url = `https://graph.facebook.com/${process.env.API_VERSION || 'v18.0'}/${phoneNumberId}/messages`;
 
-    await axios.post(url, {
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to: conversation.phone,
-      type: 'text',
-      text: { body: content }
-    }, {
+    let waPayload;
+    let messageType = 'text';
+
+    if (mediaUrl && mediaType === 'image') {
+      messageType = 'image';
+      waPayload = {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: conversation.phone,
+        type: 'image',
+        image: {
+          link: mediaUrl,
+          caption: content || undefined
+        }
+      };
+    } else if (mediaUrl && (mediaType === 'document' || mediaType === 'file')) {
+      messageType = 'document';
+      waPayload = {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: conversation.phone,
+        type: 'document',
+        document: {
+          link: mediaUrl,
+          caption: content || undefined
+        }
+      };
+    } else {
+      messageType = 'text';
+      waPayload = {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: conversation.phone,
+        type: 'text',
+        text: { body: content }
+      };
+    }
+
+    await axios.post(url, waPayload, {
       headers: { Authorization: `Bearer ${token}` }
     });
 
@@ -122,9 +153,10 @@ router.post('/:id/messages', protect, async (req, res) => {
       from: 'agent', // Or agent ID/Name
       to: conversation.phone,
       content,
-      type: 'text',
+      type: messageType,
       direction: 'outgoing',
-      status: 'sent'
+      status: 'sent',
+      mediaUrl: mediaUrl || undefined
     });
 
     // Update Conversation

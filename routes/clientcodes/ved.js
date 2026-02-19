@@ -51,7 +51,9 @@ async function sendWhatsAppText({ phoneNumberId, to, body, preview_url = false, 
   try {
     await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
       messaging_product: 'whatsapp',
-      to, type: 'text', text: { body, preview_url }
+      to,
+      type: 'text',
+      text: { body, preview_url }
     }, { headers: { Authorization: `Bearer ${token}` } });
     await saveAndEmitMessage({ phoneNumberId, to, body, type: 'text', io, clientConfig });
     return true;
@@ -66,7 +68,15 @@ async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, i
 
   try {
     await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
-    await saveAndEmitMessage({ phoneNumberId, to, body: `[Interactive] ${body}`, type: 'interactive', io, clientConfig });
+    await saveAndEmitMessage({
+      phoneNumberId,
+      to,
+      body: `[Interactive] ${body}`,
+      type: 'interactive',
+      io,
+      clientConfig,
+      metadata: { interactive }
+    });
     return true;
   } catch (err) {
     // Detailed error logging for debugging 401
@@ -80,13 +90,23 @@ async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, i
   }
 }
 
-async function saveAndEmitMessage({ phoneNumberId, to, body, type, io, clientConfig }) {
+async function saveAndEmitMessage({ phoneNumberId, to, body, type, io, clientConfig, metadata }) {
     try {
       const resolvedClientId = clientConfig.clientId;
       let conversation = await Conversation.findOne({ phone: to, clientId: resolvedClientId });
       if (!conversation) conversation = await Conversation.create({ phone: to, clientId: resolvedClientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
       
-      const savedMessage = await Message.create({ clientId: resolvedClientId, conversationId: conversation._id, from: 'bot', to, content: body, type, direction: 'outgoing', status: 'sent' });
+      const savedMessage = await Message.create({
+        clientId: resolvedClientId,
+        conversationId: conversation._id,
+        from: 'bot',
+        to,
+        content: body,
+        type,
+        direction: 'outgoing',
+        status: 'sent',
+        metadata
+      });
       conversation.lastMessage = body; conversation.lastMessageAt = new Date(); await conversation.save();
       if (io) { io.to(`client_${resolvedClientId}`).emit('new_message', savedMessage); }
     } catch (e) { console.error('DB Error:', e); }

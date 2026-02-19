@@ -11,9 +11,6 @@ const generateToken = (id) => {
   });
 };
 
-// @route   GET /api/auth/me
-// @desc    Get current logged in user and client config
-// @access  Private
 router.get('/me', protect, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
@@ -41,9 +38,6 @@ router.get('/me', protect, async (req, res) => {
   }
 });
 
-// @route   POST /api/auth/login
-// @desc    Auth user & get token
-// @access  Public
 router.post('/login', async (req, res) => {
   const { email, password } = req.body;
 
@@ -75,9 +69,6 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// @route   POST /api/auth/register
-// @desc    Register a new user (Admin only ideally, but public for setup)
-// @access  Public (for initial setup) or Protected
 router.post('/register', async (req, res) => {
   const { name, email, password, role, clientId } = req.body;
 
@@ -113,6 +104,10 @@ router.post('/register', async (req, res) => {
   } catch (error) {
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
+});
+
+router.get('/ping', async (_req, res) => {
+  res.json({ status: 'ok', time: Date.now() });
 });
 
 module.exports = router;

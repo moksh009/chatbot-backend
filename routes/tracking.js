@@ -16,10 +16,22 @@ router.get('/:uid/:productId', async (req, res) => {
     const io = req.app.get('socketio');
 
     try {
-        // Increment click count
+        const now = new Date();
+        const update = {
+            $inc: { linkClicks: 1 },
+            $set: { lastInteraction: now },
+            $push: {
+                activityLog: {
+                    action: 'link_click',
+                    details: `clicked product ${productId}`,
+                    timestamp: now
+                }
+            }
+        };
+
         const lead = await AdLead.findByIdAndUpdate(
             uid,
-            { $inc: { linkClicks: 1 }, lastInteraction: new Date() },
+            update,
             { new: true }
         );
 
