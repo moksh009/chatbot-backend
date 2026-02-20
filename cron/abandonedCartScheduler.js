@@ -55,12 +55,12 @@ async function sendWhatsAppText(token, phoneId, to, text) {
 }
 
 const scheduleAbandonedCartCron = () => {
-    // Run every 10 minutes
-    cron.schedule('*/10 * * * *', async () => {
+    // Run every 1 minute
+    cron.schedule('* * * * *', async () => {
         console.log('⏰ Running Abandoned Cart Scheduler...');
         try {
             const now = new Date();
-            const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+            const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
             const threeHoursAgo = new Date(now.getTime() - 3 * 60 * 60 * 1000);
             const fourHoursAgo = new Date(now.getTime() - 4 * 60 * 60 * 1000);
 
@@ -84,12 +84,12 @@ const scheduleAbandonedCartCron = () => {
                     continue;
                 }
 
-                // --- A. Abandonment Detection (2 Hours) ---
+                // --- A. Abandonment Detection (5 Minutes) ---
                 const abandonedLeads = await AdLead.find({
                     clientId: client.clientId,
                     cartStatus: 'active',
                     'cartSnapshot.items.0': { $exists: true },
-                    'cartSnapshot.updatedAt': { $lte: twoHoursAgo }
+                    'cartSnapshot.updatedAt': { $lte: fiveMinutesAgo }
                 });
 
                 for (const lead of abandonedLeads) {
