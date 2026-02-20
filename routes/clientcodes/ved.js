@@ -359,6 +359,13 @@ async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientConfi
             {
                 $inc: { linkClicks: 1 },
                 $set: { lastInteraction: new Date() },
+                $push: {
+                    activityLog: {
+                        action: 'link_click',
+                        details: `Requested link for ${productKey}`,
+                        timestamp: new Date()
+                    }
+                },
                 $setOnInsert: {
                     phoneNumber: to,
                     clientId: clientConfig.clientId,
@@ -535,11 +542,38 @@ const handleWebhook = async (req, res) => {
 
 const handleShopifyLinkOpenedWebhook = async (req, res) => {
     try {
-        const lead = await AdLead.findById(req.body.uid);
-        lead.linkClicks += 1;
-        await lead.save();
+        const { uid, page } = req.body;
+        const io = req.app.get('socketio');
+
+        if (!uid) return res.status(200).end();
+
+        const now = new Date();
+        const updatedLead = await AdLead.findOneAndUpdate(
+            { _id: uid },
+            {
+                $inc: { linkClicks: 1 },
+                $set: { lastInteraction: now },
+                $push: {
+                    activityLog: {
+                        action: 'link_click',
+                        details: `clicked link | page: ${page || 'storefront'}`,
+                        timestamp: now
+                    }
+                }
+            },
+            { new: true }
+        );
+
+        if (updatedLead && io) {
+            io.to(`client_${updatedLead.clientId}`).emit('stats_update', {
+                type: 'link_click',
+                leadId: updatedLead._id
+            });
+        }
+
         return res.status(200).end();
     } catch (error) {
+        console.error("Shopify link open tracking error:", error);
         return res.status(200).end();
     }
 };

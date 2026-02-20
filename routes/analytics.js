@@ -321,6 +321,9 @@ router.get('/receptionist-overview', protect, async (req, res) => {
 router.get('/', protect, async (req, res) => {
   try {
     const clientId = req.user.clientId;
+    const clientIdQuery = (clientId === 'code_clinic_v1')
+      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
+      : { clientId };
     const endDate = new Date();
     const startDate = new Date();
     const days = parseInt(req.query.days) || 30;
@@ -367,7 +370,7 @@ router.get('/', protect, async (req, res) => {
     const conversationActivity = await Message.aggregate([
       {
         $match: {
-          clientId,
+          ...clientIdQuery,
           timestamp: { $gte: startDate, $lte: endDate }
         }
       },
@@ -391,7 +394,7 @@ router.get('/', protect, async (req, res) => {
     const appointments = await Appointment.aggregate([
       {
         $match: {
-          clientId,
+          ...clientIdQuery,
           createdAt: { $gte: startDate, $lte: endDate }
         }
       },
@@ -407,7 +410,7 @@ router.get('/', protect, async (req, res) => {
     const messages = await Message.aggregate([
       {
         $match: {
-          clientId,
+          ...clientIdQuery,
           timestamp: { $gte: startDate, $lte: endDate }
         }
       },
@@ -420,13 +423,13 @@ router.get('/', protect, async (req, res) => {
     ]);
 
     // 5. DailyStat for reminders
-    const reminderStats = await DailyStat.find({ clientId, date: { $gte: dates[0], $lte: dates[dates.length - 1] } });
+    const reminderStats = await DailyStat.find({ ...clientIdQuery, date: { $gte: dates[0], $lte: dates[dates.length - 1] } });
 
     // 6. Aggregation for Orders (Revenue & Count)
     const orders = await Order.aggregate([
       {
         $match: {
-          clientId,
+          ...clientIdQuery,
           createdAt: { $gte: startDate, $lte: endDate }
         }
       },
@@ -443,7 +446,7 @@ router.get('/', protect, async (req, res) => {
     const cartEvents = await AdLead.aggregate([
       {
         $match: {
-          clientId,
+          ...clientIdQuery,
           'activityLog.action': 'add_to_cart',
           'activityLog.timestamp': { $gte: startDate, $lte: endDate }
         }
@@ -467,7 +470,7 @@ router.get('/', protect, async (req, res) => {
     const linkClickEvents = await AdLead.aggregate([
       {
         $match: {
-          clientId,
+          ...clientIdQuery,
           'activityLog.action': 'link_click',
           'activityLog.timestamp': { $gte: startDate, $lte: endDate }
         }
@@ -491,7 +494,7 @@ router.get('/', protect, async (req, res) => {
     const checkoutEvents = await AdLead.aggregate([
       {
         $match: {
-          clientId,
+          ...clientIdQuery,
           'activityLog.action': 'checkout_initiated',
           'activityLog.timestamp': { $gte: startDate, $lte: endDate }
         }
