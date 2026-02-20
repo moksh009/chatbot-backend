@@ -47,68 +47,68 @@ const FAQS = {
 // --- 2. API WRAPPERS ---
 
 async function sendWhatsAppText({ phoneNumberId, to, body, preview_url = false, io, clientConfig }) {
-  const token = clientConfig.whatsappToken;
-  try {
-    await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'text',
-      text: { body, preview_url }
-    }, { headers: { Authorization: `Bearer ${token}` } });
-    await saveAndEmitMessage({ phoneNumberId, to, body, type: 'text', io, clientConfig });
-    return true;
-  } catch (err) { console.error('Text Error:', err.message); return false; }
+    const token = clientConfig.whatsappToken;
+    try {
+        await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
+            messaging_product: 'whatsapp',
+            to,
+            type: 'text',
+            text: { body, preview_url }
+        }, { headers: { Authorization: `Bearer ${token}` } });
+        await saveAndEmitMessage({ phoneNumberId, to, body, type: 'text', io, clientConfig });
+        return true;
+    } catch (err) { console.error('Text Error:', err.message); return false; }
 }
 
 async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, io, clientConfig }) {
-  const token = clientConfig.whatsappToken;
-  const data = { messaging_product: 'whatsapp', to, type: 'interactive', interactive: { type: interactive.type, body: { text: body }, action: interactive.action } };
-  if (interactive.header) data.interactive.header = interactive.header;
-  if (interactive.footer) data.interactive.footer = interactive.footer;
+    const token = clientConfig.whatsappToken;
+    const data = { messaging_product: 'whatsapp', to, type: 'interactive', interactive: { type: interactive.type, body: { text: body }, action: interactive.action } };
+    if (interactive.header) data.interactive.header = interactive.header;
+    if (interactive.footer) data.interactive.footer = interactive.footer;
 
-  try {
-    await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
-    await saveAndEmitMessage({
-      phoneNumberId,
-      to,
-      body: `[Interactive] ${body}`,
-      type: 'interactive',
-      io,
-      clientConfig,
-      metadata: { interactive }
-    });
-    return true;
-  } catch (err) {
-    // Detailed error logging for debugging 401
-    if (err.response) {
-       console.error(`Interactive Error: Status ${err.response.status}`);
-       console.error(`Data:`, JSON.stringify(err.response.data, null, 2));
-    } else {
-       console.error('Interactive Error:', err.message);
+    try {
+        await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
+        await saveAndEmitMessage({
+            phoneNumberId,
+            to,
+            body: `[Interactive] ${body}`,
+            type: 'interactive',
+            io,
+            clientConfig,
+            metadata: { interactive }
+        });
+        return true;
+    } catch (err) {
+        // Detailed error logging for debugging 401
+        if (err.response) {
+            console.error(`Interactive Error: Status ${err.response.status}`);
+            console.error(`Data:`, JSON.stringify(err.response.data, null, 2));
+        } else {
+            console.error('Interactive Error:', err.message);
+        }
+        return false;
     }
-    return false;
-  }
 }
 
 async function saveAndEmitMessage({ phoneNumberId, to, body, type, io, clientConfig, metadata }) {
     try {
-      const resolvedClientId = clientConfig.clientId;
-      let conversation = await Conversation.findOne({ phone: to, clientId: resolvedClientId });
-      if (!conversation) conversation = await Conversation.create({ phone: to, clientId: resolvedClientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
-      
-      const savedMessage = await Message.create({
-        clientId: resolvedClientId,
-        conversationId: conversation._id,
-        from: 'bot',
-        to,
-        content: body,
-        type,
-        direction: 'outgoing',
-        status: 'sent',
-        metadata
-      });
-      conversation.lastMessage = body; conversation.lastMessageAt = new Date(); await conversation.save();
-      if (io) { io.to(`client_${resolvedClientId}`).emit('new_message', savedMessage); }
+        const resolvedClientId = clientConfig.clientId;
+        let conversation = await Conversation.findOne({ phone: to, clientId: resolvedClientId });
+        if (!conversation) conversation = await Conversation.create({ phone: to, clientId: resolvedClientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+
+        const savedMessage = await Message.create({
+            clientId: resolvedClientId,
+            conversationId: conversation._id,
+            from: 'bot',
+            to,
+            content: body,
+            type,
+            direction: 'outgoing',
+            status: 'sent',
+            metadata
+        });
+        conversation.lastMessage = body; conversation.lastMessageAt = new Date(); await conversation.save();
+        if (io) { io.to(`client_${resolvedClientId}`).emit('new_message', savedMessage); }
     } catch (e) { console.error('DB Error:', e); }
 }
 
@@ -127,95 +127,95 @@ async function notifyAdmin({ phoneNumberId, userPhone, context, io, clientConfig
 // --- 4. FLOW CONTROLLER ---
 
 async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, clientConfig }) {
-  const userMsgType = messages.type;
-  let userMsg = '';
-  let interactiveId = '';
+    const userMsgType = messages.type;
+    let userMsg = '';
+    let interactiveId = '';
 
-  if (userMsgType === 'text') userMsg = messages.text.body.trim();
-  else if (userMsgType === 'interactive') {
-      interactiveId = messages.interactive.button_reply?.id || messages.interactive.list_reply?.id;
-      userMsg = messages.interactive.button_reply?.title || messages.interactive.list_reply?.title;
-  }
-
-  console.log(`User: ${from} | Msg: ${userMsg} | ID: ${interactiveId}`);
-
-  const normalizedMsg = userMsg.toLowerCase();
-
-  if (userMsgType === 'text') {
-    if (normalizedMsg.includes('5mp doorbell details') || normalizedMsg.includes('5mp doorbell') || normalizedMsg.includes('5mp details')) {
-      await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', isAd: true, clientConfig });
-      return res.status(200).end();
+    if (userMsgType === 'text') userMsg = messages.text.body.trim();
+    else if (userMsgType === 'interactive') {
+        interactiveId = messages.interactive.button_reply?.id || messages.interactive.list_reply?.id;
+        userMsg = messages.interactive.button_reply?.title || messages.interactive.list_reply?.title;
     }
-    if (normalizedMsg.includes('3mp doorbell details') || normalizedMsg.includes('3mp doorbell') || normalizedMsg.includes('3mp details')) {
-      await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp', isAd: true, clientConfig });
-      return res.status(200).end();
+
+    console.log(`User: ${from} | Msg: ${userMsg} | ID: ${interactiveId}`);
+
+    const normalizedMsg = userMsg.toLowerCase();
+
+    if (userMsgType === 'text') {
+        if (normalizedMsg.includes('5mp doorbell details') || normalizedMsg.includes('5mp doorbell') || normalizedMsg.includes('5mp details')) {
+            await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', isAd: true, clientConfig });
+            return res.status(200).end();
+        }
+        if (normalizedMsg.includes('3mp doorbell details') || normalizedMsg.includes('3mp doorbell') || normalizedMsg.includes('3mp details')) {
+            await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp', isAd: true, clientConfig });
+            return res.status(200).end();
+        }
+        if (normalizedMsg.includes('want to know more')) {
+            await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
+            return res.status(200).end();
+        }
     }
-    if (normalizedMsg.includes('want to know more')) {
-      await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
-      return res.status(200).end();
+
+    // A. AD LEAD INTENT (Priority)
+    // Matches "details on this product", "price", "info", "tell me more"
+    const adIntentRegex = /(details|know|about|price|info).*product|tell me more/i;
+
+    if (userMsgType === 'text' && adIntentRegex.test(userMsg)) {
+        // Direct flow: Show 5MP Pro card immediately
+        await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', isAd: true, clientConfig });
+        return res.status(200).end();
     }
-  }
 
-  // A. AD LEAD INTENT (Priority)
-  // Matches "details on this product", "price", "info", "tell me more"
-  const adIntentRegex = /(details|know|about|price|info).*product|tell me more/i;
-  
-  if (userMsgType === 'text' && adIntentRegex.test(userMsg)) {
-      // Direct flow: Show 5MP Pro card immediately
-      await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', isAd: true, clientConfig });
-      return res.status(200).end();
-  }
+    // B. GREETING INTENT
+    const greetingRegex = /^(hi|hello|hey|hola|start|menu)/i;
+    if (userMsgType === 'text' && greetingRegex.test(userMsg)) {
+        await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
+        return res.status(200).end();
+    }
 
-  // B. GREETING INTENT
-  const greetingRegex = /^(hi|hello|hey|hola|start|menu)/i;
-  if (userMsgType === 'text' && greetingRegex.test(userMsg)) {
-      await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
-      return res.status(200).end();
-  }
+    // C. INTERACTIVE HANDLERS
+    if (interactiveId) {
+        switch (interactiveId) {
+            // --- Navigation ---
+            case 'menu_products': await sendProductSelection({ phoneNumberId, to: from, io, clientConfig }); break;
+            case 'menu_features': await sendFeatureComparison({ phoneNumberId, to: from, io, clientConfig }); break;
+            case 'menu_faqs': await sendFAQMenu({ phoneNumberId, to: from, io, clientConfig }); break;
+            case 'btn_back_menu': await sendMainMenu({ phoneNumberId, to: from, io, clientConfig }); break;
 
-  // C. INTERACTIVE HANDLERS
-  if (interactiveId) {
-      switch (interactiveId) {
-          // --- Navigation ---
-          case 'menu_products': await sendProductSelection({ phoneNumberId, to: from, io, clientConfig }); break;
-          case 'menu_features': await sendFeatureComparison({ phoneNumberId, to: from, io, clientConfig }); break;
-          case 'menu_faqs':     await sendFAQMenu({ phoneNumberId, to: from, io, clientConfig }); break;
-          case 'btn_back_menu': await sendMainMenu({ phoneNumberId, to: from, io, clientConfig }); break;
-          
-          // --- Agent Requests ---
-          case 'menu_agent': 
-              await handleAgentRequest({ phoneNumberId, to: from, context: 'General Enquiry', io, clientConfig });
-              break;
-          case 'agent_5mp':
-              await handleAgentRequest({ phoneNumberId, to: from, context: 'Interested in 5MP Pro', io, clientConfig });
-              break;
-          case 'agent_3mp':
-              await handleAgentRequest({ phoneNumberId, to: from, context: 'Interested in 3MP', io, clientConfig });
-              break;
+            // --- Agent Requests ---
+            case 'menu_agent':
+                await handleAgentRequest({ phoneNumberId, to: from, context: 'General Enquiry', io, clientConfig });
+                break;
+            case 'agent_5mp':
+                await handleAgentRequest({ phoneNumberId, to: from, context: 'Interested in 5MP Pro', io, clientConfig });
+                break;
+            case 'agent_3mp':
+                await handleAgentRequest({ phoneNumberId, to: from, context: 'Interested in 3MP', io, clientConfig });
+                break;
 
-          // --- Product Selections ---
-          case 'sel_3mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp', clientConfig }); break;
-          case 'sel_5mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', clientConfig }); break;
+            // --- Product Selections ---
+            case 'sel_3mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp', clientConfig }); break;
+            case 'sel_5mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', clientConfig }); break;
 
-          // --- Buy Actions ---
-          case 'buy_3mp': await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '3mp', clientConfig }); break;
-          case 'buy_5mp': await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '5mp', clientConfig }); break;
+            // --- Buy Actions ---
+            case 'buy_3mp': await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '3mp', clientConfig }); break;
+            case 'buy_5mp': await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '5mp', clientConfig }); break;
 
-          // --- FAQs ---
-          case 'faq_install': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'install', clientConfig }); break;
-          case 'faq_battery': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'battery', clientConfig }); break;
-          case 'faq_warranty': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'warranty', clientConfig }); break;
-          
-          default: await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
-      }
-      return res.status(200).end();
-  }
+            // --- FAQs ---
+            case 'faq_install': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'install', clientConfig }); break;
+            case 'faq_battery': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'battery', clientConfig }); break;
+            case 'faq_warranty': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'warranty', clientConfig }); break;
 
-  // D. FALLBACK
-  if (userMsgType === 'text') {
-      await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
-  }
-  res.status(200).end();
+            default: await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
+        }
+        return res.status(200).end();
+    }
+
+    // D. FALLBACK
+    if (userMsgType === 'text') {
+        await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
+    }
+    res.status(200).end();
 }
 
 // --- 5. RESPONSE TEMPLATES ---
@@ -269,7 +269,7 @@ async function sendProductSelection({ phoneNumberId, to, io, clientConfig }) {
 
 async function sendProductCard({ phoneNumberId, to, io, productKey, isAd = false, clientConfig }) {
     const product = PRODUCTS[productKey];
-    
+
     // We use 3 Buttons: Buy, Call Me, View Other
     const sent = await sendWhatsAppInteractive({
         phoneNumberId, to,
@@ -295,10 +295,10 @@ async function sendProductCard({ phoneNumberId, to, io, productKey, isAd = false
 
 async function handleAgentRequest({ phoneNumberId, to, context, io, clientConfig }) {
     // 1. Notify User (Warm, Reassuring)
-    await sendWhatsAppText({ 
-        phoneNumberId, 
-        to, 
-        body: `✅ *Request Received!* \n\nOur security expert has been notified. They will call you shortly on this number to assist you with *${context}*.\n\nIn the meantime, feel free to browse our features!`, 
+    await sendWhatsAppText({
+        phoneNumberId,
+        to,
+        body: `✅ *Request Received!* \n\nOur security expert has been notified. They will call you shortly on this number to assist you with *${context}*.\n\nIn the meantime, feel free to browse our features!`,
         io,
         clientConfig
     });
@@ -312,38 +312,38 @@ async function handleAgentRequest({ phoneNumberId, to, context, io, clientConfig
         // Increment daily stats
         await DailyStat.updateOne(
             { clientId: clientConfig.clientId, date: today },
-            { 
+            {
                 $inc: { agentRequests: 1 },
                 $setOnInsert: { clientId: clientConfig.clientId, date: today }
             },
             { upsert: true }
         );
-        
+
         // Emit socket event for real-time dashboard update
         if (io) {
-             io.to(`client_${clientConfig.clientId}`).emit('stats_update', { 
-                 type: 'agent_request', 
-                 phone: to,
-                 context
-             });
+            io.to(`client_${clientConfig.clientId}`).emit('stats_update', {
+                type: 'agent_request',
+                phone: to,
+                context
+            });
         }
-    } catch(e) { console.error('Agent Request Track Error:', e); }
+    } catch (e) { console.error('Agent Request Track Error:', e); }
 }
 
 async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientConfig }) {
     const product = PRODUCTS[productKey];
-    
+
     // 1. Track the Link Click (Purchase Intent) Immediately
-    var leadid="";
+    var leadid = "";
     try {
         const lead = await AdLead.findOneAndUpdate(
             { phoneNumber: to, clientId: clientConfig.clientId },
-            { 
-                $inc: { linkClicks: 1 }, 
+            {
+                $inc: { linkClicks: 1 },
                 $set: { lastInteraction: new Date() },
-                $setOnInsert: { 
-                    phoneNumber: to, 
-                    clientId: clientConfig.clientId, 
+                $setOnInsert: {
+                    phoneNumber: to,
+                    clientId: clientConfig.clientId,
                     createdAt: new Date(),
                     source: 'WhatsApp'
                 }
@@ -353,14 +353,14 @@ async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientConfi
 
         // 2. Emit Real-Time Event to Dashboard
         if (lead && io) {
-            leadid=lead._id.toString();
+            leadid = lead._id.toString();
             io.to(`client_${clientConfig.clientId}`).emit('stats_update', {
                 type: 'link_click',
                 leadId: lead._id,
                 productId: productKey
             });
         }
-    } catch(e) { console.error("Lead Tracking Error", e); }
+    } catch (e) { console.error("Lead Tracking Error", e); }
 
     // 3. Send Direct URL (No Redirects)
     // We append UTM parameters so you can still track source in Shopify Analytics if needed
@@ -369,12 +369,12 @@ async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientConfi
     urlObj.searchParams.set('utm_source', 'whatsapp');
     urlObj.searchParams.set('utm_medium', 'chatbot');
     urlObj.searchParams.set('uid', leadid);
-    
+
     // Send high-converting text message with the direct link
-    await sendWhatsAppText({ 
-        phoneNumberId, 
-        to, 
-        body: `⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 ${urlObj.toString()}\n\n_Cash on Delivery Available_`, 
+    await sendWhatsAppText({
+        phoneNumberId,
+        to,
+        body: `⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 ${urlObj.toString()}\n\n_Cash on Delivery Available_`,
         io,
         clientConfig
     });
@@ -447,72 +447,72 @@ async function sendFAQAnswer({ phoneNumberId, to, io, key, clientConfig }) {
 // --- ROUTER REPLACEMENT ---
 
 const handleWebhook = async (req, res) => {
-  try {
-    const entry = req.body.entry?.[0];
-    const value = entry?.changes?.[0]?.value;
-    const messages = value?.messages?.[0];
-    if (!messages) return res.status(200).end();
-
-    const clientConfig = req.clientConfig;
-    const clientId = clientConfig.clientId;
-    const io = req.app.get('socketio');
-
-    let conversation = await Conversation.findOne({ phone: messages.from, clientId });
-    if (!conversation) conversation = await Conversation.create({ phone: messages.from, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
-
-    const userMsgContent = messages.type === 'text' ? messages.text.body : (messages.interactive?.button_reply?.title || messages.interactive?.list_reply?.title || `[${messages.type}]`);
-
-    // --- SAVE INCOMING USER MESSAGE (Fix for Live Chat visibility) ---
-    // We save every user message to the database so it appears in the dashboard
-    const savedMsg = await Message.create({ 
-        clientId, 
-        conversationId: conversation._id, 
-        from: messages.from, 
-        to: 'bot', 
-        content: userMsgContent, 
-        type: messages.type, 
-        direction: 'incoming', 
-        status: 'received',
-        timestamp: new Date()
-    });
-    
-    // Emit to dashboard immediately
-    if (io) io.to(`client_${clientId}`).emit('new_message', savedMsg);
-
-    if (conversation.status === 'HUMAN_TAKEOVER') {
-        return res.status(200).end();
-    }
-
-    // --- LEAD CAPTURE ---
     try {
-        const updatedLead = await AdLead.findOneAndUpdate(
-            { phoneNumber: messages.from, clientId },
-            { 
-                $set: { 
-                    lastInteraction: new Date(),
-                    chatSummary: userMsgContent.substring(0, 50) 
-                },
-                $setOnInsert: { 
-                    phoneNumber: messages.from, 
-                    clientId, 
-                    createdAt: new Date(),
-                    source: 'WhatsApp'
-                }
-            },
-            { upsert: true, new: true }
-        );
-        
-        if (io) {
-            io.to(`client_${clientId}`).emit('stats_update', { 
-                type: 'lead_activity', 
-                lead: updatedLead 
-            });
-        }
-    } catch (e) { console.error('Lead Capture Error:', e); }
+        const entry = req.body.entry?.[0];
+        const value = entry?.changes?.[0]?.value;
+        const messages = value?.messages?.[0];
+        if (!messages) return res.status(200).end();
 
-    await handleUserChatbotFlow({ from: messages.from, phoneNumberId: value.metadata.phone_number_id, messages, res, io, clientConfig });
-    
-  } catch (err) { console.error('Webhook Error:', err.message); res.status(200).end(); }
+        const clientConfig = req.clientConfig;
+        const clientId = clientConfig.clientId;
+        const io = req.app.get('socketio');
+
+        let conversation = await Conversation.findOne({ phone: messages.from, clientId });
+        if (!conversation) conversation = await Conversation.create({ phone: messages.from, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+
+        const userMsgContent = messages.type === 'text' ? messages.text.body : (messages.interactive?.button_reply?.title || messages.interactive?.list_reply?.title || `[${messages.type}]`);
+
+        // --- SAVE INCOMING USER MESSAGE (Fix for Live Chat visibility) ---
+        // We save every user message to the database so it appears in the dashboard
+        const savedMsg = await Message.create({
+            clientId,
+            conversationId: conversation._id,
+            from: messages.from,
+            to: 'bot',
+            content: userMsgContent,
+            type: messages.type,
+            direction: 'incoming',
+            status: 'received',
+            timestamp: new Date()
+        });
+
+        // Emit to dashboard immediately
+        if (io) io.to(`client_${clientId}`).emit('new_message', savedMsg);
+
+        if (conversation.status === 'HUMAN_TAKEOVER') {
+            return res.status(200).end();
+        }
+
+        // --- LEAD CAPTURE ---
+        try {
+            const updatedLead = await AdLead.findOneAndUpdate(
+                { phoneNumber: messages.from, clientId },
+                {
+                    $set: {
+                        lastInteraction: new Date(),
+                        chatSummary: userMsgContent.substring(0, 50)
+                    },
+                    $setOnInsert: {
+                        phoneNumber: messages.from,
+                        clientId,
+                        createdAt: new Date(),
+                        source: 'WhatsApp'
+                    }
+                },
+                { upsert: true, new: true }
+            );
+
+            if (io) {
+                io.to(`client_${clientId}`).emit('stats_update', {
+                    type: 'lead_activity',
+                    lead: updatedLead
+                });
+            }
+        } catch (e) { console.error('Lead Capture Error:', e); }
+
+        await handleUserChatbotFlow({ from: messages.from, phoneNumberId: value.metadata.phone_number_id, messages, res, io, clientConfig });
+
+    } catch (err) { console.error('Webhook Error:', err.message); res.status(200).end(); }
 };
 
 const handleShopifyLinkOpenedWebhook = async (req, res) => {
@@ -655,4 +655,87 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
     }
 };
 
-module.exports = { handleWebhook, handleShopifyLinkOpenedWebhook, handleShopifyCartUpdatedWebhook };
+const handleShopifyCheckoutInitiatedWebhook = async (req, res) => {
+    try {
+        const { uid, cartitems, product_titles, total_price, page } = req.body;
+        const clientConfig = req.clientConfig;
+        const io = req.app.get('socketio');
+
+        if (!uid) {
+            console.log("Shopify checkout initiated received without uid");
+            return res.status(200).end();
+        }
+
+        const lead = await AdLead.findById(uid);
+        if (!lead) {
+            console.log("Shopify checkout initiated: lead not found for uid:", uid);
+            return res.status(200).end();
+        }
+
+        const newHandles = Array.isArray(cartitems) ? cartitems : [];
+        const newTitles = Array.isArray(product_titles) ? product_titles : [];
+        const now = new Date();
+        const priceFormatted = total_price ? (total_price / 100).toLocaleString() : '0';
+
+        console.log("Shopify checkout initiated for lead phone number:", lead.phoneNumber);
+
+        const activityEntry = {
+            action: 'checkout_initiated',
+            details: `Checkout initiated | items: ${(newTitles.length ? newTitles : newHandles).join(', ')} | total: ₹${priceFormatted} | page: ${page || '/cart'}`,
+            timestamp: now
+        };
+
+        const update = {
+            $set: {
+                lastInteraction: now,
+                cartSnapshot: {
+                    handles: newHandles,
+                    titles: newTitles.length === newHandles.length ? newTitles : newHandles,
+                    updatedAt: now
+                }
+            },
+            $inc: { checkoutInitiatedCount: 1 },
+            $push: {
+                activityLog: activityEntry
+            }
+        };
+
+        const updatedLead = await AdLead.findOneAndUpdate(
+            { _id: uid },
+            update,
+            { new: true }
+        );
+
+        if (updatedLead && io) {
+            io.to(`client_${updatedLead.clientId}`).emit('stats_update', {
+                type: 'checkout_initiated',
+                leadId: updatedLead._id,
+                cartitems: newHandles,
+                product_titles: newTitles,
+                total_price: priceFormatted
+            });
+        }
+
+        if (clientConfig && clientConfig.phoneNumberId && newHandles.length) {
+            const context = `Checkout initiated for: ${(newTitles.length ? newTitles : newHandles).join(', ')} | value: ₹${priceFormatted}`;
+            try {
+                await notifyAdmin({
+                    phoneNumberId: clientConfig.phoneNumberId,
+                    userPhone: lead.phoneNumber,
+                    context,
+                    io,
+                    clientConfig
+                });
+            } catch (e) {
+                console.error("Checkout initiated admin notify error:", e);
+            }
+        }
+
+        return res.status(200).end();
+    } catch (error) {
+        console.error("Shopify checkout initiated error:", error);
+        return res.status(200).end();
+    }
+};
+
+module.exports = { handleWebhook, handleShopifyLinkOpenedWebhook, handleShopifyCartUpdatedWebhook, handleShopifyCheckoutInitiatedWebhook };
