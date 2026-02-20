@@ -762,13 +762,20 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
         const clientConfig = req.clientConfig;
         const io = req.app.get('socketio');
 
-        // Shopify sends 'total_price', 'customer', 'line_items', 'name' (orderId)
+        // Shopify sends 'total_price', 'customer', 'line_items', 'name' (orderId), 'shipping_address', 'payment_gateway_names'
         const orderId = payload.name || `#${payload.order_number}`;
         const totalPrice = parseFloat(payload.total_price) || 0;
         const customer = payload.customer || {};
+        const shipping = payload.shipping_address || {};
+
+        // Extract payment method
+        let paymentMethod = payload.gateway || '';
+        if (payload.payment_gateway_names && payload.payment_gateway_names.length > 0) {
+            paymentMethod = payload.payment_gateway_names.join(', ');
+        }
 
         // Clean phone number (Shopify usually sends +91... or similar)
-        let phone = customer.phone || payload.phone || payload.billing_address?.phone || '';
+        let phone = customer.phone || payload.phone || shipping.phone || payload.billing_address?.phone || '';
         phone = phone.replace(/\D/g, '');
         if (phone.length > 10 && phone.startsWith('91')) phone = phone.substring(2);
 
@@ -794,7 +801,12 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
                     phone,
                     amount: totalPrice,
                     status: 'paid', // Shopify orders are usually paid if this webhook fires
-                    items
+                    items,
+                    paymentMethod,
+                    address: `${shipping.address1 || ''} ${shipping.address2 || ''}`.trim() || 'N/A',
+                    city: shipping.city || '',
+                    state: shipping.province || '',
+                    zip: shipping.zip || ''
                 },
                 $setOnInsert: {
                     clientId: clientConfig.clientId,
@@ -840,7 +852,8 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
 
         // 4. Notify Admin on WhatsApp
         if (clientConfig && clientConfig.phoneNumberId) {
-            const alertBody = `🎉 *NEW ORDER RECEIVED!* 🎉\n\n🆔 *Order:* ${orderId}\n👤 *Customer:* ${customerName}\n📱 *Phone:* +91${phone}\n💰 *Value:* ₹${totalPrice.toLocaleString()}\n\n📦 *Items:*\n${itemNames}`;
+            const addressString = shipping.address1 ? `${shipping.address1}, ${shipping.city || ''}` : 'No address provided';
+            const alertBody = `🎉 *NEW ORDER RECEIVED!* 🎉\n\n🆔 *Order:* ${orderId}\n👤 *Customer:* ${customerName}\n📱 *Phone:* +91${phone}\n💰 *Value:* ₹${totalPrice.toLocaleString()}\n💳 *Payment:* ${paymentMethod || 'N/A'}\n📍 *Address:* ${addressString}\n\n📦 *Items:*\n${itemNames}`;
 
             // Re-using text message sender functionality
             try {

@@ -7,6 +7,11 @@ const OrderSchema = new mongoose.Schema({
   phone: { type: String },
   amount: { type: Number, required: true },
   status: { type: String, default: 'pending' }, // pending, paid, shipped
+  paymentMethod: { type: String }, // e.g., 'Cash on Delivery (COD)'
+  address: { type: String },
+  city: { type: String },
+  state: { type: String },
+  zip: { type: String },
   items: [{
     name: String,
     quantity: Number,
