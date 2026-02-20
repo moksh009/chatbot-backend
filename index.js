@@ -11,7 +11,6 @@ const { DateTime } = require('luxon');
 const birthdayData = require('./birthdays.json');
 const { sendBirthdayWishWithImage } = require('./utils/sendBirthdayMessage');
 const scheduleAbandonedCartCron = require('./cron/abandonedCartScheduler');
-const { sendBirthdayWishWithImage } = require('./utils/sendBirthdayMessage');
 // Load environment variables
 // dotenv.config();
 // Silence .env missing warning
