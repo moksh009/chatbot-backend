@@ -103,14 +103,38 @@ const scheduleAbandonedCartCron = () => {
                     // Wait, Facebook API templates with dynamic URLs require a button parameter if the URL has a variable tail
                     // Let's pass the uid as the dynamic URL parameter for the button.
                     try {
+                        const templateName = 'abandoned_cart_remind';
+
+                        // Extract highest quality image from the most recent item added
+                        let imageUrl = 'https://www.delitech.in/cdn/shop/files/WhatsAppImage2024-03-24at1.25.10PM.jpg';
+                        if (lead.cartSnapshot && lead.cartSnapshot.items && lead.cartSnapshot.items.length > 0) {
+                            const firstItemWithImage = lead.cartSnapshot.items.find(i => i.image);
+                            if (firstItemWithImage && firstItemWithImage.image) {
+                                // Ensure standard protocol
+                                imageUrl = firstItemWithImage.image.startsWith('//') ? `https:${firstItemWithImage.image}` : firstItemWithImage.image;
+                            }
+                        }
+
+                        // Build dynamic product link / cart restore link
+                        const restoreUrlSuffix = `${lead._id.toString()}?uid=${lead._id.toString()}&restore=true`;
+
                         const templateData = {
                             messaging_product: 'whatsapp',
                             to: lead.phoneNumber,
                             type: 'template',
                             template: {
-                                name: 'abandoned_cart_reminder',
-                                language: { code: 'en' },
+                                name: templateName,
+                                language: { code: 'en_US' },
                                 components: [
+                                    {
+                                        type: 'header',
+                                        parameters: [
+                                            {
+                                                type: 'image',
+                                                image: { link: imageUrl }
+                                            }
+                                        ]
+                                    },
                                     {
                                         type: 'body',
                                         parameters: variables
@@ -119,7 +143,7 @@ const scheduleAbandonedCartCron = () => {
                                         type: 'button',
                                         sub_type: 'url',
                                         index: '0',
-                                        parameters: [{ type: 'text', text: lead._id.toString() }]
+                                        parameters: [{ type: 'text', text: restoreUrlSuffix }]
                                     }
                                 ]
                             }

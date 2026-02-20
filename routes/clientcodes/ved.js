@@ -607,7 +607,12 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
         const newHandles = Array.isArray(cartitems) ? cartitems : [];
         const newTitles = Array.isArray(product_titles) ? product_titles : [];
         const cartItemsArray = Array.isArray(items) && items.length > 0
-            ? items.map(i => ({ variant_id: Number(i.variant_id || i.id), quantity: Number(i.quantity) }))
+            ? items.map(i => ({
+                variant_id: Number(i.variant_id || i.id),
+                quantity: Number(i.quantity),
+                image: i.image || i.featured_image?.url || '',
+                url: i.url || ''
+            }))
             : newHandles.map(id => ({ variant_id: id, quantity: 1 }));
         const now = new Date();
 
