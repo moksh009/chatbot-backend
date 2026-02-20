@@ -67,13 +67,26 @@ router.get('/realtime', protect, async (req, res) => {
     ]);
     const totalCheckouts = checkoutResult[0]?.totalCheckouts || 0;
 
+    // 7. Abandoned vs Recovered Carts
+    const abandonedCarts = await AdLead.countDocuments({
+      ...query,
+      cartStatus: 'abandoned'
+    });
+
+    const recoveredCarts = await AdLead.countDocuments({
+      ...query,
+      cartStatus: 'recovered'
+    });
+
     res.json({
       leads: { total: totalLeads, newToday: newLeadsToday },
       orders: { count: orderCountToday, revenue: revenueToday },
       linkClicks: totalLinkClicks,
       agentRequests: agentRequestsToday,
       addToCarts: totalAddCarts,
-      checkouts: totalCheckouts
+      checkouts: totalCheckouts,
+      abandonedCarts,
+      recoveredCarts
     });
 
   } catch (error) {
@@ -163,6 +176,43 @@ router.get('/top-leads', protect, async (req, res) => {
     res.json(leads);
   } catch (error) {
     console.error('Top Leads Error:', error);
+    res.status(500).json({ message: 'Server Error' });
+  }
+});
+
+// GET /api/analytics/top-products
+router.get('/top-products', protect, async (req, res) => {
+  try {
+    const clientId = req.user.clientId;
+    const query = (clientId === 'code_clinic_v1')
+      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
+      : { clientId };
+
+    const topProducts = await Order.aggregate([
+      { $match: query },
+      { $unwind: "$items" },
+      {
+        $group: {
+          _id: "$items.name",
+          totalRevenue: { $sum: { $multiply: ["$items.price", "$items.quantity"] } },
+          totalSold: { $sum: "$items.quantity" }
+        }
+      },
+      { $sort: { totalRevenue: -1 } },
+      { $limit: 10 },
+      {
+        $project: {
+          name: "$_id",
+          revenue: "$totalRevenue",
+          sold: "$totalSold",
+          _id: 0
+        }
+      }
+    ]);
+
+    res.json(topProducts);
+  } catch (error) {
+    console.error('Top Products Error:', error);
     res.status(500).json({ message: 'Server Error' });
   }
 });

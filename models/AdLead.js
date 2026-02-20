@@ -60,6 +60,17 @@ const adLeadSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  cartStatus: {
+    type: String,
+    enum: ['active', 'abandoned', 'recovered', 'purchased'],
+    default: 'active'
+  },
+  abandonedCartReminderSentAt: Date,
+  abandonedCartRecoveredAt: Date,
+  adminFollowUpTriggered: {
+    type: Boolean,
+    default: false
+  },
   source: {
     type: String,
     default: 'Direct'

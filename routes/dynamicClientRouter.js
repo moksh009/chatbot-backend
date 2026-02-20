@@ -120,4 +120,32 @@ router.get('/orders', async (req, res) => {
   }
 });
 
+router.get('/cart-snapshot', async (req, res) => {
+  try {
+    const { businessType } = req.clientConfig;
+    if (businessType === 'ecommerce') {
+      await vedController.getCartSnapshot(req, res);
+    } else {
+      res.status(400).json({ error: 'Not supported for this business type' });
+    }
+  } catch (error) {
+    console.error('Error fetching cart snapshot:', error);
+    res.status(500).json({ error: 'Failed' });
+  }
+});
+
+router.get('/restore-cart', async (req, res) => {
+  try {
+    const { businessType } = req.clientConfig;
+    if (businessType === 'ecommerce') {
+      await vedController.restoreCart(req, res);
+    } else {
+      res.status(400).send('Not supported for this business type');
+    }
+  } catch (error) {
+    console.error('Error restoring cart:', error);
+    res.status(500).send('Failed');
+  }
+});
+
 module.exports = router;

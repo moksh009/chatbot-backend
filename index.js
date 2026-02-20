@@ -10,6 +10,8 @@ const { DateTime } = require('luxon');
 // Load birthday data
 const birthdayData = require('./birthdays.json');
 const { sendBirthdayWishWithImage } = require('./utils/sendBirthdayMessage');
+const scheduleAbandonedCartCron = require('./cron/abandonedCartScheduler');
+const { sendBirthdayWishWithImage } = require('./utils/sendBirthdayMessage');
 // Load environment variables
 // dotenv.config();
 // Silence .env missing warning
@@ -93,10 +95,14 @@ app.get('/homepage', (req, res) => {
 });
 
 
+// Keep-alive endpoint
 app.post('/keepalive-ping', (req, res) => {
   console.log(`🔁 Keepalive ping received at ${new Date().toISOString()}`);
   res.status(200).json({ message: 'Server is awake!' });
 });
+
+// Initialize Abandoned Cart Cron Job
+scheduleAbandonedCartCron();
 
 // Cron job for birthday messages and appointment reminders
 cron.schedule('0 6 * * *', async () => {
@@ -108,7 +114,7 @@ cron.schedule('0 6 * * *', async () => {
 
   try {
     const clients = await Client.find({});
-    
+
     for (const client of clients) {
       const token = client.whatsappToken || process.env.WHATSAPP_TOKEN;
       const phoneid = client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
@@ -161,10 +167,10 @@ cron.schedule('0 6 * * *', async () => {
             failureCount++;
             console.log(`❌ Birthday message failed for ${user.number}: ${result.reason || result.error}`);
           }
-          
+
           // Add delay to avoid rate limiting
           await new Promise(resolve => setTimeout(resolve, 500));
-          
+
         } catch (error) {
           console.error(`❌ Error sending birthday message to ${user.number}:`, error.message);
           failureCount++;
@@ -204,7 +210,7 @@ cron.schedule('0 7 * * *', async () => {
       if (client.config && client.config.calendars) {
         calendarIds.push(...Object.values(client.config.calendars));
       }
-      
+
       // Fallback for legacy Code Clinic if no specific calendars configured
       if (clientId === 'code_clinic_v1' && calendarIds.length === 0) {
         if (process.env.GCAL_CALENDAR_ID) calendarIds.push(process.env.GCAL_CALENDAR_ID);
@@ -215,9 +221,9 @@ cron.schedule('0 7 * * *', async () => {
 
       const startOfDay = istNow.startOf('day').toISO();
       const endOfDay = istNow.endOf('day').toISO();
-      
+
       let allTodayEvents = [];
-      
+
       for (const calendarId of calendarIds) {
         try {
           const events = await listEvents(startOfDay, endOfDay, calendarId);
@@ -240,16 +246,16 @@ cron.schedule('0 7 * * *', async () => {
             // console.log(`⚠️ No phone number found in event: ${event.summary}`);
             continue;
           }
-          
+
           const phoneNumber = phoneMatch[1].trim();
-          
+
           // Check if user has consented to appointment reminders
           // Note: We search by phone. In future, we might want to verify they are associated with this client.
-          const userAppointments = await Appointment.find({ 
+          const userAppointments = await Appointment.find({
             phone: phoneNumber,
-            'consent.appointmentReminders': true 
+            'consent.appointmentReminders': true
           });
-          
+
           if (userAppointments.length === 0) {
             // console.log(`❌ Skipping reminder for ${phoneNumber} - user has not consented to reminders`);
             continue;
@@ -259,7 +265,7 @@ cron.schedule('0 7 * * *', async () => {
           const nameMatch = event.description?.match(/Name:\s*([^\n]+)/);
           const serviceMatch = event.description?.match(/Service:\s*([^\n]+)/);
           const doctorMatch = event.description?.match(/Doctor:\s*([^\n]+)/);
-          
+
           const patientName = nameMatch ? nameMatch[1].trim() : "Valued Customer";
           const service = serviceMatch ? serviceMatch[1].trim() : "Service";
           const doctor = doctorMatch ? doctorMatch[1].trim() : "Our Professional";
@@ -284,11 +290,11 @@ cron.schedule('0 7 * * *', async () => {
               { $inc: { appointmentRemindersSent: 1 }, $setOnInsert: { clientId: clientId, date: dateStr } },
               { upsert: true }
             );
-          } catch {}
-          
+          } catch { }
+
           // Add delay to avoid rate limiting
           await new Promise(resolve => setTimeout(resolve, 1000));
-          
+
         } catch (error) {
           console.error(`❌ Error processing appointment reminder for event ${event.id}:`, error.message);
         }
@@ -300,7 +306,7 @@ cron.schedule('0 7 * * *', async () => {
     console.error('❌ Error in appointment reminder cron job:', err);
   }
 });
-  
+
 const http = require('http');
 const socketIo = require('socket.io');
 
@@ -318,7 +324,7 @@ app.set('socketio', io);
 
 io.on('connection', (socket) => {
   console.log('New client connected:', socket.id);
-  
+
   // Join room based on clientId if provided in query
   const clientId = socket.handshake.query.clientId;
   if (clientId) {
