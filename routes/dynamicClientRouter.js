@@ -94,4 +94,30 @@ router.post('/webhook/shopify/checkout-initiated', async (req, res) => {
   }
 });
 
+router.post('/webhook/shopify/order-complete', async (req, res) => {
+  try {
+    const { businessType } = req.clientConfig;
+    if (businessType === 'ecommerce') {
+      await vedController.handleShopifyOrderCompleteWebhook(req, res);
+    }
+  } catch (error) {
+    console.error('Error in dynamic webhook handler:', error);
+    res.sendStatus(500);
+  }
+});
+
+router.get('/orders', async (req, res) => {
+  try {
+    const { businessType } = req.clientConfig;
+    if (businessType === 'ecommerce') {
+      await vedController.getClientOrders(req, res);
+    } else {
+      res.status(400).json({ error: 'Orders not supported for this business type' });
+    }
+  } catch (error) {
+    console.error('Error fetching client orders:', error);
+    res.status(500).json({ error: 'Failed to fetch orders' });
+  }
+});
+
 module.exports = router;

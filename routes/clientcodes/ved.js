@@ -7,6 +7,7 @@ const Conversation = require('../../models/Conversation');
 const Message = require('../../models/Message');
 const Client = require('../../models/Client');
 const DailyStat = require('../../models/DailyStat');
+const Order = require('../../models/Order');
 
 // --- 1. ASSETS & DATA (Polished) ---
 const IMAGES = {
@@ -16,21 +17,28 @@ const IMAGES = {
 };
 
 const PRODUCTS = {
+    '2mp': {
+        id: 'prod_2mp',
+        name: 'Delitech Smart Wireless Video Doorbell (2MP)',
+        price: '₹5,499',
+        short_desc: '1080p HD Video • Night Vision • 2-Way Talk',
+        full_desc: 'The best value smart doorbell in India.\n\n📹 *1080p HD Video*\n🌙 *Night Vision* (See in dark)\n🗣️ *2-Way Audio* (Talk to visitors)\n🔋 *Wireless* (Rechargeable Battery)\n🔔 *Free Installation*',
+        img: IMAGES.hero_3mp, // reuse 3mp image or generic
+        url: 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-2mp'
+    },
     '3mp': {
         id: 'prod_3mp',
-        name: 'Delitech Doorbell (3MP)',
+        name: 'Delitech Smart Wireless Video Doorbell Plus (3MP)',
         price: '₹5,999',
-        // Short desc for list view
         short_desc: '2K HD Video • Night Vision • 2-Way Talk',
-        // Rich desc for product card
-        full_desc: 'The best value smart doorbell in India.\n\n📹 *2K HD Video* (Clear 3MP)\n🌙 *Night Vision* (See in dark)\n🗣️ *2-Way Audio* (Talk to visitors)\n🔋 *Wireless* (Rechargeable Battery)\n🔔 *Free Installation*',
+        full_desc: 'Enhanced clarity smart doorbell.\n\n📹 *2K HD Video* (Clear 3MP)\n🌙 *Night Vision* (See in dark)\n🗣️ *2-Way Audio* (Talk to visitors)\n🔋 *Wireless* (Rechargeable Battery)\n🔔 *Free Installation*',
         img: IMAGES.hero_3mp,
         url: 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-3mp'
     },
     '5mp': {
         id: 'prod_5mp',
-        name: 'Delitech Pro (5MP)',
-        price: '₹6,499',
+        name: 'Delitech Smart Wireless Video Doorbell Pro (5MP)',
+        price: '₹6,999',
         short_desc: '5MP Ultra HD • Color Night Vision • AI Detect',
         full_desc: 'Our most advanced security solution.\n\n💎 *5MP Ultra Clarity* (Best in class)\n🌈 *Color Night Vision*\n🤖 *AI Human Detection* (No false alerts)\n🚨 *Anti-Theft Siren Alarm*\n💾 *Free SD Card + Free Installation*',
         img: IMAGES.hero_5mp,
@@ -150,6 +158,10 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
             await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp', isAd: true, clientConfig });
             return res.status(200).end();
         }
+        if (normalizedMsg.includes('2mp doorbell details') || normalizedMsg.includes('2mp doorbell') || normalizedMsg.includes('2mp details')) {
+            await sendProductCard({ phoneNumberId, to: from, io, productKey: '2mp', isAd: true, clientConfig });
+            return res.status(200).end();
+        }
         if (normalizedMsg.includes('want to know more')) {
             await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
             return res.status(200).end();
@@ -190,14 +202,19 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
                 await handleAgentRequest({ phoneNumberId, to: from, context: 'Interested in 5MP Pro', io, clientConfig });
                 break;
             case 'agent_3mp':
-                await handleAgentRequest({ phoneNumberId, to: from, context: 'Interested in 3MP', io, clientConfig });
+                await handleAgentRequest({ phoneNumberId, to: from, context: 'Interested in 3MP Plus', io, clientConfig });
+                break;
+            case 'agent_2mp':
+                await handleAgentRequest({ phoneNumberId, to: from, context: 'Interested in 2MP', io, clientConfig });
                 break;
 
             // --- Product Selections ---
+            case 'sel_2mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '2mp', clientConfig }); break;
             case 'sel_3mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp', clientConfig }); break;
             case 'sel_5mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', clientConfig }); break;
 
             // --- Buy Actions ---
+            case 'buy_2mp': await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '2mp', clientConfig }); break;
             case 'buy_3mp': await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '3mp', clientConfig }); break;
             case 'buy_5mp': await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '5mp', clientConfig }); break;
 
@@ -252,7 +269,8 @@ async function sendProductSelection({ phoneNumberId, to, io, clientConfig }) {
                         title: 'Best Sellers',
                         rows: [
                             { id: 'sel_5mp', title: 'Doorbell Pro (5MP)', description: 'Best Clarity & Color Night Vision' },
-                            { id: 'sel_3mp', title: 'Doorbell (3MP)', description: 'HD Video, Value Choice' }
+                            { id: 'sel_3mp', title: 'Doorbell Plus (3MP)', description: 'Enhanced HD Video, Plus Features' },
+                            { id: 'sel_2mp', title: 'Doorbell (2MP)', description: 'Standard HD Video, Value Choice' }
                         ]
                     },
                     {
@@ -738,4 +756,131 @@ const handleShopifyCheckoutInitiatedWebhook = async (req, res) => {
     }
 };
 
-module.exports = { handleWebhook, handleShopifyLinkOpenedWebhook, handleShopifyCartUpdatedWebhook, handleShopifyCheckoutInitiatedWebhook };
+const handleShopifyOrderCompleteWebhook = async (req, res) => {
+    try {
+        const payload = req.body;
+        const clientConfig = req.clientConfig;
+        const io = req.app.get('socketio');
+
+        // Shopify sends 'total_price', 'customer', 'line_items', 'name' (orderId)
+        const orderId = payload.name || `#${payload.order_number}`;
+        const totalPrice = parseFloat(payload.total_price) || 0;
+        const customer = payload.customer || {};
+
+        // Clean phone number (Shopify usually sends +91... or similar)
+        let phone = customer.phone || payload.phone || payload.billing_address?.phone || '';
+        phone = phone.replace(/\D/g, '');
+        if (phone.length > 10 && phone.startsWith('91')) phone = phone.substring(2);
+
+        const customerName = `${customer.first_name || ''} ${customer.last_name || ''}`.trim() || 'Valued Customer';
+        const lineItems = payload.line_items || [];
+
+        const items = lineItems.map(item => ({
+            name: item.title,
+            quantity: item.quantity,
+            price: parseFloat(item.price) || 0
+        }));
+
+        const itemNames = items.map(i => `${i.quantity}x ${i.name}`).join(', ');
+
+        console.log(`Shopify order complete received: ${orderId} for phone: ${phone}`);
+
+        // 1. Create or Update Order in DB
+        const newOrder = await Order.findOneAndUpdate(
+            { orderId, clientId: clientConfig.clientId },
+            {
+                $set: {
+                    customerName,
+                    phone,
+                    amount: totalPrice,
+                    status: 'paid', // Shopify orders are usually paid if this webhook fires
+                    items
+                },
+                $setOnInsert: {
+                    clientId: clientConfig.clientId,
+                    createdAt: new Date()
+                }
+            },
+            { upsert: true, new: true }
+        );
+
+        // 2. Update AdLead if it exists
+        let leadId = null;
+        if (phone) {
+            const lead = await AdLead.findOneAndUpdate(
+                { phoneNumber: { $regex: new RegExp(`${phone}$`) }, clientId: clientConfig.clientId },
+                {
+                    $set: { isOrderPlaced: true, lastInteraction: new Date() },
+                    $inc: { totalSpent: totalPrice },
+                    $push: {
+                        activityLog: {
+                            action: 'order_placed',
+                            details: `Order ${orderId} placed | value: ₹${totalPrice} | items: ${itemNames}`,
+                            timestamp: new Date()
+                        }
+                    }
+                },
+                { new: true }
+            );
+            if (lead) leadId = lead._id;
+        }
+
+        // 3. Emit Socket Event for real-time dashboard
+        if (io) {
+            io.to(`client_${clientConfig.clientId}`).emit('new_order', newOrder);
+            if (leadId) {
+                io.to(`client_${clientConfig.clientId}`).emit('stats_update', {
+                    type: 'order_placed',
+                    leadId: leadId,
+                    orderId: newOrder.orderId,
+                    amount: totalPrice
+                });
+            }
+        }
+
+        // 4. Notify Admin on WhatsApp
+        if (clientConfig && clientConfig.phoneNumberId) {
+            const alertBody = `🎉 *NEW ORDER RECEIVED!* 🎉\n\n🆔 *Order:* ${orderId}\n👤 *Customer:* ${customerName}\n📱 *Phone:* +91${phone}\n💰 *Value:* ₹${totalPrice.toLocaleString()}\n\n📦 *Items:*\n${itemNames}`;
+
+            // Re-using text message sender functionality
+            try {
+                const adminPhone = clientConfig.adminPhoneNumber;
+                if (adminPhone) {
+                    await axios.post(`https://graph.facebook.com/v18.0/${clientConfig.phoneNumberId}/messages`, {
+                        messaging_product: 'whatsapp',
+                        to: adminPhone,
+                        type: 'text',
+                        text: { body: alertBody }
+                    }, { headers: { Authorization: `Bearer ${clientConfig.whatsappToken}` } });
+                }
+            } catch (e) {
+                console.error("Order admin notify error:", e.response?.data || e.message);
+            }
+        }
+
+        return res.status(200).end();
+    } catch (error) {
+        console.error("Shopify order complete error:", error);
+        return res.status(200).end();
+    }
+};
+
+const getClientOrders = async (req, res) => {
+    try {
+        const clientConfig = req.clientConfig;
+        const orders = await Order.find({ clientId: clientConfig.clientId }).sort({ createdAt: -1 }).limit(100);
+        res.json(orders);
+    } catch (error) {
+        console.error("Fetch orders error:", error);
+        res.status(500).json({ error: 'Server configuration error' });
+    }
+};
+
+module.exports = {
+    handleWebhook,
+    handleShopifyLinkOpenedWebhook,
+    handleShopifyCartUpdatedWebhook,
+    handleShopifyCheckoutInitiatedWebhook,
+    handleShopifyOrderCompleteWebhook,
+    getClientOrders
+};
