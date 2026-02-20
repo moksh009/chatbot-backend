@@ -90,6 +90,42 @@ const adLeadSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   }
+}, {
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
+});
+
+// Virtual for derived Lead State
+adLeadSchema.virtual('derivedLeadState').get(function () {
+  // 1. Purchased Recently (<24h)
+  if (this.cartStatus === 'purchased') {
+    // Find last order timestamp in activityLog if available
+    const orderLogs = this.activityLog?.filter(log => log.action === 'order_placed') || [];
+    if (orderLogs.length > 0) {
+      const lastOrderDate = new Date(orderLogs[orderLogs.length - 1].timestamp);
+      const hoursSinceOrder = (new Date() - lastOrderDate) / (1000 * 60 * 60);
+      if (hoursSinceOrder < 24) return 'Purchased Recently';
+    } else {
+      // Fallback: Use lastInteraction if cartStatus is purchased recently
+      const hoursSinceInteraction = (new Date() - new Date(this.lastInteraction)) / (1000 * 60 * 60);
+      if (hoursSinceInteraction < 24) return 'Purchased Recently';
+    }
+  }
+
+  // 2. Recovered Cart
+  if (this.cartStatus === 'recovered') return 'Recovered Cart';
+
+  // 3. Cart Abandoned
+  if (this.cartStatus === 'abandoned') return 'Cart Abandoned';
+
+  // 4. High Intent (Checkout Started)
+  if (this.checkoutInitiatedCount > 0 && !this.isOrderPlaced) return 'High Intent';
+
+  // 5. Browsing with Intent
+  if (this.addToCartCount > 0) return 'Browsing with Intent';
+
+  // 6. Default
+  return 'Browsing';
 });
 
 // Compound index for clientId + phoneNumber to ensure uniqueness per client
@@ -120,10 +156,35 @@ adLeadSchema.pre('save', function (next) {
   if (this.ordersCount > 3) tags.add('loyal');
   if (score > 100) tags.add('high-value');
   if (score > 50 && score <= 100) tags.add('warm');
-  if (this.checkoutInitiatedCount > 0 && !this.isOrderPlaced) tags.add('checkout-initiated');
-  if (this.addToCartCount > 0 && !this.isOrderPlaced) tags.add('abandoned-cart');
+
+  // Auto-manage new dynamic tags
+  if (this.totalSpent > 0) tags.add('repeat-buyer');
+  if (this.checkoutInitiatedCount >= 2) tags.add('high-intent');
+
+  if (this.cartStatus === 'abandoned') {
+    tags.add('cart-abandoned');
+  } else if (this.cartStatus === 'recovered' || this.cartStatus === 'purchased') {
+    tags.delete('cart-abandoned');
+  }
+
+  if (this.checkoutInitiatedCount > 0 && !this.isOrderPlaced) {
+    tags.add('checkout-initiated');
+  } else if (this.isOrderPlaced) {
+    tags.delete('checkout-initiated');
+  }
 
   this.tags = Array.from(tags);
+
+  // Data Consistency Auto-Correction
+  if (this.cartStatus === 'purchased' && this.cartSnapshot?.updatedAt) {
+    const orderLogs = this.activityLog?.filter(log => log.action === 'order_placed') || [];
+    if (orderLogs.length > 0) {
+      const lastOrderDate = new Date(orderLogs[orderLogs.length - 1].timestamp);
+      if (new Date(this.cartSnapshot.updatedAt) > lastOrderDate) {
+        this.cartStatus = 'active'; // Cart was updated *after* the last purchase event
+      }
+    }
+  }
 
   next();
 });

@@ -361,9 +361,10 @@ async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientConfi
                 $set: { lastInteraction: new Date() },
                 $push: {
                     activityLog: {
-                        action: 'link_click',
+                        action: 'whatsapp_restore_link_clicked',
                         details: `Requested link for ${productKey}`,
-                        timestamp: new Date()
+                        timestamp: new Date(),
+                        meta: {}
                     }
                 },
                 $setOnInsert: {
@@ -545,7 +546,10 @@ const handleShopifyLinkOpenedWebhook = async (req, res) => {
         const { uid, page } = req.body;
         const io = req.app.get('socketio');
 
-        if (!uid) return res.status(200).end();
+        if (!uid) {
+            console.warn("uid_missing: Shopify link open received without uid");
+            return res.status(200).end();
+        }
 
         const now = new Date();
         const updatedLead = await AdLead.findOneAndUpdate(
@@ -555,9 +559,10 @@ const handleShopifyLinkOpenedWebhook = async (req, res) => {
                 $set: { lastInteraction: now },
                 $push: {
                     activityLog: {
-                        action: 'link_click',
+                        action: 'whatsapp_restore_link_clicked',
                         details: `clicked link | page: ${page || 'storefront'}`,
-                        timestamp: now
+                        timestamp: now,
+                        meta: {}
                     }
                 }
             },
@@ -585,7 +590,7 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
         const io = req.app.get('socketio');
 
         if (!uid) {
-            console.log("Shopify cart update received without uid");
+            console.warn("uid_missing: Shopify cart update received without uid");
             return res.status(200).end();
         }
 
@@ -597,7 +602,9 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
 
         const newHandles = Array.isArray(cartitems) ? cartitems : [];
         const newTitles = Array.isArray(product_titles) ? product_titles : [];
-        const cartItemsArray = Array.isArray(items) && items.length > 0 ? items : newHandles.map(id => ({ variant_id: id, quantity: 1 }));
+        const cartItemsArray = Array.isArray(items) && items.length > 0
+            ? items.map(i => ({ variant_id: Number(i.variant_id || i.id), quantity: Number(i.quantity) }))
+            : newHandles.map(id => ({ variant_id: id, quantity: 1 }));
         const now = new Date();
 
         const prevHandles = Array.isArray(lead.cartSnapshot?.handles) ? lead.cartSnapshot.handles : [];
@@ -621,28 +628,23 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
 
         const activityEntries = [];
 
-        if (added.length) {
+        if (['purchased', 'abandoned', 'recovered'].includes(lead.cartStatus)) {
             activityEntries.push({
-                action: 'add_to_cart',
-                details: `added: ${added.map(h => newMap[h]).join(', ')} | page: ${page || '/cart'}`
+                action: 'new_cart_session_started',
+                details: 'Cart lifecycle reset after previous purchase/abandonment',
+                timestamp: now,
+                meta: {}
             });
         }
 
-        if (removed.length) {
-            activityEntries.push({
-                action: 'remove_from_cart',
-                details: `removed: ${removed.map(h => prevMap[h]).join(', ')} | page: ${page || '/cart'}`
-            });
-        }
+        activityEntries.push({
+            action: 'cart_updated',
+            details: `cart updated | items: ${(newTitles.length ? newTitles : newHandles).join(', ')} | page: ${page || '/cart'}`,
+            timestamp: now,
+            meta: {}
+        });
 
-        if (!activityEntries.length) {
-            activityEntries.push({
-                action: 'add_to_cart',
-                details: `cart updated | items: ${(newTitles.length ? newTitles : newHandles).join(', ')} | page: ${page || '/cart'}`
-            });
-        }
-
-        const addCountIncrement = added.length || (activityEntries.length ? 1 : 0);
+        const addCountIncrement = added.length > 0 ? 1 : 0;
 
         const update = {
             $set: {
@@ -657,6 +659,15 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
             }
         };
 
+        if (['purchased', 'abandoned', 'recovered'].includes(lead.cartStatus)) {
+            update.$unset = {
+                abandonedCartReminderSentAt: "",
+                abandonedCartRecoveredAt: ""
+            };
+            update.$set.adminFollowUpTriggered = false;
+            update.$set.checkoutInitiatedCount = 0;
+        }
+
         if (addCountIncrement > 0) {
             update.$inc = { addToCartCount: addCountIncrement };
         }
@@ -664,11 +675,7 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
         if (activityEntries.length) {
             update.$push = {
                 activityLog: {
-                    $each: activityEntries.map(entry => ({
-                        action: entry.action,
-                        details: entry.details,
-                        timestamp: now
-                    }))
+                    $each: activityEntries
                 }
             };
         }
@@ -717,7 +724,7 @@ const handleShopifyCheckoutInitiatedWebhook = async (req, res) => {
         const io = req.app.get('socketio');
 
         if (!uid) {
-            console.log("Shopify checkout initiated received without uid");
+            console.warn("uid_missing: Shopify checkout initiated received without uid");
             return res.status(200).end();
         }
 
@@ -737,14 +744,16 @@ const handleShopifyCheckoutInitiatedWebhook = async (req, res) => {
         const activityEntries = [{
             action: 'checkout_initiated',
             details: `Checkout initiated | items: ${(newTitles.length ? newTitles : newHandles).join(', ')} | total: ₹${priceFormatted} | page: ${page || '/cart'}`,
-            timestamp: now
+            timestamp: now,
+            meta: {}
         }];
 
         if (lead.cartStatus === 'recovered') {
             activityEntries.push({
                 action: 'checkout_started_after_recovery',
                 details: 'User initiated checkout after recovering abandoned cart via WhatsApp',
-                timestamp: now
+                timestamp: now,
+                meta: {}
             });
         }
 
@@ -870,14 +879,16 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
                 const activityEntries = [{
                     action: 'order_placed',
                     details: `Order ${orderId} placed | value: ₹${totalPrice} | items: ${itemNames}`,
-                    timestamp: new Date()
+                    timestamp: new Date(),
+                    meta: {}
                 }];
 
                 if (existingLead.cartStatus === 'recovered') {
                     activityEntries.push({
                         action: 'purchase_completed_after_recovery',
                         details: `Order ${orderId} placed after recovering cart`,
-                        timestamp: new Date()
+                        timestamp: new Date(),
+                        meta: {}
                     });
                 }
 
@@ -954,18 +965,8 @@ const getCartSnapshot = async (req, res) => {
             return res.status(400).json({ success: false, message: 'UID missing' });
         }
 
-        const lead = await AdLead.findOne({ _id: uid }); // User stated `uid` maps to _id, let's look at `const lead = await AdLead.findById(uid)` or `AdLead.findOne({ uid })`. Ah, the user request says:
-        // const lead = await AdLead.findOne({ uid }); // Actually wait, in original instructions: "const lead = await AdLead.findOne({ uid });" but in webhook code `uid` is usually the MongoDB `_id` assigned as uid. To be safe, let's use what the user requested, but wait... 
-        // User's instructions say:
-        // const lead = await AdLead.findOne({ uid });
-        // Let's implement exactly as requested but check if uid is _id.
-        // Actually, in `routes/clientcodes/ved.js`, it says `const lead = await AdLead.findById(uid);` in webhooks.
-        // So I will use `findById` or `findOne({ _id: uid })` or fallback if uid is its own field.
-        // Wait, the AdLead schema doesn't have a `uid` field. The schema has `clientId`, `phoneNumber`. 
-        // So `uid` must be the MongoDB `_id`. Let's use `findById` because it will work if `uid` is an ObjectId.
-
         let leadData = null;
-        if (uid && uid.length === 24) {
+        if (uid && /^[0-9a-fA-F]{24}$/.test(uid)) {
             try {
                 leadData = await AdLead.findById(uid);
             } catch (e) {
@@ -974,7 +975,7 @@ const getCartSnapshot = async (req, res) => {
         }
 
         if (!leadData) {
-            leadData = await AdLead.findOne({ phoneNumber: uid }); // fallback just in case
+            leadData = await AdLead.findOne({ phoneNumber: uid }).catch(() => null); // fallback just in case
         }
 
         if (!leadData || !leadData.cartSnapshot) {
@@ -1045,6 +1046,40 @@ const restoreCart = async (req, res) => {
     }
 };
 
+const logRestoreEvent = async (req, res) => {
+    try {
+        const { uid, action, details } = req.body;
+        if (!uid) {
+            console.warn("uid_missing: logRestoreEvent without uid");
+            return res.status(400).end();
+        }
+
+        let lead = null;
+        if (uid.length === 24) {
+            lead = await AdLead.findById(uid);
+        }
+        if (!lead) {
+            return res.status(404).end();
+        }
+
+        await AdLead.findByIdAndUpdate(lead._id, {
+            $push: {
+                activityLog: {
+                    action: action || 'restore_failed',
+                    details: details || 'Unknown error during cart restoration',
+                    timestamp: new Date(),
+                    meta: {}
+                }
+            }
+        });
+
+        res.status(200).json({ success: true });
+    } catch (err) {
+        console.error("logRestoreEvent error:", err);
+        res.status(500).end();
+    }
+};
+
 module.exports = {
     handleWebhook,
     handleShopifyLinkOpenedWebhook,
@@ -1053,5 +1088,6 @@ module.exports = {
     handleShopifyOrderCompleteWebhook,
     getClientOrders,
     getCartSnapshot,
-    restoreCart
+    restoreCart,
+    logRestoreEvent
 };

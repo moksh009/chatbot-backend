@@ -106,6 +106,20 @@ router.post('/webhook/shopify/order-complete', async (req, res) => {
   }
 });
 
+router.post('/webhook/shopify/log-restore-event', async (req, res) => {
+  try {
+    const { businessType } = req.clientConfig;
+    if (businessType === 'ecommerce') {
+      await vedController.logRestoreEvent(req, res);
+    } else {
+      res.status(400).send('Not supported for this business type');
+    }
+  } catch (error) {
+    console.error('Error in dynamic webhook handler:', error);
+    res.sendStatus(500);
+  }
+});
+
 router.get('/orders', async (req, res) => {
   try {
     const { businessType } = req.clientConfig;

@@ -6,7 +6,7 @@ const Client = require('../models/Client');
 const loadClientConfig = async (req, res, next) => {
   try {
     const { clientId } = req.params;
-    
+
     if (!clientId) {
       return res.status(400).json({ error: 'Client ID is required' });
     }
@@ -23,25 +23,25 @@ const loadClientConfig = async (req, res, next) => {
     // Attach client config to request
     // Allow overriding via environment variables for specific clients (e.g. WHATSAPP_TOKEN_0001)
     const envSuffix = `_${client.clientId}`;
-    
+
     // Check if token exists in env
     const envToken = process.env[`WHATSAPP_TOKEN${envSuffix}`];
     const clientToken = client.whatsappToken;
     const clientConfigToken = client.config?.whatsappToken; // Check nested config just in case
     const globalToken = process.env.WHATSAPP_TOKEN;
-    
+
     // Determine token source (Priority: DB > Env > Global)
     // User explicitly requested to prioritize MongoDB and ignore expired Env
     let finalToken = clientToken || clientConfigToken;
-    
+
     if (!finalToken) {
-        if (envToken) {
-             finalToken = envToken;
-             console.log(`⚠️ Using ENV token for ${clientId} (DB token missing)`);
-        } else if (globalToken) {
-             finalToken = globalToken;
-             console.log(`⚠️ Using GLOBAL token for ${clientId} (DB & Specific Env missing)`);
-        }
+      if (envToken) {
+        finalToken = envToken;
+        console.log(`⚠️ Using ENV token for ${clientId} (DB token missing)`);
+      } else if (globalToken) {
+        finalToken = globalToken;
+        console.log(`⚠️ Using GLOBAL token for ${clientId} (DB & Specific Env missing)`);
+      }
     }
 
     // Debug logging for token selection (all clients)
@@ -60,10 +60,10 @@ const loadClientConfig = async (req, res, next) => {
       phoneNumberId: client.phoneNumberId,
       // Add phone number for message direction logic (incoming vs outgoing)
       phoneNumber: client.config?.phoneNumber || process.env[`PHONE_NUMBER${envSuffix}`] || process.env.PHONE_NUMBER,
-      adminPhoneNumber: client.config?.adminPhoneNumber || process.env[`ADMIN_PHONE_NUMBER${envSuffix}`] || process.env.ADMIN_PHONE_NUMBER,
-      
+      adminPhoneNumber: client.adminPhoneNumber || client.config?.adminPhoneNumber || process.env[`ADMIN_PHONE_NUMBER${envSuffix}`] || process.env.ADMIN_PHONE_NUMBER,
+
       // Use the resolved finalToken
-      whatsappToken: finalToken, 
+      whatsappToken: finalToken,
       verifyToken: process.env[`VERIFY_TOKEN${envSuffix}`] || client.verifyToken || process.env.WHATSAPP_VERIFY_TOKEN,
       googleCalendarId: client.googleCalendarId || process.env[`GOOGLE_CALENDAR_ID${envSuffix}`] || process.env.GOOGLE_CALENDAR_ID,
       openaiApiKey: client.openaiApiKey || process.env[`OPENAI_API_KEY${envSuffix}`] || process.env.OPENAI_API_KEY,

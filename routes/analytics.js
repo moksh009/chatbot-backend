@@ -78,6 +78,35 @@ router.get('/realtime', protect, async (req, res) => {
       cartStatus: 'recovered'
     });
 
+    // 8. Conversion Funnel Metrics
+    const totalOrdersAllTime = await Order.countDocuments(query);
+
+    const whatsappRecoveriesPurchasedResult = await AdLead.aggregate([
+      { $match: query },
+      {
+        $project: {
+          purchaseAfterRecoveryCount: {
+            $size: {
+              $filter: {
+                input: "$activityLog",
+                as: "log",
+                cond: { $eq: ["$$log.action", "purchase_completed_after_recovery"] }
+              }
+            }
+          }
+        }
+      },
+      { $group: { _id: null, total: { $sum: "$purchaseAfterRecoveryCount" } } }
+    ]);
+    const whatsappRecoveriesPurchased = whatsappRecoveriesPurchasedResult[0]?.total || 0;
+
+    const adminFollowupsPurchasedResult = await AdLead.countDocuments({
+      ...query,
+      adminFollowUpTriggered: true,
+      isOrderPlaced: true
+    });
+    const adminFollowupsPurchased = adminFollowupsPurchasedResult;
+
     res.json({
       leads: { total: totalLeads, newToday: newLeadsToday },
       orders: { count: orderCountToday, revenue: revenueToday },
@@ -86,7 +115,12 @@ router.get('/realtime', protect, async (req, res) => {
       addToCarts: totalAddCarts,
       checkouts: totalCheckouts,
       abandonedCarts,
-      recoveredCarts
+      recoveredCarts,
+      funnel: {
+        totalOrdersAllTime,
+        whatsappRecoveriesPurchased,
+        adminFollowupsPurchased
+      }
     });
 
   } catch (error) {

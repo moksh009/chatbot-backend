@@ -69,18 +69,26 @@ const scheduleAbandonedCartCron = () => {
             if (!clients.length) return;
 
             for (const client of clients) {
-                const token = client.whatsappToken;
-                const phoneId = client.phoneNumberId;
-                const adminPhone = client.adminPhoneNumber;
+                const envSuffix = `_${client.clientId}`;
+                const envToken = process.env[`WHATSAPP_TOKEN${envSuffix}`];
+                const globalToken = process.env.WHATSAPP_TOKEN;
 
-                if (!token || !phoneId) continue;
+                let token = client.whatsappToken || client.config?.whatsappToken;
+                if (!token) token = envToken || globalToken;
+
+                const phoneId = client.phoneNumberId || client.config?.phoneNumberId;
+                const adminPhone = client.adminPhoneNumber || client.config?.adminPhoneNumber;
+
+                if (!token || !phoneId) {
+                    console.warn(`[Cron] Skipping client ${client.clientId} - missing token or phoneId`);
+                    continue;
+                }
 
                 // --- A. Abandonment Detection (2 Hours) ---
                 const abandonedLeads = await AdLead.find({
                     clientId: client.clientId,
                     cartStatus: 'active',
-                    addToCartCount: { $gt: 0 },
-                    $or: [{ checkoutInitiatedCount: 0 }, { checkoutInitiatedCount: { $exists: false } }],
+                    'cartSnapshot.items.0': { $exists: true },
                     'cartSnapshot.updatedAt': { $lte: twoHoursAgo }
                 });
 
@@ -139,7 +147,8 @@ const scheduleAbandonedCartCron = () => {
                                     activityLog: {
                                         action: 'whatsapp_template_sent',
                                         details: 'Sent abandoned_cart_reminder template',
-                                        timestamp: new Date()
+                                        timestamp: new Date(),
+                                        meta: {}
                                     }
                                 }
                             });
@@ -150,7 +159,8 @@ const scheduleAbandonedCartCron = () => {
                                     activityLog: {
                                         action: 'whatsapp_failed',
                                         details: 'Failed to send abandoned_cart_reminder template (silent killer caught)',
-                                        timestamp: new Date()
+                                        timestamp: new Date(),
+                                        meta: {}
                                     }
                                 }
                             });
@@ -164,35 +174,39 @@ const scheduleAbandonedCartCron = () => {
                 const followupLeads = await AdLead.find({
                     clientId: client.clientId,
                     cartStatus: 'abandoned',
-                    isOrderPlaced: false,
                     adminFollowUpTriggered: false,
                     abandonedCartReminderSentAt: { $lt: threeHoursAgo, $gte: fourHoursAgo }
                 });
 
                 for (const lead of followupLeads) {
-                    if (!adminPhone) continue;
+                    try {
+                        if (!adminPhone) continue;
 
-                    let cartValue = 0; // if price is stored
-                    // Calculate price if available from prices or default to 0
-                    // Alternatively just list handles/titles
-                    const items = lead.cartSnapshot?.titles?.join(', ') || 'Unknown items';
-                    const timeSince = Math.round((new Date() - lead.lastInteraction) / (1000 * 60 * 60));
+                        let cartValue = 0; // if price is stored
+                        // Calculate price if available from prices or default to 0
+                        // Alternatively just list handles/titles
+                        const items = lead.cartSnapshot?.titles?.join(', ') || 'Unknown items';
+                        const timeSince = Math.round((new Date() - lead.lastInteraction) / (1000 * 60 * 60));
 
-                    const message = `⚠️ *Abandoned Cart Alert*\nCustomer: ${lead.name || 'Unknown'}\nPhone: +${lead.phoneNumber}\nProducts: ${items}\nCart Value: ₹${cartValue}\nLast activity: ${timeSince} hours ago\n👉 Call customer now: https://wa.me/${lead.phoneNumber}`;
+                        const message = `⚠️ *Abandoned Cart Alert*\nCustomer: ${lead.name || 'Unknown'}\nPhone: +${lead.phoneNumber}\nProducts: ${items}\nCart Value: ₹${cartValue}\nLast activity: ${timeSince} hours ago\n👉 Call customer now: https://wa.me/${lead.phoneNumber}`;
 
-                    const success = await sendWhatsAppText(token, phoneId, adminPhone, message);
+                        const success = await sendWhatsAppText(token, phoneId, adminPhone, message);
 
-                    if (success) {
-                        await AdLead.findByIdAndUpdate(lead._id, {
-                            $set: { adminFollowUpTriggered: true },
-                            $push: {
-                                activityLog: {
-                                    action: 'admin_followup_triggered',
-                                    details: 'Sent follow-up alert to admin',
-                                    timestamp: new Date()
+                        if (success) {
+                            await AdLead.findByIdAndUpdate(lead._id, {
+                                $set: { adminFollowUpTriggered: true },
+                                $push: {
+                                    activityLog: {
+                                        action: 'admin_followup_sent',
+                                        details: 'Sent follow-up alert to admin',
+                                        timestamp: new Date(),
+                                        meta: {}
+                                    }
                                 }
-                            }
-                        });
+                            });
+                        }
+                    } catch (err) {
+                        console.error("Failed to process followup lead:", err.message);
                     }
                 }
             }
