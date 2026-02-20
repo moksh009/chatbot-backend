@@ -68,6 +68,28 @@ async function sendWhatsAppText({ phoneNumberId, to, body, preview_url = false, 
     } catch (err) { console.error('Text Error:', err.message); return false; }
 }
 
+async function sendWhatsAppImage({ phoneNumberId, to, imageUrl, caption, io, clientConfig }) {
+    const token = clientConfig.whatsappToken;
+    try {
+        await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
+            messaging_product: 'whatsapp',
+            to,
+            type: 'image',
+            image: {
+                link: imageUrl,
+                caption: caption
+            }
+        }, { headers: { Authorization: `Bearer ${token}` } });
+
+        // Log it to the conversation as well
+        await saveAndEmitMessage({ phoneNumberId, to, body: `[Image Sent] ${caption}`, type: 'image', io, clientConfig });
+        return true;
+    } catch (e) {
+        console.error('sendWhatsAppImage Error:', e.response?.data || e.message);
+        return false;
+    }
+}
+
 async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, io, clientConfig }) {
     const token = clientConfig.whatsappToken;
     const data = { messaging_product: 'whatsapp', to, type: 'interactive', interactive: { type: interactive.type, body: { text: body }, action: interactive.action } };
@@ -954,8 +976,39 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
             // 5. Notify Customer on WhatsApp
             try {
                 if (phone) {
-                    const customerMessage = `🎉 *Thank You for Your Order!* 🎉\n\nHi ${customerName},\nYour order ${orderId} has been successfully placed safely. We will notify you once it's shipped!\n\nQuestions? Just reply to this message.`;
-                    await sendWhatsAppText({ phoneNumberId: clientConfig.phoneNumberId, to: phone, body: customerMessage, io, clientConfig });
+                    // Find the best product image to send
+                    let productImageUrl = 'https://delitechsmarthome.in/cdn/shop/files/Delitech_Main_photoswq.png'; // Default fallback
+
+                    // 1. Check if order contains keywords matching our registered products in ved.js
+                    const lowerItems = itemNames.toLowerCase();
+                    if (lowerItems.includes('5mp')) {
+                        productImageUrl = 'https://delitechsmarthome.in/cdn/shop/files/my1.png?v=1759746759&width=1346';
+                    } else if (lowerItems.includes('3mp') || lowerItems.includes('2mp')) {
+                        productImageUrl = 'https://delitechsmarthome.in/cdn/shop/files/Delitech_Main_photoswq.png?v=1760635732&width=1346';
+                    }
+                    // 2. Fallback to webhook items if available (Shopify sometimes sends image under properties)
+                    else if (items && items.length > 0 && items[0].image) {
+                        productImageUrl = items[0].image.startsWith('//') ? `https:${items[0].image}` : items[0].image;
+                    }
+                    // 3. Fallback to searching the lead's cartSnapshot
+                    else if (existingLead && existingLead.cartSnapshot && existingLead.cartSnapshot.items && existingLead.cartSnapshot.items.length > 0) {
+                        const firstItemWithImage = existingLead.cartSnapshot.items.find(i => i.image);
+                        if (firstItemWithImage && firstItemWithImage.image) {
+                            productImageUrl = firstItemWithImage.image.startsWith('//') ? `https:${firstItemWithImage.image}` : firstItemWithImage.image;
+                        }
+                    }
+
+                    const customerMessage = `🎉 *Order Confirmed! 🎉*\n\nHi ${customerName},\nThank you for choosing Delitech Smart Homes! 🏡✨\n\nYour order *${orderId}* has been successfully placed.\n\n📦 *Order Summary:*\n${itemNames}\n💰 *Total Value:* ₹${totalPrice.toLocaleString()}\n💳 *Payment:* ${paymentMethod || 'Online'}\n\n🚚 We are preparing your order and will notify you as soon as it ships.\n\nIf you have any questions, just reply to this message. We are here to help!`;
+
+                    // Send an image message with the beautiful caption
+                    await sendWhatsAppImage({
+                        phoneNumberId: clientConfig.phoneNumberId,
+                        to: phone,
+                        imageUrl: productImageUrl,
+                        caption: customerMessage,
+                        io,
+                        clientConfig
+                    });
                 }
             } catch (e) {
                 console.error("Order customer notify error:", e.response?.data || e.message);
