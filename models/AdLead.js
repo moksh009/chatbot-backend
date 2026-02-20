@@ -52,7 +52,7 @@ const adLeadSchema = new mongoose.Schema({
     handles: [String],
     titles: [String],
     items: [{
-      variant_id: Number,
+      variant_id: String,
       quantity: Number,
       image: String,
       url: String
