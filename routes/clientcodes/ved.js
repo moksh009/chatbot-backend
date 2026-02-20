@@ -585,18 +585,22 @@ const handleShopifyLinkOpenedWebhook = async (req, res) => {
 
 const handleShopifyCartUpdatedWebhook = async (req, res) => {
     try {
-        const { uid, cartitems, product_titles, page, items } = req.body;
+        const { uid, cartitems, product_titles, page, items, phone } = req.body;
         const clientConfig = req.clientConfig;
         const io = req.app.get('socketio');
 
-        if (!uid) {
-            console.warn("uid_missing: Shopify cart update received without uid");
-            return res.status(200).end();
+        let lead = null;
+        if (uid) {
+            lead = await AdLead.findById(uid);
+        } else if (phone) {
+            // Fallback: match by phone if uid is missing from tracking pixel
+            let cleanPhone = phone.replace(/\D/g, '');
+            if (cleanPhone.length > 10 && cleanPhone.startsWith('91')) cleanPhone = cleanPhone.substring(2);
+            lead = await AdLead.findOne({ phoneNumber: { $regex: new RegExp(`${cleanPhone}$`) }, clientId: clientConfig.clientId });
         }
 
-        const lead = await AdLead.findById(uid);
         if (!lead) {
-            console.log("Shopify cart update: lead not found for uid:", uid);
+            console.log("Shopify cart update: lead not found for uid/phone:", uid, phone);
             return res.status(200).end();
         }
 
@@ -719,18 +723,22 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
 
 const handleShopifyCheckoutInitiatedWebhook = async (req, res) => {
     try {
-        const { uid, cartitems, product_titles, total_price, page } = req.body;
+        const { uid, cartitems, product_titles, total_price, page, phone } = req.body;
         const clientConfig = req.clientConfig;
         const io = req.app.get('socketio');
 
-        if (!uid) {
-            console.warn("uid_missing: Shopify checkout initiated received without uid");
-            return res.status(200).end();
+        let lead = null;
+        if (uid) {
+            lead = await AdLead.findById(uid);
+        } else if (phone) {
+            // Fallback: match by phone if uid is missing from frontend tracking
+            let cleanPhone = phone.replace(/\D/g, '');
+            if (cleanPhone.length > 10 && cleanPhone.startsWith('91')) cleanPhone = cleanPhone.substring(2);
+            lead = await AdLead.findOne({ phoneNumber: { $regex: new RegExp(`${cleanPhone}$`) }, clientId: clientConfig.clientId });
         }
 
-        const lead = await AdLead.findById(uid);
         if (!lead) {
-            console.log("Shopify checkout initiated: lead not found for uid:", uid);
+            console.log("Shopify checkout initiated: lead not found for uid/phone:", uid, phone);
             return res.status(200).end();
         }
 
@@ -892,9 +900,14 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
                     });
                 }
 
+                const incObj = { totalSpent: totalPrice, ordersCount: 1 };
+                // Patch UI funnel logic for users who used Express "Buy Now" checkout bypassing cart events
+                if (!existingLead.addToCartCount) incObj.addToCartCount = 1;
+                if (!existingLead.checkoutInitiatedCount) incObj.checkoutInitiatedCount = 1;
+
                 const updateObj = {
                     $set: { isOrderPlaced: true, lastInteraction: new Date(), cartStatus: 'purchased' },
-                    $inc: { totalSpent: totalPrice },
+                    $inc: incObj,
                     $push: {
                         activityLog: { $each: activityEntries }
                     }
@@ -923,19 +936,24 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
             const addressString = shipping.address1 ? `${shipping.address1}, ${shipping.city || ''}` : 'No address provided';
             const alertBody = `🎉 *NEW ORDER RECEIVED!* 🎉\n\n🆔 *Order:* ${orderId}\n👤 *Customer:* ${customerName}\n📱 *Phone:* +91${phone}\n💰 *Value:* ₹${totalPrice.toLocaleString()}\n💳 *Payment:* ${paymentMethod || 'N/A'}\n📍 *Address:* ${addressString}\n\n📦 *Items:*\n${itemNames}`;
 
-            // Re-using text message sender functionality
+            // Send Admin Notification
             try {
                 const adminPhone = clientConfig.adminPhoneNumber;
                 if (adminPhone) {
-                    await axios.post(`https://graph.facebook.com/v18.0/${clientConfig.phoneNumberId}/messages`, {
-                        messaging_product: 'whatsapp',
-                        to: adminPhone,
-                        type: 'text',
-                        text: { body: alertBody }
-                    }, { headers: { Authorization: `Bearer ${clientConfig.whatsappToken}` } });
+                    await sendWhatsAppText({ phoneNumberId: clientConfig.phoneNumberId, to: adminPhone, body: alertBody, io, clientConfig });
                 }
             } catch (e) {
                 console.error("Order admin notify error:", e.response?.data || e.message);
+            }
+
+            // 5. Notify Customer on WhatsApp
+            try {
+                if (phone) {
+                    const customerMessage = `🎉 *Thank You for Your Order!* 🎉\n\nHi ${customerName},\nYour order ${orderId} has been successfully placed safely. We will notify you once it's shipped!\n\nQuestions? Just reply to this message.`;
+                    await sendWhatsAppText({ phoneNumberId: clientConfig.phoneNumberId, to: phone, body: customerMessage, io, clientConfig });
+                }
+            } catch (e) {
+                console.error("Order customer notify error:", e.response?.data || e.message);
             }
         }
 

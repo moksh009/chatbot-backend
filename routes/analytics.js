@@ -166,8 +166,20 @@ router.get('/lead/:id', protect, async (req, res) => {
     const lead = await AdLead.findById(req.params.id);
     if (!lead) return res.status(404).json({ message: 'Lead not found' });
 
-    // Fetch related orders
-    const orders = await Order.find({ phone: lead.phoneNumber, clientId: lead.clientId });
+    // Fetch related orders (handle stripped country code from Shopify)
+    const strippedPhone = lead.phoneNumber.length > 10 && lead.phoneNumber.startsWith('91')
+      ? lead.phoneNumber.substring(2)
+      : lead.phoneNumber;
+
+    const orders = await Order.find({
+      clientId: lead.clientId,
+      $or: [
+        { phone: lead.phoneNumber },
+        { phone: strippedPhone },
+        { phone: `+91${strippedPhone}` },
+        { phone: `91${strippedPhone}` }
+      ]
+    });
 
     // Fetch related appointments
     const appointments = await Appointment.find({ phone: lead.phoneNumber, clientId: lead.clientId });
@@ -387,7 +399,12 @@ router.get('/receptionist-overview', protect, async (req, res) => {
     const activeVIPs = await AdLead.find({
       clientId,
       lastInteraction: { $gte: today },
-      leadScore: { $gt: 50 }
+      $or: [
+        { leadScore: { $gt: 50 } },
+        { isOrderPlaced: true },
+        { ordersCount: { $gt: 0 } },
+        { totalSpent: { $gt: 0 } }
+      ]
     }).select('name phoneNumber leadScore tags');
 
     res.json({
@@ -555,14 +572,14 @@ router.get('/', protect, async (req, res) => {
       {
         $match: {
           ...clientIdQuery,
-          'activityLog.action': 'link_click',
+          'activityLog.action': { $in: ['link_click', 'whatsapp_restore_link_clicked'] },
           'activityLog.timestamp': { $gte: startDate, $lte: endDate }
         }
       },
       { $unwind: '$activityLog' },
       {
         $match: {
-          'activityLog.action': 'link_click',
+          'activityLog.action': { $in: ['link_click', 'whatsapp_restore_link_clicked'] },
           'activityLog.timestamp': { $gte: startDate, $lte: endDate }
         }
       },

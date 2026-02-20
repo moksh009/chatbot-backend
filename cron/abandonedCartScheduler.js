@@ -102,29 +102,29 @@ const scheduleAbandonedCartCron = () => {
                     // The button URL is usually dynamic per component, or maybe handled by template configuration
                     // Wait, Facebook API templates with dynamic URLs require a button parameter if the URL has a variable tail
                     // Let's pass the uid as the dynamic URL parameter for the button.
-                    const templateData = {
-                        messaging_product: 'whatsapp',
-                        to: lead.phoneNumber,
-                        type: 'template',
-                        template: {
-                            name: 'abandoned_cart_reminder',
-                            language: { code: 'en' },
-                            components: [
-                                {
-                                    type: 'body',
-                                    parameters: variables
-                                },
-                                {
-                                    type: 'button',
-                                    sub_type: 'url',
-                                    index: '0',
-                                    parameters: [{ type: 'text', text: lead._id.toString() }]
-                                }
-                            ]
-                        }
-                    };
-
                     try {
+                        const templateData = {
+                            messaging_product: 'whatsapp',
+                            to: lead.phoneNumber,
+                            type: 'template',
+                            template: {
+                                name: 'abandoned_cart_reminder',
+                                language: { code: 'en' },
+                                components: [
+                                    {
+                                        type: 'body',
+                                        parameters: variables
+                                    },
+                                    {
+                                        type: 'button',
+                                        sub_type: 'url',
+                                        index: '0',
+                                        parameters: [{ type: 'text', text: lead._id.toString() }]
+                                    }
+                                ]
+                            }
+                        };
+
                         let success = false;
                         try {
                             await axios.post(

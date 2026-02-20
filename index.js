@@ -100,6 +100,24 @@ app.post('/keepalive-ping', (req, res) => {
   res.status(200).json({ message: 'Server is awake!' });
 });
 
+app.get('/keepalive-ping', (req, res) => {
+  res.status(200).json({ message: 'Server is awake via GET!' });
+});
+
+// Self-ping to keep render free-tier awake. Runs every 10 minutes.
+cron.schedule('*/10 * * * *', () => {
+  const url = process.env.SERVER_URL || `https://chatbot-backend-lg5y.onrender.com`;
+  console.log(`[Self-Ping] Pinging ${url}/keepalive-ping to prevent sleep...`);
+  const https = require('https');
+  https.get(`${url}/keepalive-ping`, (resp) => {
+    let data = '';
+    resp.on('data', (chunk) => data += chunk);
+    resp.on('end', () => console.log('[Self-Ping] awake!', data));
+  }).on('error', (err) => {
+    console.error('[Self-Ping] Error:', err.message);
+  });
+});
+
 // Initialize Abandoned Cart Cron Job
 scheduleAbandonedCartCron();
 
