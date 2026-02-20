@@ -487,6 +487,30 @@ router.get('/', protect, async (req, res) => {
       }
     ]);
 
+    // 9. Aggregation for Checkouts (per day)
+    const checkoutEvents = await AdLead.aggregate([
+      {
+        $match: {
+          clientId,
+          'activityLog.action': 'checkout_initiated',
+          'activityLog.timestamp': { $gte: startDate, $lte: endDate }
+        }
+      },
+      { $unwind: '$activityLog' },
+      {
+        $match: {
+          'activityLog.action': 'checkout_initiated',
+          'activityLog.timestamp': { $gte: startDate, $lte: endDate }
+        }
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$activityLog.timestamp" } },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
     // Merge Data
     const stats = dates.map(date => {
       const convActivityForDay = conversationActivity.find(c => c._id === date)?.count || 0;
@@ -503,6 +527,7 @@ router.get('/', protect, async (req, res) => {
       const orderRevenue = dayOrder?.revenue || 0;
       const cartCount = cartEvents.find(c => c._id === date)?.count || 0;
       const linkClickCount = linkClickEvents.find(c => c._id === date)?.count || 0;
+      const checkoutCount = checkoutEvents.find(c => c._id === date)?.count || 0;
 
       return {
         date,
@@ -515,7 +540,8 @@ router.get('/', protect, async (req, res) => {
         orders: orderCount,
         revenue: orderRevenue,
         addToCarts: cartCount,
-        linkClicks: linkClickCount
+        linkClicks: linkClickCount,
+        checkouts: checkoutCount
       };
     });
 
