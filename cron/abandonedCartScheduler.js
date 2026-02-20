@@ -103,7 +103,7 @@ const scheduleAbandonedCartCron = () => {
                     // Wait, Facebook API templates with dynamic URLs require a button parameter if the URL has a variable tail
                     // Let's pass the uid as the dynamic URL parameter for the button.
                     try {
-                        const templateName = 'abandoned_cart_remind';
+                        const templateName = 'abandoned_cart_reminder';
 
                         // Extract highest quality image from the most recent item added
                         let imageUrl = 'https://www.delitech.in/cdn/shop/files/WhatsAppImage2024-03-24at1.25.10PM.jpg';
@@ -124,7 +124,7 @@ const scheduleAbandonedCartCron = () => {
                             type: 'template',
                             template: {
                                 name: templateName,
-                                language: { code: 'en_US' },
+                                language: { code: 'en' },
                                 components: [
                                     {
                                         type: 'header',

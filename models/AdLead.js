@@ -51,6 +51,12 @@ const adLeadSchema = new mongoose.Schema({
   cartSnapshot: {
     handles: [String],
     titles: [String],
+    items: [{
+      variant_id: Number,
+      quantity: Number,
+      image: String,
+      url: String
+    }],
     updatedAt: {
       type: Date,
       default: Date.now

@@ -12,12 +12,14 @@ async function testTemplate() {
     const token = client.whatsappToken || client.config?.whatsappToken || process.env.WHATSAPP_TOKEN;
     const phoneId = client.phoneNumberId || client.config?.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
 
+    const phone = process.env.TEST_PHONE_NUMBER || "919313045439";
+
     const templateData = {
         "messaging_product": "whatsapp",
-        "to": "919313045439",
+        "to": phone,
         "type": "template",
         "template": {
-            "name": "abandoned_cart_remind",
+            "name": "abandoned_cart_reminder",
             "language": {
                 "code": "en_US"
             },
