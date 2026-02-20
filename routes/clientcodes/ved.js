@@ -965,9 +965,15 @@ const getCartSnapshot = async (req, res) => {
         // So `uid` must be the MongoDB `_id`. Let's use `findById` because it will work if `uid` is an ObjectId.
 
         let leadData = null;
-        if (uid.length === 24) {
-            leadData = await AdLead.findById(uid);
-        } else {
+        if (uid && uid.length === 24) {
+            try {
+                leadData = await AdLead.findById(uid);
+            } catch (e) {
+                console.log("Invalid ObjectId lookup failed silently");
+            }
+        }
+
+        if (!leadData) {
             leadData = await AdLead.findOne({ phoneNumber: uid }); // fallback just in case
         }
 
