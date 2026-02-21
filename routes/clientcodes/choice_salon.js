@@ -14,6 +14,7 @@ const Conversation = require('../../models/Conversation');
 const Message = require('../../models/Message');
 const path = require('path');
 const Appointment = require('../../models/Appointment');
+const ServiceModel = require('../../models/Service');
 const DailyStat = require('../../models/DailyStat');
 const Client = require('../../models/Client');
 const AdLead = require('../../models/AdLead');
@@ -69,7 +70,7 @@ let partialDate = '';
 
 async function generateWithGemini(apiKey, prompt) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
-  const payload = { contents: [{ role: 'user', parts: [{ text: prompt }]}] };
+  const payload = { contents: [{ role: 'user', parts: [{ text: prompt }] }] };
   const resp = await axios.post(url, payload, { headers: { 'Content-Type': 'application/json' } });
   const text = resp.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
   return text.trim();
@@ -97,17 +98,17 @@ const salonServices = [
 // Real stylists (Female focused)
 const salonStylists = [
   { id: 'stylist_shubhashbhai', title: 'Shubhashbhai', description: 'Master Stylist (15+ yrs exp)' },
-  { id: 'stylist_sarah', title: 'Sarah', description: 'Senior Hair Specialist' }
+  { id: 'stylist_moksh', title: 'Moksh', description: 'Senior Hair Specialist' }
 ];
 
 // Map stylists to their specific Google Calendar IDs
 const stylistCalendars = {
   'Shubhashbhai': process.env.GCAL_CALENDAR_ID2,
-  'Sarah': process.env.GCAL_CALENDAR_ID,
+  'Moksh': process.env.GCAL_CALENDAR_ID,
   'shubhashbhai': process.env.GCAL_CALENDAR_ID2,
-  'sarah': process.env.GCAL_CALENDAR_ID,
+  'moksh': process.env.GCAL_CALENDAR_ID,
   'stylist_shubhashbhai': process.env.GCAL_CALENDAR_ID2,
-  'stylist_sarah': process.env.GCAL_CALENDAR_ID
+  'stylist_moksh': process.env.GCAL_CALENDAR_ID
 };
 
 const salonPricing = [
@@ -168,7 +169,7 @@ async function saveAndEmitMessage({ clientId, from, to, body, type, direction, s
 
 async function sendWhatsAppText({ phoneNumberId, to, body, token, io, clientId }) {
   if (clientId === 'choice_salon') {
-      console.log(`[DEBUG sendWhatsAppText] Token: '${token ? token.substring(0, 15) + '...' : 'undefined'}' (Length: ${token ? token.length : 0})`);
+    console.log(`[DEBUG sendWhatsAppText] Token: '${token ? token.substring(0, 15) + '...' : 'undefined'}' (Length: ${token ? token.length : 0})`);
   }
 
   const apiVersion = process.env.API_VERSION || 'v18.0';
@@ -197,7 +198,7 @@ async function sendWhatsAppText({ phoneNumberId, to, body, token, io, clientId }
     await conversation.save();
 
     if (io) {
-        io.to(`client_${clientId}`).emit('conversation_update', conversation);
+      io.to(`client_${clientId}`).emit('conversation_update', conversation);
     }
 
     await saveAndEmitMessage({
@@ -250,7 +251,7 @@ async function sendWhatsAppImage({ phoneNumberId, to, imageUrl, caption, token, 
     await conversation.save();
 
     if (io) {
-        io.to(`client_${clientId}`).emit('conversation_update', conversation);
+      io.to(`client_${clientId}`).emit('conversation_update', conversation);
     }
 
     await saveAndEmitMessage({
@@ -311,7 +312,7 @@ async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons, t
     await conversation.save();
 
     if (io) {
-        io.to(`client_${clientId}`).emit('conversation_update', conversation);
+      io.to(`client_${clientId}`).emit('conversation_update', conversation);
     }
 
     await saveAndEmitMessage({
@@ -391,7 +392,7 @@ async function sendWhatsAppList({ phoneNumberId, to, header, body, button, rows,
     await conversation.save();
 
     if (io) {
-        io.to(`client_${clientId}`).emit('conversation_update', conversation);
+      io.to(`client_${clientId}`).emit('conversation_update', conversation);
     }
 
     await saveAndEmitMessage({
@@ -444,23 +445,23 @@ async function sendSmartButtonsOrList({ phoneNumberId, to, header, body, buttons
 // Helper: get available booking days (dynamic, based on Google Calendar availability)
 async function getAvailableBookingDays(stylist, calendars) {
   try {
-    // Normalize stylist name to match config keys (e.g., "Stylist Sarah" -> "stylist_sarah")
+    // Normalize stylist name to match config keys (e.g., "Stylist Moksh" -> "stylist_moksh")
     const stylistKey = stylist.toLowerCase().replace(/\s+/g, '_');
     const calendarId = calendars[stylistKey] || calendars[stylist];
     console.log(`🔍 Fetching dynamic available dates from Google Calendar for ${stylist} (key: ${stylistKey})...`, calendarId);
-    
+
     if (!calendarId) {
-       console.log('❌ No calendar ID found for stylist:', stylist);
-       return [];
+      console.log('❌ No calendar ID found for stylist:', stylist);
+      return [];
     }
 
     const availableDates = await getAvailableDates(8, calendarId);
-    
+
     if (availableDates.length === 0) {
       console.log('❌ No available dates found, returning empty array');
       return [];
     }
-    
+
     console.log(`✅ Found ${availableDates.length} available dates for booking`);
     return availableDates;
   } catch (error) {
@@ -492,15 +493,15 @@ function getPaginatedServices(page = 0) {
   const startIndex = page * servicesPerPage;
   const endIndex = startIndex + servicesPerPage;
   const pageServices = salonServices.slice(startIndex, endIndex);
-  
+
   // Add "Ask Stylist" option
   pageServices.push({ id: 'service_ask_stylist', title: 'Ask Stylist' });
-  
+
   // Add "Choose Another Service" if there are more services
   if (endIndex < salonServices.length) {
     pageServices.push({ id: 'service_more', title: 'More Services' });
   }
-  
+
   return {
     services: pageServices,
     currentPage: page,
@@ -516,14 +517,14 @@ async function fetchRealTimeSlots(dateStr, page = 0, stylist, calendars) {
     const stylistKey = stylist.toLowerCase().replace(/\s+/g, '_');
     const calendarId = calendars[stylistKey] || calendars[stylist];
     console.log(`🔍 Fetching available slots for ${dateStr} (page ${page}) with stylist ${stylist} (key: ${stylistKey})...`);
-    
+
     if (!calendarId) {
-        console.error(`No calendar ID configured for stylist: ${stylist} (key: ${stylistKey})`);
-        return { slots: [], totalSlots: 0, currentPage: 0, totalPages: 0, hasMore: false };
+      console.error(`No calendar ID configured for stylist: ${stylist} (key: ${stylistKey})`);
+      return { slots: [], totalSlots: 0, currentPage: 0, totalPages: 0, hasMore: false };
     }
 
     const result = await getAvailableSlots(dateStr, page, calendarId);
-    
+
     if (result.totalSlots === 0) {
       console.log(`❌ No available slots found for ${dateStr}`);
       return {
@@ -534,9 +535,9 @@ async function fetchRealTimeSlots(dateStr, page = 0, stylist, calendars) {
         hasMore: false
       };
     }
-    
+
     console.log(`✅ Found ${result.totalSlots} available slots for ${dateStr} (page ${result.currentPage + 1}/${result.totalPages})`);
-    
+
     return result;
   } catch (err) {
     console.error('Error fetching real time slots:', err);
@@ -580,21 +581,21 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   const helperParams = { phoneNumberId, token, io, clientId };
 
   // Track lead interaction for Active Leads display
-   try {
-       await AdLead.updateOne(
-           { clientId, phoneNumber: from },
-           { 
-               $set: { 
-                   lastInteraction: new Date(),
-                   chatSummary: userMsg ? userMsg.substring(0, 50) : 'Interaction'
-               },
-               $setOnInsert: { source: 'WhatsApp', leadScore: 10 } 
-           },
-           { upsert: true }
-       );
-   } catch (e) {
-       console.error('AdLead update error:', e);
-   }
+  try {
+    await AdLead.updateOne(
+      { clientId, phoneNumber: from },
+      {
+        $set: {
+          lastInteraction: new Date(),
+          chatSummary: userMsg ? userMsg.substring(0, 50) : 'Interaction'
+        },
+        $setOnInsert: { source: 'WhatsApp', leadScore: 10 }
+      },
+      { upsert: true }
+    );
+  } catch (e) {
+    console.error('AdLead update error:', e);
+  }
 
   // Handle STOP/UNSUBSCRIBE commands
   if (userMsgType === 'text' && userMsg && (userMsg.trim().toLowerCase() === 'stop' || userMsg.trim().toLowerCase() === 'unsubscribe')) {
@@ -603,20 +604,20 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       // Update BirthdayUser collection
       await BirthdayUser.updateOne(
         { number: from },
-        { 
-          $set: { 
+        {
+          $set: {
             isOpted: false,
             optedOutOn: new Date().toISOString()
           }
         },
         { upsert: true }
       );
-      
+
       // Update all appointments for this user to opt out of reminders
       await Appointment.updateMany(
         { phone: from },
-        { 
-          $set: { 
+        {
+          $set: {
             'consent.appointmentReminders': false,
             'consent.birthdayMessages': false,
             'consent.marketingMessages': false,
@@ -624,13 +625,13 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           }
         }
       );
-      
+
       await sendWhatsAppText({
         ...helperParams,
         to: from,
         body: '✅ You have been unsubscribed from all appointment reminders and birthday messages. You will no longer receive any messages from us. If you change your mind, you can opt back in by sending "START" to this number.'
       });
-      
+
       // Clear any existing session
       delete userSessions[from];
       res.status(200).end();
@@ -653,20 +654,20 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       // Update BirthdayUser collection
       await BirthdayUser.updateOne(
         { number: from },
-        { 
-          $set: { 
+        {
+          $set: {
             isOpted: true
           },
           $unset: { optedOutOn: 1 }
         },
         { upsert: true }
       );
-      
+
       // Update all appointments for this user to opt in to reminders
       await Appointment.updateMany(
         { phone: from },
-        { 
-          $set: { 
+        {
+          $set: {
             'consent.appointmentReminders': true,
             'consent.birthdayMessages': true,
             'consent.marketingMessages': false, // No marketing messages
@@ -674,13 +675,13 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           }
         }
       );
-      
+
       await sendWhatsAppText({
         ...helperParams,
         to: from,
         body: '✅ You have been successfully resubscribed to appointment reminders and birthday messages. Welcome back! 🎉'
       });
-      
+
       // Clear any existing session
       delete userSessions[from];
       res.status(200).end();
@@ -722,7 +723,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   // Step: User selected a FAQ Topic (e.g., 'ask_services')
   if (session.step === 'ask_question_topic') {
     const topicKey = userMsg;
-    
+
     // Check if valid topic (button click)
     if (FAQ_DATA[topicKey]) {
       const questions = FAQ_DATA[topicKey];
@@ -739,7 +740,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       res.status(200).end();
       return;
     }
-    
+
     // If user typed text or sent invalid input, guide them back
     await sendWhatsAppList({
       ...helperParams,
@@ -759,42 +760,42 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     // Find the answer
     let answer = null;
     let questionTitle = '';
-    
+
     // Search in current topic or all
     for (const key in FAQ_DATA) {
-        const q = FAQ_DATA[key].find(item => item.id === userMsg);
-        if (q) {
-            answer = q.answer;
-            questionTitle = q.title;
-            break;
-        }
+      const q = FAQ_DATA[key].find(item => item.id === userMsg);
+      if (q) {
+        answer = q.answer;
+        questionTitle = q.title;
+        break;
+      }
     }
 
     if (answer) {
-        // Send answer
-        await sendWhatsAppText({
-            ...helperParams,
-            to: from,
-            body: `*${questionTitle}*\n\n${answer}`
-        });
-        
-        // Follow up
-        await sendSmartButtonsOrList({
-            ...helperParams,
-            to: from,
-            header: undefined,
-            body: 'Is there anything else I can help you with?',
-            buttons: [
-                { id: 'user_ask_question', title: 'Ask Another Question' },
-                { id: 'user_schedule_appt', title: 'Book Appointment' },
-                { id: 'user_home', title: 'Main Menu' }
-            ]
-        });
-        session.step = 'home_waiting';
-        res.status(200).end();
-        return;
+      // Send answer
+      await sendWhatsAppText({
+        ...helperParams,
+        to: from,
+        body: `*${questionTitle}*\n\n${answer}`
+      });
+
+      // Follow up
+      await sendSmartButtonsOrList({
+        ...helperParams,
+        to: from,
+        header: undefined,
+        body: 'Is there anything else I can help you with?',
+        buttons: [
+          { id: 'user_ask_question', title: 'Ask Another Question' },
+          { id: 'user_schedule_appt', title: 'Book Appointment' },
+          { id: 'user_home', title: 'Main Menu' }
+        ]
+      });
+      session.step = 'home_waiting';
+      res.status(200).end();
+      return;
     }
-    
+
     // Invalid selection or text - re-show questions for the topic
     const topicKey = session.data.faqTopic;
     if (topicKey && FAQ_DATA[topicKey]) {
@@ -810,24 +811,24 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       res.status(200).end();
       return;
     } else {
-        // Fallback to topics if state is lost
-        await sendWhatsAppList({
-            ...helperParams,
-            to: from,
-            header: 'Ask a Question ❓',
-            body: 'Please select a topic:',
-            button: 'Select Topic',
-            rows: QUESTION_TOPICS
-        });
-        session.step = 'ask_question_topic';
-        res.status(200).end();
-        return;
+      // Fallback to topics if state is lost
+      await sendWhatsAppList({
+        ...helperParams,
+        to: from,
+        header: 'Ask a Question ❓',
+        body: 'Please select a topic:',
+        button: 'Select Topic',
+        rows: QUESTION_TOPICS
+      });
+      session.step = 'ask_question_topic';
+      res.status(200).end();
+      return;
     }
   }
 
-      // AI-powered free-text handling (not a button/list reply)
+  // AI-powered free-text handling (not a button/list reply)
   if (userMsgType === 'text' && (!session.step || session.step === 'home' || session.step === 'home_waiting' || session.step === 'faq_menu' || session.step === 'appt_day' || session.step === 'appt_pick_day_waiting' || session.step === 'appt_time_waiting' || session.step === 'ask_question_topic' || session.step === 'faq_await')) {
-    
+
     // Check if user is explicitly trying to book an appointment via text
     const bookingKeywords = [
       'book appointment',
@@ -850,7 +851,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     ];
     const userMsgLower = userMsg.toLowerCase();
     const isExplicitBooking = bookingKeywords.some(keyword => userMsgLower.includes(keyword));
-    
+
     // If user is in FAQ/Ask Question flow, don't trigger booking automatically
     if (session.step === 'ask_question_topic' || session.step === 'faq_await') {
       // Handle as a general question, not booking
@@ -872,7 +873,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       return;
     }
     // Enhanced OpenAI prompt for precise, human-like responses (Ladies Only Salon)
-    const prompt = `You are Sarah, a friendly and professional salon assistant for Choice Salon for Ladies in Ahmedabad.
+    const prompt = `You are a friendly and professional salon assistant for Choice Salon for Ladies in Ahmedabad.
     
     IMPORTANT INSTRUCTIONS:
     1. Choice Salon is EXCLUSIVELY for ladies. Do NOT mention or offer any male services (like shaving, beard trimming, etc.).
@@ -891,21 +892,21 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     USER QUESTION: ${userMsg}
     
     Provide a SHORT, PRECISE response:`;
-    
+
     let aiResponse = '';
     try {
       aiResponse = await generateWithGemini(geminiKey, prompt);
-      if (!aiResponse.toLowerCase().includes('need anything else') && 
-          !aiResponse.toLowerCase().includes('anything else') &&
-          !aiResponse.toLowerCase().includes('help you') &&
-          !aiResponse.toLowerCase().includes('assistance')) {
+      if (!aiResponse.toLowerCase().includes('need anything else') &&
+        !aiResponse.toLowerCase().includes('anything else') &&
+        !aiResponse.toLowerCase().includes('help you') &&
+        !aiResponse.toLowerCase().includes('assistance')) {
         aiResponse += '\n\nNeed anything else I can help you with?';
       }
     } catch (err) {
       console.error('Gemini API error:', err);
       aiResponse = "I'm having trouble accessing information right now. Please try again, or use the buttons below.";
     }
-    
+
     // Always append the two main buttons
     await sendSmartButtonsOrList({
       ...helperParams,
@@ -994,8 +995,8 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         ...helperParams,
         to: from,
         header: 'Book Appointment 💇‍♀️',
-      body: 'Which service would you like to book?',
-      button: 'Select Service',
+        body: 'Which service would you like to book?',
+        button: 'Select Service',
         rows: paginatedServices.services
       });
       session.step = 'choose_service';
@@ -1057,16 +1058,16 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       // Show next page of services
       const nextPage = (session.data.servicePage || 0) + 1;
       const paginatedServices = getPaginatedServices(nextPage);
-      
+
       if (paginatedServices.services.length > 0) {
         // Add "Back" button to the services list
         const servicesWithBack = [...paginatedServices.services];
         servicesWithBack.unshift({ id: 'service_back', title: '🔙 Back' });
-        
+
         await sendWhatsAppList({
           ...helperParams,
           to: from,
-        header: 'Book Appointment',
+          header: 'Book Appointment',
           body: 'Choose from more services:',
           button: 'Select Service',
           rows: servicesWithBack
@@ -1077,12 +1078,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         return;
       }
     }
-    
+
     // Handle going back to previous page
     if (userMsg === 'service_back') {
       const prevPage = Math.max((session.data.servicePage || 0) - 1, 0);
       const paginatedServices = getPaginatedServices(prevPage);
-      
+
       await sendWhatsAppList({
         ...helperParams,
         to: from,
@@ -1096,7 +1097,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       res.status(200).end();
       return;
     }
-    
+
     // Handle "Ask Stylist" option
     if (userMsg === 'service_ask_stylist') {
       await sendWhatsAppText({
@@ -1109,23 +1110,23 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       res.status(200).end();
       return;
     }
-    
-  const chosen = salonServices.find(s => s.id === userMsg || s.title.toLowerCase() === (userMsg || '').toLowerCase());
-  if (chosen) {
-    session.data.chosenService = chosen.title;
-    session.data.chosenCategory = chosen.category;
-    session.data.chosenPrice = chosen.price;
-    await sendSmartButtonsOrList({
-      ...helperParams,
-      to: from,
-      header: `${chosen.title} – ${chosen.price}`,
-      body: `For ${chosen.title}, from which stylist would you prefer?`,
-      buttons: salonStylists.map(s => ({ id: s.id, title: s.title }))
-    });
-    session.step = 'choose_stylist';
-    res.status(200).end();
-    return;
-  } else {
+
+    const chosen = salonServices.find(s => s.id === userMsg || s.title.toLowerCase() === (userMsg || '').toLowerCase());
+    if (chosen) {
+      session.data.chosenService = chosen.title;
+      session.data.chosenCategory = chosen.category;
+      session.data.chosenPrice = chosen.price;
+      await sendSmartButtonsOrList({
+        ...helperParams,
+        to: from,
+        header: `${chosen.title} – ${chosen.price}`,
+        body: `For ${chosen.title}, from which stylist would you prefer?`,
+        buttons: salonStylists.map(s => ({ id: s.id, title: s.title }))
+      });
+      session.step = 'choose_stylist';
+      res.status(200).end();
+      return;
+    } else {
       // Fallback: show current page of services again
       const currentPage = session.data.servicePage || 0;
       const paginatedServices = getPaginatedServices(currentPage);
@@ -1151,13 +1152,13 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       session.data.stylistId = chosen.id; // Store ID for calendar lookup
       // Step 4: Date selection
       const days = await getAvailableBookingDays(session.data.stylistId, calendars);
-      
+
       // Clean up the days array to only include WhatsApp-compatible properties
       const cleanDays = days.map(day => ({
         id: day.id,
         title: day.title
       }));
-      
+
       await sendWhatsAppList({
         ...helperParams,
         to: from,
@@ -1178,8 +1179,8 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         header: `Great! Which stylist would you prefer?`,
         body: 'Choose your stylist:',
         buttons: salonStylists.map(s => ({ id: s.id, title: s.title }))
-       });
-       session.step = 'choose_stylist';
+      });
+      session.step = 'choose_stylist';
       res.status(200).end();
       return;
     }
@@ -1213,7 +1214,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           // Check if this is today and provide a more helpful message
           const nowIST = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
           const today = new Date(nowIST).toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'short', year: 'numeric' });
-          
+
           if (selectedDate.toLowerCase().includes(today.toLowerCase())) {
             await sendWhatsAppText({
               ...helperParams,
@@ -1314,7 +1315,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       return;
     } else if (session.data.slotResult && session.data.slotResult.slots) {
       // Handle text-based slot selection
-      const match = session.data.slotResult.slots.find(slot => 
+      const match = session.data.slotResult.slots.find(slot =>
         slot.title.toLowerCase() === (userMsg || '').toLowerCase()
       );
       if (match && match.slot) {
@@ -1378,22 +1379,22 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       session.data.name = userMsg;
       // Use the WhatsApp 'from' field as the phone number
       session.data.phone = from;
-      
+
       // Check if user has previous consent history
       try {
-        const previousAppointments = await Appointment.find({ 
-          phone: session.data.phone 
+        const previousAppointments = await Appointment.find({
+          phone: session.data.phone
         }).sort({ createdAt: -1 }).limit(1);
-        
+
         if (previousAppointments.length > 0) {
           const lastAppointment = previousAppointments[0];
           const hasConsentHistory = lastAppointment.consent && lastAppointment.consent.consentedAt;
-          
+
           if (hasConsentHistory) {
             // User has previous consent - show direct confirmation
             let consentStatus = '';
             let confirmationBody = `✅ *Booking Summary*\n\n👤 *Name:* ${session.data.name}\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n�‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n💅 *Service:* ${session.data.chosenService || 'General Salon Session'}\n\n📱 *Phone:* ${session.data.phone}\n\n🔔 *Communication Preferences:*\n`;
-            
+
             if (lastAppointment.consent.appointmentReminders && lastAppointment.consent.birthdayMessages) {
               consentStatus = '✅ Accept All';
               confirmationBody += `• Booking reminders\n\n*Using your previous preference: Accept All*`;
@@ -1404,7 +1405,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
               consentStatus = '❌ No Thanks';
               confirmationBody += `• No communications\n\n*Using your previous preference: No Thanks*`;
             }
-            
+
             // Store the previous consent for this booking
             session.data.consent = {
               appointmentReminders: lastAppointment.consent.appointmentReminders,
@@ -1413,9 +1414,9 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
               consentedAt: new Date(),
               reusedFromPrevious: true
             };
-            
+
             console.log(`🔄 Using previous consent for user ${session.data.phone}: ${consentStatus}`);
-            
+
             // Send direct confirmation with previous consent
             await sendWhatsAppButtons({
               ...helperParams,
@@ -1432,7 +1433,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
             return;
           }
         }
-        
+
         // No previous consent or first-time user - show consent options
         await sendWhatsAppButtons({
           ...helperParams,
@@ -1448,7 +1449,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         session.step = 'appt_consent';
         res.status(200).end();
         return;
-        
+
       } catch (error) {
         console.error('Error checking previous consent:', error);
         // Fallback to showing consent options
@@ -1484,7 +1485,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     if (userMsg === 'confirm_with_previous_consent') {
       // User confirmed with previous consent - proceed to booking
       console.log('✅ User confirmed appointment with previous consent');
-      
+
       // Check if appointment is already being processed to prevent duplicates
       if (session.data.isProcessing) {
         console.log('Appointment already being processed for user:', from);
@@ -1496,13 +1497,13 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         res.status(200).end();
         return;
       }
-      
+
       // Set processing flag to prevent duplicate bookings
       session.data.isProcessing = true;
-      
+
       // Proceed with booking using the stored consent
       // (session.data.consent is already set from previous step)
-      
+
       // Create Google Calendar event
       let eventId = '';
       try {
@@ -1527,7 +1528,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         });
         const stylistId = session.data.stylistId || session.data.stylist;
         const calendarId = calendars[stylistId] || calendars[session.data.stylist] || process.env.GCAL_CALENDAR_ID;
-        
+
         // Check if an event already exists for this time slot to prevent duplicates
         try {
           const existingEvents = await getAvailableTimeSlots({
@@ -1536,18 +1537,18 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
             endTime: '23:59',
             calendarId
           });
-          
+
           // Check if there's already an event in this time slot
           const conflictingEvent = existingEvents.find(event => {
             const eventStart = DateTime.fromISO(event.start);
             const eventEnd = DateTime.fromISO(event.end);
             const slotStartTime = slotStart;
             const slotEndTime = slotEnd;
-            
+
             // Check if events overlap
             return (slotStartTime < eventEnd && slotEndTime > eventStart);
           });
-          
+
           if (conflictingEvent) {
             console.log('⚠️ Conflicting event found:', conflictingEvent);
             throw new Error('This time slot is no longer available. Please choose a different time.');
@@ -1556,10 +1557,10 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           console.log('⚠️ Could not check for conflicting events:', checkError.message);
           // Continue with booking even if check fails
         }
-        
+
         // Create event description based on consent
         let eventDescription = `Name: ${session.data.name}\nPhone: ${session.data.phone}\nService: ${session.data.chosenService || ''}\nStylist: ${session.data.stylist || ''}\nDate: ${session.data.date}\nTime: ${session.data.time}\nBooked via WhatsApp`;
-        
+
         // Add consent status to event description
         if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
           eventDescription += '\n\n🔔 User has consented to receive appointment reminders and birthday messages.';
@@ -1568,7 +1569,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         } else {
           eventDescription += '\n\n❌ User has opted out of all communications.';
         }
-        
+
         const event = await createEvent({
           summary: `Appointment: ${session.data.name} - ${session.data.chosenService || ''} with ${session.data.stylist || ''}`,
           description: eventDescription,
@@ -1598,7 +1599,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         res.status(200).end();
         return;
       }
-      
+
       // Save appointment to DB with consent data
       try {
         // Ensure all required fields are present
@@ -1614,12 +1615,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           consent: session.data.consent,
           clientId // Add clientId to link appointment to the correct business
         };
-        
+
         // Validate required fields before saving
         if (!appointmentData.name || !appointmentData.phone || !appointmentData.doctor) {
           throw new Error(`Missing required fields: name=${appointmentData.name}, phone=${appointmentData.phone}, doctor=${appointmentData.doctor}`);
         }
-        
+
         console.log('Saving appointment to database:', {
           name: appointmentData.name,
           phone: appointmentData.phone,
@@ -1629,19 +1630,22 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           time: appointmentData.time,
           consent: appointmentData.consent
         });
-        
+
+        const serviceDb = await ServiceModel.findOne({ clientId: appointmentData.clientId, name: appointmentData.service });
+        appointmentData.revenue = serviceDb ? serviceDb.price : 0;
+
         await Appointment.create(appointmentData);
 
         // Update AdLead with booking points
         try {
           await AdLead.updateOne(
             { clientId, phoneNumber: session.data.phone },
-            { 
-              $inc: { appointmentsBooked: 1 }, 
-              $set: { 
+            {
+              $inc: { appointmentsBooked: 1 },
+              $set: {
                 lastInteraction: new Date(),
                 name: session.data.name // Ensure name is up to date
-              } 
+              }
             },
             { upsert: true }
           );
@@ -1655,13 +1659,13 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           if (io) {
             io.to(`client_${clientId}`).emit('appointments_update', { type: 'created' });
           }
-        } catch {}
-        
+        } catch { }
+
         console.log('✅ Appointment saved successfully to database');
-        
+
       } catch (dbError) {
         console.error('❌ Error saving appointment to database:', dbError);
-        
+
         // Try to delete the Google Calendar event if database save failed
         if (eventId) {
           try {
@@ -1671,26 +1675,26 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
             console.error('❌ Error deleting Google Calendar event:', deleteError);
           }
         }
-        
+
         await sendWhatsAppText({
           ...helperParams,
           to: from,
           body: 'Sorry, there was an error saving your appointment. Please try again or contact support.'
         });
-        
+
         // Reset processing flag
         session.data.isProcessing = false;
         session.step = 'home';
         res.status(200).end();
         return;
       }
-      
+
       // Update BirthdayUser collection based on consent
       if (session.data.consent.birthdayMessages) {
         await BirthdayUser.updateOne(
           { number: session.data.phone },
-          { 
-            $set: { 
+          {
+            $set: {
               isOpted: true,
               month: new Date().getMonth() + 1, // Current month as default
               day: new Date().getDate() // Current day as default
@@ -1702,8 +1706,8 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       } else {
         await BirthdayUser.updateOne(
           { number: session.data.phone },
-          { 
-            $set: { 
+          {
+            $set: {
               isOpted: false,
               optedOutOn: new Date().toISOString()
             }
@@ -1711,7 +1715,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           { upsert: true }
         );
       }
-      
+
       // Notify admins of new booking with detailed consent status
       let consentStatus = '';
       if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
@@ -1721,36 +1725,36 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       } else {
         consentStatus = '❌ Opted out of all communications (reused from previous)';
       }
-      
+
       const adminMsg = `🚨 *New Appointment Booked*\n\n` +
-                       `👤 *User Name:* ${session.data.name}\n` +
-                       `📱 *User Phone:* ${session.data.phone}\n` +
-                       `💇‍♀️ *Service:* ${session.data.chosenService || 'General Session'}\n` +
-                       `🎨 *Stylist:* ${session.data.stylist || 'Any'}\n` +
-                       `📅 *Date:* ${session.data.date}\n` +
-                       `🕒 *Time:* ${session.data.time}\n\n` +
-                       `📋 *Status:* ${consentStatus}`;
+        `👤 *User Name:* ${session.data.name}\n` +
+        `📱 *User Phone:* ${session.data.phone}\n` +
+        `💇‍♀️ *Service:* ${session.data.chosenService || 'General Session'}\n` +
+        `🎨 *Stylist:* ${session.data.stylist || 'Any'}\n` +
+        `📅 *Date:* ${session.data.date}\n` +
+        `🕒 *Time:* ${session.data.time}\n\n` +
+        `📋 *Status:* ${consentStatus}`;
       await notifyAdmins({ ...helperParams, message: adminMsg, adminNumbers });
-      
+
       // Send confirmation to user based on consent
       let confirmationBody = `✅ *Booking Confirmed*\n\n` +
-                             `📅 *Date:* ${session.data.date}\n` +
-                             `🕒 *Time:* ${session.data.time}\n` +
-                             `💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n\n` +
-                             `📍 *Location:* Choice Salon for Ladies, Nikol\n` +
-                             `🏢 *Address:* 2nd Floor, Raspan Arcade, 6-7, Raspan Cross Rd, Nikol, Ahmedabad\n` +
-                             `🗺️ *Map:* https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
-                             `⏰ *Please arrive 15 minutes early* for your appointment.`;
-      
+        `📅 *Date:* ${session.data.date}\n` +
+        `🕒 *Time:* ${session.data.time}\n` +
+        `💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n\n` +
+        `📍 *Location:* Choice Salon for Ladies, Nikol\n` +
+        `🏢 *Address:* 2nd Floor, Raspan Arcade, 6-7, Raspan Cross Rd, Nikol, Ahmedabad\n` +
+        `🗺️ *Map:* https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
+        `⏰ *Please arrive 15 minutes early* for your appointment.`;
+
       // Add consent-specific confirmation message
       if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
         confirmationBody += `\n\n🔔 *Reminders:* You'll receive updates before your appointment.`;
       } else if (session.data.consent.appointmentReminders) {
         confirmationBody += `\n\n📅 *Reminders:* You'll receive updates before your appointment.`;
       }
-      
+
       confirmationBody += `\n\n❌ To stop receiving messages, reply with "STOP" at any time.`;
-      
+
       await sendWhatsAppButtons({
         ...helperParams,
         to: from,
@@ -1768,21 +1772,21 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         try {
           let upsellMsg = '';
           const chosenService = (session.data.chosenService || '').toLowerCase();
-          
+
           if (chosenService.includes('haircut')) {
             upsellMsg = `✨ *Exclusive Upgrade for You!* ✨\n\n` +
-                        `Since you've booked a Haircut, would you like to add a *Luxury Hair Spa* or a *Deep Conditioning Treatment*? 🛁\n\n` +
-                        `These treatments are perfect for keeping your hair healthy and shiny! ✨\n\n` +
-                        `🎁 *SPECIAL OFFER:* Get *10% OFF* if you add any treatment to your haircut today! 🎟️\n\n` +
-                        `Reply "YES" if you'd like to add this to your booking.`;
+              `Since you've booked a Haircut, would you like to add a *Luxury Hair Spa* or a *Deep Conditioning Treatment*? 🛁\n\n` +
+              `These treatments are perfect for keeping your hair healthy and shiny! ✨\n\n` +
+              `🎁 *SPECIAL OFFER:* Get *10% OFF* if you add any treatment to your haircut today! 🎟️\n\n` +
+              `Reply "YES" if you'd like to add this to your booking.`;
           } else {
             // General upsell for other services
             upsellMsg = `✨ *Complete Your Glow-Up!* ✨\n\n` +
-                        `Would you like to add a *Refreshing Pedicure* or *Threading* to your visit? 🦶🧶\n\n` +
-                        `🎁 *SPECIAL OFFER:* Book an additional service now and get *10% OFF* on the add-on! 🎟️\n\n` +
-                        `Reply with the service name if you're interested!`;
+              `Would you like to add a *Refreshing Pedicure* or *Threading* to your visit? 🦶🧶\n\n` +
+              `🎁 *SPECIAL OFFER:* Book an additional service now and get *10% OFF* on the add-on! 🎟️\n\n` +
+              `Reply with the service name if you're interested!`;
           }
-          
+
           await sendWhatsAppText({
             ...helperParams,
             to: from,
@@ -1793,17 +1797,17 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           console.error(`❌ Error sending delayed upsell message to ${from}:`, err);
         }
       }, 300000);
-      
+
       // Reset processing flag and clear session data
       session.data.isProcessing = false;
       session.step = 'home';
       session.data = {}; // Clear all session data
-      
+
       console.log('✅ Appointment booking completed successfully for user:', from);
-      
+
       res.status(200).end();
       return;
-      
+
     } else if (userMsg === 'change_consent_preferences') {
       // User wants to change preferences - show consent options
       await sendWhatsAppButtons({
@@ -1841,7 +1845,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   // Appointment: Consent step
   if (session.step === 'appt_consent') {
     if (userMsg === 'consent_confirm_all' || userMsg === 'consent_reminders_only' || userMsg === 'consent_none') {
-      
+
       // Check if appointment is already being processed to prevent duplicates
       if (session.data.isProcessing) {
         console.log('Appointment already being processed for user:', from);
@@ -1853,10 +1857,10 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         res.status(200).end();
         return;
       }
-      
+
       // Set processing flag to prevent duplicate bookings
       session.data.isProcessing = true;
-      
+
       // Store consent preference based on user selection
       let consentOptions = {
         appointmentReminders: false,
@@ -1884,7 +1888,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         ...consentOptions,
         consentedAt: new Date()
       };
-      
+
       // Create Google Calendar event
       let eventId = '';
       try {
@@ -1909,7 +1913,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         });
         const stylistId = session.data.stylistId || session.data.stylist;
         const calendarId = calendars[stylistId] || calendars[session.data.stylist] || process.env.GCAL_CALENDAR_ID;
-        
+
         // Check if an event already exists for this time slot to prevent duplicates
         try {
           const existingEvents = await getAvailableTimeSlots({
@@ -1918,18 +1922,18 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
             endTime: '23:59',
             calendarId
           });
-          
+
           // Check if there's already an event in this time slot
           const conflictingEvent = existingEvents.find(event => {
             const eventStart = DateTime.fromISO(event.start);
             const eventEnd = DateTime.fromISO(event.end);
             const slotStartTime = slotStart;
             const slotEndTime = slotEnd;
-            
+
             // Check if events overlap
             return (slotStartTime < eventEnd && slotEndTime > eventStart);
           });
-          
+
           if (conflictingEvent) {
             console.log('⚠️ Conflicting event found:', conflictingEvent);
             throw new Error('This time slot is no longer available. Please choose a different time.');
@@ -1938,10 +1942,10 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           console.log('⚠️ Could not check for conflicting events:', checkError.message);
           // Continue with booking even if check fails
         }
-        
+
         // Create event description based on consent
         let eventDescription = `Name: ${session.data.name}\nPhone: ${session.data.phone}\nService: ${session.data.chosenService || ''}\nStylist: ${session.data.stylist || ''}\nDate: ${session.data.date}\nTime: ${session.data.time}\nBooked via WhatsApp`;
-        
+
         // Add consent status to event description
         if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
           eventDescription += '\n\n🔔 User has consented to receive appointment reminders and birthday messages.';
@@ -1950,7 +1954,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         } else {
           eventDescription += '\n\n❌ User has opted out of all communications.';
         }
-        
+
         const event = await createEvent({
           summary: `Appointment: ${session.data.name} - ${session.data.chosenService || ''} with ${session.data.stylist || ''}`,
           description: eventDescription,
@@ -1979,7 +1983,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         res.status(200).end();
         return;
       }
-      
+
       // Save appointment to DB with consent data
       try {
         // Ensure all required fields are present
@@ -1995,12 +1999,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           consent: session.data.consent,
           clientId // Add clientId to link appointment to the correct business
         };
-        
+
         // Validate required fields before saving
         if (!appointmentData.name || !appointmentData.phone || !appointmentData.doctor) {
           throw new Error(`Missing required fields: name=${appointmentData.name}, phone=${appointmentData.phone}, doctor=${appointmentData.doctor}`);
         }
-        
+
         console.log('Saving appointment to database:', {
           name: appointmentData.name,
           phone: appointmentData.phone,
@@ -2010,20 +2014,23 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           time: appointmentData.time,
           consent: appointmentData.consent
         });
-        
+
+        const serviceDb = await ServiceModel.findOne({ clientId: appointmentData.clientId, name: appointmentData.service });
+        appointmentData.revenue = serviceDb ? serviceDb.price : 0;
+
         await Appointment.create(appointmentData);
         try {
           const io = req.app.get('socketio');
           if (io) {
             io.to(`client_${clientId}`).emit('appointments_update', { type: 'created' });
           }
-        } catch {}
-        
+        } catch { }
+
         console.log('✅ Appointment saved successfully to database');
-        
+
       } catch (dbError) {
         console.error('❌ Error saving appointment to database:', dbError);
-        
+
         // Try to delete the Google Calendar event if database save failed
         if (eventId) {
           try {
@@ -2033,26 +2040,26 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
             console.error('❌ Error deleting Google Calendar event:', deleteError);
           }
         }
-        
+
         await sendWhatsAppText({
           ...helperParams,
           to: from,
           body: 'Sorry, there was an error saving your appointment. Please try again or contact support.'
         });
-        
+
         // Reset processing flag
         session.data.isProcessing = false;
         session.step = 'home';
         res.status(200).end();
         return;
       }
-      
+
       // Update BirthdayUser collection based on consent
       if (session.data.consent.birthdayMessages) {
         await BirthdayUser.updateOne(
           { number: session.data.phone },
-          { 
-            $set: { 
+          {
+            $set: {
               isOpted: true,
               month: new Date().getMonth() + 1, // Current month as default
               day: new Date().getDate() // Current day as default
@@ -2064,8 +2071,8 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       } else {
         await BirthdayUser.updateOne(
           { number: session.data.phone },
-          { 
-            $set: { 
+          {
+            $set: {
               isOpted: false,
               optedOutOn: new Date().toISOString()
             }
@@ -2073,7 +2080,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           { upsert: true }
         );
       }
-      
+
       // Notify admins of new booking with detailed consent status
       let consentStatus = '';
       if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
@@ -2083,36 +2090,36 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       } else {
         consentStatus = 'Opted out of all communications';
       }
-      
+
       const adminMsg = `New Appointment Booked\n\n` +
-                       `User Name: ${session.data.name}\n` +
-                       `User Phone: ${session.data.phone}\n` +
-                       `Service: ${session.data.chosenService || 'General Session'}\n` +
-                       `Stylist: ${session.data.stylist || 'Any'}\n` +
-                       `Date: ${session.data.date}\n` +
-                       `Time: ${session.data.time}\n\n` +
-                       `Status: ${consentStatus}`;
+        `User Name: ${session.data.name}\n` +
+        `User Phone: ${session.data.phone}\n` +
+        `Service: ${session.data.chosenService || 'General Session'}\n` +
+        `Stylist: ${session.data.stylist || 'Any'}\n` +
+        `Date: ${session.data.date}\n` +
+        `Time: ${session.data.time}\n\n` +
+        `Status: ${consentStatus}`;
       await notifyAdmins({ ...helperParams, message: adminMsg, adminNumbers });
-      
+
       // Send confirmation to user based on consent
       let confirmationBody = `Appointment Confirmed\n\n` +
-                             `Date: ${session.data.date}\n` +
-                             `Time: ${session.data.time}\n` +
-                             `Stylist: ${session.data.stylist || 'Not specified'}\n\n` +
-                             `Location: Choice Salon for Ladies, Nikol\n` +
-                             `Address: 2nd Floor, Raspan Arcade, 6-7, Raspan Cross Rd, Nikol, Ahmedabad\n` +
-                             `Map: https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
-                             `Please arrive 15 minutes early for your appointment.`;
-      
+        `Date: ${session.data.date}\n` +
+        `Time: ${session.data.time}\n` +
+        `Stylist: ${session.data.stylist || 'Not specified'}\n\n` +
+        `Location: Choice Salon for Ladies, Nikol\n` +
+        `Address: 2nd Floor, Raspan Arcade, 6-7, Raspan Cross Rd, Nikol, Ahmedabad\n` +
+        `Map: https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
+        `Please arrive 15 minutes early for your appointment.`;
+
       // Add consent-specific confirmation message
       if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
         confirmationBody += `\n\nReminders: You'll receive updates before your appointment.`;
       } else if (session.data.consent.appointmentReminders) {
         confirmationBody += `\n\nReminders: You'll receive updates before your appointment.`;
       }
-      
+
       confirmationBody += `\n\nTo stop receiving messages, reply with "STOP" at any time.`;
-      
+
       await sendWhatsAppButtons({
         ...helperParams,
         to: from,
@@ -2130,21 +2137,21 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         try {
           let upsellMsg = '';
           const chosenService = (session.data.chosenService || '').toLowerCase();
-          
+
           if (chosenService.includes('haircut')) {
             upsellMsg = `Exclusive Upgrade for You\n\n` +
-                        `Since you've booked a Haircut, would you like to add a Luxury Hair Spa or a Deep Conditioning Treatment?\n\n` +
-                        `These treatments help keep your hair healthy and shiny.\n\n` +
-                        `SPECIAL OFFER: Get 10% OFF if you add any treatment to your haircut today.\n\n` +
-                        `Reply "YES" if you'd like to add this to your booking.`;
+              `Since you've booked a Haircut, would you like to add a Luxury Hair Spa or a Deep Conditioning Treatment?\n\n` +
+              `These treatments help keep your hair healthy and shiny.\n\n` +
+              `SPECIAL OFFER: Get 10% OFF if you add any treatment to your haircut today.\n\n` +
+              `Reply "YES" if you'd like to add this to your booking.`;
           } else {
             // General upsell for other services
             upsellMsg = `Complete Your Visit\n\n` +
-                        `Would you like to add a Refreshing Pedicure or Threading to your visit?\n\n` +
-                        `SPECIAL OFFER: Book an additional service now and get 10% OFF on the add-on.\n\n` +
-                        `Reply with the service name if you're interested!`;
+              `Would you like to add a Refreshing Pedicure or Threading to your visit?\n\n` +
+              `SPECIAL OFFER: Book an additional service now and get 10% OFF on the add-on.\n\n` +
+              `Reply with the service name if you're interested!`;
           }
-          
+
           await sendWhatsAppText({
             ...helperParams,
             to: from,
@@ -2155,14 +2162,14 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           console.error(`❌ Error sending delayed upsell message to ${from}:`, err);
         }
       }, 300000);
-      
+
       // Reset processing flag and clear session data
       session.data.isProcessing = false;
       session.step = 'home';
       session.data = {}; // Clear all session data
-      
+
       console.log('✅ Appointment booking completed successfully for user:', from);
-      
+
       res.status(200).end();
       return;
     } else {
@@ -2289,11 +2296,11 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           const calendarId = stylistCalendars[stylist.title];
           if (calendarId) {
             try {
-              const appointments = await findEventsByPhoneNumber({ 
-                phone: phoneNumber, 
-                startDate, 
-                endDate, 
-                calendarId 
+              const appointments = await findEventsByPhoneNumber({
+                phone: phoneNumber,
+                startDate,
+                endDate,
+                calendarId
               });
               appointments.forEach(apt => {
                 apt.calendarId = calendarId;
@@ -2567,7 +2574,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 
   // FAQ/Ask a Question (AI-powered)
   if (session.step === 'faq_await') {
-    
+
     // Check if user is trying to book an appointment via text
     if (userMsg && (userMsg.toLowerCase().includes('book') || userMsg.toLowerCase().includes('appointment') || userMsg.toLowerCase().includes('schedule') || userMsg.toLowerCase().includes('make appointment') || userMsg.toLowerCase().includes('book visit') || userMsg.toLowerCase().includes('see doctor'))) {
       // Start the booking flow directly
@@ -2585,7 +2592,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       res.status(200).end();
       return;
     }
-    
+
     // Enhanced OpenAI prompt for FAQ responses
     const prompt = `You are Ava, a friendly and knowledgeable assistant for TURF BOOKING in ahmedabad, Uganda. 
 
@@ -2606,21 +2613,21 @@ ${knowledgeBase}
 USER QUESTION: ${messages.text?.body || userMsg}
 
 Please provide a helpful, human-like response:`;
-    
+
     let aiResponse = '';
     try {
       aiResponse = await generateWithGemini(geminiKey, prompt);
-      if (!aiResponse.toLowerCase().includes('need anything else') && 
-          !aiResponse.toLowerCase().includes('anything else') &&
-          !aiResponse.toLowerCase().includes('help you') &&
-          !aiResponse.toLowerCase().includes('assistance')) {
+      if (!aiResponse.toLowerCase().includes('need anything else') &&
+        !aiResponse.toLowerCase().includes('anything else') &&
+        !aiResponse.toLowerCase().includes('help you') &&
+        !aiResponse.toLowerCase().includes('assistance')) {
         aiResponse += '\n\nNeed anything else I can help you with?';
       }
     } catch (err) {
       console.error('Gemini API error:', err);
       aiResponse = "I'm having trouble accessing information right now. Please try again, or use the buttons below.";
     }
-    
+
     await sendSmartButtonsOrList({
       ...helperParams,
       to: from,
@@ -2704,13 +2711,13 @@ const handleWebhook = async (req, res) => {
     // --- DASHBOARD LOGIC START ---
     // Use dynamic client config if available, otherwise fallback to lookup or default
     let clientId = req.clientConfig ? req.clientConfig.clientId : 'code_clinic_v1';
-    
+
     // Fallback lookup if no config (legacy support)
     if (!req.clientConfig && phoneNumberId) {
-         try {
-            const client = await Client.findOne({ phoneNumberId });
-            if (client) clientId = client.clientId;
-         } catch(e) { console.error('Client lookup failed:', e); }
+      try {
+        const client = await Client.findOne({ phoneNumberId });
+        if (client) clientId = client.clientId;
+      } catch (e) { console.error('Client lookup failed:', e); }
     }
 
     const io = req.app.get('socketio');
@@ -2731,9 +2738,9 @@ const handleWebhook = async (req, res) => {
     }
 
     // 2. Save Incoming Message
-    const userMsgContent = messages.type === 'text' ? messages.text.body : 
-                           messages.type === 'interactive' ? (messages.interactive.button_reply?.title || messages.interactive.list_reply?.title) : 
-                           `[${messages.type}]`;
+    const userMsgContent = messages.type === 'text' ? messages.text.body :
+      messages.type === 'interactive' ? (messages.interactive.button_reply?.title || messages.interactive.list_reply?.title) :
+        `[${messages.type}]`;
 
     const savedMsg = await Message.create({
       clientId,
@@ -2776,7 +2783,7 @@ const handleWebhook = async (req, res) => {
       messages.button.payload === 'Opt Out of Greetings'
     ) {
       console.log('🎂 Birthday opt-out button clicked by:', from);
-    
+
       try {
         const result = await BirthdayUser.updateMany(
           { number: from, isOpted: true },
@@ -2787,10 +2794,10 @@ const handleWebhook = async (req, res) => {
             },
           }
         );
-    
+
         if (result.modifiedCount > 0) {
           console.log(`✅ ${result.modifiedCount} record(s) updated for user ${from}`);
-    
+
           await sendWhatsAppText({
             ...helperParams,
             to: from,
@@ -2803,7 +2810,7 @@ const handleWebhook = async (req, res) => {
       } catch (err) {
         console.error('❌ Error handling birthday opt-out:', err);
       }
-    
+
       return res.status(200).end();
     }
 
