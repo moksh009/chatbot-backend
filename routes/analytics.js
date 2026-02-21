@@ -524,7 +524,7 @@ router.get('/', protect, async (req, res) => {
       }
     ]);
 
-    // 3. Aggregation for Appointments
+    // 3. Aggregation for Appointments (Count & Revenue)
     const appointments = await Appointment.aggregate([
       {
         $match: {
@@ -535,7 +535,8 @@ router.get('/', protect, async (req, res) => {
       {
         $group: {
           _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
-          count: { $sum: 1 }
+          count: { $sum: 1 },
+          revenue: { $sum: { $ifNull: ["$revenue", 0] } }
         }
       }
     ]);
@@ -666,6 +667,12 @@ router.get('/', protect, async (req, res) => {
       const linkClickCount = linkClickEvents.find(c => c._id === date)?.count || 0;
       const checkoutCount = checkoutEvents.find(c => c._id === date)?.count || 0;
 
+      const dayAppointment = appointments.find(c => c._id === date);
+      const apptRevenue = dayAppointment?.revenue || 0;
+
+      // Unify revenue logically. If it's a salon, orderRevenue is probably 0, and apptRevenue has the value. This ensures generic tracking.
+      const totalRevenue = orderRevenue + apptRevenue;
+
       return {
         date,
         totalChats: chatCount,
@@ -675,7 +682,9 @@ router.get('/', protect, async (req, res) => {
         birthdayRemindersSent: bdayCount,
         appointmentRemindersSent: apptRemCount,
         orders: orderCount,
-        revenue: orderRevenue,
+        revenue: totalRevenue,
+        apptRevenue: apptRevenue,
+        orderRevenue: orderRevenue,
         addToCarts: cartCount,
         linkClicks: linkClickCount,
         checkouts: checkoutCount
