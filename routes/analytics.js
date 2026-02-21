@@ -7,8 +7,16 @@ const DailyStat = require('../models/DailyStat');
 const AdLead = require('../models/AdLead');
 const Order = require('../models/Order');
 const Client = require('../models/Client');
+const Service = require('../models/Service');
 const { listEvents } = require('../utils/googleCalendar');
 const { protect } = require('../middleware/auth');
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+
+// Utility function to initialize Gemini API with fallback key
+const getGeminiClient = (req) => {
+  const apiKey = req.clientConfig?.openaiApiKey || process.env.GEMINI_API_KEY; // Fallback to provided user key
+  return new GoogleGenerativeAI(apiKey);
+};
 
 router.get('/realtime', protect, async (req, res) => {
   try {
@@ -221,10 +229,63 @@ router.get('/top-leads', protect, async (req, res) => {
       ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
       : { clientId };
 
-    const leads = await AdLead.find(query)
-      .sort({ leadScore: -1 })
-      .limit(20)
-      .select('name phoneNumber leadScore tags lastInteraction ordersCount totalSpent');
+    const leads = await AdLead.aggregate([
+      { $match: query },
+      {
+        $lookup: {
+          from: "appointments",
+          let: { phoneNo: "$phoneNumber", cId: "$clientId" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ["$phone", "$$phoneNo"] },
+                    { $eq: ["$clientId", "$$cId"] }
+                  ]
+                }
+              }
+            },
+            {
+              $group: {
+                _id: null,
+                apptRevenue: { $sum: "$revenue" },
+                apptCount: { $sum: 1 }
+              }
+            }
+          ],
+          as: "apptData"
+        }
+      },
+      {
+        $addFields: {
+          apptStats: { $arrayElemAt: ["$apptData", 0] }
+        }
+      },
+      {
+        $addFields: {
+          computedTotalSpent: { $add: [{ $ifNull: ["$totalSpent", 0] }, { $ifNull: ["$apptStats.apptRevenue", 0] }] },
+          computedOrdersCount: { $add: [{ $ifNull: ["$ordersCount", 0] }, { $ifNull: ["$apptStats.apptCount", 0] }] }
+        }
+      },
+      {
+        $sort: { computedTotalSpent: -1, leadScore: -1 }
+      },
+      {
+        $limit: 20
+      },
+      {
+        $project: {
+          name: 1,
+          phoneNumber: 1,
+          leadScore: 1,
+          tags: 1,
+          lastInteraction: 1,
+          ordersCount: "$computedOrdersCount",
+          totalSpent: "$computedTotalSpent"
+        }
+      }
+    ]);
 
     res.json(leads);
   } catch (error) {
@@ -268,8 +329,11 @@ router.get('/top-products', protect, async (req, res) => {
     }
 
     // Fallback for Service-based businesses (Clinic, Salon, Turf)
+    const activeServicesRecords = await Service.find({ ...query, isActive: true }).select('name');
+    const validServiceNames = activeServicesRecords.map(s => s.name);
+
     const topServices = await Appointment.aggregate([
-      { $match: { ...query, service: { $exists: true, $ne: null } } },
+      { $match: { ...query, service: { $in: validServiceNames } } },
       {
         $group: {
           _id: "$service",
@@ -695,6 +759,112 @@ router.get('/', protect, async (req, res) => {
   } catch (error) {
     console.error('Analytics Aggregation Error:', error);
     res.status(500).json({ message: 'Server Error' });
+  }
+});
+
+// GET /api/analytics/ai-summary
+router.get('/ai-summary', protect, async (req, res) => {
+  try {
+    const clientId = req.user.clientId;
+    const query = (clientId === 'code_clinic_v1')
+      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
+      : { clientId };
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    const apptsToday = await Appointment.countDocuments({ ...query, status: { $ne: 'cancelled' }, createdAt: { $gte: today, $lt: tomorrow } });
+    const leadsToday = await AdLead.countDocuments({ ...query, createdAt: { $gte: today, $lt: tomorrow } });
+    const ordersToday = await Order.countDocuments({ ...query, createdAt: { $gte: today, $lt: tomorrow } });
+
+    // Check if any VIP exists (using simple totalSpent query on leads)
+    const vips = await AdLead.find(query).sort({ totalSpent: -1 }).limit(10);
+    const vipCount = vips.filter(v => v.totalSpent > 1000).length;
+
+    const genAI = getGeminiClient(req);
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+    const prompt = `You are an AI business executive assistant speaking directly to a business owner. Write a short, punchy, 2-to-3 sentence motivational morning summary. Do not use asterisks or markdown formatting. Keep it extremely natural and energetic.
+    
+    Data for today:
+    Appointments Booked: ${apptsToday}
+    New Leads Captured: ${leadsToday}
+    Orders Placed: ${ordersToday}
+    High-value VIPs in database: ${vipCount}
+    
+    Example: "Good morning! You have ${apptsToday} appointments today and ${leadsToday} new leads. Keep up the great work satisfying your ${vipCount} VIPs."`;
+
+    const result = await model.generateContent(prompt);
+    const text = result.response.text();
+
+    res.json({ summary: text });
+  } catch (error) {
+    console.error('AI Summary Error:', error);
+    res.json({ summary: "Good morning! Your dashboard is ready. I'm currently unable to reach the AI engine for your daily summary, but you have a great day ahead!" });
+  }
+});
+
+// GET /api/analytics/insights (Advanced USP Features)
+router.get('/insights', protect, async (req, res) => {
+  try {
+    const clientId = req.user.clientId;
+    const query = (clientId === 'code_clinic_v1')
+      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
+      : { clientId };
+
+    const appts = await Appointment.find(query);
+    const orders = await Order.find(query);
+    const leads = await AdLead.find(query);
+
+    // 1. Peak Hours Heatmap
+    const heatmap = {}; // Format: "Day_Hour" -> count
+    appts.forEach(a => {
+      const d = new Date(a.createdAt);
+      const day = d.getDay(); // 0 (Sun) to 6 (Sat)
+      const hour = d.getHours(); // 0 to 23
+      const key = `${day}_${hour}`;
+      heatmap[key] = (heatmap[key] || 0) + 1;
+    });
+
+    // 2. Retention (Returning vs New)
+    let returning = 0;
+    let newLeads = 0;
+    leads.forEach(l => {
+      if ((l.ordersCount || 0) > 1) { returning++; } else { newLeads++; }
+    });
+
+    // Extract appointment frequencies to boost retention metric for Service businesses
+    const phoneCounts = {};
+    appts.forEach(a => {
+      phoneCounts[a.phone] = (phoneCounts[a.phone] || 0) + 1;
+    });
+    Object.values(phoneCounts).forEach(count => {
+      if (count > 1) { returning++; } else { newLeads++; }
+    });
+
+    // 3. Average Order/Booking Value & LTV
+    let totalRev = 0;
+    let totalTransactions = 0;
+
+    appts.forEach(a => { if (a.revenue > 0) { totalRev += a.revenue; totalTransactions++; } });
+    orders.forEach(o => { if (o.amount > 0) { totalRev += o.amount; totalTransactions++; } });
+
+    const aov = totalTransactions > 0 ? Math.round(totalRev / totalTransactions) : 0;
+    const uniqueCustomers = returning + newLeads;
+    const ltv = uniqueCustomers > 0 ? Math.round(totalRev / uniqueCustomers) : 0;
+
+    res.json({
+      heatmap,
+      retention: { returning, new: newLeads },
+      aov,
+      ltv,
+      totalRevenueGlobally: totalRev
+    });
+  } catch (e) {
+    console.error('Insights API Error:', e);
+    res.status(500).json({ error: 'Server Error' });
   }
 });
 
