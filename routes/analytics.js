@@ -13,10 +13,13 @@ const { protect } = require('../middleware/auth');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 // Utility function to initialize Gemini API with fallback key
-const getGeminiClient = (req) => {
-  const apiKey = req.clientConfig?.openaiApiKey || process.env.GEMINI_API_KEY; // Fallback to provided user key
+const getGeminiClient = async (req) => {
+  const clientId = req.user.clientId;
+  const client = await Client.findOne({ clientId });
+  const apiKey = client?.openaiApiKey || process.env.GEMINI_API_KEY;
   return new GoogleGenerativeAI(apiKey);
 };
+
 
 router.get('/realtime', protect, async (req, res) => {
   try {
@@ -783,7 +786,8 @@ router.get('/ai-summary', protect, async (req, res) => {
     const vips = await AdLead.find(query).sort({ totalSpent: -1 }).limit(10);
     const vipCount = vips.filter(v => v.totalSpent > 1000).length;
 
-    const genAI = getGeminiClient(req);
+    const genAI = await getGeminiClient(req);
+
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
     const prompt = `You are an AI business executive assistant speaking directly to a business owner. Write a short, punchy, 2-to-3 sentence motivational morning summary. Do not use asterisks or markdown formatting. Keep it extremely natural and energetic.

@@ -5,7 +5,7 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const { DateTime } = require('luxon');
-const OpenAI = require('openai');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const Client = require('../../models/Client');
 const Conversation = require('../../models/Conversation');
@@ -47,34 +47,34 @@ function getUserSession(userId) {
 // --- Helper Functions ---
 
 async function saveAndEmitMessage({ phoneNumberId, to, body, type, io, clientId, direction = 'outgoing' }) {
-    try {
-      let conversation = await Conversation.findOne({ phone: to, clientId });
-      if (!conversation) {
-          conversation = await Conversation.create({ phone: to, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
-      }
-      
-      const savedMessage = await Message.create({
-        clientId,
-        conversationId: conversation._id,
-        from: direction === 'outgoing' ? 'bot' : to,
-        to: direction === 'outgoing' ? to : 'bot',
-        content: body,
-        type,
-        direction,
-        status: 'sent'
-      });
-
-      conversation.lastMessage = body;
-      conversation.lastMessageAt = new Date();
-      await conversation.save();
-
-      if (io) {
-        io.to(`client_${clientId}`).emit('new_message', savedMessage);
-        io.to(`client_${clientId}`).emit('conversation_update', conversation);
-      }
-    } catch (e) {
-      console.error('DB/Socket Error:', e);
+  try {
+    let conversation = await Conversation.findOne({ phone: to, clientId });
+    if (!conversation) {
+      conversation = await Conversation.create({ phone: to, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
     }
+
+    const savedMessage = await Message.create({
+      clientId,
+      conversationId: conversation._id,
+      from: direction === 'outgoing' ? 'bot' : to,
+      to: direction === 'outgoing' ? to : 'bot',
+      content: body,
+      type,
+      direction,
+      status: 'sent'
+    });
+
+    conversation.lastMessage = body;
+    conversation.lastMessageAt = new Date();
+    await conversation.save();
+
+    if (io) {
+      io.to(`client_${clientId}`).emit('new_message', savedMessage);
+      io.to(`client_${clientId}`).emit('conversation_update', conversation);
+    }
+  } catch (e) {
+    console.error('DB/Socket Error:', e);
+  }
 }
 
 async function sendWhatsAppText({ phoneNumberId, to, body, token, io, clientId }) {
@@ -222,16 +222,16 @@ async function getAvailableBookingDays(doctor, calendars) {
     const calendarId = calendars[doctor];
     console.log('🔍 Fetching dynamic available dates from Google Calendar...', calendarId);
     if (!calendarId) {
-       console.log('❌ No calendar ID found for doctor:', doctor);
-       return [];
+      console.log('❌ No calendar ID found for doctor:', doctor);
+      return [];
     }
     const availableDates = await getAvailableDates(8, calendarId);
-    
+
     if (availableDates.length === 0) {
       console.log('❌ No available dates found, returning empty array');
       return [];
     }
-    
+
     console.log(`✅ Found ${availableDates.length} available dates for booking`);
     return availableDates;
   } catch (error) {
@@ -261,18 +261,26 @@ const codeClinicServices = [
   { id: 'service_volleyball', title: 'Volleyball Booking' }
 ];
 
+const turfPricing = {
+  'service_football': 3500,
+  'service_cricket': 3500,
+  'service_pickleball': 3500,
+  'service_volleyball': 3500
+};
+
+
 function getPaginatedServices(page = 0) {
   const servicesPerPage = 8;
   const startIndex = page * servicesPerPage;
   const endIndex = startIndex + servicesPerPage;
   const pageServices = codeClinicServices.slice(startIndex, endIndex);
-  
+
   // pageServices.push({ id: 'service_ask_doctor', title: 'Ask Coach' });
-  
+
   if (endIndex < codeClinicServices.length) {
     pageServices.push({ id: 'service_more', title: 'More Sports' });
   }
-  
+
   return {
     services: pageServices,
     currentPage: page,
@@ -289,26 +297,26 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   const session = getUserSession(from);
   const userMsgType = messages.type;
   const userMsg = userMsgType === 'interactive' ? (messages.interactive?.button_reply?.id || messages.interactive?.list_reply?.id) : messages.text?.body;
-  
+
   const { whatsappToken: token, openaiApiKey, config, clientId } = clientConfig;
-  const calendars = config.calendars || {}; 
+  const calendars = config.calendars || {};
   const adminNumbers = config.adminPhones || (config.adminPhone ? [config.adminPhone] : []);
 
-  const openai = new OpenAI({ apiKey: openaiApiKey || process.env.OPENAI_API_KEY });
+  const genAI = new GoogleGenerativeAI(openaiApiKey || process.env.GEMINI_API_KEY);
 
   // Handle STOP/UNSUBSCRIBE
   if (userMsgType === 'text' && userMsg && (userMsg.trim().toLowerCase() === 'stop' || userMsg.trim().toLowerCase() === 'unsubscribe')) {
-      // ... (Unsubscribe logic - abbreviated for brevity but keeping standard response)
-      await sendWhatsAppText({ phoneNumberId, to: from, body: 'You have been unsubscribed.', token, io, clientId });
-      delete userSessions[from];
-      return res.status(200).end();
+    // ... (Unsubscribe logic - abbreviated for brevity but keeping standard response)
+    await sendWhatsAppText({ phoneNumberId, to: from, body: 'You have been unsubscribed.', token, io, clientId });
+    delete userSessions[from];
+    return res.status(200).end();
   }
 
   // Handle START
   if (userMsgType === 'text' && userMsg && userMsg.trim().toLowerCase() === 'start') {
-      await sendWhatsAppText({ phoneNumberId, to: from, body: 'Welcome back! You are resubscribed.', token, io, clientId });
-      delete userSessions[from];
-      return res.status(200).end();
+    await sendWhatsAppText({ phoneNumberId, to: from, body: 'Welcome back! You are resubscribed.', token, io, clientId });
+    delete userSessions[from];
+    return res.status(200).end();
   }
 
   // Greeting -> Main Menu
@@ -333,217 +341,235 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 
   // Handle 'Book Turf'
   if (userMsg === 'user_schedule_appt') {
-      const paginatedServices = getPaginatedServices(0);
-      await sendWhatsAppList({
-          phoneNumberId,
-          to: from,
-          header: 'Book Turf ⚽',
-          body: 'Which service do you need?',
-          button: 'Select Service',
-          rows: paginatedServices.services,
-          token, io, clientId
-      });
-      session.step = 'choose_service';
-      return res.status(200).end();
+    const paginatedServices = getPaginatedServices(0);
+    await sendWhatsAppList({
+      phoneNumberId,
+      to: from,
+      header: 'Book Turf ⚽',
+      body: 'Which service do you need?',
+      button: 'Select Service',
+      rows: paginatedServices.services,
+      token, io, clientId
+    });
+    session.step = 'choose_service';
+    return res.status(200).end();
   }
 
   // Handle Service Selection
   if (session.step === 'choose_service') {
-      if (userMsg.startsWith('service_')) {
-          session.data.chosenService = userMsg;
-          const doctorList = Object.keys(calendars).map(name => ({ id: `doctor_${name}`, title: name }));
-          
-          if (doctorList.length === 0) {
-              await sendWhatsAppText({ phoneNumberId, to: from, body: "No turfs available currently.", token, io, clientId });
-              return res.status(200).end();
-          }
+    if (userMsg.startsWith('service_')) {
+      session.data.chosenService = userMsg;
+      const doctorList = Object.keys(calendars).map(name => ({ id: `doctor_${name}`, title: name }));
 
-          await sendSmartButtonsOrList({
-              phoneNumberId,
-              to: from,
-              header: 'Select Turf',
-              body: 'Please select a turf:',
-              buttons: doctorList,
-              token, io, clientId
-          });
-          session.step = 'choose_doctor';
-          return res.status(200).end();
+      if (doctorList.length === 0) {
+        await sendWhatsAppText({ phoneNumberId, to: from, body: "No turfs available currently.", token, io, clientId });
+        return res.status(200).end();
       }
+
+      await sendSmartButtonsOrList({
+        phoneNumberId,
+        to: from,
+        header: 'Select Turf',
+        body: 'Please select a turf:',
+        buttons: doctorList,
+        token, io, clientId
+      });
+      session.step = 'choose_doctor';
+      return res.status(200).end();
+    }
   }
 
   // Handle Turf Selection
   if (session.step === 'choose_doctor') {
-      if (userMsg.startsWith('doctor_')) {
-          const doctorName = userMsg.replace('doctor_', '');
-          session.data.doctor = doctorName;
-          
-          const days = await getAvailableBookingDays(doctorName, calendars);
-          if (days.length === 0) {
-              await sendWhatsAppText({ phoneNumberId, to: from, body: "No dates available.", token, io, clientId });
-              return res.status(200).end();
-          }
-          
-          await sendWhatsAppList({
-              phoneNumberId,
-              to: from,
-              header: 'Select Date',
-              body: 'When would you like to book?',
-              button: 'Select Date',
-              rows: days,
-              token, io, clientId
-          });
-          session.step = 'appt_day';
-          return res.status(200).end();
+    if (userMsg.startsWith('doctor_')) {
+      const doctorName = userMsg.replace('doctor_', '');
+      session.data.doctor = doctorName;
+
+      const days = await getAvailableBookingDays(doctorName, calendars);
+      if (days.length === 0) {
+        await sendWhatsAppText({ phoneNumberId, to: from, body: "No dates available.", token, io, clientId });
+        return res.status(200).end();
       }
+
+      await sendWhatsAppList({
+        phoneNumberId,
+        to: from,
+        header: 'Select Date',
+        body: 'When would you like to book?',
+        button: 'Select Date',
+        rows: days,
+        token, io, clientId
+      });
+      session.step = 'appt_day';
+      return res.status(200).end();
+    }
   }
 
   // Handle Date Selection
   if (session.step === 'appt_day') {
-      if (userMsg.startsWith('calendar_day_') || userMsg.includes('202')) { // crude check for date
-          // For list selection, we might need to map back ID to date, or rely on title if we stored it
-          // But getAvailableBookingDays returned IDs like calendar_day_0. 
-          // We need to know which date that corresponds to.
-          // This stateful reliance is tricky without regenerating the list.
-          // Simplified: We assume we can parse the date from the ID or we ask user to type date if we can't.
-          // Better: getAvailableBookingDays should return IDs that contain the date, e.g. date_2023-10-27
-          // Let's assume the user picked a valid option.
-          
-          // Re-fetch days to match ID (inefficient but safe)
-          const days = await getAvailableBookingDays(session.data.doctor, calendars);
-          const selectedDay = days.find(d => d.id === userMsg);
-          if (selectedDay) {
-              // Parse date from title or ID?
-              // Title format: "Friday, 27 Oct 2023"
-              const dateStr = selectedDay.title; // We need to convert this to YYYY-MM-DD for Google Calendar
-              // This is hard without a helper.
-              // Let's assume getAvailableBookingDays returns ID as date_YYYY-MM-DD in the future.
-              // For now, let's use a workaround or regex on title.
-              // Actually, getAvailableDates utils returns {id, title} where id is usually the date string!
-              // Let's check getAvailableDates.js if possible, but assuming ID is date string is best practice.
-              // If ID is `calendar_day_X`, we are in trouble.
-              // Let's assume ID is the date string for now as it's cleaner.
-              // If getAvailableDates returns `calendar_day_X`, we need to fix it there or here.
-              // In the code I read earlier: `days.push({ id: calendar_day_${days.length}, ... })` was the fallback.
-              // The real `getAvailableDates` likely returns real dates.
-              
-              session.data.date = selectedDay.id; // Assuming ID is YYYY-MM-DD or parsable
-              
-              // Fetch slots
-              const slots = await fetchRealTimeSlots(session.data.date, 0, session.data.doctor, calendars);
-              if (slots.totalSlots === 0) {
-                  await sendWhatsAppText({ phoneNumberId, to: from, body: "No slots available on this date.", token, io, clientId });
-                  return res.status(200).end();
-              }
-              
-              await sendWhatsAppList({
-                  phoneNumberId,
-                  to: from,
-                  header: 'Select Time',
-                  body: 'Please select a time slot:',
-                  button: 'Select Time',
-                  rows: slots.slots.map(s => ({ id: `slot_${s}`, title: s })),
-                  token, io, clientId
-              });
-              session.step = 'appt_time';
-              return res.status(200).end();
-          }
+    if (userMsg.startsWith('calendar_day_') || userMsg.includes('202')) { // crude check for date
+      // For list selection, we might need to map back ID to date, or rely on title if we stored it
+      // But getAvailableBookingDays returned IDs like calendar_day_0. 
+      // We need to know which date that corresponds to.
+      // This stateful reliance is tricky without regenerating the list.
+      // Simplified: We assume we can parse the date from the ID or we ask user to type date if we can't.
+      // Better: getAvailableBookingDays should return IDs that contain the date, e.g. date_2023-10-27
+      // Let's assume the user picked a valid option.
+
+      // Re-fetch days to match ID (inefficient but safe)
+      const days = await getAvailableBookingDays(session.data.doctor, calendars);
+      const selectedDay = days.find(d => d.id === userMsg);
+      if (selectedDay) {
+        // Parse date from title or ID?
+        // Title format: "Friday, 27 Oct 2023"
+        const dateStr = selectedDay.title; // We need to convert this to YYYY-MM-DD for Google Calendar
+        // This is hard without a helper.
+        // Let's assume getAvailableBookingDays returns ID as date_YYYY-MM-DD in the future.
+        // For now, let's use a workaround or regex on title.
+        // Actually, getAvailableDates utils returns {id, title} where id is usually the date string!
+        // Let's check getAvailableDates.js if possible, but assuming ID is date string is best practice.
+        // If ID is `calendar_day_X`, we are in trouble.
+        // Let's assume ID is the date string for now as it's cleaner.
+        // If getAvailableDates returns `calendar_day_X`, we need to fix it there or here.
+        // In the code I read earlier: `days.push({ id: calendar_day_${days.length}, ... })` was the fallback.
+        // The real `getAvailableDates` likely returns real dates.
+
+        session.data.date = selectedDay.id; // Assuming ID is YYYY-MM-DD or parsable
+
+        // Fetch slots
+        const slots = await fetchRealTimeSlots(session.data.date, 0, session.data.doctor, calendars);
+        if (slots.totalSlots === 0) {
+          await sendWhatsAppText({ phoneNumberId, to: from, body: "No slots available on this date.", token, io, clientId });
+          return res.status(200).end();
+        }
+
+        await sendWhatsAppList({
+          phoneNumberId,
+          to: from,
+          header: 'Select Time',
+          body: 'Please select a time slot:',
+          button: 'Select Time',
+          rows: slots.slots.map(s => ({ id: `slot_${s}`, title: s })),
+          token, io, clientId
+        });
+        session.step = 'appt_time';
+        return res.status(200).end();
       }
+    }
   }
 
   // Handle Time Selection
   if (session.step === 'appt_time') {
-      if (userMsg.startsWith('slot_')) {
-          session.data.time = userMsg.replace('slot_', '');
-          await sendWhatsAppText({ phoneNumberId, to: from, body: "Please enter your Name:", token, io, clientId });
-          session.step = 'appt_name';
-          return res.status(200).end();
-      }
+    if (userMsg.startsWith('slot_')) {
+      session.data.time = userMsg.replace('slot_', '');
+      await sendWhatsAppText({ phoneNumberId, to: from, body: "Please enter your Name:", token, io, clientId });
+      session.step = 'appt_name';
+      return res.status(200).end();
+    }
   }
 
   // Handle Name Input
   if (session.step === 'appt_name') {
-      session.data.name = userMsg;
-      // Ask for confirmation/consent
-      await sendSmartButtonsOrList({
-          phoneNumberId,
-          to: from,
-          header: 'Confirm Booking',
-          body: `Please confirm your booking:\n\nService: ${session.data.chosenService}\nTurf: ${session.data.doctor}\nDate: ${session.data.date}\nTime: ${session.data.time}\nName: ${session.data.name}`,
-          buttons: [
-              { id: 'confirm_booking', title: 'Confirm ✅' },
-              { id: 'cancel_booking', title: 'Cancel ❌' }
-          ],
-          token, io, clientId
-      });
-      session.step = 'appt_consent';
-      return res.status(200).end();
+    session.data.name = userMsg;
+    // Ask for confirmation/consent
+    await sendSmartButtonsOrList({
+      phoneNumberId,
+      to: from,
+      header: 'Confirm Booking',
+      body: `Please confirm your booking:\n\nService: ${session.data.chosenService}\nTurf: ${session.data.doctor}\nDate: ${session.data.date}\nTime: ${session.data.time}\nName: ${session.data.name}`,
+      buttons: [
+        { id: 'confirm_booking', title: 'Confirm ✅' },
+        { id: 'cancel_booking', title: 'Cancel ❌' }
+      ],
+      token, io, clientId
+    });
+    session.step = 'appt_consent';
+    return res.status(200).end();
   }
 
   // Handle Consent/Confirmation
   if (session.step === 'appt_consent') {
-      if (userMsg === 'confirm_booking') {
-          // Create Event
-          // createEvent(auth, calendarId, summary, description, startTime, endTime)
-          // We need auth? No, createEvent usually handles auth internally or via params.
-          // Let's check utils/googleCalendar.js signature usage.
-          // In original code: `createEvent(calendarId, eventDetails)`?
-          // I'll assume `createEvent` takes (calendarId, event) or similar.
-          // I will use a safe wrapper or assume it works.
-          
-          try {
-             const calendarId = calendars[session.data.doctor];
-             // Create appointment in DB
-             await Appointment.create({
-                 clientId,
-                 phone: from,
-                 name: session.data.name,
-                 service: session.data.chosenService,
-                 date: session.data.date,
-                 time: session.data.time,
-                 status: 'confirmed'
-             });
-             
-             // Notify user
-             await sendWhatsAppText({ phoneNumberId, to: from, body: "✅ Booking Confirmed! We look forward to seeing you.", token, io, clientId });
-             
-             // Notify Admin
-             await notifyAdmins({ 
-                 phoneNumberId, 
-                 message: `New Booking:\n${session.data.name}\n${session.data.date} @ ${session.data.time}\n${session.data.doctor}`, 
-                 token, 
-                 adminNumbers, io, clientId 
-             });
-          } catch (e) {
-             console.error('Booking Error:', e);
-             await sendWhatsAppText({ phoneNumberId, to: from, body: "⚠️ Error confirming booking. Please contact support.", token, io, clientId });
-          }
-          
-          delete userSessions[from];
-          return res.status(200).end();
-      } else if (userMsg === 'cancel_booking') {
-          await sendWhatsAppText({ phoneNumberId, to: from, body: "Booking cancelled.", token, io, clientId });
-          delete userSessions[from];
-          return res.status(200).end();
+    if (userMsg === 'confirm_booking') {
+      // Create Event
+      // createEvent(auth, calendarId, summary, description, startTime, endTime)
+      // We need auth? No, createEvent usually handles auth internally or via params.
+      // Let's check utils/googleCalendar.js signature usage.
+      // In original code: `createEvent(calendarId, eventDetails)`?
+      // I'll assume `createEvent` takes (calendarId, event) or similar.
+      // I will use a safe wrapper or assume it works.
+
+      try {
+        const calendarId = calendars[session.data.doctor];
+        const revenue = turfPricing[session.data.chosenService] || 0;
+
+        // Create appointment in DB
+        await Appointment.create({
+          clientId,
+          phone: from,
+          name: session.data.name,
+          service: session.data.chosenService,
+          date: session.data.date,
+          time: session.data.time,
+          status: 'confirmed',
+          revenue: revenue
+        });
+
+        // Update AdLead
+        try {
+          const AdLead = require('../../models/AdLead');
+          await AdLead.findOneAndUpdate(
+            { clientId, phoneNumber: from },
+            {
+              $inc: { appointmentsBooked: 1 },
+              $set: {
+                lastInteraction: new Date(),
+                name: session.data.name
+              }
+            },
+            { upsert: true }
+          );
+        } catch (adErr) {
+          console.error('AdLead update error:', adErr);
+        }
+
+
+        // Notify user
+        await sendWhatsAppText({ phoneNumberId, to: from, body: "✅ Booking Confirmed! We look forward to seeing you.", token, io, clientId });
+
+        // Notify Admin
+        await notifyAdmins({
+          phoneNumberId,
+          message: `New Booking:\n${session.data.name}\n${session.data.date} @ ${session.data.time}\n${session.data.doctor}`,
+          token,
+          adminNumbers, io, clientId
+        });
+      } catch (e) {
+        console.error('Booking Error:', e);
+        await sendWhatsAppText({ phoneNumberId, to: from, body: "⚠️ Error confirming booking. Please contact support.", token, io, clientId });
       }
+
+      delete userSessions[from];
+      return res.status(200).end();
+    } else if (userMsg === 'cancel_booking') {
+      await sendWhatsAppText({ phoneNumberId, to: from, body: "Booking cancelled.", token, io, clientId });
+      delete userSessions[from];
+      return res.status(200).end();
+    }
   }
 
   // Fallback / AI Chat
   if (userMsgType === 'text') {
-      // Use OpenAI to answer questions
-      try {
-          const completion = await openai.chat.completions.create({
-              model: "gpt-3.5-turbo",
-              messages: [
-                  { role: "system", content: `You are a helpful assistant for a turf booking business. Use this knowledge base: ${knowledgeBase}` },
-                  { role: "user", content: userMsg }
-              ]
-          });
-          const reply = completion.choices[0].message.content;
-          await sendWhatsAppText({ phoneNumberId, to: from, body: reply, token, io, clientId });
-      } catch (e) {
-          console.error('OpenAI Error:', e);
-          await sendWhatsAppText({ phoneNumberId, to: from, body: "I'm sorry, I didn't understand that. Type 'menu' to see options.", token, io, clientId });
-      }
+    // Use OpenAI to answer questions
+    try {
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const fullPrompt = `System: You are a helpful assistant for a turf booking business. Use this knowledge base: ${knowledgeBase}\n\nUser: ${userMsg}`;
+      const result = await model.generateContent(fullPrompt);
+      const reply = result.response.text().trim();
+      await sendWhatsAppText({ phoneNumberId, to: from, body: reply, token, io, clientId });
+    } catch (e) {
+      console.error('Gemini Error:', e);
+      await sendWhatsAppText({ phoneNumberId, to: from, body: "I'm sorry, I didn't understand that. Type 'menu' to see options.", token, io, clientId });
+    }
   }
 
   return res.status(200).end();
@@ -559,37 +585,37 @@ exports.handleWebhook = async (req, res) => {
     if (!messages) return res.status(200).end();
 
     const io = req.app.get('socketio');
-    
+
     // Dynamic credentials
     const { whatsappToken, config, clientId, openaiApiKey } = req.clientConfig;
     const token = whatsappToken || process.env.WHATSAPP_TOKEN;
-    
+
     // Save incoming message
     const conversation = await Conversation.findOneAndUpdate(
-        { phone: messages.from, clientId },
-        { $set: { status: 'BOT_ACTIVE', lastMessageAt: new Date() } },
-        { upsert: true, new: true }
+      { phone: messages.from, clientId },
+      { $set: { status: 'BOT_ACTIVE', lastMessageAt: new Date() } },
+      { upsert: true, new: true }
     );
 
     const userMsgContent = messages.type === 'text' ? messages.text.body : `[${messages.type}]`;
-    
+
     await Message.create({
-        clientId,
-        conversationId: conversation._id,
-        from: messages.from,
-        to: 'bot',
-        content: userMsgContent,
-        type: messages.type,
-        direction: 'incoming',
-        status: 'received',
-        timestamp: new Date()
+      clientId,
+      conversationId: conversation._id,
+      from: messages.from,
+      to: 'bot',
+      content: userMsgContent,
+      type: messages.type,
+      direction: 'incoming',
+      status: 'received',
+      timestamp: new Date()
     });
-    
+
     if (io) io.to(`client_${clientId}`).emit('new_message', {
-        clientId,
-        from: messages.from,
-        content: userMsgContent,
-        direction: 'incoming'
+      clientId,
+      from: messages.from,
+      content: userMsgContent,
+      direction: 'incoming'
     });
 
     await handleUserChatbotFlow({ from: messages.from, phoneNumberId: value.metadata.phone_number_id, messages, res, clientConfig: req.clientConfig, io });

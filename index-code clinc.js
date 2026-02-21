@@ -28,14 +28,14 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-const OpenAI = require('openai');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 const BirthdayUser = require('./models/BirthdayUser');
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 let isWaitingForTimeSlot = false;
-let waitingForPartial   = false;
-let partialDate         = '';
+let waitingForPartial = false;
+let partialDate = '';
 
 // Load knowledge base for OpenAI
 const knowledgeBase = fs.readFileSync(path.join(__dirname, 'utils', 'knowledgeBase.txt'), 'utf8');
@@ -120,15 +120,15 @@ async function sendWhatsAppList({ phoneNumberId, to, header, body, button, rows 
       action: {
         button,
         sections: [
-            {
-              title: 'Available Days',
-              rows: safeRows.map(r => {
-                const row = { id: r.id, title: r.title };
-                if (r.description) row.description = r.description;
-                return row;
-              })
-            }
-          ]
+          {
+            title: 'Available Days',
+            rows: safeRows.map(r => {
+              const row = { id: r.id, title: r.title };
+              if (r.description) row.description = r.description;
+              return row;
+            })
+          }
+        ]
       }
     }
   };
@@ -199,12 +199,12 @@ async function getAvailableBookingDays() {
     const calendarId = doctorCalendars[doctor] || process.env.GCAL_CALENDAR_ID;
     console.log('🔍 Fetching dynamic available dates from Google Calendar...');
     const availableDates = await getAvailableDates(8, calendarId);
-    
+
     if (availableDates.length === 0) {
       console.log('❌ No available dates found, returning empty array');
       return [];
     }
-    
+
     console.log(`✅ Found ${availableDates.length} available dates for booking`);
     return availableDates;
   } catch (error) {
@@ -261,15 +261,15 @@ function getPaginatedServices(page = 0) {
   const startIndex = page * servicesPerPage;
   const endIndex = startIndex + servicesPerPage;
   const pageServices = codeClinicServices.slice(startIndex, endIndex);
-  
+
   // Add "Ask Doctor" option
   pageServices.push({ id: 'service_ask_doctor', title: 'Ask Doctor' });
-  
+
   // Add "Choose Another Service" if there are more services
   if (endIndex < codeClinicServices.length) {
     pageServices.push({ id: 'service_more', title: 'More Services' });
   }
-  
+
   return {
     services: pageServices,
     currentPage: page,
@@ -301,9 +301,9 @@ async function fetchRealTimeSlots(dateStr, page = 0, doctor) {
   try {
     const calendarId = doctorCalendars[doctor] || process.env.GCAL_CALENDAR_ID;
     console.log(`🔍 Fetching available slots for ${dateStr} (page ${page}) with doctor ${doctor}...`);
-    
+
     const result = await getAvailableSlots(dateStr, page, calendarId);
-    
+
     if (result.totalSlots === 0) {
       console.log(`❌ No available slots found for ${dateStr}`);
       return {
@@ -314,9 +314,9 @@ async function fetchRealTimeSlots(dateStr, page = 0, doctor) {
         hasMore: false
       };
     }
-    
+
     console.log(`✅ Found ${result.totalSlots} available slots for ${dateStr} (page ${result.currentPage + 1}/${result.totalPages})`);
-    
+
     return result;
   } catch (err) {
     console.error('Error fetching real time slots:', err);
@@ -353,20 +353,20 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res }) {
       // Update BirthdayUser collection
       await BirthdayUser.updateOne(
         { number: from },
-        { 
-          $set: { 
+        {
+          $set: {
             isOpted: false,
             optedOutOn: new Date().toISOString()
           }
         },
         { upsert: true }
       );
-      
+
       // Update all appointments for this user to opt out of reminders
       await Appointment.updateMany(
         { phone: from },
-        { 
-          $set: { 
+        {
+          $set: {
             'consent.appointmentReminders': false,
             'consent.birthdayMessages': false,
             'consent.marketingMessages': false,
@@ -374,13 +374,13 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res }) {
           }
         }
       );
-      
+
       await sendWhatsAppText({
         phoneNumberId,
         to: from,
         body: '✅ You have been unsubscribed from all appointment reminders and birthday messages. You will no longer receive any messages from us. If you change your mind, you can opt back in by sending "START" to this number.'
       });
-      
+
       // Clear any existing session
       delete userSessions[from];
       res.status(200).end();
@@ -403,20 +403,20 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res }) {
       // Update BirthdayUser collection
       await BirthdayUser.updateOne(
         { number: from },
-        { 
-          $set: { 
+        {
+          $set: {
             isOpted: true
           },
           $unset: { optedOutOn: 1 }
         },
         { upsert: true }
       );
-      
+
       // Update all appointments for this user to opt in to reminders
       await Appointment.updateMany(
         { phone: from },
-        { 
-          $set: { 
+        {
+          $set: {
             'consent.appointmentReminders': true,
             'consent.birthdayMessages': true,
             'consent.marketingMessages': false, // No marketing messages
@@ -424,13 +424,13 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res }) {
           }
         }
       );
-      
+
       await sendWhatsAppText({
         phoneNumberId,
         to: from,
         body: '✅ You have been successfully resubscribed to appointment reminders and birthday messages. Welcome back! 🎉'
       });
-      
+
       // Clear any existing session
       delete userSessions[from];
       res.status(200).end();
@@ -468,14 +468,14 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res }) {
     return;
   }
 
-      // AI-powered free-text handling (not a button/list reply)
+  // AI-powered free-text handling (not a button/list reply)
   if (userMsgType === 'text' && (!session.step || session.step === 'home' || session.step === 'home_waiting' || session.step === 'faq_menu' || session.step === 'appt_day' || session.step === 'appt_pick_day_waiting' || session.step === 'appt_time_waiting' || session.step === 'ask_question_topic' || session.step === 'faq_await')) {
-    
+
     // Check if user is explicitly trying to book an appointment via text
     const bookingKeywords = ['book appointment', 'make appointment', 'schedule appointment', 'book visit', 'see doctor', 'book consultation'];
     const userMsgLower = userMsg.toLowerCase();
     const isExplicitBooking = bookingKeywords.some(keyword => userMsgLower.includes(keyword));
-    
+
     // If user is in FAQ/Ask Question flow, don't trigger booking automatically
     if (session.step === 'ask_question_topic' || session.step === 'faq_await') {
       // Handle as a general question, not booking
@@ -517,36 +517,27 @@ ${knowledgeBase}
 USER QUESTION: ${userMsg}
 
 Provide a SHORT, PRECISE response:`;
-    
+
     let aiResponse = '';
     try {
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-3.5-turbo',
-        temperature: 0.8,
-        max_tokens: 500,
-        messages: [
-          { 
-            role: 'system', 
-            content: 'You are Ava, a friendly dental clinic assistant for Code Clinic in Kampala. Be conversational, warm, and helpful. Use natural language, appropriate emojis, and always sound like a real person. Reference the knowledge base for accurate information.' 
-          },
-          { role: 'user', content: prompt }
-        ]
-      });
-      aiResponse = completion.choices[0].message.content.trim();
-      
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const fullPrompt = `System: You are Ava, a friendly dental clinic assistant for Code Clinic in Kampala. Be conversational, warm, and helpful. Use natural language, appropriate emojis, and always sound like a real person. Reference the knowledge base for accurate information.\n\nUser: ${prompt}`;
+      const result = await model.generateContent(fullPrompt);
+      aiResponse = result.response.text().trim();
+
       // Ensure the response ends with a friendly closing if it doesn't already
-      if (!aiResponse.toLowerCase().includes('need anything else') && 
-          !aiResponse.toLowerCase().includes('anything else') &&
-          !aiResponse.toLowerCase().includes('help you') &&
-          !aiResponse.toLowerCase().includes('assistance')) {
+      if (!aiResponse.toLowerCase().includes('need anything else') &&
+        !aiResponse.toLowerCase().includes('anything else') &&
+        !aiResponse.toLowerCase().includes('help you') &&
+        !aiResponse.toLowerCase().includes('assistance')) {
         aiResponse += '\n\nNeed anything else I can help you with? 😊';
       }
-      
+
     } catch (err) {
-      console.error('OpenAI API error:', err);
+      console.error('Gemini API error:', err);
       aiResponse = "Hi there! 😊 I'm having a bit of trouble accessing my information right now. Could you try asking your question again, or feel free to use the buttons below to get help!";
     }
-    
+
     // Always append the two main buttons
     await sendSmartButtonsOrList({
       phoneNumberId,
@@ -682,12 +673,12 @@ Provide a SHORT, PRECISE response:`;
       // Show next page of services
       const nextPage = (session.data.servicePage || 0) + 1;
       const paginatedServices = getPaginatedServices(nextPage);
-      
+
       if (paginatedServices.services.length > 0) {
         // Add "Back" button to the services list
         const servicesWithBack = [...paginatedServices.services];
         servicesWithBack.unshift({ id: 'service_back', title: '🔙 Back' });
-        
+
         await sendWhatsAppList({
           phoneNumberId,
           to: from,
@@ -702,12 +693,12 @@ Provide a SHORT, PRECISE response:`;
         return;
       }
     }
-    
+
     // Handle going back to previous page
     if (userMsg === 'service_back') {
       const prevPage = Math.max((session.data.servicePage || 0) - 1, 0);
       const paginatedServices = getPaginatedServices(prevPage);
-      
+
       await sendWhatsAppList({
         phoneNumberId,
         to: from,
@@ -721,7 +712,7 @@ Provide a SHORT, PRECISE response:`;
       res.status(200).end();
       return;
     }
-    
+
     // Handle "Ask Doctor" option
     if (userMsg === 'service_ask_doctor') {
       await sendWhatsAppText({
@@ -734,7 +725,7 @@ Provide a SHORT, PRECISE response:`;
       res.status(200).end();
       return;
     }
-    
+
     // Handle regular service selection
     const chosen = codeClinicServices.find(s => s.id === userMsg || s.title.toLowerCase() === (userMsg || '').toLowerCase());
     if (chosen) {
@@ -775,13 +766,13 @@ Provide a SHORT, PRECISE response:`;
       session.data.doctor = chosen.title;
       // Step 4: Date selection
       const days = await getAvailableBookingDays();
-      
+
       // Clean up the days array to only include WhatsApp-compatible properties
       const cleanDays = days.map(day => ({
         id: day.id,
         title: day.title
       }));
-      
+
       await sendWhatsAppList({
         phoneNumberId,
         to: from,
@@ -837,7 +828,7 @@ Provide a SHORT, PRECISE response:`;
           // Check if this is today and provide a more helpful message
           const nowIST = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
           const today = new Date(nowIST).toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'short', year: 'numeric' });
-          
+
           if (selectedDate.toLowerCase().includes(today.toLowerCase())) {
             await sendWhatsAppText({
               phoneNumberId,
@@ -938,7 +929,7 @@ Provide a SHORT, PRECISE response:`;
       return;
     } else if (session.data.slotResult && session.data.slotResult.slots) {
       // Handle text-based slot selection
-      const match = session.data.slotResult.slots.find(slot => 
+      const match = session.data.slotResult.slots.find(slot =>
         slot.title.toLowerCase() === (userMsg || '').toLowerCase()
       );
       if (match && match.slot) {
@@ -1002,22 +993,22 @@ Provide a SHORT, PRECISE response:`;
       session.data.name = userMsg;
       // Use the WhatsApp 'from' field as the phone number
       session.data.phone = from;
-      
+
       // Check if user has previous consent history
       try {
-        const previousAppointments = await Appointment.find({ 
-          phone: session.data.phone 
+        const previousAppointments = await Appointment.find({
+          phone: session.data.phone
         }).sort({ createdAt: -1 }).limit(1);
-        
+
         if (previousAppointments.length > 0) {
           const lastAppointment = previousAppointments[0];
           const hasConsentHistory = lastAppointment.consent && lastAppointment.consent.consentedAt;
-          
+
           if (hasConsentHistory) {
             // User has previous consent - show direct confirmation
             let consentStatus = '';
             let confirmationBody = `✅ *Appointment Summary*\n\n👤 *Name:* ${session.data.name}\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n👨‍⚕️ *Doctor:* ${session.data.doctor || 'Not specified'}\n🏥 *Service:* ${session.data.chosenService || 'General Consultation'}\n\n📱 *Phone:* ${session.data.phone}\n\n🔔 *Communication Preferences:*\n`;
-            
+
             if (lastAppointment.consent.appointmentReminders && lastAppointment.consent.birthdayMessages) {
               consentStatus = '✅ Accept All';
               confirmationBody += `• Appointment reminders\n• Birthday wishes\n\n*Using your previous preference: Accept All*`;
@@ -1028,7 +1019,7 @@ Provide a SHORT, PRECISE response:`;
               consentStatus = '❌ No Thanks';
               confirmationBody += `• No communications\n\n*Using your previous preference: No Thanks*`;
             }
-            
+
             // Store the previous consent for this booking
             session.data.consent = {
               appointmentReminders: lastAppointment.consent.appointmentReminders,
@@ -1037,9 +1028,9 @@ Provide a SHORT, PRECISE response:`;
               consentedAt: new Date(),
               reusedFromPrevious: true
             };
-            
+
             console.log(`🔄 Using previous consent for user ${session.data.phone}: ${consentStatus}`);
-            
+
             // Send direct confirmation with previous consent
             await sendWhatsAppButtons({
               phoneNumberId,
@@ -1056,7 +1047,7 @@ Provide a SHORT, PRECISE response:`;
             return;
           }
         }
-        
+
         // No previous consent or first-time user - show consent options
         await sendWhatsAppButtons({
           phoneNumberId,
@@ -1072,7 +1063,7 @@ Provide a SHORT, PRECISE response:`;
         session.step = 'appt_consent';
         res.status(200).end();
         return;
-        
+
       } catch (error) {
         console.error('Error checking previous consent:', error);
         // Fallback to showing consent options
@@ -1108,7 +1099,7 @@ Provide a SHORT, PRECISE response:`;
     if (userMsg === 'confirm_with_previous_consent') {
       // User confirmed with previous consent - proceed to booking
       console.log('✅ User confirmed appointment with previous consent');
-      
+
       // Check if appointment is already being processed to prevent duplicates
       if (session.data.isProcessing) {
         console.log('Appointment already being processed for user:', from);
@@ -1120,13 +1111,13 @@ Provide a SHORT, PRECISE response:`;
         res.status(200).end();
         return;
       }
-      
+
       // Set processing flag to prevent duplicate bookings
       session.data.isProcessing = true;
-      
+
       // Proceed with booking using the stored consent
       // (session.data.consent is already set from previous step)
-      
+
       // Create Google Calendar event
       let eventId = '';
       try {
@@ -1151,7 +1142,7 @@ Provide a SHORT, PRECISE response:`;
         });
         const doctor = session.data.doctor;
         const calendarId = doctorCalendars[doctor] || process.env.GCAL_CALENDAR_ID;
-        
+
         // Check if an event already exists for this time slot to prevent duplicates
         try {
           const existingEvents = await getAvailableTimeSlots({
@@ -1160,18 +1151,18 @@ Provide a SHORT, PRECISE response:`;
             endTime: '23:59',
             calendarId
           });
-          
+
           // Check if there's already an event in this time slot
           const conflictingEvent = existingEvents.find(event => {
             const eventStart = DateTime.fromISO(event.start);
             const eventEnd = DateTime.fromISO(event.end);
             const slotStartTime = slotStart;
             const slotEndTime = slotEnd;
-            
+
             // Check if events overlap
             return (slotStartTime < eventEnd && slotEndTime > eventStart);
           });
-          
+
           if (conflictingEvent) {
             console.log('⚠️ Conflicting event found:', conflictingEvent);
             throw new Error('This time slot is no longer available. Please choose a different time.');
@@ -1180,10 +1171,10 @@ Provide a SHORT, PRECISE response:`;
           console.log('⚠️ Could not check for conflicting events:', checkError.message);
           // Continue with booking even if check fails
         }
-        
+
         // Create event description based on consent
         let eventDescription = `Name: ${session.data.name}\nPhone: ${session.data.phone}\nService: ${session.data.chosenService || ''}\nDoctor: ${session.data.doctor || ''}\nDate: ${session.data.date}\nTime: ${session.data.time}\nBooked via WhatsApp`;
-        
+
         // Add consent status to event description
         if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
           eventDescription += '\n\n🔔 User has consented to receive appointment reminders and birthday messages.';
@@ -1192,7 +1183,7 @@ Provide a SHORT, PRECISE response:`;
         } else {
           eventDescription += '\n\n❌ User has opted out of all communications.';
         }
-        
+
         const event = await createEvent({
           summary: `Appointment: ${session.data.name} - ${session.data.chosenService || ''} with ${session.data.doctor || ''}`,
           description: eventDescription,
@@ -1222,7 +1213,7 @@ Provide a SHORT, PRECISE response:`;
         res.status(200).end();
         return;
       }
-      
+
       // Save appointment to DB with consent data
       try {
         // Ensure all required fields are present
@@ -1237,12 +1228,12 @@ Provide a SHORT, PRECISE response:`;
           eventId,
           consent: session.data.consent
         };
-        
+
         // Validate required fields before saving
         if (!appointmentData.name || !appointmentData.phone || !appointmentData.doctor) {
           throw new Error(`Missing required fields: name=${appointmentData.name}, phone=${appointmentData.phone}, doctor=${appointmentData.doctor}`);
         }
-        
+
         console.log('Saving appointment to database:', {
           name: appointmentData.name,
           phone: appointmentData.phone,
@@ -1252,14 +1243,14 @@ Provide a SHORT, PRECISE response:`;
           time: appointmentData.time,
           consent: appointmentData.consent
         });
-        
+
         await Appointment.create(appointmentData);
-        
+
         console.log('✅ Appointment saved successfully to database');
-        
+
       } catch (dbError) {
         console.error('❌ Error saving appointment to database:', dbError);
-        
+
         // Try to delete the Google Calendar event if database save failed
         if (eventId) {
           try {
@@ -1269,26 +1260,26 @@ Provide a SHORT, PRECISE response:`;
             console.error('❌ Error deleting Google Calendar event:', deleteError);
           }
         }
-        
+
         await sendWhatsAppText({
           phoneNumberId,
           to: from,
           body: 'Sorry, there was an error saving your appointment. Please try again or contact support.'
         });
-        
+
         // Reset processing flag
         session.data.isProcessing = false;
         session.step = 'home';
         res.status(200).end();
         return;
       }
-      
+
       // Update BirthdayUser collection based on consent
       if (session.data.consent.birthdayMessages) {
         await BirthdayUser.updateOne(
           { number: session.data.phone },
-          { 
-            $set: { 
+          {
+            $set: {
               isOpted: true,
               month: new Date().getMonth() + 1, // Current month as default
               day: new Date().getDate() // Current day as default
@@ -1300,8 +1291,8 @@ Provide a SHORT, PRECISE response:`;
       } else {
         await BirthdayUser.updateOne(
           { number: session.data.phone },
-          { 
-            $set: { 
+          {
+            $set: {
               isOpted: false,
               optedOutOn: new Date().toISOString()
             }
@@ -1309,7 +1300,7 @@ Provide a SHORT, PRECISE response:`;
           { upsert: true }
         );
       }
-      
+
       // Notify admins of new booking with detailed consent status
       let consentStatus = '';
       if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
@@ -1319,13 +1310,13 @@ Provide a SHORT, PRECISE response:`;
       } else {
         consentStatus = '❌ Opted out of all communications (reused from previous)';
       }
-      
+
       const adminMsg = `*New Booking*\nName: ${session.data.name}\nPhone: ${session.data.phone}\nService: ${session.data.chosenService || ''}\nDoctor: ${session.data.doctor || ''}\nDate: ${session.data.date}\nTime: ${session.data.time}\n${consentStatus}`;
       await notifyAdmins({ phoneNumberId, message: adminMsg });
-      
+
       // Send confirmation to user based on consent
       let confirmationBody = `✅ *Appointment Confirmed*\n\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n👨‍⚕️ *Doctor:* ${session.data.doctor || 'Not specified'}\n\n📍 *Location:* Code Clinic\n🗺️ *Map:* https://maps.google.com/?q=Code+Clinic\n\n⏰ *Please arrive 15 minutes early* for your appointment.`;
-      
+
       // Add consent-specific confirmation message
       if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
         confirmationBody += `\n\n🔔 *Appointment Reminders & Birthday Wishes:* You'll receive reminders before your appointments and birthday messages.\n\n❌ To stop receiving messages, reply with "STOP" at any time.`;
@@ -1334,7 +1325,7 @@ Provide a SHORT, PRECISE response:`;
       } else {
         confirmationBody += `\n\n📱 *No Communications:* You've opted out of all messages.`;
       }
-      
+
       await sendWhatsAppButtons({
         phoneNumberId,
         to: from,
@@ -1345,17 +1336,17 @@ Provide a SHORT, PRECISE response:`;
           { id: 'home', title: '🏠 Home' }
         ]
       });
-      
+
       // Reset processing flag and clear session data
       session.data.isProcessing = false;
       session.step = 'home';
       session.data = {}; // Clear all session data
-      
+
       console.log('✅ Appointment booking completed successfully for user:', from);
-      
+
       res.status(200).end();
       return;
-      
+
     } else if (userMsg === 'change_consent_preferences') {
       // User wants to change preferences - show consent options
       await sendWhatsAppButtons({
@@ -1393,7 +1384,7 @@ Provide a SHORT, PRECISE response:`;
   // Appointment: Consent step
   if (session.step === 'appt_consent') {
     if (userMsg === 'consent_confirm_all' || userMsg === 'consent_reminders_only' || userMsg === 'consent_none') {
-      
+
       // Check if appointment is already being processed to prevent duplicates
       if (session.data.isProcessing) {
         console.log('Appointment already being processed for user:', from);
@@ -1405,10 +1396,10 @@ Provide a SHORT, PRECISE response:`;
         res.status(200).end();
         return;
       }
-      
+
       // Set processing flag to prevent duplicate bookings
       session.data.isProcessing = true;
-      
+
       // Store consent preference based on user selection
       let consentOptions = {
         appointmentReminders: false,
@@ -1436,7 +1427,7 @@ Provide a SHORT, PRECISE response:`;
         ...consentOptions,
         consentedAt: new Date()
       };
-      
+
       // Create Google Calendar event
       let eventId = '';
       try {
@@ -1461,7 +1452,7 @@ Provide a SHORT, PRECISE response:`;
         });
         const doctor = session.data.doctor;
         const calendarId = doctorCalendars[doctor] || process.env.GCAL_CALENDAR_ID;
-        
+
         // Check if an event already exists for this time slot to prevent duplicates
         try {
           const existingEvents = await getAvailableTimeSlots({
@@ -1470,18 +1461,18 @@ Provide a SHORT, PRECISE response:`;
             endTime: '23:59',
             calendarId
           });
-          
+
           // Check if there's already an event in this time slot
           const conflictingEvent = existingEvents.find(event => {
             const eventStart = DateTime.fromISO(event.start);
             const eventEnd = DateTime.fromISO(event.end);
             const slotStartTime = slotStart;
             const slotEndTime = slotEnd;
-            
+
             // Check if events overlap
             return (slotStartTime < eventEnd && slotEndTime > eventStart);
           });
-          
+
           if (conflictingEvent) {
             console.log('⚠️ Conflicting event found:', conflictingEvent);
             throw new Error('This time slot is no longer available. Please choose a different time.');
@@ -1490,10 +1481,10 @@ Provide a SHORT, PRECISE response:`;
           console.log('⚠️ Could not check for conflicting events:', checkError.message);
           // Continue with booking even if check fails
         }
-        
+
         // Create event description based on consent
         let eventDescription = `Name: ${session.data.name}\nPhone: ${session.data.phone}\nService: ${session.data.chosenService || ''}\nDoctor: ${session.data.doctor || ''}\nDate: ${session.data.date}\nTime: ${session.data.time}\nBooked via WhatsApp`;
-        
+
         // Add consent status to event description
         if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
           eventDescription += '\n\n🔔 User has consented to receive appointment reminders and birthday messages.';
@@ -1502,7 +1493,7 @@ Provide a SHORT, PRECISE response:`;
         } else {
           eventDescription += '\n\n❌ User has opted out of all communications.';
         }
-        
+
         const event = await createEvent({
           summary: `Appointment: ${session.data.name} - ${session.data.chosenService || ''} with ${session.data.doctor || ''}`,
           description: eventDescription,
@@ -1531,7 +1522,7 @@ Provide a SHORT, PRECISE response:`;
         res.status(200).end();
         return;
       }
-      
+
       // Save appointment to DB with consent data
       try {
         // Ensure all required fields are present
@@ -1546,12 +1537,12 @@ Provide a SHORT, PRECISE response:`;
           eventId,
           consent: session.data.consent
         };
-        
+
         // Validate required fields before saving
         if (!appointmentData.name || !appointmentData.phone || !appointmentData.doctor) {
           throw new Error(`Missing required fields: name=${appointmentData.name}, phone=${appointmentData.phone}, doctor=${appointmentData.doctor}`);
         }
-        
+
         console.log('Saving appointment to database:', {
           name: appointmentData.name,
           phone: appointmentData.phone,
@@ -1561,14 +1552,14 @@ Provide a SHORT, PRECISE response:`;
           time: appointmentData.time,
           consent: appointmentData.consent
         });
-        
+
         await Appointment.create(appointmentData);
-        
+
         console.log('✅ Appointment saved successfully to database');
-        
+
       } catch (dbError) {
         console.error('❌ Error saving appointment to database:', dbError);
-        
+
         // Try to delete the Google Calendar event if database save failed
         if (eventId) {
           try {
@@ -1578,26 +1569,26 @@ Provide a SHORT, PRECISE response:`;
             console.error('❌ Error deleting Google Calendar event:', deleteError);
           }
         }
-        
+
         await sendWhatsAppText({
           phoneNumberId,
           to: from,
           body: 'Sorry, there was an error saving your appointment. Please try again or contact support.'
         });
-        
+
         // Reset processing flag
         session.data.isProcessing = false;
         session.step = 'home';
         res.status(200).end();
         return;
       }
-      
+
       // Update BirthdayUser collection based on consent
       if (session.data.consent.birthdayMessages) {
         await BirthdayUser.updateOne(
           { number: session.data.phone },
-          { 
-            $set: { 
+          {
+            $set: {
               isOpted: true,
               month: new Date().getMonth() + 1, // Current month as default
               day: new Date().getDate() // Current day as default
@@ -1609,8 +1600,8 @@ Provide a SHORT, PRECISE response:`;
       } else {
         await BirthdayUser.updateOne(
           { number: session.data.phone },
-          { 
-            $set: { 
+          {
+            $set: {
               isOpted: false,
               optedOutOn: new Date().toISOString()
             }
@@ -1618,7 +1609,7 @@ Provide a SHORT, PRECISE response:`;
           { upsert: true }
         );
       }
-      
+
       // Notify admins of new booking with detailed consent status
       let consentStatus = '';
       if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
@@ -1628,13 +1619,13 @@ Provide a SHORT, PRECISE response:`;
       } else {
         consentStatus = '❌ Opted out of all communications';
       }
-      
+
       const adminMsg = `*New Booking*\nName: ${session.data.name}\nPhone: ${session.data.phone}\nService: ${session.data.chosenService || ''}\nDoctor: ${session.data.doctor || ''}\nDate: ${session.data.date}\nTime: ${session.data.time}\n${consentStatus}`;
       await notifyAdmins({ phoneNumberId, message: adminMsg });
-      
+
       // Send confirmation to user based on consent
       let confirmationBody = `✅ *Appointment Confirmed*\n\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n👨‍⚕️ *Doctor:* ${session.data.doctor || 'Not specified'}\n\n📍 *Location:* Code Clinic\n🗺️ *Map:* https://maps.google.com/?q=Code+Clinic\n\n⏰ *Please arrive 15 minutes early* for your appointment.`;
-      
+
       // Add consent-specific confirmation message
       if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
         confirmationBody += `\n\n🔔 *Appointment Reminders & Birthday Wishes:* You'll receive reminders before your appointments and birthday messages.\n\n❌ To stop receiving messages, reply with "STOP" at any time.`;
@@ -1643,7 +1634,7 @@ Provide a SHORT, PRECISE response:`;
       } else {
         confirmationBody += `\n\n📱 *No Communications:* You've opted out of all messages.`;
       }
-      
+
       await sendWhatsAppButtons({
         phoneNumberId,
         to: from,
@@ -1654,14 +1645,14 @@ Provide a SHORT, PRECISE response:`;
           { id: 'home', title: '🏠 Home' }
         ]
       });
-      
+
       // Reset processing flag and clear session data
       session.data.isProcessing = false;
       session.step = 'home';
       session.data = {}; // Clear all session data
-      
+
       console.log('✅ Appointment booking completed successfully for user:', from);
-      
+
       res.status(200).end();
       return;
     } else {
@@ -1784,11 +1775,11 @@ Provide a SHORT, PRECISE response:`;
         const startDate = today.toISOString().slice(0, 10);
         const endDate = new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
         // Search in Dr. Steven's calendar
-        const stevenAppointments = await findEventsByPhoneNumber({ 
-          phone: phoneNumber, 
-          startDate, 
-          endDate, 
-          calendarId: process.env.GCAL_CALENDAR_ID 
+        const stevenAppointments = await findEventsByPhoneNumber({
+          phone: phoneNumber,
+          startDate,
+          endDate,
+          calendarId: process.env.GCAL_CALENDAR_ID
         });
         stevenAppointments.forEach(apt => {
           apt.calendarId = process.env.GCAL_CALENDAR_ID;
@@ -1796,11 +1787,11 @@ Provide a SHORT, PRECISE response:`;
         });
         allAppointments.push(...stevenAppointments);
         // Search in Dr. Angella's calendar
-        const angellaAppointments = await findEventsByPhoneNumber({ 
-          phone: phoneNumber, 
-          startDate, 
-          endDate, 
-          calendarId: process.env.GCAL_CALENDAR_ID2 
+        const angellaAppointments = await findEventsByPhoneNumber({
+          phone: phoneNumber,
+          startDate,
+          endDate,
+          calendarId: process.env.GCAL_CALENDAR_ID2
         });
         angellaAppointments.forEach(apt => {
           apt.calendarId = process.env.GCAL_CALENDAR_ID2;
@@ -2050,7 +2041,7 @@ Provide a SHORT, PRECISE response:`;
 
   // FAQ/Ask a Question (AI-powered)
   if (session.step === 'faq_await') {
-    
+
     // Check if user is trying to book an appointment via text
     if (userMsg && (userMsg.toLowerCase().includes('book') || userMsg.toLowerCase().includes('appointment') || userMsg.toLowerCase().includes('schedule') || userMsg.toLowerCase().includes('make appointment') || userMsg.toLowerCase().includes('book visit') || userMsg.toLowerCase().includes('see doctor'))) {
       // Start the booking flow directly
@@ -2068,7 +2059,7 @@ Provide a SHORT, PRECISE response:`;
       res.status(200).end();
       return;
     }
-    
+
     // Enhanced OpenAI prompt for FAQ responses
     const prompt = `You are Ava, a friendly and knowledgeable assistant for CODE CLINIC dental practice in Kampala, Uganda. 
 
@@ -2089,36 +2080,27 @@ ${knowledgeBase}
 USER QUESTION: ${messages.text?.body || userMsg}
 
 Please provide a helpful, human-like response:`;
-    
+
     let aiResponse = '';
     try {
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-3.5-turbo',
-        temperature: 0.8,
-        max_tokens: 500,
-        messages: [
-          { 
-            role: 'system', 
-            content: 'You are Ava, a friendly dental clinic assistant for Code Clinic in Kampala. Be conversational, warm, and helpful. Use natural language, appropriate emojis, and always sound like a real person. Reference the knowledge base for accurate information.' 
-          },
-          { role: 'user', content: prompt }
-        ]
-      });
-      aiResponse = completion.choices[0].message.content.trim();
-      
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const fullPrompt = `System: You are Ava, a friendly dental clinic assistant for Code Clinic in Kampala. Be conversational, warm, and helpful. Use natural language, appropriate emojis, and always sound like a real person. Reference the knowledge base for accurate information.\n\nUser: ${prompt}`;
+      const result = await model.generateContent(fullPrompt);
+      aiResponse = result.response.text().trim();
+
       // Ensure the response ends with a friendly closing if it doesn't already
-      if (!aiResponse.toLowerCase().includes('need anything else') && 
-          !aiResponse.toLowerCase().includes('anything else') &&
-          !aiResponse.toLowerCase().includes('help you') &&
-          !aiResponse.toLowerCase().includes('assistance')) {
+      if (!aiResponse.toLowerCase().includes('need anything else') &&
+        !aiResponse.toLowerCase().includes('anything else') &&
+        !aiResponse.toLowerCase().includes('help you') &&
+        !aiResponse.toLowerCase().includes('assistance')) {
         aiResponse += '\n\nNeed anything else I can help you with? 😊';
       }
-      
+
     } catch (err) {
-      console.error('OpenAI API error:', err);
+      console.error('Gemini API error:', err);
       aiResponse = "Hi there! 😊 I'm having a bit of trouble accessing my information right now. Could you try asking your question again, or feel free to use the buttons below to get help!";
     }
-    
+
     await sendSmartButtonsOrList({
       phoneNumberId,
       to: from,
@@ -2241,7 +2223,7 @@ app.post('/', async (req, res) => {
       messages.button.payload === 'Opt Out of Greetings'
     ) {
       console.log('🎂 Birthday opt-out button clicked by:', from);
-    
+
       try {
         const result = await BirthdayUser.updateMany(
           { number: from, isOpted: true },
@@ -2252,10 +2234,10 @@ app.post('/', async (req, res) => {
             },
           }
         );
-    
+
         if (result.modifiedCount > 0) {
           console.log(`✅ ${result.modifiedCount} record(s) updated for user ${from}`);
-    
+
           await sendWhatsAppText({
             phoneNumberId,
             to: from,
@@ -2268,7 +2250,7 @@ app.post('/', async (req, res) => {
       } catch (err) {
         console.error('❌ Error handling birthday opt-out:', err);
       }
-    
+
       return res.status(200).end();
     }
 
@@ -2323,12 +2305,9 @@ app.post('/', async (req, res) => {
             "${userText}"
           `.trim();
           try {
-            const resp = await openai.chat.completions.create({
-              model: 'gpt-3.5-turbo',
-              temperature: 0,
-              messages: [{ role: 'user', content: prompt }]
-            });
-            const jsonString = resp.choices[0].message.content;
+            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+            const result = await model.generateContent(prompt);
+            const jsonString = result.response.text().replace(/```json/g, '').replace(/```/g, '').trim();
             const timeSlots = JSON.parse(jsonString);
             await DoctorScheduleOverride.create({
               date: partialDate,
@@ -2399,10 +2378,10 @@ cron.schedule('0 6 * * *', async () => {
           failureCount++;
           console.log(`❌ Birthday message failed for ${user.number}: ${result.reason || result.error}`);
         }
-        
+
         // Add delay to avoid rate limiting
         await new Promise(resolve => setTimeout(resolve, 500));
-        
+
       } catch (error) {
         console.error(`❌ Error sending birthday message to ${user.number}:`, error.message);
         failureCount++;
@@ -2429,13 +2408,13 @@ cron.schedule('0 7 * * *', async () => {
     // Get all events from Google Calendar for today
     const startOfDay = istNow.startOf('day').toISO();
     const endOfDay = istNow.endOf('day').toISO();
-    
+
     // Get events from both doctor calendars
     const calendarIds = [process.env.GCAL_CALENDAR_ID, process.env.GCAL_CALENDAR_ID2];
     const { listEvents } = require('./utils/googleCalendar');
-    
+
     let allTodayEvents = [];
-    
+
     for (const calendarId of calendarIds) {
       try {
         const events = await listEvents(startOfDay, endOfDay, calendarId);
@@ -2456,15 +2435,15 @@ cron.schedule('0 7 * * *', async () => {
           console.log(`⚠️ No phone number found in event: ${event.summary}`);
           continue;
         }
-        
+
         const phoneNumber = phoneMatch[1].trim();
-        
+
         // Check if user has consented to appointment reminders
-        const userAppointments = await Appointment.find({ 
+        const userAppointments = await Appointment.find({
           phone: phoneNumber,
-          'consent.appointmentReminders': true 
+          'consent.appointmentReminders': true
         });
-        
+
         if (userAppointments.length === 0) {
           console.log(`❌ Skipping reminder for ${phoneNumber} - user has not consented to reminders`);
           continue;
@@ -2474,7 +2453,7 @@ cron.schedule('0 7 * * *', async () => {
         const nameMatch = event.description?.match(/Name:\s*([^\n]+)/);
         const serviceMatch = event.description?.match(/Service:\s*([^\n]+)/);
         const doctorMatch = event.description?.match(/Doctor:\s*([^\n]+)/);
-        
+
         const patientName = nameMatch ? nameMatch[1].trim() : "Valued Patient";
         const service = serviceMatch ? serviceMatch[1].trim() : "Dental Service";
         const doctor = doctorMatch ? doctorMatch[1].trim() : "Our Doctor";
@@ -2494,10 +2473,10 @@ cron.schedule('0 7 * * *', async () => {
         });
 
         console.log(`✅ Appointment reminder sent to ${phoneNumber} for ${time}`);
-        
+
         // Add delay to avoid rate limiting
         await new Promise(resolve => setTimeout(resolve, 1000));
-        
+
       } catch (error) {
         console.error(`❌ Error processing appointment reminder for event ${event.id}:`, error.message);
       }
@@ -2509,7 +2488,7 @@ cron.schedule('0 7 * * *', async () => {
     console.error('❌ Error in appointment reminder cron job:', err);
   }
 });
-  
+
 console.log(`Starting server on port ${PORT}...`);
 connectDB()
   .then(() => {

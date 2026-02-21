@@ -20,13 +20,13 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-const OpenAI = require('openai');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 let isWaitingForTimeSlot = false;
-let waitingForPartial   = false;
-let partialDate         = '';
+let waitingForPartial = false;
+let partialDate = '';
 
 // Load knowledge base for OpenAI
 const knowledgeBase = fs.readFileSync(require('path').join(__dirname, 'utils', 'knowledgeBase.txt'), 'utf8');
@@ -111,13 +111,13 @@ async function sendWhatsAppList({ phoneNumberId, to, header, body, button, rows 
         button,
         sections: [
           {
-              title: 'Available Days',
-              rows: safeRows.map(r => {
-                const row = { id: r.id, title: r.title };
-                if (r.description) row.description = r.description;
-                return row;
-              })
-            }
+            title: 'Available Days',
+            rows: safeRows.map(r => {
+              const row = { id: r.id, title: r.title };
+              if (r.description) row.description = r.description;
+              return row;
+            })
+          }
         ]
       }
     }
@@ -235,12 +235,12 @@ async function sendSmartButtonsOrList({ phoneNumberId, to, header, body, buttons
 // Helper: get available days (Mon-Sat, disable Sun)
 function getAvailableDays() {
   return [
-    { id: 'day_monday',    title: 'Monday' },
-    { id: 'day_tuesday',   title: 'Tuesday' },
+    { id: 'day_monday', title: 'Monday' },
+    { id: 'day_tuesday', title: 'Tuesday' },
     { id: 'day_wednesday', title: 'Wednesday' },
-    { id: 'day_thursday',  title: 'Thursday' },
-    { id: 'day_friday',    title: 'Friday' },
-    { id: 'day_saturday',  title: 'Saturday' }
+    { id: 'day_thursday', title: 'Thursday' },
+    { id: 'day_friday', title: 'Friday' },
+    { id: 'day_saturday', title: 'Saturday' }
     // Sunday intentionally omitted
   ];
 }
@@ -259,7 +259,7 @@ async function fetchRealTimeSlots(dateStr) {
         const day = parts[1].padStart(2, '0');
         const month = parts[2].substring(0, 3);
         const year = parts[3] || new Date().getFullYear();
-        const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
         const monthNum = (months.indexOf(month) + 1).toString().padStart(2, '0');
         dateObj = new Date(`${year}-${monthNum}-${day}`);
       }
@@ -877,16 +877,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res }) {
     const prompt = `You are a helpful, friendly, and stylish assistant for Hair Rap by Yoyo. Use the following knowledge base to answer user questions.\n\n[KNOWLEDGE BASE]\n${knowledgeBase}\n\n[USER]: ${messages.text?.body || userMsg}\n[ASSISTANT]:`;
     let aiResponse = '';
     try {
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-3.5-turbo',
-        temperature: 0.3,
-        messages: [
-          { role: 'system', content: 'You are a helpful, friendly, and stylish assistant for Hair Rap by Yoyo.' },
-          { role: 'user', content: prompt }
-        ]
-      });
-      aiResponse = completion.choices[0].message.content.trim();
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const fullPrompt = `System: You are a helpful, friendly, and stylish assistant for Hair Rap by Yoyo.\n\nUser: ${prompt}`;
+      const result = await model.generateContent(fullPrompt);
+      aiResponse = result.response.text().trim();
     } catch (err) {
+      console.error('Gemini API Error:', err);
       aiResponse = "Sorry, I'm having trouble accessing my info right now. Please try again later or use the menu.";
     }
     await sendSmartButtonsOrList({
@@ -943,16 +939,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res }) {
     const prompt = `You are a helpful, friendly, and stylish assistant for Hair Rap by Yoyo. Use the following knowledge base to answer user questions.\n\n[KNOWLEDGE BASE]\n${knowledgeBase}\n\n[USER]: ${messages.text?.body || userMsg}\n[ASSISTANT]:`;
     let aiResponse = '';
     try {
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-3.5-turbo',
-        temperature: 0.3,
-        messages: [
-          { role: 'system', content: 'You are a helpful, friendly, and stylish assistant for Hair Rap by Yoyo.' },
-          { role: 'user', content: prompt }
-        ]
-      });
-      aiResponse = completion.choices[0].message.content.trim();
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const fullPrompt = `System: You are a helpful, friendly, and stylish assistant for Hair Rap by Yoyo.\n\nUser: ${prompt}`;
+      const result = await model.generateContent(fullPrompt);
+      aiResponse = result.response.text().trim();
     } catch (err) {
+      console.error('Gemini API Error:', err);
       aiResponse = "Oops! I didn’t get that.\nYou can tap a button below or type:\n• Book\n• Price\n• Ask";
     }
     await sendSmartButtonsOrList({
@@ -1353,12 +1345,9 @@ app.post('/', async (req, res) => {
             "${userText}"
           `.trim();
           try {
-            const resp = await openai.chat.completions.create({
-              model: 'gpt-3.5-turbo',
-              temperature: 0,
-              messages: [{ role: 'user', content: prompt }]
-            });
-            const jsonString = resp.choices[0].message.content;
+            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+            const result = await model.generateContent(prompt);
+            const jsonString = result.response.text().replace(/```json/g, '').replace(/```/g, '').trim();
             const timeSlots = JSON.parse(jsonString);
             await DoctorScheduleOverride.create({
               date: partialDate,

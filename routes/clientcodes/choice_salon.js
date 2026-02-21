@@ -19,7 +19,7 @@ const DailyStat = require('../../models/DailyStat');
 const Client = require('../../models/Client');
 const AdLead = require('../../models/AdLead');
 const { DateTime } = require('luxon');
-const OpenAI = require('openai');
+
 
 // Detect greeting words
 const GREETING_WORDS = ['hi', 'hello', 'hey', 'hii', 'good morning', 'good afternoon', 'good evening', 'greetings', 'kem cho', 'namaste'];
@@ -1631,8 +1631,20 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           consent: appointmentData.consent
         });
 
-        const serviceDb = await ServiceModel.findOne({ clientId: appointmentData.clientId, name: appointmentData.service });
-        appointmentData.revenue = serviceDb ? serviceDb.price : 0;
+        const selectedServiceId = session.data.chosenService;
+        const serviceInfo = salonServices.find(s => s.id === selectedServiceId);
+        const serviceTitle = serviceInfo ? serviceInfo.title : selectedServiceId;
+
+        const serviceDb = await ServiceModel.findOne({ clientId: appointmentData.clientId, name: serviceTitle });
+        let revenue = serviceDb ? serviceDb.price : 0;
+
+        if (revenue === 0) {
+          const pricing = salonPricing.find(p => p.service === serviceTitle);
+          if (pricing) {
+            revenue = parseInt(pricing.price.replace(/[^\d]/g, ''));
+          }
+        }
+        appointmentData.revenue = revenue;
 
         await Appointment.create(appointmentData);
 
@@ -1653,6 +1665,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         } catch (adErr) {
           console.error('❌ Error updating AdLead:', adErr);
         }
+
 
         try {
           const io = req.app.get('socketio');
@@ -2015,10 +2028,23 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           consent: appointmentData.consent
         });
 
-        const serviceDb = await ServiceModel.findOne({ clientId: appointmentData.clientId, name: appointmentData.service });
-        appointmentData.revenue = serviceDb ? serviceDb.price : 0;
+        const selectedServiceId = session.data.chosenService;
+        const serviceInfo = salonServices.find(s => s.id === selectedServiceId);
+        const serviceTitle = serviceInfo ? serviceInfo.title : selectedServiceId;
+
+        const serviceDb = await ServiceModel.findOne({ clientId: appointmentData.clientId, name: serviceTitle });
+        let revenue = serviceDb ? serviceDb.price : 0;
+
+        if (revenue === 0) {
+          const pricing = salonPricing.find(p => p.service === serviceTitle);
+          if (pricing) {
+            revenue = parseInt(pricing.price.replace(/[^\d]/g, ''));
+          }
+        }
+        appointmentData.revenue = revenue;
 
         await Appointment.create(appointmentData);
+
         try {
           const io = req.app.get('socketio');
           if (io) {
@@ -2722,7 +2748,7 @@ const handleWebhook = async (req, res) => {
 
     const io = req.app.get('socketio');
     const token = req.clientConfig?.whatsappToken || process.env.WHATSAPP_TOKEN;
-    const openai = new OpenAI({ apiKey: (req.clientConfig?.openaiApiKey || process.env.OPENAI_API_KEY) });
+
     const helperParams = { phoneNumberId, token, io, clientId };
 
     // 1. Find or Create Conversation
