@@ -17,13 +17,13 @@ const checkOverlap = async (clientId, doctor, start, end, excludeId = null) => {
     doctor,
     status: { $ne: 'cancelled' }
   };
-  
+
   if (excludeId) {
     query._id = { $ne: excludeId };
   }
 
   const dbAppointments = await Appointment.find(query);
-  
+
   const hasDbConflict = dbAppointments.some(appt => {
     // Reconstruct start/end from DB date/time if possible, 
     // but Appointment model should ideally store ISO strings.
@@ -52,10 +52,10 @@ const checkOverlap = async (clientId, doctor, start, end, excludeId = null) => {
 
   const conflict = events.find(event => {
     if (excludeId && event.id === excludeId) return false;
-    
+
     const eventStart = new Date(event.start.dateTime || event.start.date);
     const eventEnd = new Date(event.end.dateTime || event.end.date);
-    
+
     // Overlap logic: (StartA < EndB) and (EndA > StartB)
     return (newStart < eventEnd && newEnd > eventStart);
   });
@@ -89,24 +89,24 @@ const formatDateTime = (isoDateString) => {
   try {
     const dateObj = new Date(isoDateString);
     if (isNaN(dateObj.getTime())) {
-        throw new Error('Invalid date string: ' + isoDateString);
+      throw new Error('Invalid date string: ' + isoDateString);
     }
-    const date = dateObj.toLocaleDateString('en-GB', { 
-      weekday: 'long', 
-      day: '2-digit', 
+    const date = dateObj.toLocaleDateString('en-GB', {
+      weekday: 'long',
+      day: '2-digit',
       month: 'short',
       timeZone: 'Asia/Kolkata'
     }); // "Tuesday, 23 Jul"
-    const time = dateObj.toLocaleTimeString('en-US', { 
-      hour: '2-digit', 
-      minute: '2-digit', 
+    const time = dateObj.toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
       hour12: true,
       timeZone: 'Asia/Kolkata'
     }); // "11:00 AM"
     return { date, time };
   } catch (e) {
-      console.error('Date formatting error:', e.message);
-      return { date: 'Invalid Date', time: 'Invalid Time' };
+    console.error('Date formatting error:', e.message);
+    return { date: 'Invalid Date', time: 'Invalid Time' };
   }
 };
 
@@ -118,7 +118,7 @@ router.get('/', protect, async (req, res) => {
   const query = { clientId: req.user.clientId };
 
   if (phone) {
-      query.phone = { $regex: phone, $options: 'i' };
+    query.phone = { $regex: phone, $options: 'i' };
   }
 
   try {
@@ -141,35 +141,35 @@ router.get('/calendar', protect, async (req, res) => {
 
     const client = await Client.findOne({ clientId: req.user.clientId });
     if (!client) {
-        return res.status(404).json({ message: 'Client not found' });
+      return res.status(404).json({ message: 'Client not found' });
     }
-    
+
     // Collect all calendar IDs
     const calendarIds = new Set();
     if (client.googleCalendarId) calendarIds.add(client.googleCalendarId);
-    
+
     // Add stylist calendars from config
     if (client.config?.calendars) {
-        Object.values(client.config.calendars).forEach(id => calendarIds.add(id));
+      Object.values(client.config.calendars).forEach(id => calendarIds.add(id));
     }
-    
+
     // Default to 'primary' if no calendars found
     if (calendarIds.size === 0) calendarIds.add('primary');
 
     // 1. Fetch Google Calendar Events from ALL calendars
     let googleEvents = [];
     try {
-      const calendarPromises = Array.from(calendarIds).map(calId => 
-         listEvents(start, end, calId)
-             .catch(err => {
-                 console.error(`GCal fetch error for ${calId}:`, err.message);
-                 return [];
-             })
+      const calendarPromises = Array.from(calendarIds).map(calId =>
+        listEvents(start, end, calId)
+          .catch(err => {
+            console.error(`GCal fetch error for ${calId}:`, err.message);
+            return [];
+          })
       );
-      
+
       const results = await Promise.all(calendarPromises);
       googleEvents = results.flat();
-      
+
       // Remove duplicates based on event ID
       const uniqueEvents = new Map();
       googleEvents.forEach(e => uniqueEvents.set(e.id, e));
@@ -190,7 +190,7 @@ router.get('/calendar', protect, async (req, res) => {
     // 3. Merge
     const mergedEvents = googleEvents.map(event => {
       const dbAppt = dbMap.get(event.id);
-      
+
       let source = 'chatbot';
       if (dbAppt) {
         source = dbAppt.bookingSource || 'chatbot'; // Default to chatbot if field missing
@@ -203,7 +203,7 @@ router.get('/calendar', protect, async (req, res) => {
 
       // Determine color based on doctor/stylist
       let color = dbAppt?.doctor?.toLowerCase() === 'shubhashbhai' ? '#ff9f89' : (dbAppt?.doctor?.toLowerCase() === 'moksh' ? '#89c4ff' : undefined);
-      
+
       // Fallback: check summary if no DB appointment link found
       if (!color && event.summary) {
         const summary = event.summary.toLowerCase();
@@ -214,7 +214,7 @@ router.get('/calendar', protect, async (req, res) => {
       return {
         id: event.id,
         title: event.summary || 'No Title',
-        start: startDateTime, 
+        start: startDateTime,
         end: endDateTime,
         allDay: !event.start.dateTime,
         source: source,
@@ -237,33 +237,33 @@ router.get('/calendar', protect, async (req, res) => {
       // Reconstruct ISO date from DB string (Asia/Kolkata)
       // Note: This is a best-effort conversion.
       // Ideally DB should store ISO start/end.
-      let startISO = new Date().toISOString(); 
+      let startISO = new Date().toISOString();
       let endISO = new Date().toISOString();
 
       try {
-         const todayYear = new Date().getFullYear();
-         // Parse "Monday, 09 Feb" -> "09 Feb"
-         const datePart = appt.date.split(',')[1]?.trim(); 
-         if (datePart && appt.time) {
-             const timeParts = appt.time.match(/(\d+):(\d+)\s*(AM|PM)/i);
-             if (timeParts) {
-                 let hours = parseInt(timeParts[1]);
-                 const minutes = parseInt(timeParts[2]);
-                 const ampm = timeParts[3].toUpperCase();
-                 if (ampm === 'PM' && hours < 12) hours += 12;
-                 if (ampm === 'AM' && hours === 12) hours = 0;
-                 
-                 const d = new Date(`${datePart} ${todayYear} ${hours}:${minutes}:00`);
-                 // Basic validation
-                 if (!isNaN(d.getTime())) {
-                     startISO = d.toISOString();
-                     d.setHours(d.getHours() + 1); // Default 1 hour duration
-                     endISO = d.toISOString();
-                 }
-             }
-         }
+        const todayYear = new Date().getFullYear();
+        // Parse "Monday, 09 Feb" -> "09 Feb"
+        const datePart = appt.date.split(',')[1]?.trim();
+        if (datePart && appt.time) {
+          const timeParts = appt.time.match(/(\d+):(\d+)\s*(AM|PM)/i);
+          if (timeParts) {
+            let hours = parseInt(timeParts[1]);
+            const minutes = parseInt(timeParts[2]);
+            const ampm = timeParts[3].toUpperCase();
+            if (ampm === 'PM' && hours < 12) hours += 12;
+            if (ampm === 'AM' && hours === 12) hours = 0;
+
+            const d = new Date(`${datePart} ${todayYear} ${hours}:${minutes}:00`);
+            // Basic validation
+            if (!isNaN(d.getTime())) {
+              startISO = d.toISOString();
+              d.setHours(d.getHours() + 1); // Default 1 hour duration
+              endISO = d.toISOString();
+            }
+          }
+        }
       } catch (e) {
-          console.error('Date parsing error for DB appointment:', e);
+        console.error('Date parsing error for DB appointment:', e);
       }
 
       mergedEvents.push({
@@ -300,42 +300,47 @@ router.get('/calendar', protect, async (req, res) => {
 router.post('/', protect, async (req, res) => {
   try {
     const { name, phone, email, service, doctor, start, end, notes } = req.body;
-    
+
     // Check for conflicts before creating
     const conflict = await checkOverlap(req.user.clientId, doctor, start, end);
     if (conflict) {
-        return res.status(409).json({ 
-            message: 'This time slot is already booked for the selected provider.',
-            conflict 
-        });
+      return res.status(409).json({
+        message: 'This time slot is already booked for the selected provider.',
+        conflict
+      });
     }
 
     const client = await Client.findOne({ clientId: req.user.clientId });
     if (!client) {
-        return res.status(404).json({ message: 'Client not found' });
+      return res.status(404).json({ message: 'Client not found' });
     }
     const calendarId = client.googleCalendarId || 'primary';
 
     // 1. Create in Google Calendar (Fail-safe)
     let eventId = null;
     try {
-        const gCalEvent = await createEvent({
-            summary: `${name} - ${service}`,
-            description: `${notes || ''}\nPhone: ${phone}\nSource: Manual Dashboard Booking`,
-            start,
-            end,
-            attendees: email ? [email] : [],
-            calendarId
-        });
-        eventId = gCalEvent.eventId;
+      const gCalEvent = await createEvent({
+        summary: `${name} - ${service}`,
+        description: `${notes || ''}\nPhone: ${phone}\nSource: Manual Dashboard Booking`,
+        start,
+        end,
+        attendees: email ? [email] : [],
+        calendarId
+      });
+      eventId = gCalEvent.eventId;
     } catch (gError) {
-        console.error('Google Calendar Sync Failed (Create):', gError.message);
-        // Proceed without Google Calendar event
+      console.error('Google Calendar Sync Failed (Create):', gError.message);
+      // Proceed without Google Calendar event
     }
 
     // 2. Create in DB
     const { date, time } = formatDateTime(start);
-    
+
+    // Look up service price for revenue tracking
+    const ServiceModel = require('../models/Service');
+    const serviceDb = await ServiceModel.findOne({ clientId: req.user.clientId, name: service });
+    const revenue = serviceDb ? serviceDb.price : 0;
+
     const appointment = new Appointment({
       clientId: req.user.clientId,
       name,
@@ -345,6 +350,7 @@ router.post('/', protect, async (req, res) => {
       doctor: doctor || 'Unassigned',
       date,
       time,
+      revenue,
       eventId: eventId || req.body.existingEventId, // Use existing ID if provided (converting external/chatbot event)
       bookingSource: req.body.existingEventId ? 'chatbot' : 'manual', // If converting, assume it's from chatbot/external
       logs: [{
@@ -359,24 +365,24 @@ router.post('/', protect, async (req, res) => {
 
     // If converting an existing event, we might want to update its description/title in GCal to match our format
     if (req.body.existingEventId) {
-        try {
-            await updateEvent({
-                eventId: req.body.existingEventId,
-                calendarId,
-                summary: `${name} - ${service}`,
-                description: `${notes || ''}\nPhone: ${phone}\nSource: Dashboard (Converted)`,
-                start,
-                end
-            });
-        } catch (gError) {
-            console.error('Failed to update converted GCal event:', gError.message);
-        }
+      try {
+        await updateEvent({
+          eventId: req.body.existingEventId,
+          calendarId,
+          summary: `${name} - ${service}`,
+          description: `${notes || ''}\nPhone: ${phone}\nSource: Dashboard (Converted)`,
+          start,
+          end
+        });
+      } catch (gError) {
+        console.error('Failed to update converted GCal event:', gError.message);
+      }
     }
 
     // Emit socket event for real-time update
     const io = req.app.get('socketio');
     if (io) {
-        io.to(`client_${req.user.clientId}`).emit('appointments_update');
+      io.to(`client_${req.user.clientId}`).emit('appointments_update');
     }
 
     res.status(201).json(appointment);
@@ -384,7 +390,7 @@ router.post('/', protect, async (req, res) => {
   } catch (error) {
     console.error('Create appointment error:', error);
     if (error.code === 11000) {
-        return res.status(409).json({ message: 'This time slot is already booked for the selected provider.' });
+      return res.status(409).json({ message: 'This time slot is already booked for the selected provider.' });
     }
     res.status(500).json({ message: 'Failed to create appointment', error: error.message });
   }
@@ -397,7 +403,7 @@ router.put('/:id', protect, async (req, res) => {
   try {
     const { start, end, name, service, notes, email, phone, doctor } = req.body;
     const appointment = await Appointment.findOne({ _id: req.params.id, clientId: req.user.clientId });
-    
+
     if (!appointment) return res.status(404).json({ message: 'Not found' });
 
     // Check for conflicts if time or doctor changes
@@ -405,26 +411,26 @@ router.put('/:id', protect, async (req, res) => {
       const checkStart = start || appointment.start; // Assuming start is available or we need to derive it
       const checkEnd = end || appointment.end;
       const checkDoctor = doctor || appointment.doctor;
-      
+
       const conflict = await checkOverlap(
-        req.user.clientId, 
-        checkDoctor, 
-        checkStart, 
-        checkEnd, 
+        req.user.clientId,
+        checkDoctor,
+        checkStart,
+        checkEnd,
         appointment.eventId // Exclude current GCal event
       );
-      
+
       if (conflict) {
-        return res.status(409).json({ 
+        return res.status(409).json({
           message: 'The new time slot is already booked for this provider.',
-          conflict 
+          conflict
         });
       }
     }
 
     const client = await Client.findOne({ clientId: req.user.clientId });
     if (!client) {
-        return res.status(404).json({ message: 'Client not found' });
+      return res.status(404).json({ message: 'Client not found' });
     }
     const calendarId = client.googleCalendarId || 'primary';
 
@@ -455,7 +461,7 @@ router.put('/:id', protect, async (req, res) => {
       appointment.date = date;
       appointment.time = time;
     }
-    
+
     appointment.logs.push({
       action: 'update',
       changedBy: req.user._id || 'dashboard_user',
@@ -468,7 +474,7 @@ router.put('/:id', protect, async (req, res) => {
     // Emit socket event for real-time update
     const io = req.app.get('socketio');
     if (io) {
-        io.to(`client_${req.user.clientId}`).emit('appointments_update');
+      io.to(`client_${req.user.clientId}`).emit('appointments_update');
     }
 
     res.json(appointment);
@@ -486,7 +492,7 @@ router.patch('/:id/status', protect, async (req, res) => {
   try {
     const { status } = req.body;
     const client = await Client.findOne({ clientId: req.user.clientId });
-    
+
     // Subscription Check for cancellation
     if (status === 'cancelled' && (!client || client.subscriptionPlan === 'v1')) {
       return res.status(403).json({ message: 'Cancellation is locked for CX Agent (v1). Please upgrade to v2.' });
@@ -497,19 +503,19 @@ router.patch('/:id/status', protect, async (req, res) => {
 
     appointment.status = status;
     if (status === 'cancelled') {
-        appointment.cancelledAt = new Date();
-        appointment.cancelledBy = req.user._id || 'dashboard_user';
-        
-        // Also delete from GCal if linked
-        if (appointment.eventId) {
-            try {
-                const calendarId = client.googleCalendarId || 'primary';
-                await deleteEvent(appointment.eventId, calendarId);
-                appointment.eventId = null;
-            } catch (gError) {
-                console.warn('GCal delete failed during status update:', gError.message);
-            }
+      appointment.cancelledAt = new Date();
+      appointment.cancelledBy = req.user._id || 'dashboard_user';
+
+      // Also delete from GCal if linked
+      if (appointment.eventId) {
+        try {
+          const calendarId = client.googleCalendarId || 'primary';
+          await deleteEvent(appointment.eventId, calendarId);
+          appointment.eventId = null;
+        } catch (gError) {
+          console.warn('GCal delete failed during status update:', gError.message);
         }
+      }
     }
 
     appointment.logs.push({
@@ -524,7 +530,7 @@ router.patch('/:id/status', protect, async (req, res) => {
     // Emit socket event
     const io = req.app.get('socketio');
     if (io) {
-        io.to(`client_${req.user.clientId}`).emit('appointments_update');
+      io.to(`client_${req.user.clientId}`).emit('appointments_update');
     }
 
     res.json(appointment);
@@ -540,7 +546,7 @@ router.patch('/:id/status', protect, async (req, res) => {
 router.delete('/:id', protect, async (req, res) => {
   try {
     const client = await Client.findOne({ clientId: req.user.clientId });
-    
+
     // Subscription Check
     if (!client || client.subscriptionPlan === 'v1') {
       return res.status(403).json({ message: 'Cancellation is locked for CX Agent (v1). Please upgrade to v2.' });
@@ -559,13 +565,13 @@ router.delete('/:id', protect, async (req, res) => {
         console.warn('Google Calendar delete failed (might be already deleted):', gError.message);
       }
     }
-    
+
     // 2. Soft Delete in DB
     appointment.status = 'cancelled';
     appointment.cancelledAt = new Date();
     appointment.cancelledBy = req.user._id || 'dashboard_user';
     appointment.eventId = null; // Remove link to GCal event since it's deleted there
-    
+
     appointment.logs.push({
       action: 'cancel',
       changedBy: req.user._id || 'dashboard_user',
@@ -574,11 +580,11 @@ router.delete('/:id', protect, async (req, res) => {
     });
 
     await appointment.save();
-    
+
     // Emit socket event for real-time update
     const io = req.app.get('socketio');
     if (io) {
-        io.to(`client_${req.user.clientId}`).emit('appointments_update');
+      io.to(`client_${req.user.clientId}`).emit('appointments_update');
     }
 
     res.json({ message: 'Appointment cancelled' });
@@ -594,7 +600,7 @@ router.delete('/:id', protect, async (req, res) => {
 router.delete('/external/:eventId', protect, async (req, res) => {
   try {
     const client = await Client.findOne({ clientId: req.user.clientId });
-    
+
     // Subscription Check
     if (!client || client.subscriptionPlan === 'v1') {
       return res.status(403).json({ message: 'Cancellation is locked for CX Agent (v1). Please upgrade to v2.' });

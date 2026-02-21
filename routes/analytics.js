@@ -28,13 +28,20 @@ router.get('/realtime', protect, async (req, res) => {
       createdAt: { $gte: today }
     });
 
-    // 2. Orders & Revenue (Today)
+    // 2. Orders & Appointments Revenue (Today)
     const ordersToday = await Order.find({
       ...query,
       createdAt: { $gte: today }
     });
 
-    const revenueToday = ordersToday.reduce((sum, order) => sum + order.amount, 0);
+    const appointmentsToday = await Appointment.find({
+      ...query,
+      createdAt: { $gte: today }
+    });
+
+    const orderRevenue = ordersToday.reduce((sum, order) => sum + order.amount, 0);
+    const appointmentRevenue = appointmentsToday.reduce((sum, appt) => sum + (appt.revenue || 0), 0);
+    const revenueToday = orderRevenue + appointmentRevenue;
     const orderCountToday = ordersToday.length;
 
     // 3. Link Clicks (Total)
@@ -256,7 +263,33 @@ router.get('/top-products', protect, async (req, res) => {
       }
     ]);
 
-    res.json(topProducts);
+    if (topProducts.length > 0) {
+      return res.json(topProducts);
+    }
+
+    // Fallback for Service-based businesses (Clinic, Salon, Turf)
+    const topServices = await Appointment.aggregate([
+      { $match: { ...query, service: { $exists: true, $ne: null } } },
+      {
+        $group: {
+          _id: "$service",
+          totalRevenue: { $sum: "$revenue" },
+          totalSold: { $sum: 1 }
+        }
+      },
+      { $sort: { totalSold: -1 } },
+      { $limit: 10 },
+      {
+        $project: {
+          name: "$_id",
+          revenue: "$totalRevenue",
+          sold: "$totalSold",
+          _id: 0
+        }
+      }
+    ]);
+
+    res.json(topServices);
   } catch (error) {
     console.error('Top Products Error:', error);
     res.status(500).json({ message: 'Server Error' });

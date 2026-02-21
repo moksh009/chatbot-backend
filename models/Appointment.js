@@ -10,10 +10,10 @@ const AppointmentSchema = new mongoose.Schema({
   date: { type: String, required: true }, // e.g., 'Tuesday, 23 Jul'
   time: { type: String, required: true }, // e.g., '11:00 AM'
   eventId: { type: String }, // Google Calendar event ID
-  bookingSource: { 
-    type: String, 
-    enum: ['chatbot', 'manual'], 
-    default: 'chatbot' 
+  bookingSource: {
+    type: String,
+    enum: ['chatbot', 'manual'],
+    default: 'chatbot'
   },
   status: {
     type: String,
@@ -35,12 +35,13 @@ const AppointmentSchema = new mongoose.Schema({
     marketingMessages: { type: Boolean, default: true },
     consentedAt: { type: Date, default: Date.now }
   },
+  revenue: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
 
 // Update the updatedAt field before saving
-AppointmentSchema.pre('save', function(next) {
+AppointmentSchema.pre('save', function (next) {
   this.updatedAt = new Date();
   next();
 });

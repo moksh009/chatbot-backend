@@ -74,12 +74,13 @@ app.use('/api/auth', authRoutes);
 app.use('/api/conversations', conversationRoutes);
 app.use('/api/appointments', appointmentRoutes);
 app.use('/api/analytics', analyticsRoutes);
-app.use('/api/campaigns', campaignsRoutes);
-
+const businessRoutes = require('./routes/business');
 
 // Dynamic Client Router (Replaces hardcoded client routes)
 // Handles /api/client/:clientId/webhook
 app.use('/api/client/:clientId', dynamicClientRouter);
+
+app.use('/api/business', businessRoutes);
 
 // app.use('/api/client/0001', turfClientRoutes);
 // app.use('/api/client/0002', vedClientRoutes);
