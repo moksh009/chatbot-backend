@@ -38,14 +38,14 @@ const QUESTION_TOPICS = [
 
 const FAQ_DATA = {
   'ask_services': [
-    { id: 'faq_serv_types', title: 'What services do you offer?', answer: 'We offer ladies haircuts, advanced hair spa, protein and straightening treatments, global color, highlights, and more. Biji badhi details mate tame ahi booking kari shako cho! ✨' },
-    { id: 'faq_serv_kids', title: 'Do you do kids haircuts?', answer: 'Yes. We provide haircuts for girls of all ages. Chokriyo mate best service malshe! 👧' },
-    { id: 'faq_serv_color', title: 'Do you do hair color?', answer: 'Yes. We offer professional global color and highlights with proper hair care guidance. Quality color kaam thai jashe! 🎨' },
-    { id: 'faq_serv_spa', title: 'Do you offer hair spa?', answer: 'Yes. We have multiple hair spa options including Normal Spa, Loreal Spa, Silk Protein Spa, Shea Butter Spa, and Permanent Spa. Hair mate best spa results malshe! 🧖‍♀️' }
+    { id: 'faq_serv_types', title: 'What services do you offer?', answer: 'We offer ladies haircuts, advanced hair spa, protein and straightening treatments, global color, highlights, and more. During our 🌈 Holi Sale (24 Mar - 5 Mar), get a FREE Haircut with any Spa, Treatment, or Color! Best services malshe tame! ✨' },
+    { id: 'faq_serv_kids', title: 'Do you do kids haircuts?', answer: 'Yes. We provide haircuts for girls of all ages. Chokriyo mate professional cut malshe! 👧' },
+    { id: 'faq_serv_color', title: 'Do you do hair color?', answer: 'Yes. We offer professional global color and highlights. 🌈 Holi Special: Get a FREE Haircut with Global/Highlight Color! Perfect color kaam thai jashe! 🎨' },
+    { id: 'faq_serv_spa', title: 'Do you offer hair spa?', answer: 'Yes. We have multiple hair spa options. 🌈 Holi Special: Get a FREE Haircut with any Hair Spa starting at just ₹999/-! Hair mate best treatment malshe! 🧖‍♀️' }
   ],
   'ask_pricing': [
-    { id: 'faq_price_haircut', title: 'How much is a haircut?', answer: 'Our Haircut is ₹500 and Advance Haircut is ₹700 for ladies.' },
-    { id: 'faq_price_list', title: 'Full Price List', answer: 'Here is our latest price list:\n\nHaircut\n• Haircut: ₹500/-\n• Advance Haircut: ₹700/-\n\nHair Spa\n• Normal Spa: ₹1,000/-\n• Loreal Spa: ₹1,200/-\n• Silk Protein Spa: ₹1,500/-\n• Shea Butter Spa: ₹2,000/-\n• Permanent Spa: ₹2,000/-\n\nHair Treatment\n• Nano Therapy: ₹3,500/-\n• Brazil Therapy: ₹3,000/-\n• Botox: ₹2,800/-\n• Keratin: ₹2,500/-\n• Mirror Shine Boto Smooth: ₹4,000/-\n• Loreal Straightening: ₹3,500/-\n\nColour\n• Global Color: ₹2,000/-\n• Root Touch Up: ₹1,000/-\n• Balayage Highlight: ₹2,500/-\n• Classic Highlight: ₹2,000/-' },
+    { id: 'faq_price_haircut', title: 'How much is a haircut?', answer: 'Our Haircut is ₹500 and Advance Haircut is ₹700. ✨ Pro Tip: Get it for FREE with any Spa, Treatment, or Color!' },
+    { id: 'faq_price_list', title: '🌈 Holi Sale 2026 Price List (24 Mar - 5 Mar)', answer: '✨ *Holi Festive Deals (Includes FREE Haircut)* ✨\n\nHair Spa + 💇‍♀️ FREE Haircut\n• Normal Spa: ~~₹1500~~ ₹999/-\n• Loreal Spa: ~~₹1700~~ ₹1199/-\n• Silk Protein Spa: ~~₹2000~~ ₹1499/-\n• Shea Butter Spa: ~~₹2500~~ ₹1999/-\n• Permanent Spa: ~~₹2500~~ ₹1499/-\n\nHair Treatment + 💇‍♀️ FREE Haircut\n• Mirror Shine Boto Smooth: ~~₹4500~~ ₹2999/-\n• Smoothing: ~~₹3500~~ ₹2799/-\n• Nano Therapy: ~~₹4000~~ ₹3299/-\n• Botox: ~~₹3300~~ ₹2499/-\n\nColour + 💇‍♀️ FREE Haircut\n• Global Hair Color: ~~₹2500~~ ₹1999/-\n• Highlight Color: ~~₹2500~~ ₹1999/-\n\n*Prices depend on hair length & growth.*' },
     { id: 'faq_price_payment', title: 'Payment Methods', answer: 'We accept Cash, UPI, and all major Credit/Debit cards.' }
   ],
   'ask_appointments': [
@@ -80,23 +80,19 @@ async function generateWithGemini(apiKey, prompt) {
   return text.trim();
 }
 const salonServices = [
-  { id: 'svc_haircut_basic', title: 'Haircut', price: '₹500/-', description: '₹500/-', category: 'Haircut' },
-  { id: 'svc_haircut_advance', title: 'Advance Haircut', price: '₹700/-', description: '₹700/-', category: 'Haircut' },
-  { id: 'svc_spa_normal', title: 'Normal Spa', price: '₹1,000/-', description: '₹1,000/-', category: 'Hair Spa' },
-  { id: 'svc_spa_loreal', title: 'Loreal Spa', price: '₹1,200/-', description: '₹1,200/-', category: 'Hair Spa' },
-  { id: 'svc_spa_silk', title: 'Silk Protein Spa', price: '₹1,500/-', description: '₹1,500/-', category: 'Hair Spa' },
-  { id: 'svc_spa_shea', title: 'Shea Butter Spa', price: '₹2,000/-', description: '₹2,000/-', category: 'Hair Spa' },
-  { id: 'svc_spa_perm', title: 'Permanent Spa', price: '₹2,000/-', description: '₹2,000/-', category: 'Hair Spa' },
-  { id: 'svc_treat_nano', title: 'Nano Therapy', price: '₹3,500/-', description: '₹3,500/-', category: 'Hair Treatment' },
-  { id: 'svc_treat_brazil', title: 'Brazil Therapy', price: '₹3,000/-', description: '₹3,000/-', category: 'Hair Treatment' },
-  { id: 'svc_treat_botox', title: 'Botox', price: '₹2,800/-', description: '₹2,800/-', category: 'Hair Treatment' },
-  { id: 'svc_treat_keratin', title: 'Keratin', price: '₹2,500/-', description: '₹2,500/-', category: 'Hair Treatment' },
-  { id: 'svc_treat_mirror', title: 'Mirror Shine Boto Smooth', price: '₹4,000/-', description: '₹4,000/-', category: 'Hair Treatment' },
-  { id: 'svc_treat_loreal_straight', title: 'Loreal Straightening', price: '₹3,500/-', description: '₹3,500/-', category: 'Hair Treatment' },
-  { id: 'svc_color_global', title: 'Global Color', price: '₹2,000/-', description: '₹2,000/-', category: 'Colour' },
-  { id: 'svc_color_roots', title: 'Root Touch Up', price: '₹1,000/-', description: '₹1,000/-', category: 'Colour' },
-  { id: 'svc_color_balayage', title: 'Balayage Highlight', price: '₹2,500/-', description: '₹2,500/-', category: 'Colour' },
-  { id: 'svc_color_classic', title: 'Classic Highlight', price: '₹2,000/-', description: '₹2,000/-', category: 'Colour' }
+  { id: 'svc_spa_normal', title: 'Normal Spa + FREE Haircut', price: '₹999/-', description: '~~₹1500~~ ₹999/- (Holi Offer)', category: 'Hair Spa 🌈' },
+  { id: 'svc_spa_loreal', title: 'Loreal Spa + FREE Haircut', price: '₹1,199/-', description: '~~₹1700~~ ₹1199/- (Holi Offer)', category: 'Hair Spa 🌈' },
+  { id: 'svc_spa_silk', title: 'Protein Spa + FREE Haircut', price: '₹1,499/-', description: '~~₹2000~~ ₹1499/- (Holi Offer)', category: 'Hair Spa 🌈' },
+  { id: 'svc_spa_shea', title: 'Shea Butter + FREE Haircut', price: '₹1,999/-', description: '~~₹2500~~ ₹1999/- (Holi Offer)', category: 'Hair Spa 🌈' },
+  { id: 'svc_spa_perm', title: 'Permanent Spa + FREE Haircut', price: '₹1,499/-', description: '~~₹2500~~ ₹1499/- (Holi Offer)', category: 'Hair Spa 🌈' },
+  { id: 'svc_treat_mirror', title: 'Boto Smooth + FREE Haircut', price: '₹2,999/-', description: '~~₹4500~~ ₹2999/- (Holi Offer)', category: 'Treatment 🌈' },
+  { id: 'svc_treat_smooth', title: 'Smoothing + FREE Haircut', price: '₹2,799/-', description: '~~₹3500~~ ₹2799/- (Holi Offer)', category: 'Treatment 🌈' },
+  { id: 'svc_treat_nano', title: 'Nano Therapy + FREE Haircut', price: '₹3,299/-', description: '~~₹4000~~ ₹3299/- (Holi Offer)', category: 'Treatment 🌈' },
+  { id: 'svc_treat_botox', title: 'Botox + FREE Haircut', price: '₹2,499/-', description: '~~₹3300~~ ₹2499/- (Holi Offer)', category: 'Treatment 🌈' },
+  { id: 'svc_color_global', title: 'Global Color + FREE Haircut', price: '₹1,999/-', description: '~~₹2500~~ ₹1999/- (Holi Offer)', category: 'Colour 🌈' },
+  { id: 'svc_color_classic', title: 'Highlight + FREE Haircut', price: '₹1,999/-', description: '~~₹2500~~ ₹1999/- (Holi Offer)', category: 'Colour 🌈' },
+  { id: 'svc_haircut_basic', title: 'Basic Haircut', price: '₹500/-', description: 'Professional Cut', category: 'Standard' },
+  { id: 'svc_haircut_advance', title: 'Advance Haircut', price: '₹700/-', description: 'Stylized Cut', category: 'Standard' }
 ];
 
 // Real stylists (Female focused)
@@ -116,23 +112,17 @@ const stylistCalendars = {
 };
 
 const salonPricing = [
-  { category: 'Haircut', service: 'Haircut', price: '500/-' },
-  { category: 'Haircut', service: 'Advance Haircut', price: '700/-' },
-  { category: 'Hair Spa', service: 'Normal Spa', price: '1,000/-' },
-  { category: 'Hair Spa', service: 'Loreal Spa', price: '1,200/-' },
-  { category: 'Hair Spa', service: 'Silk Protein Spa', price: '1,500/-' },
-  { category: 'Hair Spa', service: 'Shea Butter Spa', price: '2,000/-' },
-  { category: 'Hair Spa', service: 'Permanent Spa', price: '2,000/-' },
-  { category: 'Hair Treatment', service: 'Nano Therapy', price: '3,500/-' },
-  { category: 'Hair Treatment', service: 'Brazil Therapy', price: '3,000/-' },
-  { category: 'Hair Treatment', service: 'Botox', price: '2,800/-' },
-  { category: 'Hair Treatment', service: 'Keratin', price: '2,500/-' },
-  { category: 'Hair Treatment', service: 'Mirror Shine Boto Smooth', price: '4,000/-' },
-  { category: 'Hair Treatment', service: 'Loreal Straightening', price: '3,500/-' },
-  { category: 'Colour', service: 'Global Color', price: '2,000/-' },
-  { category: 'Colour', service: 'Root Touch Up', price: '1,000/-' },
-  { category: 'Colour', service: 'Balayage Highlight', price: '2,500/-' },
-  { category: 'Colour', service: 'Classic Highlight', price: '2,000/-' }
+  { category: 'Holi Special 🌈 (24 Mar - 5 Mar)', service: 'Normal Spa + FREE Haircut', price: '~~₹1500~~ ₹999/-' },
+  { category: 'Holi Special 🌈', service: 'Loreal Spa + FREE Haircut', price: '~~₹1700~~ ₹1199/-' },
+  { category: 'Holi Special 🌈', service: 'Protein Spa + FREE Haircut', price: '~~₹2000~~ ₹1499/-' },
+  { category: 'Holi Special 🌈', service: 'Shea Butter + FREE Haircut', price: '~~₹2500~~ ₹1999/-' },
+  { category: 'Holi Special 🌈', service: 'Permanent Spa + FREE Haircut', price: '~~₹2500~~ ₹1499/-' },
+  { category: 'Holi Treatments 🌈', service: 'Boto Smooth + FREE Haircut', price: '~~₹4500~~ ₹2999/-' },
+  { category: 'Holi Treatments 🌈', service: 'Smoothing + FREE Haircut', price: '~~₹3500~~ ₹2799/-' },
+  { category: 'Holi Treatments 🌈', service: 'Nano Therapy + FREE Haircut', price: '~~₹4000~~ ₹3299/-' },
+  { category: 'Holi Treatments 🌈', service: 'Botox + FREE Haircut', price: '~~₹3300~~ ₹2499/-' },
+  { category: 'Holi Color 🌈', service: 'Global Color + FREE Haircut', price: '~~₹2500~~ ₹1999/-' },
+  { category: 'Holi Color 🌈', service: 'Highlight + FREE Haircut', price: '~~₹2500~~ ₹1999/-' }
 ];
 
 // Helper to get or initialize user session
@@ -708,16 +698,16 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       ...helperParams,
       to: from,
       imageUrl: 'https://instagram.famd1-2.fna.fbcdn.net/v/t51.2885-19/436333745_1497177940869325_2985750738127060080_n.jpg?efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLmRqYW5nby4xMDgwLmMyIn0&_nc_ht=instagram.famd1-2.fna.fbcdn.net&_nc_cat=101&_nc_oc=Q6cZ2QH8vCGf2jGUX3lSsvjRV2axzhtJLYNHfIbhUn1TQkvNKEvnx4XWgdyKCrgXVx8KsC9Pq5Fgfk9UcjXn18wL8ThL&_nc_ohc=8-CBI_zJuBwQ7kNvwEeJ635&_nc_gid=Gp62ZusslBSvo5TFvcyJAg&edm=ALGbJPMBAAAA&ccb=7-5&oh=00_AftGK8L_C4HRW6SdWj31MRppEsoQ-N4fEB14vEohvB7zrA&oe=69A1B22C&_nc_sid=7d3ac5',
-      caption: 'Choice Salon for Ladies 💅'
+      caption: 'Choice Salon Holi Sale 🌈'
     });
     await sendWhatsAppButtons({
       ...helperParams,
       to: from,
-      header: 'Choice Salon for Ladies 💅',
-      body: 'Hi 👋\n\nThis is Shubhashbhai from Choice Salon! ✨ Welcome to our virtual assistant. How can I help you today? ✨',
+      header: '🌈 Holi Festival Sale 2026 🌈',
+      body: 'Hi 👋\n\nThis is Shubhashbhai from Choice Salon! ✨ Celebrate Holi with our exclusive deals (24 Mar - 5 Mar)!\n\n🎁 *Holi Special:* Get a **FREE HAIRCUT** with any Spa, Treatment, or Color service! 💇‍♀️\n\nHow can I help you today? ✨',
       buttons: [
-        { id: 'user_schedule_appt', title: 'Book Appointment 📅' },
-        { id: 'user_pricing', title: 'Pricing 💰' },
+        { id: 'user_schedule_appt', title: 'Book Holi Offer 📅' },
+        { id: 'user_pricing', title: 'Offer Price List 💰' },
         { id: 'user_ask_question', title: 'Ask a Question ❓' }
       ]
     });
@@ -984,16 +974,16 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       ...helperParams,
       to: from,
       imageUrl: 'https://instagram.famd1-2.fna.fbcdn.net/v/t51.2885-19/436333745_1497177940869325_2985750738127060080_n.jpg?efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLmRqYW5nby4xMDgwLmMyIn0&_nc_ht=instagram.famd1-2.fna.fbcdn.net&_nc_cat=101&_nc_oc=Q6cZ2QH8vCGf2jGUX3lSsvjRV2axzhtJLYNHfIbhUn1TQkvNKEvnx4XWgdyKCrgXVx8KsC9Pq5Fgfk9UcjXn18wL8ThL&_nc_ohc=8-CBI_zJuBwQ7kNvwEeJ635&_nc_gid=Gp62ZusslBSvo5TFvcyJAg&edm=ALGbJPMBAAAA&ccb=7-5&oh=00_AftGK8L_C4HRW6SdWj31MRppEsoQ-N4fEB14vEohvB7zrA&oe=69A1B22C&_nc_sid=7d3ac5',
-      caption: 'Choice Salon for Ladies 💅'
+      caption: 'Choice Salon Holi Sale 🌈'
     });
     await sendWhatsAppButtons({
       ...helperParams,
       to: from,
-      header: 'Choice Salon for Ladies 💅',
-      body: 'Hi 👋\n\nThis is Shubhashbhai from Choice Salon! ✨ Welcome to our virtual assistant. How can I help you today? ✨',
+      header: '🌈 Holi Festival Sale 2026 🌈',
+      body: 'Hi 👋\n\nThis is Shubhashbhai from Choice Salon! ✨ Celebrate Holi with our exclusive deals (24 Mar - 5 Mar)!\n\n🎁 *Holi Special:* Get a **FREE HAIRCUT** with any Spa, Treatment, or Color service! 💇‍♀️\n\nHow can I help you today? ✨',
       buttons: [
-        { id: 'user_schedule_appt', title: 'Book Appointment 📅' },
-        { id: 'user_pricing', title: 'Pricing 💰' },
+        { id: 'user_schedule_appt', title: 'Book Holi Offer 📅' },
+        { id: 'user_pricing', title: 'Offer Price List 💰' },
         { id: 'user_ask_question', title: 'Ask a Question ❓' }
       ]
     });
@@ -1455,7 +1445,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           ...helperParams,
           to: from,
           header: 'Booking Summary',
-          body: `✨ *Review Your Booking* ✨
+          body: `✨ *Review Your Holi Booking* ✨
 
 👤 *Client:* ${session.data.name}
 📅 *Date:* ${session.data.date}
@@ -1486,7 +1476,7 @@ Please choose your preference:`,
           ...helperParams,
           to: from,
           header: 'Booking Summary',
-          body: `✨ *Review Your Booking* ✨
+          body: `✨ *Review Your Holi Booking* ✨
 
 👤 *Client:* ${session.data.name}
 📅 *Date:* ${session.data.date}
