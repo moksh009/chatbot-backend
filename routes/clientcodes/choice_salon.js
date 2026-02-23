@@ -599,7 +599,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           ...helperParams,
           to: from,
           imageHeader: SALON_IMG,
-          body: `💅 *Confirm Your Luxury Upgrade* ✨\n\nAre you sure you want to add **Mirror Shine Boto Smooth** (₹4,000) to your existing booking?\n\nIt's our absolute best treatment for a glass-like finish! 💎✨`,
+          body: `💅 *Confirm Your Luxury Upgrade* ✨\n\nAre you sure you want to add *Mirror Shine Boto Smooth* (₹4,000) to your existing booking?\n\nIt's our absolute best treatment for a glass-like finish! 💎✨`,
           footer: 'Choose your preference below 👇',
           buttons: [
             { id: 'upsell_confirm_mirror_shine', title: 'Yes, Upgrade ✅' },
@@ -1397,12 +1397,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         const currentPage = session.data.slotPage || 0;
         session.data.slotPage = currentPage + 1;
         session.step = 'calendar_pick_day';
-        await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res });
+        await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res, clientConfig, io });
         return;
       } else if (userMsg === 'slot_prev') {
         session.data.slotPage = Math.max((session.data.slotPage || 0) - 1, 0);
         session.step = 'calendar_pick_day';
-        await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res });
+        await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res, clientConfig, io });
         return;
       } else {
         // Handle slot selection - find the selected slot
@@ -1413,7 +1413,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       }
     } else if (userMsg === 'back_date') {
       session.step = 'calendar_pick_day';
-      await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res });
+      await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res, clientConfig, io });
       return;
     } else if (session.data.slotResult && session.data.slotResult.slots) {
       // Handle text-based slot selection
@@ -2302,7 +2302,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 
 You're already booked, but why not make it spectacular? 💎
 
-Upgrade to our **Mirror Shine Boto Smooth** (₹4,000) for that ultimate glass-like finish. 💅✨
+Upgrade to our *Mirror Shine Boto Smooth* (₹4,000) for that ultimate glass-like finish. 💅✨
 
 *Only 2 premium slots remaining today!*`,
             footer: 'Limited availability! Tap below to upgrade 👇',
@@ -2406,7 +2406,7 @@ Upgrade to our **Mirror Shine Boto Smooth** (₹4,000) for that ultimate glass-l
         });
       } else if (userMsg === 'faq_home') {
         session.step = 'home';
-        await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res });
+        await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res, clientConfig, io });
         return;
       }
       session.step = 'faq_menu';

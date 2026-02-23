@@ -598,7 +598,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           ...helperParams,
           to: from,
           imageHeader: HOLI_IMG,
-          body: `💅 *Confirm Your Luxury Upgrade* ✨\n\nAre you sure you want to add **Mirror Shine Boto Smooth** (₹4,000) to your existing booking?\n\nIt's our absolute best treatment for a glass-like finish! 💎✨`,
+          body: `💅 *Confirm Your Luxury Upgrade* ✨\n\nAre you sure you want to add *Mirror Shine Boto Smooth* (₹4,000) to your existing booking?\n\nIt's our absolute best treatment for a glass-like finish! 💎✨`,
           footer: 'Choose your preference below 👇',
           buttons: [
             { id: 'upsell_confirm_mirror_shine', title: 'Yes, Upgrade ✅' },
@@ -648,7 +648,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           ...helperParams,
           to: from,
           imageHeader: HOLI_IMG,
-          body: `✨ *Legendary Choice!* ✨\n\nI've updated your session to the ultimate luxury experience!\n\n✅ *Final Booking Details*\n👤 *Client:* ${lastAppt.name}\n📅 *Date:* ${lastAppt.date}\n🕒 *Time:* ${lastAppt.time}\n💇‍♀️ *Stylist:* ${lastAppt.doctor || 'Not specified'}\n💅 *Total Services:* ${lastAppt.service}\n\nShubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️`,
+          body: `✨ *Legendary Choice!* ✨\n\nI've updated your session to the ultimate luxury experience!\n\n✅ *Final Booking Details*\n👤 *Name:* ${lastAppt.name}\n📅 *Date:* ${lastAppt.date}\n🕒 *Time:* ${lastAppt.time}\n💇‍♀️ *Stylist:* ${lastAppt.doctor || 'Not specified'}\n💅 *Total Services:* ${lastAppt.service}\n\nShubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️`,
           buttons: [
             { id: 'user_home', title: '🏠 Home' },
             { id: 'user_ask_question', title: '❓ Ask Question' }
@@ -1393,12 +1393,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         const currentPage = session.data.slotPage || 0;
         session.data.slotPage = currentPage + 1;
         session.step = 'calendar_pick_day';
-        await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res });
+        await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res, clientConfig, io });
         return;
       } else if (userMsg === 'slot_prev') {
         session.data.slotPage = Math.max((session.data.slotPage || 0) - 1, 0);
         session.step = 'calendar_pick_day';
-        await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res });
+        await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res, clientConfig, io });
         return;
       } else {
         // Handle slot selection - find the selected slot
@@ -1409,7 +1409,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       }
     } else if (userMsg === 'back_date') {
       session.step = 'calendar_pick_day';
-      await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res });
+      await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res, clientConfig, io });
       return;
     } else if (session.data.slotResult && session.data.slotResult.slots) {
       // Handle text-based slot selection
@@ -1547,7 +1547,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           imageHeader: HOLI_IMG,
           body: `✨ *Review Your Holi Booking* ✨
 
-👤 *Client:* ${session.data.name}
+👤 *Name:* ${session.data.name}
 📅 *Date:* ${session.data.date}
 🕒 *Time:* ${session.data.time}
 💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}
@@ -1574,7 +1574,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           imageHeader: HOLI_IMG,
           body: `✨ *Review Your Holi Booking* ✨
 
-👤 *Client:* ${session.data.name}
+👤 *Name:* ${session.data.name}
 📅 *Date:* ${session.data.date}
 🕒 *Time:* ${session.data.time}
 💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}
@@ -1876,7 +1876,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 
       // Send confirmation to user based on consent
       let confirmationBody = `✅ *Booking Confirmed*\n\n` +
-        `👤 *Client:* ${session.data.name}\n` +
+        `👤 *Name:* ${session.data.name}\n` +
         `📅 *Date:* ${session.data.date}\n` +
         `🕒 *Time:* ${session.data.time}\n` +
         `💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n` +
@@ -1915,12 +1915,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 
 You're already booked, but why not make it spectacular? 💎
 
-Upgrade to our **Mirror Shine Boto Smooth** (₹4,000) for that ultimate glass-like finish. 💅✨
+Upgrade to our *Mirror Shine Boto Smooth* (₹4,000) for that ultimate glass-like finish. 💅✨
 
 *Only 2 premium slots remaining today!*`,
             footer: 'Limited availability! Tap below to upgrade 👇',
             buttons: [
-              { id: 'upsell_add_mirror_shine', title: 'Add to Booking 💅' }
+              { id: 'upsell_add_mirror_shine', title: 'Add to Booking 💇🏻‍♀️' }
             ]
           });
           console.log(`✅ Advanced interactive upsell sent to ${from}`);
@@ -2262,7 +2262,7 @@ Upgrade to our **Mirror Shine Boto Smooth** (₹4,000) for that ultimate glass-l
         ...helperParams,
         to: from,
         imageHeader: HOLI_IMG,
-        body: `✅ *Booking Confirmed*\n\n👤 *Client:* ${session.data.name}\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n💅 *Service:* ${session.data.chosenService || 'General Session'}\n\n📍 *Choice Salon for Ladies, Nikol*\n🏢 2nd Floor, Raspan Arcade, 6-7, Nikol\n🗺️ Map: https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n⏰ *Please arrive 15 minutes early*`,
+        body: `✅ *Booking Confirmed*\n\n👤 *Name:* ${session.data.name}\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n💅 *Service:* ${session.data.chosenService || 'General Session'}\n\n📍 *Choice Salon for Ladies, Nikol*\n🏢 2nd Floor, Raspan Arcade, 6-7, Nikol\n🗺️ Map: https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n⏰ *Please arrive 15 minutes early*`,
         footer: '❌ To stop receiving messages, reply with "STOP" at any time.',
         buttons: [
           { id: 'book_another', title: '📅 Book Another' },
@@ -2392,7 +2392,7 @@ Upgrade to our **Mirror Shine Boto Smooth** (₹4,000) for that ultimate glass-l
         });
       } else if (userMsg === 'faq_home') {
         session.step = 'home';
-        await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res });
+        await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res, clientConfig, io });
         return;
       }
       session.step = 'faq_menu';
