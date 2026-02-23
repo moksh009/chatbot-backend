@@ -629,16 +629,19 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         const upgradeService = 'Mirror Shine Boto Smooth';
         const upgradePrice = 4000;
 
-        // Update Appointment in DB
-        lastAppt.service += ` + ${upgradeService}`;
-        lastAppt.revenue += upgradePrice;
-        lastAppt.logs.push({
-          action: 'update',
-          changedBy: 'chatbot',
-          source: 'chatbot',
-          details: `User confirmed premium upsell: ${upgradeService}`
-        });
-        await lastAppt.save();
+        // Check if already upgraded to prevent duplicate charges
+        if (!lastAppt.service.includes(upgradeService)) {
+          // Update Appointment in DB
+          lastAppt.service += ` + ${upgradeService}`;
+          lastAppt.revenue += upgradePrice;
+          lastAppt.logs.push({
+            action: 'update',
+            changedBy: 'chatbot',
+            source: 'chatbot',
+            details: `User confirmed premium upsell: ${upgradeService}`
+          });
+          await lastAppt.save();
+        }
 
         // Notify Admins
         const adminAlert = `💅 *Client Upgraded to Premium!*\n\n👤 *Client:* ${lastAppt.name}\n📱 *Phone:* ${from}\n📅 *Date:* ${lastAppt.date}\n🕒 *Time:* ${lastAppt.time}\n\n✨ *New Total Service:* ${lastAppt.service}\n💰 *Updated Revenue:* ${lastAppt.revenue}`;
@@ -1914,29 +1917,18 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       // Send Upsell message after 5 minutes (300,000 ms)
       setTimeout(async () => {
         try {
-          let upsellMsg = '';
-          const chosenService = (session.data.chosenService || '').toLowerCase();
-
-          if (chosenService.includes('haircut')) {
-            upsellMsg = `✨ *Exclusive Upgrade for You!* ✨\n\n` +
-              `Since you've booked a Haircut, would you like to add a *Luxury Hair Spa* or a *Deep Conditioning Treatment*? 🛁\n\n` +
-              `These treatments are perfect for keeping your hair healthy and shiny! ✨\n\n` +
-              `🎁 *SPECIAL OFFER:* Get *10% OFF* if you add any treatment to your haircut today! 🎟️\n\n` +
-              `Reply "YES" if you'd like to add this to your booking.`;
-          } else {
-            // General upsell for other services
-            upsellMsg = `✨ *Complete Your Glow-Up!* ✨\n\n` +
-              `Would you like to add a *Refreshing Pedicure* or *Threading* to your visit? 🦶🧶\n\n` +
-              `🎁 *SPECIAL OFFER:* Book an additional service now and get *10% OFF* on the add-on! 🎟️\n\n` +
-              `Reply with the service name if you're interested!`;
-          }
-
-          await sendWhatsAppText({
+          // Send Premium Interactive Upsell
+          await sendWhatsAppButtons({
             ...helperParams,
             to: from,
-            body: upsellMsg
+            imageHeader: SALON_IMG,
+            body: `✨ *Ultimate Glow-Up!* ✨\n\nYou're already booked, but why not make it spectacular? 💎\n\nUpgrade to our *Mirror Shine Boto Smooth* (₹4,000) for that ultimate glass-like finish. 💅✨\n\n*Only 2 premium slots remaining today!*`,
+            footer: 'Limited availability! Tap below to upgrade 👇',
+            buttons: [
+              { id: 'upsell_add_mirror_shine', title: 'Add to Booking 💅' }
+            ]
           });
-          console.log(`✅ Delayed upsell message sent to ${from}`);
+          console.log(`✅ Advanced interactive upsell sent to ${from}`);
         } catch (err) {
           console.error(`❌ Error sending delayed upsell message to ${from}:`, err);
         }
