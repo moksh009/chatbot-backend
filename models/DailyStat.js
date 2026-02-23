@@ -10,7 +10,9 @@ const DailyStatSchema = new mongoose.Schema({
   appointmentRemindersSent: { type: Number, default: 0 },
   totalMessagesExchanged: { type: Number, default: 0 },
   agentRequests: { type: Number, default: 0 },
-  linkClicks: { type: Number, default: 0 }
+  linkClicks: { type: Number, default: 0 },
+  abandonedCartSent: { type: Number, default: 0 },
+  abandonedCartClicks: { type: Number, default: 0 }
 });
 
 // Ensure unique stats per client per day

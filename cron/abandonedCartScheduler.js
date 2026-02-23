@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const axios = require('axios');
 const AdLead = require('../models/AdLead');
 const Client = require('../models/Client');
+const DailyStat = require('../models/DailyStat');
 
 // Function to send WhatsApp template
 async function sendWhatsAppTemplate(token, phoneId, to, templateName, variables) {
@@ -190,6 +191,16 @@ const scheduleAbandonedCartCron = () => {
                                     }
                                 }
                             });
+
+                            // Increment Daily Stats
+                            try {
+                                const today = new Date().toISOString().split('T')[0];
+                                await DailyStat.updateOne(
+                                    { clientId: client.clientId, date: today },
+                                    { $inc: { abandonedCartSent: 1 } },
+                                    { upsert: true }
+                                );
+                            } catch (e) { console.error("DailyStat Update Error (Sent):", e); }
                         } else {
                             // Failure handler: keep as active but log failure so it can be monitored
                             await AdLead.findByIdAndUpdate(lead._id, {

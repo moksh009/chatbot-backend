@@ -598,6 +598,16 @@ const handleShopifyLinkOpenedWebhook = async (req, res) => {
             });
         }
 
+        // Increment Daily Stats
+        try {
+            const today = new Date().toISOString().split('T')[0];
+            await DailyStat.updateOne(
+                { clientId: updatedLead.clientId, date: today },
+                { $inc: { abandonedCartClicks: 1 } },
+                { upsert: true }
+            );
+        } catch (e) { console.error("DailyStat Update Error (Click):", e); }
+
         return res.status(200).end();
     } catch (error) {
         console.error("Shopify link open tracking error:", error);
@@ -1114,6 +1124,16 @@ const restoreCart = async (req, res) => {
                 ]
             }
         });
+
+        // Increment Daily Stats (since restoreCart also implies a click)
+        try {
+            const today = new Date().toISOString().split('T')[0];
+            await DailyStat.updateOne(
+                { clientId: lead.clientId, date: today },
+                { $inc: { abandonedCartClicks: 1 } },
+                { upsert: true }
+            );
+        } catch (e) { console.error("DailyStat Update Error (Restore):", e); }
 
         res.redirect(`https://delitechsmarthome.in/cart?uid=${uid}&restore=true`);
     } catch (error) {

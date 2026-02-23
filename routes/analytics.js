@@ -96,7 +96,15 @@ router.get('/realtime', protect, async (req, res) => {
       cartStatus: 'recovered'
     });
 
-    // 8. Conversion Funnel Metrics
+    // 8. Abandoned Cart Messaging Stats (Total from DailyStats)
+    const cartStatsResult = await DailyStat.aggregate([
+      { $match: query },
+      { $group: { _id: null, totalSent: { $sum: "$abandonedCartSent" }, totalClicks: { $sum: "$abandonedCartClicks" } } }
+    ]);
+    const totalAbandonedCartSent = cartStatsResult[0]?.totalSent || 0;
+    const totalAbandonedCartClicks = cartStatsResult[0]?.totalClicks || 0;
+
+    // 9. Conversion Funnel Metrics
     const totalOrdersAllTime = await Order.countDocuments(query);
 
     const whatsappRecoveriesPurchasedResult = await AdLead.aggregate([
@@ -134,6 +142,8 @@ router.get('/realtime', protect, async (req, res) => {
       checkouts: totalCheckouts,
       abandonedCarts,
       recoveredCarts,
+      abandonedCartSent: totalAbandonedCartSent,
+      abandonedCartClicks: totalAbandonedCartClicks,
       funnel: {
         totalOrdersAllTime,
         whatsappRecoveriesPurchased,
@@ -733,6 +743,8 @@ router.get('/', protect, async (req, res) => {
       const cartCount = cartEvents.find(c => c._id === date)?.count || 0;
       const linkClickCount = linkClickEvents.find(c => c._id === date)?.count || 0;
       const checkoutCount = checkoutEvents.find(c => c._id === date)?.count || 0;
+      const abandonedCartSent = dayReminder?.abandonedCartSent || 0;
+      const abandonedCartClicks = dayReminder?.abandonedCartClicks || 0;
 
       const dayAppointment = appointments.find(c => c._id === date);
       const apptRevenue = dayAppointment?.revenue || 0;
@@ -754,7 +766,9 @@ router.get('/', protect, async (req, res) => {
         orderRevenue: orderRevenue,
         addToCarts: cartCount,
         linkClicks: linkClickCount,
-        checkouts: checkoutCount
+        checkouts: checkoutCount,
+        abandonedCartSent,
+        abandonedCartClicks
       };
     });
 
