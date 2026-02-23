@@ -130,8 +130,8 @@ const scheduleAbandonedCartCron = () => {
                             }
                         }
 
-                        // Build dynamic product link / cart restore link
-                        const restoreUrlSuffix = `${lead._id.toString()}?uid=${lead._id.toString()}&restore=true`;
+                        // Build dynamic product link / cart restore link (Direct Store Link as per user request)
+                        const restoreUrlSuffix = `?uid=${lead._id.toString()}&restore=true`;
 
                         const templateData = {
                             messaging_product: 'whatsapp',
