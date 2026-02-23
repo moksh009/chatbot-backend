@@ -103,15 +103,29 @@ const scheduleAbandonedCartCron = () => {
                     // Wait, Facebook API templates with dynamic URLs require a button parameter if the URL has a variable tail
                     // Let's pass the uid as the dynamic URL parameter for the button.
                     try {
-                        const templateName = 'abandoned_cart_reminder';
+                        const templateName = 'cart_remainder';
 
                         // Extract highest quality image from the most recent item added
-                        let imageUrl = 'https://www.delitech.in/cdn/shop/files/WhatsAppImage2024-03-24at1.25.10PM.jpg';
-                        if (lead.cartSnapshot && lead.cartSnapshot.items && lead.cartSnapshot.items.length > 0) {
-                            const firstItemWithImage = lead.cartSnapshot.items.find(i => i.image);
-                            if (firstItemWithImage && firstItemWithImage.image) {
-                                // Ensure standard protocol
-                                imageUrl = firstItemWithImage.image.startsWith('//') ? `https:${firstItemWithImage.image}` : firstItemWithImage.image;
+                        // Fallback assets based on ved.js
+                        const ASSETS = {
+                            'hero_3mp': 'https://delitechsmarthome.in/cdn/shop/files/Delitech_Main_photoswq.png?v=1760635732&width=1346',
+                            'hero_5mp': 'https://delitechsmarthome.in/cdn/shop/files/my1.png?v=1759746759&width=1346'
+                        };
+
+                        let imageUrl = ASSETS.hero_3mp; // Default fallback
+
+                        if (lead.cartSnapshot && lead.cartSnapshot.titles) {
+                            const titles = lead.cartSnapshot.titles.join(' ').toLowerCase();
+                            if (titles.includes('5mp')) {
+                                imageUrl = ASSETS.hero_5mp;
+                            } else if (titles.includes('3mp') || titles.includes('2mp')) {
+                                imageUrl = ASSETS.hero_3mp;
+                            } else if (lead.cartSnapshot.items && lead.cartSnapshot.items.length > 0) {
+                                // Last resort: try to get image from items snapshot
+                                const firstItemWithImage = lead.cartSnapshot.items.find(i => i.image);
+                                if (firstItemWithImage && firstItemWithImage.image) {
+                                    imageUrl = firstItemWithImage.image.startsWith('//') ? `https:${firstItemWithImage.image}` : firstItemWithImage.image;
+                                }
                             }
                         }
 
@@ -170,7 +184,7 @@ const scheduleAbandonedCartCron = () => {
                                 $push: {
                                     activityLog: {
                                         action: 'whatsapp_template_sent',
-                                        details: 'Sent abandoned_cart_reminder template',
+                                        details: 'Sent cart_remainder template',
                                         timestamp: new Date(),
                                         meta: {}
                                     }
@@ -182,7 +196,7 @@ const scheduleAbandonedCartCron = () => {
                                 $push: {
                                     activityLog: {
                                         action: 'whatsapp_failed',
-                                        details: 'Failed to send abandoned_cart_reminder template (silent killer caught)',
+                                        details: 'Failed to send cart_remainder template (silent killer caught)',
                                         timestamp: new Date(),
                                         meta: {}
                                     }
