@@ -104,17 +104,17 @@ const salonServices = [
 // Real stylists (Female focused)
 const salonStylists = [
   { id: 'stylist_shubhashbhai', title: 'Shubhashbhai', description: 'Master Stylist (15+ yrs exp)' },
-  { id: 'stylist_hetal', title: 'Hetal', description: 'Senior Hair Specialist' }
+  { id: 'stylist_another', title: 'Another Staff', description: 'Senior Hair Specialist' }
 ];
 
 // Map stylists to their specific Google Calendar IDs
 const stylistCalendars = {
   'Shubhashbhai': process.env.GCAL_CALENDAR_ID2,
-  'Hetal': process.env.GCAL_CALENDAR_ID,
+  'Another Staff': process.env.GCAL_CALENDAR_ID,
   'shubhashbhai': process.env.GCAL_CALENDAR_ID2,
-  'moksh': process.env.GCAL_CALENDAR_ID,
+  'another_staff': process.env.GCAL_CALENDAR_ID,
   'stylist_shubhashbhai': process.env.GCAL_CALENDAR_ID2,
-  'stylist_hetal': process.env.GCAL_CALENDAR_ID
+  'stylist_another': process.env.GCAL_CALENDAR_ID
 };
 
 const salonPricing = [
@@ -590,8 +590,8 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   // 1. Handle Advanced Upsell Button
   if (userMsg === 'upsell_add_mirror_shine') {
     try {
-      // Find latest appointment for this user
-      const lastAppt = await Appointment.findOne({ phoneNumber: from, clientId }).sort({ createdAt: -1 });
+      // Find latest appointment for this user (schema uses 'phone')
+      const lastAppt = await Appointment.findOne({ phone: from, clientId }).sort({ createdAt: -1 });
 
       if (lastAppt) {
         const upgradeService = 'Mirror Shine Boto Smooth';
@@ -639,7 +639,10 @@ Shubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️
         return;
       } else {
         // Fallback if no appointment found
+        console.log(`⚠️ No appointment found for upsell for ${from}`);
         await sendWhatsAppText({ ...helperParams, to: from, body: "I couldn't find your latest booking to update it. Please ask us in person!" });
+        res.status(200).end();
+        return;
       }
     } catch (upsellErr) {
       console.error('❌ Error processing upsell:', upsellErr);
@@ -993,7 +996,7 @@ Shubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️
   // Allow restart at any point
   if (userMsg === 'user_home' || userMsg === 'faq_home') {
     session.step = 'home';
-    await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res });
+    await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res, clientConfig, io });
     return;
   }
 
@@ -1002,7 +1005,7 @@ Shubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️
   if (userMsg === 'user_home' || userMsg === 'home') {
     session.step = 'home';
     session.data = {};
-    await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res });
+    await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res, clientConfig, io });
     return;
   }
 
@@ -2220,23 +2223,28 @@ Shubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️
       await notifyAdmins({ ...helperParams, message: adminMsg, adminNumbers });
 
       // Send confirmation to user based on consent
-      let confirmationBody = `Appointment Confirmed\n\n` +
-        `Date: ${session.data.date}\n` +
-        `Time: ${session.data.time}\n` +
-        `Stylist: ${session.data.stylist || 'Not specified'}\n\n` +
-        `Location: Choice Salon for Ladies, Nikol\n` +
-        `Address: 2nd Floor, Raspan Arcade, 6-7, Raspan Cross Rd, Nikol, Ahmedabad\n` +
-        `Map: https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
-        `Please arrive 15 minutes early for your appointment.`;
+      let confirmationBody = `✅ *Booking Confirmed*\n\n` +
+        `👤 *Client:* ${session.data.name}\n` +
+        `📅 *Date:* ${session.data.date}\n` +
+        `🕒 *Time:* ${session.data.time}\n` +
+        `💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n` +
+        `💅 *Service:* ${session.data.chosenService || 'General Session'}\n\n` +
+        `📍 *Choice Salon for Ladies, Nikol*\n` +
+        `🏢 2nd Floor, Raspan Arcade, 6-7, Nikol\n` +
+        `🗺️ Map: https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
+        `⏰ *Please arrive 15 minutes early*`;
 
-
+      let footerText = '❌ To stop receiving messages, reply with "STOP"';
+      if (session.data.consent.appointmentReminders) {
+        footerText = '🔔 Reminders active. Reply STOP to opt-out.';
+      }
 
       await sendWhatsAppButtons({
         ...helperParams,
         to: from,
         imageHeader: SALON_IMG,
-        body: `✅ *Booking Confirmed*\n\n👤 *Client:* ${session.data.name}\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n💅 *Service:* ${session.data.chosenService || 'General Session'}\n\n📍 *Choice Salon for Ladies, Nikol*\n🏢 2nd Floor, Raspan Arcade, 6-7, Nikol\n🗺️ Map: https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n⏰ *Please arrive 15 minutes early*`,
-        footer: '',
+        body: confirmationBody,
+        footer: footerText,
         buttons: [
           { id: 'book_another', title: '📅 Book Another' },
           { id: 'user_ask_question', title: '❓ Ask Question' },
@@ -2252,8 +2260,14 @@ Shubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️
             ...helperParams,
             to: from,
             imageHeader: SALON_IMG,
-            body: `✨ *Complete Your Glow-Up!* ✨\n\nUpgrade your visit with our most requested premium treatment: *Mirror Shine Boto Smooth* (₹4,000). 💎\n\nIt's our #1 high-end treatment for ultimate glass-like shine and deep hair restoration. You deserve that extra sparkle! 💅✨`,
-            footer: 'Limited slots available for premium treatments!',
+            body: `✨ *Ultimate Glow-Up!* ✨
+
+You're already booked, but why not make it spectacular? 💎
+
+Upgrade to our **Mirror Shine Boto Smooth** (₹4,000) for that ultimate glass-like finish. 💅✨
+
+*Only 2 premium slots remaining today!*`,
+            footer: 'Limited availability! Tap below to upgrade 👇',
             buttons: [
               { id: 'upsell_add_mirror_shine', title: 'Add to Booking 💅' }
             ]
