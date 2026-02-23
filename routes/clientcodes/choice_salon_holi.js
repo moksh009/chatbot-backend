@@ -45,7 +45,7 @@ const FAQ_DATA = {
   ],
   'ask_pricing': [
     { id: 'faq_price_haircut', title: 'How much is a haircut?', answer: 'Our Haircut is ₹500 and Advance Haircut is ₹700. ✨ Pro Tip: Get it for FREE with any Spa, Treatment, or Color!' },
-    { id: 'faq_price_list', title: '🌈 Holi Sale 2026 Price List (24 Mar - 5 Mar)', answer: '✨ *Holi Festive Deals (Includes FREE Haircut)* ✨\n\nHair Spa + 💇‍♀️ FREE Haircut\n• Normal Spa: ~~₹1500~~ ₹999/-\n• Loreal Spa: ~~₹1700~~ ₹1199/-\n• Silk Protein Spa: ~~₹2000~~ ₹1499/-\n• Shea Butter Spa: ~~₹2500~~ ₹1999/-\n• Permanent Spa: ~~₹2500~~ ₹1499/-\n\nHair Treatment + 💇‍♀️ FREE Haircut\n• Mirror Shine Boto Smooth: ~~₹4500~~ ₹2999/-\n• Smoothing: ~~₹3500~~ ₹2799/-\n• Nano Therapy: ~~₹4000~~ ₹3299/-\n• Botox: ~~₹3300~~ ₹2499/-\n\nColour + 💇‍♀️ FREE Haircut\n• Global Hair Color: ~~₹2500~~ ₹1999/-\n• Highlight Color: ~~₹2500~~ ₹1999/-\n\n*Prices depend on hair length & growth.*' },
+    { id: 'faq_price_list', title: '🌈 Holi Sale 2026 Price List (24 Mar - 5 Mar)', answer: '✨ *Holi Festive Deals (Includes FREE Haircut)* ✨\n\nHair Spa + 💇‍♀️ FREE Haircut\n• Normal Spa: ₹1500 ❌ ➔ ₹999\n• Loreal Spa: ₹1700 ❌ ➔ ₹1199\n• Silk Protein Spa: ₹2000 ❌ ➔ ₹1499\n• Shea Butter Spa: ₹2500 ❌ ➔ ₹1999\n• Permanent Spa: ₹2500 ❌ ➔ ₹1499\n\nHair Treatment + 💇‍♀️ FREE Haircut\n• Mirror Shine Boto Smooth: ₹4500 ❌ ➔ ₹2999\n• Smoothing: ₹3500 ❌ ➔ ₹2799\n• Nano Therapy: ₹4000 ❌ ➔ ₹3299\n• Botox: ₹3300 ❌ ➔ ₹2499\n\nColour + 💇‍♀️ FREE Haircut\n• Global Hair Color: ₹2500 ❌ ➔ ₹1999\n• Highlight Color: ₹2500 ❌ ➔ ₹1999\n\n*Prices depend on hair length & growth.*' },
     { id: 'faq_price_payment', title: 'Payment Methods', answer: 'We accept Cash, UPI, and all major Credit/Debit cards.' }
   ],
   'ask_appointments': [
@@ -80,17 +80,17 @@ async function generateWithGemini(apiKey, prompt) {
   return text.trim();
 }
 const salonServices = [
-  { id: 'svc_spa_normal', title: 'Normal Spa + FREE Haircut', price: '₹999/-', description: '~~₹1500~~ ₹999/- (Holi Offer)', category: 'Hair Spa 🌈' },
-  { id: 'svc_spa_loreal', title: 'Loreal Spa + FREE Haircut', price: '₹1,199/-', description: '~~₹1700~~ ₹1199/- (Holi Offer)', category: 'Hair Spa 🌈' },
-  { id: 'svc_spa_silk', title: 'Protein Spa + FREE Haircut', price: '₹1,499/-', description: '~~₹2000~~ ₹1499/- (Holi Offer)', category: 'Hair Spa 🌈' },
-  { id: 'svc_spa_shea', title: 'Shea Butter + FREE Haircut', price: '₹1,999/-', description: '~~₹2500~~ ₹1999/- (Holi Offer)', category: 'Hair Spa 🌈' },
-  { id: 'svc_spa_perm', title: 'Permanent Spa + FREE Haircut', price: '₹1,499/-', description: '~~₹2500~~ ₹1499/- (Holi Offer)', category: 'Hair Spa 🌈' },
-  { id: 'svc_treat_mirror', title: 'Boto Smooth + FREE Haircut', price: '₹2,999/-', description: '~~₹4500~~ ₹2999/- (Holi Offer)', category: 'Treatment 🌈' },
-  { id: 'svc_treat_smooth', title: 'Smoothing + FREE Haircut', price: '₹2,799/-', description: '~~₹3500~~ ₹2799/- (Holi Offer)', category: 'Treatment 🌈' },
-  { id: 'svc_treat_nano', title: 'Nano Therapy + FREE Haircut', price: '₹3,299/-', description: '~~₹4000~~ ₹3299/- (Holi Offer)', category: 'Treatment 🌈' },
-  { id: 'svc_treat_botox', title: 'Botox + FREE Haircut', price: '₹2,499/-', description: '~~₹3300~~ ₹2499/- (Holi Offer)', category: 'Treatment 🌈' },
-  { id: 'svc_color_global', title: 'Global Color + FREE Haircut', price: '₹1,999/-', description: '~~₹2500~~ ₹1999/- (Holi Offer)', category: 'Colour 🌈' },
-  { id: 'svc_color_classic', title: 'Highlight + FREE Haircut', price: '₹1,999/-', description: '~~₹2500~~ ₹1999/- (Holi Offer)', category: 'Colour 🌈' },
+  { id: 'svc_spa_normal', title: 'Normal Spa + FREE Cut', price: '₹999/-', description: '₹1500 ❌ ➔ ₹999 (Holi Offer)', category: 'Hair Spa 🌈' },
+  { id: 'svc_spa_loreal', title: 'Loreal Spa + FREE Cut', price: '₹1,199/-', description: '₹1700 ❌ ➔ ₹1199 (Holi Offer)', category: 'Hair Spa 🌈' },
+  { id: 'svc_spa_silk', title: 'Protein Spa + FREE Cut', price: '₹1,499/-', description: '₹2000 ❌ ➔ ₹1499 (Holi Offer)', category: 'Hair Spa 🌈' },
+  { id: 'svc_spa_shea', title: 'Shea Butter + FREE Cut', price: '₹1,999/-', description: '₹2500 ❌ ➔ ₹1999 (Holi Offer)', category: 'Hair Spa 🌈' },
+  { id: 'svc_spa_perm', title: 'Permanent Spa + FREE Cut', price: '₹1,499/-', description: '₹2500 ❌ ➔ ₹1499 (Holi Offer)', category: 'Hair Spa 🌈' },
+  { id: 'svc_treat_mirror', title: 'Boto Smooth + FREE Cut', price: '₹2,999/-', description: '₹4500 ❌ ➔ ₹2999 (Holi Offer)', category: 'Treatment 🌈' },
+  { id: 'svc_treat_smooth', title: 'Smoothing + FREE Cut', price: '₹2,799/-', description: '₹3500 ❌ ➔ ₹2799 (Holi Offer)', category: 'Treatment 🌈' },
+  { id: 'svc_treat_nano', title: 'Nano Therapy + FREE Cut', price: '₹3,299/-', description: '₹4000 ❌ ➔ ₹3299 (Holi Offer)', category: 'Treatment 🌈' },
+  { id: 'svc_treat_botox', title: 'Botox + FREE Cut', price: '₹2,499/-', description: '₹3300 ❌ ➔ ₹2499 (Holi Offer)', category: 'Treatment 🌈' },
+  { id: 'svc_color_global', title: 'Global Color + FREE Cut', price: '₹1,999/-', description: '₹2500 ❌ ➔ ₹1999 (Holi Offer)', category: 'Colour 🌈' },
+  { id: 'svc_color_classic', title: 'Highlight + FREE Cut', price: '₹1,999/-', description: '₹2500 ❌ ➔ ₹1999 (Holi Offer)', category: 'Colour 🌈' },
   { id: 'svc_haircut_basic', title: 'Basic Haircut', price: '₹500/-', description: 'Professional Cut', category: 'Standard' },
   { id: 'svc_haircut_advance', title: 'Advance Haircut', price: '₹700/-', description: 'Stylized Cut', category: 'Standard' }
 ];
@@ -98,31 +98,31 @@ const salonServices = [
 // Real stylists (Female focused)
 const salonStylists = [
   { id: 'stylist_shubhashbhai', title: 'Shubhashbhai', description: 'Master Stylist (15+ yrs exp)' },
-  { id: 'stylist_moksh', title: 'Moksh', description: 'Senior Hair Specialist' }
+  { id: 'stylist_hetal', title: 'Hetal', description: 'Senior Hair Specialist' }
 ];
 
 // Map stylists to their specific Google Calendar IDs
 const stylistCalendars = {
   'Shubhashbhai': process.env.GCAL_CALENDAR_ID2,
-  'Moksh': process.env.GCAL_CALENDAR_ID,
+  'Hetal': process.env.GCAL_CALENDAR_ID,
   'shubhashbhai': process.env.GCAL_CALENDAR_ID2,
   'moksh': process.env.GCAL_CALENDAR_ID,
   'stylist_shubhashbhai': process.env.GCAL_CALENDAR_ID2,
-  'stylist_moksh': process.env.GCAL_CALENDAR_ID
+  'stylist_hetal': process.env.GCAL_CALENDAR_ID
 };
 
 const salonPricing = [
-  { category: 'Holi Special 🌈 (24 Mar - 5 Mar)', service: 'Normal Spa + FREE Haircut', price: '~~₹1500~~ ₹999/-' },
-  { category: 'Holi Special 🌈', service: 'Loreal Spa + FREE Haircut', price: '~~₹1700~~ ₹1199/-' },
-  { category: 'Holi Special 🌈', service: 'Protein Spa + FREE Haircut', price: '~~₹2000~~ ₹1499/-' },
-  { category: 'Holi Special 🌈', service: 'Shea Butter + FREE Haircut', price: '~~₹2500~~ ₹1999/-' },
-  { category: 'Holi Special 🌈', service: 'Permanent Spa + FREE Haircut', price: '~~₹2500~~ ₹1499/-' },
-  { category: 'Holi Treatments 🌈', service: 'Boto Smooth + FREE Haircut', price: '~~₹4500~~ ₹2999/-' },
-  { category: 'Holi Treatments 🌈', service: 'Smoothing + FREE Haircut', price: '~~₹3500~~ ₹2799/-' },
-  { category: 'Holi Treatments 🌈', service: 'Nano Therapy + FREE Haircut', price: '~~₹4000~~ ₹3299/-' },
-  { category: 'Holi Treatments 🌈', service: 'Botox + FREE Haircut', price: '~~₹3300~~ ₹2499/-' },
-  { category: 'Holi Color 🌈', service: 'Global Color + FREE Haircut', price: '~~₹2500~~ ₹1999/-' },
-  { category: 'Holi Color 🌈', service: 'Highlight + FREE Haircut', price: '~~₹2500~~ ₹1999/-' }
+  { category: 'Holi Special 🌈 (24 Mar - 5 Mar)', service: 'Normal Spa + FREE Haircut', price: '₹1500 ❌ ➔ ₹999' },
+  { category: 'Holi Special 🌈', service: 'Loreal Spa + FREE Haircut', price: '₹1700 ❌ ➔ ₹1199' },
+  { category: 'Holi Special 🌈', service: 'Protein Spa + FREE Haircut', price: '₹2000 ❌ ➔ ₹1499' },
+  { category: 'Holi Special 🌈', service: 'Shea Butter + FREE Haircut', price: '₹2500 ❌ ➔ ₹1999' },
+  { category: 'Holi Special 🌈', service: 'Permanent Spa + FREE Haircut', price: '₹2500 ❌ ➔ ₹1499' },
+  { category: 'Holi Treatments 🌈', service: 'Boto Smooth + FREE Haircut', price: '₹4500 ❌ ➔ ₹2999' },
+  { category: 'Holi Treatments 🌈', service: 'Smoothing + FREE Haircut', price: '₹3500 ❌ ➔ ₹2799' },
+  { category: 'Holi Treatments 🌈', service: 'Nano Therapy + FREE Haircut', price: '₹4000 ❌ ➔ ₹3299' },
+  { category: 'Holi Treatments 🌈', service: 'Botox + FREE Haircut', price: '₹3300 ❌ ➔ ₹2499' },
+  { category: 'Holi Color 🌈', service: 'Global Color + FREE Haircut', price: '₹2500 ❌ ➔ ₹1999' },
+  { category: 'Holi Color 🌈', service: 'Highlight + FREE Haircut', price: '₹2500 ❌ ➔ ₹1999' }
 ];
 
 // Helper to get or initialize user session
@@ -266,7 +266,7 @@ async function sendWhatsAppImage({ phoneNumberId, to, imageUrl, caption, token, 
 }
 
 // Helper to send WhatsApp interactive button message
-async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons, token, io, clientId }) {
+async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons, token, io, clientId, footer, imageHeader }) {
   const apiVersion = process.env.API_VERSION || 'v18.0';
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
   const data = {
@@ -276,8 +276,9 @@ async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons, t
     type: 'interactive',
     interactive: {
       type: 'button',
-      header: header ? { type: 'text', text: header } : undefined,
+      header: imageHeader ? { type: 'image', image: { link: imageHeader } } : (header ? { type: 'text', text: header } : undefined),
       body: { text: body },
+      footer: footer ? { text: footer } : undefined,
       action: {
         buttons: buttons.map(({ id, title }) => ({
           type: 'reply',
@@ -327,7 +328,7 @@ async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons, t
 }
 
 // Helper to send WhatsApp interactive list message (for day selection)
-async function sendWhatsAppList({ phoneNumberId, to, header, body, button, rows, token, io, clientId }) {
+async function sendWhatsAppList({ phoneNumberId, to, header, body, button, rows, token, io, clientId, footer, imageHeader }) {
   const apiVersion = process.env.API_VERSION || 'v18.0';
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
   // Enforce WhatsApp max 10 rows per section
@@ -343,9 +344,9 @@ async function sendWhatsAppList({ phoneNumberId, to, header, body, button, rows,
     type: 'interactive',
     interactive: {
       type: 'list',
-      header: header ? { type: 'text', text: header } : undefined,
+      header: imageHeader ? { type: 'image', image: { link: imageHeader } } : (header ? { type: 'text', text: header } : undefined),
       body: { text: body },
-      footer: { text: '' },
+      footer: footer ? { text: footer } : (true ? { text: 'Choice Salon Holi Offer 🌈' } : { text: 'Choice Salon for Ladies 💅' }),
       action: {
         button,
         sections: [
@@ -439,7 +440,7 @@ async function sendSmartButtonsOrList({ phoneNumberId, to, header, body, buttons
 // Helper: get available booking days (dynamic, based on Google Calendar availability)
 async function getAvailableBookingDays(stylist, calendars) {
   try {
-    // Normalize stylist name to match config keys (e.g., "Stylist Moksh" -> "stylist_moksh")
+    // Normalize stylist name to match config keys (e.g., "Stylist Hetal" -> "stylist_hetal")
     const stylistKey = stylist.toLowerCase().replace(/\s+/g, '_');
     const calendarId = calendars[stylistKey] || calendars[stylist];
     console.log(`🔍 Fetching dynamic available dates from Google Calendar for ${stylist} (key: ${stylistKey})...`, calendarId);
@@ -694,17 +695,11 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 
   // If user sends a greeting, always show the main menu with buttons
   if (userMsgType === 'text' && userMsg && GREETING_WORDS.some(w => userMsg.trim().toLowerCase().startsWith(w))) {
-    await sendWhatsAppImage({
-      ...helperParams,
-      to: from,
-      imageUrl: 'https://instagram.famd1-2.fna.fbcdn.net/v/t51.2885-19/436333745_1497177940869325_2985750738127060080_n.jpg?efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLmRqYW5nby4xMDgwLmMyIn0&_nc_ht=instagram.famd1-2.fna.fbcdn.net&_nc_cat=101&_nc_oc=Q6cZ2QH8vCGf2jGUX3lSsvjRV2axzhtJLYNHfIbhUn1TQkvNKEvnx4XWgdyKCrgXVx8KsC9Pq5Fgfk9UcjXn18wL8ThL&_nc_ohc=8-CBI_zJuBwQ7kNvwEeJ635&_nc_gid=Gp62ZusslBSvo5TFvcyJAg&edm=ALGbJPMBAAAA&ccb=7-5&oh=00_AftGK8L_C4HRW6SdWj31MRppEsoQ-N4fEB14vEohvB7zrA&oe=69A1B22C&_nc_sid=7d3ac5',
-      caption: 'Choice Salon Holi Sale 🌈'
-    });
     await sendWhatsAppButtons({
       ...helperParams,
       to: from,
-      header: '🌈 Holi Festival Sale 2026 🌈',
-      body: 'Hi 👋\n\nThis is Shubhashbhai from Choice Salon! ✨ Celebrate Holi with our exclusive deals (24 Mar - 5 Mar)!\n\n🎁 *Holi Special:* Get a **FREE HAIRCUT** with any Spa, Treatment, or Color service! 💇‍♀️\n\nHow can I help you today? ✨',
+      imageHeader: 'https://instagram.famd1-2.fna.fbcdn.net/v/t51.2885-19/436333745_1497177940869325_2985750738127060080_n.jpg?efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLmRqYW5nby4xMDgwLmMyIn0&_nc_ht=instagram.famd1-2.fna.fbcdn.net&_nc_cat=101&_nc_oc=Q6cZ2QH8vCGf2jGUX3lSsvjRV2axzhtJLYNHfIbhUn1TQkvNKEvnx4XWgdyKCrgXVx8KsC9Pq5Fgfk9UcjXn18wL8ThL&_nc_ohc=8-CBI_zJuBwQ7kNvwEeJ635&_nc_gid=Gp62ZusslBSvo5TFvcyJAg&edm=ALGbJPMBAAAA&ccb=7-5&oh=00_AftGK8L_C4HRW6SdWj31MRppEsoQ-N4fEB14vEohvB7zrA&oe=69A1B22C&_nc_sid=7d3ac5',
+      body: 'Hi 👋\n\nThis is Shubhashbhai from Choice Salon! ✨ Celebrate Holi with our exclusive deals (24 Mar - 5 Mar)!\n\n🎁 *Holi Special:* Get a *FREE HAIRCUT* with any Spa, Treatment, or Color service! 💇‍♀️\n\nHow can I help you today? ✨',
       buttons: [
         { id: 'user_schedule_appt', title: 'Book Holi Offer 📅' },
         { id: 'user_pricing', title: 'Offer Price List 💰' },
@@ -732,6 +727,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         to: from,
         header: 'Frequently Asked Questions',
         body: `Here are some common questions about ${QUESTION_TOPICS.find(t => t.id === topicKey)?.title || 'this topic'}. Select one to see the answer:`,
+        footer: '🔔 Opt-in for reminders & birthday wishes 🎂',
         button: 'Select Question',
         rows: questions.map(q => ({ id: q.id, title: q.title }))
       });
@@ -970,17 +966,11 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   }
 
   if (!session.step || session.step === 'home') {
-    await sendWhatsAppImage({
-      ...helperParams,
-      to: from,
-      imageUrl: 'https://instagram.famd1-2.fna.fbcdn.net/v/t51.2885-19/436333745_1497177940869325_2985750738127060080_n.jpg?efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLmRqYW5nby4xMDgwLmMyIn0&_nc_ht=instagram.famd1-2.fna.fbcdn.net&_nc_cat=101&_nc_oc=Q6cZ2QH8vCGf2jGUX3lSsvjRV2axzhtJLYNHfIbhUn1TQkvNKEvnx4XWgdyKCrgXVx8KsC9Pq5Fgfk9UcjXn18wL8ThL&_nc_ohc=8-CBI_zJuBwQ7kNvwEeJ635&_nc_gid=Gp62ZusslBSvo5TFvcyJAg&edm=ALGbJPMBAAAA&ccb=7-5&oh=00_AftGK8L_C4HRW6SdWj31MRppEsoQ-N4fEB14vEohvB7zrA&oe=69A1B22C&_nc_sid=7d3ac5',
-      caption: 'Choice Salon Holi Sale 🌈'
-    });
     await sendWhatsAppButtons({
       ...helperParams,
       to: from,
-      header: '🌈 Holi Festival Sale 2026 🌈',
-      body: 'Hi 👋\n\nThis is Shubhashbhai from Choice Salon! ✨ Celebrate Holi with our exclusive deals (24 Mar - 5 Mar)!\n\n🎁 *Holi Special:* Get a **FREE HAIRCUT** with any Spa, Treatment, or Color service! 💇‍♀️\n\nHow can I help you today? ✨',
+      imageHeader: 'https://instagram.famd1-2.fna.fbcdn.net/v/t51.2885-19/436333745_1497177940869325_2985750738127060080_n.jpg?efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLmRqYW5nby4xMDgwLmMyIn0&_nc_ht=instagram.famd1-2.fna.fbcdn.net&_nc_cat=101&_nc_oc=Q6cZ2QH8vCGf2jGUX3lSsvjRV2axzhtJLYNHfIbhUn1TQkvNKEvnx4XWgdyKCrgXVx8KsC9Pq5Fgfk9UcjXn18wL8ThL&_nc_ohc=8-CBI_zJuBwQ7kNvwEeJ635&_nc_gid=Gp62ZusslBSvo5TFvcyJAg&edm=ALGbJPMBAAAA&ccb=7-5&oh=00_AftGK8L_C4HRW6SdWj31MRppEsoQ-N4fEB14vEohvB7zrA&oe=69A1B22C&_nc_sid=7d3ac5',
+      body: 'Hi 👋\n\nThis is Shubhashbhai from Choice Salon! ✨ Celebrate Holi with our exclusive deals (24 Mar - 5 Mar)!\n\n🎁 *Holi Special:* Get a *FREE HAIRCUT* with any Spa, Treatment, or Color service! 💇‍♀️\n\nHow can I help you today? ✨',
       buttons: [
         { id: 'user_schedule_appt', title: 'Book Holi Offer 📅' },
         { id: 'user_pricing', title: 'Offer Price List 💰' },
@@ -1126,7 +1116,9 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         ...helperParams,
         to: from,
         header: `${chosen.title} – ${chosen.price}`,
+        footer: '🔔 Opt-in for reminders & birthday wishes 🎂',
         body: `For ${chosen.title}, from which stylist would you prefer?`,
+        footer: '🔔 Opt-in for reminders & birthday wishes 🎂',
         buttons: salonStylists.map(s => ({ id: s.id, title: s.title }))
       });
       session.step = 'choose_stylist';
@@ -1370,6 +1362,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         ...helperParams,
         to: from,
         header: `Available time slots for ${session.data.date}:`,
+        footer: '🔔 Opt-in for reminders & birthday wishes 🎂',
         body: 'Pick a time:',
         buttons
       });
@@ -1455,10 +1448,8 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 
 📱 *Contact:* ${session.data.phone}
 
-🔔 *Stay Updated?*
-We can send you booking reminders and special birthday surprises! 🎂
-
-Please choose your preference:`,
+*Please choose your communication preference below:*`,
+          footer: '🔔 Opt-in for reminders & birthday wishes 🎂',
           buttons: [
             { id: 'consent_confirm_all', title: '✅ Accept All' },
             { id: 'consent_reminders_only', title: '📅 Reminders Only' },
@@ -1486,10 +1477,8 @@ Please choose your preference:`,
 
 📱 *Contact:* ${session.data.phone}
 
-🔔 *Stay Updated?*
-We can send you booking reminders and special birthday surprises! 🎂
-
-Please choose your preference:`,
+*Please choose your communication preference below:*`,
+          footer: '🔔 Opt-in for reminders & birthday wishes 🎂',
           buttons: [
             { id: 'consent_confirm_all', title: '✅ Accept All' },
             { id: 'consent_reminders_only', title: '📅 Reminders Only' },
@@ -1604,6 +1593,7 @@ Please choose your preference:`,
 
         const event = await createEvent({
           summary: `Appointment: ${session.data.name} - ${session.data.chosenService || ''} with ${session.data.stylist || ''}`,
+          footer: '🔔 Opt-in for reminders & birthday wishes 🎂',
           description: eventDescription,
           start: startISO,
           end: endISO,
@@ -1798,7 +1788,8 @@ Please choose your preference:`,
         confirmationBody += `\n\n📅 *Reminders:* You'll receive updates before your appointment.`;
       }
 
-      confirmationBody += `\n\n❌ To stop receiving messages, reply with "STOP" at any time.`;
+      confirmationBody += `\n\n,
+          footer: '❌ To stop receiving messages, reply with "STOP" at any time.'`;
 
       await sendWhatsAppButtons({
         ...helperParams,
@@ -1860,6 +1851,7 @@ Please choose your preference:`,
         to: from,
         header: '📋 Change Communication Preferences',
         body: `*Appointment Details:*\n\n👤 *Name:* ${session.data.name}\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n�‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n💅 *Service:* ${session.data.chosenService || 'General Salon Session'}\n\n📱 *Phone:* ${session.data.phone}\n\n🔔 *Communication Preferences:*\nWe'd like to send you:\n• Appointment reminders\n• Birthday wishes\n\nPlease choose your preference:`,
+        footer: '🔔 Opt-in for reminders & birthday wishes 🎂',
         buttons: [
           { id: 'consent_confirm_all', title: '✅ Accept All' },
           { id: 'consent_reminders_only', title: '📅 Reminders Only' },
@@ -1876,6 +1868,7 @@ Please choose your preference:`,
         to: from,
         header: '📋 Confirm Appointment',
         body: `Please confirm your appointment or change your communication preferences.`,
+        footer: '🔔 Opt-in for reminders & birthday wishes 🎂',
         buttons: [
           { id: 'confirm_with_previous_consent', title: '✅ Confirm Appointment' },
           { id: 'change_consent_preferences', title: '🔄 Change Preferences' }
@@ -2169,24 +2162,18 @@ Please choose your preference:`,
         `Map: https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
         `Please arrive 15 minutes early for your appointment.`;
 
-      // Add consent-specific confirmation message
-      if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
-        confirmationBody += `\n\nReminders: You'll receive updates before your appointment.`;
-      } else if (session.data.consent.appointmentReminders) {
-        confirmationBody += `\n\nReminders: You'll receive updates before your appointment.`;
-      }
-
-      confirmationBody += `\n\nTo stop receiving messages, reply with "STOP" at any time.`;
+      confirmationBody += `\n\nReminders: You'll receive updates before your appointment.`;
 
       await sendWhatsAppButtons({
         ...helperParams,
         to: from,
-        header: 'Got it',
+        header: '✅ Booking Confirmed',
         body: confirmationBody,
+        footer: '❌ To stop receiving messages, reply with "STOP" at any time.',
         buttons: [
-          { id: 'book_another', title: 'Book Another' },
-          { id: 'user_ask_question', title: 'Ask Question' },
-          { id: 'home', title: 'Home' }
+          { id: 'book_another', title: '📅 Book Another' },
+          { id: 'user_ask_question', title: '❓ Ask Question' },
+          { id: 'user_home', title: '🏠 Home' }
         ]
       });
 
@@ -2236,6 +2223,7 @@ Please choose your preference:`,
         to: from,
         header: 'Appointment Summary',
         body: `Appointment Details:\n\nName: ${session.data.name}\nDate: ${session.data.date}\nTime: ${session.data.time}\nStylist: ${session.data.stylist || 'Not specified'}\nService: ${session.data.chosenService || 'General Salon Session'}\n\nPhone: ${session.data.phone}\n\nCommunication Preferences:\nWe can send you:\n• Appointment reminders\n• Birthday wishes\n\nPlease choose your preference:`,
+        footer: '🔔 Opt-in for reminders & birthday wishes 🎂',
         buttons: [
           { id: 'consent_confirm_all', title: '✅ Accept All' },
           { id: 'consent_reminders_only', title: '📅 Reminders Only' },
@@ -2385,6 +2373,7 @@ Please choose your preference:`,
             to: from,
             header: 'Confirm Action',
             body: `Found your booking:\n${foundAppt.summary}\nDate: ${foundAppt.date}\nTime: ${foundAppt.time}\nDo you want to ${session.step === 'cancel_lookup' ? 'cancel' : 'reschedule'} this appointment?`,
+            footer: '🔔 Opt-in for reminders & birthday wishes 🎂',
             buttons: [
               { id: 'confirm_yes', title: 'Yes, Confirm' },
               { id: 'confirm_no', title: 'No, Cancel' }
@@ -2455,6 +2444,7 @@ Please choose your preference:`,
         to: from,
         header: 'Confirm Action',
         body: `You selected:\n${foundEvent.summary}\nDate: ${foundEvent.date}\nTime: ${foundEvent.time}\nStylist: ${foundEvent.stylist}\nDo you want to ${session.step === 'cancel_pick_event' ? 'cancel' : 'reschedule'} this appointment?`,
+        footer: '🔔 Opt-in for reminders & birthday wishes 🎂',
         buttons: [
           { id: 'confirm_yes', title: 'Yes, Confirm' },
           { id: 'confirm_no', title: 'No, Cancel' }
@@ -2538,6 +2528,7 @@ Please choose your preference:`,
         to: from,
         header: 'Confirm Action',
         body: `Found your booking:\n${session.data.cancelEventSummary}\nDate: ${session.data.cancelEventDate}\nTime: ${session.data.cancelEventTime}\nDoctor: ${session.data.cancelDoctor}\nDo you want to cancel this booking?`,
+        footer: '🔔 Opt-in for reminders & birthday wishes 🎂',
         buttons: [
           { id: 'confirm_yes', title: 'Yes, Confirm' },
           { id: 'confirm_no', title: 'No, Cancel' }
@@ -2619,6 +2610,7 @@ Please choose your preference:`,
         to: from,
         header: 'Confirm Action',
         body: `Found your booking:\n${session.data.cancelEventSummary}\nDate: ${session.data.cancelEventDate}\nTime: ${session.data.cancelEventTime}\nDoctor: ${session.data.cancelDoctor}\nDo you want to reschedule this booking?`,
+        footer: '🔔 Opt-in for reminders & birthday wishes 🎂',
         buttons: [
           { id: 'confirm_yes', title: 'Yes, Confirm' },
           { id: 'confirm_no', title: 'No, Cancel' }
