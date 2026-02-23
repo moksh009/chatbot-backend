@@ -586,10 +586,42 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   // Pass common params to helpers
   const helperParams = { phoneNumberId, token, io, clientId };
 
-  // 1. Handle Advanced Upsell Button
+  // 1. Handle Advanced Upsell - Step 1: Confirmation Request
   if (userMsg === 'upsell_add_mirror_shine') {
     try {
       // Find latest appointment for this user (schema uses 'phone')
+      const lastAppt = await Appointment.findOne({ phone: from, clientId }).sort({ createdAt: -1 });
+
+      if (lastAppt) {
+        // Send Confirmation Step
+        await sendWhatsAppButtons({
+          ...helperParams,
+          to: from,
+          imageHeader: HOLI_IMG,
+          body: `💅 *Confirm Your Luxury Upgrade* ✨\n\nAre you sure you want to add **Mirror Shine Boto Smooth** (₹4,000) to your existing booking?\n\nIt's our absolute best treatment for a glass-like finish! 💎✨`,
+          footer: 'Choose your preference below 👇',
+          buttons: [
+            { id: 'upsell_confirm_mirror_shine', title: 'Yes, Upgrade ✅' },
+            { id: 'upsell_reject_mirror_shine', title: 'No, Thanks ❌' }
+          ]
+        });
+        res.status(200).end();
+        return;
+      } else {
+        // Fallback if no appointment found
+        console.log(`⚠️ No appointment found for upsell for ${from}`);
+        await sendWhatsAppText({ ...helperParams, to: from, body: "I couldn't find your latest booking to update it. Please ask us in person!" });
+        res.status(200).end();
+        return;
+      }
+    } catch (err) {
+      console.error('❌ Error in upsell confirmation step:', err);
+    }
+  }
+
+  // 1a. Handle Advanced Upsell - Step 2: Confirmed execution
+  if (userMsg === 'upsell_confirm_mirror_shine') {
+    try {
       const lastAppt = await Appointment.findOne({ phone: from, clientId }).sort({ createdAt: -1 });
 
       if (lastAppt) {
@@ -603,7 +635,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           action: 'update',
           changedBy: 'chatbot',
           source: 'chatbot',
-          details: `User added premium upsell: ${upgradeService}`
+          details: `User confirmed premium upsell: ${upgradeService}`
         });
         await lastAppt.save();
 
@@ -616,18 +648,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           ...helperParams,
           to: from,
           imageHeader: HOLI_IMG,
-          body: `✨ *Legendary Choice!* ✨
-
-I've updated your session to the ultimate luxury experience!
-
-✅ *Final Booking Details*
-👤 *Client:* ${lastAppt.name}
-📅 *Date:* ${lastAppt.date}
-🕒 *Time:* ${lastAppt.time}
-💇‍♀️ *Stylist:* ${lastAppt.doctor || 'Not specified'}
-💅 *Total Services:* ${lastAppt.service}
-
-Shubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️`,
+          body: `✨ *Legendary Choice!* ✨\n\nI've updated your session to the ultimate luxury experience!\n\n✅ *Final Booking Details*\n👤 *Client:* ${lastAppt.name}\n📅 *Date:* ${lastAppt.date}\n🕒 *Time:* ${lastAppt.time}\n💇‍♀️ *Stylist:* ${lastAppt.doctor || 'Not specified'}\n💅 *Total Services:* ${lastAppt.service}\n\nShubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️`,
           buttons: [
             { id: 'user_home', title: '🏠 Home' },
             { id: 'user_ask_question', title: '❓ Ask Question' }
@@ -637,15 +658,24 @@ Shubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️
         res.status(200).end();
         return;
       } else {
-        // Fallback if no appointment found
-        console.log(`⚠️ No appointment found for upsell for ${from}`);
-        await sendWhatsAppText({ ...helperParams, to: from, body: "I couldn't find your latest booking to update it. Please ask us in person!" });
+        await sendWhatsAppText({ ...helperParams, to: from, body: "Sorry, I couldn't update your booking. Please check with us at the salon!" });
         res.status(200).end();
         return;
       }
     } catch (upsellErr) {
-      console.error('❌ Error processing upsell:', upsellErr);
+      console.error('❌ Error processing upsell confirmation:', upsellErr);
     }
+  }
+
+  // 1b. Handle Advanced Upsell - Step 2: Rejected
+  if (userMsg === 'upsell_reject_mirror_shine') {
+    await sendWhatsAppText({
+      ...helperParams,
+      to: from,
+      body: `No worries at all! ✨ Your original booking is still confirmed. We can't wait to see you! 🧖‍♀️💅`
+    });
+    res.status(200).end();
+    return;
   }
 
   // Track lead interaction for Active Leads display
@@ -1461,20 +1491,27 @@ Shubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️
           if (hasConsentHistory) {
             // User has previous consent - show direct confirmation
             let consentStatus = '';
-            let confirmationBody = `✅ *Booking Summary*\n\n👤 *Name:* ${session.data.name}\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n�‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n💅 *Service:* ${session.data.chosenService || 'General Salon Session'}\n\n📱 *Phone:* ${session.data.phone}\n\n🔔 *Communication Preferences:*\n`;
-
+            let footerText = '';
             if (lastAppointment.consent.appointmentReminders && lastAppointment.consent.birthdayMessages) {
               consentStatus = '✅ Accept All';
-              confirmationBody += `• Booking reminders & Birthday wishes 🎂\n\n*Using your previous preference: Accept All*`;
+              footerText = '⭐ Your previous preference: Accept All';
             } else if (lastAppointment.consent.appointmentReminders) {
               consentStatus = '📅 Reminders Only';
-              confirmationBody += `• Booking reminders only 📅\n\n*Using your previous preference: Reminders Only*`;
+              footerText = '📅 Your previous preference: Reminders';
             } else {
               consentStatus = '❌ No Thanks';
-              confirmationBody += `• No communications ❌\n\n*Using your previous preference: No Thanks*`;
+              footerText = '❌ Your previous preference: No Comms';
             }
 
-            // Store the previous consent for this booking
+            let confirmationBody = `✅ *Booking Summary*\n\n` +
+              `👤 *Name:* ${session.data.name}\n` +
+              `📅 *Date:* ${session.data.date}\n` +
+              `🕒 *Time:* ${session.data.time}\n` +
+              `💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n` +
+              `💅 *Service:* ${session.data.chosenService || 'General Salon Session'}\n\n` +
+              `📱 *Phone:* ${session.data.phone}`;
+
+            // Store the previous consent for this booking so it can be used on confirm
             session.data.consent = {
               appointmentReminders: lastAppointment.consent.appointmentReminders,
               birthdayMessages: lastAppointment.consent.birthdayMessages,
@@ -1489,11 +1526,12 @@ Shubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️
             await sendWhatsAppButtons({
               ...helperParams,
               to: from,
-              header: 'Confirm Booking',
+              imageHeader: HOLI_IMG,
               body: confirmationBody,
+              footer: footerText,
               buttons: [
-                { id: 'confirm_with_previous_consent', title: 'Confirm' },
-                { id: 'change_consent_preferences', title: 'Change' }
+                { id: 'confirm_with_previous_consent', title: 'Confirm ✅' },
+                { id: 'change_consent_preferences', title: 'Change 🔄' }
               ]
             });
             session.step = 'appt_confirm_with_previous_consent';
@@ -1849,7 +1887,7 @@ Shubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️
 
       let footerText = '❌ To stop receiving messages, reply with "STOP"';
       if (session.data.consent.appointmentReminders) {
-        footerText = '🔔 Reminders active. Reply STOP to opt-out.';
+        footerText = 'Reply STOP to opt-out.';
       }
 
       await sendWhatsAppButtons({
