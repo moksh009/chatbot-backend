@@ -28,6 +28,9 @@ const GREETING_WORDS = [
   'radhe radhe', 'halo', 'tame', 'shubhashbhai'
 ];
 
+const HOLI_DATES = 'Feb 24 - March 5';
+const HOLI_IMG = 'https://instagram.famd1-2.fna.fbcdn.net/v/t51.2885-19/436333745_1497177940869325_2985750738127060080_n.jpg?efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLmRqYW5nby4xMDgwLmMyIn0&_nc_ht=instagram.famd1-2.fna.fbcdn.net&_nc_cat=101&_nc_oc=Q6cZ2QH8vCGf2jGUX3lSsvjRV2axzhtJLYNHfIbhUn1TQkvNKEvnx4XWgdyKCrgXVx8KsC9Pq5Fgfk9UcjXn18wL8ThL&_nc_ohc=8-CBI_zJuBwQ7kNvwEeJ635&_nc_gid=Gp62ZusslBSvo5TFvcyJAg&edm=ALGbJPMBAAAA&ccb=7-5&oh=00_AftGK8L_C4HRW6SdWj31MRppEsoQ-N4fEB14vEohvB7zrA&oe=69A1B22C&_nc_sid=7d3ac5';
+
 // Add at the top for topic list
 const QUESTION_TOPICS = [
   { id: 'ask_services', title: 'Services' },
@@ -38,14 +41,14 @@ const QUESTION_TOPICS = [
 
 const FAQ_DATA = {
   'ask_services': [
-    { id: 'faq_serv_types', title: 'What services do you offer?', answer: 'We offer ladies haircuts, advanced hair spa, protein and straightening treatments, global color, highlights, and more. During our 🌈 Holi Sale (24 Mar - 5 Mar), get a FREE Haircut with any Spa, Treatment, or Color! Best services malshe tame! ✨' },
+    { id: 'faq_serv_types', title: 'What services do you offer?', answer: `We offer ladies haircuts, advanced hair spa, protein and straightening treatments, global color, highlights, and more. During our 🌈 Holi Sale (${HOLI_DATES}), get a FREE Haircut with any Spa, Treatment, or Color! Best services malshe tame! ✨` },
     { id: 'faq_serv_kids', title: 'Do you do kids haircuts?', answer: 'Yes. We provide haircuts for girls of all ages. Chokriyo mate professional cut malshe! 👧' },
-    { id: 'faq_serv_color', title: 'Do you do hair color?', answer: 'Yes. We offer professional global color and highlights. 🌈 Holi Special: Get a FREE Haircut with Global/Highlight Color! Perfect color kaam thai jashe! 🎨' },
-    { id: 'faq_serv_spa', title: 'Do you offer hair spa?', answer: 'Yes. We have multiple hair spa options. 🌈 Holi Special: Get a FREE Haircut with any Hair Spa starting at just ₹999/-! Hair mate best treatment malshe! 🧖‍♀️' }
+    { id: 'faq_serv_color', title: 'Do you do hair color?', answer: `Yes. We offer professional global color and highlights. 🌈 Holi Special: Get a FREE Haircut with Global/Highlight Color! Perfect color kaam thai jashe! 🎨` },
+    { id: 'faq_serv_spa', title: 'Do you offer hair spa?', answer: `Yes. We have multiple hair spa options. 🌈 Holi Special: Get a FREE Haircut with any Hair Spa starting at just ₹999/-! Hair mate best treatment malshe! 🧖‍♀️` }
   ],
   'ask_pricing': [
     { id: 'faq_price_haircut', title: 'How much is a haircut?', answer: 'Our Haircut is ₹500 and Advance Haircut is ₹700. ✨ Pro Tip: Get it for FREE with any Spa, Treatment, or Color!' },
-    { id: 'faq_price_list', title: '🌈 Holi Sale 2026 Price List (24 Mar - 5 Mar)', answer: '✨ *Holi Festive Deals (Includes FREE Haircut)* ✨\n\nHair Spa + 💇‍♀️ FREE Haircut\n• Normal Spa: ₹1500 ❌ ➔ ₹999\n• Loreal Spa: ₹1700 ❌ ➔ ₹1199\n• Silk Protein Spa: ₹2000 ❌ ➔ ₹1499\n• Shea Butter Spa: ₹2500 ❌ ➔ ₹1999\n• Permanent Spa: ₹2500 ❌ ➔ ₹1499\n\nHair Treatment + 💇‍♀️ FREE Haircut\n• Mirror Shine Boto Smooth: ₹4500 ❌ ➔ ₹2999\n• Smoothing: ₹3500 ❌ ➔ ₹2799\n• Nano Therapy: ₹4000 ❌ ➔ ₹3299\n• Botox: ₹3300 ❌ ➔ ₹2499\n\nColour + 💇‍♀️ FREE Haircut\n• Global Hair Color: ₹2500 ❌ ➔ ₹1999\n• Highlight Color: ₹2500 ❌ ➔ ₹1999\n\n*Prices depend on hair length & growth.*' },
+    { id: 'faq_price_list', title: `🌈 Holi Sale 2026 Price List (${HOLI_DATES})`, answer: '✨ *Holi Festive Deals (Includes FREE Haircut)* ✨\n\nHair Spa + 💇‍♀️ FREE Haircut\n• Normal Spa: ₹1500 ❌ ➔ ₹999\n• Loreal Spa: ₹1700 ❌ ➔ ₹1199\n• Silk Protein Spa: ₹2000 ❌ ➔ ₹1499\n• Shea Butter Spa: ₹2500 ❌ ➔ ₹1999\n• Permanent Spa: ₹2500 ❌ ➔ ₹1499\n\nHair Treatment + 💇‍♀️ FREE Haircut\n• Mirror Shine Boto Smooth: ₹4500 ❌ ➔ ₹2999\n• Smoothing: ₹3500 ❌ ➔ ₹2799\n• Nano Therapy: ₹4000 ❌ ➔ ₹3299\n• Botox: ₹3300 ❌ ➔ ₹2499\n\nColour + 💇‍♀️ FREE Haircut\n• Global Hair Color: ₹2500 ❌ ➔ ₹1999\n• Highlight Color: ₹2500 ❌ ➔ ₹1999\n\n*Prices depend on hair length & growth.*' },
     { id: 'faq_price_payment', title: 'Payment Methods', answer: 'We accept Cash, UPI, and all major Credit/Debit cards.' }
   ],
   'ask_appointments': [
@@ -89,8 +92,12 @@ const salonServices = [
   { id: 'svc_treat_smooth', title: 'Smoothing + FREE Cut', price: '₹2,799/-', description: '₹3500 ❌ ➔ ₹2799 (Holi Offer)', category: 'Treatment 🌈' },
   { id: 'svc_treat_nano', title: 'Nano Therapy + FREE Cut', price: '₹3,299/-', description: '₹4000 ❌ ➔ ₹3299 (Holi Offer)', category: 'Treatment 🌈' },
   { id: 'svc_treat_botox', title: 'Botox + FREE Cut', price: '₹2,499/-', description: '₹3300 ❌ ➔ ₹2499 (Holi Offer)', category: 'Treatment 🌈' },
+  { id: 'svc_treat_brazil', title: 'Brazil Therapy + FREE Cut', price: '₹2,499/-', description: '₹3000 ❌ ➔ ₹2499 (Holi Offer)', category: 'Treatment 🌈' },
+  { id: 'svc_treat_keratin', title: 'Keratin + FREE Cut', price: '₹1,999/-', description: '₹2500 ❌ ➔ ₹1999 (Holi Offer)', category: 'Treatment 🌈' },
   { id: 'svc_color_global', title: 'Global Color + FREE Cut', price: '₹1,999/-', description: '₹2500 ❌ ➔ ₹1999 (Holi Offer)', category: 'Colour 🌈' },
+  { id: 'svc_color_balayage', title: 'Balayage + FREE Cut', price: '₹1,999/-', description: '₹2500 ❌ ➔ ₹1999 (Holi Offer)', category: 'Colour 🌈' },
   { id: 'svc_color_classic', title: 'Highlight + FREE Cut', price: '₹1,999/-', description: '₹2500 ❌ ➔ ₹1999 (Holi Offer)', category: 'Colour 🌈' },
+  { id: 'svc_color_roots', title: 'Root Touch Up', price: '₹1,000/-', description: 'Professional Touch Up', category: 'Standard' },
   { id: 'svc_haircut_basic', title: 'Basic Haircut', price: '₹500/-', description: 'Professional Cut', category: 'Standard' },
   { id: 'svc_haircut_advance', title: 'Advance Haircut', price: '₹700/-', description: 'Stylized Cut', category: 'Standard' }
 ];
@@ -112,17 +119,21 @@ const stylistCalendars = {
 };
 
 const salonPricing = [
-  { category: 'Holi Special 🌈 (24 Mar - 5 Mar)', service: 'Normal Spa + FREE Haircut', price: '₹1500 ❌ ➔ ₹999' },
+  { category: `Holi Special 🌈 (${HOLI_DATES})`, service: 'Normal Spa + FREE Haircut', price: '₹1500 ❌ ➔ ₹999' },
   { category: 'Holi Special 🌈', service: 'Loreal Spa + FREE Haircut', price: '₹1700 ❌ ➔ ₹1199' },
   { category: 'Holi Special 🌈', service: 'Protein Spa + FREE Haircut', price: '₹2000 ❌ ➔ ₹1499' },
   { category: 'Holi Special 🌈', service: 'Shea Butter + FREE Haircut', price: '₹2500 ❌ ➔ ₹1999' },
   { category: 'Holi Special 🌈', service: 'Permanent Spa + FREE Haircut', price: '₹2500 ❌ ➔ ₹1499' },
-  { category: 'Holi Treatments 🌈', service: 'Boto Smooth + FREE Haircut', price: '₹4500 ❌ ➔ ₹2999' },
-  { category: 'Holi Treatments 🌈', service: 'Smoothing + FREE Haircut', price: '₹3500 ❌ ➔ ₹2799' },
-  { category: 'Holi Treatments 🌈', service: 'Nano Therapy + FREE Haircut', price: '₹4000 ❌ ➔ ₹3299' },
-  { category: 'Holi Treatments 🌈', service: 'Botox + FREE Haircut', price: '₹3300 ❌ ➔ ₹2499' },
-  { category: 'Holi Color 🌈', service: 'Global Color + FREE Haircut', price: '₹2500 ❌ ➔ ₹1999' },
-  { category: 'Holi Color 🌈', service: 'Highlight + FREE Haircut', price: '₹2500 ❌ ➔ ₹1999' }
+  { id: 'svc_treat_mirror', title: 'Boto Smooth + FREE Cut', price: '₹2,999/-', description: '₹4500 ❌ ➔ ₹2999 (Holi Offer)', category: 'Treatment 🌈' },
+  { id: 'svc_treat_smooth', title: 'Smoothing + FREE Cut', price: '₹2,799/-', description: '₹3500 ❌ ➔ ₹2799 (Holi Offer)', category: 'Treatment 🌈' },
+  { id: 'svc_treat_nano', title: 'Nano Therapy + FREE Cut', price: '₹3,299/-', description: '₹4000 ❌ ➔ ₹3299 (Holi Offer)', category: 'Treatment 🌈' },
+  { id: 'svc_treat_botox', title: 'Botox + FREE Cut', price: '₹2,499/-', description: '₹3300 ❌ ➔ ₹2499 (Holi Offer)', category: 'Treatment 🌈' },
+  { id: 'svc_treat_brazil', title: 'Brazil Therapy + FREE Cut', price: '₹2,499/-', description: '₹3000 ❌ ➔ ₹2499 (Holi Offer)', category: 'Treatment 🌈' },
+  { id: 'svc_treat_keratin', title: 'Keratin + FREE Cut', price: '₹1,999/-', description: '₹2500 ❌ ➔ ₹1999 (Holi Offer)', category: 'Treatment 🌈' },
+  { id: 'svc_color_global', title: 'Global Color + FREE Cut', price: '₹1,999/-', description: '₹2500 ❌ ➔ ₹1999 (Holi Offer)', category: 'Colour 🌈' },
+  { id: 'svc_color_balayage', title: 'Balayage + FREE Cut', price: '₹1,999/-', description: '₹2500 ❌ ➔ ₹1999 (Holi Offer)', category: 'Colour 🌈' },
+  { id: 'svc_color_classic', title: 'Highlight + FREE Cut', price: '₹1,999/-', description: '₹2500 ❌ ➔ ₹1999 (Holi Offer)', category: 'Colour 🌈' },
+  { id: 'svc_color_roots', title: 'Root Touch Up', price: '₹1,000/-', description: 'Professional Touch Up', category: 'Standard' },
 ];
 
 // Helper to get or initialize user session
@@ -288,7 +299,7 @@ async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons, t
     }
   };
   // Remove undefined header if not set
-  if (!header) delete data.interactive.header;
+  if (!header && !imageHeader) delete data.interactive.header;
   try {
     await axios.post(url, data, {
       headers: {
@@ -367,7 +378,7 @@ async function sendWhatsAppList({ phoneNumberId, to, header, body, button, rows,
       }
     }
   };
-  if (!header) delete data.interactive.header;
+  if (!header && !imageHeader) delete data.interactive.header;
   try {
     await axios.post(url, data, {
       headers: {
@@ -575,6 +586,65 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   // Pass common params to helpers
   const helperParams = { phoneNumberId, token, io, clientId };
 
+  // 1. Handle Advanced Upsell Button
+  if (userMsg === 'upsell_add_mirror_shine') {
+    try {
+      // Find latest appointment for this user
+      const lastAppt = await Appointment.findOne({ phoneNumber: from, clientId }).sort({ createdAt: -1 });
+
+      if (lastAppt) {
+        const upgradeService = 'Mirror Shine Boto Smooth';
+        const upgradePrice = 4000;
+
+        // Update Appointment in DB
+        lastAppt.service += ` + ${upgradeService}`;
+        lastAppt.revenue += upgradePrice;
+        lastAppt.logs.push({
+          action: 'update',
+          changedBy: 'chatbot',
+          source: 'chatbot',
+          details: `User added premium upsell: ${upgradeService}`
+        });
+        await lastAppt.save();
+
+        // Notify Admins
+        const adminAlert = `💅 *Client Upgraded to Premium!*\n\n👤 *Client:* ${lastAppt.name}\n📱 *Phone:* ${from}\n📅 *Date:* ${lastAppt.date}\n🕒 *Time:* ${lastAppt.time}\n\n✨ *New Total Service:* ${lastAppt.service}\n💰 *Updated Revenue:* ${lastAppt.revenue}`;
+        await notifyAdmins({ ...helperParams, message: adminAlert, adminNumbers });
+
+        // Confirm to User
+        await sendWhatsAppButtons({
+          ...helperParams,
+          to: from,
+          imageHeader: HOLI_IMG,
+          body: `✨ *Legendary Choice!* ✨
+
+I've updated your session to the ultimate luxury experience!
+
+✅ *Final Booking Details*
+👤 *Client:* ${lastAppt.name}
+📅 *Date:* ${lastAppt.date}
+🕒 *Time:* ${lastAppt.time}
+💇‍♀️ *Stylist:* ${lastAppt.doctor || 'Not specified'}
+💅 *Total Services:* ${lastAppt.service}
+
+Shubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️`,
+          buttons: [
+            { id: 'user_home', title: '🏠 Home' },
+            { id: 'user_ask_question', title: '❓ Ask Question' }
+          ]
+        });
+
+        res.status(200).end();
+        return;
+      } else {
+        // Fallback if no appointment found
+        await sendWhatsAppText({ ...helperParams, to: from, body: "I couldn't find your latest booking to update it. Please ask us in person!" });
+      }
+    } catch (upsellErr) {
+      console.error('❌ Error processing upsell:', upsellErr);
+    }
+  }
+
   // Track lead interaction for Active Leads display
   try {
     await AdLead.updateOne(
@@ -698,8 +768,8 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     await sendWhatsAppButtons({
       ...helperParams,
       to: from,
-      imageHeader: 'https://instagram.famd1-2.fna.fbcdn.net/v/t51.2885-19/436333745_1497177940869325_2985750738127060080_n.jpg?efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLmRqYW5nby4xMDgwLmMyIn0&_nc_ht=instagram.famd1-2.fna.fbcdn.net&_nc_cat=101&_nc_oc=Q6cZ2QH8vCGf2jGUX3lSsvjRV2axzhtJLYNHfIbhUn1TQkvNKEvnx4XWgdyKCrgXVx8KsC9Pq5Fgfk9UcjXn18wL8ThL&_nc_ohc=8-CBI_zJuBwQ7kNvwEeJ635&_nc_gid=Gp62ZusslBSvo5TFvcyJAg&edm=ALGbJPMBAAAA&ccb=7-5&oh=00_AftGK8L_C4HRW6SdWj31MRppEsoQ-N4fEB14vEohvB7zrA&oe=69A1B22C&_nc_sid=7d3ac5',
-      body: 'Hi 👋\n\nThis is Shubhashbhai from Choice Salon! ✨ Celebrate Holi with our exclusive deals (24 Mar - 5 Mar)!\n\n🎁 *Holi Special:* Get a *FREE HAIRCUT* with any Spa, Treatment, or Color service! 💇‍♀️\n\nHow can I help you today? ✨',
+      imageHeader: HOLI_IMG,
+      body: `Hi 👋\n\nThis is Shubhashbhai from Choice Salon! ✨ Celebrate Holi with our exclusive deals (${HOLI_DATES})!\n\n🎁 *Holi Special:* Get a *FREE HAIRCUT* with any Spa, Treatment, or Color service! 💇‍♀️\n\nHow can I help you today? ✨`,
       buttons: [
         { id: 'user_schedule_appt', title: 'Book Holi Offer 📅' },
         { id: 'user_pricing', title: 'Offer Price List 💰' },
@@ -969,8 +1039,8 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     await sendWhatsAppButtons({
       ...helperParams,
       to: from,
-      imageHeader: 'https://instagram.famd1-2.fna.fbcdn.net/v/t51.2885-19/436333745_1497177940869325_2985750738127060080_n.jpg?efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLmRqYW5nby4xMDgwLmMyIn0&_nc_ht=instagram.famd1-2.fna.fbcdn.net&_nc_cat=101&_nc_oc=Q6cZ2QH8vCGf2jGUX3lSsvjRV2axzhtJLYNHfIbhUn1TQkvNKEvnx4XWgdyKCrgXVx8KsC9Pq5Fgfk9UcjXn18wL8ThL&_nc_ohc=8-CBI_zJuBwQ7kNvwEeJ635&_nc_gid=Gp62ZusslBSvo5TFvcyJAg&edm=ALGbJPMBAAAA&ccb=7-5&oh=00_AftGK8L_C4HRW6SdWj31MRppEsoQ-N4fEB14vEohvB7zrA&oe=69A1B22C&_nc_sid=7d3ac5',
-      body: 'Hi 👋\n\nThis is Shubhashbhai from Choice Salon! ✨ Celebrate Holi with our exclusive deals (24 Mar - 5 Mar)!\n\n🎁 *Holi Special:* Get a *FREE HAIRCUT* with any Spa, Treatment, or Color service! 💇‍♀️\n\nHow can I help you today? ✨',
+      imageHeader: HOLI_IMG,
+      body: `Hi 👋\n\nThis is Shubhashbhai from Choice Salon! ✨ Celebrate Holi with our exclusive deals (${HOLI_DATES})!\n\n🎁 *Holi Special:* Get a *FREE HAIRCUT* with any Spa, Treatment, or Color service! 💇‍♀️\n\nHow can I help you today? ✨`,
       buttons: [
         { id: 'user_schedule_appt', title: 'Book Holi Offer 📅' },
         { id: 'user_pricing', title: 'Offer Price List 💰' },
@@ -1437,7 +1507,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         await sendWhatsAppButtons({
           ...helperParams,
           to: from,
-          header: 'Booking Summary',
+          imageHeader: HOLI_IMG,
           body: `✨ *Review Your Holi Booking* ✨
 
 👤 *Client:* ${session.data.name}
@@ -1446,9 +1516,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}
 💅 *Service:* ${session.data.chosenService || 'General Salon Session'}
 
-📱 *Contact:* ${session.data.phone}
-
-*Please choose your communication preference below:*`,
+📱 *Contact:* ${session.data.phone}`,
           footer: '🔔 Opt-in for reminders & birthday wishes 🎂',
           buttons: [
             { id: 'consent_confirm_all', title: '✅ Accept All' },
@@ -1466,7 +1534,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         await sendWhatsAppButtons({
           ...helperParams,
           to: from,
-          header: 'Booking Summary',
+          imageHeader: HOLI_IMG,
           body: `✨ *Review Your Holi Booking* ✨
 
 👤 *Client:* ${session.data.name}
@@ -1475,9 +1543,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}
 💅 *Service:* ${session.data.chosenService || 'General Salon Session'}
 
-📱 *Contact:* ${session.data.phone}
-
-*Please choose your communication preference below:*`,
+📱 *Contact:* ${session.data.phone}`,
           footer: '🔔 Opt-in for reminders & birthday wishes 🎂',
           buttons: [
             { id: 'consent_confirm_all', title: '✅ Accept All' },
@@ -1789,7 +1855,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       }
 
       confirmationBody += `\n\n,
-          footer: '❌ To stop receiving messages, reply with "STOP" at any time.'`;
+          footer: ''`;
 
       await sendWhatsAppButtons({
         ...helperParams,
@@ -1803,34 +1869,23 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         ]
       });
 
-      // Send Upsell message after 5 minutes (300,000 ms)
+      // Send Advanced Upsell message after 5 minutes (300,000 ms)
       setTimeout(async () => {
         try {
-          let upsellMsg = '';
-          const chosenService = (session.data.chosenService || '').toLowerCase();
-
-          if (chosenService.includes('haircut')) {
-            upsellMsg = `✨ *Exclusive Upgrade for You!* ✨\n\n` +
-              `Since you've booked a Haircut, would you like to add a *Luxury Hair Spa* or a *Deep Conditioning Treatment*? 🛁\n\n` +
-              `These treatments are perfect for keeping your hair healthy and shiny! ✨\n\n` +
-              `🎁 *SPECIAL OFFER:* Get *10% OFF* if you add any treatment to your haircut today! 🎟️\n\n` +
-              `Reply "YES" if you'd like to add this to your booking.`;
-          } else {
-            // General upsell for other services
-            upsellMsg = `✨ *Complete Your Glow-Up!* ✨\n\n` +
-              `Would you like to add a *Refreshing Pedicure* or *Threading* to your visit? 🦶🧶\n\n` +
-              `🎁 *SPECIAL OFFER:* Book an additional service now and get *10% OFF* on the add-on! 🎟️\n\n` +
-              `Reply with the service name if you're interested!`;
-          }
-
-          await sendWhatsAppText({
+          // Send Premium Interactive Upsell
+          await sendWhatsAppButtons({
             ...helperParams,
             to: from,
-            body: upsellMsg
+            imageHeader: HOLI_IMG,
+            body: `✨ *Complete Your Glow-Up!* ✨\n\nUpgrade your visit with our most requested premium treatment: *Mirror Shine Boto Smooth* (₹4,000). 💎\n\nIt's our #1 high-end treatment for ultimate glass-like shine and deep hair restoration. You deserve that extra sparkle! 💅✨`,
+            footer: 'Limited slots available for premium treatments!',
+            buttons: [
+              { id: 'upsell_add_mirror_shine', title: 'Add to Booking 💅' }
+            ]
           });
-          console.log(`✅ Delayed upsell message sent to ${from}`);
+          console.log(`✅ Advanced interactive upsell sent to ${from}`);
         } catch (err) {
-          console.error(`❌ Error sending delayed upsell message to ${from}:`, err);
+          console.error(`❌ Error sending advanced upsell to ${from}:`, err);
         }
       }, 300000);
 
@@ -2162,13 +2217,13 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         `Map: https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
         `Please arrive 15 minutes early for your appointment.`;
 
-      confirmationBody += `\n\nReminders: You'll receive updates before your appointment.`;
+
 
       await sendWhatsAppButtons({
         ...helperParams,
         to: from,
-        header: '✅ Booking Confirmed',
-        body: confirmationBody,
+        imageHeader: HOLI_IMG,
+        body: `✅ *Booking Confirmed*\n\n👤 *Client:* ${session.data.name}\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n💅 *Service:* ${session.data.chosenService || 'General Session'}\n\n📍 *Choice Salon for Ladies, Nikol*\n🏢 2nd Floor, Raspan Arcade, 6-7, Nikol\n🗺️ Map: https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n⏰ *Please arrive 15 minutes early*`,
         footer: '❌ To stop receiving messages, reply with "STOP" at any time.',
         buttons: [
           { id: 'book_another', title: '📅 Book Another' },

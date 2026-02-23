@@ -28,6 +28,8 @@ const GREETING_WORDS = [
   'radhe radhe', 'halo', 'tame', 'shubhashbhai'
 ];
 
+const SALON_IMG = 'https://instagram.famd1-2.fna.fbcdn.net/v/t51.2885-19/436333745_1497177940869325_2985750738127060080_n.jpg?efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLmRqYW5nby4xMDgwLmMyIn0&_nc_ht=instagram.famd1-2.fna.fbcdn.net&_nc_cat=101&_nc_oc=Q6cZ2QH8vCGf2jGUX3lSsvjRV2axzhtJLYNHfIbhUn1TQkvNKEvnx4XWgdyKCrgXVx8KsC9Pq5Fgfk9UcjXn18wL8ThL&_nc_ohc=8-CBI_zJuBwQ7kNvwEeJ635&_nc_gid=Gp62ZusslBSvo5TFvcyJAg&edm=ALGbJPMBAAAA&ccb=7-5&oh=00_AftGK8L_C4HRW6SdWj31MRppEsoQ-N4fEB14vEohvB7zrA&oe=69A1B22C&_nc_sid=7d3ac5';
+
 // Add at the top for topic list
 const QUESTION_TOPICS = [
   { id: 'ask_services', title: 'Services' },
@@ -298,7 +300,7 @@ async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons, t
     }
   };
   // Remove undefined header if not set
-  if (!header) delete data.interactive.header;
+  if (!header && !imageHeader) delete data.interactive.header;
   try {
     await axios.post(url, data, {
       headers: {
@@ -377,7 +379,7 @@ async function sendWhatsAppList({ phoneNumberId, to, header, body, button, rows,
       }
     }
   };
-  if (!header) delete data.interactive.header;
+  if (!header && !imageHeader) delete data.interactive.header;
   try {
     await axios.post(url, data, {
       headers: {
@@ -585,6 +587,65 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   // Pass common params to helpers
   const helperParams = { phoneNumberId, token, io, clientId };
 
+  // 1. Handle Advanced Upsell Button
+  if (userMsg === 'upsell_add_mirror_shine') {
+    try {
+      // Find latest appointment for this user
+      const lastAppt = await Appointment.findOne({ phoneNumber: from, clientId }).sort({ createdAt: -1 });
+
+      if (lastAppt) {
+        const upgradeService = 'Mirror Shine Boto Smooth';
+        const upgradePrice = 4000;
+
+        // Update Appointment in DB
+        lastAppt.service += ` + ${upgradeService}`;
+        lastAppt.revenue += upgradePrice;
+        lastAppt.logs.push({
+          action: 'update',
+          changedBy: 'chatbot',
+          source: 'chatbot',
+          details: `User added premium upsell: ${upgradeService}`
+        });
+        await lastAppt.save();
+
+        // Notify Admins
+        const adminAlert = `💅 *Client Upgraded to Premium!*\n\n👤 *Client:* ${lastAppt.name}\n📱 *Phone:* ${from}\n📅 *Date:* ${lastAppt.date}\n🕒 *Time:* ${lastAppt.time}\n\n✨ *New Total Service:* ${lastAppt.service}\n💰 *Updated Revenue:* ${lastAppt.revenue}`;
+        await notifyAdmins({ ...helperParams, message: adminAlert, adminNumbers });
+
+        // Confirm to User
+        await sendWhatsAppButtons({
+          ...helperParams,
+          to: from,
+          imageHeader: SALON_IMG,
+          body: `✨ *Legendary Choice!* ✨
+
+I've updated your session to the ultimate luxury experience!
+
+✅ *Final Booking Details*
+👤 *Client:* ${lastAppt.name}
+📅 *Date:* ${lastAppt.date}
+🕒 *Time:* ${lastAppt.time}
+💇‍♀️ *Stylist:* ${lastAppt.doctor || 'Not specified'}
+💅 *Total Services:* ${lastAppt.service}
+
+Shubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️`,
+          buttons: [
+            { id: 'user_home', title: '🏠 Home' },
+            { id: 'user_ask_question', title: '❓ Ask Question' }
+          ]
+        });
+
+        res.status(200).end();
+        return;
+      } else {
+        // Fallback if no appointment found
+        await sendWhatsAppText({ ...helperParams, to: from, body: "I couldn't find your latest booking to update it. Please ask us in person!" });
+      }
+    } catch (upsellErr) {
+      console.error('❌ Error processing upsell:', upsellErr);
+    }
+  }
+
   // Track lead interaction for Active Leads display
   try {
     await AdLead.updateOne(
@@ -708,7 +769,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     await sendWhatsAppButtons({
       ...helperParams,
       to: from,
-      imageHeader: 'https://instagram.famd1-2.fna.fbcdn.net/v/t51.2885-19/436333745_1497177940869325_2985750738127060080_n.jpg?efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLmRqYW5nby4xMDgwLmMyIn0&_nc_ht=instagram.famd1-2.fna.fbcdn.net&_nc_cat=101&_nc_oc=Q6cZ2QH8vCGf2jGUX3lSsvjRV2axzhtJLYNHfIbhUn1TQkvNKEvnx4XWgdyKCrgXVx8KsC9Pq5Fgfk9UcjXn18wL8ThL&_nc_ohc=8-CBI_zJuBwQ7kNvwEeJ635&_nc_gid=Gp62ZusslBSvo5TFvcyJAg&edm=ALGbJPMBAAAA&ccb=7-5&oh=00_AftGK8L_C4HRW6SdWj31MRppEsoQ-N4fEB14vEohvB7zrA&oe=69A1B22C&_nc_sid=7d3ac5',
+      imageHeader: SALON_IMG,
       body: 'Hi 👋\n\nThis is Shubhashbhai from Choice Salon! ✨ Welcome to our virtual assistant. How can I help you today? ✨',
       buttons: [
         { id: 'user_schedule_appt', title: 'Book Appointment 📅' },
@@ -979,7 +1040,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     await sendWhatsAppButtons({
       ...helperParams,
       to: from,
-      imageHeader: 'https://instagram.famd1-2.fna.fbcdn.net/v/t51.2885-19/436333745_1497177940869325_2985750738127060080_n.jpg?efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLmRqYW5nby4xMDgwLmMyIn0&_nc_ht=instagram.famd1-2.fna.fbcdn.net&_nc_cat=101&_nc_oc=Q6cZ2QH8vCGf2jGUX3lSsvjRV2axzhtJLYNHfIbhUn1TQkvNKEvnx4XWgdyKCrgXVx8KsC9Pq5Fgfk9UcjXn18wL8ThL&_nc_ohc=8-CBI_zJuBwQ7kNvwEeJ635&_nc_gid=Gp62ZusslBSvo5TFvcyJAg&edm=ALGbJPMBAAAA&ccb=7-5&oh=00_AftGK8L_C4HRW6SdWj31MRppEsoQ-N4fEB14vEohvB7zrA&oe=69A1B22C&_nc_sid=7d3ac5',
+      imageHeader: SALON_IMG,
       body: 'Hi 👋\n\nThis is Shubhashbhai from Choice Salon! ✨ Welcome to our virtual assistant. How can I help you today? ✨',
       buttons: [
         { id: 'user_schedule_appt', title: 'Book Appointment 📅' },
@@ -1447,7 +1508,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         await sendWhatsAppButtons({
           ...helperParams,
           to: from,
-          header: 'Booking Summary',
+          imageHeader: SALON_IMG,
           body: `✨ *Review Your Booking* ✨
 
 👤 *Client:* ${session.data.name}
@@ -1456,9 +1517,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}
 💅 *Service:* ${session.data.chosenService || 'General Salon Session'}
 
-📱 *Contact:* ${session.data.phone}
-
-*Please choose your communication preference below:*`,
+📱 *Contact:* ${session.data.phone}`,
           footer: '🔔 Opt-in for reminders & birthday wishes 🎂',
           buttons: [
             { id: 'consent_confirm_all', title: '✅ Accept All' },
@@ -1476,7 +1535,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         await sendWhatsAppButtons({
           ...helperParams,
           to: from,
-          header: 'Booking Summary',
+          imageHeader: SALON_IMG,
           body: `✨ *Review Your Booking* ✨
 
 👤 *Client:* ${session.data.name}
@@ -1485,9 +1544,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}
 💅 *Service:* ${session.data.chosenService || 'General Salon Session'}
 
-📱 *Contact:* ${session.data.phone}
-
-*Please choose your communication preference below:*`,
+📱 *Contact:* ${session.data.phone}`,
           footer: '🔔 Opt-in for reminders & birthday wishes 🎂',
           buttons: [
             { id: 'consent_confirm_all', title: '✅ Accept All' },
@@ -1799,7 +1856,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       }
 
       confirmationBody += `\n\n,
-          footer: '❌ To stop receiving messages, reply with "STOP" at any time.'`;
+          footer: ''`;
 
       await sendWhatsAppButtons({
         ...helperParams,
@@ -2172,14 +2229,14 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         `Map: https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
         `Please arrive 15 minutes early for your appointment.`;
 
-      confirmationBody += `\n\nReminders: You'll receive updates before your appointment.`;
+
 
       await sendWhatsAppButtons({
         ...helperParams,
         to: from,
-        header: '✅ Booking Confirmed',
-        body: confirmationBody,
-        footer: '❌ To stop receiving messages, reply with "STOP" at any time.',
+        imageHeader: SALON_IMG,
+        body: `✅ *Booking Confirmed*\n\n👤 *Client:* ${session.data.name}\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n💅 *Service:* ${session.data.chosenService || 'General Session'}\n\n📍 *Choice Salon for Ladies, Nikol*\n🏢 2nd Floor, Raspan Arcade, 6-7, Nikol\n🗺️ Map: https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n⏰ *Please arrive 15 minutes early*`,
+        footer: '',
         buttons: [
           { id: 'book_another', title: '📅 Book Another' },
           { id: 'user_ask_question', title: '❓ Ask Question' },
@@ -2187,34 +2244,23 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         ]
       });
 
-      // Send Upsell message after 5 minutes (300,000 ms)
+      // Send Advanced Upsell message after 5 minutes (300,000 ms)
       setTimeout(async () => {
         try {
-          let upsellMsg = '';
-          const chosenService = (session.data.chosenService || '').toLowerCase();
-
-          if (chosenService.includes('haircut')) {
-            upsellMsg = `Exclusive Upgrade for You\n\n` +
-              `Since you've booked a Haircut, would you like to add a Luxury Hair Spa or a Deep Conditioning Treatment?\n\n` +
-              `These treatments help keep your hair healthy and shiny.\n\n` +
-              `SPECIAL OFFER: Get 10% OFF if you add any treatment to your haircut today.\n\n` +
-              `Reply "YES" if you'd like to add this to your booking.`;
-          } else {
-            // General upsell for other services
-            upsellMsg = `Complete Your Visit\n\n` +
-              `Would you like to add a Refreshing Pedicure or Threading to your visit?\n\n` +
-              `SPECIAL OFFER: Book an additional service now and get 10% OFF on the add-on.\n\n` +
-              `Reply with the service name if you're interested!`;
-          }
-
-          await sendWhatsAppText({
+          // Send Premium Interactive Upsell
+          await sendWhatsAppButtons({
             ...helperParams,
             to: from,
-            body: upsellMsg
+            imageHeader: SALON_IMG,
+            body: `✨ *Complete Your Glow-Up!* ✨\n\nUpgrade your visit with our most requested premium treatment: *Mirror Shine Boto Smooth* (₹4,000). 💎\n\nIt's our #1 high-end treatment for ultimate glass-like shine and deep hair restoration. You deserve that extra sparkle! 💅✨`,
+            footer: 'Limited slots available for premium treatments!',
+            buttons: [
+              { id: 'upsell_add_mirror_shine', title: 'Add to Booking 💅' }
+            ]
           });
-          console.log(`✅ Delayed upsell message sent to ${from}`);
+          console.log(`✅ Advanced interactive upsell sent to ${from}`);
         } catch (err) {
-          console.error(`❌ Error sending delayed upsell message to ${from}:`, err);
+          console.error(`❌ Error sending advanced upsell to ${from}:`, err);
         }
       }, 300000);
 
