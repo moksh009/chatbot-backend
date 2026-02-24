@@ -19,7 +19,7 @@ const { getAvailableTimeSlots, createEvent, deleteEvent, findEventsByPhoneNumber
 const { getAvailableDates } = require('../../utils/getAvailableDates');
 const { getAvailableSlots } = require('../../utils/getAvailableSlots');
 
-// --- ELITE TURF CONSTANTS ---
+// --- ROUGH N TURF CONSTANTS ---
 const TURF_LOGO = 'https://i.imgur.com/vH1rN8o.jpeg';  // Direct JPEG link to prevent MIME type error
 const EQUIPMENT_B_TEXT = 'Match Ball & Bibs ⚽';
 const EQUIPMENT_B_PRICE = 300;
@@ -331,7 +331,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           await sendWhatsAppButtons({
             phoneNumberId, to: from, token, io, clientId,
             imageHeader: TURF_LOGO,
-            body: `⚽ *Elite Add-on Confirmed!* ⚽\n\nWe've successfully added the *${addOnText.replace(' ⚽', '').replace(' ⏱️', '')}* to your booking.\n\n✅ *Final Booking Summary*\n👤 *Captain:* ${lastAppt.name}\n📅 *Date:* ${lastAppt.date}\n🕒 *Time:* ${lastAppt.time}\n🏟️ *Turf:* ${lastAppt.doctor || 'Standard'}\n⚽ *Package:* ${lastAppt.service}\n💰 *Total Due:* ₹${lastAppt.revenue}\n\nCan't wait to see you on the pitch! 🏆👇`,
+            body: `⚽ *Rough N Turf Add-on Confirmed!* ⚽\n\nWe've successfully added the *${addOnText.replace(' ⚽', '').replace(' ⏱️', '')}* to your booking.\n\n✅ *Final Booking Summary*\n👤 *Captain:* ${lastAppt.name}\n📅 *Date:* ${lastAppt.date}\n🕒 *Time:* ${lastAppt.time}\n🏟️ *Turf:* ${lastAppt.doctor || 'Standard'}\n⚽ *Package:* ${lastAppt.service}\n💰 *Total Due:* ₹${lastAppt.revenue}\n\nCan't wait to see you on the pitch! 🏆👇`,
             footer: 'Click below to share details with your squad!',
             buttons: [
               { id: 'action_share_squad', title: 'Share with Squad 📲' },
@@ -395,7 +395,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       phoneNumberId,
       to: from,
       imageHeader: TURF_LOGO,
-      body: '⚽ *Welcome to Elite Sports Turf!* 🏆\n\nI’m your virtual booking assistant. Ready for the next match? Choose an option below:',
+      body: '⚽ *Welcome to Rough N Turf!* 🏆\n\nI’m your virtual booking assistant. Ready for the next match? Choose an option below:',
       footer: 'Experience premium turf facilities at best prices!',
       buttons: [
         { id: 'user_schedule_appt', title: 'Book Turf 🗓️' },
@@ -413,7 +413,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       phoneNumberId,
       to: from,
       imageHeader: TURF_LOGO,
-      body: 'Welcome to Elite Sports Turf! ⚽\n\nHere are all our options:',
+      body: 'Welcome to Rough N Turf! ⚽\n\nHere are all our options:',
       button: 'Menu',
       rows: [
         { id: 'user_schedule_appt', title: 'Book Turf 🗓️' },
@@ -431,7 +431,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     await sendWhatsAppButtons({
       phoneNumberId, to: from, token, io, clientId,
       imageHeader: TURF_LOGO,
-      body: `💰 *Elite Turf Pricing Models*\n\nWe feature dynamic pricing to give you the best deals based on sunlight and peak traffic!\n\n📉 *Off-Peak Hours (10:00 AM - 4:00 PM)*\nRate: ₹${OFF_PEAK_PRICE} / hr\n\n🌟 *Prime Time Hours (5:00 PM - 11:00 PM & 6:00 AM - 9:00 AM)*\nRate: ₹${PEAK_PRICE} / hr\n\n_Note: Equipment and Refs are available as add-ons after booking._`,
+      body: `💰 *Rough N Turf Pricing Models*\n\nWe feature dynamic pricing to give you the best deals based on sunlight and peak traffic!\n\n📉 *Off-Peak Hours (10:00 AM - 4:00 PM)*\nRate: ₹${OFF_PEAK_PRICE} / hr\n\n🌟 *Prime Time Hours (5:00 PM - 11:00 PM & 6:00 AM - 9:00 AM)*\nRate: ₹${PEAK_PRICE} / hr\n\n_Note: Equipment and Refs are available as add-ons after booking._`,
       buttons: [
         { id: 'user_schedule_appt', title: 'Book Now ⚽' },
         { id: 'user_home', title: 'Main Menu' }
@@ -615,12 +615,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         // Notify Admin
         await notifyAdmins({
           phoneNumberId,
-          message: `🏆 *New Elite Turf Booking*\n\n👤 *Captain:* ${session.data.name}\n📅 *Date:* ${session.data.dateStr || session.data.date}\n🕒 *Time:* ${session.data.time}\n🏟️ *Arena:* ${session.data.doctor}\n💰 *Revenue:* ₹${revenue}`,
+          message: `🏆 *New Rough N Turf Booking*\n\n👤 *Captain:* ${session.data.name}\n📅 *Date:* ${session.data.dateStr || session.data.date}\n🕒 *Time:* ${session.data.time}\n🏟️ *Arena:* ${session.data.doctor}\n💰 *Revenue:* ₹${revenue}`,
           token,
           adminNumbers, io, clientId
         });
 
-        // Immediate Elite Upsell Trigger
+        // Immediate Rough N Turf Upsell Trigger
         await sendWhatsAppButtons({
           phoneNumberId, to: from, token, io, clientId,
           imageHeader: TURF_LOGO,
@@ -656,11 +656,10 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     return res.status(200).end();
   }
 
-  // Fallback / AI Chat
   if (userMsgType === 'text') {
     try {
       const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-      const fullPrompt = `System: You are an elite assistant for a premium sports turf. Use professional, energetic tone. Answer this user: ${userMsg}`;
+      const fullPrompt = `System: You are an assistant for Rough N Turf, a premium sports turf. Use professional, energetic tone. Answer this user: ${userMsg}`;
       const result = await model.generateContent(fullPrompt);
       const reply = result.response.text().trim();
       await sendWhatsAppButtons({
