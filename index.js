@@ -520,7 +520,8 @@ cron.schedule('*/10 * * * *', async () => {
       const token = client.whatsappToken || process.env.WHATSAPP_TOKEN;
       const phoneid = client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
       const clientId = client.clientId;
-      const adminNumbers = ['919824474547']; // Hardcoded Choice Salon Admin
+      const adminNumbers = [...(client.config?.adminPhones || []), client.config?.adminPhone, '919824474547', process.env.ADMIN_PHONE_NUMBER].filter(Boolean);
+      const uniqueAdmins = [...new Set(adminNumbers)];
 
       if (!token || !phoneid) continue;
 
@@ -561,7 +562,7 @@ cron.schedule('*/10 * * * *', async () => {
 
           const message = `🔔 *UPCOMING APPOINTMENT ALERT*\n\nYou have an appointment arriving in exactly *1 Hour*.\n\n👤 *Client:* ${patientName}\n📞 *Phone:* ${phone}\n💅 *Service:* ${service}\n⏰ *Time:* ${eventTime}\n\n_Please ensure the station is prepared!_ ✨`;
 
-          for (const adminPhone of adminNumbers) {
+          for (const adminPhone of uniqueAdmins) {
             await sendWhatsAppText({
               phoneNumberId: phoneid,
               to: adminPhone,

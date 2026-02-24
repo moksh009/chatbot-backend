@@ -1584,33 +1584,30 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         const stylistId = session.data.stylistId || session.data.stylist;
         const calendarId = calendars[stylistId] || calendars[session.data.stylist] || process.env.GCAL_CALENDAR_ID;
 
-        // Check if an event already exists for this time slot to prevent duplicates
+        // Check if the time slot has reached its 4-person capacity
         try {
-          const existingEvents = await getAvailableTimeSlots({
+          const availableSlots = await getAvailableTimeSlots({
             date: session.data.date,
             startTime: '00:00',
             endTime: '23:59',
-            calendarId
+            calendarId,
+            clientId: 'choice_salon',
+            doctor: session.data.stylist,
+            capacity: 4
           });
 
-          // Check if there's already an event in this time slot
-          const conflictingEvent = existingEvents.find(event => {
-            const eventStart = DateTime.fromISO(event.start);
-            const eventEnd = DateTime.fromISO(event.end);
-            const slotStartTime = slotStart;
-            const slotEndTime = slotEnd;
-
-            // Check if events overlap
-            return (slotStartTime < eventEnd && slotEndTime > eventStart);
+          const isSlotAvailable = availableSlots.some(slot => {
+            const sStart = DateTime.fromISO(slot.start);
+            const sEnd = DateTime.fromISO(slot.end);
+            return (slotStart >= sStart && slotEnd <= sEnd);
           });
 
-          if (conflictingEvent) {
-            console.log('⚠️ Conflicting event found:', conflictingEvent);
-            throw new Error('This time slot is no longer available. Please choose a different time.');
+          if (!isSlotAvailable) {
+            throw new Error('This time slot is now full. Please choose a different time.');
           }
         } catch (checkError) {
-          console.log('⚠️ Could not check for conflicting events:', checkError.message);
-          // Continue with booking even if check fails
+          if (checkError.message.includes('now full')) throw checkError;
+          console.warn('⚠️ Capacity check warning:', checkError.message);
         }
 
         // Create event description based on consent
@@ -1978,33 +1975,30 @@ Upgrade to our *Mirror Shine Boto Smooth* (₹4,000) for that ultimate glass-lik
         const stylistId = session.data.stylistId || session.data.stylist;
         const calendarId = calendars[stylistId] || calendars[session.data.stylist] || process.env.GCAL_CALENDAR_ID;
 
-        // Check if an event already exists for this time slot to prevent duplicates
+        // Check if the time slot has reached its 4-person capacity
         try {
-          const existingEvents = await getAvailableTimeSlots({
+          const availableSlots = await getAvailableTimeSlots({
             date: session.data.date,
             startTime: '00:00',
             endTime: '23:59',
-            calendarId
+            calendarId,
+            clientId: 'choice_salon',
+            doctor: session.data.stylist,
+            capacity: 4
           });
 
-          // Check if there's already an event in this time slot
-          const conflictingEvent = existingEvents.find(event => {
-            const eventStart = DateTime.fromISO(event.start);
-            const eventEnd = DateTime.fromISO(event.end);
-            const slotStartTime = slotStart;
-            const slotEndTime = slotEnd;
-
-            // Check if events overlap
-            return (slotStartTime < eventEnd && slotEndTime > eventStart);
+          const isSlotAvailable = availableSlots.some(slot => {
+            const sStart = DateTime.fromISO(slot.start);
+            const sEnd = DateTime.fromISO(slot.end);
+            return (slotStart >= sStart && slotEnd <= sEnd);
           });
 
-          if (conflictingEvent) {
-            console.log('⚠️ Conflicting event found:', conflictingEvent);
-            throw new Error('This time slot is no longer available. Please choose a different time.');
+          if (!isSlotAvailable) {
+            throw new Error('This time slot is now full. Please choose a different time.');
           }
         } catch (checkError) {
-          console.log('⚠️ Could not check for conflicting events:', checkError.message);
-          // Continue with booking even if check fails
+          if (checkError.message.includes('now full')) throw checkError;
+          console.warn('⚠️ Capacity check warning:', checkError.message);
         }
 
         // Create event description based on consent

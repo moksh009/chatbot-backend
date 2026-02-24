@@ -7,13 +7,13 @@ const { listEvents, createEvent, updateEvent, deleteEvent } = require('../utils/
 const { DateTime } = require('luxon');
 
 // Helper to check for overlapping appointments
-const checkOverlap = async (clientId, doctor, start, end, excludeId = null) => {
+const checkOverlap = async (clientId, doctor, start, end, excludeId = null, capacity = 4) => {
   const newStart = new Date(start);
   const newEnd = new Date(end);
 
-  // 1. Check DB for conflicts (Using string-based date/time from schema)
+  // 1. Count DB overlaps (using same string-based logic as chatbot logic)
   const { date: targetDate, time: targetTime } = formatDateTime(start);
-  const query = {
+  const dbQuery = {
     clientId,
     doctor,
     date: targetDate,
@@ -21,29 +21,19 @@ const checkOverlap = async (clientId, doctor, start, end, excludeId = null) => {
     status: { $ne: 'cancelled' }
   };
 
-  if (excludeId) {
-    // If it's a mongo ID
-    if (excludeId.length === 24) {
-      query._id = { $ne: excludeId };
-    }
-    // If it's a GCal event ID, the DB check might not filter it out easily 
-    // but the GCal check below will handle it.
+  if (excludeId && excludeId.length === 24) {
+    dbQuery._id = { $ne: excludeId };
   }
 
+  let dbCount = 0;
   try {
-    const dbConflict = await Appointment.findOne(query);
-    if (dbConflict) {
-      return {
-        name: dbConflict.name,
-        start: dbConflict.date + ' ' + dbConflict.time,
-        source: 'database'
-      };
-    }
-  } catch (dbErr) {
-    console.warn('DB Conflict check failed:', dbErr.message);
+    dbCount = await Appointment.countDocuments(dbQuery);
+  } catch (err) {
+    console.warn('DB Count failed in checkOverlap:', err.message);
   }
 
-  // 2. Check Google Calendar (The source of truth)
+  // 2. Count GCal overlaps
+  let gcalCount = 0;
   try {
     const client = await Client.findOne({ clientId });
     if (!client) return null;
@@ -51,39 +41,37 @@ const checkOverlap = async (clientId, doctor, start, end, excludeId = null) => {
     let calendarId = client.googleCalendarId || 'primary';
     if (client.config?.calendars && doctor) {
       const doctorKey = doctor.toLowerCase().replace(/\s+/g, '');
-      if (client.config.calendars[doctorKey]) {
-        calendarId = client.config.calendars[doctorKey];
-      } else if (client.config.calendars[doctor]) {
-        calendarId = client.config.calendars[doctor];
-      }
+      calendarId = client.config.calendars[doctorKey] || client.config.calendars[doctor] || calendarId;
     }
 
-    // Fetch events for that day
     const dayStart = DateTime.fromJSDate(newStart).startOf('day').toISO();
     const dayEnd = DateTime.fromJSDate(newStart).endOf('day').toISO();
     const events = await listEvents(dayStart, dayEnd, calendarId);
 
-    const conflict = events.find(event => {
-      // Exclude by eventId if provided
+    gcalCount = events.filter(event => {
       if (excludeId && event.id === excludeId) return false;
-
       const eventStart = new Date(event.start.dateTime || event.start.date);
       const eventEnd = new Date(event.end.dateTime || event.end.date);
-
-      // Overlap logic: (StartA < EndB) and (EndA > StartB)
       return (newStart < eventEnd && newEnd > eventStart);
-    });
+    }).length;
 
-    return conflict ? {
-      name: conflict.summary,
-      start: conflict.start.dateTime || conflict.start.date,
-      end: conflict.end.dateTime || conflict.end.date,
-      source: 'google_calendar'
-    } : null;
   } catch (gcalErr) {
-    console.warn('Google Calendar Conflict check failed:', gcalErr.message);
-    return null; // Don't block booking if GCal is down, DB check already passed
+    console.warn('Google Calendar Overlap check failed:', gcalErr.message);
   }
+
+  // Current logic: We take the higher count to be safe, or sum them if distinct.
+  // Usually they should be synced. Let's use the higher count.
+  const totalCount = Math.max(dbCount, gcalCount);
+
+  if (totalCount >= capacity) {
+    return {
+      name: 'Slot full',
+      count: totalCount,
+      source: 'combined'
+    };
+  }
+
+  return null;
 };
 
 // @route   POST /api/appointments/check-conflict

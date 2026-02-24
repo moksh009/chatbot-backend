@@ -106,18 +106,19 @@ async function getBookedAppointments(dateIST, calendarId) {
   }
 }
 
-// Check if a slot overlaps with any booked appointments
-function isSlotAvailable(slot, bookedAppointments) {
+// Check if a slot is available based on capacity
+function isSlotAvailable(slot, bookedAppointments, capacity = 4) {
+  let overlapCount = 0;
   for (const appointment of bookedAppointments) {
     const appointmentStart = appointment.start;
     const appointmentEnd = appointment.end;
 
     // Check for overlap
     if (slot.start < appointmentEnd && slot.end > appointmentStart) {
-      return false; // Slot overlaps with booked appointment
+      overlapCount++;
     }
   }
-  return true; // Slot is available
+  return overlapCount < capacity; // Slot is available if it hasn't reached capacity
 }
 
 // Get available slots for a specific date with pagination
@@ -180,10 +181,10 @@ async function getAvailableSlots(dateStr, page = 0, calendarId) {
         }
       }
 
-      // Check if slot is available (not booked)
-      const isAvailable = isSlotAvailable(slot, bookedAppointments);
+      // Check if slot is available (not booked up to capacity)
+      const isAvailable = isSlotAvailable(slot, bookedAppointments, 4);
       if (!isAvailable) {
-        console.log(`📅 Filtering out booked slot: ${slot.displayTime}`);
+        console.log(`📅 Filtering out full slot: ${slot.displayTime}`);
       }
       return isAvailable;
     });

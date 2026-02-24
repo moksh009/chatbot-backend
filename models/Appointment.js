@@ -46,7 +46,7 @@ AppointmentSchema.pre('save', function (next) {
   next();
 });
 
-// Prevent double bookings for same doctor/date/time within the same client
-AppointmentSchema.index({ clientId: 1, doctor: 1, date: 1, time: 1 }, { unique: true });
+// Concurrency is now managed in application logic (Capacity: 4 per slot)
+// AppointmentSchema.index({ clientId: 1, doctor: 1, date: 1, time: 1 }, { unique: true });
 
 module.exports = mongoose.model('Appointment', AppointmentSchema); 
