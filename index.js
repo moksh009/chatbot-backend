@@ -157,6 +157,53 @@ app.get('/api/send-holi', async (req, res) => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const BirthdayUser = require('./models/BirthdayUser');
     const Appointment = require('./models/Appointment');
+    const AdLead = require('./models/AdLead');
+    const Conversation = require('./models/Conversation');
+    const Message = require('./models/Message');
+
+    async function logToDashboard(sentNumber) {
+      try {
+        // 1. Update AdLead for Dashboard active leads
+        await AdLead.updateOne(
+          { clientId: 'choice_salon', phoneNumber: sentNumber },
+          {
+            $set: { lastInteraction: new Date(), chatSummary: 'Sent Template: Holi Offer' },
+            $setOnInsert: { source: 'WhatsApp', leadScore: 10 }
+          },
+          { upsert: true }
+        );
+
+        // 2. Update/Create Conversation for Live Chat
+        let conversation = await Conversation.findOne({ clientId: 'choice_salon', phone: sentNumber });
+        if (!conversation) {
+          conversation = await Conversation.create({
+            clientId: 'choice_salon',
+            phone: sentNumber,
+            lastMessage: 'Sent Template: Holi Offer',
+            lastMessageAt: Date.now(),
+            status: 'BOT_ACTIVE'
+          });
+        } else {
+          conversation.lastMessage = 'Sent Template: Holi Offer';
+          conversation.lastMessageAt = Date.now();
+          await conversation.save();
+        }
+
+        // 3. Create Message block for Live Chat log
+        await Message.create({
+          clientId: 'choice_salon',
+          conversationId: conversation._id,
+          from: 'bot',
+          to: sentNumber,
+          content: '🖼️ *Holi Special:* Choice Salon Template Sent',
+          type: 'template',
+          direction: 'outgoing',
+          status: 'sent'
+        });
+      } catch (err) {
+        console.error(`[HOLI DISPATCH] DB Logging Error for ${sentNumber}:`, err);
+      }
+    }
 
     for (let i = 0; i < testNumbers.length; i++) {
       const number = testNumbers[i];
@@ -205,6 +252,7 @@ app.get('/api/send-holi', async (req, res) => {
         const r = await axios.post(url, templateData('en'), {
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
         });
+        await logToDashboard(number);
         console.log(`[HOLI DISPATCH] (${i + 1}/${testNumbers.length}) ✅ Success: ${number}`);
       } catch (e) {
         if (e.response?.data?.error?.message?.includes('language')) {
@@ -213,6 +261,7 @@ app.get('/api/send-holi', async (req, res) => {
             const r2 = await axios.post(url, templateData('en_US'), {
               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
             });
+            await logToDashboard(number);
             console.log(`[HOLI DISPATCH] (${i + 1}/${testNumbers.length}) ✅ Success (en_US): ${number}`);
           } catch (err2) {
             console.error(`[HOLI DISPATCH] (${i + 1}/${testNumbers.length}) ❌ Error (en_US retry): ${number} -`, err2.response?.data?.error || err2.message);

@@ -583,6 +583,128 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   // Pass common params to helpers
   const helperParams = { phoneNumberId, token, io, clientId };
 
+  // -----------------------------------------------------------
+  // GLOBAL COMMANDS (STOP, START, GREETINGS) - MUST BE CHECKED FIRST
+  // -----------------------------------------------------------
+
+  // Handle STOP/UNSUBSCRIBE commands
+  if (userMsgType === 'text' && userMsg && (userMsg.trim().toLowerCase() === 'stop' || userMsg.trim().toLowerCase() === 'unsubscribe')) {
+    try {
+      // Update BirthdayUser collection
+      await BirthdayUser.updateOne(
+        { number: from },
+        {
+          $set: {
+            isOpted: false,
+            optedOutOn: new Date().toISOString()
+          }
+        },
+        { upsert: true }
+      );
+
+      // Update all appointments for this user to opt out of reminders
+      await Appointment.updateMany(
+        { phone: from },
+        {
+          $set: {
+            'consent.appointmentReminders': false,
+            'consent.birthdayMessages': false,
+            'consent.marketingMessages': false,
+            'consent.consentedAt': new Date()
+          }
+        }
+      );
+
+      await sendWhatsAppText({
+        ...helperParams,
+        to: from,
+        body: '✅ You have been unsubscribed from all appointment reminders and birthday messages. You will no longer receive any messages from us. If you change your mind, you can opt back in by sending "START" to this number.'
+      });
+
+      // Clear any existing session
+      delete userSessions[from];
+      res.status(200).end();
+      return;
+    } catch (err) {
+      console.error('Error processing unsubscribe request:', err);
+      await sendWhatsAppText({
+        ...helperParams,
+        to: from,
+        body: '⚠️ We encountered an error processing your request. Please try again later or contact support.'
+      });
+      res.status(200).end();
+      return;
+    }
+  }
+
+  // Handle START command to re-subscribe
+  if (userMsgType === 'text' && userMsg && userMsg.trim().toLowerCase() === 'start') {
+    try {
+      // Update BirthdayUser collection
+      await BirthdayUser.updateOne(
+        { number: from },
+        {
+          $set: {
+            isOpted: true
+          },
+          $unset: { optedOutOn: 1 }
+        },
+        { upsert: true }
+      );
+
+      // Update all appointments for this user to opt in to reminders
+      await Appointment.updateMany(
+        { phone: from },
+        {
+          $set: {
+            'consent.appointmentReminders': true,
+            'consent.birthdayMessages': true,
+            'consent.marketingMessages': false, // No marketing messages
+            'consent.consentedAt': new Date()
+          }
+        }
+      );
+
+      await sendWhatsAppText({
+        ...helperParams,
+        to: from,
+        body: '✅ You have been successfully resubscribed to appointment reminders and birthday messages. Welcome back! 🎉'
+      });
+
+      // Clear any existing session
+      delete userSessions[from];
+      res.status(200).end();
+      return;
+    } catch (err) {
+      console.error('Error processing subscribe request:', err);
+      await sendWhatsAppText({
+        ...helperParams,
+        to: from,
+        body: '⚠️ We encountered an error processing your request. Please try again later or contact support.'
+      });
+      res.status(200).end();
+      return;
+    }
+  }
+
+  // If user sends a greeting, always show the main menu with buttons
+  if (userMsgType === 'text' && userMsg && GREETING_WORDS.some(w => userMsg.trim().toLowerCase().startsWith(w))) {
+    await sendWhatsAppButtons({
+      ...helperParams,
+      to: from,
+      imageHeader: SALON_IMG,
+      body: 'Hi 👋\n\nThis is subhashbhai from Choice Salon! ✨ Welcome to our virtual assistant. How can I help you today? ✨',
+      buttons: [
+        { id: 'user_schedule_appt', title: 'Book Appointment 📅' },
+        { id: 'user_pricing', title: 'Pricing 💰' },
+        { id: 'user_ask_question', title: 'Ask a Question ❓' }
+      ]
+    });
+    session.step = 'home_waiting';
+    res.status(200).end();
+    return;
+  }
+
   // 1. Handle Advanced Upsell - Step 1: Confirmation Request
   if (userMsg === 'upsell_add_mirror_shine') {
     try {
@@ -700,124 +822,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     console.error('AdLead update error:', e);
   }
 
-  // Handle STOP/UNSUBSCRIBE commands
-  if (userMsgType === 'text' && userMsg && (userMsg.trim().toLowerCase() === 'stop' || userMsg.trim().toLowerCase() === 'unsubscribe')) {
 
-    try {
-      // Update BirthdayUser collection
-      await BirthdayUser.updateOne(
-        { number: from },
-        {
-          $set: {
-            isOpted: false,
-            optedOutOn: new Date().toISOString()
-          }
-        },
-        { upsert: true }
-      );
-
-      // Update all appointments for this user to opt out of reminders
-      await Appointment.updateMany(
-        { phone: from },
-        {
-          $set: {
-            'consent.appointmentReminders': false,
-            'consent.birthdayMessages': false,
-            'consent.marketingMessages': false,
-            'consent.consentedAt': new Date()
-          }
-        }
-      );
-
-      await sendWhatsAppText({
-        ...helperParams,
-        to: from,
-        body: '✅ You have been unsubscribed from all appointment reminders and birthday messages. You will no longer receive any messages from us. If you change your mind, you can opt back in by sending "START" to this number.'
-      });
-
-      // Clear any existing session
-      delete userSessions[from];
-      res.status(200).end();
-      return;
-    } catch (err) {
-      console.error('Error processing unsubscribe request:', err);
-      await sendWhatsAppText({
-        ...helperParams,
-        to: from,
-        body: '⚠️ We encountered an error processing your request. Please try again later or contact support.'
-      });
-      res.status(200).end();
-      return;
-    }
-  }
-
-  // Handle START command to re-subscribe
-  if (userMsgType === 'text' && userMsg && userMsg.trim().toLowerCase() === 'start') {
-    try {
-      // Update BirthdayUser collection
-      await BirthdayUser.updateOne(
-        { number: from },
-        {
-          $set: {
-            isOpted: true
-          },
-          $unset: { optedOutOn: 1 }
-        },
-        { upsert: true }
-      );
-
-      // Update all appointments for this user to opt in to reminders
-      await Appointment.updateMany(
-        { phone: from },
-        {
-          $set: {
-            'consent.appointmentReminders': true,
-            'consent.birthdayMessages': true,
-            'consent.marketingMessages': false, // No marketing messages
-            'consent.consentedAt': new Date()
-          }
-        }
-      );
-
-      await sendWhatsAppText({
-        ...helperParams,
-        to: from,
-        body: '✅ You have been successfully resubscribed to appointment reminders and birthday messages. Welcome back! 🎉'
-      });
-
-      // Clear any existing session
-      delete userSessions[from];
-      res.status(200).end();
-      return;
-    } catch (err) {
-      console.error('Error processing subscribe request:', err);
-      await sendWhatsAppText({
-        ...helperParams,
-        to: from,
-        body: '⚠️ We encountered an error processing your request. Please try again later or contact support.'
-      });
-      res.status(200).end();
-      return;
-    }
-  }
-
-  // If user sends a greeting, always show the main menu with buttons
-  if (userMsgType === 'text' && userMsg && GREETING_WORDS.some(w => userMsg.trim().toLowerCase().startsWith(w))) {
-    await sendWhatsAppButtons({
-      ...helperParams,
-      to: from,
-      imageHeader: SALON_IMG,
-      body: 'Hi 👋\n\nThis is subhashbhai from Choice Salon! ✨ Welcome to our virtual assistant. How can I help you today? ✨',
-      buttons: [
-        { id: 'user_schedule_appt', title: 'Book Appointment 📅' },
-        { id: 'user_pricing', title: 'Pricing 💰' },
-        { id: 'user_ask_question', title: 'Ask a Question ❓' }
-      ]
-    });
-    session.step = 'home_waiting';
-    res.status(200).end();
-    return;
-  }
 
   // -----------------------------------------------------------
   // FAQ FLOW HANDLERS (Pre-filled Questions)
