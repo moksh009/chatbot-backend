@@ -494,13 +494,10 @@ async function getAvailableBookingDays(stylist, calendars) {
 
 // Helper function to get paginated services
 function getPaginatedServices(page = 0) {
-  const servicesPerPage = 8; // Show 8 services + "Ask Stylist" + "Choose Another Service"
+  const servicesPerPage = 8; // Show 8 services + "Choose Another Service"
   const startIndex = page * servicesPerPage;
   const endIndex = startIndex + servicesPerPage;
   const pageServices = salonServices.slice(startIndex, endIndex);
-
-  // Add "Ask Stylist" option
-  pageServices.push({ id: 'service_ask_stylist', title: 'Ask Stylist' });
 
   // Add "Choose Another Service" if there are more services
   if (endIndex < salonServices.length) {

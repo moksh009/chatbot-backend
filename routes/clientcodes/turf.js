@@ -684,10 +684,16 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 
 exports.handleWebhook = async (req, res) => {
   try {
+    // DEBUG: Log the entire incoming payload to see why it's silently failing
+    console.log(`[TURF WEBHOOK RAW PAYLOAD]:`, JSON.stringify(req.body, null, 2));
+
     const entry = req.body.entry?.[0];
     const value = entry?.changes?.[0]?.value;
     const messages = value?.messages?.[0];
-    if (!messages) return res.status(200).end();
+    if (!messages) {
+      console.log('[TURF WEBHOOK] No messages array found in payload. Returning 200.');
+      return res.status(200).end();
+    }
 
     const io = req.app.get('socketio');
     const { whatsappToken, config, clientId, openaiApiKey } = req.clientConfig;
