@@ -244,11 +244,12 @@ app.get('/api/send-holi', async (req, res) => {
               ]
             }
           ]
-        }
+        },
+        ttl: 86400 // 24 hours in seconds
       });
 
       try {
-        const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+        const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/marketing_messages`;
         const r = await axios.post(url, templateData('en'), {
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
         });
@@ -257,7 +258,7 @@ app.get('/api/send-holi', async (req, res) => {
       } catch (e) {
         if (e.response?.data?.error?.message?.includes('language')) {
           try {
-            const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+            const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/marketing_messages`;
             const r2 = await axios.post(url, templateData('en_US'), {
               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
             });
