@@ -138,15 +138,32 @@ app.get('/api/send-holi', async (req, res) => {
     let results = [];
 
     for (const number of testNumbers) {
+      const templateData = (langCode) => ({
+        messaging_product: 'whatsapp',
+        to: number,
+        type: 'template',
+        template: {
+          name: 'holi_offer_1',
+          language: { code: langCode },
+          components: [
+            {
+              type: 'header',
+              parameters: [
+                {
+                  type: 'image',
+                  image: {
+                    link: 'https://instagram.famd1-2.fna.fbcdn.net/v/t51.2885-19/436333745_1497177940869325_2985750738127060080_n.jpg?efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLmRqYW5nby4xMDgwLmMyIn0&_nc_ht=instagram.famd1-2.fna.fbcdn.net&_nc_cat=101&_nc_oc=Q6cZ2QH8vCGf2jGUX3lSsvjRV2axzhtJLYNHfIbhUn1TQkvNKEvnx4XWgdyKCrgXVx8KsC9Pq5Fgfk9UcjXn18wL8ThL&_nc_ohc=8-CBI_zJuBwQ7kNvwEeJ635&_nc_gid=Gp62ZusslBSvo5TFvcyJAg&edm=ALGbJPMBAAAA&ccb=7-5&oh=00_AftGK8L_C4HRW6SdWj31MRppEsoQ-N4fEB14vEohvB7zrA&oe=69A1B22C&_nc_sid=7d3ac5'
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      });
+
       try {
         const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
-        const data = {
-          messaging_product: 'whatsapp',
-          to: number,
-          type: 'template',
-          template: { name: 'holi_offer_1', language: { code: 'en' } }
-        };
-        const r = await axios.post(url, data, {
+        const r = await axios.post(url, templateData('en'), {
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
         });
         results.push({ number, status: 'success', data: r.data });
@@ -154,13 +171,7 @@ app.get('/api/send-holi', async (req, res) => {
         if (e.response?.data?.error?.message?.includes('language')) {
           try {
             const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
-            const data2 = {
-              messaging_product: 'whatsapp',
-              to: number,
-              type: 'template',
-              template: { name: 'holi_offer_1', language: { code: 'en_US' } }
-            };
-            const r2 = await axios.post(url, data2, {
+            const r2 = await axios.post(url, templateData('en_US'), {
               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
             });
             results.push({ number, status: 'success (en_US retry)', data: r2.data });
