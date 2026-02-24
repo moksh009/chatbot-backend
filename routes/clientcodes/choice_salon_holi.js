@@ -584,13 +584,13 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   const buttonTitle = messages.interactive?.button_reply?.title;
 
   // Handle template button reply "Book Free Haircut", payload could be the text or an ID.
-  if (userMsgType === 'button' && messages.button?.text === 'Book Free Haircut') {
+  if (
+    (userMsgType === 'button' && messages.button?.text === 'Book Free Haircut') ||
+    (userMsgType === 'interactive' && buttonTitle === 'Book Free Haircut') ||
+    (typeof userMsg === 'string' && userMsg.toLowerCase() === 'book free haircut')
+  ) {
     userMsg = 'user_schedule_appt';
-  } else if (userMsgType === 'interactive' && buttonTitle === 'Book Free Haircut') {
-    userMsg = 'user_schedule_appt';
-  } else if (typeof userMsg === 'string' && userMsg.toLowerCase() === 'book free haircut') {
-    userMsg = 'user_schedule_appt';
-    session.step = 'home_waiting'; // Force step reset so it processes the schedule command
+    session.step = 'home_waiting'; // Force step forward so it bypasses the welcome greeting
   }
 
   // Pass common params to helpers
