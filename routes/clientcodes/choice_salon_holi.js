@@ -2821,12 +2821,13 @@ const handleWebhook = async (req, res) => {
   // console.log(JSON.stringify(req.body, null, 2));
 
   try {
-    const entry = req.body.entry && req.body.entry[0];
-    const changes = entry && entry.changes && entry.changes[0];
-    const value = changes && changes.value;
-    const phoneNumberId = value && value.metadata && value.metadata.phone_number_id;
-    const messages = value && value.messages && value.messages[0];
-    const from = messages && messages.from;
+    console.log('[CHOICE SALON WEBHOOK RAW PAYLOAD]:', JSON.stringify(req.body, null, 2));
+
+    const entry = req.body.entry?.[0];
+    const value = entry?.changes?.[0]?.value;
+    const messages = value?.messages?.[0];
+    const phoneNumberId = value?.metadata?.phone_number_id;
+    const from = messages?.from;
 
     // Only process if this is a real user message
     if (!messages || !from) {
