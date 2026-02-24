@@ -163,7 +163,7 @@ async function sendWhatsAppList({ phoneNumberId, to, header, imageHeader, body, 
     type: 'interactive',
     interactive: {
       type: 'list',
-      header: imageHeader ? { type: 'image', image: { link: imageHeader } } : (header ? { type: 'text', text: header } : undefined),
+      header: header ? { type: 'text', text: header.substring(0, 60) } : undefined,
       body: { text: body },
       footer: footer ? { text: footer } : { text: '' },
       action: {
@@ -181,7 +181,7 @@ async function sendWhatsAppList({ phoneNumberId, to, header, imageHeader, body, 
       }
     }
   };
-  if (!header && !imageHeader) delete data.interactive.header;
+  if (!header) delete data.interactive.header;
   try {
     await axios.post(url, data, {
       headers: {
@@ -414,7 +414,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     await sendWhatsAppList({
       phoneNumberId,
       to: from,
-      imageHeader: TURF_LOGO,
+      header: 'Rough N Turf ⚽',
       body: 'Welcome to Rough N Turf! ⚽\n\nHere are all our options:',
       button: 'Menu',
       rows: [
@@ -449,7 +449,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     await sendWhatsAppList({
       phoneNumberId,
       to: from,
-      imageHeader: TURF_LOGO,
+      header: 'Rough N Turf 🏆',
       body: 'Choose Your Sport 🏆\n\nWe offer world-class pitches and courts. Which sport are you playing today?',
       button: 'Select Sport',
       rows: paginatedServices.services,
