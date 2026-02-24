@@ -155,9 +155,28 @@ app.get('/api/send-holi', async (req, res) => {
 
     console.log(`[HOLI DISPATCH] Starting to send to ${testNumbers.length} unique numbers...`);
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const BirthdayUser = require('./models/BirthdayUser');
+    const Appointment = require('./models/Appointment');
 
     for (let i = 0; i < testNumbers.length; i++) {
       const number = testNumbers[i];
+
+      // --- OPT-OUT CHECK ---
+      // Check if user replied STOP (isOpted: false in BirthdayUser)
+      const isBirthdayOptedOut = await BirthdayUser.findOne({ number: number, isOpted: false });
+      if (isBirthdayOptedOut) {
+        console.log(`[HOLI DISPATCH] (${i + 1}/${testNumbers.length}) 🚫 Skipped (Opted Out): ${number}`);
+        continue;
+      }
+
+      // Check if user opted out from marketing messages via Appointment logic
+      const isApptOptedOut = await Appointment.findOne({ phone: number, 'consent.marketingMessages': false });
+      if (isApptOptedOut) {
+        console.log(`[HOLI DISPATCH] (${i + 1}/${testNumbers.length}) 🚫 Skipped (Marketing Opt-Out): ${number}`);
+        continue;
+      }
+      // ---------------------
+
       const templateData = (langCode) => ({
         messaging_product: 'whatsapp',
         to: number,
@@ -203,9 +222,9 @@ app.get('/api/send-holi', async (req, res) => {
         }
       }
 
-      // If not the last number, wait 3 seconds to avoid spamming the API and getting banned
+      // If not the last number, wait 5 seconds to avoid spamming the API and getting banned
       if (i < testNumbers.length - 1) {
-        await sleep(3000);
+        await sleep(5000);
       }
     }
     console.log(`[HOLI DISPATCH] Finished sending templates!`);
