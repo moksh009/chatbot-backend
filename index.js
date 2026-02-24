@@ -126,18 +126,38 @@ app.get('/api/fix-v2', async (req, res) => {
 
 // --- TEMPORARY ROUTE TO SEND HOLI PROMO ---
 app.get('/api/send-holi', async (req, res) => {
+  // Start the background process immediately so the 100s Render timeout doesn't kill the request
+  res.status(200).json({ message: 'Holi Promo dispatch started in the background. Check server logs for progress.' });
+
   try {
     const Client = require('./models/Client');
     const axios = require('axios');
     const client = await Client.findOne({ businessType: 'choice_salon' });
-    if (!client) return res.status(404).send('Client not found');
+    if (!client) {
+      console.log('[HOLI DISPATCH ERROR] Client not found');
+      return;
+    }
 
     const token = client.whatsappToken;
     const phoneNumberId = client.phoneNumberId;
-    const testNumbers = ['916353306984', '919313045439'];
-    let results = [];
 
-    for (const number of testNumbers) {
+    // The user's provided list of raw numbers
+    const rawNumbers = [
+      '+91 6352 491 488', '+91 87583 70609', '+91 98251 96413', '+91 99040 96683',
+      '+91 88662 05204', '+91 96013 04846', '+91 99785 45458', '+91 6354 776 189',
+      '+91 99980 41144', '+91 6352 491 488', '+91 98252 83143', '+91 99135 45458',
+      '+91 70419 63524', '+91 99096 18458', '+91 98244 74547', '+91 94846 07042',
+      '+91 98790 95371', '+91 6355 411 809', '+91 6353 306 984', '+91 9313 045 439'
+    ];
+
+    // Clean numbers and remove duplicates
+    const testNumbers = [...new Set(rawNumbers.map(n => n.replace(/\D/g, '')))];
+
+    console.log(`[HOLI DISPATCH] Starting to send to ${testNumbers.length} unique numbers...`);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    for (let i = 0; i < testNumbers.length; i++) {
+      const number = testNumbers[i];
       const templateData = (langCode) => ({
         messaging_product: 'whatsapp',
         to: number,
@@ -166,7 +186,7 @@ app.get('/api/send-holi', async (req, res) => {
         const r = await axios.post(url, templateData('en'), {
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
         });
-        results.push({ number, status: 'success', data: r.data });
+        console.log(`[HOLI DISPATCH] (${i + 1}/${testNumbers.length}) ✅ Success: ${number}`);
       } catch (e) {
         if (e.response?.data?.error?.message?.includes('language')) {
           try {
@@ -174,18 +194,23 @@ app.get('/api/send-holi', async (req, res) => {
             const r2 = await axios.post(url, templateData('en_US'), {
               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
             });
-            results.push({ number, status: 'success (en_US retry)', data: r2.data });
+            console.log(`[HOLI DISPATCH] (${i + 1}/${testNumbers.length}) ✅ Success (en_US): ${number}`);
           } catch (err2) {
-            results.push({ number, status: 'error', error: err2.response?.data?.error || err2.message });
+            console.error(`[HOLI DISPATCH] (${i + 1}/${testNumbers.length}) ❌ Error (en_US retry): ${number} -`, err2.response?.data?.error || err2.message);
           }
         } else {
-          results.push({ number, status: 'error', error: e.response?.data?.error || e.message });
+          console.error(`[HOLI DISPATCH] (${i + 1}/${testNumbers.length}) ❌ Error: ${number} -`, e.response?.data?.error || e.message);
         }
       }
+
+      // If not the last number, wait 3 seconds to avoid spamming the API and getting banned
+      if (i < testNumbers.length - 1) {
+        await sleep(3000);
+      }
     }
-    res.json({ results });
+    console.log(`[HOLI DISPATCH] Finished sending templates!`);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(`[HOLI DISPATCH] Fatal Error:`, err.message);
   }
 });
 
