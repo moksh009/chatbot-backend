@@ -18,9 +18,17 @@ const { DoctorScheduleOverride } = require('../../models/DoctorScheduleOverride'
 const { getAvailableTimeSlots, createEvent, deleteEvent, findEventsByPhoneNumber } = require('../../utils/googleCalendar');
 const { getAvailableDates } = require('../../utils/getAvailableDates');
 const { getAvailableSlots } = require('../../utils/getAvailableSlots');
-const { sendLeaveConfirmationAndMenu, sendPromptForTimeSlots, sendPartialConfirmationAndMenu } = require('../../utils/step2');
-const { sendAdminInitialButtons, sendAdminLeaveDateList } = require('../../utils/Step1');
-const { parseDateFromId } = require('../../utils/helpers');
+
+// --- ELITE TURF CONSTANTS ---
+const TURF_LOGO = 'https://img1.khelomore.com/venues/1936/logo/Rough-N-Turf.jpg';
+const EQUIPMENT_B_TEXT = 'Match Ball & Bibs ⚽';
+const EQUIPMENT_B_PRICE = 300;
+const REFEREE_TEXT = 'Certified Referee ⏱️';
+const REFEREE_PRICE = 800;
+
+const PEAK_HOURS = ['17:00', '18:00', '19:00', '20:00', '21:00', '22:00', '23:00', '06:00', '07:00', '08:00', '09:00'];
+const OFF_PEAK_PRICE = 1500;
+const PEAK_PRICE = 3500;
 
 // Load knowledge base for OpenAI
 const knowledgeBasePath = path.join(__dirname, '..', '..', 'utils', 'knowledgeBase.txt');
@@ -99,7 +107,7 @@ async function sendWhatsAppText({ phoneNumberId, to, body, token, io, clientId }
   }
 }
 
-async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons, token, io, clientId }) {
+async function sendWhatsAppButtons({ phoneNumberId, to, header, imageHeader, body, footer, buttons, token, io, clientId }) {
   const apiVersion = process.env.API_VERSION || 'v18.0';
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
   const data = {
@@ -109,17 +117,23 @@ async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons, t
     type: 'interactive',
     interactive: {
       type: 'button',
-      header: header ? { type: 'text', text: header } : undefined,
       body: { text: body },
       action: {
         buttons: buttons.map(({ id, title }) => ({
           type: 'reply',
-          reply: { id, title }
+          reply: { id, title: title.substring(0, 20) }
         }))
       }
     }
   };
-  if (!header) delete data.interactive.header;
+  if (header) {
+    data.interactive.header = { type: 'text', text: header };
+  } else if (imageHeader) {
+    data.interactive.header = { type: 'image', image: { link: imageHeader } };
+  }
+  if (footer) {
+    data.interactive.footer = { text: footer };
+  }
   try {
     await axios.post(url, data, {
       headers: {
@@ -133,12 +147,11 @@ async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons, t
   }
 }
 
-async function sendWhatsAppList({ phoneNumberId, to, header, body, button, rows, token, io, clientId }) {
+async function sendWhatsAppList({ phoneNumberId, to, header, body, footer, button, rows, token, io, clientId }) {
   const apiVersion = process.env.API_VERSION || 'v18.0';
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
   let safeRows = rows;
   if (rows.length > 10) {
-    console.warn('sendWhatsAppList: Truncating rows to 10 due to WhatsApp API limit.');
     safeRows = rows.slice(0, 10);
   }
   const data = {
@@ -150,7 +163,7 @@ async function sendWhatsAppList({ phoneNumberId, to, header, body, button, rows,
       type: 'list',
       header: header ? { type: 'text', text: header } : undefined,
       body: { text: body },
-      footer: { text: '' },
+      footer: footer ? { text: footer } : { text: '' },
       action: {
         button,
         sections: [
@@ -180,13 +193,14 @@ async function sendWhatsAppList({ phoneNumberId, to, header, body, button, rows,
   }
 }
 
-async function sendSmartButtonsOrList({ phoneNumberId, to, header, body, buttons, fallbackButtonLabel = 'Select Option', token, io, clientId }) {
+async function sendSmartButtonsOrList({ phoneNumberId, to, header, imageHeader, body, footer, buttons, fallbackButtonLabel = 'Select Option', token, io, clientId }) {
   if (buttons.length > 3) {
     await sendWhatsAppList({
       phoneNumberId,
       to,
       header,
       body,
+      footer,
       button: fallbackButtonLabel,
       rows: buttons.map(({ id, title }) => ({ id, title })),
       token, io, clientId
@@ -196,7 +210,9 @@ async function sendSmartButtonsOrList({ phoneNumberId, to, header, body, buttons
       phoneNumberId,
       to,
       header,
+      imageHeader,
       body,
+      footer,
       buttons,
       token, io, clientId
     });
@@ -220,23 +236,13 @@ async function notifyAdmins({ phoneNumberId, message, token, adminNumbers, io, c
 async function getAvailableBookingDays(doctor, calendars) {
   try {
     const calendarId = calendars[doctor];
-    console.log('🔍 Fetching dynamic available dates from Google Calendar...', calendarId);
     if (!calendarId) {
-      console.log('❌ No calendar ID found for doctor:', doctor);
       return [];
     }
     const availableDates = await getAvailableDates(8, calendarId);
-
-    if (availableDates.length === 0) {
-      console.log('❌ No available dates found, returning empty array');
-      return [];
-    }
-
-    console.log(`✅ Found ${availableDates.length} available dates for booking`);
     return availableDates;
   } catch (error) {
     console.error('❌ Error getting available dates:', error);
-    // Fallback logic could go here, but for now return empty
     return [];
   }
 }
@@ -246,7 +252,9 @@ async function fetchRealTimeSlots(dateStr, page = 0, doctor, calendars) {
     const calendarId = calendars[doctor];
     if (!calendarId) return { slots: [], totalSlots: 0, currentPage: 0, totalPages: 0, hasMore: false };
 
-    const result = await getAvailableSlots(dateStr, page, calendarId);
+    // Fix Google Calendar Date Format parsing bug
+    const reformattedDateStr = dateStr.includes('_') ? dateStr : dateStr;
+    const result = await getAvailableSlots(reformattedDateStr, page, calendarId);
     return result;
   } catch (err) {
     console.error('Error fetching real time slots:', err);
@@ -255,31 +263,17 @@ async function fetchRealTimeSlots(dateStr, page = 0, doctor, calendars) {
 }
 
 const codeClinicServices = [
-  { id: 'service_football', title: 'Football Booking' },
-  { id: 'service_cricket', title: 'Cricket Booking' },
-  { id: 'service_pickleball', title: 'Pickleball Booking' },
-  { id: 'service_volleyball', title: 'Volleyball Booking' }
+  { id: 'service_football', title: 'Football Booking (5v5)' },
+  { id: 'service_football_large', title: 'Football Booking (8v8)' },
+  { id: 'service_cricket', title: 'Box Cricket' },
+  { id: 'service_pickleball', title: 'Pickleball Court' }
 ];
-
-const turfPricing = {
-  'service_football': 3500,
-  'service_cricket': 3500,
-  'service_pickleball': 3500,
-  'service_volleyball': 3500
-};
-
 
 function getPaginatedServices(page = 0) {
   const servicesPerPage = 8;
   const startIndex = page * servicesPerPage;
   const endIndex = startIndex + servicesPerPage;
   const pageServices = codeClinicServices.slice(startIndex, endIndex);
-
-  // pageServices.push({ id: 'service_ask_doctor', title: 'Ask Coach' });
-
-  if (endIndex < codeClinicServices.length) {
-    pageServices.push({ id: 'service_more', title: 'More Sports' });
-  }
 
   return {
     services: pageServices,
@@ -289,7 +283,16 @@ function getPaginatedServices(page = 0) {
   };
 }
 
-const GREETING_WORDS = ['hi', 'hello', 'hey', 'hii', 'good morning', 'good afternoon', 'good evening', 'greetings'];
+const GREETING_WORDS = ['hi', 'hello', 'hey', 'hii', 'good morning', 'good afternoon', 'good evening', 'greetings', 'start', 'menu'];
+
+// Helper to determine price based on slot time
+function calculatePricing(time) {
+  const isPeak = PEAK_HOURS.some(h => time.startsWith(h));
+  return {
+    price: isPeak ? PEAK_PRICE : OFF_PEAK_PRICE,
+    label: isPeak ? 'Peak Hours 🌟' : 'Off-Peak Discount 📉'
+  };
+}
 
 // --- Main Flow Handler ---
 
@@ -306,31 +309,103 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 
   // Handle STOP/UNSUBSCRIBE
   if (userMsgType === 'text' && userMsg && (userMsg.trim().toLowerCase() === 'stop' || userMsg.trim().toLowerCase() === 'unsubscribe')) {
-    // ... (Unsubscribe logic - abbreviated for brevity but keeping standard response)
     await sendWhatsAppText({ phoneNumberId, to: from, body: 'You have been unsubscribed.', token, io, clientId });
     delete userSessions[from];
     return res.status(200).end();
   }
 
-  // Handle START
-  if (userMsgType === 'text' && userMsg && userMsg.trim().toLowerCase() === 'start') {
-    await sendWhatsAppText({ phoneNumberId, to: from, body: 'Welcome back! You are resubscribed.', token, io, clientId });
-    delete userSessions[from];
-    return res.status(200).end();
+  // Handle Upsells (Interactive execution)
+  if (userMsg === 'upsell_equip_add') {
+    try {
+      const lastAppt = await Appointment.findOne({ phone: from, clientId }).sort({ createdAt: -1 });
+      if (lastAppt && !lastAppt.service.includes(EQUIPMENT_B_TEXT)) {
+        lastAppt.service += ` + ${EQUIPMENT_B_TEXT}`;
+        lastAppt.revenue += EQUIPMENT_B_PRICE;
+        await lastAppt.save();
+
+        await sendWhatsAppButtons({
+          phoneNumberId, to: from, token, io, clientId,
+          imageHeader: TURF_LOGO,
+          body: `⚽ *Elite Add-on Confirmed!* ⚽\n\nWe've successfully added the *Match Ball & Bibs* to your booking.\n\n✅ *Final Booking Summary*\n👤 *Captain:* ${lastAppt.name}\n📅 *Date:* ${lastAppt.date}\n🕒 *Time:* ${lastAppt.time}\n🏟️ *Turf:* ${lastAppt.doctor || 'Standard'}\n⚽ *Package:* ${lastAppt.service}\n💰 *Total Due:* ₹${lastAppt.revenue}\n\nCan't wait to see you on the pitch! 🏆👇`,
+          footer: 'Click below to share details with your squad!',
+          buttons: [
+            { id: 'action_share_squad', title: 'Share with Squad 📲' },
+            { id: 'user_home', title: '🏠 Main Menu' }
+          ]
+        });
+
+        await notifyAdmins({
+          phoneNumberId, token, adminNumbers, io, clientId,
+          message: `⚽ *Squad Upgraded!* ⚽\n\n${lastAppt.name} just added Match Ball & Bibs to their booking!\n\n📅 ${lastAppt.date} @ ${lastAppt.time}\n🏟️ ${lastAppt.doctor}\n💰 *New Total:* ₹${lastAppt.revenue}`
+        });
+
+        res.status(200).end();
+        return;
+      }
+    } catch (err) { console.error('Upsell error:', err); }
+  }
+
+  if (userMsg === 'upsell_equip_reject') {
+    const lastAppt = await Appointment.findOne({ phone: from, clientId }).sort({ createdAt: -1 });
+    await sendWhatsAppButtons({
+      phoneNumberId, to: from, token, io, clientId,
+      body: `No problem at all! We've got your standard reservation locked in. ⚽⭐`,
+      buttons: [
+        { id: 'action_share_squad', title: 'Share with Squad 📲' },
+        { id: 'user_home', title: '🏠 Main Menu' }
+      ]
+    });
+    res.status(200).end();
+    return;
+  }
+
+  if (userMsg === 'action_share_squad') {
+    const lastAppt = await Appointment.findOne({ phone: from, clientId }).sort({ createdAt: -1 });
+    if (lastAppt) {
+      // Squad Split Calculator
+      const formatTitle = lastAppt.service.includes('5v5') ? '10' : (lastAppt.service.includes('Pickleball') ? '4' : '10');
+      const splitCount = parseInt(formatTitle);
+      const splitPrice = Math.round(lastAppt.revenue / splitCount);
+
+      const shareMsg = `🏆 *MATCH CONFIRMED: Get Ready Squad!* 🏆\n\nReserve your spot for the upcoming game:\n\n📅 *When:* ${lastAppt.date}, ${lastAppt.time}\n🏟️ *Where:* Rough-N-Turf (${lastAppt.doctor})\n⚽ *Format:* ${lastAppt.service.replace('Booking', '').trim()}\n\n💰 *Total Pitch Fee:* ₹${lastAppt.revenue}\n💸 *Per Player (Team of ${splitCount}):* ₹${splitPrice}\n\n_Please UPI your share to secure your spot on the team!_ 🔥`;
+
+      await sendWhatsAppText({ phoneNumberId, to: from, token, io, clientId, body: `Here is the squad detail message. Copy and paste this into your WhatsApp group! 👇` });
+      await sendWhatsAppText({ phoneNumberId, to: from, token, io, clientId, body: shareMsg });
+    }
+    res.status(200).end();
+    return;
   }
 
   // Greeting -> Main Menu
   if (userMsgType === 'text' && userMsg && GREETING_WORDS.some(w => userMsg.trim().toLowerCase().startsWith(w))) {
+    await sendWhatsAppButtons({
+      phoneNumberId,
+      to: from,
+      imageHeader: TURF_LOGO,
+      body: '⚽ *Welcome to Elite Sports Turf!* 🏆\n\nI’m your virtual booking assistant. Ready for the next match? Choose an option below:',
+      footer: 'Experience premium turf facilities at best prices!',
+      buttons: [
+        { id: 'user_schedule_appt', title: 'Book Turf 🗓️' },
+        { id: 'user_pricing', title: 'Pricing & Timings 💰' },
+        { id: 'user_home', title: 'More Options ⚙️' }
+      ],
+      token, io, clientId
+    });
+    session.step = 'home_waiting';
+    return res.status(200).end();
+  }
+
+  if (userMsg === 'user_home') {
     await sendWhatsAppList({
       phoneNumberId,
       to: from,
-      header: 'Welcome to Turf Booking! ⚽',
-      body: 'Hi 👋\n\nI’m your virtual assistant. How can I help you today?',
+      header: 'Welcome to Elite Sports Turf! ⚽',
+      body: 'Here are all our options:',
       button: 'Menu',
       rows: [
         { id: 'user_schedule_appt', title: 'Book Turf 🗓️' },
         { id: 'user_cancel_appt', title: 'Cancel Booking ❌' },
-        { id: 'user_pricing', title: 'Pricing 💰' },
+        { id: 'user_pricing', title: 'Pricing Info 💰' },
         { id: 'user_ask_question', title: 'Ask a Question ❓' }
       ],
       token, io, clientId
@@ -339,15 +414,29 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     return res.status(200).end();
   }
 
+  if (userMsg === 'user_pricing') {
+    await sendWhatsAppButtons({
+      phoneNumberId, to: from, token, io, clientId,
+      imageHeader: TURF_LOGO,
+      body: `💰 *Elite Turf Pricing Models*\n\nWe feature dynamic pricing to give you the best deals based on sunlight and peak traffic!\n\n📉 *Off-Peak Hours (10:00 AM - 4:00 PM)*\nRate: ₹${OFF_PEAK_PRICE} / hr\n\n🌟 *Prime Time Hours (5:00 PM - 11:00 PM & 6:00 AM - 9:00 AM)*\nRate: ₹${PEAK_PRICE} / hr\n\n_Note: Equipment and Refs are available as add-ons after booking._`,
+      buttons: [
+        { id: 'user_schedule_appt', title: 'Book Now ⚽' },
+        { id: 'user_home', title: 'Main Menu' }
+      ]
+    });
+    res.status(200).end();
+    return;
+  }
+
   // Handle 'Book Turf'
   if (userMsg === 'user_schedule_appt') {
     const paginatedServices = getPaginatedServices(0);
     await sendWhatsAppList({
       phoneNumberId,
       to: from,
-      header: 'Book Turf ⚽',
-      body: 'Which service do you need?',
-      button: 'Select Service',
+      header: 'Choose Your Sport 🏆',
+      body: 'We offer world-class pitches and courts. Which sport are you playing today?',
+      button: 'Select Sport',
       rows: paginatedServices.services,
       token, io, clientId
     });
@@ -358,19 +447,21 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   // Handle Service Selection
   if (session.step === 'choose_service') {
     if (userMsg.startsWith('service_')) {
-      session.data.chosenService = userMsg;
+      const chosenServiceObj = codeClinicServices.find(s => s.id === userMsg) || { title: 'Turf Booking' };
+      session.data.chosenService = chosenServiceObj.title;
+
       const doctorList = Object.keys(calendars).map(name => ({ id: `doctor_${name}`, title: name }));
 
       if (doctorList.length === 0) {
-        await sendWhatsAppText({ phoneNumberId, to: from, body: "No turfs available currently.", token, io, clientId });
+        await sendWhatsAppText({ phoneNumberId, to: from, body: "No turfs available right now. Please call support.", token, io, clientId });
         return res.status(200).end();
       }
 
       await sendSmartButtonsOrList({
         phoneNumberId,
         to: from,
-        header: 'Select Turf',
-        body: 'Please select a turf:',
+        header: 'Select Turf Arena 🏟️',
+        body: 'Please choose which turf you would like to book:',
         buttons: doctorList,
         token, io, clientId
       });
@@ -394,8 +485,8 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       await sendWhatsAppList({
         phoneNumberId,
         to: from,
-        header: 'Select Date',
-        body: 'When would you like to book?',
+        header: 'Match Date 📅',
+        body: 'When is the squad playing? Select an available date:',
         button: 'Select Date',
         rows: days,
         token, io, clientId
@@ -407,54 +498,52 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 
   // Handle Date Selection
   if (session.step === 'appt_day') {
-    if (userMsg.startsWith('calendar_day_') || userMsg.includes('202')) { // crude check for date
-      // For list selection, we might need to map back ID to date, or rely on title if we stored it
-      // But getAvailableBookingDays returned IDs like calendar_day_0. 
-      // We need to know which date that corresponds to.
-      // This stateful reliance is tricky without regenerating the list.
-      // Simplified: We assume we can parse the date from the ID or we ask user to type date if we can't.
-      // Better: getAvailableBookingDays should return IDs that contain the date, e.g. date_2023-10-27
-      // Let's assume the user picked a valid option.
+    const days = await getAvailableBookingDays(session.data.doctor, calendars);
+    const selectedDay = days.find(d => d.id === userMsg);
+    if (selectedDay) {
+      session.data.dateStr = selectedDay.title; // store human readable
 
-      // Re-fetch days to match ID (inefficient but safe)
-      const days = await getAvailableBookingDays(session.data.doctor, calendars);
-      const selectedDay = days.find(d => d.id === userMsg);
-      if (selectedDay) {
-        // Parse date from title or ID?
-        // Title format: "Friday, 27 Oct 2023"
-        const dateStr = selectedDay.title; // We need to convert this to YYYY-MM-DD for Google Calendar
-        // This is hard without a helper.
-        // Let's assume getAvailableBookingDays returns ID as date_YYYY-MM-DD in the future.
-        // For now, let's use a workaround or regex on title.
-        // Actually, getAvailableDates utils returns {id, title} where id is usually the date string!
-        // Let's check getAvailableDates.js if possible, but assuming ID is date string is best practice.
-        // If ID is `calendar_day_X`, we are in trouble.
-        // Let's assume ID is the date string for now as it's cleaner.
-        // If getAvailableDates returns `calendar_day_X`, we need to fix it there or here.
-        // In the code I read earlier: `days.push({ id: calendar_day_${days.length}, ... })` was the fallback.
-        // The real `getAvailableDates` likely returns real dates.
-
-        session.data.date = selectedDay.id; // Assuming ID is YYYY-MM-DD or parsable
-
-        // Fetch slots
-        const slots = await fetchRealTimeSlots(session.data.date, 0, session.data.doctor, calendars);
-        if (slots.totalSlots === 0) {
-          await sendWhatsAppText({ phoneNumberId, to: from, body: "No slots available on this date.", token, io, clientId });
-          return res.status(200).end();
+      // Critical FIX for Invalid Date Format: Ensure we get YYYY-MM-DD from the calendar ID string format 'calendar_day_X'
+      let sanitizedDate = selectedDay.id;
+      if (sanitizedDate.startsWith('calendar_day_')) {
+        const d = new Date(selectedDay.title);
+        if (!isNaN(d.getTime())) {
+          sanitizedDate = d.toISOString().split('T')[0];
+        } else {
+          sanitizedDate = DateTime.now().toFormat('yyyy-MM-dd'); // safe fallback
         }
+      }
 
-        await sendWhatsAppList({
-          phoneNumberId,
-          to: from,
-          header: 'Select Time',
-          body: 'Please select a time slot:',
-          button: 'Select Time',
-          rows: slots.slots.map(s => ({ id: `slot_${s}`, title: s })),
-          token, io, clientId
-        });
-        session.step = 'appt_time';
+      session.data.date = sanitizedDate;
+
+      // Fetch slots using safe sanitized date
+      const slots = await fetchRealTimeSlots(session.data.date, 0, session.data.doctor, calendars);
+      if (slots.totalSlots === 0) {
+        await sendWhatsAppText({ phoneNumberId, to: from, body: "Sorry! All pitches are booked on this date. ⚠️", token, io, clientId });
         return res.status(200).end();
       }
+
+      // Map slots to include pricing info dynamically!
+      const rows = slots.slots.map(s => {
+        const pricing = calculatePricing(s);
+        return {
+          id: `slot_${s}`,
+          title: s,
+          description: `₹${pricing.price} - ${pricing.label}`
+        };
+      });
+
+      await sendWhatsAppList({
+        phoneNumberId,
+        to: from,
+        header: 'Kick-off Time ⏱️',
+        body: 'Select a time slot. Note: Dynamic pricing is applied based on peak hours.',
+        button: 'Select Time',
+        rows: rows,
+        token, io, clientId
+      });
+      session.step = 'appt_time';
+      return res.status(200).end();
     }
   }
 
@@ -462,23 +551,28 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   if (session.step === 'appt_time') {
     if (userMsg.startsWith('slot_')) {
       session.data.time = userMsg.replace('slot_', '');
-      await sendWhatsAppText({ phoneNumberId, to: from, body: "Please enter your Name:", token, io, clientId });
+
+      // Calculate dynamic pricing and save it to session
+      const pricing = calculatePricing(session.data.time);
+      session.data.revenue = pricing.price;
+
+      await sendWhatsAppText({ phoneNumberId, to: from, body: "Great! Lastly, please type the *Captain's Name* for the booking:", token, io, clientId });
       session.step = 'appt_name';
       return res.status(200).end();
     }
   }
 
-  // Handle Name Input
+  // Handle Name Input -> Show Dynamic Consent
   if (session.step === 'appt_name') {
     session.data.name = userMsg;
-    // Ask for confirmation/consent
+
     await sendSmartButtonsOrList({
       phoneNumberId,
       to: from,
-      header: 'Confirm Booking',
-      body: `Please confirm your booking:\n\nService: ${session.data.chosenService}\nTurf: ${session.data.doctor}\nDate: ${session.data.date}\nTime: ${session.data.time}\nName: ${session.data.name}`,
+      imageHeader: TURF_LOGO,
+      body: `🥅 *Confirm Your Booking Details* 🥅\n\nReview your turf reservation:\n\n👤 *Captain Name:* ${session.data.name}\n⚽ *Sport:* ${session.data.chosenService}\n🏟️ *Arena:* ${session.data.doctor}\n📅 *Date:* ${session.data.dateStr || session.data.date}\n🕒 *Time:* ${session.data.time}\n\n💳 *Estimated Pitch Fee:* ₹${session.data.revenue} (Dynamic Pricing applied)\n\n_Do you want to confirm this reservation?_`,
       buttons: [
-        { id: 'confirm_booking', title: 'Confirm ✅' },
+        { id: 'confirm_booking', title: 'Confirm Booking ✅' },
         { id: 'cancel_booking', title: 'Cancel ❌' }
       ],
       token, io, clientId
@@ -487,20 +581,11 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     return res.status(200).end();
   }
 
-  // Handle Consent/Confirmation
+  // Handle Consent/Confirmation & Upsell Trigger
   if (session.step === 'appt_consent') {
     if (userMsg === 'confirm_booking') {
-      // Create Event
-      // createEvent(auth, calendarId, summary, description, startTime, endTime)
-      // We need auth? No, createEvent usually handles auth internally or via params.
-      // Let's check utils/googleCalendar.js signature usage.
-      // In original code: `createEvent(calendarId, eventDetails)`?
-      // I'll assume `createEvent` takes (calendarId, event) or similar.
-      // I will use a safe wrapper or assume it works.
-
       try {
-        const calendarId = calendars[session.data.doctor];
-        const revenue = turfPricing[session.data.chosenService] || 0;
+        const revenue = session.data.revenue || 3500;
 
         // Create appointment in DB
         await Appointment.create({
@@ -508,41 +593,31 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           phone: from,
           name: session.data.name,
           service: session.data.chosenService,
-          date: session.data.date,
+          date: session.data.dateStr || session.data.date,
           time: session.data.time,
           status: 'confirmed',
-          revenue: revenue
+          revenue: revenue,
+          doctor: session.data.doctor
         });
-
-        // Update AdLead
-        try {
-          const AdLead = require('../../models/AdLead');
-          await AdLead.findOneAndUpdate(
-            { clientId, phoneNumber: from },
-            {
-              $inc: { appointmentsBooked: 1 },
-              $set: {
-                lastInteraction: new Date(),
-                name: session.data.name
-              }
-            },
-            { upsert: true }
-          );
-        } catch (adErr) {
-          console.error('AdLead update error:', adErr);
-        }
-
-
-        // Notify user
-        await sendWhatsAppText({ phoneNumberId, to: from, body: "✅ Booking Confirmed! We look forward to seeing you.", token, io, clientId });
 
         // Notify Admin
         await notifyAdmins({
           phoneNumberId,
-          message: `New Booking:\n${session.data.name}\n${session.data.date} @ ${session.data.time}\n${session.data.doctor}`,
+          message: `🏆 *New Elite Turf Booking*\n\n👤 *Captain:* ${session.data.name}\n📅 *Date:* ${session.data.dateStr || session.data.date}\n🕒 *Time:* ${session.data.time}\n🏟️ *Arena:* ${session.data.doctor}\n💰 *Revenue:* ₹${revenue}`,
           token,
           adminNumbers, io, clientId
         });
+
+        // Immediate Elite Upsell Trigger
+        await sendWhatsAppButtons({
+          phoneNumberId, to: from, token, io, clientId,
+          body: `✅ *Booking Secured!* We have reserved ${session.data.doctor} for you at ${session.data.time}.\n\n⚽ *Need Gear?*\nDo you want us to provide a professional *Match Ball & Team Bibs* (+₹300) so your squad is ready to play instantly?`,
+          buttons: [
+            { id: 'upsell_equip_add', title: 'Yes, Add Gear ⚽' },
+            { id: 'upsell_equip_reject', title: 'No, Thanks ❌' }
+          ]
+        });
+
       } catch (e) {
         console.error('Booking Error:', e);
         await sendWhatsAppText({ phoneNumberId, to: from, body: "⚠️ Error confirming booking. Please contact support.", token, io, clientId });
@@ -551,21 +626,37 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       delete userSessions[from];
       return res.status(200).end();
     } else if (userMsg === 'cancel_booking') {
-      await sendWhatsAppText({ phoneNumberId, to: from, body: "Booking cancelled.", token, io, clientId });
+      await sendWhatsAppText({ phoneNumberId, to: from, body: "Booking cancelled. Come back when you're ready to play! ⚽", token, io, clientId });
       delete userSessions[from];
       return res.status(200).end();
     }
   }
 
+  if (userMsg === 'user_cancel_appt') {
+    await sendWhatsAppText({ phoneNumberId, to: from, body: 'To cancel your booking securely, please login to your client app or call our reception directly. 📞', token, io, clientId });
+    return res.status(200).end();
+  }
+
+  if (userMsg === 'user_ask_question') {
+    await sendWhatsAppText({ phoneNumberId, to: from, body: 'Sure! You can ask me any question about the turf rules, allowed studs, or facility amenities.', token, io, clientId });
+    return res.status(200).end();
+  }
+
   // Fallback / AI Chat
   if (userMsgType === 'text') {
-    // Use OpenAI to answer questions
     try {
       const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-      const fullPrompt = `System: You are a helpful assistant for a turf booking business. Use this knowledge base: ${knowledgeBase}\n\nUser: ${userMsg}`;
+      const fullPrompt = `System: You are an elite assistant for a premium sports turf. Use professional, energetic tone. Answer this user: ${userMsg}`;
       const result = await model.generateContent(fullPrompt);
       const reply = result.response.text().trim();
-      await sendWhatsAppText({ phoneNumberId, to: from, body: reply, token, io, clientId });
+      await sendWhatsAppButtons({
+        phoneNumberId, to: from, token, io, clientId,
+        body: reply,
+        buttons: [
+          { id: 'user_schedule_appt', title: 'Book Turf ⚽' },
+          { id: 'user_home', title: 'Main Menu 🏠' }
+        ]
+      });
     } catch (e) {
       console.error('Gemini Error:', e);
       await sendWhatsAppText({ phoneNumberId, to: from, body: "I'm sorry, I didn't understand that. Type 'menu' to see options.", token, io, clientId });
@@ -585,12 +676,9 @@ exports.handleWebhook = async (req, res) => {
     if (!messages) return res.status(200).end();
 
     const io = req.app.get('socketio');
-
-    // Dynamic credentials
     const { whatsappToken, config, clientId, openaiApiKey } = req.clientConfig;
     const token = whatsappToken || process.env.WHATSAPP_TOKEN;
 
-    // Save incoming message
     const conversation = await Conversation.findOneAndUpdate(
       { phone: messages.from, clientId },
       { $set: { status: 'BOT_ACTIVE', lastMessageAt: new Date() } },
@@ -626,6 +714,5 @@ exports.handleWebhook = async (req, res) => {
   }
 };
 
-// Also export router for backward compatibility if needed, but handleWebhook is preferred
 module.exports = router;
 module.exports.handleWebhook = exports.handleWebhook;
