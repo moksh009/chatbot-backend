@@ -11,60 +11,79 @@ const checkOverlap = async (clientId, doctor, start, end, excludeId = null) => {
   const newStart = new Date(start);
   const newEnd = new Date(end);
 
-  // 1. Check DB for conflicts
+  // 1. Check DB for conflicts (Using string-based date/time from schema)
+  const { date: targetDate, time: targetTime } = formatDateTime(start);
   const query = {
     clientId,
     doctor,
+    date: targetDate,
+    time: targetTime,
     status: { $ne: 'cancelled' }
   };
 
   if (excludeId) {
-    query._id = { $ne: excludeId };
+    // If it's a mongo ID
+    if (excludeId.length === 24) {
+      query._id = { $ne: excludeId };
+    }
+    // If it's a GCal event ID, the DB check might not filter it out easily 
+    // but the GCal check below will handle it.
   }
 
-  const dbAppointments = await Appointment.find(query);
-
-  const hasDbConflict = dbAppointments.some(appt => {
-    // Reconstruct start/end from DB date/time if possible, 
-    // but Appointment model should ideally store ISO strings.
-    // For now, let's check based on the 'date' and 'time' fields if they match exactly
-    // as a fallback, but we should really use Google Calendar as the source of truth for availability.
-    return false; // DB check is tricky with the current string-based date/time schema
-  });
+  try {
+    const dbConflict = await Appointment.findOne(query);
+    if (dbConflict) {
+      return {
+        name: dbConflict.name,
+        start: dbConflict.date + ' ' + dbConflict.time,
+        source: 'database'
+      };
+    }
+  } catch (dbErr) {
+    console.warn('DB Conflict check failed:', dbErr.message);
+  }
 
   // 2. Check Google Calendar (The source of truth)
-  const client = await Client.findOne({ clientId });
-  if (!client) return false;
+  try {
+    const client = await Client.findOne({ clientId });
+    if (!client) return null;
 
-  // Find the correct calendar ID for the doctor
-  let calendarId = client.googleCalendarId || 'primary';
-  if (client.config?.calendars && doctor) {
-    const doctorKey = doctor.toLowerCase().replace(/\s+/g, '');
-    if (client.config.calendars[doctorKey]) {
-      calendarId = client.config.calendars[doctorKey];
+    let calendarId = client.googleCalendarId || 'primary';
+    if (client.config?.calendars && doctor) {
+      const doctorKey = doctor.toLowerCase().replace(/\s+/g, '');
+      if (client.config.calendars[doctorKey]) {
+        calendarId = client.config.calendars[doctorKey];
+      } else if (client.config.calendars[doctor]) {
+        calendarId = client.config.calendars[doctor];
+      }
     }
+
+    // Fetch events for that day
+    const dayStart = DateTime.fromJSDate(newStart).startOf('day').toISO();
+    const dayEnd = DateTime.fromJSDate(newStart).endOf('day').toISO();
+    const events = await listEvents(dayStart, dayEnd, calendarId);
+
+    const conflict = events.find(event => {
+      // Exclude by eventId if provided
+      if (excludeId && event.id === excludeId) return false;
+
+      const eventStart = new Date(event.start.dateTime || event.start.date);
+      const eventEnd = new Date(event.end.dateTime || event.end.date);
+
+      // Overlap logic: (StartA < EndB) and (EndA > StartB)
+      return (newStart < eventEnd && newEnd > eventStart);
+    });
+
+    return conflict ? {
+      name: conflict.summary,
+      start: conflict.start.dateTime || conflict.start.date,
+      end: conflict.end.dateTime || conflict.end.date,
+      source: 'google_calendar'
+    } : null;
+  } catch (gcalErr) {
+    console.warn('Google Calendar Conflict check failed:', gcalErr.message);
+    return null; // Don't block booking if GCal is down, DB check already passed
   }
-
-  // Fetch events for that day
-  const dayStart = DateTime.fromJSDate(newStart).startOf('day').toISO();
-  const dayEnd = DateTime.fromJSDate(newStart).endOf('day').toISO();
-  const events = await listEvents(dayStart, dayEnd, calendarId);
-
-  const conflict = events.find(event => {
-    if (excludeId && event.id === excludeId) return false;
-
-    const eventStart = new Date(event.start.dateTime || event.start.date);
-    const eventEnd = new Date(event.end.dateTime || event.end.date);
-
-    // Overlap logic: (StartA < EndB) and (EndA > StartB)
-    return (newStart < eventEnd && newEnd > eventStart);
-  });
-
-  return conflict ? {
-    name: conflict.summary,
-    start: conflict.start.dateTime || conflict.start.date,
-    end: conflict.end.dateTime || conflict.end.date
-  } : null;
 };
 
 // @route   POST /api/appointments/check-conflict
@@ -536,7 +555,7 @@ router.patch('/:id/status', protect, async (req, res) => {
     res.json(appointment);
   } catch (error) {
     console.error('Status update error:', error);
-    res.status(500).json({ message: 'Server Error' });
+    res.status(500).json({ message: 'Status update failed', details: error.message });
   }
 });
 

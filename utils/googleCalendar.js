@@ -37,7 +37,7 @@ function initializeOAuth2Client() {
     const REDIRECT_URI = process.env.GCAL_REDIRECT_URI || 'http://localhost:3000/oauth2callback';
     const REFRESH_TOKEN = process.env.GCAL_REFRESH_TOKEN || '';
     const ACCESS_TOKEN = process.env.GCAL_ACCESS_TOKEN || '';
-    
+
     // Log environment variables (remove this in production)
     console.log('🔍 Google OAuth2 Config:', {
       hasClientId: !!CLIENT_ID,
@@ -45,17 +45,17 @@ function initializeOAuth2Client() {
       hasRefreshToken: !!REFRESH_TOKEN,
       redirectUri: REDIRECT_URI
     });
-    
+
     // Validate required environment variables
     if (!CLIENT_ID || !CLIENT_SECRET || !REFRESH_TOKEN) {
       const missing = [];
       if (!CLIENT_ID) missing.push('GCAL_CLIENT_ID');
       if (!CLIENT_SECRET) missing.push('GCAL_CLIENT_SECRET');
       if (!REFRESH_TOKEN) missing.push('GCAL_REFRESH_TOKEN');
-      
+
       throw new Error(`Missing required Google OAuth2 configuration: ${missing.join(', ')}. Please check your environment variables.`);
     }
-    
+
     // Create new OAuth2 client if it doesn't exist
     if (!oAuth2Client) {
       oAuth2Client = new google.auth.OAuth2(
@@ -63,13 +63,13 @@ function initializeOAuth2Client() {
         CLIENT_SECRET,
         REDIRECT_URI
       );
-      
+
       // Set credentials with both access and refresh tokens
       oAuth2Client.setCredentials({
         refresh_token: REFRESH_TOKEN,
         access_token: ACCESS_TOKEN
       });
-      
+
       // Set up auto-refresh of access token
       oAuth2Client.on('tokens', (tokens) => {
         if (tokens.refresh_token) {
@@ -81,17 +81,21 @@ function initializeOAuth2Client() {
         }
       });
     }
-    
+
     return oAuth2Client;
-    
+
   } catch (error) {
-    console.error('❌ Error initializing Google OAuth2 client:', error.message);
-    throw new Error('Failed to initialize Google Calendar client. Please check your configuration.');
+    console.warn('⚠️ Google OAuth2 client not initialized yet:', error.message);
+    return null;
   }
 }
 
-// Initialize the client immediately when this module is loaded
-initializeOAuth2Client();
+// Attempt initialization immediately but don't crash if it fails
+try {
+  initializeOAuth2Client();
+} catch (e) {
+  console.warn('⚠️ Initial GCal auth attempt failed, will retry on use.');
+}
 
 async function createEvent({ summary, description, start, end, attendees, calendarId }) {
   try {
@@ -99,32 +103,32 @@ async function createEvent({ summary, description, start, end, attendees, calend
     if (!calendarId) {
       throw new Error('calendarId argument is required');
     }
-    
+
     // Initialize OAuth2 client
     const auth = initializeOAuth2Client();
-    
+
     // Create event object
     const event = {
       summary,
       description: description || 'Appointment created via WhatsApp Bot',
-      start: { 
-        dateTime: start, 
-        timeZone: 'Asia/Kolkata' 
+      start: {
+        dateTime: start,
+        timeZone: 'Asia/Kolkata'
       },
-      end: { 
-        dateTime: end, 
-        timeZone: 'Asia/Kolkata' 
+      end: {
+        dateTime: end,
+        timeZone: 'Asia/Kolkata'
       },
-      attendees: attendees && attendees.length > 0 
-        ? attendees.map(email => ({ email, responseStatus: 'needsAction' })) 
+      attendees: attendees && attendees.length > 0
+        ? attendees.map(email => ({ email, responseStatus: 'needsAction' }))
         : undefined,
       reminders: {
         useDefault: true
       }
     };
-    
+
     console.log(`Creating calendar event: ${summary} from ${start} to ${end}`);
-    
+
     // Insert event into calendar
     const res = await calendar.events.insert({
       auth,
@@ -133,7 +137,7 @@ async function createEvent({ summary, description, start, end, attendees, calend
       conferenceDataVersion: 1,
       sendUpdates: 'all'
     });
-    
+
     console.log("✅ Event created successfully:", res.data.htmlLink);
     return {
       success: true,
@@ -143,27 +147,20 @@ async function createEvent({ summary, description, start, end, attendees, calend
       start: res.data.start,
       end: res.data.end
     };
-    
+
   } catch (error) {
     console.error('❌ Error creating Google Calendar event:', error.message);
-    
+
     // Handle specific error cases
     if (error.code === 401) {
-      // Clear stored tokens to force re-authentication
+      console.warn('Auth failed, clearing tokens...');
       delete process.env.GCAL_ACCESS_TOKEN;
-      delete process.env.GCAL_REFRESH_TOKEN;
-      throw new Error('Authentication failed. Please re-authenticate with Google Calendar.');
-    } else if (error.code === 403) {
-      throw new Error('Insufficient permissions to create calendar events.');
-    } else if (error.code === 404) {
-      throw new Error('Calendar not found. Please check the calendar ID.');
-    } else {
-      // For other errors, include more details
-      const errorMessage = error.errors && error.errors[0] 
-        ? `${error.message} (${error.errors[0].message})` 
-        : error.message;
-      throw new Error(`Failed to create event: ${errorMessage}`);
     }
+
+    const errorMessage = error.errors && error.errors[0]
+      ? `${error.message} (${error.errors[0].message})`
+      : error.message;
+    throw new Error(`Google Calendar Error: ${errorMessage}`);
   }
 }
 
@@ -173,29 +170,29 @@ async function updateEvent({ eventId, summary, description, start, end, attendee
     if (!calendarId || !eventId) {
       throw new Error('Both calendarId and eventId arguments are required');
     }
-    
+
     // Initialize OAuth2 client
     const auth = initializeOAuth2Client();
-    
+
     // Prepare event update
     const event = {
       summary,
       description: description || 'Updated appointment via WhatsApp Bot',
-      start: { 
-        dateTime: start, 
-        timeZone: 'Asia/Kolkata' 
+      start: {
+        dateTime: start,
+        timeZone: 'Asia/Kolkata'
       },
-      end: { 
-        dateTime: end, 
-        timeZone: 'Asia/Kolkata' 
+      end: {
+        dateTime: end,
+        timeZone: 'Asia/Kolkata'
       },
-      attendees: attendees && attendees.length > 0 
-        ? attendees.map(email => ({ email, responseStatus: 'needsAction' })) 
+      attendees: attendees && attendees.length > 0
+        ? attendees.map(email => ({ email, responseStatus: 'needsAction' }))
         : undefined
     };
-    
+
     console.log(`Updating calendar event ${eventId}: ${summary || 'No title'}`);
-    
+
     // Update the event
     const res = await calendar.events.patch({
       auth,
@@ -204,7 +201,7 @@ async function updateEvent({ eventId, summary, description, start, end, attendee
       resource: event,
       sendUpdates: 'all'
     });
-    
+
     console.log(`✅ Event updated successfully: ${res.data.htmlLink}`);
     return {
       success: true,
@@ -213,10 +210,10 @@ async function updateEvent({ eventId, summary, description, start, end, attendee
       updated: res.data.updated,
       hangoutLink: res.data.hangoutLink || null
     };
-    
+
   } catch (error) {
     console.error('❌ Error updating Google Calendar event:', error.message);
-    
+
     // Handle specific error cases
     if (error.code === 401) {
       delete process.env.GCAL_ACCESS_TOKEN;
@@ -227,8 +224,8 @@ async function updateEvent({ eventId, summary, description, start, end, attendee
     } else if (error.code === 404) {
       throw new Error('Event not found. It may have been deleted.');
     } else {
-      const errorMessage = error.errors && error.errors[0] 
-        ? `${error.message} (${error.errors[0].message})` 
+      const errorMessage = error.errors && error.errors[0]
+        ? `${error.message} (${error.errors[0].message})`
         : error.message;
       throw new Error(`Failed to update event: ${errorMessage}`);
     }
@@ -241,12 +238,12 @@ async function deleteEvent(eventId, calendarId) {
     if (!calendarId || !eventId) {
       throw new Error('Both calendarId and eventId arguments are required');
     }
-    
+
     // Initialize OAuth2 client
     const auth = initializeOAuth2Client();
-    
+
     console.log(`Deleting calendar event ${eventId} from calendar ${calendarId}`);
-    
+
     // Delete the event
     await calendar.events.delete({
       auth,
@@ -254,7 +251,7 @@ async function deleteEvent(eventId, calendarId) {
       eventId,
       sendUpdates: 'all'
     });
-    
+
     console.log(`✅ Event ${eventId} deleted successfully`);
     return {
       success: true,
@@ -263,10 +260,10 @@ async function deleteEvent(eventId, calendarId) {
       calendarId,
       deletedAt: new Date().toISOString()
     };
-    
+
   } catch (error) {
     console.error('❌ Error deleting Google Calendar event:', error.message);
-    
+
     // Handle specific error cases
     if (error.code === 401) {
       delete process.env.GCAL_ACCESS_TOKEN;
@@ -293,8 +290,8 @@ async function deleteEvent(eventId, calendarId) {
         alreadyDeleted: true
       };
     } else {
-      const errorMessage = error.errors && error.errors[0] 
-        ? `${error.message} (${error.errors[0].message})` 
+      const errorMessage = error.errors && error.errors[0]
+        ? `${error.message} (${error.errors[0].message})`
         : error.message;
       throw new Error(`Failed to delete event: ${errorMessage}`);
     }
@@ -435,15 +432,15 @@ async function findEventsByPhoneNumber({ phone, startDate, endDate, calendarId }
       const start = event.start?.dateTime || event.start?.date;
       const dateObj = new Date(start);
       // Convert to IST for display
-      const date = dateObj.toLocaleDateString('en-GB', { 
-        weekday: 'long', 
-        day: '2-digit', 
+      const date = dateObj.toLocaleDateString('en-GB', {
+        weekday: 'long',
+        day: '2-digit',
         month: 'short',
         timeZone: 'Asia/Kolkata'
       });
-      const time = dateObj.toLocaleTimeString('en-GB', { 
-        hour: '2-digit', 
-        minute: '2-digit', 
+      const time = dateObj.toLocaleTimeString('en-GB', {
+        hour: '2-digit',
+        minute: '2-digit',
         hour12: true,
         timeZone: 'Asia/Kolkata'
       });
@@ -471,12 +468,12 @@ async function listEvents(timeMin, timeMax, calendarId) {
     if (!calendarId) {
       throw new Error('calendarId argument is required');
     }
-    
+
     // Initialize OAuth2 client
     const auth = initializeOAuth2Client();
-    
+
     console.log(`📅 Fetching events from calendar ${calendarId} from ${timeMin} to ${timeMax}`);
-    
+
     // List events from calendar
     const res = await calendar.events.list({
       auth: auth,
@@ -486,12 +483,12 @@ async function listEvents(timeMin, timeMax, calendarId) {
       singleEvents: true,
       orderBy: 'startTime'
     });
-    
+
     const events = res.data.items || [];
     console.log(`✅ Found ${events.length} events in calendar ${calendarId}`);
-    
+
     return events;
-    
+
   } catch (error) {
     console.error('❌ Error listing calendar events:', error.message);
     throw error;
