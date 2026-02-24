@@ -26,7 +26,7 @@ const EQUIPMENT_B_PRICE = 300;
 const REFEREE_TEXT = 'Certified Referee ⏱️';
 const REFEREE_PRICE = 800;
 
-const PEAK_HOURS = ['17:00', '18:00', '19:00', '20:00', '21:00', '22:00', '23:00', '06:00', '07:00', '08:00', '09:00'];
+const PEAK_HOURS = ['17:00', '18:00', '19:00', '20:00', '21:00', '22:00', '23:00'];
 const OFF_PEAK_PRICE = 1500;
 const PEAK_PRICE = 3500;
 
@@ -147,7 +147,7 @@ async function sendWhatsAppButtons({ phoneNumberId, to, header, imageHeader, bod
   }
 }
 
-async function sendWhatsAppList({ phoneNumberId, to, header, body, footer, button, rows, token, io, clientId }) {
+async function sendWhatsAppList({ phoneNumberId, to, header, imageHeader, body, footer, button, rows, token, io, clientId }) {
   const apiVersion = process.env.API_VERSION || 'v18.0';
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
   let safeRows = rows;
@@ -161,7 +161,7 @@ async function sendWhatsAppList({ phoneNumberId, to, header, body, footer, butto
     type: 'interactive',
     interactive: {
       type: 'list',
-      header: header ? { type: 'text', text: header } : undefined,
+      header: imageHeader ? { type: 'image', image: { link: imageHeader } } : (header ? { type: 'text', text: header } : undefined),
       body: { text: body },
       footer: footer ? { text: footer } : { text: '' },
       action: {
@@ -179,7 +179,7 @@ async function sendWhatsAppList({ phoneNumberId, to, header, body, footer, butto
       }
     }
   };
-  if (!header) delete data.interactive.header;
+  if (!header && !imageHeader) delete data.interactive.header;
   try {
     await axios.post(url, data, {
       headers: {
@@ -315,40 +315,46 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   }
 
   // Handle Upsells (Interactive execution)
-  if (userMsg === 'upsell_equip_add') {
+  if (userMsg === 'upsell_equip_add' || userMsg === 'upsell_ref_add') {
     try {
       const lastAppt = await Appointment.findOne({ phone: from, clientId }).sort({ createdAt: -1 });
-      if (lastAppt && !lastAppt.service.includes(EQUIPMENT_B_TEXT)) {
-        lastAppt.service += ` + ${EQUIPMENT_B_TEXT}`;
-        lastAppt.revenue += EQUIPMENT_B_PRICE;
-        await lastAppt.save();
+      if (lastAppt) {
+        const isEquip = userMsg === 'upsell_equip_add';
+        const addOnText = isEquip ? EQUIPMENT_B_TEXT : REFEREE_TEXT;
+        const addOnPrice = isEquip ? EQUIPMENT_B_PRICE : REFEREE_PRICE;
 
-        await sendWhatsAppButtons({
-          phoneNumberId, to: from, token, io, clientId,
-          imageHeader: TURF_LOGO,
-          body: `⚽ *Elite Add-on Confirmed!* ⚽\n\nWe've successfully added the *Match Ball & Bibs* to your booking.\n\n✅ *Final Booking Summary*\n👤 *Captain:* ${lastAppt.name}\n📅 *Date:* ${lastAppt.date}\n🕒 *Time:* ${lastAppt.time}\n🏟️ *Turf:* ${lastAppt.doctor || 'Standard'}\n⚽ *Package:* ${lastAppt.service}\n💰 *Total Due:* ₹${lastAppt.revenue}\n\nCan't wait to see you on the pitch! 🏆👇`,
-          footer: 'Click below to share details with your squad!',
-          buttons: [
-            { id: 'action_share_squad', title: 'Share with Squad 📲' },
-            { id: 'user_home', title: '🏠 Main Menu' }
-          ]
-        });
+        if (!lastAppt.service.includes(addOnText)) {
+          lastAppt.service += ` + ${addOnText}`;
+          lastAppt.revenue += addOnPrice;
+          await lastAppt.save();
 
-        await notifyAdmins({
-          phoneNumberId, token, adminNumbers, io, clientId,
-          message: `⚽ *Squad Upgraded!* ⚽\n\n${lastAppt.name} just added Match Ball & Bibs to their booking!\n\n📅 ${lastAppt.date} @ ${lastAppt.time}\n🏟️ ${lastAppt.doctor}\n💰 *New Total:* ₹${lastAppt.revenue}`
-        });
+          await sendWhatsAppButtons({
+            phoneNumberId, to: from, token, io, clientId,
+            imageHeader: TURF_LOGO,
+            body: `⚽ *Elite Add-on Confirmed!* ⚽\n\nWe've successfully added the *${addOnText.replace(' ⚽', '').replace(' ⏱️', '')}* to your booking.\n\n✅ *Final Booking Summary*\n👤 *Captain:* ${lastAppt.name}\n📅 *Date:* ${lastAppt.date}\n🕒 *Time:* ${lastAppt.time}\n🏟️ *Turf:* ${lastAppt.doctor || 'Standard'}\n⚽ *Package:* ${lastAppt.service}\n💰 *Total Due:* ₹${lastAppt.revenue}\n\nCan't wait to see you on the pitch! 🏆👇`,
+            footer: 'Click below to share details with your squad!',
+            buttons: [
+              { id: 'action_share_squad', title: 'Share with Squad 📲' },
+              { id: 'user_home', title: '🏠 Main Menu' }
+            ]
+          });
 
+          await notifyAdmins({
+            phoneNumberId, token, adminNumbers, io, clientId,
+            message: `⚽ *Squad Upgraded!* ⚽\n\n${lastAppt.name} just added ${addOnText} to their booking!\n\n📅 ${lastAppt.date} @ ${lastAppt.time}\n🏟️ ${lastAppt.doctor}\n💰 *New Total:* ₹${lastAppt.revenue}`
+          });
+        }
         res.status(200).end();
         return;
       }
     } catch (err) { console.error('Upsell error:', err); }
   }
 
-  if (userMsg === 'upsell_equip_reject') {
+  if (userMsg === 'upsell_reject') {
     const lastAppt = await Appointment.findOne({ phone: from, clientId }).sort({ createdAt: -1 });
     await sendWhatsAppButtons({
       phoneNumberId, to: from, token, io, clientId,
+      imageHeader: TURF_LOGO,
       body: `No problem at all! We've got your standard reservation locked in. ⚽⭐`,
       buttons: [
         { id: 'action_share_squad', title: 'Share with Squad 📲' },
@@ -363,11 +369,18 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     const lastAppt = await Appointment.findOne({ phone: from, clientId }).sort({ createdAt: -1 });
     if (lastAppt) {
       // Squad Split Calculator
-      const formatTitle = lastAppt.service.includes('5v5') ? '10' : (lastAppt.service.includes('Pickleball') ? '4' : '10');
-      const splitCount = parseInt(formatTitle);
-      const splitPrice = Math.round(lastAppt.revenue / splitCount);
+      let formatStr = '5v5';
+      let totalPlayers = 10;
+      if (lastAppt.service.includes('8v8')) {
+        totalPlayers = 16;
+        formatStr = '8v8';
+      } else if (lastAppt.service.includes('Pickleball')) {
+        totalPlayers = 4;
+        formatStr = 'Doubles';
+      }
+      const splitPrice = Math.round(lastAppt.revenue / totalPlayers);
 
-      const shareMsg = `🏆 *MATCH CONFIRMED: Get Ready Squad!* 🏆\n\nReserve your spot for the upcoming game:\n\n📅 *When:* ${lastAppt.date}, ${lastAppt.time}\n🏟️ *Where:* Rough-N-Turf (${lastAppt.doctor})\n⚽ *Format:* ${lastAppt.service.replace('Booking', '').trim()}\n\n💰 *Total Pitch Fee:* ₹${lastAppt.revenue}\n💸 *Per Player (Team of ${splitCount}):* ₹${splitPrice}\n\n_Please UPI your share to secure your spot on the team!_ 🔥`;
+      const shareMsg = `⚽ Match confirmed! ${lastAppt.doctor} at ${lastAppt.time}. Total ₹${lastAppt.revenue}. For a ${formatStr} format, it's just ₹${splitPrice} per person! Pay via UPI here...`;
 
       await sendWhatsAppText({ phoneNumberId, to: from, token, io, clientId, body: `Here is the squad detail message. Copy and paste this into your WhatsApp group! 👇` });
       await sendWhatsAppText({ phoneNumberId, to: from, token, io, clientId, body: shareMsg });
@@ -399,8 +412,8 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     await sendWhatsAppList({
       phoneNumberId,
       to: from,
-      header: 'Welcome to Elite Sports Turf! ⚽',
-      body: 'Here are all our options:',
+      imageHeader: TURF_LOGO,
+      body: 'Welcome to Elite Sports Turf! ⚽\n\nHere are all our options:',
       button: 'Menu',
       rows: [
         { id: 'user_schedule_appt', title: 'Book Turf 🗓️' },
@@ -434,8 +447,8 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     await sendWhatsAppList({
       phoneNumberId,
       to: from,
-      header: 'Choose Your Sport 🏆',
-      body: 'We offer world-class pitches and courts. Which sport are you playing today?',
+      imageHeader: TURF_LOGO,
+      body: 'Choose Your Sport 🏆\n\nWe offer world-class pitches and courts. Which sport are you playing today?',
       button: 'Select Sport',
       rows: paginatedServices.services,
       token, io, clientId
@@ -523,13 +536,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         return res.status(200).end();
       }
 
-      // Map slots to include pricing info dynamically!
       const rows = slots.slots.map(s => {
         const pricing = calculatePricing(s);
         return {
           id: `slot_${s}`,
           title: s,
-          description: `₹${pricing.price} - ${pricing.label}`
+          description: `₹${pricing.price}/hr - ${pricing.label}`
         };
       });
 
@@ -611,10 +623,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         // Immediate Elite Upsell Trigger
         await sendWhatsAppButtons({
           phoneNumberId, to: from, token, io, clientId,
-          body: `✅ *Booking Secured!* We have reserved ${session.data.doctor} for you at ${session.data.time}.\n\n⚽ *Need Gear?*\nDo you want us to provide a professional *Match Ball & Team Bibs* (+₹300) so your squad is ready to play instantly?`,
+          imageHeader: TURF_LOGO,
+          body: `✅ *Booking Secured!* We have reserved ${session.data.doctor} for you at ${session.data.time}.\n\nNeed a match ball and team bibs? Add for ₹300. Or need a certified Referee? Add for ₹800.`,
           buttons: [
-            { id: 'upsell_equip_add', title: 'Yes, Add Gear ⚽' },
-            { id: 'upsell_equip_reject', title: 'No, Thanks ❌' }
+            { id: 'upsell_equip_add', title: 'Ball & Bibs (+₹300)' },
+            { id: 'upsell_ref_add', title: 'Referee (+₹800)' },
+            { id: 'upsell_reject', title: 'No Thanks ❌' }
           ]
         });
 
