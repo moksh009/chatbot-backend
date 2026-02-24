@@ -105,6 +105,20 @@ app.get('/keepalive-ping', (req, res) => {
   res.status(200).json({ message: 'Server is awake via GET!' });
 });
 
+// --- TEMPORARY ROUTE TO UPGRADE CHOICE SALON TO V2 (Since Render Free Tier has no shell access) ---
+app.get('/api/fix-v2', async (req, res) => {
+  try {
+    const Client = require('./models/Client');
+    await Client.updateMany(
+      { clientId: { $in: ['choice_salon', 'choice_salon_holi'] } },
+      { $set: { subscriptionPlan: 'v2' } }
+    );
+    res.json({ success: true, message: 'Upgraded choice_salon and choice_salon_holi to v2 successfully!' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Self-ping to keep render free-tier awake. Runs every 10 minutes.
 cron.schedule('*/10 * * * *', () => {
   const url = process.env.SERVER_URL || `https://chatbot-backend-lg5y.onrender.com`;
@@ -319,9 +333,86 @@ cron.schedule('0 7 * * *', async () => {
       }
       console.log(`🎯 Appointment reminders completed for client ${clientId}`);
     }
-
   } catch (err) {
     console.error('❌ Error in appointment reminder cron job:', err);
+  }
+});
+
+// Admin 1-Hour Appointment Reminder (Choice Salon Specific)
+// Runs every 10 minutes, looking for appointments exactly 1 hour (± 5 mins) from now.
+cron.schedule('*/10 * * * *', async () => {
+  console.log(`⏰ Running Admin 1-hour appointment reminder check...`);
+  try {
+    const clients = await Client.find({ clientId: { $in: ['choice_salon', 'choice_salon_holi'] } });
+    const { listEvents } = require('./utils/googleCalendar');
+    const { sendWhatsAppText } = require('./utils/whatsappHelpers'); // Or button helper if preferred
+
+    // We want to find events starting between 55 minutes and 65 minutes from "now"
+    const istNow = DateTime.utc().setZone('Asia/Kolkata');
+    const windowStart = istNow.plus({ minutes: 55 }).toISO();
+    const windowEnd = istNow.plus({ minutes: 65 }).toISO();
+
+    for (const client of clients) {
+      const token = client.whatsappToken || process.env.WHATSAPP_TOKEN;
+      const phoneid = client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
+      const clientId = client.clientId;
+      const adminNumbers = ['919824474547']; // Hardcoded Choice Salon Admin
+
+      if (!token || !phoneid) continue;
+
+      // Get calendars
+      const calendarIds = [];
+      if (client.googleCalendarId) calendarIds.push(client.googleCalendarId);
+      if (client.config && client.config.calendars) {
+        calendarIds.push(...Object.values(client.config.calendars));
+      }
+      if (calendarIds.length === 0) continue;
+
+      let upcomingEvents = [];
+      for (const calendarId of calendarIds) {
+        try {
+          const events = await listEvents(windowStart, windowEnd, calendarId);
+          upcomingEvents = upcomingEvents.concat(events);
+        } catch (error) {
+          console.error(`❌ Admin Reminder GCal Error (${calendarId}):`, error.message);
+        }
+      }
+
+      for (const event of upcomingEvents) {
+        try {
+          // Prevent duplicate reminders by checking a custom Extended Property (if we could write it)
+          // Since we can't easily write to GCal extended props without extra API calls, we rely on the narrow 10m window.
+          // In a production scenario with potential overlapping cron runs, a DB log is safer.
+
+          // Parse event info
+          const nameMatch = event.description?.match(/Name:\s*([^\n]+)/);
+          const serviceMatch = event.description?.match(/Service:\s*([^\n]+)/);
+          const phoneMatch = event.description?.match(/Phone:\s*([^\n]+)/);
+
+          const patientName = nameMatch ? nameMatch[1].trim() : "A client";
+          const service = serviceMatch ? serviceMatch[1].trim() : event.summary.replace(patientName, '').replace('-', '').trim() || "Service";
+          const phone = phoneMatch ? phoneMatch[1].trim() : "Unknown";
+
+          const eventTime = DateTime.fromISO(event.start.dateTime).setZone('Asia/Kolkata').toFormat('h:mm a');
+
+          const message = `🔔 *UPCOMING APPOINTMENT ALERT*\n\nYou have an appointment arriving in exactly *1 Hour*.\n\n👤 *Client:* ${patientName}\n📞 *Phone:* ${phone}\n💅 *Service:* ${service}\n⏰ *Time:* ${eventTime}\n\n_Please ensure the station is prepared!_ ✨`;
+
+          for (const adminPhone of adminNumbers) {
+            await sendWhatsAppText({
+              phoneNumberId: phoneid,
+              to: adminPhone,
+              body: message,
+              token: token
+            });
+          }
+          console.log(`✅ Admin 1HR Reminder sent for ${patientName} at ${eventTime}`);
+        } catch (err) {
+          console.error(`❌ Error sending Admin Reminder:`, err.message);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('❌ Error in admin 1HR reminder cron:', err);
   }
 });
 

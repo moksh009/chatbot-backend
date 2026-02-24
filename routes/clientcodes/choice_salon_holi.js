@@ -25,7 +25,7 @@ const { DateTime } = require('luxon');
 const GREETING_WORDS = [
   'hi', 'hello', 'hey', 'hii', 'good morning', 'good afternoon', 'good evening', 'greetings',
   'kem cho', 'namaste', 'kemcho', 'majama', 'ram ram', 'jay shree krishna', 'jsk', 'jay swaminarayan',
-  'radhe radhe', 'halo', 'tame', 'shubhashbhai'
+  'radhe radhe', 'halo', 'tame', 'subhashbhai'
 ];
 
 const HOLI_DATES = 'Feb 24 - March 5';
@@ -58,7 +58,7 @@ const FAQ_DATA = {
     { id: 'faq_appt_advance', title: 'Do I need to book ahead?', answer: 'We recommend booking at least 2 hours in advance to ensure your preferred stylist is available.' }
   ],
   'ask_other': [
-    { id: 'faq_other_loc', title: 'Where are you located?', answer: 'We are at Second Floor, Raspan Arcade, 6-7, Raspan Cross Rd, opp. Gokul Party Plot, New India Colony, Nikol, Ahmedabad.' },
+    { id: 'faq_other_loc', title: 'Where are you located?', answer: 'We are at Second Floor, Raspan Arcade, 5-6, Raspan Cross Rd, opp. Gokul Party Plot, New India Colony, Nikol, Ahmedabad.' },
     { id: 'faq_other_contact', title: 'Contact Number?', answer: 'You can reach us at +91 98244 74547 for any queries.' },
     { id: 'faq_other_safety', title: 'Safety Measures?', answer: 'We follow strict hygiene protocols, including sanitization of tools and stations after every client.' }
   ]
@@ -104,17 +104,17 @@ const salonServices = [
 
 // Real stylists (Female focused)
 const salonStylists = [
-  { id: 'stylist_shubhashbhai', title: 'Shubhashbhai', description: 'Master Stylist (15+ yrs exp)' },
+  { id: 'stylist_subhashbhai', title: 'subhashbhai', description: 'Master Stylist (15+ yrs exp)' },
   { id: 'stylist_another', title: 'Another Staff', description: 'Senior Hair Specialist' }
 ];
 
 // Map stylists to their specific Google Calendar IDs
 const stylistCalendars = {
-  'Shubhashbhai': process.env.GCAL_CALENDAR_ID2,
+  'subhashbhai': process.env.GCAL_CALENDAR_ID2,
   'Another Staff': process.env.GCAL_CALENDAR_ID,
-  'shubhashbhai': process.env.GCAL_CALENDAR_ID2,
+  'subhashbhai': process.env.GCAL_CALENDAR_ID2,
   'another_staff': process.env.GCAL_CALENDAR_ID,
-  'stylist_shubhashbhai': process.env.GCAL_CALENDAR_ID2,
+  'stylist_subhashbhai': process.env.GCAL_CALENDAR_ID2,
   'stylist_another': process.env.GCAL_CALENDAR_ID
 };
 
@@ -123,8 +123,8 @@ const salonPricing = [
   { category: 'Holi Special 🫧', service: 'Loreal Spa + FREE Haircut', price: '₹1700 ❌ ➔ ₹1199' },
   { category: 'Holi Special 🫧', service: 'Protein Spa + FREE Haircut', price: '₹2000 ❌ ➔ ₹1499' },
   { category: 'Holi Special 🫧', service: 'Shea Butter + FREE Haircut', price: '₹2500 ❌ ➔ ₹1999' },
-  { category: 'Holi Special 🫧', service: 'Permanent Spa + FREE Haircut', price: '₹2500 ❌ ➔ ₹1499' },
-  { id: 'svc_treat_mirror', title: 'Boto Smooth + FREE Cut', price: '₹2,999/-', description: '₹4500 ❌ ➔ ₹2999 (Holi Offer)', category: 'Treatment 🫧' },
+  { category: 'Holi Special 🫧', service: 'Permanent Spa * T&C apply, pricing depends on length + FREE Haircut', price: '₹2500 ❌ ➔ ₹1499' },
+  { id: 'svc_treat_mirror', title: 'Botosmooth + FREE Cut', price: '₹2,999/-', description: '₹4500 ❌ ➔ ₹2999 (Holi Offer)', category: 'Treatment 🫧' },
   { id: 'svc_treat_smooth', title: 'Smoothing + FREE Cut', price: '₹2,799/-', description: '₹3500 ❌ ➔ ₹2799 (Holi Offer)', category: 'Treatment 🫧' },
   { id: 'svc_treat_nano', title: 'Nano Therapy + FREE Cut', price: '₹3,299/-', description: '₹4000 ❌ ➔ ₹3299 (Holi Offer)', category: 'Treatment 🫧' },
   { id: 'svc_treat_botox', title: 'Botox + FREE Cut', price: '₹2,499/-', description: '₹3300 ❌ ➔ ₹2499 (Holi Offer)', category: 'Treatment 🫧' },
@@ -476,16 +476,15 @@ async function getAvailableBookingDays(stylist, calendars) {
     const days = [];
     const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
     const businessStart = new Date(now);
-    businessStart.setHours(7, 0, 0, 0);
+    businessStart.setHours(10, 0, 0, 0); // 10:00 AM
     const businessEnd = new Date(now);
-    businessEnd.setHours(18, 0, 0, 0);
+    businessEnd.setHours(21, 0, 0, 0); // 9:00 PM
     let startOffset = 0;
     if (now < businessStart || now >= businessEnd) {
       startOffset = 1;
     }
     for (let i = startOffset; days.length < 7; i++) {
       const d = new Date(now.getTime() + i * 24 * 60 * 60 * 1000);
-      if (d.getDay() === 0) continue;
       const label = d.toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'short', year: 'numeric' });
       days.push({ id: `calendar_day_${days.length}`, title: label });
     }
@@ -593,13 +592,18 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       const lastAppt = await Appointment.findOne({ phone: from, clientId }).sort({ createdAt: -1 });
 
       if (lastAppt) {
+        const baseService = lastAppt.service || 'Previous Service';
+        const basePrice = lastAppt.revenue || 0;
+        const upgradePrice = 4000;
+        const totalPrice = basePrice + upgradePrice;
+
         // Send Confirmation Step
         await sendWhatsAppButtons({
           ...helperParams,
           to: from,
           imageHeader: HOLI_IMG,
-          body: `💅 *Confirm Your Luxury Upgrade* ✨\n\nAre you sure you want to add *Mirror Shine Boto Smooth* (₹4,000) to your existing booking?\n\nIt's our absolute best treatment for a glass-like finish! 💎✨`,
-          footer: 'Choose your preference below 👇',
+          body: `💅 *Confirm Your Luxury Upgrade* ✨\n\nAre you sure you want to add *Mirror Shine Botosmooth* to your existing booking?\n\n*Current Selection:*\n💇‍♀️ ${baseService} (₹${basePrice})\n✨ Upgrade: Mirror Shine Botosmooth (₹${upgradePrice})\n\n💰 *Total Value: ₹${totalPrice}*\n\nIt's our absolute best treatment for a glass-like finish! 💎✨`,
+          footer: 'You want to upgrade? 👇',
           buttons: [
             { id: 'upsell_confirm_mirror_shine', title: 'Yes, Upgrade ✅' },
             { id: 'upsell_reject_mirror_shine', title: 'No, Thanks ❌' }
@@ -625,7 +629,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       const lastAppt = await Appointment.findOne({ phone: from, clientId }).sort({ createdAt: -1 });
 
       if (lastAppt) {
-        const upgradeService = 'Mirror Shine Boto Smooth';
+        const upgradeService = 'Mirror Shine Botosmooth';
         const upgradePrice = 4000;
 
         // Check if already upgraded to prevent duplicate charges
@@ -651,7 +655,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           ...helperParams,
           to: from,
           imageHeader: HOLI_IMG,
-          body: `✨ *Legendary Choice!* ✨\n\nI've updated your session to the ultimate luxury experience!\n\n✅ *Final Booking Details*\n👤 *Name:* ${lastAppt.name}\n📅 *Date:* ${lastAppt.date}\n🕒 *Time:* ${lastAppt.time}\n💇‍♀️ *Stylist:* ${lastAppt.doctor || 'Not specified'}\n💅 *Total Services:* ${lastAppt.service}\n\nShubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️`,
+          body: `✨ *Legendary Choice!* ✨\n\nI've updated your session to the ultimate luxury experience!\n\n✅ *Final Booking Details*\n👤 *Name:* ${lastAppt.name}\n📅 *Date:* ${lastAppt.date}\n🕒 *Time:* ${lastAppt.time}\n💇‍♀️ *Stylist:* ${lastAppt.doctor || 'Not specified'}\n💅 *Total Services:* ${lastAppt.service}\n\nsubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️`,
           buttons: [
             { id: 'user_home', title: '🏠 Home' },
             { id: 'user_ask_question', title: '❓ Ask Question' }
@@ -805,7 +809,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       ...helperParams,
       to: from,
       imageHeader: HOLI_IMG,
-      body: `Hi 👋\n\nThis is Shubhashbhai from Choice Salon! ✨ Celebrate Holi with our exclusive deals (${HOLI_DATES})!\n\n🎁 *Holi Special:* Get a *FREE HAIRCUT* with any Spa, Treatment, or Color service! 💇‍♀️\n\nHow can I help you today? ✨`,
+      body: `Hi 👋\n\nThis is subhashbhai from Choice Salon! ✨ Celebrate Holi with our exclusive deals (${HOLI_DATES})!\n\n🎁 *Holi Special:* Get a *FREE HAIRCUT* with any Spa, Treatment, or Color service! 💇‍♀️\n\nHow can I help you today? ✨`,
       buttons: [
         { id: 'user_schedule_appt', title: 'Book Holi Offer 📅' },
         { id: 'user_pricing', title: 'Offer Price List 💰' },
@@ -1075,7 +1079,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       ...helperParams,
       to: from,
       imageHeader: HOLI_IMG,
-      body: `Hi 👋\n\nThis is Shubhashbhai from Choice Salon! ✨ Celebrate Holi with our exclusive deals (${HOLI_DATES})!\n\n🎁 *Holi Special:* Get a *FREE HAIRCUT* with any Spa, Treatment, or Color service! 💇‍♀️\n\nHow can I help you today? ✨`,
+      body: `Hi 👋\n\nThis is subhashbhai from Choice Salon! ✨ Celebrate Holi with our exclusive deals (${HOLI_DATES})!\n\n🎁 *Holi Special:* Get a *FREE HAIRCUT* with any Spa, Treatment, or Color service! 💇‍♀️\n\nHow can I help you today? ✨`,
       buttons: [
         { id: 'user_schedule_appt', title: 'Book Holi Offer 📅' },
         { id: 'user_pricing', title: 'Offer Price List 💰' },
@@ -1217,14 +1221,29 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       session.data.chosenService = chosen.title;
       session.data.chosenCategory = chosen.category;
       session.data.chosenPrice = chosen.price;
-      await sendSmartButtonsOrList({
+
+      // For Holi logic, directly assign to the main calendar and skip stylist prompt
+      session.data.stylist = 'subhashbhai';
+      session.data.stylistId = 'stylist_subhashbhai';
+
+      const days = await getAvailableBookingDays(session.data.stylistId, calendars);
+
+      const cleanDays = days.map(day => ({
+        id: day.id,
+        title: day.title
+      }));
+
+      await sendWhatsAppList({
         ...helperParams,
         to: from,
-        header: `${chosen.title} – ${chosen.price}`,
-        body: `For ${chosen.title}, from which stylist would you prefer?`,
-        buttons: salonStylists.map(s => ({ id: s.id, title: s.title }))
+        header: `Choose a date for your appointment`,
+        body: 'Please select a day:',
+        button: 'Select Day',
+        rows: cleanDays
       });
-      session.step = 'choose_stylist';
+      session.data.calendarDays = days;
+      session.step = 'calendar_pick_day';
+
       res.status(200).end();
       return;
     } else {
@@ -1245,47 +1264,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     }
   }
 
-  // Step 3: Stylist selection
-  if (session.step === 'choose_stylist') {
-    const chosen = salonStylists.find(d => d.id === userMsg || d.title.toLowerCase() === (userMsg || '').toLowerCase());
-    if (chosen) {
-      session.data.stylist = chosen.title;
-      session.data.stylistId = chosen.id; // Store ID for calendar lookup
-      // Step 4: Date selection
-      const days = await getAvailableBookingDays(session.data.stylistId, calendars);
-
-      // Clean up the days array to only include WhatsApp-compatible properties
-      const cleanDays = days.map(day => ({
-        id: day.id,
-        title: day.title
-      }));
-
-      await sendWhatsAppList({
-        ...helperParams,
-        to: from,
-        header: `Choose a date for your appointment`,
-        body: 'Please select a day:',
-        button: 'Select Day',
-        rows: cleanDays
-      });
-      session.data.calendarDays = days; // Keep full data in session
-      session.step = 'calendar_pick_day';
-      res.status(200).end();
-      return;
-    } else {
-      // Fallback: show stylist list again
-      await sendSmartButtonsOrList({
-        ...helperParams,
-        to: from,
-        header: `Great! Which stylist would you prefer?`,
-        body: 'Choose your stylist:',
-        buttons: salonStylists.map(s => ({ id: s.id, title: s.title }))
-      });
-      session.step = 'choose_stylist';
-      res.status(200).end();
-      return;
-    }
-  }
+  // Deleted the choose_stylist step as requested.
 
   // Step 4: Date selection (calendar_pick_day)
   if (session.step === 'calendar_pick_day') {
@@ -1884,7 +1863,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         `🕒 *Time:* ${session.data.time}\n` +
         `💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n` +
         `💅 *Service:* ${session.data.chosenService || 'General Session'}\n\n` +
-        `🏢 Choice Salon 2nd Floor, Raspan Arcade, 6-7, Nikol\n` +
+        `🏢 Choice Salon 2nd Floor, Raspan Arcade, 5-6, Nikol\n` +
         `🗺️ Map: https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
         `⏰ *Please arrive 15 minutes early*`;
 
@@ -2255,7 +2234,7 @@ Upgrade to our *Mirror Shine Boto Smooth* (₹4,000) for that ultimate glass-lik
         `Date: ${session.data.date}\n` +
         `Time: ${session.data.time}\n` +
         `Stylist: ${session.data.stylist || 'Not specified'}\n\n` +
-        `Address: Choice Salon 2nd Floor, Raspan Arcade, 6-7, Raspan Cross Rd, Nikol, Ahmedabad\n` +
+        `Address: Choice Salon 2nd Floor, Raspan Arcade, 5-6, Raspan Cross Rd, Nikol, Ahmedabad\n` +
         `Map: https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
         `Please arrive 15 minutes early for your appointment.`;
 
@@ -2265,7 +2244,7 @@ Upgrade to our *Mirror Shine Boto Smooth* (₹4,000) for that ultimate glass-lik
         ...helperParams,
         to: from,
         imageHeader: HOLI_IMG,
-        body: `✅ *Booking Confirmed*\n\n👤 *Name:* ${session.data.name}\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n💅 *Service:* ${session.data.chosenService || 'General Session'}\n\n📍 *Choice Salon for Ladies, Nikol*\n🏢 2nd Floor, Raspan Arcade, 6-7, Nikol\n🗺️ Map: https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n⏰ *Please arrive 15 minutes early*`,
+        body: `✅ *Booking Confirmed*\n\n👤 *Name:* ${session.data.name}\n📅 *Date:* ${session.data.date}\n🕒 *Time:* ${session.data.time}\n💇‍♀️ *Stylist:* ${session.data.stylist || 'Not specified'}\n💅 *Service:* ${session.data.chosenService || 'General Session'}\n\n📍 *Choice Salon for Ladies, Nikol*\n🏢 2nd Floor, Raspan Arcade, 5-6, Nikol\n🗺️ Map: https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n⏰ *Please arrive 15 minutes early*`,
         footer: '❌ To stop receiving messages, reply with "STOP" at any time.',
         buttons: [
           { id: 'book_another', title: '📅 Book Another' },

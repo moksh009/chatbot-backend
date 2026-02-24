@@ -25,7 +25,7 @@ const { DateTime } = require('luxon');
 const GREETING_WORDS = [
   'hi', 'hello', 'hey', 'hii', 'good morning', 'good afternoon', 'good evening', 'greetings',
   'kem cho', 'namaste', 'kemcho', 'majama', 'ram ram', 'jay shree krishna', 'jsk', 'jay swaminarayan',
-  'radhe radhe', 'halo', 'tame', 'shubhashbhai'
+  'radhe radhe', 'halo', 'tame', 'subhashbhai'
 ];
 
 const SALON_IMG = 'https://instagram.famd1-2.fna.fbcdn.net/v/t51.2885-19/436333745_1497177940869325_2985750738127060080_n.jpg?efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLmRqYW5nby4xMDgwLmMyIn0&_nc_ht=instagram.famd1-2.fna.fbcdn.net&_nc_cat=101&_nc_oc=Q6cZ2QH8vCGf2jGUX3lSsvjRV2axzhtJLYNHfIbhUn1TQkvNKEvnx4XWgdyKCrgXVx8KsC9Pq5Fgfk9UcjXn18wL8ThL&_nc_ohc=8-CBI_zJuBwQ7kNvwEeJ635&_nc_gid=Gp62ZusslBSvo5TFvcyJAg&edm=ALGbJPMBAAAA&ccb=7-5&oh=00_AftGK8L_C4HRW6SdWj31MRppEsoQ-N4fEB14vEohvB7zrA&oe=69A1B22C&_nc_sid=7d3ac5';
@@ -103,17 +103,17 @@ const salonServices = [
 
 // Real stylists (Female focused)
 const salonStylists = [
-  { id: 'stylist_shubhashbhai', title: 'Shubhashbhai', description: 'Master Stylist (15+ yrs exp)' },
+  { id: 'stylist_subhashbhai', title: 'subhashbhai', description: 'Master Stylist (15+ yrs exp)' },
   { id: 'stylist_another', title: 'Another Staff', description: 'Senior Hair Specialist' }
 ];
 
 // Map stylists to their specific Google Calendar IDs
 const stylistCalendars = {
-  'Shubhashbhai': process.env.GCAL_CALENDAR_ID2,
+  'subhashbhai': process.env.GCAL_CALENDAR_ID2,
   'Another Staff': process.env.GCAL_CALENDAR_ID,
-  'shubhashbhai': process.env.GCAL_CALENDAR_ID2,
+  'subhashbhai': process.env.GCAL_CALENDAR_ID2,
   'another_staff': process.env.GCAL_CALENDAR_ID,
-  'stylist_shubhashbhai': process.env.GCAL_CALENDAR_ID2,
+  'stylist_subhashbhai': process.env.GCAL_CALENDAR_ID2,
   'stylist_another': process.env.GCAL_CALENDAR_ID
 };
 
@@ -124,12 +124,12 @@ const salonPricing = [
   { category: 'Hair Spa', service: 'Loreal Spa', price: '1,200/-' },
   { category: 'Hair Spa', service: 'Silk Protein Spa', price: '1,500/-' },
   { category: 'Hair Spa', service: 'Shea Butter Spa', price: '2,000/-' },
-  { category: 'Hair Spa', service: 'Permanent Spa', price: '2,000/-' },
+  { category: 'Hair Spa', service: 'Permanent Spa * T&C apply, pricing depends on length', price: '2,000/-' },
   { category: 'Hair Treatment', service: 'Nano Therapy', price: '3,500/-' },
   { category: 'Hair Treatment', service: 'Brazil Therapy', price: '3,000/-' },
   { category: 'Hair Treatment', service: 'Botox', price: '2,800/-' },
   { category: 'Hair Treatment', service: 'Keratin', price: '2,500/-' },
-  { category: 'Hair Treatment', service: 'Mirror Shine Boto Smooth', price: '4,000/-' },
+  { category: 'Hair Treatment', service: 'Mirror Shine Botosmooth', price: '4,000/-' },
   { category: 'Hair Treatment', service: 'Loreal Straightening', price: '3,500/-' },
   { category: 'Colour', service: 'Global Color', price: '2,000/-' },
   { category: 'Colour', service: 'Root Touch Up', price: '1,000/-' },
@@ -477,16 +477,15 @@ async function getAvailableBookingDays(stylist, calendars) {
     const days = [];
     const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
     const businessStart = new Date(now);
-    businessStart.setHours(7, 0, 0, 0);
+    businessStart.setHours(10, 0, 0, 0); // 10:00 AM
     const businessEnd = new Date(now);
-    businessEnd.setHours(18, 0, 0, 0);
+    businessEnd.setHours(21, 0, 0, 0); // 9:00 PM
     let startOffset = 0;
     if (now < businessStart || now >= businessEnd) {
       startOffset = 1;
     }
     for (let i = startOffset; days.length < 7; i++) {
       const d = new Date(now.getTime() + i * 24 * 60 * 60 * 1000);
-      if (d.getDay() === 0) continue;
       const label = d.toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'short', year: 'numeric' });
       days.push({ id: `calendar_day_${days.length}`, title: label });
     }
@@ -594,12 +593,17 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       const lastAppt = await Appointment.findOne({ phone: from, clientId }).sort({ createdAt: -1 });
 
       if (lastAppt) {
+        const baseService = lastAppt.service || 'Previous Service';
+        const basePrice = lastAppt.revenue || 0;
+        const upgradePrice = 4000;
+        const totalPrice = basePrice + upgradePrice;
+
         // Send Confirmation Step
         await sendWhatsAppButtons({
           ...helperParams,
           to: from,
           imageHeader: SALON_IMG,
-          body: `💅 *Confirm Your Luxury Upgrade* ✨\n\nAre you sure you want to add *Mirror Shine Boto Smooth* (₹4,000) to your existing booking?\n\nIt's our absolute best treatment for a glass-like finish! 💎✨`,
+          body: `💅 *Confirm Your Luxury Upgrade* ✨\n\nAre you sure you want to add *Mirror Shine Botosmooth* to your existing booking?\n\n*Current Selection:*\n💇‍♀️ ${baseService} (₹${basePrice})\n✨ Upgrade: Mirror Shine Botosmooth (₹${upgradePrice})\n\n💰 *Total Value: ₹${totalPrice}*\n\nIt's our absolute best treatment for a glass-like finish! 💎✨`,
           footer: 'Choose your preference below 👇',
           buttons: [
             { id: 'upsell_confirm_mirror_shine', title: 'Yes, Upgrade ✅' },
@@ -626,7 +630,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       const lastAppt = await Appointment.findOne({ phone: from, clientId }).sort({ createdAt: -1 });
 
       if (lastAppt) {
-        const upgradeService = 'Mirror Shine Boto Smooth';
+        const upgradeService = 'Mirror Shine Botosmooth';
         const upgradePrice = 4000;
 
         // Check if already upgraded to prevent duplicate charges
@@ -652,7 +656,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           ...helperParams,
           to: from,
           imageHeader: SALON_IMG,
-          body: `✨ *Legendary Choice!* ✨\n\nI've updated your session to the ultimate luxury experience!\n\n✅ *Final Booking Details*\n👤 *Client:* ${lastAppt.name}\n📅 *Date:* ${lastAppt.date}\n🕒 *Time:* ${lastAppt.time}\n💇‍♀️ *Stylist:* ${lastAppt.doctor || 'Not specified'}\n💅 *Total Services:* ${lastAppt.service}\n\nShubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️`,
+          body: `✨ *Legendary Choice!* ✨\n\nI've updated your session to the ultimate luxury experience!\n\n✅ *Final Booking Details*\n👤 *Client:* ${lastAppt.name}\n📅 *Date:* ${lastAppt.date}\n🕒 *Time:* ${lastAppt.time}\n💇‍♀️ *Stylist:* ${lastAppt.doctor || 'Not specified'}\n💅 *Total Services:* ${lastAppt.service}\n\nsubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️`,
           buttons: [
             { id: 'user_home', title: '🏠 Home' },
             { id: 'user_ask_question', title: '❓ Ask Question' }
@@ -806,7 +810,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       ...helperParams,
       to: from,
       imageHeader: SALON_IMG,
-      body: 'Hi 👋\n\nThis is Shubhashbhai from Choice Salon! ✨ Welcome to our virtual assistant. How can I help you today? ✨',
+      body: 'Hi 👋\n\nThis is subhashbhai from Choice Salon! ✨ Welcome to our virtual assistant. How can I help you today? ✨',
       buttons: [
         { id: 'user_schedule_appt', title: 'Book Appointment 📅' },
         { id: 'user_pricing', title: 'Pricing 💰' },
@@ -1077,7 +1081,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       ...helperParams,
       to: from,
       imageHeader: SALON_IMG,
-      body: 'Hi 👋\n\nThis is Shubhashbhai from Choice Salon! ✨ Welcome to our virtual assistant. How can I help you today? ✨',
+      body: 'Hi 👋\n\nThis is subhashbhai from Choice Salon! ✨ Welcome to our virtual assistant. How can I help you today? ✨',
       buttons: [
         { id: 'user_schedule_appt', title: 'Book Appointment 📅' },
         { id: 'user_pricing', title: 'Pricing 💰' },
@@ -1922,7 +1926,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
             ...helperParams,
             to: from,
             imageHeader: SALON_IMG,
-            body: `✨ *Ultimate Glow-Up!* ✨\n\nYou're already booked, but why not make it spectacular? 💎\n\nUpgrade to our *Mirror Shine Boto Smooth* (₹4,000) for that ultimate glass-like finish. 💅✨\n\n*Only 2 premium slots remaining today!*`,
+            body: `✨ *Ultimate Glow-Up!* ✨\n\nYou're already booked, but why not make it spectacular? 💎\n\nUpgrade to our *Mirror Shine Botosmooth* (₹4,000) for that ultimate glass-like finish. 💅✨\n\n*Only 2 premium slots remaining today!*`,
             footer: 'Limited availability! Tap below to upgrade 👇',
             buttons: [
               { id: 'upsell_add_mirror_shine', title: 'Add to Booking 💅' }

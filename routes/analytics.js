@@ -342,11 +342,16 @@ router.get('/top-products', protect, async (req, res) => {
     }
 
     // Fallback for Service-based businesses (Clinic, Salon, Turf)
-    const activeServicesRecords = await Service.find({ ...query, isActive: true }).select('name');
-    const validServiceNames = activeServicesRecords.map(s => s.name);
-
+    // Directly aggregate revenue from valid Appointments regardless of pre-defined Service models
+    // This allows dynamically mapped/upselled services (like "Haircut + Mirror Shine Boto Smooth") to natively track revenue.
     const topServices = await Appointment.aggregate([
-      { $match: { ...query, service: { $in: validServiceNames } } },
+      {
+        $match: {
+          ...query,
+          status: { $ne: 'cancelled' },
+          revenue: { $gt: 0 } // Only group appointments that actually generated revenue
+        }
+      },
       {
         $group: {
           _id: "$service",
@@ -354,7 +359,7 @@ router.get('/top-products', protect, async (req, res) => {
           totalSold: { $sum: 1 }
         }
       },
-      { $sort: { totalSold: -1 } },
+      { $sort: { totalRevenue: -1 } }, // Always sort by highest revenue, not just quantity
       { $limit: 10 },
       {
         $project: {
