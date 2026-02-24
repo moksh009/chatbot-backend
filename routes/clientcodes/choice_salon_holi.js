@@ -577,7 +577,19 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 
   const session = getUserSession(from);
   const userMsgType = messages.type;
-  const userMsg = userMsgType === 'interactive' ? (messages.interactive?.button_reply?.id || messages.interactive?.list_reply?.id) : messages.text?.body;
+
+  // Extract button ID/Title or text body
+  let userMsg = userMsgType === 'interactive' ? (messages.interactive?.button_reply?.id || messages.interactive?.list_reply?.id || messages.interactive?.button_reply?.title) : messages.text?.body;
+  const buttonTitle = messages.interactive?.button_reply?.title;
+
+  // Handle template button reply "Book Free Haircut", payload could be the text or an ID.
+  if (userMsgType === 'button' && messages.button?.text === 'Book Free Haircut') {
+    userMsg = 'user_schedule_appt';
+  } else if (userMsgType === 'interactive' && buttonTitle === 'Book Free Haircut') {
+    userMsg = 'user_schedule_appt';
+  } else if (typeof userMsg === 'string' && userMsg.toLowerCase() === 'book free haircut') {
+    userMsg = 'user_schedule_appt';
+  }
 
   // Pass common params to helpers
   const helperParams = { phoneNumberId, token, io, clientId };
