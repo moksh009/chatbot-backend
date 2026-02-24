@@ -124,6 +124,60 @@ app.get('/api/fix-v2', async (req, res) => {
   }
 });
 
+// --- TEMPORARY ROUTE TO SEND HOLI PROMO ---
+app.get('/api/send-holi', async (req, res) => {
+  try {
+    const Client = require('./models/Client');
+    const axios = require('axios');
+    const client = await Client.findOne({ businessType: 'choice_salon' });
+    if (!client) return res.status(404).send('Client not found');
+
+    const token = client.whatsappToken;
+    const phoneNumberId = client.phoneNumberId;
+    const testNumbers = ['916353306984', '919313045439'];
+    let results = [];
+
+    for (const number of testNumbers) {
+      try {
+        const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+        const data = {
+          messaging_product: 'whatsapp',
+          to: number,
+          type: 'template',
+          template: { name: 'holi_offer_1', language: { code: 'en' } }
+        };
+        const r = await axios.post(url, data, {
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
+        });
+        results.push({ number, status: 'success', data: r.data });
+      } catch (e) {
+        if (e.response?.data?.error?.message?.includes('language')) {
+          try {
+            const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+            const data2 = {
+              messaging_product: 'whatsapp',
+              to: number,
+              type: 'template',
+              template: { name: 'holi_offer_1', language: { code: 'en_US' } }
+            };
+            const r2 = await axios.post(url, data2, {
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
+            });
+            results.push({ number, status: 'success (en_US retry)', data: r2.data });
+          } catch (err2) {
+            results.push({ number, status: 'error', error: err2.response?.data?.error || err2.message });
+          }
+        } else {
+          results.push({ number, status: 'error', error: e.response?.data?.error || e.message });
+        }
+      }
+    }
+    res.json({ results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Self-ping to keep render free-tier awake. Runs every 10 minutes.
 cron.schedule('*/10 * * * *', () => {
   const url = process.env.SERVER_URL || `https://chatbot-backend-lg5y.onrender.com`;
