@@ -19,8 +19,10 @@ const { getAvailableTimeSlots, createEvent, deleteEvent, findEventsByPhoneNumber
 const { getAvailableDates } = require('../../utils/getAvailableDates');
 const { getAvailableSlots } = require('../../utils/getAvailableSlots');
 
+const SERVER_URL = process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com';
+
 // --- ROUGH N TURF CONSTANTS ---
-const TURF_LOGO = 'https://i.imgur.com/vH1rN8o.jpeg';  // Direct JPEG link to prevent MIME type error
+const TURF_LOGO = `${SERVER_URL}/public/images/turf_logo.jpeg`;
 const EQUIPMENT_B_TEXT = 'Match Ball & Bibs ⚽';
 const EQUIPMENT_B_PRICE = 300;
 const REFEREE_TEXT = 'Certified Referee ⏱️';

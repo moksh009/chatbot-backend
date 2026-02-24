@@ -58,10 +58,15 @@ function resolveWhatsAppConfig() {
   }
 })();
 
+const path = require('path');
+
 // Middleware
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Serve static files from the 'public' directory
+app.use('/public', express.static(path.join(__dirname, 'public')));
 
 // Debug Middleware: Log all incoming requests
 app.use((req, res, next) => {
