@@ -20,7 +20,7 @@ const { getAvailableDates } = require('../../utils/getAvailableDates');
 const { getAvailableSlots } = require('../../utils/getAvailableSlots');
 
 // --- ELITE TURF CONSTANTS ---
-const TURF_LOGO = 'https://img1.khelomore.com/venues/1936/logo/Rough-N-Turf.jpg';
+const TURF_LOGO = 'https://i.imgur.com/vH1rN8o.jpeg';  // Direct JPEG link to prevent MIME type error
 const EQUIPMENT_B_TEXT = 'Match Ball & Bibs ⚽';
 const EQUIPMENT_B_PRICE = 300;
 const REFEREE_TEXT = 'Certified Referee ⏱️';
