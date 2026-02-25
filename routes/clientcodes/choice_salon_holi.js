@@ -1082,7 +1082,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       await sendWhatsAppImage({
         ...helperParams,
         to: from,
-        imageUrl: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/public/images/pfinal.png`,
+        imageUrl: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/public/images/p23.png`,
         caption: 'Choice Salon Services & Pricing'
       });
       res.status(200).end();
