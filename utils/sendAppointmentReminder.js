@@ -17,7 +17,7 @@ async function sendAppointmentReminder(phoneNumberId, accessToken, recipientPhon
     const apiVersion = process.env.API_VERSION || process.env.WHATSAPP_API_VERSION || 'v18.0';
     const templateLang = process.env.WHATSAPP_TEMPLATE_LANG || 'en_US';
     const { summary, start, doctor, date, time } = appointmentDetails;
-    
+
     // Extract patient name from summary (format: "Appointment: Name - Service with Doctor")
     const patientName = summary.split(':')[1]?.split('-')[0]?.trim() || "Valued Patient";
     const serviceName = summary.split('-')[1]?.split('with')[0]?.trim() || "Dental Service";
@@ -25,16 +25,16 @@ async function sendAppointmentReminder(phoneNumberId, accessToken, recipientPhon
     // Determine template name
     // Priority: Override > Client Config > Default
     let templateName = templateNameOverride || "appointment_reminder_1";
-    
+
     if (!templateNameOverride && clientId && clientId !== 'code_clinic_v1') {
-       try {
-         const client = await Client.findOne({ clientId });
-         if (client?.config?.templates?.appointment) {
-           templateName = client.config.templates.appointment;
-         }
-       } catch (e) { console.error('Error fetching client config for template:', e); }
+      try {
+        const client = await Client.findOne({ clientId });
+        if (client?.config?.templates?.appointment) {
+          templateName = client.config.templates.appointment;
+        }
+      } catch (e) { console.error('Error fetching client config for template:', e); }
     }
-    
+
     // Format the reminder message according to the template
     const message = {
       messaging_product: 'whatsapp',
@@ -93,7 +93,7 @@ async function sendAppointmentReminder(phoneNumberId, accessToken, recipientPhon
     const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
     console.log('Sending message to:', url);
     console.log('Message payload:', JSON.stringify(message, null, 2));
-    
+
     const response = await axios.post(url, message, {
       headers: {
         'Authorization': `Bearer ${accessToken}`,
@@ -122,7 +122,7 @@ async function sendAppointmentReminder(phoneNumberId, accessToken, recipientPhon
       conversation.lastMessage = 'Appointment reminder';
       conversation.lastMessageAt = new Date();
       await conversation.save();
-    } catch {}
+    } catch { }
     return response.data;
   } catch (error) {
     console.error('Error sending appointment reminder:', error.response?.data || error.message);
@@ -141,13 +141,13 @@ async function processUpcomingAppointments(phoneNumberId, accessToken) {
 
     // Get all events for today
     const events = await listEvents(startOfDay, endOfDay);
-    
+
     // Filter events that are in the future and have a phone number
     const upcomingAppointments = events.filter(event => {
       const eventTime = DateTime.fromISO(event.start.dateTime).setZone(TIMEZONE);
-      return eventTime > now && 
-             event.description && 
-             event.description.includes('Phone:');
+      return eventTime > now &&
+        event.description &&
+        event.description.includes('Phone:');
     });
 
     console.log(`Found ${upcomingAppointments.length} upcoming appointments`);
@@ -158,18 +158,19 @@ async function processUpcomingAppointments(phoneNumberId, accessToken) {
         // Extract phone number from event description
         const phoneMatch = event.description.match(/Phone:\s*([^\n]+)/);
         if (!phoneMatch) continue;
-        
+
         const phoneNumber = phoneMatch[1].trim();
-        
+
         // Check if user has consented to appointment reminders
         const Appointment = require('../models/Appointment');
-        const userAppointments = await Appointment.find({ 
+        const userAppointments = await Appointment.find({
           phone: phoneNumber,
-          'consent.appointmentReminders': true 
+          'consent.appointmentReminders': true,
+          clientId: { $nin: ['choice_salon', 'choice_salon_holi'] } // USER REQUEST: Stop sending reminders for Choice Salon & Choice Holi
         });
-        
+
         if (userAppointments.length === 0) {
-          console.log(`Skipping reminder for ${phoneNumber} - user has not consented to reminders`);
+          console.log(`Skipping reminder for ${phoneNumber} - user has not consented or it's a Choice Salon appointment.`);
           continue;
         }
 
@@ -192,16 +193,16 @@ async function processUpcomingAppointments(phoneNumberId, accessToken) {
         });
 
         console.log(`Sent reminder for appointment: ${event.summary} at ${time} on ${date}`);
-        
+
         // Add a small delay between sending reminders to avoid rate limiting
         await new Promise(resolve => setTimeout(resolve, 1000));
-        
+
       } catch (error) {
         console.error(`Error processing appointment ${event.id}:`, error.message);
         // Continue with the next appointment even if one fails
       }
     }
-    
+
     return { success: true, remindersSent: upcomingAppointments.length };
   } catch (error) {
     console.error('Error in processUpcomingAppointments:', error);

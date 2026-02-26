@@ -400,6 +400,12 @@ cron.schedule('0 7 * * *', async () => {
 
       if (!token || !phoneid) continue;
 
+      // USER REQUEST: Stop sending 7 AM reminders to Choice Salon & Choice Holi users
+      if (clientId === 'choice_salon' || clientId === 'choice_salon_holi') {
+        console.log(`ℹ️ Skipping 7 AM user reminders for ${clientId} as requested by admin.`);
+        continue;
+      }
+
       // Get events from both doctor calendars and main calendar
       const calendarIds = [];
       if (client.googleCalendarId) calendarIds.push(client.googleCalendarId);
@@ -550,17 +556,19 @@ cron.schedule('*/10 * * * *', async () => {
           // In a production scenario with potential overlapping cron runs, a DB log is safer.
 
           // Parse event info
-          const nameMatch = event.description?.match(/Name:\s*([^\n]+)/);
-          const serviceMatch = event.description?.match(/Service:\s*([^\n]+)/);
-          const phoneMatch = event.description?.match(/Phone:\s*([^\n]+)/);
+          const nameMatch = event.description?.match(/Name:\s*([^\n]+)/i);
+          const serviceMatch = event.description?.match(/Service:\s*([^\n]+)/i);
+          const phoneMatch = event.description?.match(/Phone:\s*([^\n]+)/i);
+          const stylistMatch = event.description?.match(/Stylist:\s*([^\n]+)/i);
 
           const patientName = nameMatch ? nameMatch[1].trim() : "A client";
-          const service = serviceMatch ? serviceMatch[1].trim() : event.summary.replace(patientName, '').replace('-', '').trim() || "Service";
+          const service = serviceMatch ? serviceMatch[1].trim() : event.summary.replace(patientName, '').replace('-', '').replace('Appointment:', '').trim() || "Service";
           const phone = phoneMatch ? phoneMatch[1].trim() : "Unknown";
+          const stylist = stylistMatch ? stylistMatch[1].trim() : "Not specified";
 
           const eventTime = DateTime.fromISO(event.start.dateTime).setZone('Asia/Kolkata').toFormat('h:mm a');
 
-          const message = `🔔 *UPCOMING APPOINTMENT ALERT*\n\nYou have an appointment arriving in exactly *1 Hour*.\n\n👤 *Client:* ${patientName}\n📞 *Phone:* ${phone}\n💅 *Service:* ${service}\n⏰ *Time:* ${eventTime}\n\n_Please ensure the station is prepared!_ ✨`;
+          const message = `🔔 *UPCOMING APPOINTMENT ALERT*\n\nYou have an appointment arriving in exactly *1 Hour*.\n\n👤 *Client:* ${patientName}\n📞 *Phone:* ${phone}\n💅 *Service:* ${service}\n💇‍♀️ *Stylist:* ${stylist}\n⏰ *Time:* ${eventTime}\n\n_Please ensure the station is prepared!_ ✨`;
 
           for (const adminPhone of uniqueAdmins) {
             await sendWhatsAppText({
