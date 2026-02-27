@@ -348,6 +348,11 @@ router.post('/', protect, async (req, res) => {
     const serviceDb = await ServiceModel.findOne({ clientId: req.user.clientId, name: service });
     const revenue = serviceDb ? serviceDb.price : 0;
 
+    // Delete any existing appointment with this external event ID to prevent duplicates when rescheduling
+    if (req.body.existingEventId) {
+      await Appointment.findOneAndDelete({ eventId: req.body.existingEventId, clientId: req.user.clientId });
+    }
+
     const appointment = new Appointment({
       clientId: req.user.clientId,
       name,
