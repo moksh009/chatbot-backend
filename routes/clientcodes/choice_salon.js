@@ -935,36 +935,78 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     }
   }
 
+  // -----------------------------------------------------------
+  // GLOBAL: "CALL ME" HANDLER — Works at any step in any flow
+  // -----------------------------------------------------------
+  if (userMsgType === 'text' && userMsg) {
+    const callMeKeywords = [
+      'call me', 'call karo', 'mane call karo', 'mane call karsho', 'please call',
+      'call karjo', 'call kari lejo', 'phone karo', 'phone karjo', 'give me a call',
+      'call back', 'ring me', 'contact me', 'please contact', 'tame call karo',
+      'thoda call karo', 'call me please', 'please call me'
+    ];
+    const userMsgLower2 = userMsg.trim().toLowerCase();
+    const isCallMeRequest = callMeKeywords.some(kw => userMsgLower2.includes(kw));
+
+    if (isCallMeRequest) {
+      // Notify all admins immediately
+      const adminCallMsg = `📞 *Call Back Request!*\n\n👤 *Customer Phone:* ${from}\n💬 *Message:* "${userMsg}"\n\n_Please call this customer back as soon as possible!_ 🙏`;
+      await notifyAdmins({ ...helperParams, message: adminCallMsg, adminNumbers });
+
+      // Reply warmly to the user without breaking their flow
+      await sendWhatsAppButtons({
+        ...helperParams,
+        to: from,
+        body: `Sure! 📞 We've notified our team and someone will call you back shortly. 😊\n\nIn the meantime, you can still book an appointment or ask anything here! 💅✨`,
+        buttons: [
+          { id: 'user_schedule_appt', title: 'Book Appointment 📅' },
+          { id: 'user_ask_question', title: 'Ask a Question ❓' }
+        ]
+      });
+      // Do NOT reset session — let user continue from where they were
+      res.status(200).end();
+      return;
+    }
+  }
+
   // AI-powered free-text handling (not a button/list reply)
   if (userMsgType === 'text' && (!session.step || session.step === 'home' || session.step === 'home_waiting' || session.step === 'faq_menu' || session.step === 'appt_day' || session.step === 'appt_pick_day_waiting' || session.step === 'appt_time_waiting' || session.step === 'ask_question_topic' || session.step === 'faq_await')) {
 
     // Check if user is explicitly trying to book an appointment via text
     const bookingKeywords = [
-      'book appointment',
-      'make appointment',
-      'schedule appointment',
-      'book visit',
-      'see stylist',
-      'book salon session',
-      'appointment book kar',
-      'book karvu',
-      'booking kar',
-      'time book',
-      'slot book',
-      'haircut karvu',
-      'spa karvu',
-      'color karvu',
-      'treatment karvu',
-      'appoinment',
-      'booking chhe'
+      'book appointment', 'make appointment', 'schedule appointment', 'book visit',
+      'see stylist', 'book salon session', 'appointment book kar', 'book karvu',
+      'booking kar', 'time book', 'slot book', 'haircut karvu', 'spa karvu',
+      'color karvu', 'treatment karvu', 'appoinment', 'booking chhe',
+      'book karvanu', 'appointment joiye', 'appt book'
     ];
     const userMsgLower = userMsg.toLowerCase();
     const isExplicitBooking = bookingKeywords.some(keyword => userMsgLower.includes(keyword));
+
+    // Check if user typed a known service name (e.g., after viewing pricing)
+    const typedServiceMatch = salonServices.find(s =>
+      userMsgLower.includes(s.title.toLowerCase())
+    );
 
     // If user is in FAQ/Ask Question flow, don't trigger booking automatically
     if (session.step === 'ask_question_topic' || session.step === 'faq_await') {
       // Handle as a general question, not booking
       console.log('User in FAQ flow, handling as question');
+    } else if (typedServiceMatch) {
+      // User typed a service name (e.g., after viewing pricing list)
+      session.data.chosenService = typedServiceMatch.title;
+      session.data.chosenCategory = typedServiceMatch.category;
+      session.data.chosenPrice = typedServiceMatch.price;
+      await sendSmartButtonsOrList({
+        ...helperParams,
+        to: from,
+        header: `${typedServiceMatch.title} – ${typedServiceMatch.price}`,
+        body: `Great choice! For *${typedServiceMatch.title}*, which stylist would you prefer?`,
+        buttons: salonStylists.map(s => ({ id: s.id, title: s.title }))
+      });
+      session.step = 'choose_stylist';
+      res.status(200).end();
+      return;
     } else if (isExplicitBooking) {
       // Start the booking flow directly
       const paginatedServices = getPaginatedServices(0);
@@ -972,7 +1014,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         ...helperParams,
         to: from,
         header: 'Book Appointment 💇‍♀️',
-        body: 'Perfect! I’d be happy to help you book an appointment. 😊 Which service do you need?',
+        body: 'Perfect! I\'d be happy to help you book an appointment. 😊 Which service do you need?',
         button: 'Select Service',
         rows: paginatedServices.services
       });
@@ -981,26 +1023,89 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       res.status(200).end();
       return;
     }
-    // Enhanced OpenAI prompt for precise, human-like responses (Ladies Only Salon)
-    const prompt = `You are a friendly and professional salon assistant for Choice Salon for Ladies in Ahmedabad.
-    
-    IMPORTANT INSTRUCTIONS:
-    1. Choice Salon is EXCLUSIVELY for ladies. Do NOT mention or offer any male services (like shaving, beard trimming, etc.).
-    2. Use the knowledge base below to provide accurate, helpful information.
-    3. Keep responses SHORT and PRECISE (max 2-3 sentences).
-    4. Be conversational, warm, and feminine in tone. Use 1-2 relevant emojis ✨💇‍♀️.
-    5. If asked about services: Mention Haircuts, Hair Spa, Facials, Color, Pedicure, Threading, and Waxing.
-    6. If asked about pricing: Mention 2-3 top services (e.g., Haircut ₹500, Hair Spa ₹1500).
-    7. If asked about hours: "We're open Monday-Sunday, 10 AM to 8 PM".
-    8. If question is NOT about salon services: Politely redirect to salon topics.
-    9. End with a simple "How else can I pamper you today? ✨" or "Need help booking? 😊"
-    
-    KNOWLEDGE BASE:
-    ${knowledgeBase}
-    
-    USER QUESTION: ${userMsg}
-    
-    Provide a SHORT, PRECISE response:`;
+
+    // -------------------------------------------------------
+    // GEMINI AI: Choice Salon-specific, Gujinglish-aware prompt
+    // -------------------------------------------------------
+    const choiceSalonKnowledge = `
+CHOICE SALON FOR LADIES — KNOWLEDGE BASE
+=========================================
+Business Name: Choice Salon (Ladies Only)
+Owner / Master Stylist: Subhashbhai (15+ years experience)
+Location: Second Floor, Raspan Arcade, 6-7, Raspan Cross Rd, opp. Gokul Party Plot, New India Colony, Nikol, Ahmedabad.
+Contact: +91 98244 74547
+Working Hours: Monday to Sunday, 10:00 AM to 8:00 PM
+Payment: Cash, UPI, Credit/Debit cards
+
+SERVICES & PRICING:
+-------------------
+Haircut:
+  • Haircut: ₹500
+  • Advance Haircut: ₹700
+
+Hair Spa:
+  • Normal Spa: ₹1,000
+  • Loreal Spa: ₹1,200
+  • Silk Protein Spa: ₹1,500
+  • Shea Butter Spa: ₹2,000
+  • Permanent Spa: ₹2,000 (T&C apply, price depends on hair length)
+
+Hair Treatments:
+  • Nano Therapy: ₹3,500
+  • Brazil Therapy: ₹3,000
+  • Botox: ₹2,800
+  • Keratin: ₹2,500
+  • Mirror Shine Botosmooth: ₹4,000
+  • Loreal Straightening: ₹3,500
+
+Colour Services:
+  • Global Color: ₹2,000
+  • Root Touch Up: ₹1,000
+  • Balayage Highlight: ₹2,500
+  • Classic Highlight: ₹2,000
+
+FAQ:
+  Q: Does Subhashbhai do haircuts himself?
+  A: Yes! Subhashbhai personally handles all services. He is the master stylist.
+  Q: Is the salon for ladies only?
+  A: Yes, Choice Salon is exclusively for ladies.
+  Q: How to book?
+  A: You can book directly in this chat.
+  Q: Can I walk in?
+  A: Walk-ins are welcome, but booking in advance is recommended.
+`;
+
+    const prompt = `You are a friendly, human-like WhatsApp assistant for *Choice Salon for Ladies* in Ahmedabad, India. Your name is Assistant, and you work for Subhashbhai.
+
+LANGUAGE RULES (VERY IMPORTANT):
+- Users may write in English, Gujarati, or Gujinglish (Gujarati words written in English letters mixed with English).
+- Examples of Gujinglish:
+    • "Hair cut owner karse?" = "Does the owner do haircuts?"
+    • "Spa ma kayu aavse?" = "What is included in spa?"
+    • "Spa karvanu chhe" = "I want to get a spa done"
+    • "Bhav shu chhe?" = "What is the price?"
+    • "Kyare aavvu?" = "When should I come?"
+- ALWAYS understand what the user means and reply in clear, simple, friendly English.
+- Never say you don't understand. Try your best to interpret.
+
+RESPONSE RULES:
+1. Keep replies SHORT (2-4 sentences max). No essays.
+2. Be warm, friendly, and conversational — like a real person, not a robot.
+3. Use 1-2 emojis naturally. Don't overdo it.
+4. This salon is ONLY for ladies. Never mention male services.
+5. Don't ask the user to repeat themselves — always try to understand their question.
+6. If someone asks about a service price, give the exact price from the knowledge base.
+7. If someone asks who does the work, say Subhashbhai is the master stylist.
+8. Never redirect the user to call — they are already chatting with you.
+9. End with a natural follow-up like "Want to book? 😊" or "Anything else I can help with? ✨"
+10. If asked who you are: say you're the virtual assistant for Choice Salon.
+
+CHOICE SALON KNOWLEDGE:
+${choiceSalonKnowledge}
+
+CUSTOMER MESSAGE: "${userMsg}"
+
+Reply in short, friendly English:`;
 
     let aiResponse = '';
     try {
@@ -1134,12 +1239,25 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       res.status(200).end();
       return;
     } else if (userMsg === 'user_pricing') {
+      // Send the pricing image first
       await sendWhatsAppImage({
         ...helperParams,
         to: from,
         imageUrl: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/public/images/p23.png`,
-        caption: 'Choice Salon Services & Pricing'
+        caption: 'Choice Salon Services & Pricing 💅'
       });
+      // Then immediately send a service selection list so the flow continues
+      const paginatedServices = getPaginatedServices(0);
+      await sendWhatsAppList({
+        ...helperParams,
+        to: from,
+        header: 'What would you like to book? 😊',
+        body: 'Select a service below to book your appointment:',
+        button: 'Choose Service',
+        rows: paginatedServices.services
+      });
+      session.step = 'choose_service';
+      session.data.servicePage = 0;
       res.status(200).end();
       return;
     } else {
