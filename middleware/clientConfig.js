@@ -52,6 +52,18 @@ const loadClientConfig = async (req, res, next) => {
     console.log(`- Global Token: ${globalToken ? 'Exists' : 'Missing'}`);
     console.log(`=> FINAL TOKEN USED: ${finalToken ? finalToken.substring(0, 10) + '...' : 'NONE'}`);
 
+    // --- Gemini API Key Resolution ---
+    // Priority: DB openaiApiKey (trimmed) → GEMINI_API_KEY env var
+    // We trim() to catch invisible copy-paste spaces which cause API_KEY_INVALID
+    const rawDbGeminiKey = client.openaiApiKey ? client.openaiApiKey.trim() : null;
+    const rawEnvGeminiKey = process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.trim() : null;
+    const resolvedGeminiKey = rawDbGeminiKey || rawEnvGeminiKey || null;
+
+    console.log(`[DEBUG] Gemini Key Resolution for ${clientId}:`);
+    console.log(`- DB Key (openaiApiKey): ${rawDbGeminiKey ? rawDbGeminiKey.substring(0, 10) + '... (len=' + rawDbGeminiKey.length + ')' : 'Missing'}`);
+    console.log(`- Env Key (GEMINI_API_KEY): ${rawEnvGeminiKey ? rawEnvGeminiKey.substring(0, 10) + '... (len=' + rawEnvGeminiKey.length + ')' : 'Missing'}`);
+    console.log(`=> FINAL GEMINI KEY: ${resolvedGeminiKey ? resolvedGeminiKey.substring(0, 10) + '...' : 'NONE ⚠️'}`);
+
     req.clientConfig = {
       _id: client._id,
       clientId: client.clientId,
@@ -67,10 +79,15 @@ const loadClientConfig = async (req, res, next) => {
       verifyToken: process.env[`VERIFY_TOKEN${envSuffix}`] || client.verifyToken || process.env.WHATSAPP_VERIFY_TOKEN,
       googleCalendarId: client.googleCalendarId || process.env[`GOOGLE_CALENDAR_ID${envSuffix}`] || process.env.GOOGLE_CALENDAR_ID,
       openaiApiKey: client.openaiApiKey || process.env[`OPENAI_API_KEY${envSuffix}`] || process.env.OPENAI_API_KEY,
+      // Dedicated Gemini key (trimmed to remove invisible leading/trailing spaces)
+      geminiApiKey: resolvedGeminiKey,
+      // Legacy alias used by choice_salon / choice_salon_holi
+      geminiApikey: resolvedGeminiKey,
       config: client.config || {}
     };
 
     next();
+
   } catch (error) {
     console.error('Error loading client config:', error);
     res.status(500).json({ error: 'Internal Server Error' });

@@ -16,7 +16,8 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 const getGeminiClient = async (req) => {
   const clientId = req.user.clientId;
   const client = await Client.findOne({ clientId });
-  const apiKey = client?.openaiApiKey || process.env.GEMINI_API_KEY;
+  // trim() prevents invisible copy-paste spaces causing API_KEY_INVALID
+  const apiKey = (client?.openaiApiKey?.trim()) || (process.env.GEMINI_API_KEY?.trim());
   return new GoogleGenerativeAI(apiKey);
 };
 

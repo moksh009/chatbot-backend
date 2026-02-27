@@ -571,11 +571,14 @@ async function notifyAdmins({ phoneNumberId, message, adminNumbers, token, clien
 
 async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clientConfig, io }) {
   // Extract client config
-  const { whatsappToken: token, geminiApikey, config, clientId } = clientConfig;
+  const { whatsappToken: token, geminiApiKey, config, clientId } = clientConfig;
   // Merge DB config calendars with local hardcoded/env calendars
   const calendars = { ...stylistCalendars, ...(config.calendars || {}) };
   const adminNumbers = config.adminPhones || (config.adminPhone ? [config.adminPhone] : []);
-  const geminiKey = geminiApikey || process.env.GEMINI_API_KEY;
+  // Use already-trimmed key resolved and validated by clientConfig middleware
+  const geminiKey = geminiApiKey || process.env.GEMINI_API_KEY?.trim();
+  console.log(`[CHOICE_SALON_HOLI] Gemini key source: ${geminiApiKey ? 'DB/Middleware' : 'Env Fallback'}, len=${geminiKey?.length || 0}`);
+  if (!geminiKey) console.warn('[CHOICE_SALON_HOLI] ⚠️ No Gemini API key found! AI replies will fail.');
 
   const session = getUserSession(from);
   const userMsgType = messages.type;

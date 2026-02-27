@@ -348,13 +348,17 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   const userMsgType = messages.type;
   const userMsg = userMsgType === 'interactive' ? (messages.interactive?.button_reply?.id || messages.interactive?.list_reply?.id) : messages.text?.body;
 
-  const { whatsappToken: token, openaiApiKey, config, clientId } = clientConfig;
+  const { whatsappToken: token, geminiApiKey, config, clientId } = clientConfig;
   const calendars = config.calendars || {};
   const adminNumbers = config.adminPhones || (config.adminPhone ? [config.adminPhone] : []);
   // Resolve Flow ID: MongoDB config.flowId takes priority, then env, then hardcoded default
   const TURF_FLOW_ID = config.flowId || process.env.WHATSAPP_FLOW_ID || '2043223316539716';
 
-  const genAI = new GoogleGenerativeAI(openaiApiKey || process.env.GEMINI_API_KEY);
+  // Use the already-trimmed key resolved by clientConfig middleware
+  const resolvedGeminiKey = geminiApiKey || process.env.GEMINI_API_KEY?.trim();
+  console.log(`[TURF] Gemini key source: ${geminiApiKey ? 'DB/Middleware' : 'Env Fallback'}, len=${resolvedGeminiKey?.length || 0}`);
+  if (!resolvedGeminiKey) console.warn('[TURF] ⚠️ No Gemini API key found! AI replies will fail.');
+  const genAI = new GoogleGenerativeAI(resolvedGeminiKey || 'MISSING_KEY');
 
   // ===================================================================
   // HANDLE WHATSAPP FLOW RESPONSE (nfm_reply)
@@ -933,7 +937,7 @@ exports.handleWebhook = async (req, res) => {
     }
 
     const io = req.app.get('socketio');
-    const { whatsappToken, config, clientId, openaiApiKey } = req.clientConfig;
+    const { whatsappToken, config, clientId, geminiApiKey } = req.clientConfig;
     const token = whatsappToken || process.env.WHATSAPP_TOKEN;
 
     const conversation = await Conversation.findOneAndUpdate(

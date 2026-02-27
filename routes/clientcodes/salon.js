@@ -439,10 +439,14 @@ async function notifyAdmins({ phoneNumberId, message, adminNumbers, token, clien
 
 async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clientConfig, io }) {
   // Extract client config
-  const { whatsappToken: token, openaiApiKey, config, clientId } = clientConfig;
+  const { whatsappToken: token, geminiApiKey, config, clientId } = clientConfig;
   const calendars = config.calendars || {};
   const adminNumbers = config.adminPhones || (config.adminPhone ? [config.adminPhone] : []);
-  const genAI = new GoogleGenerativeAI(openaiApiKey || process.env.GEMINI_API_KEY);
+  // Use already-trimmed key resolved by clientConfig middleware
+  const resolvedGeminiKey = geminiApiKey || process.env.GEMINI_API_KEY?.trim();
+  console.log(`[SALON] Gemini key source: ${geminiApiKey ? 'DB/Middleware' : 'Env Fallback'}, len=${resolvedGeminiKey?.length || 0}`);
+  if (!resolvedGeminiKey) console.warn('[SALON] ⚠️ No Gemini API key found! AI replies will fail.');
+  const genAI = new GoogleGenerativeAI(resolvedGeminiKey || 'MISSING_KEY');
 
   const session = getUserSession(from);
   const userMsgType = messages.type;
