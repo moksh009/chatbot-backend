@@ -341,6 +341,145 @@ function calculatePricing(time) {
   };
 }
 
+// ===================================================================
+// HELPERS: date/time parsing + calendar slot validation + auto-booking
+// ===================================================================
+
+/**
+ * Converts a natural-language or form date string to YYYY-MM-DD.
+ * Handles: 'tomorrow', 'today', 'YYYY-MM-DD', 'DD/MM/YYYY', 'Monday, 27 Feb 2026'
+ */
+function resolveBookingDate(dateStr) {
+  if (!dateStr || dateStr === 'TBD') return null;
+  const ist = DateTime.now().setZone('Asia/Kolkata');
+  const lower = dateStr.trim().toLowerCase();
+  if (lower === 'today') return ist.toFormat('yyyy-MM-dd');
+  if (lower === 'tomorrow') return ist.plus({ days: 1 }).toFormat('yyyy-MM-dd');
+  // Already YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr.trim())) return dateStr.trim();
+  // DD/MM/YYYY
+  const dmY = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (dmY) return `${dmY[3]}-${dmY[2].padStart(2, '0')}-${dmY[1].padStart(2, '0')}`;
+  // Try luxon parse of human-readable formats (e.g. "Monday, 27 Feb 2026")
+  const formats = ['EEEE, dd MMM yyyy', 'dd MMM yyyy', 'dd MMM', 'EEEE dd MMM'];
+  for (const fmt of formats) {
+    const parsed = DateTime.fromFormat(dateStr.trim(), fmt, { locale: 'en', zone: 'Asia/Kolkata' });
+    if (parsed.isValid) {
+      const result = parsed.year < 2000 ? parsed.set({ year: ist.year }) : parsed;
+      return result.toFormat('yyyy-MM-dd');
+    }
+  }
+  // Last resort: JS Date
+  try {
+    const d = new Date(dateStr);
+    if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
+  } catch { }
+  console.warn(`[TURF] Could not parse date: ${dateStr}`);
+  return null;
+}
+
+/**
+ * Converts any time format to 24h "HH:MM" string.
+ * Handles: '7pm', '7:00 PM', '19:00', '7 PM', '7:30pm'
+ */
+function parseTimeToHHMM(timeStr) {
+  if (!timeStr || timeStr === 'TBD') return null;
+  const t = timeStr.trim();
+  // Already HH:MM 24h
+  if (/^\d{2}:\d{2}$/.test(t)) return t;
+  // HH:MM AM/PM or H am/pm
+  const match = t.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i);
+  if (match) {
+    let h = parseInt(match[1], 10);
+    const m = match[2] ? parseInt(match[2], 10) : 0;
+    const period = match[3].toLowerCase();
+    if (period === 'pm' && h !== 12) h += 12;
+    if (period === 'am' && h === 12) h = 0;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  }
+  return null;
+}
+
+/**
+ * Resolves a turf arena name to its Google Calendar ID.
+ * Tries exact match, then lowercase+underscore key match.
+ */
+function resolveCalendarId(arenaName, calendars) {
+  if (!arenaName || !calendars || Object.keys(calendars).length === 0) return null;
+  if (calendars[arenaName]) return calendars[arenaName];
+  const key = arenaName.toLowerCase().replace(/\s+/g, '_');
+  if (calendars[key]) return calendars[key];
+  // Use the first calendar if there's only one configured
+  const keys = Object.keys(calendars);
+  if (keys.length === 1) return calendars[keys[0]];
+  return null;
+}
+
+/**
+ * Checks if a specific 1-hour slot is free on Google Calendar.
+ * If free  → creates the event and returns { booked: true, eventId }.
+ * If taken → returns { booked: false, availableSlots: ['10:00', '11:00', ...] }.
+ */
+async function attemptCalendarBooking({ calendarId, isoDate, timeHHMM, captain_name, chosenService, from, revenue, turf_arena, clientId }) {
+  const { listEvents, createEvent, getAvailableTimeSlots } = require('../../utils/googleCalendar');
+
+  const slotStart = new Date(`${isoDate}T${timeHHMM}:00+05:30`);
+  const slotEnd = new Date(slotStart.getTime() + 60 * 60 * 1000);
+
+  console.log(`[TURF] Checking slot: ${isoDate} ${timeHHMM} — calendar: ${calendarId}`);
+
+  let existingEvents = [];
+  try {
+    existingEvents = await listEvents(slotStart.toISOString(), slotEnd.toISOString(), calendarId);
+  } catch (e) {
+    console.error('[TURF] listEvents error (will try booking anyway):', e.message);
+  }
+
+  const isSlotFree = existingEvents.length === 0;
+  console.log(`[TURF] Slot ${timeHHMM} on ${isoDate}: ${isSlotFree ? '✅ FREE' : `❌ TAKEN (${existingEvents.length} events)`}`);
+
+  if (isSlotFree) {
+    try {
+      const eventResult = await createEvent({
+        calendarId,
+        summary: `⚽ ${captain_name} — ${chosenService}`,
+        description: `Name: ${captain_name}\nPhone: ${from}\nService: ${chosenService}\nArena: ${turf_arena}\nFee: ₹${revenue}`,
+        start: slotStart.toISOString(),
+        end: slotEnd.toISOString()
+      });
+      console.log(`[TURF] ✅ Calendar event created: ${eventResult.eventId}`);
+      return { booked: true, eventId: eventResult.eventId };
+    } catch (e) {
+      console.error('[TURF] createEvent failed (still treating as booked):', e.message);
+      return { booked: true, eventId: null };
+    }
+  } else {
+    // Fetch remaining available slots for the day
+    let availableSlots = [];
+    try {
+      const slotsResult = await getAvailableTimeSlots({
+        date: isoDate,
+        startTime: '09:00',
+        endTime: '23:00',
+        slotMinutes: 60,
+        calendarId,
+        capacity: 1
+      });
+      availableSlots = slotsResult.map(s => {
+        const dt = new Date(s.start);
+        const h = String(dt.getUTCHours() + 5).padStart(2, '0');
+        const m = dt.getUTCMinutes() + 30;
+        // Handle IST offset properly with luxon
+        const ist = DateTime.fromISO(s.start, { zone: 'UTC' }).setZone('Asia/Kolkata');
+        return ist.toFormat('HH:mm');
+      });
+    } catch (e) {
+      console.error('[TURF] getAvailableTimeSlots error:', e.message);
+    }
+    return { booked: false, availableSlots };
+  }
+}
+
 // --- Main Flow Handler ---
 
 async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clientConfig, io }) {
@@ -631,6 +770,72 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   }
 
   // Handle Consent/Confirmation & Upsell Trigger
+  // ===================================================================
+  // NEW: Handle user picking a slot from the "available slots" list
+  // (Fires when nfm_reply or AI detected that the requested slot was taken)
+  // ===================================================================
+  if (session.step === 'pick_available_slot' && userMsg && userMsg.startsWith('avail_slot_')) {
+    const chosenTime = userMsg.replace('avail_slot_', ''); // e.g. '19:00'
+    const { chosenService, doctor, dateStr, date: isoDate, name, revenue: prevRevenue } = session.data;
+    const calendarId = resolveCalendarId(doctor, calendars);
+    const newRevenue = calculatePricing(chosenTime).price;
+
+    const bookingResult = calendarId
+      ? await attemptCalendarBooking({ calendarId, isoDate, timeHHMM: chosenTime, captain_name: name, chosenService, from, revenue: newRevenue, turf_arena: doctor, clientId })
+      : { booked: true, eventId: null }; // no cal config → optimistic
+
+    if (bookingResult.booked) {
+      // Display time in 12h for user
+      const displayTime = DateTime.fromFormat(chosenTime, 'HH:mm', { zone: 'Asia/Kolkata' }).toFormat('h:mm a');
+      await Appointment.create({
+        clientId, phone: from, name, service: chosenService,
+        date: dateStr, time: displayTime, status: 'confirmed',
+        revenue: newRevenue, doctor, eventId: bookingResult.eventId || undefined
+      });
+      await notifyAdmins({
+        phoneNumberId, token, adminNumbers, io, clientId,
+        message: `🏆 *New Rough N Turf Booking*\n\n👤 *Captain:* ${name}\n📅 *Date:* ${dateStr}\n🕒 *Time:* ${displayTime}\n🏟️ *Arena:* ${doctor}\n💰 *Revenue:* ₹${newRevenue}`
+      });
+      await sendWhatsAppButtons({
+        phoneNumberId, to: from, token, io, clientId,
+        imageHeader: TURF_LOGO,
+        body: `✅ *Booking Confirmed!* ⚽🏆\n\n👤 *Captain:* ${name}\n⚽ *Sport:* ${chosenService}\n🏟️ *Arena:* ${doctor}\n📅 *Date:* ${dateStr}\n🕒 *Time:* ${displayTime}\n💳 *Fee:* ₹${newRevenue}\n\nWant to upgrade? 👇`,
+        buttons: [
+          { id: 'upsell_equip_add', title: 'Ball & Bibs (+₹300)' },
+          { id: 'upsell_ref_add', title: 'Referee (+₹800)' },
+          { id: 'upsell_reject', title: 'No Thanks ❌' }
+        ]
+      });
+      delete userSessions[from];
+    } else {
+      // Still taken — re-show updated slots
+      const slots = bookingResult.availableSlots || [];
+      if (slots.length === 0) {
+        await sendWhatsAppButtons({
+          phoneNumberId, to: from, token, io, clientId,
+          body: `⚠️ That slot just got taken too! Unfortunately no more slots are available on *${dateStr}*.`,
+          buttons: [
+            { id: 'user_schedule_appt', title: 'Try Another Date ⚽' },
+            { id: 'user_home', title: 'Main Menu 🏠' }
+          ]
+        });
+      } else {
+        const rows = slots.map(s => {
+          const p = calculatePricing(s);
+          return { id: `avail_slot_${s}`, title: s, description: `₹${p.price}/hr — ${p.label}` };
+        });
+        await sendWhatsAppList({
+          phoneNumberId, to: from, token, io, clientId,
+          header: '⚠️ That slot was just taken!',
+          body: `Sorry, that slot at *${doctor}* on *${dateStr}* just got booked. Here are the remaining available slots:`,
+          button: 'Choose Slot',
+          rows
+        });
+      }
+    }
+    return res.status(200).end();
+  }
+
   if (session.step === 'appt_consent') {
     if (userMsg === 'confirm_booking') {
       try {
@@ -638,42 +843,36 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 
         // Create appointment in DB
         await Appointment.create({
-          clientId,
-          phone: from,
-          name: session.data.name,
+          clientId, phone: from, name: session.data.name,
           service: session.data.chosenService,
           date: session.data.dateStr || session.data.date,
-          time: session.data.time,
-          status: 'confirmed',
-          revenue: revenue,
-          doctor: session.data.doctor
+          time: session.data.time, status: 'confirmed',
+          revenue, doctor: session.data.doctor
         });
 
-        // Create event in Google Calendar for the selected turf
+        // Create event in Google Calendar — uses correct param names: start/end
         try {
-          const calendarId = calendars[session.data.doctor];
+          const calendarId = resolveCalendarId(session.data.doctor, calendars);
           if (calendarId) {
-            // Build start datetime: combine date + time (date is YYYY-MM-DD, time is HH:MM)
-            const [year, month, day] = (session.data.dateStr || session.data.date).split(/[-\/]/);
-            const [hour, minute] = session.data.time.split(':');
-            const startDateTime = new Date(year, month - 1, day, parseInt(hour), parseInt(minute || 0));
-            const endDateTime = new Date(startDateTime.getTime() + 60 * 60 * 1000); // 1 hour slot
-
+            const isoDate = resolveBookingDate(session.data.dateStr || session.data.date);
+            const timeHHMM = parseTimeToHHMM(session.data.time) || session.data.time.split(':').slice(0, 2).join(':');
+            const slotStart = isoDate
+              ? new Date(`${isoDate}T${timeHHMM}:00+05:30`)
+              : new Date();
+            const slotEnd = new Date(slotStart.getTime() + 60 * 60 * 1000);
             await createEvent({
               calendarId,
               summary: `⚽ ${session.data.name} — ${session.data.chosenService}`,
-              description: `Captain: ${session.data.name}\nPhone: ${from}\nSport: ${session.data.chosenService}\nArena: ${session.data.doctor}\nFee: ₹${revenue}`,
-              startDateTime: startDateTime.toISOString(),
-              endDateTime: endDateTime.toISOString(),
-              attendeeEmail: null,
-              phoneNumber: from
+              description: `Name: ${session.data.name}\nPhone: ${from}\nService: ${session.data.chosenService}\nArena: ${session.data.doctor}\nFee: ₹${revenue}`,
+              start: slotStart.toISOString(),
+              end: slotEnd.toISOString()
             });
-            console.log(`[TURF] ✅ Google Calendar event created on calendar: ${calendarId}`);
+            console.log(`[TURF] ✅ Google Calendar event created for ${session.data.doctor}`);
           } else {
             console.warn(`[TURF] ⚠️ No calendarId found for turf: ${session.data.doctor}`);
           }
         } catch (calErr) {
-          // Calendar error should NOT block the booking confirmation
+          // Calendar error should NOT block booking confirmation
           console.error('[TURF] Google Calendar createEvent error:', calErr.message);
         }
 
@@ -843,7 +1042,7 @@ Output:`;
       }
 
       if (nextAction === 'skip_to_confirmation') {
-        // Pre-fill session with all extracted details and jump to confirmation
+        // AI extracted all 5 details — validate slot & auto-book
         const serviceMap = {
           'football (5v5)': 'Football Booking (5v5)',
           'football (8v8)': 'Football Booking (8v8)',
@@ -851,30 +1050,85 @@ Output:`;
           'pickleball': 'Pickleball Court'
         };
         const normalizedSport = extracted.sport ? (serviceMap[extracted.sport.toLowerCase()] || extracted.sport) : 'Turf Booking';
+        const arena = extracted.turf_arena || Object.keys(calendars)[0] || 'Standard';
+        const captainName = extracted.captain_name || 'Captain';
+        const dateStr = extracted.date || 'TBD';
+        const timeStr = extracted.time || 'TBD';
+        const isoDate = resolveBookingDate(dateStr);
+        const timeHHMM = parseTimeToHHMM(timeStr);
+        const calendarId = resolveCalendarId(arena, calendars);
+        const revenue = calculatePricing(timeHHMM || '17:00').price;
 
-        session.data.chosenService = normalizedSport;
-        session.data.doctor = extracted.turf_arena || Object.keys(calendars)[0] || 'Standard';
-        session.data.dateStr = extracted.date || 'TBD';
-        session.data.date = extracted.date || 'TBD';
-        session.data.time = extracted.time || 'TBD';
-        session.data.name = extracted.captain_name || 'Captain';
+        // Send reply message first
+        await sendWhatsAppText({ phoneNumberId, to: from, body: replyMsg, token, io, clientId });
 
-        // Calculate revenue based on extracted time
-        const timeForPricing = extracted.time ? extracted.time.replace(':00 AM', ':00').replace(':00 PM', ':00') : '17:00';
-        const pricingResult = calculatePricing(timeForPricing);
-        session.data.revenue = pricingResult.price;
+        if (calendarId && isoDate && timeHHMM) {
+          const bookingResult = await attemptCalendarBooking({
+            calendarId, isoDate, timeHHMM, captain_name: captainName,
+            chosenService: normalizedSport, from, revenue, turf_arena: arena, clientId
+          });
 
-        session.step = 'appt_consent';
-
-        await sendWhatsAppButtons({
-          phoneNumberId, to: from, token, io, clientId,
-          imageHeader: TURF_LOGO,
-          body: `${replyMsg}\n\n🥅 *Quick Booking Summary* 🥅\n\n👤 *Captain:* ${session.data.name}\n⚽ *Sport:* ${session.data.chosenService}\n🏟️ *Arena:* ${session.data.doctor}\n📅 *Date:* ${session.data.dateStr}\n🕒 *Time:* ${session.data.time}\n💳 *Estimated Fee:* ₹${session.data.revenue}\n\n_Confirm your reservation below!_`,
-          buttons: [
-            { id: 'confirm_booking', title: 'Confirm Booking ✅' },
-            { id: 'cancel_booking', title: 'Cancel ❌' }
-          ]
-        });
+          if (bookingResult.booked) {
+            await Appointment.create({
+              clientId, phone: from, name: captainName, service: normalizedSport,
+              date: dateStr, time: timeStr, status: 'confirmed', revenue, doctor: arena,
+              eventId: bookingResult.eventId || undefined
+            });
+            await notifyAdmins({
+              phoneNumberId, token, adminNumbers, io, clientId,
+              message: `🏆 *New Rough N Turf Booking*\n\n👤 *Captain:* ${captainName}\n📅 *Date:* ${dateStr}\n🕒 *Time:* ${timeStr}\n🏟️ *Arena:* ${arena}\n💰 *Revenue:* ₹${revenue}`
+            });
+            await sendWhatsAppButtons({
+              phoneNumberId, to: from, token, io, clientId,
+              imageHeader: TURF_LOGO,
+              body: `✅ *Booking Confirmed!* ⚽🏆\n\n👤 *Captain:* ${captainName}\n⚽ *Sport:* ${normalizedSport}\n🏟️ *Arena:* ${arena}\n📅 *Date:* ${dateStr}\n🕒 *Time:* ${timeStr}\n💳 *Fee:* ₹${revenue}\n\nWant extras? 👇`,
+              buttons: [
+                { id: 'upsell_equip_add', title: 'Ball & Bibs (+₹300)' },
+                { id: 'upsell_ref_add', title: 'Referee (+₹800)' },
+                { id: 'upsell_reject', title: 'No Thanks ❌' }
+              ]
+            });
+            delete userSessions[from];
+          } else {
+            const slots = bookingResult.availableSlots || [];
+            if (slots.length === 0) {
+              await sendWhatsAppButtons({
+                phoneNumberId, to: from, token, io, clientId,
+                body: `⚠️ Sorry! *${timeStr}* at *${arena}* on *${dateStr}* is fully booked and there are no other slots that day. Try a different date?`,
+                buttons: [
+                  { id: 'user_schedule_appt', title: 'Try Another Date ⚽' },
+                  { id: 'user_home', title: 'Main Menu 🏠' }
+                ]
+              });
+            } else {
+              session.data = { chosenService: normalizedSport, doctor: arena, dateStr, date: isoDate, name: captainName, revenue };
+              session.step = 'pick_available_slot';
+              const rows = slots.map(s => {
+                const p = calculatePricing(s);
+                return { id: `avail_slot_${s}`, title: s, description: `₹${p.price}/hr — ${p.label}` };
+              });
+              await sendWhatsAppList({
+                phoneNumberId, to: from, token, io, clientId,
+                header: `⚠️ ${timeStr} is already booked!`,
+                body: `Sorry, *${timeStr}* at *${arena}* on *${dateStr}* is taken. Here are available slots — tap one to book instantly:`,
+                footer: 'Dynamic pricing applies ⚽', button: 'Choose Slot', rows
+              });
+            }
+          }
+        } else {
+          // Can't validate — fall back to manual confirm buttons
+          session.data = { chosenService: normalizedSport, doctor: arena, dateStr, date: dateStr, time: timeStr, name: captainName, revenue };
+          session.step = 'appt_consent';
+          await sendWhatsAppButtons({
+            phoneNumberId, to: from, token, io, clientId,
+            imageHeader: TURF_LOGO,
+            body: `🥅 *Quick Booking Summary* 🥅\n\n👤 *Captain:* ${captainName}\n⚽ *Sport:* ${normalizedSport}\n🏟️ *Arena:* ${arena}\n📅 *Date:* ${dateStr}\n🕒 *Time:* ${timeStr}\n💳 *Estimated Fee:* ₹${revenue}\n\n_Confirm your reservation below!_`,
+            buttons: [
+              { id: 'confirm_booking', title: 'Confirm Booking ✅' },
+              { id: 'cancel_booking', title: 'Cancel ❌' }
+            ]
+          });
+        }
         return res.status(200).end();
       }
 
