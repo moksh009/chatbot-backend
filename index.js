@@ -283,6 +283,228 @@ app.get('/api/send-holi', async (req, res) => {
   }
 });
 
+// --- ROUTE TO SEND MARKETING MSG TO FIRST 200 CONTACTS FROM contacts.json ---
+app.get('/api/send-choice-salon', async (req, res) => {
+  // Respond immediately so Render timeout doesn't kill it
+  res.status(200).json({ message: 'Choice Salon marketing dispatch started in background. Check server logs for progress.' });
+
+  try {
+    const Client = require('./models/Client');
+    const axios = require('axios');
+    const fs = require('fs');
+    const path = require('path');
+    const BirthdayUser = require('./models/BirthdayUser');
+    const Appointment = require('./models/Appointment');
+    const AdLead = require('./models/AdLead');
+    const Conversation = require('./models/Conversation');
+    const Message = require('./models/Message');
+    const DailyStat = require('./models/DailyStat');
+    const { DateTime } = require('luxon');
+
+    const client = await Client.findOne({ businessType: 'choice_salon' });
+    if (!client) {
+      console.log('[SALON DISPATCH ERROR] Client not found');
+      return;
+    }
+
+    const token = client.whatsappToken;
+    const phoneNumberId = client.phoneNumberId;
+    const clientId = 'choice_salon';
+
+    // Read contacts from JSON file
+    const contactsPath = path.join(__dirname, 'public', 'images', 'contacts.json');
+    if (!fs.existsSync(contactsPath)) {
+      console.log('[SALON DISPATCH ERROR] contacts.json not found');
+      return;
+    }
+
+    const allContacts = JSON.parse(fs.readFileSync(contactsPath, 'utf8'));
+
+    // STRICTLY first 200 contacts only
+    const contacts = allContacts.slice(0, 200);
+    const totalToSend = contacts.length;
+
+    console.log(`[SALON DISPATCH] Starting to send to ${totalToSend} contacts (out of ${allContacts.length} total)...`);
+
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let successCount = 0;
+    let failCount = 0;
+    let skippedCount = 0;
+
+    // Helper: log to dashboard, live chat, and analytics
+    async function logToDashboard(sentNumber, contactName) {
+      try {
+        const io = req.app.get('socketio');
+        const msgContent = `📢 *Marketing:* Holi Offer Template Sent to ${contactName || sentNumber}`;
+
+        // 1. Update AdLead for Dashboard active leads
+        await AdLead.updateOne(
+          { clientId, phoneNumber: sentNumber },
+          {
+            $set: { lastInteraction: new Date(), chatSummary: 'Sent Template: Holi Offer' },
+            $setOnInsert: { source: 'WhatsApp Marketing', leadScore: 10 }
+          },
+          { upsert: true }
+        );
+
+        // 2. Update/Create Conversation for Live Chat
+        let conversation = await Conversation.findOne({ clientId, phone: sentNumber });
+        if (!conversation) {
+          conversation = await Conversation.create({
+            clientId,
+            phone: sentNumber,
+            lastMessage: msgContent,
+            lastMessageAt: Date.now(),
+            status: 'BOT_ACTIVE'
+          });
+        } else {
+          conversation.lastMessage = msgContent;
+          conversation.lastMessageAt = Date.now();
+          await conversation.save();
+        }
+
+        // 3. Create Message for Live Chat log
+        const savedMessage = await Message.create({
+          clientId,
+          conversationId: conversation._id,
+          from: 'bot',
+          to: sentNumber,
+          content: msgContent,
+          type: 'template',
+          direction: 'outgoing',
+          status: 'sent',
+          timestamp: new Date()
+        });
+
+        // 4. Emit socket events so dashboard updates in real-time
+        if (io) {
+          io.to(`client_${clientId}`).emit('conversation_update', conversation);
+          io.to(`client_${clientId}`).emit('new_message', savedMessage);
+        }
+
+        // 5. Update DailyStat for analytics
+        const dateStr = DateTime.utc().setZone('Asia/Kolkata').toISODate();
+        await DailyStat.updateOne(
+          { clientId, date: dateStr },
+          {
+            $inc: { marketingMessagesSent: 1 },
+            $setOnInsert: { clientId, date: dateStr }
+          },
+          { upsert: true }
+        );
+      } catch (err) {
+        console.error(`[SALON DISPATCH] DB Logging Error for ${sentNumber}:`, err.message);
+      }
+    }
+
+    for (let i = 0; i < totalToSend; i++) {
+      const contact = contacts[i];
+      const number = contact.phone;
+      const contactName = [contact.firstName, contact.middleName, contact.lastName].filter(Boolean).join(' ').trim() || number;
+
+      // --- OPT-OUT CHECK ---
+      const isBirthdayOptedOut = await BirthdayUser.findOne({ number: number, isOpted: false });
+      if (isBirthdayOptedOut) {
+        console.log(`[SALON DISPATCH] (${i + 1}/${totalToSend}) 🚫 Skipped (Opted Out): ${number} (${contactName})`);
+        skippedCount++;
+        continue;
+      }
+
+      const isApptOptedOut = await Appointment.findOne({ phone: number, 'consent.marketingMessages': false });
+      if (isApptOptedOut) {
+        console.log(`[SALON DISPATCH] (${i + 1}/${totalToSend}) 🚫 Skipped (Marketing Opt-Out): ${number} (${contactName})`);
+        skippedCount++;
+        continue;
+      }
+      // ---------------------
+
+      const templateData = (langCode) => ({
+        messaging_product: 'whatsapp',
+        to: number,
+        type: 'template',
+        template: {
+          name: 'holi_offer_1',
+          language: { code: langCode },
+          components: [
+            {
+              type: 'header',
+              parameters: [
+                {
+                  type: 'image',
+                  image: {
+                    link: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/public/images/1.png`
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        ttl: 86400
+      });
+
+      try {
+        const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/marketing_messages`;
+        await axios.post(url, templateData('en'), {
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
+        });
+        await logToDashboard(number, contactName);
+        successCount++;
+        console.log(`[SALON DISPATCH] (${i + 1}/${totalToSend}) ✅ Success: ${number} (${contactName})`);
+      } catch (e) {
+        if (e.response?.data?.error?.message?.includes('language')) {
+          try {
+            const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/marketing_messages`;
+            await axios.post(url, templateData('en_US'), {
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
+            });
+            await logToDashboard(number, contactName);
+            successCount++;
+            console.log(`[SALON DISPATCH] (${i + 1}/${totalToSend}) ✅ Success (en_US): ${number} (${contactName})`);
+          } catch (err2) {
+            failCount++;
+            console.error(`[SALON DISPATCH] (${i + 1}/${totalToSend}) ❌ Error (en_US retry): ${number} -`, err2.response?.data?.error || err2.message);
+          }
+        } else {
+          failCount++;
+          console.error(`[SALON DISPATCH] (${i + 1}/${totalToSend}) ❌ Error: ${number} -`, e.response?.data?.error || e.message);
+        }
+      }
+
+      // Wait 3 seconds between each message
+      if (i < totalToSend - 1) {
+        await sleep(3000);
+      }
+    }
+
+    console.log(`[SALON DISPATCH] ✅ COMPLETED! Sent: ${successCount}, Failed: ${failCount}, Skipped: ${skippedCount}, Total: ${totalToSend}`);
+
+    // Update analytics with final summary
+    try {
+      const dateStr = DateTime.utc().setZone('Asia/Kolkata').toISODate();
+      await DailyStat.updateOne(
+        { clientId, date: dateStr },
+        {
+          $set: {
+            marketingSummary: {
+              totalContacts: totalToSend,
+              sent: successCount,
+              failed: failCount,
+              skipped: skippedCount,
+              completedAt: new Date()
+            }
+          }
+        },
+        { upsert: true }
+      );
+    } catch (err) {
+      console.error('[SALON DISPATCH] Analytics summary save error:', err.message);
+    }
+
+  } catch (err) {
+    console.error(`[SALON DISPATCH] Fatal Error:`, err.message);
+  }
+});
+
 // Self-ping to keep render free-tier awake. Runs every 10 minutes.
 cron.schedule('*/10 * * * *', () => {
   const url = process.env.SERVER_URL || `https://chatbot-backend-lg5y.onrender.com`;
