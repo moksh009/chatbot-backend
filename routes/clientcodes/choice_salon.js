@@ -75,8 +75,8 @@ let waitingForPartial = false;
 let partialDate = '';
 
 async function generateWithGemini(apiKey, prompt) {
-  // Using gemini-2.0-flash on stable v1 endpoint (gemini-1.5-flash is deprecated)
-  const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+  // gemini-2.0-flash is ONLY available on /v1beta/ not /v1/
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
   const payload = { contents: [{ role: 'user', parts: [{ text: prompt }] }] };
   const resp = await axios.post(url, payload, { headers: { 'Content-Type': 'application/json' } });
   const text = resp.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
