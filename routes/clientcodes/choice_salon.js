@@ -598,10 +598,6 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     };
     const mediaLabel = mediaTypeLabels[userMsgType] || userMsgType;
 
-    // Notify admins
-    const adminMsg = `📩 *Media Message Received*\n\n👤 *From:* ${from}\n📎 *Type:* ${mediaLabel}\n${messages[userMsgType]?.caption ? `💬 *Caption:* "${messages[userMsgType].caption}"` : ''}\n\n_Please check WhatsApp to view the media and respond to this customer._`;
-    await notifyAdmins({ ...helperParams, message: adminMsg, adminNumbers });
-
     const primaryAdmin = adminNumbers[0] || config.adminPhone || '919824474547';
     const adminChatLink = `https://wa.me/${primaryAdmin}`;
 
