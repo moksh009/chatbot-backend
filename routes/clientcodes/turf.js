@@ -221,6 +221,51 @@ async function sendSmartButtonsOrList({ phoneNumberId, to, header, imageHeader, 
   }
 }
 
+// --- WhatsApp Flow (Native Meta Form) ---
+// Flow ID is stored in MongoDB: client.config.flowId
+// Fallback chain: config.flowId → WHATSAPP_FLOW_ID env → hardcoded default
+
+async function sendWhatsAppFlow({ phoneNumberId, to, flowId, token, io, clientId }) {
+  const apiVersion = process.env.API_VERSION || 'v18.0';
+  const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
+
+  const data = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'flow',
+      header: { type: 'text', text: 'Rough N Turf ⚽' },
+      body: { text: 'Please fill out your match details to check availability and book:' },
+      footer: { text: 'Fast & secure booking' },
+      action: {
+        name: 'flow',
+        parameters: {
+          flow_message_version: '3',
+          flow_action: 'navigate',
+          flow_token: `turf_booking_${to}`,
+          flow_id: flowId,
+          flow_cta: '📅 Book Turf',
+          flow_action_payload: {
+            screen: 'BOOKING_SCREEN'
+          }
+        }
+      }
+    }
+  };
+
+  try {
+    const resp = await axios.post(url, data, {
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+    });
+    console.log('[TURF] Flow message sent:', resp.data);
+    await saveAndEmitMessage({ phoneNumberId, to, body: '[Flow] Book your turf — tap to open form', type: 'interactive', io, clientId });
+  } catch (err) {
+    console.error('[TURF] Error sending WhatsApp Flow:', JSON.stringify(err.response?.data) || err.message);
+  }
+}
+
 async function notifyAdmins({ phoneNumberId, message, token, adminNumbers, io, clientId }) {
   if (!adminNumbers || adminNumbers.length === 0) return;
   for (const adminNumber of adminNumbers) {
@@ -306,8 +351,73 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   const { whatsappToken: token, openaiApiKey, config, clientId } = clientConfig;
   const calendars = config.calendars || {};
   const adminNumbers = config.adminPhones || (config.adminPhone ? [config.adminPhone] : []);
+  // Resolve Flow ID: MongoDB config.flowId takes priority, then env, then hardcoded default
+  const TURF_FLOW_ID = config.flowId || process.env.WHATSAPP_FLOW_ID || '2043223316539716';
 
   const genAI = new GoogleGenerativeAI(openaiApiKey || process.env.GEMINI_API_KEY);
+
+  // ===================================================================
+  // HANDLE WHATSAPP FLOW RESPONSE (nfm_reply)
+  // Fires when the user clicks "Confirm Details" inside the native form.
+  // Meta sends type=interactive, interactive.type="nfm_reply".
+  // ===================================================================
+  if (userMsgType === 'interactive' && messages.interactive?.type === 'nfm_reply') {
+    try {
+      const rawJson = messages.interactive.nfm_reply?.response_json;
+      if (!rawJson) {
+        console.warn('[TURF] nfm_reply received but response_json is empty');
+        return res.status(200).end();
+      }
+
+      // Parse the JSON string Meta sends back from the Flow form
+      const flowData = JSON.parse(rawJson);
+      console.log('[TURF FLOW RESPONSE] Parsed payload:', JSON.stringify(flowData, null, 2));
+
+      // Extract the 5 exact field names as defined in the Flow Builder
+      const sport = flowData.sport || 'Turf Booking';
+      const turf_arena = flowData.turf_arena || Object.keys(calendars)[0] || 'Standard';
+      const date = flowData.date || 'TBD';
+      const time = flowData.time || 'TBD';
+      const captain_name = flowData.captain_name || 'Captain';
+
+      // Normalise sport display name
+      const serviceMap = {
+        'football (5v5)': 'Football Booking (5v5)',
+        'football (8v8)': 'Football Booking (8v8)',
+        'box cricket': 'Box Cricket',
+        'pickleball': 'Pickleball Court'
+      };
+      const chosenService = serviceMap[sport.toLowerCase()] || sport;
+
+      // Save all 5 fields to session
+      session.data.chosenService = chosenService;
+      session.data.doctor = turf_arena;
+      session.data.dateStr = date;
+      session.data.date = date;
+      session.data.time = time;
+      session.data.name = captain_name;
+      session.data.revenue = calculatePricing(time).price;
+      session.step = 'appt_consent';
+
+      // Jump straight to Step 6 — Confirmation screen
+      await sendWhatsAppButtons({
+        phoneNumberId, to: from, token, io, clientId,
+        imageHeader: TURF_LOGO,
+        body: `🥅 *Confirm Your Booking Details* 🥅\n\nReview your turf reservation:\n\n👤 *Captain Name:* ${captain_name}\n⚽ *Sport:* ${chosenService}\n🏟️ *Arena:* ${turf_arena}\n📅 *Date:* ${date}\n🕒 *Time:* ${time}\n\n💳 *Estimated Pitch Fee:* ₹${session.data.revenue} (Dynamic Pricing applied)\n\n_Do you want to confirm this reservation?_`,
+        buttons: [
+          { id: 'confirm_booking', title: 'Confirm Booking ✅' },
+          { id: 'cancel_booking', title: 'Cancel ❌' }
+        ]
+      });
+    } catch (err) {
+      console.error('[TURF] Flow nfm_reply parse error:', err);
+      await sendWhatsAppText({
+        phoneNumberId, to: from, token, io, clientId,
+        body: '⚠️ We had trouble reading your booking form. Please try again or type "menu".'
+      });
+    }
+    return res.status(200).end();
+  }
 
   // Handle STOP/UNSUBSCRIBE
   if (userMsgType === 'text' && userMsg && (userMsg.trim().toLowerCase() === 'stop' || userMsg.trim().toLowerCase() === 'unsubscribe')) {
@@ -443,152 +553,73 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     return;
   }
 
-  // Handle 'Book Turf'
+  // ===================================================================
+  // STEP 1 — SEND WHATSAPP FLOW (native form button)
+  // Flow ID sourced from: MongoDB config.flowId → WHATSAPP_FLOW_ID env → fallback
+  // ===================================================================
   if (userMsg === 'user_schedule_appt') {
-    const paginatedServices = getPaginatedServices(0);
-    await sendWhatsAppList({
-      phoneNumberId,
-      to: from,
-      header: 'Rough N Turf 🏆',
-      body: 'Choose Your Sport 🏆\n\nWe offer world-class pitches and courts. Which sport are you playing today?',
-      button: 'Select Sport',
-      rows: paginatedServices.services,
-      token, io, clientId
-    });
-    session.step = 'choose_service';
+    await sendWhatsAppFlow({ phoneNumberId, to: from, flowId: TURF_FLOW_ID, token, io, clientId });
     return res.status(200).end();
   }
 
-  // Handle Service Selection
-  if (session.step === 'choose_service') {
-    if (userMsg.startsWith('service_')) {
-      const chosenServiceObj = codeClinicServices.find(s => s.id === userMsg) || { title: 'Turf Booking' };
-      session.data.chosenService = chosenServiceObj.title;
-
-      const doctorList = Object.keys(calendars).map(name => ({ id: `doctor_${name}`, title: name }));
-
-      if (doctorList.length === 0) {
-        await sendWhatsAppText({ phoneNumberId, to: from, body: "No turfs available right now. Please call support.", token, io, clientId });
-        return res.status(200).end();
-      }
-
-      await sendSmartButtonsOrList({
-        phoneNumberId,
-        to: from,
-        header: 'Select Turf Arena 🏟️',
-        body: 'Please choose which turf you would like to book:',
-        buttons: doctorList,
-        token, io, clientId
-      });
-      session.step = 'choose_doctor';
+  // Legacy fallback step handlers (only active if no flowId is set)
+  if (session.step === 'choose_service' && userMsg && userMsg.startsWith('service_')) {
+    const chosenServiceObj = codeClinicServices.find(s => s.id === userMsg) || { title: 'Turf Booking' };
+    session.data.chosenService = chosenServiceObj.title;
+    const doctorList = Object.keys(calendars).map(name => ({ id: `doctor_${name}`, title: name }));
+    if (doctorList.length === 0) {
+      await sendWhatsAppText({ phoneNumberId, to: from, body: 'No turfs available right now. Please call support.', token, io, clientId });
       return res.status(200).end();
     }
+    await sendSmartButtonsOrList({ phoneNumberId, to: from, header: 'Select Turf Arena 🏟️', body: 'Please choose which turf you would like to book:', buttons: doctorList, token, io, clientId });
+    session.step = 'choose_doctor';
+    return res.status(200).end();
   }
 
-  // Handle Turf Selection
-  if (session.step === 'choose_doctor') {
-    if (userMsg.startsWith('doctor_')) {
-      const doctorName = userMsg.replace('doctor_', '');
-      session.data.doctor = doctorName;
-
-      const days = await getAvailableBookingDays(doctorName, calendars);
-      if (days.length === 0) {
-        await sendWhatsAppText({ phoneNumberId, to: from, body: "No dates available.", token, io, clientId });
-        return res.status(200).end();
-      }
-
-      await sendWhatsAppList({
-        phoneNumberId,
-        to: from,
-        header: 'Match Date 📅',
-        body: 'When is the squad playing? Select an available date:',
-        button: 'Select Date',
-        rows: days,
-        token, io, clientId
-      });
-      session.step = 'appt_day';
-      return res.status(200).end();
-    }
+  if (session.step === 'choose_doctor' && userMsg && userMsg.startsWith('doctor_')) {
+    const doctorName = userMsg.replace('doctor_', '');
+    session.data.doctor = doctorName;
+    const days = await getAvailableBookingDays(doctorName, calendars);
+    if (days.length === 0) { await sendWhatsAppText({ phoneNumberId, to: from, body: 'No dates available.', token, io, clientId }); return res.status(200).end(); }
+    await sendWhatsAppList({ phoneNumberId, to: from, header: 'Match Date 📅', body: 'When is the squad playing? Select an available date:', button: 'Select Date', rows: days, token, io, clientId });
+    session.step = 'appt_day';
+    return res.status(200).end();
   }
 
-  // Handle Date Selection
   if (session.step === 'appt_day') {
     const days = await getAvailableBookingDays(session.data.doctor, calendars);
     const selectedDay = days.find(d => d.id === userMsg);
     if (selectedDay) {
-      session.data.dateStr = selectedDay.title; // store human readable
-
-      // Critical FIX for Invalid Date Format: Ensure we get YYYY-MM-DD from the calendar ID string format 'calendar_day_X'
+      session.data.dateStr = selectedDay.title;
       let sanitizedDate = selectedDay.id;
       if (sanitizedDate.startsWith('calendar_day_')) {
         const d = new Date(selectedDay.title);
-        if (!isNaN(d.getTime())) {
-          sanitizedDate = d.toISOString().split('T')[0];
-        } else {
-          sanitizedDate = DateTime.now().toFormat('yyyy-MM-dd'); // safe fallback
-        }
+        sanitizedDate = !isNaN(d.getTime()) ? d.toISOString().split('T')[0] : DateTime.now().toFormat('yyyy-MM-dd');
       }
-
       session.data.date = sanitizedDate;
-
-      // Fetch slots using safe sanitized date
       const slots = await fetchRealTimeSlots(session.data.date, 0, session.data.doctor, calendars);
-      if (slots.totalSlots === 0) {
-        await sendWhatsAppText({ phoneNumberId, to: from, body: "Sorry! All pitches are booked on this date. ⚠️", token, io, clientId });
-        return res.status(200).end();
-      }
-
-      const rows = slots.slots.map(s => {
-        const pricing = calculatePricing(s);
-        return {
-          id: `slot_${s}`,
-          title: s,
-          description: `₹${pricing.price}/hr - ${pricing.label}`
-        };
-      });
-
-      await sendWhatsAppList({
-        phoneNumberId,
-        to: from,
-        header: 'Kick-off Time ⏱️',
-        body: 'Select a time slot. Note: Dynamic pricing is applied based on peak hours.',
-        button: 'Select Time',
-        rows: rows,
-        token, io, clientId
-      });
+      if (slots.totalSlots === 0) { await sendWhatsAppText({ phoneNumberId, to: from, body: 'Sorry! All pitches are booked on this date. ⚠️', token, io, clientId }); return res.status(200).end(); }
+      const rows = slots.slots.map(s => { const p = calculatePricing(s); return { id: `slot_${s}`, title: s, description: `₹${p.price}/hr - ${p.label}` }; });
+      await sendWhatsAppList({ phoneNumberId, to: from, header: 'Kick-off Time ⏱️', body: 'Select a time slot. Dynamic pricing applies based on peak hours.', button: 'Select Time', rows, token, io, clientId });
       session.step = 'appt_time';
       return res.status(200).end();
     }
   }
 
-  // Handle Time Selection
-  if (session.step === 'appt_time') {
-    if (userMsg.startsWith('slot_')) {
-      session.data.time = userMsg.replace('slot_', '');
-
-      // Calculate dynamic pricing and save it to session
-      const pricing = calculatePricing(session.data.time);
-      session.data.revenue = pricing.price;
-
-      await sendWhatsAppText({ phoneNumberId, to: from, body: "Great! Lastly, please type the *Captain's Name* for the booking:", token, io, clientId });
-      session.step = 'appt_name';
-      return res.status(200).end();
-    }
+  if (session.step === 'appt_time' && userMsg && userMsg.startsWith('slot_')) {
+    session.data.time = userMsg.replace('slot_', '');
+    session.data.revenue = calculatePricing(session.data.time).price;
+    await sendWhatsAppText({ phoneNumberId, to: from, body: "Great! Lastly, type the *Captain's Name* for the booking:", token, io, clientId });
+    session.step = 'appt_name';
+    return res.status(200).end();
   }
 
-  // Handle Name Input -> Show Dynamic Consent
   if (session.step === 'appt_name') {
     session.data.name = userMsg;
-
     await sendSmartButtonsOrList({
-      phoneNumberId,
-      to: from,
-      imageHeader: TURF_LOGO,
-      body: `🥅 *Confirm Your Booking Details* 🥅\n\nReview your turf reservation:\n\n👤 *Captain Name:* ${session.data.name}\n⚽ *Sport:* ${session.data.chosenService}\n🏟️ *Arena:* ${session.data.doctor}\n📅 *Date:* ${session.data.dateStr || session.data.date}\n🕒 *Time:* ${session.data.time}\n\n💳 *Estimated Pitch Fee:* ₹${session.data.revenue} (Dynamic Pricing applied)\n\n_Do you want to confirm this reservation?_`,
-      buttons: [
-        { id: 'confirm_booking', title: 'Confirm Booking ✅' },
-        { id: 'cancel_booking', title: 'Cancel ❌' }
-      ],
+      phoneNumberId, to: from, imageHeader: TURF_LOGO,
+      body: `🥅 *Confirm Your Booking Details* 🥅\n\n👤 *Captain:* ${session.data.name}\n⚽ *Sport:* ${session.data.chosenService}\n🏟️ *Arena:* ${session.data.doctor}\n📅 *Date:* ${session.data.dateStr || session.data.date}\n🕒 *Time:* ${session.data.time}\n💳 *Fee:* ₹${session.data.revenue}\n\n_Confirm your reservation?_`,
+      buttons: [{ id: 'confirm_booking', title: 'Confirm Booking ✅' }, { id: 'cancel_booking', title: 'Cancel ❌' }],
       token, io, clientId
     });
     session.step = 'appt_consent';
@@ -661,19 +692,195 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   if (userMsgType === 'text') {
     try {
       const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-      const fullPrompt = `System: You are an assistant for Rough N Turf, a premium sports turf. Use professional, energetic tone. Answer this user: ${userMsg}`;
-      const result = await model.generateContent(fullPrompt);
-      const reply = result.response.text().trim();
+
+      const smartPrompt = `You are the energetic and helpful virtual booking assistant for "Rough N Turf", a premium sports turf facility in Ahmedabad. Your persona is sporty, friendly, and professional. You understand both English and "Gujinglish" (Gujarati written in English alphabet).
+
+Your goal is to answer FAQs, extract booking details, and decide the exact next step the chatbot system should take.
+
+You MUST ALWAYS respond in strict JSON format. Never output plain text outside of the JSON structure.
+
+### Business Knowledge & Pricing:
+- Off-Peak (10:00 AM – 4:00 PM): ₹1,500/hr
+- Peak (5:00 PM – 11:00 PM & 6:00 AM – 9:00 AM): ₹3,500/hr
+- Sports: Football (5v5), Football (8v8), Box Cricket, Pickleball.
+- Add-ons: Match Ball & Bibs (₹300), Certified Referee (₹800).
+
+### Extraction Rules:
+Extract these if mentioned:
+1. "sport"
+2. "turf_arena"
+3. "date"
+4. "time"
+5. "captain_name"
+
+### Next Action Routing Logic (CRITICAL):
+You must evaluate the conversation and assign ONE of these strict values to the "next_action" field:
+- "answer_question": The user is just asking a question (e.g., "What is the price?"). You answer it in the reply_message.
+- "trigger_whatsapp_flow": The user wants to book, OR they provided *some* booking details, but NOT ALL 5 details. You must tell the system to show the form so they can fill in the rest.
+- "skip_to_confirmation": The user provided ALL 5 booking details in their message (Zero-Click booking).
+- "handover_to_admin": The user is angry, confused, or asks to speak to a human/call.
+
+### JSON Output Structure:
+{
+  "reply_message": "Your conversational response to the user.",
+  "extracted_data": {
+    "sport": null,
+    "turf_arena": null,
+    "date": null,
+    "time": null,
+    "captain_name": null
+  },
+  "next_action": "answer_question | trigger_whatsapp_flow | skip_to_confirmation | handover_to_admin"
+}
+
+### Examples:
+
+User: "Hi, booking karvu che"
+Output:
+{
+  "reply_message": "⚽ Welcome to Rough N Turf! 🏆 Ready for the next match? Click the button below to book your turf.",
+  "extracted_data": { "sport": null, "turf_arena": null, "date": null, "time": null, "captain_name": null },
+  "next_action": "trigger_whatsapp_flow"
+}
+
+User: "Bhai aaje ratre su rate che?"
+Output:
+{
+  "reply_message": "Aaje ratre (Prime Time) no rate ₹3,500/hr che. Do you want to check availability and book?",
+  "extracted_data": { "sport": null, "turf_arena": null, "date": null, "time": null, "captain_name": null },
+  "next_action": "trigger_whatsapp_flow"
+}
+
+User: "Book football 5v5 on Turf A for tomorrow 7am. Captain Yash."
+Output:
+{
+  "reply_message": "Awesome Yash! Setting up your 5v5 Football match for tomorrow at 7 AM.",
+  "extracted_data": { "sport": "Football (5v5)", "turf_arena": "Turf A", "date": "tomorrow", "time": "7:00 AM", "captain_name": "Yash" },
+  "next_action": "skip_to_confirmation"
+}
+
+Now respond to this user message:
+User: "${userMsg}"
+Output:`;
+
+      const result = await model.generateContent(smartPrompt);
+      let rawReply = result.response.text().trim();
+
+      // Strip markdown code fences if present
+      rawReply = rawReply.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
+
+      let aiResponse;
+      try {
+        aiResponse = JSON.parse(rawReply);
+      } catch (parseErr) {
+        console.error('Gemini JSON parse error, falling back to plain reply:', parseErr);
+        await sendWhatsAppButtons({
+          phoneNumberId, to: from, token, io, clientId,
+          body: rawReply || "I'm not sure about that. Let me help you book!",
+          buttons: [
+            { id: 'user_schedule_appt', title: 'Book Turf ⚽' },
+            { id: 'user_home', title: 'Main Menu 🏠' }
+          ]
+        });
+        return res.status(200).end();
+      }
+
+      const replyMsg = aiResponse.reply_message || "How can I help you today?";
+      const extracted = aiResponse.extracted_data || {};
+      const nextAction = aiResponse.next_action;
+
+      // --- ROUTING BASED ON next_action ---
+
+      if (nextAction === 'handover_to_admin') {
+        // Notify admin and inform user
+        await notifyAdmins({
+          phoneNumberId, token, adminNumbers, io, clientId,
+          message: `🚨 *Human Handover Requested*\n\n📞 Customer: ${from}\n💬 Message: "${userMsg}"\n\n_Please reach out to them directly._`
+        });
+        await sendWhatsAppButtons({
+          phoneNumberId, to: from, token, io, clientId,
+          imageHeader: TURF_LOGO,
+          body: `${replyMsg}\n\n_Our team has been notified and will contact you shortly._ 📞`,
+          buttons: [
+            { id: 'user_schedule_appt', title: 'Book Turf ⚽' },
+            { id: 'user_home', title: 'Main Menu 🏠' }
+          ]
+        });
+        return res.status(200).end();
+      }
+
+      if (nextAction === 'skip_to_confirmation') {
+        // Pre-fill session with all extracted details and jump to confirmation
+        const serviceMap = {
+          'football (5v5)': 'Football Booking (5v5)',
+          'football (8v8)': 'Football Booking (8v8)',
+          'box cricket': 'Box Cricket',
+          'pickleball': 'Pickleball Court'
+        };
+        const normalizedSport = extracted.sport ? (serviceMap[extracted.sport.toLowerCase()] || extracted.sport) : 'Turf Booking';
+
+        session.data.chosenService = normalizedSport;
+        session.data.doctor = extracted.turf_arena || Object.keys(calendars)[0] || 'Standard';
+        session.data.dateStr = extracted.date || 'TBD';
+        session.data.date = extracted.date || 'TBD';
+        session.data.time = extracted.time || 'TBD';
+        session.data.name = extracted.captain_name || 'Captain';
+
+        // Calculate revenue based on extracted time
+        const timeForPricing = extracted.time ? extracted.time.replace(':00 AM', ':00').replace(':00 PM', ':00') : '17:00';
+        const pricingResult = calculatePricing(timeForPricing);
+        session.data.revenue = pricingResult.price;
+
+        session.step = 'appt_consent';
+
+        await sendWhatsAppButtons({
+          phoneNumberId, to: from, token, io, clientId,
+          imageHeader: TURF_LOGO,
+          body: `${replyMsg}\n\n🥅 *Quick Booking Summary* 🥅\n\n👤 *Captain:* ${session.data.name}\n⚽ *Sport:* ${session.data.chosenService}\n🏟️ *Arena:* ${session.data.doctor}\n📅 *Date:* ${session.data.dateStr}\n🕒 *Time:* ${session.data.time}\n💳 *Estimated Fee:* ₹${session.data.revenue}\n\n_Confirm your reservation below!_`,
+          buttons: [
+            { id: 'confirm_booking', title: 'Confirm Booking ✅' },
+            { id: 'cancel_booking', title: 'Cancel ❌' }
+          ]
+        });
+        return res.status(200).end();
+      }
+
+      if (nextAction === 'trigger_whatsapp_flow') {
+        // Pre-fill any partially extracted data into session
+        if (extracted.sport) {
+          const serviceMap = {
+            'football (5v5)': 'Football Booking (5v5)',
+            'football (8v8)': 'Football Booking (8v8)',
+            'box cricket': 'Box Cricket',
+            'pickleball': 'Pickleball Court'
+          };
+          session.data.chosenService = serviceMap[extracted.sport.toLowerCase()] || extracted.sport;
+        }
+        if (extracted.turf_arena) session.data.doctor = extracted.turf_arena;
+        if (extracted.date) session.data.dateStr = extracted.date;
+        if (extracted.time) session.data.time = extracted.time;
+        if (extracted.captain_name) session.data.name = extracted.captain_name;
+
+        // Send AI reply text first
+        await sendWhatsAppText({ phoneNumberId, to: from, body: replyMsg, token, io, clientId });
+
+        // 🚀 Send the WhatsApp Flow form (Flow ID from MongoDB config.flowId)
+        await sendWhatsAppFlow({ phoneNumberId, to: from, flowId: TURF_FLOW_ID, token, io, clientId });
+        return res.status(200).end();
+      }
+
+      // Default: answer_question — just send the reply with CTA buttons
       await sendWhatsAppButtons({
         phoneNumberId, to: from, token, io, clientId,
-        body: reply,
+        body: replyMsg,
         buttons: [
           { id: 'user_schedule_appt', title: 'Book Turf ⚽' },
           { id: 'user_home', title: 'Main Menu 🏠' }
         ]
       });
+
     } catch (e) {
-      console.error('Gemini Error:', e);
+      console.error('Gemini Smart Handler Error:', e);
       await sendWhatsAppText({ phoneNumberId, to: from, body: "I'm sorry, I didn't understand that. Type 'menu' to see options.", token, io, clientId });
     }
   }
