@@ -409,8 +409,15 @@ router.post('/', protect, async (req, res) => {
 router.put('/:id', protect, async (req, res) => {
   try {
     const { start, end, name, service, notes, email, phone, doctor } = req.body;
-    const appointment = await Appointment.findOne({ _id: req.params.id, clientId: req.user.clientId });
 
+    // Try to find by MongoDB _id first, then by Google Calendar eventId
+    let appointment;
+    if (req.params.id.match(/^[0-9a-fA-F]{24}$/)) {
+      appointment = await Appointment.findOne({ _id: req.params.id, clientId: req.user.clientId });
+    }
+    if (!appointment) {
+      appointment = await Appointment.findOne({ eventId: req.params.id, clientId: req.user.clientId });
+    }
     if (!appointment) return res.status(404).json({ message: 'Not found' });
 
     // Check for conflicts if time or doctor changes
@@ -505,7 +512,14 @@ router.patch('/:id/status', protect, async (req, res) => {
       return res.status(403).json({ message: 'Cancellation is locked for CX Agent (v1). Please upgrade to v2.' });
     }
 
-    const appointment = await Appointment.findOne({ _id: req.params.id, clientId: req.user.clientId });
+    // Try to find by MongoDB _id first, then by Google Calendar eventId
+    let appointment;
+    if (req.params.id.match(/^[0-9a-fA-F]{24}$/)) {
+      appointment = await Appointment.findOne({ _id: req.params.id, clientId: req.user.clientId });
+    }
+    if (!appointment) {
+      appointment = await Appointment.findOne({ eventId: req.params.id, clientId: req.user.clientId });
+    }
     if (!appointment) return res.status(404).json({ message: 'Not found' });
 
     appointment.status = status;
@@ -559,7 +573,14 @@ router.delete('/:id', protect, async (req, res) => {
       return res.status(403).json({ message: 'Cancellation is locked for CX Agent (v1). Please upgrade to v2.' });
     }
 
-    const appointment = await Appointment.findOne({ _id: req.params.id, clientId: req.user.clientId });
+    // Try to find by MongoDB _id first, then by Google Calendar eventId
+    let appointment;
+    if (req.params.id.match(/^[0-9a-fA-F]{24}$/)) {
+      appointment = await Appointment.findOne({ _id: req.params.id, clientId: req.user.clientId });
+    }
+    if (!appointment) {
+      appointment = await Appointment.findOne({ eventId: req.params.id, clientId: req.user.clientId });
+    }
     if (!appointment) return res.status(404).json({ message: 'Not found' });
 
     const calendarId = client.googleCalendarId || 'primary';

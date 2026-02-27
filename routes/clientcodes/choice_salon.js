@@ -1154,6 +1154,7 @@ COMMON QUERY MAPPINGS — understand these user intents:
     • "kal slot che?" / "tomorrow available?" = checking availability
     • "color ketla" / "colour price" = asking colour pricing
     • "spa ma su aave" = What's included in spa?
+    • "appt date change karo" / "time badalvo che" / "cancel kro" / "appointment cancel karvi che" = asking to change or cancel appointment
 
 RESPONSE RULES:
 1. Keep replies SHORT (2-4 sentences max). No essays.
@@ -1165,6 +1166,8 @@ RESPONSE RULES:
 7. If someone says "I want to talk to owner" — say Subhashbhai is the owner and you can help here, or they can call +91 98244 74547.
 8. Never say "I don't understand" or "I can't help". Always attempt to answer.
 9. End with a natural follow-up like "Want to book? 😊" or "Anything else? ✨"
+10. IMPORTANT: If the user explicitly asks to CANCEL an appointment, include the exact text [INTENT:CANCEL] anywhere in your reply.
+11. IMPORTANT: If the user explicitly asks to RESCHEDULE or CHANGE the time/date of an appointment, include the exact text [INTENT:RESCHEDULE] anywhere in your reply.
 
 CHOICE SALON KNOWLEDGE:
 ${choiceSalonKnowledge}
@@ -1174,29 +1177,54 @@ CUSTOMER MESSAGE: "${userMsg}"
 Reply in short, friendly English:`;
 
     let aiResponse = '';
+    let buttons = [];
     try {
       aiResponse = await generateWithGemini(geminiKey, prompt);
+
+      // Parse intents to generate dynamic buttons
+      if (aiResponse.includes('[INTENT:CANCEL]')) {
+        aiResponse = aiResponse.replace(/\[INTENT:CANCEL\]/g, '').trim();
+        buttons = [
+          { id: 'user_cancel_appt', title: 'Cancel Appointment ❌' },
+          { id: 'user_home', title: 'Start Over 🔄' }
+        ];
+      } else if (aiResponse.includes('[INTENT:RESCHEDULE]')) {
+        aiResponse = aiResponse.replace(/\[INTENT:RESCHEDULE\]/g, '').trim();
+        buttons = [
+          { id: 'user_reschedule_appt', title: 'Reschedule Appt 📅' },
+          { id: 'user_home', title: 'Start Over 🔄' }
+        ];
+      } else {
+        // Default buttons
+        buttons = [
+          { id: 'user_schedule_appt', title: 'Book Appointment' },
+          { id: 'user_ask_question', title: 'Ask a Question' }
+        ];
+      }
+
       if (!aiResponse.toLowerCase().includes('need anything else') &&
         !aiResponse.toLowerCase().includes('anything else') &&
         !aiResponse.toLowerCase().includes('help you') &&
+        !buttons.some(b => b.id === 'user_cancel_appt' || b.id === 'user_reschedule_appt') &&
         !aiResponse.toLowerCase().includes('assistance')) {
         aiResponse += '\n\nNeed anything else I can help you with?';
       }
     } catch (err) {
       console.error('Gemini API error:', err);
       aiResponse = "I'm having trouble accessing information right now. Please try again, or use the buttons below.";
+      buttons = [
+        { id: 'user_schedule_appt', title: 'Book Appointment' },
+        { id: 'user_ask_question', title: 'Ask a Question' }
+      ];
     }
 
-    // Always append the two main buttons
+    // Send AI response with the dynamically chosen buttons
     await sendSmartButtonsOrList({
       ...helperParams,
       to: from,
       header: undefined,
       body: aiResponse,
-      buttons: [
-        { id: 'user_schedule_appt', title: 'Book Appointment' },
-        { id: 'user_ask_question', title: 'Ask a Question' }
-      ]
+      buttons: buttons
     });
     session.step = 'home_waiting';
     res.status(200).end();
@@ -1284,13 +1312,9 @@ Reply in short, friendly English:`;
       res.status(200).end();
       return;
     } else if (userMsg === 'user_cancel_appt' || userMsg === 'user_reschedule_appt') {
-      await sendWhatsAppText({
-        ...helperParams,
-        to: from,
-        body: 'To cancel or reschedule your appointment, please contact us at +91 98244 74547. Thank you! 😊'
-      });
-      session.step = 'home';
-      res.status(200).end();
+      // Direct the user to the database lookup flow instead of a static message
+      session.step = userMsg === 'user_cancel_appt' ? 'cancel_lookup' : 'reschedule_lookup';
+      await handleUserChatbotFlow({ from, phoneNumberId, messages: { type: 'trigger' }, res, clientConfig, io });
       return;
     } else if (userMsg === 'user_ask_question' || session.step === 'ask_question_topic') {
       await sendWhatsAppList({
@@ -2539,7 +2563,7 @@ Upgrade to our *Mirror Shine Boto Smooth* (₹4,000) for that ultimate glass-lik
           header: 'Hours',
           body: 'We\'re here Monday through Saturday from 10:00 AM to 6:00 PM. We\'re closed on Sundays.\n\nIs there anything else I can help you with today?',
           buttons: [
-            { id: 'user_schedule_appt', title: 'Book Turf' },
+            { id: 'user_schedule_appt', title: 'Book Salon' },
             { id: 'user_ask_question', title: 'Ask Question' },
             { id: 'user_home', title: 'Back to Menu' }
           ]
@@ -2551,7 +2575,7 @@ Upgrade to our *Mirror Shine Boto Smooth* (₹4,000) for that ultimate glass-lik
           header: 'Payment Options',
           body: 'We make it easy to pay! We accept all major credit and debit cards, cash payments, and UPI transfers. We also work with select insurance providers to help cover your treatment costs.\n\nReady to schedule your appointment?',
           buttons: [
-            { id: 'user_schedule_appt', title: 'Book Turf' },
+            { id: 'user_schedule_appt', title: 'Book Salon' },
             { id: 'user_ask_question', title: 'Ask Question' },
             { id: 'user_home', title: 'Back to Menu' }
           ]
@@ -2563,7 +2587,7 @@ Upgrade to our *Mirror Shine Boto Smooth* (₹4,000) for that ultimate glass-lik
           header: 'Our Services',
           body: 'We offer comprehensive turf services including field bookings, coaching sessions, equipment rentals, tournaments, and much more! Our experienced team is here to take care of all your turf needs.\n\nWould you like to know more about a specific service or book a turf session?',
           buttons: [
-            { id: 'user_schedule_appt', title: 'Book Turf' },
+            { id: 'user_schedule_appt', title: 'Book Salon' },
             { id: 'user_ask_question', title: 'Ask Question' },
             { id: 'user_home', title: 'Back to Menu' }
           ]
@@ -2575,7 +2599,7 @@ Upgrade to our *Mirror Shine Boto Smooth* (₹4,000) for that ultimate glass-lik
           header: 'Talk to Our Team',
           body: 'I’ve noted your request.\nOne of our team members will reach out to you shortly.\n\nIn the meantime, you can:',
           buttons: [
-            { id: 'user_schedule_appt', title: 'Book Turf' },
+            { id: 'user_schedule_appt', title: 'Book Salon' },
             { id: 'user_ask_question', title: 'Ask Question' },
             { id: 'user_home', title: 'Back to Menu' }
           ]
@@ -2833,7 +2857,15 @@ Upgrade to our *Mirror Shine Boto Smooth* (₹4,000) for that ultimate glass-lik
           body: 'Your previous booking has been cancelled and the slot is now free for others.'
         });
         try {
-          await Appointment.findOneAndDelete({ eventId: session.data.cancelEventId, clientId });
+          // Delete old appointment looking up by either Google Calendar eventId OR MongoDB _id
+          const cancelQuery = { clientId };
+          if (session.data.cancelEventId.match(/^[0-9a-fA-F]{24}$/)) {
+            cancelQuery._id = session.data.cancelEventId;
+          } else {
+            cancelQuery.eventId = session.data.cancelEventId;
+          }
+
+          await Appointment.findOneAndDelete(cancelQuery);
           const io = req.app.get('socketio');
           if (io) {
             io.to(`client_${clientId}`).emit('appointments_update', { type: 'deleted', eventId: session.data.cancelEventId });
@@ -2849,7 +2881,7 @@ Upgrade to our *Mirror Shine Boto Smooth* (₹4,000) for that ultimate glass-lik
         await sendWhatsAppList({
           ...helperParams,
           to: from,
-          header: 'Book Turf ⚽',
+          header: 'Book Salon ⚽',
           body: 'Which service do you need?',
           button: 'Select Service',
           rows: paginatedServices.services
@@ -2916,7 +2948,7 @@ Upgrade to our *Mirror Shine Boto Smooth* (₹4,000) for that ultimate glass-lik
       await sendWhatsAppList({
         ...helperParams,
         to: from,
-        header: 'Book Turf ⚽',
+        header: 'Book Salon ⚽',
         body: 'Perfect! I\'d be happy to help you book an turf. 😊 Which service do you need?',
         button: 'Select Service',
         rows: paginatedServices.services
@@ -2968,7 +3000,7 @@ Please provide a helpful, human-like response:`;
       header: undefined,
       body: aiResponse,
       buttons: [
-        { id: 'user_schedule_appt', title: 'Book Turf' },
+        { id: 'user_schedule_appt', title: 'Book Salon' },
         { id: 'user_home', title: 'Back to Menu' }
       ]
     });
