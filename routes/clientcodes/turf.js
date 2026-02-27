@@ -645,6 +645,34 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           doctor: session.data.doctor
         });
 
+        // Create event in Google Calendar for the selected turf
+        try {
+          const calendarId = calendars[session.data.doctor];
+          if (calendarId) {
+            // Build start datetime: combine date + time (date is YYYY-MM-DD, time is HH:MM)
+            const [year, month, day] = (session.data.dateStr || session.data.date).split(/[-\/]/);
+            const [hour, minute] = session.data.time.split(':');
+            const startDateTime = new Date(year, month - 1, day, parseInt(hour), parseInt(minute || 0));
+            const endDateTime = new Date(startDateTime.getTime() + 60 * 60 * 1000); // 1 hour slot
+
+            await createEvent({
+              calendarId,
+              summary: `⚽ ${session.data.name} — ${session.data.chosenService}`,
+              description: `Captain: ${session.data.name}\nPhone: ${from}\nSport: ${session.data.chosenService}\nArena: ${session.data.doctor}\nFee: ₹${revenue}`,
+              startDateTime: startDateTime.toISOString(),
+              endDateTime: endDateTime.toISOString(),
+              attendeeEmail: null,
+              phoneNumber: from
+            });
+            console.log(`[TURF] ✅ Google Calendar event created on calendar: ${calendarId}`);
+          } else {
+            console.warn(`[TURF] ⚠️ No calendarId found for turf: ${session.data.doctor}`);
+          }
+        } catch (calErr) {
+          // Calendar error should NOT block the booking confirmation
+          console.error('[TURF] Google Calendar createEvent error:', calErr.message);
+        }
+
         // Notify Admin
         await notifyAdmins({
           phoneNumberId,
@@ -691,7 +719,8 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 
   if (userMsgType === 'text') {
     try {
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      // Using gemini-2.0-flash (gemini-1.5-flash is deprecated and returns 404)
+      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
       const smartPrompt = `You are the energetic and helpful virtual booking assistant for "Rough N Turf", a premium sports turf facility in Ahmedabad. Your persona is sporty, friendly, and professional. You understand both English and "Gujinglish" (Gujarati written in English alphabet).
 
