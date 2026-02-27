@@ -75,8 +75,8 @@ let waitingForPartial = false;
 let partialDate = '';
 
 async function generateWithGemini(apiKey, prompt) {
-  // gemini-2.0-flash is ONLY available on /v1beta/ not /v1/
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+  // gemini-2.5-flash — gemini-2.0-flash is deprecated (404 for new users)
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
   const payload = { contents: [{ role: 'user', parts: [{ text: prompt }] }] };
   const resp = await axios.post(url, payload, { headers: { 'Content-Type': 'application/json' } });
   const text = resp.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
@@ -587,6 +587,47 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   // Pass common params to helpers
   const helperParams = { phoneNumberId, token, io, clientId };
 
+  // ===================================================================
+  // HANDLE NON-TEXT MEDIA MESSAGES (image, video, audio, sticker, document, location)
+  // Forward to admin + tell user images/media not supported by bot
+  // ===================================================================
+  if (['image', 'video', 'audio', 'document', 'sticker', 'location', 'contacts'].includes(userMsgType)) {
+    const mediaTypeLabels = {
+      image: '📷 Image', video: '🎥 Video', audio: '🎤 Voice Note',
+      document: '📄 Document', sticker: '😃 Sticker', location: '📍 Location', contacts: '👤 Contact'
+    };
+    const mediaLabel = mediaTypeLabels[userMsgType] || userMsgType;
+
+    // Notify admins
+    const adminMsg = `📩 *Media Message Received*\n\n👤 *From:* ${from}\n📎 *Type:* ${mediaLabel}\n${messages[userMsgType]?.caption ? `💬 *Caption:* "${messages[userMsgType].caption}"` : ''}\n\n_Please check WhatsApp to view the media and respond to this customer._`;
+    await notifyAdmins({ ...helperParams, message: adminMsg, adminNumbers });
+
+    const primaryAdmin = adminNumbers[0] || config.adminPhone || '919824474547';
+    const adminChatLink = `https://wa.me/${primaryAdmin}`;
+
+    await sendWhatsAppButtons({
+      ...helperParams,
+      to: from,
+      body: `Thanks for sharing that ${mediaLabel.toLowerCase()}! 📸\n\nOur bot can only process text messages right now, but we've forwarded your ${mediaLabel.toLowerCase()} to Subhashbhai.\n\nYou can also chat with him directly 👇`,
+      buttons: [
+        { id: 'user_schedule_appt', title: 'Book Appointment 📅' },
+        { id: 'user_ask_question', title: 'Ask a Question ❓' }
+      ]
+    });
+    await sendWhatsAppText({
+      ...helperParams, to: from,
+      body: `📞 Chat with Subhashbhai directly:\n${adminChatLink}`
+    });
+    res.status(200).end();
+    return;
+  }
+
+  // If userMsg is empty/undefined (reaction, unknown type), just ack
+  if (!userMsg && userMsgType !== 'interactive') {
+    res.status(200).end();
+    return;
+  }
+
   // -----------------------------------------------------------
   // GLOBAL COMMANDS (STOP, START, GREETINGS) - MUST BE CHECKED FIRST
   // -----------------------------------------------------------
@@ -1079,30 +1120,55 @@ FAQ:
   A: Walk-ins are welcome, but booking in advance is recommended.
 `;
 
-    const prompt = `You are a friendly, human-like WhatsApp assistant for *Choice Salon for Ladies* in Ahmedabad, India. Your name is Assistant, and you work for Subhashbhai.
+    const prompt = `You are a friendly, human-like WhatsApp assistant for *Choice Salon for Ladies* in Ahmedabad, India. You work for Subhashbhai (the owner and master stylist).
 
-LANGUAGE RULES (VERY IMPORTANT):
-- Users may write in English, Gujarati, or Gujinglish (Gujarati words written in English letters mixed with English).
-- Examples of Gujinglish:
-    • "Hair cut owner karse?" = "Does the owner do haircuts?"
-    • "Spa ma kayu aavse?" = "What is included in spa?"
-    • "Spa karvanu chhe" = "I want to get a spa done"
-    • "Bhav shu chhe?" = "What is the price?"
-    • "Kyare aavvu?" = "When should I come?"
-- ALWAYS understand what the user means and reply in clear, simple, friendly English.
-- Never say you don't understand. Try your best to interpret.
+CRITICAL LANGUAGE RULES:
+- Users write in English, Gujarati, Hindi, or Gujinglish (Gujarati/Hindi words written in English letters mixed with English).
+- You MUST understand Gujinglish. Here is a comprehensive dictionary:
+    • "karse" / "kare che" = does/will do
+    • "karvanu" / "karvu" / "karavi" = to do/get done
+    • "joiye" / "joie" = need/want
+    • "aavse" / "aave" = will come/is included
+    • "chhe" / "che" = is/are
+    • "shu" / "su" = what
+    • "ketla" / "ketlu" = how much
+    • "bhav" / "bhaav" = price/rate
+    • "malshe" / "malse" = will get
+    • "kevi rite" = how / in what way
+    • "kyare" = when
+    • "kya" / "kyaa" = where
+    • "haa" / "ha" = yes
+    • "na" / "nai" = no
+    • "chalu" = open/running
+    • "band" / "bandh" = closed
+    • "owner" / "malik" / "sheth" = owner (Subhashbhai)
+    • "bhabi" / "bhabhi" = madam/wife
+    • "hair smoothing" = hair straightening/keratin/botosmooth treatment
+    • "price list" / "rate card" / "bhav patti" = pricing menu
+    • "appointment" / "booking" / "schedule" = all mean booking
+    • "talk to" / "vaat karvi" / "bolvu" = want to speak with
+    • "mane" = me/to me
+    • "tame" = you (formal)
+    • "kem cho" = how are you (greeting)
+    • "karo" / "karsho" = please do (request)
+
+COMMON QUERY MAPPINGS — understand these user intents:
+    • "Hair smoothing price" / "smoothing ketla ma" = asking about Keratin/Botosmooth/Straightening prices
+    • "owner sathe vaat karvi" / "I want to talk to owner" / "malik ne connect karo" = wants to speak to Subhashbhai directly
+    • "kal slot che?" / "tomorrow available?" = checking availability
+    • "color ketla" / "colour price" = asking colour pricing
+    • "spa ma su aave" = What's included in spa?
 
 RESPONSE RULES:
 1. Keep replies SHORT (2-4 sentences max). No essays.
-2. Be warm, friendly, and conversational — like a real person, not a robot.
+2. Be warm, friendly, and conversational — like a real person chatting on WhatsApp.
 3. Use 1-2 emojis naturally. Don't overdo it.
 4. This salon is ONLY for ladies. Never mention male services.
-5. Don't ask the user to repeat themselves — always try to understand their question.
-6. If someone asks about a service price, give the exact price from the knowledge base.
-7. If someone asks who does the work, say Subhashbhai is the master stylist.
-8. Never redirect the user to call — they are already chatting with you.
-9. End with a natural follow-up like "Want to book? 😊" or "Anything else I can help with? ✨"
-10. If asked who you are: say you're the virtual assistant for Choice Salon.
+5. If someone asks about a service price, give the EXACT price from the knowledge base below.
+6. If someone asks about "hair smoothing" / "straightening" — give prices for Keratin (₹2,500), Loreal Straightening (₹3,500), and Mirror Shine Botosmooth (₹4,000).
+7. If someone says "I want to talk to owner" — say Subhashbhai is the owner and you can help here, or they can call +91 98244 74547.
+8. Never say "I don't understand" or "I can't help". Always attempt to answer.
+9. End with a natural follow-up like "Want to book? 😊" or "Anything else? ✨"
 
 CHOICE SALON KNOWLEDGE:
 ${choiceSalonKnowledge}

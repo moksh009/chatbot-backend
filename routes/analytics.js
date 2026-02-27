@@ -809,7 +809,7 @@ router.get('/ai-summary', protect, async (req, res) => {
     const genAI = await getGeminiClient(req);
 
     // Using gemini-2.0-flash (gemini-1.5-flash is deprecated and returns 404)
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     const prompt = `You are an AI business executive assistant speaking directly to a business owner. Write a short, punchy, 2-to-3 sentence motivational morning summary. Do not use asterisks or markdown formatting. Keep it extremely natural and energetic.
     
