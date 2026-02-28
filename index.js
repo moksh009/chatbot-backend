@@ -320,11 +320,23 @@ app.get('/api/send-choice-salon', async (req, res) => {
 
     const allContacts = JSON.parse(fs.readFileSync(contactsPath, 'utf8'));
 
-    // STRICTLY first 200 contacts only
-    const contacts = allContacts.slice(0, 200);
+    // STRICTLY first 300 contacts only
+    const contacts = allContacts.slice(0, 300);
     const totalToSend = contacts.length;
 
-    console.log(`[SALON DISPATCH] Starting to send to ${totalToSend} contacts (out of ${allContacts.length} total)...`);
+    if (totalToSend > 0) {
+      // Save remaining back to avoid resending
+      const remainingContacts = allContacts.slice(totalToSend);
+      fs.writeFileSync(contactsPath, JSON.stringify(remainingContacts, null, 2));
+
+      // Append to the sent log
+      const sentPath = path.join(__dirname, 'public', 'images', 'sent_contacts_200.json');
+      let previouslySent = [];
+      if (fs.existsSync(sentPath)) previouslySent = JSON.parse(fs.readFileSync(sentPath, 'utf8'));
+      fs.writeFileSync(sentPath, JSON.stringify([...previouslySent, ...contacts], null, 2));
+    }
+
+    console.log(`[SALON DISPATCH] Starting to send to ${totalToSend} contacts (remaining in waitlist: ${allContacts.length - totalToSend})...`);
 
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let successCount = 0;
