@@ -785,51 +785,6 @@ router.get('/', protect, async (req, res) => {
   }
 });
 
-// GET /api/analytics/ai-summary
-router.get('/ai-summary', protect, async (req, res) => {
-  try {
-    const clientId = req.user.clientId;
-    const query = (clientId === 'code_clinic_v1')
-      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
-      : { clientId };
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-
-    const apptsToday = await Appointment.countDocuments({ ...query, status: { $ne: 'cancelled' }, createdAt: { $gte: today, $lt: tomorrow } });
-    const leadsToday = await AdLead.countDocuments({ ...query, createdAt: { $gte: today, $lt: tomorrow } });
-    const ordersToday = await Order.countDocuments({ ...query, createdAt: { $gte: today, $lt: tomorrow } });
-
-    // Check if any VIP exists (using simple totalSpent query on leads)
-    const vips = await AdLead.find(query).sort({ totalSpent: -1 }).limit(10);
-    const vipCount = vips.filter(v => v.totalSpent > 1000).length;
-
-    const genAI = await getGeminiClient(req);
-
-    // Using gemini-2.0-flash (gemini-1.5-flash is deprecated and returns 404)
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-
-    const prompt = `You are an AI business executive assistant speaking directly to a business owner. Write a short, punchy, 2-to-3 sentence motivational morning summary. Do not use asterisks or markdown formatting. Keep it extremely natural and energetic.
-    
-    Data for today:
-    Appointments Booked: ${apptsToday}
-    New Leads Captured: ${leadsToday}
-    Orders Placed: ${ordersToday}
-    High-value VIPs in database: ${vipCount}
-    
-    Example: "Good morning! You have ${apptsToday} appointments today and ${leadsToday} new leads. Keep up the great work satisfying your ${vipCount} VIPs."`;
-
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
-
-    res.json({ summary: text });
-  } catch (error) {
-    console.error('AI Summary Error:', error);
-    res.json({ summary: "Good morning! Your dashboard is ready. I'm currently unable to reach the AI engine for your daily summary, but you have a great day ahead!" });
-  }
-});
 
 // GET /api/analytics/insights (Advanced USP Features)
 router.get('/insights', protect, async (req, res) => {

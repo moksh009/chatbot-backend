@@ -3106,7 +3106,8 @@ const handleWebhook = async (req, res) => {
     // 2. Save Incoming Message
     const userMsgContent = messages.type === 'text' ? messages.text.body :
       messages.type === 'interactive' ? (messages.interactive.button_reply?.title || messages.interactive.list_reply?.title) :
-        `[${messages.type}]`;
+        messages.type === 'button' ? messages.button?.text :
+          `[${messages.type}]`;
 
     const savedMsg = await Message.create({
       clientId,
