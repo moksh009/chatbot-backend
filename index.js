@@ -283,7 +283,7 @@ app.get('/api/send-holi', async (req, res) => {
   }
 });
 
-// --- ROUTE TO SEND MARKETING MSG TO FIRST 200 CONTACTS FROM contacts.json ---
+// --- ROUTE TO SEND MARKETING MSG TO FIRST 300 CONTACTS FROM contacts.json ---
 app.get('/api/send-choice-salon', async (req, res) => {
   // Respond immediately so Render timeout doesn't kill it
   res.status(200).json({ message: 'Choice Salon marketing dispatch started in background. Check server logs for progress.' });
