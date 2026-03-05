@@ -557,7 +557,11 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   }
 
   // If user sends a greeting, always show the main menu WhatsApp List
-  if (userMsgType === 'text' && userMsg && GREETING_WORDS.some(w => userMsg.trim().toLowerCase().startsWith(w))) {
+  const msgLower = (userMsgType === 'text' && userMsg) ? userMsg.trim().toLowerCase() : '';
+  const isGreeting = msgLower && GREETING_WORDS.some(w =>
+    msgLower === w || msgLower.startsWith(w + ' ') || msgLower.startsWith(w + ',') || msgLower.startsWith(w + '!') || msgLower.startsWith(w + '.')
+  );
+  if (isGreeting && session.step !== 'appt_name') {
     await sendWhatsAppList({
       phoneNumberId,
       to: from,

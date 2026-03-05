@@ -309,7 +309,7 @@ router.post('/', protect, async (req, res) => {
     const { name, phone, email, service, doctor, start, end, notes } = req.body;
 
     // Check for conflicts before creating
-    const conflict = await checkOverlap(req.user.clientId, doctor, start, end);
+    const conflict = await checkOverlap(req.user.clientId, doctor, start, end, req.body.existingEventId);
     if (conflict) {
       return res.status(409).json({
         message: 'This time slot is already booked for the selected provider.',
@@ -323,21 +323,25 @@ router.post('/', protect, async (req, res) => {
     }
     const calendarId = client.googleCalendarId || 'primary';
 
-    // 1. Create in Google Calendar (Fail-safe)
+    // 1. Handle in Google Calendar
     let eventId = null;
-    try {
-      const gCalEvent = await createEvent({
-        summary: `${name} - ${service}`,
-        description: `${notes || ''}\nPhone: ${phone}\nSource: Manual Dashboard Booking`,
-        start,
-        end,
-        attendees: email ? [email] : [],
-        calendarId
-      });
-      eventId = gCalEvent.eventId;
-    } catch (gError) {
-      console.error('Google Calendar Sync Failed (Create):', gError.message);
-      // Proceed without Google Calendar event
+    if (!req.body.existingEventId) {
+      try {
+        const gCalEvent = await createEvent({
+          summary: `${name} - ${service}`,
+          description: `${notes || ''}\nPhone: ${phone}\nSource: Manual Dashboard Booking`,
+          start,
+          end,
+          attendees: email ? [email] : [],
+          calendarId
+        });
+        eventId = gCalEvent.eventId;
+      } catch (gError) {
+        console.error('Google Calendar Sync Failed (Create):', gError.message);
+        // Proceed without Google Calendar event
+      }
+    } else {
+      eventId = req.body.existingEventId;
     }
 
     // 2. Create in DB
@@ -363,7 +367,7 @@ router.post('/', protect, async (req, res) => {
       date,
       time,
       revenue,
-      eventId: eventId || req.body.existingEventId, // Use existing ID if provided (converting external/chatbot event)
+      eventId: eventId,
       bookingSource: req.body.existingEventId ? 'chatbot' : 'manual', // If converting, assume it's from chatbot/external
       logs: [{
         action: 'create',

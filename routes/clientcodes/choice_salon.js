@@ -728,8 +728,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     }
   }
 
-  // If user sends a greeting, always show the main menu with buttons
-  if (userMsgType === 'text' && userMsg && GREETING_WORDS.some(w => userMsg.trim().toLowerCase().startsWith(w))) {
+  // If user sends a greeting, always globally reset and show the main menu with buttons
+  const msgLower = (userMsgType === 'text' && userMsg) ? userMsg.trim().toLowerCase() : '';
+  const isGreeting = msgLower && GREETING_WORDS.some(w =>
+    msgLower === w || msgLower.startsWith(w + ' ') || msgLower.startsWith(w + ',') || msgLower.startsWith(w + '!') || msgLower.startsWith(w + '.')
+  );
+  if (isGreeting && session.step !== 'appt_name') {
     await sendWhatsAppButtons({
       ...helperParams,
       to: from,
