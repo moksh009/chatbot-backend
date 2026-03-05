@@ -1107,8 +1107,14 @@ Now respond to this user message:
 User: "${userMsg}"
 Output:`;
 
-      const result = await model.generateContent(smartPrompt);
-      let rawReply = result.response.text().trim();
+      let rawReply = '';
+      try {
+        const result = await model.generateContent(smartPrompt);
+        rawReply = result.response.text().trim();
+      } catch (geminiNetErr) {
+        console.error('Gemini API Network/Timeout Error (turf):', geminiNetErr.message);
+        rawReply = "{}"; // Trigger the JSON parse fallback behavior
+      }
 
       // Strip markdown code fences if present
       rawReply = rawReply.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();

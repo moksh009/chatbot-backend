@@ -88,13 +88,22 @@ async function getBookedAppointments(dateIST, calendarId) {
     // Convert to UTC ISO for Google Calendar API
     const startUTC = startOfDayIST.toUTC().toISO();
     const endUTC = endOfDayIST.toUTC().toISO();
-    const response = await calendar.events.list({
-      calendarId,
-      timeMin: startUTC,
-      timeMax: endUTC,
-      singleEvents: true,
-      orderBy: 'startTime'
-    });
+
+    let response;
+    try {
+      response = await calendar.events.list({
+        calendarId,
+        timeMin: startUTC,
+        timeMax: endUTC,
+        singleEvents: true,
+        orderBy: 'startTime'
+      });
+    } catch (gcalErr) {
+      console.error('Google Calendar API Error in getBookedAppointments:', gcalErr.message);
+      // Return empty array to fallback to database slots instead of crashing
+      return [];
+    }
+
     // Map to Luxon DateTime for start/end
     return (response.data.items || []).map(event => {
       const start = event.start?.dateTime || event.start?.date;
@@ -106,7 +115,7 @@ async function getBookedAppointments(dateIST, calendarId) {
       };
     });
   } catch (error) {
-    console.error('Error fetching booked appointments:', error);
+    console.error('Error in getBookedAppointments:', error);
     return [];
   }
 }
