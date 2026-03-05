@@ -571,12 +571,76 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       session.data.chosenService = chosenService;
       session.data.doctor = turf_arena;
       session.data.dateStr = date;
-      session.data.date = date;
+      session.data.date = date; // initially just the raw YYYY-MM-DD
       session.data.time = time;
       session.data.name = captain_name;
       session.data.revenue = calculatePricing(time).price;
-      session.step = 'appt_consent';
 
+      // 1) RESOLVE DATE AND TIME
+      const isoDate = resolveBookingDate(date);
+      const timeHHMM = parseTimeToHHMM(time);
+      const calendarId = resolveCalendarId(turf_arena, calendars);
+
+      // 2) PRE-EMPTIVELY CHECK AVAILABILITY BEFORE ASKING TO CONFIRM
+      if (calendarId && isoDate && timeHHMM) {
+        let existingEvents = [];
+        try {
+          const slotStart = new Date(`${isoDate}T${timeHHMM}:00+05:30`);
+          const slotEnd = new Date(slotStart.getTime() + 60 * 60 * 1000);
+          const { listEvents } = require('../../utils/googleCalendar');
+          existingEvents = await listEvents(slotStart.toISOString(), slotEnd.toISOString(), calendarId);
+        } catch (e) {
+          console.error('[TURF] pre-check listEvents error:', e.message);
+        }
+
+        // IF THE SLOT IS ALREADY TAKEN (Duplicate booking intercepted early!)
+        if (existingEvents.length > 0) {
+          console.log(`[TURF] Slot ${timeHHMM} on ${isoDate} is TAKEN. Triggering fallback.`);
+
+          // Re-format YYYY-MM-DD to 'EEEE, dd MMM yyyy' for fetchRealTimeSlots
+          const formattedDate = DateTime.fromISO(isoDate, { zone: 'Asia/Kolkata' }).toFormat('EEEE, dd MMM yyyy');
+          const slotsData = await fetchRealTimeSlots(formattedDate, 0, turf_arena, calendars);
+
+          if (slotsData.slots.length === 0) {
+            await sendWhatsAppButtons({
+              phoneNumberId, to: from, token, io, clientId,
+              body: `⚠️ Oops! The time slot *${time}* has already been booked and no other slots are available on *${date}*.`,
+              buttons: [
+                { id: 'user_schedule_appt', title: 'Try Another Date ⚽' },
+                { id: 'user_home', title: 'Main Menu 🏠' }
+              ]
+            });
+          } else {
+            session.step = 'pick_available_slot';
+            const rows = slotsData.slots.map(s => {
+              const p = calculatePricing(s);
+              return { id: `avail_slot_${s}`, title: s, description: `₹${p.price}/hr — ${p.label}` };
+            });
+
+            const slotTextList = slotsData.slots.map(s => {
+              const displayTime = DateTime.fromFormat(s, 'HH:mm', { zone: 'Asia/Kolkata' }).toFormat('h:mm a');
+              const displayEndTime = DateTime.fromFormat(s, 'HH:mm', { zone: 'Asia/Kolkata' }).plus({ hours: 1 }).toFormat('h:mm a');
+              return `• ${displayTime} - ${displayEndTime}`;
+            }).join('\n');
+
+            await sendWhatsAppText({
+              phoneNumberId, to: from, token, io, clientId,
+              body: `⚠️ *${time}* is already booked!\n\nHere are the available time slots for ${date}:\n${slotTextList}\n\nYou can *choose from the menu below* OR *type your time* (e.g. "5pm - 6pm" or "5pm").`
+            });
+
+            await sendWhatsAppList({
+              phoneNumberId, to: from, token, io, clientId,
+              header: `⚠️ Time slot taken!`,
+              body: `Please select another time to confirm your booking instantly:`,
+              footer: 'Dynamic pricing applies ⚽', button: 'Choose Slot', rows
+            });
+          }
+          return res.status(200).end();
+        }
+      }
+
+      // 3) IF SLOT IS FREE (OR NO CALENDAR ID), ASK FOR CONFIRMATION
+      session.step = 'appt_consent';
       // Jump straight to Step 6 — Confirmation screen
       await sendWhatsAppButtons({
         phoneNumberId, to: from, token, io, clientId,
@@ -604,56 +668,8 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     return res.status(200).end();
   }
 
-  // Handle Upsells (Interactive execution)
-  if (userMsg === 'upsell_equip_add' || userMsg === 'upsell_ref_add') {
-    try {
-      const lastAppt = await Appointment.findOne({ phone: from, clientId }).sort({ createdAt: -1 });
-      if (lastAppt) {
-        const isEquip = userMsg === 'upsell_equip_add';
-        const addOnText = isEquip ? EQUIPMENT_B_TEXT : REFEREE_TEXT;
-        const addOnPrice = isEquip ? EQUIPMENT_B_PRICE : REFEREE_PRICE;
-
-        if (!lastAppt.service.includes(addOnText)) {
-          lastAppt.service += ` + ${addOnText}`;
-          lastAppt.revenue += addOnPrice;
-          await lastAppt.save();
-
-          await sendWhatsAppButtons({
-            phoneNumberId, to: from, token, io, clientId,
-            imageHeader: TURF_LOGO,
-            body: `⚽ *Rough N Turf Add-on Confirmed!* ⚽\n\nWe've successfully added the *${addOnText.replace(' ⚽', '').replace(' ⏱️', '')}* to your booking.\n\n✅ *Final Booking Summary*\n👤 *Captain:* ${lastAppt.name}\n📅 *Date:* ${lastAppt.date}\n🕒 *Time:* ${lastAppt.time}\n🏟️ *Turf:* ${lastAppt.doctor || 'Standard'}\n⚽ *Package:* ${lastAppt.service}\n💰 *Total Due:* ₹${lastAppt.revenue}\n\nCan't wait to see you on the pitch! 🏆👇`,
-            footer: 'Click below to share details with your squad!',
-            buttons: [
-              { id: 'action_share_squad', title: 'Share with Squad 📲' },
-              { id: 'user_home', title: '🏠 Main Menu' }
-            ]
-          });
-
-          await notifyAdmins({
-            phoneNumberId, token, adminNumbers, io, clientId,
-            message: `⚽ *Squad Upgraded!* ⚽\n\n${lastAppt.name} just added ${addOnText} to their booking!\n\n📅 ${lastAppt.date} @ ${lastAppt.time}\n🏟️ ${lastAppt.doctor}\n💰 *New Total:* ₹${lastAppt.revenue}`
-          });
-        }
-        res.status(200).end();
-        return;
-      }
-    } catch (err) { console.error('Upsell error:', err); }
-  }
-
-  if (userMsg === 'upsell_reject') {
-    const lastAppt = await Appointment.findOne({ phone: from, clientId }).sort({ createdAt: -1 });
-    await sendWhatsAppButtons({
-      phoneNumberId, to: from, token, io, clientId,
-      imageHeader: TURF_LOGO,
-      body: `No problem at all! We've got your standard reservation locked in. ⚽⭐`,
-      buttons: [
-        { id: 'action_share_squad', title: 'Share with Squad 📲' },
-        { id: 'user_home', title: '🏠 Main Menu' }
-      ]
-    });
-    res.status(200).end();
-    return;
-  }
+  // Upsells have been removed post-booking due to unneeded complexity.
+  // We strictly keep the share squad action logic underneath.
 
   if (userMsg === 'action_share_squad') {
     const lastAppt = await Appointment.findOne({ phone: from, clientId }).sort({ createdAt: -1 });
@@ -842,11 +858,10 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         await sendWhatsAppButtons({
           phoneNumberId, to: from, token, io, clientId,
           imageHeader: TURF_LOGO,
-          body: `✅ *Booking Confirmed!* ⚽🏆\n\n👤 *Captain:* ${name}\n⚽ *Sport:* ${chosenService}\n🏟️ *Arena:* ${doctor}\n📅 *Date:* ${dateStr}\n🕒 *Time:* ${displayTime}\n💳 *Fee:* ₹${newRevenue}\n\nWant to upgrade? 👇`,
+          body: `✅ *Booking Confirmed!* ⚽🏆\n\n👤 *Captain:* ${name}\n⚽ *Sport:* ${chosenService}\n🏟️ *Arena:* ${doctor}\n📅 *Date:* ${dateStr}\n🕒 *Time:* ${displayTime}\n💳 *Fee:* ₹${newRevenue}`,
           buttons: [
-            { id: 'upsell_equip_add', title: 'Ball & Bibs (+₹300)' },
-            { id: 'upsell_ref_add', title: 'Referee (+₹800)' },
-            { id: 'upsell_reject', title: 'No Thanks ❌' }
+            { id: 'action_share_squad', title: 'Share with Squad 📲' },
+            { id: 'user_home', title: 'Main Menu 🏠' }
           ]
         });
         delete userSessions[from];
@@ -928,22 +943,28 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           adminNumbers, io, clientId
         });
 
-        // Immediate Rough N Turf Upsell Trigger
+        // Immediate Rough N Turf Upsell Trigger removed; show simplified Share Squad
         await sendWhatsAppButtons({
           phoneNumberId, to: from, token, io, clientId,
           imageHeader: TURF_LOGO,
-          body: `✅ *Booking Secured!* We have reserved ${session.data.doctor} for you at ${session.data.time}.\n\nNeed a match ball and team bibs? Add for ₹300. Or need a certified Referee? Add for ₹800.`,
+          body: `✅ *Booking Confirmed!* We have reserved ${session.data.doctor} for you at ${session.data.time}.\n\nShare this with your squad!`,
           buttons: [
-            { id: 'upsell_equip_add', title: 'Ball & Bibs (+₹300)' },
-            { id: 'upsell_ref_add', title: 'Referee (+₹800)' },
-            { id: 'upsell_reject', title: 'No Thanks ❌' }
+            { id: 'action_share_squad', title: 'Share with Squad 📲' },
+            { id: 'user_home', title: 'Main Menu 🏠' }
           ]
         });
 
       } catch (e) {
         if (e.code === 11000) {
           console.error('Duplicate Booking Error:', e.message);
-          const slotsData = await fetchRealTimeSlots(session.data.dateStr || session.data.date, 0, session.data.doctor, calendars);
+
+          // Re-format YYYY-MM-DD to 'EEEE, dd MMM yyyy' for fetchRealTimeSlots
+          let formattedDateForSearch = session.data.dateStr || session.data.date;
+          if (/^\d{4}-\d{2}-\d{2}$/.test(formattedDateForSearch)) {
+            formattedDateForSearch = DateTime.fromISO(formattedDateForSearch, { zone: 'Asia/Kolkata' }).toFormat('EEEE, dd MMM yyyy');
+          }
+
+          const slotsData = await fetchRealTimeSlots(formattedDateForSearch, 0, session.data.doctor, calendars);
 
           if (slotsData.slots.length === 0) {
             await sendWhatsAppButtons({
@@ -957,8 +978,9 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           } else {
             session.step = 'pick_available_slot';
             const rows = slotsData.slots.map(s => {
-              const p = calculatePricing(s);
-              return { id: `avail_slot_${s}`, title: s, description: `₹${p.price}/hr — ${p.label}` };
+              const displayTime = DateTime.fromFormat(s, 'HH:mm', { zone: 'Asia/Kolkata' }).toFormat('h:mm a');
+              const displayEndTime = DateTime.fromFormat(s, 'HH:mm', { zone: 'Asia/Kolkata' }).plus({ hours: 1 }).toFormat('h:mm a');
+              return { id: `avail_slot_${s}`, title: s, description: `${displayTime} - ${displayEndTime}` };
             });
 
             const slotTextList = slotsData.slots.map(s => {
@@ -972,6 +994,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
               body: `⚠️ Someone just booked *${session.data.time}* before you!\n\nDon't worry, here are the available time slots for today:\n${slotTextList}\n\nYou can *choose from the menu below* OR *type your time* (e.g. "5pm - 6pm" or "5pm").`
             });
 
+            // Make sure the action name exactly strictly evaluates correctly for the list builder
             await sendWhatsAppList({
               phoneNumberId, to: from, token, io, clientId,
               header: `⚠️ Time slot taken!`,
@@ -1166,11 +1189,10 @@ Output:`;
             await sendWhatsAppButtons({
               phoneNumberId, to: from, token, io, clientId,
               imageHeader: TURF_LOGO,
-              body: `✅ *Booking Confirmed!* ⚽🏆\n\n👤 *Captain:* ${captainName}\n⚽ *Sport:* ${normalizedSport}\n🏟️ *Arena:* ${arena}\n📅 *Date:* ${dateStr}\n🕒 *Time:* ${timeStr}\n💳 *Fee:* ₹${revenue}\n\nWant extras? 👇`,
+              body: `✅ *Booking Confirmed!* ⚽🏆\n\n👤 *Captain:* ${captainName}\n⚽ *Sport:* ${normalizedSport}\n🏟️ *Arena:* ${arena}\n📅 *Date:* ${dateStr}\n🕒 *Time:* ${timeStr}\n💳 *Fee:* ₹${revenue}`,
               buttons: [
-                { id: 'upsell_equip_add', title: 'Ball & Bibs (+₹300)' },
-                { id: 'upsell_ref_add', title: 'Referee (+₹800)' },
-                { id: 'upsell_reject', title: 'No Thanks ❌' }
+                { id: 'action_share_squad', title: 'Share with Squad 📲' },
+                { id: 'user_home', title: 'Main Menu 🏠' }
               ]
             });
             delete userSessions[from];
