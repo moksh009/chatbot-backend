@@ -19,8 +19,8 @@ function initializeOAuth2Client() {
 
 // Get working hours for a specific day
 function getWorkingHours(dayOfWeek) {
-  // All 7 days open from 10:00 AM to 9:00 PM
-  return { start: '10:00', end: '21:00', isOpen: true };
+  // All 7 days open from 10:00 AM to 12:00 AM (midnight)
+  return { start: '10:00', end: '24:00', isOpen: true };
 }
 
 // Generate all possible 30-minute slots for a given day using Luxon
@@ -32,7 +32,9 @@ function generateAllTimeSlots(dateIST, workingHours) {
   const [endHour, endMinute] = workingHours.end.split(':').map(Number);
 
   let slotStart = dateIST.set({ hour: startHour, minute: startMinute, second: 0, millisecond: 0 });
-  const endOfDay = dateIST.set({ hour: endHour, minute: endMinute, second: 0, millisecond: 0 });
+  const endOfDay = (endHour >= 24)
+    ? dateIST.endOf('day')
+    : dateIST.set({ hour: endHour, minute: endMinute, second: 0, millisecond: 0 });
 
   // Get current time in IST
   const nowIST = DateTime.now().setZone('Asia/Kolkata');
@@ -54,9 +56,12 @@ function generateAllTimeSlots(dateIST, workingHours) {
     }
   }
 
-  while (slotStart < endOfDay) {
+  while (slotStart.isValid && slotStart < endOfDay) {
     let slotEnd = slotStart.plus({ minutes: 30 });
-    if (slotEnd > endOfDay) break;
+    if (!slotEnd.isValid || slotEnd > endOfDay) break;
+
+    // Safety catch to prevent infinite loops if slotEnd evaluates incorrectly
+    if (slotEnd <= slotStart) break;
 
     slots.push({
       start: slotStart,
@@ -126,24 +131,37 @@ async function getAvailableSlots(dateStr, page = 0, calendarId) {
   try {
     if (!calendarId) throw new Error('calendarId argument is required');
     // Parse the date string to get the actual date
-    // dateStr format: "Monday, 22 Jul 2025" or "Monday 22 Jul 2025"
-    const dateMatch = dateStr.match(/(\w+),?\s*(\d+)\s+(\w+)(?:\s+(\d{4}))?/);
-    if (!dateMatch) {
-      throw new Error('Invalid date format');
+    let dateIST;
+
+    // Check if it's in YYYY-MM-DD format first
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      dateIST = DateTime.fromISO(dateStr, { zone: 'Asia/Kolkata' });
+    } else {
+      // Fallback to verbose "Monday, 22 Jul 2025" or "Monday 22 Jul 2025"
+      const dateMatch = dateStr.match(/(\w+),?\s*(\d+)\s+(\w+)(?:\s+(\d{4}))?/);
+      if (!dateMatch) {
+        throw new Error('Invalid date format');
+      }
+      const day = parseInt(dateMatch[2], 10);
+      const monthStr = dateMatch[3];
+      const year = dateMatch[4] ? parseInt(dateMatch[4], 10) : new Date().getFullYear();
+
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const monthIndex = months.indexOf(monthStr);
+      if (monthIndex === -1) {
+        throw new Error('Invalid month');
+      }
+
+      dateIST = DateTime.fromObject(
+        { year, month: monthIndex + 1, day },
+        { zone: 'Asia/Kolkata' }
+      );
     }
-    const dayOfWeek = dateMatch[1];
-    const day = parseInt(dateMatch[2], 10);
-    const month = dateMatch[3];
-    const year = dateMatch[4] || new Date().getFullYear();
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const monthIndex = months.indexOf(month);
-    if (monthIndex === -1) {
-      throw new Error('Invalid month');
+
+    if (!dateIST.isValid) {
+      throw new Error(`Invalid DateTime constructed: ${dateIST.invalidReason}`);
     }
-    const dateIST = DateTime.fromObject(
-      { year, month: monthIndex + 1, day },
-      { zone: 'Asia/Kolkata' }
-    );
+
     const dayOfWeekNum = dateIST.weekday % 7; // Luxon: Monday=1, Sunday=7
     const workingHours = getWorkingHours(dayOfWeekNum);
     if (!workingHours.isOpen) {
