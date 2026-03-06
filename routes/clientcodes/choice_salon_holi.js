@@ -3331,7 +3331,7 @@ const handleFlowWebhook = async (req, res) => {
 
     // 1. Decrypt AES Key
     const privateKey = fs.readFileSync(path.join(process.cwd(), 'private.pem'), 'utf8');
-    let aesKey = crypto.privateDecrypt({
+    const aesKey = crypto.privateDecrypt({
       key: privateKey,
       padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
       oaepHash: 'sha256'
@@ -3352,80 +3352,84 @@ const handleFlowWebhook = async (req, res) => {
     decrypted += decipher.final('utf8');
     const decryptedBody = JSON.parse(decrypted);
 
-    console.log('[Choice Salon] FLOW Decrypted Payload:', decryptedBody);
+    console.log('[Choice Salon Flow] Decrypted Action:', decryptedBody.action);
 
     let responsePayload = {};
 
-    // 3. Handle 'ping' Action
-    if (decryptedBody.action === 'ping') {
-      responsePayload = { data: { status: "active" } };
-    }
-    // Handle INIT action - Meta sends this when the Flow is first opened
-    else if (decryptedBody.action === 'INIT') {
-      responsePayload = {
-        screen: "HOLI_BOOKING_SCREEN",
-        data: {}
-      };
-    }
-    // 4. Handle Meta's 'data_exchange' action (slot fetching)
-    else if (decryptedBody.action === 'data_exchange') {
-      const innerAction = decryptedBody.data?.action;
-      const service = decryptedBody.data?.service || 'Haircut';
-      const date = decryptedBody.data?.date;
+    // 3. Strict Routing matching the Flow JSON
+    switch (decryptedBody.action) {
+      case 'ping':
+        responsePayload = { data: { status: "active" } };
+        break;
 
-      let formattedSlotsArray = [];
-      if (date) {
-        const { config } = req.clientConfig;
-        const calendars = { ...stylistCalendars, ...(config.calendars || {}) };
-        console.log('[Choice Salon Flow] Fetching slots for date:', date, 'calendars:', Object.keys(calendars));
-        const result = await fetchRealTimeSlots(date, 0, 'subhashbhai', calendars);
-        formattedSlotsArray = (result.slots || []).map(s => ({ id: s.id, title: s.title }));
-        console.log(`[Choice Salon Flow] Got ${formattedSlotsArray.length} slots for ${date}`);
-      }
-
-      if (formattedSlotsArray.length === 0) {
-        // No slots available — send a friendly no-availability response
+      case 'INIT':
+        // Meta's first ping when opening the flow
         responsePayload = {
-          screen: 'TIME_AND_DETAILS_SCREEN',
-          data: {
-            selected_service: service,
-            selected_date: date,
-            available_slots: [{ id: 'no_slots', title: 'No slots available for this date' }]
-          }
+          screen: "HOLI_BOOKING_SCREEN",
+          data: {}
         };
-      } else {
+        break;
+
+      case 'data_exchange': {
+        // Triggered by the "Find Available Slots" footer button
+        const service = decryptedBody.data?.service || 'cut_advance';
+        const date = decryptedBody.data?.date || new Date().toISOString().split('T')[0];
+
+        console.log(`[Choice Salon Flow] Fetching slots for ${service} on ${date}`);
+
+        let formattedSlotsArray = [];
+        try {
+          const { config } = req.clientConfig;
+          const calendars = { ...stylistCalendars, ...(config.calendars || {}) };
+          const result = await fetchRealTimeSlots(date, 0, 'subhashbhai', calendars);
+
+          formattedSlotsArray = (result.slots || []).map(s => ({
+            id: s.id,
+            title: s.title
+          }));
+          console.log(`[Choice Salon Flow] Got ${formattedSlotsArray.length} slots for ${date}`);
+        } catch (slotError) {
+          console.error('[Choice Salon Flow] Error fetching slots:', slotError);
+        }
+
+        // Fallback if no slots exist to prevent UI crash
+        if (formattedSlotsArray.length === 0) {
+          formattedSlotsArray = [{ id: 'no_slots', title: 'No slots available' }];
+        }
+
         responsePayload = {
-          screen: 'TIME_AND_DETAILS_SCREEN',
+          screen: "TIME_AND_DETAILS_SCREEN",
           data: {
             selected_service: service,
             selected_date: date,
             available_slots: formattedSlotsArray
           }
         };
+        break;
       }
-    } else {
-      responsePayload = { data: { status: "ERROR" } };
+
+      default:
+        console.warn('[Choice Salon Flow] Unknown action received:', decryptedBody.action);
+        responsePayload = { screen: "HOLI_BOOKING_SCREEN", data: {} }; // Safe fallback
+        break;
     }
 
-    // Encrypt the response payload
-    const flipped_iv = [];
-    for (const pair of iv.entries()) {
-      flipped_iv.push(~pair[1] & 0xFF);
-    }
-    const flippedIvBuffer = Buffer.from(flipped_iv);
-
+    // 4. Encrypt Response (Using strict Buffer map for bitwise NOT)
+    const flippedIvBuffer = Buffer.from(iv.map(b => ~b & 0xFF));
     const cipher = crypto.createCipheriv(algorithm, aesKey, flippedIvBuffer);
+
     const responseCiphertext = cipher.update(JSON.stringify(responsePayload), 'utf8');
     const finalBuffer = cipher.final();
     const authTagOut = cipher.getAuthTag();
 
     const encryptedPayload = Buffer.concat([responseCiphertext, finalBuffer, authTagOut]);
 
+    // Send strictly as text/plain
     res.status(200).set('Content-Type', 'text/plain').send(encryptedPayload.toString('base64'));
 
   } catch (error) {
-    console.error('[Choice Salon] Flow Endpoint Error:', error);
-    res.status(500).send();
+    console.error('[Choice Salon Flow] Critical Endpoint Error:', error);
+    res.status(500).send('Internal Server Error');
   }
 };
 
