@@ -4,6 +4,7 @@ const dotenv = require('dotenv');
 const axios = require('axios');
 const { DoctorScheduleOverride } = require('../../models/DoctorScheduleOverride');
 const fs = require('fs');
+const crypto = require('crypto');
 const { getAvailableTimeSlots, createEvent, deleteEvent, findEventsByPhoneNumber } = require('../../utils/googleCalendar');
 const { getAvailableDates } = require('../../utils/getAvailableDates');
 const { getAvailableSlots } = require('../../utils/getAvailableSlots');
@@ -3155,6 +3156,91 @@ router.get('/', (req, res) => {
     res.status(403).end();
   }
 });
+
+const handleFlowWebhook = async (req, res) => {
+  try {
+    const { encrypted_flow_data, encrypted_aes_key, initial_vector } = req.body;
+
+    // 1. Decrypt AES Key
+    const privateKey = process.env.FLOW_PRIVATE_KEY || fs.readFileSync('private.pem', 'utf8');
+    const aesKey = crypto.privateDecrypt({
+      key: privateKey,
+      padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+      oaepHash: 'sha256'
+    }, Buffer.from(encrypted_aes_key, 'base64'));
+
+    // 2. Decrypt Flow Data
+    const iv = Buffer.from(initial_vector, 'base64');
+    const flowDataBuffer = Buffer.from(encrypted_flow_data, 'base64');
+    const authTagLength = 16;
+    const authTag = flowDataBuffer.slice(flowDataBuffer.length - authTagLength);
+    const ciphertext = flowDataBuffer.slice(0, flowDataBuffer.length - authTagLength);
+
+    const decipher = crypto.createDecipheriv('aes-256-gcm', aesKey, iv);
+    decipher.setAuthTag(authTag);
+    let decrypted = decipher.update(ciphertext, undefined, 'utf8');
+    decrypted += decipher.final('utf8');
+    const decryptedBody = JSON.parse(decrypted);
+
+    console.log('[Choice Salon] FLOW Decrypted Payload:', decryptedBody);
+
+    let responsePayload = {};
+
+    // 3. Handle 'ping' Action
+    if (decryptedBody.action === 'ping') {
+      responsePayload = { data: { status: "ACTIVE" } };
+    }
+    // 4. Handle 'fetch_slots' Action
+    else if (decryptedBody.action === 'fetch_slots') {
+      const service = decryptedBody.data?.service || 'Haircut';
+      const date = decryptedBody.data?.date;
+
+      let formattedSlotsArray = [];
+      if (date) {
+        // Fetch real-time slots
+        const { whatsappToken: token, geminiApiKey, config, clientId } = req.clientConfig;
+        const calendars = { ...stylistCalendars, ...(config.calendars || {}) };
+        const result = await fetchRealTimeSlots(date, 0, 'subhashbhai', calendars); // Default stylist Subhashbhai
+
+        // Format slots identically to the standard buttons structure
+        formattedSlotsArray = result.slots.map(s => ({
+          id: s.id,       // "10:00_AM"
+          title: s.title  // "10:00 AM"
+        }));
+      }
+
+      responsePayload = {
+        screen: "TIME_AND_DETAILS_SCREEN",
+        data: {
+          selected_service: service,
+          selected_date: date,
+          available_slots: formattedSlotsArray
+        }
+      };
+    } else {
+      responsePayload = { data: { status: "ERROR" } };
+    }
+
+    // Encrypt the response payload
+    const flippedIv = Buffer.alloc(12);
+    for (let i = 0; i < 12; i++) {
+      flippedIv[i] = ~iv[i];
+    }
+
+    const cipher = crypto.createCipheriv('aes-256-gcm', aesKey, flippedIv);
+    const encryptedPayload = Buffer.concat([
+      cipher.update(JSON.stringify(responsePayload), 'utf8'),
+      cipher.final(),
+      cipher.getAuthTag()
+    ]);
+
+    res.send(encryptedPayload.toString('base64'));
+
+  } catch (error) {
+    console.error('[Choice Salon] Flow Endpoint Error:', error);
+    res.status(500).send();
+  }
+};
 
 router.handleWebhook = handleWebhook;
 router.handleFlowWebhook = handleFlowWebhook;
