@@ -13,43 +13,44 @@ const Order = require('../../models/Order');
 const IMAGES = {
     hero_3mp: 'https://delitechsmarthome.in/cdn/shop/files/Delitech_Main_photoswq.png?v=1760635732&width=1346',
     hero_5mp: 'https://delitechsmarthome.in/cdn/shop/files/my1.png?v=1759746759&width=1346',
+    hero_2mp: 'https://delitechsmarthome.in/cdn/shop/files/DelitechMainphotos7i.png?v=1770617818&width=1346',
     features: 'https://delitechsmarthome.in/cdn/shop/files/image241.png?v=1762148394&width=1346'
 };
 
 const PRODUCTS = {
     '2mp': {
         id: 'prod_2mp',
-        name: 'Delitech Smart Wireless Video Doorbell (2MP)',
+        name: 'Delitech Smart Video Doorbell (2MP)',
         price: '₹5,499',
-        short_desc: '1080p HD Video • Night Vision • 2-Way Talk',
-        full_desc: 'The best value smart doorbell in India.\n\n📹 *1080p HD Video*\n🌙 *Night Vision* (See in dark)\n🗣️ *2-Way Audio* (Talk to visitors)\n🔋 *Wireless* (Rechargeable Battery)\n🔔 *Free Installation*',
-        img: IMAGES.hero_3mp, // reuse 3mp image or generic
+        short_desc: 'Standard HD Video • 2-Way Talk',
+        full_desc: 'Essential home security made simple.\n\n📹 *1080p HD Video*\n🌙 *Night Vision* (Clear up to 15ft)\n🗣️ *2-Way Audio* (Talk from your phone)\n🔋 *100% Wireless* (No drilling required)\n🔔 *Free Chime Included*',
+        img: IMAGES.hero_2mp,
         url: 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-2mp'
     },
     '3mp': {
         id: 'prod_3mp',
-        name: 'Delitech Smart Wireless Video Doorbell Plus (3MP)',
+        name: 'Delitech Smart Video Doorbell Plus (3MP)',
         price: '₹5,999',
-        short_desc: '2K HD Video • Night Vision • 2-Way Talk',
-        full_desc: 'Enhanced clarity smart doorbell.\n\n📹 *2K HD Video* (Clear 3MP)\n🌙 *Night Vision* (See in dark)\n🗣️ *2-Way Audio* (Talk to visitors)\n🔋 *Wireless* (Rechargeable Battery)\n🔔 *Free Installation*',
+        short_desc: '2K Crisp Video • Color Night Vision',
+        full_desc: 'The perfect balance of affordability and HD security.\n\n📹 *2048×1536 (3MP) HD Video*\n� *Color Night Vision*\n🗣️ *Real-Time 2-Way Audio*\n🔋 *100% Wireless DIY Setup*\n🔔 *Instant Phone Alerts*',
         img: IMAGES.hero_3mp,
         url: 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-3mp'
     },
     '5mp': {
         id: 'prod_5mp',
-        name: 'Delitech Smart Wireless Video Doorbell Pro (5MP)',
+        name: 'Delitech Smart Video Doorbell Pro (5MP)',
         price: '₹6,999',
-        short_desc: '5MP Ultra HD • Color Night Vision • AI Detect',
-        full_desc: 'Our most advanced security solution.\n\n💎 *5MP Ultra Clarity* (Best in class)\n🌈 *Color Night Vision*\n🤖 *AI Human Detection* (No false alerts)\n🚨 *Anti-Theft Siren Alarm*\n💾 *Free SD Card + Free Installation*',
+        short_desc: '5MP Ultra HD • Smart AI • Anti-Theft',
+        full_desc: 'The ultimate peace-of-mind solution. Unmatched clarity and premium security.\n\n💎 *5MP Crystal-Clear Resolution*\n👀 *Ultra-Wide 130° Head-to-Toe View*\n🌈 *Color Night Vision*\n🤖 *AI Smart Visitor Log* (No false alerts)\n🚨 *Built-in Anti-Theft Siren*\n🌦️ *IP65 Weatherproof* (Rain/Heat resistant)\n💾 *Free SD Card Included*',
         img: IMAGES.hero_5mp,
         url: 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-5mp'
     }
 };
 
 const FAQS = {
-    'install': "*Installation is DIY (Do It Yourself)!* 🛠️\nNo wiring needed. Just stick it or screw it to the wall. Setup takes 5 minutes via our mobile app.",
-    'battery': "*Battery Life* 🔋\nThe doorbell lasts 3-6 months on a single charge (depending on usage). Rechargeable via USB cable (included).",
-    'warranty': "*Warranty & Support* 🛡️\nWe offer a 1-Year Replacement Warranty on manufacturing defects. Free technical support available."
+    'install': "🛠️ *Is it hard to install?*\nNot at all! It's *100% Wireless DIY*. No electricians or wiring needed. You can stick it or screw it to the wall in under 2 minutes. Setup through the CloudEdge App is instant.",
+    'battery': "🔋 *How long does the battery last?*\nThe IP65 weatherproof battery lasts *up to 6 months* on a single charge (depending on motion alerts). Simply recharge it via the included USB cable.",
+    'warranty': "🛡️ *What about Warranty & Support?*\nEnjoy complete peace of mind with our *1-Year Replacement Warranty* on any manufacturing defects, plus free premium technical support."
 };
 
 // --- 2. API WRAPPERS ---
@@ -172,39 +173,73 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
     const normalizedMsg = userMsg.toLowerCase();
 
     if (userMsgType === 'text') {
-        if (normalizedMsg.includes('5mp doorbell details') || normalizedMsg.includes('5mp doorbell') || normalizedMsg.includes('5mp details')) {
+        const txt = normalizedMsg;
+
+        // --- DIRECT FEATURE/OBJECTION MATCHING ---
+        if (txt.includes('waterproof') || txt.includes('rain') || txt.includes('weather')) {
+            await sendWhatsAppInteractive({
+                phoneNumberId, to: from, io, clientConfig,
+                body: "🌦️ *IP65 Weatherproof Guarantee*\n\nYes! Our Doorbells are built to withstand the heaviest Indian monsoons and intense summer heat. You never have to worry about water damage.\n\nReady to secure your home?",
+                interactive: {
+                    type: 'button',
+                    action: { buttons: [{ type: 'reply', reply: { id: 'buy_5mp', title: 'Get 5MP Pro' } }, { type: 'reply', reply: { id: 'menu_products', title: 'View All' } }] }
+                }
+            });
+            return res.status(200).end();
+        }
+
+        if (txt.includes('wire') || txt.includes('drill') || txt.includes('install')) {
+            await sendWhatsAppInteractive({
+                phoneNumberId, to: from, io, clientConfig,
+                body: "⚡ *100% Wireless DIY Setup*\n\nNo drilling, no electricians, and no messy wires! Installation takes exactly 2 minutes. You can screw it in or use the heavy-duty adhesive.\n\nWhich model are you looking for?",
+                interactive: {
+                    type: 'button',
+                    action: { buttons: [{ type: 'reply', reply: { id: 'menu_products', title: 'View Doorbells' } }, { type: 'reply', reply: { id: 'buy_5mp', title: 'Buy 5MP Pro' } }] }
+                }
+            });
+            return res.status(200).end();
+        }
+
+        if (txt.includes('battery') || txt.includes('charge')) {
+            await sendWhatsAppInteractive({
+                phoneNumberId, to: from, io, clientConfig,
+                body: "🔋 *Massive 6-Month Battery*\n\nDelitech Doorbells run on an ultra-capacity rechargeable battery that lasts up to 6 months on a single charge! Just plug it in overnight when low.",
+                interactive: {
+                    type: 'button',
+                    action: { buttons: [{ type: 'reply', reply: { id: 'menu_products', title: 'View Doorbells' } }] }
+                }
+            });
+            return res.status(200).end();
+        }
+
+        // --- DIRECT PRODUCT MATCHING ---
+        if (txt.includes('5mp') || txt.includes('pro')) {
             await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', isAd: true, clientConfig });
             return res.status(200).end();
         }
-        if (normalizedMsg.includes('3mp doorbell details') || normalizedMsg.includes('3mp doorbell') || normalizedMsg.includes('3mp details')) {
+        if (txt.includes('3mp') || txt.includes('plus')) {
             await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp', isAd: true, clientConfig });
             return res.status(200).end();
         }
-        if (normalizedMsg.includes('2mp doorbell details') || normalizedMsg.includes('2mp doorbell') || normalizedMsg.includes('2mp details')) {
+        if (txt.includes('2mp')) {
             await sendProductCard({ phoneNumberId, to: from, io, productKey: '2mp', isAd: true, clientConfig });
             return res.status(200).end();
         }
-        if (normalizedMsg.includes('want to know more')) {
+
+        // --- AD LEAD INTENT (Priority) ---
+        const adIntentRegex = /(details|know|about|price|info|tell me more)/i;
+        if (adIntentRegex.test(txt)) {
+            // Upsell Direct to 5MP Pro
+            await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', isAd: true, clientConfig });
+            return res.status(200).end();
+        }
+
+        // --- GREETING INTENT ---
+        const greetingRegex = /^(hi|hello|hey|hola|start|menu|kem cho)/i;
+        if (greetingRegex.test(txt)) {
             await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
             return res.status(200).end();
         }
-    }
-
-    // A. AD LEAD INTENT (Priority)
-    // Matches "details on this product", "price", "info", "tell me more"
-    const adIntentRegex = /(details|know|about|price|info).*product|tell me more/i;
-
-    if (userMsgType === 'text' && adIntentRegex.test(userMsg)) {
-        // Direct flow: Show 5MP Pro card immediately
-        await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', isAd: true, clientConfig });
-        return res.status(200).end();
-    }
-
-    // B. GREETING INTENT
-    const greetingRegex = /^(hi|hello|hey|hola|start|menu)/i;
-    if (userMsgType === 'text' && greetingRegex.test(userMsg)) {
-        await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
-        return res.status(200).end();
     }
 
     // C. INTERACTIVE HANDLERS
@@ -262,15 +297,15 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
 async function sendMainMenu({ phoneNumberId, to, io, clientConfig }) {
     await sendWhatsAppInteractive({
         phoneNumberId, to,
-        body: "👋 Welcome to *Delitech Smart Home*!\n\nSecure your home with India's #1 Wireless Video Doorbell. No wiring, just safety! 🏠✨\n\nChoose an option:",
+        body: "👋 Welcome to *Delitech Smart Home* Security!\n\nDid you know a visible security camera deters 60% of break-ins? Protect your family with India's #1 Wireless Video Doorbell. No wiring, just complete peace of mind. 🏠✨\n\nHow can I help you secure your home today?",
         interactive: {
             type: 'button',
-            header: { type: 'text', text: 'Main Menu' },
+            header: { type: 'text', text: 'Delitech Security' },
             action: {
                 buttons: [
-                    { type: 'reply', reply: { id: 'menu_products', title: '👁 View Products' } },
-                    { type: 'reply', reply: { id: 'menu_features', title: '🌟 Features' } },
-                    { type: 'reply', reply: { id: 'menu_faqs', title: '❓ FAQs' } }
+                    { type: 'reply', reply: { id: 'menu_products', title: '�️ View Doorbells' } },
+                    { type: 'reply', reply: { id: 'menu_features', title: '✨ Smart Features' } },
+                    { type: 'reply', reply: { id: 'menu_faqs', title: '❓ Setup & FAQs' } }
                 ]
             }
         }, io, clientConfig
@@ -280,25 +315,30 @@ async function sendMainMenu({ phoneNumberId, to, io, clientConfig }) {
 async function sendProductSelection({ phoneNumberId, to, io, clientConfig }) {
     await sendWhatsAppInteractive({
         phoneNumberId, to,
-        body: "Select a model to view photos & pricing:",
+        body: "Invest in your family's safety. Select a model below to view exclusive photos and pricing:\n\n*(Tip: Over 80% of our customers choose the 5MP Pro for absolute clarity)*",
         interactive: {
             type: 'list',
-            header: { type: 'text', text: 'Our Models' },
+            header: { type: 'text', text: 'Select a Model' },
             action: {
-                button: 'Select Doorbell',
+                button: 'View Doorbells',
                 sections: [
                     {
-                        title: 'Best Sellers',
+                        title: 'Premium Security',
                         rows: [
-                            { id: 'sel_5mp', title: 'Doorbell Pro (5MP)', description: 'Best Clarity & Color Night Vision' },
-                            { id: 'sel_3mp', title: 'Doorbell Plus (3MP)', description: 'Enhanced HD Video, Plus Features' },
-                            { id: 'sel_2mp', title: 'Doorbell (2MP)', description: 'Standard HD Video, Value Choice' }
+                            { id: 'sel_5mp', title: 'Doorbell Pro (5MP)', description: '👑 Ultimate Clarity & Smart AI' },
+                            { id: 'sel_3mp', title: 'Doorbell Plus (3MP)', description: '⭐ 2K Video & Color Night Vision' }
                         ]
                     },
                     {
-                        title: 'Help',
+                        title: 'Essential Security',
                         rows: [
-                            { id: 'menu_agent', title: 'Talk to Expert', description: 'Get a callback' }
+                            { id: 'sel_2mp', title: 'Doorbell (2MP)', description: 'Standard HD & 2-Way Talk' }
+                        ]
+                    },
+                    {
+                        title: 'Need Help Deciding?',
+                        rows: [
+                            { id: 'menu_agent', title: 'Consult an Expert', description: 'Get a free security callback' }
                         ]
                     }
                 ]
@@ -431,13 +471,13 @@ async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientConfi
 async function sendFeatureComparison({ phoneNumberId, to, io, clientConfig }) {
     await sendWhatsAppInteractive({
         phoneNumberId, to,
-        body: `🌟 *Why Choose Delitech?*\n\n🔋 *100% Wireless*\nNo wiring headaches. 5 min setup.\n\n🗣️ *2-Way Talk*\nSpeak to visitors from anywhere.\n\n🌙 *Night Vision*\nCrystal clear video in pitch dark.\n\n💾 *Secure Storage*\nSupports SD Card & Cloud.`,
+        body: `🌟 *Why Delitech is India's Top Choice*\n\n� *100% Wireless DIY*\nNo electricians. No drilling. 2-minute setup.\n\n� *See Everything*\nCrystal clear Ultra-HD video and Color Night Vision.\n\n🗣️ *Stop Intruders Instantly*\nUse 2-Way Talk and the Built-In Siren from anywhere in the world.\n\n🌦️ *IP65 Weatherproof*\nWithstands heavy Indian monsoons and intense heat.`,
         interactive: {
             type: 'button',
-            header: { type: 'image', image: { link: IMAGES.features } }, // New Feature Image
+            header: { type: 'image', image: { link: IMAGES.features } },
             action: {
                 buttons: [
-                    { type: 'reply', reply: { id: 'menu_products', title: 'Shop Now' } },
+                    { type: 'reply', reply: { id: 'menu_products', title: 'Shop Doorbells' } },
                     { type: 'reply', reply: { id: 'btn_back_menu', title: 'Main Menu' } }
                 ]
             }
@@ -448,25 +488,25 @@ async function sendFeatureComparison({ phoneNumberId, to, io, clientConfig }) {
 async function sendFAQMenu({ phoneNumberId, to, io, clientConfig }) {
     await sendWhatsAppInteractive({
         phoneNumberId, to,
-        body: "🤖 *Common Questions*\nSelect a topic to get an instant answer:",
+        body: "🤖 *Smart Assistant FAQ*\nGot questions? I've got answers. Select a topic below:",
         interactive: {
             type: 'list',
-            header: { type: 'text', text: 'FAQs' },
+            header: { type: 'text', text: 'Common Questions' },
             action: {
-                button: 'Select Question',
+                button: 'View Guides',
                 sections: [
                     {
-                        title: 'Usage',
+                        title: 'Setup & Operation',
                         rows: [
-                            { id: 'faq_install', title: 'How to install?', description: 'Wiring vs Wireless' },
-                            { id: 'faq_battery', title: 'Battery Life', description: 'Charging & Duration' }
+                            { id: 'faq_install', title: 'How to install?', description: '100% Wireless DIY details' },
+                            { id: 'faq_battery', title: 'Battery Life', description: 'Recharging & Weatherproofing' }
                         ]
                     },
                     {
-                        title: 'Service',
+                        title: 'Peace of Mind',
                         rows: [
-                            { id: 'faq_warranty', title: 'Warranty Policy', description: 'Replacement & Repair' },
-                            { id: 'menu_agent', title: 'Other Question', description: 'Talk to human' }
+                            { id: 'faq_warranty', title: 'Warranty Policy', description: '1-Year coverage guarantee' },
+                            { id: 'menu_agent', title: 'Speak to a Human', description: 'Get personalized security advice' }
                         ]
                     }
                 ]
