@@ -3169,12 +3169,7 @@ const handleFlowWebhook = async (req, res) => {
       oaepHash: 'sha256'
     }, Buffer.from(encrypted_aes_key, 'base64'));
 
-    if (aesKey.length !== 32) {
-      console.warn(`[Choice Salon] Warning: Decrypted AES Key length is ${aesKey.length} bytes. Enforcing 32 bytes.`);
-      const fixedKey = Buffer.alloc(32);
-      aesKey.copy(fixedKey, 0, 0, Math.min(aesKey.length, 32));
-      aesKey = fixedKey;
-    }
+    const algorithm = `aes-${aesKey.length * 8}-gcm`;
 
     // 2. Decrypt Flow Data
     const iv = Buffer.from(initial_vector, 'base64');
@@ -3183,7 +3178,7 @@ const handleFlowWebhook = async (req, res) => {
     const authTag = flowDataBuffer.slice(flowDataBuffer.length - authTagLength);
     const ciphertext = flowDataBuffer.slice(0, flowDataBuffer.length - authTagLength);
 
-    const decipher = crypto.createDecipheriv('aes-256-gcm', aesKey, iv);
+    const decipher = crypto.createDecipheriv(algorithm, aesKey, iv);
     decipher.setAuthTag(authTag);
     let decrypted = decipher.update(ciphertext, undefined, 'utf8');
     decrypted += decipher.final('utf8');
@@ -3234,7 +3229,7 @@ const handleFlowWebhook = async (req, res) => {
       flippedIv[i] = ~iv[i];
     }
 
-    const cipher = crypto.createCipheriv('aes-256-gcm', aesKey, flippedIv);
+    const cipher = crypto.createCipheriv(algorithm, aesKey, flippedIv);
     const encryptedPayload = Buffer.concat([
       cipher.update(JSON.stringify(responsePayload), 'utf8'),
       cipher.final(),
