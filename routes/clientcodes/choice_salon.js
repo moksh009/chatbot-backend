@@ -4,6 +4,7 @@ const dotenv = require('dotenv');
 const axios = require('axios');
 const { DoctorScheduleOverride } = require('../../models/DoctorScheduleOverride');
 const fs = require('fs');
+const crypto = require('crypto');
 const { getAvailableTimeSlots, createEvent, deleteEvent, findEventsByPhoneNumber } = require('../../utils/googleCalendar');
 const { getAvailableDates } = require('../../utils/getAvailableDates');
 const { getAvailableSlots } = require('../../utils/getAvailableSlots');
@@ -455,6 +456,68 @@ async function sendSmartButtonsOrList({ phoneNumberId, to, header, body, buttons
   }
 }
 
+// Helper: Send Native Meta WhatsApp Flow
+async function sendWhatsAppFlow({ phoneNumberId, to, header, body, token, io, clientId }) {
+  const apiVersion = process.env.API_VERSION || 'v18.0';
+  const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
+  const data = {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'flow',
+      header: { type: 'text', text: header || 'Book Appointment 💇‍♀️' },
+      body: { text: body || 'Secure your spot in seconds! Tap below to open our dynamic booking flow.' },
+      footer: { text: 'Choice Salon for Ladies ✨' },
+      action: {
+        name: 'flow',
+        parameters: {
+          flow_message_version: '3',
+          flow_token: 'choice_salon_flow',
+          flow_id: process.env.META_FLOW_ID || '1177699103681531',
+          flow_cta: 'Open Booking Flow',
+          flow_action: 'navigate',
+          flow_action_payload: {
+            screen: 'HOLI_BOOKING_SCREEN'
+          }
+        }
+      }
+    }
+  };
+
+  try {
+    await axios.post(url, data, {
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      }
+    });
+
+    let conversation = await Conversation.findOne({ phone: to, clientId });
+    if (!conversation) {
+      conversation = await Conversation.create({ phone: to, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+    }
+    conversation.lastMessage = 'Sent Booking Flow';
+    conversation.lastMessageAt = new Date();
+    await conversation.save();
+
+    await saveAndEmitMessage({
+      clientId,
+      from: 'bot',
+      to,
+      body: 'Sent Booking Flow',
+      type: 'interactive',
+      direction: 'outgoing',
+      status: 'sent',
+      conversationId: conversation._id,
+      io
+    });
+
+  } catch (err) {
+    console.error('Error sending WhatsApp flow:', err.response?.data || err.message);
+  }
+}
+
 // Helper: get available booking days (dynamic, based on Google Calendar availability)
 async function getAvailableBookingDays(stylist, calendars) {
   try {
@@ -591,6 +654,86 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 
   // Pass common params to helpers
   const helperParams = { phoneNumberId, token, io, clientId };
+
+  // ===================================================================
+  // META WHATSAPP FLOW NFM_REPLY HANDLER & VERIFICATION BRIDGE
+  // ===================================================================
+  if (userMsgType === 'interactive' && messages.interactive?.type === 'nfm_reply') {
+    try {
+      const responseJson = JSON.parse(messages.interactive.nfm_reply.response_json);
+      const service = responseJson.selected_service;
+      const date = responseJson.selected_date;
+      const time = responseJson.selected_time;
+      const customer_name = responseJson.customer_name;
+
+      // Verification Bridge: Check if slot is actually available
+      const result = await fetchRealTimeSlots(date, 0, 'subhashbhai', calendars);
+      const isAvailable = result.slots.some(s => s.id === time || s.title === time);
+
+      if (!isAvailable) {
+        await sendWhatsAppFlow({ ...helperParams, to: from, body: `Sorry! The slot for *${time}* on *${date}* just got booked! Please select a new time below ⬇️` });
+        session.step = 'flow_in_progress';
+      } else {
+        // Build final appointment object directly
+        const appointmentData = {
+          clientId,
+          phone: from,
+          name: customer_name,
+          service,
+          date,
+          time,
+          doctor: 'subhashbhai',
+          status: 'confirmed',
+          createdAt: new Date(),
+          source: 'chatbot'
+        };
+
+        await Appointment.create(appointmentData);
+
+        // Sync with Google Calendar
+        const calendarId = calendars['subhashbhai'];
+        const startTime = DateTime.fromFormat(`${date} ${time}`, 'dd/MM/yyyy h:mm a', { zone: 'Asia/Kolkata' }).toISO();
+        const endTime = DateTime.fromISO(startTime).plus({ minutes: 60 }).toISO();
+
+        const eventDetails = {
+          summary: `Appointment: ${customer_name}`,
+          description: `Service: ${service}\nPhone: ${from}`,
+          startTime,
+          endTime,
+        };
+        await createEvent(calendarId, eventDetails);
+
+        await sendWhatsAppText({
+          ...helperParams,
+          to: from,
+          body: `✨ *Legendary Choice!* ✨\n\nI've confirmed your booking!\n\n✅ *Final Booking Details*\n👤 *Name:* ${customer_name}\n📅 *Date:* ${date}\n🕒 *Time:* ${time}\n💇‍♀️ *Stylist:* subhashbhai\n💅 *Total Services:* ${service}\n\nsubhashbhai and the team will be ready for you. See you soon! 💅🧖‍♀️`
+        });
+
+        // Trigger Upsell
+        await sendWhatsAppButtons({
+          ...helperParams,
+          to: from,
+          imageHeader: SALON_IMG,
+          body: `💅 *Confirm Your Luxury Upgrade* ✨\n\nAre you sure you want to add *Mirror Shine Botosmooth* to your existing booking?\n\nIt's our absolute best treatment for a glass-like finish! 💎✨`,
+          footer: 'You want to upgrade? 👇',
+          buttons: [
+            { id: 'upsell_confirm_mirror_shine', title: 'Yes, Upgrade ✅' },
+            { id: 'upsell_reject_mirror_shine', title: 'No, Thanks ❌' }
+          ]
+        });
+
+        session.step = 'home';
+      }
+      res.status(200).end();
+      return;
+    } catch (e) {
+      console.error('Flow Reply Error:', e);
+      // Fallback
+      await sendWhatsAppFlow({ ...helperParams, to: from, body: 'Something went wrong processing your booking. Let us try that again!' });
+      res.status(200).end();
+      return;
+    }
+  }
 
   // ===================================================================
   // HANDLE NON-TEXT MEDIA MESSAGES (image, video, audio, sticker, document, location)
@@ -1306,18 +1449,8 @@ Reply in short, friendly English:`;
   // Home menu response
   if (session.step === 'home_waiting') {
     if (userMsg === 'user_schedule_appt') {
-      // Always start with service selection - first page
-      const paginatedServices = getPaginatedServices(0);
-      await sendWhatsAppList({
-        ...helperParams,
-        to: from,
-        header: 'Book Appointment 💇‍♀️',
-        body: 'Which service would you like to book?',
-        button: 'Select Service',
-        rows: paginatedServices.services
-      });
-      session.step = 'choose_service';
-      session.data.servicePage = 0;
+      await sendWhatsAppFlow({ ...helperParams, to: from });
+      session.step = 'flow_in_progress';
       res.status(200).end();
       return;
     } else if (userMsg === 'user_cancel_appt' || userMsg === 'user_reschedule_appt') {
@@ -2986,54 +3119,141 @@ Upgrade to our *Mirror Shine Boto Smooth* (₹4,000) for that ultimate glass-lik
       return;
     }
 
-    // Enhanced OpenAI prompt for FAQ responses
-    const prompt = `You are Ava, a friendly and knowledgeable assistant for TURF BOOKING in ahmedabad, Uganda. 
+    // Enhanced OpenAI prompt for FAQ responses & Zero-Click Extraction
+    const prompt = `You are Ava, a friendly and knowledgeable assistant for Choice Salon in Ahmedabad.
 
-IMPORTANT INSTRUCTIONS:
-1. Use the knowledge base below to provide accurate, helpful information
-2. Be warm, conversational, and professional - like a real person
-3. Use natural language with appropriate emojis
-4. If asked about pricing, mention 4-5 top services only and suggest booking for specific treatments
-5. If asked about booking, encourage them to type "book turf" or use the button
-6. If asked about hours, always mention the specific working hours from the knowledge base
-7. If the answer is not in the knowledge base, suggest calling the turf management or emailing
-8. Always end responses with "Need anything else?" or similar friendly closing
-9. For identity questions, use the specific response from the knowledge base
+IMPORTANT INSTRUCTIONS (CRITICAL):
+1. You MUST ALWAYS output ONLY standard JSON format. No markdown blocks, no text before or after.
+2. If the user is asking a basic question, answer it in the "answer" field.
+3. If the user is trying to book an appointment (e.g. "book a haircut for tomorrow at 2pm"), extract as much as you can.
+4. Your JSON MUST match this exact schema:
+{
+  "service": "String or null",
+  "date": "String (DD/MM/YYYY) or null",
+  "time": "String (HH:MM AM/PM) or null",
+  "customer_name": "String or null",
+  "answer": "String (Your helpful reply to a question, or null if booking)",
+  "next_action": "answer_faq" | "trigger_flow" | "skip_to_booking"
+}
+5. Set "next_action" to "answer_faq" if they are just asking questions.
+6. Set "next_action" to "trigger_flow" if they want to book but are missing details like time or date.
+7. Set "next_action" to "skip_to_booking" ONLY if service, date, time, and customer_name are all successfully extracted.
 
 KNOWLEDGE BASE:
 ${knowledgeBase}
 
-USER QUESTION: ${messages.text?.body || userMsg}
-
-Please provide a helpful, human-like response:`;
+USER QUESTION: ${messages.text?.body || userMsg}`;
 
     let aiResponse = '';
+    let parsedData = null;
     try {
-      aiResponse = await generateWithGemini(geminiKey, prompt);
-      if (!aiResponse.toLowerCase().includes('need anything else') &&
-        !aiResponse.toLowerCase().includes('anything else') &&
-        !aiResponse.toLowerCase().includes('help you') &&
-        !aiResponse.toLowerCase().includes('assistance')) {
-        aiResponse += '\n\nNeed anything else I can help you with?';
+      const rawResponse = await generateWithGemini(geminiKey, prompt);
+
+      // Clean up mapping if it wrapped in markdown
+      const cleanedResponse = rawResponse.replace(/```json/g, '').replace(/```/g, '').trim();
+      parsedData = JSON.parse(cleanedResponse);
+      aiResponse = parsedData.answer || '';
+
+      if (parsedData.next_action === 'answer_faq') {
+        if (aiResponse && !aiResponse.toLowerCase().includes('need anything else')) {
+          aiResponse += '\n\nNeed anything else I can help you with?';
+        }
       }
     } catch (err) {
-      console.error('Gemini API error:', err);
+      console.error('Gemini JSON parsing error:', err);
       aiResponse = "I'm having trouble accessing information right now. Please try again, or use the buttons below.";
+      parsedData = { next_action: 'answer_faq' };
     }
 
-    await sendSmartButtonsOrList({
-      ...helperParams,
-      to: from,
-      header: undefined,
-      body: aiResponse,
-      buttons: [
-        { id: 'user_schedule_appt', title: 'Book Salon' },
-        { id: 'user_home', title: 'Back to Menu' }
-      ]
-    });
-    session.step = 'faq_await';
-    res.status(200).end();
-    return;
+    // Process the Action
+    if (parsedData.next_action === 'trigger_flow') {
+      await sendWhatsAppFlow({ ...helperParams, to: from, body: "Let's finish getting your details! Tap below to open our booking flow." });
+      session.step = 'flow_in_progress';
+      res.status(200).end();
+      return;
+    } else if (parsedData.next_action === 'skip_to_booking') {
+      // PHASE 4: Verification Bridge
+      const { service, date, time, customer_name } = parsedData;
+      const calendars = { ...stylistCalendars, ...(config.calendars || {}) };
+
+      // Verify slot using existing logic
+      const result = await fetchRealTimeSlots(date, 0, 'subhashbhai', calendars);
+      const isAvailable = result.slots.some(s => s.id === time || s.title === time);
+
+      if (!isAvailable) {
+        await sendWhatsAppFlow({ ...helperParams, to: from, body: `Sorry! The slot for *${time}* on *${date}* just got booked! Please select a new time below ⬇️` });
+        session.step = 'flow_in_progress';
+        res.status(200).end();
+        return;
+      } else {
+        // Build final appointment object directly
+        const appointmentData = {
+          clientId,
+          phone: from,
+          name: customer_name,
+          service,
+          date,
+          time,
+          doctor: 'subhashbhai',
+          status: 'confirmed',
+          createdAt: new Date(),
+          source: 'chatbot'
+        };
+
+        await Appointment.create(appointmentData);
+
+        // Sync with Google Calendar
+        const calendarId = calendars['subhashbhai'];
+        const startTime = DateTime.fromFormat(`${date} ${time}`, 'dd/MM/yyyy h:mm a', { zone: 'Asia/Kolkata' }).toISO();
+        const endTime = DateTime.fromISO(startTime).plus({ minutes: 60 }).toISO();
+
+        const eventDetails = {
+          summary: `Appointment: ${customer_name}`,
+          description: `Service: ${service}\nPhone: ${from}`,
+          startTime,
+          endTime,
+        };
+        await createEvent(calendarId, eventDetails);
+
+        await sendWhatsAppText({
+          ...helperParams,
+          to: from,
+          body: `✨ *Legendary Choice!* ✨\n\nI've confirmed your booking!\n\n✅ *Final Booking Details*\n👤 *Name:* ${customer_name}\n📅 *Date:* ${date}\n🕒 *Time:* ${time}\n💇‍♀️ *Stylist:* subhashbhai\n💅 *Service:* ${service}\n\nWe will be ready for you. See you soon! 💅`
+        });
+
+        // Trigger Upsell
+        await sendWhatsAppButtons({
+          ...helperParams,
+          to: from,
+          imageHeader: SALON_IMG,
+          body: `💅 *Confirm Your Luxury Upgrade* ✨\n\nUpgrade your booking with *Mirror Shine Botosmooth* for just ₹4000 extra!\nIt's our absolute best treatment for a glass-like finish! 💎✨`,
+          footer: 'You want to upgrade? 👇',
+          buttons: [
+            { id: 'upsell_confirm_mirror_shine', title: 'Yes, Upgrade ✅' },
+            { id: 'upsell_reject_mirror_shine', title: 'No, Thanks ❌' }
+          ]
+        });
+
+        session.step = 'home';
+        res.status(200).end();
+        return;
+      }
+    } else {
+      // Standard FAQ Answer
+      await sendSmartButtonsOrList({
+        ...helperParams,
+        to: from,
+        header: undefined,
+        body: aiResponse,
+        buttons: [
+          { id: 'user_schedule_appt', title: 'Book Salon' },
+          { id: 'user_home', title: 'Back to Menu' }
+        ]
+      });
+      session.step = 'faq_await';
+      res.status(200).end();
+      return;
+    }
   }
 
   // Handle topic selection
@@ -3218,7 +3438,93 @@ const handleWebhook = async (req, res) => {
   res.status(200).end();
 };
 
+const handleFlowWebhook = async (req, res) => {
+  try {
+    const { encrypted_flow_data, encrypted_aes_key, initial_vector } = req.body;
+
+    // 1. Decrypt AES Key
+    const privateKey = process.env.FLOW_PRIVATE_KEY || fs.readFileSync('private.pem', 'utf8');
+    const aesKey = crypto.privateDecrypt({
+      key: privateKey,
+      padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+      oaepHash: 'sha256'
+    }, Buffer.from(encrypted_aes_key, 'base64'));
+
+    // 2. Decrypt Flow Data
+    const iv = Buffer.from(initial_vector, 'base64');
+    const flowDataBuffer = Buffer.from(encrypted_flow_data, 'base64');
+    const authTagLength = 16;
+    const authTag = flowDataBuffer.slice(flowDataBuffer.length - authTagLength);
+    const ciphertext = flowDataBuffer.slice(0, flowDataBuffer.length - authTagLength);
+
+    const decipher = crypto.createDecipheriv('aes-256-gcm', aesKey, iv);
+    decipher.setAuthTag(authTag);
+    let decrypted = decipher.update(ciphertext, undefined, 'utf8');
+    decrypted += decipher.final('utf8');
+    const decryptedBody = JSON.parse(decrypted);
+
+    console.log('[Choice Salon] FLOW Decrypted Payload:', decryptedBody);
+
+    let responsePayload = {};
+
+    // 3. Handle 'ping' Action
+    if (decryptedBody.action === 'ping') {
+      responsePayload = { data: { status: "ACTIVE" } };
+    }
+    // 4. Handle 'fetch_slots' Action
+    else if (decryptedBody.action === 'fetch_slots') {
+      const service = decryptedBody.data?.service || 'Haircut';
+      const date = decryptedBody.data?.date;
+
+      let formattedSlotsArray = [];
+      if (date) {
+        // Fetch real-time slots
+        const { whatsappToken: token, geminiApiKey, config, clientId } = req.clientConfig;
+        const calendars = { ...stylistCalendars, ...(config.calendars || {}) };
+        const result = await fetchRealTimeSlots(date, 0, 'subhashbhai', calendars); // Default stylist Subhashbhai
+
+        // Format slots identically to the standard buttons structure
+        formattedSlotsArray = result.slots.map(s => ({
+          id: s.id,       // "10:00_AM"
+          title: s.title  // "10:00 AM"
+        }));
+      }
+
+      responsePayload = {
+        screen: "TIME_AND_DETAILS_SCREEN",
+        data: {
+          selected_service: service,
+          selected_date: date,
+          available_slots: formattedSlotsArray
+        }
+      };
+    } else {
+      responsePayload = { data: { status: "ERROR" } };
+    }
+
+    // Encrypt the response payload
+    const flippedIv = Buffer.alloc(12);
+    for (let i = 0; i < 12; i++) {
+      flippedIv[i] = ~iv[i];
+    }
+
+    const cipher = crypto.createCipheriv('aes-256-gcm', aesKey, flippedIv);
+    const encryptedPayload = Buffer.concat([
+      cipher.update(JSON.stringify(responsePayload), 'utf8'),
+      cipher.final(),
+      cipher.getAuthTag()
+    ]);
+
+    res.send(encryptedPayload.toString('base64'));
+
+  } catch (error) {
+    console.error('[Choice Salon] Flow Endpoint Error:', error);
+    res.status(500).send();
+  }
+};
+
 exports.handleWebhook = handleWebhook;
+exports.handleFlowWebhook = handleFlowWebhook;
 // Maintain router for backward compatibility
 router.post('/', handleWebhook);
 

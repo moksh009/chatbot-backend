@@ -58,6 +58,19 @@ router.post('/webhook', async (req, res) => {
   }
 });
 
+router.post('/webhook/flow-endpoint', async (req, res) => {
+  try {
+    const { businessType } = req.clientConfig;
+    if (businessType === 'choice_salon') {
+      await choiceSalonController.handleFlowWebhook(req, res);
+    } else {
+      res.status(404).send('Flow endpoint not supported for this client');
+    }
+  } catch (error) {
+    console.error('Error in flow webhook handler:', error);
+    res.status(500).send('Internal Server Error');
+  }
+});
 router.post('/webhook/shopify/link-opened', async (req, res) => {
   try {
     const { businessType } = req.clientConfig;
