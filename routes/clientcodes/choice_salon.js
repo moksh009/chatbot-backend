@@ -3444,11 +3444,18 @@ const handleFlowWebhook = async (req, res) => {
 
     // 1. Decrypt AES Key
     const privateKey = fs.readFileSync(path.join(process.cwd(), 'private.pem'), 'utf8');
-    const aesKey = crypto.privateDecrypt({
+    let aesKey = crypto.privateDecrypt({
       key: privateKey,
       padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
       oaepHash: 'sha256'
     }, Buffer.from(encrypted_aes_key, 'base64'));
+
+    if (aesKey.length !== 32) {
+      console.warn(`[Choice Salon] Warning: Decrypted AES Key length is ${aesKey.length} bytes. Enforcing 32 bytes.`);
+      const fixedKey = Buffer.alloc(32);
+      aesKey.copy(fixedKey, 0, 0, Math.min(aesKey.length, 32));
+      aesKey = fixedKey;
+    }
 
     // 2. Decrypt Flow Data
     const iv = Buffer.from(initial_vector, 'base64');
