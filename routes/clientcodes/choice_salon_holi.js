@@ -3224,19 +3224,20 @@ const handleFlowWebhook = async (req, res) => {
     }
 
     // Encrypt the response payload
-    const flippedIv = Buffer.alloc(12);
-    for (let i = 0; i < 12; i++) {
-      flippedIv[i] = ~iv[i];
+    const flipped_iv = [];
+    for (const pair of iv.entries()) {
+      flipped_iv.push(~pair[1] & 0xFF);
     }
+    const flippedIvBuffer = Buffer.from(flipped_iv);
 
-    const cipher = crypto.createCipheriv(algorithm, aesKey, flippedIv);
-    const encryptedPayload = Buffer.concat([
-      cipher.update(JSON.stringify(responsePayload), 'utf8'),
-      cipher.final(),
-      cipher.getAuthTag()
-    ]);
+    const cipher = crypto.createCipheriv(algorithm, aesKey, flippedIvBuffer);
+    const responseCiphertext = cipher.update(JSON.stringify(responsePayload), 'utf8');
+    const finalBuffer = cipher.final();
+    const authTagOut = cipher.getAuthTag();
 
-    res.send(encryptedPayload.toString('base64'));
+    const encryptedPayload = Buffer.concat([responseCiphertext, finalBuffer, authTagOut]);
+
+    res.status(200).set('Content-Type', 'text/plain').send(encryptedPayload.toString('base64'));
 
   } catch (error) {
     console.error('[Choice Salon] Flow Endpoint Error:', error);
