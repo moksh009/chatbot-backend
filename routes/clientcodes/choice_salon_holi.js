@@ -444,7 +444,7 @@ async function sendWhatsAppFlow({ phoneNumberId, to, header, body, token, io, cl
           flow_message_version: '3',
           flow_token: 'choice_salon_flow',
           flow_id: '1244048577247022',
-          flow_cta: 'Open Booking Flow',
+          flow_cta: 'Book Now',
           flow_action: 'navigate',
           flow_action_payload: {
             screen: 'HOLI_BOOKING_SCREEN'
@@ -671,6 +671,145 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     });
     res.status(200).end();
     return;
+  }
+
+  // ===================================================================
+  // META WHATSAPP FLOW NFM_REPLY HANDLER & VERIFICATION BRIDGE
+  // ===================================================================
+  if (userMsgType === 'interactive' && messages.interactive?.type === 'nfm_reply') {
+    try {
+      const responseJson = JSON.parse(messages.interactive.nfm_reply.response_json);
+      const service = responseJson.service;
+      const date = responseJson.date;
+      const time = responseJson.time;
+      const customer_name = responseJson.customer_name;
+
+      console.log('[Choice Salon] NFM Reply received:', { service, date, time, customer_name });
+
+      if (!service || !date || !time || !customer_name) {
+        await sendWhatsAppText({ ...helperParams, to: from, body: 'We received your booking but some details were missing. Please try again.' });
+        res.status(200).end();
+        return;
+      }
+
+      // --- VERIFICATION BRIDGE ---
+      const result = await fetchRealTimeSlots(date, 0, 'subhashbhai', calendars);
+      const isAvailable = result.slots.some(s => s.id === time || s.title === time);
+
+      if (!isAvailable) {
+        await sendWhatsAppFlow({ ...helperParams, to: from, body: `Sorry! The slot for *${time}* on *${date}* just got booked! Please tap below to pick a new time ⬇️` });
+        res.status(200).end();
+        return;
+      }
+
+      // --- SLOT IS AVAILABLE: EXECUTE BOOKING ---
+      // Find the matching slot object for calendar time bounds
+      const matchedSlot = result.slots.find(s => s.id === time || s.title === time);
+      const calendarId = calendars['subhashbhai'] || process.env.GCAL_CALENDAR_ID;
+
+      // Create Google Calendar event
+      let eventId = '';
+      try {
+        const slotStart = matchedSlot?.slot?.start;
+        const slotEnd = matchedSlot?.slot?.end;
+        const startISO = slotStart ? slotStart.toUTC().toISO() : `${date}T09:00:00Z`;
+        const endISO = slotEnd ? slotEnd.toUTC().toISO() : `${date}T10:00:00Z`;
+
+        const event = await createEvent({
+          summary: `Appointment: ${customer_name} - ${service}`,
+          description: `Name: ${customer_name}\nPhone: ${from}\nService: ${service}\nDate: ${date}\nTime: ${time}\nBooked via WhatsApp Flow`,
+          start: startISO,
+          end: endISO,
+          attendees: [],
+          calendarId
+        });
+        eventId = event.id;
+        console.log('[Choice Salon] Calendar event created:', eventId);
+      } catch (calErr) {
+        console.error('[Choice Salon] Calendar error:', calErr);
+        await sendWhatsAppText({ ...helperParams, to: from, body: 'Sorry, there was an error booking into the calendar. Please try again.' });
+        res.status(200).end();
+        return;
+      }
+
+      // Save appointment to MongoDB
+      try {
+        const serviceInfo = salonServices.find(s => s.id === service);
+        const serviceTitle = serviceInfo ? serviceInfo.title : service;
+        const serviceDb = await ServiceModel.findOne({ clientId, name: serviceTitle });
+        const revenue = serviceDb ? serviceDb.price : 0;
+
+        await Appointment.create({
+          name: customer_name,
+          email: '',
+          phone: from,
+          service: serviceTitle,
+          doctor: 'subhashbhai',
+          date,
+          time,
+          eventId,
+          revenue,
+          clientId,
+          consent: { appointmentReminders: true, birthdayMessages: false, marketingMessages: false, consentedAt: new Date() }
+        });
+
+        await AdLead.updateOne(
+          { clientId, phoneNumber: from },
+          { $inc: { appointmentsBooked: 1 }, $set: { lastInteraction: new Date(), name: customer_name } },
+          { upsert: true }
+        );
+        console.log('[Choice Salon] Appointment saved to DB');
+      } catch (dbErr) {
+        console.error('[Choice Salon] DB save error:', dbErr);
+        if (eventId) { try { await deleteEvent(eventId, calendarId); } catch (e) { } }
+        await sendWhatsAppText({ ...helperParams, to: from, body: 'Sorry, there was an error saving your appointment. Please contact us directly.' });
+        res.status(200).end();
+        return;
+      }
+
+      // Notify admins
+      const adminMsg = `🚨 *New Booking (via Flow)*\n\n` +
+        `👤 *Name:* ${customer_name}\n📱 *Phone:* ${from}\n💇‍♀️ *Service:* ${service}\n📅 *Date:* ${date}\n🕒 *Time:* ${time}`;
+      await notifyAdmins({ ...helperParams, message: adminMsg, adminNumbers });
+
+      // Send confirmation ticket to user
+      const confirmationBody = `✅ *Booking Confirmed!*\n\n` +
+        `👤 *Name:* ${customer_name}\n📅 *Date:* ${date}\n🕒 *Time:* ${time}\n💇‍♀️ *Service:* ${service}\n\n` +
+        `🏢 Choice Salon, 2nd Floor, Raspan Arcade, Nikol\n🗺️ https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
+        `⏰ Please arrive 15 minutes early!`;
+
+      await sendWhatsAppButtons({
+        ...helperParams, to: from,
+        imageHeader: HOLI_IMG,
+        body: confirmationBody,
+        buttons: [
+          { id: 'user_schedule_appt', title: '📅 Book Another' },
+          { id: 'user_ask_question', title: '❓ Ask Question' }
+        ]
+      });
+
+      // Send Mirror Shine upsell after 5 minutes
+      setTimeout(async () => {
+        try {
+          await sendWhatsAppButtons({
+            ...helperParams, to: from,
+            imageHeader: HOLI_IMG,
+            body: `✨ *Holi Glow Upgrade!* ✨\n\nYou're booked! Upgrade to *Mirror Shine Boto Smooth* (₹4,000) for a glass-like finish. 💎\n\n*Only 2 premium slots remaining today!*`,
+            footer: 'Limited availability! Tap below 👇',
+            buttons: [{ id: 'upsell_add_mirror_shine', title: 'Add to Booking 💇🏻‍♀️' }]
+          });
+        } catch (upsellErr) { console.error('[Choice Salon] Upsell error:', upsellErr); }
+      }, 300000);
+
+      session.step = 'home';
+      res.status(200).end();
+      return;
+    } catch (e) {
+      console.error('[Choice Salon] NFM Reply Error:', e);
+      await sendWhatsAppFlow({ ...helperParams, to: from, body: 'Something went wrong. Tap below to try booking again.' });
+      res.status(200).end();
+      return;
+    }
   }
 
   // If userMsg is empty/undefined (reaction, unknown type), just ack
@@ -3221,33 +3360,42 @@ const handleFlowWebhook = async (req, res) => {
     if (decryptedBody.action === 'ping') {
       responsePayload = { data: { status: "active" } };
     }
-    // 4. Handle 'fetch_slots' Action
-    else if (decryptedBody.action === 'fetch_slots') {
+    // 4. Handle Meta's 'data_exchange' action (slot fetching)
+    else if (decryptedBody.action === 'data_exchange') {
+      const innerAction = decryptedBody.data?.action;
       const service = decryptedBody.data?.service || 'Haircut';
       const date = decryptedBody.data?.date;
 
       let formattedSlotsArray = [];
       if (date) {
-        // Fetch real-time slots
-        const { whatsappToken: token, geminiApiKey, config, clientId } = req.clientConfig;
+        const { config } = req.clientConfig;
         const calendars = { ...stylistCalendars, ...(config.calendars || {}) };
-        const result = await fetchRealTimeSlots(date, 0, 'subhashbhai', calendars); // Default stylist Subhashbhai
-
-        // Format slots identically to the standard buttons structure
-        formattedSlotsArray = result.slots.map(s => ({
-          id: s.id,       // "10:00_AM"
-          title: s.title  // "10:00 AM"
-        }));
+        console.log('[Choice Salon Flow] Fetching slots for date:', date, 'calendars:', Object.keys(calendars));
+        const result = await fetchRealTimeSlots(date, 0, 'subhashbhai', calendars);
+        formattedSlotsArray = (result.slots || []).map(s => ({ id: s.id, title: s.title }));
+        console.log(`[Choice Salon Flow] Got ${formattedSlotsArray.length} slots for ${date}`);
       }
 
-      responsePayload = {
-        screen: "TIME_AND_DETAILS_SCREEN",
-        data: {
-          selected_service: service,
-          selected_date: date,
-          available_slots: formattedSlotsArray
-        }
-      };
+      if (formattedSlotsArray.length === 0) {
+        // No slots available — send a friendly no-availability response
+        responsePayload = {
+          screen: 'TIME_AND_DETAILS_SCREEN',
+          data: {
+            selected_service: service,
+            selected_date: date,
+            available_slots: [{ id: 'no_slots', title: 'No slots available for this date' }]
+          }
+        };
+      } else {
+        responsePayload = {
+          screen: 'TIME_AND_DETAILS_SCREEN',
+          data: {
+            selected_service: service,
+            selected_date: date,
+            available_slots: formattedSlotsArray
+          }
+        };
+      }
     } else {
       responsePayload = { data: { status: "ERROR" } };
     }

@@ -515,7 +515,9 @@ async function sendWhatsAppFlow({ phoneNumberId, to, header, body, token, io, cl
 
   } catch (err) {
     console.error('Error sending WhatsApp flow:', err.response?.data || err.message);
+    return false; // Signal failure to caller
   }
+  return true; // Signal success
 }
 
 // Helper: get available booking days (dynamic, based on Google Calendar availability)
@@ -1449,8 +1451,23 @@ Reply in short, friendly English:`;
   // Home menu response
   if (session.step === 'home_waiting') {
     if (userMsg === 'user_schedule_appt') {
-      await sendWhatsAppFlow({ ...helperParams, to: from });
-      session.step = 'flow_in_progress';
+      const flowSent = await sendWhatsAppFlow({ ...helperParams, to: from });
+      if (flowSent) {
+        session.step = 'flow_in_progress';
+      } else {
+        // Fallback: Flow not available for this number/account — use classic list booking
+        const paginatedServices = getPaginatedServices(0);
+        await sendWhatsAppList({
+          ...helperParams,
+          to: from,
+          header: 'Book Appointment 💇‍♀️',
+          body: 'Which service would you like to book?',
+          button: 'Select Service',
+          rows: paginatedServices.services
+        });
+        session.step = 'choose_service';
+        session.data.servicePage = 0;
+      }
       res.status(200).end();
       return;
     } else if (userMsg === 'user_cancel_appt' || userMsg === 'user_reschedule_appt') {
