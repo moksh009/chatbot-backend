@@ -1311,11 +1311,15 @@ exports.handleWebhook = async (req, res) => {
     const { whatsappToken, config, clientId, geminiApiKey } = req.clientConfig;
     const token = whatsappToken || process.env.WHATSAPP_TOKEN;
 
-    const conversation = await Conversation.findOneAndUpdate(
-      { phone: messages.from, clientId },
-      { $set: { status: 'BOT_ACTIVE', lastMessageAt: new Date() } },
-      { upsert: true, new: true }
-    );
+    let conversation = await Conversation.findOne({ phone: messages.from, clientId });
+    if (!conversation) {
+      conversation = await Conversation.create({
+        phone: messages.from,
+        clientId,
+        status: 'BOT_ACTIVE',
+        lastMessageAt: new Date()
+      });
+    }
 
     const userMsgContent = messages.type === 'text' ? messages.text.body : `[${messages.type}]`;
 
@@ -1331,12 +1335,27 @@ exports.handleWebhook = async (req, res) => {
       timestamp: new Date()
     });
 
-    if (io) io.to(`client_${clientId}`).emit('new_message', {
-      clientId,
-      from: messages.from,
-      content: userMsgContent,
-      direction: 'incoming'
-    });
+    conversation.lastMessage = userMsgContent;
+    conversation.lastMessageAt = new Date();
+    if (conversation.status === 'HUMAN_TAKEOVER') {
+      conversation.unreadCount = (conversation.unreadCount || 0) + 1;
+    }
+    await conversation.save();
+
+    if (io) {
+      io.to(`client_${clientId}`).emit('new_message', {
+        clientId,
+        from: messages.from,
+        content: userMsgContent,
+        direction: 'incoming'
+      });
+      io.to(`client_${clientId}`).emit('conversation_update', conversation);
+    }
+
+    if (conversation.status === 'HUMAN_TAKEOVER') {
+      console.log(`[TURF] Conversation ${conversation._id} is in HUMAN_TAKEOVER mode. Skipping bot reply.`);
+      return res.status(200).end();
+    }
 
     await handleUserChatbotFlow({ from: messages.from, phoneNumberId: value.metadata.phone_number_id, messages, res, clientConfig: req.clientConfig, io });
 

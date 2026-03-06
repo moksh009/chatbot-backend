@@ -1336,6 +1336,12 @@ Reply in short, friendly English:`;
   }
 
   if (session.step === 'choose_service') {
+    // AI Fallback: users typing instead of clicking buttons
+    if (userMsgType === 'text') {
+      session.step = 'faq_await';
+      return await handleUserChatbotFlow({ from, phoneNumberId, messages, res, clientConfig, io });
+    }
+
     // Handle pagination for services
     if (userMsg === 'service_more') {
       // Show next page of services
@@ -1446,6 +1452,12 @@ Reply in short, friendly English:`;
 
   // Step 4: Date selection (calendar_pick_day)
   if (session.step === 'calendar_pick_day') {
+    // AI Fallback: users typing instead of clicking buttons
+    if (userMsgType === 'text') {
+      session.step = 'faq_await';
+      return await handleUserChatbotFlow({ from, phoneNumberId, messages, res, clientConfig, io });
+    }
+
     let date = '';
     const page = session.data.slotPage || 0; // Always define page at the top
     if (userMsg && userMsg.startsWith('calendar_day_')) {
@@ -1544,6 +1556,12 @@ Reply in short, friendly English:`;
 
   // Step 5: Time slot selection (choose_time)
   if (session.step === 'choose_time') {
+    // AI Fallback: users typing instead of clicking buttons
+    if (userMsgType === 'text') {
+      session.step = 'faq_await';
+      return await handleUserChatbotFlow({ from, phoneNumberId, messages, res, clientConfig, io });
+    }
+
     let time = '';
     let selectedSlot = null;
     // Support slot pagination and selection
@@ -3055,7 +3073,7 @@ const handleWebhook = async (req, res) => {
     conversation.lastMessage = userMsgContent;
     conversation.lastMessageAt = new Date();
     if (conversation.status === 'HUMAN_TAKEOVER') {
-      conversation.unreadCount += 1;
+      conversation.unreadCount = (conversation.unreadCount || 0) + 1;
     }
     await conversation.save();
 

@@ -34,9 +34,9 @@ router.get('/', protect, async (req, res) => {
 // @access  Private
 router.get('/:id', protect, async (req, res) => {
   try {
-    const conversation = await Conversation.findOne({ 
-      _id: req.params.id, 
-      clientId: req.user.clientId 
+    const conversation = await Conversation.findOne({
+      _id: req.params.id,
+      clientId: req.user.clientId
     }).populate('assignedTo', 'name');
 
     if (!conversation) {
@@ -54,9 +54,9 @@ router.get('/:id', protect, async (req, res) => {
 // @access  Private
 router.get('/:id/messages', protect, async (req, res) => {
   try {
-    const conversation = await Conversation.findOne({ 
-      _id: req.params.id, 
-      clientId: req.user.clientId 
+    const conversation = await Conversation.findOne({
+      _id: req.params.id,
+      clientId: req.user.clientId
     });
 
     if (!conversation) {
@@ -77,7 +77,7 @@ router.get('/:id/messages', protect, async (req, res) => {
 // @access  Private
 router.post('/:id/messages', protect, async (req, res) => {
   const { content, mediaUrl, mediaType } = req.body;
- 
+
   try {
     // Resolve client-specific WhatsApp credentials
     const client = await Client.findOne({ clientId: req.user.clientId });
@@ -93,9 +93,9 @@ router.post('/:id/messages', protect, async (req, res) => {
       });
     }
 
-    const conversation = await Conversation.findOne({ 
-      _id: req.params.id, 
-      clientId: req.user.clientId 
+    const conversation = await Conversation.findOne({
+      _id: req.params.id,
+      clientId: req.user.clientId
     });
 
     if (!conversation) {
@@ -189,9 +189,9 @@ router.put('/:id/takeover', protect, async (req, res) => {
       return res.status(403).json({ message: 'Human Handoff is locked for CX Agent (v1). Please upgrade to v2.' });
     }
 
-    const conversation = await Conversation.findOne({ 
-      _id: req.params.id, 
-      clientId: req.user.clientId 
+    const conversation = await Conversation.findOne({
+      _id: req.params.id,
+      clientId: req.user.clientId
     });
 
     if (!conversation) return res.status(404).json({ message: 'Not found' });
@@ -211,9 +211,9 @@ router.put('/:id/takeover', protect, async (req, res) => {
 // @access  Private
 router.put('/:id/release', protect, async (req, res) => {
   try {
-    const conversation = await Conversation.findOne({ 
-      _id: req.params.id, 
-      clientId: req.user.clientId 
+    const conversation = await Conversation.findOne({
+      _id: req.params.id,
+      clientId: req.user.clientId
     });
 
     if (!conversation) return res.status(404).json({ message: 'Not found' });
@@ -221,6 +221,33 @@ router.put('/:id/release', protect, async (req, res) => {
     conversation.status = 'BOT_ACTIVE';
     conversation.assignedTo = null;
     await conversation.save();
+
+    res.json(conversation);
+  } catch (error) {
+    res.status(500).json({ message: 'Server Error' });
+  }
+});
+
+// @route   PUT /api/conversations/:id/read
+// @desc    Mark conversation as read (reset unreadCount)
+// @access  Private
+router.put('/:id/read', protect, async (req, res) => {
+  try {
+    const conversation = await Conversation.findOne({
+      _id: req.params.id,
+      clientId: req.user.clientId
+    });
+
+    if (!conversation) return res.status(404).json({ message: 'Not found' });
+
+    conversation.unreadCount = 0;
+    await conversation.save();
+
+    // Emit Socket Event to update other connected clients for this tenant
+    const io = req.app.get('socketio');
+    if (io) {
+      io.to(`client_${req.user.clientId}`).emit('conversation_update', conversation);
+    }
 
     res.json(conversation);
   } catch (error) {

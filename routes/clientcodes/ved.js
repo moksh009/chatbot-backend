@@ -524,8 +524,19 @@ const handleWebhook = async (req, res) => {
             timestamp: new Date()
         });
 
+        // Update Conversation Last Message & Unread Count
+        conversation.lastMessage = userMsgContent;
+        conversation.lastMessageAt = new Date();
+        if (conversation.status === 'HUMAN_TAKEOVER') {
+            conversation.unreadCount = (conversation.unreadCount || 0) + 1;
+        }
+        await conversation.save();
+
         // Emit to dashboard immediately
-        if (io) io.to(`client_${clientId}`).emit('new_message', savedMsg);
+        if (io) {
+            io.to(`client_${clientId}`).emit('new_message', savedMsg);
+            io.to(`client_${clientId}`).emit('conversation_update', conversation);
+        }
 
         if (conversation.status === 'HUMAN_TAKEOVER') {
             return res.status(200).end();

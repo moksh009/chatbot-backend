@@ -262,7 +262,10 @@ async function deleteEvent(eventId, calendarId) {
     };
 
   } catch (error) {
-    console.error('❌ Error deleting Google Calendar event:', error.message);
+    // Suppress scary terminal errors for natural 404s/410s
+    if (error.code !== 404 && error.code !== 410) {
+      console.error('❌ Error deleting Google Calendar event:', error.message);
+    }
 
     // Handle specific error cases
     if (error.code === 401) {
