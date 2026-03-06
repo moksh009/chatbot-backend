@@ -3526,23 +3526,6 @@ const handleFlowWebhook = async (req, res) => {
   }
 };
 
-exports.handleWebhook = handleWebhook;
-exports.handleFlowWebhook = handleFlowWebhook;
-// Maintain router for backward compatibility
-router.post('/', handleWebhook);
-
-const verifyToken = process.env.VERIFY_TOKEN;
-
-router.get('/', (req, res) => {
-  const { 'hub.mode': mode, 'hub.challenge': challenge, 'hub.verify_token': token } = req.query;
-
-  if (mode === 'subscribe' && token === verifyToken) {
-    console.log('WEBHOOK VERIFIED');
-    res.status(200).send(challenge);
-  } else {
-    res.status(403).end();
-  }
-});
-
 router.handleWebhook = handleWebhook;
+router.handleFlowWebhook = handleFlowWebhook;
 module.exports = router;
