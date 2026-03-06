@@ -426,6 +426,40 @@ async function sendWhatsAppList({ phoneNumberId, to, header, body, button, rows,
   }
 }
 
+async function sendWhatsAppFlow({ phoneNumberId, to, header, body, token, io, clientId }) {
+  const apiVersion = process.env.API_VERSION || 'v18.0';
+  const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
+  const data = {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'flow',
+      header: { type: 'text', text: header || 'Book Appointment 💇‍♀️' },
+      body: { text: body || 'Secure your spot in seconds! Tap below to open our dynamic booking flow.' },
+      footer: { text: 'Choice Salon for Ladies ✨' },
+      action: {
+        name: 'flow',
+        parameters: {
+          flow_message_version: '3',
+          flow_token: 'choice_salon_flow',
+          flow_id: '1244048577247022',
+          flow_cta: 'Open Booking Flow',
+          flow_action: 'navigate',
+          flow_action_payload: {
+            screen: 'HOLI_BOOKING_SCREEN'
+          }
+        }
+      }
+    }
+  };
+  try {
+    await axios.post(url, data, { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } });
+  } catch (err) {
+    console.error('Error sending WhatsApp Flow:', err.response?.data || err.message);
+  }
+}
+
 // Utility: Send buttons or list depending on count
 async function sendSmartButtonsOrList({ phoneNumberId, to, header, body, buttons, fallbackButtonLabel = 'Select Option', token, io, clientId }) {
   if (buttons.length > 3) {
@@ -1264,18 +1298,13 @@ Reply in short, friendly English:`;
   // Home menu response
   if (session.step === 'home_waiting') {
     if (userMsg === 'user_schedule_appt') {
-      // Always start with service selection - first page
-      const paginatedServices = getPaginatedServices(0);
-      await sendWhatsAppList({
+      // Launch Meta WhatsApp 2-Screen Booking Flow
+      await sendWhatsAppFlow({
         ...helperParams,
         to: from,
-        header: 'Book Appointment 💇‍♀️',
-        body: 'Which service would you like to book?',
-        button: 'Select Service',
-        rows: paginatedServices.services
+        body: 'Book your Holi appointment in seconds! Tap below to open our booking form. 💅'
       });
-      session.step = 'choose_service';
-      session.data.servicePage = 0;
+      session.step = 'home_waiting';
       res.status(200).end();
       return;
     } else if (userMsg === 'user_cancel_appt' || userMsg === 'user_reschedule_appt') {

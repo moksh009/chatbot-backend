@@ -474,7 +474,7 @@ async function sendWhatsAppFlow({ phoneNumberId, to, header, body, token, io, cl
         parameters: {
           flow_message_version: '3',
           flow_token: 'choice_salon_flow',
-          flow_id: process.env.META_FLOW_ID || '1177699103681531',
+          flow_id: '1244048577247022',
           flow_cta: 'Open Booking Flow',
           flow_action: 'navigate',
           flow_action_payload: {
