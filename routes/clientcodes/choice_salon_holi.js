@@ -3360,6 +3360,13 @@ const handleFlowWebhook = async (req, res) => {
     if (decryptedBody.action === 'ping') {
       responsePayload = { data: { status: "active" } };
     }
+    // Handle INIT action - Meta sends this when the Flow is first opened
+    else if (decryptedBody.action === 'INIT') {
+      responsePayload = {
+        screen: "HOLI_BOOKING_SCREEN",
+        data: {}
+      };
+    }
     // 4. Handle Meta's 'data_exchange' action (slot fetching)
     else if (decryptedBody.action === 'data_exchange') {
       const innerAction = decryptedBody.data?.action;
