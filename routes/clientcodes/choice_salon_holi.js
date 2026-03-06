@@ -3190,7 +3190,7 @@ const handleFlowWebhook = async (req, res) => {
 
     // 3. Handle 'ping' Action
     if (decryptedBody.action === 'ping') {
-      responsePayload = { data: { status: "ACTIVE" } };
+      responsePayload = { data: { status: "active" } };
     }
     // 4. Handle 'fetch_slots' Action
     else if (decryptedBody.action === 'fetch_slots') {
