@@ -663,10 +663,31 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   if (userMsgType === 'interactive' && messages.interactive?.type === 'nfm_reply') {
     try {
       const responseJson = JSON.parse(messages.interactive.nfm_reply.response_json);
-      const service = responseJson.selected_service;
+      const rawService = responseJson.selected_service;
       const date = responseJson.selected_date;
       const time = responseJson.selected_time;
       const customer_name = responseJson.customer_name;
+
+      const FLOW_SERVICE_MAP = {
+        'svchaircutbasic': 'Haircut (₹500)',
+        'svchaircutadvance': 'Advance Haircut (₹700)',
+        'svcspaloreal': 'Loreal Spa (₹1200)',
+        'svcspasilk': 'Silk Protein Spa (₹1500)',
+        'svcspashea': 'Shea Butter Spa (₹2000)',
+        'svcspanormal': 'Normal Spa (₹1000)',
+        'svcspaperm': 'Permanent Spa (₹2000)',
+        'svctreatnano': 'Nano Therapy (₹3500)',
+        'svctreatbrazil': 'Brazil Therapy (₹3000)',
+        'svctreatbotox': 'Botox (₹2800)',
+        'svctreatkeratin': 'Keratin (₹2500)',
+        'svctreatmirror': 'Mirror Shine Boto Smooth (₹4000)',
+        'svctreatlorealstraight': 'Loreal Straightening (₹3500)',
+        'svccolorglobal': 'Global Color (₹2000)',
+        'svccolorroots': 'Root Touch Up (₹1000)',
+        'svccolorbalayage': 'Balayage Highlight (₹2500)',
+        'svccolorclassic': 'Classic Highlight (₹2000)'
+      };
+      const service = FLOW_SERVICE_MAP[rawService] || rawService;
 
       // Verification Bridge: Check if slot is actually available
       const result = await fetchRealTimeSlots(date, 0, 'subhashbhai', calendars);
@@ -704,6 +725,18 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           endTime,
         };
         await createEvent(calendarId, eventDetails);
+
+        let formattedDate = date;
+        try {
+          formattedDate = require('luxon').DateTime.fromFormat(`${date} ${time}`, 'dd/MM/yyyy h:mm a', { zone: 'Asia/Kolkata' }).toFormat('cccc, dd LLL yyyy');
+        } catch (e) {
+          console.error('Date parsing error', e);
+        }
+
+        const adminMsg = `🚨 *New Appointment Booked*\n\n` +
+          `👤 *User Name:* ${customer_name}\n📱 *User Phone:* ${from}\n💇‍♀️ *Service:* ${service}\n🎨 *Stylist:* subhashbhai\n📅 *Date:* ${formattedDate}\n🕒 *Time:* ${time}\n\n📋 *Status:* ✅ Consented to appointment reminders and birthday messages (Booked via Flow)`;
+        const adminNumbers = config.adminPhones || (config.adminPhone ? [config.adminPhone] : []);
+        await notifyAdmins({ ...helperParams, message: adminMsg, adminNumbers });
 
         await sendWhatsAppText({
           ...helperParams,
@@ -2260,10 +2293,12 @@ Reply in short, friendly English:`;
         consentStatus = '❌ Opted out of all communications (reused from previous)';
       }
 
+      const resolvedServiceTitle = salonServices.find(s => s.id === session.data.chosenService)?.title || session.data.chosenService || 'General Session';
+
       const adminMsg = `🚨 *New Appointment Booked*\n\n` +
         `👤 *User Name:* ${session.data.name}\n` +
         `📱 *User Phone:* ${session.data.phone}\n` +
-        `💇‍♀️ *Service:* ${session.data.chosenService || 'General Session'}\n` +
+        `💇‍♀️ *Service:* ${resolvedServiceTitle}\n` +
         `🎨 *Stylist:* ${session.data.stylist || 'Any'}\n` +
         `📅 *Date:* ${session.data.date}\n` +
         `🕒 *Time:* ${session.data.time}\n\n` +
@@ -2620,21 +2655,23 @@ Reply in short, friendly English:`;
       // Notify admins of new booking with detailed consent status
       let consentStatus = '';
       if (session.data.consent.appointmentReminders && session.data.consent.birthdayMessages) {
-        consentStatus = 'Consented to appointment reminders and birthday messages';
+        consentStatus = '✅ Consented to appointment reminders and birthday messages';
       } else if (session.data.consent.appointmentReminders) {
-        consentStatus = 'Consented to appointment reminders only';
+        consentStatus = '📅 Consented to appointment reminders only';
       } else {
-        consentStatus = 'Opted out of all communications';
+        consentStatus = '❌ Opted out of all communications';
       }
 
-      const adminMsg = `New Appointment Booked\n\n` +
-        `User Name: ${session.data.name}\n` +
-        `User Phone: ${session.data.phone}\n` +
-        `Service: ${session.data.chosenService || 'General Session'}\n` +
-        `Stylist: ${session.data.stylist || 'Any'}\n` +
-        `Date: ${session.data.date}\n` +
-        `Time: ${session.data.time}\n\n` +
-        `Status: ${consentStatus}`;
+      const resolvedServiceTitle = salonServices.find(s => s.id === session.data.chosenService)?.title || session.data.chosenService || 'General Session';
+
+      const adminMsg = `🚨 *New Appointment Booked*\n\n` +
+        `👤 *User Name:* ${session.data.name}\n` +
+        `📱 *User Phone:* ${session.data.phone}\n` +
+        `💇‍♀️ *Service:* ${resolvedServiceTitle}\n` +
+        `🎨 *Stylist:* ${session.data.stylist || 'Any'}\n` +
+        `📅 *Date:* ${session.data.date}\n` +
+        `🕒 *Time:* ${session.data.time}\n\n` +
+        `📋 *Status:* ${consentStatus}`;
       await notifyAdmins({ ...helperParams, message: adminMsg, adminNumbers });
 
       // Send confirmation to user based on consent
