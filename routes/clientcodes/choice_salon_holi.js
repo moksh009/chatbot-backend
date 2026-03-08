@@ -1025,7 +1025,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       imageHeader: HOLI_IMG,
       body: `Hi 👋\n\nThis is subhashbhai from Choice Salon! ✨ Welcome to our premium ladies salon!\n\nWhether you need an advanced haircut, color, or a relaxing spa, we've got you covered 💇‍♀️\n\nHow can I help you today? ✨`,
       buttons: [
-        { id: 'user_schedule_appt', title: 'Book Appointment 📅' },
+        { id: 'user_schedule_appt', title: 'Book Now 📅' },
         { id: 'user_pricing', title: 'Price List & Offers 💰' },
         { id: 'user_ask_question', title: 'Ask a Question ❓' }
       ]
@@ -1288,7 +1288,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         to: from,
         body: `Sure! 📞 We've notified our team and someone will call you back shortly. 😊\n\nIn the meantime, you can still book an appointment or ask anything here! ✨`,
         buttons: [
-          { id: 'user_schedule_appt', title: 'Book Appointment 📅' },
+          { id: 'user_schedule_appt', title: 'Book Appt 📅' },
           { id: 'user_ask_question', title: 'Ask a Question ❓' }
         ]
       });
