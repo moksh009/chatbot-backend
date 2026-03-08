@@ -89,6 +89,7 @@ const scheduleAbandonedCartCron = () => {
                 const abandonedLeads = await AdLead.find({
                     clientId: client.clientId,
                     cartStatus: 'active',
+                    isOrderPlaced: { $ne: true },
                     'cartSnapshot.items.0': { $exists: true },
                     'cartSnapshot.updatedAt': { $lte: fiveMinutesAgo }
                 });
