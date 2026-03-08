@@ -713,25 +713,30 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         'color_highlight': '🎨 Classic Highlight (₹1999)',
         'color_balayage': '🎨 Balayage Highlight (₹2499)',
         // New flow IDs without underscores:
-        'svcspanormal': '🎁 Normal Spa + FREE Cut (₹999)',
-        'svcspaloreal': '🎁 Loreal Spa + FREE Cut (₹1199)',
-        'svcspasilk': '🎁 Protein Spa + FREE Cut (₹1499)',
-        'svcspashea': '🎁 Shea Butter + FREE Cut (₹1999)',
-        'svcspaperm': '🎁 Permanent Spa + FREE Cut (₹1499)',
-        'svctreatmirror': '🎁 Mirror Botosmooth + FREE Cut (₹2999)',
-        'svchaircutbasic': '✂️ Basic Haircut (₹499)',
-        'svchaircutadvance': '✂️ Advance Haircut (₹699)',
-        'svctreatkeratin': '💎 Keratin (₹2499)',
-        'svctreatbotox': '💎 Botox (₹2799)',
-        'svctreatbrazil': '💎 Brazil Therapy (₹2999)',
-        'svctreatlorealstraight': '💎 Loreal Straightening (₹3499)',
-        'svctreatnano': '💎 Nano Therapy (₹3499)',
-        'svccolorroots': '🎨 Root Touch Up (₹999)',
-        'svccolorglobal': '🎨 Global Color (₹1999)',
-        'svccolorclassic': '🎨 Classic Highlight (₹1999)',
-        'svccolorbalayage': '🎨 Balayage Highlight (₹2499)'
+        'svc_spa_normal': '🎁 Normal Spa (₹999)',
+        'svc_spa_loreal': '🎁 Loreal Spa (₹1199)',
+        'svc_spa_silk': '🎁 Protein Spa (₹1499)',
+        'svc_spa_shea': '🎁 Shea Butter (₹1999)',
+        'svc_spa_perm': '🎁 Permanent Spa (₹1499)',
+        'svc_treat_mirror': '💎 Mirror Botosmooth (₹2999)',
+        'svc_haircut_basic': '✂️ Basic Haircut (₹499)',
+        'svc_haircut_advance': '✂️ Advance Haircut (₹699)',
+        'svc_treat_keratin': '💎 Keratin (₹2499)',
+        'svc_treat_botox': '💎 Botox (₹2799)',
+        'svc_treat_brazil': '💎 Brazil Therapy (₹2999)',
+        'svc_treat_loreal_straight': '💎 Loreal Straightening (₹3499)',
+        'svc_treat_nano': '💎 Nano Therapy (₹3499)',
+        'svc_color_roots': '🎨 Root Touch Up (₹999)',
+        'svc_color_global': '🎨 Global Color (₹1999)',
+        'svc_color_classic': '🎨 Classic Highlight (₹1999)',
+        'svc_color_balayage': '🎨 Balayage (₹2499)'
       };
-      const serviceLabel = FLOW_SERVICE_MAP[serviceId] || serviceId;
+
+      let serviceLabel = FLOW_SERVICE_MAP[serviceId] || serviceId;
+      const foundService = salonServices.find(s => s.id === serviceId);
+      if (foundService) {
+        serviceLabel = `${foundService.title} (${foundService.price})`;
+      }
 
       // --- Resolve time slot ID → human-readable time ---
       let timeLabel = timeId; // fallback

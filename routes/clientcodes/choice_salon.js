@@ -669,25 +669,30 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       const customer_name = responseJson.customer_name;
 
       const FLOW_SERVICE_MAP = {
-        'svchaircutbasic': 'Haircut (₹500)',
-        'svchaircutadvance': 'Advance Haircut (₹700)',
-        'svcspaloreal': 'Loreal Spa (₹1200)',
-        'svcspasilk': 'Silk Protein Spa (₹1500)',
-        'svcspashea': 'Shea Butter Spa (₹2000)',
-        'svcspanormal': 'Normal Spa (₹1000)',
-        'svcspaperm': 'Permanent Spa (₹2000)',
-        'svctreatnano': 'Nano Therapy (₹3500)',
-        'svctreatbrazil': 'Brazil Therapy (₹3000)',
-        'svctreatbotox': 'Botox (₹2800)',
-        'svctreatkeratin': 'Keratin (₹2500)',
-        'svctreatmirror': 'Mirror Shine Boto Smooth (₹4000)',
-        'svctreatlorealstraight': 'Loreal Straightening (₹3500)',
-        'svccolorglobal': 'Global Color (₹2000)',
-        'svccolorroots': 'Root Touch Up (₹1000)',
-        'svccolorbalayage': 'Balayage Highlight (₹2500)',
-        'svccolorclassic': 'Classic Highlight (₹2000)'
+        'svc_haircut_basic': 'Haircut (₹500)',
+        'svc_haircut_advance': 'Advance Haircut (₹700)',
+        'svc_spa_loreal': 'Loreal Spa (₹1200)',
+        'svc_spa_silk': 'Silk Protein Spa (₹1500)',
+        'svc_spa_shea': 'Shea Butter Spa (₹2000)',
+        'svc_spa_normal': 'Normal Spa (₹1000)',
+        'svc_spa_perm': 'Permanent Spa (₹2000)',
+        'svc_treat_nano': 'Nano Therapy (₹3500)',
+        'svc_treat_brazil': 'Brazil Therapy (₹3000)',
+        'svc_treat_botox': 'Botox (₹2800)',
+        'svc_treat_keratin': 'Keratin (₹2500)',
+        'svc_treat_mirror': 'Mirror Shine Boto Smooth (₹4000)',
+        'svc_treat_loreal_straight': 'Loreal Straightening (₹3500)',
+        'svc_color_global': 'Global Color (₹2000)',
+        'svc_color_roots': 'Root Touch Up (₹1000)',
+        'svc_color_balayage': 'Balayage Highlight (₹2500)',
+        'svc_color_classic': 'Classic Highlight (₹2000)'
       };
-      const service = FLOW_SERVICE_MAP[rawService] || rawService;
+
+      let service = FLOW_SERVICE_MAP[rawService] || rawService;
+      const foundService = salonServices.find(s => s.id === rawService);
+      if (foundService) {
+        service = `${foundService.title} (${foundService.price})`;
+      }
 
       // Verification Bridge: Check if slot is actually available
       const result = await fetchRealTimeSlots(date, 0, 'subhashbhai', calendars);
