@@ -661,7 +661,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       to: from,
       body: `Thanks for sharing that ${mediaLabel.toLowerCase()}! 📸\n\nOur bot can only process text messages right now, but we've forwarded your ${mediaLabel.toLowerCase()} to Subhashbhai.\n\nYou can also chat with him directly 👇`,
       buttons: [
-        { id: 'user_schedule_appt', title: 'Book Holi Offer 📅' },
+        { id: 'user_schedule_appt', title: 'Book Appt 📅' },
         { id: 'user_ask_question', title: 'Ask a Question ❓' }
       ]
     });
@@ -796,7 +796,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       // --- Send confirmation buttons ---
       await sendWhatsAppButtons({
         ...helperParams, to: from,
-        body: `✅ *Booking Summary*\n\n` +
+        body: `Almost there! Let's quickly double-check your details: ✨\n\n` +
           `👤 *Name:* ${customer_name}\n` +
           `📅 *Date:* ${formattedDate}\n` +
           `🕒 *Time:* ${timeLabel}\n` +
@@ -922,14 +922,14 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
     await notifyAdmins({ ...helperParams, message: adminMsg, adminNumbers });
 
     // Send confirmation ticket
-    const confirmationBody = `✅ *Booking Confirmed!*\n\n` +
+    const confirmationBody = `You're all set! 🎉 We have your appointment confirmed. Here are the details:\n\n` +
       `👤 *Name:* ${customer_name}\n` +
       `💇‍♀️ *Service:* ${serviceLabel}\n` +
       `📅 *Date:* ${date}\n` +
       `🕒 *Time:* ${timeLabel}\n\n` +
       `📍 *Choice Salon*\n2nd Floor, Raspan Arcade, Nikol, Ahmedabad\n` +
       `🗺️ https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
-      `⏰ Please arrive 10-15 minutes early!`;
+      `⏰ Please arrive 10-15 minutes early!\n\nCan't wait to see you! 💖`;
 
     await sendWhatsAppButtons({
       ...helperParams, to: from,
@@ -947,7 +947,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
         await sendWhatsAppButtons({
           ...helperParams, to: from,
           imageHeader: UPSELL_IMG,
-          body: `✨ *Premium Upgrade Available!* ✨\n\nYou're booked! Interested in upgrading to *Mirror Shine Boto Smooth* (₹2,999) for a glass-like finish? 💎\n\n*Only 2 premium slots remaining today!*`,
+          body: `Hey, one quick thing! 🤫 Since you're already coming in, I have 2 slots left today for our premium *Mirror Shine Boto Smooth* (₹2,999). It gives your hair that crazy glass-like finish. ✨ Want me to upgrade your appointment?`,
           footer: 'Limited availability! Tap below 👇',
           buttons: [{ id: 'upsell_add_mirror_shine', title: 'Add to Booking 💎' }]
         });
@@ -1028,7 +1028,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       ...helperParams,
       to: from,
       imageHeader: HOLI_IMG,
-      body: `Hi 👋\n\nThis is subhashbhai from Choice Salon! ✨ Welcome to our premium ladies salon!\n\nWhether you need an advanced haircut, color, or a relaxing spa, we've got you covered 💇‍♀️\n\nHow can I help you today? ✨`,
+      body: `Hey there! 👋 Welcome to Choice Salon. ✨ Treat yourself to our premium hair spa, advanced coloring, or precision cuts. 💇‍♀️\n\nHow can we pamper you today?`,
       buttons: [
         { id: 'user_schedule_appt', title: 'Book Now 📅' },
         { id: 'user_pricing', title: 'Prices & Offers 💰' },
@@ -1291,7 +1291,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       await sendWhatsAppButtons({
         ...helperParams,
         to: from,
-        body: `Sure! 📞 We've notified our team and someone will call you back shortly. 😊\n\nIn the meantime, you can still book an appointment or ask anything here! ✨`,
+        body: `Absolutely. 📞 I've let the team know, and we'll give you a call back as soon as possible. 😊\n\nFeel free to keep chatting or booking here while you wait! ✨`,
         buttons: [
           { id: 'user_schedule_appt', title: 'Book Appt 📅' },
           { id: 'user_ask_question', title: 'Ask a Question ❓' }
@@ -1575,7 +1575,7 @@ Reply in short, friendly English:`;
 
   if (!session.step || session.step === 'home') {
     if (userMsg === 'user_schedule_appt') {
-      await sendWhatsAppFlow({ ...helperParams, to: from, body: 'Awesome! Tap below to pick your service and grab your Holi deal. 🎁👇' });
+      await sendWhatsAppFlow({ ...helperParams, to: from, body: 'Awesome! Tap below to choose your service and secure your spot. 👇' });
       session.step = 'home_waiting';
       res.status(200).end();
       return;
@@ -1584,9 +1584,9 @@ Reply in short, friendly English:`;
       ...helperParams,
       to: from,
       imageHeader: HOLI_IMG,
-      body: `Hey there! 👋 Subhashbhai here from Choice Salon. Our Holi specials are officially live! 🎨\n\nGet a FREE haircut when you book any spa, color, or treatment. How can I pamper you today?`,
+      body: `Hey there! 👋 Welcome to Choice Salon. ✨ Treat yourself to our premium hair spa, advanced coloring, or precision cuts. 💇‍♀️\n\nHow can we pamper you today?`,
       buttons: [
-        { id: 'user_schedule_appt', title: 'Book Holi Offer 📅' },
+        { id: 'user_schedule_appt', title: 'Book Appt 📅' },
         { id: 'user_pricing', title: 'Offer Price List 💰' },
         { id: 'user_ask_question', title: 'Ask a Question ❓' }
       ]
@@ -1603,7 +1603,7 @@ Reply in short, friendly English:`;
       await sendWhatsAppFlow({
         ...helperParams,
         to: from,
-        body: 'Awesome! Tap below to pick your service and grab your Holi deal. 🎁👇'
+        body: 'Awesome! Tap below to choose your service and secure your spot. 👇'
       });
       session.step = 'home_waiting';
       res.status(200).end();
@@ -1636,7 +1636,7 @@ Reply in short, friendly English:`;
       await sendWhatsAppFlow({
         ...helperParams,
         to: from,
-        body: 'Awesome! Tap below to pick your service and grab your Holi deal. 🎁👇'
+        body: 'Awesome! Tap below to choose your service and secure your spot. 👇'
       });
       session.step = 'home_waiting';
       res.status(200).end();
@@ -1662,7 +1662,7 @@ Reply in short, friendly English:`;
 
   // OLD FLOW: choose_service — now redirects to Meta WhatsApp Flow
   if (session.step === 'choose_service') {
-    await sendWhatsAppFlow({ ...helperParams, to: from, body: 'Awesome! Tap below to pick your service and grab your Holi deal. 🎁👇' });
+    await sendWhatsAppFlow({ ...helperParams, to: from, body: 'Awesome! Tap below to choose your service and secure your spot. 👇' });
     session.step = 'home_waiting';
     res.status(200).end();
     return;
@@ -1673,7 +1673,7 @@ Reply in short, friendly English:`;
 
   // Step 4: Date selection (calendar_pick_day) — now redirects to Meta WhatsApp Flow
   if (session.step === 'calendar_pick_day') {
-    await sendWhatsAppFlow({ ...helperParams, to: from, body: 'Awesome! Tap below to pick your service and grab your Holi deal. 🎁👇' });
+    await sendWhatsAppFlow({ ...helperParams, to: from, body: 'Awesome! Tap below to choose your service and secure your spot. 👇' });
     session.step = 'home_waiting';
     res.status(200).end();
     return;
