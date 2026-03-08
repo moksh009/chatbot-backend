@@ -154,12 +154,6 @@ const scheduleAbandonedCartCron = () => {
                                     {
                                         type: 'body',
                                         parameters: variables
-                                    },
-                                    {
-                                        type: 'button',
-                                        sub_type: 'url',
-                                        index: '0',
-                                        parameters: [{ type: 'text', text: restoreUrlSuffix }]
                                     }
                                 ]
                             }
