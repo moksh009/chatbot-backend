@@ -944,7 +944,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
           imageHeader: UPSELL_IMG,
           body: `✨ *Premium Upgrade Available!* ✨\n\nYou're booked! Interested in upgrading to *Mirror Shine Boto Smooth* (₹2,999) for a glass-like finish? 💎\n\n*Only 2 premium slots remaining today!*`,
           footer: 'Limited availability! Tap below 👇',
-          buttons: [{ id: 'upsell_add_mirror_shine', title: 'Add to Booking 💇🏻‍♀️' }]
+          buttons: [{ id: 'upsell_add_mirror_shine', title: 'Add to Booking 💎' }]
         });
       } catch (upsellErr) { console.error('[Choice Salon] Upsell error:', upsellErr); }
     }, 300000);
@@ -962,7 +962,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       ...helperParams, to: from,
       body: 'No problem! Your booking has been cancelled. What would you like to do? 😊',
       buttons: [
-        { id: 'user_schedule_appt', title: 'Book Appointment 📅' },
+        { id: 'user_schedule_appt', title: 'Book Appt 📅' },
         { id: 'user_ask_question', title: 'Ask a Question ❓' }
       ]
     });
@@ -1026,7 +1026,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       body: `Hi 👋\n\nThis is subhashbhai from Choice Salon! ✨ Welcome to our premium ladies salon!\n\nWhether you need an advanced haircut, color, or a relaxing spa, we've got you covered 💇‍♀️\n\nHow can I help you today? ✨`,
       buttons: [
         { id: 'user_schedule_appt', title: 'Book Now 📅' },
-        { id: 'user_pricing', title: 'Price List & Offers 💰' },
+        { id: 'user_pricing', title: 'Prices & Offers 💰' },
         { id: 'user_ask_question', title: 'Ask a Question ❓' }
       ]
     });
