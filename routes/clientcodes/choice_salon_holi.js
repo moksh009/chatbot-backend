@@ -796,12 +796,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       // --- Send confirmation buttons ---
       await sendWhatsAppButtons({
         ...helperParams, to: from,
-        body: `Almost there! Let's quickly double-check your details: ✨\n\n` +
+        body: `Almost there! \nLet's quickly double-check your details: ✨\n\n` +
           `👤 *Name:* ${customer_name}\n` +
           `📅 *Date:* ${formattedDate}\n` +
           `🕒 *Time:* ${timeLabel}\n` +
           `💇‍♀️ *Stylist:* subhashbhai\n` +
-          `💅 *Service:* ${serviceLabel}\n\n` +
+          `💅 *Service:* ${serviceLabel}\n` +
           `📱 *Phone:* ${from}`,
         footer: footerText,
         buttons: [
@@ -1028,7 +1028,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       ...helperParams,
       to: from,
       imageHeader: HOLI_IMG,
-      body: `Hey there! 👋 Welcome to Choice Salon. ✨ Treat yourself to our premium hair spa, advanced coloring, or precision cuts. 💇‍♀️\n\nHow can we pamper you today?`,
+      body: `Hey! \n\n 👋 Welcome to Choice Salon. ✨ \n\nTreat yourself to our premium hair spa, advanced coloring, or precision cuts. 💇‍♀️\n\nHow can we pamper you today?`,
       buttons: [
         { id: 'user_schedule_appt', title: 'Book Now 📅' },
         { id: 'user_pricing', title: 'Prices & Offers 💰' },
@@ -1626,18 +1626,26 @@ Reply in short, friendly English:`;
       res.status(200).end();
       return;
     } else if (userMsg === 'user_pricing') {
-      // Send pricing image then immediately trigger the Meta Flow
+      // Send pricing image then trigger the Meta Flow after 5 seconds
       await sendWhatsAppImage({
         ...helperParams,
         to: from,
-        imageUrl: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/public/images/p23.png`,
-        caption: 'Choice Salon Holi Special – Services & Pricing 🎈'
+        imageUrl: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/public/images/pfinal1.png`,
+        caption: 'Choice Salon – Premium Services & Pricing ✨'
       });
-      await sendWhatsAppFlow({
-        ...helperParams,
-        to: from,
-        body: 'Awesome! Tap below to choose your service and secure your spot. 👇'
-      });
+
+      setTimeout(async () => {
+        try {
+          await sendWhatsAppFlow({
+            ...helperParams,
+            to: from,
+            body: 'Awesome! Tap below to choose your service and secure your spot. 👇'
+          });
+        } catch (e) {
+          console.error("Error sending delayed flow:", e);
+        }
+      }, 5000);
+
       session.step = 'home_waiting';
       res.status(200).end();
       return;
