@@ -758,6 +758,7 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
             };
             update.$set.adminFollowUpTriggered = false;
             update.$set.checkoutInitiatedCount = 0;
+            update.$set.isOrderPlaced = false;
         }
 
         if (addCountIncrement > 0) {

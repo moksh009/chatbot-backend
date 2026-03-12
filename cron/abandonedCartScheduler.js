@@ -62,8 +62,8 @@ const scheduleAbandonedCartCron = () => {
         try {
             const now = new Date();
             const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
-            const threeHoursAgo = new Date(now.getTime() - 3 * 60 * 60 * 1000);
-            const fourHoursAgo = new Date(now.getTime() - 4 * 60 * 60 * 1000);
+            const sixMinutesAgo = new Date(now.getTime() - 6 * 60 * 1000);
+            const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
 
             // Get all ecommerce clients to get their credentials
             const clients = await Client.find({ businessType: 'ecommerce' });
@@ -154,6 +154,17 @@ const scheduleAbandonedCartCron = () => {
                                     {
                                         type: 'body',
                                         parameters: variables
+                                    },
+                                    {
+                                        type: 'button',
+                                        sub_type: 'url',
+                                        index: '0',
+                                        parameters: [
+                                            {
+                                                type: 'text',
+                                                text: restoreUrlSuffix
+                                            }
+                                        ]
                                     }
                                 ]
                             }
@@ -197,8 +208,11 @@ const scheduleAbandonedCartCron = () => {
                                 );
                             } catch (e) { console.error("DailyStat Update Error (Sent):", e); }
                         } else {
-                            // Failure handler: keep as active but log failure so it can be monitored
+                            // Failure handler: mark as failed so it doesn't infinitely loop
                             await AdLead.findByIdAndUpdate(lead._id, {
+                                $set: {
+                                    cartStatus: 'failed'
+                                },
                                 $push: {
                                     activityLog: {
                                         action: 'whatsapp_failed',
@@ -214,12 +228,12 @@ const scheduleAbandonedCartCron = () => {
                     }
                 }
 
-                // --- B. Admin Follow-Up (3-4 Hours After Reminder) ---
+                // --- B. Admin Follow-Up (5 Minutes After Reminder) ---
                 const followupLeads = await AdLead.find({
                     clientId: client.clientId,
-                    cartStatus: 'abandoned',
+                    cartStatus: { $in: ['abandoned', 'recovered'] },
                     adminFollowUpTriggered: false,
-                    abandonedCartReminderSentAt: { $lt: threeHoursAgo, $gte: fourHoursAgo }
+                    abandonedCartReminderSentAt: { $lt: fiveMinutesAgo, $gte: tenMinutesAgo }
                 });
 
                 for (const lead of followupLeads) {
@@ -230,9 +244,9 @@ const scheduleAbandonedCartCron = () => {
                         // Calculate price if available from prices or default to 0
                         // Alternatively just list handles/titles
                         const items = lead.cartSnapshot?.titles?.join(', ') || 'Unknown items';
-                        const timeSince = Math.round((new Date() - lead.lastInteraction) / (1000 * 60 * 60));
+                        const timeSince = Math.round((new Date() - lead.lastInteraction) / (1000 * 60)); // Changed to minutes
 
-                        const message = `⚠️ *Abandoned Cart Alert*\nCustomer: ${lead.name || 'Unknown'}\nPhone: +${lead.phoneNumber}\nProducts: ${items}\nCart Value: ₹${cartValue}\nLast activity: ${timeSince} hours ago\n👉 Call customer now: https://wa.me/${lead.phoneNumber}`;
+                        const message = `⚠️ *Abandoned Cart Alert*\nCustomer: ${lead.name || 'Unknown'}\nPhone: +${lead.phoneNumber}\nProducts: ${items}\nCart Value: ₹${cartValue}\nLast activity: ${timeSince} minutes ago\n👉 Call customer now: https://wa.me/${lead.phoneNumber}`;
 
                         const success = await sendWhatsAppText(token, phoneId, adminPhone, message);
 
