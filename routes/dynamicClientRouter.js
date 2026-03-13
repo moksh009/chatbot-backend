@@ -8,6 +8,7 @@ const vedController = require('./clientcodes/ved');
 const salonController = require('./clientcodes/salon');
 const choiceSalonController = require('./clientcodes/choice_salon_holi');
 const newChoiceSalonController = require('./clientcodes/choice_salon');
+const topedgeController = require('./clientcodes/topedgeai');
 
 // Middleware to load client config
 router.use(loadClientConfig);
@@ -51,6 +52,8 @@ router.post('/webhook', async (req, res) => {
       await choiceSalonController.handleWebhook(req, res);
     } else if (businessType === 'choice_salon_new') {
       await newChoiceSalonController.handleWebhook(req, res);
+    } else if (businessType === 'agency') {
+      await topedgeController.handleWebhook(req, res);
     } else {
       console.log(`Unknown or unhandled business type: ${businessType}`);
       res.sendStatus(200); // Acknowledge to avoid retries
@@ -68,6 +71,8 @@ router.post('/webhook/flow-endpoint', async (req, res) => {
       await choiceSalonController.handleFlowWebhook(req, res);
     } else if (businessType === 'choice_salon_new') {
       await newChoiceSalonController.handleFlowWebhook(req, res);
+    } else if (businessType === 'agency') {
+      await topedgeController.handleFlowWebhook(req, res);
     } else {
       res.status(404).send('Flow endpoint not supported for this client');
     }
