@@ -810,17 +810,23 @@ const handleWebhook = async (req, res) => {
                 lead.markModified('meta');
                 await incrementLeadScore(lead, 10);
                 await lead.save();
+                // Use a list to show all 4 verticals
                 setTimeout(async () => {
                     await sendWhatsAppInteractive({
                         phoneNumberId: phoneId, to: userPhone, body: s.whichVertical,
                         interactive: {
-                            type: 'button',
+                            type: 'list',
                             action: {
-                                buttons: [
-                                    { type: 'reply', reply: { id: 'vert_salon', title: s.salon } },
-                                    { type: 'reply', reply: { id: 'vert_turf', title: s.turf } },
-                                    { type: 'reply', reply: { id: 'vert_clinic', title: s.clinic } }
-                                ]
+                                button: 'Select Industry',
+                                sections: [{
+                                    title: 'Your Business Type',
+                                    rows: [
+                                        { id: 'vert_salon', title: s.salon, description: 'Appointment & booking automation' },
+                                        { id: 'vert_turf', title: s.turf, description: 'Slot booking & availability' },
+                                        { id: 'vert_clinic', title: s.clinic, description: 'Patient intake & reminders' },
+                                        { id: 'vert_ecommerce', title: s.ecommerce, description: 'Order & inquiry automation' }
+                                    ]
+                                }]
                             }
                         },
                         io, clientConfig
@@ -1001,8 +1007,10 @@ const handleWebhook = async (req, res) => {
         // -- 2. MAIN MENU ROUTING --
         if (['hi', 'hello', 'hey', 'start', 'menu', 'menu_main'].includes(textLower)) {
             // Reset state
+            ensureLeadMeta(lead);
             lead.meta.roiStep = 0;
             lead.humanIntervention = false;
+            lead.markModified('meta');
             await lead.save();
 
             const greet = s.greeting(userName) + "\n\nWe provide advanced 24/7 WhatsApp AI Chatbots and Voice Callers helping businesses like Salons, Clinics, and E-Commerce scale and recover lost leads instantly.\n\nWhat would you like to explore today? 👇";
@@ -1030,16 +1038,22 @@ const handleWebhook = async (req, res) => {
             
             case 'opt_roi':
                 if (!lead.meta.businessVertical) {
+                    // Use a list to show all 4 verticals (WhatsApp max 3 buttons, so we use a list)
                     await sendWhatsAppInteractive({
                         phoneNumberId: phoneId, to: userPhone, body: s.whichVertical,
                         interactive: {
-                            type: 'button',
+                            type: 'list',
                             action: {
-                                buttons: [
-                                    { type: 'reply', reply: { id: 'vert_salon', title: s.salon } },
-                                    { type: 'reply', reply: { id: 'vert_turf', title: s.turf } },
-                                    { type: 'reply', reply: { id: 'vert_clinic', title: s.clinic } }
-                                ]
+                                button: 'Select Industry',
+                                sections: [{
+                                    title: 'Your Business Type',
+                                    rows: [
+                                        { id: 'vert_salon', title: s.salon, description: 'Appointment & booking automation' },
+                                        { id: 'vert_turf', title: s.turf, description: 'Slot booking & availability' },
+                                        { id: 'vert_clinic', title: s.clinic, description: 'Patient intake & reminders' },
+                                        { id: 'vert_ecommerce', title: s.ecommerce, description: 'Order & inquiry automation' }
+                                    ]
+                                }]
                             }
                         },
                         io, clientConfig
@@ -1107,7 +1121,9 @@ const handleWebhook = async (req, res) => {
                 }
 
                 lead.humanIntervention = true;
-                lead.meta = { ...lead.meta, roiStep: 0 };
+                ensureLeadMeta(lead);
+                lead.meta.roiStep = 0;
+                lead.markModified('meta');
                 await lead.save();
                 break;
 
@@ -1120,8 +1136,6 @@ const handleWebhook = async (req, res) => {
                 break;
 
             case 'demo_clinic':
-                const CLINIC_FLOW_ID = '1163688705769254';
-                const CALL_FLOW_ID = 'YOUR_CALL_FLOW_ID'; // User to replace after creating the Flow in Meta Builder
                 await sendWhatsAppFlow({ phoneNumberId: phoneId, to: userPhone, flowId: CLINIC_FLOW_ID, body: "🩺 *Clinic Booking Demo*\n\nTest how patients can complete an intake form and request a doctor consultation natively.", buttonText: 'Book Clinic', io, clientConfig });
                 break;
 
