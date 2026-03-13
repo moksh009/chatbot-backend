@@ -35,7 +35,20 @@ const EVENTS = {
 };
 
 const STRINGS = {
-        pricing:        `💰 See pricing`,
+    en: {
+        greeting:       (name) => `Hey ${name}! I'm the TopEdge AI demo bot 🤖`,
+        qualifier:      `Before I show you the magic, quick question —`,
+        isOwner:        `🏢 I own a business`,
+        isExplorer:     `🔍 Just exploring`,
+        isDev:          `💼 I'm a developer / agency`,
+        whichVertical:  `Perfect! Which best describes your business?`,
+        salon:          `💇‍♀️ Salon / Spa`,
+        turf:           `🏟️ Turf / Sports`,
+        clinic:         `🩺 Clinic / Healthcare`,
+        ecommerce:      `🛒 E-Commerce / Retail`,
+        roiIntro:       `Let me calculate exactly how much revenue you're missing. 3 quick questions:`,
+        bookCall:       `📞 Book a free call`,
+        seePricing:     `💰 See pricing`,
         tryDemo:        `👀 Try a demo`,
         connecting:     `Connecting you to our team... 👨‍💻\n\nA human agent will take over this chat shortly. The AI bot has been muted for your convenience.`,
         connectingAdmin: `I have paused my automated responses. A TopEdge AI system architect will review this chat and reply to you directly very soon!\n\n*(If you want to restart the bot anytime, just type "Menu")*`,
@@ -108,21 +121,6 @@ const STRINGS = {
         onboardingMsg: `🚀 *TopEdge AI के साथ शुरुआत*\n\n1. रणनीति कॉल (आज)\n2. डेमो और अनुमोदन (दिन 1-2)\n3. तकनीकी सेटअप (दिन 3-4)\n4. लाइव लॉन्च (दिन 5)\n\nहम आपके लिए सब कुछ बनाते और प्रबंधित करते हैं।`,
         contactDelitech: `हमारे लाइव क्लायंट Delitech को देखें — वे अभी इसे चला रहे हैं:`,
         confirmBooking: (day, time) => `✅ हो गया!\nआपकी कॉल ${day} को ${time} बजे बुक की गई है।`,
-    }
-};
-ाल —`,
-        isOwner:        `🏢 मेरा अपना व्यवसाय है`,
-        isExplorer:     `🔍 बस देख रहा हूँ`,
-        isDev:          `💼 मैं एक डेवलपर / एजेंसी हूँ`,
-        whichVertical:  `आपका व्यवसाय किस श्रेणी में आता है?`,
-        salon:          `💇‍♀️ सैलून / स्पा`,
-        turf:           `🏟️ टर्फ / स्पोर्ट्स`,
-        clinic:         `🩺 क्लीनिक / स्वास्थ्य सेवा`,
-        ecommerce:      `🛒 ई-कॉमर्स / रिटेल`,
-        roiIntro:       `मुझे यह गणना करने दें कि आप कितनी आय खो रहे हैं। 3 त्वरित प्रश्न:`,
-        bookCall:       `📞 फ्री कॉल बुक करें`,
-        seePricing:     `💰 कीमत देखें`,
-        tryDemo:        `👀 डेमो देखें`,
     }
 };
 
@@ -657,6 +655,8 @@ const chatbotIndustryInteractive = {
 const handleWebhook = async (req, res) => {
     try {
         const body = req.body;
+        console.log(`[TOPEDGE_WEBHOOK] Raw Body:`, JSON.stringify(body, null, 2));
+
         if (!body.object || !body.entry?.[0]?.changes?.[0]?.value) return res.sendStatus(200);
 
         const value = body.entry[0].changes[0].value;
