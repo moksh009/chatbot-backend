@@ -37,6 +37,8 @@ router.get('/webhook', (req, res) => {
 });
 
 // Webhook Event Handling (POST)
+router.post('/webhook', async (req, res) => {
+  try {
     const { businessType, clientId } = req.clientConfig;
     console.log(`[WEBHOOK] Incoming for Client: ${clientId} | BusinessType: ${businessType}`);
 
