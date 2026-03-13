@@ -668,7 +668,7 @@ const handleShopifyLinkOpenedWebhook = async (req, res) => {
 
 const handleShopifyCartUpdatedWebhook = async (req, res) => {
     try {
-        const { uid, cartitems, product_titles, page, items, phone } = req.body;
+        const { uid, cartitems, product_titles, page, items, phone, total_price } = req.body;
         const clientConfig = req.clientConfig;
         const io = req.app.get('socketio');
 
@@ -746,6 +746,7 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
                     handles: newHandles,
                     titles: newTitles.length === newHandles.length ? newTitles : newHandles,
                     items: cartItemsArray,
+                    total_price: total_price ? (total_price / 100) : 0,
                     updatedAt: now
                 }
             }

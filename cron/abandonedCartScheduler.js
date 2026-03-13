@@ -61,9 +61,12 @@ const scheduleAbandonedCartCron = () => {
         console.log('⏰ Running Abandoned Cart Scheduler...');
         try {
             const now = new Date();
-            const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
-            const sixMinutesAgo = new Date(now.getTime() - 6 * 60 * 1000);
-            const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+            // Cart Reminder threshold: 2 hours of inactivity
+            const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+            
+            // Admin Follow-up window: 3 to 4 hours after the cart reminder was sent
+            const threeHoursAgo = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+            const fourHoursAgo = new Date(now.getTime() - 4 * 60 * 60 * 1000);
 
             // Get all ecommerce clients to get their credentials
             const clients = await Client.find({ businessType: 'ecommerce' });
@@ -91,7 +94,7 @@ const scheduleAbandonedCartCron = () => {
                     cartStatus: 'active',
                     isOrderPlaced: { $ne: true },
                     'cartSnapshot.items.0': { $exists: true },
-                    'cartSnapshot.updatedAt': { $lte: fiveMinutesAgo }
+                    'cartSnapshot.updatedAt': { $lte: twoHoursAgo }
                 });
 
                 for (const lead of abandonedLeads) {
@@ -217,25 +220,30 @@ const scheduleAbandonedCartCron = () => {
                     }
                 }
 
-                // --- B. Admin Follow-Up (5 Minutes After Reminder) ---
+                // --- B. Admin Follow-Up (3 Hours After Reminder) ---
                 const followupLeads = await AdLead.find({
                     clientId: client.clientId,
                     cartStatus: { $in: ['abandoned', 'recovered'] },
                     adminFollowUpTriggered: false,
-                    abandonedCartReminderSentAt: { $lt: fiveMinutesAgo, $gte: tenMinutesAgo }
+                    abandonedCartReminderSentAt: { $lt: threeHoursAgo, $gte: fourHoursAgo }
                 });
 
                 for (const lead of followupLeads) {
                     try {
                         if (!adminPhone) continue;
 
-                        let cartValue = 0; // if price is stored
-                        // Calculate price if available from prices or default to 0
-                        // Alternatively just list handles/titles
+                        const cartValue = lead.cartSnapshot?.total_price || 0;
                         const items = lead.cartSnapshot?.titles?.join(', ') || 'Unknown items';
-                        const timeSince = Math.round((new Date() - lead.lastInteraction) / (1000 * 60)); // Changed to minutes
+                        const minutesSince = Math.round((new Date() - lead.lastInteraction) / (1000 * 60));
+                        
+                        let timeSinceFormatted = `${minutesSince} mins`;
+                        if (minutesSince > 60) {
+                            timeSinceFormatted = `${Math.floor(minutesSince / 60)} hrs, ${minutesSince % 60} mins`;
+                        }
 
-                        const message = `⚠️ *Abandoned Cart Alert*\nCustomer: ${lead.name || 'Unknown'}\nPhone: +${lead.phoneNumber}\nProducts: ${items}\nCart Value: ₹${cartValue}\nLast activity: ${timeSince} minutes ago\n👉 Call customer now: https://wa.me/${lead.phoneNumber}`;
+                        const customerName = lead.name || 'Unknown';
+
+                        const message = `⚠️ *Abandoned Cart Alert*\nCustomer: ${customerName}\nPhone: +${lead.phoneNumber}\nProducts: ${items}\nCart Value: ₹${cartValue.toLocaleString()}\nLast activity: ${timeSinceFormatted} ago\n👉 Call customer now: https://wa.me/${lead.phoneNumber}`;
 
                         const success = await sendWhatsAppText(token, phoneId, adminPhone, message);
 
