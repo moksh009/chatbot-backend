@@ -124,6 +124,12 @@ const STRINGS = {
     }
 };
 
+// --- RE-ENGAGEMENT HELPERS ---
+function ensureLeadMeta(lead) {
+    if (!lead) return;
+    if (!lead.meta) lead.meta = {};
+}
+
 // --- CORE HELPERS ---
 
 async function trackEvent(phone, event, clientConfig, metadata = {}) {
@@ -183,8 +189,9 @@ function EventsFilter(events, eventName) {
 
 
 async function incrementLeadScore(lead, points) {
-    if (!lead.meta) lead.meta = {};
+    ensureLeadMeta(lead);
     lead.meta.leadScore = (lead.meta.leadScore || 0) + points;
+    lead.markModified('meta');
     await lead.save();
 }
 
@@ -214,6 +221,7 @@ function scheduleTimers(phone, phoneNumberId, io, clientConfig) {
 async function sendTier1(phone, phoneNumberId, io, clientConfig) {
     try {
         const lead = await AdLead.findOne({ phoneNumber: phone, clientId: clientConfig.clientId });
+        ensureLeadMeta(lead);
         if (!lead || lead.humanIntervention || lead.meta.doNotDisturb) return;
 
         let msg = '';
@@ -241,6 +249,7 @@ async function sendTier1(phone, phoneNumberId, io, clientConfig) {
 async function sendTier2(phone, phoneNumberId, io, clientConfig) {
     try {
         const lead = await AdLead.findOne({ phoneNumber: phone, clientId: clientConfig.clientId });
+        ensureLeadMeta(lead);
         if (!lead || lead.humanIntervention || lead.meta.doNotDisturb) return;
 
         let text = '';
@@ -274,6 +283,7 @@ async function sendTier2(phone, phoneNumberId, io, clientConfig) {
 async function sendTier3(phone, phoneNumberId, io, clientConfig) {
     try {
         const lead = await AdLead.findOne({ phoneNumber: phone, clientId: clientConfig.clientId });
+        ensureLeadMeta(lead);
         if (!lead || lead.humanIntervention || lead.meta.doNotDisturb) return;
 
         const roiLine = lead.meta.roiCalculated
@@ -354,10 +364,12 @@ async function routeToIndustryDemo(phone, vertical, userName, phoneNumberId, io,
 
     // Update lead meta
     const lead = await AdLead.findOne({ phoneNumber: phone, clientId: clientConfig.clientId });
+    ensureLeadMeta(lead);
     if (lead) {
         if (!lead.meta.demosViewed) lead.meta.demosViewed = [];
         if (!lead.meta.demosViewed.includes(vertical)) lead.meta.demosViewed.push(vertical);
         lead.meta.sessionState = 'viewing_demo';
+        lead.markModified('meta');
         await incrementLeadScore(lead, 5);
         await lead.save();
     }
@@ -371,6 +383,7 @@ async function routeToIndustryDemo(phone, vertical, userName, phoneNumberId, io,
 async function sendSocialProof(phone, vertical, phoneNumberId, io, clientConfig) {
     try {
         const lead = await AdLead.findOne({ phoneNumber: phone, clientId: clientConfig.clientId });
+        ensureLeadMeta(lead);
         if (!lead || lead.humanIntervention || lead.meta.doNotDisturb) return;
 
         const key = `proofShown_${vertical}`;
@@ -399,6 +412,7 @@ async function sendSocialProof(phone, vertical, phoneNumberId, io, clientConfig)
         }, 1500);
 
         lead.meta[key] = idx + 1;
+        lead.markModified('meta');
         await incrementLeadScore(lead, 3);
         await lead.save();
     } catch (err) { console.error('Social Proof Error:', err.message); }
@@ -457,6 +471,7 @@ async function handleCallBooked(phone, payload, clientConfig, io) {
     try {
         const { day, time, cust_name, business } = payload;
         const lead = await AdLead.findOne({ phoneNumber: phone, clientId: clientConfig.clientId });
+        ensureLeadMeta(lead);
 
         // Confirm to user
         const confirmMsg = 
@@ -472,6 +487,7 @@ async function handleCallBooked(phone, payload, clientConfig, io) {
             lead.meta.callBooked = { day, time, cust_name, business, bookedAt: new Date() };
             lead.meta.sessionState = 'call_booked';
             lead.humanIntervention = true; // Mute bot after booking
+            lead.markModified('meta');
             await incrementLeadScore(lead, 25);
             await lead.save();
 
@@ -692,7 +708,9 @@ const handleWebhook = async (req, res) => {
             });
             await trackEvent(userPhone, EVENTS.SESSION_START, clientConfig);
         } else {
+            ensureLeadMeta(lead);
             lead.meta.lastActivity = new Date();
+            lead.markModified('meta');
             await lead.save();
         }
         
@@ -709,7 +727,8 @@ const handleWebhook = async (req, res) => {
         await saveAndEmitMessage({ to: userPhone, body: msg.type === 'text' ? incomingText : `[Interaction: ${incomingText}]`, type: msg.type, io, clientConfig, from: userPhone });
 
         // -- LANGUAGE SELECTOR (Module 7 integration) --
-        if (!lead.meta.language && !incomingText.startsWith('lang_')) {
+        ensureLeadMeta(lead);
+        if (!lead.meta?.language && !incomingText.startsWith('lang_')) {
             const langMsg = "Welcome to TopEdge AI! 🤖\nSelect your language / ભાષા પસંદ કરો";
             await sendWhatsAppInteractive({
                 phoneNumberId: phoneId, to: userPhone, body: langMsg,
@@ -730,8 +749,10 @@ const handleWebhook = async (req, res) => {
 
         if (incomingText.startsWith('lang_')) {
             const lang = incomingText.split('_')[1];
+            ensureLeadMeta(lead);
             lead.meta.language = lang;
             lead.meta.sessionState = 'lang_selection';
+            lead.markModified('meta');
             await lead.save();
             await trackEvent(userPhone, EVENTS.LANG_SELECTED, clientConfig, { lang });
             
@@ -780,11 +801,13 @@ const handleWebhook = async (req, res) => {
         // -- QUALIFIER HANDLERS --
         if (incomingText.startsWith('qual_')) {
             const type = incomingText.replace('qual_', '');
+            ensureLeadMeta(lead);
             lead.meta.leadType = type;
             lead.meta.qualifiedAt = new Date();
             lead.meta.sessionState = 'qualifier_done';
             
             if (type === 'owner') {
+                lead.markModified('meta');
                 await incrementLeadScore(lead, 10);
                 await lead.save();
                 setTimeout(async () => {
@@ -804,6 +827,7 @@ const handleWebhook = async (req, res) => {
                     });
                 }, 1000);
             } else if (type === 'dev') {
+                lead.markModified('meta');
                 await incrementLeadScore(lead, 5);
                 const devMsg = "Great! Here's what's relevant for you:\n→ API documentation: topedgeai.com/docs\n→ We build on official WhatsApp Cloud API\n→ White-label partnerships available\n→ Custom flow development: from ₹15,000";
                 await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: devMsg, io, clientConfig });
@@ -811,10 +835,13 @@ const handleWebhook = async (req, res) => {
                     await sendWhatsAppInteractive({ phoneNumberId: phoneId, to: userPhone, body: s.greeting(userName), interactive: mainMenuInteractive, io, clientConfig });
                 }, 2000);
                 lead.meta.sessionState = 'main_menu';
+                lead.markModified('meta');
             } else {
+                lead.markModified('meta');
                 await incrementLeadScore(lead, 2);
                 await sendWhatsAppInteractive({ phoneNumberId: phoneId, to: userPhone, body: s.greeting(userName), interactive: mainMenuInteractive, io, clientConfig });
                 lead.meta.sessionState = 'main_menu';
+                lead.markModified('meta');
             }
             
             await lead.save();
@@ -825,8 +852,10 @@ const handleWebhook = async (req, res) => {
         // -- VERTICAL HANDLER --
         if (incomingText.startsWith('vert_')) {
             const vertical = incomingText.replace('vert_', '');
+            ensureLeadMeta(lead);
             lead.meta.businessVertical = vertical;
             lead.meta.sessionState = 'vertical_selected';
+            lead.markModified('meta');
             await incrementLeadScore(lead, 5);
             await lead.save();
             await trackEvent(userPhone, EVENTS.VERTICAL_PICKED, clientConfig, { vertical });
@@ -837,7 +866,8 @@ const handleWebhook = async (req, res) => {
         }
 
         // -- ROI CALCULATOR STATE MACHINE (Updated logic to be industry-specific in Module 2) --
-        if (lead.meta && lead.meta.roiStep > 0 && msg.type === 'text') {
+        ensureLeadMeta(lead);
+        if (lead.meta.roiStep > 0 && msg.type === 'text') {
             const num = parseInt(incomingText.replace(/[^0-9]/g, ''), 10);
             if (isNaN(num)) {
                 await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: s.validNumber, io, clientConfig });
@@ -853,6 +883,7 @@ const handleWebhook = async (req, res) => {
                 else if (vertical === 'ecommerce') lead.meta.dailyInquiries = num;
                 
                 lead.meta.roiStep = 2;
+                lead.markModified('meta');
                 await lead.save();
 
                 let nextQ = "";
@@ -871,6 +902,7 @@ const handleWebhook = async (req, res) => {
                 else if (vertical === 'ecommerce') lead.meta.repliedTo = num;
 
                 lead.meta.roiStep = 3;
+                lead.markModified('meta');
                 await lead.save();
 
                 let nextQ = "";
@@ -929,6 +961,7 @@ const handleWebhook = async (req, res) => {
                 lead.meta.roiStep = 0; 
                 lead.meta.roiCalculated = true;
                 lead.meta.roiResult = { monthlyGain, currentLoss, vertical };
+                lead.markModified('meta');
                 await incrementLeadScore(lead, 15);
                 await lead.save();
                 await trackEvent(userPhone, EVENTS.ROI_COMPLETED, clientConfig, { vertical, gain: monthlyGain });
@@ -937,6 +970,7 @@ const handleWebhook = async (req, res) => {
                 if (lead.meta.leadScore >= 60 && !lead.meta.hotAlertSent) {
                     await sendAdminAlert(userPhone, lead, 'Score hit HOT threshold 🔥', clientConfig);
                     lead.meta.hotAlertSent = true;
+                    lead.markModified('meta');
                     await lead.save();
                 }
 

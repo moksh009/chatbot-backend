@@ -92,6 +92,10 @@ const adLeadSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   },
+  meta: {
+    type: Object,
+    default: {}
+  },
   createdAt: {
     type: Date,
     default: Date.now
