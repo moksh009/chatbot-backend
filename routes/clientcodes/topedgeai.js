@@ -209,15 +209,14 @@ function clearAllTimers(phone) {
 }
 
 function scheduleTimers(phone, phoneNumberId, io, clientConfig) {
-    // In production we use real values. Testing values mentioned in Module 3 rules:
-    // 30s/2min/5min for testing.
-    const t1 = setTimeout(() => sendTier1(phone, phoneNumberId, io, clientConfig), 15 * 60 * 1000); 
-    const t2 = setTimeout(() => sendTier2(phone, phoneNumberId, io, clientConfig), 3 * 3600 * 1000);
+    // Timers updated per client request: 1 Hour, 5 Hours, 24 Hours
+    const t1 = setTimeout(() => sendTier1(phone, phoneNumberId, io, clientConfig), 1 * 3600 * 1000); 
+    const t2 = setTimeout(() => sendTier2(phone, phoneNumberId, io, clientConfig), 5 * 3600 * 1000);
     const t3 = setTimeout(() => sendTier3(phone, phoneNumberId, io, clientConfig), 24 * 3600 * 1000);
     timerMap.set(phone, [t1, t2, t3]);
 }
 
-// --- TIER 1 — 15 MINUTE NUDGE ---
+// --- TIER 1 — 1 HOUR NUDGE ---
 async function sendTier1(phone, phoneNumberId, io, clientConfig) {
     try {
         const lead = await AdLead.findOne({ phoneNumber: phone, clientId: clientConfig.clientId });
@@ -226,6 +225,7 @@ async function sendTier1(phone, phoneNumberId, io, clientConfig) {
 
         let msg = '';
         const state = lead.meta.roiStep ? `roi_step${lead.meta.roiStep}` : lead.meta.sessionState;
+        const vertical = lead.meta.businessVertical || 'your';
 
         if (state === 'roi_step1') 
             msg = 'Still there? You were about to discover your exact revenue gap — takes 2 more answers 😊';
@@ -234,13 +234,27 @@ async function sendTier1(phone, phoneNumberId, io, clientConfig) {
         else if (state === 'roi_step3') 
             msg = 'Last step! Enter your average value and I\'ll calculate your number 💰';
         else if (state === 'viewing_demo') 
-            msg = `Did you get to try the ${lead.meta.businessVertical} demo? Tap any option to continue 👇`;
+            msg = `Did you get to try the ${vertical} demo? Pick an option below to continue 👇`;
         else if (state === 'faq') 
             msg = 'Any questions I can answer? Happy to help 🙋';
         else 
-            msg = "Hey! Still here if you have questions 😊 Tap 'Menu' to pick up where you left off.";
+            msg = 'Hey! Still here if you have questions 😊 Pick an option below to continue 👇';
 
-        await sendWhatsAppText({ phoneNumberId, to: phone, body: msg, io, clientConfig });
+        // Always send with interactive buttons so the user can act
+        await sendWhatsAppInteractive({
+            phoneNumberId, to: phone, body: msg,
+            interactive: {
+                type: 'button',
+                action: {
+                    buttons: [
+                        { type: 'reply', reply: { id: 'menu_main',   title: '📋 Main Menu' } },
+                        { type: 'reply', reply: { id: 'opt_chatbot', title: '📱 Live Demo' } },
+                        { type: 'reply', reply: { id: 'book_call',   title: '📞 Book Call' } }
+                    ]
+                }
+            },
+            io, clientConfig
+        });
         await trackEvent(phone, EVENTS.FOLLOWUP_SENT, clientConfig, { tier: 1 });
     } catch (err) { console.error('Tier 1 Error:', err.message); }
 }
@@ -334,13 +348,14 @@ const PROOF_MESSAGES = {
 
 async function routeToIndustryDemo(phone, vertical, userName, phoneNumberId, io, clientConfig) {
     const intros = {
-        salon:     `${userName}, here's exactly what your salon clients experience on WhatsApp 💇‍♀️\n\n👇 Try booking an appointment as if you were a customer — tap the button below:`,
-        turf:      `${userName}, here's how your turf bookings look on WhatsApp ⚽\n\n👇 Go ahead, book a slot like your customers would — tap the button below:`,
-        clinic:    `${userName}, here's the patient experience your clinic would deliver 🩺\n\n👇 Try selecting a department and booking as a patient — tap the button below:`,
-        ecommerce: `${userName}, here's what your store's WhatsApp could look like 🛒\n\n👇 Check out our live clients below — message them to see the bot in action!`
+        salon:     `${userName}, Welcome to TopEdge AI Salon 💇‍♀️\n\n👇 Try booking an appointment as if you were a customer — tap the button below:`,
+        turf:      `${userName}, Welcome to TopEdge AI Turf ⚽\n\n👇 Go ahead, book a slot like your customers would — tap the button below:`,
+        clinic:    `${userName}, Welcome to TopEdge AI Clinic 🩺\n\n👇 Try selecting a department and booking as a patient — tap the button below:`,
+        ecommerce: `${userName}, Welcome to TopEdge AI E-Commerce 🛒\n\n👇 Explore our digital food catalog and experience smooth ordering:`
     };
 
-    await sendWhatsAppText({ phoneNumberId, to: phone, body: intros[vertical], io, clientConfig });
+    // Explicitly send logo attached to the Demo Intro (per user request)
+    await sendWhatsAppImage({ phoneNumberId, to: phone, imageUrl: LOGO_URL, caption: intros[vertical], io, clientConfig });
     
     const flowIds = {
         salon:     '1977238969670742',
@@ -350,31 +365,51 @@ async function routeToIndustryDemo(phone, vertical, userName, phoneNumberId, io,
     };
 
     const flowButtons = {
-        salon:   'Book Appointment',
-        turf:    'Book Slot',
-        clinic:  'Book Appointment',
+        salon:   'Book Salon Flow',
+        turf:    'Book Turf Flow',
+        clinic:  'Book Clinic Flow',
     };
 
     setTimeout(async () => {
-        if (flowIds[vertical]) {
-            await sendWhatsAppFlow({ phoneNumberId, to: phone, flowId: flowIds[vertical], body: `Experience the booking flow your ${vertical} customers would use — try it now!`, buttonText: flowButtons[vertical] || 'Try Demo', io, clientConfig });
-        } else {
-            // Ecommerce: send live client contact cards
-            const vcardDeli = {
-                name: { formatted_name: 'Delitech SmartHomes', first_name: 'Delitech' },
-                phones: [{ phone: '919875251998', type: 'WORK' }]
-            };
-            const vcardChoice = {
-                name: { formatted_name: 'Choice Salon & Academy', first_name: 'Choice' },
-                phones: [{ phone: '919274794547', type: 'WORK' }]
-            };
-            await sendContactCard({ phoneNumberId, to: phone, vcard: vcardDeli, io, clientConfig });
-            await sendContactCard({ phoneNumberId, to: phone, vcard: vcardChoice, io, clientConfig });
-
-            // After ecom cards, show post-demo options after 3s
-            setTimeout(async () => {
-                await sendPostDemoOptions(phone, vertical, phoneNumberId, io, clientConfig);
-            }, 3000);
+        let flowSuccess = false;
+        
+        // 1. Send Ecommerce Food Demo
+        if (vertical === 'ecommerce') {
+            await sendWhatsAppInteractive({
+                 phoneNumberId, to: phone,
+                 body: "🍔 *Digital Menu & Fast Ordering*\n\nSelect a category to view our mouth-watering options:",
+                 interactive: {
+                     type: 'list',
+                     action: {
+                         button: 'View Menu',
+                         sections: [{
+                             title: 'Categories',
+                             rows: [
+                                 { id: 'ecom_pizza', title: '🍕 Wood-Fired Pizza', description: 'Freshly baked pizzas' },
+                                 { id: 'ecom_burger', title: '🍔 Smash Burgers', description: 'Juicy gourmet burgers' },
+                                 { id: 'ecom_pasta', title: '🍝 Fresh Pasta', description: 'Authentic Italian pasta' }
+                             ]
+                         }]
+                     }
+                 }, io, clientConfig
+            });
+        }
+        // 2. Send Native Flow Demo if available
+        else if (flowIds[vertical]) {
+            flowSuccess = await sendWhatsAppFlow({ phoneNumberId, to: phone, flowId: flowIds[vertical], body: `Secure your spot in seconds! Tap below to open our dynamic booking flow.`, buttonText: flowButtons[vertical] || 'Try Demo', io, clientConfig });
+            
+            // Fallback if Meta API rejects the unpublished/draft Flow ID
+            if (!flowSuccess) {
+                await sendWhatsAppInteractive({
+                    phoneNumberId, to: phone,
+                    body: `*(Note: The native ${vertical} Flow is currently offline for maintenance by Meta. You can still test our conversational AI!)*`,
+                    interactive: {
+                        type: 'button',
+                        action: { buttons: [{ type: 'reply', reply: { id: `demo_${vertical}`, title: 'Simulate Booking' } }] }
+                    },
+                    io, clientConfig
+                });
+            }
         }
     }, 1500);
 
@@ -435,6 +470,9 @@ async function sendSocialProof(phone, vertical, phoneNumberId, io, clientConfig)
         const lead = await AdLead.findOne({ phoneNumber: phone, clientId: clientConfig.clientId });
         ensureLeadMeta(lead);
         if (!lead || lead.humanIntervention || lead.meta.doNotDisturb) return;
+        
+        // Critical Fix: If the user switched to a DIFFERENT industry before this 30s timer fired, abort!
+        if (lead.meta.businessVertical && lead.meta.businessVertical !== vertical) return;
 
         const key = `proofShown_${vertical}`;
         const idx = lead.meta[key] || 0;
@@ -551,7 +589,20 @@ async function handleCallBooked(phone, payload, clientConfig, io) {
 
 
 
-// --- API WRAPPERS ---
+// --- API WRAPPERS & AI ---
+
+async function generateWithGemini(apiKey, prompt) {
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+    const payload = { contents: [{ role: 'user', parts: [{ text: prompt }] }] };
+    const resp = await axios.post(url, payload, { headers: { 'Content-Type': 'application/json' } });
+    const text = resp.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    return text.trim();
+  } catch (err) {
+    console.error('Gemini API Error (TopEdge ROI):', err.message);
+    return null;
+  }
+}
 
 async function sendWhatsAppText({ phoneNumberId, to, body, io, clientConfig }) {
     const token = clientConfig.whatsappToken;
@@ -672,11 +723,12 @@ const mainMenuInteractive = {
         sections: [{
             title: 'Select an option',
             rows: [
-                { id: 'opt_chatbot', title: '🤖 Explore Chatbots', description: 'See our automated WhatsApp bots' },
-                { id: 'opt_caller', title: '📞 Explore AI Caller', description: 'Experience live voice AI' },
+                { id: 'opt_chatbot', title: '📱 Live Demo', description: 'See our automated WhatsApp flows' },
+                { id: 'opt_live_demo', title: '⭐ Testimonials', description: 'Test our live AI clients' },
+                { id: 'opt_caller', title: '📞 Test AI Caller', description: 'Experience live voice AI' },
                 { id: 'opt_roi', title: '🧮 Calculate ROI', description: 'See how much revenue you lose' },
                 { id: 'opt_faq', title: '❓ FAQs & Pricing', description: 'Got questions? Start here.' },
-                { id: 'opt_human', title: '👨‍💻 Talk to Human', description: 'Connect directly with our team' }
+                { id: 'opt_human', title: '👨‍💻 Talk to Human', description: 'Connect with our team' }
             ]
         }]
     }
@@ -781,8 +833,7 @@ const handleWebhook = async (req, res) => {
         // -- LANGUAGE SELECTOR (Module 7 integration) --
         ensureLeadMeta(lead);
         if (!lead.meta?.language && !incomingText.startsWith('lang_')) {
-            await sendWhatsAppImage({ phoneNumberId: phoneId, to: userPhone, imageUrl: LOGO_URL, caption: "TopEdge AI - Your Business on Autopilot 🚀", io, clientConfig });
-            const langMsg = "Welcome to TopEdge AI! 🤖\nSelect your language / ભાષા પસંદ કરો";
+            const langMsg = "Welcome to *TopEdge AI* 🤖\nYour Business on Autopilot 🚀\n\nSelect your language / ભાષા પસંદ કરો";
             await sendWhatsAppInteractive({
                 phoneNumberId: phoneId, to: userPhone, body: langMsg,
                 interactive: {
@@ -882,7 +933,20 @@ const handleWebhook = async (req, res) => {
                 `*This is exactly what your customers would see!* ☝️\n\n` +
                 `The same flow, fully automated 24/7 — no manual work needed.`;
 
-            await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: confirmMsg, io, clientConfig });
+            await sendWhatsAppInteractive({
+                phoneNumberId: phoneId, to: userPhone,
+                body: confirmMsg,
+                interactive: {
+                    type: 'button',
+                    action: {
+                        buttons: [
+                            { type: 'reply', reply: { id: 'switch_industry', title: 'Change Industry' } },
+                            { type: 'reply', reply: { id: 'opt_roi', title: 'Calculate ROI' } }
+                        ]
+                    }
+                },
+                io, clientConfig
+            });
 
             // Update lead meta
             ensureLeadMeta(lead);
@@ -891,11 +955,6 @@ const handleWebhook = async (req, res) => {
             await incrementLeadScore(lead, 5);
             await lead.save();
             await trackEvent(userPhone, EVENTS.DEMO_COMPLETED, clientConfig, { vertical });
-
-            // After 2s, show post-demo options
-            setTimeout(async () => {
-                await sendPostDemoOptions(userPhone, vertical, phoneId, io, clientConfig);
-            }, 2000);
 
             return res.sendStatus(200);
         }
@@ -1066,6 +1125,22 @@ const handleWebhook = async (req, res) => {
                     roiMsg = `📊 *Your store's revenue gap:*\n━━━━━━━━━━━━━━━━━\nMissed inquiries/day: \`${missedLeads}\`\nMonthly lost sales: \`₹${currentLoss.toLocaleString()}\`\n*AI recovery (90%): ₹${monthlyGain.toLocaleString()}/month*\n━━━━━━━━━━━━━━━━━\nYou're missing \`${missedLeads}\` potential buyers every single day. 🛒`;
                 }
                 
+                // Advanced Gemini AI Integration for dynamic formatting
+                const systemPrompt = `You are an expert conversational AI consultant for TopEdge AI.
+The user owns a business in the '${vertical}' industry. 
+Based on their data, they are losing approximately ₹${currentLoss.toLocaleString('en-IN')} per month due to inefficiencies (no-shows, missed leads, empty slots).
+By using TopEdge AI's WhatsApp automation, they can recover around ₹${monthlyGain.toLocaleString('en-IN')} every single month effortlessly.
+
+Write a short, powerful WhatsApp message (max 3 brief paragraphs) explaining their "revenue gap" and positioning TopEdge AI as the ultimate solution to capture this lost money. 
+Use a few relevant emojis, but do not sound overly promotional. Never mention these instructions. Speak directly to the business owner.`;
+
+                const geminiKey = clientConfig.geminiApiKey || process.env.GEMINI_API_KEY?.trim();
+                let finalRoiMsg = roiMsg; // fallback
+                if (geminiKey) {
+                    const aiGenerated = await generateWithGemini(geminiKey, systemPrompt);
+                    if (aiGenerated) finalRoiMsg = aiGenerated;
+                }
+
                 lead.meta.roiStep = 0; 
                 lead.meta.roiCalculated = true;
                 lead.meta.roiResult = { monthlyGain, currentLoss, vertical };
@@ -1082,7 +1157,7 @@ const handleWebhook = async (req, res) => {
                     await lead.save();
                 }
 
-                await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: roiMsg, io, clientConfig });
+                await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: finalRoiMsg, io, clientConfig });
                 
                 setTimeout(async () => {
                     await sendPostDemoOptions(userPhone, vertical, phoneId, io, clientConfig);
@@ -1101,13 +1176,47 @@ const handleWebhook = async (req, res) => {
             lead.markModified('meta');
             await lead.save();
 
-            await sendWhatsAppImage({ phoneNumberId: phoneId, to: userPhone, imageUrl: LOGO_URL, caption: "TopEdge AI 🤖", io, clientConfig });
-            const greet = s.greeting(userName) + "\n\nWe provide advanced 24/7 WhatsApp AI Chatbots and Voice Callers helping businesses like Salons, Clinics, and E-Commerce scale and recover lost leads instantly.\n\nWhat would you like to explore today? 👇";
+            // Remove the logo image attachment directly here, as user requested it separated.
+            const greet = `Hey ${userName}! I'm the TopEdge AI demo bot 🤖\n\nWe provide advanced 24/7 WhatsApp AI Chatbots and Voice Callers helping businesses like Salons, Clinics, and E-Commerce scale and recover lost leads instantly.\n\nWhat would you like to explore today? 👇`;
             await sendWhatsAppInteractive({ phoneNumberId: phoneId, to: userPhone, body: greet, interactive: mainMenuInteractive, io, clientConfig });
             return res.sendStatus(200);
         }
 
+        // --- Handle Ecommerce Food Catalog Actions ---
+        if (incomingText.startsWith('ecom_')) {
+            const FOODS = {
+                ecom_pizza: { name: "Margherita Pizza", price: "₹299", desc: "Classic cheese & fresh basil", emoji: "🍕" },
+                ecom_burger: { name: "Classic Smash Burger", price: "₹199", desc: "Double patty & cheddar cheese", emoji: "🍔" },
+                ecom_pasta: { name: "Penne Alfredo", price: "₹249", desc: "Creamy white sauce with herbs", emoji: "🍝" }
+            };
+            const item = FOODS[incomingText];
+            if (item) {
+                 await sendWhatsAppText({
+                     phoneNumberId: phoneId, to: userPhone,
+                     body: `${item.emoji} *${item.name}*\n💰 ${item.price}\n📝 ${item.desc}\n\n*Simulated Checkout!* If this were your store, the user could instantly 'Add to Cart' and pay right here within WhatsApp.`,
+                     io, clientConfig
+                 });
+                 // Send confirmation button to change industry
+                 setTimeout(async () => {
+                     await sendWhatsAppInteractive({
+                         phoneNumberId: phoneId, to: userPhone,
+                         body: "✅ Order flow simulation complete! Try exploring a different industry:",
+                         interactive: { type: 'button', action: { buttons: [{ type: 'reply', reply: { id: 'switch_industry', title: 'Change Industry' } }] } },
+                         io, clientConfig
+                     });
+                 }, 2000);
+            }
+            return res.sendStatus(200);
+        }
+
         switch (incomingText) {
+            case 'opt_live_demo':
+                await sendWhatsAppText({ 
+                    phoneNumberId: phoneId, to: userPhone, 
+                    body: "⭐ *Live Client AI Chatbots*\n\nHere are some of our live, production clients. Feel free to click the links below and start a chat to test their conversational AI!\n\n💇‍♀️ *Choice Salon & Academy:*\n👉 https://wa.me/919274794547\n\n🛒 *Delitech SmartHomes:*\n👉 https://wa.me/919875251998", 
+                    io, clientConfig 
+                });
+                break;
             case 'opt_chatbot':
                 await sendWhatsAppInteractive({
                     phoneNumberId: phoneId, to: userPhone,
@@ -1236,42 +1345,52 @@ const handleWebhook = async (req, res) => {
                 break;
 
             case 'demo_salon':
-                await sendWhatsAppFlow({ phoneNumberId: phoneId, to: userPhone, flowId: '1977238969670742', body: "💇‍♀️ *Salon Booking Demo*\n\nTest out how users can view services, pick a stylist, and choose a time slot natively.", buttonText: 'Book Salon', io, clientConfig });
+                const okSalon = await sendWhatsAppFlow({ phoneNumberId: phoneId, to: userPhone, flowId: '1977238969670742', body: "💇‍♀️ *Salon Booking Demo*\n\nTest out how users can view services, pick a stylist, and choose a time slot natively.", buttonText: 'Book Salon', io, clientConfig });
+                if (!okSalon) {
+                    await sendWhatsAppInteractive({ phoneNumberId: phoneId, to: userPhone, body: "The native Salon Flow is currently offline for maintenance.", interactive: { type: 'button', action: { buttons: [{ type: 'reply', reply: { id: 'menu_main', title: 'Main Menu' } }] } }, io, clientConfig });
+                }
                 break;
             
             case 'demo_turf':
-                await sendWhatsAppFlow({ phoneNumberId: phoneId, to: userPhone, flowId: '2142814969819669', body: "⚽ *Turf Booking Demo*\n\nTest how users can see available courts and book their 1-hour slots quickly.", buttonText: 'Book Turf', io, clientConfig });
+                const okTurf = await sendWhatsAppFlow({ phoneNumberId: phoneId, to: userPhone, flowId: '2142814969819669', body: "⚽ *Turf Booking Demo*\n\nTest how users can see available courts and book their 1-hour slots quickly.", buttonText: 'Book Turf', io, clientConfig });
+                if (!okTurf) {
+                    await sendWhatsAppInteractive({ phoneNumberId: phoneId, to: userPhone, body: "The native Turf Flow is currently offline for maintenance.", interactive: { type: 'button', action: { buttons: [{ type: 'reply', reply: { id: 'menu_main', title: 'Main Menu' } }] } }, io, clientConfig });
+                }
                 break;
 
             case 'demo_clinic':
-                await sendWhatsAppFlow({ phoneNumberId: phoneId, to: userPhone, flowId: CLINIC_FLOW_ID, body: "🩺 *Clinic Booking Demo*\n\nTest how patients can complete an intake form and request a doctor consultation natively.", buttonText: 'Book Clinic', io, clientConfig });
+                const okClinic = await sendWhatsAppFlow({ phoneNumberId: phoneId, to: userPhone, flowId: CLINIC_FLOW_ID, body: "🩺 *Clinic Booking Demo*\n\nTest how patients can complete an intake form and request a doctor consultation natively.", buttonText: 'Book Clinic', io, clientConfig });
+                if (!okClinic) {
+                    await sendWhatsAppInteractive({ phoneNumberId: phoneId, to: userPhone, body: "The native Clinic Flow is currently offline for maintenance.", interactive: { type: 'button', action: { buttons: [{ type: 'reply', reply: { id: 'menu_main', title: 'Main Menu' } }] } }, io, clientConfig });
+                }
                 break;
 
             case 'demo_ecom':
-                await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: "🛒 *E-Commerce & Retail*\n\nWe deployed advanced abandoned-cart recovery and catalogue bots for these live clients. Feel free to message their live numbers to see the bot in action!", io, clientConfig});
-                
-                const vcardDeli = {
-                    name: { formatted_name: "Delitech SmartHomes", first_name: "Delitech" },
-                    phones: [{ phone: "919875251998", type: "WORK" }]
-                };
-                const vcardChoice = {
-                    name: { formatted_name: "Choice Salon & Academy", first_name: "Choice" },
-                    phones: [{ phone: "919274794547", type: "WORK" }]
-                };
-                
-                await sendContactCard({ phoneNumberId: phoneId, to: userPhone, vcard: vcardDeli, io, clientConfig });
-                await sendContactCard({ phoneNumberId: phoneId, to: userPhone, vcard: vcardChoice, io, clientConfig });
-                
-                // Update vertical in meta
+                // Use the same food catalog demo as routeToIndustryDemo
+                await sendWhatsAppImage({ phoneNumberId: phoneId, to: userPhone, imageUrl: LOGO_URL, caption: "Welcome to TopEdge AI E-Commerce 🛒\n\n👇 Explore our digital food catalog and experience smooth ordering:", io, clientConfig });
+                await sendWhatsAppInteractive({
+                     phoneNumberId: phoneId, to: userPhone,
+                     body: "🍔 *Digital Menu & Fast Ordering*\n\nSelect a category to view our mouth-watering options:",
+                     interactive: {
+                         type: 'list',
+                         action: {
+                             button: 'View Menu',
+                             sections: [{
+                                 title: 'Categories',
+                                 rows: [
+                                     { id: 'ecom_pizza', title: '🍕 Wood-Fired Pizza', description: 'Freshly baked pizzas' },
+                                     { id: 'ecom_burger', title: '🍔 Smash Burgers', description: 'Juicy gourmet burgers' },
+                                     { id: 'ecom_pasta', title: '🍝 Fresh Pasta', description: 'Authentic Italian pasta' }
+                                 ]
+                             }]
+                         }
+                     }, io, clientConfig
+                });
                 ensureLeadMeta(lead);
                 lead.meta.businessVertical = 'ecommerce';
                 lead.meta.sessionState = 'viewing_demo';
                 lead.markModified('meta');
                 await lead.save();
-
-                setTimeout(async () => {
-                    await sendPostDemoOptions(userPhone, 'ecommerce', phoneId, io, clientConfig);
-                }, 3000);
                 break;
 
             // -- INDUSTRY SWITCHER (from post-demo menu) --
