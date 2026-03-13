@@ -362,11 +362,11 @@ async function routeToIndustryDemo(phone, vertical, userName, phoneNumberId, io,
             // Ecommerce: send live client contact cards
             const vcardDeli = {
                 name: { formatted_name: 'Delitech SmartHomes', first_name: 'Delitech' },
-                phones: [{ phone: '+91 94297 84875', type: 'WORK' }]
+                phones: [{ phone: '919875251998', type: 'WORK' }]
             };
             const vcardChoice = {
                 name: { formatted_name: 'Choice Salon & Academy', first_name: 'Choice' },
-                phones: [{ phone: '+91 92747 94547', type: 'WORK' }]
+                phones: [{ phone: '919274794547', type: 'WORK' }]
             };
             await sendContactCard({ phoneNumberId, to: phone, vcard: vcardDeli, io, clientConfig });
             await sendContactCard({ phoneNumberId, to: phone, vcard: vcardChoice, io, clientConfig });
@@ -1085,21 +1085,7 @@ const handleWebhook = async (req, res) => {
                 await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: roiMsg, io, clientConfig });
                 
                 setTimeout(async () => {
-                    await sendWhatsAppInteractive({
-                        phoneNumberId: phoneId, to: userPhone,
-                        body: "Want to see exactly how we'd set this up for your business?",
-                        interactive: {
-                            type: 'button',
-                            action: {
-                                buttons: [
-                                    { type: 'reply', reply: { id: 'book_call', title: s.bookCall } },
-                                    { type: 'reply', reply: { id: 'demo_industry', title: s.tryDemo } },
-                                    { type: 'reply', reply: { id: 'faq_pricing', title: s.seePricing } }
-                                ]
-                            }
-                        },
-                        io, clientConfig
-                    });
+                    await sendPostDemoOptions(userPhone, vertical, phoneId, io, clientConfig);
                 }, 2000);
                 
                 return res.sendStatus(200);
@@ -1123,7 +1109,26 @@ const handleWebhook = async (req, res) => {
 
         switch (incomingText) {
             case 'opt_chatbot':
-                await sendWhatsAppInteractive({ phoneNumberId: phoneId, to: userPhone, body: "We build tailored AI experiences for every industry. Select a live demo below to test the booking flow natively inside WhatsApp! 👇", interactive: chatbotIndustryInteractive, io, clientConfig });
+                await sendWhatsAppInteractive({
+                    phoneNumberId: phoneId, to: userPhone,
+                    body: "We build tailored AI experiences for every industry.\n\nYou can test a live booking flow right now, or see how we handle eCommerce! 👇",
+                    interactive: {
+                        type: 'list',
+                        action: {
+                            button: 'Select Industry',
+                            sections: [{
+                                title: 'Live Demos',
+                                rows: [
+                                    { id: 'vert_salon',     title: s.salon,     description: 'Test Appointment Booking' },
+                                    { id: 'vert_turf',      title: s.turf,      description: 'Test Slot Booking' },
+                                    { id: 'vert_clinic',    title: s.clinic,    description: 'Test Patient Intake' },
+                                    { id: 'vert_ecommerce', title: s.ecommerce, description: 'See Live E-Com Bots' }
+                                ]
+                            }]
+                        }
+                    },
+                    io, clientConfig
+                });
                 break;
             
             case 'opt_caller':
@@ -1205,12 +1210,12 @@ const handleWebhook = async (req, res) => {
             case 'book_call':
                 await incrementLeadScore(lead, 10);
                 await lead.save();
-                await sendWhatsAppFlow({
-                    phoneNumberId: phoneId, to: userPhone,
-                    flowId: CALL_FLOW_ID,
-                    body: "Schedule your free 30-minute strategy session with our technical team. Pick a time that works best for you 👇",
-                    buttonText: "Book Now",
-                    io, clientConfig
+                
+                // Fallback direct link since CALL_FLOW_ID isn't created yet
+                await sendWhatsAppText({ 
+                    phoneNumberId: phoneId, to: userPhone, 
+                    body: "📞 *Book a Free Strategy Call*\n\nPick a time that works best for you using our calendar link below:\n\n👉 https://calendly.com/moksh-topedgeai/discovery-call\n\n*(Looking forward to speaking with you!)*", 
+                    io, clientConfig 
                 });
                 break;
             
@@ -1247,11 +1252,11 @@ const handleWebhook = async (req, res) => {
                 
                 const vcardDeli = {
                     name: { formatted_name: "Delitech SmartHomes", first_name: "Delitech" },
-                    phones: [{ phone: "+91 94297 84875", type: "WORK" }]
+                    phones: [{ phone: "919875251998", type: "WORK" }]
                 };
                 const vcardChoice = {
                     name: { formatted_name: "Choice Salon & Academy", first_name: "Choice" },
-                    phones: [{ phone: "+91 92747 94547", type: "WORK" }]
+                    phones: [{ phone: "919274794547", type: "WORK" }]
                 };
                 
                 await sendContactCard({ phoneNumberId: phoneId, to: userPhone, vcard: vcardDeli, io, clientConfig });
