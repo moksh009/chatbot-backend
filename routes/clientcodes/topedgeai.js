@@ -1143,11 +1143,11 @@ const handleWebhook = async (req, res) => {
                 return res.sendStatus(200);
             }
 
-            // 2. Detect which flow completed by checking industry-specific fields
-            const isSalon = flowResponse.service !== undefined && flowResponse.sport === undefined;
-            const isTurf = flowResponse.sport !== undefined;
-            const isClinic = flowResponse.department !== undefined;
-            const vertical = isSalon ? 'salon' : isTurf ? 'turf' : isClinic ? 'clinic' : (lead.meta?.businessVertical || 'salon');
+            // 2. Detect industry first (use meta as backup)
+            const vertical = flowResponse.sport ? 'turf' : (flowResponse.department ? 'clinic' : (flowResponse.service ? 'salon' : (lead.meta?.businessVertical || 'salon')));
+            const isSalon = vertical === 'salon';
+            const isTurf = vertical === 'turf';
+            const isClinic = vertical === 'clinic';
 
             let confirmMsg = '';
             let lastBooking = { vertical, ...flowResponse, timestamp: new Date() };
@@ -1167,11 +1167,11 @@ const handleWebhook = async (req, res) => {
 
             if (isSalon) {
                 confirmMsg =
-                    `Almost there!\nLet's quickly double-check your details: ✨\n\n` +
+                    `Almost there!\nLet's quickly double-check: ✨\n\n` +
                     `👤 *Name:* ${flowResponse.customer_name || flowResponse.name || userName}\n` +
-                    `💇 * الخدمة (Service):* ${flowResponse.service || 'N/A'}\n` +
-                    `💰 *Estimated Price:* ₹${bookingPrice}\n` +
-                    `📅 *Date:* ${flowResponse.date || 'N/A'}\n` +
+                    `💅 *Service:* ${flowResponse.service || 'N/A'}\n` +
+                    `💰 *Price:* ₹${bookingPrice}\n` +
+                    `📅 *Date:* ${flowResponse.date || flowResponse.day || 'N/A'}\n` +
                     `⏰ *Time:* ${flowResponse.time || flowResponse.slot || flowResponse.time_slot || 'N/A'}\n` +
                     `✂️ *Stylist:* ${flowResponse.stylist || 'subhashbhai'}\n` +
                     `📱 *Phone:* ${userPhone}\n` +
@@ -1179,25 +1179,25 @@ const handleWebhook = async (req, res) => {
                     `*This is exactly what your customers would see!* ☝️\nFully automated 24/7.`;
             } else if (isTurf) {
                 confirmMsg =
-                    `Almost there!\nLet's confirm your booking: ✨\n\n` +
+                    `Almost there!\nLet's verify your slot: ✨\n\n` +
+                    `👤 *Name:* ${flowResponse.customer_name || flowResponse.name || userName}\n` +
                     `🏅 *Sport:* ${flowResponse.sport || 'N/A'}\n` +
                     `⏱️ *Duration:* ${flowResponse.duration || '1'} Hour(s)\n` +
-                    `💰 *Estimated Price:* ₹${bookingPrice}\n` +
-                    `📅 *Date:* ${flowResponse.date || 'N/A'}\n` +
-                    `⏰ *Kick-off:* ${flowResponse.time || flowResponse.slot || flowResponse.time_slot || 'N/A'}\n` +
-                    `👤 *Name:* ${flowResponse.customer_name || flowResponse.name || userName}\n` +
+                    `💰 *Price:* ₹${bookingPrice}\n` +
+                    `📅 *Date:* ${flowResponse.date || flowResponse.day || 'N/A'}\n` +
+                    `⏰ *Time:* ${flowResponse.time || flowResponse.slot || flowResponse.time_slot || 'N/A'}\n` +
                     `📱 *Phone:* ${userPhone}\n` +
                     `━━━━━━━━━━━━━━━━━\n` +
-                    `*This is exactly what your customers would see!* ☝️`;
+                    `*This is exactly what your turf visitors see!* ☝️`;
             } else if (isClinic) {
                 confirmMsg =
-                    `Almost there!\nLet's confirm your details: ✨\n\n` +
-                    `🏥 *Department:* ${flowResponse.department || 'N/A'}\n` +
-                    `💊 *Service:* ${flowResponse.service || 'N/A'}\n` +
-                    `💰 *Consultation Fee:* ₹${bookingPrice}\n` +
-                    `📅 *Date:* ${flowResponse.date || 'N/A'}\n` +
-                    `⏰ *Time:* ${flowResponse.time || flowResponse.slot || flowResponse.time_slot || 'N/A'}\n` +
+                    `Almost there!\nLet's confirm your visit: ✨\n\n` +
                     `👤 *Patient:* ${flowResponse.patient_name || flowResponse.customer_name || flowResponse.name || userName}\n` +
+                    `🏥 *Dept:* ${flowResponse.department || 'N/A'}\n` +
+                    `💊 *Service:* ${flowResponse.service || 'N/A'}\n` +
+                    `💰 *Fee:* ₹${bookingPrice}\n` +
+                    `📅 *Date:* ${flowResponse.date || flowResponse.day || 'N/A'}\n` +
+                    `⏰ *Time:* ${flowResponse.time || flowResponse.slot || flowResponse.time_slot || 'N/A'}\n` +
                     `📱 *Phone:* ${userPhone}\n` +
                     `━━━━━━━━━━━━━━━━━\n` +
                     `*This is exactly what your patients would see!* ☝️`;
@@ -1426,11 +1426,7 @@ const handleWebhook = async (req, res) => {
             await sendWhatsAppInteractive({
                 phoneNumberId: phoneId, to: userPhone,
                 body: greet,
-                interactive: {
-                    type: 'list',
-                    header: { type: 'image', image: { link: LOGO_URL } },
-                    action: mainMenuInteractive.action
-                },
+                interactive: mainMenuInteractive,
                 io, clientConfig
             });
             return res.sendStatus(200);
