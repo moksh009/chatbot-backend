@@ -307,33 +307,20 @@ async function calculateAndShowROI(phone, lead, phoneNumberId, io, clientConfig)
     const service = lead.meta.roiService || '';
 
     // CALCULATION:
-    // Leads lost due to slow response
     const leadsLostToSpeed = Math.round(inquiries * rtLoss);
-
-    // Of those lost leads, AI recovers 80% (instant 24/7 response)
     const leadsRecovered = Math.round(leadsLostToSpeed * 0.80);
-
-    // Additional closures from recovered leads
     const extraClosures = Math.round(leadsRecovered * closeRate);
-
-    // Monthly revenue gain
     const monthlyGain = extraClosures * avgValue;
-
-    // Annual projection
     const yearlyGain = monthlyGain * 12;
-
-    // Current monthly loss (what they're bleeding right now)
     const currentMonthlyLoss = leadsLostToSpeed * closeRate * avgValue;
-
-    // Daily loss
     const dailyLoss = Math.round(currentMonthlyLoss / 30);
 
     // Build result message
-    const vertLabel = { salon: 'Salon', turf: 'Turf', clinic: 'Clinic', ecommerce: 'E-Commerce' };
+    const vLabels = { salon: 'Salon', turf: 'Turf', clinic: 'Clinic', ecommerce: 'E-Commerce' };
     const resultMsg =
         `🧮 *Your Revenue Recovery Report*\n` +
         `━━━━━━━━━━━━━━━━━\n` +
-        `🏢 Business:  ${vertLabel[vertical]}\n` +
+        `🏢 Business:  ${vLabels[vertical]}\n` +
         `📦 Service:   ${service.replace('roi_svc_', '').replace(/_/g, ' ')}\n` +
         `━━━━━━━━━━━━━━━━━\n` +
         `📉 *WHAT'S SLIPPING THROUGH THE CRACKS*\n` +
@@ -347,37 +334,21 @@ async function calculateAndShowROI(phone, lead, phoneNumberId, io, clientConfig)
         `Monthly revenue gain:   ₹${monthlyGain.toLocaleString('en-IN')}\n` +
         `Annual projection:      ₹${yearlyGain.toLocaleString('en-IN')} 🚀\n` +
         `━━━━━━━━━━━━━━━━━\n` +
-        `_These numbers are based on your actual inputs — not industry averages._\n\n` +
+        `_These numbers are based on your actual inputs._\n\n` +
         `*Want to capture that ₹${monthlyGain.toLocaleString('en-IN')}/month?*\n` +
-        `Our team can have your AI live in 3–5 days. 👇`;
+        `Tap below to take the next step. 👇`;
 
     // Save to DB
     lead.meta.roiStep = 0;
     lead.meta.roiCalculated = true;
-    lead.meta.roiResult = {
-        monthlyGain,
-        currentMonthlyLoss,
-        yearlyGain,
-        leadsRecovered,
-        extraClosures,
-        dailyLoss
-    };
+    lead.meta.roiResult = { monthlyGain, currentMonthlyLoss, yearlyGain, leadsRecovered, extraClosures, dailyLoss };
     lead.markModified('meta');
     await incrementLeadScore(lead, 20);
     await lead.save();
-    await trackEvent(phone, EVENTS.ROI_COMPLETED, clientConfig, {
-        vertical,
-        monthlyGain,
-        service: lead.meta.roiService
-    });
+    await trackEvent(phone, EVENTS.ROI_COMPLETED, clientConfig, { vertical, monthlyGain, service });
 
-    // Send result
-    await sendWhatsAppText({ phoneNumberId, to: phone, body: resultMsg, io, clientConfig });
-
-    // After 2s send post-demo options
-    setTimeout(async () => {
-        await sendPostDemoOptions(phone, vertical, phoneNumberId, io, clientConfig);
-    }, 2000);
+    // Send combined result + options
+    await sendPostDemoOptions(phone, vertical, phoneNumberId, io, clientConfig, resultMsg);
 }
 
 async function sendServiceSelector(phone, vertical, phoneNumberId, io, clientConfig) {
@@ -546,7 +517,7 @@ async function routeToIndustryDemo(phone, vertical, userName, phoneNumberId, io,
     await trackEvent(phone, EVENTS.DEMO_OPENED, clientConfig, { vertical });
 }
 
-async function sendPostDemoOptions(phone, vertical, phoneNumberId, io, clientConfig) {
+async function sendPostDemoOptions(phone, vertical, phoneNumberId, io, clientConfig, customBody) {
     try {
         const lead = await AdLead.findOne({ phoneNumber: phone, clientId: clientConfig.clientId });
         if (!lead || lead.humanIntervention) return;
@@ -560,7 +531,7 @@ async function sendPostDemoOptions(phone, vertical, phoneNumberId, io, clientCon
 
         await sendWhatsAppInteractive({
             phoneNumberId, to: phone,
-            body: `You just saw what your business could look like on WhatsApp. 👆\n\nWhat's the next step for you?`,
+            body: customBody || `You just saw what your business could look like on WhatsApp. 👆\n\nWhat's the next step for you?`,
             interactive: {
                 type: 'list',
                 action: {
@@ -596,13 +567,8 @@ async function sendSocialProof(phone, vertical, phoneNumberId, io, clientConfig)
         const proofs = PROOF_MESSAGES[vertical];
         const msg = proofs[idx % proofs.length];
 
-        await sendWhatsAppText({ phoneNumberId, to: phone, body: msg, io, clientConfig });
-
-        setTimeout(async () => {
-            const freshLead = await AdLead.findOne({ phoneNumber: phone, clientId: clientConfig.clientId });
-            if (freshLead && freshLead.meta?.roiStep > 0) return; // Abort post-demo options if they started ROI
-            await sendPostDemoOptions(phone, vertical, phoneNumberId, io, clientConfig);
-        }, 1500);
+        // Send the social proof + options as ONE message
+        await sendPostDemoOptions(phone, vertical, phoneNumberId, io, clientConfig, msg);
 
         lead.meta[key] = idx + 1;
         lead.markModified('meta');
@@ -877,7 +843,7 @@ const faqInteractive = {
     action: {
         button: 'Select Topic',
         sections: [{
-            title: 'Frequently Asked Questions',
+            title: 'Common Questions',
             rows: [
                 { id: 'faq_pricing', title: '💰 Pricing & Packages', description: 'How much does it cost?' },
                 { id: 'faq_integration', title: '🔗 Integrations', description: 'Does it work with my software?' },
@@ -1072,7 +1038,7 @@ const handleWebhook = async (req, res) => {
                     action: {
                         button: 'Select Range',
                         sections: [{
-                            title: 'Average Order / Service Value',
+                            title: 'Average Sale Value',
                             rows: [
                                 { id: 'roi_val_200', title: 'Under ₹500', description: 'Quick / basic services' },
                                 { id: 'roi_val_750', title: '₹500 – ₹1,000', description: 'Standard service' },
@@ -1186,14 +1152,28 @@ const handleWebhook = async (req, res) => {
             let confirmMsg = '';
             let lastBooking = { vertical, ...flowResponse, timestamp: new Date() };
 
+            const PRICES = {
+                // Salon
+                'Heads up Haircut': 500, 'Hair Styling': 700, 'Beard Trim': 300, 'Hair Color': 1500, 'Classic Mani-Pedi': 1200,
+                // Turf
+                'Cricket (Box)': 800, 'Football (5-a-side)': 700, 'Badminton': 400, 'Full Ground': 2500,
+                // Clinic
+                'Dental Checkup': 300, 'Skin Consultation': 500, 'General Physician': 200, 'Physiotherapy': 400
+            };
+
+            const getPrice = (item) => PRICES[item] || 'Check at counter';
+            const bookingPrice = isSalon ? getPrice(flowResponse.service) : isTurf ? (getPrice(flowResponse.sport) * (parseInt(flowResponse.duration) || 1)) : isClinic ? getPrice(flowResponse.department) : 'N/A';
+            lastBooking.price = bookingPrice;
+
             if (isSalon) {
                 confirmMsg =
                     `Almost there!\nLet's quickly double-check your details: ✨\n\n` +
                     `👤 *Name:* ${flowResponse.customer_name || flowResponse.name || userName}\n` +
+                    `💇 * الخدمة (Service):* ${flowResponse.service || 'N/A'}\n` +
+                    `💰 *Estimated Price:* ₹${bookingPrice}\n` +
                     `📅 *Date:* ${flowResponse.date || 'N/A'}\n` +
-                    `⏰ *Time:* ⏲️ ${flowResponse.time || flowResponse.slot || flowResponse.time_slot || 'N/A'}\n` +
-                    `💇 *Stylist:* ${flowResponse.stylist || 'subhashbhai'}\n` +
-                    `💅 *Service:* ${flowResponse.service || 'N/A'}\n` +
+                    `⏰ *Time:* ${flowResponse.time || flowResponse.slot || flowResponse.time_slot || 'N/A'}\n` +
+                    `✂️ *Stylist:* ${flowResponse.stylist || 'subhashbhai'}\n` +
                     `📱 *Phone:* ${userPhone}\n` +
                     `━━━━━━━━━━━━━━━━━\n` +
                     `*This is exactly what your customers would see!* ☝️\nFully automated 24/7.`;
@@ -1201,9 +1181,10 @@ const handleWebhook = async (req, res) => {
                 confirmMsg =
                     `Almost there!\nLet's confirm your booking: ✨\n\n` +
                     `🏅 *Sport:* ${flowResponse.sport || 'N/A'}\n` +
-                    `⏱️ *Duration:* ${flowResponse.duration || 'N/A'}\n` +
+                    `⏱️ *Duration:* ${flowResponse.duration || '1'} Hour(s)\n` +
+                    `💰 *Estimated Price:* ₹${bookingPrice}\n` +
                     `📅 *Date:* ${flowResponse.date || 'N/A'}\n` +
-                    `⏰ *Kick-off:* ⏲️ ${flowResponse.time || flowResponse.slot || flowResponse.time_slot || 'N/A'}\n` +
+                    `⏰ *Kick-off:* ${flowResponse.time || flowResponse.slot || flowResponse.time_slot || 'N/A'}\n` +
                     `👤 *Name:* ${flowResponse.customer_name || flowResponse.name || userName}\n` +
                     `📱 *Phone:* ${userPhone}\n` +
                     `━━━━━━━━━━━━━━━━━\n` +
@@ -1213,8 +1194,9 @@ const handleWebhook = async (req, res) => {
                     `Almost there!\nLet's confirm your details: ✨\n\n` +
                     `🏥 *Department:* ${flowResponse.department || 'N/A'}\n` +
                     `💊 *Service:* ${flowResponse.service || 'N/A'}\n` +
+                    `💰 *Consultation Fee:* ₹${bookingPrice}\n` +
                     `📅 *Date:* ${flowResponse.date || 'N/A'}\n` +
-                    `⏰ *Time:* ⏲️ ${flowResponse.time || flowResponse.slot || flowResponse.time_slot || 'N/A'}\n` +
+                    `⏰ *Time:* ${flowResponse.time || flowResponse.slot || flowResponse.time_slot || 'N/A'}\n` +
                     `👤 *Patient:* ${flowResponse.patient_name || flowResponse.customer_name || flowResponse.name || userName}\n` +
                     `📱 *Phone:* ${userPhone}\n` +
                     `━━━━━━━━━━━━━━━━━\n` +
@@ -1441,12 +1423,16 @@ const handleWebhook = async (req, res) => {
                 greet = `Hey ${userName}! 👋\n\nI'm the TopEdge AI demo — and what you're about to see is *not a slideshow.*\n\nIt's the actual automation your business could run on WhatsApp, 24/7, without hiring anyone.\n\n_Salons, clinics, turf facilities, and e-commerce stores — all running on autopilot._\n\nWhat would you like to explore? 👇`;
             }
 
-            await sendWhatsAppImage({ phoneNumberId: phoneId, to: userPhone, imageUrl: LOGO_URL, caption: greet, io, clientConfig });
-
-            // Followed by the interactive menu
-            setTimeout(async () => {
-                await sendWhatsAppInteractive({ phoneNumberId: phoneId, to: userPhone, body: "Menu Options", interactive: mainMenuInteractive, io, clientConfig });
-            }, 1000);
+            await sendWhatsAppInteractive({
+                phoneNumberId: phoneId, to: userPhone,
+                body: greet,
+                interactive: {
+                    type: 'list',
+                    header: { type: 'image', image: { link: LOGO_URL } },
+                    action: mainMenuInteractive.action
+                },
+                io, clientConfig
+            });
             return res.sendStatus(200);
         }
 
@@ -1473,30 +1459,22 @@ const handleWebhook = async (req, res) => {
                 lead.markModified('meta');
                 await lead.save();
 
-                // Send the image with caption 
-                await sendWhatsAppImage({
-                    phoneNumberId: phoneId, to: userPhone, imageUrl: item.img,
-                    caption: `${item.emoji} *${item.name}*\n💰 ${item.price}\n📝 ${item.desc}\n\n*Simulated Checkout!* If this were your store, the user could instantly 'Add to Cart' and pay right here. Want to see the rest of the flow? 👇`,
+                // Send combined interactive message: Image header + description + action buttons
+                await sendWhatsAppInteractive({
+                    phoneNumberId: phoneId, to: userPhone,
+                    body: `${item.emoji} *${item.name}*\n💰 ${item.price}\n📝 ${item.desc}\n\n*Simulated Checkout!* If this were your store, the user could instantly 'Add to Cart' and pay right here. Want to see the rest of the flow? 👇`,
+                    interactive: {
+                        type: 'button',
+                        header: { type: 'image', image: { link: item.img } },
+                        action: {
+                            buttons: [
+                                { type: 'reply', reply: { id: 'ecom_proceed_checkout', title: 'Proceed to Checkout' } },
+                                { type: 'reply', reply: { id: 'switch_industry', title: 'Change Industry' } }
+                            ]
+                        }
+                    },
                     io, clientConfig
                 });
-
-                // Send confirmation button to checkout or change industry
-                setTimeout(async () => {
-                    await sendWhatsAppInteractive({
-                        phoneNumberId: phoneId, to: userPhone,
-                        body: "Would you like to complete this test order?",
-                        interactive: {
-                            type: 'button',
-                            action: {
-                                buttons: [
-                                    { type: 'reply', reply: { id: 'ecom_proceed_checkout', title: 'Proceed to Checkout' } },
-                                    { type: 'reply', reply: { id: 'switch_industry', title: 'Change Industry' } }
-                                ]
-                            }
-                        },
-                        io, clientConfig
-                    });
-                }, 1000);
             }
             return res.sendStatus(200);
         }
@@ -1545,10 +1523,12 @@ const handleWebhook = async (req, res) => {
             const b = lead.meta?.lastBooking || {};
             const successMsg = `✅ *Booking Confirmed*\n\n` +
                 `👤 *Name:* ${b.customer_name || b.name || userName}\n` +
+                `💇 *Service:* ${b.service || 'N/A'}\n` +
+                `💰 *Price:* ₹${b.price || 'N/A'}\n` +
                 `📅 *Date:* ${b.date || 'Today'}\n` +
                 `⏰ *Time:* ${b.time || b.slot || 'N/A'}\n` +
-                `💇 *Stylist:* ${b.stylist || 'subhashbhai'}\n` +
-                `💅 *Service:* ${b.service || 'N/A'}\n\n` +
+                `✂️ *Stylist:* ${b.stylist || 'subhashbhai'}\n` +
+                `📱 *Phone:* ${userPhone}\n\n` +
                 `🏢 *Choice Salon* 2nd Floor, Raspan Arcade, 5-6, Nikol\n` +
                 `🗺️ *Map:* https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
                 `*This is a DEMO* — your real customers would receive this exact experience. 👇`;
@@ -1621,11 +1601,13 @@ const handleWebhook = async (req, res) => {
         if (incomingText === 'turf_confirm_done') {
             const b = lead.meta?.lastBooking || {};
             const successMsg = `✅ *Slot Confirmed*\n\n` +
+                `👤 *Name:* ${b.customer_name || b.name || userName}\n` +
                 `🏅 *Sport:* ${b.sport || 'N/A'}\n` +
-                `⏱️ *Duration:* ${b.duration || 'N/A'}\n` +
+                `⏱️ *Duration:* ${b.duration || '1'} Hour(s)\n` +
+                `💰 *Price:* ₹${b.price || 'N/A'}\n` +
                 `📅 *Date:* ${b.date || 'Today'}\n` +
                 `⏰ *Time:* ${b.time || b.slot || 'N/A'}\n` +
-                `👤 *Name:* ${b.customer_name || b.name || userName}\n\n` +
+                `📱 *Phone:* ${userPhone}\n\n` +
                 `🏢 *TopEdge Sports Arena* Nikol-Naroda Road, Ahmedabad\n` +
                 `🗺️ *Map:* https://maps.google.com/?q=TopEdge+Sports+Arena+Ahmedabad\n\n` +
                 `*This is a DEMO* — your real customers would get this exact experience. 👇`;
@@ -1739,7 +1721,7 @@ const handleWebhook = async (req, res) => {
                 body: "🍔 *What are you craving today?*\nSelect a category below 👇",
                 interactive: {
                     type: 'list',
-                    header: { type: 'image', image: { link: INDUSTRY_IMAGES.ecommerce } },
+                    header: { type: 'text', text: 'TopEdge Store' },
                     action: {
                         button: 'View Menu',
                         sections: [{
@@ -1877,24 +1859,38 @@ const handleWebhook = async (req, res) => {
                 break;
 
             case 'faq_pricing':
-                await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: "💰 *Pricing & Packages*\n\nWe offer custom-tailored solutions based on your lead volume and integration needs. \n\nOur base AI Chatbot packages start at just *₹4,999/month*, ensuring a massive ROI by recovering lost leads.\n\nWould you like a custom quote?", io, clientConfig });
-                setTimeout(async () => {
-                    await sendWhatsAppInteractive({ phoneNumberId: phoneId, to: userPhone, body: "What's next?", interactive: { type: 'button', action: { buttons: [{ type: 'reply', reply: { id: 'opt_human', title: 'Get Custom Quote' } }, { type: 'reply', reply: { id: 'menu_main', title: 'Main Menu' } }] } }, io, clientConfig });
-                }, 1500);
+                await sendWhatsAppInteractive({
+                    phoneNumberId: phoneId, to: userPhone,
+                    body: "💰 *Pricing & Packages*\n\nWe offer custom-tailored solutions based on your lead volume and integration needs. \n\nOur base AI Chatbot packages start at just *₹4,999/month*, ensuring a massive ROI by recovering lost leads.\n\nWould you like a custom quote?",
+                    interactive: {
+                        type: 'button',
+                        action: {
+                            buttons: [
+                                { type: 'reply', reply: { id: 'opt_human', title: 'Get Custom Quote' } },
+                                { type: 'reply', reply: { id: 'menu_main', title: 'Main Menu' } }
+                            ]
+                        }
+                    },
+                    io, clientConfig
+                });
                 break;
 
             case 'faq_integration':
-                await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: "🔗 *Seamless Integrations*\n\nTopEdge AI integrates effortlessly with your existing tools! We connect directly to *Shopify, WooCommerce, Google Calendar, Zoho, HubSpot, and custom CRMs* via API.\n\nDon't have a CRM? No problem! We provide a beautiful, custom dashboard out-of-the-box.", io, clientConfig });
-                setTimeout(async () => {
-                    await sendWhatsAppInteractive({ phoneNumberId: phoneId, to: userPhone, body: "Explore more:", interactive: faqInteractive, io, clientConfig });
-                }, 1500);
+                await sendWhatsAppInteractive({
+                    phoneNumberId: phoneId, to: userPhone,
+                    body: "🔗 *Seamless Integrations*\n\nTopEdge AI integrates effortlessly with your existing tools! We connect directly to *Shopify, WooCommerce, Google Calendar, Zoho, HubSpot, and custom CRMs* via API.\n\nDon't have a CRM? No problem! We provide a beautiful, custom dashboard out-of-the-box.",
+                    interactive: faqInteractive,
+                    io, clientConfig
+                });
                 break;
 
             case 'faq_onboarding':
-                await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: "⏱️ *Lightning Fast Onboarding*\n\nOnce we gather your business knowledge, our engineering team can deploy your fully trained AI Assistant in just *3 to 5 business days*!\n\nWe handle all Meta API approvals, server hosting, and webhook scaling for you.", io, clientConfig });
-                setTimeout(async () => {
-                    await sendWhatsAppInteractive({ phoneNumberId: phoneId, to: userPhone, body: "Explore more:", interactive: faqInteractive, io, clientConfig });
-                }, 1500);
+                await sendWhatsAppInteractive({
+                    phoneNumberId: phoneId, to: userPhone,
+                    body: "⏱️ *Lightning Fast Onboarding*\n\nOnce we gather your business knowledge, our engineering team can deploy your fully trained AI Assistant in just *3 to 5 business days*!\n\nWe handle all Meta API approvals, server hosting, and webhook scaling for you.",
+                    interactive: faqInteractive,
+                    io, clientConfig
+                });
                 break;
 
             case 'book_call':
