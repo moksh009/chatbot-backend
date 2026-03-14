@@ -14,6 +14,7 @@ dotenv.config();
 // --- GLOBALS ---
 const timerMap = new Map();
 const socialProofTimerMap = new Map(); // FIX 5: Separate tracked timers for social proof
+const demoDedupMap = new Map(); // Deduplication: prevent duplicate welcome messages from WhatsApp retries
 const SALON_FLOW_ID = '1977238969670742';
 const TURF_FLOW_ID = '2142814969819669';
 const CLINIC_FLOW_ID = '1163688705769254';
@@ -435,7 +436,7 @@ async function sendServiceSelector(phone, vertical, phoneNumberId, io, clientCon
     });
 }
 
-// --- DEMO ROUTING (Module 4 implementation) ---
+// --- DEMO ROUTING ---
 
 const PROOF_MESSAGES = {
     salon: [
@@ -457,6 +458,15 @@ const PROOF_MESSAGES = {
 };
 
 async function routeToIndustryDemo(phone, vertical, userName, phoneNumberId, io, clientConfig) {
+    // Deduplication guard: if the same welcome was sent for this phone+vertical in the last 2 minutes, skip
+    const dedupKey = `${phone}_${vertical}`;
+    if (demoDedupMap.has(dedupKey)) {
+        console.log(`[DEDUP] Skipping duplicate routeToIndustryDemo for ${phone} / ${vertical}`);
+        return;
+    }
+    demoDedupMap.set(dedupKey, true);
+    setTimeout(() => demoDedupMap.delete(dedupKey), 2 * 60 * 1000); // Clear after 2 minutes
+
     const welcomeCaptions = {
         salon: `Hey! 👋\n\n💇‍♀️ Welcome to *TopEdge AI Salon* ✨\n\nTreat yourself to our premium hair spa,\nadvanced coloring, or precision cuts. 💅\n\nHow can we pamper you today?`,
         turf: `Hey! 👋\n\n⚽ Welcome to *TopEdge AI Turf* 🏟️\n\nBook your cricket, football, or badminton\nslot in seconds — no calls needed! 🏏\n\nReady to play?`,
@@ -482,31 +492,16 @@ async function routeToIndustryDemo(phone, vertical, userName, phoneNumberId, io,
         ],
         ecommerce: [
             { type: 'reply', reply: { id: 'ecom_browse', title: 'Browse Menu 🍔' } },
-            { type: 'reply', reply: { id: 'ecom_offers', title: 'Today\'s Offers 🔥' } },
+            { type: 'reply', reply: { id: 'ecom_offers', title: "Today's Offers 🔥" } },
             { type: 'reply', reply: { id: 'ecom_track', title: 'Track My Order 📦' } }
         ]
     };
 
-    // STEP 1: Send Welcome Image
     const demoImage = WELCOME_IMAGES[vertical] || LOGO_URL;
     const caption = welcomeCaptions[vertical] || `Welcome to ${vertical} Demo!`;
+    const buttons = actionButtons[vertical] || actionButtons.salon;
 
-    await sendWhatsAppImage({ phoneNumberId, to: phone, imageUrl: demoImage, caption: caption, io, clientConfig });
-
-    // STEP 2: Send Action Buttons after 1.5s delay
-    setTimeout(async () => {
-        await sendWhatsAppInteractive({
-            phoneNumberId, to: phone,
-            body: "Choose an option below 👇",
-            interactive: {
-                type: 'button',
-                action: { buttons: actionButtons[vertical] || actionButtons.salon }
-            },
-            io, clientConfig
-        });
-    }, 1500);
-
-    // Update lead meta
+    // Pre-save lead state BEFORE sending so WhatsApp retries are blocked by sessionState check
     const lead = await AdLead.findOne({ phoneNumber: phone, clientId: clientConfig.clientId });
     ensureLeadMeta(lead);
     if (lead) {
@@ -518,9 +513,21 @@ async function routeToIndustryDemo(phone, vertical, userName, phoneNumberId, io,
         await lead.save();
     }
 
-    // FIX 5: After 30 seconds, send social proof (tracked & cancellable)
-    if (flowIds[vertical]) {
-        // Cancel any existing social proof timer for this user
+    // Send ONE combined message: image header + text body + 3 action buttons
+    await sendWhatsAppInteractive({
+        phoneNumberId, to: phone,
+        body: caption,
+        interactive: {
+            type: 'button',
+            header: { type: 'image', image: { link: demoImage } },
+            action: { buttons }
+        },
+        io, clientConfig
+    });
+
+    // After 30 seconds, send social proof (only for salon/turf/clinic which have native flows)
+    const hasFlow = vertical !== 'ecommerce';
+    if (hasFlow) {
         if (socialProofTimerMap.has(phone)) {
             clearTimeout(socialProofTimerMap.get(phone));
             socialProofTimerMap.delete(phone);
@@ -529,7 +536,7 @@ async function routeToIndustryDemo(phone, vertical, userName, phoneNumberId, io,
             socialProofTimerMap.delete(phone);
             const freshLead = await AdLead.findOne({ phoneNumber: phone, clientId: clientConfig.clientId });
             if (freshLead && freshLead.meta?.businessVertical === vertical && !freshLead.humanIntervention) {
-                if (freshLead.meta?.roiStep > 0) return; // Abort if they started ROI
+                if (freshLead.meta?.roiStep > 0) return;
                 await sendSocialProof(phone, vertical, phoneNumberId, io, clientConfig);
             }
         }, 30000);
@@ -1177,35 +1184,39 @@ const handleWebhook = async (req, res) => {
             const vertical = isSalon ? 'salon' : isTurf ? 'turf' : isClinic ? 'clinic' : (lead.meta?.businessVertical || 'salon');
 
             let confirmMsg = '';
+            let lastBooking = { vertical, ...flowResponse, timestamp: new Date() };
 
             if (isSalon) {
                 confirmMsg =
-                    `Almost there! Let's quickly double-check your details: ✨\n\n` +
+                    `Almost there!\nLet's quickly double-check your details: ✨\n\n` +
                     `👤 *Name:* ${flowResponse.customer_name || flowResponse.name || userName}\n` +
                     `📅 *Date:* ${flowResponse.date || 'N/A'}\n` +
-                    `⏰ *Time:* ${flowResponse.time || flowResponse.slot || flowResponse.time_slot || 'N/A'}\n` +
-                    `💇 *Stylist:* ${flowResponse.stylist || 'Any Available'}\n` +
+                    `⏰ *Time:* ⏲️ ${flowResponse.time || flowResponse.slot || flowResponse.time_slot || 'N/A'}\n` +
+                    `💇 *Stylist:* ${flowResponse.stylist || 'subhashbhai'}\n` +
                     `💅 *Service:* ${flowResponse.service || 'N/A'}\n` +
+                    `📱 *Phone:* ${userPhone}\n` +
                     `━━━━━━━━━━━━━━━━━\n` +
                     `*This is exactly what your customers would see!* ☝️\nFully automated 24/7.`;
             } else if (isTurf) {
                 confirmMsg =
-                    `Almost there! Let's confirm your booking: ✨\n\n` +
+                    `Almost there!\nLet's confirm your booking: ✨\n\n` +
                     `🏅 *Sport:* ${flowResponse.sport || 'N/A'}\n` +
                     `⏱️ *Duration:* ${flowResponse.duration || 'N/A'}\n` +
                     `📅 *Date:* ${flowResponse.date || 'N/A'}\n` +
-                    `⏰ *Kick-off:* ${flowResponse.time || flowResponse.slot || flowResponse.time_slot || 'N/A'}\n` +
+                    `⏰ *Kick-off:* ⏲️ ${flowResponse.time || flowResponse.slot || flowResponse.time_slot || 'N/A'}\n` +
                     `👤 *Name:* ${flowResponse.customer_name || flowResponse.name || userName}\n` +
+                    `📱 *Phone:* ${userPhone}\n` +
                     `━━━━━━━━━━━━━━━━━\n` +
                     `*This is exactly what your customers would see!* ☝️`;
             } else if (isClinic) {
                 confirmMsg =
-                    `Almost there! Let's confirm your details: ✨\n\n` +
+                    `Almost there!\nLet's confirm your details: ✨\n\n` +
                     `🏥 *Department:* ${flowResponse.department || 'N/A'}\n` +
                     `💊 *Service:* ${flowResponse.service || 'N/A'}\n` +
                     `📅 *Date:* ${flowResponse.date || 'N/A'}\n` +
-                    `⏰ *Time:* ${flowResponse.time || flowResponse.slot || flowResponse.time_slot || 'N/A'}\n` +
+                    `⏰ *Time:* ⏲️ ${flowResponse.time || flowResponse.slot || flowResponse.time_slot || 'N/A'}\n` +
                     `👤 *Patient:* ${flowResponse.patient_name || flowResponse.customer_name || flowResponse.name || userName}\n` +
+                    `📱 *Phone:* ${userPhone}\n` +
                     `━━━━━━━━━━━━━━━━━\n` +
                     `*This is exactly what your patients would see!* ☝️`;
             } else {
@@ -1215,14 +1226,15 @@ const handleWebhook = async (req, res) => {
                 if (flowResponse.date) details.push(`📅 Date: ${flowResponse.date}`);
                 if (flowResponse.time || flowResponse.slot) details.push(`⏰ Time: ${flowResponse.time || flowResponse.slot}`);
                 if (flowResponse.name || flowResponse.customer_name || flowResponse.patient_name) details.push(`👤 Name: ${flowResponse.patient_name || flowResponse.customer_name || flowResponse.name}`);
+                details.push(`📱 Phone: ${userPhone}`);
                 const detailBlock = details.length > 0 ? details.join('\n') : '(Booking details captured)';
                 confirmMsg =
-                    `Almost there! Let's quickly double-check: ✨\n━━━━━━━━━━━━━━━━━\n${detailBlock}\n━━━━━━━━━━━━━━━━━\n` +
+                    `Almost there!\nLet's quickly double-check: ✨\n━━━━━━━━━━━━━━━━━\n${detailBlock}\n━━━━━━━━━━━━━━━━━\n` +
                     `*This is exactly what your customers would see!* ☝️ Fully automated 24/7.`;
             }
 
             const confirmButtonId = isSalon ? 'salon_confirm_done' : isTurf ? 'turf_confirm_done' : isClinic ? 'clinic_confirm_done' : 'salon_confirm_done';
-            const confirmButtonTitle = isSalon ? '✅ Looks Great!' : isTurf ? '✅ Looks Great!' : isClinic ? '✅ Looks Great!' : '✅ Confirm';
+            const confirmButtonTitle = isSalon ? '✅ Confirm' : isTurf ? '✅ Confirm' : isClinic ? '✅ Confirm' : '✅ Confirm';
 
             await sendWhatsAppInteractive({
                 phoneNumberId: phoneId, to: userPhone,
@@ -1232,7 +1244,7 @@ const handleWebhook = async (req, res) => {
                     action: {
                         buttons: [
                             { type: 'reply', reply: { id: confirmButtonId, title: confirmButtonTitle } },
-                            { type: 'reply', reply: { id: 'switch_industry', title: '🔄 Try Another' } }
+                            { type: 'reply', reply: { id: 'switch_industry', title: '🔄 Change' } }
                         ]
                     }
                 },
@@ -1241,10 +1253,10 @@ const handleWebhook = async (req, res) => {
 
             // Update lead meta
             ensureLeadMeta(lead);
-            lead.meta.businessVertical = vertical; // Ensure vertical is saved from flow detection
+            lead.meta.businessVertical = vertical;
+            lead.meta.lastBooking = lastBooking; // PERSIST DATA FOR SUCCESS MSG
             lead.meta.sessionState = 'demo_completed';
             lead.markModified('meta');
-            await incrementLeadScore(lead, 5);
             await lead.save();
             await trackEvent(userPhone, EVENTS.DEMO_COMPLETED, clientConfig, { vertical });
 
@@ -1507,38 +1519,56 @@ const handleWebhook = async (req, res) => {
         }
 
         if (incomingText === 'salon_prices') {
-            const pricingMsg = "💰 *Salon Services & Pricing*\n━━━━━━━━━━━━━━━━━\n✂️ Advance Haircut     — ₹699\n👨 Men's Styling        — ₹399\n🫧 Moroccan Hair Spa   — ₹1,499\n💎 Keratin Treatment   — ₹2,999*\n💎 Hair Botox          — ₹3,499*\n🎨 Balayage Full       — ₹3,999*\n💄 Party Makeup        — ₹1,999\n━━━━━━━━━━━━━━━━━\n*Price varies by hair length\n📞 Call for custom quote";
-            await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: pricingMsg, io, clientConfig });
-            setTimeout(async () => {
-                await sendWhatsAppInteractive({
-                    phoneNumberId: phoneId, to: userPhone, body: "Ready to book? 👇",
-                    interactive: {
-                        type: 'button',
-                        action: { buttons: [{ type: 'reply', reply: { id: 'salon_book', title: 'Book Now 📅' } }, { type: 'reply', reply: { id: 'menu_main', title: 'Main Menu' } }] }
-                    }, io, clientConfig
-                });
-            }, 1500);
+            await sendWhatsAppInteractive({
+                phoneNumberId: phoneId, to: userPhone,
+                body: "💰 *Salon Services & Pricing*\n━━━━━━━━━━━━━━━━━\n✂️ Advance Haircut     — ₹699\n👨 Men's Styling        — ₹399\n🫧 Moroccan Hair Spa   — ₹1,499\n💎 Keratin Treatment   — ₹2,999*\n💎 Hair Botox          — ₹3,499*\n🎨 Balayage Full       — ₹3,999*\n💄 Party Makeup        — ₹1,999\n━━━━━━━━━━━━━━━━━\n*Price varies by hair length.\n📞 Call for custom quote.\n\nReady to book? 👇",
+                interactive: {
+                    type: 'button',
+                    action: { buttons: [{ type: 'reply', reply: { id: 'salon_book', title: 'Book Now 📅' } }, { type: 'reply', reply: { id: 'menu_main', title: 'Main Menu' } }] }
+                }, io, clientConfig
+            });
             return res.sendStatus(200);
         }
-
         if (incomingText === 'salon_question') {
-            const questionMsg = "💬 Sure! Ask me anything about our services, timings, or pricing.\nI'll get back to you right away 😊\n\n*Salon Timings:*\n⏰ Mon–Sat: 10:00 AM – 8:00 PM\n⏰ Sunday:  10:00 AM – 6:00 PM\n\n📍 Location: Ahmedabad, Gujarat";
-            await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: questionMsg, io, clientConfig });
-            setTimeout(async () => {
-                await sendWhatsAppInteractive({
-                    phoneNumberId: phoneId, to: userPhone, body: "What's next? 👇",
-                    interactive: {
-                        type: 'button',
-                        action: { buttons: [{ type: 'reply', reply: { id: 'salon_book', title: 'Book Now 📅' } }, { type: 'reply', reply: { id: 'opt_human', title: 'Talk to Human 👨‍💻' } }] }
-                    }, io, clientConfig
-                });
-            }, 1500);
+            await sendWhatsAppInteractive({
+                phoneNumberId: phoneId, to: userPhone,
+                body: "💬 Sure! Ask me anything — our team will respond shortly. 😊\n\n*Salon Timings:*\n⏰ Mon–Sat: 10:00 AM – 8:00 PM\n⏰ Sunday:  10:00 AM – 6:00 PM\n📍 Location: Ahmedabad, Gujarat\n\nWhat would you like to do?",
+                interactive: {
+                    type: 'button',
+                    action: { buttons: [{ type: 'reply', reply: { id: 'salon_book', title: 'Book Now 📅' } }, { type: 'reply', reply: { id: 'opt_human', title: 'Talk to Human 👨‍💻' } }] }
+                }, io, clientConfig
+            });
             return res.sendStatus(200);
         }
 
         if (incomingText === 'salon_confirm_done') {
-            const finalMsg = "🎉 *Booking Confirmed!*\nYour appointment has been logged.\nWe'll send you a reminder 1 hour before. 🔔\n\n*This is a DEMO* — but your real customers\nwould receive this exact experience. 👆";
-            await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: finalMsg, io, clientConfig });
+            const b = lead.meta?.lastBooking || {};
+            const successMsg = `✅ *Booking Confirmed*\n\n` +
+                `👤 *Name:* ${b.customer_name || b.name || userName}\n` +
+                `📅 *Date:* ${b.date || 'Today'}\n` +
+                `⏰ *Time:* ${b.time || b.slot || 'N/A'}\n` +
+                `💇 *Stylist:* ${b.stylist || 'subhashbhai'}\n` +
+                `💅 *Service:* ${b.service || 'N/A'}\n\n` +
+                `🏢 *Choice Salon* 2nd Floor, Raspan Arcade, 5-6, Nikol\n` +
+                `🗺️ *Map:* https://maps.google.com/?q=Choice+Salon+Raspan+Arcade+Nikol\n\n` +
+                `*This is a DEMO* — your real customers would receive this exact experience. 👇`;
+
+            await sendWhatsAppInteractive({
+                phoneNumberId: phoneId, to: userPhone,
+                body: successMsg,
+                interactive: {
+                    type: 'button',
+                    header: { type: 'image', image: { link: WELCOME_IMAGES.salon } },
+                    action: {
+                        buttons: [
+                            { type: 'reply', reply: { id: 'salon_book', title: '📅 Book Another' } },
+                            { type: 'reply', reply: { id: 'salon_question', title: '❓ Ask Question' } },
+                            { type: 'reply', reply: { id: 'menu_main', title: '🏠 Home' } }
+                        ]
+                    }
+                },
+                io, clientConfig
+            });
             setTimeout(async () => {
                 const freshLead = await AdLead.findOne({ phoneNumber: userPhone, clientId: clientConfig.clientId });
                 if (freshLead && freshLead.meta?.roiStep > 0) return;
@@ -1565,38 +1595,57 @@ const handleWebhook = async (req, res) => {
         }
 
         if (incomingText === 'turf_prices') {
-            const pricingMsg = "💰 *Turf Slot Pricing*\n━━━━━━━━━━━━━━━━━\n🏏 Cricket (Box)       — ₹800/hr\n⚽ Football (5-a-side) — ₹700/hr\n🏸 Badminton           — ₹400/hr\n🏟️ Full Ground         — ₹2,500/hr\n━━━━━━━━━━━━━━━━━\n⏰ Available: 6:00 AM – 11:00 PM\n📦 Includes: Stumps, nets & lighting\n💡 Book 2hrs+ → 10% off";
-            await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: pricingMsg, io, clientConfig });
-            setTimeout(async () => {
-                await sendWhatsAppInteractive({
-                    phoneNumberId: phoneId, to: userPhone, body: "Ready to book?",
-                    interactive: {
-                        type: 'button',
-                        action: { buttons: [{ type: 'reply', reply: { id: 'turf_book', title: 'Book a Slot ⚽' } }, { type: 'reply', reply: { id: 'menu_main', title: 'Main Menu' } }] }
-                    }, io, clientConfig
-                });
-            }, 1500);
+            await sendWhatsAppInteractive({
+                phoneNumberId: phoneId, to: userPhone,
+                body: "💰 *Turf Slot Pricing*\n━━━━━━━━━━━━━━━━━\n🏏 Cricket (Box)       — ₹800/hr\n⚽ Football (5-a-side) — ₹700/hr\n🏸 Badminton           — ₹400/hr\n🏟️ Full Ground         — ₹2,500/hr\n━━━━━━━━━━━━━━━━━\n⏰ Available: 6:00 AM – 11:00 PM\n📦 Includes: Stumps, nets & lighting\n💡 Book 2hrs+ → 10% off\n\nReady to book?",
+                interactive: {
+                    type: 'button',
+                    action: { buttons: [{ type: 'reply', reply: { id: 'turf_book', title: 'Book a Slot ⚽' } }, { type: 'reply', reply: { id: 'menu_main', title: 'Main Menu' } }] }
+                }, io, clientConfig
+            });
             return res.sendStatus(200);
         }
 
         if (incomingText === 'turf_question') {
-            const questionMsg = "💬 Happy to help! Here are the basics:\n\n📍 *Location:* Ahmedabad, Gujarat\n⏰ *Timings:* 6:00 AM – 11:00 PM (All days)\n🅿️ *Parking:* Free on-site\n👟 *Shoes:* Sports shoes required\n🎒 *Equipment:* Available on rent";
-            await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: questionMsg, io, clientConfig });
-            setTimeout(async () => {
-                await sendWhatsAppInteractive({
-                    phoneNumberId: phoneId, to: userPhone, body: "What's next? 👇",
-                    interactive: {
-                        type: 'button',
-                        action: { buttons: [{ type: 'reply', reply: { id: 'turf_book', title: 'Book a Slot ⚽' } }, { type: 'reply', reply: { id: 'opt_human', title: 'Talk to Human 👨‍💻' } }] }
-                    }, io, clientConfig
-                });
-            }, 1500);
+            await sendWhatsAppInteractive({
+                phoneNumberId: phoneId, to: userPhone,
+                body: "💬 Happy to help! Here are the basics:\n\n📍 *Location:* Ahmedabad, Gujarat\n⏰ *Timings:* 6:00 AM – 11:00 PM (All days)\n🅿️ *Parking:* Free on-site\n👟 *Shoes:* Sports shoes required\n🎒 *Equipment:* Available on rent\n\nWhat's next? 👇",
+                interactive: {
+                    type: 'button',
+                    action: { buttons: [{ type: 'reply', reply: { id: 'turf_book', title: 'Book a Slot ⚽' } }, { type: 'reply', reply: { id: 'opt_human', title: 'Talk to Human 👨‍💻' } }] }
+                }, io, clientConfig
+            });
             return res.sendStatus(200);
         }
 
         if (incomingText === 'turf_confirm_done') {
-            const finalMsg = "🎉 *Slot Confirmed!*\nYour turf slot is booked!\nWe'll send a reminder 30 mins before. 🔔\n\n*This is a DEMO* — your real customers\nwould get this exact experience. 👆";
-            await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: finalMsg, io, clientConfig });
+            const b = lead.meta?.lastBooking || {};
+            const successMsg = `✅ *Slot Confirmed*\n\n` +
+                `🏅 *Sport:* ${b.sport || 'N/A'}\n` +
+                `⏱️ *Duration:* ${b.duration || 'N/A'}\n` +
+                `📅 *Date:* ${b.date || 'Today'}\n` +
+                `⏰ *Time:* ${b.time || b.slot || 'N/A'}\n` +
+                `👤 *Name:* ${b.customer_name || b.name || userName}\n\n` +
+                `🏢 *TopEdge Sports Arena* Nikol-Naroda Road, Ahmedabad\n` +
+                `🗺️ *Map:* https://maps.google.com/?q=TopEdge+Sports+Arena+Ahmedabad\n\n` +
+                `*This is a DEMO* — your real customers would get this exact experience. 👇`;
+
+            await sendWhatsAppInteractive({
+                phoneNumberId: phoneId, to: userPhone,
+                body: successMsg,
+                interactive: {
+                    type: 'button',
+                    header: { type: 'image', image: { link: WELCOME_IMAGES.turf } },
+                    action: {
+                        buttons: [
+                            { type: 'reply', reply: { id: 'turf_book', title: '📅 Book Another' } },
+                            { type: 'reply', reply: { id: 'turf_question', title: '❓ Ask Question' } },
+                            { type: 'reply', reply: { id: 'menu_main', title: '🏠 Home' } }
+                        ]
+                    }
+                },
+                io, clientConfig
+            });
             setTimeout(async () => {
                 const freshLead = await AdLead.findOne({ phoneNumber: userPhone, clientId: clientConfig.clientId });
                 if (freshLead && freshLead.meta?.roiStep > 0) return;
@@ -1623,38 +1672,57 @@ const handleWebhook = async (req, res) => {
         }
 
         if (incomingText === 'clinic_prices') {
-            const pricingMsg = "💰 *Consultation Fees*\n━━━━━━━━━━━━━━━━━\n🦷 Dental Checkup      — ₹300\n✨ Skin Consultation    — ₹500\n🩺 General Physician   — ₹200\n💪 Physiotherapy (30m) — ₹400\n🔬 Blood Test Package  — ₹799\n━━━━━━━━━━━━━━━━━\n⏰ Timings: 9:00 AM – 7:00 PM\n📋 Walk-ins welcome\n🏥 Appointments get priority";
-            await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: pricingMsg, io, clientConfig });
-            setTimeout(async () => {
-                await sendWhatsAppInteractive({
-                    phoneNumberId: phoneId, to: userPhone, body: "Ready to book?",
-                    interactive: {
-                        type: 'button',
-                        action: { buttons: [{ type: 'reply', reply: { id: 'clinic_book', title: 'Book Appointment 🩺' } }, { type: 'reply', reply: { id: 'menu_main', title: 'Main Menu' } }] }
-                    }, io, clientConfig
-                });
-            }, 1500);
+            await sendWhatsAppInteractive({
+                phoneNumberId: phoneId, to: userPhone,
+                body: "💰 *Consultation Fees*\n━━━━━━━━━━━━━━━━━\n🦷 Dental Checkup      — ₹300\n✨ Skin Consultation    — ₹500\n🩺 General Physician   — ₹200\n💪 Physiotherapy (30m) — ₹400\n🔬 Blood Test Package  — ₹799\n━━━━━━━━━━━━━━━━━\n⏰ Timings: 9:00 AM – 7:00 PM\n📋 Walk-ins welcome\n🏥 Appointments get priority\n\nReady to book?",
+                interactive: {
+                    type: 'button',
+                    action: { buttons: [{ type: 'reply', reply: { id: 'clinic_book', title: 'Book Appointment 🩺' } }, { type: 'reply', reply: { id: 'menu_main', title: 'Main Menu' } }] }
+                }, io, clientConfig
+            });
             return res.sendStatus(200);
         }
 
         if (incomingText === 'clinic_question') {
-            const questionMsg = "💬 Happy to answer! Here are the key details:\n\n📍 *Location:* Ahmedabad, Gujarat\n⏰ *Timings:* 9:00 AM – 7:00 PM (Mon–Sat)\n🚑 *Emergency:* Call +91-XXXXXXXXXX\n📋 *Reports:* Ready within 24 hours\n💉 *Lab Tests:* Home collection available";
-            await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: questionMsg, io, clientConfig });
-            setTimeout(async () => {
-                await sendWhatsAppInteractive({
-                    phoneNumberId: phoneId, to: userPhone, body: "What's next? 👇",
-                    interactive: {
-                        type: 'button',
-                        action: { buttons: [{ type: 'reply', reply: { id: 'clinic_book', title: 'Book Appointment 🩺' } }, { type: 'reply', reply: { id: 'opt_human', title: 'Talk to Human 👨‍💻' } }] }
-                    }, io, clientConfig
-                });
-            }, 1500);
+            await sendWhatsAppInteractive({
+                phoneNumberId: phoneId, to: userPhone,
+                body: "💬 Happy to answer! Here are the key details:\n\n📍 *Location:* Ahmedabad, Gujarat\n⏰ *Timings:* 9:00 AM – 7:00 PM (Mon–Sat)\n🚑 *Emergency:* Call +91-XXXXXXXXXX\n📋 *Reports:* Ready within 24 hours\n💉 *Lab Tests:* Home collection available\n\nWhat's next? 👇",
+                interactive: {
+                    type: 'button',
+                    action: { buttons: [{ type: 'reply', reply: { id: 'clinic_book', title: 'Book Appointment 🩺' } }, { type: 'reply', reply: { id: 'opt_human', title: 'Talk to Human 👨‍💻' } }] }
+                }, io, clientConfig
+            });
             return res.sendStatus(200);
         }
 
         if (incomingText === 'clinic_confirm_done') {
-            const finalMsg = "🎉 *Appointment Confirmed!*\nYour consultation is booked!\nReminder will be sent 1 hour before. 🔔\n\nCarry a valid ID & previous reports if any.\n\n*This is a DEMO* — your real patients\nwould get this exact experience. 👆";
-            await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: finalMsg, io, clientConfig });
+            const b = lead.meta?.lastBooking || {};
+            const successMsg = `✅ *Appointment Confirmed*\n\n` +
+                `🏥 *Dept:* ${b.department || 'N/A'}\n` +
+                `💊 *Service:* ${b.service || 'N/A'}\n` +
+                `📅 *Date:* ${b.date || 'Today'}\n` +
+                `⏰ *Time:* ${b.time || b.slot || 'N/A'}\n` +
+                `👤 *Patient:* ${b.patient_name || b.customer_name || userName}\n\n` +
+                `🏢 *TopEdge Care Clinic* Opp. Galaxy Circle, Ahmedabad\n` +
+                `🗺️ *Map:* https://maps.google.com/?q=TopEdge+Care+Clinic+Ahmedabad\n\n` +
+                `*This is a DEMO* — your real patients would get this exact experience. 👇`;
+
+            await sendWhatsAppInteractive({
+                phoneNumberId: phoneId, to: userPhone,
+                body: successMsg,
+                interactive: {
+                    type: 'button',
+                    header: { type: 'image', image: { link: WELCOME_IMAGES.clinic } },
+                    action: {
+                        buttons: [
+                            { type: 'reply', reply: { id: 'clinic_book', title: '🩺 Book Another' } },
+                            { type: 'reply', reply: { id: 'clinic_question', title: '❓ Ask Question' } },
+                            { type: 'reply', reply: { id: 'menu_main', title: '🏠 Home' } }
+                        ]
+                    }
+                },
+                io, clientConfig
+            });
             setTimeout(async () => {
                 const freshLead = await AdLead.findOne({ phoneNumber: userPhone, clientId: clientConfig.clientId });
                 if (freshLead && freshLead.meta?.roiStep > 0) return;
@@ -1665,27 +1733,26 @@ const handleWebhook = async (req, res) => {
 
         // --- E-COMMERCE ACTION BUTTONS ---
         if (incomingText === 'ecom_browse') {
-            await sendWhatsAppImage({ phoneNumberId: phoneId, to: userPhone, imageUrl: INDUSTRY_IMAGES.ecommerce, caption: "🍽️ *Our Menu*\nFresh, fast, and delivered hot! 🔥", io, clientConfig });
-            setTimeout(async () => {
-                await sendWhatsAppInteractive({
-                    phoneNumberId: phoneId, to: userPhone,
-                    body: "🍔 *What are you craving today?*\nSelect a category below:",
-                    interactive: {
-                        type: 'list',
-                        action: {
-                            button: 'View Menu',
-                            sections: [{
-                                title: 'Categories',
-                                rows: [
-                                    { id: 'ecom_pizza', title: '🍕 Wood-Fired Pizza', description: 'From ₹299 — Fresh daily' },
-                                    { id: 'ecom_burger', title: '🍔 Smash Burgers', description: 'From ₹199 — Juicy & loaded' },
-                                    { id: 'ecom_pasta', title: '🍝 Fresh Pasta', description: 'From ₹249 — Authentic Italian' }
-                                ]
-                            }]
-                        }
-                    }, io, clientConfig
-                });
-            }, 1000);
+            // Send one interactive list with image header
+            await sendWhatsAppInteractive({
+                phoneNumberId: phoneId, to: userPhone,
+                body: "🍔 *What are you craving today?*\nSelect a category below 👇",
+                interactive: {
+                    type: 'list',
+                    header: { type: 'image', image: { link: INDUSTRY_IMAGES.ecommerce } },
+                    action: {
+                        button: 'View Menu',
+                        sections: [{
+                            title: 'Categories',
+                            rows: [
+                                { id: 'ecom_pizza', title: '🍕 Wood-Fired Pizza', description: 'From ₹299 — Fresh daily' },
+                                { id: 'ecom_burger', title: '🍔 Smash Burgers', description: 'From ₹199 — Juicy & loaded' },
+                                { id: 'ecom_pasta', title: '🍝 Fresh Pasta', description: 'From ₹249 — Authentic Italian' }
+                            ]
+                        }]
+                    }
+                }, io, clientConfig
+            });
             ensureLeadMeta(lead);
             lead.meta.sessionState = 'viewing_demo';
             lead.markModified('meta');
@@ -1694,32 +1761,26 @@ const handleWebhook = async (req, res) => {
         }
 
         if (incomingText === 'ecom_offers') {
-            const offersMsg = "🔥 *Today's Special Offers*\n━━━━━━━━━━━━━━━━━\n🍕 Buy 2 Pizzas → Get 1 FREE\n🍔 Burger Combo → ₹349 (Save ₹50)\n🍝 Pasta + Drink → ₹299 (Save ₹70)\n━━━━━━━━━━━━━━━━━\n⏰ Valid today until 10 PM\n🚚 Free delivery on orders above ₹499\n⚡ Average delivery: 25-30 mins";
-            await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: offersMsg, io, clientConfig });
-            setTimeout(async () => {
-                await sendWhatsAppInteractive({
-                    phoneNumberId: phoneId, to: userPhone, body: "Ready to order? 👇",
-                    interactive: {
-                        type: 'button',
-                        action: { buttons: [{ type: 'reply', reply: { id: 'ecom_browse', title: 'Order Now 🛒' } }, { type: 'reply', reply: { id: 'menu_main', title: 'Main Menu' } }] }
-                    }, io, clientConfig
-                });
-            }, 1500);
+            await sendWhatsAppInteractive({
+                phoneNumberId: phoneId, to: userPhone,
+                body: "🔥 *Today's Special Offers*\n━━━━━━━━━━━━━━━━━\n🍕 Buy 2 Pizzas → Get 1 FREE\n🍔 Burger Combo → ₹349 (Save ₹50)\n🍝 Pasta + Drink → ₹299 (Save ₹70)\n━━━━━━━━━━━━━━━━━\n⏰ Valid today until 10 PM\n🚚 Free delivery on orders above ₹499\n⚡ Avg delivery: 25-30 mins\n\nReady to order?",
+                interactive: {
+                    type: 'button',
+                    action: { buttons: [{ type: 'reply', reply: { id: 'ecom_browse', title: 'Order Now 🛒' } }, { type: 'reply', reply: { id: 'menu_main', title: 'Main Menu' } }] }
+                }, io, clientConfig
+            });
             return res.sendStatus(200);
         }
 
         if (incomingText === 'ecom_track') {
-            const trackMsg = "📦 *Order Tracking*\n\nYour last order status will appear here.\n\n🟢 *Order #1042* — Out for delivery!\n🛵 Driver: Rahul | ETA: 12 mins\n📍 Tracking: link.topedgeai.com/track\n\n*In a real deployment, this would show\nyour actual live order status!* ☝️";
-            await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: trackMsg, io, clientConfig });
-            setTimeout(async () => {
-                await sendWhatsAppInteractive({
-                    phoneNumberId: phoneId, to: userPhone, body: "What's next? 👇",
-                    interactive: {
-                        type: 'button',
-                        action: { buttons: [{ type: 'reply', reply: { id: 'ecom_browse', title: 'Order Again 🛒' } }, { type: 'reply', reply: { id: 'opt_human', title: 'Talk to Human 👨‍💻' } }] }
-                    }, io, clientConfig
-                });
-            }, 1500);
+            await sendWhatsAppInteractive({
+                phoneNumberId: phoneId, to: userPhone,
+                body: "📦 *Order Tracking*\n\nYour last order status will appear here.\n\n🟢 *Order #1042* — Out for delivery!\n🛵 Driver: Rahul | ETA: 12 mins\n📍 Tracking: link.topedgeai.com/track\n\n*In a real deployment, this shows\nyour actual live order status!* ☝️\n\nWhat's next?",
+                interactive: {
+                    type: 'button',
+                    action: { buttons: [{ type: 'reply', reply: { id: 'ecom_browse', title: 'Order Again 🛒' } }, { type: 'reply', reply: { id: 'opt_human', title: 'Talk to Human 👨‍💻' } }] }
+                }, io, clientConfig
+            });
             return res.sendStatus(200);
         }
 
