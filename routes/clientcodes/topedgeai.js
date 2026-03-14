@@ -33,6 +33,16 @@ const VERTICAL_LABELS = {
     ecommerce: 'E-Commerce'
 };
 
+const INDUSTRY_IMAGES = {
+    salon: 'https://images.unsplash.com/photo-1595476108010-b4d1f10d5e43?w=800&q=80',
+    turf: 'https://images.unsplash.com/photo-1551280857-2b9bbe5240bc?w=800&q=80',
+    clinic: 'https://images.unsplash.com/photo-1519494026892-80bbd2d6fd0d?w=800&q=80',
+    ecommerce: 'https://images.unsplash.com/photo-1472851294608-062f824d29cc?w=800&q=80',
+    ecom_pizza: 'https://images.unsplash.com/photo-1513104890138-7c749659a591?w=800&q=80',
+    ecom_burger: 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=800&q=80',
+    ecom_pasta: 'https://images.unsplash.com/photo-1473093295043-cdd812d0e601?w=800&q=80'
+};
+
 const EVENTS = {
     SESSION_START: 'session_start',
     LANG_SELECTED: 'lang_selected',
@@ -224,19 +234,20 @@ function clearAllTimers(phone) {
 }
 
 function scheduleTimers(phone, phoneNumberId, io, clientConfig) {
-    // Timers updated per client request: 1 Hour, 5 Hours, 24 Hours
-    const t1 = setTimeout(() => sendTier1(phone, phoneNumberId, io, clientConfig), 1 * 3600 * 1000);
-    const t2 = setTimeout(() => sendTier2(phone, phoneNumberId, io, clientConfig), 5 * 3600 * 1000);
-    const t3 = setTimeout(() => sendTier3(phone, phoneNumberId, io, clientConfig), 24 * 3600 * 1000);
-    timerMap.set(phone, [t1, t2, t3]);
+    // SINGLE nudge only — 1 hour after last activity, fires ONCE per session
+    const t1 = setTimeout(() => sendInactivityNudge(phone, phoneNumberId, io, clientConfig), 1 * 3600 * 1000);
+    timerMap.set(phone, [t1]);
 }
 
-// --- TIER 1 — 1 HOUR NUDGE ---
-async function sendTier1(phone, phoneNumberId, io, clientConfig) {
+// --- SINGLE INACTIVITY NUDGE — 1 HOUR ---
+async function sendInactivityNudge(phone, phoneNumberId, io, clientConfig) {
     try {
         const lead = await AdLead.findOne({ phoneNumber: phone, clientId: clientConfig.clientId });
         ensureLeadMeta(lead);
         if (!lead || lead.humanIntervention || lead.meta.doNotDisturb) return;
+
+        // Only send ONCE — if we already nudged this session, stop
+        if (lead.meta.nudgeSentThisSession) return;
 
         let msg = '';
         const state = lead.meta.roiStep ? `roi_step${lead.meta.roiStep}` : lead.meta.sessionState;
@@ -255,7 +266,6 @@ async function sendTier1(phone, phoneNumberId, io, clientConfig) {
         else
             msg = 'Hey! Still here if you have questions 😊 Pick an option below to continue 👇';
 
-        // Always send with interactive buttons so the user can act
         await sendWhatsAppInteractive({
             phoneNumberId, to: phone, body: msg,
             interactive: {
@@ -270,73 +280,14 @@ async function sendTier1(phone, phoneNumberId, io, clientConfig) {
             },
             io, clientConfig
         });
+
+        // Mark nudge as sent so we never send again this session
+        lead.meta.nudgeSentThisSession = true;
+        lead.markModified('meta');
+        await lead.save();
+
         await trackEvent(phone, EVENTS.FOLLOWUP_SENT, clientConfig, { tier: 1 });
-    } catch (err) { console.error('Tier 1 Error:', err.message); }
-}
-
-// --- TIER 2 — 3 HOUR WARM FOLLOW-UP ---
-async function sendTier2(phone, phoneNumberId, io, clientConfig) {
-    try {
-        const lead = await AdLead.findOne({ phoneNumber: phone, clientId: clientConfig.clientId });
-        ensureLeadMeta(lead);
-        if (!lead || lead.humanIntervention || lead.meta.doNotDisturb) return;
-
-        let text = '';
-        if (lead.meta.roiCalculated) {
-            text = `Hey ${lead.name}! You calculated ₹${lead.meta.roiResult.monthlyGain.toLocaleString()}/month in potential gains earlier.\nOur team has a 20-min slot open tomorrow to show you exactly how we'd build this.\nWant to grab it?`;
-        } else if (lead.meta.demosViewed && lead.meta.demosViewed.length > 0) {
-            text = `Hey ${lead.name}! You checked out our ${lead.meta.demosViewed[0]} demo earlier.\nDid it look like something your business could use? Happy to answer any questions 😊`;
-        } else {
-            text = `Hey ${lead.name}! Anything I can help clarify about TopEdge AI?\nWe automate WhatsApp for businesses like yours in 3–5 days 🚀`;
-        }
-
-        await sendWhatsAppInteractive({
-            phoneNumberId, to: phone, body: text,
-            interactive: {
-                type: 'button',
-                action: {
-                    buttons: [
-                        { type: 'reply', reply: { id: 'book_call', title: '📞 Book free call' } },
-                        { type: 'reply', reply: { id: 'faq_pricing', title: '💰 Show me pricing' } },
-                        { type: 'reply', reply: { id: 'not_now', title: '⏰ Maybe later' } }
-                    ]
-                }
-            },
-            io, clientConfig
-        });
-        await trackEvent(phone, EVENTS.FOLLOWUP_SENT, clientConfig, { tier: 2 });
-    } catch (err) { console.error('Tier 2 Error:', err.message); }
-}
-
-// --- TIER 3 — 24 HOUR NEXT-DAY MESSAGE ---
-async function sendTier3(phone, phoneNumberId, io, clientConfig) {
-    try {
-        const lead = await AdLead.findOne({ phoneNumber: phone, clientId: clientConfig.clientId });
-        ensureLeadMeta(lead);
-        if (!lead || lead.humanIntervention || lead.meta.doNotDisturb) return;
-
-        const roiLine = lead.meta.roiCalculated
-            ? `You had ₹${lead.meta.roiResult.monthlyGain.toLocaleString()}/month on the table yesterday — still interested?`
-            : `We help businesses automate WhatsApp in 3–5 days. No tech skills needed.`;
-
-        const text = `Good morning ${lead.name}! 🌞\nJust checking in from TopEdge AI.\n${roiLine}\nTap below if you'd like to explore this week:`;
-
-        await sendWhatsAppInteractive({
-            phoneNumberId, to: phone, body: text,
-            interactive: {
-                type: 'button',
-                action: {
-                    buttons: [
-                        { type: 'reply', reply: { id: 'menu_main', title: '✅ Yes, let\'s talk' } },
-                        { type: 'reply', reply: { id: 'opt_roi', title: '🧮 Calculate my ROI' } },
-                        { type: 'reply', reply: { id: 'stop_msgs', title: '🚫 Stop messages' } }
-                    ]
-                }
-            },
-            io, clientConfig
-        });
-        await trackEvent(phone, EVENTS.FOLLOWUP_SENT, clientConfig, { tier: 3 });
-    } catch (err) { console.error('Tier 3 Error:', err.message); }
+    } catch (err) { console.error('Nudge Error:', err.message); }
 }
 
 
@@ -369,8 +320,9 @@ async function routeToIndustryDemo(phone, vertical, userName, phoneNumberId, io,
         ecommerce: `${userName}, Welcome to TopEdge AI E-Commerce 🛒\n\n👇 Explore our digital food catalog and experience smooth ordering:`
     };
 
-    // Explicitly send logo attached to the Demo Intro (per user request)
-    await sendWhatsAppImage({ phoneNumberId, to: phone, imageUrl: LOGO_URL, caption: intros[vertical], io, clientConfig });
+    // Explicitly send industry-specific image attached to the Demo Intro (per user request)
+    const demoImage = INDUSTRY_IMAGES[vertical] || LOGO_URL;
+    await sendWhatsAppImage({ phoneNumberId, to: phone, imageUrl: demoImage, caption: intros[vertical], io, clientConfig });
 
     const flowIds = {
         salon:     SALON_FLOW_ID,
@@ -685,8 +637,26 @@ async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, i
     } catch (err) { console.error('Interactive Error:', err.message); return false; }
 }
 
-async function sendWhatsAppFlow({ phoneNumberId, to, flowId, body, buttonText = 'Open Form', io, clientConfig }) {
+async function sendWhatsAppFlow({ phoneNumberId, to, flowId, body, buttonText = 'Open Form', screenName, io, clientConfig }) {
     const token = clientConfig.whatsappToken;
+    const apiVersion = process.env.API_VERSION || 'v18.0';
+    const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
+
+    // Build flow action — use navigate if screenName provided, otherwise data_exchange to auto-open
+    const flowParams = {
+        flow_message_version: '3',
+        flow_token: `topedge_${flowId}`,
+        flow_id: flowId,
+        flow_cta: buttonText
+    };
+
+    if (screenName) {
+        flowParams.flow_action = 'navigate';
+        flowParams.flow_action_payload = { screen: screenName };
+    } else {
+        flowParams.flow_action = 'data_exchange';
+    }
+
     const data = {
         messaging_product: 'whatsapp',
         to,
@@ -695,25 +665,23 @@ async function sendWhatsAppFlow({ phoneNumberId, to, flowId, body, buttonText = 
             type: 'flow',
             header: { type: 'text', text: 'TopEdge AI Demo' },
             body: { text: body },
-            footer: { text: 'Automated Booking Flow' },
+            footer: { text: 'Powered by TopEdge AI ⚡' },
             action: {
                 name: 'flow',
-                parameters: {
-                    flow_message_version: '3',
-                    flow_token: 'topedge_demo_token',
-                    flow_id: flowId,
-                    flow_cta: buttonText,
-                    flow_action: 'navigate',
-                    flow_action_payload: { screen: 'HOME' }
-                }
+                parameters: flowParams
             }
         }
     };
     try {
-        await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
+        const resp = await axios.post(url, data, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } });
+        console.log('[FLOW SENT OK]', flowId, 'to', to);
         await saveAndEmitMessage({ phoneNumberId, to, body: `[Flow] ${body}`, type: 'interactive', io, clientConfig });
         return true;
-    } catch (err) { console.error('Flow Error:', err.message); return false; }
+    } catch (err) {
+        console.error('Flow Error:', err.response?.data || err.message);
+        console.error('Flow Error Details:', JSON.stringify(err.response?.data?.error || {}, null, 2));
+        return false;
+    }
 }
 
 async function sendContactCard({ phoneNumberId, to, vcard, io, clientConfig }) {
@@ -845,6 +813,7 @@ const handleWebhook = async (req, res) => {
         } else {
             ensureLeadMeta(lead);
             lead.meta.lastActivity = new Date();
+            lead.meta.nudgeSentThisSession = false; // Reset so nudge can fire again after new activity
             lead.markModified('meta');
             await lead.save();
         }
@@ -1107,10 +1076,10 @@ const handleWebhook = async (req, res) => {
                 await trackEvent(userPhone, EVENTS.ROI_STARTED, clientConfig, { vertical });
 
                 const roiQuestions = {
-                    salon: '1️⃣ How many clients visit your salon per month? (Just type a number)',
-                    turf: '1️⃣ How many hours is your turf available per day? (e.g. 15)',
-                    clinic: '1️⃣ How many patient appointments do you have per day?',
-                    ecommerce: '1️⃣ How many customer inquiries do you get per day on WhatsApp?'
+                    salon: '1️⃣ How many customer inquiries (calls/messages) do you get per month?',
+                    turf: '1️⃣ How many booking inquiries do you get per month?',
+                    clinic: '1️⃣ How many patient inquiries (calls/messages) do you get per month?',
+                    ecommerce: '1️⃣ How many product inquiries do you get per month on WhatsApp?'
                 };
                 await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: `🧮 *Let's calculate exactly how much revenue you're missing.*\n\n${roiQuestions[vertical] || roiQuestions.salon}`, io, clientConfig });
             } else {
@@ -1120,9 +1089,9 @@ const handleWebhook = async (req, res) => {
             return res.sendStatus(200);
         }
 
-        // -- ROI CALCULATOR STATE MACHINE (Updated logic to be industry-specific in Module 2) --
+        // -- ROI CALCULATOR STATE MACHINE (Refined Module 14) --
         ensureLeadMeta(lead);
-        if (lead.meta.roiStep > 0 && msg.type === 'text') {
+        if (lead.meta.roiStep > 0) {
             // FIX 3: Enhanced input validation
             if (!isValidROINumber(incomingText)) {
                 await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: `⚠️ Please enter a valid number only.\nExample: *150*\n\n(No text, symbols, or letters — just the number)`, io, clientConfig });
@@ -1132,146 +1101,133 @@ const handleWebhook = async (req, res) => {
 
             const vertical = lead.meta.businessVertical || 'salon';
 
-            // FIX 3: Range validation for percentage fields (Step 2 for salon/clinic)
-            if (lead.meta.roiStep === 2 && (vertical === 'salon' || vertical === 'clinic')) {
-                if (num < 0 || num > 100) {
-                    await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: `⚠️ Please enter a percentage between 0 and 100.\nExample: *25* (meaning 25%)`, io, clientConfig });
-                    return res.sendStatus(200);
-                }
-            }
-
             // vertical already declared above in FIX 3 block
 
             if (lead.meta.roiStep === 1) {
-                if (vertical === 'salon') lead.meta.monthlyClients = num;
-                else if (vertical === 'turf') lead.meta.totalHours = num;
-                else if (vertical === 'clinic') lead.meta.dailyAppointments = num;
-                else if (vertical === 'ecommerce') lead.meta.dailyInquiries = num;
-
+                lead.meta.monthlyInquiries = num;
                 lead.meta.roiStep = 2;
                 lead.markModified('meta');
                 await lead.save();
 
-                let nextQ = "";
-                if (vertical === 'salon') nextQ = "What % of appointments are no-shows or last-minute cancels? (e.g. 15 for 15%)";
-                else if (vertical === 'turf') nextQ = "How many of those hours go unbooked on average per day?";
-                else if (vertical === 'clinic') nextQ = "What % of appointments are no-shows? (e.g. 10 for 10%)";
-                else if (vertical === 'ecommerce') nextQ = "How many do you actually reply to within 1 hour on average?";
-
-                await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: nextQ, io, clientConfig });
+                await sendWhatsAppInteractive({
+                    phoneNumberId: phoneId, to: userPhone, 
+                    body: "2️⃣ What is your current close rate? (Approx % of leads that become customers)",
+                    interactive: {
+                        type: 'button',
+                        action: {
+                            buttons: [
+                                { type: 'reply', reply: { id: 'rate_10', title: '10%' } },
+                                { type: 'reply', reply: { id: 'rate_25', title: '25%' } },
+                                { type: 'reply', reply: { id: 'rate_50', title: '50%+' } }
+                            ]
+                        }
+                    },
+                    io, clientConfig
+                });
                 return res.sendStatus(200);
             }
-            if (lead.meta.roiStep === 2) {
-                if (vertical === 'salon') lead.meta.noShowRate = num;
-                else if (vertical === 'turf') lead.meta.emptyHours = num;
-                else if (vertical === 'clinic') lead.meta.noShowRate = num;
-                else if (vertical === 'ecommerce') lead.meta.repliedTo = num;
 
+            if (incomingText.startsWith('rate_')) {
+                lead.meta.closeRate = parseInt(incomingText.replace('rate_', ''), 10);
                 lead.meta.roiStep = 3;
                 lead.markModified('meta');
                 await lead.save();
 
-                let nextQ = "";
-                if (vertical === 'salon') nextQ = "What is your average service value per client in ₹?";
-                else if (vertical === 'turf') nextQ = "What is your per-hour booking rate in ₹?";
-                else if (vertical === 'clinic') nextQ = "What is your average consultation fee in ₹?";
-                else if (vertical === 'ecommerce') nextQ = "What is your average order value in ₹?";
-
-                await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: nextQ, io, clientConfig });
+                await sendWhatsAppInteractive({
+                    phoneNumberId: phoneId, to: userPhone,
+                    body: "3️⃣ What is your average response time to a new inquiry?",
+                    interactive: {
+                        type: 'button',
+                        action: {
+                            buttons: [
+                                { type: 'reply', reply: { id: 'time_5', title: 'Under 5 min' } },
+                                { type: 'reply', reply: { id: 'time_30', title: '30 min' } },
+                                { type: 'reply', reply: { id: 'time_60', title: '1 hour+' } }
+                            ]
+                        }
+                    },
+                    io, clientConfig
+                });
                 return res.sendStatus(200);
             }
-            if (lead.meta.roiStep === 3) {
-                let monthlyGain = 0;
-                let currentLoss = 0;
-                let roiMsg = "";
 
-                if (vertical === 'salon') {
-                    const monthlyClients = lead.meta.monthlyClients || 100;
-                    const noShowRate = lead.meta.noShowRate || 10;
-                    const avgValue = num;
-                    const missedClients = (monthlyClients * noShowRate) / 100;
-                    currentLoss = missedClients * avgValue;
-                    monthlyGain = Math.round(missedClients * 0.70 * avgValue); // AI recovers 70%
-                    const yearlyGain = monthlyGain * 12;
+            if (incomingText.startsWith('time_')) {
+                lead.meta.responseTime = incomingText.replace('time_', '');
+                lead.meta.roiStep = 4;
+                lead.markModified('meta');
+                await lead.save();
 
-                    roiMsg = `📊 *Here's your revenue gap:*\n━━━━━━━━━━━━━━━━━\nMonthly no-shows: \`${Math.round(missedClients)}\` clients\nMonthly loss: \`₹${currentLoss.toLocaleString()}\`\n*AI recovery (70%): ₹${monthlyGain.toLocaleString()}/month*\n*Yearly gain: ₹${yearlyGain.toLocaleString()}/year*\n━━━━━━━━━━━━━━━━━\nYou're leaving *₹${monthlyGain.toLocaleString()}* on the table every single month. 💰`;
-                } else if (vertical === 'turf') {
-                    const totalHours = lead.meta.totalHours || 12;
-                    const emptyHours = lead.meta.emptyHours || 4;
-                    const hourlyRate = num;
-                    const dailyLoss = emptyHours * hourlyRate;
-                    currentLoss = dailyLoss * 26; // Monthly loss
-                    monthlyGain = Math.round(emptyHours * 0.65 * hourlyRate * 26); // AI fills 65%
+                await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: "4️⃣ What is your average order value or service price in ₹?", io, clientConfig });
+                return res.sendStatus(200);
+            }
 
-                    roiMsg = `📊 *Your turf revenue gap:*\n━━━━━━━━━━━━━━━━━\nEmpty hours/day: \`${emptyHours}\` hours\nDaily loss: \`₹${dailyLoss.toLocaleString()}\`\nMonthly loss: \`₹${currentLoss.toLocaleString()}\`\n*AI slot-fill gain: ₹${monthlyGain.toLocaleString()}/month*\n━━━━━━━━━━━━━━━━━\n\`${emptyHours}\` empty hours daily = *₹${currentLoss.toLocaleString()}* evaporating every month. 🔥`;
-                } else if (vertical === 'clinic') {
-                    const dailyAppointments = lead.meta.dailyAppointments || 20;
-                    const noShowRate = lead.meta.noShowRate || 15;
-                    const consultFee = num;
-                    const dailyNoShows = (dailyAppointments * noShowRate) / 100;
-                    currentLoss = Math.round(dailyNoShows * consultFee * 26);
-                    monthlyGain = Math.round(dailyNoShows * 0.75 * consultFee * 26); // AI recovers 75%
+            if (lead.meta.roiStep === 4 && msg.type === 'text') {
+                const inquiries = lead.meta.monthlyInquiries || 100;
+                const closeRate = (lead.meta.closeRate || 20) / 100;
+                const avgValue = num;
 
-                    roiMsg = `📊 *Your clinic revenue gap:*\n━━━━━━━━━━━━━━━━━\nDaily no-shows: \`${dailyNoShows.toFixed(1)}\` patients\nMonthly loss: \`₹${currentLoss.toLocaleString()}\`\n*AI recovery (75%): ₹${monthlyGain.toLocaleString()}/month*\n━━━━━━━━━━━━━━━━━\n\`${dailyNoShows.toFixed(1)}\` patients ghost you daily. AI reminders + auto-rebooking fix that. 🏥`;
-                } else if (vertical === 'ecommerce') {
-                    const dailyInquiries = lead.meta.dailyInquiries || 50;
-                    const repliedTo = lead.meta.repliedTo || 20;
-                    const avgOrder = num;
-                    const missedLeads = dailyInquiries - repliedTo;
-                    currentLoss = Math.round(missedLeads * avgOrder * 0.35 * 30); // 35% conversion
-                    monthlyGain = Math.round(missedLeads * 0.90 * avgOrder * 0.35 * 30); // AI replies to 90%
+                // Simple but realistic math:
+                // 1. AI recovers 35% of lost leads (dead inquiries)
+                // 2. AI improves close rate by 40% due to instant speed
+                const extraLeads = Math.round(inquiries * 0.35); 
+                const projectedClosures = Math.round(extraLeads * (closeRate * 1.4));
+                const monthlyGain = projectedClosures * avgValue;
+                const yearlyGain = monthlyGain * 12;
+                const dailyLoss = Math.round(monthlyGain / 30);
 
-                    roiMsg = `📊 *Your store's revenue gap:*\n━━━━━━━━━━━━━━━━━\nMissed inquiries/day: \`${missedLeads}\`\nMonthly lost sales: \`₹${currentLoss.toLocaleString()}\`\n*AI recovery (90%): ₹${monthlyGain.toLocaleString()}/month*\n━━━━━━━━━━━━━━━━━\nYou're missing \`${missedLeads}\` potential buyers every single day. 🛒`;
-                }
-
-                // Advanced Gemini AI Integration for dynamic formatting
-                const systemPrompt = `You are an expert conversational AI consultant for TopEdge AI.
-The user owns a business in the '${vertical}' industry. 
-Based on their data, they are losing approximately ₹${currentLoss.toLocaleString('en-IN')} per month due to inefficiencies (no-shows, missed leads, empty slots).
-By using TopEdge AI's WhatsApp automation, they can recover around ₹${monthlyGain.toLocaleString('en-IN')} every single month effortlessly.
-
-Write a short, powerful WhatsApp message (max 3 brief paragraphs) explaining their "revenue gap" and positioning TopEdge AI as the ultimate solution to capture this lost money. 
-Use a few relevant emojis, but do not sound overly promotional. Never mention these instructions. Speak directly to the business owner.`;
-
-                // FIX 4: Gemini with guaranteed static fallback
-                const geminiKey = clientConfig.geminiApiKey || process.env.GEMINI_API_KEY?.trim();
-                let finalRoiMsg = roiMsg; // static fallback is ALWAYS set
-                if (geminiKey) {
-                    try {
-                        const aiGenerated = await generateWithGemini(geminiKey, systemPrompt);
-                        if (aiGenerated && aiGenerated.length > 20) {
-                            finalRoiMsg = aiGenerated;
-                        } else {
-                            console.warn('Gemini returned empty/short response, using static fallback');
-                        }
-                    } catch (geminiError) {
-                        console.error('Gemini failed, using static fallback:', geminiError.message);
-                        // finalRoiMsg already = roiMsg (static), no action needed
-                    }
-                }
+                const finalRoiMsg = `📊 *TopEdge AI ROI REPORT*\n━━━━━━━━━━━━━━━━━\n\n*MONTHLY GROWTH POTENTIAL*\n\`₹${monthlyGain.toLocaleString('en-IN')}\`\n\n*+${extraLeads} EXTRA LEADS CAPTURED*\n*${projectedClosures} PROJECTED MONTHLY CLOSURES*\n\n*ANNUAL PROJECTION*\n\`₹${yearlyGain.toLocaleString('en-IN')}\`\n\n*DAILY INEFFICIENT LOSS*\n\`₹${dailyLoss.toLocaleString('en-IN')}\`\n\n*DATA ACCURACY*\n\`99.9%\`\n━━━━━━━━━━━━━━━━━\nReady to capture this growth? 👇`;
 
                 lead.meta.roiStep = 0;
                 lead.meta.roiCalculated = true;
-                lead.meta.roiResult = { monthlyGain, currentLoss, vertical };
+                lead.meta.roiResult = { monthlyGain, extraLeads, projectedClosures };
                 lead.markModified('meta');
-                await incrementLeadScore(lead, 15);
+                await incrementLeadScore(lead, 20);
                 await lead.save();
-                await trackEvent(userPhone, EVENTS.ROI_COMPLETED, clientConfig, { vertical, gain: monthlyGain });
-
-                // Check for HOT threshold
-                if (lead.meta.leadScore >= 60 && !lead.meta.hotAlertSent) {
-                    await sendAdminAlert(userPhone, lead, 'Score hit HOT threshold 🔥', clientConfig);
-                    lead.meta.hotAlertSent = true;
-                    lead.markModified('meta');
-                    await lead.save();
-                }
+                await trackEvent(userPhone, EVENTS.ROI_COMPLETED, clientConfig, { vertical: lead.meta.businessVertical, gain: monthlyGain });
 
                 await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: finalRoiMsg, io, clientConfig });
 
                 setTimeout(async () => {
-                    await sendPostDemoOptions(userPhone, vertical, phoneId, io, clientConfig);
+                    await sendPostDemoOptions(userPhone, lead.meta.businessVertical, phoneId, io, clientConfig);
                 }, 2000);
 
+                return res.sendStatus(200);
+            }
+        }
+
+        // -- E-COMMERCE CHECKOUT STATE MACHINE --
+        if (msg.type === 'text') {
+            if (lead.meta.sessionState === 'ecom_checkout_name') {
+                lead.meta.customerName = incomingText;
+                lead.meta.sessionState = 'ecom_checkout_address';
+                lead.markModified('meta');
+                await lead.save();
+                await sendWhatsAppText({
+                    phoneNumberId: phoneId, to: userPhone,
+                    body: `Thanks ${incomingText}! 📍 Please type your full delivery address:`,
+                    io, clientConfig
+                });
+                return res.sendStatus(200);
+            }
+            if (lead.meta.sessionState === 'ecom_checkout_address') {
+                lead.meta.customerAddress = incomingText;
+                lead.meta.sessionState = 'demo_completed';
+                lead.markModified('meta');
+                await incrementLeadScore(lead, 5);
+                await lead.save();
+
+                const itemDetails = lead.meta.ecomItem || 'your order';
+                const confirmMsg = `✅ *Order Confirmed!*\n━━━━━━━━━━━━━━━━━\n🛒 Items: ${itemDetails}\n👤 Name: ${lead.meta.customerName}\n📍 Address: ${incomingText}\n🚚 Status: Out for delivery soon!\n━━━━━━━━━━━━━━━━━\n*This is exactly what your customers would experience!* ☝️\nFully automated 24/7 — zero manual work needed.`;
+                
+                await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: confirmMsg, io, clientConfig });
+                
+                // Track demo completion
+                await trackEvent(userPhone, EVENTS.DEMO_COMPLETED, clientConfig, { vertical: 'ecommerce' });
+                
+                setTimeout(async () => {
+                   await sendPostDemoOptions(userPhone, 'ecommerce', phoneId, io, clientConfig);
+                }, 2000);
+                
                 return res.sendStatus(200);
             }
         }
@@ -1285,35 +1241,64 @@ Use a few relevant emojis, but do not sound overly promotional. Never mention th
             lead.markModified('meta');
             await lead.save();
 
-            // Remove the logo image attachment directly here, as user requested it separated.
+            // Combine Logo and Greeting into a single message using the caption
             const greet = `Hey ${userName}! I'm the TopEdge AI demo bot 🤖\n\nWe provide advanced 24/7 WhatsApp AI Chatbots and Voice Callers helping businesses like Salons, Clinics, and E-Commerce scale and recover lost leads instantly.\n\nWhat would you like to explore today? 👇`;
-            await sendWhatsAppInteractive({ phoneNumberId: phoneId, to: userPhone, body: greet, interactive: mainMenuInteractive, io, clientConfig });
+            await sendWhatsAppImage({ phoneNumberId: phoneId, to: userPhone, imageUrl: LOGO_URL, caption: greet, io, clientConfig });
+            
+            // Followed by the interactive menu
+            setTimeout(async () => {
+                await sendWhatsAppInteractive({ phoneNumberId: phoneId, to: userPhone, body: "Menu Options", interactive: mainMenuInteractive, io, clientConfig });
+            }, 1000);
             return res.sendStatus(200);
         }
 
         // --- Handle Ecommerce Food Catalog Actions ---
         if (incomingText.startsWith('ecom_')) {
+            if (incomingText === 'ecom_proceed_checkout') {
+                ensureLeadMeta(lead);
+                lead.meta.sessionState = 'ecom_checkout_name';
+                lead.markModified('meta');
+                await lead.save();
+                await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: "Great! 📝 Please type your full name for the order:", io, clientConfig });
+                return res.sendStatus(200);
+            }
+
             const FOODS = {
-                ecom_pizza: { name: "Margherita Pizza", price: "₹299", desc: "Classic cheese & fresh basil", emoji: "🍕" },
-                ecom_burger: { name: "Classic Smash Burger", price: "₹199", desc: "Double patty & cheddar cheese", emoji: "🍔" },
-                ecom_pasta: { name: "Penne Alfredo", price: "₹249", desc: "Creamy white sauce with herbs", emoji: "🍝" }
+                ecom_pizza: { name: "Margherita Pizza", price: "₹299", desc: "Classic cheese & fresh basil", emoji: "🍕", img: INDUSTRY_IMAGES.ecom_pizza },
+                ecom_burger: { name: "Classic Smash Burger", price: "₹199", desc: "Double patty & cheddar cheese", emoji: "🍔", img: INDUSTRY_IMAGES.ecom_burger },
+                ecom_pasta: { name: "Penne Alfredo", price: "₹249", desc: "Creamy white sauce with herbs", emoji: "🍝", img: INDUSTRY_IMAGES.ecom_pasta }
             };
             const item = FOODS[incomingText];
             if (item) {
-                await sendWhatsAppText({
-                    phoneNumberId: phoneId, to: userPhone,
-                    body: `${item.emoji} *${item.name}*\n💰 ${item.price}\n📝 ${item.desc}\n\n*Simulated Checkout!* If this were your store, the user could instantly 'Add to Cart' and pay right here within WhatsApp.`,
+                ensureLeadMeta(lead);
+                lead.meta.ecomItem = item.name;
+                lead.markModified('meta');
+                await lead.save();
+
+                // Send the image with caption 
+                await sendWhatsAppImage({
+                    phoneNumberId: phoneId, to: userPhone, imageUrl: item.img,
+                    caption: `${item.emoji} *${item.name}*\n💰 ${item.price}\n📝 ${item.desc}\n\n*Simulated Checkout!* If this were your store, the user could instantly 'Add to Cart' and pay right here. Want to see the rest of the flow? 👇`,
                     io, clientConfig
                 });
-                // Send confirmation button to change industry
+                
+                // Send confirmation button to checkout or change industry
                 setTimeout(async () => {
                     await sendWhatsAppInteractive({
                         phoneNumberId: phoneId, to: userPhone,
-                        body: "✅ Order flow simulation complete! Try exploring a different industry:",
-                        interactive: { type: 'button', action: { buttons: [{ type: 'reply', reply: { id: 'switch_industry', title: 'Change Industry' } }] } },
+                        body: "Would you like to complete this test order?",
+                        interactive: { 
+                            type: 'button', 
+                            action: { 
+                                buttons: [
+                                    { type: 'reply', reply: { id: 'ecom_proceed_checkout', title: 'Proceed to Checkout' } },
+                                    { type: 'reply', reply: { id: 'switch_industry', title: 'Change Industry' } }
+                                ] 
+                            } 
+                        },
                         io, clientConfig
                     });
-                }, 2000);
+                }, 1000);
             }
             return res.sendStatus(200);
         }
