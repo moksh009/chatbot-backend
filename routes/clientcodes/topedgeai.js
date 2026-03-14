@@ -287,9 +287,145 @@ async function sendInactivityNudge(phone, phoneNumberId, io, clientConfig) {
         await lead.save();
 
         await trackEvent(phone, EVENTS.FOLLOWUP_SENT, clientConfig, { tier: 1 });
-    } catch (err) { console.error('Nudge Error:', err.message); }
+} catch (err) { console.error('Nudge Error:', err.message); }
 }
 
+// --- ROI HELPER FUNCTIONS ---
+async function calculateAndShowROI(phone, lead, phoneNumberId, io, clientConfig) {
+  const inquiries     = lead.meta.monthlyInquiries || 150;
+  const closeRate     = lead.meta.closeRate || 0.20;
+  const rtLoss        = lead.meta.responseTimeLoss || 0.25;
+  const avgValue      = lead.meta.avgValue || 1500;
+  const vertical      = lead.meta.businessVertical || 'salon';
+  const service       = lead.meta.roiService || '';
+
+  // CALCULATION:
+  // Leads lost due to slow response
+  const leadsLostToSpeed    = Math.round(inquiries * rtLoss);
+
+  // Of those lost leads, AI recovers 80% (instant 24/7 response)
+  const leadsRecovered      = Math.round(leadsLostToSpeed * 0.80);
+
+  // Additional closures from recovered leads
+  const extraClosures       = Math.round(leadsRecovered * closeRate);
+
+  // Monthly revenue gain
+  const monthlyGain         = extraClosures * avgValue;
+
+  // Annual projection
+  const yearlyGain          = monthlyGain * 12;
+
+  // Current monthly loss (what they're bleeding right now)
+  const currentMonthlyLoss  = leadsLostToSpeed * closeRate * avgValue;
+
+  // Daily loss
+  const dailyLoss           = Math.round(currentMonthlyLoss / 30);
+
+  // Build result message
+  const vertLabel = { salon: 'Salon', turf: 'Turf', clinic: 'Clinic', ecommerce: 'E-Commerce' };
+  const resultMsg =
+    `📊 *Your TopEdge AI ROI Report*\n` +
+    `━━━━━━━━━━━━━━━━━\n` +
+    `🏢 Business:      ${vertLabel[vertical]}\n` +
+    `📦 Service:       ${service.replace('roi_svc_', '').replace(/_/g, ' ')}\n` +
+    `━━━━━━━━━━━━━━━━━\n` +
+    `📉 *CURRENT SITUATION*\n` +
+    `Inquiries lost/month: ${leadsLostToSpeed}\n` +
+    `Revenue lost/month:   ₹${currentMonthlyLoss.toLocaleString('en-IN')}\n` +
+    `Revenue lost/day:     ₹${dailyLoss.toLocaleString('en-IN')}\n` +
+    `━━━━━━━━━━━━━━━━━\n` +
+    `📈 *WITH TOPEDGE AI*\n` +
+    `Leads recovered/month: ${leadsRecovered}\n` +
+    `Extra closures/month:  ${extraClosures}\n` +
+    `Monthly gain:          ₹${monthlyGain.toLocaleString('en-IN')}\n` +
+    `Annual projection:     ₹${yearlyGain.toLocaleString('en-IN')}\n` +
+    `━━━━━━━━━━━━━━━━━\n` +
+    `*Ready to capture ₹${monthlyGain.toLocaleString('en-IN')}/month?* 👇`;
+
+  // Save to DB
+  lead.meta.roiStep = 0;
+  lead.meta.roiCalculated = true;
+  lead.meta.roiResult = {
+    monthlyGain,
+    currentMonthlyLoss,
+    yearlyGain,
+    leadsRecovered,
+    extraClosures,
+    dailyLoss
+  };
+  lead.markModified('meta');
+  await incrementLeadScore(lead, 20);
+  await lead.save();
+  await trackEvent(phone, EVENTS.ROI_COMPLETED, clientConfig, {
+    vertical,
+    monthlyGain,
+    service: lead.meta.roiService
+  });
+
+  // Send result
+  await sendWhatsAppText({ phoneNumberId, to: phone, body: resultMsg, io, clientConfig });
+
+  // After 2s send post-demo options
+  setTimeout(async () => {
+    await sendPostDemoOptions(phone, vertical, phoneNumberId, io, clientConfig);
+  }, 2000);
+}
+
+async function sendServiceSelector(phone, vertical, phoneNumberId, io, clientConfig) {
+  const serviceOptions = {
+    salon: {
+      body: "What type of salon services do you primarily offer?",
+      rows: [
+        { id: 'roi_svc_haircut',   title: '✂️ Haircuts & Styling',    description: 'Cuts, blowouts, styling' },
+        { id: 'roi_svc_spa',       title: '💆 Spa & Treatments',       description: 'Facials, massage, care' },
+        { id: 'roi_svc_color',     title: '🎨 Colouring & Chemical',   description: 'Balayage, keratin, etc.' },
+        { id: 'roi_svc_bridal',    title: '👰 Bridal & Makeup',        description: 'Events & wedding packages' }
+      ]
+    },
+    turf: {
+      body: "What sport is your turf primarily used for?",
+      rows: [
+        { id: 'roi_svc_cricket',   title: '🏏 Cricket',    description: 'Box or full pitch' },
+        { id: 'roi_svc_football',  title: '⚽ Football',   description: '5-a-side or full ground' },
+        { id: 'roi_svc_badminton', title: '🏸 Badminton',  description: 'Indoor/outdoor courts' },
+        { id: 'roi_svc_multi',     title: '🏟️ Multi-Sport',description: 'Mixed usage' }
+      ]
+    },
+    clinic: {
+      body: "What is your primary medical department?",
+      rows: [
+        { id: 'roi_svc_dental',    title: '🦷 Dental',         description: 'General & cosmetic dentistry' },
+        { id: 'roi_svc_skin',      title: '✨ Dermatology',     description: 'Skin & hair treatments' },
+        { id: 'roi_svc_general',   title: '🩺 General Physician',description: 'Consultations & check-ups' },
+        { id: 'roi_svc_physio',    title: '💪 Physiotherapy',   description: 'Rehab & sports injuries' }
+      ]
+    },
+    ecommerce: {
+      body: "What best describes your store?",
+      rows: [
+        { id: 'roi_svc_fashion',    title: '👗 Fashion & Apparel',   description: 'Clothing & accessories' },
+        { id: 'roi_svc_food',       title: '🍔 Food & Beverages',    description: 'Restaurant, cloud kitchen' },
+        { id: 'roi_svc_electronics',title: '📱 Electronics',         description: 'Gadgets & accessories' },
+        { id: 'roi_svc_homegoods',  title: '🏠 Home & Lifestyle',    description: 'Furniture & decor' }
+      ]
+    }
+  };
+
+  const opt = serviceOptions[vertical] || serviceOptions.salon;
+
+  await sendWhatsAppInteractive({
+    phoneNumberId, to: phone,
+    body: opt.body,
+    interactive: {
+      type: 'list',
+      action: {
+        button: 'Select Service',
+        sections: [{ title: 'Your Primary Service', rows: opt.rows }]
+      }
+    },
+    io, clientConfig
+  });
+}
 
 // --- DEMO ROUTING (Module 4 implementation) ---
 
@@ -337,6 +473,12 @@ async function routeToIndustryDemo(phone, vertical, userName, phoneNumberId, io,
         clinic: 'Book Clinic Flow',
     };
 
+    const flowScreens = {
+        salon: 'SALON_HOME',
+        turf: 'TURF_HOME',
+        clinic: 'CLINIC_HOME',
+    };
+
     setTimeout(async () => {
         let flowSuccess = false;
 
@@ -363,7 +505,7 @@ async function routeToIndustryDemo(phone, vertical, userName, phoneNumberId, io,
         }
         // 2. Send Native Flow Demo if available
         else if (flowIds[vertical]) {
-            flowSuccess = await sendWhatsAppFlow({ phoneNumberId, to: phone, flowId: flowIds[vertical], body: `Secure your spot in seconds! Tap below to open our dynamic booking flow.`, buttonText: flowButtons[vertical] || 'Try Demo', io, clientConfig });
+            flowSuccess = await sendWhatsAppFlow({ phoneNumberId, to: phone, flowId: flowIds[vertical], body: `Secure your spot in seconds! Tap below to open our dynamic booking flow.`, buttonText: flowButtons[vertical] || 'Try Demo', screenName: flowScreens[vertical] || 'HOME', io, clientConfig });
 
             // Fallback if Meta API rejects the unpublished/draft Flow ID
             if (!flowSuccess) {
@@ -654,7 +796,9 @@ async function sendWhatsAppFlow({ phoneNumberId, to, flowId, body, buttonText = 
         flowParams.flow_action = 'navigate';
         flowParams.flow_action_payload = { screen: screenName };
     } else {
-        flowParams.flow_action = 'data_exchange';
+        // Fallback to navigate with a default screen if data_exchange is failing
+        flowParams.flow_action = 'navigate';
+        flowParams.flow_action_payload = { screen: 'HOME' };
     }
 
     const data = {
@@ -830,6 +974,142 @@ const handleWebhook = async (req, res) => {
 
         await saveAndEmitMessage({ to: userPhone, body: msg.type === 'text' ? incomingText : `[Interaction: ${incomingText}]`, type: msg.type, io, clientConfig, from: userPhone });
 
+        // -- ROI INTERACTIVE MENU HANDLERS --
+        // ROI Service selection
+        if (incomingText.startsWith('roi_svc_')) {
+          lead.meta.roiService = incomingText;
+          lead.meta.roiStep = 2;
+          lead.markModified('meta');
+          await lead.save();
+          // Send STEP 3 — inquiries list
+          await sendWhatsAppInteractive({
+            phoneNumberId: phoneId, to: userPhone,
+            body: "📊 How many inquiries or bookings do you receive per month?",
+            interactive: {
+              type: 'list',
+              action: {
+                button: 'Select Range',
+                sections: [{
+                  title: 'Monthly Volume',
+                  rows: [
+                    { id: 'roi_inq_50',   title: '0 – 50',     description: 'Just getting started' },
+                    { id: 'roi_inq_100',  title: '50 – 100',   description: 'Growing steadily' },
+                    { id: 'roi_inq_200',  title: '100 – 200',  description: 'Active business' },
+                    { id: 'roi_inq_500',  title: '200 – 500',  description: 'High volume' },
+                    { id: 'roi_inq_1000', title: '500 – 1,000',description: 'Very high volume' },
+                    { id: 'roi_inq_1001', title: '1,000+',      description: 'Enterprise level' }
+                  ]
+                }]
+              }
+            },
+            io, clientConfig
+          });
+          return res.sendStatus(200);
+        }
+
+        // ROI Inquiries selection
+        if (incomingText.startsWith('roi_inq_')) {
+          const INQ_VALUES = {
+            roi_inq_50: 25, roi_inq_100: 75, roi_inq_200: 150,
+            roi_inq_500: 350, roi_inq_1000: 750, roi_inq_1001: 1200
+          };
+          lead.meta.monthlyInquiries = INQ_VALUES[incomingText];
+          lead.meta.roiStep = 3;
+          lead.markModified('meta');
+          await lead.save();
+          // Send STEP 4 — close rate buttons
+          await sendWhatsAppInteractive({
+            phoneNumberId: phoneId, to: userPhone,
+            body: "💼 What % of those inquiries do you convert into paying customers?",
+            interactive: {
+              type: 'button',
+              action: {
+                buttons: [
+                  { type: 'reply', reply: { id: 'roi_cr_10',  title: 'Under 10%' } },
+                  { type: 'reply', reply: { id: 'roi_cr_25',  title: '10% – 30%' } },
+                  { type: 'reply', reply: { id: 'roi_cr_50',  title: '30% – 50%' } }
+                ]
+              }
+            },
+            io, clientConfig
+          });
+          return res.sendStatus(200);
+        }
+
+        // ROI Close rate selection
+        if (incomingText.startsWith('roi_cr_')) {
+          const CR_VALUES = { roi_cr_10: 0.07, roi_cr_25: 0.20, roi_cr_50: 0.40 };
+          lead.meta.closeRate = CR_VALUES[incomingText];
+          lead.meta.roiStep = 4;
+          lead.markModified('meta');
+          await lead.save();
+          // Send STEP 5 — response time buttons
+          await sendWhatsAppInteractive({
+            phoneNumberId: phoneId, to: userPhone,
+            body: "⏱️ How fast do you typically respond to a new inquiry?",
+            interactive: {
+              type: 'button',
+              action: {
+                buttons: [
+                  { type: 'reply', reply: { id: 'roi_rt_fast',   title: 'Under 5 mins' } },
+                  { type: 'reply', reply: { id: 'roi_rt_medium', title: '30 mins – 1 hr' } },
+                  { type: 'reply', reply: { id: 'roi_rt_slow',   title: '1 hour+' } }
+                ]
+              }
+            },
+            io, clientConfig
+          });
+          return res.sendStatus(200);
+        }
+
+        // ROI Response time selection
+        if (incomingText.startsWith('roi_rt_')) {
+          const RT_MULTIPLIER = { roi_rt_fast: 0.10, roi_rt_medium: 0.25, roi_rt_slow: 0.45 };
+          lead.meta.responseTimeLoss = RT_MULTIPLIER[incomingText];
+          lead.meta.roiStep = 5;
+          lead.markModified('meta');
+          await lead.save();
+          // Send STEP 6 — average value list
+          await sendWhatsAppInteractive({
+            phoneNumberId: phoneId, to: userPhone,
+            body: "💰 What is the average value of a single booking or order?",
+            interactive: {
+              type: 'list',
+              action: {
+                button: 'Select Range',
+                sections: [{
+                  title: 'Average Order / Service Value',
+                  rows: [
+                    { id: 'roi_val_200',   title: 'Under ₹500',       description: 'Quick / basic services' },
+                    { id: 'roi_val_750',   title: '₹500 – ₹1,000',    description: 'Standard service' },
+                    { id: 'roi_val_1500',  title: '₹1,000 – ₹2,000',  description: 'Premium service' },
+                    { id: 'roi_val_3500',  title: '₹2,000 – ₹5,000',  description: 'Packages / events' },
+                    { id: 'roi_val_7500',  title: '₹5,000 – ₹10,000', description: 'Treatments / large orders' },
+                    { id: 'roi_val_15000', title: '₹10,000+',           description: 'Premium / enterprise' }
+                  ]
+                }]
+              }
+            },
+            io, clientConfig
+          });
+          return res.sendStatus(200);
+        }
+
+        // ROI Average value selection — FINAL STEP, triggers calculation
+        if (incomingText.startsWith('roi_val_')) {
+          const VAL_VALUES = {
+            roi_val_200: 350, roi_val_750: 750, roi_val_1500: 1500,
+            roi_val_3500: 3500, roi_val_7500: 7500, roi_val_15000: 15000
+          };
+          lead.meta.avgValue = VAL_VALUES[incomingText];
+          lead.meta.roiStep = 6;
+          lead.markModified('meta');
+          await lead.save();
+          // CALCULATE AND SHOW RESULT
+          await calculateAndShowROI(userPhone, lead, phoneId, io, clientConfig);
+          return res.sendStatus(200);
+        }
+
         // -- LANGUAGE SELECTOR (Module 7 integration) --
         ensureLeadMeta(lead);
         if (!lead.meta?.language && !incomingText.startsWith('lang_')) {
@@ -943,7 +1223,7 @@ const handleWebhook = async (req, res) => {
                     `💊 Service: ${flowResponse.service || 'N/A'}\n` +
                     `📅 Date: ${flowResponse.date || 'N/A'}\n` +
                     `⏰ Time: ${flowResponse.time || flowResponse.slot || flowResponse.time_slot || 'N/A'}\n` +
-                    `👤 Patient: ${flowResponse.customer_name || flowResponse.name || userName}\n` +
+                    `👤 Patient: ${flowResponse.patient_name || flowResponse.customer_name || flowResponse.name || userName}\n` +
                     `━━━━━━━━━━━━━━━━━\n` +
                     `*This is exactly what your patients would see!* ☝️\n` +
                     `Fully automated 24/7 — zero manual work needed.`;
@@ -953,7 +1233,7 @@ const handleWebhook = async (req, res) => {
                 if (flowResponse.service) details.push(`📌 Service: ${flowResponse.service}`);
                 if (flowResponse.date)    details.push(`📅 Date: ${flowResponse.date}`);
                 if (flowResponse.time || flowResponse.slot) details.push(`⏰ Time: ${flowResponse.time || flowResponse.slot}`);
-                if (flowResponse.name || flowResponse.customer_name) details.push(`👤 Name: ${flowResponse.customer_name || flowResponse.name}`);
+                if (flowResponse.name || flowResponse.customer_name || flowResponse.patient_name) details.push(`👤 Name: ${flowResponse.patient_name || flowResponse.customer_name || flowResponse.name}`);
                 const detailBlock = details.length > 0 ? details.join('\n') : '(Booking details captured)';
                 confirmMsg =
                     `✅ *Demo Booking Confirmed!*\n━━━━━━━━━━━━━━━━━\n${detailBlock}\n━━━━━━━━━━━━━━━━━\n` +
@@ -1075,13 +1355,8 @@ const handleWebhook = async (req, res) => {
                 await lead.save();
                 await trackEvent(userPhone, EVENTS.ROI_STARTED, clientConfig, { vertical });
 
-                const roiQuestions = {
-                    salon: '1️⃣ How many customer inquiries (calls/messages) do you get per month?',
-                    turf: '1️⃣ How many booking inquiries do you get per month?',
-                    clinic: '1️⃣ How many patient inquiries (calls/messages) do you get per month?',
-                    ecommerce: '1️⃣ How many product inquiries do you get per month on WhatsApp?'
-                };
-                await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: `🧮 *Let's calculate exactly how much revenue you're missing.*\n\n${roiQuestions[vertical] || roiQuestions.salon}`, io, clientConfig });
+                // Send STEP 2 — service type selector based on vertical
+                await sendServiceSelector(userPhone, vertical, phoneId, io, clientConfig);
             } else {
                 // Default: Route to industry demo (Module 4)
                 await routeToIndustryDemo(userPhone, vertical, userName, phoneId, io, clientConfig);
@@ -1091,109 +1366,6 @@ const handleWebhook = async (req, res) => {
 
         // -- ROI CALCULATOR STATE MACHINE (Refined Module 14) --
         ensureLeadMeta(lead);
-        if (lead.meta.roiStep > 0) {
-            // FIX 3: Enhanced input validation
-            if (!isValidROINumber(incomingText)) {
-                await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: `⚠️ Please enter a valid number only.\nExample: *150*\n\n(No text, symbols, or letters — just the number)`, io, clientConfig });
-                return res.sendStatus(200);
-            }
-            const num = parseInt(incomingText.replace(/[^0-9]/g, ''), 10);
-
-            const vertical = lead.meta.businessVertical || 'salon';
-
-            // vertical already declared above in FIX 3 block
-
-            if (lead.meta.roiStep === 1) {
-                lead.meta.monthlyInquiries = num;
-                lead.meta.roiStep = 2;
-                lead.markModified('meta');
-                await lead.save();
-
-                await sendWhatsAppInteractive({
-                    phoneNumberId: phoneId, to: userPhone, 
-                    body: "2️⃣ What is your current close rate? (Approx % of leads that become customers)",
-                    interactive: {
-                        type: 'button',
-                        action: {
-                            buttons: [
-                                { type: 'reply', reply: { id: 'rate_10', title: '10%' } },
-                                { type: 'reply', reply: { id: 'rate_25', title: '25%' } },
-                                { type: 'reply', reply: { id: 'rate_50', title: '50%+' } }
-                            ]
-                        }
-                    },
-                    io, clientConfig
-                });
-                return res.sendStatus(200);
-            }
-
-            if (incomingText.startsWith('rate_')) {
-                lead.meta.closeRate = parseInt(incomingText.replace('rate_', ''), 10);
-                lead.meta.roiStep = 3;
-                lead.markModified('meta');
-                await lead.save();
-
-                await sendWhatsAppInteractive({
-                    phoneNumberId: phoneId, to: userPhone,
-                    body: "3️⃣ What is your average response time to a new inquiry?",
-                    interactive: {
-                        type: 'button',
-                        action: {
-                            buttons: [
-                                { type: 'reply', reply: { id: 'time_5', title: 'Under 5 min' } },
-                                { type: 'reply', reply: { id: 'time_30', title: '30 min' } },
-                                { type: 'reply', reply: { id: 'time_60', title: '1 hour+' } }
-                            ]
-                        }
-                    },
-                    io, clientConfig
-                });
-                return res.sendStatus(200);
-            }
-
-            if (incomingText.startsWith('time_')) {
-                lead.meta.responseTime = incomingText.replace('time_', '');
-                lead.meta.roiStep = 4;
-                lead.markModified('meta');
-                await lead.save();
-
-                await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: "4️⃣ What is your average order value or service price in ₹?", io, clientConfig });
-                return res.sendStatus(200);
-            }
-
-            if (lead.meta.roiStep === 4 && msg.type === 'text') {
-                const inquiries = lead.meta.monthlyInquiries || 100;
-                const closeRate = (lead.meta.closeRate || 20) / 100;
-                const avgValue = num;
-
-                // Simple but realistic math:
-                // 1. AI recovers 35% of lost leads (dead inquiries)
-                // 2. AI improves close rate by 40% due to instant speed
-                const extraLeads = Math.round(inquiries * 0.35); 
-                const projectedClosures = Math.round(extraLeads * (closeRate * 1.4));
-                const monthlyGain = projectedClosures * avgValue;
-                const yearlyGain = monthlyGain * 12;
-                const dailyLoss = Math.round(monthlyGain / 30);
-
-                const finalRoiMsg = `📊 *TopEdge AI ROI REPORT*\n━━━━━━━━━━━━━━━━━\n\n*MONTHLY GROWTH POTENTIAL*\n\`₹${monthlyGain.toLocaleString('en-IN')}\`\n\n*+${extraLeads} EXTRA LEADS CAPTURED*\n*${projectedClosures} PROJECTED MONTHLY CLOSURES*\n\n*ANNUAL PROJECTION*\n\`₹${yearlyGain.toLocaleString('en-IN')}\`\n\n*DAILY INEFFICIENT LOSS*\n\`₹${dailyLoss.toLocaleString('en-IN')}\`\n\n*DATA ACCURACY*\n\`99.9%\`\n━━━━━━━━━━━━━━━━━\nReady to capture this growth? 👇`;
-
-                lead.meta.roiStep = 0;
-                lead.meta.roiCalculated = true;
-                lead.meta.roiResult = { monthlyGain, extraLeads, projectedClosures };
-                lead.markModified('meta');
-                await incrementLeadScore(lead, 20);
-                await lead.save();
-                await trackEvent(userPhone, EVENTS.ROI_COMPLETED, clientConfig, { vertical: lead.meta.businessVertical, gain: monthlyGain });
-
-                await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: finalRoiMsg, io, clientConfig });
-
-                setTimeout(async () => {
-                    await sendPostDemoOptions(userPhone, lead.meta.businessVertical, phoneId, io, clientConfig);
-                }, 2000);
-
-                return res.sendStatus(200);
-            }
-        }
 
         // -- E-COMMERCE CHECKOUT STATE MACHINE --
         if (msg.type === 'text') {
@@ -1348,9 +1520,8 @@ const handleWebhook = async (req, res) => {
                 break;
 
             case 'opt_roi':
+                ensureLeadMeta(lead);
                 if (!lead.meta.businessVertical) {
-                    // FIX 2 + FIX 8: Save context so vert_ handler knows to route to ROI, not demo
-                    ensureLeadMeta(lead);
                     lead.meta.industrySelectContext = 'roi';
                     lead.markModified('meta');
                     await lead.save();
@@ -1378,16 +1549,12 @@ const handleWebhook = async (req, res) => {
                 }
                 const vertical = lead.meta.businessVertical;
                 lead.meta.roiStep = 1;
+                lead.markModified('meta');
                 await lead.save();
                 await trackEvent(userPhone, EVENTS.ROI_STARTED, clientConfig, { vertical });
-
-                let firstQ = "";
-                if (vertical === 'salon') firstQ = "1️⃣ How many clients visit your salon per month? (Just type a number)";
-                else if (vertical === 'turf') firstQ = "1️⃣ How many hours is your turf available per day? (e.g. 15)";
-                else if (vertical === 'clinic') firstQ = "1️⃣ How many patient appointments do you have per day?";
-                else if (vertical === 'ecommerce') firstQ = "1️⃣ How many customer inquiries do you get per day on WhatsApp?";
-
-                await sendWhatsAppText({ phoneNumberId: phoneId, to: userPhone, body: `🧮 *Let's calculate exactly how much revenue you're missing.*\n\n${firstQ}`, io, clientConfig });
+                
+                // Send STEP 2 — service type selector based on vertical
+                await sendServiceSelector(userPhone, vertical, phoneId, io, clientConfig);
                 break;
 
             case 'opt_faq':
@@ -1456,21 +1623,21 @@ const handleWebhook = async (req, res) => {
                 break;
 
             case 'demo_salon':
-                const okSalon = await sendWhatsAppFlow({ phoneNumberId: phoneId, to: userPhone, flowId: SALON_FLOW_ID, body: "💇‍♀️ *Salon Booking Demo*\n\nTest out how users can view services, pick a stylist, and choose a time slot natively.", buttonText: 'Book Salon', io, clientConfig });
+                const okSalon = await sendWhatsAppFlow({ phoneNumberId: phoneId, to: userPhone, flowId: SALON_FLOW_ID, body: "💇‍♀️ *Salon Booking Demo*\n\nTest out how users can view services, pick a stylist, and choose a time slot natively.", buttonText: 'Book Salon', screenName: 'SALON_HOME', io, clientConfig });
                 if (!okSalon) {
                     await sendWhatsAppInteractive({ phoneNumberId: phoneId, to: userPhone, body: "The native Salon Flow is currently offline for maintenance.", interactive: { type: 'button', action: { buttons: [{ type: 'reply', reply: { id: 'menu_main', title: 'Main Menu' } }] } }, io, clientConfig });
                 }
                 break;
 
             case 'demo_turf':
-                const okTurf = await sendWhatsAppFlow({ phoneNumberId: phoneId, to: userPhone, flowId: TURF_FLOW_ID, body: "⚽ *Turf Booking Demo*\n\nTest how users can see available courts and book their 1-hour slots quickly.", buttonText: 'Book Turf', io, clientConfig });
+                const okTurf = await sendWhatsAppFlow({ phoneNumberId: phoneId, to: userPhone, flowId: TURF_FLOW_ID, body: "⚽ *Turf Booking Demo*\n\nTest how users can see available courts and book their 1-hour slots quickly.", buttonText: 'Book Turf', screenName: 'TURF_HOME', io, clientConfig });
                 if (!okTurf) {
                     await sendWhatsAppInteractive({ phoneNumberId: phoneId, to: userPhone, body: "The native Turf Flow is currently offline for maintenance.", interactive: { type: 'button', action: { buttons: [{ type: 'reply', reply: { id: 'menu_main', title: 'Main Menu' } }] } }, io, clientConfig });
                 }
                 break;
 
             case 'demo_clinic':
-                const okClinic = await sendWhatsAppFlow({ phoneNumberId: phoneId, to: userPhone, flowId: CLINIC_FLOW_ID, body: "🩺 *Clinic Booking Demo*\n\nTest how patients can complete an intake form and request a doctor consultation natively.", buttonText: 'Book Clinic', io, clientConfig });
+                const okClinic = await sendWhatsAppFlow({ phoneNumberId: phoneId, to: userPhone, flowId: CLINIC_FLOW_ID, body: "🩺 *Clinic Booking Demo*\n\nTest how patients can complete an intake form and request a doctor consultation natively.", buttonText: 'Book Clinic', screenName: 'CLINIC_HOME', io, clientConfig });
                 if (!okClinic) {
                     await sendWhatsAppInteractive({ phoneNumberId: phoneId, to: userPhone, body: "The native Clinic Flow is currently offline for maintenance.", interactive: { type: 'button', action: { buttons: [{ type: 'reply', reply: { id: 'menu_main', title: 'Main Menu' } }] } }, io, clientConfig });
                 }
