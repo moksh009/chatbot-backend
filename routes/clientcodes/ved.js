@@ -243,7 +243,7 @@ async function notifyAdmin({ phoneNumberId, userPhone, context, io, clientConfig
 
 // --- 4. FLOW CONTROLLER ---
 
-async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, clientConfig }) {
+async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, clientConfig, lead }) {
     const userMsgType = messages.type;
     let userMsg = '';
     let interactiveId = '';
@@ -407,7 +407,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
                 } else if (userMsg.includes('Order Now')) {
                     // Context-aware purchase link
                     let productKey = '3mp'; // Default fallback
-                    const lastViewed = lead.activityLog?.reverse().find(log => log.action === 'viewed_product')?.details;
+                    const lastViewed = [...(lead.activityLog || [])].reverse().find(log => log.action === 'viewed_product')?.details;
                     if (lastViewed && ['5mp', '3mp', '2mp'].includes(lastViewed)) {
                         productKey = lastViewed;
                     }
@@ -760,7 +760,15 @@ const handleWebhook = async (req, res) => {
             }
         } catch (e) { console.error('Lead Capture Error:', e); }
 
-        await handleUserChatbotFlow({ from: messages.from, phoneNumberId: value.metadata.phone_number_id, messages, res, io, clientConfig });
+        await handleUserChatbotFlow({ 
+            from: messages.from, 
+            phoneNumberId: value.metadata.phone_number_id, 
+            messages, 
+            res, 
+            io, 
+            clientConfig,
+            lead: updatedLead
+        });
 
     } catch (err) { console.error('Webhook Error:', err.message); res.status(200).end(); }
 };
