@@ -258,6 +258,10 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
     else if (userMsgType === 'interactive') {
         interactiveId = messages.interactive.button_reply?.id || messages.interactive.list_reply?.id;
         userMsg = messages.interactive.button_reply?.title || messages.interactive.list_reply?.title;
+    } else if (userMsgType === 'button') {
+        // Handle Template Quick Replies (type: button)
+        userMsg = messages.button?.text || "";
+        interactiveId = messages.button?.payload || "";
     }
 
     console.log(`User: ${from} | Msg: ${userMsg} | ID: ${interactiveId}`);
@@ -705,7 +709,9 @@ const handleWebhook = async (req, res) => {
         let conversation = await Conversation.findOne({ phone: messages.from, clientId });
         if (!conversation) conversation = await Conversation.create({ phone: messages.from, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
 
-        const userMsgContent = messages.type === 'text' ? messages.text.body : (messages.interactive?.button_reply?.title || messages.interactive?.list_reply?.title || `[${messages.type}]`);
+        const userMsgContent = messages.type === 'text' ? messages.text.body : 
+                               messages.type === 'button' ? messages.button?.text :
+                               (messages.interactive?.button_reply?.title || messages.interactive?.list_reply?.title || `[${messages.type}]`);
 
         // --- SAVE INCOMING USER MESSAGE (Fix for Live Chat visibility) ---
         // We save every user message to the database so it appears in the dashboard
