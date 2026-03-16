@@ -244,6 +244,12 @@ async function notifyAdmin({ phoneNumberId, userPhone, context, io, clientConfig
 // --- 4. FLOW CONTROLLER ---
 
 async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, clientConfig, lead }) {
+    // Ensure lead exists for logging/context
+    if (!lead) {
+        console.warn(`[Flow] No lead provided for ${from}, attempting lookup...`);
+        lead = await AdLead.findOne({ phoneNumber: from, clientId: clientConfig.clientId });
+    }
+
     const userMsgType = messages.type;
     let userMsg = '';
     let interactiveId = '';
@@ -734,8 +740,9 @@ const handleWebhook = async (req, res) => {
         }
 
         // --- LEAD CAPTURE ---
+        let updatedLead = null;
         try {
-            const updatedLead = await AdLead.findOneAndUpdate(
+            updatedLead = await AdLead.findOneAndUpdate(
                 { phoneNumber: messages.from, clientId },
                 {
                     $set: {
@@ -752,7 +759,7 @@ const handleWebhook = async (req, res) => {
                 { upsert: true, new: true }
             );
 
-            if (io) {
+            if (updatedLead && io) {
                 io.to(`client_${clientId}`).emit('stats_update', {
                     type: 'lead_activity',
                     lead: updatedLead
