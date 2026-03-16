@@ -121,7 +121,7 @@ async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, i
     }
 }
 
-async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, headerImage, languageCode = 'en', io, clientConfig }) {
+async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, headerImage, buttonUrlParam, languageCode = 'en', io, clientConfig }) {
     const token = clientConfig.whatsappToken;
     try {
         const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
@@ -133,6 +133,20 @@ async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, headerIma
                     {
                         type: 'image',
                         image: { link: headerImage }
+                    }
+                ]
+            });
+        }
+
+        if (buttonUrlParam) {
+            components.push({
+                type: 'button',
+                sub_type: 'url',
+                index: '0',
+                parameters: [
+                    {
+                        type: 'text',
+                        text: buttonUrlParam
                     }
                 ]
             });
@@ -197,6 +211,23 @@ async function saveAndEmitMessage({ phoneNumberId, to, body, type, io, clientCon
         if (io) { io.to(`client_${resolvedClientId}`).emit('new_message', savedMessage); }
     } catch (e) { console.error('DB Error:', e); }
 }
+
+async function logActivity(leadId, action, details) {
+    try {
+        await AdLead.findByIdAndUpdate(leadId, {
+            $push: {
+                activityLog: {
+                    action,
+                    details,
+                    timestamp: new Date()
+                }
+            }
+        });
+    } catch (err) {
+        console.error("Activity log error:", err);
+    }
+}
+
 
 // --- 3. ADVANCED ADMIN NOTIFICATION ---
 async function notifyAdmin({ phoneNumberId, userPhone, context, io, clientConfig }) {
@@ -269,13 +300,41 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
 
         // --- DIRECT PRODUCT MATCHING ---
         if (txt.includes('5mp') || txt.includes('pro')) {
-            await sendWhatsAppTemplate({ phoneNumberId, to: from, templateName: '5mp', headerImage: IMAGES.hero_5mp, io, clientConfig });
+            await logActivity(lead._id, 'viewed_product', '5mp');
+            const sent = await sendWhatsAppTemplate({ 
+                phoneNumberId, 
+                to: from, 
+                templateName: '5mp_final', 
+                headerImage: IMAGES.hero_5mp, 
+                buttonUrlParam: lead._id.toString(),
+                io, 
+                clientConfig 
+            });
+            if (!sent) {
+                // Fallback if template fails
+                await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', isAd: true, clientConfig });
+            }
             return res.status(200).end();
         }
         if (txt.includes('3mp') || txt.includes('plus')) {
-            await sendWhatsAppTemplate({ phoneNumberId, to: from, templateName: '3mp', headerImage: IMAGES.hero_3mp, io, clientConfig });
+            await logActivity(lead._id, 'viewed_product', '3mp');
+            const sent = await sendWhatsAppTemplate({ 
+                phoneNumberId, 
+                to: from, 
+                templateName: '3mp_final', 
+                headerImage: IMAGES.hero_3mp, 
+                buttonUrlParam: lead._id.toString(),
+                io, 
+                clientConfig 
+            });
+            if (!sent) {
+                // Fallback if template fails
+                await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp', isAd: true, clientConfig });
+            }
             return res.status(200).end();
         }
+
+
 
         if (txt.includes('2mp')) {
             await sendProductCard({ phoneNumberId, to: from, io, productKey: '2mp', isAd: true, clientConfig });
@@ -346,9 +405,14 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
                 } else if (userMsg.includes('Talk to Agent')) {
                     await handleAgentRequest({ phoneNumberId, to: from, context: 'Requested through Template Button', io, clientConfig });
                 } else if (userMsg.includes('Order Now')) {
-                    // Default to 3mp link for "Order Now" if not specific, 
-                    // as 5mp usually uses a direct URL button in the template
-                    await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '3mp', clientConfig });
+                    // Context-aware purchase link
+                    let productKey = '3mp'; // Default fallback
+                    const lastViewed = lead.activityLog?.reverse().find(log => log.action === 'viewed_product')?.details;
+                    if (lastViewed && ['5mp', '3mp', '2mp'].includes(lastViewed)) {
+                        productKey = lastViewed;
+                    }
+                    await sendPurchaseLink({ phoneNumberId, to: from, io, productKey, clientConfig });
+
                 } else {
                     await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
                 }

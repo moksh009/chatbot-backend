@@ -117,6 +117,7 @@ const scheduleAbandonedCartCron = () => {
                             'hero_5mp': 'https://delitechsmarthome.in/cdn/shop/files/my1.png?v=1759746759&width=1346'
                         };
 
+
                         let imageUrl = ASSETS.hero_3mp; // Default fallback
 
                         if (lead.cartSnapshot && lead.cartSnapshot.titles) {
