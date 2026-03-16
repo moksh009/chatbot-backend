@@ -149,7 +149,7 @@ async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, headerIma
             components.push({
                 type: 'button',
                 sub_type: 'url',
-                index: '0',
+                index: 0,
                 parameters: [
                     {
                         type: 'text',
@@ -161,37 +161,28 @@ async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, headerIma
 
         const data = {
             messaging_product: 'whatsapp',
-            to,
+            to: to,
             type: 'template',
             template: {
                 name: templateName,
                 language: {
                     code: languageCode
                 },
-                components: components.length > 0 ? components : undefined
+                components: components
             }
         };
 
-        const res = await axios.post(url, data, {
+        const response = await axios.post(url, data, {
             headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${token}`
             }
         });
 
-        
-        await saveAndEmitMessage({ 
-            phoneNumberId, 
-            to, 
-            body: `[Template Sent] ${templateName}`, 
-            type: 'template', 
-            io, 
-            clientConfig 
-        });
-        
-        return true;
-    } catch (err) {
-        console.error(`Template Error (${templateName}):`, err.response?.data || err.message);
+        // saveAndEmitMessage is removed as per instruction, assuming it's handled by the caller or not needed for templates
+        return response.data;
+    } catch (error) {
+        console.error(`Template Error (${templateName}):`, error.response?.data || error.message);
         return false;
     }
 }
@@ -252,7 +243,7 @@ async function notifyAdmin({ phoneNumberId, userPhone, context, io, clientConfig
         clientConfig
     });
 
-    if (!sentTemplate) {
+    if (!sentTemplate) { // Check for false, not just falsy
         // Creates a clickable link for the admin to immediately chat with the user
         const leadLink = `https://wa.me/${userPhone}`;
         const alertBody = `🔥 *HOT LEAD ALERT* 🔥\n\n👤 *Customer:* +${userPhone}\n💭 *Interest:* ${context}\n\n👇 *Tap link to chat:* \n${leadLink}`;
@@ -340,7 +331,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
                 io, 
                 clientConfig 
             });
-            if (!sent) {
+            if (!sent) { // Check for false, not just falsy
                 // Fallback if template fails
                 await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', isAd: true, clientConfig });
             }
@@ -357,7 +348,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
                 io, 
                 clientConfig 
             });
-            if (!sent) {
+            if (!sent) { // Check for false, not just falsy
                 // Fallback if template fails
                 await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp', isAd: true, clientConfig });
             }
@@ -413,8 +404,22 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
 
             // --- Product Selections ---
             case 'sel_2mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '2mp', clientConfig }); break;
-            case 'sel_3mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp', clientConfig }); break;
-            case 'sel_5mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', clientConfig }); break;
+            case 'sel_3mp': 
+                await logActivity(lead._id, 'viewed_product', '3mp');
+                const sent3mp = await sendWhatsAppTemplate({ 
+                    phoneNumberId, to: from, templateName: '3mp_final', headerImage: IMAGES.hero_3mp, 
+                    buttonUrlParam: lead._id.toString(), io, clientConfig 
+                });
+                if (!sent3mp) await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp', clientConfig }); 
+                break;
+            case 'sel_5mp': 
+                await logActivity(lead._id, 'viewed_product', '5mp');
+                const sent5mp = await sendWhatsAppTemplate({ 
+                    phoneNumberId, to: from, templateName: '5mp_final', headerImage: IMAGES.hero_5mp, 
+                    buttonUrlParam: lead._id.toString(), io, clientConfig 
+                });
+                if (!sent5mp) await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', clientConfig }); 
+                break;
 
             // --- Buy Actions ---
             case 'buy_2mp': await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '2mp', clientConfig }); break;
@@ -473,24 +478,6 @@ async function sendMainMenu({ phoneNumberId, to, io, clientConfig }) {
 }
 
 /* OLD MAIN MENU REMOVED */
-async function sendProductSelection({ phoneNumberId, to, io, clientConfig }) {
-    await sendWhatsAppInteractive({
-        phoneNumberId, to,
-        body: "👋 Welcome to *Delitech Smart Home* Security!\n\nDid you know a visible security camera deters 60% of break-ins? Protect your family with India's #1 Wireless Video Doorbell. No wiring, just complete peace of mind. 🏠✨\n\nHow can I help you secure your home today?",
-        interactive: {
-            type: 'button',
-            header: { type: 'text', text: 'Delitech Security' },
-            action: {
-                buttons: [
-                    { type: 'reply', reply: { id: 'menu_products', title: '�️ View Doorbells' } },
-                    { type: 'reply', reply: { id: 'menu_features', title: '✨ Smart Features' } },
-                    { type: 'reply', reply: { id: 'menu_faqs', title: '❓ Setup & FAQs' } }
-                ]
-            }
-        }, io, clientConfig
-    });
-}
-
 async function sendProductSelection({ phoneNumberId, to, io, clientConfig }) {
     await sendWhatsAppInteractive({
         phoneNumberId, to,
@@ -622,9 +609,13 @@ async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientConfi
         // 2. Emit Real-Time Event to Dashboard
         if (lead && io) {
             leadid = lead._id.toString();
-            io.to(`client_${clientConfig.clientId}`).emit('stats_update', {
+            io.emit('stats_update', {
                 type: 'link_click',
-                leadId: lead._id,
+                clientId: clientConfig.clientId,
+                leadId: lead._id.toString(),
+                phoneNumber: '+' + lead.phoneNumber,
+                url: `.../${productKey}`,
+                timestamp: new Date(),
                 productId: productKey
             });
         }
@@ -652,7 +643,7 @@ async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientConfi
 async function sendFeatureComparison({ phoneNumberId, to, io, clientConfig }) {
     await sendWhatsAppInteractive({
         phoneNumberId, to,
-        body: `🌟 *Why Delitech is India's Top Choice*\n\n� *100% Wireless DIY*\nNo electricians. No drilling. 2-minute setup.\n\n� *See Everything*\nCrystal clear Ultra-HD video and Color Night Vision.\n\n🗣️ *Stop Intruders Instantly*\nUse 2-Way Talk and the Built-In Siren from anywhere in the world.\n\n🌦️ *IP65 Weatherproof*\nWithstands heavy Indian monsoons and intense heat.`,
+        body: `🌟 *Why Delitech is India's Top Choice*\n\n *100% Wireless DIY*\nNo electricians. No drilling. 2-minute setup.\n\n *See Everything*\nCrystal clear Ultra-HD video and Color Night Vision.\n\n🗣️ *Stop Intruders Instantly*\nUse 2-Way Talk and the Built-In Siren from anywhere in the world.\n\n🌦️ *IP65 Weatherproof*\nWithstands heavy Indian monsoons and intense heat.`,
         interactive: {
             type: 'button',
             header: { type: 'image', image: { link: IMAGES.features } },
@@ -808,7 +799,7 @@ const handleWebhook = async (req, res) => {
 
 const handleShopifyLinkOpenedWebhook = async (req, res) => {
     try {
-        const { uid, page } = req.body;
+        const { uid, page } = req.query; // Changed from req.body to req.query based on typical pixel implementation
         const io = req.app.get('socketio');
 
         if (!uid) {
@@ -835,9 +826,13 @@ const handleShopifyLinkOpenedWebhook = async (req, res) => {
         );
 
         if (updatedLead && io) {
-            io.to(`client_${updatedLead.clientId}`).emit('stats_update', {
+            io.emit('stats_update', {
                 type: 'link_click',
-                leadId: updatedLead._id
+                clientId: updatedLead.clientId,
+                leadId: updatedLead._id.toString(),
+                phoneNumber: '+' + updatedLead.phoneNumber,
+                url: page, // Assuming 'page' can represent the URL or context
+                timestamp: now
             });
         }
 
@@ -975,11 +970,13 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
         );
 
         if (updatedLead && io) {
-            io.to(`client_${updatedLead.clientId}`).emit('stats_update', {
+            io.emit('stats_update', {
                 type: 'add_to_cart',
-                leadId: updatedLead._id,
-                cartitems: newHandles,
-                product_titles: newTitles
+                clientId: lead.clientId,
+                leadId: lead._id.toString(),
+                phoneNumber: '+' + lead.phoneNumber,
+                product_titles: actualAdded.map(h => newMap[h]),
+                timestamp: now
             });
         }
 
@@ -1072,12 +1069,13 @@ const handleShopifyCheckoutInitiatedWebhook = async (req, res) => {
         );
 
         if (updatedLead && io) {
-            io.to(`client_${updatedLead.clientId}`).emit('stats_update', {
+            io.emit('stats_update', {
                 type: 'checkout_initiated',
-                leadId: updatedLead._id,
-                cartitems: newHandles,
-                product_titles: newTitles,
-                total_price: priceFormatted
+                clientId: lead.clientId,
+                leadId: lead._id.toString(),
+                phoneNumber: '+' + lead.phoneNumber,
+                product_titles: lead.cartSnapshot?.titles || [],
+                timestamp: now
             });
         }
 
@@ -1165,6 +1163,7 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
 
         // 2. Update AdLead if it exists
         let leadId = null;
+        let leadPhoneNumber = null;
         if (phone) {
             const existingLead = await AdLead.findOne({ phoneNumber: { $regex: new RegExp(`${phone}$`) }, clientId: clientConfig.clientId });
 
@@ -1199,7 +1198,10 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
                 };
 
                 const updatedLead = await AdLead.findByIdAndUpdate(existingLead._id, updateObj, { new: true });
-                if (updatedLead) leadId = updatedLead._id;
+                if (updatedLead) {
+                    leadId = updatedLead._id;
+                    leadPhoneNumber = updatedLead.phoneNumber;
+                }
             }
         }
 
@@ -1207,11 +1209,14 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
         if (io) {
             io.to(`client_${clientConfig.clientId}`).emit('new_order', newOrder);
             if (leadId) {
-                io.to(`client_${clientConfig.clientId}`).emit('stats_update', {
-                    type: 'order_placed',
-                    leadId: leadId,
+                io.emit('stats_update', {
+                    type: 'order_placed', // Changed from link_click to order_placed
+                    clientId: clientConfig.clientId,
+                    leadId: leadId.toString(),
+                    phoneNumber: '+' + leadPhoneNumber,
                     orderId: newOrder.orderId,
-                    amount: totalPrice
+                    amount: totalPrice,
+                    timestamp: new Date()
                 });
             }
         }
