@@ -23,16 +23,16 @@ const PRODUCTS = {
         name: 'Delitech Smart Video Doorbell (2MP)',
         price: '₹5,499',
         short_desc: 'Standard HD Video • 2-Way Talk',
-        full_desc: 'Essential home security made simple.\n\n📹 *1080p HD Video*\n🌙 *Night Vision* (Clear up to 15ft)\n🗣️ *2-Way Audio* (Talk from your phone)\n🔋 *100% Wireless* (No drilling required)\n🔔 *Free Chime Included*',
+        full_desc: 'Essential home security made simple.\n\n📹 *1080p HD Video*\n🌙 *Night Vision* (Clear up to 15ft)\n🗣️ *2-Way Audio* (Talk from your phone)\n🔋 *100% Wireless* (No drilling required)\n🔔 *Free Chime Included*\n\n🎁 *SPECIAL OFFER:* Free Shipping + Free Installation',
         img: IMAGES.hero_2mp,
         url: 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-2mp'
     },
     '3mp': {
-        id: 'prod_3mp',
+        id: 'prod_mp',
         name: 'Delitech Smart Video Doorbell Plus (3MP)',
-        price: '₹5,999',
+        price: '₹6,499',
         short_desc: '2K Crisp Video • Color Night Vision',
-        full_desc: 'The perfect balance of affordability and HD security.\n\n📹 *2048×1536 (3MP) HD Video*\n� *Color Night Vision*\n🗣️ *Real-Time 2-Way Audio*\n🔋 *100% Wireless DIY Setup*\n🔔 *Instant Phone Alerts*',
+        full_desc: 'The perfect balance of affordability and HD security.\n\n📹 *2048×1536 (3MP) HD Video*\n🌈 *Color Night Vision*\n🗣️ *Real-Time 2-Way Audio*\n🔋 *100% Wireless Setup*\n🔔 *Instant Phone Alerts*\n\n🎁 *SPECIAL OFFER:* Free Shipping + Free Installation',
         img: IMAGES.hero_3mp,
         url: 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-3mp'
     },
@@ -41,7 +41,7 @@ const PRODUCTS = {
         name: 'Delitech Smart Video Doorbell Pro (5MP)',
         price: '₹6,999',
         short_desc: '5MP Ultra HD • Smart AI • Anti-Theft',
-        full_desc: 'The ultimate peace-of-mind solution. Unmatched clarity and premium security.\n\n💎 *5MP Crystal-Clear Resolution*\n👀 *Ultra-Wide 130° Head-to-Toe View*\n🌈 *Color Night Vision*\n🤖 *AI Smart Visitor Log* (No false alerts)\n🚨 *Built-in Anti-Theft Siren*\n🌦️ *IP65 Weatherproof* (Rain/Heat resistant)\n💾 *Free SD Card Included*',
+        full_desc: 'The ultimate peace-of-mind solution. Unmatched clarity and premium security.\n\n💎 *5MP Crystal-Clear Resolution*\n👀 *Ultra-Wide 130° Head-to-Toe View*\n🌈 *Color Night Vision*\n🤖 *AI Smart Visitor Log* (No false alerts)\n🚨 *Built-in Anti-Theft Siren*\n🌦️ *IP65 Weatherproof* (Rain/Heat resistant)\n💾 *Free SD Card Included*\n\n🎁 *SPECIAL OFFER:* Free Shipping + Free Installation',
         img: IMAGES.hero_5mp,
         url: 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-5mp'
     }
@@ -120,6 +120,46 @@ async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, i
         return false;
     }
 }
+
+async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageCode = 'en', io, clientConfig }) {
+    const token = clientConfig.whatsappToken;
+    try {
+        const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+        const data = {
+            messaging_product: 'whatsapp',
+            to,
+            type: 'template',
+            template: {
+                name: templateName,
+                language: {
+                    code: languageCode
+                }
+            }
+        };
+
+        const res = await axios.post(url, data, {
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        
+        await saveAndEmitMessage({ 
+            phoneNumberId, 
+            to, 
+            body: `[Template Sent] ${templateName}`, 
+            type: 'template', 
+            io, 
+            clientConfig 
+        });
+        
+        return true;
+    } catch (err) {
+        console.error(`Template Error (${templateName}):`, err.response?.data || err.message);
+        return false;
+    }
+}
+
 
 async function saveAndEmitMessage({ phoneNumberId, to, body, type, io, clientConfig, metadata }) {
     try {
@@ -214,17 +254,18 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
 
         // --- DIRECT PRODUCT MATCHING ---
         if (txt.includes('5mp') || txt.includes('pro')) {
-            await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', isAd: true, clientConfig });
+            await sendWhatsAppTemplate({ phoneNumberId, to: from, templateName: '5mp', io, clientConfig });
             return res.status(200).end();
         }
         if (txt.includes('3mp') || txt.includes('plus')) {
-            await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp', isAd: true, clientConfig });
+            await sendWhatsAppTemplate({ phoneNumberId, to: from, templateName: '3mp', io, clientConfig });
             return res.status(200).end();
         }
         if (txt.includes('2mp')) {
             await sendProductCard({ phoneNumberId, to: from, io, productKey: '2mp', isAd: true, clientConfig });
             return res.status(200).end();
         }
+
 
         // --- AD LEAD INTENT (Priority) ---
         const adIntentRegex = /(details|know|about|price|info|tell me more)/i;
@@ -280,8 +321,17 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
             case 'faq_battery': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'battery', clientConfig }); break;
             case 'faq_warranty': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'warranty', clientConfig }); break;
 
-            default: await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
+            default: 
+                // Handle Template Button Titles if ID is not direct
+                if (userMsg.includes('View Doorbells')) {
+                    await sendProductSelection({ phoneNumberId, to: from, io, clientConfig });
+                } else if (userMsg.includes('Setup & FAQ')) {
+                    await sendFAQMenu({ phoneNumberId, to: from, io, clientConfig });
+                } else {
+                    await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
+                }
         }
+
         return res.status(200).end();
     }
 
@@ -295,6 +345,16 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
 // --- 5. RESPONSE TEMPLATES ---
 
 async function sendMainMenu({ phoneNumberId, to, io, clientConfig }) {
+    await sendWhatsAppTemplate({
+        phoneNumberId,
+        to,
+        templateName: 'delitech_welcome',
+        io,
+        clientConfig
+    });
+}
+/* OLD MAIN MENU REMOVED */
+async function sendProductSelection({ phoneNumberId, to, io, clientConfig }) {
     await sendWhatsAppInteractive({
         phoneNumberId, to,
         body: "👋 Welcome to *Delitech Smart Home* Security!\n\nDid you know a visible security camera deters 60% of break-ins? Protect your family with India's #1 Wireless Video Doorbell. No wiring, just complete peace of mind. 🏠✨\n\nHow can I help you secure your home today?",
@@ -315,7 +375,7 @@ async function sendMainMenu({ phoneNumberId, to, io, clientConfig }) {
 async function sendProductSelection({ phoneNumberId, to, io, clientConfig }) {
     await sendWhatsAppInteractive({
         phoneNumberId, to,
-        body: "Invest in your family's safety. Select a model below to view exclusive photos and pricing:\n\n*(Tip: Over 80% of our customers choose the 5MP Pro for absolute clarity)*",
+        body: "Invest in your family's safety. Select a model below to view exclusive photos and pricing:\n\n*(Tip: Over 80% of our customers choose the 3MP Pro for absolute clarity)*",
         interactive: {
             type: 'list',
             header: { type: 'text', text: 'Select a Model' },
@@ -353,7 +413,8 @@ async function sendProductCard({ phoneNumberId, to, io, productKey, isAd = false
     // We use 3 Buttons: Buy, Call Me, View Other
     const sent = await sendWhatsAppInteractive({
         phoneNumberId, to,
-        body: `🛡️ *${product.name}*\n\n${product.full_desc}\n\n💰 *Offer Price:* ${product.price}\n✅ 1 Year Warranty | 🚚 Free Shipping`,
+        body: `🛡️ *${product.name}*\n\n${product.full_desc}\n\n💰 *Offer Price:* ${product.price}\n✅ 1 Year Warranty | 🚚 Free Shipping | 🛠️ Free Installation`,
+
         interactive: {
             type: 'button',
             header: { type: 'image', image: { link: product.img } },
@@ -462,7 +523,8 @@ async function sendPurchaseLink({ phoneNumberId, to, io, productKey, clientConfi
     await sendWhatsAppText({
         phoneNumberId,
         to,
-        body: `⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 ${urlObj.toString()}\n\n_Cash on Delivery Available_`,
+        body: `⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 ${urlObj.toString()}\n\n_Cash on Delivery Available_\n_🚚 Free Shipping & 🛠️ Free Installation Included_`,
+
         io,
         clientConfig
     });

@@ -21,64 +21,64 @@ const CLINIC_FLOW_ID = '1163688705769254';
 // User to replace after creating the Flow in Meta Builder
 
 const SALON_SERVICE_LABELS = {
-  haircut_women:  'Advanced Haircut (₹699)',
-  haircut_men:    "Men's Styling (₹399)",
-  spa_moroccan:   'Moroccan Hair Spa (₹1,499)',
-  treat_keratin:  'Keratin Treatment (₹2,999)',
-  treat_botox:    'Hair Botox (₹3,499)',
-  color_balayage: 'Balayage Full (₹3,999)'
+    haircut_women: 'Advanced Haircut (₹699)',
+    haircut_men: "Men's Styling (₹399)",
+    spa_moroccan: 'Moroccan Hair Spa (₹1,499)',
+    treat_keratin: 'Keratin Treatment (₹2,999)',
+    treat_botox: 'Hair Botox (₹3,499)',
+    color_balayage: 'Balayage Full (₹3,999)'
 }
 
 const SALON_STYLIST_LABELS = {
-  senior_ved: 'Moksh (Senior Director)',
-  pro_riya:   'Smit (Pro Stylist)',
-  any:        'Any Available Stylist'
+    senior_ved: 'Moksh (Senior Director)',
+    pro_riya: 'Smit (Pro Stylist)',
+    any: 'Any Available Stylist'
 }
 
 const TURF_SPORT_LABELS = {
-  box_cricket:  'Box Cricket (₹800/hr)',
-  football_5v5: '5v5 Football (₹1,000/hr)',
-  volleyball:   'Volleyball Court (₹600/hr)'
+    box_cricket: 'Box Cricket (₹800/hr)',
+    football_5v5: '5v5 Football (₹1,000/hr)',
+    volleyball: 'Volleyball Court (₹600/hr)'
 }
 
 const TURF_DURATION_LABELS = {
-  '1': '1 Hour',
-  '2': '2 Hours (10% Off)',
-  '3': '3+ Hours (Tournament)'
+    '1': '1 Hour',
+    '2': '2 Hours (10% Off)',
+    '3': '3+ Hours (Tournament)'
 }
 
 const CLINIC_DEPT_LABELS = {
-  general: 'General Physician',
-  dental:  'Dental Care',
-  skin:    'Dermatology (Skin)',
-  physio:  'Physiotherapy'
+    general: 'General Physician',
+    dental: 'Dental Care',
+    skin: 'Dermatology (Skin)',
+    physio: 'Physiotherapy'
 }
 
 const CLINIC_SERVICE_LABELS = {
-  gen_checkup:  'General Checkup',
-  gen_fever:    'Fever / Flu Consultation',
-  gen_bp:       'BP & Diabetes Followup',
-  dent_cleaning:'Teeth Cleaning',
-  dent_filling: 'Cavity Filling',
-  dent_root:    'Root Canal Treatment',
-  dent_braces:  'Braces / Aligners Consult',
-  skin_acne:    'Acne & Pimple Treatment',
-  skin_glow:    'Glow Facial & HydraFacial',
-  skin_laser:   'Laser Hair Removal',
-  skin_pigment: 'Pigmentation & Dark Spots',
-  physio_back:  'Back & Spine Pain',
-  physio_knee:  'Knee & Joint Therapy',
-  physio_sport: 'Sports Injury Rehab'
+    gen_checkup: 'General Checkup',
+    gen_fever: 'Fever / Flu Consultation',
+    gen_bp: 'BP & Diabetes Followup',
+    dent_cleaning: 'Teeth Cleaning',
+    dent_filling: 'Cavity Filling',
+    dent_root: 'Root Canal Treatment',
+    dent_braces: 'Braces / Aligners Consult',
+    skin_acne: 'Acne & Pimple Treatment',
+    skin_glow: 'Glow Facial & HydraFacial',
+    skin_laser: 'Laser Hair Removal',
+    skin_pigment: 'Pigmentation & Dark Spots',
+    physio_back: 'Back & Spine Pain',
+    physio_knee: 'Knee & Joint Therapy',
+    physio_sport: 'Sports Injury Rehab'
 }
 
 const CLINIC_STATUS_LABELS = {
-  new:       'New Patient',
-  returning: 'Returning Patient'
+    new: 'New Patient',
+    returning: 'Returning Patient'
 }
 
 // Helper to clean time display (replace _ with space)
 function cleanTime(t) {
-  return t ? t.replace('_', ' ') : 'N/A'
+    return t ? t.replace('_', ' ') : 'N/A'
 }
 
 // FIX 3: Input validation helper
@@ -360,92 +360,92 @@ async function sendInactivityNudge(phone, phoneNumberId, io, clientConfig) {
 
 // --- ROI HELPER FUNCTIONS ---
 async function calculateAndShowROI(phone, lead, phoneNumberId, io, clientConfig) {
-  const inquiries       = lead.meta.monthlyInquiries || 150
-  const closeRate       = lead.meta.closeRate || 0.20
-  const rtLoss          = lead.meta.responseTimeLoss || 0.25
-  const avgValue        = lead.meta.avgValue || 1500
-  const vertical        = lead.meta.businessVertical || 'salon'
-  const service         = lead.meta.roiService || ''
+    const inquiries = lead.meta.monthlyInquiries || 150
+    const closeRate = lead.meta.closeRate || 0.20
+    const rtLoss = lead.meta.responseTimeLoss || 0.25
+    const avgValue = lead.meta.avgValue || 1500
+    const vertical = lead.meta.businessVertical || 'salon'
+    const service = lead.meta.roiService || ''
 
-  // ── CURRENT STATE (what they have now) ──
-  // How many inquiries they successfully close today
-  const currentClosures     = Math.round(inquiries * closeRate)
-  const currentRevenue      = currentClosures * avgValue
+    // ── CURRENT STATE (what they have now) ──
+    // How many inquiries they successfully close today
+    const currentClosures = Math.round(inquiries * closeRate)
+    const currentRevenue = currentClosures * avgValue
 
-  // ── THE LEAK (leads lost due to slow response) ──
-  // rtLoss = % of inquiries that ghost because of slow reply
-  const leadsLost           = Math.round(inquiries * rtLoss)
-  // What those lost leads would have been worth
-  const revenueLost         = Math.round(leadsLost * closeRate * avgValue)
-  // Daily loss
-  const dailyLoss           = Math.round(revenueLost / 30)
+    // ── THE LEAK (leads lost due to slow response) ──
+    // rtLoss = % of inquiries that ghost because of slow reply
+    const leadsLost = Math.round(inquiries * rtLoss)
+    // What those lost leads would have been worth
+    const revenueLost = Math.round(leadsLost * closeRate * avgValue)
+    // Daily loss
+    const dailyLoss = Math.round(revenueLost / 30)
 
-  // ── WITH AI (what they get after TopEdge) ──
-  // AI responds instantly 24/7 → recovers 80% of lost leads
-  const leadsRecovered      = Math.round(leadsLost * 0.80)
-  // AI also improves close rate by 25% due to speed + follow-up
-  const newCloseRate        = Math.min(closeRate * 1.25, 0.85)
-  // Revenue from recovered leads (at improved close rate)
-  const recoveredRevenue    = Math.round(leadsRecovered * newCloseRate * avgValue)
-  // Total new monthly revenue = current + recovered
-  const newMonthlyRevenue   = currentRevenue + recoveredRevenue
-  // Monthly gain = what they GAIN on top of current
-  const monthlyGain         = recoveredRevenue
-  const yearlyGain          = monthlyGain * 12
-  // ROI % = gain / TopEdge cost (₹4999/mo starter plan)
-  const roiPercent          = Math.round((monthlyGain / 4999) * 100)
+    // ── WITH AI (what they get after TopEdge) ──
+    // AI responds instantly 24/7 → recovers 80% of lost leads
+    const leadsRecovered = Math.round(leadsLost * 0.80)
+    // AI also improves close rate by 25% due to speed + follow-up
+    const newCloseRate = Math.min(closeRate * 1.25, 0.85)
+    // Revenue from recovered leads (at improved close rate)
+    const recoveredRevenue = Math.round(leadsRecovered * newCloseRate * avgValue)
+    // Total new monthly revenue = current + recovered
+    const newMonthlyRevenue = currentRevenue + recoveredRevenue
+    // Monthly gain = what they GAIN on top of current
+    const monthlyGain = recoveredRevenue
+    const yearlyGain = monthlyGain * 12
+    // ROI % = gain / TopEdge cost (₹4999/mo starter plan)
+    const roiPercent = Math.round((monthlyGain / 4999) * 100)
 
-  // Edge case: if monthlyGain is still 0 due to very small numbers,
-  // use a minimum floor to show meaningful output
-  const displayGain         = Math.max(monthlyGain, Math.round(avgValue * 2))
-  const displayYearly       = displayGain * 12
-  const displayRoi          = Math.round((displayGain / 4999) * 100)
-  const displayLost         = Math.max(revenueLost, Math.round(avgValue * closeRate * 3))
-  const displayDaily        = Math.round(displayLost / 30)
-  const displayLeadsLost    = Math.max(leadsLost, 3)
-  const displayRecovered    = Math.max(leadsRecovered, Math.round(displayLeadsLost * 0.8))
+    // Edge case: if monthlyGain is still 0 due to very small numbers,
+    // use a minimum floor to show meaningful output
+    const displayGain = Math.max(monthlyGain, Math.round(avgValue * 2))
+    const displayYearly = displayGain * 12
+    const displayRoi = Math.round((displayGain / 4999) * 100)
+    const displayLost = Math.max(revenueLost, Math.round(avgValue * closeRate * 3))
+    const displayDaily = Math.round(displayLost / 30)
+    const displayLeadsLost = Math.max(leadsLost, 3)
+    const displayRecovered = Math.max(leadsRecovered, Math.round(displayLeadsLost * 0.8))
 
-  const vLabels = { salon: 'Salon', turf: 'Turf', clinic: 'Clinic', ecommerce: 'E-Commerce' }
-  const svcLabel = service.replace('roi_svc_', '').replace(/_/g, ' ')
+    const vLabels = { salon: 'Salon', turf: 'Turf', clinic: 'Clinic', ecommerce: 'E-Commerce' }
+    const svcLabel = service.replace('roi_svc_', '').replace(/_/g, ' ')
 
-  const resultMsg =
-    `🧮 *Your Revenue Recovery Report*\n` +
-    `━━━━━━━━━━━━━━━━━\n` +
-    `🏢 *Business:*  ${vLabels[vertical] || vertical}\n` +
-    `📦 *Service:*   ${svcLabel.charAt(0).toUpperCase() + svcLabel.slice(1)}\n` +
-    `━━━━━━━━━━━━━━━━━\n` +
-    `📉 *WHAT'S BLEEDING RIGHT NOW*\n` +
-    `Leads slipping away/month:  *${displayLeadsLost}*\n` +
-    `Revenue you're losing/month: *₹${displayLost.toLocaleString('en-IN')}*\n` +
-    `That's *₹${displayDaily.toLocaleString('en-IN')} every single day* 💸\n` +
-    `━━━━━━━━━━━━━━━━━\n` +
-    `📈 *WITH TOPEDGE AI (from Day 1)*\n` +
-    `Leads recovered/month:  *${displayRecovered}* (instant 24/7 reply)\n` +
-    `Extra revenue/month:    *₹${displayGain.toLocaleString('en-IN')}*\n` +
-    `Annual revenue gained:  *₹${displayYearly.toLocaleString('en-IN')} 🚀*\n` +
-    `ROI on TopEdge plan:    *${displayRoi}%* return 📊\n` +
-    `━━━━━━━━━━━━━━━━━\n` +
-    `_Based on your actual inputs. Conservative estimate._\n\n` +
-    `*You're leaving ₹${displayGain.toLocaleString('en-IN')}/month on the table.*\n` +
-    `Want to fix that? 👇`
+    const resultMsg =
+        `🧮 *Your Revenue Recovery Report*\n` +
+        `━━━━━━━━━━━━━━━━━\n` +
+        `🏢 *Business:*  ${vLabels[vertical] || vertical}\n` +
+        `📦 *Service:*   ${svcLabel.charAt(0).toUpperCase() + svcLabel.slice(1)}\n` +
+        `━━━━━━━━━━━━━━━━━\n` +
+        `📉 *WHAT'S BLEEDING RIGHT NOW*\n` +
+        `Leads slipping away/month:  *${displayLeadsLost}*\n` +
+        `Revenue you're losing/month: *₹${displayLost.toLocaleString('en-IN')}*\n` +
+        `That's *₹${displayDaily.toLocaleString('en-IN')} every single day* 💸\n` +
+        `━━━━━━━━━━━━━━━━━\n` +
+        `📈 *WITH TOPEDGE AI (from Day 1)*\n` +
+        `Leads recovered/month:  *${displayRecovered}* (instant 24/7 reply)\n` +
+        `Extra revenue/month:    *₹${displayGain.toLocaleString('en-IN')}*\n` +
+        `Annual revenue gained:  *₹${displayYearly.toLocaleString('en-IN')} 🚀*\n` +
+        `ROI on TopEdge plan:    *${displayRoi}%* return 📊\n` +
+        `━━━━━━━━━━━━━━━━━\n` +
+        `_Based on your actual inputs. Conservative estimate._\n\n` +
+        `*You're leaving ₹${displayGain.toLocaleString('en-IN')}/month on the table.*\n` +
+        `Want to fix that? 👇`
 
-  // Save to DB
-  lead.meta.roiStep = 0
-  lead.meta.roiCalculated = true
-  lead.meta.roiResult = {
-    monthlyGain: displayGain,
-    currentMonthlyLoss: displayLost,
-    yearlyGain: displayYearly,
-    leadsRecovered: displayRecovered,
-    dailyLoss: displayDaily,
-    roiPercent: displayRoi
-  }
-  lead.markModified('meta')
-  await incrementLeadScore(lead, 20)
-  await lead.save()
-  await trackEvent(phone, EVENTS.ROI_COMPLETED, clientConfig, { vertical, monthlyGain: displayGain, service })
+    // Save to DB
+    lead.meta.roiStep = 0
+    lead.meta.roiCalculated = true
+    lead.meta.roiResult = {
+        monthlyGain: displayGain,
+        currentMonthlyLoss: displayLost,
+        yearlyGain: displayYearly,
+        leadsRecovered: displayRecovered,
+        dailyLoss: displayDaily,
+        roiPercent: displayRoi
+    }
+    lead.markModified('meta')
+    await incrementLeadScore(lead, 20)
+    await lead.save()
+    await trackEvent(phone, EVENTS.ROI_COMPLETED, clientConfig, { vertical, monthlyGain: displayGain, service })
 
-  await sendPostDemoOptions(phone, vertical, phoneNumberId, io, clientConfig, resultMsg)
+    await sendPostDemoOptions(phone, vertical, phoneNumberId, io, clientConfig, resultMsg)
 }
 
 async function sendServiceSelector(phone, vertical, phoneNumberId, io, clientConfig) {
@@ -1244,13 +1244,13 @@ const handleWebhook = async (req, res) => {
             // 2. Detect industry first (use meta as backup)
             // Check most specific first
             const isClinic = flowResponse.department !== undefined
-            const isTurf   = flowResponse.sport !== undefined
-            const isSalon  = !isClinic && !isTurf && flowResponse.service !== undefined
-            
+            const isTurf = flowResponse.sport !== undefined
+            const isSalon = !isClinic && !isTurf && flowResponse.service !== undefined
+
             const vertical = isClinic ? 'clinic'
-              : isTurf   ? 'turf'
-              : isSalon  ? 'salon'
-              : (lead.meta?.businessVertical || 'salon')
+                : isTurf ? 'turf'
+                    : isSalon ? 'salon'
+                        : (lead.meta?.businessVertical || 'salon')
 
             let confirmMsg = '';
             let lastBooking = { vertical, ...flowResponse, timestamp: new Date() };
@@ -1541,23 +1541,23 @@ const handleWebhook = async (req, res) => {
             // ── NEW: Handle ecom action buttons FIRST ──
             if (incomingText === 'ecom_browse') {
                 await sendWhatsAppInteractive({
-                phoneNumberId: phoneId, to: userPhone,
-                body: "🍔 *What are you craving today?*\nSelect a category below 👇",
-                interactive: {
-                    type: 'list',
-                    header: { type: 'text', text: 'TopEdge Store' },
-                    action: {
-                    button: 'View Menu',
-                    sections: [{
-                        title: 'Categories',
-                        rows: [
-                        { id: 'ecom_pizza',  title: '🍕 Wood-Fired Pizza',  description: 'From ₹299 — Fresh daily' },
-                        { id: 'ecom_burger', title: '🍔 Smash Burgers',     description: 'From ₹199 — Juicy & loaded' },
-                        { id: 'ecom_pasta',  title: '🍝 Fresh Pasta',       description: 'From ₹249 — Authentic Italian' }
-                        ]
-                    }]
-                    }
-                }, io, clientConfig
+                    phoneNumberId: phoneId, to: userPhone,
+                    body: "🍔 *What are you craving today?*\nSelect a category below 👇",
+                    interactive: {
+                        type: 'list',
+                        header: { type: 'text', text: 'TopEdge Store' },
+                        action: {
+                            button: 'View Menu',
+                            sections: [{
+                                title: 'Categories',
+                                rows: [
+                                    { id: 'ecom_pizza', title: '🍕 Wood-Fired Pizza', description: 'From ₹299 — Fresh daily' },
+                                    { id: 'ecom_burger', title: '🍔 Smash Burgers', description: 'From ₹199 — Juicy & loaded' },
+                                    { id: 'ecom_pasta', title: '🍝 Fresh Pasta', description: 'From ₹249 — Authentic Italian' }
+                                ]
+                            }]
+                        }
+                    }, io, clientConfig
                 })
                 ensureLeadMeta(lead)
                 lead.meta.sessionState = 'viewing_demo'
@@ -1569,34 +1569,34 @@ const handleWebhook = async (req, res) => {
 
             if (incomingText === 'ecom_offers') {
                 await sendWhatsAppInteractive({
-                phoneNumberId: phoneId, to: userPhone,
-                body: "🔥 *Today's Special Offers*\n━━━━━━━━━━━━━━━━━\n🍕 Buy 2 Pizzas → Get 1 FREE\n🍔 Burger Combo → ₹349 (Save ₹50)\n🍝 Pasta + Drink → ₹299 (Save ₹70)\n━━━━━━━━━━━━━━━━━\n⏰ Valid today until 10 PM\n🚚 Free delivery on orders above ₹499\n⚡ Avg delivery: 25-30 mins\n\nReady to order?",
-                interactive: {
-                    type: 'button',
-                    action: {
-                    buttons: [
-                        { type: 'reply', reply: { id: 'ecom_browse',  title: 'Order Now 🛒' } },
-                        { type: 'reply', reply: { id: 'menu_main',    title: 'Main Menu' } }
-                    ]
-                    }
-                }, io, clientConfig
+                    phoneNumberId: phoneId, to: userPhone,
+                    body: "🔥 *Today's Special Offers*\n━━━━━━━━━━━━━━━━━\n🍕 Buy 2 Pizzas → Get 1 FREE\n🍔 Burger Combo → ₹349 (Save ₹50)\n🍝 Pasta + Drink → ₹299 (Save ₹70)\n━━━━━━━━━━━━━━━━━\n⏰ Valid today until 10 PM\n🚚 Free delivery on orders above ₹499\n⚡ Avg delivery: 25-30 mins\n\nReady to order?",
+                    interactive: {
+                        type: 'button',
+                        action: {
+                            buttons: [
+                                { type: 'reply', reply: { id: 'ecom_browse', title: 'Order Now 🛒' } },
+                                { type: 'reply', reply: { id: 'menu_main', title: 'Main Menu' } }
+                            ]
+                        }
+                    }, io, clientConfig
                 })
                 return res.sendStatus(200)
             }
 
             if (incomingText === 'ecom_track') {
                 await sendWhatsAppInteractive({
-                phoneNumberId: phoneId, to: userPhone,
-                body: "📦 *Order Tracking*\n\n🟢 *Order #1042* — Out for delivery!\n🛵 Driver: Rahul | ETA: 12 mins\n📍 Tracking: link.topedgeai.com/track\n\n*In a real deployment, this shows\nyour actual live order status!* ☝️",
-                interactive: {
-                    type: 'button',
-                    action: {
-                    buttons: [
-                        { type: 'reply', reply: { id: 'ecom_browse', title: 'Order Again 🛒' } },
-                        { type: 'reply', reply: { id: 'opt_human',   title: 'Talk to Human 👨💻' } }
-                    ]
-                    }
-                }, io, clientConfig
+                    phoneNumberId: phoneId, to: userPhone,
+                    body: "📦 *Order Tracking*\n\n🟢 *Order #1042* — Out for delivery!\n🛵 Driver: Rahul | ETA: 12 mins\n📍 Tracking: link.topedgeai.com/track\n\n*In a real deployment, this shows\nyour actual live order status!* ☝️",
+                    interactive: {
+                        type: 'button',
+                        action: {
+                            buttons: [
+                                { type: 'reply', reply: { id: 'ecom_browse', title: 'Order Again 🛒' } },
+                                { type: 'reply', reply: { id: 'opt_human', title: 'Talk to Human 👨💻' } }
+                            ]
+                        }
+                    }, io, clientConfig
                 })
                 return res.sendStatus(200)
             }
