@@ -121,7 +121,7 @@ async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, i
     }
 }
 
-async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, headerImage, buttonUrlParam, languageCode = 'en', io, clientConfig }) {
+async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, headerImage, buttonUrlParam, bodyVariables = [], languageCode = 'en', io, clientConfig }) {
     const token = clientConfig.whatsappToken;
     try {
         const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
@@ -135,6 +135,13 @@ async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, headerIma
                         image: { link: headerImage }
                     }
                 ]
+            });
+        }
+
+        if (bodyVariables && bodyVariables.length > 0) {
+            components.push({
+                type: 'body',
+                parameters: bodyVariables.map(val => ({ type: 'text', text: String(val) }))
             });
         }
 
@@ -231,14 +238,27 @@ async function logActivity(leadId, action, details) {
 
 // --- 3. ADVANCED ADMIN NOTIFICATION ---
 async function notifyAdmin({ phoneNumberId, userPhone, context, io, clientConfig }) {
-    const adminPhone = clientConfig.adminPhoneNumber;
+    const adminPhone = '919313045439'; // Hardcoded as per request
     if (!adminPhone) return;
 
-    // Creates a clickable link for the admin to immediately chat with the user
-    const leadLink = `https://wa.me/${userPhone}`;
-    const alertBody = `🔥 *HOT LEAD ALERT* 🔥\n\n👤 *Customer:* +${userPhone}\n💭 *Interest:* ${context}\n\n👇 *Tap link to chat:* \n${leadLink}`;
+    // Try sending template first, fallback to standard text message if template not created yet
+    // Template expects body variables: [userPhone, context, userPhone]
+    const sentTemplate = await sendWhatsAppTemplate({
+        phoneNumberId,
+        to: adminPhone,
+        templateName: 'delitech_admin_lead',
+        bodyVariables: [userPhone, context.substring(0, 1000), userPhone],
+        io,
+        clientConfig
+    });
 
-    await sendWhatsAppText({ phoneNumberId, to: adminPhone, body: alertBody, preview_url: true, io, clientConfig });
+    if (!sentTemplate) {
+        // Creates a clickable link for the admin to immediately chat with the user
+        const leadLink = `https://wa.me/${userPhone}`;
+        const alertBody = `🔥 *HOT LEAD ALERT* 🔥\n\n👤 *Customer:* +${userPhone}\n💭 *Interest:* ${context}\n\n👇 *Tap link to chat:* \n${leadLink}`;
+
+        await sendWhatsAppText({ phoneNumberId, to: adminPhone, body: alertBody, preview_url: true, io, clientConfig });
+    }
 }
 
 // --- 4. FLOW CONTROLLER ---
@@ -884,11 +904,13 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
             newMap[h] = newTitles[idx] || h;
         });
 
+        // Safely determine newly added handles to avoid empty arrays blocking alerts
         const added = newHandles.filter(h => !prevHandles.includes(h));
-        const removed = prevHandles.filter(h => !newHandles.includes(h));
+        // If it's a completely new cart session, treat all handles as added
+        const isNewCart = ['purchased', 'abandoned', 'recovered'].includes(lead.cartStatus) || prevHandles.length === 0;
+        const actualAdded = isNewCart ? newHandles : added;
 
-        console.log("Shopify cart update for lead phone number:", lead.phoneNumber);
-        console.log("Cart handles:", newHandles);
+        console.log("Shopify cart update for lead phone number:", lead.phoneNumber, "| added:", actualAdded);
 
         const activityEntries = [];
 
@@ -961,8 +983,8 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
             });
         }
 
-        if (clientConfig && clientConfig.phoneNumberId && added.length) {
-            const context = `Added to cart: ${added.map(h => newMap[h]).join(', ')} | page: ${page || '/cart'}`;
+        if (clientConfig && clientConfig.phoneNumberId && actualAdded.length > 0) {
+            const context = `Added to cart: ${actualAdded.map(h => newMap[h]).join(', ')} | page: ${page || '/cart'}`;
             try {
                 await notifyAdmin({
                     phoneNumberId: clientConfig.phoneNumberId,
@@ -1001,6 +1023,7 @@ const handleShopifyCheckoutInitiatedWebhook = async (req, res) => {
 
         if (!lead) {
             console.log("Shopify checkout initiated: lead not found for uid/phone:", uid, phone);
+            // If tracking hasn't synced the user's phone yet, we can't send an alert, but we still acknowledge
             return res.status(200).end();
         }
 
@@ -1202,7 +1225,17 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
             try {
                 const adminPhone = clientConfig.adminPhoneNumber;
                 if (adminPhone) {
-                    await sendWhatsAppText({ phoneNumberId: clientConfig.phoneNumberId, to: adminPhone, body: alertBody, io, clientConfig });
+                    const sentTemplate = await sendWhatsAppTemplate({
+                        phoneNumberId: clientConfig.phoneNumberId,
+                        to: adminPhone,
+                        templateName: 'delitech_admin_order',
+                        bodyVariables: [orderId, customerName, phone, totalPrice.toLocaleString(), paymentMethod || 'N/A', addressString, itemNames],
+                        io, clientConfig
+                    });
+                    
+                    if (!sentTemplate) {
+                        await sendWhatsAppText({ phoneNumberId: clientConfig.phoneNumberId, to: adminPhone, body: alertBody, io, clientConfig });
+                    }
                 }
             } catch (e) {
                 console.error("Order admin notify error:", e.response?.data || e.message);
@@ -1235,15 +1268,27 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
 
                     const customerMessage = `🎉 *Order Confirmed! 🎉*\n\nHi ${customerName},\nThank you for choosing Delitech Smart Homes! 🏡✨\n\nYour order *${orderId}* has been successfully placed.\n\n📦 *Order Summary:*\n${itemNames}\n💰 *Total Value:* ₹${totalPrice.toLocaleString()}\n💳 *Payment:* ${paymentMethod || 'Online'}\n\n🚚 We are preparing your order and will notify you as soon as it ships.\n\nIf you have any questions, just reply to this message. We are here to help!`;
 
-                    // Send an image message with the beautiful caption
-                    await sendWhatsAppImage({
+                    // Try to send the template first
+                    const sentTemplate = await sendWhatsAppTemplate({
                         phoneNumberId: clientConfig.phoneNumberId,
                         to: phone,
-                        imageUrl: productImageUrl,
-                        caption: customerMessage,
-                        io,
-                        clientConfig
+                        templateName: 'delitech_order_format',
+                        headerImage: productImageUrl,
+                        bodyVariables: [customerName, orderId, itemNames, totalPrice.toLocaleString(), paymentMethod || 'Online'],
+                        io, clientConfig
                     });
+
+                    // Fallback to standard image message
+                    if (!sentTemplate) {
+                        await sendWhatsAppImage({
+                            phoneNumberId: clientConfig.phoneNumberId,
+                            to: phone,
+                            imageUrl: productImageUrl,
+                            caption: customerMessage,
+                            io,
+                            clientConfig
+                        });
+                    }
                 }
             } catch (e) {
                 console.error("Order customer notify error:", e.response?.data || e.message);
@@ -1320,9 +1365,16 @@ const restoreCart = async (req, res) => {
             return res.status(404).send('Cart not found');
         }
 
+        // Shopify Cart Permalink to reconstruct items across browsers (local WhatsApp VS Safari)
+        let cartUrl = `https://delitechsmarthome.in/cart?uid=${uid}&restore=true`;
+        if (lead.cartSnapshot && lead.cartSnapshot.items && lead.cartSnapshot.items.length > 0) {
+            const permalinkItems = lead.cartSnapshot.items.map(item => `${item.variant_id}:${item.quantity}`).join(',');
+            cartUrl = `https://delitechsmarthome.in/cart/${permalinkItems}?uid=${uid}&restore=true`;
+        }
+
         // Idempotency check to prevent duplicate restores/logs
         if (lead.cartStatus === 'recovered' || lead.cartStatus === 'purchased') {
-            return res.redirect(`https://delitechsmarthome.in/cart?uid=${uid}&restore=true`);
+            return res.redirect(cartUrl);
         }
 
         // Mark cartStatus -> recovered
@@ -1360,7 +1412,7 @@ const restoreCart = async (req, res) => {
             );
         } catch (e) { console.error("DailyStat Update Error (Restore):", e); }
 
-        res.redirect(`https://delitechsmarthome.in/cart?uid=${uid}&restore=true`);
+        res.redirect(cartUrl);
     } catch (error) {
         console.error("Restore cart error:", error);
         res.status(500).send('An error occurred while restoring the cart');
