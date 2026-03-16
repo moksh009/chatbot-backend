@@ -121,10 +121,23 @@ async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, i
     }
 }
 
-async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageCode = 'en', io, clientConfig }) {
+async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, headerImage, languageCode = 'en', io, clientConfig }) {
     const token = clientConfig.whatsappToken;
     try {
         const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+        const components = [];
+        if (headerImage) {
+            components.push({
+                type: 'header',
+                parameters: [
+                    {
+                        type: 'image',
+                        image: { link: headerImage }
+                    }
+                ]
+            });
+        }
+
         const data = {
             messaging_product: 'whatsapp',
             to,
@@ -133,7 +146,8 @@ async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageC
                 name: templateName,
                 language: {
                     code: languageCode
-                }
+                },
+                components: components.length > 0 ? components : undefined
             }
         };
 
@@ -143,6 +157,7 @@ async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageC
                 'Authorization': `Bearer ${token}`
             }
         });
+
         
         await saveAndEmitMessage({ 
             phoneNumberId, 
@@ -254,13 +269,14 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
 
         // --- DIRECT PRODUCT MATCHING ---
         if (txt.includes('5mp') || txt.includes('pro')) {
-            await sendWhatsAppTemplate({ phoneNumberId, to: from, templateName: '5mp', io, clientConfig });
+            await sendWhatsAppTemplate({ phoneNumberId, to: from, templateName: '5mp', headerImage: IMAGES.hero_5mp, io, clientConfig });
             return res.status(200).end();
         }
         if (txt.includes('3mp') || txt.includes('plus')) {
-            await sendWhatsAppTemplate({ phoneNumberId, to: from, templateName: '3mp', io, clientConfig });
+            await sendWhatsAppTemplate({ phoneNumberId, to: from, templateName: '3mp', headerImage: IMAGES.hero_3mp, io, clientConfig });
             return res.status(200).end();
         }
+
         if (txt.includes('2mp')) {
             await sendProductCard({ phoneNumberId, to: from, io, productKey: '2mp', isAd: true, clientConfig });
             return res.status(200).end();
@@ -327,10 +343,17 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
                     await sendProductSelection({ phoneNumberId, to: from, io, clientConfig });
                 } else if (userMsg.includes('Setup & FAQ')) {
                     await sendFAQMenu({ phoneNumberId, to: from, io, clientConfig });
+                } else if (userMsg.includes('Talk to Agent')) {
+                    await handleAgentRequest({ phoneNumberId, to: from, context: 'Requested through Template Button', io, clientConfig });
+                } else if (userMsg.includes('Order Now')) {
+                    // Default to 3mp link for "Order Now" if not specific, 
+                    // as 5mp usually uses a direct URL button in the template
+                    await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '3mp', clientConfig });
                 } else {
                     await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
                 }
         }
+
 
         return res.status(200).end();
     }
@@ -349,10 +372,12 @@ async function sendMainMenu({ phoneNumberId, to, io, clientConfig }) {
         phoneNumberId,
         to,
         templateName: 'delitech_welcome',
+        headerImage: IMAGES.hero_5mp, // Best general representation
         io,
         clientConfig
     });
 }
+
 /* OLD MAIN MENU REMOVED */
 async function sendProductSelection({ phoneNumberId, to, io, clientConfig }) {
     await sendWhatsAppInteractive({
