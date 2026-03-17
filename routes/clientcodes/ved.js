@@ -373,10 +373,21 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
     if (interactiveId) {
         switch (interactiveId) {
             // --- Navigation ---
-            case 'menu_products': await sendProductSelection({ phoneNumberId, to: from, io, clientConfig }); break;
-            case 'menu_features': await sendFeatureComparison({ phoneNumberId, to: from, io, clientConfig }); break;
-            case 'menu_faqs': await sendFAQMenu({ phoneNumberId, to: from, io, clientConfig }); break;
-            case 'btn_back_menu': await sendMainMenu({ phoneNumberId, to: from, io, clientConfig }); break;
+            case 'menu_products': 
+                if (lead) await logActivity(lead._id, 'navigated', 'Product Menu');
+                await sendProductSelection({ phoneNumberId, to: from, io, clientConfig }); 
+                break;
+            case 'menu_features': 
+                if (lead) await logActivity(lead._id, 'navigated', 'Features Menu');
+                await sendFeatureComparison({ phoneNumberId, to: from, io, clientConfig }); 
+                break;
+            case 'menu_faqs': 
+                if (lead) await logActivity(lead._id, 'navigated', 'FAQ Menu');
+                await sendFAQMenu({ phoneNumberId, to: from, io, clientConfig }); 
+                break;
+            case 'btn_back_menu': 
+                await sendMainMenu({ phoneNumberId, to: from, io, clientConfig, lead }); 
+                break;
 
             // --- Agent Requests ---
             case 'menu_agent':
@@ -403,7 +414,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
                 if (!sent3mp) await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp', clientConfig }); 
                 break;
             case 'sel_5mp': 
-                await logActivity(lead._id, 'viewed_product', '5mp');
+                if (lead) await logActivity(lead._id, 'viewed_product', '5mp');
                 const sent5mp = await sendWhatsAppTemplate({ 
                     phoneNumberId, to: from, templateName: '5mp_final', headerImage: IMAGES.hero_5mp, 
                     buttonUrlParam: lead._id.toString(), io, clientConfig 
@@ -417,9 +428,18 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
             case 'buy_5mp': await sendPurchaseLink({ phoneNumberId, to: from, io, productKey: '5mp', clientConfig }); break;
 
             // --- FAQs ---
-            case 'faq_install': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'install', clientConfig }); break;
-            case 'faq_battery': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'battery', clientConfig }); break;
-            case 'faq_warranty': await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'warranty', clientConfig }); break;
+            case 'faq_install': 
+                if (lead) await logActivity(lead._id, 'read_faq', 'Installation');
+                await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'install', clientConfig }); 
+                break;
+            case 'faq_battery': 
+                if (lead) await logActivity(lead._id, 'read_faq', 'Battery/Charging');
+                await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'battery', clientConfig }); 
+                break;
+            case 'faq_warranty': 
+                if (lead) await logActivity(lead._id, 'read_faq', 'Warranty');
+                await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'warranty', clientConfig }); 
+                break;
 
             default: 
                 // Handle Template Button Titles if ID is not direct
@@ -479,15 +499,20 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
 // --- 5. RESPONSE TEMPLATES ---
 
 async function sendMainMenu({ phoneNumberId, to, io, clientConfig, lead }) {
-    await sendWhatsAppTemplate({
+    const sent = await sendWhatsAppTemplate({
         phoneNumberId,
         to,
         templateName: 'delitech_welcome',
         headerImage: IMAGES.hero_5mp, // Best general representation
-        buttonUrlParam: lead?._id?.toString(),
+        // buttonUrlParam removed because delitech_welcome uses Quick Replies, not a dynamic URL button at index 0
         io,
         clientConfig
     });
+
+    if (!sent) {
+        // Fallback to Interactive Menu if template fails/rejected
+        await sendProductSelection({ phoneNumberId, to, io, clientConfig });
+    }
 }
 
 /* OLD MAIN MENU REMOVED */
@@ -731,6 +756,7 @@ const handleWebhook = async (req, res) => {
         const io = req.app.get('socketio');
 
         let conversation = await Conversation.findOne({ phone: messages.from, clientId });
+        const previousLastMessageAt = conversation?.lastMessageAt;
         if (!conversation) conversation = await Conversation.create({ phone: messages.from, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
 
         const userMsgContent = messages.type === 'text' ? messages.text.body : 
@@ -769,24 +795,54 @@ const handleWebhook = async (req, res) => {
             return res.status(200).end();
         }
 
-        // --- LEAD CAPTURE ---
+        // --- LEAD CAPTURE & REFERRAL TRACKING ---
         let updatedLead = null;
         try {
+            const referral = messages.referral;
+            const updateFields = {
+                lastInteraction: new Date(),
+                chatSummary: userMsgContent.substring(0, 50)
+            };
+
+            // Capture Ad Referral Data for ROAS tracking
+            if (referral) {
+                updateFields.source = `Ad: ${referral.source_id || 'Unknown'}`;
+                updateFields.meta = {
+                    ...((conversation.meta) || {}),
+                    referral: referral
+                };
+            }
+
             updatedLead = await AdLead.findOneAndUpdate(
                 { phoneNumber: messages.from, clientId },
                 {
-                    $set: {
-                        lastInteraction: new Date(),
-                        chatSummary: userMsgContent.substring(0, 50)
-                    },
+                    $set: updateFields,
                     $setOnInsert: {
                         phoneNumber: messages.from,
                         clientId,
                         createdAt: new Date(),
-                        source: 'WhatsApp'
+                        source: referral ? `Ad: ${referral.source_id}` : 'WhatsApp'
                     }
                 },
                 { upsert: true, new: true }
+            );
+
+            // --- DAILY ANALYTICS TRACKING ---
+            const today = new Date().toISOString().split('T')[0];
+            const isNewDayForUser = !previousLastMessageAt || 
+                                     new Date(previousLastMessageAt).toISOString().split('T')[0] !== today;
+
+            await DailyStat.updateOne(
+                { clientId, date: today },
+                { 
+                    $inc: { 
+                        totalMessagesExchanged: 1,
+                        totalChats: isNewDayForUser ? 1 : 0,
+                        uniqueUsers: isNewDayForUser ? 1 : 0 
+                    },
+                    $setOnInsert: { clientId, date: today }
+                },
+                { upsert: true }
             );
 
             if (updatedLead && io) {
@@ -795,7 +851,7 @@ const handleWebhook = async (req, res) => {
                     lead: updatedLead
                 });
             }
-        } catch (e) { console.error('Lead Capture Error:', e); }
+        } catch (e) { console.error('Lead Capture/Stats Error:', e); }
 
         await handleUserChatbotFlow({ 
             from: messages.from, 
