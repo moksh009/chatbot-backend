@@ -941,12 +941,14 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
 
         let calculatedTotalPrice = total_price ? (total_price / 100) : 0;
         
-        // Fallback: If total_price is missing or 0, estimate it from titles
-        if (calculatedTotalPrice === 0 && newTitles.length > 0) {
-            newTitles.forEach(title => {
-                if (title.toUpperCase().includes('5MP')) calculatedTotalPrice += 6999;
-                else if (title.toUpperCase().includes('3MP')) calculatedTotalPrice += 6499;
-                else if (title.toUpperCase().includes('2MP')) calculatedTotalPrice += 5499;
+        // Fallback: If total_price is missing or 0, estimate it from titles or handles
+        if (calculatedTotalPrice === 0) {
+            const itemsToCheck = newTitles.length > 0 ? newTitles : newHandles;
+            itemsToCheck.forEach(item => {
+                const searchStr = String(item).toUpperCase();
+                if (searchStr.includes('5MP')) calculatedTotalPrice += 6999;
+                else if (searchStr.includes('3MP')) calculatedTotalPrice += 6499;
+                else if (searchStr.includes('2MP')) calculatedTotalPrice += 5499;
             });
         }
 
@@ -963,12 +965,21 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
                     total_price: calculatedTotalPrice,
                     updatedAt: now
                 }
-            },
-            $unset: {
-                abandonedCartReminderSentAt: "",
-                abandonedCartRecoveredAt: ""
             }
         };
+
+        // CRITICAL: Do NOT unset reminder timestamp if lead is already in an abandoned state.
+        // This ensures the admin follow-up timer in the scheduler stays alive.
+        if (lead.cartStatus === 'abandoned') {
+            update.$unset = {
+                abandonedCartRecoveredAt: ""
+            };
+        } else {
+            update.$unset = {
+                abandonedCartReminderSentAt: "",
+                abandonedCartRecoveredAt: ""
+            };
+        }
 
         if (['purchased', 'abandoned', 'recovered'].includes(lead.cartStatus)) {
             update.$set.checkoutInitiatedCount = 0;

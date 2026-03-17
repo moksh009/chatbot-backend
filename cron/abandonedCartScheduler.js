@@ -61,12 +61,12 @@ const scheduleAbandonedCartCron = () => {
         console.log('⏰ Running Abandoned Cart Scheduler...');
         try {
             const now = new Date();
-            // Cart Reminder threshold: 1.5 minutes of inactivity
-            const abandonmentThreshold = new Date(now.getTime() - 1.5 * 60 * 1000);
+            // Detection threshold: 1 min of silence
+            const abandonmentThreshold = new Date(now.getTime() - 1 * 60 * 1000);
 
-            // Admin Follow-up window: 3 to 10 minutes after the cart reminder was sent
+            // Admin Follow-up window: 3 to 20 minutes after reminder sent
             const threeMinutesAgo = new Date(now.getTime() - 3 * 60 * 1000);
-            const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+            const twentyMinutesAgo = new Date(now.getTime() - 20 * 60 * 1000);
 
             // Get all ecommerce clients to get their credentials
             const clients = await Client.find({ businessType: 'ecommerce' });
@@ -223,7 +223,7 @@ const scheduleAbandonedCartCron = () => {
                     clientId: client.clientId,
                     cartStatus: { $in: ['active', 'abandoned', 'recovered'] },
                     adminFollowUpTriggered: false,
-                    abandonedCartReminderSentAt: { $lt: threeMinutesAgo, $gte: tenMinutesAgo }
+                    abandonedCartReminderSentAt: { $lt: threeMinutesAgo, $gte: twentyMinutesAgo }
                 });
 
                 for (const lead of followupLeads) {
