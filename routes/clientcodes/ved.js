@@ -354,10 +354,10 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
 
 
         // --- AD LEAD INTENT (Priority) ---
-        const adIntentRegex = /(details|know|about|price|info|tell me more)/i;
+        const adIntentRegex = /(details|know|about|price|info|tell me more|interested)/i;
         if (adIntentRegex.test(txt)) {
-            // Upsell Direct to 5MP Pro
-            await sendProductCard({ phoneNumberId, to: from, io, productKey: '5mp', isAd: true, clientConfig });
+            // Send Welcome Template instead of 5MP card
+            await sendMainMenu({ phoneNumberId, to: from, io, clientConfig, lead });
             return res.status(200).end();
         }
 
