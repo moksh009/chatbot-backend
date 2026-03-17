@@ -81,20 +81,28 @@ const scheduleAbandonedCartCron = () => {
                 if (!token) token = envToken || globalToken;
 
                 const phoneId = client.phoneNumberId || client.config?.phoneNumberId;
-                const adminPhone = client.adminPhoneNumber || client.config?.adminPhoneNumber;
+                let adminPhone = client.adminPhoneNumber || client.config?.adminPhoneNumber;
+                
+                // Hardcoded fallback for Delitech admin if not in DB
+                if (!adminPhone && client.clientId === 'delitech_smarthomes') {
+                    adminPhone = '919313045439';
+                }
 
                 if (!token || !phoneId) {
                     console.warn(`[Cron] Skipping client ${client.clientId} - missing token or phoneId`);
                     continue;
                 }
 
-                // --- A. Abandonment Detection (5 Minutes) ---
+                // --- A. Abandonment Detection (3 Minutes of inactivity) ---
+                // NOTE: We do NOT filter by isOrderPlaced - returning customers who placed orders
+                // in the past must still receive cart recovery messages if they add new items.
                 const abandonedLeads = await AdLead.find({
                     clientId: client.clientId,
                     cartStatus: 'active',
-                    isOrderPlaced: { $ne: true },
                     'cartSnapshot.items.0': { $exists: true },
-                    'cartSnapshot.updatedAt': { $lte: threeMinutesAgo }
+                    'cartSnapshot.updatedAt': { $lte: threeMinutesAgo },
+                    // Don't re-send if we already sent a reminder for this cart session
+                    abandonedCartReminderSentAt: { $exists: false }
                 });
 
                 for (const lead of abandonedLeads) {
@@ -158,6 +166,17 @@ const scheduleAbandonedCartCron = () => {
                                     {
                                         type: 'body',
                                         parameters: variables
+                                    },
+                                    {
+                                        type: 'button',
+                                        sub_type: 'url',
+                                        index: 0,
+                                        parameters: [
+                                            {
+                                                type: 'text',
+                                                text: lead._id.toString()
+                                            }
+                                        ]
                                     }
                                 ]
                             }

@@ -232,24 +232,11 @@ async function notifyAdmin({ phoneNumberId, userPhone, context, io, clientConfig
     const adminPhone = '919313045439'; // Hardcoded as per request
     if (!adminPhone) return;
 
-    // Try sending template first, fallback to standard text message if template not created yet
-    // Template expects body variables: [userPhone, context, userPhone]
-    const sentTemplate = await sendWhatsAppTemplate({
-        phoneNumberId,
-        to: adminPhone,
-        templateName: 'delitech_admin_lead',
-        bodyVariables: [userPhone, context.substring(0, 1000), userPhone],
-        io,
-        clientConfig
-    });
+    // Always send a plain text message so admin is always notified reliably
+    const leadLink = `https://wa.me/${userPhone}`;
+    const alertBody = `🚨 *HOT LEAD*\n*Customer Phone:* +${userPhone}\n💭 *User Action:* ${context}\n\n👇 *Tap the link below to chat with them immediately:*\n${leadLink}\n\nTry to close the sale while they are still online!`;
 
-    if (!sentTemplate) { // Check for false, not just falsy
-        // Creates a clickable link for the admin to immediately chat with the user
-        const leadLink = `https://wa.me/${userPhone}`;
-        const alertBody = `🔥 *HOT LEAD ALERT* 🔥\n\n👤 *Customer:* +${userPhone}\n💭 *Interest:* ${context}\n\n👇 *Tap link to chat:* \n${leadLink}`;
-
-        await sendWhatsAppText({ phoneNumberId, to: adminPhone, body: alertBody, preview_url: true, io, clientConfig });
-    }
+    await sendWhatsAppText({ phoneNumberId, to: adminPhone, body: alertBody, preview_url: true, io, clientConfig });
 }
 
 // --- 4. FLOW CONTROLLER ---
@@ -438,7 +425,21 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
                 } else if (userMsg.includes('Setup & FAQ')) {
                     await sendFAQMenu({ phoneNumberId, to: from, io, clientConfig });
                 } else if (userMsg.includes('Talk to Agent')) {
-                    await handleAgentRequest({ phoneNumberId, to: from, context: 'Requested through Template Button', io, clientConfig });
+                    // Build a rich context with product & cart info from lead
+                    let agentContext = 'Requested help via WhatsApp';
+                    if (lead) {
+                        const lastViewed = [...(lead.activityLog || [])].reverse().find(l => l.action === 'viewed_product')?.details;
+                        const cartTitles = lead.cartSnapshot?.titles?.length ? lead.cartSnapshot.titles : lead.cartSnapshot?.handles;
+                        const cartQty = lead.cartSnapshot?.items?.reduce((sum, i) => sum + (i.quantity || 1), 0) || (cartTitles?.length || 0);
+                        const cartPrice = lead.cartSnapshot?.total_price ? `₹${lead.cartSnapshot.total_price.toLocaleString()}` : null;
+                        const parts = [];
+                        if (cartTitles && cartTitles.length > 0) {
+                            parts.push(`🛒 Cart (${cartQty} item${cartQty !== 1 ? 's' : ''}): ${cartTitles.join(', ')}${cartPrice ? ` | Total: ${cartPrice}` : ''}`);
+                        }
+                        if (lastViewed) parts.push(`👀 Last viewed: ${lastViewed}`);
+                        if (parts.length > 0) agentContext = parts.join(' | ');
+                    }
+                    await handleAgentRequest({ phoneNumberId, to: from, context: agentContext, io, clientConfig });
                 } else if (userMsg.includes('Order Now')) {
                     // Context-aware purchase link
                     let productKey = '3mp'; // Default fallback
@@ -930,6 +931,10 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
         const update = {
             $set: {
                 cartStatus: 'active',
+                // ALWAYS clear isOrderPlaced so returning customers who previously
+                // placed orders still receive cart recovery messages for new carts
+                isOrderPlaced: false,
+                adminFollowUpTriggered: false,
                 lastInteraction: now,
                 cartSnapshot: {
                     handles: newHandles,
@@ -938,17 +943,16 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
                     total_price: total_price ? (total_price / 100) : 0,
                     updatedAt: now
                 }
+            },
+            // ALWAYS clear these so the scheduler treats this as a fresh cart session
+            $unset: {
+                abandonedCartReminderSentAt: "",
+                abandonedCartRecoveredAt: ""
             }
         };
 
         if (['purchased', 'abandoned', 'recovered'].includes(lead.cartStatus)) {
-            update.$unset = {
-                abandonedCartReminderSentAt: "",
-                abandonedCartRecoveredAt: ""
-            };
-            update.$set.adminFollowUpTriggered = false;
             update.$set.checkoutInitiatedCount = 0;
-            update.$set.isOrderPlaced = false;
         }
 
         if (addCountIncrement > 0) {
