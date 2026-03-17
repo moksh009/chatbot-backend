@@ -64,8 +64,8 @@ const scheduleAbandonedCartCron = () => {
             // Cart Reminder threshold: 1.5 minutes of inactivity (Reduced from 3 for better responsiveness)
             const abandonmentThreshold = new Date(now.getTime() - 1.5 * 60 * 1000);
             
-            // Admin Follow-up window: 6 to 10 minutes after the cart reminder was sent
-            const sixMinutesAgo = new Date(now.getTime() - 6 * 60 * 1000);
+            // Admin Follow-up window: 3 to 10 minutes after the cart reminder was sent
+            const threeMinutesAgo = new Date(now.getTime() - 3 * 60 * 1000);
             const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
 
             // Get all ecommerce clients to get their credentials
@@ -221,17 +221,27 @@ const scheduleAbandonedCartCron = () => {
                 // --- B. Admin Follow-Up (6 Minutes After Reminder) ---
                 const followupLeads = await AdLead.find({
                     clientId: client.clientId,
-                    cartStatus: { $in: ['abandoned', 'recovered'] },
+                    cartStatus: { $in: ['active', 'abandoned', 'recovered'] },
                     adminFollowUpTriggered: false,
-                    abandonedCartReminderSentAt: { $lt: sixMinutesAgo, $gte: tenMinutesAgo }
+                    abandonedCartReminderSentAt: { $lt: threeMinutesAgo, $gte: tenMinutesAgo }
                 });
 
                 for (const lead of followupLeads) {
                     try {
                         if (!adminPhone) continue;
 
-                        const cartValue = lead.cartSnapshot?.total_price || 0;
+                        let cartValue = lead.cartSnapshot?.total_price || 0;
                         const items = lead.cartSnapshot?.titles?.join(', ') || 'Unknown items';
+
+                        // --- Fallback: If cart value is 0, estimate it from titles (common for partial webhooks) ---
+                        if (cartValue === 0 && lead.cartSnapshot?.titles?.length > 0) {
+                            lead.cartSnapshot.titles.forEach(title => {
+                                if (title.includes('5MP')) cartValue += 6999;
+                                else if (title.includes('3MP')) cartValue += 6499;
+                                else if (title.includes('2MP')) cartValue += 5499;
+                            });
+                        }
+
                         const minutesSince = Math.round((new Date() - lead.lastInteraction) / (1000 * 60));
                         
                         let timeSinceFormatted = `${minutesSince} mins`;
@@ -241,7 +251,7 @@ const scheduleAbandonedCartCron = () => {
 
                         const customerName = lead.name || 'Unknown';
 
-                        const message = `⚠️ *Abandoned Cart Alert*\nCustomer: ${customerName}\nPhone: +${lead.phoneNumber}\nProducts: ${items}\nCart Value: ₹${cartValue.toLocaleString()}\nLast activity: ${timeSinceFormatted} ago\n👉 Call customer now: https://wa.me/${lead.phoneNumber}`;
+                        const message = `⚠️ *Abandoned Cart Alert*\nWe have sent them a card recovery message still they have not purchased. Contact them now!\n\nCustomer: ${customerName}\nPhone: +${lead.phoneNumber}\nProducts: ${items}\nCart Value: ₹${cartValue.toLocaleString()}\nLast activity: ${timeSinceFormatted} ago\n👉 Call customer now: https://wa.me/${lead.phoneNumber}`;
 
                         const success = await sendWhatsAppText(token, phoneId, adminPhone, message);
 

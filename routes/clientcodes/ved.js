@@ -429,12 +429,21 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
                     let agentContext = 'Requested help via WhatsApp';
                     if (lead) {
                         const lastViewed = [...(lead.activityLog || [])].reverse().find(l => l.action === 'viewed_product')?.details;
-                        const cartTitles = lead.cartSnapshot?.titles?.length ? lead.cartSnapshot.titles : lead.cartSnapshot?.handles;
-                        const cartQty = lead.cartSnapshot?.items?.reduce((sum, i) => sum + (i.quantity || 1), 0) || (cartTitles?.length || 0);
+                        const cartItems = lead.cartSnapshot?.items || [];
+                        const cartTitles = lead.cartSnapshot?.titles || [];
+                        const cartHandles = lead.cartSnapshot?.handles || [];
+                        
+                        const cartSummary = cartItems.map(item => {
+                            const title = cartTitles[cartHandles.indexOf(item.variant_id)] || item.variant_id;
+                            return `${title} (Qty: ${item.quantity})`;
+                        }).join(', ');
+
+                        const cartQty = cartItems.reduce((sum, i) => sum + (i.quantity || 1), 0);
                         const cartPrice = lead.cartSnapshot?.total_price ? `₹${lead.cartSnapshot.total_price.toLocaleString()}` : null;
+                        
                         const parts = [];
-                        if (cartTitles && cartTitles.length > 0) {
-                            parts.push(`🛒 Cart (${cartQty} item${cartQty !== 1 ? 's' : ''}): ${cartTitles.join(', ')}${cartPrice ? ` | Total: ${cartPrice}` : ''}`);
+                        if (cartSummary) {
+                            parts.push(`🛒 Cart (${cartQty} item${cartQty !== 1 ? 's' : ''}): ${cartSummary}${cartPrice ? ` | Total: ${cartPrice}` : ''}`);
                         }
                         if (lastViewed) parts.push(`👀 Last viewed: ${lastViewed}`);
                         if (parts.length > 0) agentContext = parts.join(' | ');
@@ -450,29 +459,29 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
                     await sendPurchaseLink({ phoneNumberId, to: from, io, productKey, clientConfig });
 
                 } else {
-                    await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
+                    await sendMainMenu({ phoneNumberId, to: from, io, clientConfig, lead });
                 }
         }
-
 
         return res.status(200).end();
     }
 
     // D. FALLBACK
     if (userMsgType === 'text') {
-        await sendMainMenu({ phoneNumberId, to: from, io, clientConfig });
+        await sendMainMenu({ phoneNumberId, to: from, io, clientConfig, lead });
     }
     res.status(200).end();
 }
 
 // --- 5. RESPONSE TEMPLATES ---
 
-async function sendMainMenu({ phoneNumberId, to, io, clientConfig }) {
+async function sendMainMenu({ phoneNumberId, to, io, clientConfig, lead }) {
     await sendWhatsAppTemplate({
         phoneNumberId,
         to,
         templateName: 'delitech_welcome',
         headerImage: IMAGES.hero_5mp, // Best general representation
+        buttonUrlParam: lead?._id?.toString(),
         io,
         clientConfig
     });
@@ -930,11 +939,20 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
 
         const addCountIncrement = added.length > 0 ? 1 : 0;
 
+        let calculatedTotalPrice = total_price ? (total_price / 100) : 0;
+        
+        // Fallback: If total_price is missing or 0, estimate it from titles
+        if (calculatedTotalPrice === 0 && newTitles.length > 0) {
+            newTitles.forEach(title => {
+                if (title.toUpperCase().includes('5MP')) calculatedTotalPrice += 6999;
+                else if (title.toUpperCase().includes('3MP')) calculatedTotalPrice += 6499;
+                else if (title.toUpperCase().includes('2MP')) calculatedTotalPrice += 5499;
+            });
+        }
+
         const update = {
             $set: {
                 cartStatus: 'active',
-                // ALWAYS clear isOrderPlaced so returning customers who previously
-                // placed orders still receive cart recovery messages for new carts
                 isOrderPlaced: false,
                 adminFollowUpTriggered: false,
                 lastInteraction: now,
@@ -942,16 +960,25 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
                     handles: newHandles,
                     titles: newTitles.length === newHandles.length ? newTitles : newHandles,
                     items: cartItemsArray,
-                    total_price: total_price ? (total_price / 100) : 0,
+                    total_price: calculatedTotalPrice,
                     updatedAt: now
                 }
-            },
-            // ALWAYS clear these so the scheduler treats this as a fresh cart session
-            $unset: {
-                abandonedCartReminderSentAt: "",
-                abandonedCartRecoveredAt: ""
             }
         };
+
+        // ONLY unset reminder timestamp if this is NOT a restoration session
+        // (i.e., if user was NOT previously in 'abandoned' status)
+        if (!['abandoned', 'recovered'].includes(lead.cartStatus)) {
+            update.$unset = {
+                abandonedCartReminderSentAt: "",
+                abandonedCartRecoveredAt: ""
+            };
+        } else {
+            // If they were already abandoned, just clear recovered status for fresh tracking
+            update.$unset = {
+                abandonedCartRecoveredAt: ""
+            };
+        }
 
         if (['purchased', 'abandoned', 'recovered'].includes(lead.cartStatus)) {
             update.$set.checkoutInitiatedCount = 0;
@@ -987,7 +1014,14 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
         }
 
         if (clientConfig && clientConfig.phoneNumberId && actualAdded.length > 0) {
-            const context = `Added to cart: ${actualAdded.map(h => newMap[h]).join(', ')} | page: ${page || '/cart'}`;
+            // Build a full cart context with quantities
+            const fullCartString = updatedLead.cartSnapshot?.items?.map(item => {
+                const title = updatedLead.cartSnapshot.titles[updatedLead.cartSnapshot.handles.indexOf(item.variant_id)] || item.variant_id;
+                return `${title} (Qty: ${item.quantity})`;
+            }).join(', ') || actualAdded.map(h => newMap[h]).join(', ');
+
+            const context = `🛒 *Cart Updated*\nItems: ${fullCartString}\nTotal: ₹${updatedLead.cartSnapshot?.total_price?.toLocaleString() || 0}\nPage: ${page || '/cart'}`;
+            
             try {
                 await notifyAdmin({
                     phoneNumberId: clientConfig.phoneNumberId,

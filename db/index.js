@@ -21,8 +21,22 @@ async function connectDB(){
                 await collection.dropIndex('phoneNumber_1');
                 console.log("✅ Successfully dropped conflicting index.");
             }
+
+            // --- AUTO-FIX: Reset leads with 'failed' status to 'active' ---
+            const failedLeads = await connectionInstance.connection.collection('adleads').countDocuments({ cartStatus: 'failed' });
+            if (failedLeads > 0) {
+                console.log(`⚠️ Found ${failedLeads} leads with 'failed' status. Resetting to 'active' for recovery...`);
+                await connectionInstance.connection.collection('adleads').updateMany(
+                    { cartStatus: 'failed' },
+                    { 
+                        $set: { cartStatus: 'active' },
+                        $unset: { abandonedCartReminderSentAt: "" } 
+                    }
+                );
+                console.log("✅ Successfully reset failed leads.");
+            }
         } catch (idxErr) {
-            console.log("ℹ️ Index cleanup check passed/skipped:", idxErr.message);
+            console.log("ℹ️ Database auto-fix check passed/skipped:", idxErr.message);
         }
         // ----------------------------------------------------------
 

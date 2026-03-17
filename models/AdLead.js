@@ -68,7 +68,7 @@ const adLeadSchema = new mongoose.Schema({
   },
   cartStatus: {
     type: String,
-    enum: ['active', 'abandoned', 'recovered', 'purchased'],
+    enum: ['active', 'abandoned', 'recovered', 'purchased', 'failed'],
     default: 'active'
   },
   abandonedCartReminderSentAt: Date,
