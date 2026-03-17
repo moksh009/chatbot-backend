@@ -66,7 +66,7 @@ const scheduleAbandonedCartCron = () => {
 
             // Admin Follow-up window: 3 to 10 minutes after the cart reminder was sent
             const threeMinutesAgo = new Date(now.getTime() - 3 * 60 * 1000);
-            // const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+            const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
 
             // Get all ecommerce clients to get their credentials
             const clients = await Client.find({ businessType: 'ecommerce' });
