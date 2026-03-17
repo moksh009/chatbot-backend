@@ -61,12 +61,12 @@ const scheduleAbandonedCartCron = () => {
         console.log('⏰ Running Abandoned Cart Scheduler...');
         try {
             const now = new Date();
-            // Cart Reminder threshold: 1.5 minutes of inactivity (Reduced from 3 for better responsiveness)
+            // Cart Reminder threshold: 1.5 minutes of inactivity
             const abandonmentThreshold = new Date(now.getTime() - 1.5 * 60 * 1000);
-            
+
             // Admin Follow-up window: 3 to 10 minutes after the cart reminder was sent
             const threeMinutesAgo = new Date(now.getTime() - 3 * 60 * 1000);
-            const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+            // const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
 
             // Get all ecommerce clients to get their credentials
             const clients = await Client.find({ businessType: 'ecommerce' });
@@ -83,7 +83,7 @@ const scheduleAbandonedCartCron = () => {
 
                 const phoneId = client.phoneNumberId || client.config?.phoneNumberId;
                 let adminPhone = client.adminPhoneNumber || client.config?.adminPhoneNumber;
-                
+
                 // Hardcoded fallback for Delitech admin if not in DB
                 if (!adminPhone && client.clientId === 'delitech_smarthomes') {
                     adminPhone = '919313045439';
@@ -218,7 +218,7 @@ const scheduleAbandonedCartCron = () => {
                     }
                 }
 
-                // --- B. Admin Follow-Up (6 Minutes After Reminder) ---
+                // --- B. Admin Follow-Up (3 Minutes After Reminder) ---
                 const followupLeads = await AdLead.find({
                     clientId: client.clientId,
                     cartStatus: { $in: ['active', 'abandoned', 'recovered'] },
@@ -243,7 +243,7 @@ const scheduleAbandonedCartCron = () => {
                         }
 
                         const minutesSince = Math.round((new Date() - lead.lastInteraction) / (1000 * 60));
-                        
+
                         let timeSinceFormatted = `${minutesSince} mins`;
                         if (minutesSince > 60) {
                             timeSinceFormatted = `${Math.floor(minutesSince / 60)} hrs, ${minutesSince % 60} mins`;
@@ -256,6 +256,7 @@ const scheduleAbandonedCartCron = () => {
                         const success = await sendWhatsAppText(token, phoneId, adminPhone, message);
 
                         if (success) {
+                            console.log(`[Cron] Admin follow-up sent for ${lead.phoneNumber}`);
                             await AdLead.findByIdAndUpdate(lead._id, {
                                 $set: { adminFollowUpTriggered: true },
                                 $push: {

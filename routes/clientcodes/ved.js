@@ -963,22 +963,12 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
                     total_price: calculatedTotalPrice,
                     updatedAt: now
                 }
-            }
-        };
-
-        // ONLY unset reminder timestamp if this is NOT a restoration session
-        // (i.e., if user was NOT previously in 'abandoned' status)
-        if (!['abandoned', 'recovered'].includes(lead.cartStatus)) {
-            update.$unset = {
+            },
+            $unset: {
                 abandonedCartReminderSentAt: "",
                 abandonedCartRecoveredAt: ""
-            };
-        } else {
-            // If they were already abandoned, just clear recovered status for fresh tracking
-            update.$unset = {
-                abandonedCartRecoveredAt: ""
-            };
-        }
+            }
+        };
 
         if (['purchased', 'abandoned', 'recovered'].includes(lead.cartStatus)) {
             update.$set.checkoutInitiatedCount = 0;
