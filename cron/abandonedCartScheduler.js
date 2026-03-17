@@ -61,12 +61,12 @@ const scheduleAbandonedCartCron = () => {
         console.log('⏰ Running Abandoned Cart Scheduler...');
         try {
             const now = new Date();
-            // Detection threshold: 1 min of silence
-            const abandonmentThreshold = new Date(now.getTime() - 1 * 60 * 1000);
-
-            // Admin Follow-up window: 3 to 20 minutes after reminder sent
-            const threeMinutesAgo = new Date(now.getTime() - 3 * 60 * 1000);
-            const twentyMinutesAgo = new Date(now.getTime() - 20 * 60 * 1000);
+            // Detection threshold: 2 hours of silence for production
+            const abandonmentThreshold = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+            
+            // Admin Follow-up window: 2 to 6 hours after reminder sent
+            const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+            const sixHoursAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000);
 
             // Get all ecommerce clients to get their credentials
             const clients = await Client.find({ businessType: 'ecommerce' });
@@ -83,11 +83,6 @@ const scheduleAbandonedCartCron = () => {
 
                 const phoneId = client.phoneNumberId || client.config?.phoneNumberId;
                 let adminPhone = client.adminPhoneNumber || client.config?.adminPhoneNumber;
-
-                // Hardcoded fallback for Delitech admin if not in DB
-                if (!adminPhone && client.clientId === 'delitech_smarthomes') {
-                    adminPhone = '919313045439';
-                }
 
                 if (!token || !phoneId) {
                     continue;
@@ -218,12 +213,12 @@ const scheduleAbandonedCartCron = () => {
                     }
                 }
 
-                // --- B. Admin Follow-Up (3 Minutes After Reminder) ---
+                // --- B. Admin Follow-Up (2 Hours After Reminder) ---
                 const followupLeads = await AdLead.find({
                     clientId: client.clientId,
                     cartStatus: { $in: ['active', 'abandoned', 'recovered'] },
                     adminFollowUpTriggered: false,
-                    abandonedCartReminderSentAt: { $lt: threeMinutesAgo, $gte: twentyMinutesAgo }
+                    abandonedCartReminderSentAt: { $lt: twoHoursAgo, $gte: sixHoursAgo }
                 });
 
                 for (const lead of followupLeads) {

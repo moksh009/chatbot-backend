@@ -229,8 +229,11 @@ async function logActivity(leadId, action, details) {
 
 // --- 3. ADVANCED ADMIN NOTIFICATION ---
 async function notifyAdmin({ phoneNumberId, userPhone, context, io, clientConfig }) {
-    const adminPhone = '919313045439'; // Hardcoded as per request
-    if (!adminPhone) return;
+    const adminPhone = clientConfig.adminPhoneNumber || clientConfig.config?.adminPhoneNumber;
+    if (!adminPhone) {
+        console.warn(`[AdminNotify] No admin phone found for client: ${clientConfig.clientId}`);
+        return;
+    }
 
     // Always send a plain text message so admin is always notified reliably
     const leadLink = `https://wa.me/${userPhone}`;
