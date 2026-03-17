@@ -800,11 +800,13 @@ const handleWebhook = async (req, res) => {
 
 const handleShopifyLinkOpenedWebhook = async (req, res) => {
     try {
-        const { uid, page } = req.query; // Changed from req.body to req.query based on typical pixel implementation
+        // Check both query and body for uid (Shopify storefront scripts may send either)
+        const uid = req.query.uid || req.body.uid;
+        const page = req.query.page || req.body.page;
         const io = req.app.get('socketio');
 
         if (!uid) {
-            console.warn("uid_missing: Shopify link open received without uid");
+            console.warn("[WEBHOOK] uid_missing: Shopify link open received without uid in query or body");
             return res.status(200).end();
         }
 
@@ -968,7 +970,7 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
         }
 
         const updatedLead = await AdLead.findOneAndUpdate(
-            { _id: uid },
+            { _id: lead._id }, // Use lead._id found earlier to ensure we update the correct record
             update,
             { new: true }
         );
@@ -1067,7 +1069,7 @@ const handleShopifyCheckoutInitiatedWebhook = async (req, res) => {
         };
 
         const updatedLead = await AdLead.findOneAndUpdate(
-            { _id: uid },
+            { _id: lead._id }, // Use lead._id found earlier
             update,
             { new: true }
         );

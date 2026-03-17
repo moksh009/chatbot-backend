@@ -61,8 +61,8 @@ const scheduleAbandonedCartCron = () => {
         console.log('⏰ Running Abandoned Cart Scheduler...');
         try {
             const now = new Date();
-            // Cart Reminder threshold: 3 minutes of inactivity
-            const threeMinutesAgo = new Date(now.getTime() - 3 * 60 * 1000);
+            // Cart Reminder threshold: 1.5 minutes of inactivity (Reduced from 3 for better responsiveness)
+            const abandonmentThreshold = new Date(now.getTime() - 1.5 * 60 * 1000);
             
             // Admin Follow-up window: 6 to 10 minutes after the cart reminder was sent
             const sixMinutesAgo = new Date(now.getTime() - 6 * 60 * 1000);
@@ -73,6 +73,7 @@ const scheduleAbandonedCartCron = () => {
             if (!clients.length) return;
 
             for (const client of clients) {
+                // ... (existing token/phoneId logic)
                 const envSuffix = `_${client.clientId}`;
                 const envToken = process.env[`WHATSAPP_TOKEN${envSuffix}`];
                 const globalToken = process.env.WHATSAPP_TOKEN;
@@ -89,21 +90,21 @@ const scheduleAbandonedCartCron = () => {
                 }
 
                 if (!token || !phoneId) {
-                    console.warn(`[Cron] Skipping client ${client.clientId} - missing token or phoneId`);
                     continue;
                 }
 
-                // --- A. Abandonment Detection (3 Minutes of inactivity) ---
-                // NOTE: We do NOT filter by isOrderPlaced - returning customers who placed orders
-                // in the past must still receive cart recovery messages if they add new items.
+                // --- A. Abandonment Detection ---
                 const abandonedLeads = await AdLead.find({
                     clientId: client.clientId,
                     cartStatus: 'active',
                     'cartSnapshot.items.0': { $exists: true },
-                    'cartSnapshot.updatedAt': { $lte: threeMinutesAgo },
-                    // Don't re-send if we already sent a reminder for this cart session
+                    'cartSnapshot.updatedAt': { $lte: abandonmentThreshold },
                     abandonedCartReminderSentAt: { $exists: false }
                 });
+
+                if (abandonedLeads.length > 0) {
+                    console.log(`[Cron] Found ${abandonedLeads.length} abandoned leads for client ${client.clientId}`);
+                }
 
                 for (const lead of abandonedLeads) {
                     const customerName = lead.name || 'Valued Customer';
@@ -166,17 +167,6 @@ const scheduleAbandonedCartCron = () => {
                                     {
                                         type: 'body',
                                         parameters: variables
-                                    },
-                                    {
-                                        type: 'button',
-                                        sub_type: 'url',
-                                        index: 0,
-                                        parameters: [
-                                            {
-                                                type: 'text',
-                                                text: lead._id.toString()
-                                            }
-                                        ]
                                     }
                                 ]
                             }
@@ -220,20 +210,8 @@ const scheduleAbandonedCartCron = () => {
                                 );
                             } catch (e) { console.error("DailyStat Update Error (Sent):", e); }
                         } else {
-                            // Failure handler: mark as failed so it doesn't infinitely loop
-                            await AdLead.findByIdAndUpdate(lead._id, {
-                                $set: {
-                                    cartStatus: 'failed'
-                                },
-                                $push: {
-                                    activityLog: {
-                                        action: 'whatsapp_failed',
-                                        details: 'Failed to send cart_remainder template (silent killer caught)',
-                                        timestamp: new Date(),
-                                        meta: {}
-                                    }
-                                }
-                            });
+                            // Failure handler: Simply log it, don't set invalid status
+                            console.error(`[Cron] Failed to send reminder to ${lead.phoneNumber}`);
                         }
                     } catch (err) {
                         console.error("Failed to process abandoned lead:", err.message);
