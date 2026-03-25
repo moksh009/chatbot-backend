@@ -1420,10 +1420,12 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
             // Send Admin Notification
             try {
                 const adminPhone = clientConfig.adminPhoneNumber || clientConfig.config?.adminPhoneNumber;
-                console.log(`[ADMIN NOTIFY] Attempting to alert admin (${adminPhone}) for order ${orderId}`);
+                console.log(`[ADMIN NOTIFY] Order ${orderId} received. Admin Phone: ${adminPhone}`);
                 
                 if (adminPhone) {
-                    // Try Template First
+                    const alertBody = `🎉 *NEW ORDER RECEIVED!* 🎉\n\n🆔 *Order:* ${orderId}\n👤 *Customer:* ${customerName}\n📱 *Phone:* +91${phone}\n💰 *Value:* ₹${totalPrice.toLocaleString()}\n💳 *Payment:* ${paymentMethod || 'N/A'}\n📍 *Address:* ${addressString}\n\n📦 *Items:*\n${itemNames}`;
+
+                    // Send Template
                     const sentTemplate = await sendWhatsAppTemplate({
                         phoneNumberId: clientConfig.phoneNumberId,
                         to: adminPhone,
@@ -1433,7 +1435,7 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
                     });
                     
                     if (!sentTemplate) {
-                        console.log(`[ADMIN NOTIFY] Template failed/missing, sending direct text to ${adminPhone}`);
+                        console.log(`[ADMIN NOTIFY] Template failed, sending direct text to ${adminPhone}`);
                         await sendWhatsAppText({ 
                             phoneNumberId: clientConfig.phoneNumberId, 
                             to: adminPhone, 
@@ -1441,12 +1443,14 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
                             io, 
                             clientConfig 
                         });
+                    } else {
+                        console.log(`[ADMIN NOTIFY] Template sent successfully to ${adminPhone}`);
                     }
                 } else {
-                    console.error(`[ADMIN NOTIFY] No adminPhoneNumber found in clientConfig for ${clientConfig.clientId}`);
+                    console.error(`[ADMIN NOTIFY] CRITICAL: No adminPhoneNumber for ${clientConfig.clientId}`);
                 }
             } catch (e) {
-                console.error("Order admin notify error:", e.response?.data || e.message);
+                console.error("[ADMIN NOTIFY] Order alert crash:", e.message);
             }
 
             // 5. Notify Customer on WhatsApp

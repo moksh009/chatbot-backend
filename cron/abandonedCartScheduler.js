@@ -82,8 +82,7 @@ const scheduleAbandonedCartCron = () => {
             // --- Step 1: First recovery message (2 hours) ---
             const firstBatch = await AdLead.find({
                 clientId: { $exists: true },
-                "activityLog.action": "add_to_cart",
-                "activityLog.action": { $ne: "order_placed" },
+                isOrderPlaced: { $ne: true }, // using boolean flag is safer than activityLog array matches
                 recoveryStep: { $exists: false },
                 updatedAt: { $lte: twoHoursAgo, $gte: sevenDaysAgo }
             });
@@ -135,9 +134,10 @@ const scheduleAbandonedCartCron = () => {
 
             // --- Step 2: Negotiator message (4 hours, no purchase) ---
             const secondBatch = await AdLead.find({
+                clientId: { $exists: true }, // Ensure safety
                 recoveryStep: 1,
                 recoveryStartedAt: { $lte: fourHoursAgo },
-                "activityLog.action": { $ne: "order_placed" }
+                isOrderPlaced: { $ne: true }
             });
 
             for (const lead of secondBatch) {
