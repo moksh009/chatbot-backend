@@ -183,6 +183,7 @@ const handleWebhook = async (req, res) => {
         const helperParams = { phoneNumberId, token, io, clientConfig: req.clientConfig };
         let userMsg = '';
         let interactiveId = '';
+        const userMsgType = messages.type;
 
         if (userMsgType === 'text') userMsg = messages.text.body.trim();
         else if (userMsgType === 'interactive') {
