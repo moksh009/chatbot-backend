@@ -4,6 +4,7 @@ const AdLead = require('../models/AdLead');
 const Client = require('../models/Client');
 const DailyStat = require('../models/DailyStat');
 const { sendAbandonedCartEmail } = require('../utils/emailService');
+const log = require('../utils/logger')('AbandonedCart');
 
 // Function to send WhatsApp template
 async function sendWhatsAppTemplate(token, phoneId, to, templateName, variables) {
@@ -73,7 +74,7 @@ async function generateGeminiResponse(apiKey, prompt) {
 const scheduleAbandonedCartCron = () => {
     // 1. Abandoned Cart Scheduler - Runs every 10 minutes
     cron.schedule('*/10 * * * *', async () => {
-        console.log('⏰ Running Advanced Abandoned Cart Scheduler...');
+        log.info('Abandoned cart cron tick — checking for recoverable leads...');
         try {
             const now = new Date();
             const twoHoursAgo  = new Date(now - 2 * 60 * 60 * 1000);
@@ -83,10 +84,11 @@ const scheduleAbandonedCartCron = () => {
             // --- Step 1: First recovery message (2 hours) ---
             const firstBatch = await AdLead.find({
                 clientId: { $exists: true },
-                isOrderPlaced: { $ne: true }, // using boolean flag is safer than activityLog array matches
+                isOrderPlaced: { $ne: true },
                 recoveryStep: { $exists: false },
                 updatedAt: { $lte: twoHoursAgo, $gte: sevenDaysAgo }
             });
+            log.info(`Step 1 (2h) batch size: ${firstBatch.length}`);
 
             for (const lead of firstBatch) {
                 const client = await Client.findOne({ clientId: lead.clientId });

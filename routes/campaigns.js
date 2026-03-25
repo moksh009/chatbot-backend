@@ -10,6 +10,7 @@ const Client = require('../models/Client');
 const { sendBirthdayWishWithImage } = require('../utils/sendBirthdayMessage');
 const { sendAppointmentReminder } = require('../utils/sendAppointmentReminder');
 const DailyStat = require('../models/DailyStat');
+const log = require('../utils/logger')('Campaigns');
 
 try {
   fs.mkdirSync('uploads', { recursive: true });
@@ -62,6 +63,7 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
       csvFile: req.file.path,
       audienceCount: validCount
     });
+    log.info(`Campaign CREATED: ${campaign.name} | clientId: ${req.user.clientId} | rows: ${validCount}`);
     res.json(campaign);
   } catch (error) {
     res.status(500).json({ message: 'Server Error', error: error.message });
@@ -92,6 +94,7 @@ router.post('/start', protect, async (req, res) => {
     const campaign = await Campaign.findOne({ _id: campaignId, clientId: req.user.clientId });
     if (!campaign) return res.status(404).json({ message: 'Campaign not found' });
     if (!campaign.csvFile) return res.status(400).json({ message: 'No CSV file attached to campaign' });
+    log.info(`Campaign START: campaignId=${campaignId} | clientId=${req.user.clientId} | templateType=${templateType}`);
     campaign.status = 'SENDING';
     await campaign.save();
 
@@ -212,6 +215,7 @@ router.post('/start', protect, async (req, res) => {
     campaign.status = 'COMPLETED';
     await campaign.save();
 
+    log.success(`Campaign DONE: ${campaignId} | sent=${sent} failed=${failed} total=${total}`);
     res.json({ success: true, campaignId, total, sent, failed, status: campaign.status });
   } catch (error) {
     try {

@@ -1,13 +1,17 @@
 const axios = require('axios');
 const Order = require('../models/Order');
 const { sendCODToPrepaidEmail } = require('./emailService');
+const log = require('./logger')('EcommerceHelpers');
 
 /**
  * Sends a WhatsApp interactive message to COD customers, nudging them to pay via UPI for a reward.
  */
 async function sendCODToPrepaidNudge(order, client, phone) {
-    if (!phone) return;
-
+    if (!phone) {
+        log.warn(`COD nudge skipped — no phone for order: ${order.orderId || order._id}`);
+        return;
+    }
+    log.info(`COD nudge dispatching | order: ${order.orderId} | phone: ${phone}`);
     let paymentUrl = ""; 
     
     try {
@@ -23,8 +27,8 @@ async function sendCODToPrepaidNudge(order, client, phone) {
                     link_purpose: `Order ${order.orderNumber || order.orderId}`,
                     customer_details: {
                         customer_phone: phone,
-                        customer_name: order.name || customerName || "Customer",
-                        customer_email: order.email || "customer@example.com"
+                        customer_name: order.customerName || order.name || "Customer",
+                        customer_email: order.customerEmail || order.email || "customer@example.com"
                     },
                     link_meta: {
                         return_url: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/r/cashfree-callback/${order._id}?link_id={link_id}`
@@ -42,14 +46,12 @@ async function sendCODToPrepaidNudge(order, client, phone) {
 
             if (response.data && response.data.link_url) {
                 paymentUrl = response.data.link_url;
-                await Order.findByIdAndUpdate(order._id, {
-                    cashfreeLinkId: linkId,
-                    cashfreeUrl: paymentUrl
-                });
+                log.success(`Cashfree payment link created: ${paymentUrl}`);
+                await Order.findByIdAndUpdate(order._id, { cashfreeLinkId: linkId, cashfreeUrl: paymentUrl });
             }
         }
     } catch (err) {
-        console.error("Cashfree link creation failed for order", order.orderId, err.response?.data || err.message);
+        log.error(`Cashfree link creation failed | order: ${order.orderId}`, { error: err.response?.data || err.message });
     }
 
     // Send WhatsApp interactive message
@@ -92,10 +94,11 @@ async function sendCODToPrepaidNudge(order, client, phone) {
             { headers: { Authorization: `Bearer ${token}` } }
         );
         
+        log.success(`COD WhatsApp nudge sent | order: ${order.orderId} | phone: ${phone}`);
         await Order.findByIdAndUpdate(order._id, { codNudgeSentAt: new Date() });
 
         // 📧 Also send COD nudge via email if available
-        const customerEmail = order.email;
+        const customerEmail = order.customerEmail || order.email;
         if (customerEmail) {
             await sendCODToPrepaidEmail(client, {
                 customerEmail,
@@ -106,7 +109,7 @@ async function sendCODToPrepaidNudge(order, client, phone) {
             });
         }
     } catch (error) {
-        console.error("WhatsApp COD Nudge Error:", error.response?.data || error.message);
+        log.error(`COD nudge failed | order: ${order?.orderId}`, { error: error.response?.data || error.message });
     }
 }
 
