@@ -1419,8 +1419,11 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
 
             // Send Admin Notification
             try {
-                const adminPhone = clientConfig.adminPhoneNumber;
+                const adminPhone = clientConfig.adminPhoneNumber || clientConfig.config?.adminPhoneNumber;
+                console.log(`[ADMIN NOTIFY] Attempting to alert admin (${adminPhone}) for order ${orderId}`);
+                
                 if (adminPhone) {
+                    // Try Template First
                     const sentTemplate = await sendWhatsAppTemplate({
                         phoneNumberId: clientConfig.phoneNumberId,
                         to: adminPhone,
@@ -1430,8 +1433,17 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
                     });
                     
                     if (!sentTemplate) {
-                        await sendWhatsAppText({ phoneNumberId: clientConfig.phoneNumberId, to: adminPhone, body: alertBody, io, clientConfig });
+                        console.log(`[ADMIN NOTIFY] Template failed/missing, sending direct text to ${adminPhone}`);
+                        await sendWhatsAppText({ 
+                            phoneNumberId: clientConfig.phoneNumberId, 
+                            to: adminPhone, 
+                            body: alertBody, 
+                            io, 
+                            clientConfig 
+                        });
                     }
+                } else {
+                    console.error(`[ADMIN NOTIFY] No adminPhoneNumber found in clientConfig for ${clientConfig.clientId}`);
                 }
             } catch (e) {
                 console.error("Order admin notify error:", e.response?.data || e.message);
