@@ -8,6 +8,7 @@ const Message = require('../../models/Message');
 const Client = require('../../models/Client');
 const DailyStat = require('../../models/DailyStat');
 const Order = require('../../models/Order');
+const { sendCODToPrepaidNudge } = require('../../utils/ecommerceHelpers');
 
 // --- 1. ASSETS & DATA (Polished) ---
 const IMAGES = {
@@ -1321,7 +1322,9 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
                     customerName,
                     phone,
                     amount: totalPrice,
-                    status: 'paid', // Shopify orders are usually paid if this webhook fires
+                    totalPrice, // added field for consistency
+                    isCOD: paymentMethod.toLowerCase().includes('cod') || paymentMethod.toLowerCase().includes('cash'),
+                    status: (paymentMethod.toLowerCase().includes('cod') || paymentMethod.toLowerCase().includes('cash')) ? 'confirmed' : 'paid',
                     items,
                     paymentMethod,
                     address: `${shipping.address1 || ''} ${shipping.address2 || ''}`.trim() || 'N/A',
@@ -1331,11 +1334,23 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
                 },
                 $setOnInsert: {
                     clientId: clientConfig.clientId,
-                    createdAt: new Date()
+                    createdAt: new Date(),
+                    shopifyOrderId: payload.id // ensure shopifyOrderId is saved for mapping
                 }
             },
             { upsert: true, new: true }
         );
+
+        // 1.1 Trigger COD Nudge if applicable
+        if (newOrder.isCOD) {
+            console.log(`Setting up 3-minute COD nudge for order ${orderId}`);
+            setTimeout(async () => {
+                // Fetch full client object (with config) for the nudge helper
+                const Client = require('../../models/Client');
+                const fullClient = await Client.findOne({ clientId: clientConfig.clientId });
+                await sendCODToPrepaidNudge(newOrder, fullClient, phone);
+            }, 3 * 60 * 1000);
+        }
 
         // 2. Update AdLead if it exists
         let leadId = null;
