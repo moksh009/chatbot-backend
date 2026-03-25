@@ -1,5 +1,6 @@
 const axios = require('axios');
 const Order = require('../models/Order');
+const { sendCODToPrepaidEmail } = require('./emailService');
 
 /**
  * Sends a WhatsApp interactive message to COD customers, nudging them to pay via UPI for a reward.
@@ -10,7 +11,7 @@ async function sendCODToPrepaidNudge(order, client, phone) {
     let paymentUrl = ""; 
     
     try {
-        const cfConfig = client.config?.cashfree || {};
+        const cfConfig = client.nicheData?.paymentGateway?.cashfree || client.config?.cashfree || {};
         if (cfConfig.app_id && cfConfig.secret_key) {
             const linkId = `cf_link_${order._id}_${Date.now()}`;
             const response = await axios.post(
@@ -73,7 +74,7 @@ async function sendCODToPrepaidNudge(order, client, phone) {
                     body: {
                         text: `Hi! Your order ${order.orderId} for *${itemName}* (₹${order.totalPrice}) is confirmed as COD.\n\n🎁 Pay via UPI right now and get:\n✅ ₹50 cashback\n✅ Priority shipping\n\nOffer expires in 2 hours!`
                     },
-                    footer: { text: "Delitech Smart Home" },
+                    footer: { text: client.name || "Smart Store" },
                     action: {
                         buttons: [
                             { 
@@ -92,6 +93,18 @@ async function sendCODToPrepaidNudge(order, client, phone) {
         );
         
         await Order.findByIdAndUpdate(order._id, { codNudgeSentAt: new Date() });
+
+        // 📧 Also send COD nudge via email if available
+        const customerEmail = order.email;
+        if (customerEmail) {
+            await sendCODToPrepaidEmail(client, {
+                customerEmail,
+                customerName: order.name || 'Customer',
+                orderId: order.orderNumber || order.orderId,
+                totalPrice: order.totalPrice,
+                paymentLink: order.cashfreeUrl || null
+            });
+        }
     } catch (error) {
         console.error("WhatsApp COD Nudge Error:", error.response?.data || error.message);
     }

@@ -8,17 +8,33 @@ const ClientSchema = new mongoose.Schema({
     enum: ['ecommerce', 'salon', 'turf', 'clinic', 'choice_salon', 'agency', 'other'],
     default: 'other'
   },
+  niche: {
+    type: String,
+    enum: ['ecommerce', 'salon', 'clinic', 'turf', 'agency', 'other'],
+    default: 'other'
+  },
+  plan: {
+    type: String,
+    enum: ['CX Agent (V1)', 'CX Agent (V2)'],
+    default: 'CX Agent (V1)'
+  },
   subscriptionPlan: {
     type: String,
     enum: ['v1', 'v2'],
-    default: 'v2' // Defaulting to v2 for now to preserve existing functionality, migration script will handle specifics
+    default: 'v2' // Deprecated, migrating to 'plan'
   },
-  phoneNumberId: { type: String, required: true }, // Removed unique: true to allow multiple clients (e.g. testing) on same number
+  isGenericBot: { type: Boolean, default: false },
+  phoneNumberId: { type: String, required: true },
   whatsappToken: { type: String }, // Store the client's specific WhatsApp token
+  wabaId: { type: String }, // WhatsApp Business Account ID (Required for Templates)
   verifyToken: { type: String }, // Store the client's specific Webhook Verify Token
   googleCalendarId: { type: String }, // Store the client's specific Google Calendar ID
   openaiApiKey: { type: String }, // Store the client's specific OpenAI API Key
+  emailUser: { type: String },  // Gmail address for email broadcasts
+  emailAppPassword: { type: String },  // Gmail App Password (not the login password)
   config: { type: mongoose.Schema.Types.Mixed, default: {} }, // Flexible config for other settings
+  nicheData: { type: mongoose.Schema.Types.Mixed, default: {} }, // Flexible config for generic niche bots
+  flowData: { type: mongoose.Schema.Types.Mixed, default: {} }, // Flexible config for generic WhatsApp text flows
   createdAt: { type: Date, default: Date.now }
 });
 

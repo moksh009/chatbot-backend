@@ -18,13 +18,27 @@ function initializeOAuth2Client() {
 }
 
 // Get working hours for a specific day
-function getWorkingHours(dayOfWeek) {
-  // All 7 days open from 10:00 AM to 12:00 AM (midnight)
+function getWorkingHours(dayOfWeek, config = {}) {
+  // Use config from nicheData if available, otherwise default to 10 AM - 12 PM
+  if (config.workingHours) {
+    // If workingHours is a simple object like { start: '09:00', end: '18:00' }
+    if (config.workingHours.start && config.workingHours.end) {
+      return { 
+        start: config.workingHours.start, 
+        end: config.workingHours.end, 
+        isOpen: config.workingHours.isOpen !== false 
+      };
+    }
+    // If it's day-specific
+    const dayConfig = config.workingHours[dayOfWeek];
+    if (dayConfig) return dayConfig;
+  }
+  
   return { start: '10:00', end: '24:00', isOpen: true };
 }
 
-// Generate all possible 30-minute slots for a given day using Luxon
-function generateAllTimeSlots(dateIST, workingHours) {
+// Generate all possible slots for a given day using Luxon
+function generateAllTimeSlots(dateIST, workingHours, slotMinutes = 30) {
   if (!workingHours.isOpen) return [];
 
   const slots = [];
@@ -47,9 +61,9 @@ function generateAllTimeSlots(dateIST, workingHours) {
     // If buffer time is after the working hours start, use buffer time
     if (bufferTime > slotStart) {
       slotStart = bufferTime;
-      // Round up to the next 30-minute slot
+      // Round up to the next N-minute slot
       const minutes = slotStart.minute;
-      const roundedMinutes = Math.ceil(minutes / 30) * 30;
+      const roundedMinutes = Math.ceil(minutes / slotMinutes) * slotMinutes;
       slotStart = slotStart.set({ minute: roundedMinutes, second: 0, millisecond: 0 });
 
       console.log(`⏰ Adjusted start time for today: ${slotStart.toFormat('HH:mm')} (buffer: ${bufferTime.toFormat('HH:mm')})`);
@@ -57,7 +71,7 @@ function generateAllTimeSlots(dateIST, workingHours) {
   }
 
   while (slotStart.isValid && slotStart < endOfDay) {
-    let slotEnd = slotStart.plus({ minutes: 30 });
+    let slotEnd = slotStart.plus({ minutes: slotMinutes });
     if (!slotEnd.isValid || slotEnd > endOfDay) break;
 
     // Safety catch to prevent infinite loops if slotEnd evaluates incorrectly
@@ -77,48 +91,7 @@ function generateAllTimeSlots(dateIST, workingHours) {
   return slots;
 }
 
-// Get booked appointments for a specific date (returns Luxon DateTime for start/end)
-async function getBookedAppointments(dateIST, calendarId) {
-  try {
-    const calendar = google.calendar({ version: 'v3', auth: initializeOAuth2Client() });
-    if (!calendarId) throw new Error('calendarId argument is required');
-    // Get start and end of day in IST
-    const startOfDayIST = dateIST.startOf('day');
-    const endOfDayIST = dateIST.endOf('day');
-    // Convert to UTC ISO for Google Calendar API
-    const startUTC = startOfDayIST.toUTC().toISO();
-    const endUTC = endOfDayIST.toUTC().toISO();
-
-    let response;
-    try {
-      response = await calendar.events.list({
-        calendarId,
-        timeMin: startUTC,
-        timeMax: endUTC,
-        singleEvents: true,
-        orderBy: 'startTime'
-      });
-    } catch (gcalErr) {
-      console.error('Google Calendar API Error in getBookedAppointments:', gcalErr.message);
-      // Return empty array to fallback to database slots instead of crashing
-      return [];
-    }
-
-    // Map to Luxon DateTime for start/end
-    return (response.data.items || []).map(event => {
-      const start = event.start?.dateTime || event.start?.date;
-      const end = event.end?.dateTime || event.end?.date;
-      return {
-        ...event,
-        start: DateTime.fromISO(start, { zone: 'Asia/Kolkata' }),
-        end: DateTime.fromISO(end, { zone: 'Asia/Kolkata' })
-      };
-    });
-  } catch (error) {
-    console.error('Error in getBookedAppointments:', error);
-    return [];
-  }
-}
+// ... existing getBookedAppointments ...
 
 // Check if a slot is available based on capacity
 function isSlotAvailable(slot, bookedAppointments, capacity = 4) {
@@ -136,7 +109,7 @@ function isSlotAvailable(slot, bookedAppointments, capacity = 4) {
 }
 
 // Get available slots for a specific date with pagination
-async function getAvailableSlots(dateStr, page = 0, calendarId) {
+async function getAvailableSlots(dateStr, page = 0, calendarId, config = {}) {
   try {
     if (!calendarId) throw new Error('calendarId argument is required');
     // Parse the date string to get the actual date
@@ -172,7 +145,7 @@ async function getAvailableSlots(dateStr, page = 0, calendarId) {
     }
 
     const dayOfWeekNum = dateIST.weekday % 7; // Luxon: Monday=1, Sunday=7
-    const workingHours = getWorkingHours(dayOfWeekNum);
+    const workingHours = getWorkingHours(dayOfWeekNum, config);
     if (!workingHours.isOpen) {
       return {
         slots: [],
@@ -182,7 +155,7 @@ async function getAvailableSlots(dateStr, page = 0, calendarId) {
         hasMore: false
       };
     }
-    const allSlots = generateAllTimeSlots(dateIST, workingHours);
+    const allSlots = generateAllTimeSlots(dateIST, workingHours, config.slotDuration || 30);
     const bookedAppointments = await getBookedAppointments(dateIST, calendarId);
 
     // Get current time in IST
@@ -203,25 +176,16 @@ async function getAvailableSlots(dateStr, page = 0, calendarId) {
 
         // If it's today, check if the slot has already passed (including buffer)
         if (slot.start <= bufferTime) {
-          console.log(`⏰ Filtering out past/too-close slot: ${slot.displayTime} (${slot.start.toFormat('HH:mm:ss')}) - Current: ${nowIST.toFormat('HH:mm:ss')}, Buffer: ${bufferTime.toFormat('HH:mm:ss')}`);
           return false; // Slot is in the past or too close to current time
         }
       }
 
       // Check if slot is available (not booked up to capacity)
-      const isAvailable = isSlotAvailable(slot, bookedAppointments, 4);
-      if (!isAvailable) {
-        console.log(`📅 Filtering out full slot: ${slot.displayTime}`);
-      }
+      const isAvailable = isSlotAvailable(slot, bookedAppointments, config.capacity || 4);
       return isAvailable;
     });
 
     console.log(`✅ Available slots after filtering: ${availableSlots.length}`);
-
-    // If no slots available for today, log a helpful message
-    if (isToday && availableSlots.length === 0) {
-      console.log(`⚠️ No available slots for today (${dateIST.toFormat('EEEE, dd MMM yyyy')}) - all slots are either in the past or too close to current time`);
-    }
 
     const slotsPerPage = 9; // WhatsApp allows max 10 rows, so 9 slots + 1 "Show more"
     const totalSlots = availableSlots.length;

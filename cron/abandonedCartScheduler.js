@@ -3,6 +3,7 @@ const axios = require('axios');
 const AdLead = require('../models/AdLead');
 const Client = require('../models/Client');
 const DailyStat = require('../models/DailyStat');
+const { sendAbandonedCartEmail } = require('../utils/emailService');
 
 // Function to send WhatsApp template
 async function sendWhatsAppTemplate(token, phoneId, to, templateName, variables) {
@@ -106,7 +107,8 @@ const scheduleAbandonedCartCron = () => {
                 const hasOrdered = lead.activityLog.some(l => l.action === "order_placed");
                 if (hasOrdered) continue;
 
-                const restoreUrl = `${process.env.STORE_URL || 'https://delitechsmarthome.in'}/cart`;
+                const storeUrl = client.nicheData?.storeUrl || process.env.STORE_URL || 'https://example.com';
+                const restoreUrl = `${storeUrl}/cart`;
 
                 await sendWhatsAppTemplate(
                     token,
@@ -117,6 +119,18 @@ const scheduleAbandonedCartCron = () => {
                         { type: "text", text: lead.name || "Customer" }
                     ]
                 );
+
+                // 📧 Also send abandoned cart email if customer has email
+                if (lead.email) {
+                    await sendAbandonedCartEmail(client, {
+                        customerEmail: lead.email,
+                        customerName: lead.name || 'Customer',
+                        cartLink: `${client.nicheData?.storeUrl || process.env.STORE_URL || restoreUrl}/cart`,
+                        items: lead.activityLog
+                            .filter(l => l.action === 'add_to_cart')
+                            .map(l => ({ name: l.details || 'Product' }))
+                    });
+                }
 
                 await AdLead.findByIdAndUpdate(lead._id, { 
                     recoveryStep: 1, 
@@ -144,6 +158,12 @@ const scheduleAbandonedCartCron = () => {
                 const client = await Client.findOne({ clientId: lead.clientId });
                 if (!client) continue;
 
+                // Feature Tiering Gate: V1 Clients do NOT get the AI Negotiator Message
+                if (client.plan === 'CX Agent (V1)') {
+                    await AdLead.findByIdAndUpdate(lead._id, { recoveryStep: 2 }); // complete
+                    continue;
+                }
+
                 const token = client.whatsappToken || client.config?.whatsappToken || process.env.WHATSAPP_TOKEN;
                 const phoneId = client.phoneNumberId || client.config?.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
                 const apiKey = client.openaiApiKey || client.config?.geminiApiKey || process.env.GEMINI_API_KEY;
@@ -162,8 +182,10 @@ const scheduleAbandonedCartCron = () => {
 
                 const cartProductName = cartItemAction ? cartItemAction.details : "a smart doorbell";
 
+                const aiPromptContext = client.nicheData?.aiPromptContext || `You are a friendly sales assistant for ${client.name || 'our ecommerce store'}.`;
+                
                 const aiPrompt = `
-You are a friendly sales assistant for Delitech Smart Home, a doorbell company.
+${aiPromptContext}
 A customer named ${lead.name || "there"} added ${cartProductName} to their cart but hasn't bought yet.
 
 Write ONE short WhatsApp message (max 3 sentences) that:

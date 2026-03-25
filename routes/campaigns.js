@@ -33,12 +33,13 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
   }
 
   try {
-    // Check subscription plan
+    // Check subscription plan (using new 'plan' field, fallback to subscriptionPlan for legacy)
     const client = await Client.findOne({ clientId: req.user.clientId });
-    if (!client || client.subscriptionPlan === 'v1') {
+    const isV1 = client?.plan === 'CX Agent (V1)' || client?.subscriptionPlan === 'v1';
+    if (!client || isV1) {
       // Clean up uploaded file
       try { fs.unlinkSync(req.file.path); } catch {}
-      return res.status(403).json({ message: 'Marketing Broadcasting (CSV Upload) is locked for CX Agent (v1). Please upgrade to v2.' });
+      return res.status(403).json({ message: 'Marketing Broadcasting (CSV Upload) is locked for CX Agent (V1). Please upgrade to V2.' });
     }
 
     const rows = [];
@@ -100,8 +101,9 @@ router.post('/start', protect, async (req, res) => {
         return res.status(404).json({ message: 'Client configuration not found' });
     }
 
-    if (client.subscriptionPlan === 'v1') {
-      return res.status(403).json({ message: 'Marketing Broadcasting is locked for CX Agent (v1). Please upgrade to v2.' });
+    const isV1 = client?.plan === 'CX Agent (V1)' || client?.subscriptionPlan === 'v1';
+    if (isV1) {
+      return res.status(403).json({ message: 'Marketing Broadcasting is locked for CX Agent (V1). Please upgrade to V2.' });
     }
 
     const phoneNumberId = client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
@@ -166,6 +168,33 @@ router.post('/start', protect, async (req, res) => {
           await DailyStat.updateOne(
             { clientId: req.user.clientId, date: dateStr },
             { $inc: { appointmentRemindersSent: 1 }, $setOnInsert: { clientId: req.user.clientId, date: dateStr } },
+            { upsert: true }
+          );
+        } else if (templateType === 'whatsapp') {
+          // Generic WhatsApp template broadcast
+          const tName = req.body.templateName || campaign.templateName;
+          if (!tName) { failed++; continue; }
+          const axios = require('axios');
+          const waPayload = {
+            messaging_product: 'whatsapp',
+            to: recipientPhone,
+            type: 'template',
+            template: {
+              name: tName,
+              language: { code: req.body.languageCode || 'en' },
+              components: req.body.templateComponents || []
+            }
+          };
+          await axios.post(
+            `https://graph.facebook.com/${process.env.API_VERSION || 'v18.0'}/${phoneNumberId}/messages`,
+            waPayload,
+            { headers: { Authorization: `Bearer ${accessToken}` } }
+          );
+          sent++;
+          const dateStr = new Date().toISOString().split('T')[0];
+          await DailyStat.updateOne(
+            { clientId: req.user.clientId, date: dateStr },
+            { $inc: { marketingMessagesSent: 1 }, $setOnInsert: { clientId: req.user.clientId, date: dateStr } },
             { upsert: true }
           );
         } else {

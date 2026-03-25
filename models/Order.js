@@ -1,17 +1,21 @@
 const mongoose = require('mongoose');
 
 const OrderSchema = new mongoose.Schema({
-  clientId: { type: String, required: true }, // e.g., 'delitech_smarthomes'
-  shopifyOrderId: { type: String }, // e.g., '529348239048'
-  orderId: { type: String, required: true, unique: true }, // e.g., #1001
-  orderNumber: { type: String }, 
-  customerName: { type: String, required: true },
-  phone: { type: String },
-  email: { type: String },
-  amount: { type: Number, required: true },
+  clientId: { type: String, required: true },
+  shopifyOrderId: { type: String },
+  orderId: { type: String, required: true, unique: true },
+  orderNumber: { type: String },
+  customerName: { type: String },
+  name: { type: String },              // Alias of customerName (Shopify compat)
+  phone: { type: String },             // Legacy field
+  customerPhone: { type: String },     // New standardized field
+  email: { type: String },             // Legacy field
+  customerEmail: { type: String },     // New standardized field for email automation
+  amount: { type: Number },            // Legacy field (not required — totalPrice is used)
   totalPrice: { type: Number },
-  status: { type: String, default: 'pending' }, // pending, paid, shipped, confirmed
-  paymentMethod: { type: String }, // e.g., 'Cash on Delivery (COD)'
+  status: { type: String, default: 'pending' },
+  paymentMethod: { type: String },
+  storeString: { type: String },
   isCOD: { type: Boolean, default: false },
   razorpayLinkId: { type: String },
   razorpayUrl: { type: String },

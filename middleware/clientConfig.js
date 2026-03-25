@@ -44,25 +44,17 @@ const loadClientConfig = async (req, res, next) => {
       }
     }
 
-    // Debug logging for token selection (all clients)
-    console.log(`[DEBUG] Token Selection for ${clientId}:`);
-    console.log(`- DB Token (root): ${clientToken ? clientToken.substring(0, 10) + '...' : 'Missing'}`);
-    console.log(`- DB Token (config): ${clientConfigToken ? clientConfigToken.substring(0, 10) + '...' : 'Missing'}`);
-    console.log(`- Env Token: ${envToken ? 'Exists' : 'Missing'}`);
-    console.log(`- Global Token: ${globalToken ? 'Exists' : 'Missing'}`);
-    console.log(`=> FINAL TOKEN USED: ${finalToken ? finalToken.substring(0, 10) + '...' : 'NONE'}`);
-
-    // --- Gemini API Key Resolution ---
-    // Priority: DB openaiApiKey (trimmed) → GEMINI_API_KEY env var
-    // We trim() to catch invisible copy-paste spaces which cause API_KEY_INVALID
+    // === Resolve Gemini API Key === 
     const rawDbGeminiKey = client.openaiApiKey ? client.openaiApiKey.trim() : null;
     const rawEnvGeminiKey = process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.trim() : null;
     const resolvedGeminiKey = rawDbGeminiKey || rawEnvGeminiKey || null;
 
-    console.log(`[DEBUG] Gemini Key Resolution for ${clientId}:`);
-    console.log(`- DB Key (openaiApiKey): ${rawDbGeminiKey ? rawDbGeminiKey.substring(0, 10) + '... (len=' + rawDbGeminiKey.length + ')' : 'Missing'}`);
-    console.log(`- Env Key (GEMINI_API_KEY): ${rawEnvGeminiKey ? rawEnvGeminiKey.substring(0, 10) + '... (len=' + rawEnvGeminiKey.length + ')' : 'Missing'}`);
-    console.log(`=> FINAL GEMINI KEY: ${resolvedGeminiKey ? resolvedGeminiKey.substring(0, 10) + '...' : 'NONE ⚠️'}`);
+    if (!finalToken) {
+      console.warn(`[ClientConfig] ⚠️ No WhatsApp token found for client: ${clientId}`);
+    }
+    if (!resolvedGeminiKey) {
+      console.warn(`[ClientConfig] ⚠️ No Gemini API key found for client: ${clientId}`);
+    }
 
     req.clientConfig = {
       _id: client._id,
@@ -83,7 +75,14 @@ const loadClientConfig = async (req, res, next) => {
       geminiApiKey: resolvedGeminiKey,
       // Legacy alias used by choice_salon / choice_salon_holi
       geminiApikey: resolvedGeminiKey,
-      config: client.config || {}
+      config: client.config || {},
+      
+      // === NEW SAAS ARCHITECTURE FIELDS ===
+      nicheData: client.nicheData || {},
+      flowData: client.flowData || {},
+      plan: client.plan || 'CX Agent (V1)',
+      isGenericBot: client.isGenericBot || false,
+      subscriptionPlan: client.subscriptionPlan || 'v2'
     };
 
     next();
