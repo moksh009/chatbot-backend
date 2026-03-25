@@ -170,15 +170,17 @@ function extractProductUrl(product, clientConfig, to) {
 
 const handleWebhook = async (req, res) => {
     try {
-        const { from, phoneNumberId, messages } = req;
+        const entry = req.body.entry?.[0];
+        const value = entry?.changes?.[0]?.value;
+        const messages = value?.messages?.[0];
+        const phoneNumberId = value?.metadata?.phone_number_id;
+        const from = messages?.from;
+
+        if (!messages || !from) return res.status(200).end();
+
         const { clientId, whatsappToken: token, nicheData, plan } = req.clientConfig;
         const io = req.app.get('socketio');
         const helperParams = { phoneNumberId, token, io, clientConfig: req.clientConfig };
-
-        if (!messages) return res.status(200).end();
-
-        // Decode incoming message
-        const userMsgType = messages.type;
         let userMsg = '';
         let interactiveId = '';
 
