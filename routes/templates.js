@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
-const authMiddleware = require('../middleware/auth');
+const { protect } = require('../middleware/auth');
+const log = require('../utils/logger')('TemplateAPI');
 const Client = require('../models/Client');
 const User = require('../models/User');
 
@@ -25,7 +26,7 @@ async function getClientCredentials(clientId, userId) {
 }
 
 // 1. Fetch All Templates from Meta
-router.get('/sync', authMiddleware, async (req, res) => {
+router.get('/sync', protect, async (req, res) => {
     try {
         const { clientId } = req.query;
         if (!clientId) return res.status(400).json({ success: false, message: 'clientId is required' });
@@ -51,7 +52,7 @@ router.get('/sync', authMiddleware, async (req, res) => {
 });
 
 // 2. Create a Template on Meta
-router.post('/create', authMiddleware, async (req, res) => {
+router.post('/create', protect, async (req, res) => {
     try {
         const { clientId, name, category, language, components } = req.body;
         if (!clientId || !name || !category || !language || !components) {
@@ -90,7 +91,7 @@ router.post('/create', authMiddleware, async (req, res) => {
 });
 
 // 3. Delete a Template from Meta
-router.delete('/:name', authMiddleware, async (req, res) => {
+router.delete('/:name', protect, async (req, res) => {
     try {
         const { clientId } = req.query;
         const templateName = req.params.name;
