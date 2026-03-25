@@ -15,6 +15,8 @@ const OrderSchema = new mongoose.Schema({
   isCOD: { type: Boolean, default: false },
   razorpayLinkId: { type: String },
   razorpayUrl: { type: String },
+  cashfreeLinkId: { type: String },
+  cashfreeUrl: { type: String },
   paidViaLink: { type: Boolean, default: false },
   paidAt: { type: Date },
   codNudgeSentAt: { type: Date },

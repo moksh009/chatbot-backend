@@ -221,77 +221,97 @@ router.post('/order-webhook', async (req, res) => {
     }
 });
 
-// --- RAZORPAY CALLBACKS ---
+// --- CASHFREE CALLBACKS ---
 
-// GET /r/payment-success/:orderId (Callback for Razorpay)
-router.get('/payment-success/:orderId', async (req, res) => {
+// GET /r/cashfree-callback/:orderId
+router.get('/cashfree-callback/:orderId', async (req, res) => {
     try {
         const Order = require('../models/Order');
         const DailyStat = require('../models/DailyStat');
         const Client = require('../models/Client');
         const axios = require('axios');
         
+        const { link_id } = req.query;
         const order = await Order.findById(req.params.orderId);
         if (!order) return res.status(404).send("Order not found");
 
         const client = await Client.findOne({ clientId: order.clientId });
         if (!client) return res.status(404).send("Client not found");
 
-        // Update order status
-        await Order.findByIdAndUpdate(order._id, { 
-            isCOD: false, 
-            paidViaLink: true, 
-            status: 'paid',
-            paidAt: new Date() 
-        });
-
-        const io = req.app.get('socketio');
-        // Emit to dashboard — COD converted!
-        if (io) {
-            io.to(`client_${order.clientId}`).emit("cod_converted", {
-                phone: order.phone,
-                orderNumber: order.orderNumber || order.orderId,
-                amount: order.totalPrice
-            });
-        }
-
-        // Update DailyStat for ROI counter
-        const today = new Date().toISOString().split('T')[0];
-        await DailyStat.findOneAndUpdate(
-            { clientId: order.clientId, date: today },
-            { 
-                $inc: { 
-                    codConvertedCount: 1, 
-                    codConvertedRevenue: order.totalPrice,
-                    rtoCostSaved: 150 // avg RTO cost per order
-                },
-                $setOnInsert: { clientId: order.clientId, date: today }
-            },
-            { upsert: true }
+        const cfConfig = client.config?.cashfree || {};
+        
+        // Verify Payment Status with Cashfree
+        const verifyRes = await axios.get(
+            `https://api.cashfree.com/pg/links/${link_id}`,
+            {
+                headers: {
+                    'x-client-id': cfConfig.app_id,
+                    'x-client-secret': cfConfig.secret_key,
+                    'x-api-version': '2023-08-01'
+                }
+            }
         );
 
-        // Send confirmation WhatsApp message
-        if (order.phone) {
-            const token = client.whatsappToken || client.config?.whatsappToken || process.env.WHATSAPP_TOKEN;
-            const phoneId = client.phoneNumberId || client.config?.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
-            
-            await axios.post(
-                `https://graph.facebook.com/v18.0/${phoneId}/messages`,
-                {
-                    messaging_product: 'whatsapp',
-                    to: order.phone,
-                    type: "text",
-                    text: { 
-                        body: `✅ Payment confirmed! ₹${order.totalPrice} received.\n\nYour order ${order.orderId} will be dispatched within 24 hours. Thank you for choosing Delitech! 🏠`
-                    }
+        const paymentStatus = verifyRes.data.link_status;
+        console.log(`[CASHFREE CALLBACK] Order: ${order.orderNumber} | Status: ${paymentStatus}`);
+
+        if (paymentStatus === 'PAID') {
+            // Update order status
+            await Order.findByIdAndUpdate(order._id, { 
+                isCOD: false, 
+                paidViaLink: true, 
+                status: 'paid',
+                paidAt: new Date() 
+            });
+
+            const io = req.app.get('socketio');
+            // Emit to dashboard — COD converted!
+            if (io) {
+                io.to(`client_${order.clientId}`).emit("cod_converted", {
+                    phone: order.phone,
+                    orderNumber: order.orderNumber || order.orderId,
+                    amount: order.totalPrice
+                });
+            }
+
+            // Update DailyStat for ROI counter
+            const today = new Date().toISOString().split('T')[0];
+            await DailyStat.findOneAndUpdate(
+                { clientId: order.clientId, date: today },
+                { 
+                    $inc: { 
+                        codConvertedCount: 1, 
+                        codConvertedRevenue: order.totalPrice,
+                        rtoCostSaved: 150 // avg RTO cost per order
+                    },
+                    $setOnInsert: { clientId: order.clientId, date: today }
                 },
-                { headers: { Authorization: `Bearer ${token}` } }
+                { upsert: true }
             );
+
+            // Send confirmation WhatsApp message
+            if (order.phone) {
+                const token = client.whatsappToken || client.config?.whatsappToken || process.env.WHATSAPP_TOKEN;
+                const phoneId = client.phoneNumberId || client.config?.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
+                
+                await axios.post(
+                    `https://graph.facebook.com/v18.0/${phoneId}/messages`,
+                    {
+                        messaging_product: 'whatsapp',
+                        to: order.phone,
+                        type: "text",
+                        text: { 
+                            body: `✅ Payment confirmed! ₹${order.totalPrice} received.\n\nYour order ${order.orderId} will be dispatched within 24 hours. Thank you for choosing Delitech! 🏠`
+                        }
+                    },
+                    { headers: { Authorization: `Bearer ${token}` } }
+                );
+            }
         }
 
         res.redirect(`https://delitechsmarthome.in`);
     } catch (err) {
-        console.error("Payment callback error:", err);
+        console.error("Cashfree callback error:", err.response?.data || err.message);
         res.redirect(`https://delitechsmarthome.in`);
     }
 });

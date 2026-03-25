@@ -377,10 +377,11 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
             const orderId = interactiveId.replace("cod_pay_", "");
             const Order = require('../../models/Order');
             const order = await Order.findById(orderId);
-            if (order && order.razorpayUrl) {
+            const pUrl = order ? (order.cashfreeUrl || order.razorpayUrl) : null;
+            if (pUrl) {
                 await sendWhatsAppText({
                     phoneNumberId, to: from, io, clientConfig,
-                    body: `Perfect! Here's your secure payment link 🔐\n\n👉 ${order.razorpayUrl}\n\nPay via GPay, PhonePe, or any UPI app. Link valid for 2 hours.\n\nOnce paid, we'll process your order immediately! ✅`
+                    body: `Perfect! Here's your secure payment link 🔐\n\n👉 ${pUrl}\n\nPay via GPay, PhonePe, or any UPI app. Link valid for 2 hours.\n\nOnce paid, we'll process your order immediately! ✅`
                 });
             }
             return res.status(200).end();

@@ -1,5 +1,4 @@
 const axios = require('axios');
-const Razorpay = require('razorpay');
 const Order = require('../models/Order');
 
 /**
@@ -11,40 +10,45 @@ async function sendCODToPrepaidNudge(order, client, phone) {
     let paymentUrl = ""; 
     
     try {
-        const rzpConfig = client.config?.razorpay || {};
-        if (rzpConfig.key_id && rzpConfig.key_secret) {
-            const rzp = new Razorpay({
-                key_id: rzpConfig.key_id,
-                key_secret: rzpConfig.key_secret
-            });
-            
-            const link = await rzp.paymentLink.create({
-                amount: Math.round(order.totalPrice * 100), // in paise
-                currency: "INR",
-                description: `Order ${order.orderNumber || order.orderId} - Delitech Smart Home`,
-                customer: { 
-                    contact: `+${phone}`,
-                    email: order.email || ""
+        const cfConfig = client.config?.cashfree || {};
+        if (cfConfig.app_id && cfConfig.secret_key) {
+            const linkId = `cf_link_${order._id}_${Date.now()}`;
+            const response = await axios.post(
+                'https://api.cashfree.com/pg/links',
+                {
+                    link_id: linkId,
+                    link_amount: order.totalPrice,
+                    link_currency: "INR",
+                    link_purpose: `Order ${order.orderNumber || order.orderId}`,
+                    customer_details: {
+                        customer_phone: phone,
+                        customer_name: order.name || customerName || "Customer",
+                        customer_email: order.email || "customer@example.com"
+                    },
+                    link_meta: {
+                        return_url: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/r/cashfree-callback/${order._id}?link_id={link_id}`
+                    }
                 },
-                notify: { sms: false, email: false, whatsapp: false },
-                reminder_enable: false,
-                notes: {
-                    order_db_id: order._id.toString(),
-                    shopify_order_id: order.shopifyOrderId
-                },
-                callback_url: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/r/payment-success/${order._id}`,
-                callback_method: "get",
-                expire_by: Math.floor(Date.now() / 1000) + (2 * 60 * 60) // 2 hours
-            });
-            
-            paymentUrl = link.short_url;
-            await Order.findByIdAndUpdate(order._id, { 
-                razorpayLinkId: link.id,
-                razorpayUrl: link.short_url 
-            });
+                {
+                    headers: {
+                        'x-client-id': cfConfig.app_id,
+                        'x-client-secret': cfConfig.secret_key,
+                        'x-api-version': '2023-08-01',
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
+
+            if (response.data && response.data.link_url) {
+                paymentUrl = response.data.link_url;
+                await Order.findByIdAndUpdate(order._id, {
+                    cashfreeLinkId: linkId,
+                    cashfreeUrl: paymentUrl
+                });
+            }
         }
     } catch (err) {
-        console.error("Razorpay link creation failed for order", order.orderId, err.message);
+        console.error("Cashfree link creation failed for order", order.orderId, err.response?.data || err.message);
     }
 
     // Send WhatsApp interactive message
