@@ -55,224 +55,209 @@ async function sendWhatsAppText(token, phoneId, to, text) {
     }
 }
 
+// Gemini API Helper (Moved here for AI Nudge)
+async function generateGeminiResponse(apiKey, prompt) {
+    if (!apiKey) return "Hi! Don't forget you left something amazing in your cart. Grab it before it's gone!";
+    try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+        const data = { contents: [{ parts: [{ text: prompt }] }] };
+        const response = await axios.post(url, data, { headers: { 'Content-Type': 'application/json' } });
+        return response.data.candidates[0].content.parts[0].text;
+    } catch (err) {
+        console.error('Gemini API Error (cart_recovery):', err.message);
+        return "Hey there! We noticed you left a great item in your cart. Order today to secure it!";
+    }
+}
+
 const scheduleAbandonedCartCron = () => {
-    // Run every 1 minute
-    cron.schedule('* * * * *', async () => {
-        console.log('⏰ Running Abandoned Cart Scheduler...');
+    // 1. Abandoned Cart Scheduler - Runs every 10 minutes
+    cron.schedule('*/10 * * * *', async () => {
+        console.log('⏰ Running Advanced Abandoned Cart Scheduler...');
         try {
             const now = new Date();
-            // Detection threshold: 2 hours of silence for production
-            const abandonmentThreshold = new Date(now.getTime() - 2 * 60 * 60 * 1000);
-            
-            // Admin Follow-up window: 2 to 6 hours after reminder sent
-            const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
-            const sixHoursAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000);
+            const twoHoursAgo  = new Date(now - 2 * 60 * 60 * 1000);
+            const fourHoursAgo = new Date(now - 4 * 60 * 60 * 1000);
+            const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
 
-            // Get all ecommerce clients to get their credentials
-            const clients = await Client.find({ businessType: 'ecommerce' });
-            if (!clients.length) return;
+            // --- Step 1: First recovery message (2 hours) ---
+            const firstBatch = await AdLead.find({
+                clientId: { $exists: true },
+                "activityLog.action": "add_to_cart",
+                "activityLog.action": { $ne: "order_placed" },
+                recoveryStep: { $exists: false },
+                updatedAt: { $lte: twoHoursAgo, $gte: sevenDaysAgo }
+            });
 
-            for (const client of clients) {
-                // ... (existing token/phoneId logic)
-                const envSuffix = `_${client.clientId}`;
-                const envToken = process.env[`WHATSAPP_TOKEN${envSuffix}`];
-                const globalToken = process.env.WHATSAPP_TOKEN;
+            for (const lead of firstBatch) {
+                const client = await Client.findOne({ clientId: lead.clientId });
+                if (!client) continue;
 
-                let token = client.whatsappToken || client.config?.whatsappToken;
-                if (!token) token = envToken || globalToken;
+                const token = client.whatsappToken || client.config?.whatsappToken || process.env.WHATSAPP_TOKEN;
+                const phoneId = client.phoneNumberId || client.config?.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
 
-                const phoneId = client.phoneNumberId || client.config?.phoneNumberId;
-                let adminPhone = client.adminPhoneNumber || client.config?.adminPhoneNumber;
+                if (!token || !phoneId) continue;
 
-                if (!token || !phoneId) {
+                const lastCart = lead.activityLog
+                    .filter(l => l.action === "add_to_cart")
+                    .sort((a, b) => b.timestamp - a.timestamp)[0];
+                
+                if (!lastCart) continue;
+                
+                // Extra check if they naturally purchased
+                const hasOrdered = lead.activityLog.some(l => l.action === "order_placed");
+                if (hasOrdered) continue;
+
+                const restoreUrl = `${process.env.STORE_URL || 'https://delitechsmarthome.in'}/cart`;
+
+                await sendWhatsAppTemplate(
+                    token,
+                    phoneId,
+                    lead.phoneNumber,
+                    "cart_remainder", // Using existing approved template
+                    [
+                        { type: "text", text: lead.name || "Customer" }
+                    ]
+                );
+
+                await AdLead.findByIdAndUpdate(lead._id, { 
+                    recoveryStep: 1, 
+                    recoveryStartedAt: new Date() 
+                });
+
+                // Update stats
+                const today = new Date().toISOString().split('T')[0];
+                await DailyStat.findOneAndUpdate(
+                    { clientId: lead.clientId, date: today },
+                    { $inc: { cartRecoveryMessagesSent: 1 }, $setOnInsert: { clientId: lead.clientId, date: today } },
+                    { upsert: true }
+                );
+            }
+
+            // --- Step 2: Negotiator message (4 hours, no purchase) ---
+            const secondBatch = await AdLead.find({
+                recoveryStep: 1,
+                recoveryStartedAt: { $lte: fourHoursAgo },
+                "activityLog.action": { $ne: "order_placed" }
+            });
+
+            for (const lead of secondBatch) {
+                const client = await Client.findOne({ clientId: lead.clientId });
+                if (!client) continue;
+
+                const token = client.whatsappToken || client.config?.whatsappToken || process.env.WHATSAPP_TOKEN;
+                const phoneId = client.phoneNumberId || client.config?.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
+                const apiKey = client.openaiApiKey || client.config?.geminiApiKey || process.env.GEMINI_API_KEY;
+
+                if (!token || !phoneId) continue;
+
+                const hasOrdered = lead.activityLog.some(l => l.action === "order_placed");
+                if (hasOrdered) {
+                    await AdLead.findByIdAndUpdate(lead._id, { recoveryStep: 2 }); // complete
                     continue;
                 }
 
-                // --- A. Abandonment Detection ---
-                const abandonedLeads = await AdLead.find({
-                    clientId: client.clientId,
-                    cartStatus: 'active',
-                    'cartSnapshot.items.0': { $exists: true },
-                    'cartSnapshot.updatedAt': { $lte: abandonmentThreshold },
-                    abandonedCartReminderSentAt: { $exists: false }
-                });
+                const cartItemAction = lead.activityLog
+                    .filter(l => l.action === "add_to_cart")
+                    .sort((a, b) => b.timestamp - a.timestamp)[0];
 
-                if (abandonedLeads.length > 0) {
-                    console.log(`[Cron] Found ${abandonedLeads.length} abandoned leads for client ${client.clientId}`);
+                const cartProductName = cartItemAction ? cartItemAction.details : "a smart doorbell";
+
+                const aiPrompt = `
+You are a friendly sales assistant for Delitech Smart Home, a doorbell company.
+A customer named ${lead.name || "there"} added ${cartProductName} to their cart but hasn't bought yet.
+
+Write ONE short WhatsApp message (max 3 sentences) that:
+1. Mentions the specific product by name (if available)
+2. Offers a genuine reason to buy today (like a fast shipping promise, or mentions it's top-rated)
+3. Ends with a question to re-engage them
+
+Be conversational, not salesy. No emojis overload. Sound human. Do not use asterisks for bolding.
+`;
+
+                const aiResponse = await generateGeminiResponse(apiKey, aiPrompt);
+                
+                await sendWhatsAppText(
+                    token,
+                    phoneId,
+                    lead.phoneNumber,
+                    aiResponse
+                );
+
+                // Alert admin
+                const adminPhone = client.adminPhoneNumber || client.config?.adminPhoneNumber;
+                if (adminPhone) {
+                    await sendWhatsAppText(
+                        token,
+                        phoneId,
+                        adminPhone,
+                        `🔥 Hot Lead Alert: ${lead.name || lead.phoneNumber} added ${cartProductName} to cart 4hrs ago with no purchase. Check: https://wa.me/91${lead.phoneNumber}`
+                    );
                 }
 
-                for (const lead of abandonedLeads) {
-                    const customerName = lead.name || 'Valued Customer';
-                    // Template variables: {{1}} -> Customer name
-                    const variables = [
-                        { type: 'text', text: customerName } // {{1}}
-                    ];
+                await AdLead.findByIdAndUpdate(lead._id, { recoveryStep: 2 });
+            }
+        } catch (e) {
+            console.error('Abandoned Cart Cron Error:', e);
+        }
+    });
 
-                    // The button URL is usually dynamic per component, or maybe handled by template configuration
-                    // Wait, Facebook API templates with dynamic URLs require a button parameter if the URL has a variable tail
-                    // Let's pass the uid as the dynamic URL parameter for the button.
-                    try {
-                        const templateName = 'cart_remainder';
+    // 2. Post-Purchase Review Collection - Runs daily at 10:00 IST (4:30 UTC = 30 4 * * *)
+    cron.schedule('30 4 * * *', async () => {
+        console.log('⏰ Running Post-Purchase Review Collector...');
+        try {
+            const ReviewRequest = require('../models/ReviewRequest');
+            const dueReviews = await ReviewRequest.find({
+                status: "scheduled",
+                scheduledFor: { $lte: new Date() }
+            });
 
-                        // Extract highest quality image from the most recent item added
-                        // Fallback assets based on ved.js
-                        const ASSETS = {
-                            'hero_3mp': 'https://delitechsmarthome.in/cdn/shop/files/Delitech_Main_photoswq.png?v=1760635732&width=1346',
-                            'hero_5mp': 'https://delitechsmarthome.in/cdn/shop/files/my1.png?v=1759746759&width=1346'
-                        };
+            for (const review of dueReviews) {
+                const client = await Client.findOne({ clientId: review.clientId });
+                if (!client) continue;
 
+                const token = client.whatsappToken || client.config?.whatsappToken || process.env.WHATSAPP_TOKEN;
+                const phoneId = client.phoneNumberId || client.config?.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
 
-                        let imageUrl = ASSETS.hero_3mp; // Default fallback
+                if (!token || !phoneId) continue;
 
-                        if (lead.cartSnapshot && lead.cartSnapshot.titles) {
-                            const titles = lead.cartSnapshot.titles.join(' ').toLowerCase();
-                            if (titles.includes('5mp')) {
-                                imageUrl = ASSETS.hero_5mp;
-                            } else if (titles.includes('3mp') || titles.includes('2mp')) {
-                                imageUrl = ASSETS.hero_3mp;
-                            } else if (lead.cartSnapshot.items && lead.cartSnapshot.items.length > 0) {
-                                // Last resort: try to get image from items snapshot
-                                const firstItemWithImage = lead.cartSnapshot.items.find(i => i.image);
-                                if (firstItemWithImage && firstItemWithImage.image) {
-                                    imageUrl = firstItemWithImage.image.startsWith('//') ? `https:${firstItemWithImage.image}` : firstItemWithImage.image;
-                                }
-                            }
+                const data = {
+                    messaging_product: 'whatsapp',
+                    to: review.phone,
+                    type: 'interactive',
+                    interactive: {
+                        type: "button",
+                        body: {
+                            text: `Hi! How's your *${review.productName}*? 😊\n\nYour feedback genuinely helps us improve and helps other customers make better decisions!`
+                        },
+                        action: {
+                            buttons: [
+                                { type: "reply", reply: { id: `rv_good_${review._id}`, title: "😍 Loved it!" } },
+                                { type: "reply", reply: { id: `rv_ok_${review._id}`,   title: "😐 It's okay" } },
+                                { type: "reply", reply: { id: `rv_bad_${review._id}`,  title: "😕 Not happy" } }
+                            ]
                         }
-
-                        // Build dynamic product link / cart restore link (Direct Store Link as per user request)
-                        const restoreUrlSuffix = `?uid=${lead._id.toString()}&restore=true`;
-
-                        const templateData = {
-                            messaging_product: 'whatsapp',
-                            to: lead.phoneNumber,
-                            type: 'template',
-                            template: {
-                                name: templateName,
-                                language: { code: 'en' },
-                                components: [
-                                    {
-                                        type: 'header',
-                                        parameters: [
-                                            {
-                                                type: 'image',
-                                                image: { link: imageUrl }
-                                            }
-                                        ]
-                                    },
-                                    {
-                                        type: 'body',
-                                        parameters: variables
-                                    }
-                                ]
-                            }
-                        };
-
-                        let success = false;
-                        try {
-                            await axios.post(
-                                `https://graph.facebook.com/v18.0/${phoneId}/messages`,
-                                templateData,
-                                { headers: { Authorization: `Bearer ${token}` } }
-                            );
-                            success = true;
-                        } catch (e) {
-                            console.error("Cart Reminder Template Error:", e.response?.data || e.message);
-                        }
-
-                        if (success) {
-                            await AdLead.findByIdAndUpdate(lead._id, {
-                                $set: {
-                                    cartStatus: 'abandoned',
-                                    abandonedCartReminderSentAt: new Date()
-                                },
-                                $push: {
-                                    activityLog: {
-                                        action: 'whatsapp_template_sent',
-                                        details: 'Sent cart_remainder template',
-                                        timestamp: new Date(),
-                                        meta: {}
-                                    }
-                                }
-                            });
-
-                            // Increment Daily Stats
-                            try {
-                                const today = new Date().toISOString().split('T')[0];
-                                await DailyStat.updateOne(
-                                    { clientId: client.clientId, date: today },
-                                    { $inc: { abandonedCartSent: 1 } },
-                                    { upsert: true }
-                                );
-                            } catch (e) { console.error("DailyStat Update Error (Sent):", e); }
-                        } else {
-                            // Failure handler: Simply log it, don't set invalid status
-                            console.error(`[Cron] Failed to send reminder to ${lead.phoneNumber}`);
-                        }
-                    } catch (err) {
-                        console.error("Failed to process abandoned lead:", err.message);
                     }
-                }
+                };
 
-                // --- B. Admin Follow-Up (2 Hours After Reminder) ---
-                const followupLeads = await AdLead.find({
-                    clientId: client.clientId,
-                    cartStatus: { $in: ['active', 'abandoned', 'recovered'] },
-                    adminFollowUpTriggered: false,
-                    abandonedCartReminderSentAt: { $lt: twoHoursAgo, $gte: sixHoursAgo }
-                });
-
-                for (const lead of followupLeads) {
-                    try {
-                        if (!adminPhone) continue;
-
-                        let cartValue = lead.cartSnapshot?.total_price || 0;
-                        const items = lead.cartSnapshot?.titles?.join(', ') || 'Unknown items';
-
-                        // --- Fallback: If cart value is 0, estimate it from titles (common for partial webhooks) ---
-                        if (cartValue === 0 && lead.cartSnapshot?.titles?.length > 0) {
-                            lead.cartSnapshot.titles.forEach(title => {
-                                if (title.includes('5MP')) cartValue += 6999;
-                                else if (title.includes('3MP')) cartValue += 6499;
-                                else if (title.includes('2MP')) cartValue += 5499;
-                            });
-                        }
-
-                        const minutesSince = Math.round((new Date() - lead.lastInteraction) / (1000 * 60));
-
-                        let timeSinceFormatted = `${minutesSince} mins`;
-                        if (minutesSince > 60) {
-                            timeSinceFormatted = `${Math.floor(minutesSince / 60)} hrs, ${minutesSince % 60} mins`;
-                        }
-
-                        const customerName = lead.name || 'Unknown';
-
-                        const message = `⚠️ *Abandoned Cart Alert*\nWe have sent them a card recovery message still they have not purchased. Contact them now!\n\nCustomer: ${customerName}\nPhone: +${lead.phoneNumber}\nProducts: ${items}\nCart Value: ₹${cartValue.toLocaleString()}\nLast activity: ${timeSinceFormatted} ago\n👉 Call customer now: https://wa.me/${lead.phoneNumber}`;
-
-                        const success = await sendWhatsAppText(token, phoneId, adminPhone, message);
-
-                        if (success) {
-                            console.log(`[Cron] Admin follow-up sent for ${lead.phoneNumber}`);
-                            await AdLead.findByIdAndUpdate(lead._id, {
-                                $set: { adminFollowUpTriggered: true },
-                                $push: {
-                                    activityLog: {
-                                        action: 'admin_followup_sent',
-                                        details: 'Sent follow-up alert to admin',
-                                        timestamp: new Date(),
-                                        meta: {}
-                                    }
-                                }
-                            });
-                        }
-                    } catch (err) {
-                        console.error("Failed to process followup lead:", err.message);
-                    }
+                try {
+                    await axios.post(
+                        `https://graph.facebook.com/v18.0/${phoneId}/messages`,
+                        data,
+                        { headers: { Authorization: `Bearer ${token}` } }
+                    );
+                    
+                    await ReviewRequest.findByIdAndUpdate(review._id, { 
+                        status: "sent", sentAt: new Date() 
+                    });
+                } catch (e) {
+                    console.error('WhatsApp Review Template Error:', e.response?.data || e.message);
                 }
             }
-        } catch (error) {
-            console.error('Error in Abandoned Cart Scheduler:', error);
+        } catch (e) {
+            console.error('Review Cron Error:', e);
         }
     });
 };
 
 module.exports = scheduleAbandonedCartCron;
+

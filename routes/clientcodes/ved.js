@@ -354,7 +354,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
 
 
         // --- AD LEAD INTENT (Priority) ---
-        const adIntentRegex = /(details|know|about|price|info|tell me more|interested)/i;
+        const adIntentRegex = /(details|know|about|price|info|tell me more|interested|information|catalogue|catalog|cost|doorbell)/i;
         if (adIntentRegex.test(txt)) {
             // Send Welcome Template instead of 5MP card
             await sendMainMenu({ phoneNumberId, to: from, io, clientConfig, lead });
@@ -371,6 +371,82 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
 
     // C. INTERACTIVE HANDLERS
     if (interactiveId) {
+        // Dynamic ID Handlers (COD & Reviews)
+        if (interactiveId.startsWith("cod_pay_")) {
+            const orderId = interactiveId.replace("cod_pay_", "");
+            const Order = require('../../models/Order');
+            const order = await Order.findById(orderId);
+            if (order && order.razorpayUrl) {
+                await sendWhatsAppText({
+                    phoneNumberId, to: from, io, clientConfig,
+                    body: `Perfect! Here's your secure payment link 🔐\n\n👉 ${order.razorpayUrl}\n\nPay via GPay, PhonePe, or any UPI app. Link valid for 2 hours.\n\nOnce paid, we'll process your order immediately! ✅`
+                });
+            }
+            return res.status(200).end();
+        }
+
+        if (interactiveId.startsWith("cod_keep_")) {
+            await sendWhatsAppText({
+                phoneNumberId, to: from, io, clientConfig,
+                body: "No problem at all! Your COD order is confirmed. We'll deliver to your door soon. 📦"
+            });
+            return res.status(200).end();
+        }
+
+        if (interactiveId.startsWith("rv_good_") || interactiveId.startsWith("rv_ok_")) {
+            const ReviewRequest = require('../../models/ReviewRequest');
+            const reviewId = interactiveId.split("_").pop();
+            const review = await ReviewRequest.findById(reviewId);
+            
+            if (review) {
+                await ReviewRequest.findByIdAndUpdate(reviewId, { 
+                    status: "responded_positive", response: interactiveId.includes("good") ? "positive" : "neutral" 
+                });
+            }
+
+            await sendWhatsAppText({
+                phoneNumberId, to: from, io, clientConfig,
+                body: `Thank you so much! 🙏 Would you mind leaving a quick Google review? It takes 30 seconds and means the world to us!\n\n⭐ ${review?.reviewUrl || clientConfig.config?.googleReviewUrl || 'https://g.page/r/delitech/review'}\n\nThank you for being a Delitech customer! 🏠`
+            });
+
+            // Update stats
+            const today = new Date().toISOString().split('T')[0];
+            await DailyStat.findOneAndUpdate(
+                { clientId: clientConfig.clientId, date: today },
+                { $inc: { reviewsCollected: 1 }, $setOnInsert: { clientId: clientConfig.clientId, date: today } },
+                { upsert: true }
+            );
+            return res.status(200).end();
+        }
+
+        if (interactiveId.startsWith("rv_bad_")) {
+            const ReviewRequest = require('../../models/ReviewRequest');
+            const reviewId = interactiveId.split("_").pop();
+            await ReviewRequest.findByIdAndUpdate(reviewId, { 
+                status: "responded_negative", response: "negative" 
+            });
+            
+            // Flag in dashboard
+            await Conversation.findOneAndUpdate(
+                { phone: from, clientId: clientConfig.clientId },
+                { requiresAttention: true, attentionReason: "Unhappy customer - review" }
+            );
+            
+            if (io) {
+                io.to(`client_${clientConfig.clientId}`).emit("attention_required", {
+                    phone: from,
+                    reason: "Customer unhappy with product",
+                    priority: "high"
+                });
+            }
+
+            await sendWhatsAppText({
+                phoneNumberId, to: from, io, clientConfig,
+                body: `We're really sorry to hear that 😔 Our team will reach out within 2 hours to make it right. Customer happiness is our top priority! 💙`
+            });
+            return res.status(200).end();
+        }
+
         switch (interactiveId) {
             // --- Navigation ---
             case 'menu_products': 

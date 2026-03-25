@@ -12,7 +12,16 @@ const DailyStatSchema = new mongoose.Schema({
   agentRequests: { type: Number, default: 0 },
   linkClicks: { type: Number, default: 0 },
   abandonedCartSent: { type: Number, default: 0 },
-  abandonedCartClicks: { type: Number, default: 0 }
+  abandonedCartClicks: { type: Number, default: 0 },
+  cartRecoveryMessagesSent: { type: Number, default: 0 },
+  cartsRecovered: { type: Number, default: 0 },
+  cartRevenueRecovered: { type: Number, default: 0 },
+  codConvertedCount: { type: Number, default: 0 },
+  codConvertedRevenue: { type: Number, default: 0 },
+  rtoCostSaved: { type: Number, default: 0 },
+  reviewsCollected: { type: Number, default: 0 },
+  marketingMessagesSent: { type: Number, default: 0 },
+  marketingSummary: { type: Object, default: {} }
 });
 
 // Ensure unique stats per client per day

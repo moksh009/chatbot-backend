@@ -848,4 +848,63 @@ router.get('/insights', protect, async (req, res) => {
   }
 });
 
+// GET /api/analytics/:clientId/roi
+router.get('/:clientId/roi', protect, async (req, res) => {
+    try {
+        const clientId = req.params.clientId;
+        const { period = 'today' } = req.query; // today, week, month
+
+        const now = new Date();
+        const tzOffset = 5.5 * 60 * 60 * 1000; // IST is UTC +5:30
+        const nowIST = new Date(now.getTime() + tzOffset);
+        
+        let dates = [];
+        if (period === 'today') {
+            dates.push(nowIST.toISOString().split('T')[0]);
+        } else if (period === 'week') {
+            for (let i = 0; i < 7; i++) {
+                const d = new Date(nowIST.getTime() - i * 24 * 60 * 60 * 1000);
+                dates.push(d.toISOString().split('T')[0]);
+            }
+        } else if (period === 'month') {
+            for (let i = 0; i < 30; i++) {
+                const d = new Date(nowIST.getTime() - i * 24 * 60 * 60 * 1000);
+                dates.push(d.toISOString().split('T')[0]);
+            }
+        }
+
+        const stats = await DailyStat.find({
+            clientId,
+            date: { $in: dates }
+        });
+
+        const roi = {
+            cartRecoveryMessagesSent: 0,
+            cartsRecovered: 0,
+            cartRevenueRecovered: 0,
+            codConvertedCount: 0,
+            codConvertedRevenue: 0,
+            rtoCostSaved: 0,
+            reviewsCollected: 0
+        };
+
+        stats.forEach(s => {
+            roi.cartRecoveryMessagesSent += s.cartRecoveryMessagesSent || 0;
+            roi.cartsRecovered += s.cartsRecovered || 0;
+            roi.cartRevenueRecovered += s.cartRevenueRecovered || 0;
+            roi.codConvertedCount += s.codConvertedCount || 0;
+            roi.codConvertedRevenue += s.codConvertedRevenue || 0;
+            roi.rtoCostSaved += s.rtoCostSaved || 0;
+            roi.reviewsCollected += s.reviewsCollected || 0;
+        });
+
+        roi.totalRecoveredRevenue = roi.cartRevenueRecovered + roi.codConvertedRevenue + roi.rtoCostSaved;
+
+        res.json(roi);
+    } catch (e) {
+        console.error('ROI Analytics Error:', e);
+        res.status(500).json({ error: 'Server Error' });
+    }
+});
+
 module.exports = router;
