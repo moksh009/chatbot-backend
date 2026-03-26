@@ -47,7 +47,8 @@ router.get('/sync', protect, async (req, res) => {
 
     } catch (error) {
         console.error('[Template API] Error:', error.message);
-        res.status(500).json({ success: false, message: error.message });
+        // Returning 200 with empty data array to prevent Frontend crashes when WABA ID isn't configured for new clients
+        res.status(200).json({ success: false, data: [], message: error.message });
     }
 });
 

@@ -848,10 +848,11 @@ router.get('/insights', protect, async (req, res) => {
   }
 });
 
-// GET /api/analytics/ecommerce/roi
-router.get("/ecommerce/roi", protect, async (req, res) => {
+// GET /api/analytics/:clientId/roi
+router.get("/:clientId/roi", protect, async (req, res) => {
   try {
-    const { clientId, period = "month" } = req.query;
+    const { clientId } = req.params;
+    const { period = "month" } = req.query;
     if (!clientId) return res.status(400).json({ error: "clientId required" });
 
     const { startOfDay } = require("date-fns");
