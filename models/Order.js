@@ -29,6 +29,9 @@ const OrderSchema = new mongoose.Schema({
   city: { type: String },
   state: { type: String },
   zip: { type: String },
+  fulfilledAt: { type: Date },
+  trackingUrl: { type: String },
+  trackingNumber: { type: String },
   items: [{
     name: String,
     quantity: Number,

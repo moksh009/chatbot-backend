@@ -35,6 +35,35 @@ const ClientSchema = new mongoose.Schema({
   config: { type: mongoose.Schema.Types.Mixed, default: {} }, // Flexible config for other settings
   nicheData: { type: mongoose.Schema.Types.Mixed, default: {} }, // Flexible config for generic niche bots
   flowData: { type: mongoose.Schema.Types.Mixed, default: {} }, // Flexible config for generic WhatsApp text flows
+  
+  // Phase 7 Added Fields
+  razorpayKeyId: { type: String, default: "" },
+  razorpaySecret: { type: String, default: "" },
+  googleReviewUrl: { type: String, default: "" },
+  adminPhone: { type: String, default: "" },
+  shopDomain: { type: String, default: "" },
+  shopifyAccessToken: { type: String, default: "" },
+  shopifyWebhookSecret: { type: String, default: "" },
+  
+  messageTemplates: [{
+    id: { type: String, required: true },
+    name: { type: String, required: true },
+    body: { type: String, required: true },
+    buttons: [{
+      id: String,
+      label: String
+    }],
+    waitMinutes: { type: Number, default: 0 },
+    isActive: { type: Boolean, default: true },
+    lastEditedAt: Date
+  }],
+  
+  automationFlows: [{
+    id: { type: String },
+    isActive: { type: Boolean, default: false },
+    config: { type: mongoose.Schema.Types.Mixed, default: {} }
+  }],
+  
   createdAt: { type: Date, default: Date.now }
 });
 

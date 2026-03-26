@@ -21,7 +21,9 @@ const DailyStatSchema = new mongoose.Schema({
   rtoCostSaved: { type: Number, default: 0 },
   reviewsCollected: { type: Number, default: 0 },
   marketingMessagesSent: { type: Number, default: 0 },
-  marketingSummary: { type: Object, default: {} }
+  marketingSummary: { type: Object, default: {} },
+  reviewsPositive: { type: Number, default: 0 },
+  reviewsNegative: { type: Number, default: 0 }
 });
 
 // Ensure unique stats per client per day

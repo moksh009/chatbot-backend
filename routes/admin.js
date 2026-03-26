@@ -50,7 +50,7 @@ router.get('/clients/:id', protect, isSuperAdmin, async (req, res) => {
 router.post('/clients', protect, isSuperAdmin, async (req, res) => {
   try {
     const {
-      clientId, name, businessType, niche, plan, isGenericBot, phoneNumberId, whatsappToken, verifyToken: webhookVerifyToken, googleCalendarId, openaiApiKey, nicheData, flowData, wabaId, emailUser, emailAppPassword
+      clientId, name, businessType, niche, plan, isGenericBot, phoneNumberId, whatsappToken, verifyToken: webhookVerifyToken, googleCalendarId, openaiApiKey, nicheData, flowData, wabaId, emailUser, emailAppPassword, automationFlows, messageTemplates
     } = req.body;
 
     const existingClient = await Client.findOne({ clientId });
@@ -64,6 +64,7 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
       plan: plan || 'CX Agent (V1)', isGenericBot: isGenericBot || false,
       phoneNumberId, whatsappToken, verifyToken: webhookVerifyToken, googleCalendarId,
       openaiApiKey, nicheData: nicheData || {}, flowData: flowData || {},
+      automationFlows: automationFlows || [], messageTemplates: messageTemplates || [],
       wabaId: wabaId || '', emailUser: emailUser || '', emailAppPassword: emailAppPassword || ''
     });
 
@@ -81,12 +82,12 @@ router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
   try {
     log.info(`Updating client: ${req.params.id}`);
     const {
-      name, businessType, niche, plan, isGenericBot, phoneNumberId, whatsappToken, verifyToken: webhookVerifyToken, googleCalendarId, openaiApiKey, nicheData, flowData, wabaId, emailUser, emailAppPassword
+      name, businessType, niche, plan, isGenericBot, phoneNumberId, whatsappToken, verifyToken: webhookVerifyToken, googleCalendarId, openaiApiKey, nicheData, flowData, automationFlows, messageTemplates, wabaId, emailUser, emailAppPassword
     } = req.body;
 
     const updatedClient = await Client.findByIdAndUpdate(
       req.params.id,
-      { $set: { name, businessType, niche, plan, isGenericBot, phoneNumberId, whatsappToken, verifyToken: webhookVerifyToken, googleCalendarId, openaiApiKey, nicheData, flowData, wabaId, emailUser, emailAppPassword } },
+      { $set: { name, businessType, niche, plan, isGenericBot, phoneNumberId, whatsappToken, verifyToken: webhookVerifyToken, googleCalendarId, openaiApiKey, nicheData, flowData, automationFlows, messageTemplates, wabaId, emailUser, emailAppPassword } },
       { new: true, runValidators: true }
     );
 
@@ -121,24 +122,63 @@ router.delete('/clients/:id', protect, isSuperAdmin, async (req, res) => {
 // Any authenticated user can update their OWN client's editable fields
 router.patch('/my-settings', protect, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
-    if (!user) return res.status(401).json({ message: 'Unauthorized' });
+    const { nicheData, flowData, automationFlows, messageTemplates, clientId } = req.body;
+    
+    // If Super Admin and clientId provided, use that. Otherwise use user's own.
+    let targetClientId = req.user.clientId;
+    if (req.user.role === 'SUPER_ADMIN' && clientId) {
+      targetClientId = clientId;
+    }
 
-    const { nicheData, flowData } = req.body;
+    if (!targetClientId) {
+      return res.status(400).json({ message: 'No target clientId specified' });
+    }
+
+    const updateFields = {};
+    if (nicheData !== undefined) updateFields.nicheData = nicheData;
+    if (flowData !== undefined) updateFields.flowData = flowData;
+    if (automationFlows !== undefined) updateFields.automationFlows = automationFlows;
+    if (messageTemplates !== undefined) updateFields.messageTemplates = messageTemplates;
 
     const updated = await Client.findOneAndUpdate(
-      { clientId: user.clientId },
-      { $set: { nicheData, flowData } },
+      { clientId: targetClientId },
+      { $set: updateFields },
       { new: true }
     );
 
     if (!updated) return res.status(404).json({ message: 'Client not found' });
 
-    log.success(`Client ${user.clientId} self-updated bot settings`);
-    res.json({ success: true, nicheData: updated.nicheData, flowData: updated.flowData });
+    log.success(`${req.user.role} updated settings for: ${targetClientId}`);
+    res.json({ 
+      success: true, 
+      nicheData: updated.nicheData, 
+      flowData: updated.flowData,
+      automationFlows: updated.automationFlows,
+      messageTemplates: updated.messageTemplates
+    });
   } catch (err) {
-    log.error('Self-service settings error', { clientId: req.user?.clientId, error: err.message });
+    log.error('Settings update error', { error: err.message });
     res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+// --- GET SETTINGS BY CLIENTID (Super Admin) ---
+router.get('/settings/:clientId', protect, isSuperAdmin, async (req, res) => {
+  try {
+    const client = await Client.findOne({ clientId: req.params.clientId });
+    if (!client) return res.status(404).json({ message: 'Client not found' });
+    
+    res.json({
+      clientId: client.clientId,
+      businessType: client.businessType,
+      nicheData: client.nicheData,
+      flowData: client.flowData,
+      automationFlows: client.automationFlows,
+      messageTemplates: client.messageTemplates,
+      plan: client.plan
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
   }
 });
 module.exports = router;

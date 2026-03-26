@@ -926,7 +926,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
       ...helperParams,
       to: from,
       imageHeader: SALON_IMG,
-      body: 'Hi 👋\n\nThis is subhashbhai from Choice Salon! ✨ Welcome to our virtual assistant. How can I help you today? ✨',
+      body: clientConfig.nicheData?.welcomeMessage || 'Hi 👋\n\nThis is subhashbhai from Choice Salon! ✨ Welcome to our virtual assistant. How can I help you today? ✨',
       buttons: [
         { id: 'user_schedule_appt', title: 'Book Appointment 📅' },
         { id: 'user_pricing', title: 'Pricing 💰' },

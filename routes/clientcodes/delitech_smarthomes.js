@@ -413,9 +413,12 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
 
             // Update stats
             const today = new Date().toISOString().split('T')[0];
+            const incFields = { reviewsCollected: 1 };
+            if (interactiveId.includes("good")) incFields.reviewsPositive = 1;
+
             await DailyStat.findOneAndUpdate(
                 { clientId: clientConfig.clientId, date: today },
-                { $inc: { reviewsCollected: 1 }, $setOnInsert: { clientId: clientConfig.clientId, date: today } },
+                { $inc: incFields, $setOnInsert: { clientId: clientConfig.clientId, date: today } },
                 { upsert: true }
             );
             return res.status(200).end();
@@ -427,6 +430,14 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
             await ReviewRequest.findByIdAndUpdate(reviewId, { 
                 status: "responded_negative", response: "negative" 
             });
+
+            // Update stats
+            const today = new Date().toISOString().split('T')[0];
+            await DailyStat.findOneAndUpdate(
+                { clientId: clientConfig.clientId, date: today },
+                { $inc: { reviewsCollected: 1, reviewsNegative: 1 }, $setOnInsert: { clientId: clientConfig.clientId, date: today } },
+                { upsert: true }
+            );
             
             // Flag in dashboard
             await Conversation.findOneAndUpdate(
@@ -577,27 +588,18 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
 // --- 5. RESPONSE TEMPLATES ---
 
 async function sendMainMenu({ phoneNumberId, to, io, clientConfig, lead }) {
-    const sent = await sendWhatsAppTemplate({
-        phoneNumberId,
-        to,
-        templateName: 'delitech_welcome',
-        headerImage: IMAGES.hero_5mp, // Best general representation
-        // buttonUrlParam removed because delitech_welcome uses Quick Replies, not a dynamic URL button at index 0
-        io,
-        clientConfig
-    });
-
-    if (!sent) {
-        // Fallback to Interactive Menu if template fails/rejected
-        await sendProductSelection({ phoneNumberId, to, io, clientConfig });
-    }
+    // Relying on dynamic Dashboard welcome messages instead of hardcoded templates
+    await sendProductSelection({ phoneNumberId, to, io, clientConfig });
 }
 
 /* OLD MAIN MENU REMOVED */
 async function sendProductSelection({ phoneNumberId, to, io, clientConfig }) {
+    const defaultBody = "Invest in your family's safety. Select a model below to view exclusive photos and pricing:\n\n*(Tip: Over 80% of our customers choose the 3MP Pro for absolute clarity)*";
+    const body = clientConfig.nicheData?.welcomeMessage || defaultBody;
+
     await sendWhatsAppInteractive({
         phoneNumberId, to,
-        body: "Invest in your family's safety. Select a model below to view exclusive photos and pricing:\n\n*(Tip: Over 80% of our customers choose the 3MP Pro for absolute clarity)*",
+        body: body,
         interactive: {
             type: 'list',
             header: { type: 'text', text: 'Select a Model' },

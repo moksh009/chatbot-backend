@@ -119,6 +119,64 @@ async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons, t
     }
 }
 
+async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageCode = 'en', headerImageUrl = null, bodyParams = [], io, clientConfig }) {
+    const token = clientConfig.whatsappToken;
+    const apiVersion = process.env.API_VERSION || 'v18.0';
+    try {
+        const templateData = { name: templateName, language: { code: languageCode }, components: [] };
+        if (headerImageUrl) {
+            templateData.components.push({ type: 'header', parameters: [{ type: 'image', image: { link: headerImageUrl } }] });
+        }
+        if (bodyParams.length > 0) {
+            templateData.components.push({ type: 'body', parameters: bodyParams.map(text => ({ type: 'text', text: String(text) })) });
+        }
+
+        await axios.post(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`, {
+            messaging_product: 'whatsapp', to, type: 'template', template: templateData
+        }, { headers: { Authorization: `Bearer ${token}` } });
+        
+        let conversation = await Conversation.findOne({ phone: to, clientId: clientConfig.clientId });
+        if (!conversation) conversation = await Conversation.create({ phone: to, clientId: clientConfig.clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+        
+        await saveAndEmitMessage({ clientId: clientConfig.clientId, from: 'bot', to, body: `[Template] ${templateName}`, type: 'template', direction: 'outgoing', status: 'sent', conversationId: conversation._id, io });
+        return true;
+    } catch (err) { 
+        console.error('[GenericEngine] Template Error:', err.response?.data || err.message); 
+        return false; 
+    }
+}
+
+async function sendDynamicMessage({ stepId, fallbackInteractive, phoneNumberId, to, io, clientConfig, templateParams = {} }) {
+    const mappedTpl = (clientConfig.messageTemplates || []).find(t => t.id === stepId);
+    const token = clientConfig.whatsappToken;
+    
+    if (mappedTpl && mappedTpl.type === 'meta_template' && mappedTpl.templateName) {
+        let bodyParams = templateParams.variables || [];
+        const success = await sendWhatsAppTemplate({
+            phoneNumberId, to, io, clientConfig,
+            templateName: mappedTpl.templateName,
+            headerImageUrl: mappedTpl.headerImage || null,
+            bodyParams,
+            languageCode: 'en'
+        });
+        if (success) return true;
+        console.warn(`[GenericEngine] Meta template ${mappedTpl.templateName} failed. Falling back to interactive.`);
+    }
+
+    if (fallbackInteractive.type === 'interactive') {
+        const { header, body, buttons, imageHeader } = fallbackInteractive.interactive;
+        return await sendWhatsAppButtons({
+            phoneNumberId, to, io, clientId: clientConfig.clientId, token,
+            header, body, buttons, imageHeader
+        });
+    } else if (fallbackInteractive.type === 'text') {
+        return await sendWhatsAppText({
+            phoneNumberId, to, io, clientId: clientConfig.clientId, token,
+            body: fallbackInteractive.body
+        });
+    }
+}
+
 async function sendWhatsAppFlow({ phoneNumberId, to, header, body, token, io, clientId, flowId, screenId, footer }) {
     const apiVersion = process.env.API_VERSION || 'v18.0';
     const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
@@ -274,9 +332,15 @@ const handleWebhook = async (req, res) => {
             });
 
             // Confirmation
-            await sendWhatsAppText({
-                ...helperParams, to: from,
-                body: `✅ *Booking Confirmed!*\n\n👤 *Name:* ${customer_name}\n💇‍♀️ *Service:* ${serviceLabel}\n📅 *Date:* ${date}\n🕒 *Time:* ${timeId.replace('_', ' ')}\n\nSee you soon! ✨`
+            const fallbackBody = `✅ *Booking Confirmed!*\n\n👤 *Name:* ${customer_name}\n💇‍♀️ *Service:* ${serviceLabel}\n📅 *Date:* ${date}\n🕒 *Time:* ${timeId.replace('_', ' ')}\n\nSee you soon! ✨`;
+            await sendDynamicMessage({
+                stepId: 'order_confirmation',
+                fallbackInteractive: { type: 'text', body: fallbackBody },
+                phoneNumberId: helperParams.phoneNumberId,
+                to: from,
+                io: helperParams.io,
+                clientConfig: req.clientConfig,
+                templateParams: { variables: [customer_name, serviceLabel, date, timeId.replace('_', ' ')] }
             });
 
             return res.status(200).end();
@@ -292,13 +356,24 @@ const handleWebhook = async (req, res) => {
         const welcomeMsg = nicheData.welcomeMessage || 'Welcome! How can we help you today?';
         const welcomeImg = nicheData.bannerImage;
 
-        await sendWhatsAppButtons({
-            ...helperParams, to: from, imageHeader: welcomeImg,
-            body: welcomeMsg,
-            buttons: [
-                { id: 'user_book', title: 'Book Now 📅' },
-                { id: 'user_faq', title: 'Ask a Question ❓' }
-            ]
+        await sendDynamicMessage({
+            stepId: 'welcome_menu',
+            fallbackInteractive: { 
+                type: 'interactive', 
+                body: welcomeMsg, 
+                interactive: {
+                    imageHeader: welcomeImg,
+                    body: welcomeMsg,
+                    buttons: [
+                        { id: 'user_book', title: 'Book Now 📅' },
+                        { id: 'user_faq', title: 'Ask a Question ❓' }
+                    ]
+                }
+            },
+            phoneNumberId: helperParams.phoneNumberId,
+            to: from,
+            io: helperParams.io,
+            clientConfig: req.clientConfig
         });
         return res.status(200).end();
     }
@@ -323,9 +398,13 @@ const handleWebhook = async (req, res) => {
 
     // 4. Handle "Ask a Question" Button
     if (userMsg === 'user_faq') {
-        await sendWhatsAppText({
-            ...helperParams, to: from,
-            body: 'Sure! 😊 What would you like to know? Feel free to ask me anything about our services, pricing, or hours!'
+        await sendDynamicMessage({
+            stepId: 'support_menu',
+            fallbackInteractive: { type: 'text', body: 'Sure! 😊 What would you like to know? Feel free to ask me anything about our services, pricing, or hours!' },
+            phoneNumberId: helperParams.phoneNumberId,
+            to: from,
+            io: helperParams.io,
+            clientConfig: req.clientConfig
         });
         return res.status(200).end();
     }

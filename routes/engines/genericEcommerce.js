@@ -83,6 +83,59 @@ async function logActivity(leadId, action, details) {
     } catch (err) { console.error("[EcommerceEngine] Activity log error:", err.message); }
 }
 
+async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageCode = 'en', headerImageUrl = null, bodyParams = [], io, clientConfig }) {
+    const token = clientConfig.whatsappToken;
+    try {
+        const templateData = { name: templateName, language: { code: languageCode }, components: [] };
+        if (headerImageUrl) {
+            templateData.components.push({ type: 'header', parameters: [{ type: 'image', image: { link: headerImageUrl } }] });
+        }
+        if (bodyParams.length > 0) {
+            templateData.components.push({ type: 'body', parameters: bodyParams.map(text => ({ type: 'text', text: String(text) })) });
+        }
+
+        await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
+            messaging_product: 'whatsapp', to, type: 'template', template: templateData
+        }, { headers: { Authorization: `Bearer ${token}` } });
+        
+        await saveAndEmitMessage({ phoneNumberId, to, body: `[Template Sent] ${templateName}`, type: 'template', io, clientConfig });
+        return true;
+    } catch (err) { 
+        console.error('[EcommerceEngine] Template Error:', err.response?.data || err.message); 
+        return false; 
+    }
+}
+
+async function sendDynamicMessage({ stepId, fallbackInteractive, phoneNumberId, to, io, clientConfig, templateParams = {} }) {
+    const mappedTpl = (clientConfig.messageTemplates || []).find(t => t.id === stepId);
+    
+    if (mappedTpl && mappedTpl.type === 'meta_template' && mappedTpl.templateName) {
+        let bodyParams = templateParams.variables || [];
+        const success = await sendWhatsAppTemplate({
+            phoneNumberId, to, io, clientConfig,
+            templateName: mappedTpl.templateName,
+            headerImageUrl: mappedTpl.headerImage || null,
+            bodyParams,
+            languageCode: 'en'
+        });
+        if (success) return true;
+        console.warn(`[EcommerceEngine] Meta template ${mappedTpl.templateName} failed. Falling back to interactive.`);
+    }
+
+    if (fallbackInteractive.type === 'interactive') {
+        return await sendWhatsAppInteractive({
+            phoneNumberId, to, io, clientConfig,
+            body: fallbackInteractive.body,
+            interactive: fallbackInteractive.interactive
+        });
+    } else if (fallbackInteractive.type === 'text') {
+        return await sendWhatsAppText({
+            phoneNumberId, to, io, clientConfig,
+            body: fallbackInteractive.body
+        });
+    }
+}
+
 
 // --- 2. DYNAMIC MENUS (Powered by nicheData) ---
 
@@ -102,7 +155,11 @@ async function sendMainMenu({ phoneNumberId, to, io, clientConfig }) {
     };
     if (image) interactive.header = { type: 'image', image: { link: image } };
 
-    await sendWhatsAppInteractive({ phoneNumberId, to, body: welcomeMsg, interactive, io, clientConfig });
+    await sendDynamicMessage({
+        stepId: 'welcome_menu',
+        fallbackInteractive: { type: 'interactive', body: welcomeMsg, interactive },
+        phoneNumberId, to, io, clientConfig
+    });
 }
 
 async function sendCatalogue({ phoneNumberId, to, io, clientConfig }) {
@@ -113,7 +170,6 @@ async function sendCatalogue({ phoneNumberId, to, io, clientConfig }) {
         return sendWhatsAppText({ phoneNumberId, to, body: "Our product catalog is currently being updated. Please check back soon!", io, clientConfig });
     }
 
-    // Convert products to interactive list (max 10 items)
     const rows = products.slice(0, 10).map(p => ({
         id: `view_prod_${p.id}`,
         title: p.title.substring(0, 24),
@@ -129,7 +185,42 @@ async function sendCatalogue({ phoneNumberId, to, io, clientConfig }) {
         }
     };
 
-    await sendWhatsAppInteractive({ phoneNumberId, to, body: "Browse our premium products below:", interactive, io, clientConfig });
+    await sendDynamicMessage({
+        stepId: 'catalog_menu',
+        fallbackInteractive: { type: 'interactive', body: "Browse our premium products below:", interactive },
+        phoneNumberId, to, io, clientConfig
+    });
+}
+
+async function sendSupportMenu({ phoneNumberId, to, io, clientConfig }) {
+    const { nicheData = {} } = clientConfig;
+    const faqs = nicheData.faqs || [];
+
+    if (faqs.length === 0) {
+        return sendWhatsAppText({ phoneNumberId, to, body: "Our support AI is online! Just type your question below:", io, clientConfig });
+    }
+
+    const rows = faqs.slice(0, 8).map(f => ({
+        id: `faq_${f.id}`,
+        title: f.question.substring(0, 24)
+    }));
+    
+    rows.push({ id: 'menu_agent', title: '📞 Talk to Agent' });
+
+    const interactive = {
+        type: 'list',
+        header: { type: 'text', text: 'Help & Support' },
+        action: {
+            button: 'View Options',
+            sections: [{ title: 'Common Questions', rows }]
+        }
+    };
+
+    await sendDynamicMessage({
+        stepId: 'support_menu',
+        fallbackInteractive: { type: 'interactive', body: "Select a topic below to get instant answers:", interactive },
+        phoneNumberId, to, io, clientConfig
+    });
 }
 
 async function sendProductDetails({ phoneNumberId, to, io, clientConfig, productId }) {
@@ -165,6 +256,57 @@ function extractProductUrl(product, clientConfig, to) {
     return 'https://example.com'; 
 }
 
+async function sendCODToPrepaidNudge(order, clientConfig, phone) {
+    const { createCODPaymentLink } = require('../../utils/razorpay');
+
+    let paymentUrl;
+    try {
+        const link = await createCODPaymentLink(order, clientConfig);
+        paymentUrl = link.short_url;
+        await Order.findByIdAndUpdate(order._id, {
+            razorpayLinkId: link.id,
+            razorpayUrl: link.short_url,
+            codNudgeSentAt: new Date()
+        });
+    } catch (err) {
+        console.error("[EcommerceEngine] Razorpay link failed:", err.message);
+        return;
+    }
+
+    const template = (clientConfig.messageTemplates || []).find(t => t.id === "cod_to_prepaid");
+    const itemName = order.items?.[0]?.name || "your product";
+    const discount = clientConfig.automationFlows?.find(f => f.id === "cod_to_prepaid")?.config?.discountAmount || 50;
+
+    const bodyText = template?.body
+        ? template.body
+            .replace("{{order_number}}", order.orderNumber)
+            .replace("{{product_name}}", itemName)
+            .replace("{{discount_amount}}", discount)
+        : `Your order #${order.orderNumber} for *${itemName}* (₹${order.totalPrice}) is confirmed via COD.\n\n💳 Pay via UPI now and save ₹${discount}!\n\nOffer expires in 2 hours.`;
+
+    const btn1Label = template?.buttons?.[0]?.label || "💳 Pay via UPI";
+    const btn2Label = template?.buttons?.[1]?.label || "Keep COD";
+
+    const interactive = {
+        type: "button",
+        header: { type: "text", text: "Quick Payment Offer 🎁" },
+        action: {
+            buttons: [
+                { type: "reply", reply: { id: `cod_pay_${order._id}`, title: btn1Label.substring(0, 20) } },
+                { type: "reply", reply: { id: `cod_keep_${order._id}`, title: btn2Label.substring(0, 20) } }
+            ]
+        }
+    };
+
+    await sendWhatsAppInteractive({
+        phoneNumberId: clientConfig.phoneNumberId,
+        to: phone,
+        body: bodyText,
+        interactive,
+        io: global.io || null,
+        clientConfig
+    });
+}
 
 // --- 3. WEBHOOK HANDLER ---
 
@@ -246,20 +388,102 @@ const handleWebhook = async (req, res) => {
                 return res.status(200).end();
             }
 
-            // Reviews system
-            if (interactiveId.startsWith('rv_good_') || interactiveId.startsWith('rv_ok_')) {
-                const reviewId = interactiveId.split("_").pop();
-                await ReviewRequest.findByIdAndUpdate(reviewId, { status: "responded_positive" });
-                const rLink = nicheData.googleReviewUrl || 'https://google.com';
-                await sendWhatsAppText({ ...helperParams, to: from, body: `Thank you so much! 🙏 Please take 30 seconds to drop us a 5-star review here: ${rLink}` });
+            if (interactiveId === 'menu_support') {
+                if (lead) await logActivity(lead._id, 'navigated', 'Support Menu');
+                await sendSupportMenu({ ...helperParams, to: from });
                 return res.status(200).end();
             }
-            if (interactiveId.startsWith('rv_bad_')) {
-                const reviewId = interactiveId.split("_").pop();
-                await ReviewRequest.findByIdAndUpdate(reviewId, { status: "responded_negative" });
-                await sendWhatsAppText({ ...helperParams, to: from, body: `We're really sorry to hear that. A manager will text you shortly to resolve this.` });
+
+            if (interactiveId.startsWith('faq_')) {
+                const fId = interactiveId.replace('faq_', '');
+                const faqs = nicheData.faqs || [];
+                const faq = faqs.find(f => f.id === fId);
+                if (faq) {
+                    if (lead) await logActivity(lead._id, 'read_faq', faq.question);
+                    await sendWhatsAppText({ ...helperParams, to: from, body: `*${faq.question}*\n\n${faq.answer}` });
+                }
+                return res.status(200).end();
+            }
+
+            if (interactiveId === 'menu_agent') {
+                if (lead) await logActivity(lead._id, 'action', 'Requested Agent');
+                await sendWhatsAppText({ ...helperParams, to: from, body: `✅ *Request Received!*\n\nOur human agent has been notified and will reply shortly to your number.` });
                 conversation.status = 'HUMAN_TAKEOVER';
                 await conversation.save();
+                return res.status(200).end();
+            }
+
+            // --- Phase 7 ROI & Review Actions ---
+            if (interactiveId.startsWith('cod_pay_')) {
+                const orderId = interactiveId.replace("cod_pay_", "");
+                const order = await Order.findById(orderId);
+                if (order?.razorpayUrl) {
+                    const msg = `Here's your secure payment link 🔐\n\n👉 ${order.razorpayUrl}\n\nPay via GPay, PhonePe, or any UPI. Valid for 2 hours.`;
+                    await sendWhatsAppText({ ...helperParams, to: from, body: msg });
+                }
+                return res.status(200).end();
+            }
+
+            if (interactiveId.startsWith('cod_keep_')) {
+                await sendWhatsAppText({ ...helperParams, to: from, body: "No problem! Your COD order is confirmed. We'll deliver soon. 📦" });
+                return res.status(200).end();
+            }
+
+            if (interactiveId.startsWith('rv_good_')) {
+                const reviewId = interactiveId.replace("rv_good_", "");
+                const review = await ReviewRequest.findById(reviewId);
+                await ReviewRequest.findByIdAndUpdate(reviewId, { status: "responded_positive", response: "positive" });
+                const { startOfDay } = require("date-fns");
+                await DailyStat.findOneAndUpdate(
+                    { clientId: req.clientConfig.clientId, date: startOfDay(new Date()) },
+                    { $inc: { reviewsCollected: 1, reviewsPositive: 1 } },
+                    { upsert: true }
+                );
+                const reviewUrl = review?.reviewUrl || nicheData.googleReviewUrl || req.clientConfig.googleReviewUrl || "";
+                const replyText = reviewUrl
+                    ? `Thank you so much! 🙏 Could you leave a quick Google review? Takes 30 seconds!\n\n⭐ ${reviewUrl}\n\nMeans the world to us!`
+                    : `Thank you so much! 🙏 Your feedback means everything to us!`;
+                await sendWhatsAppText({ ...helperParams, to: from, body: replyText });
+                if (io) io.to(`client_${req.clientConfig.clientId}`).emit("stats_update", { type: "review_positive" });
+                return res.status(200).end();
+            }
+
+            if (interactiveId.startsWith('rv_ok_')) {
+                const reviewId = interactiveId.replace("rv_ok_", "");
+                await ReviewRequest.findByIdAndUpdate(reviewId, { status: "responded_positive", response: "neutral" });
+                const { startOfDay } = require("date-fns");
+                await DailyStat.findOneAndUpdate(
+                    { clientId: req.clientConfig.clientId, date: startOfDay(new Date()) },
+                    { $inc: { reviewsCollected: 1 } },
+                    { upsert: true }
+                );
+                const reviewUrl = nicheData.googleReviewUrl || req.clientConfig.googleReviewUrl || "";
+                const replyText = reviewUrl
+                    ? `Thanks for the feedback! 😊 If you have a moment, a quick review would help a lot:\n\n${reviewUrl}`
+                    : "Thanks for your feedback! 😊 We'll keep improving!";
+                await sendWhatsAppText({ ...helperParams, to: from, body: replyText });
+                return res.status(200).end();
+            }
+
+            if (interactiveId.startsWith('rv_bad_')) {
+                const reviewId = interactiveId.replace("rv_bad_", "");
+                await ReviewRequest.findByIdAndUpdate(reviewId, { status: "responded_negative", response: "negative" });
+                const { startOfDay } = require("date-fns");
+                await DailyStat.findOneAndUpdate(
+                    { clientId: req.clientConfig.clientId, date: startOfDay(new Date()) },
+                    { $inc: { reviewsCollected: 1, reviewsNegative: 1 } },
+                    { upsert: true }
+                );
+                conversation.status = 'HUMAN_TAKEOVER';
+                conversation.requiresAttention = true;
+                conversation.attentionReason = "Negative review — needs follow-up";
+                await conversation.save();
+                if (io) io.to(`client_${req.clientConfig.clientId}`).emit("attention_required", {
+                    phone: from,
+                    reason: "Customer unhappy with product",
+                    priority: "high"
+                });
+                await sendWhatsAppText({ ...helperParams, to: from, body: "We're really sorry to hear that 😔 Our team will reach out within a few hours to make it right. Your satisfaction is our priority! 💙" });
                 return res.status(200).end();
             }
         }
@@ -385,6 +609,23 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
         const msg = `🎉 *Order Confirmed!* 🎉\n\nHi ${orderData.customer?.first_name || 'there'},\nThanks for your purchase! 🛍️\n\n📦 *Order Summary:* ${items}\n💰 *Total:* ₹${totalPrice}\n💳 *Payment:* ${isCOD ? 'Cash on Delivery (COD)' : 'Prepaid Online'}\n\nWe will update you once it ships.`;
         await sendWhatsAppText({ ...helperParams, to: phone, body: msg });
 
+        if (isCOD && req.clientConfig.razorpayKeyId) {
+            const codFlow = (req.clientConfig.automationFlows || []).find(f => f.id === "cod_to_prepaid");
+            const isActive = codFlow?.isActive ?? false;
+
+            if (isActive) {
+                const delayMs = (codFlow?.config?.delayMinutes || 3) * 60 * 1000;
+                setTimeout(async () => {
+                    try {
+                        const refreshedClient = await require('../../models/Client').findOne({ clientId });
+                        await sendCODToPrepaidNudge(savedOrder, refreshedClient, phone);
+                    } catch (err) {
+                        console.error("[EcommerceEngine] COD nudge failed:", err.message);
+                    }
+                }, delayMs);
+            }
+        }
+
         // 📧 Also send order confirmation email if customer email is available
         const customerEmail = orderData.customer?.email || orderData.email;
         if (customerEmail) {
@@ -406,6 +647,51 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
     }
 };
 
+
+const handleShopifyOrderFulfilledWebhook = async (req, res) => {
+    res.status(200).end(); // Always respond 200 first for Shopify
+    try {
+        const { clientId } = req.clientConfig;
+        const payload = req.body;
+        const phoneRaw = payload.phone || payload.customer?.phone || payload.billing_address?.phone || payload.shipping_address?.phone;
+        if (!phoneRaw) return;
+        const phone = phoneRaw.replace(/\D/g, "");
+
+        const orderNumber = payload.order_number || payload.name;
+        const productName = payload.line_items?.[0]?.title || "your product";
+        const trackingUrl = payload.fulfillments?.[0]?.tracking_url || "";
+        const trackingNum = payload.fulfillments?.[0]?.tracking_number || "";
+
+        await Order.findOneAndUpdate(
+            { shopifyOrderId: String(payload.id), clientId },
+            { status: "fulfilled", fulfilledAt: new Date(), trackingUrl, trackingNumber: trackingNum }
+        );
+
+        const shippingMsg = `📦 Your order #${orderNumber} has been shipped!\n\n` +
+            (trackingUrl ? `🚚 Track here: ${trackingUrl}\n\n` : "") +
+            `Expected delivery in 3-5 business days. We'll keep you posted!`;
+
+        const helperParams = { phoneNumberId: req.clientConfig.phoneNumberId, token: req.clientConfig.whatsappToken, io: req.app.get('socketio'), clientConfig: req.clientConfig };
+        await sendWhatsAppText({ ...helperParams, to: phone, body: shippingMsg });
+
+        const reviewFlow = (req.clientConfig.automationFlows || []).find(f => f.id === "review_collection");
+        if (reviewFlow?.isActive) {
+            const delayDays = reviewFlow?.config?.delayDays || 4;
+            const scheduledFor = new Date(Date.now() + delayDays * 24 * 60 * 60 * 1000);
+            await ReviewRequest.findOneAndUpdate(
+                { clientId: req.clientConfig._id, phone, orderNumber },
+                {
+                    clientId: req.clientConfig._id, phone, orderNumber, productName,
+                    reviewUrl: req.clientConfig.googleReviewUrl || "",
+                    scheduledFor, status: "scheduled"
+                },
+                { upsert: true }
+            );
+        }
+    } catch (err) {
+        console.error("[EcommerceEngine] Order fulfilled error:", err);
+    }
+};
 
 const handleShopifyLinkOpenedWebhook = async (req, res) => {
     try {
@@ -520,6 +806,7 @@ module.exports = {
     handleShopifyCartUpdatedWebhook,
     handleShopifyCheckoutInitiatedWebhook,
     handleShopifyOrderCompleteWebhook,
+    handleShopifyOrderFulfilledWebhook,
     getClientOrders,
     getCartSnapshot,
     restoreCart,

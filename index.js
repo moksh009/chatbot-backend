@@ -90,6 +90,7 @@ app.use('/api/client/:clientId', dynamicClientRouter);
 app.use('/api/business', businessRoutes);
 app.use('/api/admin', adminRoutes); // Super Admin Route Registration
 app.use('/api/templates', templatesRoutes); 
+app.use('/api/payment', require('./routes/payment')); 
 
 // app.use('/api/client/0001', turfClientRoutes);
 // app.use('/api/client/0002', vedClientRoutes);
@@ -138,6 +139,10 @@ cron.schedule('*/10 * * * *', () => {
 
 // Initialize Abandoned Cart Cron Job
 scheduleAbandonedCartCron();
+
+// Initialize Review Collection Cron Job
+const scheduleReviewCron = require('./cron/reviewCollection');
+scheduleReviewCron();
 
 // Cron job for birthday messages and appointment reminders
 cron.schedule('0 6 * * *', async () => {
@@ -442,6 +447,7 @@ const io = socketIo(server, {
 });
 
 app.set('socketio', io);
+global.io = io;
 
 io.on('connection', (socket) => {
   console.log('New client connected:', socket.id);

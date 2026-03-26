@@ -1,16 +1,20 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
 const ReviewRequestSchema = new mongoose.Schema({
-  clientId: { type: String, required: true },
-  phone: String,
-  orderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
+  clientId: { type: mongoose.Schema.Types.ObjectId, ref: "Client", required: true },
+  phone: { type: String, required: true },
+  orderId: { type: mongoose.Schema.Types.ObjectId, ref: "Order" },
   orderNumber: String,
   productName: String,
-  status: { type: String, enum: ['scheduled','sent','responded_positive','responded_negative'], default: 'scheduled' },
-  scheduledFor: Date,
+  reviewUrl: String,
+  status: { 
+    type: String, 
+    enum: ["scheduled","sent","responded_positive","responded_negative","skipped"],
+    default: "scheduled"
+  },
+  scheduledFor: { type: Date, required: true },
   sentAt: Date,
-  response: String,
-  reviewUrl: String
-});
+  response: String
+}, { timestamps: true });
 
-module.exports = mongoose.model('ReviewRequest', ReviewRequestSchema);
+module.exports = mongoose.model("ReviewRequest", ReviewRequestSchema);

@@ -135,6 +135,18 @@ router.post('/webhook/shopify/order-complete', async (req, res) => {
   }
 });
 
+router.post('/webhook/shopify/order-fulfilled', async (req, res) => {
+  try {
+    const { businessType } = req.clientConfig;
+    if (businessType === 'ecommerce') {
+      await genericEcommerceEngine.handleShopifyOrderFulfilledWebhook(req, res);
+    }
+  } catch (error) {
+    console.error('Error in dynamic webhook handler:', error);
+    res.sendStatus(500);
+  }
+});
+
 router.post('/webhook/shopify/log-restore-event', async (req, res) => {
   try {
     const { businessType } = req.clientConfig;
