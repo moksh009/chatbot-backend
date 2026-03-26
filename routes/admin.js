@@ -405,20 +405,57 @@ Return ONLY valid JSON with no markdown, no explanation. Start with { and end wi
 
 Business description: ${prompt}`;
 
+    console.log('[generate-flow] Calling Gemini API...');
     const result = await model.generateContent(systemPrompt);
-    const text = result.response.text().trim();
-    
-    // Extract JSON from response
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return res.status(500).json({ error: 'AI did not return valid JSON', raw: text.slice(0, 300) });
-    
-    const flow = JSON.parse(jsonMatch[0]);
-    if (!flow.nodes || !flow.edges) return res.status(500).json({ error: 'AI response missing nodes or edges' });
-    
+    const rawText = result.response.text().trim();
+    console.log('[generate-flow] Gemini raw response (first 500 chars):', rawText.slice(0, 500));
+
+    // Strip markdown code fences if Gemini wraps JSON in ```json ... ```
+    let cleaned = rawText
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+
+    // Extract the outermost JSON object
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      console.error('[generate-flow] No JSON found in response:', rawText.slice(0, 300));
+      return res.status(500).json({ error: 'AI did not return valid JSON', raw: rawText.slice(0, 300) });
+    }
+
+    let flow;
+    try {
+      flow = JSON.parse(jsonMatch[0]);
+    } catch (parseErr) {
+      console.error('[generate-flow] JSON parse error:', parseErr.message, '| raw:', jsonMatch[0].slice(0, 300));
+      return res.status(500).json({ error: 'Failed to parse AI JSON: ' + parseErr.message, raw: jsonMatch[0].slice(0, 200) });
+    }
+
+    if (!flow.nodes || !flow.edges) {
+      return res.status(500).json({ error: 'AI response missing nodes or edges', flow });
+    }
+
+    console.log('[generate-flow] Success — nodes:', flow.nodes.length, '| edges:', flow.edges.length);
     res.json({ success: true, nodes: flow.nodes, edges: flow.edges });
   } catch (err) {
-    log.error('AI flow generation failed', { error: err.message });
+    console.error('[generate-flow] FATAL:', err.message, err.stack?.slice(0, 500));
     res.status(500).json({ error: err.message });
+  }
+});
+
+// --- GEMINI KEY PROBE (no auth — for diagnostics) ---
+router.get('/test-gemini', async (req, res) => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return res.status(500).json({ ok: false, error: 'GEMINI_API_KEY not set' });
+  try {
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const result = await model.generateContent('Say "ok" in JSON like {"status":"ok"}');
+    const text = result.response.text().trim();
+    res.json({ ok: true, raw: text.slice(0, 200) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
