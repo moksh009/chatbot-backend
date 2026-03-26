@@ -21,7 +21,7 @@ async function runDualBrainEngine(parsedMessage, client) {
   let convo = await Conversation.findOneAndUpdate(
     { phone, clientId: client.clientId },
     {
-      $setOnInsert: { phone, clientId: client.clientId, lastStepId: null, botPaused: false, status: 'BOT_ACTIVE', unreadCount: 0 },
+      $setOnInsert: { phone, clientId: client.clientId, lastStepId: null, botPaused: false, status: 'BOT_ACTIVE' },
       $inc: { unreadCount: 1 },
       $set: { lastInteraction: new Date() }
     },
