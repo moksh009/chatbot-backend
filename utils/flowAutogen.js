@@ -15,7 +15,7 @@ async function generateFlowForClient(client, customPrompt = '', existingFlow = n
         }
 
         const genAI = new GoogleGenerativeAI(geminiKey);
-        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' }, { apiVersion: 'v1' });
 
         const niche = client.niche || client.businessType || 'business';
         const businessInfo = customPrompt || client.systemPrompt || `A professional ${niche} service.`;

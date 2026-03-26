@@ -448,7 +448,7 @@ router.post('/generate-flow', protect, async (req, res) => {
       result = await model.generateContent(systemPrompt);
     } catch (apiErr) {
       console.error('[generate-flow] Flash failed, falling back to Pro:', apiErr.message);
-      const proModel = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
+      const proModel = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' }, { apiVersion: 'v1' });
       result = await proModel.generateContent(systemPrompt);
     }
 
