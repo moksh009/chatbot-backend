@@ -101,7 +101,17 @@ router.get('/run-migration', async (req, res) => {
         }
 
         if (isModified) {
-            await client.save();
+            const setFields = {};
+            if (client.flowNodes) setFields.flowNodes = client.flowNodes;
+            if (client.flowEdges) setFields.flowEdges = client.flowEdges;
+            if (client.automationFlows) setFields.automationFlows = client.automationFlows;
+            if (client.messageTemplates) setFields.messageTemplates = client.messageTemplates;
+
+            await Client.updateOne(
+              { _id: client._id },
+              { $set: setFields },
+              { runValidators: false }
+            );
             updated++;
         }
     }

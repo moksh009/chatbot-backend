@@ -5,7 +5,7 @@ const ClientSchema = new mongoose.Schema({
   name: { type: String },
   businessType: { 
     type: String, 
-    enum: ['ecommerce', 'salon', 'turf', 'clinic', 'choice_salon', 'agency', 'other'],
+    enum: ['ecommerce', 'salon', 'turf', 'clinic', 'choice_salon', 'choice_salon_new', 'agency', 'other'],
     default: 'other'
   },
   niche: {
@@ -45,18 +45,9 @@ const ClientSchema = new mongoose.Schema({
   shopifyAccessToken: { type: String, default: "" },
   shopifyWebhookSecret: { type: String, default: "" },
   
-  messageTemplates: [{
-    id: { type: String, required: true },
-    name: { type: String, required: true },
-    body: { type: String, required: true },
-    buttons: [{
-      id: String,
-      label: String
-    }],
-    waitMinutes: { type: Number, default: 0 },
-    isActive: { type: Boolean, default: true },
-    lastEditedAt: Date
-  }],
+  // messageTemplates stored as flexible Mixed array to support both 
+  // legacy sub-documents and new flow-based template references
+  messageTemplates: { type: mongoose.Schema.Types.Mixed, default: [] },
   
   automationFlows: [{
     id: { type: String },
