@@ -6,7 +6,6 @@ const Message = require('../../models/Message');
 const Order = require('../../models/Order');
 const DailyStat = require('../../models/DailyStat');
 const ReviewRequest = require('../../models/ReviewRequest');
-const { sendCODToPrepaidNudge } = require('../../utils/ecommerceHelpers');
 const { sendOrderConfirmationEmail, sendCODToPrepaidEmail } = require('../../utils/emailService');
 
 // --- 1. CORE API WRAPPERS ---
@@ -83,7 +82,7 @@ async function logActivity(leadId, action, details) {
     } catch (err) { console.error("[EcommerceEngine] Activity log error:", err.message); }
 }
 
-async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageCode = 'en', headerImageUrl = null, bodyParams = [], io, clientConfig }) {
+async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageCode = 'en', headerImageUrl = null, bodyParams = [], buttonUrlParam = null, io, clientConfig }) {
     const token = clientConfig.whatsappToken;
     try {
         const templateData = { name: templateName, language: { code: languageCode }, components: [] };
@@ -92,6 +91,14 @@ async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageC
         }
         if (bodyParams.length > 0) {
             templateData.components.push({ type: 'body', parameters: bodyParams.map(text => ({ type: 'text', text: String(text) })) });
+        }
+        if (buttonUrlParam) {
+            templateData.components.push({
+                type: 'button',
+                sub_type: 'url',
+                index: 0,
+                parameters: [{ type: 'text', text: String(buttonUrlParam) }]
+            });
         }
 
         await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
@@ -111,11 +118,14 @@ async function sendDynamicMessage({ stepId, fallbackInteractive, phoneNumberId, 
     
     if (mappedTpl && mappedTpl.type === 'meta_template' && mappedTpl.templateName) {
         let bodyParams = templateParams.variables || [];
+        let buttonUrlParam = templateParams.buttonUrlParam || to; // Fallback to Phone Number (uid) for tracking if not explicitly passed
+
         const success = await sendWhatsAppTemplate({
             phoneNumberId, to, io, clientConfig,
             templateName: mappedTpl.templateName,
             headerImageUrl: mappedTpl.headerImage || null,
             bodyParams,
+            buttonUrlParam,
             languageCode: 'en'
         });
         if (success) return true;
@@ -245,7 +255,15 @@ async function sendProductDetails({ phoneNumberId, to, io, clientConfig, product
         interactive.header = { type: 'image', image: { link: product.image } };
     }
 
-    await sendWhatsAppInteractive({ phoneNumberId, to, body: text, interactive, io, clientConfig });
+    await sendDynamicMessage({
+        stepId: `view_prod_${product.id}`,
+        fallbackInteractive: { type: 'interactive', body: text, interactive },
+        phoneNumberId, to, io, clientConfig,
+        templateParams: {
+            variables: [product.title, product.price],
+            buttonUrlParam: to // Track link clicks by passing phone number
+        }
+    });
 }
 
 function extractProductUrl(product, clientConfig, to) {

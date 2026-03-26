@@ -119,7 +119,7 @@ async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons, t
     }
 }
 
-async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageCode = 'en', headerImageUrl = null, bodyParams = [], io, clientConfig }) {
+async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageCode = 'en', headerImageUrl = null, bodyParams = [], buttonUrlParam = null, io, clientConfig }) {
     const token = clientConfig.whatsappToken;
     const apiVersion = process.env.API_VERSION || 'v18.0';
     try {
@@ -129,6 +129,14 @@ async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageC
         }
         if (bodyParams.length > 0) {
             templateData.components.push({ type: 'body', parameters: bodyParams.map(text => ({ type: 'text', text: String(text) })) });
+        }
+        if (buttonUrlParam) {
+            templateData.components.push({
+                type: 'button',
+                sub_type: 'url',
+                index: 0,
+                parameters: [{ type: 'text', text: String(buttonUrlParam) }]
+            });
         }
 
         await axios.post(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`, {
@@ -152,11 +160,14 @@ async function sendDynamicMessage({ stepId, fallbackInteractive, phoneNumberId, 
     
     if (mappedTpl && mappedTpl.type === 'meta_template' && mappedTpl.templateName) {
         let bodyParams = templateParams.variables || [];
+        let buttonUrlParam = templateParams.buttonUrlParam || to; // Fallback to Phone Number (uid)
+
         const success = await sendWhatsAppTemplate({
             phoneNumberId, to, io, clientConfig,
             templateName: mappedTpl.templateName,
             headerImageUrl: mappedTpl.headerImage || null,
             bodyParams,
+            buttonUrlParam,
             languageCode: 'en'
         });
         if (success) return true;
@@ -314,25 +325,64 @@ const handleWebhook = async (req, res) => {
                 return res.status(200).end();
             }
 
-            // Create Appointment
+            // Create Pending Appointment
             const appointment = await Appointment.create({
                 clientId, phone: from, name: customer_name,
                 service: serviceLabel, date, time: timeId,
-                status: 'confirmed', source: 'chatbot_flow'
+                status: 'pending', source: 'chatbot_flow'
             });
 
+            // Pending Confirmation Buttons
+            const confirmMsg = `Almost there, ${customer_name}! ✨\n\nPlease confirm your details:\n\n💇‍♀️ *Service:* ${serviceLabel}\n📅 *Date:* ${date}\n🕒 *Time:* ${timeId.replace('_', ' ')}\n\nTap confirm below to finalize your booking!`;
+            
+            await sendWhatsAppButtons({
+                ...helperParams, to: from,
+                body: confirmMsg,
+                buttons: [
+                    { id: `confirm_apt_${appointment._id}`, title: '✅ Confirm Booking' },
+                    { id: `cancel_apt_${appointment._id}`, title: '❌ Cancel' }
+                ]
+            });
+
+            return res.status(200).end();
+
+            return res.status(200).end();
+        } catch (err) {
+            console.error('[GenericEngine] Flow error:', err);
+            return res.status(200).end();
+        }
+    }
+
+    // --- Interactive Button Handlers (Confirmation Flow) ---
+    if (userMsgType === 'interactive' && userMsg.startsWith('confirm_apt_')) {
+        const aptId = userMsg.replace('confirm_apt_', '');
+        try {
+            const appointment = await Appointment.findById(aptId);
+            if (!appointment) return res.status(200).end();
+            if (appointment.status === 'confirmed') {
+                await sendWhatsAppText({ ...helperParams, to: from, body: 'Thanks! This booking has already been confirmed. See you soon! ✨' });
+                return res.status(200).end();
+            }
+
+            appointment.status = 'confirmed';
+            await appointment.save();
+
             // GCal Sync
-            const startTime = DateTime.fromISO(`${date}T${timeId.replace('_', ':')}:00`, { zone: 'Asia/Kolkata' }).toISO();
+            const calendars = nicheData.calendars || {};
+            const staffKey = 'default'; 
+            const calendarId = calendars[staffKey] || req.clientConfig.googleCalendarId;
+
+            const startTime = DateTime.fromISO(`${appointment.date}T${appointment.time.replace('_', ':')}:00`, { zone: 'Asia/Kolkata' }).toISO();
             const endTime = DateTime.fromISO(startTime).plus({ minutes: nicheData.slotDuration || 60 }).toISO();
             
             await createEvent(calendarId, {
-                summary: `Booking: ${customer_name}`,
-                description: `Service: ${serviceLabel}\nPhone: ${from}`,
+                summary: `Booking: ${appointment.name}`,
+                description: `Service: ${appointment.service}\nPhone: ${from}`,
                 startTime, endTime
             });
 
-            // Confirmation
-            const fallbackBody = `✅ *Booking Confirmed!*\n\n👤 *Name:* ${customer_name}\n💇‍♀️ *Service:* ${serviceLabel}\n📅 *Date:* ${date}\n🕒 *Time:* ${timeId.replace('_', ' ')}\n\nSee you soon! ✨`;
+            // Final Confirmation via Dynamic Message
+            const fallbackBody = `✅ *Booking Confirmed!*\n\n👤 *Name:* ${appointment.name}\n💇‍♀️ *Service:* ${appointment.service}\n📅 *Date:* ${appointment.date}\n🕒 *Time:* ${appointment.time.replace('_', ' ')}\n\nSee you soon! ✨`;
             await sendDynamicMessage({
                 stepId: 'order_confirmation',
                 fallbackInteractive: { type: 'text', body: fallbackBody },
@@ -340,14 +390,21 @@ const handleWebhook = async (req, res) => {
                 to: from,
                 io: helperParams.io,
                 clientConfig: req.clientConfig,
-                templateParams: { variables: [customer_name, serviceLabel, date, timeId.replace('_', ' ')] }
+                templateParams: { variables: [appointment.name, appointment.service, appointment.date, appointment.time.replace('_', ' ')] }
             });
 
             return res.status(200).end();
         } catch (err) {
-            console.error('[GenericEngine] Flow error:', err);
+            console.error('[GenericEngine] Confirm Error:', err);
             return res.status(200).end();
         }
+    }
+
+    if (userMsgType === 'interactive' && userMsg.startsWith('cancel_apt_')) {
+        const aptId = userMsg.replace('cancel_apt_', '');
+        await Appointment.findByIdAndUpdate(aptId, { status: 'cancelled' });
+        await sendWhatsAppText({ ...helperParams, to: from, body: 'No problem! Your booking has been cancelled. Let us know if you need anything else! 😊' });
+        return res.status(200).end();
     }
 
     // 2. Handle Greeting / Trigger
