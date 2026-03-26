@@ -142,7 +142,12 @@ router.get('/clients/:id', protect, isSuperAdmin, async (req, res) => {
 router.post('/clients', protect, isSuperAdmin, async (req, res) => {
   try {
     const {
-      clientId, name, businessType, niche, plan, isGenericBot, phoneNumberId, whatsappToken, verifyToken: webhookVerifyToken, googleCalendarId, openaiApiKey, nicheData, flowData, wabaId, emailUser, emailAppPassword, automationFlows, messageTemplates
+      clientId, name, businessType, niche, plan, isGenericBot,
+      phoneNumberId, whatsappToken, verifyToken: webhookVerifyToken,
+      googleCalendarId, openaiApiKey, nicheData, flowData,
+      wabaId, emailUser, emailAppPassword, automationFlows, messageTemplates,
+      razorpayKeyId, razorpaySecret, adminPhone,
+      shopDomain, shopifyAccessToken, shopifyWebhookSecret, googleReviewUrl
     } = req.body;
 
     const existingClient = await Client.findOne({ clientId });
@@ -159,6 +164,10 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
       openaiApiKey, nicheData: nicheData || {}, flowData: flowData || {},
       automationFlows: automationFlows || [], messageTemplates: messageTemplates || [],
       wabaId: wabaId || '', emailUser: emailUser || '', emailAppPassword: emailAppPassword || '',
+      razorpayKeyId: razorpayKeyId || '', razorpaySecret: razorpaySecret || '',
+      adminPhone: adminPhone || '', shopDomain: shopDomain || '',
+      shopifyAccessToken: shopifyAccessToken || '', shopifyWebhookSecret: shopifyWebhookSecret || '',
+      googleReviewUrl: googleReviewUrl || '',
       flowNodes: defaultFlow.nodes,
       flowEdges: defaultFlow.edges,
     });
@@ -177,13 +186,23 @@ router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
   try {
     log.info(`Updating client: ${req.params.id}`);
     const {
-      name, businessType, niche, plan, isGenericBot, phoneNumberId, whatsappToken, verifyToken: webhookVerifyToken, googleCalendarId, openaiApiKey, nicheData, flowData, automationFlows, messageTemplates, wabaId, emailUser, emailAppPassword
+      name, businessType, niche, plan, isGenericBot, phoneNumberId, whatsappToken,
+      verifyToken: webhookVerifyToken, googleCalendarId, openaiApiKey, nicheData, flowData,
+      automationFlows, messageTemplates, wabaId, emailUser, emailAppPassword,
+      razorpayKeyId, razorpaySecret, adminPhone,
+      shopDomain, shopifyAccessToken, shopifyWebhookSecret, googleReviewUrl
     } = req.body;
 
     const updatedClient = await Client.findByIdAndUpdate(
       req.params.id,
-      { $set: { name, businessType, niche, plan, isGenericBot, phoneNumberId, whatsappToken, verifyToken: webhookVerifyToken, googleCalendarId, openaiApiKey, nicheData, flowData, automationFlows, messageTemplates, wabaId, emailUser, emailAppPassword } },
-      { new: true, runValidators: true }
+      { $set: {
+        name, businessType, niche, plan, isGenericBot, phoneNumberId, whatsappToken,
+        verifyToken: webhookVerifyToken, googleCalendarId, openaiApiKey, nicheData, flowData,
+        automationFlows, messageTemplates, wabaId, emailUser, emailAppPassword,
+        razorpayKeyId, razorpaySecret, adminPhone,
+        shopDomain, shopifyAccessToken, shopifyWebhookSecret, googleReviewUrl
+      }},
+      { new: true, runValidators: false }
     );
 
     if (!updatedClient) {
