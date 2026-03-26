@@ -80,6 +80,19 @@ const loadClientConfig = async (req, res, next) => {
       // === NEW SAAS ARCHITECTURE FIELDS ===
       nicheData: client.nicheData || {},
       flowData: client.flowData || {},
+      automationFlows: client.automationFlows || [],
+      messageTemplates: client.messageTemplates || [],
+      flowNodes: client.flowNodes || [],
+      flowEdges: client.flowEdges || [],
+      
+      // Phase 7 Credentials & URLs
+      adminPhone: client.adminPhone || '',
+      shopDomain: client.shopDomain || '',
+      shopifyAccessToken: client.shopifyAccessToken || '',
+      razorpayKeyId: client.razorpayKeyId || '',
+      razorpaySecret: client.razorpaySecret || '',
+      googleReviewUrl: client.googleReviewUrl || '',
+
       plan: client.plan || 'CX Agent (V1)',
       isGenericBot: client.isGenericBot || false,
       subscriptionPlan: client.subscriptionPlan || 'v2'

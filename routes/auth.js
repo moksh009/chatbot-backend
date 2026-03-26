@@ -33,7 +33,15 @@ router.get('/me', protect, async (req, res) => {
         clientConfig: client ? {
           ...client.config,
           nicheData: client.nicheData || {},
-          flowData: client.flowData || {}
+          flowData: client.flowData || {},
+          automationFlows: client.automationFlows || [],
+          messageTemplates: client.messageTemplates || [],
+          flowNodes: client.flowNodes || [],
+          flowEdges: client.flowEdges || [],
+          adminPhone: client.adminPhone || '',
+          shopDomain: client.shopDomain || '',
+          razorpayKeyId: client.razorpayKeyId || '',
+          googleReviewUrl: client.googleReviewUrl || ''
         } : {},
         clientTemplates: client && client.config && client.config.templates ? client.config.templates : null
     });
@@ -67,7 +75,15 @@ router.post('/login', async (req, res) => {
         clientConfig: client ? {
           ...client.config,
           nicheData: client.nicheData || {},
-          flowData: client.flowData || {}
+          flowData: client.flowData || {},
+          automationFlows: client.automationFlows || [],
+          messageTemplates: client.messageTemplates || [],
+          flowNodes: client.flowNodes || [],
+          flowEdges: client.flowEdges || [],
+          adminPhone: client.adminPhone || '',
+          shopDomain: client.shopDomain || '',
+          razorpayKeyId: client.razorpayKeyId || '',
+          googleReviewUrl: client.googleReviewUrl || ''
         } : {},
         clientTemplates: client && client.config && client.config.templates ? client.config.templates : null
       });
