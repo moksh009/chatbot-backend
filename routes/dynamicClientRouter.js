@@ -4,7 +4,6 @@ const loadClientConfig = require('../middleware/clientConfig');
 
 // Import client controllers
 const turfController = require('./clientcodes/turf');
-const vedController = require('./clientcodes/ved');
 const salonController = require('./clientcodes/salon');
 const choiceSalonController = require('./clientcodes/choice_salon_holi');
 const topedgeController = require('./clientcodes/topedgeai');
