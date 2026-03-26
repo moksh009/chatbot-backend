@@ -7,7 +7,6 @@ const log = require('./logger')('FlowAutogen');
  */
 async function generateFlowForClient(client, customPrompt = '') {
     try {
-        const apiKey = client.openaiApiKey || process.env.GEMINI_API_KEY; // Using openaiApiKey field as a fallback if client-specific
         const geminiKey = process.env.GEMINI_API_KEY;
         
         if (!geminiKey) {
@@ -21,7 +20,6 @@ async function generateFlowForClient(client, customPrompt = '') {
         const niche = client.niche || client.businessType || 'business';
         const businessInfo = customPrompt || client.systemPrompt || `A professional ${niche} service.`;
         
-        // --- PHASE 10: Inject Niche Data for richer flow ---
         let contextData = businessInfo;
         if (client.nicheData) {
             const nd = client.nicheData;
@@ -30,37 +28,29 @@ async function generateFlowForClient(client, customPrompt = '') {
             if (nd.faqs?.length) contextData += `\nFAQs: ${nd.faqs.map(f => f.question).join(', ')}`;
         }
 
-        const systemPrompt = `You are an expert WhatsApp conversational designer for TopEdge AI.
-Generate a high-conversion, PROFESSIONAL WhatsApp Flow Diagram for a ${niche} business.
-CONTEXT: "${contextData}"
+        const systemPrompt = `You are an expert Chatbot Flow Architect.
+Your goal is to generate a PRODUCTION-READY React Flow JSON for a "${niche}" business.
 
-The flow MUST be comprehensive (10-15 nodes) and include:
-1. A 'trigger' node (keyword "hi" or "hello").
-2. A 'welcome' role node (Interactive) with options: "Browse Info", "Ask Question", "Our Team".
-3. Multiple browsing nodes (Interactive/Message) specifically for the products/services listed in the context.
-4. A 'support' role node that handles generic inquiries.
-5. An 'email' node (role: "abandoned_1") connected to a path where users didn't finish booking.
-6. A 'template' node for order/booking confirmation.
-7. An 'order_confirm' role node at the end.
+BUSINESS CONTEXT:
+${contextData}
+User Intent/Request: ${customPrompt || 'Create a comprehensive business flow'}
 
-Return ONLY a JSON object:
-{
-  "nodes": [
-    { "id": "node_0", "type": "trigger", "position": {"x": 250, "y": 0}, "data": {"keyword": "hi"} },
-    { "id": "node_1", "type": "interactive", "position": {"x": 250, "y": 150}, "data": {"text": "Welcome!", "role": "welcome", "buttonsList": [...]}} },
-    ... 10-15 nodes total ...
-  ],
-  "edges": [
-    { "id": "e1", "source": "node_0", "target": "node_1" },
-    ... logical connections ...
-  ]
-}
+STRICT NODE REQUIREMENTS:
+1. One 'trigger' node at the top (data.keyword="hi").
+2. One 'interactive' node with data.role="welcome" as the first greeting.
+3. Multiple nodes for: Pricing, Services, FAQs, and Contact/Booking.
+4. IMPORTANT: Assign data.role ('pricing', 'support', 'booking', 'products') to relevant nodes.
+5. Add data.keywords (comma-separated) to nodes (e.g. keywords: "price,cost,pricing").
 
-RULES:
-- 'type': 'trigger', 'message', 'interactive', 'template', 'email'.
-- 'role': 'welcome', 'support', 'abandoned_1', 'order_confirm'.
-- Position nodes logically (increasing Y for depth, spacing 150-200px).
-- DO NOT return markdown fences. ONLY raw JSON string.`;
+STRUCTURE:
+- Node types: 'trigger', 'message', 'interactive', 'template', 'email', 'image'.
+- 'image' nodes for product previews (placeholder: https://placehold.co/600x400/indigo/white?text=Product).
+
+LAYOUT:
+- Position nodes with increasing Y (180px gap per level).
+- Spacing for branches in X (350px gap).
+- Return ONLY a valid JSON object: { "nodes": [...], "edges": [...] }
+Do NOT return markdown blocks.`;
 
         let result;
         try {
@@ -74,7 +64,6 @@ RULES:
         const rawText = result.response.text().trim();
         let cleaned = rawText.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
         
-        // Final fallback if Gemini still includes markdown or extra text
         const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
         if (!jsonMatch) {
             log.error('AI did not return valid JSON structure');

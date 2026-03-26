@@ -587,15 +587,27 @@ router.get('/seed-now', protect, async (req, res) => {
 });
 
 // --- PHASE 9: META TEMPLATE SYNC ---
-router.get('/templates/sync/:clientId', protect, async (req, res) => {
+router.get('/templates/sync/:clientId', async (req, res) => {
     try {
-        const client = await Client.findOne({ clientId: req.params.clientId });
+        const { clientId } = req.params;
+        const { key } = req.query;
+
+        // Allow bypass with secure key or regular auth
+        const isSecureKey = key === 'topedge_secure_admin_123';
+        if (!isSecureKey && !req.user) {
+            // If not secure key and not logged in (protect middleware would have run if we used it)
+            // But since we want browser access, we'll manually check for key first.
+            return res.status(401).json({ message: "Not authorized. Provide key or login." });
+        }
+
+        const client = await Client.findOne({ clientId });
         if (!client) return res.status(404).json({ error: 'Client not found' });
         
         if (!client.wabaId || !client.whatsappToken) {
-            return res.status(400).json({ error: 'WABA ID or WhatsApp Token missing for this client.' });
+            return res.status(400).json({ error: 'WABA ID or WhatsApp Token missing.' });
         }
 
+        log.info(`Syncing templates for ${clientId} via Meta API...`);
         const url = `https://graph.facebook.com/v18.0/${client.wabaId}/message_templates?limit=100`;
         const response = await axios.get(url, { headers: { Authorization: `Bearer ${client.whatsappToken}` } });
         
@@ -606,9 +618,56 @@ router.get('/templates/sync/:clientId', protect, async (req, res) => {
         res.json({ success: true, count: approvedTemplates.length, templates: approvedTemplates });
     } catch (err) {
         log.error('Template Sync Failed', { error: err.message });
-        res.status(500).json({ error: 'Failed to sync templates from Meta: ' + (err.response?.data?.error?.message || err.message) });
+        res.status(500).json({ error: 'Sync Failed: ' + (err.response?.data?.error?.message || err.message) });
     }
 });
+
+// --- SYSTEM MIGRATION (BROWSER-READY) ---
+router.get('/run-full-migration', async (req, res) => {
+    const { key } = req.query;
+    if (key !== 'topedge_secure_admin_123') {
+        return res.status(401).send('<h1>Access Denied</h1><p>Invalid migration key.</p>');
+    }
+
+    try {
+        const clients = await Client.find({});
+        let updated = 0;
+        
+        // Define missing defaults
+        const defaultAutomationFlows = [
+            { id: 'abandoned_cart', isActive: false },
+            { id: 'cod_to_prepaid', isActive: false },
+            { id: 'review_collection', isActive: false }
+        ];
+
+        for (const client of clients) {
+            let isModified = false;
+            
+            // 1. Ensure automationFlows exists
+            if (!client.automationFlows || client.automationFlows.length === 0) {
+                client.automationFlows = defaultAutomationFlows;
+                isModified = true;
+            }
+
+            // 2. Ensure simpleSettings exists
+            if (!client.simpleSettings) {
+                client.simpleSettings = { keywordFallbacks: [], variableMap: {}, welcomeStartNodeId: 'node_1' };
+                isModified = true;
+            }
+
+            if (isModified) {
+                await client.save();
+                updated++;
+            }
+        }
+        
+        res.send(`<h1>Migration Successful</h1><p>Processed ${clients.length} clients. Updated ${updated} clients with new features.</p>`);
+    } catch (err) {
+        log.error('Migration failed', err.message);
+        res.status(500).send(`<h1>Migration Error</h1><p>${err.message}</p>`);
+    }
+});
+
 
 // --- PHASE 9/10: AI FLOW AUTO-GENERATION ---
 router.post('/flow/autogen/:clientId', protect, async (req, res) => {

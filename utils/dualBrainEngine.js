@@ -91,29 +91,32 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io) 
   const incomingTrigger = extractTrigger(parsedMessage);
   const userText        = (parsedMessage.text?.body || '').toLowerCase().trim();
 
-  // A) No lastStepId — look for trigger/start node matching keyword
-  if (!currentStepId) {
-    const triggerNode = flowNodes.find(n =>
-      n.type === 'trigger' &&
-      n.data?.keyword &&
-      userText === n.data.keyword.toLowerCase()
-    );
+  // A) GLOBAL KEYWORD / ROLE JUMP
+  // Check if user is trying to jump to a specific topic (e.g. "Pricing", "Products")
+  const jumpNode = flowNodes.find(n => {
+    const role = (n.data?.role || '').toLowerCase();
+    const keywords = (n.data?.keywords || '').toLowerCase().split(',').map(k => k.trim());
+    const isExactRole = role && userText === role;
+    const isKeywordMatch = keywords.length > 0 && keywords.includes(userText);
+    return isExactRole || isKeywordMatch;
+  });
 
-    if (!triggerNode && !isGreeting(userText)) return false;
-
-    // Find the trigger node to use (exact match or first trigger for greetings)
-    const resolvedTrigger = triggerNode || (isGreeting(userText) ? flowNodes.find(n => n.type === 'trigger') : null);
-    if (!resolvedTrigger) return false;
-
-    // Find the edge from the trigger
-    const startEdge = flowEdges.find(e => e.source === resolvedTrigger.id);
-    if (!startEdge) return false;
-
-    console.log(`[DualBrain] Graph: trigger match "${userText}" → node ${startEdge.target}`);
-    return await executeNode(startEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io);
+  if (jumpNode) {
+    console.log(`[DualBrain] Graph: Jumping to node ${jumpNode.id} based on keyword/role match "${userText}"`);
+    return await executeNode(jumpNode.id, flowNodes, flowEdges, client, convo, lead, phone, io);
   }
 
-  // B) User is in the middle of a flow — find matching edge from currentStep
+  // B) No currentStepId — look for trigger/start node
+  if (!currentStepId) {
+    const startNode = flowNodes.find(n => n.type === 'trigger') || flowNodes.find(n => n.data?.role === 'welcome') || flowNodes[0];
+    if (startNode) {
+      console.log(`[DualBrain] Graph: Starting fresh from node ${startNode.id}`);
+      return await executeNode(startNode.id, flowNodes, flowEdges, client, convo, lead, phone, io);
+    }
+    return false;
+  }
+
+  // C) User is in the middle of a flow — find matching edge from currentStep
   const matchingEdge = flowEdges.find(e => {
     if (e.source !== currentStepId) return false;
 
@@ -206,6 +209,18 @@ async function sendNodeContent(node, client, phone, lead = null) {
   const { type, data } = node;
 
   switch (type) {
+    case 'image': {
+      const imageUrl = data.imageUrl || '';
+      const caption = data.caption || '';
+      if (!imageUrl) return true;
+      await sendWhatsAppImage(client, phone, imageUrl, caption);
+      return true;
+    }
+
+    case 'flow': {
+      await sendWhatsAppFlow(client, phone, data.header, data.body, data.flowId, data.flowCta, data.screen);
+      return true;
+    }
     case 'message':
     case 'MessageNode': {
       if (data.imageUrl) {
@@ -359,6 +374,7 @@ async function tryKeywordFallback(parsedMessage, client, convo, phone) {
         // Re-run graph with cleared state
         const welcomeNodeId = client.simpleSettings?.welcomeStartNodeId;
         const flowNodes = client.flowNodes || [];
+        // const flowNodes = client.flowNodes || []; // Already defined above
         const flowEdges = client.flowEdges || [];
         const freshConvo = { ...convo.toObject(), lastStepId: null };
         const lead = await AdLead.findOne({ phoneNumber: phone, clientId: client.clientId });
@@ -484,6 +500,33 @@ async function sendWhatsAppTemplate(client, phone, templateName, languageCode = 
       template: { name: templateName, language: { code: languageCode }, components }
     }, { headers: { Authorization: `Bearer ${token}` } });
   } catch (err) { console.error('[DualBrain] sendTemplate error:', err.response?.data || err.message); }
+}
+
+async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, screen) {
+  const token = client.whatsappToken;
+  const phoneNumberId = client.phoneNumberId;
+  if (!token || !phoneNumberId) return;
+  try {
+    await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
+      messaging_product: 'whatsapp', to: phone, type: 'interactive',
+      interactive: {
+        type: 'flow',
+        header: { type: 'text', text: header || 'Book Now' },
+        body: { text: body || 'Tap below to continue' },
+        action: {
+          name: 'flow',
+          parameters: {
+            flow_message_version: '3',
+            flow_token: `flow_${Date.now()}`,
+            flow_id: flowId || '1244048577247022',
+            flow_cta: flowCta || 'Get Started',
+            flow_action: 'navigate',
+            flow_action_payload: { screen: screen || 'MAIN_SCREEN' }
+          }
+        }
+      }
+    }, { headers: { Authorization: `Bearer ${token}` } });
+  } catch (err) { console.error('[DualBrain] sendFlow error:', err.response?.data || err.message); }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
