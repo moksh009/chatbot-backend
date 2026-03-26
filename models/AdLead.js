@@ -15,6 +15,11 @@ const adLeadSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  email: {
+    type: String,
+    trim: true,
+    lowercase: true
+  },
   chatSummary: {
     type: String,
     default: ''

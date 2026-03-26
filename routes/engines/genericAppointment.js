@@ -396,7 +396,7 @@ async function sendWhatsAppFlow({ phoneNumberId, to, header, body, token, io, cl
     }
 }
 
-const const handleWebhook = async (req, res) => {
+const handleWebhook = async (req, res) => {
     const { from, phoneNumberId, messages } = req.body;
     if (!messages || !from) return res.status(200).end();
 

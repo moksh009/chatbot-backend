@@ -5,7 +5,14 @@ const User = require('../models/User');
 const { protect, authorize } = require('../middleware/auth');
 const log = require('../utils/logger')('AdminAPI');
 const { getDefaultFlowForNiche } = require('../utils/defaultFlowNodes');
+const { generateFlowForClient } = require('../utils/flowAutogen');
+const { convertLegacyToVisual } = require('../utils/legacyConverter');
+const { runFullMigration } = require('../scripts/phase9MigrationLogic');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const path = require('path');
+const fs = require('fs');
+
+const CLIENT_CODE_DIR = path.join(__dirname, 'clientcodes');
 
 // Middleware to check if user is a Super Admin
 const isSuperAdmin = async (req, res, next) => {
@@ -156,10 +163,10 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
       return res.status(400).json({ message: 'Client ID already exists' });
     }
 
-    const defaultFlow = getDefaultFlowForNiche(niche || businessType);
     const newClient = new Client({
       clientId, name, businessType: businessType || 'other', niche: niche || 'other',
       plan: plan || 'CX Agent (V1)', isGenericBot: isGenericBot || false,
+      systemPrompt: systemPrompt || '',
       phoneNumberId, whatsappToken, verifyToken: webhookVerifyToken, googleCalendarId,
       openaiApiKey, nicheData: nicheData || {}, flowData: flowData || {},
       automationFlows: (automationFlows && automationFlows.length > 0) ? automationFlows : defaultAutomationFlows,
@@ -169,9 +176,19 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
       adminPhone: adminPhone || '', shopDomain: shopDomain || '',
       shopifyAccessToken: shopifyAccessToken || '', shopifyWebhookSecret: shopifyWebhookSecret || '',
       googleReviewUrl: googleReviewUrl || '',
-      flowNodes: defaultFlow.nodes,
-      flowEdges: defaultFlow.edges,
+      flowNodes: [], flowEdges: [],
     });
+
+    // --- PHASE 10: Automatic Flow Generation during Onboarding ---
+    const aiFlow = await generateFlowForClient(newClient, systemPrompt);
+    if (aiFlow) {
+      newClient.flowNodes = aiFlow.nodes;
+      newClient.flowEdges = aiFlow.edges;
+    } else {
+      const defaultFlow = getDefaultFlowForNiche(niche || businessType);
+      newClient.flowNodes = defaultFlow.nodes;
+      newClient.flowEdges = defaultFlow.edges;
+    }
 
     const savedClient = await newClient.save();
     log.success(`New client provisioned: ${clientId} | Plan: ${plan || 'CX Agent (V1)'}`);
@@ -593,51 +610,27 @@ router.get('/templates/sync/:clientId', protect, async (req, res) => {
     }
 });
 
-// --- PHASE 9: AI FLOW AUTO-GENERATION ---
+// --- PHASE 9/10: AI FLOW AUTO-GENERATION ---
 router.post('/flow/autogen/:clientId', protect, async (req, res) => {
     try {
         const { prompt } = req.body;
         const client = await Client.findOne({ clientId: req.params.clientId });
         if (!client) return res.status(404).json({ error: 'Client not found' });
 
-        const apiKey = client.geminiApiKey || process.env.GEMINI_API_KEY;
-        if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not configured' });
+        const aiFlow = await generateFlowForClient(client, prompt);
+        if (!aiFlow) return res.status(500).json({ error: 'Failed to generate flow with AI. Please try again or provide more details.' });
 
-        const genAI = new GoogleGenerativeAI(apiKey);
-        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
+        client.flowNodes = aiFlow.nodes;
+        client.flowEdges = aiFlow.edges;
+        if (prompt) client.systemPrompt = prompt;
 
-        const systemPrompt = `You are an expert conversational designer. Generate a WhatsApp Flow JSON diagram for this business: "${prompt}".
-        
-Return ONLY valid JSON with:
-{
-  "nodes": [
-    { "id": "node_0", "type": "trigger", "position": {"x": 250, "y": 50}, "data": {"keyword": "hi"} },
-    { "id": "node_1", "type": "interactive", "position": {"x": 250, "y": 200}, "data": {"text": "Welcome!", "buttonsList": [{"id": "btn_0", "title": "Buy"}]} }
-  ],
-  "edges": [
-    { "id": "e0", "source": "node_0", "target": "node_1" }
-  ]
-}
-No markdown fences, no explanations. Make a complete funnel.`;
-
-        let result;
-        try {
-            result = await model.generateContent(systemPrompt);
-        } catch (apiErr) {
-            const proModel = genAI.getGenerativeModel({ model: 'gemini-1.0-pro' });
-            result = await proModel.generateContent(systemPrompt);
-        }
-
-        const rawText = result.response.text().trim();
-        let cleaned = rawText.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
-        const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) return res.status(500).json({ error: 'AI did not return valid JSON' });
-
-        const flow = JSON.parse(jsonMatch[0]);
-        if (!flow.nodes || !flow.edges) return res.status(500).json({ error: 'Invalid structure' });
-
-        // Save directly to the client profile
-        client.flowNodes = flow.nodes;
+        await client.save();
+        res.json({ success: true, nodes: aiFlow.nodes, edges: aiFlow.edges });
+    } catch (err) {
+        log.error('Manual Auto-gen failed', { error: err.message });
+        res.status(500).json({ error: 'Failed to generate flow: ' + err.message });
+    }
+});
         client.flowEdges = flow.edges;
         await client.save();
 
@@ -645,6 +638,45 @@ No markdown fences, no explanations. Make a complete funnel.`;
     } catch (err) {
         log.error('AI Flow Gen Failed', { error: err.message });
         res.status(500).json({ error: 'Generation Failed: ' + err.message });
+    }
+});
+
+// --- CONVERT LEGACY JS FLOW TO VISUAL FLOW (AI) ---
+router.post('/flow/convert-legacy/:clientId', async (req, res) => {
+    try {
+        const { clientId } = req.params;
+        const client = await Client.findOne({ clientId });
+        if (!client) return res.status(404).json({ error: 'Client not found' });
+
+        // Map clientId to legacy file
+        let fileName = '';
+        if (clientId === 'delitech_smarthomes' || clientId === 'ved') fileName = 'delitech_smarthomes.js';
+        else if (clientId === 'choice_salon_holi' || clientId === 'choice_salon') fileName = 'choice_salon_holi.js';
+        else if (clientId === 'turf') fileName = 'turf.js';
+        else {
+             // Try common patterns if not found
+             fileName = `${clientId}.js`;
+        }
+
+        const filePath = path.join(CLIENT_CODE_DIR, fileName);
+        if (!fs.existsSync(filePath)) {
+            return res.status(400).json({ error: `Legacy file not found: ${fileName}` });
+        }
+
+        const fileCode = fs.readFileSync(filePath, 'utf8');
+        log.info(`Converting legacy flow for ${clientId}...`);
+
+        const flowJson = await convertLegacyToVisual(clientId, fileCode);
+        
+        client.flowNodes = flowJson.nodes || [];
+        client.flowEdges = flowJson.edges || [];
+        client.isGenericBot = true; // Switch to generic hub engine after conversion
+        await client.save();
+
+        res.json({ success: true, message: `Migrated ${flowJson.nodes.length} nodes from legacy file.` });
+    } catch (err) {
+        log.error('Conversion Error', err.message);
+        res.status(500).json({ error: 'Conversion failed: ' + err.message });
     }
 });
 

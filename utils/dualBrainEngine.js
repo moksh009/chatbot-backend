@@ -5,6 +5,8 @@ const Conversation = require("../models/Conversation");
 const AdLead       = require("../models/AdLead");
 const Message      = require("../models/Message");
 const DailyStat    = require("../models/DailyStat");
+const emailService = require("./emailService");
+const log = require("./logger")('DualBrain');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -170,7 +172,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   const node = flowNodes.find(n => n.id === nodeId);
   if (!node) { console.warn(`[DualBrain] Node ${nodeId} not found`); return false; }
 
-  const sent = await sendNodeContent(node, client, phone);
+  const sent = await sendNodeContent(node, client, phone, lead);
   if (!sent) return false;
 
   // Update lastStepId
@@ -200,7 +202,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 // ─────────────────────────────────────────────────────────────────────────────
 // SEND NODE CONTENT — handles all node types
 // ─────────────────────────────────────────────────────────────────────────────
-async function sendNodeContent(node, client, phone) {
+async function sendNodeContent(node, client, phone, lead = null) {
   const { type, data } = node;
 
   switch (type) {
@@ -287,6 +289,43 @@ async function sendNodeContent(node, client, phone) {
       }
 
       await sendWhatsAppTemplate(client, phone, templateName, data.languageCode || 'en', components);
+      return true;
+    }
+
+    case 'email': {
+      const recipient = lead?.email || (data.recipientEmail);
+      if (!recipient) {
+        log.warn(`[DualBrain] Skipping email node: no recipient email for lead ${phone}`);
+        return true; // Don't block the flow if email is missing
+      }
+
+      let subject = data.subject || 'Follow up from ' + (client.name || 'Store');
+      let body = data.body || '';
+
+      // Simple Variable Replacement
+      const vars = {
+        '{name}': lead?.name || 'Customer',
+        '{items}': lead?.lastItems || 'your selected items',
+        '{total}': lead?.lastTotal || '0',
+        '{id}': lead?.phoneNumber || ''
+      };
+
+      Object.entries(vars).forEach(([key, val]) => {
+        subject = subject.replace(new RegExp(key, 'g'), val);
+        body = body.replace(new RegExp(key, 'g'), val);
+      });
+
+      await emailService.sendEmail(client, {
+        to: recipient,
+        subject,
+        html: `
+          <div style="font-family: sans-serif; max-width: 600px; line-height: 1.6;">
+            ${body.replace(/\n/g, '<br/>')}
+            <br/><br/>
+            <p style="color: #666; font-size: 12px;">Sent via ${client.name || 'TopEdge AI'}</p>
+          </div>
+        `
+      });
       return true;
     }
 
