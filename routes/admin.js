@@ -4,6 +4,7 @@ const Client = require('../models/Client');
 const User = require('../models/User');
 const { protect, authorize } = require('../middleware/auth');
 const log = require('../utils/logger')('AdminAPI');
+const { getDefaultFlowForNiche } = require('../utils/defaultFlowNodes');
 
 // Middleware to check if user is a Super Admin
 const isSuperAdmin = async (req, res, next) => {
@@ -65,6 +66,15 @@ router.get('/run-migration', async (req, res) => {
 
     for (const client of clients) {
         let isModified = false;
+
+        // Seed default flow nodes if not already set
+        if (!client.flowNodes || client.flowNodes.length === 0) {
+          const niche = client.niche || client.businessType || 'other';
+          const defaultFlow = getDefaultFlowForNiche(niche);
+          client.flowNodes = defaultFlow.nodes;
+          client.flowEdges = defaultFlow.edges;
+          isModified = true;
+        }
 
         if (!client.automationFlows || client.automationFlows.length === 0) {
             client.automationFlows = defaultAutomationFlows;
@@ -130,13 +140,16 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
       return res.status(400).json({ message: 'Client ID already exists' });
     }
 
+    const defaultFlow = getDefaultFlowForNiche(niche || businessType);
     const newClient = new Client({
       clientId, name, businessType: businessType || 'other', niche: niche || 'other',
       plan: plan || 'CX Agent (V1)', isGenericBot: isGenericBot || false,
       phoneNumberId, whatsappToken, verifyToken: webhookVerifyToken, googleCalendarId,
       openaiApiKey, nicheData: nicheData || {}, flowData: flowData || {},
       automationFlows: automationFlows || [], messageTemplates: messageTemplates || [],
-      wabaId: wabaId || '', emailUser: emailUser || '', emailAppPassword: emailAppPassword || ''
+      wabaId: wabaId || '', emailUser: emailUser || '', emailAppPassword: emailAppPassword || '',
+      flowNodes: defaultFlow.nodes,
+      flowEdges: defaultFlow.edges,
     });
 
     const savedClient = await newClient.save();
@@ -193,7 +206,7 @@ router.delete('/clients/:id', protect, isSuperAdmin, async (req, res) => {
 // Any authenticated user can update their OWN client's editable fields
 router.patch('/my-settings', protect, async (req, res) => {
   try {
-    const { nicheData, flowData, automationFlows, messageTemplates, clientId } = req.body;
+    const { nicheData, flowData, automationFlows, messageTemplates, flowNodes, flowEdges, clientId } = req.body;
     
     // If Super Admin and clientId provided, use that. Otherwise use user's own.
     let targetClientId = req.user.clientId;
@@ -210,6 +223,8 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (flowData !== undefined) updateFields.flowData = flowData;
     if (automationFlows !== undefined) updateFields.automationFlows = automationFlows;
     if (messageTemplates !== undefined) updateFields.messageTemplates = messageTemplates;
+    if (flowNodes !== undefined) updateFields.flowNodes = flowNodes;
+    if (flowEdges !== undefined) updateFields.flowEdges = flowEdges;
 
     const updated = await Client.findOneAndUpdate(
       { clientId: targetClientId },
@@ -242,10 +257,13 @@ router.get('/settings/:clientId', protect, isSuperAdmin, async (req, res) => {
     res.json({
       clientId: client.clientId,
       businessType: client.businessType,
+      niche: client.niche,
       nicheData: client.nicheData,
       flowData: client.flowData,
       automationFlows: client.automationFlows,
       messageTemplates: client.messageTemplates,
+      flowNodes: client.flowNodes || [],
+      flowEdges: client.flowEdges || [],
       plan: client.plan
     });
   } catch (err) {
