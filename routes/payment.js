@@ -3,7 +3,7 @@ const router = express.Router();
 const Order = require("../models/Order");
 const DailyStat = require("../models/DailyStat");
 const { startOfDay } = require("date-fns");
-const { sendWhatsAppTextMessage } = require("../utils/whatsapp"); // Verify this path/utility later
+const { sendWhatsAppText } = require("../utils/whatsappHelpers");
 
 router.get("/success/:orderId", async (req, res) => {
   try {
@@ -55,13 +55,13 @@ router.get("/success/:orderId", async (req, res) => {
     }
 
     // Send WhatsApp confirmation to customer
-    if (sendWhatsAppTextMessage) {
-      await sendWhatsAppTextMessage(
-        client.whatsappToken,
-        client.phoneNumberId,
-        order.phone || order.customerPhone,
-        `✅ Payment confirmed! ₹${order.totalPrice} received for order #${order.orderNumber}.\n\nYour order will be dispatched within 24 hours. Thank you! 🙏`
-      );
+    if (sendWhatsAppText && client.whatsappToken && client.phoneNumberId) {
+      await sendWhatsAppText({
+        token: client.whatsappToken,
+        phoneNumberId: client.phoneNumberId,
+        to: order.phone || order.customerPhone,
+        body: `✅ Payment confirmed! ₹${order.totalPrice} received for order #${order.orderNumber}.\n\nYour order will be dispatched within 24 hours. Thank you! 🙏`
+      });
     }
 
     // Redirect to success page (use client's domain if available)
