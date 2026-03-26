@@ -11,8 +11,12 @@ const axios = require('axios');
 // @access  Private
 router.get('/', protect, async (req, res) => {
   try {
-    const { days, clientId } = req.query;
+    const { days, clientId, phone } = req.query;
     let query = {};
+
+    if (phone) {
+      query.phone = phone;
+    }
 
     // For non-SUPER_ADMIN, always restrict to their own clientId
     if (req.user.role !== 'SUPER_ADMIN') {

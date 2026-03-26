@@ -172,14 +172,21 @@ router.get('/leads', protect, async (req, res) => {
       ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
       : { clientId };
 
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const skip = (page - 1) * limit;
+    const { page = 1, limit = 10, search = '' } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    if (search) {
+      const searchRegex = new RegExp(search, 'i');
+      query.$or = [
+        { name: searchRegex },
+        { phoneNumber: searchRegex }
+      ];
+    }
 
     const leads = await AdLead.find(query)
       .sort({ lastInteraction: -1 })
       .skip(skip)
-      .limit(limit);
+      .limit(parseInt(limit));
 
     const total = await AdLead.countDocuments(query);
 
@@ -914,8 +921,8 @@ router.get('/insights', protect, async (req, res) => {
   }
 });
 
-// GET /api/analytics/roi/:clientId
-router.get("/roi/:clientId", protect, async (req, res) => {
+// GET /api/analytics/:clientId/roi
+router.get("/:clientId/roi", protect, async (req, res) => {
   try {
     const { clientId } = req.params;
     const { period = "month" } = req.query;
