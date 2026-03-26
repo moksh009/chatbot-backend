@@ -631,15 +631,6 @@ router.post('/flow/autogen/:clientId', protect, async (req, res) => {
         res.status(500).json({ error: 'Failed to generate flow: ' + err.message });
     }
 });
-        client.flowEdges = flow.edges;
-        await client.save();
-
-        res.json({ success: true, nodes: flow.nodes, edges: flow.edges });
-    } catch (err) {
-        log.error('AI Flow Gen Failed', { error: err.message });
-        res.status(500).json({ error: 'Generation Failed: ' + err.message });
-    }
-});
 
 // --- CONVERT LEGACY JS FLOW TO VISUAL FLOW (AI) ---
 router.post('/flow/convert-legacy/:clientId', async (req, res) => {
