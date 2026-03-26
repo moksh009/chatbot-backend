@@ -7,6 +7,7 @@ const Order = require('../../models/Order');
 const DailyStat = require('../../models/DailyStat');
 const ReviewRequest = require('../../models/ReviewRequest');
 const { sendOrderConfirmationEmail, sendCODToPrepaidEmail } = require('../../utils/emailService');
+const { runDualBrainEngine } = require('../../utils/dualBrainEngine');
 
 // --- 1. CORE API WRAPPERS ---
 async function findNextNode(currentNodeId, handleId, edges) {
@@ -509,125 +510,34 @@ const handleWebhook = async (req, res) => {
         const { clientId, whatsappToken: token, nicheData, plan } = req.clientConfig;
         const io = req.app.get('socketio');
         const helperParams = { phoneNumberId, token, io, clientConfig: req.clientConfig };
-        let userMsg = '';
-        let interactiveId = '';
-        const userMsgType = messages.type;
 
-        if (userMsgType === 'text') userMsg = messages.text.body.trim();
-        else if (userMsgType === 'interactive') {
-            interactiveId = messages.interactive.button_reply?.id || messages.interactive.list_reply?.id;
-            userMsg = messages.interactive.button_reply?.title || messages.interactive.list_reply?.title;
-        } else if (userMsgType === 'button') {
-            userMsg = messages.button?.text || "";
-            interactiveId = messages.button?.payload || "";
-        }
+        // Parse Message
+        const parsedMessage = {
+            ...messages,
+            from,
+            messageId: messages.id
+        };
 
-        // --- Log Incoming Message to DB ---
-        let conversation = await Conversation.findOne({ phone: from, clientId });
-        if (!conversation) {
-            conversation = await Conversation.create({ phone: from, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
-        }
+        // --- DUAL-BRAIN ENGINE (Graph -> Keyword -> AI) ---
+        // Includes: Upsert Convo, Upsert Lead, Save Inbound Message, Paused Check, Graph, Keyword, Gemini text fallback
+        const handledByDualBrain = await runDualBrainEngine(parsedMessage, req.clientConfig);
 
-        const savedMsg = await Message.create({
-            clientId, conversationId: conversation._id, from, to: 'bot',
-            content: userMsg || `[${userMsgType}]`, type: userMsgType, direction: 'incoming', status: 'received'
-        });
-
-        conversation.lastMessage = userMsg || `[${userMsgType}]`;
-        conversation.lastMessageAt = new Date();
-        if (conversation.status === 'HUMAN_TAKEOVER') conversation.unreadCount = (conversation.unreadCount || 0) + 1;
-        await conversation.save();
-
-        if (io) {
-            io.to(`client_${clientId}`).emit('new_message', savedMsg);
-            io.to(`client_${clientId}`).emit('conversation_update', conversation);
-        }
-
-        if (conversation.status === 'HUMAN_TAKEOVER') {
-            console.log(`[EcommerceEngine] Takeover active for ${from}`);
+        // If DualBrain consumed the message fully (e.g. matched a graph edge, or text was matched by AI), we stop.
+        // It returns false ONLY if no graph matched AND there's no text (e.g. a legacy interactive button click that wasn't in the tree).
+        if (handledByDualBrain) {
             return res.status(200).end();
         }
 
-        let lead = await AdLead.findOne({ phoneNumber: from, clientId });
-
-        // --- GRAPH ENGINE TRAVERSAL ---
-        const nodes = req.clientConfig.flowNodes || [];
-        const edges = req.clientConfig.flowEdges || [];
-
-        if (nodes.length > 0) {
-            console.log(`[FlowEngine] Client: ${clientId} | Nodes: ${nodes.length} | Edges: ${edges.length}`);
-            
-            // 1. Check if user is triggering a starting point
-            if (userMsgType === 'text') {
-                console.log(`[FlowEngine] Checking Trigger Node for: "${userMsg}"`);
-                const triggerNode = nodes.find(n => n.type === 'trigger' && n.data?.keyword?.toLowerCase() === userMsg.toLowerCase());
-                
-                if (triggerNode) {
-                    console.log(`[FlowEngine] Trigger Match Found! Node: ${triggerNode.id}`);
-                    const nextNodeId = await findNextNode(triggerNode.id, null, edges);
-                    if (nextNodeId) {
-                        await executeNode({ nodeId: nextNodeId, nodes, edges, to: from, phoneNumberId, io, clientConfig: req.clientConfig });
-                        return res.status(200).end();
-                    } else {
-                        console.warn(`[FlowEngine] Trigger node ${triggerNode.id} has no outgoing connection!`);
-                    }
-                }
-                
-                // Fallback for "hi/hello" to first trigger node if keyword is empty
-                if (/^(hi|hello|hey|start)/i.test(userMsg)) {
-                    console.log(`[FlowEngine] Checking Greeting Fallback Trigger...`);
-                    const firstTrigger = nodes.find(n => n.type === 'trigger');
-                    if (firstTrigger) {
-                        const nextNodeId = await findNextNode(firstTrigger.id, null, edges);
-                        if (nextNodeId) {
-                            console.log(`[FlowEngine] Executing first trigger fallback for greeting.`);
-                            await executeNode({ nodeId: nextNodeId, nodes, edges, to: from, phoneNumberId, io, clientConfig: req.clientConfig });
-                            return res.status(200).end();
-                        }
-                    }
-                }
-            }
-
-            // 2. Check if user is continuing from a previous node (Interactive/Template Button)
-            if ((interactiveId || userMsg) && conversation.lastStepId) {
-                const currentMsg = interactiveId || userMsg;
-                console.log(`[FlowEngine] Continuing Flow from: ${conversation.lastStepId} | Interaction: ${currentMsg}`);
-                
-                // Try matching by handleId (id) first
-                let nextNodeId = await findNextNode(conversation.lastStepId, currentMsg, edges);
-                
-                // Fallback: If no match, check if currentMsg is the text of a button in the current node
-                if (!nextNodeId) {
-                    const currentNode = nodes.find(n => n.id === conversation.lastStepId);
-                    if (currentNode && currentNode.type === 'interactive') {
-                        const btns = currentNode.data?.buttonsList || [];
-                        const match = btns.find(b => b.title.toLowerCase() === currentMsg.toLowerCase());
-                        if (match) {
-                            console.log(`[FlowEngine] Matched interactive interaction text "${currentMsg}" to handle: ${match.id}`);
-                            nextNodeId = await findNextNode(conversation.lastStepId, match.id, edges);
-                        }
-                    } else if (currentNode && currentNode.type === 'template') {
-                         // For templates, we usually use btn_0, btn_1 handles
-                         const tpl = (req.clientConfig.waTemplates || []).find(t => t.name === currentNode.data?.templateName);
-                         const tplBtns = tpl?.components?.find(c => c.type === 'BUTTONS')?.buttons || [];
-                         const matchIdx = tplBtns.findIndex(b => b.text.toLowerCase() === currentMsg.toLowerCase());
-                         if (matchIdx > -1) {
-                             console.log(`[FlowEngine] Matched template interaction text "${currentMsg}" to handle: btn_${matchIdx}`);
-                             nextNodeId = await findNextNode(conversation.lastStepId, `btn_${matchIdx}`, edges);
-                         }
-                    }
-                }
-
-                if (nextNodeId) {
-                    await executeNode({ nodeId: nextNodeId, nodes, edges, to: from, phoneNumberId, io, clientConfig: req.clientConfig });
-                    return res.status(200).end();
-                } else {
-                    console.log(`[FlowEngine] No specific path for interaction "${currentMsg}" from node "${conversation.lastStepId}"`);
-                }
-            }
-        } else {
-            console.log(`[FlowEngine] Client ${clientId} has no graph nodes. Using legacy menus.`);
+        // --- LEGACY INTERACTIVE ACTIONS FLAG ---
+        let interactiveId = '';
+        if (messages.type === 'interactive') {
+            interactiveId = messages.interactive?.button_reply?.id || messages.interactive?.list_reply?.id || '';
+        } else if (messages.type === 'button') {
+            interactiveId = messages.button?.payload || '';
         }
+
+        let lead = await AdLead.findOne({ phoneNumber: from, clientId });
+        let conversation = await Conversation.findOne({ phone: from, clientId });
 
         // --- Handle Interactive Actions ---
         if (interactiveId) {

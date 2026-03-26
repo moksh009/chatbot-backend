@@ -11,6 +11,7 @@ const { DateTime } = require('luxon');
 const birthdayData = require('./birthdays.json');
 const { sendBirthdayWishWithImage } = require('./utils/sendBirthdayMessage');
 const scheduleAbandonedCartCron = require('./cron/abandonedCartScheduler');
+const scheduleBirthdayCron = require('./cron/birthdayCron');
 // Load environment variables
 // dotenv.config();
 // Silence .env missing warning
@@ -144,86 +145,8 @@ scheduleAbandonedCartCron();
 const scheduleReviewCron = require('./cron/reviewCollection');
 scheduleReviewCron();
 
-// Cron job for birthday messages and appointment reminders
-cron.schedule('0 6 * * *', async () => {
-  const istNow = DateTime.utc().setZone('Asia/Kolkata');
-  const currentDay = istNow.day;
-  const currentMonth = istNow.month;
-
-  console.log(`⏰ It's 6:00 AM IST — Running birthday check...`);
-
-  try {
-    const clients = await Client.find({});
-
-    for (const client of clients) {
-      const token = client.whatsappToken || process.env.WHATSAPP_TOKEN;
-      const phoneid = client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
-      const clientId = client.clientId;
-
-      if (!token || !phoneid) {
-        console.log(`⚠️ Skipping birthday check for client ${clientId} - missing WhatsApp credentials`);
-        continue;
-      }
-
-      // Find birthday users for this client
-      // Handle legacy data (no clientId) by assigning it to 'code_clinic_v1'
-      let clientQuery = {
-        day: currentDay,
-        month: currentMonth,
-        isOpted: true
-      };
-
-      if (clientId === 'code_clinic_v1') {
-        clientQuery.$or = [{ clientId: clientId }, { clientId: { $exists: false } }];
-      } else {
-        clientQuery.clientId = clientId;
-      }
-
-      const todaysBirthdays = await BirthdayUser.find(clientQuery);
-
-      if (todaysBirthdays.length === 0) continue;
-
-      console.log(`🎉 Found ${todaysBirthdays.length} birthday(s) for client ${clientId}`);
-
-      let successCount = 0;
-      let failureCount = 0;
-
-      async function incDaily(field) {
-        const dateStr = istNow.toISODate();
-        await DailyStat.updateOne(
-          { clientId: clientId, date: dateStr },
-          { $inc: { [field]: 1 }, $setOnInsert: { clientId: clientId, date: dateStr } },
-          { upsert: true }
-        );
-      }
-
-      for (const user of todaysBirthdays) {
-        try {
-          const result = await sendBirthdayWishWithImage(user.number, token, phoneid, clientId);
-          if (result.success) {
-            successCount++;
-            await incDaily('birthdayRemindersSent');
-          } else {
-            failureCount++;
-            console.log(`❌ Birthday message failed for ${user.number}: ${result.reason || result.error}`);
-          }
-
-          // Add delay to avoid rate limiting
-          await new Promise(resolve => setTimeout(resolve, 500));
-
-        } catch (error) {
-          console.error(`❌ Error sending birthday message to ${user.number}:`, error.message);
-          failureCount++;
-        }
-      }
-
-      console.log(`🎂 Birthday messages for ${clientId} completed: ${successCount} sent, ${failureCount} failed`);
-    }
-
-  } catch (error) {
-    console.error('❌ Error in birthday cron job:', error.message);
-  }
-});
+// Initialize Birthday Messages Cron Job
+scheduleBirthdayCron();
 
 // Cron job for appointment reminders (run daily at 7 AM)
 cron.schedule('0 7 * * *', async () => {

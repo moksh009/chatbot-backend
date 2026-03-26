@@ -72,25 +72,26 @@ async function generateGeminiResponse(apiKey, prompt) {
 }
 
 const scheduleAbandonedCartCron = () => {
-    // 1. Abandoned Cart Scheduler - Runs every 10 minutes
-    cron.schedule('*/10 * * * *', async () => {
+    // 1. Abandoned Cart Scheduler - Runs every 5 minutes for better 15m precision
+    cron.schedule('*/5 * * * *', async () => {
         log.info('Abandoned cart cron tick — checking for recoverable leads...');
         try {
             const now = new Date();
+            const fifteenMinsAgo = new Date(now - 15 * 60 * 1000);
             const twoHoursAgo  = new Date(now - 2 * 60 * 60 * 1000);
-            const fourHoursAgo = new Date(now - 4 * 60 * 60 * 1000);
+            const twentyFourHoursAgo = new Date(now - 24 * 60 * 60 * 1000);
             const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
 
-            // --- Step 1: First recovery message (2 hours) ---
-            const firstBatch = await AdLead.find({
+            // --- Step 1: First recovery message (15 mins) ---
+            const step1Batch = await AdLead.find({
                 clientId: { $exists: true },
                 isOrderPlaced: { $ne: true },
                 recoveryStep: { $exists: false },
-                updatedAt: { $lte: twoHoursAgo, $gte: sevenDaysAgo }
+                updatedAt: { $lte: fifteenMinsAgo, $gte: sevenDaysAgo }
             });
-            log.info(`Step 1 (2h) batch size: ${firstBatch.length}`);
+            log.info(`Step 1 (15m) batch size: ${step1Batch.length}`);
 
-            for (const lead of firstBatch) {
+            for (const lead of step1Batch) {
                 const client = await Client.findOne({ clientId: lead.clientId });
                 if (!client) continue;
 
@@ -157,15 +158,16 @@ const scheduleAbandonedCartCron = () => {
                 );
             }
 
-            // --- Step 2: Negotiator message (4 hours, no purchase) ---
-            const secondBatch = await AdLead.find({
+            // --- Step 2: Negotiator message (2 hours, no purchase) ---
+            const step2Batch = await AdLead.find({
                 clientId: { $exists: true }, // Ensure safety
                 recoveryStep: 1,
-                recoveryStartedAt: { $lte: fourHoursAgo },
+                recoveryStartedAt: { $lte: twoHoursAgo },
                 isOrderPlaced: { $ne: true }
             });
+            log.info(`Step 2 (2h) batch size: ${step2Batch.length}`);
 
-            for (const lead of secondBatch) {
+            for (const lead of step2Batch) {
                 const client = await Client.findOne({ clientId: lead.clientId });
                 if (!client) continue;
 
@@ -227,7 +229,37 @@ Be conversational, not salesy. No emojis overload. Sound human. Do not use aster
                     );
                 }
 
-                await AdLead.findByIdAndUpdate(lead._id, { recoveryStep: 2 });
+                await AdLead.findByIdAndUpdate(lead._id, { recoveryStep: 2, recoveryStartedAt: new Date() });
+            }
+
+            // --- Step 3: Final Nudge (24 hours, no purchase) ---
+            const step3Batch = await AdLead.find({
+                clientId: { $exists: true },
+                recoveryStep: 2,
+                recoveryStartedAt: { $lte: twentyFourHoursAgo },
+                isOrderPlaced: { $ne: true }
+            });
+            log.info(`Step 3 (24h) batch size: ${step3Batch.length}`);
+
+            for (const lead of step3Batch) {
+                const client = await Client.findOne({ clientId: lead.clientId });
+                if (!client) continue;
+
+                const token = client.whatsappToken || client.config?.whatsappToken || process.env.WHATSAPP_TOKEN;
+                const phoneId = client.phoneNumberId || client.config?.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
+                if (!token || !phoneId) continue;
+
+                const hasOrdered = lead.activityLog.some(l => l.action === "order_placed");
+                if (hasOrdered) {
+                    await AdLead.findByIdAndUpdate(lead._id, { recoveryStep: 3 });
+                    continue;
+                }
+
+                await sendWhatsAppText(
+                    token, phoneId, lead.phoneNumber,
+                    `🚨 Final Reminder, ${lead.name || 'friend'}! Your cart is about to expire. Complete your order now before you lose your items!`
+                );
+                await AdLead.findByIdAndUpdate(lead._id, { recoveryStep: 3 });
             }
         } catch (e) {
             console.error('Abandoned Cart Cron Error:', e);

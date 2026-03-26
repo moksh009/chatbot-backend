@@ -96,6 +96,22 @@ const adLeadSchema = new mongoose.Schema({
     type: Object,
     default: {}
   },
+  // Phase 9 fields
+  intentState: {
+    type: String,
+    enum: ['browsing', 'high_intent', 'cart_abandoned', 'recovered', 'converted'],
+    default: 'browsing'
+  },
+  cartItems: { type: mongoose.Schema.Types.Mixed, default: [] },
+  cartValue:  { type: Number, default: 0 },
+  cartUrl:    { type: String, default: '' },
+  cartAbandonedAt:   { type: Date },
+  recoveryStep:      { type: Number },
+  recoveryStartedAt: { type: Date },
+  lastOrderId:    { type: String, default: '' },
+  lifetimeValue:  { type: Number, default: 0 },
+  birthday:       { type: Date,   default: null },
+  birthdayMsgSent:{ type: Boolean,default: false },
   createdAt: {
     type: Date,
     default: Date.now

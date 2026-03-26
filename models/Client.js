@@ -59,6 +59,36 @@ const ClientSchema = new mongoose.Schema({
   flowNodes: { type: [mongoose.Schema.Types.Mixed], default: [] },
   flowEdges: { type: [mongoose.Schema.Types.Mixed], default: [] },
   
+  // Phase 9 AI & Settings
+  systemPrompt: { type: String, default: '' },
+  syncedMetaTemplates: { type: mongoose.Schema.Types.Mixed, default: [] },
+
+  // Phase 9 Simple Settings Fallback (Priority 2 keywords)
+  simpleSettings: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {
+      keywords: [
+        { word: 'hi',     action: 'restart_flow' },
+        { word: 'hello',  action: 'restart_flow' },
+        { word: 'order',  action: 'track_order'  },
+        { word: 'cancel', action: 'cancel_flow'  },
+        { word: 'human',  action: 'escalate'     }
+      ],
+      welcomeStartNodeId: '',
+      storeUrl: '',
+      knowledgeBase: '',
+      variableMap: {
+        'name':     'lead.name',
+        'total':    'order.totalPrice',
+        'product':  'cart.productName',
+        'order_id': 'order.orderNumber',
+        'date':     'appointment.date',
+        'time':     'appointment.time',
+        'service':  'appointment.serviceName'
+      }
+    }
+  },
+
   createdAt: { type: Date, default: Date.now }
 });
 

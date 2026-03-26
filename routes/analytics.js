@@ -868,8 +868,8 @@ router.get('/insights', protect, async (req, res) => {
   }
 });
 
-// GET /api/analytics/:clientId/roi
-router.get("/:clientId/roi", protect, async (req, res) => {
+// GET /api/analytics/roi/:clientId
+router.get("/roi/:clientId", protect, async (req, res) => {
   try {
     const { clientId } = req.params;
     const { period = "month" } = req.query;
@@ -901,7 +901,9 @@ router.get("/:clientId/roi", protect, async (req, res) => {
           rtoCostSaved: { $sum: "$rtoCostSaved" },
           reviewsCollected: { $sum: "$reviewsCollected" },
           reviewsPositive: { $sum: "$reviewsPositive" },
-          reviewsNegative: { $sum: "$reviewsNegative" }
+          reviewsNegative: { $sum: "$reviewsNegative" },
+          bookingsCompleted: { $sum: "$bookingsCompleted" },
+          bookingRevenue: { $sum: "$bookingRevenue" }
         }
       }
     ]);
@@ -910,7 +912,8 @@ router.get("/:clientId/roi", protect, async (req, res) => {
     const totalRecovered =
       (data.cartRevenueRecovered || 0) +
       (data.codConvertedRevenue  || 0) +
-      (data.rtoCostSaved         || 0);
+      (data.rtoCostSaved         || 0) +
+      (data.bookingRevenue       || 0); // Include new Phase 9 service revenue
 
     res.json({
       success: true,
@@ -923,7 +926,9 @@ router.get("/:clientId/roi", protect, async (req, res) => {
       rtoCostSaved: data.rtoCostSaved || 0,
       reviewsCollected: data.reviewsCollected || 0,
       reviewsPositive: data.reviewsPositive || 0,
-      reviewsNegative: data.reviewsNegative || 0
+      reviewsNegative: data.reviewsNegative || 0,
+      bookingsCompleted: data.bookingsCompleted || 0,
+      bookingRevenue: data.bookingRevenue || 0
     });
 
   } catch (err) {

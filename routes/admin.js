@@ -237,7 +237,7 @@ router.delete('/clients/:id', protect, isSuperAdmin, async (req, res) => {
 // Any authenticated user can update their OWN client's editable fields
 router.patch('/my-settings', protect, async (req, res) => {
   try {
-    const { nicheData, flowData, automationFlows, messageTemplates, flowNodes, flowEdges, clientId } = req.body;
+    const { nicheData, flowData, automationFlows, messageTemplates, flowNodes, flowEdges, simpleSettings, clientId } = req.body;
     
     // If Super Admin and clientId provided, use that. Otherwise use user's own.
     let targetClientId = req.user.clientId;
@@ -256,6 +256,7 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (messageTemplates !== undefined) updateFields.messageTemplates = messageTemplates;
     if (flowNodes !== undefined) updateFields.flowNodes = flowNodes;
     if (flowEdges !== undefined) updateFields.flowEdges = flowEdges;
+    if (simpleSettings !== undefined) updateFields.simpleSettings = simpleSettings;
 
     const updated = await Client.findOneAndUpdate(
       { clientId: targetClientId },
@@ -565,6 +566,85 @@ router.get('/seed-now', protect, async (req, res) => {
         res.send(`<h1>Seeding Complete</h1><p>${updated} clients were updated with default niche data.</p><a href="/admin/settings">Back to Dashboard</a>`);
     } catch (err) {
         res.status(500).send(`<h1>Seeding Failed</h1><p>${err.message}</p>`);
+    }
+});
+
+// --- PHASE 9: META TEMPLATE SYNC ---
+router.get('/templates/sync/:clientId', protect, async (req, res) => {
+    try {
+        const client = await Client.findOne({ clientId: req.params.clientId });
+        if (!client) return res.status(404).json({ error: 'Client not found' });
+        
+        if (!client.wabaId || !client.whatsappToken) {
+            return res.status(400).json({ error: 'WABA ID or WhatsApp Token missing for this client.' });
+        }
+
+        const url = `https://graph.facebook.com/v18.0/${client.wabaId}/message_templates?limit=100`;
+        const response = await axios.get(url, { headers: { Authorization: `Bearer ${client.whatsappToken}` } });
+        
+        const approvedTemplates = response.data.data.filter(t => t.status === 'APPROVED');
+        client.syncedMetaTemplates = approvedTemplates;
+        await client.save();
+        
+        res.json({ success: true, count: approvedTemplates.length, templates: approvedTemplates });
+    } catch (err) {
+        log.error('Template Sync Failed', { error: err.message });
+        res.status(500).json({ error: 'Failed to sync templates from Meta: ' + (err.response?.data?.error?.message || err.message) });
+    }
+});
+
+// --- PHASE 9: AI FLOW AUTO-GENERATION ---
+router.post('/flow/autogen/:clientId', protect, async (req, res) => {
+    try {
+        const { prompt } = req.body;
+        const client = await Client.findOne({ clientId: req.params.clientId });
+        if (!client) return res.status(404).json({ error: 'Client not found' });
+
+        const apiKey = client.geminiApiKey || process.env.GEMINI_API_KEY;
+        if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not configured' });
+
+        const genAI = new GoogleGenerativeAI(apiKey);
+        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
+
+        const systemPrompt = `You are an expert conversational designer. Generate a WhatsApp Flow JSON diagram for this business: "${prompt}".
+        
+Return ONLY valid JSON with:
+{
+  "nodes": [
+    { "id": "node_0", "type": "trigger", "position": {"x": 250, "y": 50}, "data": {"keyword": "hi"} },
+    { "id": "node_1", "type": "interactive", "position": {"x": 250, "y": 200}, "data": {"text": "Welcome!", "buttonsList": [{"id": "btn_0", "title": "Buy"}]} }
+  ],
+  "edges": [
+    { "id": "e0", "source": "node_0", "target": "node_1" }
+  ]
+}
+No markdown fences, no explanations. Make a complete funnel.`;
+
+        let result;
+        try {
+            result = await model.generateContent(systemPrompt);
+        } catch (apiErr) {
+            const proModel = genAI.getGenerativeModel({ model: 'gemini-1.0-pro' });
+            result = await proModel.generateContent(systemPrompt);
+        }
+
+        const rawText = result.response.text().trim();
+        let cleaned = rawText.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
+        const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) return res.status(500).json({ error: 'AI did not return valid JSON' });
+
+        const flow = JSON.parse(jsonMatch[0]);
+        if (!flow.nodes || !flow.edges) return res.status(500).json({ error: 'Invalid structure' });
+
+        // Save directly to the client profile
+        client.flowNodes = flow.nodes;
+        client.flowEdges = flow.edges;
+        await client.save();
+
+        res.json({ success: true, nodes: flow.nodes, edges: flow.edges });
+    } catch (err) {
+        log.error('AI Flow Gen Failed', { error: err.message });
+        res.status(500).json({ error: 'Generation Failed: ' + err.message });
     }
 });
 

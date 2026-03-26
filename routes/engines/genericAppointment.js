@@ -5,10 +5,14 @@ const Appointment = require('../../models/Appointment');
 const Conversation = require('../../models/Conversation');
 const Message = require('../../models/Message');
 const Client = require('../../models/Client');
-const { createEvent } = require('../../utils/googleCalendar');
+const DailyStat = require('../../models/DailyStat');
+const ReviewRequest = require('../../models/ReviewRequest');
 const { getAvailableSlots } = require('../../utils/getAvailableSlots');
+const { createEvent } = require('../../utils/googleCalendar');
 const { decryptFlowData, encryptFlowResponse } = require('../../utils/flowEncryption');
+const { runDualBrainEngine } = require('../../utils/dualBrainEngine');
 
+// --- Helper Functions ---
 /**
  * Universal Appointment Engine
  * Handles dynamic booking flows for Salons, Clinics, and other slot-based niches.
@@ -392,82 +396,37 @@ async function sendWhatsAppFlow({ phoneNumberId, to, header, body, token, io, cl
     }
 }
 
-const handleWebhook = async (req, res) => {
+const const handleWebhook = async (req, res) => {
     const { from, phoneNumberId, messages } = req.body;
-    const { clientId, whatsappToken: token, nicheData, flowNodes, flowEdges, plan } = req.clientConfig;
+    if (!messages || !from) return res.status(200).end();
+
+    const { clientId, whatsappToken: token, nicheData, plan } = req.clientConfig;
     const io = req.app.get('socketio');
     const helperParams = { phoneNumberId, token, io, clientId };
 
+    const parsedMessage = {
+        ...messages,
+        from,
+        messageId: messages.id
+    };
+
+    // --- DUAL-BRAIN ENGINE (Graph -> Keyword -> AI) ---
+    // Includes: Upsert Convo, Upsert Lead, Save Inbound Message, Paused Check, Graph, Keyword, Gemini text fallback
+    const handledByDualBrain = await runDualBrainEngine(parsedMessage, req.clientConfig);
+
+    // If DualBrain consumed the message fully (e.g. matched a graph edge, or text was matched by AI), we stop.
+    // It returns false ONLY if no graph matched AND there's no text (e.g. a legacy interactive button click that wasn't in the tree).
+    if (handledByDualBrain) {
+        return res.status(200).end();
+    }
+
+    // --- LEGACY INTERACTIVE ACTIONS FLAG ---
     const userMsgType = messages.type;
     const userMsg = userMsgType === 'interactive' 
         ? (messages.interactive?.button_reply?.id || messages.interactive?.list_reply?.id) 
         : messages.text?.body;
 
-    console.log(`[AppointmentEngine] Incoming from ${from} (${userMsgType}): ${userMsg}`);
-
-    // --- 1. VISUAL FLOW TRAVERSAL ---
-    if (flowNodes && flowNodes.length > 0) {
-        // Find if user is in an existing flow
-        const conversation = await Conversation.findOne({ phone: from, clientId });
-        const lastStepId = conversation?.lastStepId;
-
-        if (userMsgType === 'interactive') {
-            const nextNodeId = await findNextNode(lastStepId, userMsg, flowEdges || []);
-            if (nextNodeId) {
-                await executeNode({ nodeId: nextNodeId, nodes: flowNodes, edges: flowEdges || [], to: from, phoneNumberId, io, clientConfig: req.clientConfig });
-                return res.status(200).end();
-            }
-        }
-
-        // Check for Trigger (Keywords)
-        const triggerNode = flowNodes.find(n => n.type === 'trigger' && n.data?.trigger?.keyword?.toLowerCase() === userMsg?.toLowerCase());
-        if (triggerNode) {
-            await executeNode({ nodeId: triggerNode.id, nodes: flowNodes, edges: flowEdges || [], to: from, phoneNumberId, io, clientConfig: req.clientConfig });
-            return res.status(200).end();
-        }
-    }
-    let conversation = await Conversation.findOne({ phone: from, clientId });
-    if (!conversation) {
-        conversation = await Conversation.create({ phone: from, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
-    }
-
-    const incomingContent =
-        userMsgType === 'text' ? messages.text?.body :
-        userMsgType === 'interactive' && messages.interactive.type === 'button_reply' ? messages.interactive.button_reply.title :
-        userMsgType === 'interactive' && messages.interactive.type === 'list_reply' ? messages.interactive.list_reply.title :
-        userMsgType === 'interactive' && messages.interactive.type === 'nfm_reply' ? 'Flow Submission' :
-        `[${userMsgType}]`;
-
-    const savedMsg = await Message.create({
-        clientId,
-        conversationId: conversation._id,
-        from,
-        to: 'bot',
-        content: incomingContent,
-        type: userMsgType,
-        direction: 'incoming',
-        messageId: messages.id,
-        status: 'received',
-        timestamp: new Date()
-    });
-
-    conversation.lastMessage = incomingContent;
-    conversation.lastMessageAt = new Date();
-    if (conversation.status === 'HUMAN_TAKEOVER') {
-        conversation.unreadCount = (conversation.unreadCount || 0) + 1;
-    }
-    await conversation.save();
-
-    if (io) {
-        io.to(`client_${clientId}`).emit('new_message', savedMsg);
-        io.to(`client_${clientId}`).emit('conversation_update', conversation);
-    }
-
-    if (conversation.status === 'HUMAN_TAKEOVER') {
-        console.log(`[GenericEngine] Human Takeover active for ${from}, skipping bot logic.`);
-        return res.status(200).end();
-    }
-    // --- End DB Logging ---
+    console.log(`[AppointmentEngine] Interactive Fallback check for ${from}: ${userMsg || messages.interactive?.type}`);
 
     // 1. Handle Meta Flow Response (V2 Feature)
     if (userMsgType === 'interactive' && messages.interactive?.type === 'nfm_reply' && plan === 'CX Agent (V2)') {
@@ -515,8 +474,6 @@ const handleWebhook = async (req, res) => {
                     { id: `cancel_apt_${appointment._id}`, title: '❌ Cancel' }
                 ]
             });
-
-            return res.status(200).end();
 
             return res.status(200).end();
         } catch (err) {
@@ -579,34 +536,6 @@ const handleWebhook = async (req, res) => {
         return res.status(200).end();
     }
 
-    // 2. Handle Greeting / Trigger
-    const greetings = ['hi', 'hello', 'hey', 'namaste', 'kem cho'];
-    if (greetings.includes(userMsg?.toLowerCase())) {
-        const welcomeMsg = nicheData.welcomeMessage || 'Welcome! How can we help you today?';
-        const welcomeImg = nicheData.bannerImage;
-
-        await sendDynamicMessage({
-            stepId: 'welcome_menu',
-            fallbackInteractive: { 
-                type: 'interactive', 
-                body: welcomeMsg, 
-                interactive: {
-                    imageHeader: welcomeImg,
-                    body: welcomeMsg,
-                    buttons: [
-                        { id: 'user_book', title: 'Book Now 📅' },
-                        { id: 'user_faq', title: 'Ask a Question ❓' }
-                    ]
-                }
-            },
-            phoneNumberId: helperParams.phoneNumberId,
-            to: from,
-            io: helperParams.io,
-            clientConfig: req.clientConfig
-        });
-        return res.status(200).end();
-    }
-
     // 3. Handle "Book Now" Button
     if (userMsg === 'user_book') {
         if (plan === 'CX Agent (V2)' && nicheData.flowId) {
@@ -635,54 +564,6 @@ const handleWebhook = async (req, res) => {
             io: helperParams.io,
             clientConfig: req.clientConfig
         });
-        return res.status(200).end();
-    }
-
-    // 5. AI Fallback for Free Text
-    if (userMsgType === 'text') {
-        // AI Fallback using Gemini
-        const geminiKey = req.clientConfig.geminiApiKey;
-        const aiPromptContext = nicheData.aiPrompt || 'You are a helpful assistant for a local business. Use the knowledge base to answer questions.';
-        const knowledgeBase = nicheData.knowledgeBase || JSON.stringify(nicheData.services || []);
-
-        if (!geminiKey) {
-            await sendWhatsAppText({
-                ...helperParams, to: from,
-                body: 'Our AI system is currently being configured. Please call us for immediate assistance.'
-            });
-            return res.status(200).end();
-        }
-
-        const prompt = `${aiPromptContext}
-        
-KNOWLEDGE BASE:
-${knowledgeBase}
-
-USER QUESTION: ${userMsg}
-
-Please provide a helpful, human-like response. If the answer isn't in the knowledge base, ask them to use the Book Now button or contact the admin. Keep it very short and conversational!`;
-
-        try {
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
-            const payload = { contents: [{ role: 'user', parts: [{ text: prompt }] }] };
-            const resp = await axios.post(url, payload, { headers: { 'Content-Type': 'application/json' } });
-            let aiResponse = resp.data?.candidates?.[0]?.content?.parts?.[0]?.text || 'I am not sure how to answer that right now.';
-            
-            await sendWhatsAppButtons({
-                ...helperParams, to: from,
-                body: aiResponse.trim(),
-                buttons: [
-                    { id: 'user_book', title: 'Book Now 📅' },
-                    { id: 'user_faq', title: 'Ask another ❓' }
-                ]
-            });
-        } catch (err) {
-            console.error('[GenericEngine] Gemini API Error:', err.message);
-            await sendWhatsAppText({
-                ...helperParams, to: from,
-                body: "I'm having trouble accessing information right now. Please try again later."
-            });
-        }
         return res.status(200).end();
     }
 

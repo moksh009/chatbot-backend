@@ -23,7 +23,13 @@ const DailyStatSchema = new mongoose.Schema({
   marketingMessagesSent: { type: Number, default: 0 },
   marketingSummary: { type: Object, default: {} },
   reviewsPositive: { type: Number, default: 0 },
-  reviewsNegative: { type: Number, default: 0 }
+  reviewsNegative: { type: Number, default: 0 },
+  // Phase 9 Service ROI
+  bookingsCompleted:     { type: Number, default: 0 },
+  bookingRevenue:        { type: Number, default: 0 },
+  appointmentsCancelled: { type: Number, default: 0 },
+  orders:                { type: Number, default: 0 },
+  revenue:               { type: Number, default: 0 }
 });
 
 // Ensure unique stats per client per day

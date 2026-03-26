@@ -19,8 +19,15 @@ const ConversationSchema = new mongoose.Schema({
   appointmentStatus: { type: String }, // e.g., 'Booked', 'Completed', 'Cancelled'
   
   tags: [{ type: String }], // e.g., 'Lead', 'Complaint', 'VIP'
-  lastStepId: { type: String }, // For ReactFlow graph traversal state
+  lastStepId: { type: String, default: null }, // For ReactFlow graph traversal state
   
+  // Phase 9 fields
+  botPaused:         { type: Boolean, default: false },
+  requiresAttention: { type: Boolean, default: false },
+  attentionReason:   { type: String,  default: '' },
+  currentContext:    { type: String,  default: null },
+  lastInteraction:   { type: Date,    default: Date.now },
+
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });

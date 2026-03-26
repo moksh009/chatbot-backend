@@ -3,6 +3,8 @@ const calculateLeadScore = (lead) => {
   
   // Base activity points
   score += (lead.ordersCount || 0) * 50;
+  score += (lead.appointmentsBooked || 0) * 50;
+  score += (lead.checkoutInitiatedCount || 0) * 30;
   score += (lead.addToCartCount || 0) * 20;
   score += (lead.linkClicks || 0) * 5;
   
@@ -16,15 +18,25 @@ const calculateLeadScore = (lead) => {
 };
 
 const getLeadTags = (lead, score) => {
-  const tags = [];
+  const tags = new Set(lead.tags || []);
   
-  if (lead.ordersCount > 0) tags.push('customer');
-  if (lead.ordersCount > 3) tags.push('loyal');
-  if (score > 100) tags.push('high-value');
-  if (score > 50 && score <= 100) tags.push('warm');
-  if (lead.addToCartCount > 0 && !lead.isOrderPlaced) tags.push('abandoned-cart');
-  
-  return tags;
+  if (lead.ordersCount > 0) tags.add('customer');
+  if (lead.ordersCount > 3) tags.add('loyal');
+  if (score > 100) tags.add('high-value');
+  if (score > 50 && score <= 100) tags.add('warm');
+  if (lead.totalSpent > 0) tags.add('repeat-buyer');
+  if (lead.checkoutInitiatedCount >= 2) tags.add('high-intent');
+
+  return Array.from(tags);
 };
 
-module.exports = { calculateLeadScore, getLeadTags };
+// Determines the phase 9 exact intent state
+const updateLeadIntent = (lead) => {
+  if (lead.cartStatus === 'purchased' || lead.ordersCount > 0) return 'converted';
+  if (lead.cartStatus === 'recovered') return 'recovered';
+  if (lead.cartStatus === 'abandoned') return 'cart_abandoned';
+  if (lead.checkoutInitiatedCount > 0 && !lead.isOrderPlaced) return 'high_intent';
+  return 'browsing';
+};
+
+module.exports = { calculateLeadScore, getLeadTags, updateLeadIntent };
