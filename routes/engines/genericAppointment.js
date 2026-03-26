@@ -54,40 +54,71 @@ async function executeNode({ nodeId, nodes, edges, to, phoneNumberId, io, client
         if (nextNodeId) await executeNode({ nodeId: nextNodeId, nodes, edges, to, phoneNumberId, io, clientConfig });
     } 
     else if (node.type === 'interactive') {
-        const { text, buttonsList = [], buttons, imageUrl, header, footer } = node.data;
-        const finalButtons = Array.isArray(buttonsList) && buttonsList.length > 0
-            ? buttonsList 
-            : (buttons || '').split(',').map(b => b.trim()).filter(Boolean).map(b => ({ id: b.toLowerCase().replace(/\s+/g, '_'), title: b }));
+        const { header, text, imageUrl, buttonsList = [], buttons, footer, actionType, btnUrlTitle, btnUrlLink } = node.data;
+        let interactive = {};
 
-        if (finalButtons.length === 0) {
-            await sendWhatsAppText({ phoneNumberId, to, body: text, io, clientConfig });
-            return;
+        if (actionType === 'url') {
+            interactive = {
+                type: 'cta_url',
+                action: {
+                    name: 'cta_url',
+                    parameters: {
+                        display_text: (btnUrlTitle || 'Visit Website').substring(0, 20),
+                        url: btnUrlLink || 'https://google.com'
+                    }
+                }
+            };
+        } else {
+            const finalButtons = Array.isArray(buttonsList) && buttonsList.length > 0
+                ? buttonsList 
+                : (buttons || '').split(',').map(b => b.trim()).filter(Boolean).map(b => ({ id: b.toLowerCase().replace(/\s+/g, '_'), title: b }));
+
+            if (finalButtons.length === 0) {
+                console.warn(`[FlowEngine] Interactive node ${node.id} has no buttons! Falling back to text.`);
+                await sendWhatsAppText({ phoneNumberId, to, body: text, io, clientConfig });
+                return;
+            }
+
+            interactive = {
+                type: 'button',
+                action: {
+                    buttons: finalButtons.slice(0, 3).map(btn => ({
+                        type: 'reply',
+                        reply: { 
+                            id: btn.id || btn.title.toLowerCase().replace(/\s+/g, '_'), 
+                            title: (btn.title || 'click').substring(0, 20) 
+                        }
+                    }))
+                }
+            };
         }
 
-        const interactive = {
-            type: 'button',
-            action: {
-                buttons: finalButtons.slice(0, 3).map((btn, i) => ({
-                    type: 'reply',
-                    reply: { 
-                        id: btn.id || `btn_${i}`, 
-                        title: (btn.title || 'Click').substring(0, 20) 
-                    }
-                }))
-            }
-        };
         if (imageUrl) interactive.header = { type: 'image', image: { link: imageUrl } };
         else if (header) interactive.header = { type: 'text', text: header.substring(0, 60) };
         if (footer) interactive.footer = { type: 'text', text: footer.substring(0, 60) };
 
-        await sendWhatsAppInteractive({
-            phoneNumberId, to, body: text || 'Select an option:', interactive, io, clientConfig
+        const success = await sendWhatsAppInteractive({
+            phoneNumberId, to, body: text || 'Choose an option:', interactive, io, clientConfig
         });
+        if (!success) {
+            console.error(`[FlowEngine] Interactive failed, falling back to basic text.`);
+            await sendWhatsAppText({ phoneNumberId, to, body: text, io, clientConfig });
+        }
     }
     else if (node.type === 'template') {
         const { templateName, headerImageUrl } = node.data;
+
+        let finalImageUrl = headerImageUrl;
+        const tplDef = (clientConfig.waTemplates || []).find(t => t.name === templateName);
+        if (tplDef) {
+             const needsImage = tplDef.components?.some(c => c.type === 'HEADER' && c.format === 'IMAGE');
+             if (needsImage && !headerImageUrl) {
+                 finalImageUrl = 'https://images.unsplash.com/photo-1560066984-138dadb4c035?auto=format&fit=crop&q=80&w=1000';
+             }
+        }
+
         await sendWhatsAppTemplate({
-            phoneNumberId, to, templateName, headerImageUrl, io, clientConfig
+            phoneNumberId, to, templateName, headerImageUrl: finalImageUrl, io, clientConfig
         });
         // Auto-traverse to next (or wait for webhook if branching)
     }

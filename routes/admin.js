@@ -383,7 +383,7 @@ router.post('/generate-flow', protect, async (req, res) => {
     if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not configured on server' });
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    let model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    let model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
 
     const systemPrompt = `You are a WhatsApp chatbot flow designer. Given a business description, generate a JSON object with "nodes" and "edges" arrays for a ReactFlow diagram.
     
@@ -415,7 +415,7 @@ router.post('/generate-flow', protect, async (req, res) => {
       result = await model.generateContent(systemPrompt);
     } catch (apiErr) {
       console.error('[generate-flow] Flash failed, falling back to Pro:', apiErr.message);
-      const proModel = genAI.getGenerativeModel({ model: 'gemini-pro' });
+      const proModel = genAI.getGenerativeModel({ model: 'gemini-1.0-pro' });
       result = await proModel.generateContent(systemPrompt);
     }
 
