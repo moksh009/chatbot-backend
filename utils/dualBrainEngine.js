@@ -147,8 +147,8 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io) 
   const matchingEdge = flowEdges.find(e => {
     if (e.source !== currentStepId) return false;
 
-    // No trigger = auto edge
-    if (!e.trigger && !e.sourceHandle) return true;
+    // No trigger = auto edge. (Default message nodes use 'a' for their bottom port)
+    if (!e.trigger && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom')) return true;
 
     // Match by sourceHandle (button id from React Flow)
     if (e.sourceHandle) {
@@ -260,7 +260,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   });
 
   // Auto-forward if there is exactly one outgoing edge with no trigger (auto-edge)
-  const autoEdge = flowEdges.find(e => e.source === nodeId && (!e.trigger || e.trigger?.type === 'auto') && !e.sourceHandle);
+  const autoEdge = flowEdges.find(e => e.source === nodeId && (!e.trigger || e.trigger?.type === 'auto') && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom'));
   if (autoEdge) {
     setTimeout(async () => {
       const freshConvo = await Conversation.findById(convo._id);
@@ -447,6 +447,10 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null) {
       });
       return true;
     }
+
+    case 'trigger':
+      // Trigger node has no outbound message content, just traverse to children
+      return true;
 
     default:
       console.warn(`[DualBrain] Unknown node type: ${type}`);

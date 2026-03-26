@@ -496,28 +496,30 @@ router.post('/generate-flow', protect, async (req, res) => {
     The flow must ALWAYS start with a "trigger" node (id: "node_0").
     Connect nodes logically. For interactive buttons/lists, use source handles that match the item ID (e.g. "opt_1", "opt_2").
     
-    Node Types and Schema:
-    1. "trigger": { keyword: "hi" } (Starts the flow)
-    2. "message": { text: "Hello!", imageUrl?: "https://...", footer?: "Optional" }
+    Node Types and Schema (all data must be inside the 'data' object of the node):
+    1. "trigger": { id: "...", type: "trigger", position: {x: 0, y: 0}, data: { label: "Start", keyword: "hi" } }
+    2. "message": { id: "...", type: "message", position: {x: 0, y: 0}, data: { label: "Msg", body: "Hello!", imageUrl: "", footer: "" } }
     3. "interactive": { 
-         interactiveType: "button" (max 3) or "list" (max 10),
-         header?: "Welcome", 
-         text: "Choose an option", 
-         buttonsList: [{id: "opt_1", title: "Option 1"}],
-         imageUrl?: "...", 
-         footer?: "..." 
+         id: "...", type: "interactive", position: {x: 0, y: 0}, 
+         data: { 
+           label: "Menu",
+           interactiveType: "button", 
+           header: "Welcome", 
+           body: "Choose an option", 
+           buttonsList: [{id: "opt_1", title: "Option 1"}],
+           imageUrl: "", 
+           footer: "" 
+         }
        }
-    4. "image": { imageUrl: "...", caption?: "..." }
-    5. "template": { templateName: "...", languageCode: "en", buttons: [{id, title}] }
+    4. "image": { id: "...", type: "image", position: {x: 0, y: 0}, data: { label: "Img", imageUrl: "...", body: "caption" } }
+    5. "template": { id: "...", type: "template", position: {x: 0, y: 0}, data: { label: "Tpl", metaTemplateName: "...", languageCode: "en" } }
     
     Visual Layout:
-    Position nodes logically with enough spacing (dx=350, dy=250).
+    Position nodes logically with enough spacing (dx=350, dy=250) roughly in a tree left-to-right.
     
     Business description: ${prompt}
     
-    Return ONLY valid JSON. No markdown. Start with { and end with }.
-    
-    Business description: ${prompt}`;
+    Return ONLY valid JSON. No markdown. Start with { and end with }.`;
 
     console.log('[generate-flow] Calling Gemini API...');
     let result;
