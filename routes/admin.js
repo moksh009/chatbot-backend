@@ -385,6 +385,122 @@ router.patch('/my-settings', protect, async (req, res) => {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
+// --- GET PRESET FLOW BY BUSINESS TYPE ---
+router.get('/flow/preset/:type', protect, async (req, res) => {
+  const { type } = req.params; // 'ecommerce' | 'salon' | 'general'
+
+  // Helper to make nodes
+  const node = (id, x, y, label, body, role = '', buttons = []) => ({
+    id,
+    type: 'messageNode',
+    position: { x, y },
+    data: {
+      label,
+      title: label,
+      body,
+      imageUrl: '',
+      footer: '',
+      role,
+      nodeAction: '',
+      buttons: buttons.map((b, i) => ({ id: `btn-${id}-${i}`, label: b, value: b }))
+    }
+  });
+
+  const trigger = (id, x, y, keywords = ['hi', 'hello', 'start']) => ({
+    id,
+    type: 'trigger',
+    position: { x, y },
+    data: { label: 'Trigger', keywords, role: 'trigger' }
+  });
+
+  const edge = (id, source, target, label = '', sourceHandle = 'a') => ({
+    id, source, target, label, sourceHandle, targetHandle: 'b', type: 'smoothstep', animated: true
+  });
+
+  if (type === 'ecommerce') {
+    const nodes = [
+      trigger('trigger-1', 400, 0),
+      node('welcome-1', 400, 160,
+        '🛍️ Welcome to Our Store',
+        "Hi! 👋 Welcome to *{store_name}*!\n\nWe're here to help you find the perfect products.\n\nWhat would you like to do today?",
+        'welcome',
+        ['🛒 Browse Products', '📦 Track My Order', '💬 Talk to Support']
+      ),
+      node('products-1', 150, 400,
+        '🛒 Our Products',
+        "Here are our top products:\n\n🔥 *Product 1* - ₹999\n🌟 *Product 2* - ₹1,499\n💎 *Product 3* - ₹2,499\n\nTap below to explore or add to cart!",
+        'products',
+        ['🛍️ Shop Now', '🏠 Back to Menu']
+      ),
+      node('order-track-1', 650, 400,
+        '📦 Track Your Order',
+        "Please share your *Order ID* and we'll give you a real-time update!\n\nE.g. #ORD12345",
+        'order_track',
+        ['🏠 Back to Menu']
+      ),
+      node('support-1', 400, 640,
+        '💬 Support',
+        "Our support team is ready to help! 🙌\n\nYou can reach us at:\n📧 support@{store_name}.com\n📞 +91 9876543210\n\nOr describe your issue below and we'll respond ASAP.",
+        'support',
+        ['🏠 Back to Menu']
+      ),
+      node('cart-nudge-1', 150, 640,
+        '🛒 Complete Your Purchase',
+        "You left something in your cart! 🛒\n\n*Don't miss out* — your items are waiting for you.\n\nClick below to complete your purchase and get *FREE delivery* today! 🎁",
+        'abandoned_cart',
+        ['✅ Buy Now', '❌ Maybe Later']
+      )
+    ];
+    const edges = [
+      edge('e1', 'trigger-1', 'welcome-1'),
+      edge('e2', 'welcome-1', 'products-1', '🛒 Browse', 'btn-welcome-1-0'),
+      edge('e3', 'welcome-1', 'order-track-1', '📦 Track', 'btn-welcome-1-1'),
+      edge('e4', 'welcome-1', 'support-1', '💬 Support', 'btn-welcome-1-2'),
+      edge('e5', 'products-1', 'cart-nudge-1', '🛍️ Shop Now', 'btn-products-1-0'),
+    ];
+    return res.json({ success: true, nodes, edges });
+  }
+
+  if (type === 'salon' || type === 'general') {
+    const nodes = [
+      trigger('trigger-1', 400, 0),
+      node('welcome-1', 400, 160,
+        '💅 Welcome to Our Salon',
+        "Hi! 👋 Welcome to *{salon_name}*!\n\nWe'd love to pamper you today. 💆‍♀️\n\nWhat brings you here?",
+        'welcome',
+        ['📅 Book Appointment', '💇 View Services', '📞 Contact Us']
+      ),
+      node('services-1', 150, 400,
+        '💇 Our Services',
+        "Here's what we offer:\n\n✂️ *Haircut & Style* — ₹500\n💅 *Manicure & Pedicure* — ₹800\n🧖 *Facial & Cleanup* — ₹1,200\n💆 *Head Massage* — ₹400\n\nCall or WhatsApp to book!",
+        'services',
+        ['📅 Book Now', '🏠 Back']
+      ),
+      node('booking-1', 650, 400,
+        '📅 Book an Appointment',
+        "Great! Let's get you booked. 📅\n\nPlease share:\n1️⃣ Your preferred *date & time*\n2️⃣ The *service* you want\n3️⃣ Your *name*\n\nWe'll confirm your slot shortly!",
+        'booking',
+        ['✅ Confirm', '🏠 Back to Menu']
+      ),
+      node('contact-1', 400, 640,
+        '📞 Contact Us',
+        "Reach us anytime! 📞\n\n📍 *{salon_address}*\n📞 +91 9876543210\n🕐 Mon–Sat: 10am – 8pm\n\nWe look forward to seeing you! 💖",
+        'support',
+        ['📅 Book Now', '🏠 Back']
+      )
+    ];
+    const edges = [
+      edge('e1', 'trigger-1', 'welcome-1'),
+      edge('e2', 'welcome-1', 'booking-1', '📅 Book', 'btn-welcome-1-0'),
+      edge('e3', 'welcome-1', 'services-1', '💇 Services', 'btn-welcome-1-1'),
+      edge('e4', 'welcome-1', 'contact-1', '📞 Contact', 'btn-welcome-1-2'),
+      edge('e5', 'services-1', 'booking-1', '📅 Book Now', 'btn-services-1-0'),
+    ];
+    return res.json({ success: true, nodes, edges });
+  }
+
+  res.status(400).json({ error: `Unknown type: ${type}. Use 'ecommerce' or 'salon'.` });
+});
 
 // --- GET SETTINGS BY CLIENTID (Super Admin) ---
 router.get('/settings/:clientId', protect, isSuperAdmin, async (req, res) => {
