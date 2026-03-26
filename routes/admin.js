@@ -521,6 +521,9 @@ router.post('/seed-niche-data', protect, async (req, res) => {
         res.json({ success: true, message: `${updated} clients seeded with default data.` });
     } catch (err) {
         res.status(500).json({ error: 'Seeding failed: ' + err.message });
+    }
+});
+
 // --- BROWSER-BASED SEEDING (GET) ---
 // Paste this in browser: [BACKEND_URL]/api/admin/seed-now
 router.get('/seed-now', protect, async (req, res) => {
