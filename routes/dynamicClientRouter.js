@@ -53,9 +53,12 @@ router.post('/webhook', async (req, res) => {
     } else if (businessType === 'ecommerce') {
       await genericEcommerceEngine.handleWebhook(req, res);
     } else if (businessType === 'choice_salon') {
-      await choiceSalonController.handleWebhook(req, res);
+      if (req.clientConfig.isGenericBot) {
+        await genericAppointmentEngine.handleWebhook(req, res);
+      } else {
+        await choiceSalonController.handleWebhook(req, res);
+      }
     } else if (businessType === 'choice_salon_new') {
-      // Falls back to the same choice_salon controller — see notes
       await choiceSalonController.handleWebhook(req, res);
     } else if (businessType === 'agency') {
       await topedgeController.handleWebhook(req, res);

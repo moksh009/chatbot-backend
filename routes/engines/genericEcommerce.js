@@ -10,7 +10,14 @@ const { sendOrderConfirmationEmail, sendCODToPrepaidEmail } = require('../../uti
 
 // --- 1. CORE API WRAPPERS ---
 async function findNextNode(currentNodeId, handleId, edges) {
+    console.log(`[FlowEngine] Finding path from ${currentNodeId} with handle: ${handleId}`);
+    // Prioritize sourceHandle match, fallback to any edge from that node if no handle is specified
     const edge = edges.find(e => e.source === currentNodeId && (handleId ? e.sourceHandle === handleId : true));
+    if (!edge) {
+         // Fallback: look for ANY edge from this node if handleId didn't match (sometimes handles IDs are messy)
+         const fallbackEdge = edges.find(e => e.source === currentNodeId);
+         if (fallbackEdge && !handleId) return fallbackEdge.target;
+    }
     return edge ? edge.target : null;
 }
 
@@ -35,32 +42,50 @@ async function executeNode({ nodeId, nodes, edges, to, phoneNumberId, io, client
         if (nextNodeId) await executeNode({ nodeId: nextNodeId, nodes, edges, to, phoneNumberId, io, clientConfig });
     } 
     else if (node.type === 'interactive') {
-        const { header, text, imageUrl, buttonsList = [], footer } = node.data;
+        const { header, text, imageUrl, buttonsList = [], buttons, footer } = node.data;
+        // Support legacy schema and new buttonsList
+        const finalButtons = Array.isArray(buttonsList) && buttonsList.length > 0
+            ? buttonsList 
+            : (buttons || '').split(',').map(b => b.trim()).filter(Boolean).map(b => ({ id: b.toLowerCase().replace(/\s+/g, '_'), title: b }));
+
+        if (finalButtons.length === 0) {
+            console.warn(`[FlowEngine] Interactive node ${node.id} has no buttons! Falling back to text.`);
+            await sendWhatsAppText({ phoneNumberId, to, body: text, io, clientConfig });
+            return;
+        }
+
         const interactive = {
             type: 'button',
             action: {
-                buttons: buttonsList.slice(0, 3).map(btn => ({
+                buttons: finalButtons.slice(0, 3).map(btn => ({
                     type: 'reply',
-                    reply: { id: btn.id || btn.title.toLowerCase().replace(/\s+/g, '_'), title: btn.title.substring(0, 20) }
+                    reply: { 
+                        id: btn.id || btn.title.toLowerCase().replace(/\s+/g, '_'), 
+                        title: (btn.title || 'click').substring(0, 20) 
+                    }
                 }))
             }
         };
         if (imageUrl) interactive.header = { type: 'image', image: { link: imageUrl } };
-        else if (header) interactive.header = { type: 'text', text: header };
-        if (footer) interactive.footer = { type: 'text', text: footer };
+        else if (header) interactive.header = { type: 'text', text: header.substring(0, 60) };
+        if (footer) interactive.footer = { type: 'text', text: footer.substring(0, 60) };
 
-        await sendWhatsAppInteractive({
-            phoneNumberId, to, body: text, interactive, io, clientConfig
+        const success = await sendWhatsAppInteractive({
+            phoneNumberId, to, body: text || 'Choose an option:', interactive, io, clientConfig
         });
+        if (!success) {
+            console.error(`[FlowEngine] Interactive failed, falling back to basic text.`);
+            await sendWhatsAppText({ phoneNumberId, to, body: text, io, clientConfig });
+        }
     }
     else if (node.type === 'template') {
-        const { templateName, variables = '' } = node.data;
+        const { templateName, variables = '', headerImageUrl } = node.data;
         const bodyParams = variables.split(',').map(v => v.trim()).filter(Boolean);
         await sendWhatsAppTemplate({
-            phoneNumberId, to, templateName, bodyParams, io, clientConfig
+            phoneNumberId, to, templateName, bodyParams, headerImageUrl, io, clientConfig
         });
-        // Auto-traverse
-        const nextNodeId = await findNextNode(node.id, null, edges);
+        // Auto-traverse to NEXT handle "a" (default)
+        const nextNodeId = await findNextNode(node.id, "a", edges);
         if (nextNodeId) await executeNode({ nodeId: nextNodeId, nodes, edges, to, phoneNumberId, io, clientConfig });
     }
 }
@@ -119,15 +144,56 @@ async function sendWhatsAppImage({ phoneNumberId, to, imageUrl, caption, io, cli
 
 async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, io, clientConfig }) {
     const token = clientConfig.whatsappToken;
-    const data = { messaging_product: 'whatsapp', to, type: 'interactive', interactive: { type: interactive.type, body: { text: body }, action: interactive.action } };
-    if (interactive.header) data.interactive.header = interactive.header;
-    if (interactive.footer) data.interactive.footer = interactive.footer;
+    
+    // Strict Sanitization to avoid 400 Bad Request
+    const sanitizedBody = (body || 'Choose an option:').substring(0, 1024);
+    const sanitizedAction = { ...interactive.action };
+    
+    if (sanitizedAction.buttons) {
+        // IDs must be unique and <= 256 chars, Titles <= 20 chars
+        const seenIds = new Set();
+        sanitizedAction.buttons = sanitizedAction.buttons.map((b, i) => {
+            let id = (b.reply?.id || `btn_${i}`).substring(0, 256);
+            if (seenIds.has(id)) id = `${id}_${i}`;
+            seenIds.add(id);
+            return {
+                ...b,
+                reply: {
+                    id,
+                    title: (b.reply?.title || 'Click').substring(0, 20)
+                }
+            };
+        });
+    }
+
+    const data = { 
+        messaging_product: 'whatsapp', to, type: 'interactive', 
+        interactive: { 
+            type: interactive.type, 
+            body: { text: sanitizedBody }, 
+            action: sanitizedAction 
+        } 
+    };
+    
+    if (interactive.header) {
+        if (interactive.header.type === 'text') {
+            data.interactive.header = { type: 'text', text: interactive.header.text.substring(0, 60) };
+        } else {
+            data.interactive.header = interactive.header;
+        }
+    }
+    if (interactive.footer) {
+        data.interactive.footer = { type: 'text', text: interactive.footer.text.substring(0, 60) };
+    }
 
     try {
         await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
-        await saveAndEmitMessage({ phoneNumberId, to, body: `[Interactive] ${body}`, type: 'interactive', io, clientConfig, metadata: { interactive } });
+        await saveAndEmitMessage({ phoneNumberId, to, body: `[Interactive] ${sanitizedBody}`, type: 'interactive', io, clientConfig, metadata: { interactive: data.interactive } });
         return true;
-    } catch (err) { console.error('[EcommerceEngine] Interactive Error:', err.message); return false; }
+    } catch (err) { 
+        console.error('[EcommerceEngine] Interactive Error Detail:', JSON.stringify(err.response?.data || err.message)); 
+        return false; 
+    }
 }
 
 async function logActivity(leadId, action, details) {
@@ -497,15 +563,41 @@ const handleWebhook = async (req, res) => {
                 }
             }
 
-            // 2. Check if user is continuing from a previous node (Interactive)
-            if (interactiveId && conversation.lastStepId) {
-                console.log(`[FlowEngine] Continuing Flow from: ${conversation.lastStepId} | Interaction: ${interactiveId}`);
-                const nextNodeId = await findNextNode(conversation.lastStepId, interactiveId, edges);
+            // 2. Check if user is continuing from a previous node (Interactive/Template Button)
+            if ((interactiveId || userMsg) && conversation.lastStepId) {
+                const currentMsg = interactiveId || userMsg;
+                console.log(`[FlowEngine] Continuing Flow from: ${conversation.lastStepId} | Interaction: ${currentMsg}`);
+                
+                // Try matching by handleId (id) first
+                let nextNodeId = await findNextNode(conversation.lastStepId, currentMsg, edges);
+                
+                // Fallback: If no match, check if currentMsg is the text of a button in the current node
+                if (!nextNodeId) {
+                    const currentNode = nodes.find(n => n.id === conversation.lastStepId);
+                    if (currentNode && currentNode.type === 'interactive') {
+                        const btns = currentNode.data?.buttonsList || [];
+                        const match = btns.find(b => b.title.toLowerCase() === currentMsg.toLowerCase());
+                        if (match) {
+                            console.log(`[FlowEngine] Matched interactive interaction text "${currentMsg}" to handle: ${match.id}`);
+                            nextNodeId = await findNextNode(conversation.lastStepId, match.id, edges);
+                        }
+                    } else if (currentNode && currentNode.type === 'template') {
+                         // For templates, we usually use btn_0, btn_1 handles
+                         const tpl = (req.clientConfig.waTemplates || []).find(t => t.name === currentNode.data?.templateName);
+                         const tplBtns = tpl?.components?.find(c => c.type === 'BUTTONS')?.buttons || [];
+                         const matchIdx = tplBtns.findIndex(b => b.text.toLowerCase() === currentMsg.toLowerCase());
+                         if (matchIdx > -1) {
+                             console.log(`[FlowEngine] Matched template interaction text "${currentMsg}" to handle: btn_${matchIdx}`);
+                             nextNodeId = await findNextNode(conversation.lastStepId, `btn_${matchIdx}`, edges);
+                         }
+                    }
+                }
+
                 if (nextNodeId) {
                     await executeNode({ nodeId: nextNodeId, nodes, edges, to: from, phoneNumberId, io, clientConfig: req.clientConfig });
                     return res.status(200).end();
                 } else {
-                    console.log(`[FlowEngine] No specific path for interaction "${interactiveId}" from node "${conversation.lastStepId}"`);
+                    console.log(`[FlowEngine] No specific path for interaction "${currentMsg}" from node "${conversation.lastStepId}"`);
                 }
             }
         } else {
@@ -652,14 +744,22 @@ const handleWebhook = async (req, res) => {
                 Instruction: Reply politely, professionally, and concisely in under 60 words. If they want to shop or see products, tell them to type 'menu'.`;
 
                 try {
-                    // FIX: Correct model name and endpoint version
-                    const resp = await axios.post(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${req.clientConfig.geminiApiKey}`, {
-                        contents: [{ parts: [{ text: prompt }] }]
-                    });
+                    // Use standard v1 endpoint and gemini-1.5-flash
+                    let resp;
+                    try {
+                        resp = await axios.post(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${req.clientConfig.geminiApiKey}`, {
+                            contents: [{ parts: [{ text: prompt }] }]
+                        });
+                    } catch (axiosErr) {
+                        console.error('[EcommerceEngine] Flash failed, falling back to Pro:', axiosErr.message);
+                        resp = await axios.post(`https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key=${req.clientConfig.geminiApiKey}`, {
+                            contents: [{ parts: [{ text: prompt }] }]
+                        });
+                    }
                     const aiText = resp.data?.candidates?.[0]?.content?.parts?.[0]?.text;
                     if (aiText) await sendWhatsAppText({ ...helperParams, to: from, body: aiText });
                 } catch (e) { 
-                    console.error('[EcommerceEngine] AI Error:', e.response?.data || e.message); 
+                    console.error('[EcommerceEngine] AI FATAL Error:', e.response?.data || e.message); 
                 }
                 return res.status(200).end();
             }

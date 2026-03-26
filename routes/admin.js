@@ -383,38 +383,42 @@ router.post('/generate-flow', protect, async (req, res) => {
     if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not configured on server' });
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    // Use gemini-1.0-pro ($gemini-pro) as fallback if flash is not found in the region/SDK
-    let model;
-    try {
-      model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-    } catch (e) {
-      console.warn('[generate-flow] gemini-1.5-flash failed to init, falling back to gemini-pro');
-      model = genAI.getGenerativeModel({ model: 'gemini-pro' });
-    }
+    let model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
     const systemPrompt = `You are a WhatsApp chatbot flow designer. Given a business description, generate a JSON object with "nodes" and "edges" arrays for a ReactFlow diagram.
-
-Each node must have:
-- id: unique string
-- type: one of "trigger", "message", "interactive"
-- position: {x, y}
-- data: object with relevant fields
-  - trigger: { keyword: "hi" }
-  - message: { title: string, text: string, imageUrl?: string, footer?: string }
-  - interactive: { header?: string, text: string, imageUrl?: string, buttonsList: [{id, title}], footer?: string }
-
-Each edge must have:
-- id: unique string
-- source: nodeId
-- target: nodeId
-- animated: true
-
-Return ONLY valid JSON with no markdown, no explanation. Start with { and end with }.
-
-Business description: ${prompt}`;
+    
+    The flow must ALWAYS start with a "trigger" node (id: "node_0").
+    Connect nodes logically. For interactive buttons, use handles like "btn_0", "btn_1", etc.
+    
+    Each node must have:
+    - id: unique string (e.g. "node_0", "node_1")
+    - type: one of "trigger", "message", "interactive", "template"
+    - position: {x, y}
+    - data: object with relevant fields:
+      - trigger: { keyword: "hi" }
+      - message: { title: string, text: string, imageUrl?: string, footer?: string }
+      - interactive: { header?: string, text: string, imageUrl?: string, buttonsList: [{id, title}], footer?: string }
+      - template: { templateName: string, languageCode: "en_US", buttons: [{id, title}] }
+    
+    For a Salon/Clinic business, include steps for:
+    1. Greeting
+    2. Service Menu (Interactive)
+    3. Booking (can use dynamic message or template)
+    
+    Return ONLY valid JSON with no markdown, no explanation. Start with { and end with }.
+    
+    Business description: ${prompt}`;
 
     console.log('[generate-flow] Calling Gemini API...');
-    const result = await model.generateContent(systemPrompt);
+    let result;
+    try {
+      result = await model.generateContent(systemPrompt);
+    } catch (apiErr) {
+      console.error('[generate-flow] Flash failed, falling back to Pro:', apiErr.message);
+      const proModel = genAI.getGenerativeModel({ model: 'gemini-pro' });
+      result = await proModel.generateContent(systemPrompt);
+    }
+
     const rawText = result.response.text().trim();
     console.log('[generate-flow] Gemini raw response (first 500 chars):', rawText.slice(0, 500));
 
@@ -461,13 +465,104 @@ router.get('/test-gemini', async (req, res) => {
   if (!apiKey) return res.status(500).json({ ok: false, error: 'GEMINI_API_KEY not set' });
   try {
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-    const result = await model.generateContent('Say "ok" in JSON like {"status":"ok"}');
+    let model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    let result;
+    try {
+        result = await model.generateContent('Say "ok" in JSON like {"status":"ok"}');
+    } catch (apiErr) {
+        console.warn('[test-gemini] Flash failed, testing Pro:', apiErr.message);
+        model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+        result = await model.generateContent('Say "ok" in JSON like {"status":"ok"}');
+    }
     const text = result.response.text().trim();
     res.json({ ok: true, raw: text.slice(0, 200) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
+});
+
+// --- MANUAL SEEDING ROUTE (Admin Only) ---
+router.post('/seed-niche-data', protect, async (req, res) => {
+    try {
+        const clients = await Client.find({});
+        let updated = 0;
+        const DEFAULT_ECOMMERCE = {
+            welcomeMessage: "Hi! 👋 Welcome to our store. We're here to help you find the best products. How can we assist you today?",
+            bannerImage: "https://images.unsplash.com/photo-1558002038-1055907df827?auto=format&fit=crop&w=800&q=80",
+            flowButtonText: "Shop Now 🛍️",
+            supportReply: "Our AI assistant is ready! You can check product availability, track orders, or talk to our team.",
+            orderConfirmMsg: "Hi {name}, your order for {items} worth ₹{total} is confirmed! Payment: {payment}. We'll ship soon! 📦",
+            abandonedMsg1: "Hi {name}! 👋 You left some items in your cart. Would you like to complete your order?",
+            abandonedMsg2: "Last chance, {name}! 🎁 Your cart is still waiting. Complete your purchase now!",
+            websiteUrl: "https://google.com",
+            googleReviewUrl: "https://g.page/review"
+        };
+        const DEFAULT_SALON = {
+            welcomeMessage: "Hey! 💇‍♀️ Welcome to our Salon. Treat yourself to our premium services. How can we pamper you today?",
+            bannerImage: "https://images.unsplash.com/photo-1560066984-138dadb4c035?auto=format&fit=crop&w=800&q=80",
+            flowButtonText: "Book Appointment 📅",
+            supportReply: "We provide professional hair and beauty services. Our team is expert in advanced treatments and cuts.",
+            orderConfirmMsg: "Hi {name}, your booking for {items} on {date} at {time} is confirmed! See you soon! ✨",
+            abandonedMsg1: "Hi {name}! 👋 We saw you looking at our services. Would you like to book a slot?",
+            abandonedMsg2: "Still thinking about that makeover, {name}? 💅 Book now!",
+            websiteUrl: "https://google.com",
+            googleReviewUrl: "https://g.page/review",
+            calendars: { "Main Stylist": "" },
+            services: [{ name: "Haircut", price: "500", duration: "30" }]
+        };
+
+        for (const client of clients) {
+            if (!client.nicheData || Object.keys(client.nicheData).length === 0) {
+                client.nicheData = (client.businessType === 'ecommerce') ? DEFAULT_ECOMMERCE : DEFAULT_SALON;
+                await client.save();
+                updated++;
+            }
+        }
+        res.json({ success: true, message: `${updated} clients seeded with default data.` });
+    } catch (err) {
+        res.status(500).json({ error: 'Seeding failed: ' + err.message });
+// --- BROWSER-BASED SEEDING (GET) ---
+// Paste this in browser: [BACKEND_URL]/api/admin/seed-now
+router.get('/seed-now', protect, async (req, res) => {
+    try {
+        const clients = await Client.find({});
+        let updated = 0;
+        const DEFAULT_ECOMMERCE = {
+            welcomeMessage: "Hi! 👋 Welcome to our store. We're here to help you find the best products. How can we assist you today?",
+            bannerImage: "https://images.unsplash.com/photo-1558002038-1055907df827?auto=format&fit=crop&w=800&q=80",
+            flowButtonText: "Shop Now 🛍️",
+            supportReply: "Our AI assistant is ready! You can check product availability, track orders, or talk to our team.",
+            orderConfirmMsg: "Hi {name}, your order for {items} worth ₹{total} is confirmed! Payment: {payment}. We'll ship soon! 📦",
+            abandonedMsg1: "Hi {name}! 👋 You left some items in your cart. Would you like to complete your order?",
+            abandonedMsg2: "Last chance, {name}! 🎁 Your cart is still waiting. Complete your purchase now!",
+            websiteUrl: "https://google.com",
+            googleReviewUrl: "https://g.page/review"
+        };
+        const DEFAULT_SALON = {
+            welcomeMessage: "Hey! 💇‍♀️ Welcome to our Salon. Treat yourself to our premium services. How can we pamper you today?",
+            bannerImage: "https://images.unsplash.com/photo-1560066984-138dadb4c035?auto=format&fit=crop&w=800&q=80",
+            flowButtonText: "Book Appointment 📅",
+            supportReply: "We provide professional hair and beauty services. Our team is expert in advanced treatments and cuts.",
+            orderConfirmMsg: "Hi {name}, your booking for {items} on {date} at {time} is confirmed! See you soon! ✨",
+            abandonedMsg1: "Hi {name}! 👋 We saw you looking at our services. Would you like to book a slot?",
+            abandonedMsg2: "Still thinking about that makeover, {name}? 💅 Book now!",
+            websiteUrl: "https://google.com",
+            googleReviewUrl: "https://g.page/review",
+            calendars: { "Main Stylist": "" },
+            services: [{ name: "Haircut", price: "500", duration: "30" }]
+        };
+
+        for (const client of clients) {
+            if (!client.nicheData || Object.keys(client.nicheData).length === 0) {
+                client.nicheData = (client.businessType === 'ecommerce' || client.clientId.includes('smarthomes')) ? DEFAULT_ECOMMERCE : DEFAULT_SALON;
+                await client.save();
+                updated++;
+            }
+        }
+        res.send(`<h1>Seeding Complete</h1><p>${updated} clients were updated with default niche data.</p><a href="/admin/settings">Back to Dashboard</a>`);
+    } catch (err) {
+        res.status(500).send(`<h1>Seeding Failed</h1><p>${err.message}</p>`);
+    }
 });
 
 module.exports = router;

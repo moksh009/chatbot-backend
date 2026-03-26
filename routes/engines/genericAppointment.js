@@ -15,7 +15,85 @@ const { decryptFlowData, encryptFlowResponse } = require('../../utils/flowEncryp
  * Driven by client.nicheData and client.plan.
  */
 
-// Helper to save message to DB and emit to Socket.IO
+// --- 1. VISUAL FLOW ENGINE ---
+async function findNextNode(currentNodeId, handleId, edges) {
+    console.log(`[AppointmentFlow] Finding path from ${currentNodeId} with handle: ${handleId}`);
+    // Prioritize sourceHandle match, fallback to match button text if handleId is missing
+    let edge = edges.find(e => e.source === currentNodeId && (handleId ? e.sourceHandle === handleId : true));
+    
+    if (!edge && handleId) {
+        // Fallback: match by handle label if handle ID is missing (v1 -> v2 migration support)
+        edge = edges.find(e => e.source === currentNodeId && e.label === handleId);
+    }
+    
+    if (!edge) {
+         const fallbackEdge = edges.find(e => e.source === currentNodeId);
+         if (fallbackEdge && !handleId) return fallbackEdge.target;
+    }
+    return edge ? edge.target : null;
+}
+
+async function executeNode({ nodeId, nodes, edges, to, phoneNumberId, io, clientConfig }) {
+    const node = nodes.find(n => n.id === nodeId);
+    if (!node) return;
+
+    console.log(`[AppointmentFlow] Executing Node: ${node.id} (${node.type})`);
+
+    // Update conversation's current step
+    await Conversation.findOneAndUpdate({ phone: to, clientId: clientConfig.clientId }, { lastStepId: node.id });
+
+    if (node.type === 'message') {
+        const { text, imageUrl } = node.data;
+        if (imageUrl) {
+            await sendWhatsAppImage({ phoneNumberId, to, imageUrl, caption: text, io, clientConfig });
+        } else {
+            await sendWhatsAppText({ phoneNumberId, to, body: text, io, clientConfig });
+        }
+        // Auto-traverse
+        const nextNodeId = await findNextNode(node.id, null, edges);
+        if (nextNodeId) await executeNode({ nodeId: nextNodeId, nodes, edges, to, phoneNumberId, io, clientConfig });
+    } 
+    else if (node.type === 'interactive') {
+        const { text, buttonsList = [], buttons, imageUrl, header, footer } = node.data;
+        const finalButtons = Array.isArray(buttonsList) && buttonsList.length > 0
+            ? buttonsList 
+            : (buttons || '').split(',').map(b => b.trim()).filter(Boolean).map(b => ({ id: b.toLowerCase().replace(/\s+/g, '_'), title: b }));
+
+        if (finalButtons.length === 0) {
+            await sendWhatsAppText({ phoneNumberId, to, body: text, io, clientConfig });
+            return;
+        }
+
+        const interactive = {
+            type: 'button',
+            action: {
+                buttons: finalButtons.slice(0, 3).map((btn, i) => ({
+                    type: 'reply',
+                    reply: { 
+                        id: btn.id || `btn_${i}`, 
+                        title: (btn.title || 'Click').substring(0, 20) 
+                    }
+                }))
+            }
+        };
+        if (imageUrl) interactive.header = { type: 'image', image: { link: imageUrl } };
+        else if (header) interactive.header = { type: 'text', text: header.substring(0, 60) };
+        if (footer) interactive.footer = { type: 'text', text: footer.substring(0, 60) };
+
+        await sendWhatsAppInteractive({
+            phoneNumberId, to, body: text || 'Select an option:', interactive, io, clientConfig
+        });
+    }
+    else if (node.type === 'template') {
+        const { templateName, headerImageUrl } = node.data;
+        await sendWhatsAppTemplate({
+            phoneNumberId, to, templateName, headerImageUrl, io, clientConfig
+        });
+        // Auto-traverse to next (or wait for webhook if branching)
+    }
+}
+
+// --- 2. CORE API WRAPPERS ---
 async function saveAndEmitMessage({ clientId, from, to, body, type, direction, status, conversationId, io }) {
     try {
         const savedMessage = await Message.create({
@@ -70,6 +148,54 @@ async function sendWhatsAppText({ phoneNumberId, to, body, token, io, clientId }
         });
     } catch (err) {
         console.error('[GenericEngine] Error sending text:', err.response?.data || err.message);
+    }
+}
+
+async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, io, clientConfig }) {
+    const token = clientConfig.whatsappToken;
+    const sanitizedBody = (body || 'Choose an option:').substring(0, 1024);
+    const sanitizedAction = { ...interactive.action };
+    
+    if (sanitizedAction.buttons) {
+        const seenIds = new Set();
+        sanitizedAction.buttons = sanitizedAction.buttons.map((b, i) => {
+            let id = (b.reply?.id || `btn_${i}`).substring(0, 256);
+            if (seenIds.has(id)) id = `${id}_${i}`;
+            seenIds.add(id);
+            return {
+                ...b,
+                reply: { id, title: (b.reply?.title || 'Click').substring(0, 20) }
+            };
+        });
+    }
+
+    const data = { 
+        messaging_product: 'whatsapp', to, type: 'interactive', 
+        interactive: { 
+            type: interactive.type, 
+            body: { text: sanitizedBody }, 
+            action: sanitizedAction 
+        } 
+    };
+    
+    if (interactive.header) {
+        if (interactive.header.type === 'text') {
+            data.interactive.header = { type: 'text', text: interactive.header.text.substring(0, 60) };
+        } else {
+            data.interactive.header = interactive.header;
+        }
+    }
+    if (interactive.footer) {
+        data.interactive.footer = { type: 'text', text: interactive.footer.text.substring(0, 60) };
+    }
+
+    try {
+        await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
+        await saveAndEmitMessage({ clientId: clientConfig.clientId, from: 'bot', to, body: `[Interactive] ${sanitizedBody}`, type: 'interactive', direction: 'outgoing', status: 'sent', conversationId: (await Conversation.findOne({ phone: to, clientId: clientConfig.clientId }))?._id, io });
+        return true;
+    } catch (err) { 
+        console.error('[GenericEngine] Interactive Error:', JSON.stringify(err.response?.data || err.message)); 
+        return false; 
     }
 }
 
@@ -236,24 +362,39 @@ async function sendWhatsAppFlow({ phoneNumberId, to, header, body, token, io, cl
 }
 
 const handleWebhook = async (req, res) => {
-    const entry = req.body.entry?.[0];
-    const value = entry?.changes?.[0]?.value;
-    const messages = value?.messages?.[0];
-    const phoneNumberId = value?.metadata?.phone_number_id;
-    const from = messages?.from;
-
-    if (!messages || !from) return res.status(200).end();
-
-    const { clientId, whatsappToken: token, nicheData, plan } = req.clientConfig;
+    const { from, phoneNumberId, messages } = req.body;
+    const { clientId, whatsappToken: token, nicheData, flowNodes, flowEdges, plan } = req.clientConfig;
     const io = req.app.get('socketio');
     const helperParams = { phoneNumberId, token, io, clientId };
 
     const userMsgType = messages.type;
-    const userMsg = userMsgType === 'interactive' ? 
-        (messages.interactive?.button_reply?.id || messages.interactive?.list_reply?.id) : 
-        messages.text?.body;
+    const userMsg = userMsgType === 'interactive' 
+        ? (messages.interactive?.button_reply?.id || messages.interactive?.list_reply?.id) 
+        : messages.text?.body;
 
-    // --- DB Logging & State Management ---
+    console.log(`[AppointmentEngine] Incoming from ${from} (${userMsgType}): ${userMsg}`);
+
+    // --- 1. VISUAL FLOW TRAVERSAL ---
+    if (flowNodes && flowNodes.length > 0) {
+        // Find if user is in an existing flow
+        const conversation = await Conversation.findOne({ phone: from, clientId });
+        const lastStepId = conversation?.lastStepId;
+
+        if (userMsgType === 'interactive') {
+            const nextNodeId = await findNextNode(lastStepId, userMsg, flowEdges || []);
+            if (nextNodeId) {
+                await executeNode({ nodeId: nextNodeId, nodes: flowNodes, edges: flowEdges || [], to: from, phoneNumberId, io, clientConfig: req.clientConfig });
+                return res.status(200).end();
+            }
+        }
+
+        // Check for Trigger (Keywords)
+        const triggerNode = flowNodes.find(n => n.type === 'trigger' && n.data?.trigger?.keyword?.toLowerCase() === userMsg?.toLowerCase());
+        if (triggerNode) {
+            await executeNode({ nodeId: triggerNode.id, nodes: flowNodes, edges: flowEdges || [], to: from, phoneNumberId, io, clientConfig: req.clientConfig });
+            return res.status(200).end();
+        }
+    }
     let conversation = await Conversation.findOne({ phone: from, clientId });
     if (!conversation) {
         conversation = await Conversation.create({ phone: from, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });

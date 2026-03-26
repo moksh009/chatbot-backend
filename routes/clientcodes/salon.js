@@ -633,10 +633,19 @@ Provide a SHORT, PRECISE response:`;
 
     let aiResponse = '';
     try {
-      // Using gemini-2.0-flash (gemini-1.5-flash is deprecated and returns 404)
-      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+      // Use gemini-1.5-flash with a fallback to gemini-pro to prevent 404/500 errors
+      let model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
       const fullPrompt = `System: You are moksh, a friendly salon appointment assistant for Salon Appointment in ahmedabad. Be conversational, warm, and helpful. Use natural language, appropriate emojis, and always sound like a real person. Reference the knowledge base for accurate information.\n\nUser: ${prompt}`;
-      const result = await model.generateContent(fullPrompt);
+      
+      let result;
+      try {
+        result = await model.generateContent(fullPrompt);
+      } catch (apiErr) {
+        console.error('[SALON] Flash AI failed, falling back to Pro:', apiErr.message);
+        model = genAI.getGenerativeModel({ model: "gemini-pro" });
+        result = await model.generateContent(fullPrompt);
+      }
+      
       aiResponse = result.response.text().trim();
 
       // Ensure the response ends with a friendly closing if it doesn't already
