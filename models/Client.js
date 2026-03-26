@@ -62,6 +62,7 @@ const ClientSchema = new mongoose.Schema({
   // Phase 9 AI & Settings
   systemPrompt: { type: String, default: '' },
   syncedMetaTemplates: { type: mongoose.Schema.Types.Mixed, default: [] },
+  syncedMetaFlows: { type: mongoose.Schema.Types.Mixed, default: [] },
 
   // Phase 9 Simple Settings Fallback (Priority 2 keywords)
   simpleSettings: {

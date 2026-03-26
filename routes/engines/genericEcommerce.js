@@ -687,7 +687,7 @@ const handleWebhook = async (req, res) => {
                         });
                     } catch (axiosErr) {
                         console.error('[EcommerceEngine] Flash failed, falling back to Pro:', axiosErr.message);
-                        resp = await axios.post(`https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key=${req.clientConfig.geminiApiKey}`, {
+                        resp = await axios.post(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-pro:generateContent?key=${req.clientConfig.geminiApiKey}`, {
                             contents: [{ parts: [{ text: prompt }] }]
                         });
                     }

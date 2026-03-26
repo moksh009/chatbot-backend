@@ -217,8 +217,9 @@ async function sendNodeContent(node, client, phone, lead = null) {
       return true;
     }
 
-    case 'flow': {
-      await sendWhatsAppFlow(client, phone, data.header, data.body, data.flowId, data.flowCta, data.screen);
+    case 'flow':
+    case 'FlowNode': {
+      await sendWhatsAppFlow(client, phone, data.header, data.body || data.text, data.flowId, data.flowCta, data.screen);
       return true;
     }
     case 'message':
@@ -261,12 +262,38 @@ async function sendNodeContent(node, client, phone, lead = null) {
         return true;
       }
 
+      // Standard reply buttons or List
+      if (data.interactiveType === 'list') {
+        const interactive = {
+          type: 'list',
+          action: {
+            button: 'Select Option',
+            sections: [
+              {
+                title: 'Choose one:',
+                rows: buttonsList.slice(0, 10).map(btn => ({
+                  id: (btn.id || btn.title || 'opt').toLowerCase().replace(/\s+/g, '_'),
+                  title: (btn.title || 'Option').substring(0, 24),
+                  description: ''
+                }))
+              }
+            ]
+          }
+        };
+        if (data.imageUrl) interactive.header = { type: 'image', image: { link: data.imageUrl } };
+        else if (data.header) interactive.header = { type: 'text', text: data.header.substring(0, 60) };
+        if (data.footer) interactive.footer = { text: data.footer.substring(0, 60) };
+
+        await sendWhatsAppInteractive(client, phone, interactive, data.text || data.body || 'Select an option:');
+        return true;
+      }
+
       const interactive = {
         type: 'button',
         action: {
           buttons: buttonsList.slice(0, 3).map(btn => ({
             type: 'reply',
-            reply: { id: (btn.id || btn.title).toLowerCase().replace(/\s+/g, '_'), title: (btn.title || 'Option').substring(0, 20) }
+            reply: { id: (btn.id || btn.title || 'btn').toLowerCase().replace(/\s+/g, '_'), title: (btn.title || 'Option').substring(0, 20) }
           }))
         }
       };
@@ -425,7 +452,7 @@ async function runAIFallback(parsedMessage, client, phone, lead) {
 
   try {
     const genAI = new GoogleGenerativeAI(client.geminiKey || process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
     const ctaHint = client.nicheData?.ctaButtonText || 'Get Started';
 
     const result = await model.generateContent([
@@ -511,8 +538,8 @@ async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, sc
       messaging_product: 'whatsapp', to: phone, type: 'interactive',
       interactive: {
         type: 'flow',
-        header: { type: 'text', text: header || 'Book Now' },
-        body: { text: body || 'Tap below to continue' },
+        header: { type: 'text', text: header || 'Action Required' },
+        body: { text: body || 'Tap below to open the form and continue.' },
         action: {
           name: 'flow',
           parameters: {
@@ -545,7 +572,7 @@ async function transcribeVoiceNote(parsedMessage, client) {
     const base64Audio = Buffer.from(audioRes.data).toString('base64');
 
     const genAI = new GoogleGenerativeAI(client.geminiKey || process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
     const result = await model.generateContent([
       { inlineData: { data: base64Audio, mimeType: 'audio/ogg' } },

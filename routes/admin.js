@@ -11,6 +11,7 @@ const { runFullMigration } = require('../scripts/phase9MigrationLogic');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const path = require('path');
 const fs = require('fs');
+const axios = require('axios');
 
 const CLIENT_CODE_DIR = path.join(__dirname, 'clientcodes');
 
@@ -131,6 +132,16 @@ router.get('/run-migration', async (req, res) => {
   }
 });
 
+// --- SECURE MIGRATION (PROTECTED) ---
+router.get('/run-secure-migration', protect, isSuperAdmin, async (req, res) => {
+    try {
+        const result = await runFullMigration();
+        res.json({ success: true, ...result });
+    } catch (err) {
+        res.status(500).json({ error: 'Migration failed: ' + err.message });
+    }
+});
+
 // --- GET CLIENT BY ID ---
 router.get('/clients/:id', protect, isSuperAdmin, async (req, res) => {
   try {
@@ -149,7 +160,7 @@ router.get('/clients/:id', protect, isSuperAdmin, async (req, res) => {
 router.post('/clients', protect, isSuperAdmin, async (req, res) => {
   try {
     const {
-      clientId, name, businessType, niche, plan, isGenericBot,
+      clientId, name, businessType, niche, plan, isGenericBot, systemPrompt,
       phoneNumberId, whatsappToken, verifyToken: webhookVerifyToken,
       googleCalendarId, openaiApiKey, nicheData, flowData,
       wabaId, emailUser, emailAppPassword, automationFlows, messageTemplates,
@@ -320,7 +331,7 @@ router.get('/settings/:clientId', protect, isSuperAdmin, async (req, res) => {
   }
 });
 // --- RUN AUTOMATION MIGRATION (Super Admin) ---
-router.get('/run-migration', protect, isSuperAdmin, async (req, res) => {
+router.get('/run-automation-migration', protect, isSuperAdmin, async (req, res) => {
   try {
       const defaultAutomationFlows = [
         { id: 'abandoned_cart', isActive: true, config: { delayHours: 2 } },
@@ -401,29 +412,33 @@ router.post('/generate-flow', protect, async (req, res) => {
     if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not configured on server' });
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    let model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
+    let model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
     const systemPrompt = `You are a WhatsApp chatbot flow designer. Given a business description, generate a JSON object with "nodes" and "edges" arrays for a ReactFlow diagram.
     
     The flow must ALWAYS start with a "trigger" node (id: "node_0").
-    Connect nodes logically. For interactive buttons, use handles like "btn_0", "btn_1", etc.
+    Connect nodes logically. For interactive buttons/lists, use source handles that match the item ID (e.g. "opt_1", "opt_2").
     
-    Each node must have:
-    - id: unique string (e.g. "node_0", "node_1")
-    - type: one of "trigger", "message", "interactive", "template"
-    - position: {x, y}
-    - data: object with relevant fields:
-      - trigger: { keyword: "hi" }
-      - message: { title: string, text: string, imageUrl?: string, footer?: string }
-      - interactive: { header?: string, text: string, imageUrl?: string, buttonsList: [{id, title}], footer?: string }
-      - template: { templateName: string, languageCode: "en_US", buttons: [{id, title}] }
+    Node Types and Schema:
+    1. "trigger": { keyword: "hi" } (Starts the flow)
+    2. "message": { text: "Hello!", imageUrl?: "https://...", footer?: "Optional" }
+    3. "interactive": { 
+         interactiveType: "button" (max 3) or "list" (max 10),
+         header?: "Welcome", 
+         text: "Choose an option", 
+         buttonsList: [{id: "opt_1", title: "Option 1"}],
+         imageUrl?: "...", 
+         footer?: "..." 
+       }
+    4. "image": { imageUrl: "...", caption?: "..." }
+    5. "template": { templateName: "...", languageCode: "en", buttons: [{id, title}] }
     
-    For a Salon/Clinic business, include steps for:
-    1. Greeting
-    2. Service Menu (Interactive)
-    3. Booking (can use dynamic message or template)
+    Visual Layout:
+    Position nodes logically with enough spacing (dx=350, dy=250).
     
-    Return ONLY valid JSON with no markdown, no explanation. Start with { and end with }.
+    Business description: ${prompt}
+    
+    Return ONLY valid JSON. No markdown. Start with { and end with }.
     
     Business description: ${prompt}`;
 
@@ -433,7 +448,7 @@ router.post('/generate-flow', protect, async (req, res) => {
       result = await model.generateContent(systemPrompt);
     } catch (apiErr) {
       console.error('[generate-flow] Flash failed, falling back to Pro:', apiErr.message);
-      const proModel = genAI.getGenerativeModel({ model: 'gemini-1.0-pro' });
+      const proModel = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
       result = await proModel.generateContent(systemPrompt);
     }
 
@@ -448,6 +463,11 @@ router.post('/generate-flow', protect, async (req, res) => {
       .trim();
 
     // Extract the outermost JSON object
+    const startIdx = cleaned.indexOf('{');
+    const endIdx = cleaned.lastIndexOf('}');
+    if (startIdx !== -1 && endIdx !== -1) {
+      cleaned = cleaned.substring(startIdx, endIdx + 1);
+    }
     const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       console.error('[generate-flow] No JSON found in response:', rawText.slice(0, 300));
@@ -625,6 +645,33 @@ router.get('/templates/sync/:clientId', async (req, res) => {
     }
 });
 
+// --- SYNC META FLOWS ---
+router.get('/flows/sync/:clientId', protect, async (req, res) => {
+    try {
+        let { clientId } = req.params;
+        if (clientId.startsWith(':')) clientId = clientId.substring(1);
+        const client = await Client.findOne({ clientId });
+        if (!client) return res.status(404).json({ error: 'Client not found' });
+
+        if (!client.wabaId || !client.whatsappToken) {
+            return res.status(400).json({ error: 'WABA ID or WhatsApp Token missing.' });
+        }
+
+        log.info(`Syncing flows for ${clientId}...`);
+        const url = `https://graph.facebook.com/v18.0/${client.wabaId}/flows?limit=100`;
+        const response = await axios.get(url, { headers: { Authorization: `Bearer ${client.whatsappToken}` } });
+        
+        const flows = response.data.data || [];
+        client.syncedMetaFlows = flows;
+        await client.save();
+        
+        res.json({ success: true, count: flows.length, flows });
+    } catch (err) {
+        log.error('Flow Sync Failed', { error: err.message });
+        res.status(500).json({ error: 'Sync Failed: ' + (err.response?.data?.error?.message || err.message) });
+    }
+});
+
 // --- SYSTEM MIGRATION (BROWSER-READY) ---
 router.get('/run-full-migration', async (req, res) => {
     const { key } = req.query;
@@ -675,11 +722,12 @@ router.get('/run-full-migration', async (req, res) => {
 // --- PHASE 9/10: AI FLOW AUTO-GENERATION ---
 router.post('/flow/autogen/:clientId', protect, async (req, res) => {
     try {
-        const { prompt } = req.body;
+        const { prompt, flowNodes, flowEdges } = req.body;
         const client = await Client.findOne({ clientId: req.params.clientId });
         if (!client) return res.status(404).json({ error: 'Client not found' });
 
-        const aiFlow = await generateFlowForClient(client, prompt);
+        const existingFlow = (flowNodes && flowNodes.length > 0) ? { nodes: flowNodes, edges: flowEdges } : null;
+        const aiFlow = await generateFlowForClient(client, prompt, existingFlow);
         if (!aiFlow) return res.status(500).json({ error: 'Failed to generate flow with AI. Please try again or provide more details.' });
 
         client.flowNodes = aiFlow.nodes;

@@ -1117,7 +1117,7 @@ Output:`;
           result = await model.generateContent(smartPrompt);
         } catch (apiErr) {
           console.error('[TURF] Flash AI failed, falling back to Pro:', apiErr.message);
-          model = genAI.getGenerativeModel({ model: "gemini-pro" });
+          model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
           result = await model.generateContent(smartPrompt);
         }
         

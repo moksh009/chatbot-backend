@@ -5,9 +5,9 @@ const log = require('./logger')('FlowAutogen');
  * Generates a complete React Flow graph (nodes & edges) using Gemini AI
  * based on the client's niche and system prompt.
  */
-async function generateFlowForClient(client, customPrompt = '') {
+async function generateFlowForClient(client, customPrompt = '', existingFlow = null) {
     try {
-        const geminiKey = process.env.GEMINI_API_KEY;
+        const geminiKey = client.geminiKey || process.env.GEMINI_API_KEY;
         
         if (!geminiKey) {
             log.error('GEMINI_API_KEY not found in environment');
@@ -15,12 +15,15 @@ async function generateFlowForClient(client, customPrompt = '') {
         }
 
         const genAI = new GoogleGenerativeAI(geminiKey);
-        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
+        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
         const niche = client.niche || client.businessType || 'business';
         const businessInfo = customPrompt || client.systemPrompt || `A professional ${niche} service.`;
         
         let contextData = businessInfo;
+        if (existingFlow && existingFlow.nodes?.length > 0) {
+            contextData += `\n\nCURRENT FLOW STRUCTURE (JSON):\n${JSON.stringify(existingFlow)}\n\nINSTRUCTION: Refine or update the existing flow above according to the user's request. Preserve existing node IDs if possible to maintain connections.`;
+        }
         if (client.nicheData) {
             const nd = client.nicheData;
             if (nd.products?.length) contextData += `\nProducts: ${nd.products.map(p => p.title + ' (₹' + p.price + ')').join(', ')}`;
@@ -50,14 +53,15 @@ LAYOUT:
 - Position nodes with increasing Y (180px gap per level).
 - Spacing for branches in X (350px gap).
 - Return ONLY a valid JSON object: { "nodes": [...], "edges": [...] }
-Do NOT return markdown blocks.`;
+- CRITICAL: Do NOT include trailing commas in arrays or objects.
+Do NOT return markdown blocks. Return ONLY raw JSON.`;
 
         let result;
         try {
             result = await model.generateContent(systemPrompt);
         } catch (err) {
             log.warn('Gemini 1.5 Flash failed, falling back to Pro', err.message);
-            const proModel = genAI.getGenerativeModel({ model: 'gemini-1.0-pro' });
+            const proModel = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
             result = await proModel.generateContent(systemPrompt);
         }
 
