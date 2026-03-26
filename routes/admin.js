@@ -5,6 +5,7 @@ const User = require('../models/User');
 const { protect, authorize } = require('../middleware/auth');
 const log = require('../utils/logger')('AdminAPI');
 const { getDefaultFlowForNiche } = require('../utils/defaultFlowNodes');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 // Middleware to check if user is a Super Admin
 const isSuperAdmin = async (req, res, next) => {
@@ -333,7 +334,14 @@ router.get('/run-migration', protect, isSuperAdmin, async (req, res) => {
           }
 
           if (isModified) {
-              await client.save();
+              const setFields = {};
+              if (client.automationFlows) setFields.automationFlows = client.automationFlows;
+              if (client.messageTemplates) setFields.messageTemplates = client.messageTemplates;
+              await Client.updateOne(
+                { _id: client._id },
+                { $set: setFields },
+                { runValidators: false }
+              );
               updated++;
           }
       }
@@ -342,6 +350,56 @@ router.get('/run-migration', protect, isSuperAdmin, async (req, res) => {
   } catch (err) {
       log.error('Migration failed via API', { error: err.message });
       res.status(500).json({ message: 'Migration Failed', error: err.message });
+  }
+});
+
+// --- AI FLOW GENERATION (Gemini) ---
+router.post('/generate-flow', protect, async (req, res) => {
+  try {
+    const { prompt } = req.body;
+    if (!prompt) return res.status(400).json({ error: 'prompt is required' });
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not configured on server' });
+
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+
+    const systemPrompt = `You are a WhatsApp chatbot flow designer. Given a business description, generate a JSON object with "nodes" and "edges" arrays for a ReactFlow diagram.
+
+Each node must have:
+- id: unique string
+- type: one of "trigger", "message", "interactive"
+- position: {x, y}
+- data: object with relevant fields
+  - trigger: { keyword: "hi" }
+  - message: { title: string, text: string, imageUrl?: string, footer?: string }
+  - interactive: { header?: string, text: string, imageUrl?: string, buttonsList: [{id, title}], footer?: string }
+
+Each edge must have:
+- id: unique string
+- source: nodeId
+- target: nodeId
+- animated: true
+
+Return ONLY valid JSON with no markdown, no explanation. Start with { and end with }.
+
+Business description: ${prompt}`;
+
+    const result = await model.generateContent(systemPrompt);
+    const text = result.response.text().trim();
+    
+    // Extract JSON from response
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return res.status(500).json({ error: 'AI did not return valid JSON', raw: text.slice(0, 300) });
+    
+    const flow = JSON.parse(jsonMatch[0]);
+    if (!flow.nodes || !flow.edges) return res.status(500).json({ error: 'AI response missing nodes or edges' });
+    
+    res.json({ success: true, nodes: flow.nodes, edges: flow.edges });
+  } catch (err) {
+    log.error('AI flow generation failed', { error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
