@@ -589,8 +589,11 @@ router.get('/seed-now', protect, async (req, res) => {
 // --- PHASE 9: META TEMPLATE SYNC ---
 router.get('/templates/sync/:clientId', async (req, res) => {
     try {
-        const { clientId } = req.params;
+        let { clientId } = req.params;
         const { key } = req.query;
+
+        // Robustness: strip leading colon if user copy-pasted literally
+        if (clientId.startsWith(':')) clientId = clientId.substring(1);
 
         // Allow bypass with secure key or regular auth
         const isSecureKey = key === 'topedge_secure_admin_123';
@@ -694,7 +697,8 @@ router.post('/flow/autogen/:clientId', protect, async (req, res) => {
 // --- CONVERT LEGACY JS FLOW TO VISUAL FLOW (AI) ---
 router.post('/flow/convert-legacy/:clientId', async (req, res) => {
     try {
-        const { clientId } = req.params;
+        let { clientId } = req.params;
+        if (clientId.startsWith(':')) clientId = clientId.substring(1);
         const client = await Client.findOne({ clientId });
         if (!client) return res.status(404).json({ error: 'Client not found' });
 
