@@ -18,7 +18,7 @@ const DailyStat = require('../../models/DailyStat');
 const Client = require('../../models/Client');
 const AdLead = require('../../models/AdLead');
 const { DateTime } = require('luxon');
-const { generateText } = require('../../utils/gemini');
+const { generateText, getGeminiModel } = require('../../utils/gemini');
 
 // Detect greeting words
 const GREETING_WORDS = ['hi', 'hello', 'hey', 'hii', 'good morning', 'good afternoon', 'good evening', 'greetings'];
@@ -2269,7 +2269,7 @@ Please provide a helpful, human-like response:`;
     let aiResponse = '';
     try {
       // Using gemini-2.0-flash (gemini-1.5-flash is deprecated and returns 404)
-      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+      const model = getGeminiModel(resolvedGeminiKey);
       const fullPrompt = `System: You are Ava, a friendly turf booking assistant for Turf Booking in ahmedabad. Be conversational, warm, and helpful. Use natural language, appropriate emojis, and always sound like a real person. Reference the knowledge base for accurate information.\n\nUser: ${prompt}`;
       const result = await model.generateContent(fullPrompt);
       aiResponse = result.response.text().trim();
@@ -2530,9 +2530,8 @@ const handleWebhook = async (req, res) => {
             "${userText}"
           `.trim();
           try {
-            const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
             // Using gemini-2.0-flash (gemini-1.5-flash is deprecated and returns 404)
-            const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+            const model = getGeminiModel(process.env.GEMINI_API_KEY);
             const result = await model.generateContent(prompt);
             const jsonString = result.response.text().replace(/```json/g, '').replace(/```/g, '').trim();
             const timeSlots = JSON.parse(jsonString);

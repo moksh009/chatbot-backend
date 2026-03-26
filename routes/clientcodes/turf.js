@@ -5,7 +5,7 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const { DateTime } = require('luxon');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { getGeminiModel } = require('../../utils/gemini');
 
 const Client = require('../../models/Client');
 const Conversation = require('../../models/Conversation');
@@ -532,7 +532,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   const resolvedGeminiKey = geminiApiKey || process.env.GEMINI_API_KEY?.trim();
   console.log(`[TURF] Gemini key source: ${geminiApiKey ? 'DB/Middleware' : 'Env Fallback'}, len=${resolvedGeminiKey?.length || 0}`);
   if (!resolvedGeminiKey) console.warn('[TURF] ⚠️ No Gemini API key found! AI replies will fail.');
-  const genAI = new GoogleGenerativeAI(resolvedGeminiKey || 'MISSING_KEY');
+  const model = getGeminiModel(resolvedGeminiKey);
 
   // ===================================================================
   // HANDLE WHATSAPP FLOW RESPONSE (nfm_reply)
@@ -1034,8 +1034,8 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 
   if (userMsgType === 'text') {
       try {
-        // Use gemini-2.5-flash
-        let model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        // Use Gemini Flash via utility
+        let model = getGeminiModel(resolvedGeminiKey);
 
       const smartPrompt = `You are the energetic and helpful virtual booking assistant for "Rough N Turf", a premium sports turf facility in Ahmedabad. Your persona is sporty, friendly, and professional. You understand both English and "Gujinglish" (Gujarati written in English alphabet).
 
@@ -1109,15 +1109,15 @@ Output:`;
 
       let rawReply = '';
       try {
-        // Use gemini-2.5-flash
-        let model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        // Use Gemini Flash via utility
+        let model = getGeminiModel(resolvedGeminiKey);
         
         let result;
         try {
           result = await model.generateContent(smartPrompt);
         } catch (apiErr) {
           console.error('[TURF] Flash AI failed, falling back to Pro:', apiErr.message);
-          model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+          model = getGeminiModel(resolvedGeminiKey);
           result = await model.generateContent(smartPrompt);
         }
         

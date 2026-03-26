@@ -114,9 +114,14 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io) 
       await Conversation.findByIdAndUpdate(convo._id, { lastStepId: null });
     }
     // Try keyword greeting trigger first
-    const triggerNode = flowNodes.find(n =>
-      n.type === 'trigger' || n.type === 'TriggerNode'
-    );
+    const incomingText = (userText || '').toLowerCase().trim();
+    const triggerNode = flowNodes.find(n => {
+      if (n.type !== 'trigger' && n.type !== 'TriggerNode') return false;
+      const keyword = (n.data?.keyword || n.data?.label || 'hi').toLowerCase();
+      return incomingText.includes(keyword) || 
+             keyword === 'start' || 
+             keyword === '*';
+    });
     const startNode = triggerNode ||
       flowNodes.find(n => n.data?.role === 'welcome') ||
       flowNodes.find(n => n.data?.isStartNode === true) ||
@@ -188,12 +193,42 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   if (!node) { console.warn(`[DualBrain] Node ${nodeId} not found`); return false; }
 
   const sent = await sendNodeContent(node, client, phone, lead, convo);
-  if (!sent) return false;
+  if (!sent && node.type !== 'logic' && node.type !== 'delay') return false;
 
   const action = node.data?.action;
 
+  // --- SPECIAL NODE LOGIC (Automated Traversal) ---
+  if (node.type === 'logic') {
+    const condition = node.data?.condition || '';
+    let result = false;
+    
+    // Simple evaluation engine (can be expanded)
+    if (condition.includes('cart_total')) {
+      const threshold = parseInt(condition.match(/\d+/)[0]) || 0;
+      const cartValue = lead?.cartValue || convo?.metadata?.cartValue || 0;
+      result = cartValue > threshold;
+    } else if (condition === 'has_phone') {
+      result = !!phone;
+    }
+    
+    const targetHandle = result ? 'true' : 'false';
+    const nextEdge = flowEdges.find(e => e.source === nodeId && e.sourceHandle === targetHandle);
+    
+    if (nextEdge) {
+      console.log(`[DualBrain] Logic Check Result: ${result} -> Jumping to ${nextEdge.target}`);
+      return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io);
+    }
+  }
+
+  if (node.type === 'livechat') {
+    // Force set conversation status to HUMAN_SUPPORT
+    await Conversation.findByIdAndUpdate(convo._id, { status: 'HUMAN_SUPPORT' });
+    console.log(`[DualBrain] LiveChat Handover: Pausing bot for phone ${phone}`);
+    // Optional: Follow fallback edge after delay if no human joins (advanced)
+  }
+
   // Update lastStepId logic
-  if (action === "AI_FALLBACK") {
+  if (action === "AI_FALLBACK" || node.type === 'logic') {
     // Don't update lastStepId — let AI handle and return here next time
     await Conversation.findByIdAndUpdate(convo._id, { 
       lastStepId: convo.lastStepId,
@@ -247,11 +282,13 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null) {
       return true;
     }
     case 'message':
-    case 'MessageNode': {
+    case 'MessageNode':
+    case 'livechat': {
+      const body = data.text || data.body || (type === 'livechat' ? 'Connecting you to a human...' : '');
       if (data.imageUrl) {
-        await sendWhatsAppImage(client, phone, data.imageUrl, data.text || data.body || '');
+        await sendWhatsAppImage(client, phone, data.imageUrl, body);
       } else {
-        await sendWhatsAppText(client, phone, data.text || data.body || data.title || '');
+        await sendWhatsAppText(client, phone, body);
       }
       return true;
     }
@@ -510,9 +547,11 @@ async function sendWhatsAppText(client, phone, body) {
   const phoneNumberId = client.phoneNumberId;
   if (!token || !phoneNumberId) return;
   try {
-    await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
+    const res = await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
       messaging_product: 'whatsapp', to: phone, type: 'text', text: { body }
     }, { headers: { Authorization: `Bearer ${token}` } });
+    
+    await saveOutboundMessage(phone, client.clientId, 'text', body, res.data.messages[0].id);
   } catch (err) { console.error('[DualBrain] sendText error:', err.response?.data?.error?.message || err.message); }
 }
 
@@ -521,9 +560,11 @@ async function sendWhatsAppImage(client, phone, imageUrl, caption) {
   const phoneNumberId = client.phoneNumberId;
   if (!token || !phoneNumberId) return;
   try {
-    await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
+    const res = await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
       messaging_product: 'whatsapp', to: phone, type: 'image', image: { link: imageUrl, caption }
     }, { headers: { Authorization: `Bearer ${token}` } });
+    
+    await saveOutboundMessage(phone, client.clientId, 'image', caption || '[Image]', res.data.messages[0].id);
   } catch (err) { console.error('[DualBrain] sendImage error:', err.response?.data?.error?.message || err.message); }
 }
 
@@ -542,7 +583,8 @@ async function sendWhatsAppInteractive(client, phone, interactive, bodyText) {
   if (interactive.footer) data.interactive.footer = { text: (interactive.footer?.text || interactive.footer || '').substring(0, 60) };
 
   try {
-    await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
+    const res = await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
+    await saveOutboundMessage(phone, client.clientId, 'interactive', sanitizedBody, res.data.messages[0].id);
     return true;
   } catch (err) {
     console.error('[DualBrain] sendInteractive error:', JSON.stringify(err.response?.data || err.message));
@@ -555,10 +597,12 @@ async function sendWhatsAppTemplate(client, phone, templateName, languageCode = 
   const phoneNumberId = client.phoneNumberId;
   if (!token || !phoneNumberId) return;
   try {
-    await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
+    const res = await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
       messaging_product: 'whatsapp', to: phone, type: 'template',
       template: { name: templateName, language: { code: languageCode }, components }
     }, { headers: { Authorization: `Bearer ${token}` } });
+    
+    await saveOutboundMessage(phone, client.clientId, 'template', `[Template: ${templateName}]`, res.data.messages[0].id);
   } catch (err) { console.error('[DualBrain] sendTemplate error:', err.response?.data || err.message); }
 }
 
@@ -676,6 +720,33 @@ async function saveInboundMessage(phone, clientId, parsedMessage, io) {
   } catch (err) {
     console.error('[DualBrain] saveInboundMessage error:', err.message);
     return null; // never crash the engine on a save failure
+  }
+}
+
+async function saveOutboundMessage(phone, clientId, type, content, messageId) {
+  try {
+    const msg = await Message.create({
+      clientId,
+      from:      'BOT',
+      to:        phone,
+      direction: 'outgoing',
+      type,
+      content,
+      messageId: messageId || '',
+      timestamp: new Date()
+    });
+    // We don't usually update lastMessage on outbound in the engine (it's updated by webhook usually)
+    // but doing it here ensures the UI stays snappy if webhook is slow
+    await Conversation.findOneAndUpdate(
+      { phone, clientId },
+      { $set: { lastMessage: `Bot: ${content.substring(0, 90)}`, lastMessageAt: new Date() } }
+    );
+    const io = global.io;
+    if (io) io.to(`client_${clientId}`).emit('new_message', msg);
+    return msg;
+  } catch (err) {
+    console.error('[DualBrain] saveOutboundMessage error:', err.message);
+    return null;
   }
 }
 

@@ -8,6 +8,7 @@ const { getDefaultFlowForNiche } = require('../utils/defaultFlowNodes');
 const { generateFlowForClient } = require('../utils/flowAutogen');
 const { convertLegacyToVisual } = require('../utils/legacyConverter');
 const { runFullMigration } = require('../scripts/phase9MigrationLogic');
+const { getGeminiModel } = require('../utils/gemini');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const path = require('path');
 const fs = require('fs');
@@ -140,6 +141,46 @@ router.get('/run-secure-migration', protect, isSuperAdmin, async (req, res) => {
     } catch (err) {
         res.status(500).json({ error: 'Migration failed: ' + err.message });
     }
+});
+
+// --- RUN DELITECH MIGRATION (URL RUNNABLE) ---
+router.get('/run-delitech-migration', async (req, res) => {
+  try {
+    const { key } = req.query;
+    if (key !== 'topedge_secure_admin_123') {
+      return res.status(401).json({ message: 'Unauthorized. Use ?key=topedge_secure_admin_123' });
+    }
+
+    const DELITECH_NODES = [
+      { id: "trigger_start", type: "trigger", position: { x: 350, y: 0 }, data: { label: "Greeting Trigger", keyword: "hi" } },
+      { id: "welcome_node", type: "template", position: { x: 350, y: 120 }, data: { label: "Welcome Message", metaTemplateName:"delitech_welcome" } },
+      { id: "doorbell_menu", type: "interactive", position: { x: 350, y: 280 }, data: { label: "Product Menu", body: "Which doorbell are you interested in? 🏠", interactiveType: "button", buttonsList: [{ id: "btn_3mp", title: "📷 3MP Doorbell" }, { id: "btn_5mp", title: "📷 5MP Doorbell" }, { id: "btn_website", title: "🌐 Visit Website" }] } },
+      { id: "product_3mp", type: "template", position: { x: 100, y: 460 }, data: { label: "3MP Doorbell", metaTemplateName: "3mp_final" } },
+      { id: "product_5mp", type: "template", position: { x: 350, y: 460 }, data: { label: "5MP Doorbell", metaTemplateName: "5mp_final" } },
+      { id: "website_node", type: "message", position: { x: 600, y: 460 }, data: { label: "Website", body: "Visit our website! 🌐\nhttps://delitechsmarthome.in" } },
+      { id: "faq_node", type: "message", position: { x: 600, y: 280 }, data: { label: "Setup & FAQ", body: "IP65 rated, 6-month battery life...", action: "AI_FALLBACK" } },
+      { id: "back_menu", type: "interactive", position: { x: 350, y: 640 }, data: { label: "Back to Menu", body: "What else?", interactiveType: "button", buttonsList: [{ id: "btn_3mp_2", title: "3MP Doorbell" }, { id: "btn_5mp_2", title: "5MP Doorbell" }] } }
+    ];
+
+    const DELITECH_EDGES = [
+      { id: "e_trigger_welcome", source: "trigger_start", target: "welcome_node" },
+      { id: "e_welcome_menu", source: "welcome_node", target: "doorbell_menu" },
+      { id: "e_menu_3mp", source: "doorbell_menu", target: "product_3mp", sourceHandle: "btn_3mp" },
+      { id: "e_menu_5mp", source: "doorbell_menu", target: "product_5mp", sourceHandle: "btn_5mp" },
+      { id: "e_menu_website", source: "doorbell_menu", target: "website_node", sourceHandle: "btn_website" },
+      { id: "e_3mp_back", source: "product_3mp", target: "back_menu" },
+      { id: "e_5mp_back", source: "product_5mp", target: "back_menu" }
+    ];
+
+    await Client.findOneAndUpdate(
+      { clientId: "delitech_smarthomes" },
+      { $set: { flowNodes: DELITECH_NODES, flowEdges: DELITECH_EDGES } }
+    );
+
+    res.json({ success: true, message: "Delitech flow migrated successfully!" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- GET CLIENT BY ID ---
@@ -448,8 +489,7 @@ router.post('/generate-flow', protect, async (req, res) => {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not configured on server' });
 
-    const genAI = new GoogleGenerativeAI(apiKey);
-    let model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+    let model = getGeminiModel(apiKey);
 
     const systemPrompt = `You are a WhatsApp chatbot flow designer. Given a business description, generate a JSON object with "nodes" and "edges" arrays for a ReactFlow diagram.
     
@@ -485,8 +525,8 @@ router.post('/generate-flow', protect, async (req, res) => {
       result = await model.generateContent(systemPrompt);
     } catch (apiErr) {
       console.error('[generate-flow] Flash failed, falling back to Pro:', apiErr.message);
-      const proModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' }, { apiVersion: 'v1beta' });
-      result = await proModel.generateContent(systemPrompt);
+      model = getGeminiModel(apiKey);
+      result = await model.generateContent(systemPrompt);
     }
 
     const rawText = result.response.text().trim();
@@ -539,14 +579,13 @@ router.get('/test-gemini', async (req, res) => {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return res.status(500).json({ ok: false, error: 'GEMINI_API_KEY not set' });
   try {
-    const genAI = new GoogleGenerativeAI(apiKey);
-    let model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+    let model = getGeminiModel(apiKey);
     let result;
     try {
         result = await model.generateContent('Say "ok" in JSON like {"status":"ok"}');
     } catch (apiErr) {
         console.warn('[test-gemini] Flash failed, testing Pro:', apiErr.message);
-        model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+        model = getGeminiModel(apiKey);
         result = await model.generateContent('Say "ok" in JSON like {"status":"ok"}');
     }
     const text = result.response.text().trim();

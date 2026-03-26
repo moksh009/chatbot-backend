@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { getGeminiModel } = require('./gemini');
 const log = require('./logger')('LegacyConverter');
 
 /**
@@ -8,8 +8,7 @@ const log = require('./logger')('LegacyConverter');
  */
 async function convertLegacyToVisual(clientId, fileCode) {
     try {
-        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }); // Using Flash for code parsing
+        const model = getGeminiModel(process.env.GEMINI_API_KEY);
 
         const systemPrompt = `You are a specialized code migration agent. 
 Task: Convert the provided WhatsApp Chatbot legacy JavaScript code into a visual "flowNodes" and "flowEdges" JSON structure for React Flow.
