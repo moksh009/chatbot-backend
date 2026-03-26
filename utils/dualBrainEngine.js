@@ -452,7 +452,7 @@ async function runAIFallback(parsedMessage, client, phone, lead) {
 
   try {
     const genAI = new GoogleGenerativeAI(client.geminiKey || process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' }, { apiVersion: 'v1' });
     const ctaHint = client.nicheData?.ctaButtonText || 'Get Started';
 
     const result = await model.generateContent([
@@ -572,7 +572,7 @@ async function transcribeVoiceNote(parsedMessage, client) {
     const base64Audio = Buffer.from(audioRes.data).toString('base64');
 
     const genAI = new GoogleGenerativeAI(client.geminiKey || process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' }, { apiVersion: 'v1' });
 
     const result = await model.generateContent([
       { inlineData: { data: base64Audio, mimeType: 'audio/ogg' } },
