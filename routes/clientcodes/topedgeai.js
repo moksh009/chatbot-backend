@@ -3,6 +3,7 @@ const router = express.Router();
 const dotenv = require('dotenv');
 const axios = require('axios');
 const AdLead = require('../../models/AdLead');
+const { generateText } = require('../../utils/gemini');
 const Conversation = require('../../models/Conversation');
 const Message = require('../../models/Message');
 const BotAnalytics = require('../../models/BotAnalytics');
@@ -770,22 +771,9 @@ async function handleCallBooked(phone, payload, clientConfig, io) {
 
 
 
-
-
 // --- API WRAPPERS & AI ---
 
-async function generateWithGemini(apiKey, prompt) {
-    try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-        const payload = { contents: [{ role: 'user', parts: [{ text: prompt }] }] };
-        const resp = await axios.post(url, payload, { headers: { 'Content-Type': 'application/json' } });
-        const text = resp.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-        return text.trim();
-    } catch (err) {
-        console.error('Gemini API Error (TopEdge ROI):', err.message);
-        return null;
-    }
-}
+
 
 async function sendWhatsAppText({ phoneNumberId, to, body, io, clientConfig }) {
     const token = clientConfig.whatsappToken;

@@ -20,6 +20,7 @@ const DailyStat = require('../../models/DailyStat');
 const Client = require('../../models/Client');
 const AdLead = require('../../models/AdLead');
 const { DateTime } = require('luxon');
+const { generateText } = require('../../utils/gemini');
 
 
 // Detect greeting words (Standard + Gujinglish)
@@ -75,19 +76,7 @@ const userSessions = {};
 let waitingForPartial = false;
 let partialDate = '';
 
-async function generateWithGemini(apiKey, prompt) {
-  try {
-    // gemini-2.5-flash — gemini-2.0-flash is deprecated (404 for new users)
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-    const payload = { contents: [{ role: 'user', parts: [{ text: prompt }] }] };
-    const resp = await axios.post(url, payload, { headers: { 'Content-Type': 'application/json' } });
-    const text = resp.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    return text.trim();
-  } catch (err) {
-    console.error('Gemini API Error (choice_salon):', err.message);
-    return "Hi! 😊 Our AI system is currently updating its knowledge base. Please select from the menu options below or contact the salon directly!";
-  }
-}
+
 const salonServices = [
   { id: 'svc_haircut_basic', title: 'Haircut', price: '₹500/-', description: '₹500/-', category: 'Haircut' },
   { id: 'svc_haircut_advance', title: 'Advance Haircut', price: '₹700/-', description: '₹700/-', category: 'Haircut' },

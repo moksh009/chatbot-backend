@@ -9,7 +9,7 @@ const log = require('./logger')('LegacyConverter');
 async function convertLegacyToVisual(clientId, fileCode) {
     try {
         const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" }); // Using Pro for complex code parsing
+        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }); // Using Flash for code parsing
 
         const systemPrompt = `You are a specialized code migration agent. 
 Task: Convert the provided WhatsApp Chatbot legacy JavaScript code into a visual "flowNodes" and "flowEdges" JSON structure for React Flow.

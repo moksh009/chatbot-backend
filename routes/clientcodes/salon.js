@@ -18,7 +18,7 @@ const DailyStat = require('../../models/DailyStat');
 const Client = require('../../models/Client');
 const AdLead = require('../../models/AdLead');
 const { DateTime } = require('luxon');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { generateText } = require('../../utils/gemini');
 
 // Detect greeting words
 const GREETING_WORDS = ['hi', 'hello', 'hey', 'hii', 'good morning', 'good afternoon', 'good evening', 'greetings'];
@@ -444,9 +444,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
   const adminNumbers = config.adminPhones || (config.adminPhone ? [config.adminPhone] : []);
   // Use already-trimmed key resolved by clientConfig middleware
   const resolvedGeminiKey = geminiApiKey || process.env.GEMINI_API_KEY?.trim();
-  console.log(`[SALON] Gemini key source: ${geminiApiKey ? 'DB/Middleware' : 'Env Fallback'}, len=${resolvedGeminiKey?.length || 0}`);
   if (!resolvedGeminiKey) console.warn('[SALON] ⚠️ No Gemini API key found! AI replies will fail.');
-  const genAI = new GoogleGenerativeAI(resolvedGeminiKey || 'MISSING_KEY');
 
   const session = getUserSession(from);
   const userMsgType = messages.type;
@@ -633,27 +631,20 @@ Provide a SHORT, PRECISE response:`;
 
     let aiResponse = '';
     try {
-      // Use gemini-1.5-flash with a fallback to gemini-pro to prevent 404/500 errors
-      let model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
       const fullPrompt = `System: You are moksh, a friendly salon appointment assistant for Salon Appointment in ahmedabad. Be conversational, warm, and helpful. Use natural language, appropriate emojis, and always sound like a real person. Reference the knowledge base for accurate information.\n\nUser: ${prompt}`;
       
-      let result;
-      try {
-        result = await model.generateContent(fullPrompt);
-      } catch (apiErr) {
-        console.error('[SALON] Flash AI failed, falling back to Pro:', apiErr.message);
-        model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
-        result = await model.generateContent(fullPrompt);
-      }
+      aiResponse = await generateText(fullPrompt, resolvedGeminiKey);
       
-      aiResponse = result.response.text().trim();
-
-      // Ensure the response ends with a friendly closing if it doesn't already
-      if (!aiResponse.toLowerCase().includes('need anything else') &&
-        !aiResponse.toLowerCase().includes('anything else') &&
-        !aiResponse.toLowerCase().includes('help you') &&
-        !aiResponse.toLowerCase().includes('assistance')) {
-        aiResponse += '\n\nNeed anything else I can help you with? 😊';
+      if (!aiResponse) {
+        aiResponse = "Hi there! 😊 I'm having a bit of trouble accessing my information right now. Could you try asking your question again, or feel free to use the buttons below to get help!";
+      } else {
+        // Ensure the response ends with a friendly closing if it doesn't already
+        if (!aiResponse.toLowerCase().includes('need anything else') &&
+          !aiResponse.toLowerCase().includes('anything else') &&
+          !aiResponse.toLowerCase().includes('help you') &&
+          !aiResponse.toLowerCase().includes('assistance')) {
+          aiResponse += '\n\nNeed anything else I can help you with? 😊';
+        }
       }
 
     } catch (err) {

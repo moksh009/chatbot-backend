@@ -5,6 +5,7 @@ const Client = require('../models/Client');
 const DailyStat = require('../models/DailyStat');
 const { sendAbandonedCartEmail } = require('../utils/emailService');
 const log = require('../utils/logger')('AbandonedCart');
+const { generateText } = require('../utils/gemini');
 
 // Function to send WhatsApp template
 async function sendWhatsAppTemplate(token, phoneId, to, templateName, variables) {
@@ -57,19 +58,7 @@ async function sendWhatsAppText(token, phoneId, to, text) {
     }
 }
 
-// Gemini API Helper (Moved here for AI Nudge)
-async function generateGeminiResponse(apiKey, prompt) {
-    if (!apiKey) return "Hi! Don't forget you left something amazing in your cart. Grab it before it's gone!";
-    try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-        const data = { contents: [{ parts: [{ text: prompt }] }] };
-        const response = await axios.post(url, data, { headers: { 'Content-Type': 'application/json' } });
-        return response.data.candidates[0].content.parts[0].text;
-    } catch (err) {
-        console.error('Gemini API Error (cart_recovery):', err.message);
-        return "Hey there! We noticed you left a great item in your cart. Order today to secure it!";
-    }
-}
+
 
 const scheduleAbandonedCartCron = () => {
     // 1. Abandoned Cart Scheduler - Runs every 5 minutes for better 15m precision
@@ -209,14 +198,19 @@ Write ONE short WhatsApp message (max 3 sentences) that:
 Be conversational, not salesy. No emojis overload. Sound human. Do not use asterisks for bolding.
 `;
 
-                const aiResponse = await generateGeminiResponse(apiKey, aiPrompt);
+                const aiResponse = await generateText(aiPrompt, apiKey);
                 
-                await sendWhatsAppText(
-                    token,
-                    phoneId,
-                    lead.phoneNumber,
-                    aiResponse
-                );
+                if (!aiResponse) {
+                    // Fallback if AI fails
+                    await sendWhatsAppText(token, phoneId, lead.phoneNumber, "Hi! Don't forget you left something amazing in your cart. Grab it before it's gone!");
+                } else {
+                    await sendWhatsAppText(
+                        token,
+                        phoneId,
+                        lead.phoneNumber,
+                        aiResponse
+                    );
+                }
 
                 // Alert admin
                 const adminPhone = client.adminPhoneNumber || client.config?.adminPhoneNumber;

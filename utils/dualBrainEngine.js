@@ -7,7 +7,7 @@ const Message      = require("../models/Message");
 const DailyStat    = require("../models/DailyStat");
 const emailService = require("./emailService");
 const log = require("./logger")('DualBrain');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { generateText, getGeminiModel } = require('./gemini');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN ENGINE — called by ALL niche engines
@@ -106,9 +106,21 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io) 
     return await executeNode(jumpNode.id, flowNodes, flowEdges, client, convo, lead, phone, io);
   }
 
-  // B) No currentStepId — look for trigger/start node
-  if (!currentStepId) {
-    const startNode = flowNodes.find(n => n.type === 'trigger') || flowNodes.find(n => n.data?.role === 'welcome') || flowNodes[0];
+  // B) No currentStepId (or it looks like a phone number) — guard + find trigger/start node
+  const looksLikePhone = currentStepId && /^\d{7,}$/.test(String(currentStepId));
+  if (!currentStepId || looksLikePhone) {
+    if (looksLikePhone) {
+      console.warn(`[DualBrain] Graph: lastStepId "${currentStepId}" looks like a phone number — resetting`);
+      await Conversation.findByIdAndUpdate(convo._id, { lastStepId: null });
+    }
+    // Try keyword greeting trigger first
+    const triggerNode = flowNodes.find(n =>
+      n.type === 'trigger' || n.type === 'TriggerNode'
+    );
+    const startNode = triggerNode ||
+      flowNodes.find(n => n.data?.role === 'welcome') ||
+      flowNodes.find(n => n.data?.isStartNode === true) ||
+      flowNodes[0];
     if (startNode) {
       console.log(`[DualBrain] Graph: Starting fresh from node ${startNode.id}`);
       return await executeNode(startNode.id, flowNodes, flowEdges, client, convo, lead, phone, io);
@@ -175,13 +187,25 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   const node = flowNodes.find(n => n.id === nodeId);
   if (!node) { console.warn(`[DualBrain] Node ${nodeId} not found`); return false; }
 
-  const sent = await sendNodeContent(node, client, phone, lead);
+  const sent = await sendNodeContent(node, client, phone, lead, convo);
   if (!sent) return false;
 
-  // Update lastStepId
-  await Conversation.findByIdAndUpdate(convo._id, {
-    lastStepId: nodeId, lastInteraction: new Date()
-  });
+  const action = node.data?.action;
+
+  // Update lastStepId logic
+  if (action === "AI_FALLBACK") {
+    // Don't update lastStepId — let AI handle and return here next time
+    await Conversation.findByIdAndUpdate(convo._id, { 
+      lastStepId: convo.lastStepId,
+      lastInteraction: new Date()
+    });
+  } else {
+    // Normal: update lastStepId to this node
+    await Conversation.findByIdAndUpdate(convo._id, {
+      lastStepId: nodeId,
+      lastInteraction: new Date()
+    });
+  }
 
   // Emit to dashboard
   if (io) io.to(`client_${client.clientId}`).emit('new_message', {
@@ -205,7 +229,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 // ─────────────────────────────────────────────────────────────────────────────
 // SEND NODE CONTENT — handles all node types
 // ─────────────────────────────────────────────────────────────────────────────
-async function sendNodeContent(node, client, phone, lead = null) {
+async function sendNodeContent(node, client, phone, lead = null, convo = null) {
   const { type, data } = node;
 
   switch (type) {
@@ -381,6 +405,17 @@ async function sendNodeContent(node, client, phone, lead = null) {
       console.warn(`[DualBrain] Unknown node type: ${type}`);
       return false;
   }
+
+  // After sending the message, check for special actions
+  if (node.data?.action) {
+    const { handleNodeAction } = require("./nodeActions");
+    // Execute action asynchronously
+    handleNodeAction(node.data.action, node, client, phone, convo, lead).catch(err => {
+      console.error(`[DualBrain] Action Error (${node.data.action}):`, err.message);
+    });
+  }
+
+  return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -451,16 +486,14 @@ async function runAIFallback(parsedMessage, client, phone, lead) {
   }
 
   try {
-    const genAI = new GoogleGenerativeAI(client.geminiKey || process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' }, { apiVersion: 'v1' });
     const ctaHint = client.nicheData?.ctaButtonText || 'Get Started';
+    const prompt = [
+      knowledgeBase,
+      `INSTRUCTIONS:\n- Keep response under 3 sentences\n- Be warm and conversational\n- End by steering toward: "${ctaHint}"\n- Never make up prices or policies not listed above\n- If unsure, say: "Let me connect you to our team"`,
+      `Customer: ${text}`
+    ].join('\n\n');
 
-    const result = await model.generateContent([
-      { text: `${knowledgeBase}\n\nINSTRUCTIONS:\n- Keep response under 3 sentences\n- Be warm and conversational\n- End by steering toward: "${ctaHint}"\n- Never make up prices or policies not listed above\n- If unsure, say: "Let me connect you to our team"` },
-      { text: `Customer: ${text}` }
-    ]);
-
-    const reply = result.response.text().trim();
+    const reply = await generateText(prompt, client.geminiKey);
     await sendWhatsAppText(client, phone, reply);
     console.log(`[DualBrain] AI Fallback used for "${text.substring(0, 50)}..."`);
   } catch (err) {
@@ -571,8 +604,7 @@ async function transcribeVoiceNote(parsedMessage, client) {
     const audioRes = await axios.get(mediaUrl, { responseType: 'arraybuffer', headers: { Authorization: `Bearer ${token}` } });
     const base64Audio = Buffer.from(audioRes.data).toString('base64');
 
-    const genAI = new GoogleGenerativeAI(client.geminiKey || process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' }, { apiVersion: 'v1' });
+    const model = getGeminiModel(client.geminiKey);
 
     const result = await model.generateContent([
       { inlineData: { data: base64Audio, mimeType: 'audio/ogg' } },
@@ -618,16 +650,33 @@ async function handleUniversalEscalate(client, phone, convo) {
 // INBOUND MESSAGE SAVER
 // ─────────────────────────────────────────────────────────────────────────────
 async function saveInboundMessage(phone, clientId, parsedMessage, io) {
-  const content = parsedMessage.text?.body || parsedMessage.interactive?.button_reply?.title || `[${parsedMessage.type}]`;
+  const content =
+    parsedMessage.text?.body ||
+    parsedMessage.interactive?.button_reply?.title ||
+    parsedMessage.interactive?.list_reply?.title ||
+    `[${parsedMessage.type || 'unknown'}]`;
   try {
+    // Message schema: from, to, direction ('incoming'|'outgoing'), type, content, messageId
     const msg = await Message.create({
-      clientId, phone, direction: 'inbound', type: parsedMessage.type,
-      content, messageId: parsedMessage.messageId || '', timestamp: new Date()
+      clientId,
+      from:      phone,
+      to:        'BOT',
+      direction: 'incoming',
+      type:      parsedMessage.type || 'text',
+      content,
+      messageId: parsedMessage.messageId || '',
+      timestamp: new Date()
     });
-    await Conversation.findOneAndUpdate({ phone, clientId }, { $set: { lastMessage: content.substring(0, 100), lastMessageAt: new Date() } });
+    await Conversation.findOneAndUpdate(
+      { phone, clientId },
+      { $set: { lastMessage: content.substring(0, 100), lastMessageAt: new Date() } }
+    );
     if (io) io.to(`client_${clientId}`).emit('new_message', msg);
     return msg;
-  } catch (err) { console.error('[DualBrain] saveInboundMessage error:', err.message); }
+  } catch (err) {
+    console.error('[DualBrain] saveInboundMessage error:', err.message);
+    return null; // never crash the engine on a save failure
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

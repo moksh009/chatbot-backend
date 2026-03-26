@@ -1,4 +1,4 @@
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { getGeminiModel } = require('./gemini');
 const log = require('./logger')('FlowAutogen');
 
 /**
@@ -14,8 +14,7 @@ async function generateFlowForClient(client, customPrompt = '', existingFlow = n
             return null;
         }
 
-        const genAI = new GoogleGenerativeAI(geminiKey);
-        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' }, { apiVersion: 'v1' });
+        const model = getGeminiModel(geminiKey);
 
         const niche = client.niche || client.businessType || 'business';
         const businessInfo = customPrompt || client.systemPrompt || `A professional ${niche} service.`;
@@ -60,8 +59,8 @@ Do NOT return markdown blocks. Return ONLY raw JSON.`;
         try {
             result = await model.generateContent(systemPrompt);
         } catch (err) {
-            log.warn('Gemini 1.5 Flash failed, falling back to Pro', err.message);
-            const proModel = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
+            log.warn('Gemini primary call failed, retrying...', err.message);
+            const proModel = getGeminiModel(geminiKey);
             result = await proModel.generateContent(systemPrompt);
         }
 

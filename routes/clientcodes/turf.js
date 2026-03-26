@@ -1034,8 +1034,8 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 
   if (userMsgType === 'text') {
       try {
-        // Use gemini-1.5-flash (correct name)
-        let model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        // Use gemini-2.5-flash
+        let model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
       const smartPrompt = `You are the energetic and helpful virtual booking assistant for "Rough N Turf", a premium sports turf facility in Ahmedabad. Your persona is sporty, friendly, and professional. You understand both English and "Gujinglish" (Gujarati written in English alphabet).
 
@@ -1109,15 +1109,15 @@ Output:`;
 
       let rawReply = '';
       try {
-        // Use gemini-1.5-flash with a fallback to gemini-pro to prevent 404/500 errors
-        let model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        // Use gemini-2.5-flash
+        let model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         
         let result;
         try {
           result = await model.generateContent(smartPrompt);
         } catch (apiErr) {
           console.error('[TURF] Flash AI failed, falling back to Pro:', apiErr.message);
-          model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+          model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
           result = await model.generateContent(smartPrompt);
         }
         

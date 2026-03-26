@@ -520,7 +520,7 @@ Provide a SHORT, PRECISE response:`;
 
     let aiResponse = '';
     try {
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
       const fullPrompt = `System: You are Ava, a friendly dental clinic assistant for Code Clinic in Kampala. Be conversational, warm, and helpful. Use natural language, appropriate emojis, and always sound like a real person. Reference the knowledge base for accurate information.\n\nUser: ${prompt}`;
       const result = await model.generateContent(fullPrompt);
       aiResponse = result.response.text().trim();
@@ -2083,7 +2083,7 @@ Please provide a helpful, human-like response:`;
 
     let aiResponse = '';
     try {
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
       const fullPrompt = `System: You are Ava, a friendly dental clinic assistant for Code Clinic in Kampala. Be conversational, warm, and helpful. Use natural language, appropriate emojis, and always sound like a real person. Reference the knowledge base for accurate information.\n\nUser: ${prompt}`;
       const result = await model.generateContent(fullPrompt);
       aiResponse = result.response.text().trim();
@@ -2305,7 +2305,7 @@ app.post('/', async (req, res) => {
             "${userText}"
           `.trim();
           try {
-            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+            const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
             const result = await model.generateContent(prompt);
             const jsonString = result.response.text().replace(/```json/g, '').replace(/```/g, '').trim();
             const timeSlots = JSON.parse(jsonString);

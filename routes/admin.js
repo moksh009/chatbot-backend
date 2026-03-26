@@ -202,8 +202,45 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
     }
 
     const savedClient = await newClient.save();
+
+    // ── PHASE 10: Inject pre-built flow template if available ──────────────
+    const flowTemplates = require('../data/flowTemplates');
+    const template      = flowTemplates[businessType] || flowTemplates[niche];
+
+    if (template) {
+      const brandName   = newClient.name || 'us';
+      const storeUrl    = (nicheData && nicheData.storeUrl)  || '';
+      const buyUrl      = (nicheData && nicheData.buyUrl)    || storeUrl;
+      const products    = (nicheData && nicheData.products)  || [];
+      const productList = products.length
+        ? products.map((p, i) => `${i + 1}. ${p.name} — ₹${p.price}`).join('\n')
+        : 'Products coming soon!';
+
+      const substituteVars = (str = '') =>
+        str
+          .replace(/{{brand_name}}/g,   brandName)
+          .replace(/{{store_url}}/g,    storeUrl)
+          .replace(/{{buy_url}}/g,      buyUrl)
+          .replace(/{{product_list}}/g, productList);
+
+      const personalizedNodes = template.nodes.map(n => ({
+        ...n,
+        data: {
+          ...n.data,
+          body:   substituteVars(n.data?.body   || ''),
+          header: substituteVars(n.data?.header || '')
+        }
+      }));
+
+      await Client.findByIdAndUpdate(savedClient._id, {
+        $set: { flowNodes: personalizedNodes, flowEdges: template.edges }
+      });
+      log.success(`Pre-built flow template injected for: ${clientId} (type: ${businessType || niche})`);
+    }
+
     log.success(`New client provisioned: ${clientId} | Plan: ${plan || 'CX Agent (V1)'}`);
-    res.status(201).json(savedClient);
+    res.status(201).json({ ...savedClient.toObject(), flowReady: !!template });
+
   } catch (err) {
     log.error('Error creating client', { error: err.message });
     res.status(500).json({ message: 'Server error creating client', error: err.message });
@@ -412,7 +449,7 @@ router.post('/generate-flow', protect, async (req, res) => {
     if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not configured on server' });
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    let model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    let model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
     const systemPrompt = `You are a WhatsApp chatbot flow designer. Given a business description, generate a JSON object with "nodes" and "edges" arrays for a ReactFlow diagram.
     
@@ -448,7 +485,7 @@ router.post('/generate-flow', protect, async (req, res) => {
       result = await model.generateContent(systemPrompt);
     } catch (apiErr) {
       console.error('[generate-flow] Flash failed, falling back to Pro:', apiErr.message);
-      const proModel = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' }, { apiVersion: 'v1' });
+      const proModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' }, { apiVersion: 'v1beta' });
       result = await proModel.generateContent(systemPrompt);
     }
 
@@ -503,7 +540,7 @@ router.get('/test-gemini', async (req, res) => {
   if (!apiKey) return res.status(500).json({ ok: false, error: 'GEMINI_API_KEY not set' });
   try {
     const genAI = new GoogleGenerativeAI(apiKey);
-    let model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    let model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     let result;
     try {
         result = await model.generateContent('Say "ok" in JSON like {"status":"ok"}');

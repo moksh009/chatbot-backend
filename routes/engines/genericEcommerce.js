@@ -8,6 +8,7 @@ const DailyStat = require('../../models/DailyStat');
 const ReviewRequest = require('../../models/ReviewRequest');
 const { sendOrderConfirmationEmail, sendCODToPrepaidEmail } = require('../../utils/emailService');
 const { runDualBrainEngine } = require('../../utils/dualBrainEngine');
+const { generateText } = require('../../utils/gemini');
 
 // --- 1. CORE API WRAPPERS ---
 async function findNextNode(currentNodeId, handleId, edges) {
@@ -677,24 +678,13 @@ const handleWebhook = async (req, res) => {
                 Knowledge Base: ${JSON.stringify(nicheData.products || {})}
                 User Message: ${userMsg}
                 Instruction: Reply politely, professionally, and concisely in under 60 words. If they want to shop or see products, tell them to type 'menu'.`;
+                const userMessage = userMsg;
 
                 try {
-                    // Use standard v1 endpoint and gemini-1.5-flash
-                    let resp;
-                    try {
-                        resp = await axios.post(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${req.clientConfig.geminiApiKey}`, {
-                            contents: [{ parts: [{ text: prompt }] }]
-                        });
-                    } catch (axiosErr) {
-                        console.error('[EcommerceEngine] Flash failed, falling back to Pro:', axiosErr.message);
-                        resp = await axios.post(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-pro:generateContent?key=${req.clientConfig.geminiApiKey}`, {
-                            contents: [{ parts: [{ text: prompt }] }]
-                        });
-                    }
-                    const aiText = resp.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+                    const aiText = await generateText(`${prompt}\n\nUser: ${userMessage}`, req.clientConfig.geminiApiKey);
                     if (aiText) await sendWhatsAppText({ ...helperParams, to: from, body: aiText });
                 } catch (e) { 
-                    console.error('[EcommerceEngine] AI FATAL Error:', e.response?.data || e.message); 
+                    console.error('[EcommerceEngine] AI FATAL Error:', e.message); 
                 }
                 return res.status(200).end();
             }
