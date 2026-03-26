@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const ConversationSchema = new mongoose.Schema({
   phone: { type: String, required: true }, // User phone number
   clientId: { type: String, required: true, default: 'code_clinic_v1' },
+  customerName: { type: String, default: '' }, // WhatsApp profile name or provided name
   status: { 
     type: String, 
     enum: ['BOT_ACTIVE', 'HUMAN_TAKEOVER', 'CLOSED'], 

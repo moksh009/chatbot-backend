@@ -16,6 +16,7 @@ const { generateText, getGeminiModel } = require('./gemini');
 async function runDualBrainEngine(parsedMessage, client) {
   const phone = parsedMessage.from;
   const io    = global.io;
+  const profileName = parsedMessage.profileName || '';
 
   // STEP 1: Upsert conversation state
   let convo = await Conversation.findOneAndUpdate(
@@ -23,7 +24,10 @@ async function runDualBrainEngine(parsedMessage, client) {
     {
       $setOnInsert: { phone, clientId: client.clientId, lastStepId: null, botPaused: false, status: 'BOT_ACTIVE' },
       $inc: { unreadCount: 1 },
-      $set: { lastInteraction: new Date() }
+      $set: { 
+        lastInteraction: new Date(),
+        ...(profileName && { customerName: profileName })
+      }
     },
     { upsert: true, new: true }
   );
@@ -31,7 +35,13 @@ async function runDualBrainEngine(parsedMessage, client) {
   // STEP 2: Upsert lead
   let lead = await AdLead.findOneAndUpdate(
     { phoneNumber: phone, clientId: client.clientId },
-    { $setOnInsert: { phoneNumber: phone, clientId: client.clientId } },
+    { 
+      $setOnInsert: { phoneNumber: phone, clientId: client.clientId },
+      $set: { 
+        ...(profileName && { name: profileName }), // Sync WhatsApp name
+        lastInteraction: new Date()
+      }
+    },
     { upsert: true, new: true }
   );
 

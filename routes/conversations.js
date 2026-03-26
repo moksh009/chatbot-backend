@@ -271,4 +271,178 @@ router.put('/:id/read', protect, async (req, res) => {
   }
 });
 
+// @route   POST /api/conversations/:id/summarize
+// @desc    Summarize conversation using AI
+// @access  Private
+router.post('/:id/summarize', protect, async (req, res) => {
+  try {
+    const query = { _id: req.params.id };
+    if (req.user.role !== 'SUPER_ADMIN') {
+      query.clientId = req.user.clientId;
+    }
+    const conversation = await Conversation.findOne(query);
+    if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
+
+    const messages = await Message.find({ conversationId: conversation._id })
+      .sort({ timestamp: 1 })
+      .limit(50);
+    
+    if (messages.length === 0) {
+      return res.json({ summary: "No messages found to summarize.", sentiment: "neutral" });
+    }
+
+    const chatLog = messages.map(m => `${m.from}: ${m.content}`).join('\n');
+    
+    const { generateText } = require('../utils/gemini');
+    
+    const prompt = `
+      Analyze this WhatsApp conversation and provide:
+      1. A one-sentence summary of the user's intent or current status.
+      2. Their sentiment (choose: "happy", "interested", "frustrated", "neutral").
+      
+      Return ONLY raw JSON: {"summary": "...", "sentiment": "..."}
+      
+      CONVERSATION:
+      ${chatLog}
+    `;
+    
+    const aiResponse = await generateText(prompt);
+    
+    try {
+      // Clean potential markdown formatting from AI
+      const jsonStr = aiResponse.replace(/```json/g, '').replace(/```/g, '').trim();
+      const result = JSON.parse(jsonStr);
+      res.json(result);
+    } catch (e) {
+      console.error("AI JSON Parse Error:", aiResponse);
+      res.json({ summary: aiResponse, sentiment: "neutral" });
+    }
+  } catch (error) {
+    console.error("Summarization Error:", error);
+    res.status(500).json({ message: 'AI processing failed', error: error.message });
+  }
+});
+
+// @route   POST /api/conversations/:id/send-template
+// @desc    Send a Meta WhatsApp Template to a lead
+// @access  Private
+router.post('/:id/send-template', protect, async (req, res) => {
+  const { templateName, languageCode = 'en', components = [] } = req.body;
+
+  try {
+    const query = { _id: req.params.id };
+    if (req.user.role !== 'SUPER_ADMIN') {
+      query.clientId = req.user.clientId;
+    }
+    const conversation = await Conversation.findOne(query);
+    if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
+
+    const client = await Client.findOne({ clientId: conversation.clientId });
+    const phoneNumberId = client?.phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID;
+    const token = client?.whatsappToken || process.env.WHATSAPP_TOKEN;
+
+    if (!phoneNumberId || !token) {
+      return res.status(500).json({ message: 'WhatsApp credentials not configured' });
+    }
+
+    const url = `https://graph.facebook.com/${process.env.API_VERSION || 'v18.0'}/${phoneNumberId}/messages`;
+    const waPayload = {
+      messaging_product: 'whatsapp',
+      to: conversation.phone,
+      type: 'template',
+      template: {
+        name: templateName,
+        language: { code: languageCode },
+        components
+      }
+    };
+
+    await axios.post(url, waPayload, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+
+    // Save outbound message sync
+    const newMessage = await Message.create({
+      clientId: conversation.clientId,
+      conversationId: conversation._id,
+      from: 'agent',
+      to: conversation.phone,
+      content: `[Template: ${templateName}]`,
+      type: 'template',
+      direction: 'outgoing',
+      status: 'sent'
+    });
+
+    conversation.lastMessage = `[Template: ${templateName}]`;
+    conversation.lastMessageAt = Date.now();
+    await conversation.save();
+
+    const io = req.app.get('socketio');
+    if (io) {
+      io.to(`client_${conversation.clientId}`).emit('new_message', newMessage);
+      io.to(`client_${conversation.clientId}`).emit('conversation_update', conversation);
+    }
+
+    res.json(newMessage);
+  } catch (error) {
+    console.error('Template Send Error:', error.response?.data || error.message);
+    res.status(500).json({ message: 'Failed to send template', error: error.message });
+  }
+});
+
+// @route   POST /api/conversations/:id/send-email
+// @desc    Send an email to a lead from LiveChat
+// @access  Private
+router.post('/:id/send-email', protect, async (req, res) => {
+  const { subject, body, toEmail } = req.body;
+
+  try {
+    const query = { _id: req.params.id };
+    if (req.user.role !== 'SUPER_ADMIN') {
+      query.clientId = req.user.clientId;
+    }
+    const conversation = await Conversation.findOne(query);
+    if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
+
+    const client = await Client.findOne({ clientId: conversation.clientId });
+    if (!client?.emailUser || !client?.emailAppPassword) {
+      return res.status(400).json({ message: 'Email SMTP not configured for this client' });
+    }
+
+    const emailService = require('../utils/emailService');
+    await emailService.sendEmail(client, {
+      to: toEmail,
+      subject,
+      html: `<div>${body.replace(/\n/g, '<br/>')}</div>`
+    });
+
+    // Save outbound message as "email" type
+    const newMessage = await Message.create({
+      clientId: conversation.clientId,
+      conversationId: conversation._id,
+      from: 'agent',
+      to: conversation.phone,
+      content: `[Email] ${subject}`,
+      type: 'email',
+      direction: 'outgoing',
+      status: 'sent'
+    });
+
+    conversation.lastMessage = `[Email] ${subject}`;
+    conversation.lastMessageAt = Date.now();
+    await conversation.save();
+
+    const io = req.app.get('socketio');
+    if (io) {
+      io.to(`client_${conversation.clientId}`).emit('new_message', newMessage);
+      io.to(`client_${conversation.clientId}`).emit('conversation_update', conversation);
+    }
+
+    res.json(newMessage);
+  } catch (error) {
+    console.error('Email Send Error:', error.message);
+    res.status(500).json({ message: 'Failed to send email' });
+  }
+});
+
 module.exports = router;

@@ -242,6 +242,52 @@ router.get('/lead/:id', protect, async (req, res) => {
   }
 });
 
+// GET /api/analytics/lead-by-phone/:phone
+router.get('/lead-by-phone/:phone', protect, async (req, res) => {
+  try {
+    let clientId = req.user.clientId;
+    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
+      clientId = req.query.clientId;
+    }
+    const lead = await AdLead.findOne({ phoneNumber: req.params.phone, clientId });
+    if (!lead) return res.status(404).json({ message: 'Lead not found' });
+    res.json(lead);
+  } catch (error) {
+    res.status(500).json({ message: 'Server Error' });
+  }
+});
+
+// PUT /api/analytics/lead/:phone (Update Lead CRM Details)
+router.put('/lead/:phone', protect, async (req, res) => {
+  try {
+    let clientId = req.user.clientId;
+    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
+      clientId = req.query.clientId;
+    }
+    
+    const { name, email, tags } = req.body;
+    
+    const lead = await AdLead.findOneAndUpdate(
+      { phoneNumber: req.params.phone, clientId },
+      { $set: { name, email, tags, lastInteraction: new Date() } },
+      { new: true }
+    );
+    
+    if (!lead) return res.status(404).json({ message: 'Lead not found' });
+
+    // Also sync to Conversation if exists
+    await Conversation.findOneAndUpdate(
+      { phone: req.params.phone, clientId },
+      { $set: { customerName: name } }
+    );
+
+    res.json(lead);
+  } catch (error) {
+    console.error('Update Lead Error:', error);
+    res.status(500).json({ message: 'Server Error' });
+  }
+});
+
 // GET /api/analytics/top-leads
 router.get('/top-leads', protect, async (req, res) => {
   try {
@@ -934,6 +980,55 @@ router.get("/roi/:clientId", protect, async (req, res) => {
   } catch (err) {
     console.error("ROI analytics error:", err);
     res.status(500).json({ error: "Failed to fetch ROI data" });
+  }
+});
+
+// GET /api/analytics/funnel
+router.get('/funnel', protect, async (req, res) => {
+  try {
+    let clientId = req.user.clientId;
+    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
+      clientId = req.query.clientId;
+    }
+    const query = { clientId };
+
+    const totalLeads = await AdLead.countDocuments(query);
+    
+    const cartResult = await AdLead.aggregate([
+      { $match: query },
+      { $group: { _id: null, count: { $sum: "$addToCartCount" } } }
+    ]);
+    const totalCarts = cartResult[0]?.count || 0;
+
+    const checkoutResult = await AdLead.aggregate([
+      { $match: query },
+      { $group: { _id: null, count: { $sum: "$checkoutInitiatedCount" } } }
+    ]);
+    const totalCheckouts = checkoutResult[0]?.count || 0;
+
+    const totalOrders = await Order.countDocuments(query);
+    
+    const revenueResult = await Order.aggregate([
+      { $match: query },
+      { $group: { _id: null, total: { $sum: "$amount" } } }
+    ]);
+    const totalRevenue = revenueResult[0]?.total || 0;
+
+    // Aggregated recovery stats
+    const recoveredCarts = await AdLead.countDocuments({ ...query, cartStatus: 'recovered' });
+
+    res.json({
+      leads: totalLeads,
+      carts: totalCarts,
+      checkouts: totalCheckouts,
+      orders: totalOrders,
+      revenue: totalRevenue,
+      recoveredCarts,
+      conversionRate: totalLeads > 0 ? ((totalOrders / totalLeads) * 100).toFixed(2) : 0
+    });
+  } catch (error) {
+    console.error("Funnel Analytics Error:", error);
+    res.status(500).json({ message: 'Server Error', error: error.message });
   }
 });
 

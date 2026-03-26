@@ -397,7 +397,14 @@ async function sendWhatsAppFlow({ phoneNumberId, to, header, body, token, io, cl
 }
 
 const handleWebhook = async (req, res) => {
-    const { from, phoneNumberId, messages } = req.body;
+    const entry = req.body.entry?.[0];
+    const value = entry?.changes?.[0]?.value;
+    const messages = value?.messages?.[0];
+    const contact = value?.contacts?.[0];
+    const profileName = contact?.profile?.name || '';
+    const phoneNumberId = value?.metadata?.phone_number_id;
+    const from = messages?.from;
+
     if (!messages || !from) return res.status(200).end();
 
     const { clientId, whatsappToken: token, nicheData, plan } = req.clientConfig;
@@ -407,6 +414,7 @@ const handleWebhook = async (req, res) => {
     const parsedMessage = {
         ...messages,
         from,
+        profileName,
         messageId: messages.id
     };
 

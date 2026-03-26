@@ -503,6 +503,8 @@ const handleWebhook = async (req, res) => {
         const entry = req.body.entry?.[0];
         const value = entry?.changes?.[0]?.value;
         const messages = value?.messages?.[0];
+        const contact = value?.contacts?.[0];
+        const profileName = contact?.profile?.name || '';
         const phoneNumberId = value?.metadata?.phone_number_id;
         const from = messages?.from;
 
@@ -516,6 +518,7 @@ const handleWebhook = async (req, res) => {
         const parsedMessage = {
             ...messages,
             from,
+            profileName,
             messageId: messages.id
         };
 
