@@ -296,18 +296,24 @@ async function sendNodeContent(node, client, phone, lead = null) {
       const recipient = lead?.email || (data.recipientEmail);
       if (!recipient) {
         log.warn(`[DualBrain] Skipping email node: no recipient email for lead ${phone}`);
-        return true; // Don't block the flow if email is missing
+        return true; 
+      }
+
+      if (!client.emailUser || !client.emailAppPassword) {
+        log.warn(`[DualBrain] Skipping email node: client ${client.clientId} missing SMTP credentials.`);
+        return true;
       }
 
       let subject = data.subject || 'Follow up from ' + (client.name || 'Store');
       let body = data.body || '';
 
-      // Simple Variable Replacement
+      // Variable Replacement
       const vars = {
         '{name}': lead?.name || 'Customer',
         '{items}': lead?.lastItems || 'your selected items',
         '{total}': lead?.lastTotal || '0',
-        '{id}': lead?.phoneNumber || ''
+        '{id}': lead?.phoneNumber || '',
+        '{order_id}': lead?.lastOrderId || 'your order'
       };
 
       Object.entries(vars).forEach(([key, val]) => {
