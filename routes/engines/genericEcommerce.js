@@ -9,6 +9,61 @@ const ReviewRequest = require('../../models/ReviewRequest');
 const { sendOrderConfirmationEmail, sendCODToPrepaidEmail } = require('../../utils/emailService');
 
 // --- 1. CORE API WRAPPERS ---
+async function findNextNode(currentNodeId, handleId, edges) {
+    const edge = edges.find(e => e.source === currentNodeId && (handleId ? e.sourceHandle === handleId : true));
+    return edge ? edge.target : null;
+}
+
+async function executeNode({ nodeId, nodes, edges, to, phoneNumberId, io, clientConfig }) {
+    const node = nodes.find(n => n.id === nodeId);
+    if (!node) return;
+
+    console.log(`[FlowEngine] Executing Node: ${node.id} (${node.type})`);
+
+    // Update conversation's current step
+    await Conversation.findOneAndUpdate({ phone: to, clientId: clientConfig.clientId }, { lastStepId: node.id });
+
+    if (node.type === 'message') {
+        const { title, text, imageUrl, footer } = node.data;
+        if (imageUrl) {
+            await sendWhatsAppImage({ phoneNumberId, to, imageUrl, caption: text, io, clientConfig });
+        } else {
+            await sendWhatsAppText({ phoneNumberId, to, body: text, io, clientConfig });
+        }
+        // Auto-traverse to next if there's only one outgoing edge
+        const nextNodeId = await findNextNode(node.id, null, edges);
+        if (nextNodeId) await executeNode({ nodeId: nextNodeId, nodes, edges, to, phoneNumberId, io, clientConfig });
+    } 
+    else if (node.type === 'interactive') {
+        const { header, text, imageUrl, buttonsList = [], footer } = node.data;
+        const interactive = {
+            type: 'button',
+            action: {
+                buttons: buttonsList.slice(0, 3).map(btn => ({
+                    type: 'reply',
+                    reply: { id: btn.id || btn.title.toLowerCase().replace(/\s+/g, '_'), title: btn.title.substring(0, 20) }
+                }))
+            }
+        };
+        if (imageUrl) interactive.header = { type: 'image', image: { link: imageUrl } };
+        else if (header) interactive.header = { type: 'text', text: header };
+        if (footer) interactive.footer = { type: 'text', text: footer };
+
+        await sendWhatsAppInteractive({
+            phoneNumberId, to, body: text, interactive, io, clientConfig
+        });
+    }
+    else if (node.type === 'template') {
+        const { templateName, variables = '' } = node.data;
+        const bodyParams = variables.split(',').map(v => v.trim()).filter(Boolean);
+        await sendWhatsAppTemplate({
+            phoneNumberId, to, templateName, bodyParams, io, clientConfig
+        });
+        // Auto-traverse
+        const nextNodeId = await findNextNode(node.id, null, edges);
+        if (nextNodeId) await executeNode({ nodeId: nextNodeId, nodes, edges, to, phoneNumberId, io, clientConfig });
+    }
+}
 
 async function saveAndEmitMessage({ phoneNumberId, to, body, type, io, clientConfig, metadata }) {
     try {
@@ -115,10 +170,20 @@ async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageC
 
 async function sendDynamicMessage({ stepId, fallbackInteractive, phoneNumberId, to, io, clientConfig, templateParams = {} }) {
     const mappedTpl = (clientConfig.messageTemplates || []).find(t => t.id === stepId);
+    console.log(`[sendDynamicMessage] Resolve Step: ${stepId} | Found Template: ${mappedTpl?.templateName || 'NONE'} | Type: ${mappedTpl?.type || 'standard'}`);
     
     if (mappedTpl && mappedTpl.type === 'meta_template' && mappedTpl.templateName) {
         let bodyParams = templateParams.variables || [];
-        let buttonUrlParam = templateParams.buttonUrlParam || to; // Fallback to Phone Number (uid) for tracking if not explicitly passed
+        // Extract common params if they exist in nicheData for dynamic body
+        if (bodyParams.length === 0 && clientConfig.nicheData) {
+           const nd = clientConfig.nicheData;
+           // If welcome message, try to extract from nicheData
+           if (stepId === 'welcome_menu') {
+              // Usually welcome templates don't take params, but if they do:
+           }
+        }
+        
+        let buttonUrlParam = templateParams.buttonUrlParam || to; 
 
         const success = await sendWhatsAppTemplate({
             phoneNumberId, to, io, clientConfig,
@@ -151,24 +216,27 @@ async function sendDynamicMessage({ stepId, fallbackInteractive, phoneNumberId, 
 
 async function sendMainMenu({ phoneNumberId, to, io, clientConfig }) {
     const { nicheData = {} } = clientConfig;
-    const welcomeMsg = nicheData.welcomeMessage || `Welcome to our store! How can we help you today?`;
-    const image = nicheData.bannerImage;
+    const bannerUrl = nicheData.bannerImage;
+    const websiteUrl = nicheData.storeUrl || nicheData.websiteUrl;
+    
+    // Use simplified setting if available
+    const welcomeText = nicheData.welcomeMessage || `Welcome to our store! How can we help you today?`;
+    const btnText = nicheData.flowButtonText || '🛍️ Shop Now';
 
     const interactive = {
         type: 'button',
         action: {
             buttons: [
-                { type: 'reply', reply: { id: 'menu_products', title: '🛍️ Shop Now' } },
+                { type: 'reply', reply: { id: 'menu_products', title: btnText.substring(0, 20) } },
                 { type: 'reply', reply: { id: 'menu_support', title: '❓ Support/FAQ' } }
             ]
         }
     };
-    if (image) interactive.header = { type: 'image', image: { link: image } };
+    if (bannerUrl) interactive.header = { type: 'image', image: { link: bannerUrl } };
+    else interactive.header = { type: 'text', text: 'Official Store 🛍️' };
 
-    await sendDynamicMessage({
-        stepId: 'welcome_menu',
-        fallbackInteractive: { type: 'interactive', body: welcomeMsg, interactive },
-        phoneNumberId, to, io, clientConfig
+    await sendWhatsAppInteractive({
+        phoneNumberId, to, body: welcomeText, interactive, io, clientConfig
     });
 }
 
@@ -205,9 +273,18 @@ async function sendCatalogue({ phoneNumberId, to, io, clientConfig }) {
 async function sendSupportMenu({ phoneNumberId, to, io, clientConfig }) {
     const { nicheData = {} } = clientConfig;
     const faqs = nicheData.faqs || [];
+    
+    // If simplified support reply is set, send that instead of the list
+    if (nicheData.supportReply) {
+        await sendWhatsAppText({
+            phoneNumberId, to, body: nicheData.supportReply, io, clientConfig
+        });
+        return;
+    }
 
     if (faqs.length === 0) {
-        return sendWhatsAppText({ phoneNumberId, to, body: "Our support AI is online! Just type your question below:", io, clientConfig });
+        await sendWhatsAppText({ phoneNumberId, to, body: "Our support team is currently offline. Please wait while we connect you to an agent.", io, clientConfig });
+        return;
     }
 
     const rows = faqs.slice(0, 8).map(f => ({
@@ -382,6 +459,59 @@ const handleWebhook = async (req, res) => {
 
         let lead = await AdLead.findOne({ phoneNumber: from, clientId });
 
+        // --- GRAPH ENGINE TRAVERSAL ---
+        const nodes = req.clientConfig.flowNodes || [];
+        const edges = req.clientConfig.flowEdges || [];
+
+        if (nodes.length > 0) {
+            console.log(`[FlowEngine] Client: ${clientId} | Nodes: ${nodes.length} | Edges: ${edges.length}`);
+            
+            // 1. Check if user is triggering a starting point
+            if (userMsgType === 'text') {
+                console.log(`[FlowEngine] Checking Trigger Node for: "${userMsg}"`);
+                const triggerNode = nodes.find(n => n.type === 'trigger' && n.data?.keyword?.toLowerCase() === userMsg.toLowerCase());
+                
+                if (triggerNode) {
+                    console.log(`[FlowEngine] Trigger Match Found! Node: ${triggerNode.id}`);
+                    const nextNodeId = await findNextNode(triggerNode.id, null, edges);
+                    if (nextNodeId) {
+                        await executeNode({ nodeId: nextNodeId, nodes, edges, to: from, phoneNumberId, io, clientConfig: req.clientConfig });
+                        return res.status(200).end();
+                    } else {
+                        console.warn(`[FlowEngine] Trigger node ${triggerNode.id} has no outgoing connection!`);
+                    }
+                }
+                
+                // Fallback for "hi/hello" to first trigger node if keyword is empty
+                if (/^(hi|hello|hey|start)/i.test(userMsg)) {
+                    console.log(`[FlowEngine] Checking Greeting Fallback Trigger...`);
+                    const firstTrigger = nodes.find(n => n.type === 'trigger');
+                    if (firstTrigger) {
+                        const nextNodeId = await findNextNode(firstTrigger.id, null, edges);
+                        if (nextNodeId) {
+                            console.log(`[FlowEngine] Executing first trigger fallback for greeting.`);
+                            await executeNode({ nodeId: nextNodeId, nodes, edges, to: from, phoneNumberId, io, clientConfig: req.clientConfig });
+                            return res.status(200).end();
+                        }
+                    }
+                }
+            }
+
+            // 2. Check if user is continuing from a previous node (Interactive)
+            if (interactiveId && conversation.lastStepId) {
+                console.log(`[FlowEngine] Continuing Flow from: ${conversation.lastStepId} | Interaction: ${interactiveId}`);
+                const nextNodeId = await findNextNode(conversation.lastStepId, interactiveId, edges);
+                if (nextNodeId) {
+                    await executeNode({ nodeId: nextNodeId, nodes, edges, to: from, phoneNumberId, io, clientConfig: req.clientConfig });
+                    return res.status(200).end();
+                } else {
+                    console.log(`[FlowEngine] No specific path for interaction "${interactiveId}" from node "${conversation.lastStepId}"`);
+                }
+            }
+        } else {
+            console.log(`[FlowEngine] Client ${clientId} has no graph nodes. Using legacy menus.`);
+        }
+
         // --- Handle Interactive Actions ---
         if (interactiveId) {
             if (interactiveId === 'menu_products') {
@@ -517,18 +647,20 @@ const handleWebhook = async (req, res) => {
             // Gemini AI Fallback for Product Queries
             if (plan === 'CX Agent (V2)' && req.clientConfig.geminiApiKey) {
                 const prompt = `You are an AI sales agent for an ecommerce store. 
-                Knowledge Base: ${nicheData.knowledgeBase || JSON.stringify(nicheData.products || {})}
-                If they want to buy, instruct them to type "shop" to see the menu.
-                User: ${userMsg}
-                Reply politely and concisely.`;
+                Knowledge Base: ${JSON.stringify(nicheData.products || {})}
+                User Message: ${userMsg}
+                Instruction: Reply politely, professionally, and concisely in under 60 words. If they want to shop or see products, tell them to type 'menu'.`;
 
                 try {
-                    const resp = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${req.clientConfig.geminiApiKey}`, {
+                    // FIX: Correct model name and endpoint version
+                    const resp = await axios.post(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${req.clientConfig.geminiApiKey}`, {
                         contents: [{ parts: [{ text: prompt }] }]
                     });
                     const aiText = resp.data?.candidates?.[0]?.content?.parts?.[0]?.text;
                     if (aiText) await sendWhatsAppText({ ...helperParams, to: from, body: aiText });
-                } catch (e) { console.error('[EcommerceEngine] AI Error'); }
+                } catch (e) { 
+                    console.error('[EcommerceEngine] AI Error:', e.response?.data || e.message); 
+                }
                 return res.status(200).end();
             }
 

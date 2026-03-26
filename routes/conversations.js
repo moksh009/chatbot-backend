@@ -91,8 +91,18 @@ router.post('/:id/messages', protect, async (req, res) => {
   const { content, mediaUrl, mediaType } = req.body;
 
   try {
-    // Resolve client-specific WhatsApp credentials
-    const client = await Client.findOne({ clientId: req.user.clientId });
+    const query = { _id: req.params.id };
+    if (req.user.role !== 'SUPER_ADMIN') {
+      query.clientId = req.user.clientId;
+    }
+    const conversation = await Conversation.findOne(query);
+
+    if (!conversation) {
+      return res.status(404).json({ message: 'Conversation not found' });
+    }
+
+    // Resolve client-specific WhatsApp credentials using conversation's clientId
+    const client = await Client.findOne({ clientId: conversation.clientId });
 
     const phoneNumberId =
       client?.phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || process.env.WHATSAPP_PHONENUMBER_ID;
@@ -105,22 +115,12 @@ router.post('/:id/messages', protect, async (req, res) => {
       });
     }
 
-    const query = { _id: req.params.id };
-    if (req.user.role !== 'SUPER_ADMIN') {
-      query.clientId = req.user.clientId;
-    }
-    const conversation = await Conversation.findOne(query);
-
-    if (!conversation) {
-      return res.status(404).json({ message: 'Conversation not found' });
-    }
-
     const url = `https://graph.facebook.com/${process.env.API_VERSION || 'v18.0'}/${phoneNumberId}/messages`;
 
     let waPayload;
     let messageType = 'text';
 
-    if (mediaUrl && mediaType === 'image') {
+    if (mediaUrl && (mediaType === 'image' || mediaType === 'IMAGE')) {
       messageType = 'image';
       waPayload = {
         messaging_product: 'whatsapp',
@@ -132,7 +132,7 @@ router.post('/:id/messages', protect, async (req, res) => {
           caption: content || undefined
         }
       };
-    } else if (mediaUrl && (mediaType === 'document' || mediaType === 'file')) {
+    } else if (mediaUrl && (mediaType === 'document' || mediaType === 'file' || mediaType === 'DOCUMENT')) {
       messageType = 'document';
       waPayload = {
         messaging_product: 'whatsapp',
@@ -159,11 +159,11 @@ router.post('/:id/messages', protect, async (req, res) => {
       headers: { Authorization: `Bearer ${token}` }
     });
 
-    // Save to DB
+    // Save to DB (MUST use conversation.clientId)
     const newMessage = await Message.create({
-      clientId: req.user.clientId,
+      clientId: conversation.clientId,
       conversationId: conversation._id,
-      from: 'agent', // Or agent ID/Name
+      from: 'agent',
       to: conversation.phone,
       content,
       type: messageType,
@@ -196,19 +196,18 @@ router.post('/:id/messages', protect, async (req, res) => {
 // @access  Private
 router.put('/:id/takeover', protect, async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.user.clientId });
-    // If client doesn't exist, we default to v2 behavior (consistent with /auth/me)
-    if (client && client.subscriptionPlan === 'v1') {
-      return res.status(403).json({ message: 'Human Handoff is locked for CX Agent (v1). Please upgrade to v2.' });
-    }
-
     const query = { _id: req.params.id };
     if (req.user.role !== 'SUPER_ADMIN') {
       query.clientId = req.user.clientId;
     }
     const conversation = await Conversation.findOne(query);
-
     if (!conversation) return res.status(404).json({ message: 'Not found' });
+
+    // Check plan using conversation.clientId
+    const client = await Client.findOne({ clientId: conversation.clientId });
+    if (client && client.plan === 'CX Agent (V1)') {
+      return res.status(403).json({ message: 'Human Handoff is locked for CX Agent (v1). Please upgrade to v2.' });
+    }
 
     conversation.status = 'HUMAN_TAKEOVER';
     conversation.assignedTo = req.user._id;

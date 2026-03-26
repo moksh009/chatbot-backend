@@ -162,7 +162,8 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
       plan: plan || 'CX Agent (V1)', isGenericBot: isGenericBot || false,
       phoneNumberId, whatsappToken, verifyToken: webhookVerifyToken, googleCalendarId,
       openaiApiKey, nicheData: nicheData || {}, flowData: flowData || {},
-      automationFlows: automationFlows || [], messageTemplates: messageTemplates || [],
+      automationFlows: (automationFlows && automationFlows.length > 0) ? automationFlows : defaultAutomationFlows,
+      messageTemplates: (messageTemplates && messageTemplates.length > 0) ? messageTemplates : defaultMessageTemplates,
       wabaId: wabaId || '', emailUser: emailUser || '', emailAppPassword: emailAppPassword || '',
       razorpayKeyId: razorpayKeyId || '', razorpaySecret: razorpaySecret || '',
       adminPhone: adminPhone || '', shopDomain: shopDomain || '',
@@ -382,7 +383,14 @@ router.post('/generate-flow', protect, async (req, res) => {
     if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not configured on server' });
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    // Use gemini-1.0-pro ($gemini-pro) as fallback if flash is not found in the region/SDK
+    let model;
+    try {
+      model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    } catch (e) {
+      console.warn('[generate-flow] gemini-1.5-flash failed to init, falling back to gemini-pro');
+      model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+    }
 
     const systemPrompt = `You are a WhatsApp chatbot flow designer. Given a business description, generate a JSON object with "nodes" and "edges" arrays for a ReactFlow diagram.
 
@@ -440,7 +448,10 @@ Business description: ${prompt}`;
     res.json({ success: true, nodes: flow.nodes, edges: flow.edges });
   } catch (err) {
     console.error('[generate-flow] FATAL:', err.message, err.stack?.slice(0, 500));
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ 
+      error: 'AI Generation Failed: ' + err.message,
+      suggestion: 'Check your GEMINI_API_KEY or try again.' 
+    });
   }
 });
 

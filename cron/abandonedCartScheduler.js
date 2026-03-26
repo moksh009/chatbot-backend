@@ -111,16 +111,25 @@ const scheduleAbandonedCartCron = () => {
 
                 const storeUrl = client.nicheData?.storeUrl || process.env.STORE_URL || 'https://example.com';
                 const restoreUrl = `${storeUrl}/cart`;
+                const customMsg = client.nicheData?.abandonedMsg1;
 
-                await sendWhatsAppTemplate(
-                    token,
-                    phoneId,
-                    lead.phoneNumber,
-                    "cart_remainder", // Using existing approved template
-                    [
-                        { type: "text", text: lead.name || "Customer" }
-                    ]
-                );
+                if (customMsg) {
+                    const personalizedMsg = customMsg
+                        .replace('{name}', lead.name || "there")
+                        .replace('{items}', lead.activityLog.filter(l => l.action === 'add_to_cart').map(l => l.details).join(', '));
+                    
+                    await sendWhatsAppText(token, phoneId, lead.phoneNumber, personalizedMsg);
+                } else {
+                    await sendWhatsAppTemplate(
+                        token,
+                        phoneId,
+                        lead.phoneNumber,
+                        "cart_remainder", // Fallback to existing approved template
+                        [{ type: "text", text: lead.name || "Customer" }]
+                    );
+                }
+
+                // 📧 Also send abandoned cart email...
 
                 // 📧 Also send abandoned cart email if customer has email
                 if (lead.email) {

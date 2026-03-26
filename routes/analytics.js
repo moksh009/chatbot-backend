@@ -25,7 +25,10 @@ const getGeminiClient = async (req) => {
 router.get('/realtime', protect, async (req, res) => {
   try {
     let clientId = req.user.clientId;
-    // Fallback/Merge for development: If user is on legacy default, show Delitech data
+    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
+      clientId = req.query.clientId;
+    }
+    
     const query = (clientId === 'code_clinic_v1')
       ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
       : { clientId };
@@ -161,6 +164,10 @@ router.get('/realtime', protect, async (req, res) => {
 router.get('/leads', protect, async (req, res) => {
   try {
     let clientId = req.user.clientId;
+    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
+      clientId = req.query.clientId;
+    }
+
     const query = (clientId === 'code_clinic_v1')
       ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
       : { clientId };
@@ -238,7 +245,10 @@ router.get('/lead/:id', protect, async (req, res) => {
 // GET /api/analytics/top-leads
 router.get('/top-leads', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    let clientId = req.user.clientId;
+    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
+      clientId = req.query.clientId;
+    }
     const query = (clientId === 'code_clinic_v1')
       ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
       : { clientId };
@@ -311,7 +321,10 @@ router.get('/top-leads', protect, async (req, res) => {
 // GET /api/analytics/top-products
 router.get('/top-products', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    let clientId = req.user.clientId;
+    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
+      clientId = req.query.clientId;
+    }
     const query = (clientId === 'code_clinic_v1')
       ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
       : { clientId };
@@ -382,7 +395,10 @@ router.get('/top-products', protect, async (req, res) => {
 // GET /api/analytics/receptionist-overview
 router.get('/receptionist-overview', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    let clientId = req.user.clientId;
+    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
+      clientId = req.query.clientId;
+    }
     const daysToFetch = parseInt(req.query.days) || 1; // Default to 1 day (today)
 
     const today = new Date();
@@ -537,7 +553,11 @@ router.get('/receptionist-overview', protect, async (req, res) => {
 
 router.get('/', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    let clientId = req.user.clientId;
+    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
+      clientId = req.query.clientId;
+    }
+
     const clientIdQuery = (clientId === 'code_clinic_v1')
       ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
       : { clientId };

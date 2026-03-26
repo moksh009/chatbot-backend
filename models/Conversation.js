@@ -19,6 +19,7 @@ const ConversationSchema = new mongoose.Schema({
   appointmentStatus: { type: String }, // e.g., 'Booked', 'Completed', 'Cancelled'
   
   tags: [{ type: String }], // e.g., 'Lead', 'Complaint', 'VIP'
+  lastStepId: { type: String }, // For ReactFlow graph traversal state
   
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }

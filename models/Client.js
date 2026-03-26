@@ -56,8 +56,8 @@ const ClientSchema = new mongoose.Schema({
   }],
   
   // Phase 9 Visual Node Builder Fields
-  flowNodes: [{ type: mongoose.Schema.Types.Mixed, default: [] }],
-  flowEdges: [{ type: mongoose.Schema.Types.Mixed, default: [] }],
+  flowNodes: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  flowEdges: { type: [mongoose.Schema.Types.Mixed], default: [] },
   
   createdAt: { type: Date, default: Date.now }
 });
