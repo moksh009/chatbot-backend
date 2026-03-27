@@ -90,6 +90,61 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
       break;
     }
     
+    case "CHECK_ORDER_STATUS": {
+      const Order = require("../models/Order");
+      const axios = require("axios");
+      const { sendWhatsAppText } = require("./dualBrainEngine");
+
+      try {
+        // 1. Try to find the latest order for this phone
+        const localOrder = await Order.findOne({ 
+          $or: [{ customerPhone: phone }, { phone: phone }], 
+          clientId: client.clientId 
+        }).sort({ createdAt: -1 });
+
+        let statusMsg = "";
+
+        if (client.shopifyAccessToken && client.shopDomain) {
+          // 2. If Shopify is connected, try to fetch real-time status
+          try {
+            const shopifyResponse = await axios.get(
+              `https://${client.shopDomain}/admin/api/2024-01/orders.json?limit=1&customer_id=${phone}`, // This assumes customer phone search works or we have an ID
+              { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
+            );
+            
+            // Note: Shopify API phone search is tricky, usually better to search by email or use our local record's Shopify ID
+            // For now, we'll rely on our local record which is synced via webhooks/sync-orders
+          } catch (e) { /* ignore shopify fetch error and fallback to local */ }
+        }
+
+        if (!localOrder) {
+          statusMsg = "I couldn't find any recent orders associated with your number. 😕 If you just placed one, it might take a moment to sync!";
+        } else {
+          statusMsg = `📦 *Order ${localOrder.orderId}*\n` +
+                      `Status: *${localOrder.status || 'Processing'}*\n` +
+                      `Total: ₹${localOrder.totalPrice || localOrder.amount}\n` +
+                      `Placed: ${new Date(localOrder.createdAt).toLocaleDateString('en-IN')}\n`;
+          
+          if (localOrder.trackingUrl) {
+            statusMsg += `🚚 Tracking: ${localOrder.trackingUrl}`;
+          } else {
+            statusMsg += `\n_We'll notify you here once it's shipped!_`;
+          }
+        }
+
+        // Update conversation metadata so the template variable {{order_status_summary}} is ready for the next node
+        await Conversation.findByIdAndUpdate(convo._id, {
+          $set: { "metadata.lastOrderStatus": statusMsg }
+        });
+
+        // We don't necessarily need to send a message here if the flow node has text with {{order_status_summary}}
+        // But for redundancy or auto-edges, it helps.
+      } catch (err) {
+        console.error("[NodeActions] CHECK_ORDER_STATUS error:", err.message);
+      }
+      break;
+    }
+
     case "AI_FALLBACK": {
       // Handled in dualBrainEngine.js by returning false or explicitly calling runAIFallback
       break;

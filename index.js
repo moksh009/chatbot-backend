@@ -175,6 +175,10 @@ scheduleReviewCron();
 // Initialize Birthday Messages Cron Job
 scheduleBirthdayCron();
 
+// Initialize Product Sync Cron Job
+const scheduleProductSyncCron = require('./cron/productSyncCron');
+scheduleProductSyncCron();
+
 // Phase 11 Cron Jobs
 require('./cron/followUpSequenceCron')();
 require('./cron/campaignSchedulerCron')();

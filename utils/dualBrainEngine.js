@@ -20,6 +20,22 @@ async function runDualBrainEngine(parsedMessage, client) {
   const io    = global.io;
   const profileName = parsedMessage.profileName || '';
 
+  // STEP 0: Helper to replace variables in text
+  const replaceVariables = (text, client, lead, convo) => {
+    if (!text) return text;
+    let result = text;
+    const vars = {
+      '{{name}}': lead?.name || profileName || 'Customer',
+      '{{product_list}}': (client.nicheData?.products || []).map(p => `• *${p.title}* - ${p.price}\n  Link: ${p.url}`).join('\n\n') || 'No products available currently.',
+      '{{buy_url}}': client.nicheData?.storeUrl || 'https://google.com',
+      '{{order_status_summary}}': convo?.metadata?.lastOrderStatus || 'No recent orders found.',
+    };
+    Object.entries(vars).forEach(([key, val]) => {
+      result = result.replace(new RegExp(key, 'g'), val);
+    });
+    return result;
+  };
+
   // STEP 1: Upsert conversation state
   let convo = await Conversation.findOneAndUpdate(
     { phone, clientId: client.clientId },
@@ -319,7 +335,8 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null) {
     case 'message':
     case 'MessageNode':
     case 'livechat': {
-      const body = data.text || data.body || (type === 'livechat' ? 'Connecting you to a human...' : '');
+      let body = data.text || data.body || (type === 'livechat' ? 'Connecting you to a human...' : '');
+      body = replaceVariables(body, client, lead, convo);
       if (data.imageUrl) {
         await sendWhatsAppImage(client, phone, data.imageUrl, body);
       } else {

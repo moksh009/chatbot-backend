@@ -39,15 +39,15 @@ const ecommercePreset = () => {
       }
     ),
     createNode('folder-shop-1', 'folder', 200, 400, 'Shopping Flow', null),
-    createNode('folder-help-1', 'folder', 600, 400, 'Customer Support', null),
+    createNode('folder-help-1', 'folder', 650, 400, 'Customer Support', null),
     
     // Inside Shop Folder
-    createNode('products-1', 'message', 100, 100, 'Products', "Check our best items: {{product_list}}", 'folder-shop-1'),
-    createNode('cart-1', 'message', 100, 250, 'Checkout', "Complete your order: {{buy_url}}", 'folder-shop-1'),
+    createNode('products-1', 'message', 100, 100, 'AI Catalog', "Check our best items: {{product_list}}\n\nReply with a product name to see more details!", 'folder-shop-1'),
+    createNode('cart-1', 'message', 100, 250, 'Checkout', "Complete your order here: {{buy_url}}", 'folder-shop-1'),
     
     // Inside Help Folder
-    createNode('track-1', 'message', 100, 100, 'Order Tracking', "Share your Order ID to track! 📦", 'folder-help-1'),
-    createNode('support-1', 'message', 350, 100, 'Talk to Agent', "Human help is coming... 👤", 'folder-help-1', { action: 'ESCALATE_HUMAN' })
+    createNode('track-1', 'message', 100, 100, 'Order Status', "Checking your order status... 🔍\n\n{{order_status_summary}}", 'folder-help-1', { action: 'CHECK_ORDER_STATUS' }),
+    createNode('support-1', 'message', 100, 250, 'Talk to Agent', "Our team is here to help! 👤", 'folder-help-1', { action: 'ESCALATE_HUMAN' })
   ];
   
   const edges = [
@@ -57,7 +57,8 @@ const ecommercePreset = () => {
     createEdge('e4', 'folder-shop-1', 'products-1'),
     createEdge('e5', 'products-1', 'cart-1'),
     createEdge('e6', 'welcome-1', 'folder-help-1', 'btn-track'),
-    createEdge('e7', 'folder-help-1', 'track-1')
+    createEdge('e7', 'folder-help-1', 'track-1'),
+    createEdge('e8', 'track-1', 'support-1')
   ];
   
   return { nodes, edges };

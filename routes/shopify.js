@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const axios = require('axios');
 const Client = require('../models/Client');
-const { protect } = require('../middleware/auth');
+const { protect, verifyClientAccess } = require('../middleware/auth');
 
 async function registerWebhooks(shopDomain, accessToken, clientId) {
   const topics = ['checkouts/create', 'checkouts/update', 'orders/create'];

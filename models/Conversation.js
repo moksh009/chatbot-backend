@@ -36,6 +36,8 @@ const ConversationSchema = new mongoose.Schema({
   resolvedAt: { type: Date },
   afterHours: { type: Boolean, default: false },
 
+  metadata: { type: Object, default: {} },
+
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });

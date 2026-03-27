@@ -40,4 +40,12 @@ const authorize = (...roles) => {
   };
 };
 
-module.exports = { protect, authorize };
+const verifyClientAccess = (req, res, next) => {
+  const { clientId } = req.params;
+  if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    return res.status(403).json({ success: false, message: 'Unauthorized' });
+  }
+  next();
+};
+
+module.exports = { protect, authorize, verifyClientAccess };

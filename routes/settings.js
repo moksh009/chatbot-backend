@@ -1,16 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const Client = require('../models/Client');
-const { protect } = require('../middleware/auth');
+const { protect, verifyClientAccess } = require('../middleware/auth');
 
-// Middleware to verify client access
-const verifyClientAccess = (req, res, next) => {
-  const { clientId } = req.params;
-  if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
-    return res.status(403).json({ success: false, message: 'Unauthorized' });
-  }
-  next();
-};
 
 router.put('/:clientId/working-hours', protect, verifyClientAccess, async (req, res) => {
   try {

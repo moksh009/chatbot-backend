@@ -33,26 +33,30 @@ function getEcommerceFlow() {
     node('welcome', 'interactive', 'Welcome', 'Welcome to our store! 👋 How can we help you?', X_CENTER, Y_SPACING, {
       buttonsList: [
         { id: 'goto_catalog', title: '🛍️ Shop Now' },
+        { id: 'goto_track',   title: '📦 Track Order' },
         { id: 'goto_support', title: '❓ Support' }
       ]
     }),
-    node('folder_shop', 'folder', 'Shopping Flow', null, X_CENTER - 150, Y_SPACING * 2),
-    node('folder_help', 'folder', 'Customer Support', null, X_CENTER + 150, Y_SPACING * 2),
+    node('folder_shop', 'folder', 'Shopping Flow', null, X_CENTER - 200, Y_SPACING * 2),
+    node('folder_help', 'folder', 'Customer Support', null, X_CENTER + 200, Y_SPACING * 2),
     
     // Inside Shop Folder
-    { ...node('catalog', 'message', 'Catalog', 'Browse our latest arrivals! 📦\n\n{{product_list}}', 100, 100), parentId: 'folder_shop' },
-    { ...node('buy', 'message', 'Checkout', 'Ready to buy? Click here: {{buy_url}}', 100, 250), parentId: 'folder_shop' },
+    { ...node('catalog', 'message', 'AI Catalog', 'Browse our latest arrivals! 📦\n\n{{product_list}}\n\nReply with a product name to see more details!', 100, 100), parentId: 'folder_shop' },
+    { ...node('buy', 'message', 'Checkout', 'Ready to buy? Get it now: {{buy_url}}', 100, 250), parentId: 'folder_shop' },
     
     // Inside Help Folder
-    { ...node('agent', 'message', 'Talk to Human', 'Connecting you now... 👤', 100, 100, { action: 'ESCALATE_HUMAN' }), parentId: 'folder_help' }
+    { ...node('track', 'message', 'Order Status', 'Checking your order... 🔍\n\n{{order_status_summary}}', 100, 100, { action: 'CHECK_ORDER_STATUS' }), parentId: 'folder_help' },
+    { ...node('agent', 'message', 'Talk to Human', 'Connecting you to our team... 👤', 100, 250, { action: 'ESCALATE_HUMAN' }), parentId: 'folder_help' }
   ];
   const edges = [
     edge('e1', 'trigger', 'welcome'),
     edge('e2', 'welcome', 'folder_shop', 'goto_catalog'),
     edge('e3', 'welcome', 'folder_help', 'goto_support'),
+    edge('e3b', 'welcome', 'folder_help', 'goto_track'),
     edge('e4', 'folder_shop', 'catalog'),
     edge('e5', 'catalog', 'buy'),
-    edge('e6', 'folder_help', 'agent'),
+    edge('e6', 'folder_help', 'track'),
+    edge('e7', 'track', 'agent'),
   ];
   return { nodes, edges };
 }
