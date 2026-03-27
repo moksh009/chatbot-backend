@@ -5,9 +5,11 @@ const Conversation = require("../models/Conversation");
 const AdLead       = require("../models/AdLead");
 const Message      = require("../models/Message");
 const DailyStat    = require("../models/DailyStat");
+const Client       = require("../models/Client");
 const emailService = require("./emailService");
 const log = require("./logger")('DualBrain');
 const { generateText, getGeminiModel } = require('./gemini');
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN ENGINE — called by ALL niche engines

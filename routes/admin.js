@@ -528,44 +528,6 @@ router.get('/flow/preset/:type', protect, async (req, res) => {
   return res.json({ success: true, ...preset });
 });
 
-  if (type === 'salon' || type === 'general') {
-    const nodes = [
-      trigger('trigger-1', 400, 0),
-      node('welcome-1', 'interactive', 400, 160,
-        'Welcome',
-        "Hi! 👋 Welcome to our location!\n\nWe'd love to assist you today. 💅\n\nWhat brings you here?",
-        null,
-        {
-          buttonsList: [
-            { id: 'btn-book', title: '📅 Book Now' },
-            { id: 'btn-service', title: '💇 Services' },
-            { id: 'btn-contact', title: '📞 Contact Us' }
-          ]
-        }
-      ),
-      node('folder-book-1', 'folder', 200, 400, 'Booking System', null),
-      
-      // Inside Booking Folder
-      node('services-1', 'message', 100, 100, 'Services', "Our list: {{service_list}}", 'folder-book-1', { action: 'SHOW_SERVICES' }),
-      node('slot-1', 'message', 100, 250, 'Select Slot', "Found slots: {{slot_list}}", 'folder-book-1', { action: 'SHOW_SLOTS' }),
-      
-      // Root Node Support
-      node('contact-1', 'message', 400, 400, 'Contact Us', "Reach us anytime! 📍 Our location is open now.", null)
-    ];
-    const edges = [
-      edge('e1', 'trigger-1', 'welcome-1'),
-      edge('e2', 'welcome-1', 'folder-book-1', 'btn-book'),
-      edge('e3', 'welcome-1', 'folder-book-1', 'btn-service'),
-      edge('e4', 'welcome-1', 'contact-1', 'btn-contact'),
-      edge('e5', 'folder-book-1', 'services-1'),
-      edge('e6', 'services-1', 'slot-1')
-    ];
-    return res.json({ success: true, nodes, edges });
-  }
-
-  res.status(400).json({ error: `Unknown type: ${type}. Use 'ecommerce' or 'salon'.` });
-});
-
 // --- GET SETTINGS BY CLIENTID (Super Admin) ---
 router.get('/settings/:clientId', protect, isSuperAdmin, async (req, res) => {
   try {
