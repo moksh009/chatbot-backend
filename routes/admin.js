@@ -515,70 +515,18 @@ router.patch('/my-settings', protect, async (req, res) => {
   }
 });
 // --- GET PRESET FLOW BY BUSINESS TYPE ---
+const flowPresets = require('../utils/flowPresets');
+
 router.get('/flow/preset/:type', protect, async (req, res) => {
-  const { type } = req.params; // 'ecommerce' | 'salon' | 'general'
-
-  // Helper to make nodes
-  const node = (id, type, x, y, label, text, parentId = null, extra = {}) => ({
-    id,
-    type,
-    position: { x, y },
-    parentId,
-    data: {
-      label,
-      text,
-      ...extra
-    }
-  });
-
-  const trigger = (id, x, y, keyword = 'hi') => ({
-    id,
-    type: 'trigger',
-    position: { x, y },
-    data: { label: 'Start Trigger', keyword }
-  });
-
-  const edge = (id, source, target, sourceHandle = null) => ({
-    id, source, target, sourceHandle, animated: true
-  });
-
-  if (type === 'ecommerce') {
-    const nodes = [
-      trigger('trigger-1', 400, 0),
-      node('welcome-1', 'interactive', 400, 160,
-        'Welcome',
-        "Hi! 👋 Welcome to Our Store!\n\nWe're here to help you find the perfect products.\n\nWhat would you like to do today?",
-        null,
-        {
-          buttonsList: [
-            { id: 'btn-shop', title: '🛒 Shop Now' },
-            { id: 'btn-track', title: '📦 Track My Order' },
-            { id: 'btn-support', title: '💬 Support' }
-          ]
-        }
-      ),
-      node('folder-shop-1', 'folder', 200, 400, 'Shopping Flow', null),
-      node('folder-help-1', 'folder', 600, 400, 'Customer Support', null),
-      
-      // Inside Shop Folder
-      node('products-1', 'message', 100, 100, 'Products', "Check our best items: {{product_list}}", 'folder-shop-1'),
-      node('cart-1', 'message', 100, 250, 'Checkout', "Complete your order: {{buy_url}}", 'folder-shop-1'),
-      
-      // Inside Help Folder
-      node('track-1', 'message', 100, 100, 'Order Tracking', "Share your Order ID to track! 📦", 'folder-help-1'),
-      node('support-1', 'message', 350, 100, 'Talk to Agent', "Human help is coming... 👤", 'folder-help-1', { action: 'ESCALATE_HUMAN' })
-    ];
-    const edges = [
-      edge('e1', 'trigger-1', 'welcome-1'),
-      edge('e2', 'welcome-1', 'folder-shop-1', 'btn-shop'),
-      edge('e3', 'welcome-1', 'folder-help-1', 'btn-support'),
-      edge('e4', 'folder-shop-1', 'products-1'),
-      edge('e5', 'products-1', 'cart-1'),
-      edge('e6', 'welcome-1', 'folder-help-1', 'btn-track'), // Link track directly if folder help handles it
-      edge('e7', 'folder-help-1', 'track-1')
-    ];
-    return res.json({ success: true, nodes, edges });
+  const { type } = req.params;
+  const preset = flowPresets.getPreset(type);
+  
+  if (!preset) {
+    return res.status(404).json({ success: false, message: "Preset not found" });
   }
+  
+  return res.json({ success: true, ...preset });
+});
 
   if (type === 'salon' || type === 'general') {
     const nodes = [
