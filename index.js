@@ -31,8 +31,9 @@ const campaignsRoutes = require('./routes/campaigns');
 // const turfClientRoutes = require('./routes/clientcodes/turf'); // Deprecated in favor of dynamic router
 // const vedClientRoutes = require('./routes/clientcodes/ved');   // Deprecated in favor of dynamic router
 const dynamicClientRouter = require('./routes/dynamicClientRouter');
-const trackingRoutes = require('./routes/tracking.js');
 const templatesRoutes = require('./routes/templates');
+const whatsappRoutes = require('./routes/whatsapp');
+const campaignsRoutes = require('./routes/campaigns');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -91,6 +92,8 @@ app.use('/api/client/:clientId', dynamicClientRouter);
 app.use('/api/business', businessRoutes);
 app.use('/api/admin', adminRoutes); // Super Admin Route Registration
 app.use('/api/templates', templatesRoutes); 
+app.use('/api/whatsapp', whatsappRoutes);
+app.use('/api/campaigns', campaignsRoutes);
 app.use('/api/payment', require('./routes/payment')); 
 
 // app.use('/api/client/0001', turfClientRoutes);

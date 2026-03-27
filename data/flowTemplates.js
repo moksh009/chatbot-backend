@@ -217,17 +217,8 @@ module.exports = {
   // ── TURF TEMPLATE ─────────────────────────────────────────────────────────
   turf: {
     nodes: [
-      { 
-        id: "trigger_start", 
-        type: "trigger", 
-        position: { x: 400, y: 0 },
-        data: { label: "Booking Trigger", keyword: "book" } 
-      },
-      { 
-        id: "welcome_node", 
-        type: "interactive", 
-        position: { x: 400, y: 150 },
-        data: {
+      { id: "trigger_start", type: "trigger", position: { x: 400, y: 0 }, data: { label: "Booking Trigger", keyword: "book" } },
+      { id: "welcome_node", type: "interactive", position: { x: 400, y: 150 }, data: {
           label: "Welcome",
           header: "Turf Booking ⚽",
           text: "Ready to play? Select an option to check availability or view our pricing.",
@@ -237,11 +228,11 @@ module.exports = {
           ]
         }
       },
-      { 
-        id: "surface_node", 
-        type: "interactive", 
-        position: { x: 400, y: 350 },
-        data: {
+      { id: "folder_booking", type: "folder", position: { x: 200, y: 350 }, data: { label: "Slot Booking" } },
+      { id: "folder_pricing", type: "folder", position: { x: 600, y: 350 }, data: { label: "Pricing & Info" } },
+      
+      // --- Booking Folder ---
+      { id: "surface_node", type: "interactive", parentId: "folder_booking", position: { x: 100, y: 100 }, data: {
           label: "Select Surface",
           text: "Which turf type would you like to book?",
           buttonsList: [
@@ -250,43 +241,106 @@ module.exports = {
           ]
         }
       },
-      { 
-        id: "slot_node", 
-        type: "message", 
-        position: { x: 400, y: 500 },
-        data: { 
+      { id: "slot_node", type: "message", parentId: "folder_booking", position: { x: 100, y: 250 }, data: { 
           label: "Available Slots", 
           text: "Fetching available time slots for you... 🕒\n\n{{slot_list}}", 
           action: "SHOW_TURF_SLOTS" 
         } 
       },
-      { 
-        id: "payment_node", 
-        type: "message", 
-        position: { x: 400, y: 650 },
-        data: { 
+      { id: "payment_node", type: "message", parentId: "folder_booking", position: { x: 100, y: 400 }, data: { 
           label: "Payment", 
           text: "To confirm your slot, please complete the payment using the link below:\n\n💳 {{payment_link}}", 
           action: "GENERATE_PAYMENT_LINK" 
         } 
       },
-      { 
-        id: "confirmed_node", 
-        type: "message", 
-        position: { x: 400, y: 800 },
-        data: { 
+      { id: "confirmed_node", type: "message", parentId: "folder_booking", position: { x: 100, y: 550 }, data: { 
           label: "Confirmed", 
           text: "✅ Payment Received! Your slot is confirmed. See you on the turf! ⚽" 
         } 
+      },
+      
+      // --- Pricing Folder ---
+      { id: "pricing_node", type: "message", parentId: "folder_pricing", position: { x: 100, y: 100 }, data: {
+          label: "Price List",
+          text: "Our Current Rates 💰:\n\n- Weekdays: ₹1200/hr\n- Weekends: ₹1500/hr\n- Night Lights: +₹200/hr\n\nBook now to reserve your spot!"
+        }
       }
     ],
     edges: [
       { id: "e1", source: "trigger_start", target: "welcome_node", animated: true },
-      { id: "e2", source: "welcome_node", target: "surface_node", sourceHandle: "btn_book", animated: true },
+      { id: "e_go_book", source: "welcome_node", target: "folder_booking", sourceHandle: "btn_book", animated: true },
+      { id: "e_go_price", source: "welcome_node", target: "folder_pricing", sourceHandle: "btn_pricing", animated: true },
+      { id: "e_fold_book", source: "folder_booking", target: "surface_node", animated: true },
       { id: "e3", source: "surface_node", target: "slot_node", sourceHandle: "btn_turf_a", animated: true },
       { id: "e4", source: "surface_node", target: "slot_node", sourceHandle: "btn_turf_b", animated: true },
       { id: "e5", source: "slot_node", target: "payment_node", animated: true },
-      { id: "e6", source: "payment_node", target: "confirmed_node", animated: true }
+      { id: "e6", source: "payment_node", target: "confirmed_node", animated: true },
+      { id: "e_fold_price", source: "folder_pricing", target: "pricing_node", animated: true }
+    ]
+  },
+
+  // ── SALON TEMPLATE ──────────────────────────────────────────────────────────
+  salon: {
+    nodes: [
+      { id: "trigger_start", type: "trigger", position: { x: 400, y: 0 }, data: { label: "Salon Greeting", keyword: "hi" } },
+      { id: "welcome_node", type: "interactive", position: { x: 400, y: 150 }, data: {
+          label: "Welcome",
+          header: "Welcome to {{brand_name}} ✂️",
+          text: "Look your best with our expert stylists. How can we help you today?",
+          buttonsList: [
+            { id: "btn_services", title: "💇‍♀️ Services Menu" },
+            { id: "btn_book", title: "📅 Book Appointment" },
+            { id: "btn_stylists", title: "⭐ Our Stylists" }
+          ]
+        }
+      },
+      { id: "f_services", type: "folder", position: { x: 100, y: 350 }, data: { label: "Services & Pricing" } },
+      { id: "f_booking", type: "folder", position: { x: 400, y: 350 }, data: { label: "Appointment Booking" } },
+      { id: "f_stylists", type: "folder", position: { x: 700, y: 350 }, data: { label: "Meet the Team" } },
+      
+      // --- Services Folder ---
+      { id: "serv_list", type: "message", parentId: "f_services", position: { x: 100, y: 100 }, data: {
+          label: "Hair Services",
+          text: "✂️ Cutting: ₹500+\n🎨 Coloring: ₹1200+\n✨ Spa: ₹800+\n\nReply with 'book' to schedule yours!"
+        }
+      },
+      
+      // --- Booking Folder ---
+      { id: "book_start", type: "message", parentId: "f_booking", position: { x: 100, y: 100 }, data: {
+          label: "Pick Service",
+          text: "Select the service you want to book from our list below:",
+          action: "SHOW_SERVICES"
+        }
+      },
+      { id: "book_slot", type: "message", parentId: "f_booking", position: { x: 100, y: 250 }, data: {
+          label: "Pick Time",
+          text: "Great! Here are the available slots for this week. 📅\n\n{{slot_list}}",
+          action: "SHOW_SLOTS"
+        }
+      },
+      { id: "book_thanks", type: "message", parentId: "f_booking", position: { x: 100, y: 400 }, data: {
+          label: "Confirmation",
+          text: "You are all set! 🎉 We have reserved your spot. See you at the salon!"
+        }
+      },
+
+      // --- Stylists Folder ---
+      { id: "stylist_list", type: "message", parentId: "f_stylists", position: { x: 100, y: 100 }, data: {
+          label: "Our Experts",
+          text: "Meet our Senior Stylists:\n\n- Priya (Hair Specialist)\n- Rohan (Master Barber)\n- Anjali (Bridal Expert)\n\nEach has 10+ years of experience! 🌟"
+        }
+      }
+    ],
+    edges: [
+      { id: "e1", source: "trigger_start", target: "welcome_node" },
+      { id: "e_to_serv", source: "welcome_node", target: "f_services", sourceHandle: "btn_services" },
+      { id: "e_to_book", source: "welcome_node", target: "f_booking", sourceHandle: "btn_book" },
+      { id: "e_to_sty", source: "welcome_node", target: "f_stylists", sourceHandle: "btn_stylists" },
+      { id: "e_f_serv", source: "f_services", target: "serv_list" },
+      { id: "e_f_book", source: "f_booking", target: "book_start" },
+      { id: "e_b1", source: "book_start", target: "book_slot" },
+      { id: "e_b2", source: "book_slot", target: "book_thanks" },
+      { id: "e_f_sty", source: "f_stylists", target: "stylist_list" }
     ]
   }
 };

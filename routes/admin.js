@@ -152,24 +152,28 @@ router.get('/run-delitech-migration', async (req, res) => {
     }
 
     const DELITECH_NODES = [
-      { id: "trigger_start", type: "trigger", position: { x: 350, y: 0 }, data: { label: "Greeting Trigger", keyword: "hi" } },
-      { id: "welcome_node", type: "template", position: { x: 350, y: 120 }, data: { label: "Welcome Message", metaTemplateName:"delitech_welcome" } },
-      { id: "doorbell_menu", type: "interactive", position: { x: 350, y: 280 }, data: { label: "Product Menu", body: "Which doorbell are you interested in? 🏠", interactiveType: "button", buttonsList: [{ id: "btn_3mp", title: "📷 3MP Doorbell" }, { id: "btn_5mp", title: "📷 5MP Doorbell" }, { id: "btn_website", title: "🌐 Visit Website" }] } },
-      { id: "product_3mp", type: "template", position: { x: 100, y: 460 }, data: { label: "3MP Doorbell", metaTemplateName: "3mp_final" } },
-      { id: "product_5mp", type: "template", position: { x: 350, y: 460 }, data: { label: "5MP Doorbell", metaTemplateName: "5mp_final" } },
-      { id: "website_node", type: "message", position: { x: 600, y: 460 }, data: { label: "Website", body: "Visit our website! 🌐\nhttps://delitechsmarthome.in" } },
-      { id: "faq_node", type: "message", position: { x: 600, y: 280 }, data: { label: "Setup & FAQ", body: "IP65 rated, 6-month battery life...", action: "AI_FALLBACK" } },
-      { id: "back_menu", type: "interactive", position: { x: 350, y: 640 }, data: { label: "Back to Menu", body: "What else?", interactiveType: "button", buttonsList: [{ id: "btn_3mp_2", title: "3MP Doorbell" }, { id: "btn_5mp_2", title: "5MP Doorbell" }] } }
+      { id: "trigger_start", type: "trigger", position: { x: 400, y: 0 }, data: { label: "Greeting Trigger", keyword: "hi" } },
+      { id: "welcome_node", type: "template", position: { x: 400, y: 150 }, data: { label: "Welcome Message", metaTemplateName:"delitech_welcome" } },
+      { id: "f_products", type: "folder", position: { x: 200, y: 350 }, data: { label: "Smart Doorbells" } },
+      { id: "f_support", type: "folder", position: { x: 600, y: 350 }, data: { label: "Setup & FAQ" } },
+      
+      // --- Products Folder ---
+      { id: "doorbell_menu", type: "interactive", parentId: "f_products", position: { x: 100, y: 100 }, data: { label: "Product Menu", body: "Which doorbell are you interested in? 🏠", interactiveType: "button", buttonsList: [{ id: "btn_3mp", title: "📷 3MP Doorbell" }, { id: "btn_5mp", title: "📷 5MP Doorbell" }, { id: "btn_website", title: "🌐 Visit Website" }] } },
+      { id: "product_3mp", type: "template", parentId: "f_products", position: { x: 100, y: 250 }, data: { label: "3MP Doorbell", metaTemplateName: "3mp_final" } },
+      { id: "product_5mp", type: "template", parentId: "f_products", position: { x: 350, y: 250 }, data: { label: "5MP Doorbell", metaTemplateName: "5mp_final" } },
+      { id: "website_node", type: "message", parentId: "f_products", position: { x: 600, y: 250 }, data: { label: "Website", body: "Visit our website! 🌐\nhttps://delitechsmarthome.in" } },
+      
+      // --- FAQ Folder ---
+      { id: "faq_node", type: "message", parentId: "f_support", position: { x: 100, y: 100 }, data: { label: "Setup & FAQ", body: "IP65 rated, 6-month battery life...", action: "AI_FALLBACK" } }
     ];
 
     const DELITECH_EDGES = [
       { id: "e_trigger_welcome", source: "trigger_start", target: "welcome_node" },
-      { id: "e_welcome_menu", source: "welcome_node", target: "doorbell_menu" },
+      { id: "e_welcome_products", source: "welcome_node", target: "f_products" },
+      { id: "e_fold_prod", source: "f_products", target: "doorbell_menu" },
       { id: "e_menu_3mp", source: "doorbell_menu", target: "product_3mp", sourceHandle: "btn_3mp" },
       { id: "e_menu_5mp", source: "doorbell_menu", target: "product_5mp", sourceHandle: "btn_5mp" },
-      { id: "e_menu_website", source: "doorbell_menu", target: "website_node", sourceHandle: "btn_website" },
-      { id: "e_3mp_back", source: "product_3mp", target: "back_menu" },
-      { id: "e_5mp_back", source: "product_5mp", target: "back_menu" }
+      { id: "e_menu_website", source: "doorbell_menu", target: "website_node", sourceHandle: "btn_website" }
     ];
 
     await Client.findOneAndUpdate(
@@ -180,6 +184,82 @@ router.get('/run-delitech-migration', async (req, res) => {
     res.json({ success: true, message: "Delitech flow migrated successfully!" });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+// --- RUN GENERIC FOLDERIZATION (URL RUNNABLE) ---
+router.get('/folderize-clients', async (req, res) => {
+  try {
+    const { key } = req.query;
+    if (key !== 'topedge_secure_admin_123') {
+      return res.status(401).json({ message: 'Unauthorized. Use ?key=topedge_secure_admin_123' });
+    }
+
+    const clientsToFix = ['choice_salon', 'choice_salon_holi'];
+    const results = [];
+    
+    for (const clientId of clientsToFix) {
+      const client = await Client.findOne({ clientId });
+      if (!client || !client.flowNodes || client.flowNodes.length === 0) {
+          results.push(`Skipping ${clientId}: No nodes found.`);
+          continue;
+      }
+
+      const hasFolders = client.flowNodes.some(n => n.type === 'folder');
+      if (hasFolders) {
+          results.push(`Skipping ${clientId}: Already has folders.`);
+          continue;
+      }
+      
+      const newNodes = [];
+      const newEdges = (client.flowEdges || []).map(e => ({ ...e }));
+
+      // Create main hierarchical containers
+      const fSupport = { id: 'f_support', type: 'folder', position: { x: 600, y: 400 }, data: { label: 'Customer Support & FAQ' } };
+      const fProducts = { id: 'f_products', type: 'folder', position: { x: 200, y: 400 }, data: { label: 'Products & Main Menu' } };
+      
+      newNodes.push(fProducts, fSupport);
+
+      let productCount = 0;
+      let supportCount = 0;
+
+      client.flowNodes.forEach(node => {
+        let updatedNode = { ...node };
+        const label = (node.data?.label || '').toLowerCase();
+        const text = (node.data?.text || node.data?.body || '').toLowerCase();
+
+        // Keep triggers and high-level greetings at the root
+        if (node.type === 'trigger' || label.includes('welcome') || node.id === 'welcome_node' || node.id === 'trigger_start') {
+            updatedNode.parentId = null; // Root
+        } else if (label.includes('support') || label.includes('faq') || text.includes('agent') || text.includes('help') || label.includes('handover')) {
+            updatedNode.parentId = 'f_support';
+            updatedNode.position = { x: 100, y: 100 + (supportCount * 150) };
+            supportCount++;
+        } else {
+            // Everything else goes to Products/Main Group for now
+            updatedNode.parentId = 'f_products';
+            updatedNode.position = { x: 100, y: 100 + (productCount * 150) };
+            productCount++;
+        }
+        newNodes.push(updatedNode);
+      });
+
+      // Inject connecting edges from folders to their primary contents if missing
+      const firstProduct = newNodes.find(n => n.parentId === 'f_products' && n.id !== 'f_products');
+      if (firstProduct) {
+          newEdges.push({ id: `e_fold_prod_init`, source: 'f_products', target: firstProduct.id, animated: true });
+      }
+      const firstSupport = newNodes.find(n => n.parentId === 'f_support' && n.id !== 'f_support');
+      if (firstSupport) {
+          newEdges.push({ id: `e_fold_supp_init`, source: 'f_support', target: firstSupport.id, animated: true });
+      }
+
+      await Client.updateOne({ clientId }, { $set: { flowNodes: newNodes, flowEdges: newEdges } });
+      results.push(`Successfully folderized ${clientId}`);
+    }
+
+    res.json({ success: true, message: "Folderization complete", results });
+  } catch (err) {
+    res.status(500).json({ error: 'Folderization failed: ' + err.message });
   }
 });
 
