@@ -225,4 +225,47 @@ router.post('/start', protect, async (req, res) => {
   }
 });
 
+// @route   GET /api/campaigns/:clientId/:campaignId/analytics
+// @desc    Get detailed performance metrics for a campaign
+// @access  Private
+router.get('/:clientId/:campaignId/analytics', protect, async (req, res) => {
+  try {
+    const { clientId, campaignId } = req.params;
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    const campaign = await Campaign.findOne({ _id: campaignId, clientId });
+    if (!campaign) return res.status(404).json({ success: false, message: 'Not found' });
+    res.json({ success: true, analytics: campaign });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// @route   POST /api/campaigns/:clientId/ab-test
+// @desc    Create an AB Test Campaign
+// @access  Private
+router.post('/:clientId/ab-test', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    // Dummy stub that just creates a campaign marked as AB Test
+    // Wait, the client will send variants in body
+    const { name, variants } = req.body;
+    const campaign = await Campaign.create({
+      clientId,
+      name,
+      templateName: "mixed",
+      isAbTest: true,
+      abVariants: variants || [],
+      status: "DRAFT"
+    });
+    res.json({ success: true, campaign });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 module.exports = router;

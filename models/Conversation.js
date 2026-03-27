@@ -29,6 +29,13 @@ const ConversationSchema = new mongoose.Schema({
   currentContext:    { type: String,  default: null },
   lastInteraction:   { type: Date,    default: Date.now },
 
+  // Phase 11 Fields
+  csatScore: { rating: Number, respondedAt: Date },
+  csatSent: { type: Boolean, default: false },
+  priority: { type: String, enum: ["normal","high","vip"], default: "normal" },
+  resolvedAt: { type: Date },
+  afterHours: { type: Boolean, default: false },
+
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });

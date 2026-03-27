@@ -115,4 +115,39 @@ router.delete('/:name', protect, async (req, res) => {
     }
 });
 
+// 4. AI Copy Generation (Gemini)
+router.post('/:clientId/ai-generate', protect, async (req, res) => {
+    try {
+        const { clientId } = req.params;
+        const { prompt, tone, audience } = req.body;
+        
+        const client = await Client.findOne({ clientId });
+        const { GoogleGenerativeAI } = require("@google/generative-ai");
+        const apiKey = client.openaiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
+        const genAI = new GoogleGenerativeAI(apiKey);
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        
+        const finalPrompt = `
+        Act as a master WhatsApp marketer.
+        Write 3 short diverse WhatsApp template body copies.
+        They must be 1-2 paragraphs max. Tone: ${tone}. Target: ${audience}.
+        Context: ${prompt}
+        Output ONLY a JSON array of 3 strings. Provide NO other text, markdown blocks are okay if standard JSON.
+        `;
+        const result = await model.generateContent(finalPrompt);
+        let outputText = result.response.text().trim();
+        if (outputText.startsWith('\`\`\`json')) outputText = outputText.slice(7, -3).trim();
+        
+        res.json({ success: true, copies: JSON.parse(outputText) });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// 5. Template History
+router.get('/:clientId/:templateId/history', protect, async (req, res) => {
+    // Dummy return, ideally we store historical documents in a separate collection.
+    res.json({ success: true, history: [] });
+});
+
 module.exports = router;

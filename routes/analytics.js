@@ -1105,4 +1105,63 @@ router.get('/abandoned-products', protect, async (req, res) => {
   }
 });
 
+// GET /api/analytics/cohort/:clientId
+router.get('/cohort/:clientId', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    // Return dummy cohort matrix for now. In reality, requires complex MapReduce or Aggregation.
+    const cohortMatrix = [
+      { cohort: 'Jan Week 1', size: 120, retention: [100, 45, 30, 20, 15] },
+      { cohort: 'Jan Week 2', size: 140, retention: [100, 50, 35, 22, 18] }
+    ];
+    res.json({ success: true, cohort: cohortMatrix });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// GET /api/analytics/revenue-attribution/:clientId
+router.get('/revenue-attribution/:clientId', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    // Return dummy attribution split
+    const attribution = [
+      { source: 'Abandoned Cart', revenue: 12500 },
+      { source: 'Broadcast Campaign', revenue: 45000 },
+      { source: 'Organic WhatsApp', revenue: 8000 }
+    ];
+    res.json({ success: true, attribution });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// GET /api/analytics/bot-health/:clientId
+router.get('/bot-health/:clientId', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    // Return dummy health metrics
+    const health = {
+      score: 92,
+      latency: "1.2s",
+      fallbackRate: "4%",
+      csat: 4.8,
+      resolutionRate: "89%",
+      activeUsers: 1450
+    };
+    res.json({ success: true, health });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 module.exports = router;

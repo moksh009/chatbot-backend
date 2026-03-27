@@ -449,4 +449,36 @@ router.post('/:id/send-email', protect, async (req, res) => {
   }
 });
 
+// @route   POST /api/conversations/:id/csat
+router.post('/:id/csat', protect, async (req, res) => {
+  try {
+    const { rating } = req.body;
+    const conversation = await Conversation.findOne({ _id: req.params.id });
+    if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
+    
+    conversation.csatScore = { rating, respondedAt: new Date() };
+    await conversation.save();
+    res.json(conversation);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// @route   POST /api/conversations/:id/assign
+router.post('/:id/assign', protect, async (req, res) => {
+  try {
+    const { agentId, priority } = req.body;
+    const conversation = await Conversation.findOne({ _id: req.params.id });
+    if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
+    
+    if (agentId) conversation.assignedTo = agentId;
+    if (priority) conversation.priority = priority;
+    
+    await conversation.save();
+    res.json(conversation);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 module.exports = router;

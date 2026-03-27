@@ -91,6 +91,48 @@ const ClientSchema = new mongoose.Schema({
     }
   },
 
+  // Phase 11 Added Fields
+  quickReplies: [{ shortcut: String, message: String, category: String }],
+  workingHours: {
+    enabled: { type: Boolean, default: false },
+    timezone: { type: String, default: "Asia/Kolkata" },
+    hours: [{
+      day: String,
+      open: String,
+      close: String,
+      closed: Boolean
+    }],
+    afterHoursMessage: String
+  },
+  escalationRules: [{
+    keywords: [String],
+    action: String,
+    notifyPhone: String
+  }],
+  knowledgeBase: {
+    about: String,
+    products: [{ name: String, price: Number, description: String, url: String }],
+    faqs: [{ question: String, answer: String }],
+    returnPolicy: String,
+    shippingPolicy: String,
+    contact: { phone: String, email: String, address: String },
+    tone: String
+  },
+  flowHistory: [{
+    version: Number,
+    nodes: mongoose.Schema.Types.Mixed,
+    edges: mongoose.Schema.Types.Mixed,
+    savedAt: Date,
+    note: String
+  }],
+  insights: [{
+    type: String,
+    message: String,
+    actionUrl: String,
+    estimatedValue: Number,
+    generatedAt: Date
+  }],
+
   createdAt: { type: Date, default: Date.now }
 });
 

@@ -82,6 +82,21 @@ app.use('/api/auth', authRoutes);
 app.use('/api/conversations', conversationRoutes);
 app.use('/api/appointments', appointmentRoutes);
 app.use('/api/analytics', analyticsRoutes);
+
+// Phase 11 Routes
+const insightsRoutes = require('./routes/insights');
+app.use('/api/insights', insightsRoutes);
+const segmentsRoutes = require('./routes/segments');
+app.use('/api/segments', segmentsRoutes);
+const sequencesRoutes = require('./routes/sequences');
+app.use('/api/sequences', sequencesRoutes);
+const settingsRoutes = require('./routes/settings');
+app.use('/api/settings', settingsRoutes);
+const flowRoutes = require('./routes/flow');
+app.use('/api/flow', flowRoutes);
+const ordersRoutes = require('./routes/orders');
+app.use('/api/orders', ordersRoutes);
+
 const businessRoutes = require('./routes/business');
 const adminRoutes = require('./routes/admin'); // Added for DFY SaaS Super Admin
 
@@ -154,6 +169,13 @@ scheduleReviewCron();
 
 // Initialize Birthday Messages Cron Job
 scheduleBirthdayCron();
+
+// Phase 11 Cron Jobs
+require('./cron/followUpSequenceCron')();
+require('./cron/campaignSchedulerCron')();
+require('./cron/abTestCron')();
+require('./cron/insightsCron')();
+require('./cron/csatCron')();
 
 // Cron job for appointment reminders (run daily at 7 AM)
 cron.schedule('0 7 * * *', async () => {
