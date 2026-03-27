@@ -28,12 +28,12 @@ const conversationRoutes = require('./routes/conversations');
 const appointmentRoutes = require('./routes/appointments');
 const analyticsRoutes = require('./routes/analytics');
 const campaignsRoutes = require('./routes/campaigns');
+const trackingRoutes = require('./routes/tracking');
 // const turfClientRoutes = require('./routes/clientcodes/turf'); // Deprecated in favor of dynamic router
 // const vedClientRoutes = require('./routes/clientcodes/ved');   // Deprecated in favor of dynamic router
 const dynamicClientRouter = require('./routes/dynamicClientRouter');
 const templatesRoutes = require('./routes/templates');
 const whatsappRoutes = require('./routes/whatsapp');
-const campaignsRoutes = require('./routes/campaigns');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
