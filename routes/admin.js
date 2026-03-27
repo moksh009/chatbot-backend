@@ -189,75 +189,74 @@ router.get('/run-delitech-migration', async (req, res) => {
 // --- RUN GENERIC FOLDERIZATION (URL RUNNABLE) ---
 router.get('/folderize-clients', async (req, res) => {
   try {
-    const { key } = req.query;
+    const { key, target } = req.query;
     if (key !== 'topedge_secure_admin_123') {
       return res.status(401).json({ message: 'Unauthorized. Use ?key=topedge_secure_admin_123' });
     }
 
-    const clientsToFix = ['choice_salon', 'choice_salon_holi'];
+    // Default to the major ones we know lack the strict new folder structure,
+    // or allow targeting a specific one via ?target=client_id
+    const clientsToFix = target ? [target] : ['choice_salon', 'delitech_smarthomes'];
     const results = [];
     
+    const flowTemplates = require('../data/flowTemplates');
+
     for (const clientId of clientsToFix) {
       const client = await Client.findOne({ clientId });
-      if (!client || !client.flowNodes || client.flowNodes.length === 0) {
-          results.push(`Skipping ${clientId}: No nodes found.`);
+      if (!client) {
+          results.push(`Skipping ${clientId}: Client not found.`);
           continue;
       }
 
-      const hasFolders = client.flowNodes.some(n => n.type === 'folder');
-      if (hasFolders) {
-          results.push(`Skipping ${clientId}: Already has folders.`);
-          continue;
+      // Determine template to apply based on businessType or niche
+      const typeKey = client.businessType === 'salon' || client.niche === 'salon' || clientId.includes('salon') 
+          ? 'salon' 
+          : 'ecommerce';
+          
+      const template = flowTemplates[typeKey];
+
+      if (!template) {
+        results.push(`Skipping ${clientId}: No template available for type ${typeKey}`);
+        continue;
       }
-      
-      const newNodes = [];
-      const newEdges = (client.flowEdges || []).map(e => ({ ...e }));
 
-      // Create main hierarchical containers
-      const fSupport = { id: 'f_support', type: 'folder', position: { x: 600, y: 400 }, data: { label: 'Customer Support & FAQ' } };
-      const fProducts = { id: 'f_products', type: 'folder', position: { x: 200, y: 400 }, data: { label: 'Products & Main Menu' } };
-      
-      newNodes.push(fProducts, fSupport);
+      // Build out variables for substitution
+      const brandName = client.name || clientId.replace('_', ' ');
+      const nicheData = client.nicheData || {};
+      const storeUrl = nicheData.storeUrl || '';
+      const buyUrl = nicheData.buyUrl || storeUrl;
+      const products = nicheData.products || [];
+      const productList = products.length
+        ? products.map((p, i) => `${i + 1}. ${p.name || p.title} — ₹${p.price}`).join('\n')
+        : 'Products coming soon!';
 
-      let productCount = 0;
-      let supportCount = 0;
+      const substituteVars = (str = '') =>
+        str
+          .replace(/{{brand_name}}/g, brandName)
+          .replace(/{{store_url}}/g, storeUrl)
+          .replace(/{{buy_url}}/g, buyUrl)
+          .replace(/{{product_list}}/g, productList);
 
-      client.flowNodes.forEach(node => {
-        let updatedNode = { ...node };
-        const label = (node.data?.label || '').toLowerCase();
-        const text = (node.data?.text || node.data?.body || '').toLowerCase();
-
-        // Keep triggers and high-level greetings at the root
-        if (node.type === 'trigger' || label.includes('welcome') || node.id === 'welcome_node' || node.id === 'trigger_start') {
-            updatedNode.parentId = null; // Root
-        } else if (label.includes('support') || label.includes('faq') || text.includes('agent') || text.includes('help') || label.includes('handover')) {
-            updatedNode.parentId = 'f_support';
-            updatedNode.position = { x: 100, y: 100 + (supportCount * 150) };
-            supportCount++;
-        } else {
-            // Everything else goes to Products/Main Group for now
-            updatedNode.parentId = 'f_products';
-            updatedNode.position = { x: 100, y: 100 + (productCount * 150) };
-            productCount++;
+      const personalizedNodes = template.nodes.map(n => ({
+        ...n,
+        data: {
+          ...n.data,
+          body: substituteVars(n.data?.body || ''),
+          header: substituteVars(n.data?.header || ''),
+          text: substituteVars(n.data?.text || '')
         }
-        newNodes.push(updatedNode);
-      });
+      }));
 
-      // Inject connecting edges from folders to their primary contents if missing
-      const firstProduct = newNodes.find(n => n.parentId === 'f_products' && n.id !== 'f_products');
-      if (firstProduct) {
-          newEdges.push({ id: `e_fold_prod_init`, source: 'f_products', target: firstProduct.id, animated: true });
-      }
-      const firstSupport = newNodes.find(n => n.parentId === 'f_support' && n.id !== 'f_support');
-      if (firstSupport) {
-          newEdges.push({ id: `e_fold_supp_init`, source: 'f_support', target: firstSupport.id, animated: true });
-      }
-
-      await Client.updateOne({ clientId }, { $set: { flowNodes: newNodes, flowEdges: newEdges } });
-      results.push(`Successfully folderized ${clientId}`);
+      // Fully overwrite the flow with the best-practice folder structure
+      await Client.updateOne(
+        { clientId }, 
+        { $set: { flowNodes: personalizedNodes, flowEdges: template.edges } }
+      );
+      
+      results.push(`Successfully re-templated and folderized ${clientId} using ${typeKey} structure.`);
     }
 
-    res.json({ success: true, message: "Folderization complete", results });
+    res.json({ success: true, message: "Template injection and folderization complete", results });
   } catch (err) {
     res.status(500).json({ error: 'Folderization failed: ' + err.message });
   }
