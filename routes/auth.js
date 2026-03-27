@@ -41,7 +41,9 @@ router.get('/me', protect, async (req, res) => {
           adminPhone: client.adminPhone || '',
           shopDomain: client.shopDomain || '',
           razorpayKeyId: client.razorpayKeyId || '',
-          googleReviewUrl: client.googleReviewUrl || ''
+          googleReviewUrl: client.googleReviewUrl || '',
+          wabaId: client.wabaId || '',
+          phoneNumberId: client.phoneNumberId || ''
         } : {},
         clientTemplates: client && client.config && client.config.templates ? client.config.templates : null
     });
@@ -83,7 +85,9 @@ router.post('/login', async (req, res) => {
           adminPhone: client.adminPhone || '',
           shopDomain: client.shopDomain || '',
           razorpayKeyId: client.razorpayKeyId || '',
-          googleReviewUrl: client.googleReviewUrl || ''
+          googleReviewUrl: client.googleReviewUrl || '',
+          wabaId: client.wabaId || '',
+          phoneNumberId: client.phoneNumberId || ''
         } : {},
         clientTemplates: client && client.config && client.config.templates ? client.config.templates : null
       });
