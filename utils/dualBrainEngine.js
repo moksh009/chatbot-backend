@@ -548,6 +548,11 @@ async function tryKeywordFallback(parsedMessage, client, convo, phone) {
       case 'track_order':
         await handleUniversalOrderTracking(client, phone);
         return true;
+      case 'initiate_return': {
+        const { handleNodeAction } = require('./nodeActions');
+        await handleNodeAction('INITIATE_RETURN', {}, client, phone, convo, lead);
+        return true;
+      }
       case 'escalate':
         await handleUniversalEscalate(client, phone, convo);
         return true;

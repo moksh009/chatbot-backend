@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
+const axios = require('axios');
 const Client = require('../models/Client');
 const AdLead = require('../models/AdLead');
 const Order = require('../models/Order');
@@ -137,7 +138,28 @@ async function handleOrder(client, data) {
         createdAt: data.created_at
     });
 
-    // 3. Emit socket event for dashboard
+    // 3. Feature 5: Shopify Order Tagging for WhatsApp attribution
+    const orderTaggingEnabled = (client.automationFlows || []).find(f => f.id === 'order_tagging')?.isActive;
+    if (orderTaggingEnabled && lead?.recoveryStep > 0 && data.id && client.shopifyAccessToken) {
+        try {
+            const existingOrder = await axios.get(
+                `https://${client.shopDomain}/admin/api/2024-01/orders/${data.id}.json`,
+                { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
+            );
+            const existingTags = existingOrder.data.order?.tags || '';
+            const newTags = existingTags ? `${existingTags}, whatsapp_recovered` : 'whatsapp_recovered';
+            await axios.put(
+                `https://${client.shopDomain}/admin/api/2024-01/orders/${data.id}.json`,
+                { order: { id: data.id, tags: newTags } },
+                { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
+            );
+            log.info(`✅ Tagged Shopify order ${data.id} as whatsapp_recovered`);
+        } catch (tagErr) {
+            log.error('Order tagging failed:', tagErr.message);
+        }
+    }
+
+    // 4. Emit socket event for dashboard
     if (global.io) {
         global.io.to(`client_${client.clientId}`).emit('new_order', newOrder);
     }

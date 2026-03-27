@@ -141,4 +141,98 @@ router.post('/:clientId/sync-orders', protect, verifyClientAccess, async (req, r
   }
 });
 
+// GET /api/shopify/:clientId/payouts — Feature 4: Revenue & Payout Dashboard
+router.get('/:clientId/payouts', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const client = await Client.findOne({ clientId: req.params.clientId });
+    if (!client?.shopifyAccessToken) return res.status(400).json({ error: 'Shopify not connected' });
+
+    const response = await axios.get(
+      `https://${client.shopDomain}/admin/api/2024-01/shopify_payments/payouts.json?limit=5`,
+      { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
+    );
+    res.json({ success: true, payouts: response.data.payouts || [] });
+  } catch (err) {
+    // Shopify Payments may not be available on all accounts
+    res.json({ success: true, payouts: [], note: 'Shopify Payments not enabled or not applicable for this store.' });
+  }
+});
+
+// POST /api/shopify/:clientId/create-checkout — Feature 1: WhatsApp-Native Checkout
+router.post('/:clientId/create-checkout', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const client = await Client.findOne({ clientId: req.params.clientId });
+    if (!client?.shopifyAccessToken) return res.status(400).json({ error: 'Shopify not connected' });
+
+    const { variantId, quantity = 1, customerPhone, customerEmail, customerName } = req.body;
+    if (!variantId) return res.status(400).json({ error: 'variantId is required' });
+
+    const checkoutPayload = {
+      checkout: {
+        line_items: [{ variant_id: variantId, quantity }],
+        ...(customerPhone && { phone: customerPhone }),
+        ...(customerEmail && { email: customerEmail }),
+      }
+    };
+
+    const response = await axios.post(
+      `https://${client.shopDomain}/admin/api/2024-01/checkouts.json`,
+      checkoutPayload,
+      { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
+    );
+    const checkout = response.data.checkout;
+    res.json({ success: true, checkoutUrl: checkout.web_url, token: checkout.token });
+  } catch (err) {
+    console.error('❌ Create Checkout Error:', err.response?.data || err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/shopify/:clientId/create-discount-code — Feature 2: Dynamic Discount Codes
+router.post('/:clientId/create-discount-code', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const client = await Client.findOne({ clientId: req.params.clientId });
+    if (!client?.shopifyAccessToken) return res.status(400).json({ error: 'Shopify not connected' });
+
+    const { discountPercent = 10, customerPhone } = req.body;
+    const codeSuffix = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const code = `COMEBACK-${codeSuffix}`;
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24h expiry
+
+    // Step 1: Create Price Rule
+    const priceRuleRes = await axios.post(
+      `https://${client.shopDomain}/admin/api/2024-01/price_rules.json`,
+      {
+        price_rule: {
+          title: code,
+          target_type: 'line_item',
+          target_selection: 'all',
+          allocation_method: 'across',
+          value_type: 'percentage',
+          value: `-${discountPercent}`,
+          customer_selection: 'all',
+          starts_at: new Date().toISOString(),
+          ends_at: expiresAt,
+          usage_limit: 1,
+          once_per_customer: true
+        }
+      },
+      { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
+    );
+    const priceRuleId = priceRuleRes.data.price_rule.id;
+
+    // Step 2: Create Discount Code under the Price Rule
+    await axios.post(
+      `https://${client.shopDomain}/admin/api/2024-01/price_rules/${priceRuleId}/discount_codes.json`,
+      { discount_code: { code } },
+      { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
+    );
+
+    res.json({ success: true, code, discountPercent, expiresAt });
+  } catch (err) {
+    console.error('❌ Create Discount Code Error:', err.response?.data || err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;

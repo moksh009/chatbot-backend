@@ -72,11 +72,13 @@ const ClientSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.Mixed,
     default: {
       keywords: [
-        { word: 'hi',     action: 'restart_flow' },
-        { word: 'hello',  action: 'restart_flow' },
-        { word: 'order',  action: 'track_order'  },
-        { word: 'cancel', action: 'cancel_flow'  },
-        { word: 'human',  action: 'escalate'     }
+        { word: 'hi',     action: 'restart_flow'    },
+        { word: 'hello',  action: 'restart_flow'    },
+        { word: 'order',  action: 'track_order'     },
+        { word: 'cancel', action: 'cancel_flow'     },
+        { word: 'human',  action: 'escalate'        },
+        { word: 'return', action: 'initiate_return' },
+        { word: 'refund', action: 'initiate_return' }
       ],
       welcomeStartNodeId: '',
       storeUrl: '',

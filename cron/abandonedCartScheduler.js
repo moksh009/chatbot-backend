@@ -242,16 +242,36 @@ Be conversational, not salesy. No emojis overload. Sound human. Do not use aster
 
                 const aiResponse = await generateText(aiPrompt, apiKey);
                 
-                if (!aiResponse) {
-                    // Fallback if AI fails
-                    await sendWhatsAppText(token, phoneId, lead.phoneNumber, "Hi! Don't forget you left something amazing in your cart. Grab it before it's gone!");
+                // Feature 2: Dynamic Discount Code
+                let discountLine = '';
+                const dynamicDiscountsEnabled = (client.automationFlows || []).find(f => f.id === 'dynamic_discounts')?.isActive;
+                const discountPercent = (client.automationFlows || []).find(f => f.id === 'dynamic_discounts')?.config?.discountPercent || 10;
+                if (dynamicDiscountsEnabled && client.shopifyAccessToken) {
+                    try {
+                        const codeSuffix = Math.random().toString(36).substring(2, 8).toUpperCase();
+                        const code = `COMEBACK-${codeSuffix}`;
+                        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+                        const priceRuleRes = await axios.post(
+                            `https://${client.shopDomain}/admin/api/2024-01/price_rules.json`,
+                            { price_rule: { title: code, target_type: 'line_item', target_selection: 'all', allocation_method: 'across', value_type: 'percentage', value: `-${discountPercent}`, customer_selection: 'all', starts_at: new Date().toISOString(), ends_at: expiresAt, usage_limit: 1, once_per_customer: true } },
+                            { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
+                        );
+                        await axios.post(
+                            `https://${client.shopDomain}/admin/api/2024-01/price_rules/${priceRuleRes.data.price_rule.id}/discount_codes.json`,
+                            { discount_code: { code } },
+                            { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
+                        );
+                        discountLine = `\n\n🎁 Here's a *${discountPercent}% off* code just for you: *${code}* (expires in 24 hours, one use only!)`;
+                    } catch(discErr) { console.warn('[AbandonedCart] Dynamic discount failed:', discErr.message); }
                 } else {
-                    await sendWhatsAppText(
-                        token,
-                        phoneId,
-                        lead.phoneNumber,
-                        aiResponse
-                    );
+                    const staticCode = client.nicheData?.globalDiscountCode || 'OFF10';
+                    discountLine = `\n\n🎁 Use code *${staticCode}* for a special discount!`;
+                }
+
+                if (!aiResponse) {
+                    await sendWhatsAppText(token, phoneId, lead.phoneNumber, `Hi! Don't forget you left something amazing in your cart. Grab it before it's gone!${discountLine}`);
+                } else {
+                    await sendWhatsAppText(token, phoneId, lead.phoneNumber, aiResponse + discountLine);
                 }
 
                 // Alert admin
@@ -265,6 +285,8 @@ Be conversational, not salesy. No emojis overload. Sound human. Do not use aster
                     );
                 }
 
+                // Feature 5: Order Tagging — tag the order in Shopify after WhatsApp recovery
+                // This is done in the webhook handler when order is confirmed
                 await AdLead.findByIdAndUpdate(lead._id, { recoveryStep: 2, recoveryStartedAt: new Date() });
             }
 
