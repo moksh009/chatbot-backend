@@ -101,6 +101,8 @@ const businessRoutes = require('./routes/business');
 app.use('/api/business', businessRoutes);
 const shopifyRoutes = require('./routes/shopify');
 app.use('/api/shopify', shopifyRoutes);
+const shopifyWebhookRoutes = require('./routes/shopifyWebhook');
+app.use('/api/shopify/webhook', shopifyWebhookRoutes);
 const adminRoutes = require('./routes/admin'); // Added for DFY SaaS Super Admin
 
 // Dynamic Client Router (Replaces hardcoded client routes)
