@@ -24,6 +24,7 @@ const ClientSchema = new mongoose.Schema({
     default: 'v2' // Deprecated, migrating to 'plan'
   },
   isGenericBot: { type: Boolean, default: false },
+  isAIFallbackEnabled: { type: Boolean, default: true },
   phoneNumberId: { type: String, required: true },
   whatsappToken: { type: String }, // Store the client's specific WhatsApp token
   wabaId: { type: String }, // WhatsApp Business Account ID (Required for Templates)

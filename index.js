@@ -100,7 +100,11 @@ app.use('/api/payment', require('./routes/payment'));
 // app.use('/api/client/0002', vedClientRoutes);
 app.use('/r', trackingRoutes);
 
-// Homepage endpoint
+// Master Webhook (Root Route for WhatsApp Meta Cloud API)
+const masterWebhook = require('./routes/masterWebhook');
+app.use('/', masterWebhook);
+
+// Homepage endpoint (already handled above if root, but keeping as specific /homepage)
 app.get('/homepage', (req, res) => {
   res.status(200).json({
     message: 'Hello World',

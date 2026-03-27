@@ -35,7 +35,8 @@ const DailyStatSchema = new mongoose.Schema({
   browseAbandonedCount:  { type: Number, default: 0 },
   upsellSentCount:       { type: Number, default: 0 },
   upsellConvertedCount:  { type: Number, default: 0 },
-  upsellRevenue:         { type: Number, default: 0 }
+  upsellRevenue:         { type: Number, default: 0 },
+  abandonedProducts:      { type: Map, of: Number, default: {} } // { "product_id": count }
 });
 
 // Ensure unique stats per client per day

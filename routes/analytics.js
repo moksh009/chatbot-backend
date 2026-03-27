@@ -1039,4 +1039,70 @@ router.get('/funnel', protect, async (req, res) => {
   }
 });
 
+// GET /api/analytics/flow-heatmap
+router.get('/flow-heatmap', protect, async (req, res) => {
+  try {
+    let clientId = req.user.clientId;
+    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
+      clientId = req.query.clientId;
+    }
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ message: 'Client not found' });
+
+    // Filter nodes that have visitCount > 0 or are triggers
+    const heatNodes = (client.flowNodes || [])
+      .map(n => ({
+        id: n.id,
+        label: n.data?.label || n.data?.text || n.type,
+        type: n.type,
+        visitCount: n.visitCount || 0
+      }))
+      .filter(n => n.visitCount > 0 || n.type === 'trigger' || n.type === 'TriggerNode')
+      .sort((a, b) => b.visitCount - a.visitCount);
+
+    res.json(heatNodes);
+  } catch (error) {
+    console.error('Flow Heatmap Error:', error);
+    res.status(500).json({ message: 'Server Error' });
+  }
+});
+
+// GET /api/analytics/abandoned-products
+router.get('/abandoned-products', protect, async (req, res) => {
+  try {
+    let clientId = req.user.clientId;
+    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
+      clientId = req.query.clientId;
+    }
+    const days = parseInt(req.query.days) || 30;
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+
+    const stats = await DailyStat.find({
+      clientId,
+      date: { $gte: since.toISOString().split('T')[0] }
+    });
+
+    // Aggregate product abandon counts
+    const productMap = {};
+    for (const stat of stats) {
+      if (stat.abandonedProducts) {
+        for (const [product, count] of stat.abandonedProducts.entries()) {
+          productMap[product] = (productMap[product] || 0) + count;
+        }
+      }
+    }
+
+    const data = Object.entries(productMap)
+      .map(([name, count]) => ({ name, value: count }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 10); // Top 10
+
+    res.json(data);
+  } catch (error) {
+    console.error('Abandoned Products Error:', error);
+    res.status(500).json({ message: 'Server Error' });
+  }
+});
+
 module.exports = router;

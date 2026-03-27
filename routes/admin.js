@@ -152,28 +152,77 @@ router.get('/run-delitech-migration', async (req, res) => {
     }
 
     const DELITECH_NODES = [
-      { id: "trigger_start", type: "trigger", position: { x: 400, y: 0 }, data: { label: "Greeting Trigger", keyword: "hi" } },
-      { id: "welcome_node", type: "template", position: { x: 400, y: 150 }, data: { label: "Welcome Message", metaTemplateName:"delitech_welcome" } },
-      { id: "f_products", type: "folder", position: { x: 200, y: 350 }, data: { label: "Smart Doorbells" } },
-      { id: "f_support", type: "folder", position: { x: 600, y: 350 }, data: { label: "Setup & FAQ" } },
+      // --- Root Trigger ---
+      { id: "trigger_start", type: "trigger", position: { x: 400, y: 0 }, data: { label: "Main Entry", keyword: "hi,hello,hey,hola" } },
       
-      // --- Products Folder ---
-      { id: "doorbell_menu", type: "interactive", parentId: "f_products", position: { x: 100, y: 100 }, data: { label: "Product Menu", body: "Which doorbell are you interested in? 🏠", interactiveType: "button", buttonsList: [{ id: "btn_3mp", title: "📷 3MP Doorbell" }, { id: "btn_5mp", title: "📷 5MP Doorbell" }, { id: "btn_website", title: "🌐 Visit Website" }] } },
-      { id: "product_3mp", type: "template", parentId: "f_products", position: { x: 100, y: 250 }, data: { label: "3MP Doorbell", metaTemplateName: "3mp_final" } },
-      { id: "product_5mp", type: "template", parentId: "f_products", position: { x: 350, y: 250 }, data: { label: "5MP Doorbell", metaTemplateName: "5mp_final" } },
-      { id: "website_node", type: "message", parentId: "f_products", position: { x: 600, y: 250 }, data: { label: "Website", body: "Visit our website! 🌐\nhttps://delitechsmarthome.in" } },
-      
-      // --- FAQ Folder ---
-      { id: "faq_node", type: "message", parentId: "f_support", position: { x: 100, y: 100 }, data: { label: "Setup & FAQ", body: "IP65 rated, 6-month battery life...", action: "AI_FALLBACK" } }
+      // --- Welcome Message ---
+      { id: "welcome_node", type: "interactive", position: { x: 400, y: 200 }, data: { 
+        label: "Welcome Concierge", 
+        interactiveType: "button",
+        header: "Delitech Smart Home",
+        body: "Welcome to Delitech! 🏠\n\nHow can we upgrade your home security today?",
+        buttonsList: [
+          { id: "btn_showroom", title: "🛍️ View Products" },
+          { id: "btn_support", title: "🛠️ Support & FAQ" },
+          { id: "btn_order", title: "📦 My Orders" }
+        ]
+      }},
+
+      // --- Folders (The containers) ---
+      { id: "f_showroom", type: "folder", position: { x: 100, y: 500 }, data: { label: "🏢 Product Showroom" } },
+      { id: "f_support", type: "folder", position: { x: 400, y: 500 }, data: { label: "🛡️ Support Center" } },
+      { id: "f_order", type: "folder", position: { x: 700, y: 500 }, data: { label: "🧾 Order Desk" } },
+
+      // --- Showroom Sub-nodes ---
+      { id: "doorbell_catalog", type: "interactive", parentId: "f_showroom", position: { x: 50, y: 100 }, data: { 
+        label: "Smart Doorbell Selection", 
+        interactiveType: "button",
+        body: "Our best-selling smart doorbells with 100% wireless DIY setup and IP65 waterproofing.",
+        buttonsList: [
+          { id: "btn_3mp", title: "📷 3MP Doorbell" },
+          { id: "btn_5mp", title: "📷 5MP Doorbell" }
+        ]
+      }},
+      { id: "product_3mp", type: "template", parentId: "f_showroom", position: { x: 50, y: 250 }, data: { label: "3MP Promo", metaTemplateName: "3mp_final" } },
+      { id: "product_5mp", type: "template", parentId: "f_showroom", position: { x: 300, y: 250 }, data: { label: "5MP Promo", metaTemplateName: "5mp_final" } },
+
+      // --- Support Sub-nodes ---
+      { id: "faq_main", type: "message", parentId: "f_support", position: { x: 50, y: 100 }, data: { 
+        label: "AI Knowledge Base", 
+        body: "Ask me anything about installation, battery life, or setup! 💡", 
+        action: "AI_FALLBACK" 
+      }},
+      { id: "install_vid", type: "message", parentId: "f_support", position: { x: 50, y: 250 }, data: { 
+        label: "Install Video", 
+        body: "Watch the setup guide: https://youtu.be/example" 
+      }},
+
+      // --- Order Desk Sub-nodes ---
+      { id: "track_order", type: "message", parentId: "f_order", position: { x: 50, y: 100 }, data: { 
+        label: "Track My Order", 
+        body: "Please share your Order ID to tracking your shipment! 🚚" 
+      }},
+      { id: "escalate_human", type: "message", parentId: "f_order", position: { x: 50, y: 250 }, data: { 
+        label: "Talk to Agent", 
+        body: "An expert will be with you shortly... 👤",
+        action: "ESCALATE_HUMAN"
+      }}
     ];
 
     const DELITECH_EDGES = [
       { id: "e_trigger_welcome", source: "trigger_start", target: "welcome_node" },
-      { id: "e_welcome_products", source: "welcome_node", target: "f_products" },
-      { id: "e_fold_prod", source: "f_products", target: "doorbell_menu" },
-      { id: "e_menu_3mp", source: "doorbell_menu", target: "product_3mp", sourceHandle: "btn_3mp" },
-      { id: "e_menu_5mp", source: "doorbell_menu", target: "product_5mp", sourceHandle: "btn_5mp" },
-      { id: "e_menu_website", source: "doorbell_menu", target: "website_node", sourceHandle: "btn_website" }
+      { id: "e_welcome_showroom", source: "welcome_node", target: "f_showroom", sourceHandle: "btn_showroom" },
+      { id: "e_welcome_support", source: "welcome_node", target: "f_support", sourceHandle: "btn_support" },
+      { id: "e_welcome_order", source: "welcome_node", target: "f_order", sourceHandle: "btn_order" },
+      
+      { id: "e_fold_catalog", source: "f_showroom", target: "doorbell_catalog" },
+      { id: "e_catalog_3mp", source: "doorbell_catalog", target: "product_3mp", sourceHandle: "btn_3mp" },
+      { id: "e_catalog_5mp", source: "doorbell_catalog", target: "product_5mp", sourceHandle: "btn_5mp" },
+      
+      { id: "e_fold_faq", source: "f_support", target: "faq_main" },
+      { id: "e_faq_install", source: "faq_main", target: "install_vid" }, // Optional link
+      
+      { id: "e_fold_track", source: "f_order", target: "track_order" }
     ];
 
     await Client.findOneAndUpdate(
@@ -422,7 +471,7 @@ router.delete('/clients/:id', protect, isSuperAdmin, async (req, res) => {
 // Any authenticated user can update their OWN client's editable fields
 router.patch('/my-settings', protect, async (req, res) => {
   try {
-    const { nicheData, flowData, automationFlows, messageTemplates, flowNodes, flowEdges, simpleSettings, clientId } = req.body;
+    const { nicheData, flowData, automationFlows, messageTemplates, flowNodes, flowEdges, simpleSettings, clientId, isAIFallbackEnabled } = req.body;
     
     // If Super Admin and clientId provided, use that. Otherwise use user's own.
     let targetClientId = req.user.clientId;
@@ -442,6 +491,7 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (flowNodes !== undefined) updateFields.flowNodes = flowNodes;
     if (flowEdges !== undefined) updateFields.flowEdges = flowEdges;
     if (simpleSettings !== undefined) updateFields.simpleSettings = simpleSettings;
+    if (isAIFallbackEnabled !== undefined) updateFields.isAIFallbackEnabled = isAIFallbackEnabled;
 
     const updated = await Client.findOneAndUpdate(
       { clientId: targetClientId },
@@ -584,7 +634,8 @@ router.get('/settings/:clientId', protect, isSuperAdmin, async (req, res) => {
       messageTemplates: client.messageTemplates,
       flowNodes: client.flowNodes || [],
       flowEdges: client.flowEdges || [],
-      plan: client.plan
+      plan: client.plan,
+      isAIFallbackEnabled: client.isAIFallbackEnabled
     });
   } catch (err) {
     res.status(500).json({ message: 'Server error' });

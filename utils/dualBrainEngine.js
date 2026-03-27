@@ -113,7 +113,19 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io) 
 
   if (jumpNode) {
     console.log(`[DualBrain] Graph: Jumping to node ${jumpNode.id} based on keyword/role match "${userText}"`);
+    // Heatmap: Increment visit
+    await trackNodeVisit(client.clientId, jumpNode.id);
     return await executeNode(jumpNode.id, flowNodes, flowEdges, client, convo, lead, phone, io);
+  }
+
+  // --- NEW: Global Reset (If user says 'hi' or 'start', always try to find a trigger node) ---
+  if (isGreeting(userText) || userText === 'start' || userText === 'menu') {
+      const triggerNode = findTriggerNode(userText, flowNodes);
+      if (triggerNode) {
+          console.log(`[DualBrain] Graph: Resetting to trigger node ${triggerNode.id} based on greeting "${userText}"`);
+          await trackNodeVisit(client.clientId, triggerNode.id);
+          return await executeNode(triggerNode.id, flowNodes, flowEdges, client, convo, lead, phone, io);
+      }
   }
 
   // B) No currentStepId (or it looks like a phone number) — guard + find trigger/start node
@@ -138,6 +150,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io) 
       flowNodes[0];
     if (startNode) {
       console.log(`[DualBrain] Graph: Starting fresh from node ${startNode.id}`);
+      await trackNodeVisit(client.clientId, startNode.id);
       return await executeNode(startNode.id, flowNodes, flowEdges, client, convo, lead, phone, io);
     }
     return false;
@@ -155,8 +168,12 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io) 
       const sid = e.sourceHandle.toLowerCase();
       const bid = (incomingTrigger.buttonId || '').toLowerCase();
       const txt = userText;
-      return sid === bid || sid === txt || txt.includes(sid);
+      return sid === bid || sid === txt || txt === sid;
     }
+    
+    // NEW: Handle complex button payloads (e.g. from Meta)
+    const buttonPayload = incomingTrigger.buttonId || '';
+    if (buttonPayload && e.sourceHandle && buttonPayload.includes(e.sourceHandle)) return true;
 
     // Match by trigger object (legacy edge format)
     if (e.trigger?.type === 'button') {
@@ -192,6 +209,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io) 
   }
 
   console.log(`[DualBrain] Graph: edge match from ${currentStepId} → ${matchingEdge.target}`);
+  await trackNodeVisit(client.clientId, matchingEdge.target);
   return await executeNode(matchingEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io);
 }
 
@@ -283,6 +301,11 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null) {
       const caption = data.caption || '';
       if (!imageUrl) return true;
       await sendWhatsAppImage(client, phone, imageUrl, caption);
+      return true;
+    }
+
+    case 'folder': {
+      // Folders are logical containers. They don't send content.
       return true;
     }
 
@@ -525,28 +548,32 @@ async function runAIFallback(parsedMessage, client, phone, lead) {
   const text = parsedMessage.text?.body;
   if (!text) return false;
 
-  const knowledgeBase = [
-    client.systemPrompt || '',
-    client.simpleSettings?.knowledgeBase || '',
-    client.nicheData?.knowledgeBase || ''
-  ].filter(Boolean).join('\n\n');
-
-  if (!knowledgeBase.trim()) {
-    await sendWhatsAppText(client, phone, "I didn't quite understand that. Type 'Hi' to see what I can help with! 😊");
-    return;
-  }
-
   try {
     const ctaHint = client.nicheData?.ctaButtonText || 'Get Started';
+    const discountCode = client.nicheData?.globalDiscountCode || 'OFF10';
+    
+    // Check if user is asking about price or hesitation
+    const isHesitating = /price|expensive|cost|discount|offer|deal|cheap|money/i.test(text);
+    
+    const bargainingInstruction = isHesitating 
+        ? `The customer seems hesitant about price. You are authorized to offer a one-time discount code: "${discountCode}". Use it to close the deal!`
+        : `If the customer asks for a deal, you can mention code "${discountCode}".`;
+
     const prompt = [
+      client.nicheData?.aiPromptContext || 'You are a friendly sales assistant.',
       knowledgeBase,
-      `INSTRUCTIONS:\n- Keep response under 3 sentences\n- Be warm and conversational\n- End by steering toward: "${ctaHint}"\n- Never make up prices or policies not listed above\n- If unsure, say: "Let me connect you to our team"`,
+      `INSTRUCTIONS:
+- Keep response under 3 sentences.
+- Be warm and conversational.
+- ${bargainingInstruction}
+- End by steering toward: "${ctaHint}"
+- If unsure, say: "Let me connect you to our team."`,
       `Customer: ${text}`
     ].join('\n\n');
 
-    const reply = await generateText(prompt, client.geminiKey);
+    const reply = await generateText(prompt, client.geminiApiKey || client.config?.geminiApiKey);
     await sendWhatsAppText(client, phone, reply);
-    console.log(`[DualBrain] AI Fallback used for "${text.substring(0, 50)}..."`);
+    console.log(`[DualBrain] AI Fallback (${isHesitating ? 'Bargaining' : 'Info'}) used for "${text.substring(0, 50)}..."`);
   } catch (err) {
     console.error('[DualBrain] AI Fallback error:', err.message);
     await sendWhatsAppText(client, phone, "I didn't quite understand that. Type 'Hi' to see how I can help! 😊");
@@ -775,8 +802,65 @@ function extractTrigger(parsedMessage) {
   };
 }
 
-function isGreeting(text) {
-  return /^(hi|hello|hey|namaste|start|hola|hii|hey there)\b/i.test((text || '').trim());
+async function trackNodeVisit(clientId, nodeId) {
+  try {
+    // Increment visitCount for this node in the Client document
+    await Client.updateOne(
+      { clientId, "flowNodes.id": nodeId },
+      { $inc: { "flowNodes.$.visitCount": 1 } }
+    );
+    // Also emit to dashboard for real-time heatmap if needed
+    const io = global.io;
+    if (io) io.to(`client_${clientId}`).emit('heatmap_update', { nodeId });
+  } catch (err) {
+    console.error('[DualBrain] Heatmap tracking error:', err.message);
+  }
 }
 
-module.exports = { runDualBrainEngine, executeNode, sendNodeContent, sendWhatsAppText, sendWhatsAppInteractive, sendWhatsAppTemplate, sendWhatsAppImage };
+function findTriggerNode(text, flowNodes) {
+    const txt = (text || '').toLowerCase().trim();
+    const isG = isGreeting(txt);
+    
+    // Helper to check if a keyword data (string or array) matches the input text
+    const matchesKeyword = (kwData, input) => {
+        if (!kwData) return false;
+        const keywords = String(kwData).toLowerCase().split(',').map(k => k.trim()).filter(Boolean);
+        return keywords.some(k => input === k || (k !== '*' && input.includes(k)) || (k === '*' && input.length > 0));
+    };
+
+    // 1. Find exact/partial match in keywords
+    const exact = flowNodes.find(n => {
+        if (n.type !== 'trigger' && n.type !== 'TriggerNode') return false;
+        return matchesKeyword(n.data?.keyword, txt);
+    });
+    if (exact) return exact;
+
+    // 2. Find fallback by label or wildcard
+    const trigger = flowNodes.find(n => {
+        if (n.type !== 'trigger' && n.type !== 'TriggerNode') return false;
+        const lbl = (n.data?.label || '').toLowerCase().trim();
+        const kw = (n.data?.keyword || '').toLowerCase().trim();
+        
+        const isWild = kw === '*' || lbl === '*';
+        const isGreetingMatch = isG && (kw === '' || kw === 'hi' || kw === 'start' || lbl.includes('entry') || lbl.includes('trigger') || lbl === 'hi' || lbl === 'start');
+        
+        return isWild || isGreetingMatch;
+    });
+
+    return trigger || flowNodes.find(n => n.type === 'trigger' || n.type === 'TriggerNode');
+}
+
+function isGreeting(text) {
+  return /^(hi|hello|hey|namaste|start|hola|hii|hey there|menu|options)\b/i.test((text || '').trim());
+}
+
+module.exports = { 
+    runDualBrainEngine, 
+    executeNode, 
+    sendNodeContent, 
+    sendWhatsAppText, 
+    sendWhatsAppInteractive, 
+    sendWhatsAppTemplate, 
+    sendWhatsAppImage,
+    trackNodeVisit
+};
