@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router({ mergeParams: true }); // mergeParams to access :clientId
 const loadClientConfig = require('../middleware/clientConfig');
+const { protect } = require('../middleware/auth');
+const Client = require('../models/Client');
 
 // Import client controllers
 const turfController = require('./clientcodes/turf');
@@ -12,6 +14,41 @@ const genericEcommerceEngine = require('./engines/genericEcommerce');
 
 // Middleware to load client config
 router.use(loadClientConfig);
+
+// Integration Setup Endpoint (PUT)
+router.put('/integrations', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    
+    // Auth validation - ensuring the logged-in user belongs to this client or is SuperAdmin
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+       return res.status(403).json({ error: 'Unauthorized to update integrations for this client.' });
+    }
+
+    const updates = {};
+    const allowedFields = [
+      'shopDomain', 'shopifyAccessToken', 'shopifyWebhookSecret',
+      'emailUser', 'emailAppPassword', 'wabaId'
+    ];
+
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) {
+        updates[field] = req.body[field];
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'No valid fields provided for update.' });
+    }
+
+    await Client.findOneAndUpdate({ clientId }, { $set: updates }, { new: true });
+    
+    res.status(200).json({ success: true, message: 'Integrations updated successfully.', updates });
+  } catch (err) {
+    console.error(`[Integrations] Error updating integrations for ${req.params.clientId}:`, err);
+    res.status(500).json({ error: 'Server error updating integrations.' });
+  }
+});
 
 // Webhook Verification (GET)
 router.get('/webhook', (req, res) => {
@@ -174,6 +211,20 @@ router.get('/orders', async (req, res) => {
   } catch (error) {
     console.error('Error fetching client orders:', error);
     res.status(500).json({ error: 'Failed to fetch orders' });
+  }
+});
+
+router.patch('/orders/:orderId/status', async (req, res) => {
+  try {
+    const { businessType } = req.clientConfig;
+    if (businessType === 'ecommerce') {
+      await genericEcommerceEngine.updateOrderStatus(req, res);
+    } else {
+      res.status(400).json({ error: 'Orders not supported for this business type' });
+    }
+  } catch (error) {
+    console.error('Error updating order status:', error);
+    res.status(500).json({ error: 'Failed' });
   }
 });
 

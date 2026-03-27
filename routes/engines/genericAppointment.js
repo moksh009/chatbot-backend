@@ -43,8 +43,14 @@ async function executeNode({ nodeId, nodes, edges, to, phoneNumberId, io, client
 
     console.log(`[AppointmentFlow] Executing Node: ${node.id} (${node.type})`);
 
-    // Update conversation's current step
-    await Conversation.findOneAndUpdate({ phone: to, clientId: clientConfig.clientId }, { lastStepId: node.id });
+    // Update conversation's current step & Node analytics
+    await Promise.all([
+        Conversation.findOneAndUpdate({ phone: to, clientId: clientConfig.clientId }, { lastStepId: node.id }),
+        Client.findOneAndUpdate(
+            { clientId: clientConfig.clientId, "flowNodes.id": node.id },
+            { $inc: { "flowNodes.$.visitCount": 1 } }
+        ).catch(e => console.error(`[AppointmentFlow] Failed to inc visitCount for node ${node.id}`, e.message))
+    ]);
 
     if (node.type === 'message') {
         const { text, imageUrl } = node.data;

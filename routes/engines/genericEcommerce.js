@@ -6,6 +6,7 @@ const Message = require('../../models/Message');
 const Order = require('../../models/Order');
 const DailyStat = require('../../models/DailyStat');
 const ReviewRequest = require('../../models/ReviewRequest');
+const Client = require('../../models/Client');
 const { sendOrderConfirmationEmail, sendCODToPrepaidEmail } = require('../../utils/emailService');
 const { runDualBrainEngine } = require('../../utils/dualBrainEngine');
 const { generateText } = require('../../utils/gemini');
@@ -29,8 +30,14 @@ async function executeNode({ nodeId, nodes, edges, to, phoneNumberId, io, client
 
     console.log(`[FlowEngine] Executing Node: ${node.id} (${node.type})`);
 
-    // Update conversation's current step
-    await Conversation.findOneAndUpdate({ phone: to, clientId: clientConfig.clientId }, { lastStepId: node.id });
+    // Update conversation's current step & Node analytics
+    await Promise.all([
+        Conversation.findOneAndUpdate({ phone: to, clientId: clientConfig.clientId }, { lastStepId: node.id }),
+        Client.findOneAndUpdate(
+            { clientId: clientConfig.clientId, "flowNodes.id": node.id },
+            { $inc: { "flowNodes.$.visitCount": 1 } }
+        ).catch(e => console.error(`[FlowEngine] Failed to inc visitCount for node ${node.id}`, e.message))
+    ]);
 
     if (node.type === 'message') {
         const { title, text, imageUrl, footer } = node.data;
@@ -978,6 +985,89 @@ const logRestoreEvent = async (req, res) => {
     }
 };
 
+const updateOrderStatus = async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const { status, trackingNumber, trackingUrl } = req.body;
+        const { clientId, shopDomain, shopifyAccessToken, nicheData, phoneNumberId, whatsappToken } = req.clientConfig;
+        const io = req.app.get('socketio');
+
+        const order = await Order.findOne({ _id: orderId, clientId });
+        if (!order) return res.status(404).json({ error: 'Order not found' });
+
+        const oldStatus = order.status;
+        order.status = status;
+        if (trackingNumber) order.trackingNumber = trackingNumber;
+        if (trackingUrl) order.trackingUrl = trackingUrl;
+        await order.save();
+
+        // 1. SHOPIFY SYNC
+        if (shopDomain && shopifyAccessToken && order.shopifyOrderId) {
+            try {
+                const shopifyApi = axios.create({
+                    baseURL: `https://${shopDomain}/admin/api/2023-10`,
+                    headers: { 'X-Shopify-Access-Token': shopifyAccessToken }
+                });
+
+                if (status === 'shipped' || status === 'fulfilled') {
+                    // Fetch fulfillments to see if we can update or create
+                    // Simplest: Create a fulfillment
+                    await shopifyApi.post(`/orders/${order.shopifyOrderId}/fulfillments.json`, {
+                        fulfillment: {
+                            location_id: nicheData.shopifyLocationId || null,
+                            tracking_number: trackingNumber || order.trackingNumber,
+                            tracking_urls: [trackingUrl || order.trackingUrl].filter(Boolean),
+                            notify_customer: false
+                        }
+                    });
+                } else if (status === 'cancelled') {
+                    await shopifyApi.post(`/orders/${order.shopifyOrderId}/cancel.json`);
+                }
+            } catch (err) {
+                console.error(`[ShopifySync] Failed for order ${order.orderNumber}:`, err.response?.data || err.message);
+            }
+        }
+
+        // 2. WHATSAPP NOTIFICATION
+        const statusMap = nicheData.orderStatusTemplates || {};
+        const templateName = statusMap[status.toLowerCase()];
+
+        if (templateName) {
+            const phone = order.customerPhone || order.phone;
+            if (phone) {
+                const bodyParams = [
+                    order.customerName || 'Customer',
+                    order.orderNumber || order.orderId,
+                    status
+                ];
+                const helperParams = { phoneNumberId, token: whatsappToken, io, clientConfig: req.clientConfig };
+                await sendWhatsAppTemplate({
+                    ...helperParams,
+                    to: phone,
+                    templateName,
+                    bodyParams,
+                    buttonUrlParam: trackingUrl || order.trackingUrl || null
+                });
+            }
+        } else if (status !== oldStatus) {
+            const phone = order.customerPhone || order.phone;
+            if (phone) {
+                let msg = `Hi ${order.customerName || 'there'}, your order #${order.orderNumber || order.orderId} status has been updated to *${status}*.`;
+                if (status === 'shipped' && (trackingUrl || order.trackingUrl)) {
+                    msg += `\n\nTrack here: ${trackingUrl || order.trackingUrl}`;
+                }
+                const helperParams = { phoneNumberId, token: whatsappToken, io, clientConfig: req.clientConfig };
+                await sendWhatsAppText({ ...helperParams, to: phone, body: msg });
+            }
+        }
+
+        res.json({ success: true, order });
+    } catch (error) {
+        console.error('[UpdateOrderStatus] Error:', error);
+        res.status(500).json({ error: 'Failed to update order status' });
+    }
+};
+
 module.exports = {
     handleWebhook,
     handleShopifyLinkOpenedWebhook,
@@ -988,5 +1078,6 @@ module.exports = {
     getClientOrders,
     getCartSnapshot,
     restoreCart,
-    logRestoreEvent
+    logRestoreEvent,
+    updateOrderStatus
 };
