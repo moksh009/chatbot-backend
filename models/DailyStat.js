@@ -29,7 +29,13 @@ const DailyStatSchema = new mongoose.Schema({
   bookingRevenue:        { type: Number, default: 0 },
   appointmentsCancelled: { type: Number, default: 0 },
   orders:                { type: Number, default: 0 },
-  revenue:               { type: Number, default: 0 }
+  revenue:               { type: Number, default: 0 },
+  
+  // Phase 11: Hyper-Ecommerce KPIs
+  browseAbandonedCount:  { type: Number, default: 0 },
+  upsellSentCount:       { type: Number, default: 0 },
+  upsellConvertedCount:  { type: Number, default: 0 },
+  upsellRevenue:         { type: Number, default: 0 }
 });
 
 // Ensure unique stats per client per day

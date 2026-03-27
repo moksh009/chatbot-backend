@@ -30,44 +30,65 @@ module.exports = {
         data: { label: "Product Management" }
       },
       {
-        id: "folder_support",
+        id: "folder_recovery",
         type: "folder",
-        position: { x: 600, y: 350 },
-        data: { label: "Customer Support" }
+        position: { x: 400, y: 550 },
+        data: { label: "Revenue Recovery (Automations)" }
       },
-      // --- Products Folder ---
+      // --- Recovery Folder ---
       {
-        id: "catalog_node",
+        id: "browse_nudge_node",
         type: "message",
-        parentId: "folder_products",
+        parentId: "folder_recovery",
         position: { x: 100, y: 100 },
         data: {
-          label: "Product Catalog",
-          text: "Here are our bestsellers! 🛍️\n\n{{product_list}}\n\nReply with the product name to see more details."
+          label: "Browse Nudge",
+          role: "browse_nudge",
+          text: "Hi {{name}}! 👋 We noticed you checking out our products. Need any help? 😊"
         }
       },
       {
-        id: "product_detail_node",
-        type: "interactive",
-        parentId: "folder_products",
-        position: { x: 100, y: 300 },
-        data: {
-          label: "Product Detail",
-          text: "This product is trending right now! Would you like to proceed to checkout?",
-          buttonsList: [
-            { id: "btn_buy", title: "🛒 Buy Now" },
-            { id: "btn_back", title: "⬅️ Back to Shop" }
-          ]
-        }
-      },
-      {
-        id: "buy_node",
+        id: "abandoned_1_node",
         type: "message",
-        parentId: "folder_products",
-        position: { x: 100, y: 500 },
+        parentId: "folder_recovery",
+        position: { x: 100, y: 250 },
         data: {
-          label: "Checkout",
-          text: "Great choice! 🎉 Click the link below to complete your order securely:\n\n👉 {{buy_url}}"
+          label: "Cart Recovery (15m)",
+          role: "abandoned_1",
+          text: "Hi {{name}}, you left {{items}} in your cart! 🛒 Grab them now before they're gone: {{cart_url}}"
+        }
+      },
+      {
+        id: "abandoned_2_node",
+        type: "message",
+        parentId: "folder_recovery",
+        position: { x: 100, y: 400 },
+        data: {
+          label: "AI Negotiator (2h)",
+          role: "abandoned_2",
+          text: "Hey {{name}}, I'm your AI assistant. I saw you looking at {{items}}. Any questions I can help with? 🤖"
+        }
+      },
+      {
+        id: "abandoned_3_node",
+        type: "message",
+        parentId: "folder_recovery",
+        position: { x: 100, y: 550 },
+        data: {
+          label: "Final Nudge (24h)",
+          role: "abandoned_3",
+          text: "🚨 Final call! Use code 'OFF10' for extra 10% off. Your cart is waiting! 🎁"
+        }
+      },
+      {
+        id: "upsell_node",
+        type: "message",
+        parentId: "folder_recovery",
+        position: { x: 100, y: 700 },
+        data: {
+          label: "Post-Purchase Upsell",
+          role: "upsell_1",
+          text: "Hope you love your order! 🎉 Since you bought {{items}}, you might also like these recommended picks! 🛍️"
         }
       },
       // --- Support Folder ---
@@ -78,6 +99,7 @@ module.exports = {
         position: { x: 100, y: 100 },
         data: {
           label: "Order Tracking",
+          role: "support",
           text: "I can help with that! 📦 Please provide your Order ID (starts with #) so I can fetch the status for you."
         }
       },
@@ -102,7 +124,9 @@ module.exports = {
       { id: "e_catalog_detail", source: "catalog_node", target: "product_detail_node", animated: true },
       { id: "e_detail_buy", source: "product_detail_node", target: "buy_node", sourceHandle: "btn_buy", animated: true },
       // Internal Support Folder Connections
-      { id: "e_folder_supp_entry", source: "folder_support", target: "track_node", animated: true }
+      { id: "e_folder_supp_entry", source: "folder_support", target: "track_node", animated: true },
+      // Recovery Flow (Logic driven, but visually connected in folder)
+      { id: "e_folder_rec_entry", source: "folder_recovery", target: "browse_nudge_node", animated: true }
     ]
   },
 

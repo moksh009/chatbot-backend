@@ -7,6 +7,9 @@ const { sendAbandonedCartEmail } = require('../utils/emailService');
 const log = require('../utils/logger')('AbandonedCart');
 const { generateText } = require('../utils/gemini');
 
+// Helper to check if a specific node role was handled previously
+const wasRoleHandled = (lead, role) => lead.activityLog.some(l => l.action === 'automation_nudge' && l.details === role);
+
 // Function to send WhatsApp template
 async function sendWhatsAppTemplate(token, phoneId, to, templateName, variables) {
     try {
@@ -71,13 +74,54 @@ const scheduleAbandonedCartCron = () => {
             const twentyFourHoursAgo = new Date(now - 24 * 60 * 60 * 1000);
             const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
 
+            // --- Step 0: Browse Abandonment (30 mins, viewed product but no cart) ---
+            const browseBatch = await AdLead.find({
+                clientId: { $exists: true },
+                isOrderPlaced: { $ne: true },
+                addToCartCount: 0,
+                linkClicks: { $gt: 0 },
+                recoveryStep: { $exists: false },
+                updatedAt: { $lte: new Date(now - 30 * 60 * 1000), $gte: sevenDaysAgo }
+            }).limit(50);
+            log.info(`Step 0 (Browse) batch size: ${browseBatch.length}`);
+
+            for (const lead of browseBatch) {
+                const client = await Client.findOne({ clientId: lead.clientId });
+                if (!client) continue;
+                const token = client.whatsappToken || client.config?.whatsappToken || process.env.WHATSAPP_TOKEN;
+                const phoneId = client.phoneNumberId || client.config?.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
+                if (!token || !phoneId) continue;
+
+                const lastClick = lead.activityLog
+                    .filter(l => l.action === "link_click")
+                    .sort((a, b) => b.timestamp - a.timestamp)[0];
+                
+                const productName = lastClick ? lastClick.details.replace('clicked product ', '') : "something amazing";
+                const msg = `Hi ${lead.name || 'there'}! 👋 We noticed you checking out *${productName}*. Need any help with it? We're here to answer any questions! 😊`;
+                
+                await sendWhatsAppText(token, phoneId, lead.phoneNumber, msg);
+                await AdLead.findByIdAndUpdate(lead._id, { 
+                    recoveryStep: 0, 
+                    $push: { activityLog: { action: 'automation_nudge', details: 'browse_abandon', timestamp: new Date() } }
+                });
+
+                // Update stats
+                const today = new Date().toISOString().split('T')[0];
+                await DailyStat.findOneAndUpdate(
+                    { clientId: lead.clientId, date: today },
+                    { $inc: { browseAbandonedCount: 1 }, $setOnInsert: { clientId: lead.clientId, date: today } },
+                    { upsert: true }
+                );
+            }
+
             // --- Step 1: First recovery message (15 mins) ---
             const step1Batch = await AdLead.find({
                 clientId: { $exists: true },
                 isOrderPlaced: { $ne: true },
-                recoveryStep: { $exists: false },
+                addToCartCount: { $gt: 0 }, 
+                recoveryStep: { $in: [null, 0] },
                 updatedAt: { $lte: fifteenMinsAgo, $gte: sevenDaysAgo }
-            });
+            }).limit(100);
             log.info(`Step 1 (15m) batch size: ${step1Batch.length}`);
 
             for (const lead of step1Batch) {
@@ -95,7 +139,6 @@ const scheduleAbandonedCartCron = () => {
                 
                 if (!lastCart) continue;
                 
-                // Extra check if they naturally purchased
                 const hasOrdered = lead.activityLog.some(l => l.action === "order_placed");
                 if (hasOrdered) continue;
 
@@ -104,9 +147,11 @@ const scheduleAbandonedCartCron = () => {
                 const customMsg = client.nicheData?.abandonedMsg1;
 
                 if (customMsg) {
+                    const discountCode = client.nicheData?.globalDiscountCode || "OFF10";
                     const personalizedMsg = customMsg
-                        .replace('{name}', lead.name || "there")
-                        .replace('{items}', lead.activityLog.filter(l => l.action === 'add_to_cart').map(l => l.details).join(', '));
+                        .replace(/{name}/g, lead.name || "there")
+                        .replace(/{items}/g, lead.activityLog.filter(l => l.action === 'add_to_cart').map(l => l.details).join(', '))
+                        .replace(/{discount_code}/g, discountCode);
                     
                     await sendWhatsAppText(token, phoneId, lead.phoneNumber, personalizedMsg);
                 } else {
@@ -114,14 +159,11 @@ const scheduleAbandonedCartCron = () => {
                         token,
                         phoneId,
                         lead.phoneNumber,
-                        "cart_remainder", // Fallback to existing approved template
+                        "cart_remainder",
                         [{ type: "text", text: lead.name || "Customer" }]
                     );
                 }
 
-                // 📧 Also send abandoned cart email...
-
-                // 📧 Also send abandoned cart email if customer has email
                 if (lead.email) {
                     await sendAbandonedCartEmail(client, {
                         customerEmail: lead.email,
@@ -135,10 +177,10 @@ const scheduleAbandonedCartCron = () => {
 
                 await AdLead.findByIdAndUpdate(lead._id, { 
                     recoveryStep: 1, 
-                    recoveryStartedAt: new Date() 
+                    recoveryStartedAt: new Date(),
+                    $push: { activityLog: { action: 'automation_nudge', details: 'cart_1', timestamp: new Date() } }
                 });
 
-                // Update stats
                 const today = new Date().toISOString().split('T')[0];
                 await DailyStat.findOneAndUpdate(
                     { clientId: lead.clientId, date: today },
@@ -249,11 +291,55 @@ Be conversational, not salesy. No emojis overload. Sound human. Do not use aster
                     continue;
                 }
 
-                await sendWhatsAppText(
-                    token, phoneId, lead.phoneNumber,
-                    `🚨 Final Reminder, ${lead.name || 'friend'}! Your cart is about to expire. Complete your order now before you lose your items!`
-                );
+                const discountCode = client.nicheData?.globalDiscountCode || "OFF10";
+                const customMsg = client.nicheData?.abandonedMsg2 || `🚨 Final Reminder, {name}! Your cart is about to expire. Use code {discount_code} to save. Complete your order now! 🛒`;
+                
+                const personalizedMsg = customMsg
+                    .replace(/{name}/g, lead.name || 'friend')
+                    .replace(/{discount_code}/g, discountCode);
+
+                await sendWhatsAppText(token, phoneId, lead.phoneNumber, personalizedMsg);
                 await AdLead.findByIdAndUpdate(lead._id, { recoveryStep: 3 });
+            }
+
+            // --- Step 4: Post-Purchase Cross-sell (1 hour after order) ---
+            const step4Batch = await AdLead.find({
+                clientId: { $exists: true },
+                isOrderPlaced: true,
+                recoveryStep: { $in: [1, 2, 3, null, 10] }, 
+                lastInteraction: { $lte: new Date(now - 1 * 60 * 60 * 1000) }
+            }).limit(50);
+            log.info(`Step 4 (Upsell) batch size: ${step4Batch.length}`);
+
+            for (const lead of step4Batch) {
+                const client = await Client.findOne({ clientId: lead.clientId });
+                if (!client || !client.nicheData?.products?.length) continue;
+                if (wasRoleHandled(lead, 'upsell_1')) {
+                    await AdLead.findByIdAndUpdate(lead._id, { recoveryStep: 11 }); 
+                    continue;
+                }
+
+                const token = client.whatsappToken || client.config?.whatsappToken || process.env.WHATSAPP_TOKEN;
+                const phoneId = client.phoneNumberId || client.config?.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
+                if (!token || !phoneId) continue;
+
+                const mainProducts = client.nicheData.products;
+                const randomItem = mainProducts[Math.floor(Math.random() * mainProducts.length)];
+                const msg = `Hope you're excited for your order, ${lead.name || 'friend'}! 🎉 Many customers who bought that also loved our *${randomItem.title || randomItem.name}*. Want to add it to your fleet? See here: ${randomItem.url || ''}`;
+
+                await sendWhatsAppText(token, phoneId, lead.phoneNumber, msg);
+                await AdLead.findByIdAndUpdate(lead._id, { 
+                    recoveryStep: 11,
+                    $push: { activityLog: { action: 'automation_nudge', details: 'upsell_1', timestamp: new Date() } }
+                });
+
+                // Update stats
+                const today = new Date().toISOString().split('T')[0];
+                await DailyStat.findOneAndUpdate(
+                    { clientId: lead.clientId, date: today },
+                    { $inc: { upsellSentCount: 1 }, $setOnInsert: { clientId: lead.clientId, date: today } },
+                    { upsert: true }
+                );
             }
         } catch (e) {
             console.error('Abandoned Cart Cron Error:', e);
