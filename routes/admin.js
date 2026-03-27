@@ -390,73 +390,63 @@ router.get('/flow/preset/:type', protect, async (req, res) => {
   const { type } = req.params; // 'ecommerce' | 'salon' | 'general'
 
   // Helper to make nodes
-  const node = (id, x, y, label, body, role = '', buttons = []) => ({
+  const node = (id, type, x, y, label, text, parentId = null, extra = {}) => ({
     id,
-    type: 'messageNode',
+    type,
     position: { x, y },
+    parentId,
     data: {
       label,
-      title: label,
-      body,
-      imageUrl: '',
-      footer: '',
-      role,
-      nodeAction: '',
-      buttons: buttons.map((b, i) => ({ id: `btn-${id}-${i}`, label: b, value: b }))
+      text,
+      ...extra
     }
   });
 
-  const trigger = (id, x, y, keywords = ['hi', 'hello', 'start']) => ({
+  const trigger = (id, x, y, keyword = 'hi') => ({
     id,
     type: 'trigger',
     position: { x, y },
-    data: { label: 'Trigger', keywords, role: 'trigger' }
+    data: { label: 'Start Trigger', keyword }
   });
 
-  const edge = (id, source, target, label = '', sourceHandle = 'a') => ({
-    id, source, target, label, sourceHandle, targetHandle: 'b', type: 'smoothstep', animated: true
+  const edge = (id, source, target, sourceHandle = null) => ({
+    id, source, target, sourceHandle, animated: true
   });
 
   if (type === 'ecommerce') {
     const nodes = [
       trigger('trigger-1', 400, 0),
-      node('welcome-1', 400, 160,
-        '🛍️ Welcome to Our Store',
-        "Hi! 👋 Welcome to *{store_name}*!\n\nWe're here to help you find the perfect products.\n\nWhat would you like to do today?",
-        'welcome',
-        ['🛒 Browse Products', '📦 Track My Order', '💬 Talk to Support']
+      node('welcome-1', 'interactive', 400, 160,
+        'Welcome',
+        "Hi! 👋 Welcome to Our Store!\n\nWe're here to help you find the perfect products.\n\nWhat would you like to do today?",
+        null,
+        {
+          buttonsList: [
+            { id: 'btn-shop', title: '🛒 Shop Now' },
+            { id: 'btn-track', title: '📦 Track My Order' },
+            { id: 'btn-support', title: '💬 Support' }
+          ]
+        }
       ),
-      node('products-1', 150, 400,
-        '🛒 Our Products',
-        "Here are our top products:\n\n🔥 *Product 1* - ₹999\n🌟 *Product 2* - ₹1,499\n💎 *Product 3* - ₹2,499\n\nTap below to explore or add to cart!",
-        'products',
-        ['🛍️ Shop Now', '🏠 Back to Menu']
-      ),
-      node('order-track-1', 650, 400,
-        '📦 Track Your Order',
-        "Please share your *Order ID* and we'll give you a real-time update!\n\nE.g. #ORD12345",
-        'order_track',
-        ['🏠 Back to Menu']
-      ),
-      node('support-1', 400, 640,
-        '💬 Support',
-        "Our support team is ready to help! 🙌\n\nYou can reach us at:\n📧 support@{store_name}.com\n📞 +91 9876543210\n\nOr describe your issue below and we'll respond ASAP.",
-        'support',
-        ['🏠 Back to Menu']
-      ),
-      node('cart-nudge-1', 150, 640,
-        '🛒 Complete Your Purchase',
-        "You left something in your cart! 🛒\n\n*Don't miss out* — your items are waiting for you.\n\nClick below to complete your purchase and get *FREE delivery* today! 🎁",
-        'abandoned_cart',
-        ['✅ Buy Now', '❌ Maybe Later']
-      )
+      node('folder-shop-1', 'folder', 200, 400, 'Shopping Flow', null),
+      node('folder-help-1', 'folder', 600, 400, 'Customer Support', null),
+      
+      // Inside Shop Folder
+      node('products-1', 'message', 100, 100, 'Products', "Check our best items: {{product_list}}", 'folder-shop-1'),
+      node('cart-1', 'message', 100, 250, 'Checkout', "Complete your order: {{buy_url}}", 'folder-shop-1'),
+      
+      // Inside Help Folder
+      node('track-1', 'message', 100, 100, 'Order Tracking', "Share your Order ID to track! 📦", 'folder-help-1'),
+      node('support-1', 'message', 350, 100, 'Talk to Agent', "Human help is coming... 👤", 'folder-help-1', { action: 'ESCALATE_HUMAN' })
     ];
     const edges = [
       edge('e1', 'trigger-1', 'welcome-1'),
-      edge('e2', 'welcome-1', 'products-1', '🛒 Browse', 'btn-welcome-1-0'),
-      edge('e3', 'welcome-1', 'order-track-1', '📦 Track', 'btn-welcome-1-1'),
-      edge('e4', 'welcome-1', 'support-1', '💬 Support', 'btn-welcome-1-2'),
-      edge('e5', 'products-1', 'cart-nudge-1', '🛍️ Shop Now', 'btn-products-1-0'),
+      edge('e2', 'welcome-1', 'folder-shop-1', 'btn-shop'),
+      edge('e3', 'welcome-1', 'folder-help-1', 'btn-support'),
+      edge('e4', 'folder-shop-1', 'products-1'),
+      edge('e5', 'products-1', 'cart-1'),
+      edge('e6', 'welcome-1', 'folder-help-1', 'btn-track'), // Link track directly if folder help handles it
+      edge('e7', 'folder-help-1', 'track-1')
     ];
     return res.json({ success: true, nodes, edges });
   }
@@ -464,37 +454,34 @@ router.get('/flow/preset/:type', protect, async (req, res) => {
   if (type === 'salon' || type === 'general') {
     const nodes = [
       trigger('trigger-1', 400, 0),
-      node('welcome-1', 400, 160,
-        '💅 Welcome to Our Salon',
-        "Hi! 👋 Welcome to *{salon_name}*!\n\nWe'd love to pamper you today. 💆‍♀️\n\nWhat brings you here?",
-        'welcome',
-        ['📅 Book Appointment', '💇 View Services', '📞 Contact Us']
+      node('welcome-1', 'interactive', 400, 160,
+        'Welcome',
+        "Hi! 👋 Welcome to our location!\n\nWe'd love to assist you today. 💅\n\nWhat brings you here?",
+        null,
+        {
+          buttonsList: [
+            { id: 'btn-book', title: '📅 Book Now' },
+            { id: 'btn-service', title: '💇 Services' },
+            { id: 'btn-contact', title: '📞 Contact Us' }
+          ]
+        }
       ),
-      node('services-1', 150, 400,
-        '💇 Our Services',
-        "Here's what we offer:\n\n✂️ *Haircut & Style* — ₹500\n💅 *Manicure & Pedicure* — ₹800\n🧖 *Facial & Cleanup* — ₹1,200\n💆 *Head Massage* — ₹400\n\nCall or WhatsApp to book!",
-        'services',
-        ['📅 Book Now', '🏠 Back']
-      ),
-      node('booking-1', 650, 400,
-        '📅 Book an Appointment',
-        "Great! Let's get you booked. 📅\n\nPlease share:\n1️⃣ Your preferred *date & time*\n2️⃣ The *service* you want\n3️⃣ Your *name*\n\nWe'll confirm your slot shortly!",
-        'booking',
-        ['✅ Confirm', '🏠 Back to Menu']
-      ),
-      node('contact-1', 400, 640,
-        '📞 Contact Us',
-        "Reach us anytime! 📞\n\n📍 *{salon_address}*\n📞 +91 9876543210\n🕐 Mon–Sat: 10am – 8pm\n\nWe look forward to seeing you! 💖",
-        'support',
-        ['📅 Book Now', '🏠 Back']
-      )
+      node('folder-book-1', 'folder', 200, 400, 'Booking System', null),
+      
+      // Inside Booking Folder
+      node('services-1', 'message', 100, 100, 'Services', "Our list: {{service_list}}", 'folder-book-1', { action: 'SHOW_SERVICES' }),
+      node('slot-1', 'message', 100, 250, 'Select Slot', "Found slots: {{slot_list}}", 'folder-book-1', { action: 'SHOW_SLOTS' }),
+      
+      // Root Node Support
+      node('contact-1', 'message', 400, 400, 'Contact Us', "Reach us anytime! 📍 Our location is open now.", null)
     ];
     const edges = [
       edge('e1', 'trigger-1', 'welcome-1'),
-      edge('e2', 'welcome-1', 'booking-1', '📅 Book', 'btn-welcome-1-0'),
-      edge('e3', 'welcome-1', 'services-1', '💇 Services', 'btn-welcome-1-1'),
-      edge('e4', 'welcome-1', 'contact-1', '📞 Contact', 'btn-welcome-1-2'),
-      edge('e5', 'services-1', 'booking-1', '📅 Book Now', 'btn-services-1-0'),
+      edge('e2', 'welcome-1', 'folder-book-1', 'btn-book'),
+      edge('e3', 'welcome-1', 'folder-book-1', 'btn-service'),
+      edge('e4', 'welcome-1', 'contact-1', 'btn-contact'),
+      edge('e5', 'folder-book-1', 'services-1'),
+      edge('e6', 'services-1', 'slot-1')
     ];
     return res.json({ success: true, nodes, edges });
   }

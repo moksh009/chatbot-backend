@@ -9,19 +9,19 @@
  */
 
 const Y_SPACING = 200;
-const X_CENTER = 350;
+const X_CENTER = 400;
 
 // ─── shared helper ────────────────────────────────────────────────────────────
-function node(id, type, label, subtext, x, y, extra = {}) {
+function node(id, type, label, text, x, y, extra = {}) {
   return {
     id,
     type,
     position: { x, y },
-    data: { label, subtext, ...extra }
+    data: { label, text, ...extra }
   };
 }
-function edge(id, source, target, label = '') {
-  return { id, source, target, label, animated: true };
+function edge(id, source, target, sourceHandle = null) {
+  return { id, source, target, sourceHandle, animated: true };
 }
 
 // =============================================================================
@@ -29,51 +29,30 @@ function edge(id, source, target, label = '') {
 // =============================================================================
 function getEcommerceFlow() {
   const nodes = [
-    { id: 'trigger', type: 'trigger', position: { x: X_CENTER, y: 0 }, data: { keyword: 'hi' } },
-    { 
-      id: 'welcome', 
-      type: 'interactive', 
-      position: { x: X_CENTER - 150, y: Y_SPACING }, 
-      data: { 
-        header: 'Welcome! 👋', 
-        text: 'Welcome to our store! How can we help you today?', 
-        buttonsList: [
-          { id: 'menu_products', title: '🛍️ Shop Now' },
-          { id: 'menu_support', title: '❓ Support' }
-        ]
-      } 
-    },
-    { 
-      id: 'catalog', 
-      type: 'message', 
-      position: { x: X_CENTER - 300, y: Y_SPACING * 2 }, 
-      data: { title: 'Product Catalog', text: 'Browse our premium models below. Tap "Buy Now" to order!' } 
-    },
-    { 
-      id: 'support', 
-      type: 'interactive', 
-      position: { x: X_CENTER + 150, y: Y_SPACING * 2 }, 
-      data: { 
-        header: 'Support Center', 
-        text: 'How can we assist you?', 
-        buttonsList: [
-          { id: 'faq_shipping', title: '🚚 Shipping' },
-          { id: 'menu_agent', title: '👤 Talk to Agent' }
-        ]
-      } 
-    },
-    { 
-      id: 'agent_hand', 
-      type: 'message', 
-      position: { x: X_CENTER + 150, y: Y_SPACING * 3 }, 
-      data: { text: 'Connecting you to our support team... please wait a moment! 👤' } 
-    }
+    node('trigger', 'trigger', 'Start', 'hi', X_CENTER, 0),
+    node('welcome', 'interactive', 'Welcome', 'Welcome to our store! 👋 How can we help you?', X_CENTER, Y_SPACING, {
+      buttonsList: [
+        { id: 'goto_catalog', title: '🛍️ Shop Now' },
+        { id: 'goto_support', title: '❓ Support' }
+      ]
+    }),
+    node('folder_shop', 'folder', 'Shopping Flow', null, X_CENTER - 150, Y_SPACING * 2),
+    node('folder_help', 'folder', 'Customer Support', null, X_CENTER + 150, Y_SPACING * 2),
+    
+    // Inside Shop Folder
+    { ...node('catalog', 'message', 'Catalog', 'Browse our latest arrivals! 📦\n\n{{product_list}}', 100, 100), parentId: 'folder_shop' },
+    { ...node('buy', 'message', 'Checkout', 'Ready to buy? Click here: {{buy_url}}', 100, 250), parentId: 'folder_shop' },
+    
+    // Inside Help Folder
+    { ...node('agent', 'message', 'Talk to Human', 'Connecting you now... 👤', 100, 100, { action: 'ESCALATE_HUMAN' }), parentId: 'folder_help' }
   ];
   const edges = [
-    { id: 'e1', source: 'trigger', target: 'welcome', animated: true },
-    { id: 'e2', source: 'welcome', target: 'catalog', sourceHandle: 'menu_products', animated: true },
-    { id: 'e3', source: 'welcome', target: 'support', sourceHandle: 'menu_support', animated: true },
-    { id: 'e4', source: 'support', target: 'agent_hand', sourceHandle: 'menu_agent', animated: true },
+    edge('e1', 'trigger', 'welcome'),
+    edge('e2', 'welcome', 'folder_shop', 'goto_catalog'),
+    edge('e3', 'welcome', 'folder_help', 'goto_support'),
+    edge('e4', 'folder_shop', 'catalog'),
+    edge('e5', 'catalog', 'buy'),
+    edge('e6', 'folder_help', 'agent'),
   ];
   return { nodes, edges };
 }
@@ -83,45 +62,24 @@ function getEcommerceFlow() {
 // =============================================================================
 function getSalonFlow() {
   const nodes = [
-    { id: 'trigger', type: 'trigger', position: { x: X_CENTER, y: 0 }, data: { keyword: 'hi' } },
-    { 
-      id: 'welcome', 
-      type: 'interactive', 
-      position: { x: X_CENTER, y: Y_SPACING }, 
-      data: { 
-        header: 'Choice Salon 💅', 
-        text: 'Welcome! Choose an option to get started:', 
-        buttonsList: [
-          { id: 'services', title: '📋 Services' },
-          { id: 'menu_support', title: '❓ FAQ' }
-        ]
-      } 
-    },
-    { 
-      id: 'services_node', 
-      type: 'interactive', 
-      position: { x: X_CENTER - 200, y: Y_SPACING * 2 }, 
-      data: { 
-        header: 'Our Services', 
-        text: 'Select a category to see pricing:', 
-        buttonsList: [
-          { id: 'book_now', title: '📅 Book Now' },
-          { id: 'back_menu', title: '⬅️ Back' }
-        ]
-      } 
-    },
-    { 
-      id: 'book_flow', 
-      type: 'message', 
-      position: { x: X_CENTER - 200, y: Y_SPACING * 3 }, 
-      data: { text: 'Opening our booking system... Please select your preferred time! 📅' } 
-    }
+    node('trigger', 'trigger', 'Greeting', 'hi', X_CENTER, 0),
+    node('welcome', 'interactive', 'Entrance', 'Welcome to the salon! ✨ Book an appointment or see our gallery.', X_CENTER, Y_SPACING, {
+      buttonsList: [
+        { id: 'goto_book', title: '📅 Book Now' },
+        { id: 'goto_faq', title: '❓ FAQ' }
+      ]
+    }),
+    node('folder_book', 'folder', 'Booking System', null, X_CENTER - 150, Y_SPACING * 2),
+    
+    // Inside Booking Folder
+    { ...node('services', 'message', 'Services', 'Our premium services: \n\n{{service_list}}', 100, 100, { action: 'SHOW_SERVICES' }), parentId: 'folder_book' },
+    { ...node('slots', 'message', 'Time Slots', 'Available times: \n\n{{slot_list}}', 100, 250, { action: 'SHOW_SLOTS' }), parentId: 'folder_book' }
   ];
   const edges = [
-    { id: 'e1', source: 'trigger', target: 'welcome', animated: true },
-    { id: 'e2', source: 'welcome', target: 'services_node', sourceHandle: 'services', animated: true },
-    { id: 'e3', source: 'services_node', target: 'book_flow', sourceHandle: 'book_now', animated: true },
-    { id: 'e4', source: 'services_node', target: 'welcome', sourceHandle: 'back_menu', animated: true },
+    edge('e1', 'trigger', 'welcome'),
+    edge('e2', 'welcome', 'folder_book', 'goto_book'),
+    edge('e3', 'folder_book', 'services'),
+    edge('e4', 'services', 'slots'),
   ];
   return { nodes, edges };
 }
@@ -131,23 +89,18 @@ function getSalonFlow() {
 // =============================================================================
 function getTurfFlow() {
   const nodes = [
-    { id: 'trigger', type: 'trigger', position: { x: X_CENTER, y: 0 }, data: { keyword: 'book' } },
-    { 
-      id: 'welcome', 
-      type: 'interactive', 
-      position: { x: X_CENTER, y: Y_SPACING }, 
-      data: { 
-        header: 'Turf Booking ⚽', 
-        text: 'Ready to play? Select an option:', 
-        buttonsList: [
-          { id: 'book_slot', title: '📅 Book Slot' },
-          { id: 'prices', title: '📋 Price List' }
-        ]
-      } 
-    }
+    node('trigger', 'trigger', 'Start', 'book', X_CENTER, 0),
+    node('welcome', 'interactive', 'Welcome', 'Ready for a match? ⚽ Book your turf slot now!', X_CENTER, Y_SPACING, {
+      buttonsList: [
+        { id: 'book_slot', title: '📅 Book Slot' },
+        { id: 'prices', title: '💰 Pricing' }
+      ]
+    }),
+    node('slots', 'message', 'Available Slots', 'Checking for open time slots... 🕒\n\n{{slot_list}}', X_CENTER, Y_SPACING * 2, { action: 'SHOW_TURF_SLOTS' })
   ];
   const edges = [
-    { id: 'e1', source: 'trigger', target: 'welcome', animated: true }
+    edge('e1', 'trigger', 'welcome'),
+    edge('e2', 'welcome', 'slots', 'book_slot')
   ];
   return { nodes, edges };
 }
@@ -157,22 +110,16 @@ function getTurfFlow() {
 // =============================================================================
 function getGenericFlow() {
   const nodes = [
-    { id: 'trigger', type: 'trigger', position: { x: X_CENTER, y: 0 }, data: { keyword: 'hi' } },
-    { 
-      id: 'welcome', 
-      type: 'interactive', 
-      position: { x: X_CENTER, y: Y_SPACING }, 
-      data: { 
-        text: 'Hello! How can we help you today?', 
-        buttonsList: [
-          { id: 'contact', title: '📞 Contact Us' },
-          { id: 'about', title: 'ℹ️ About' }
-        ]
-      } 
-    }
+    node('trigger', 'trigger', 'Hello', 'hi', X_CENTER, 0),
+    node('welcome', 'interactive', 'Menu', 'Hello! How can we assist you today? 👤', X_CENTER, Y_SPACING, {
+      buttonsList: [
+        { id: 'contact', title: '📞 Contact' },
+        { id: 'about', title: 'ℹ️ About' }
+      ]
+    })
   ];
   const edges = [
-    { id: 'e1', source: 'trigger', target: 'welcome', animated: true }
+    edge('e1', 'trigger', 'welcome')
   ];
   return { nodes, edges };
 }

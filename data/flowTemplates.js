@@ -4,104 +4,105 @@ module.exports = {
   ecommerce: {
     nodes: [
       {
-        id:   "trigger_start",
-        type: "TriggerNode",
-        position: { x: 300, y: 0 },
+        id: "trigger_start",
+        type: "trigger",
+        position: { x: 400, y: 0 },
         data: { label: "Start Trigger", keyword: "hi" }
       },
       {
-        id:   "welcome_node",
-        type: "InteractiveNode",
-        position: { x: 300, y: 120 },
+        id: "welcome_node",
+        type: "interactive",
+        position: { x: 400, y: 150 },
         data: {
-          label:   "Welcome",
-          header:  "Welcome to {{brand_name}}! 👋",
-          body:    "How can we help you today?",
-          imageUrl: "",
+          label: "Welcome",
+          header: "Welcome to {{brand_name}}! 👋",
+          text: "How can we help you today? Explore our products or get support below.",
           buttonsList: [
-            { id: "btn_catalog", title: "🛍️ View Products" },
-            { id: "btn_track",   title: "📦 Track Order"   },
-            { id: "btn_human",   title: "💬 Talk to Us"    }
+            { id: "goto_products", title: "🛍️ View Products" },
+            { id: "goto_support", title: "❓ Get Support" }
           ]
         }
       },
       {
-        id:   "catalog_node",
-        type: "MessageNode",
-        position: { x: 80, y: 280 },
+        id: "folder_products",
+        type: "folder",
+        position: { x: 200, y: 350 },
+        data: { label: "Product Management" }
+      },
+      {
+        id: "folder_support",
+        type: "folder",
+        position: { x: 600, y: 350 },
+        data: { label: "Customer Support" }
+      },
+      // --- Products Folder ---
+      {
+        id: "catalog_node",
+        type: "message",
+        parentId: "folder_products",
+        position: { x: 100, y: 100 },
         data: {
           label: "Product Catalog",
-          body:  "Here are our products! Reply with a number to learn more:\n\n{{product_list}}\n\nOr visit: {{store_url}}"
+          text: "Here are our bestsellers! 🛍️\n\n{{product_list}}\n\nReply with the product name to see more details."
         }
       },
       {
-        id:   "track_node",
-        type: "MessageNode",
-        position: { x: 300, y: 280 },
-        data: {
-          label: "Order Tracking",
-          body:  "Please share your order number or phone used at checkout and I'll check your order status right away! 📦"
-        }
-      },
-      {
-        id:   "human_node",
-        type: "MessageNode",
-        position: { x: 520, y: 280 },
-        data: {
-          label:  "Connect to Team",
-          body:   "Connecting you to our team! Someone will respond shortly. 💬",
-          action: "ESCALATE_HUMAN"
-        }
-      },
-      {
-        id:   "product_detail_node",
-        type: "InteractiveNode",
-        position: { x: 80, y: 460 },
+        id: "product_detail_node",
+        type: "interactive",
+        parentId: "folder_products",
+        position: { x: 100, y: 300 },
         data: {
           label: "Product Detail",
-          body:  "Ready to order?",
+          text: "This product is trending right now! Would you like to proceed to checkout?",
           buttonsList: [
-            { id: "btn_buy",  title: "🛒 Buy Now"       },
-            { id: "btn_back", title: "⬅️ Back to Menu"  }
+            { id: "btn_buy", title: "🛒 Buy Now" },
+            { id: "btn_back", title: "⬅️ Back to Shop" }
           ]
         }
       },
       {
-        id:   "buy_node",
-        type: "MessageNode",
-        position: { x: 0, y: 640 },
+        id: "buy_node",
+        type: "message",
+        parentId: "folder_products",
+        position: { x: 100, y: 500 },
         data: {
-          label: "Buy Now",
-          body:  "Great choice! 🎉 Click here to complete your order:\n\n👉 {{buy_url}}\n\nNeed help? Just reply here!"
+          label: "Checkout",
+          text: "Great choice! 🎉 Click the link below to complete your order securely:\n\n👉 {{buy_url}}"
+        }
+      },
+      // --- Support Folder ---
+      {
+        id: "track_node",
+        type: "message",
+        parentId: "folder_support",
+        position: { x: 100, y: 100 },
+        data: {
+          label: "Order Tracking",
+          text: "I can help with that! 📦 Please provide your Order ID (starts with #) so I can fetch the status for you."
         }
       },
       {
-        id:   "back_menu_node",
-        type: "InteractiveNode",
-        position: { x: 200, y: 640 },
+        id: "human_node",
+        type: "message",
+        parentId: "folder_support",
+        position: { x: 350, y: 100 },
         data: {
-          label: "Back to Menu",
-          body:  "What else can I help you with?",
-          buttonsList: [
-            { id: "btn_catalog_2", title: "🛍️ Products" },
-            { id: "btn_track_2",   title: "📦 Order"     },
-            { id: "btn_human_2",   title: "💬 Team"      }
-          ]
+          label: "Talk to Agent",
+          text: "Escalating your request to our team... 👤 One of our experts will join this chat in a few moments.",
+          action: "ESCALATE_HUMAN"
         }
       }
     ],
     edges: [
-      { id: "e_trigger_welcome",  source: "trigger_start",       target: "welcome_node",       trigger: { type: "auto" }                                },
-      { id: "e_welcome_catalog",  source: "welcome_node",        target: "catalog_node",       sourceHandle: "btn_catalog"                              },
-      { id: "e_welcome_track",    source: "welcome_node",        target: "track_node",         sourceHandle: "btn_track"                                },
-      { id: "e_welcome_human",    source: "welcome_node",        target: "human_node",         sourceHandle: "btn_human"                                },
-      { id: "e_catalog_detail",   source: "catalog_node",        target: "product_detail_node",trigger: { type: "keyword", value: "product" }           },
-      { id: "e_detail_buy",       source: "product_detail_node", target: "buy_node",           sourceHandle: "btn_buy"                                  },
-      { id: "e_detail_back",      source: "product_detail_node", target: "back_menu_node",     sourceHandle: "btn_back"                                 },
-      { id: "e_buy_back",         source: "buy_node",            target: "back_menu_node",     trigger: { type: "auto" }                                },
-      { id: "e_back_catalog",     source: "back_menu_node",      target: "catalog_node",       sourceHandle: "btn_catalog_2"                            },
-      { id: "e_back_track",       source: "back_menu_node",      target: "track_node",         sourceHandle: "btn_track_2"                              },
-      { id: "e_back_human",       source: "back_menu_node",      target: "human_node",         sourceHandle: "btn_human_2"                              }
+      { id: "e_start", source: "trigger_start", target: "welcome_node", animated: true },
+      { id: "e_welcome_prod", source: "welcome_node", target: "folder_products", sourceHandle: "goto_products", animated: true },
+      { id: "e_welcome_supp", source: "welcome_node", target: "folder_support", sourceHandle: "goto_support", animated: true },
+      // Internal Product Folder Connections (Logic will handle entry)
+      { id: "e_folder_prod_entry", source: "folder_products", target: "catalog_node", animated: true },
+      { id: "e_catalog_detail", source: "catalog_node", target: "product_detail_node", animated: true },
+      { id: "e_detail_buy", source: "product_detail_node", target: "buy_node", sourceHandle: "btn_buy", animated: true },
+      // Internal Support Folder Connections
+      { id: "e_folder_supp_entry", source: "folder_support", target: "track_node", animated: true }
     ]
   },
 
@@ -109,141 +110,183 @@ module.exports = {
   appointment: {
     nodes: [
       {
-        id:   "trigger_start",
-        type: "TriggerNode",
-        position: { x: 300, y: 0 },
-        data: { label: "Start", keyword: "hi" }
+        id: "trigger_start",
+        type: "trigger",
+        position: { x: 400, y: 0 },
+        data: { label: "Greeting", keyword: "hi" }
       },
       {
-        id:   "welcome_node",
-        type: "InteractiveNode",
-        position: { x: 300, y: 120 },
+        id: "welcome_node",
+        type: "interactive",
+        position: { x: 400, y: 150 },
         data: {
           label: "Welcome",
-          body:  "Welcome to {{brand_name}}! 👋\n\nHow can we help you?",
+          header: "Welcome to {{brand_name}}! ✨",
+          text: "We are excited to serve you today! What can we help you with?",
           buttonsList: [
-            { id: "btn_book",      title: "📅 Book Appointment" },
-            { id: "btn_mybooking", title: "📋 My Bookings"      },
-            { id: "btn_human",     title: "💬 Talk to Us"       }
+            { id: "goto_book", title: "📅 Book Now" },
+            { id: "goto_my", title: "📋 My Appointments" }
           ]
         }
       },
       {
-        id:   "service_node",
-        type: "MessageNode",
-        position: { x: 80, y: 300 },
+        id: "folder_booking",
+        type: "folder",
+        position: { x: 200, y: 350 },
+        data: { label: "Booking System" }
+      },
+      {
+        id: "folder_account",
+        type: "folder",
+        position: { x: 600, y: 350 },
+        data: { label: "My Account" }
+      },
+      // --- Booking Folder ---
+      {
+        id: "service_node",
+        type: "message",
+        parentId: "folder_booking",
+        position: { x: 100, y: 100 },
         data: {
-          label:  "Service Selection",
-          body:   "Please select a service:\n\n{{service_list}}",
+          label: "Service List",
+          text: "Please take a look at our services: \n\n{{service_list}}\n\nWhich one would you like to book?",
           action: "SHOW_SERVICES"
         }
       },
       {
-        id:   "slot_node",
-        type: "MessageNode",
-        position: { x: 80, y: 460 },
+        id: "slot_node",
+        type: "message",
+        parentId: "folder_booking",
+        position: { x: 100, y: 250 },
         data: {
-          label:  "Available Slots",
-          body:   "Here are available slots:\n\n{{slot_list}}",
+          label: "Select Slot",
+          text: "Found some openings for you! 🕒\n\n{{slot_list}}\n\nWhich time works best?",
           action: "SHOW_SLOTS"
         }
       },
       {
-        id:   "confirm_node",
-        type: "InteractiveNode",
-        position: { x: 80, y: 620 },
+        id: "confirm_node",
+        type: "interactive",
+        parentId: "folder_booking",
+        position: { x: 100, y: 400 },
         data: {
-          label: "Confirm Booking",
-          body:  "Confirm your booking?\n\n📅 {{selected_slot}}\n💇 {{selected_service}}",
+          label: "Confirmation",
+          text: "Perfect selection! Shall we confirm this slot for you?",
           buttonsList: [
-            { id: "btn_confirm", title: "✅ Confirm" },
-            { id: "btn_cancel",  title: "❌ Cancel"  }
+            { id: "btn_confirm", title: "✅ Confirm Booking" },
+            { id: "btn_cancel", title: "❌ Cancel" }
           ]
         }
       },
       {
-        id:   "booked_node",
-        type: "MessageNode",
-        position: { x: 80, y: 780 },
+        id: "booked_node",
+        type: "message",
+        parentId: "folder_booking",
+        position: { x: 100, y: 550 },
         data: {
-          label: "Booking Confirmed",
-          body:  "✅ Booking Confirmed!\n\n📅 {{selected_slot}}\n💇 {{selected_service}}\n\nSee you soon! 🙏\n\nReply 'reschedule' or 'cancel' to manage your booking."
+          label: "Thank You",
+          text: "Everything set! 🎉 Your booking is confirmed. We've sent the details to your phone. See you soon!"
         }
       },
+      // --- Account Folder ---
       {
-        id:   "my_bookings_node",
-        type: "MessageNode",
-        position: { x: 350, y: 300 },
+        id: "my_bookings",
+        type: "message",
+        parentId: "folder_account",
+        position: { x: 100, y: 100 },
         data: {
-          label:  "My Bookings",
-          body:   "Here are your upcoming appointments:\n\n{{my_bookings_list}}",
+          label: "My Bookings",
+          text: "Checking your schedule... 📅\n\n{{my_bookings_list}}",
           action: "SHOW_MY_BOOKINGS"
-        }
-      },
-      {
-        id:   "human_node",
-        type: "MessageNode",
-        position: { x: 580, y: 300 },
-        data: {
-          label:  "Human Escalation",
-          body:   "Connecting you to our team! 💬",
-          action: "ESCALATE_HUMAN"
         }
       }
     ],
     edges: [
-      { id: "e_trigger_welcome",   source: "trigger_start", target: "welcome_node",     trigger: { type: "auto" }                              },
-      { id: "e_welcome_book",      source: "welcome_node",  target: "service_node",     sourceHandle: "btn_book"                               },
-      { id: "e_welcome_mybooking", source: "welcome_node",  target: "my_bookings_node", sourceHandle: "btn_mybooking"                          },
-      { id: "e_welcome_human",     source: "welcome_node",  target: "human_node",       sourceHandle: "btn_human"                              },
-      { id: "e_service_slot",      source: "service_node",  target: "slot_node",        trigger: { type: "keyword", value: "select" }          },
-      { id: "e_slot_confirm",      source: "slot_node",     target: "confirm_node",     trigger: { type: "keyword", value: "select" }          },
-      { id: "e_confirm_yes",       source: "confirm_node",  target: "booked_node",      sourceHandle: "btn_confirm"                            },
-      { id: "e_confirm_no",        source: "confirm_node",  target: "service_node",     sourceHandle: "btn_cancel"                             }
+      { id: "e1", source: "trigger_start", target: "welcome_node", animated: true },
+      { id: "e_go_book", source: "welcome_node", target: "folder_booking", sourceHandle: "goto_book", animated: true },
+      { id: "e_go_account", source: "welcome_node", target: "folder_account", sourceHandle: "goto_my", animated: true },
+      // Internal Folding logic
+      { id: "e_fold_book", source: "folder_booking", target: "service_node", animated: true },
+      { id: "e_serv_slot", source: "service_node", target: "slot_node", animated: true },
+      { id: "e_slot_conf", source: "slot_node", target: "confirm_node", animated: true },
+      { id: "e_conf_yes", source: "confirm_node", target: "booked_node", sourceHandle: "btn_confirm", animated: true },
+      { id: "e_fold_acc", source: "folder_account", target: "my_bookings", animated: true }
     ]
   },
 
   // ── TURF TEMPLATE ─────────────────────────────────────────────────────────
   turf: {
     nodes: [
-      { id: "trigger_start", type: "TriggerNode", position: { x: 300, y: 0 },
-        data: { label: "Start", keyword: "hi" } },
-      { id: "welcome_node", type: "InteractiveNode", position: { x: 300, y: 120 },
+      { 
+        id: "trigger_start", 
+        type: "trigger", 
+        position: { x: 400, y: 0 },
+        data: { label: "Booking Trigger", keyword: "book" } 
+      },
+      { 
+        id: "welcome_node", 
+        type: "interactive", 
+        position: { x: 400, y: 150 },
         data: {
           label: "Welcome",
-          body: "Welcome to {{brand_name}}! ⚽\n\nBook your turf slot today!",
+          header: "Turf Booking ⚽",
+          text: "Ready to play? Select an option to check availability or view our pricing.",
           buttonsList: [
-            { id: "btn_book",    title: "⚽ Book Slot"  },
-            { id: "btn_pricing", title: "💰 Pricing"    },
-            { id: "btn_human",   title: "💬 Contact Us" }
+            { id: "btn_book", title: "📅 Book Slot" },
+            { id: "btn_pricing", title: "💰 Price List" }
           ]
         }
       },
-      { id: "surface_node", type: "InteractiveNode", position: { x: 80, y: 300 },
+      { 
+        id: "surface_node", 
+        type: "interactive", 
+        position: { x: 400, y: 350 },
         data: {
           label: "Select Surface",
-          body: "Which turf would you like?",
+          text: "Which turf type would you like to book?",
           buttonsList: [
-            { id: "btn_turf_a", title: "🏟️ Turf A" },
-            { id: "btn_turf_b", title: "🏟️ Turf B" }
+            { id: "btn_turf_a", title: "🏟️ Turf A (Main)" },
+            { id: "btn_turf_b", title: "🏟️ Turf B (Small)" }
           ]
         }
       },
-      { id: "slot_node", type: "MessageNode", position: { x: 80, y: 460 },
-        data: { label: "Available Slots", body: "{{slot_list}}", action: "SHOW_TURF_SLOTS" } },
-      { id: "payment_node", type: "MessageNode", position: { x: 80, y: 620 },
-        data: { label: "Payment", body: "Complete payment to confirm your slot:\n\n{{payment_link}}", action: "GENERATE_PAYMENT_LINK" } },
-      { id: "confirmed_node", type: "MessageNode", position: { x: 80, y: 780 },
-        data: { label: "Confirmed", body: "✅ Slot confirmed! See you on the turf! ⚽" } }
+      { 
+        id: "slot_node", 
+        type: "message", 
+        position: { x: 400, y: 500 },
+        data: { 
+          label: "Available Slots", 
+          text: "Fetching available time slots for you... 🕒\n\n{{slot_list}}", 
+          action: "SHOW_TURF_SLOTS" 
+        } 
+      },
+      { 
+        id: "payment_node", 
+        type: "message", 
+        position: { x: 400, y: 650 },
+        data: { 
+          label: "Payment", 
+          text: "To confirm your slot, please complete the payment using the link below:\n\n💳 {{payment_link}}", 
+          action: "GENERATE_PAYMENT_LINK" 
+        } 
+      },
+      { 
+        id: "confirmed_node", 
+        type: "message", 
+        position: { x: 400, y: 800 },
+        data: { 
+          label: "Confirmed", 
+          text: "✅ Payment Received! Your slot is confirmed. See you on the turf! ⚽" 
+        } 
+      }
     ],
     edges: [
-      { id: "e1", source: "trigger_start", target: "welcome_node",  trigger: { type: "auto" }                               },
-      { id: "e2", source: "welcome_node",  target: "surface_node",  sourceHandle: "btn_book"                                },
-      { id: "e3", source: "surface_node",  target: "slot_node",     sourceHandle: "btn_turf_a"                              },
-      { id: "e4", source: "surface_node",  target: "slot_node",     sourceHandle: "btn_turf_b"                              },
-      { id: "e5", source: "slot_node",     target: "payment_node",  trigger: { type: "keyword", value: "book" }             },
-      { id: "e6", source: "payment_node",  target: "confirmed_node",trigger: { type: "keyword", value: "paid" }             }
+      { id: "e1", source: "trigger_start", target: "welcome_node", animated: true },
+      { id: "e2", source: "welcome_node", target: "surface_node", sourceHandle: "btn_book", animated: true },
+      { id: "e3", source: "surface_node", target: "slot_node", sourceHandle: "btn_turf_a", animated: true },
+      { id: "e4", source: "surface_node", target: "slot_node", sourceHandle: "btn_turf_b", animated: true },
+      { id: "e5", source: "slot_node", target: "payment_node", animated: true },
+      { id: "e6", source: "payment_node", target: "confirmed_node", animated: true }
     ]
   }
-
 };
