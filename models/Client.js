@@ -45,6 +45,8 @@ const ClientSchema = new mongoose.Schema({
   shopDomain: { type: String, default: "" },
   shopifyAccessToken: { type: String, default: "" },
   shopifyWebhookSecret: { type: String, default: "" },
+  shopifyClientId: { type: String, default: "" },
+  shopifyClientSecret: { type: String, default: "" },
   
   // messageTemplates stored as flexible Mixed array to support both 
   // legacy sub-documents and new flow-based template references
