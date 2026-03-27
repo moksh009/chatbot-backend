@@ -898,7 +898,7 @@ router.get('/templates/sync/:clientId', async (req, res) => {
         client.syncedMetaTemplates = approvedTemplates;
         await client.save();
         
-        res.json({ success: true, count: approvedTemplates.length, templates: approvedTemplates });
+        res.json({ success: true, count: approvedTemplates.length, data: approvedTemplates });
     } catch (err) {
         log.error('Template Sync Failed', { error: err.message });
         res.status(500).json({ error: 'Sync Failed: ' + (err.response?.data?.error?.message || err.message) });
