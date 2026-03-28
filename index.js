@@ -35,6 +35,7 @@ const dynamicClientRouter = require('./routes/dynamicClientRouter');
 const templatesRoutes = require('./routes/templates');
 const whatsappRoutes = require('./routes/whatsapp');
 const instagramWebhookRoutes = require('./routes/instagramWebhook');
+const wooWebhookRoutes = require('./routes/wooWebhook');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -107,6 +108,7 @@ const shopifyHubRoutes = require('./routes/shopifyHub');
 app.use('/api/shopify-hub', shopifyHubRoutes);
 const shopifyWebhookRoutes = require('./routes/shopifyWebhook');
 app.use('/api/shopify/webhook', shopifyWebhookRoutes);
+app.use('/api/woocommerce/webhook', wooWebhookRoutes);
 const adminRoutes = require('./routes/admin'); // Added for DFY SaaS Super Admin
 
 // Master Webhook (Root Route for WhatsApp Meta Cloud API)
