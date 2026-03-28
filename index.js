@@ -111,17 +111,12 @@ app.use('/api/shopify/webhook', shopifyWebhookRoutes);
 app.use('/api/woocommerce/webhook', wooWebhookRoutes);
 const adminRoutes = require('./routes/admin'); // Added for DFY SaaS Super Admin
 
-// Master Webhook (Root Route for WhatsApp Meta Cloud API)
-const masterWebhook = require('./routes/masterWebhook');
-
 // Dynamic Client Router (Replaces hardcoded client routes)
 // Handles /api/client/:clientId/webhook
 app.use('/api/client/:clientId', dynamicClientRouter);
 
 // Specific channel webhooks
 app.use('/api/client', instagramWebhookRoutes);
-
-app.use('/', masterWebhook);
 
 app.use('/api/business', businessRoutes);
 app.use('/api/admin', adminRoutes); // Super Admin Route Registration
