@@ -469,6 +469,58 @@ router.delete('/clients/:id', protect, isSuperAdmin, async (req, res) => {
 
 // --- CLIENT SELF-SERVICE: Update own nicheData/flowData ---
 // Any authenticated user can update their OWN client's editable fields
+router.get('/my-settings', protect, async (req, res) => {
+  try {
+    const { clientId } = req.query;
+    
+    // If Super Admin and clientId provided, use that. Otherwise use user's own.
+    let targetClientId = req.user.clientId;
+    if (req.user.role === 'SUPER_ADMIN' && clientId) {
+      targetClientId = clientId;
+    }
+
+    if (!targetClientId) {
+      return res.status(400).json({ message: 'No target clientId specified' });
+    }
+
+    const client = await Client.findOne({ clientId: targetClientId });
+    if (!client) return res.status(404).json({ message: 'Client not found' });
+
+    // Return full settings structure
+    res.json({
+      clientId: client.clientId,
+      name: client.name,
+      businessType: client.businessType,
+      niche: client.niche,
+      storeType: client.storeType || 'shopify',
+      shopDomain: client.shopDomain,
+      shopifyClientId: client.shopifyClientId,
+      shopifyClientSecret: client.shopifyClientSecret,
+      shopifyAccessToken: client.shopifyAccessToken,
+      shopifyWebhookSecret: client.shopifyWebhookSecret,
+      woocommerceUrl: client.woocommerceUrl,
+      woocommerceKey: client.woocommerceKey,
+      woocommerceSecret: client.woocommerceSecret,
+      instagramConnected: client.instagramConnected,
+      instagramPageId: client.instagramPageId,
+      geminiApiKey: client.geminiApiKey,
+      systemPrompt: client.systemPrompt || client.flowData?.systemPrompt || '',
+      isAIFallbackEnabled: client.isAIFallbackEnabled,
+      adminPhone: client.adminPhone,
+      googleReviewUrl: client.googleReviewUrl,
+      emailUser: client.emailUser,
+      emailAppPassword: client.emailAppPassword,
+      automationFlows: client.automationFlows,
+      messageTemplates: client.messageTemplates,
+      nicheData: client.nicheData,
+      workingHours: client.workingHours
+    });
+  } catch (err) {
+    log.error('Settings fetch error', { error: err.message });
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
 router.patch('/my-settings', protect, async (req, res) => {
   try {
     const { nicheData, flowData, automationFlows, messageTemplates, flowNodes, flowEdges, simpleSettings, clientId, isAIFallbackEnabled } = req.body;
