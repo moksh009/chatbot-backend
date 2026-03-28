@@ -3,7 +3,7 @@ const router = express.Router();
 const Client = require('../models/Client');
 const DailyStat = require('../models/DailyStat');
 const { protect } = require('../middleware/auth');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { getGeminiModel } = require('../utils/gemini');
 
 router.post('/generate/:clientId', protect, async (req, res) => {
   try {
@@ -31,8 +31,7 @@ router.post('/generate/:clientId', protect, async (req, res) => {
       return res.status(500).json({ success: false, message: 'No AI token configured' });
     }
 
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-preview-04-17" });
+    const model = getGeminiModel(apiKey);
 
     // Construct prompt
     const prompt = `
@@ -45,7 +44,9 @@ router.post('/generate/:clientId', protect, async (req, res) => {
 
     const result = await model.generateContent(prompt);
     let outputText = result.response.text().trim();
-    if (outputText.startsWith('```json')) outputText = outputText.slice(7, -3).trim();
+    
+    // Clean markdown blocks if present
+    outputText = outputText.replace(/```(?:json)?/g, '').trim();
 
     const newInsights = JSON.parse(outputText);
     
