@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const Client = require("../models/Client");
 const { saveOmnichannelMessage } = require("../utils/omnichannel");
+const { runDualBrainEngine } = require("../utils/dualBrainEngine");
 
 /**
  * Verification handshake for Instagram Messenger API
@@ -59,10 +60,12 @@ router.post("/:clientId/webhook/instagram", async (req, res) => {
         };
         
         // Save to DB and update Conversation state
-        // Bot automation for Instagram is disabled in Phase 13 (human only)
         await saveOmnichannelMessage(parsedMessage, client, "instagram");
         
-        console.log(`[Instagram Webhook] Message from ${parsedMessage.from} for ${clientId}`);
+        // Automation Engine (runs flows)
+        await runDualBrainEngine(parsedMessage, client);
+        
+        console.log(`[Instagram Webhook] Processed message from ${parsedMessage.from} for ${clientId}`);
       }
     }
   } catch (err) {

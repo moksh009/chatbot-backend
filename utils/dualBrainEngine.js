@@ -11,12 +11,15 @@ const log = require("./logger")('DualBrain');
 const { generateText, getGeminiModel } = require('./gemini');
 
 
+const { sendInstagramReply } = require("./omnichannel");
+
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN ENGINE — called by ALL niche engines
 // Returns: true if message was handled
 // ─────────────────────────────────────────────────────────────────────────────
 async function runDualBrainEngine(parsedMessage, client) {
   const phone = parsedMessage.from;
+  const channel = parsedMessage.channel || 'whatsapp';
   const io    = global.io;
   const profileName = parsedMessage.profileName || '';
 
@@ -64,7 +67,7 @@ async function runDualBrainEngine(parsedMessage, client) {
   );
 
   // STEP 3: Save inbound message to DB + emit to dashboard
-  await saveInboundMessage(phone, client.clientId, parsedMessage, io);
+  await saveInboundMessage(phone, client.clientId, parsedMessage, io, channel);
 
   // STEP 4: Human Takeover — bot is paused
   if (convo.botPaused || convo.status === 'HUMAN_TAKEOVER') {
@@ -88,17 +91,17 @@ async function runDualBrainEngine(parsedMessage, client) {
   }
 
   // STEP 5: PRIORITY 1 — Graph Traversal
-  const graphHandled = await tryGraphTraversal(parsedMessage, client, convo, lead, phone, io);
+  const graphHandled = await tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, channel);
   if (graphHandled) return true;
 
   // STEP 6: PRIORITY 2 — Keyword Fallback
-  const keywordHandled = await tryKeywordFallback(parsedMessage, client, convo, phone);
+  const keywordHandled = await tryKeywordFallback(parsedMessage, client, convo, phone, channel);
   if (keywordHandled) return true;
 
   // STEP 7: PRIORITY 3 — Gemini AI Fallback
   // Only use AI if there is text body. Otherwise, let the caller handle it.
   if (parsedMessage.text?.body) {
-    await runAIFallback(parsedMessage, client, phone, lead);
+    await runAIFallback(parsedMessage, client, phone, lead, channel);
     return true;
   }
   
@@ -109,7 +112,7 @@ async function runDualBrainEngine(parsedMessage, client) {
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIORITY 1: GRAPH TRAVERSAL
 // ─────────────────────────────────────────────────────────────────────────────
-async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io) {
+async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, channel = 'whatsapp') {
   const flowNodes = client.flowNodes || [];
   const flowEdges = client.flowEdges || [];
 
@@ -133,7 +136,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io) 
     console.log(`[DualBrain] Graph: Jumping to node ${jumpNode.id} based on keyword/role match "${userText}"`);
     // Heatmap: Increment visit
     await trackNodeVisit(client.clientId, jumpNode.id);
-    return await executeNode(jumpNode.id, flowNodes, flowEdges, client, convo, lead, phone, io);
+    return await executeNode(jumpNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
   }
 
   // --- NEW: Global Reset (If user says 'hi' or 'start', always try to find a trigger node) ---
@@ -142,7 +145,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io) 
       if (triggerNode) {
           console.log(`[DualBrain] Graph: Resetting to trigger node ${triggerNode.id} based on greeting "${userText}"`);
           await trackNodeVisit(client.clientId, triggerNode.id);
-          return await executeNode(triggerNode.id, flowNodes, flowEdges, client, convo, lead, phone, io);
+          return await executeNode(triggerNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
       }
   }
 
@@ -169,7 +172,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io) 
     if (startNode) {
       console.log(`[DualBrain] Graph: Starting fresh from node ${startNode.id}`);
       await trackNodeVisit(client.clientId, startNode.id);
-      return await executeNode(startNode.id, flowNodes, flowEdges, client, convo, lead, phone, io);
+      return await executeNode(startNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
     }
     return false;
   }
@@ -218,7 +221,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io) 
         );
         if (handleEdge) {
           console.log(`[DualBrain] Graph: button title match "${userText}" → node ${handleEdge.target}`);
-          return await executeNode(handleEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io);
+          return await executeNode(handleEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
         }
       }
     }
@@ -228,7 +231,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io) 
 
   console.log(`[DualBrain] Graph: edge match from ${currentStepId} → ${matchingEdge.target}`);
   await trackNodeVisit(client.clientId, matchingEdge.target);
-  return await executeNode(matchingEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io);
+  return await executeNode(matchingEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -262,7 +265,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     
     if (nextEdge) {
       console.log(`[DualBrain] Logic Check Result: ${result} -> Jumping to ${nextEdge.target}`);
-      return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io);
+      return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
     }
   }
 
@@ -300,7 +303,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   if (autoEdge) {
     setTimeout(async () => {
       const freshConvo = await Conversation.findById(convo._id);
-      await executeNode(autoEdge.target, flowNodes, flowEdges, client, freshConvo, lead, phone, io);
+      await executeNode(autoEdge.target, flowNodes, flowEdges, client, freshConvo, lead, phone, io, channel);
     }, 800);
   }
 
@@ -310,7 +313,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 // ─────────────────────────────────────────────────────────────────────────────
 // SEND NODE CONTENT — handles all node types
 // ─────────────────────────────────────────────────────────────────────────────
-async function sendNodeContent(node, client, phone, lead = null, convo = null) {
+async function sendNodeContent(node, client, phone, lead = null, convo = null, channel = 'whatsapp') {
   const { type, data } = node;
 
   switch (type) {
@@ -340,7 +343,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null) {
       if (data.imageUrl) {
         await sendWhatsAppImage(client, phone, data.imageUrl, body);
       } else {
-        await sendWhatsAppText(client, phone, body);
+        await sendReply(client, phone, body, channel);
       }
       return true;
     }
@@ -607,7 +610,22 @@ async function runAIFallback(parsedMessage, client, phone, lead) {
 // ─────────────────────────────────────────────────────────────────────────────
 // WHATSAPP API HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
-async function sendWhatsAppText(client, phone, body) {
+async function sendReply(client, phone, body, channel = 'whatsapp') {
+  return await sendWhatsAppText(client, phone, body, channel);
+}
+
+async function sendWhatsAppText(client, phone, body, channel = 'whatsapp') {
+  if (channel === 'instagram') {
+    try {
+      const resp = await sendInstagramReply(client, phone, body);
+      await saveOutboundMessage(phone, client.clientId, 'text', body, resp.message_id || '', 'instagram');
+      return resp;
+    } catch (err) {
+      console.error('[DualBrain] IG sendReply error:', err.message);
+      return;
+    }
+  }
+
   const token = client.whatsappToken;
   const phoneNumberId = client.phoneNumberId;
   if (!token || !phoneNumberId) return;
