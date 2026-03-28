@@ -38,6 +38,13 @@ const ConversationSchema = new mongoose.Schema({
 
   metadata: { type: Object, default: {} },
 
+  // Phase 13 Omnichannel
+  channel: {
+    type: String,
+    enum: ["whatsapp", "instagram", "email"],
+    default: "whatsapp"
+  },
+
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });

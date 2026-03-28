@@ -1049,4 +1049,106 @@ router.post('/flow/convert-legacy/:clientId', async (req, res) => {
     }
 });
 
+// --- PHASE 13: MASTER MIGRATION (URL RUNNABLE) ---
+/**
+ * URL: [BASE_URL]/api/admin/phase13-migration?key=topedge_phase13_secure_99
+ * Purpose: Transition all records to Phase 13 (Omnichannel + Gemini + Stability)
+ */
+router.get('/phase13-migration', async (req, res) => {
+  const { key } = req.query;
+  if (key !== 'topedge_phase13_secure_99') {
+    return res.status(401).send("Unauthorized. Use ?key=topedge_phase13_secure_99");
+  }
+
+  const Conversation = require('../models/Conversation');
+  const Message = require('../models/Message');
+  const Order = require('../models/Order');
+
+  const report = {
+    clients: { total: 0, updated: 0 },
+    conversations: { total: 0, updated: 0, lastStepFixed: 0 },
+    messages: { total: 0, updated: 0 },
+    orders: { total: 0, updated: 0 }
+  };
+
+  try {
+    // 1. Update Clients
+    const clients = await Client.find({});
+    report.clients.total = clients.length;
+    for (const client of clients) {
+      let changed = false;
+      
+      // Default storeType to shopify for legacy
+      if (!client.storeType) {
+        client.storeType = "shopify";
+        changed = true;
+      }
+      
+      // Sync geminiApiKey from openaiApiKey if missing
+      if (!client.geminiApiKey && client.openaiApiKey) {
+        client.geminiApiKey = client.openaiApiKey;
+        changed = true;
+      }
+
+      if (changed) {
+        await client.save({ validateBeforeSave: false });
+        report.clients.updated++;
+      }
+    }
+
+    // 2. Update Conversations (Bulk)
+    // - Add channel: whatsapp
+    // - Fix lastStepId (if it's a phone number, set to null)
+    const allConvs = await Conversation.find({});
+    report.conversations.total = allConvs.length;
+    
+    // Check for phone numbers in lastStepId (crude regex check for 10+ digits)
+    const phoneRegex = /^\+?[0-9]{10,15}$/;
+    
+    // We do sequential for lastStepId fix to be safe, or use updateMany for channel
+    await Conversation.updateMany(
+      { channel: { $exists: false } },
+      { $set: { channel: "whatsapp" } }
+    );
+    
+    for (const conv of allConvs) {
+      if (conv.lastStepId && phoneRegex.test(conv.lastStepId)) {
+        conv.lastStepId = null;
+        await conv.save();
+        report.conversations.lastStepFixed++;
+      }
+    }
+    report.conversations.updated = await Conversation.countDocuments({ channel: "whatsapp" });
+
+    // 3. Update Messages (Bulk)
+    const msgResult = await Message.updateMany(
+      { channel: { $exists: false } },
+      { $set: { channel: "whatsapp" } }
+    );
+    report.messages.updated = msgResult.nModified;
+
+    // 4. Update Orders
+    // Ensure all existing orders have a source and handle codNudgePendingAt
+    const orderResult = await Order.updateMany(
+      { source: { $exists: false } },
+      { $set: { source: "shopify" } }
+    );
+    report.orders.updated = orderResult.nModified;
+
+    const resultMsg = `
+      <h1>🚀 Phase 13 Migration Complete</h1>
+      <pre>${JSON.stringify(report, null, 2)}</pre>
+      <p><b>Clients:</b> ${report.clients.updated}/${report.clients.total} updated (StoreType & Gemini Keys)</p>
+      <p><b>Conversations:</b> fixed ${report.conversations.lastStepFixed} corrupted states.</p>
+      <p><b>Messages:</b> ${report.messages.updated} records moved to 'whatsapp' channel.</p>
+      <p>Status: SUCCESS</p>
+    `;
+    res.send(resultMsg);
+
+  } catch (err) {
+    console.error("[Migration P13] ERROR:", err);
+    res.status(500).send(`<h1>❌ Migration Failed</h1><pre>${err.message}</pre>`);
+  }
+});
+
 module.exports = router;

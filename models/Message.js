@@ -12,7 +12,14 @@ const MessageSchema = new mongoose.Schema({
   messageId: { type: String },
   status: { type: String, default: 'sent' },
   mediaUrl: { type: String },
-  metadata: { type: mongoose.Schema.Types.Mixed }
+  metadata: { type: mongoose.Schema.Types.Mixed },
+  
+  // Phase 13 Omnichannel
+  channel: {
+    type: String,
+    enum: ["whatsapp", "instagram", "email"],
+    default: "whatsapp"
+  }
 });
 
 module.exports = mongoose.model('Message', MessageSchema);

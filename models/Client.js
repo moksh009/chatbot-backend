@@ -30,7 +30,8 @@ const ClientSchema = new mongoose.Schema({
   wabaId: { type: String }, // WhatsApp Business Account ID (Required for Templates)
   verifyToken: { type: String }, // Store the client's specific Webhook Verify Token
   googleCalendarId: { type: String }, // Store the client's specific Google Calendar ID
-  openaiApiKey: { type: String }, // Store the client's specific OpenAI API Key
+  geminiApiKey: { type: String }, // Store the client's specific Gemini API Key
+  openaiApiKey: { type: String }, // Legacy field (aliased to geminiApiKey in middleware)
   emailUser: { type: String },  // Gmail address for email broadcasts
   emailAppPassword: { type: String },  // Gmail App Password (not the login password)
   config: { type: mongoose.Schema.Types.Mixed, default: {} }, // Flexible config for other settings
@@ -47,6 +48,20 @@ const ClientSchema = new mongoose.Schema({
   shopifyWebhookSecret: { type: String, default: "" },
   shopifyClientId: { type: String, default: "" },
   shopifyClientSecret: { type: String, default: "" },
+  
+  // Phase 13 Store & Instagram Integration
+  storeType: {
+    type: String,
+    enum: ["shopify", "woocommerce", "manual"],
+    default: "shopify"
+  },
+  woocommerceUrl:    { type: String, default: "" },
+  woocommerceKey:    { type: String, default: "" },
+  woocommerceSecret: { type: String, default: "" },
+  
+  instagramPageId:      { type: String, default: "" },
+  instagramAccessToken: { type: String, default: "" },
+  instagramConnected:   { type: Boolean, default: false },
   
   // messageTemplates stored as flexible Mixed array to support both 
   // legacy sub-documents and new flow-based template references

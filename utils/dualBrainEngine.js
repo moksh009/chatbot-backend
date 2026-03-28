@@ -758,7 +758,7 @@ async function handleUniversalEscalate(client, phone, convo) {
 // ─────────────────────────────────────────────────────────────────────────────
 // INBOUND MESSAGE SAVER
 // ─────────────────────────────────────────────────────────────────────────────
-async function saveInboundMessage(phone, clientId, parsedMessage, io) {
+async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = "whatsapp") {
   const content =
     parsedMessage.text?.body ||
     parsedMessage.interactive?.button_reply?.title ||
@@ -774,11 +774,18 @@ async function saveInboundMessage(phone, clientId, parsedMessage, io) {
       type:      parsedMessage.type || 'text',
       content,
       messageId: parsedMessage.messageId || '',
+      channel:   channel, 
       timestamp: new Date()
     });
     await Conversation.findOneAndUpdate(
       { phone, clientId },
-      { $set: { lastMessage: content.substring(0, 100), lastMessageAt: new Date() } }
+      { 
+        $set: { 
+          lastMessage: content.substring(0, 100), 
+          lastMessageAt: new Date(),
+          channel: channel // Ensure conversation channel is updated/set
+        } 
+      }
     );
     if (io) io.to(`client_${clientId}`).emit('new_message', msg);
     return msg;
@@ -788,7 +795,7 @@ async function saveInboundMessage(phone, clientId, parsedMessage, io) {
   }
 }
 
-async function saveOutboundMessage(phone, clientId, type, content, messageId) {
+async function saveOutboundMessage(phone, clientId, type, content, messageId, channel = "whatsapp") {
   try {
     const msg = await Message.create({
       clientId,
@@ -798,13 +805,20 @@ async function saveOutboundMessage(phone, clientId, type, content, messageId) {
       type,
       content,
       messageId: messageId || '',
+      channel:   channel || 'whatsapp',
       timestamp: new Date()
     });
     // We don't usually update lastMessage on outbound in the engine (it's updated by webhook usually)
     // but doing it here ensures the UI stays snappy if webhook is slow
     await Conversation.findOneAndUpdate(
       { phone, clientId },
-      { $set: { lastMessage: `Bot: ${content.substring(0, 90)}`, lastMessageAt: new Date() } }
+      { 
+        $set: { 
+          lastMessage: `Bot: ${content.substring(0, 90)}`, 
+          lastMessageAt: new Date(),
+          channel: channel || 'whatsapp'
+        } 
+      }
     );
     const io = global.io;
     if (io) io.to(`client_${clientId}`).emit('new_message', msg);

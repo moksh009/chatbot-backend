@@ -45,8 +45,8 @@ const loadClientConfig = async (req, res, next) => {
     }
 
     // === Resolve Gemini API Key === 
-    const rawDbGeminiKey = client.openaiApiKey ? client.openaiApiKey.trim() : null;
-    const rawEnvGeminiKey = process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.trim() : null;
+    const rawDbGeminiKey = (client.geminiApiKey || client.openaiApiKey || "").trim() || null;
+    const rawEnvGeminiKey = (process.env.GEMINI_API_KEY || "").trim() || null;
     const resolvedGeminiKey = rawDbGeminiKey || rawEnvGeminiKey || null;
 
     if (!finalToken) {
@@ -64,16 +64,18 @@ const loadClientConfig = async (req, res, next) => {
       phoneNumberId: client.phoneNumberId,
       // Add phone number for message direction logic (incoming vs outgoing)
       phoneNumber: client.config?.phoneNumber || process.env[`PHONE_NUMBER${envSuffix}`] || process.env.PHONE_NUMBER,
-      adminPhoneNumber: client.adminPhoneNumber || client.config?.adminPhoneNumber || process.env[`ADMIN_PHONE_NUMBER${envSuffix}`] || process.env.ADMIN_PHONE_NUMBER,
+      adminPhoneNumber: client.adminPhone || client.adminPhoneNumber || client.config?.adminPhoneNumber || process.env[`ADMIN_PHONE_NUMBER${envSuffix}`] || process.env.ADMIN_PHONE_NUMBER,
 
       // Use the resolved finalToken
       whatsappToken: finalToken,
       verifyToken: process.env[`VERIFY_TOKEN${envSuffix}`] || client.verifyToken || process.env.WHATSAPP_VERIFY_TOKEN,
       googleCalendarId: client.googleCalendarId || process.env[`GOOGLE_CALENDAR_ID${envSuffix}`] || process.env.GOOGLE_CALENDAR_ID,
-      openaiApiKey: client.openaiApiKey || process.env[`OPENAI_API_KEY${envSuffix}`] || process.env.OPENAI_API_KEY,
-      // Dedicated Gemini key (trimmed to remove invisible leading/trailing spaces)
+      
+      // Phase 13: Deprecating OpenAI name in config
       geminiApiKey: resolvedGeminiKey,
-      // Legacy alias used by choice_salon / choice_salon_holi
+      
+      // Legacy aliases for backward compatibility during transition
+      openaiApiKey: resolvedGeminiKey, 
       geminiApikey: resolvedGeminiKey,
       config: client.config || {},
       

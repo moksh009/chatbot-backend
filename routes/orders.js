@@ -3,6 +3,34 @@ const router = express.Router();
 const Order = require('../models/Order');
 const { protect } = require('../middleware/auth');
 
+// GET /api/orders?phone=...
+router.get('/', protect, async (req, res) => {
+  try {
+    const { phone } = req.query;
+    if (!phone) {
+      return res.status(400).json({ success: false, message: 'Phone number required' });
+    }
+
+    let clientId = req.user.clientId;
+    const query = { 
+      $or: [{ phone: phone }, { customerPhone: phone }] 
+    };
+    
+    // If super admin and query clientId provided, use it
+    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
+      query.clientId = req.query.clientId;
+    } else {
+      query.clientId = clientId;
+    }
+
+    const orders = await Order.find(query).sort({ createdAt: -1 }).limit(10);
+    res.json({ success: true, orders });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
 router.get('/:clientId/cod-pipeline', protect, async (req, res) => {
   try {
     const { clientId } = req.params;
