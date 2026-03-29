@@ -22,6 +22,48 @@ const getGeminiClient = async (req) => {
 };
 
 
+// GET /api/analytics/notifications
+// @desc    Get unread conversation counts and pending order counts for sidebar badges
+// @access  Private
+router.get('/notifications', protect, async (req, res) => {
+  try {
+    let clientId = req.user.clientId;
+    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
+      clientId = req.query.clientId;
+    }
+
+    // --- PHASE 10 FIX: Shared Query for Delitech/CodeClinic ---
+    const query = (['delitech_smarthomes', 'code_clinic_v1'].includes(clientId))
+      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
+      : { clientId };
+
+    const [unreadConversations, pendingOrders] = await Promise.all([
+      Conversation.countDocuments({
+        ...query,
+        $or: [
+          { status: 'HUMAN_TAKEOVER' },
+          { unreadCount: { $gt: 0 } }
+        ]
+      }),
+      Order.countDocuments({
+        ...query,
+        status: { $in: ['pending', 'unfulfilled'] }
+      })
+    ]);
+
+    res.json({
+      success: true,
+      notifications: {
+        conversations: unreadConversations,
+        orders: pendingOrders
+      }
+    });
+  } catch (error) {
+    console.error('Notifications Error:', error);
+    res.status(500).json({ success: false, message: 'Server Error' });
+  }
+});
+
 router.get('/realtime', protect, async (req, res) => {
   try {
     let clientId = req.user.clientId;
@@ -32,7 +74,10 @@ router.get('/realtime', protect, async (req, res) => {
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
-    const query = { clientId };
+    // --- PHASE 10 FIX: Shared Query for Delitech/CodeClinic ---
+    const query = (['delitech_smarthomes', 'code_clinic_v1'].includes(clientId))
+      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
+      : { clientId };
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -170,9 +215,7 @@ router.get('/leads', protect, async (req, res) => {
       clientId = req.query.clientId;
     }
 
-    const query = (clientId === 'code_clinic_v1')
-      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
-      : { clientId };
+    const query = (clientId === 'code_clinic_v1' || clientId === 'delitech_smarthomes') ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } } : { clientId };
 
     const { page = 1, limit = 10, search = '' } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -258,7 +301,13 @@ router.get('/lead-by-phone/:phone', protect, async (req, res) => {
     if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
       clientId = req.query.clientId;
     }
-    const lead = await AdLead.findOne({ phoneNumber: req.params.phone, clientId });
+
+    // --- PHASE 10 FIX: Shared Query for Delitech/CodeClinic ---
+    const query = (['delitech_smarthomes', 'code_clinic_v1'].includes(clientId))
+      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'], phoneNumber: req.params.phone } }
+      : { clientId, phoneNumber: req.params.phone };
+
+    const lead = await AdLead.findOne(query);
     if (!lead) return res.status(404).json({ message: 'Lead not found' });
     res.json(lead);
   } catch (error) {
@@ -304,9 +353,7 @@ router.get('/top-leads', protect, async (req, res) => {
     if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
       clientId = req.query.clientId;
     }
-    const query = (clientId === 'code_clinic_v1')
-      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
-      : { clientId };
+    const query = (clientId === 'code_clinic_v1' || clientId === 'delitech_smarthomes') ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } } : { clientId };
 
     const leads = await AdLead.aggregate([
       { $match: query },
@@ -351,7 +398,7 @@ router.get('/top-leads', protect, async (req, res) => {
         $sort: { computedTotalSpent: -1, leadScore: -1 }
       },
       {
-        $limit: 20
+        $limit: 200
       },
       {
         $project: {
@@ -380,7 +427,8 @@ router.get('/top-products', protect, async (req, res) => {
     if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
       clientId = req.query.clientId;
     }
-    const query = (clientId === 'code_clinic_v1')
+    // --- PHASE 10 FIX: Shared Query for Delitech/CodeClinic ---
+    const query = (['delitech_smarthomes', 'code_clinic_v1'].includes(clientId))
       ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
       : { clientId };
 
@@ -507,9 +555,14 @@ router.get('/receptionist-overview', protect, async (req, res) => {
     // We will fetch ALL appointments for this client that are not cancelled, and then filter/merge.
     // Ideally, we should migrate DB to use ISO dates, but for now we rely on the GCal sync.
 
+    // --- PHASE 10 FIX: Shared Query for Delitech/CodeClinic ---
+    const query = (['delitech_smarthomes', 'code_clinic_v1'].includes(clientId))
+      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
+      : { clientId };
+
     // Fetch DB appointments created/for this client
     const dbAppointments = await Appointment.find({
-      clientId,
+      ...query,
       status: { $ne: 'cancelled' }
     });
 
@@ -872,9 +925,7 @@ router.get('/', protect, async (req, res) => {
 router.get('/insights', protect, async (req, res) => {
   try {
     const clientId = req.user.clientId;
-    const query = (clientId === 'code_clinic_v1')
-      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
-      : { clientId };
+    const query = (clientId === 'code_clinic_v1' || clientId === 'delitech_smarthomes') ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } } : { clientId };
 
     const appts = await Appointment.find(query);
     const orders = await Order.find(query);

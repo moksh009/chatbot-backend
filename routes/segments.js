@@ -35,7 +35,7 @@ router.get('/:clientId', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
-    const segments = await Segment.find({ clientId }).sort({ createdAt: -1 });
+    const segments = await Segment.find({ clientId: (clientId === 'delitech_smarthomes' || clientId === 'code_clinic_v1') ? { $in: ['delitech_smarthomes', 'code_clinic_v1'] } : clientId }).sort({ createdAt: -1 });
     res.json({ success: true, segments });
   } catch (error) {
     console.error('Segment fetch error:', error);
@@ -53,9 +53,13 @@ router.post('/:clientId/:segmentId/leads', protect, async (req, res) => {
     const segment = await Segment.findOne({ _id: segmentId, clientId });
     if (!segment) return res.status(404).json({ success: false, message: 'Segment not found' });
 
+    // --- PHASE 10 FIX: Shared Query for Delitech/CodeClinic ---
+    const sharedPool = ['delitech_smarthomes', 'code_clinic_v1'];
+    const effectiveClientId = sharedPool.includes(clientId) ? { $in: sharedPool } : clientId;
+    
     // Build Mongo Query
     const orCondition = [];
-    const andCondition = [{ clientId }]; // Base requirement
+    const andCondition = [{ clientId: effectiveClientId }]; // Base requirement
 
     segment.conditions.forEach(cond => {
         let q = {};
@@ -71,7 +75,7 @@ router.post('/:clientId/:segmentId/leads', protect, async (req, res) => {
 
     let finalQuery = {};
     if (segment.logic === 'AND') finalQuery = { $and: andCondition };
-    else finalQuery = { $and: [{ clientId }], $or: orCondition.length > 0 ? orCondition : [{}] };
+    else finalQuery = { $and: [{ clientId: effectiveClientId }], $or: orCondition.length > 0 ? orCondition : [{}] };
 
     const leads = await AdLead.find(finalQuery).sort({ createdAt: -1 });
     res.json({ success: true, count: leads.length, leads });

@@ -12,19 +12,15 @@ const { createMessage } = require('../utils/createMessage');
 // @access  Private
 router.get('/', protect, async (req, res) => {
   try {
-    const { days, clientId, phone } = req.query;
-    let query = {};
-
-    if (phone) {
-      query.phone = phone;
-    }
-
-    // For non-SUPER_ADMIN, always restrict to their own clientId
-    if (req.user.role !== 'SUPER_ADMIN') {
-      query.clientId = req.user.clientId;
-    } else if (clientId) {
-      // SUPER_ADMIN can filter by a specific clientId if provided
-      query.clientId = clientId;
+    // --- PHASE 10 FIX: Shared Query for Delitech/CodeClinic ---
+    const activeClientId = req.user.role === 'SUPER_ADMIN' && clientId ? clientId : req.user.clientId;
+    
+    if (req.user.role !== 'SUPER_ADMIN' || (req.user.role === 'SUPER_ADMIN' && clientId)) {
+      if (['delitech_smarthomes', 'code_clinic_v1'].includes(activeClientId)) {
+        query.clientId = { $in: ['code_clinic_v1', 'delitech_smarthomes'] };
+      } else {
+        query.clientId = activeClientId;
+      }
     }
     // If SUPER_ADMIN but no clientId provided, they see everything or we could default.
     // Let's default to everything for SUPER_ADMIN if no clientId is passed.

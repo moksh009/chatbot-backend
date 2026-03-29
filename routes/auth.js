@@ -20,6 +20,35 @@ router.get('/me', protect, async (req, res) => {
 
     const client = await Client.findOne({ clientId: user.clientId });
 
+    // --- PHASE 10 ROBUSTNESS: Ensure fallback for missing client ---
+    const clientConfig = client ? {
+      ...(client.config || {}),
+      nicheData: client.nicheData || {},
+      flowData: client.flowData || {},
+      automationFlows: client.automationFlows || [],
+      messageTemplates: client.messageTemplates || [],
+      flowNodes: client.flowNodes || [],
+      flowEdges: client.flowEdges || [],
+      syncedMetaFlows: client.syncedMetaFlows || [],
+      adminPhone: client.adminPhone || '',
+      shopDomain: client.shopDomain || '',
+      shopifyAccessToken: client.shopifyAccessToken || '',
+      shopifyClientId: client.shopifyClientId || '',
+      shopifyClientSecret: client.shopifyClientSecret || '',
+      razorpayKeyId: client.razorpayKeyId || '',
+      googleReviewUrl: client.googleReviewUrl || '',
+      wabaId: client.wabaId || '',
+      phoneNumberId: client.phoneNumberId || ''
+    } : {
+      nicheData: {},
+      flowData: {},
+      automationFlows: [],
+      messageTemplates: [],
+      flowNodes: [],
+      flowEdges: [],
+      syncedMetaFlows: []
+    };
+
     res.json({
         _id: user._id,
         name: user.name,
@@ -30,25 +59,8 @@ router.get('/me', protect, async (req, res) => {
         clientName: client ? client.name : null,
         subscriptionPlan: client ? client.subscriptionPlan || 'v2' : 'v2',
         plan: client ? client.plan || 'CX Agent (V1)' : 'CX Agent (V1)',
-        clientConfig: client ? {
-          ...client.config,
-          nicheData: client.nicheData || {},
-          flowData: client.flowData || {},
-          automationFlows: client.automationFlows || [],
-          messageTemplates: client.messageTemplates || [],
-          flowNodes: client.flowNodes || [],
-          flowEdges: client.flowEdges || [],
-          adminPhone: client.adminPhone || '',
-          shopDomain: client.shopDomain || '',
-          shopifyAccessToken: client.shopifyAccessToken || '',
-          shopifyClientId: client.shopifyClientId || '',
-          shopifyClientSecret: client.shopifyClientSecret || '',
-          razorpayKeyId: client.razorpayKeyId || '',
-          googleReviewUrl: client.googleReviewUrl || '',
-          wabaId: client.wabaId || '',
-          phoneNumberId: client.phoneNumberId || ''
-        } : {},
-        clientTemplates: client && client.config && client.config.templates ? client.config.templates : null
+        clientConfig,
+        clientTemplates: client?.config?.templates || null
     });
   } catch (error) {
     console.error(error);
