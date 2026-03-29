@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const AdLead = require('../models/AdLead');
+const DailyStat = require('../models/DailyStat');
+const { trackEcommerceEvent } = require('../utils/analyticsHelper');
 const { sendCODToPrepaidNudge } = require('../utils/ecommerceHelpers');
 
 const PRODUCTS = {
@@ -39,6 +41,9 @@ router.get('/:uid/:productId', async (req, res) => {
         if (lead) {
             console.log(`Link clicked by ${lead.phoneNumber} for ${productId}`);
             
+            // Increment DailyStat
+            await trackEcommerceEvent(lead.clientId, { linkClicks: 1 });
+
             // Emit socket event for real-time dashboard update
             if (io) {
                 io.to(`client_${lead.clientId}`).emit('stats_update', {
@@ -97,6 +102,9 @@ router.post('/cart', async (req, res) => {
         );
 
         if (lead && io) {
+            // Track in DailyStat
+            await trackEcommerceEvent(clientId, { addToCarts: 1 }, { [product]: 1 });
+
             io.to(`client_${clientId}`).emit('stats_update', {
                 type: 'add_to_cart',
                 leadId: lead._id,

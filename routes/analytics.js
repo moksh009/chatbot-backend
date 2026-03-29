@@ -880,21 +880,26 @@ router.get('/insights', protect, async (req, res) => {
     const orders = await Order.find(query);
     const leads = await AdLead.find(query);
 
-    // 1. Peak Hours Heatmap
-    const heatmap = {}; // Format: "Day_Hour" -> count
-    appts.forEach(a => {
-      const d = new Date(a.createdAt);
-      const day = d.getDay(); // 0 (Sun) to 6 (Sat)
-      const hour = d.getHours(); // 0 to 23
-      const key = `${day}_${hour}`;
+    // 1. Peak Hours Heatmap (Aggregate Checkouts, Orders, and Appointments)
+    const heatmap = {}; 
+    const addToMap = (dateStr) => {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return;
+      const key = `${d.getDay()}_${d.getHours()}`;
       heatmap[key] = (heatmap[key] || 0) + 1;
+    };
+
+    appts.forEach(a => addToMap(a.createdAt));
+    orders.forEach(o => addToMap(o.createdAt));
+    leads.forEach(l => {
+        if (l.lastSeen) addToMap(l.lastSeen);
     });
 
     // 2. Retention (Returning vs New)
     let returning = 0;
     let newLeads = 0;
     leads.forEach(l => {
-      if ((l.ordersCount || 0) > 1) { returning++; } else { newLeads++; }
+      if ((l.ordersCount || 0) > 1 || (l.addToCartCount || 0) > 1) { returning++; } else { newLeads++; }
     });
 
     // Extract appointment frequencies to boost retention metric for Service businesses

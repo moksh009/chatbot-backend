@@ -5,6 +5,7 @@ const axios = require('axios');
 const Client = require('../models/Client');
 const AdLead = require('../models/AdLead');
 const Order = require('../models/Order');
+const { trackEcommerceEvent } = require('../utils/analyticsHelper');
 const log = require('../utils/logger')('ShopifyWebhook');
 
 // Middleware to verify Shopify Webhook signature
@@ -97,6 +98,10 @@ async function handleCheckout(client, data) {
         },
         { upsert: true }
     );
+
+    // Track in DailyStat
+    await trackEcommerceEvent(client.clientId, { checkoutInitiatedCount: 1 });
+
     log.info(`Lead updated from checkout: ${cleanPhone}`);
 }
 
@@ -142,7 +147,19 @@ async function handleOrder(client, data) {
         createdAt: data.created_at
     });
 
-    // 4. Feature 5: Shopify Order Tagging for WhatsApp attribution
+    // 4. Track in DailyStat
+    const isRecovered = lead && lead.recoveryStep > 0;
+    const statsUpdate = {
+        orders: 1,
+        revenue: parseFloat(data.total_price)
+    };
+    if (isRecovered) {
+        statsUpdate.cartsRecovered = 1;
+        statsUpdate.cartRevenueRecovered = parseFloat(data.total_price);
+    }
+    await trackEcommerceEvent(client.clientId, statsUpdate);
+
+    // 5. Feature 5: Shopify Order Tagging for WhatsApp attribution
     const orderTaggingEnabled = (client.automationFlows || []).find(f => f.id === 'order_tagging')?.isActive;
     if (orderTaggingEnabled && lead && lead.recoveryStep > 0 && data.id && client.shopifyAccessToken) {
         try {
