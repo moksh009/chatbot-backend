@@ -11,12 +11,12 @@ const log = require("./logger")('DualBrain');
 const { generateText, getGeminiModel } = require('./gemini');
 const { createMessage } = require("./createMessage");
 
-const { sendInstagramReply, sendInstagramMessage } = require("./omnichannel");
-
 /**
- * WHATSAPP NAMESPACE WRAPPER
+ * WHATSAPP & INSTAGRAM NAMESPACE WRAPPERS
  * Since there are multiple sendNodeContent calls to 'WhatsApp.sendX', 
  * we map them to the local sendWhatsAppX helpers defined below.
+ * We define them here with arrow functions to avoid hoisting issues 
+ * with the function declarations defined lower in the file.
  */
 const WhatsApp = {
   sendText: (...args) => sendWhatsAppText(...args),
@@ -31,6 +31,8 @@ const Instagram = {
   sendImage: (...args) => sendInstagramImage(...args),
   sendInteractive: (...args) => sendInstagramInteractive(...args),
 };
+
+const { sendInstagramReply, sendInstagramMessage } = require("./omnichannel");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FLOW BUILDER HELPERS — handle nested folders/groups
@@ -1085,7 +1087,10 @@ async function saveOutboundMessage(phone, clientId, type, content, messageId, ch
 // ─────────────────────────────────────────────────────────────────────────────
 function extractTrigger(parsedMessage) {
   return {
-    buttonId: parsedMessage.interactive?.button_reply?.id || parsedMessage.interactive?.list_reply?.id || null,
+    buttonId: parsedMessage.interactive?.button_reply?.id || 
+              parsedMessage.interactive?.list_reply?.id || 
+              parsedMessage.button?.payload || 
+              null,
     text: parsedMessage.text?.body || null,
     type: parsedMessage.type
   };

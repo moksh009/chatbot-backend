@@ -159,6 +159,24 @@ router.post('/start', protect, async (req, res) => {
           const tName = req.body.templateName || campaign.templateName;
           if (!tName) { failed++; continue; }
           const components = req.body.templateComponents || [];
+          
+          // Auto-inject default header image if required and missing
+          if (components.length === 0) {
+              const tplDef = (client.syncedMetaTemplates || []).find(t => t.name === tName);
+              if (tplDef) {
+                  const headerComp = tplDef.components?.find(c => c.type === 'HEADER' && c.format === 'IMAGE');
+                  if (headerComp) {
+                      const imgUrl = headerComp.example?.header_handle?.[0] || 'https://images.unsplash.com/photo-1577563908411-5077b6dc7624?q=80&w=2070&auto=format&fit=crop';
+                      components.push({ type: 'header', parameters: [{ type: 'image', image: { link: imgUrl } }] });
+                  }
+                  // Inject name variable if required
+                  const bodyComp = tplDef.components?.find(c => c.type === 'BODY');
+                  if (bodyComp?.text?.includes('{{1}}')) {
+                    components.push({ type: 'body', parameters: [{ type: 'text', text: row.name || 'Customer' }] });
+                  }
+              }
+          }
+          
           const respData = await WhatsApp.sendTemplate(client, recipientPhone, tName, req.body.languageCode || 'en', components);
           const metaMsgId = respData?.messages?.[0]?.id;
 
