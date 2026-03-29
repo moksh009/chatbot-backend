@@ -342,17 +342,39 @@ router.post('/fulfillment-webhook', async (req, res) => {
 
         const Order = require('../models/Order');
         const ReviewRequest = require('../models/ReviewRequest');
+        const Client = require('../models/Client');
+        const WhatsApp = require('../utils/whatsapp');
         
-        // The order ID might be under payload.order_id for fulfillment webhooks 
-        // Or if it's an order update Webhook, it might be payload.id
         const shopifyOrderId = String(payload.order_id || payload.id);
-        
         const order = await Order.findOne({ shopifyOrderId, clientId });
-        if (!order) {
-            return res.status(404).send("Order not found");
+        const client = await Client.findOne({ clientId });
+
+        if (!order || !client) {
+            return res.status(404).send("Order or Client not found");
+        }
+
+        // 1. Send WhatsApp Notification (Real-time Shipped Alert)
+        if (order.phone) {
+            const trackingNum = payload.tracking_number || "Available in link";
+            const trackingUrl = payload.tracking_url || `https://${client.shopDomain}/account/orders`;
+            
+            const customMsg = client.nicheData?.shippingConfig?.shippedMessage || 
+                "🚚 *Good news! your order is on the way!*\n\nOrder: *{{order_id}}*\nTracking: {{tracking_num}}\n\nYou can track it here: {{tracking_url}}\n\nThank you for shopping with us! ✨";
+            
+            const body = customMsg
+                .replace('{{order_id}}', order.orderId || order.orderNumber)
+                .replace('{{tracking_num}}', trackingNum)
+                .replace('{{tracking_url}}', trackingUrl);
+
+            try {
+                await WhatsApp.sendText(client, order.phone, body);
+                await Order.findByIdAndUpdate(order._id, { $set: { status: 'Shipped', trackingUrl } });
+            } catch (waErr) {
+                console.error("Failed to send shipping WhatsApp:", waErr.message);
+            }
         }
         
-        // Schedule review for 4 days later
+        // 2. Schedule review for 4 days later
         const scheduledDate = new Date();
         scheduledDate.setDate(scheduledDate.getDate() + 4);
 
@@ -363,14 +385,14 @@ router.post('/fulfillment-webhook', async (req, res) => {
                 phone: order.phone,
                 orderId: order._id,
                 orderNumber: order.orderNumber,
-                productName: order.items && order.items.length > 0 ? order.items[0].name : "your Delitech product",
+                productName: order.items && order.items.length > 0 ? order.items[0].name : "your product",
                 status: "scheduled",
                 scheduledFor: scheduledDate
             },
             { upsert: true, new: true }
         );
 
-        res.status(200).send("Fulfillment processed, review scheduled");
+        res.status(200).send("Fulfillment processed, notification sent & review scheduled");
     } catch (err) {
         console.error("Fulfillment Webhook Error:", err.message);
         res.status(500).send("Server Error");

@@ -91,16 +91,6 @@ function incrementNodeVisit(nodes, nodeId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MAIN ENGINE — called by ALL niche engines
-// Returns: true if message was handled
-// ─────────────────────────────────────────────────────────────────────────────
-async function runDualBrainEngine(parsedMessage, client) {
-  const phone = parsedMessage.from;
-  const channel = parsedMessage.channel || 'whatsapp';
-  const io    = global.io;
-  const profileName = parsedMessage.profileName || '';
-
-// ─────────────────────────────────────────────────────────────────────────────
 // VARIABLE REPLACEMENT UTILITY
 // ─────────────────────────────────────────────────────────────────────────────
 function replaceVariables(text, client, lead, convo) {
