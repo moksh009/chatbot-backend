@@ -424,7 +424,8 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
           return true;
         }
 
-        const interactive = {
+        let interactive;
+        interactive = {
           type: 'cta_url',
           action: {
             name: 'cta_url',
@@ -460,7 +461,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
 
       // Standard reply buttons or List
       if (data.interactiveType === 'list') {
-        const interactive = {
+        interactive = {
           type: 'list',
           action: {
             button: 'Select Option',
@@ -484,7 +485,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         return true;
       }
 
-      const interactive = {
+      interactive = {
         type: 'button',
         action: {
           buttons: buttonsList.slice(0, 3).map(btn => ({
