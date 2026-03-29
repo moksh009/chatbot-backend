@@ -1,9 +1,9 @@
 const cron = require('node-cron');
 const ReviewRequest = require('../models/ReviewRequest');
 const Client = require('../models/Client');
-const axios = require('axios');
 const Conversation = require('../models/Conversation');
-const Message = require('../models/Message');
+const WhatsApp = require('../utils/whatsapp');
+const { createMessage } = require('../utils/createMessage');
 
 // Runs daily at 10:00 AM IST (04:30 UTC)
 module.exports = function scheduleReviewCron() {
@@ -16,13 +16,16 @@ module.exports = function scheduleReviewCron() {
 
       for (const review of due) {
         const client = review.clientId;
-        if (!client?.whatsappToken || !client?.phoneNumberId) continue;
+        if (!client) continue;
+
+        // Check for Human Takeover
+        const conv = await Conversation.findOne({ phone: review.phone, clientId: client._id });
+        if (conv && conv.status === 'HUMAN_TAKEOVER') continue;
 
         // Get template or use default
         const template = (client.messageTemplates || []).find(t => t.id === "review_request");
         const bodyText = template?.body
-          ? template.body
-              .replace("{{product_name}}", review.productName)
+          ? template.body.replace("{{product_name}}", review.productName)
           : `Hi! How's your *${review.productName}*? 😊\n\nYour feedback helps us improve and helps other customers!`;
 
         const btn1 = template?.buttons?.[0]?.label || "😍 Loved it!";
@@ -42,41 +45,23 @@ module.exports = function scheduleReviewCron() {
         };
 
         try {
-          await axios.post(
-            `https://graph.facebook.com/v18.0/${client.phoneNumberId}/messages`,
-            {
-              messaging_product: "whatsapp",
-              to: review.phone,
-              type: "interactive",
-              interactive
-            },
-            { headers: { Authorization: `Bearer ${client.whatsappToken}` } }
-          );
+          await WhatsApp.sendInteractive(client, review.phone, interactive);
 
           await ReviewRequest.findByIdAndUpdate(review._id, {
             status: "sent",
             sentAt: new Date()
           });
 
-          // Log in Messages collection
-          let conversation = await Conversation.findOne({ phone: review.phone, clientId: client._id });
-          if (!conversation) {
-             // Not strictly guaranteed they had a conversation, but usually they did since they bought something
-             conversation = await Conversation.create({ phone: review.phone, clientId: client._id, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
-          }
-          await Message.create({
+          await createMessage({
             clientId: client._id,
-            conversationId: conversation._id,
-            from: 'bot',
-            to: review.phone,
-            content: `[Interactive] ${bodyText}`,
+            phone: review.phone,
+            direction: 'outbound',
             type: 'interactive',
-            direction: 'outgoing',
-            status: 'sent'
+            body: `[Interactive Review Request] ${bodyText}`
           });
 
         } catch (sendErr) {
-          console.error(`[ReviewCron] Error sending to ${review.phone}:`, sendErr.response?.data || sendErr.message);
+          console.error(`[ReviewCron] Error sending to ${review.phone}:`, sendErr.message);
         }
       }
     } catch (err) {

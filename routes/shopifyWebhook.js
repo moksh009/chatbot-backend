@@ -106,11 +106,15 @@ async function handleOrder(client, data) {
 
     const cleanPhone = phone.replace(/\D/g, '').slice(-10);
 
-    // 1. Update AdLead status to stop abandonment flows
+    // 1. Fetch Lead
+    const lead = await AdLead.findOne({ phoneNumber: cleanPhone, clientId: client.clientId });
+
+    // 2. Update AdLead status to stop abandonment flows
     await AdLead.findOneAndUpdate(
         { phoneNumber: cleanPhone, clientId: client.clientId },
         { 
             isOrderPlaced: true,
+            $set: { cartStatus: 'purchased' },
             $push: {
                 activityLog: {
                     action: 'order_placed',
@@ -121,7 +125,7 @@ async function handleOrder(client, data) {
         }
     );
 
-    // 2. Create internal Order record
+    // 3. Create internal Order record
     const newOrder = await Order.create({
         clientId: client.clientId,
         orderId: data.name || `#${data.id}`,
@@ -138,28 +142,30 @@ async function handleOrder(client, data) {
         createdAt: data.created_at
     });
 
-    // 3. Feature 5: Shopify Order Tagging for WhatsApp attribution
+    // 4. Feature 5: Shopify Order Tagging for WhatsApp attribution
     const orderTaggingEnabled = (client.automationFlows || []).find(f => f.id === 'order_tagging')?.isActive;
-    if (orderTaggingEnabled && lead?.recoveryStep > 0 && data.id && client.shopifyAccessToken) {
+    if (orderTaggingEnabled && lead && lead.recoveryStep > 0 && data.id && client.shopifyAccessToken) {
         try {
-            const existingOrder = await axios.get(
-                `https://${client.shopDomain}/admin/api/2024-01/orders/${data.id}.json`,
-                { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
-            );
-            const existingTags = existingOrder.data.order?.tags || '';
-            const newTags = existingTags ? `${existingTags}, whatsapp_recovered` : 'whatsapp_recovered';
-            await axios.put(
-                `https://${client.shopDomain}/admin/api/2024-01/orders/${data.id}.json`,
-                { order: { id: data.id, tags: newTags } },
-                { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
-            );
-            log.info(`✅ Tagged Shopify order ${data.id} as whatsapp_recovered`);
+            const baseUrl = `https://${client.shopDomain}/admin/api/2024-01`;
+            const existingOrderRes = await axios.get(`${baseUrl}/orders/${data.id}.json`, {
+                headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken }
+            });
+            
+            let tags = existingOrderRes.data.order?.tags || '';
+            if (!tags.includes('whatsapp_recovered')) {
+                tags = tags ? `${tags}, whatsapp_recovered` : 'whatsapp_recovered';
+                await axios.put(`${baseUrl}/orders/${data.id}.json`, 
+                    { order: { id: data.id, tags } },
+                    { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
+                );
+                log.info(`✅ Tagged Shopify order ${data.id} as whatsapp_recovered`);
+            }
         } catch (tagErr) {
-            log.error('Order tagging failed:', tagErr.message);
+            log.error('Order tagging failed:', tagErr.response?.data || tagErr.message);
         }
     }
 
-    // 4. Emit socket event for dashboard
+    // 5. Emit socket event for dashboard
     if (global.io) {
         global.io.to(`client_${client.clientId}`).emit('new_order', newOrder);
     }

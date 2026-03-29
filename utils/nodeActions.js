@@ -2,6 +2,10 @@
 
 const Conversation = require("../models/Conversation");
 const Message = require("../models/Message");
+const WhatsApp = require("./whatsapp");
+const Order = require("../models/Order");
+const Client = require("../models/Client");
+const { createPaymentLink } = require("./razorpay");
 
 /**
  * Handle special side-effects for nodes that have an "action" field.
@@ -27,10 +31,8 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
         });
       }
       
-      if (client.adminPhone) {
-        // Dynamic require to avoid circular dependency
-        const { sendWhatsAppText } = require("./dualBrainEngine");
-        await sendWhatsAppText(client, client.adminPhone,
+      if (client.adminPhoneNumber) {
+        await WhatsApp.sendText(client, client.adminPhoneNumber,
           `👋 Human needed: ${phone}. Chat: https://wa.me/${phone}`
         );
       }
@@ -46,16 +48,14 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
         `${i+1}. *${s.name}* — ₹${s.price} (${s.duration || 30} min)`
       ).join("\n");
       
-      const { sendWhatsAppText } = require("./dualBrainEngine");
-      await sendWhatsAppText(client, phone, listText);
+      await WhatsApp.sendText(client, phone, listText);
       break;
     }
     
     case "SHOW_SLOTS": {
       // Implementation depends on availability utility
       // Placeholder: In a real scenario, this would call getAvailableSlots
-      const { sendWhatsAppText } = require("./dualBrainEngine");
-      await sendWhatsAppText(client, phone, "I'm checking our calendar for available slots... Please wait a moment. 📅");
+      await WhatsApp.sendText(client, phone, "I'm checking our calendar for available slots... Please wait a moment. 📅");
       break;
     }
     
@@ -68,32 +68,19 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
         status: "confirmed"
       }).sort({ startTime: 1 }).limit(3);
       
-      const { sendWhatsAppText } = require("./dualBrainEngine");
-      
-      if (!upcoming.length) {
-        await sendWhatsAppText(client, phone, "You have no upcoming appointments. Would you like to book one? 😊");
-        return;
-      }
-      
-      const list = upcoming.map(a =>
-        `📅 *${a.serviceName}*\n⏰ ${new Date(a.startTime).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}`
-      ).join("\n\n");
-      
-      await sendWhatsAppText(client, phone, `🛎️ *Your Upcoming Bookings:*\n\n${list}`);
+      const list = upcoming.map(a => `*${a.serviceName}* on ${new Date(a.startTime).toLocaleDateString()}`).join("\n");
+      await WhatsApp.sendText(client, phone, `🛎️ *Your Upcoming Bookings:*\n\n${list}`);
       break;
     }
     
     case "GENERATE_PAYMENT_LINK": {
       // Placeholder for payment link generation (Razorpay/Cashfree)
-      const { sendWhatsAppText } = require("./dualBrainEngine");
-      await sendWhatsAppText(client, phone, "I'm generating your secure payment link... 💳");
+      await WhatsApp.sendText(client, phone, "I'm generating your secure payment link... 💳");
       break;
     }
     
     case "CHECK_ORDER_STATUS": {
-      const Order = require("../models/Order");
       const axios = require("axios");
-      const { sendWhatsAppText } = require("./dualBrainEngine");
 
       try {
         // 1. Try to find the latest order for this phone
@@ -141,6 +128,42 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
         // But for redundancy or auto-edges, it helps.
       } catch (err) {
         console.error("[NodeActions] CHECK_ORDER_STATUS error:", err.message);
+      }
+      break;
+    }
+
+    case "CONVERT_COD_TO_PREPAID": {
+      try {
+        const latestOrder = await Order.findOne({ phone, clientId: client.clientId }).sort({ createdAt: -1 });
+        if (!latestOrder) {
+            await WhatsApp.sendText(client, phone, "I couldn't find your recent COD order to convert. 😕");
+            break;
+        }
+
+        if (latestOrder.paymentMethod !== 'COD') {
+            await WhatsApp.sendText(client, phone, "Your latest order is already prepaid! Thank you! 🌟");
+            break;
+        }
+
+        // Generate Razorpay Link
+        const amount = latestOrder.totalPrice || latestOrder.amount || 0;
+        const discountAmount = Math.round(amount * 0.05); // 5% discount for converting
+        const finalAmount = amount - discountAmount;
+
+        const paymentLink = await createPaymentLink({
+            amount: finalAmount,
+            currency: 'INR',
+            description: `Prepay for Order ${latestOrder.orderId} and save!`,
+            customer: { name: (lead?.name || 'Customer'), contact: phone },
+            metadata: { orderId: latestOrder.orderId, type: 'cod_conversion' }
+        }, client);
+
+        const msg = `🎁 *Special Offer!* 🎁\n\nConvert your COD order *${latestOrder.orderId}* to Prepaid now and save *₹${discountAmount}* instantly!\n\n💳 Pay ₹${finalAmount} securely here: ${paymentLink.short_url}\n\n_Limited time offer to speed up your delivery!_`;
+        
+        await WhatsApp.sendText(client, phone, msg);
+      } catch (err) {
+        console.error("[NodeActions] CONVERT_COD_TO_PREPAID error:", err.message);
+        await WhatsApp.sendText(client, phone, "I'm having trouble generating your pre-payment link. Please try again later or pay on delivery. 🙏");
       }
       break;
     }

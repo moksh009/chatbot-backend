@@ -10,6 +10,8 @@ const Client = require('../models/Client');
 const { sendBirthdayWishWithImage } = require('../utils/sendBirthdayMessage');
 const { sendAppointmentReminder } = require('../utils/sendAppointmentReminder');
 const DailyStat = require('../models/DailyStat');
+const WhatsApp = require('../utils/whatsapp');
+const { createMessage } = require('../utils/createMessage');
 const log = require('../utils/logger')('Campaigns');
 
 try {
@@ -51,10 +53,16 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
         .on('end', resolve)
         .on('error', reject);
     });
+    if (rows.length > 5000) {
+      try { fs.unlinkSync(req.file.path); } catch {}
+      return res.status(400).json({ message: 'CSV too large. Maximum 5000 rows allowed.' });
+    }
+
     const validCount = rows.reduce((acc, row) => {
       const phone = normalizePhone(row.phone || row.number || row.mobile || row.recipient || '');
       return phone ? acc + 1 : acc;
     }, 0);
+
     const campaign = await Campaign.create({
       clientId: req.user.clientId,
       name: req.body.name,
@@ -109,13 +117,6 @@ router.post('/start', protect, async (req, res) => {
       return res.status(403).json({ message: 'Marketing Broadcasting is locked for CX Agent (V1). Please upgrade to V2.' });
     }
 
-    const phoneNumberId = client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
-    const accessToken = client.whatsappToken || process.env.WHATSAPP_TOKEN;
-
-    if (!phoneNumberId || !accessToken) {
-      return res.status(500).json({ message: 'Messaging credentials not configured for this client' });
-    }
-
     // Determine actual template name from client config
     let actualTemplateName = null;
     if (templateType === 'birthday') {
@@ -140,24 +141,11 @@ router.post('/start', protect, async (req, res) => {
     total = rows.length;
     for (const row of rows) {
       const recipientPhone = normalizePhone(row.phone || row.number || row.mobile || row.recipient || '');
-      if (!recipientPhone) {
-        failed++;
-        continue;
-      }
+      if (!recipientPhone) { failed++; continue; }
       try {
         if (templateType === 'birthday') {
-          const resp = await sendBirthdayWishWithImage(recipientPhone, accessToken, phoneNumberId, req.user.clientId, actualTemplateName);
-          if (resp?.success) {
-            sent++;
-            const dateStr = new Date().toISOString().split('T')[0];
-            await DailyStat.updateOne(
-              { clientId: req.user.clientId, date: dateStr },
-              { $inc: { birthdayRemindersSent: 1 }, $setOnInsert: { clientId: req.user.clientId, date: dateStr } },
-              { upsert: true }
-            );
-          } else {
-            failed++;
-          }
+          const resp = await sendBirthdayWishWithImage(recipientPhone, null, null, req.user.clientId, actualTemplateName);
+          if (resp?.success) sent++; else failed++;
         } else if (templateType === 'appointment') {
           const appointmentDetails = {
             summary: row.summary || `Appointment: ${row.name || 'Patient'} - Service`,
@@ -165,47 +153,25 @@ router.post('/start', protect, async (req, res) => {
             date: row.date || '',
             time: row.time || ''
           };
-          await sendAppointmentReminder(phoneNumberId, accessToken, recipientPhone, appointmentDetails, req.user.clientId, actualTemplateName);
+          await sendAppointmentReminder(null, null, recipientPhone, appointmentDetails, req.user.clientId, actualTemplateName);
           sent++;
-          const dateStr = new Date().toISOString().split('T')[0];
-          await DailyStat.updateOne(
-            { clientId: req.user.clientId, date: dateStr },
-            { $inc: { appointmentRemindersSent: 1 }, $setOnInsert: { clientId: req.user.clientId, date: dateStr } },
-            { upsert: true }
-          );
         } else if (templateType === 'whatsapp') {
-          // Generic WhatsApp template broadcast
           const tName = req.body.templateName || campaign.templateName;
           if (!tName) { failed++; continue; }
-          const axios = require('axios');
-          const waPayload = {
-            messaging_product: 'whatsapp',
-            to: recipientPhone,
+          const components = req.body.templateComponents || [];
+          await WhatsApp.sendTemplate(client, recipientPhone, tName, req.body.languageCode || 'en', components);
+          
+          await createMessage({
+            clientId: client.clientId,
+            phone: recipientPhone,
+            direction: 'outbound',
             type: 'template',
-            template: {
-              name: tName,
-              language: { code: req.body.languageCode || 'en' },
-              components: req.body.templateComponents || []
-            }
-          };
-          await axios.post(
-            `https://graph.facebook.com/${process.env.API_VERSION || 'v18.0'}/${phoneNumberId}/messages`,
-            waPayload,
-            { headers: { Authorization: `Bearer ${accessToken}` } }
-          );
+            body: `[Campaign: ${campaign.name}] Template: ${tName}`
+          });
           sent++;
-          const dateStr = new Date().toISOString().split('T')[0];
-          await DailyStat.updateOne(
-            { clientId: req.user.clientId, date: dateStr },
-            { $inc: { marketingMessagesSent: 1 }, $setOnInsert: { clientId: req.user.clientId, date: dateStr } },
-            { upsert: true }
-          );
-        } else {
-          failed++;
         }
         await new Promise(r => setTimeout(r, 500));
       } catch (err) {
-        console.error('Campaign send error:', err.response?.data || err.message);
         failed++;
       }
     }

@@ -125,6 +125,12 @@ async function runDualBrainEngine(parsedMessage, client) {
   // STEP 3: Save inbound message to DB + emit to dashboard
   await saveInboundMessage(phone, client.clientId, parsedMessage, io, channel);
 
+  // STEP 0.1: Check if client is active
+  if (!client.isActive) {
+    log.warn(`[DualBrain] Skipping message for INACTIVE client ${client.clientId}`);
+    return true;
+  }
+
   // STEP 4: Human Takeover — bot is paused
   if (convo.botPaused || convo.status === 'HUMAN_TAKEOVER') {
     if (io) io.to(`client_${client.clientId}`).emit('new_message', {
@@ -141,7 +147,8 @@ async function runDualBrainEngine(parsedMessage, client) {
     if (transcription) {
       parsedMessage = { ...parsedMessage, type: 'text', text: { body: transcription }, _transcribedFrom: 'audio' };
     } else {
-      await sendWhatsAppText(client, phone, "Sorry, I couldn't understand the voice note. Please type your message. 🙏");
+      await WhatsApp.sendText(client, phone, "Sorry, I couldn't understand the voice note. Please type your message. 🙏");
+      await createMessage({ clientId: client.clientId, phone, direction: 'outbound', type: 'text', body: "Transcription failed message" });
       return true;
     }
   }
@@ -402,9 +409,9 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       if (channel === 'instagram') {
         await sendInstagramReply(client, phone, body);
       } else if (data.imageUrl) {
-        await sendWhatsAppImage(client, phone, data.imageUrl, body);
+        await WhatsApp.sendImage(client, phone, data.imageUrl, body);
       } else {
-        await sendWhatsAppText(client, phone, body);
+        await WhatsApp.sendText(client, phone, body);
       }
       return true;
     }
@@ -429,7 +436,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         };
         if (data.imageUrl) interactive.header = { type: 'image', image: { link: data.imageUrl } };
         else if (data.header) interactive.header = { type: 'text', text: data.header.substring(0, 60) };
-        await sendWhatsAppInteractive(client, phone, interactive, data.text || data.body || '');
+        await WhatsApp.sendInteractive(client, phone, interactive, data.text || data.body || '');
         return true;
       }
 
@@ -439,7 +446,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         : (data.buttons || '').split(',').map(b => b.trim()).filter(Boolean).map(b => ({ id: b.toLowerCase().replace(/\s+/g, '_'), title: b }));
 
       if (!buttonsList.length) {
-        await sendWhatsAppText(client, phone, data.text || data.body || '');
+        await WhatsApp.sendText(client, phone, data.text || data.body || '');
         return true;
       }
 
@@ -474,7 +481,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         else if (data.header) interactive.header = { type: 'text', text: data.header.substring(0, 60) };
         if (data.footer) interactive.footer = { text: data.footer.substring(0, 60) };
 
-        await sendWhatsAppInteractive(client, phone, interactive, data.text || data.body || 'Select an option:');
+        await WhatsApp.sendInteractive(client, phone, interactive, data.text || data.body || 'Select an option:');
         return true;
       }
 
@@ -491,7 +498,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       else if (data.header) interactive.header = { type: 'text', text: data.header.substring(0, 60) };
       if (data.footer) interactive.footer = { text: data.footer.substring(0, 60) };
 
-      await sendWhatsAppInteractive(client, phone, interactive, data.text || data.body || 'Choose an option:');
+      await WhatsApp.sendInteractive(client, phone, interactive, data.text || data.body || 'Choose an option:');
       return true;
     }
 
@@ -526,7 +533,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         }
       }
 
-      await sendWhatsAppTemplate(client, phone, templateName, data.languageCode || 'en', components);
+      await WhatsApp.sendTemplate(client, phone, templateName, data.languageCode || 'en', components);
       return true;
     }
 
@@ -641,7 +648,7 @@ async function tryKeywordFallback(parsedMessage, client, convo, phone) {
         return true;
       case 'cancel_flow':
         await Conversation.findByIdAndUpdate(convo._id, { lastStepId: null });
-        await sendWhatsAppText(client, phone, "Flow reset. Type 'Hi' to start over. 😊");
+        await WhatsApp.sendText(client, phone, "Flow reset. Type 'Hi' to start over. 😊");
         return true;
     }
   }
@@ -679,11 +686,13 @@ async function runAIFallback(parsedMessage, client, phone, lead) {
     ].join('\n\n');
 
     const reply = await generateText(prompt, client.geminiApiKey || client.config?.geminiApiKey);
-    await sendWhatsAppText(client, phone, reply);
+    await WhatsApp.sendText(client, phone, reply);
+    await createMessage({ clientId: client.clientId, phone, direction: 'outbound', type: 'text', body: reply, metadata: { is_ai_reply: true } });
     console.log(`[DualBrain] AI Fallback (${isHesitating ? 'Bargaining' : 'Info'}) used for "${text.substring(0, 50)}..."`);
   } catch (err) {
     console.error('[DualBrain] AI Fallback error:', err.message);
-    await sendWhatsAppText(client, phone, "I didn't quite understand that. Type 'Hi' to see how I can help! 😊");
+    await WhatsApp.sendText(client, phone, "I didn't quite understand that. Type 'Hi' to see how I can help! 😊");
+    await createMessage({ clientId: client.clientId, phone, direction: 'outbound', type: 'text', body: "AI error fallback" });
   }
 }
 

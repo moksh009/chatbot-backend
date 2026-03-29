@@ -4,7 +4,8 @@ const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
-const axios = require('axios');
+const WhatsApp = require('../utils/whatsapp');
+const { createMessage } = require('../utils/createMessage');
 
 // @route   GET /api/conversations
 // @desc    Get all conversations for the client
@@ -31,13 +32,30 @@ router.get('/', protect, async (req, res) => {
     if (days) {
       const date = new Date();
       date.setDate(date.getDate() - parseInt(days));
-      query.updatedAt = { $gte: date };
+      query.lastMessageAt = { $gte: date };
     }
+
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
 
     const conversations = await Conversation.find(query)
       .sort({ lastMessageAt: -1 })
+      .skip(skip)
+      .limit(limit)
       .populate('assignedTo', 'name');
-    res.json(conversations);
+    
+    const total = await Conversation.countDocuments(query);
+
+    res.json({
+      success: true,
+      data: conversations,
+      pagination: {
+        total,
+        page,
+        pages: Math.ceil(total / limit)
+      }
+    });
   } catch (error) {
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
@@ -79,10 +97,16 @@ router.get('/:id/messages', protect, async (req, res) => {
       return res.status(404).json({ message: 'Conversation not found' });
     }
 
-    const messages = await Message.find({ conversationId: conversation._id })
-      .sort({ timestamp: 1 }); // Oldest first
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const skip = (page - 1) * limit;
 
-    res.json(messages);
+    const messages = await Message.find({ conversationId: conversation._id })
+      .sort({ timestamp: -1 }) // Get newest first for pagination
+      .skip(skip)
+      .limit(limit);
+
+    res.json(messages.reverse()); // Return in chronological order for UI
   } catch (error) {
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
@@ -105,83 +129,37 @@ router.post('/:id/messages', protect, async (req, res) => {
       return res.status(404).json({ message: 'Conversation not found' });
     }
 
-    // Resolve client-specific WhatsApp credentials using conversation's clientId
+    // Resolve client credentials
     const client = await Client.findOne({ clientId: conversation.clientId });
+    if (!client) return res.status(404).json({ message: 'Client not found' });
 
-    const phoneNumberId =
-      client?.phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || process.env.WHATSAPP_PHONENUMBER_ID;
-    const token =
-      client?.whatsappToken || process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_ACCESS_TOKEN;
-
-    if (!phoneNumberId || !token) {
-      return res.status(500).json({
-        message: 'WhatsApp credentials not configured for this client',
+    let newMessage;
+    if (mediaUrl && (mediaType?.toLowerCase() === 'image')) {
+      await WhatsApp.sendImage(client, conversation.phone, mediaUrl, content);
+      newMessage = await createMessage({
+        clientId: conversation.clientId,
+        phone: conversation.phone,
+        direction: 'outbound',
+        type: 'image',
+        body: content,
+        mediaUrl
+      });
+    } else {
+      await WhatsApp.sendText(client, conversation.phone, content);
+      newMessage = await createMessage({
+        clientId: conversation.clientId,
+        phone: conversation.phone,
+        direction: 'outbound',
+        type: 'text',
+        body: content
       });
     }
 
-    const url = `https://graph.facebook.com/${process.env.API_VERSION || 'v18.0'}/${phoneNumberId}/messages`;
-
-    let waPayload;
-    let messageType = 'text';
-
-    if (mediaUrl && (mediaType === 'image' || mediaType === 'IMAGE')) {
-      messageType = 'image';
-      waPayload = {
-        messaging_product: 'whatsapp',
-        recipient_type: 'individual',
-        to: conversation.phone,
-        type: 'image',
-        image: {
-          link: mediaUrl,
-          caption: content || undefined
-        }
-      };
-    } else if (mediaUrl && (mediaType === 'document' || mediaType === 'file' || mediaType === 'DOCUMENT')) {
-      messageType = 'document';
-      waPayload = {
-        messaging_product: 'whatsapp',
-        recipient_type: 'individual',
-        to: conversation.phone,
-        type: 'document',
-        document: {
-          link: mediaUrl,
-          caption: content || undefined
-        }
-      };
-    } else {
-      messageType = 'text';
-      waPayload = {
-        messaging_product: 'whatsapp',
-        recipient_type: 'individual',
-        to: conversation.phone,
-        type: 'text',
-        text: { body: content }
-      };
-    }
-
-    await axios.post(url, waPayload, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-
-    // Save to DB (MUST use conversation.clientId)
-    const newMessage = await Message.create({
-      clientId: conversation.clientId,
-      conversationId: conversation._id,
-      from: 'agent',
-      to: conversation.phone,
-      content,
-      type: messageType,
-      direction: 'outgoing',
-      status: 'sent',
-      mediaUrl: mediaUrl || undefined
-    });
-
     // Update Conversation
-    conversation.lastMessage = content;
+    conversation.lastMessage = content.substring(0, 100);
     conversation.lastMessageAt = Date.now();
     await conversation.save();
 
-    // Emit Socket Event (Target the owner of the conversation)
     const io = req.app.get('socketio');
     if (io) {
       io.to(`client_${conversation.clientId}`).emit('new_message', newMessage);
@@ -349,32 +327,15 @@ router.post('/:id/send-template', protect, async (req, res) => {
       return res.status(500).json({ message: 'WhatsApp credentials not configured' });
     }
 
-    const url = `https://graph.facebook.com/${process.env.API_VERSION || 'v18.0'}/${phoneNumberId}/messages`;
-    const waPayload = {
-      messaging_product: 'whatsapp',
-      to: conversation.phone,
-      type: 'template',
-      template: {
-        name: templateName,
-        language: { code: languageCode },
-        components
-      }
-    };
+    await WhatsApp.sendTemplate(client, conversation.phone, templateName, languageCode, components);
 
-    await axios.post(url, waPayload, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-
-    // Save outbound message sync
-    const newMessage = await Message.create({
+    // Save outbound message
+    const newMessage = await createMessage({
       clientId: conversation.clientId,
-      conversationId: conversation._id,
-      from: 'agent',
-      to: conversation.phone,
-      content: `[Template: ${templateName}]`,
+      phone: conversation.phone,
+      direction: 'outbound',
       type: 'template',
-      direction: 'outgoing',
-      status: 'sent'
+      body: `[Template: ${templateName}]`
     });
 
     conversation.lastMessage = `[Template: ${templateName}]`;

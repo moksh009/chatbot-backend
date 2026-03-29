@@ -1,67 +1,36 @@
-const cron = require('node-cron');
-const axios = require('axios');
 const AdLead = require('../models/AdLead');
 const Client = require('../models/Client');
 const DailyStat = require('../models/DailyStat');
+const Conversation = require('../models/Conversation');
 const { sendAbandonedCartEmail } = require('../utils/emailService');
 const log = require('../utils/logger')('AbandonedCart');
 const { generateText } = require('../utils/gemini');
+const WhatsApp = require('../utils/whatsapp');
+const { createMessage } = require('../utils/createMessage');
+const cron = require('node-cron');
+const axios = require('axios');
 
 // Helper to check if a specific node role was handled previously
 const wasRoleHandled = (lead, role) => lead.activityLog.some(l => l.action === 'automation_nudge' && l.details === role);
 
-// Function to send WhatsApp template
-async function sendWhatsAppTemplate(token, phoneId, to, templateName, variables) {
-    try {
-        const data = {
-            messaging_product: 'whatsapp',
-            to: to,
-            type: 'template',
-            template: {
-                name: templateName,
-                language: { code: 'en' },
-                components: [
-                    {
-                        type: 'body',
-                        parameters: variables
-                    }
-                ]
-            }
-        };
-
-        await axios.post(
-            `https://graph.facebook.com/v18.0/${phoneId}/messages`,
-            data,
-            { headers: { Authorization: `Bearer ${token}` } }
-        );
-        return true;
-    } catch (error) {
-        console.error("WhatsApp Template Error:", error.response?.data || error.message);
-        return false;
-    }
+// Outbound message recording helper
+async function recordNudge(lead, body, type = 'text') {
+    await createMessage({
+        clientId: lead.clientId,
+        phone: lead.phoneNumber,
+        direction: 'outbound',
+        type: type,
+        body: body,
+        metadata: { is_automation_nudge: true }
+    });
 }
 
-// Function to send WhatsApp Text to admin
-async function sendWhatsAppText(token, phoneId, to, text) {
-    try {
-        await axios.post(
-            `https://graph.facebook.com/v18.0/${phoneId}/messages`,
-            {
-                messaging_product: 'whatsapp',
-                to: to,
-                type: 'text',
-                text: { body: text }
-            },
-            { headers: { Authorization: `Bearer ${token}` } }
-        );
-        return true;
-    } catch (error) {
-        console.error("WhatsApp Text Error:", error.response?.data || error.message);
-        return false;
-    }
+// Check if bot should skip this lead (Human takeover/Opt-out)
+async function shouldSkipLead(lead) {
+    const conv = await Conversation.findOne({ phone: lead.phoneNumber, clientId: lead.clientId });
+    if (conv && conv.status === 'HUMAN_TAKEOVER') return true;
+    return false;
 }
-
-
 
 const scheduleAbandonedCartCron = () => {
     // 1. Abandoned Cart Scheduler - Runs every 5 minutes for better 15m precision
@@ -88,9 +57,7 @@ const scheduleAbandonedCartCron = () => {
             for (const lead of browseBatch) {
                 const client = await Client.findOne({ clientId: lead.clientId });
                 if (!client) continue;
-                const token = client.whatsappToken || client.config?.whatsappToken || process.env.WHATSAPP_TOKEN;
-                const phoneId = client.phoneNumberId || client.config?.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
-                if (!token || !phoneId) continue;
+                if (await shouldSkipLead(lead)) continue;
 
                 const lastClick = lead.activityLog
                     .filter(l => l.action === "link_click")
@@ -99,7 +66,8 @@ const scheduleAbandonedCartCron = () => {
                 const productName = lastClick ? lastClick.details.replace('clicked product ', '') : "something amazing";
                 const msg = `Hi ${lead.name || 'there'}! 👋 We noticed you checking out *${productName}*. Need any help with it? We're here to answer any questions! 😊`;
                 
-                await sendWhatsAppText(token, phoneId, lead.phoneNumber, msg);
+                await WhatsApp.sendText(client, lead.phoneNumber, msg);
+                await recordNudge(lead, msg);
                 await AdLead.findByIdAndUpdate(lead._id, { 
                     recoveryStep: 0, 
                     $push: { activityLog: { action: 'automation_nudge', details: 'browse_abandon', timestamp: new Date() } }
@@ -127,11 +95,7 @@ const scheduleAbandonedCartCron = () => {
             for (const lead of step1Batch) {
                 const client = await Client.findOne({ clientId: lead.clientId });
                 if (!client) continue;
-
-                const token = client.whatsappToken || client.config?.whatsappToken || process.env.WHATSAPP_TOKEN;
-                const phoneId = client.phoneNumberId || client.config?.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
-
-                if (!token || !phoneId) continue;
+                if (await shouldSkipLead(lead)) continue;
 
                 const lastCart = lead.activityLog
                     .filter(l => l.action === "add_to_cart")
@@ -142,8 +106,6 @@ const scheduleAbandonedCartCron = () => {
                 const hasOrdered = lead.activityLog.some(l => l.action === "order_placed");
                 if (hasOrdered) continue;
 
-                const storeUrl = client.nicheData?.storeUrl || process.env.STORE_URL || 'https://example.com';
-                const restoreUrl = `${storeUrl}/cart`;
                 const customMsg = client.nicheData?.abandonedMsg1;
 
                 if (customMsg) {
@@ -153,15 +115,12 @@ const scheduleAbandonedCartCron = () => {
                         .replace(/{items}/g, lead.activityLog.filter(l => l.action === 'add_to_cart').map(l => l.details).join(', '))
                         .replace(/{discount_code}/g, discountCode);
                     
-                    await sendWhatsAppText(token, phoneId, lead.phoneNumber, personalizedMsg);
+                    await WhatsApp.sendText(client, lead.phoneNumber, personalizedMsg);
+                    await recordNudge(lead, personalizedMsg);
                 } else {
-                    await sendWhatsAppTemplate(
-                        token,
-                        phoneId,
-                        lead.phoneNumber,
-                        "cart_remainder",
-                        [{ type: "text", text: lead.name || "Customer" }]
-                    );
+                    const variables = [{ type: "text", text: lead.name || "Customer" }];
+                    await WhatsApp.sendTemplate(client, lead.phoneNumber, "cart_remainder", "en", [{ type: 'body', parameters: variables }]);
+                    await recordNudge(lead, `[Template: cart_remainder]`, 'template');
                 }
 
                 if (lead.email) {

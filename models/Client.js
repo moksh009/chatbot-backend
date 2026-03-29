@@ -62,6 +62,7 @@ const ClientSchema = new mongoose.Schema({
   
   instagramPageId:      { type: String, default: "" },
   instagramAccessToken: { type: String, default: "" },
+  instagramAppSecret:   { type: String, default: "" },
   instagramConnected:   { type: Boolean, default: false },
   
   // messageTemplates stored as flexible Mixed array to support both 
