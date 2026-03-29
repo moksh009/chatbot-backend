@@ -53,9 +53,29 @@ router.post('/send-template', protect, async (req, res) => {
     });
 
     log.info(`Individual template sent: ${templateName} to ${phoneNumber} (clientId: ${targetClientId})`);
-    res.json({ success: true, data: response.data });
+    
+    // Create Message record for tracking
+    try {
+        const Message = require('../models/Message');
+        const metaMessageId = response.data?.messages?.[0]?.id;
+        
+        await Message.create({
+            clientId: targetClientId,
+            from: phoneNumberId,
+            to: phoneNumber,
+            direction: 'outgoing',
+            type: 'template',
+            content: `[Individual Outreach] Template: ${templateName}`,
+            messageId: metaMessageId,
+            status: 'sent',
+            campaignId: req.body.campaignId || null, // Link to campaign if provided
+            channel: 'whatsapp'
+        });
+    } catch (msgErr) {
+        log.error('Failed to create message record for tracking', msgErr.message);
+    }
 
-  } catch (error) {
+    res.json({ success: true, data: response.data, messageId: response.data?.messages?.[0]?.id });
     const errorData = error.response?.data || error.message;
     log.error('Failed to send individual template', { error: errorData });
     res.status(error.response?.status || 500).json({ 

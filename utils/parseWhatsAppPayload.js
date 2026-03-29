@@ -13,8 +13,19 @@ function parseWhatsAppPayload(body) {
     // 1. Basic Validation
     if (!value || (!value.messages && !value.statuses)) return null;
 
-    // 2. Ignore Status Updates (sent, delivered, read)
-    if (value.statuses) return null;
+    // 2. Handle Status Updates (sent, delivered, read)
+    if (value.statuses && value.statuses.length > 0) {
+      const status = value.statuses[0];
+      return {
+        type: 'status_update',
+        messageId: status.id,
+        status: status.status, // "delivered", "read", "failed", "sent"
+        recipientId: status.recipient_id,
+        timestamp: status.timestamp,
+        phoneNumberId: metadata?.phone_number_id,
+        errors: status.errors
+      };
+    }
 
     const messages = value.messages?.[0];
     if (!messages) return null;

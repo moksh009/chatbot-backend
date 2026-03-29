@@ -43,10 +43,14 @@ router.post('/', async (req, res) => {
 
         console.log(`[MasterWebhook] Routing to Client: ${client.clientId} (${client.name})`);
 
-        // Set up the request object if needed by legacy engines
-        req.clientConfig = client;
-        
-        // ROUTE BY FLOW DATA OR BUSINESS TYPE
+        // 1. HANDLE STATUS UPDATES (delivered, read, failed)
+        if (parsedMessage.type === 'status_update') {
+            const { updateCampaignStats } = require('../utils/campaignStatsHelper');
+            await updateCampaignStats(parsedMessage, client);
+            return;
+        }
+
+        // 2. ROUTE BY FLOW DATA OR BUSINESS TYPE
         if (client.flowNodes && client.flowNodes.length > 0) {
             await runDualBrainEngine(parsedMessage, client);
         } else {

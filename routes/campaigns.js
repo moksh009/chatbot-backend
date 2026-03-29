@@ -159,14 +159,21 @@ router.post('/start', protect, async (req, res) => {
           const tName = req.body.templateName || campaign.templateName;
           if (!tName) { failed++; continue; }
           const components = req.body.templateComponents || [];
-          await WhatsApp.sendTemplate(client, recipientPhone, tName, req.body.languageCode || 'en', components);
-          
-          await createMessage({
+          const respData = await WhatsApp.sendTemplate(client, recipientPhone, tName, req.body.languageCode || 'en', components);
+          const metaMsgId = respData?.messages?.[0]?.id;
+
+          const Message = require('../models/Message');
+          await Message.create({
             clientId: client.clientId,
-            phone: recipientPhone,
-            direction: 'outbound',
+            from: client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID,
+            to: recipientPhone,
+            direction: 'outgoing',
             type: 'template',
-            body: `[Campaign: ${campaign.name}] Template: ${tName}`
+            content: `[Campaign: ${campaign.name}] Template: ${tName}`,
+            messageId: metaMsgId,
+            status: 'sent',
+            campaignId: campaign._id,
+            channel: 'whatsapp'
           });
           sent++;
         }

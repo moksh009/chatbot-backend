@@ -19,7 +19,10 @@ const MessageSchema = new mongoose.Schema({
     type: String,
     enum: ["whatsapp", "instagram", "email"],
     default: "whatsapp"
-  }
+  },
+  
+  // Phase 14 Campaign Tracking
+  campaignId: { type: mongoose.Schema.Types.ObjectId, ref: 'Campaign' }
 });
 
 module.exports = mongoose.model('Message', MessageSchema);

@@ -201,6 +201,10 @@ router.post('/order-webhook', async (req, res) => {
             );
 
             if (lead && io) {
+                // Attribution Logic: Check if this lead recently received a campaign message
+                const { attributeRevenueToCampaign } = require('../utils/campaignStatsHelper');
+                await attributeRevenueToCampaign(order, lead);
+
                 io.to(`client_${clientId}`).emit('stats_update', {
                     type: 'new_order',
                     leadId: lead._id,
