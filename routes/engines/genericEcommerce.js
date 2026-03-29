@@ -263,7 +263,10 @@ async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageC
         await saveAndEmitMessage({ phoneNumberId, to, body: `[Template Sent] ${templateName}`, type: 'template', io, clientConfig });
         return true;
     } catch (err) { 
-        console.error('[EcommerceEngine] Template Error:', err.response?.data || err.message); 
+        console.error(`[EcommerceEngine] Template Error [${templateName}]:`, JSON.stringify(err.response?.data || err.message));
+        if (err.response?.data?.error?.details) {
+            console.error(`[EcommerceEngine] Meta Error Details: ${err.response.data.error.details}`);
+        }
         return false; 
     }
 }
@@ -1010,11 +1013,21 @@ const updateOrderStatus = async (req, res) => {
                 });
 
                 if (status === 'shipped' || status === 'fulfilled') {
-                    // Fetch fulfillments to see if we can update or create
-                    // Simplest: Create a fulfillment
+                    // --- PHASE 11 ROBUSTNESS FIX ---
+                    let activeLocId = nicheData.shopifyLocationId;
+                    if (!activeLocId) {
+                        try {
+                           const locRes = await shopifyApi.get('/locations.json');
+                           activeLocId = locRes.data.locations?.[0]?.id;
+                           console.log(`[ShopifySync] Auto-detected Location ID: ${activeLocId}`);
+                        } catch (locErr) {
+                           console.error("[ShopifySync] Failed to fetch locations:", locErr.message);
+                        }
+                    }
+
                     await shopifyApi.post(`/orders/${order.shopifyOrderId}/fulfillments.json`, {
                         fulfillment: {
-                            location_id: nicheData.shopifyLocationId || null,
+                            location_id: activeLocId || null,
                             tracking_number: trackingNumber || order.trackingNumber,
                             tracking_urls: [trackingUrl || order.trackingUrl].filter(Boolean),
                             notify_customer: false
@@ -1035,9 +1048,11 @@ const updateOrderStatus = async (req, res) => {
         if (templateName) {
             const phone = order.customerPhone || order.phone;
             if (phone) {
-                // Find template definition in syncedMetaTemplates to detect parameter count
-                const tplDef = (req.clientConfig.syncedMetaTemplates || []).find(t => t.name === templateName);
-                let requiredParams = 3; // Default fallback to 3
+                // Find template definition in waTemplates or syncedMetaTemplates to detect parameter count
+                const tplDef = (req.clientConfig.waTemplates || []).find(t => t.name === templateName) || 
+                               (req.clientConfig.syncedMetaTemplates || []).find(t => t.name === templateName);
+                
+                let requiredParams = 0; 
                 if (tplDef && tplDef.components) {
                     const bodyComp = tplDef.components.find(c => c.type === 'BODY');
                     if (bodyComp && bodyComp.text) {
@@ -1056,14 +1071,18 @@ const updateOrderStatus = async (req, res) => {
                     trackingUrl || order.trackingUrl || req.clientConfig.nicheData?.storeUrl || 'our store'
                 ];
 
-                // Ensure bodyParams matches Meta's required count EXACTLY
-                if (bodyParams.length > requiredParams) {
-                    bodyParams = bodyParams.slice(0, requiredParams);
-                } else {
-                    while (bodyParams.length < requiredParams) {
-                        bodyParams.push('---'); // Minimal padding if template expects more than 6
+                // Ensure bodyParams matches Meta's required count EXACTLY if we know the count
+                if (requiredParams > 0) {
+                    if (bodyParams.length > requiredParams) {
+                        bodyParams = bodyParams.slice(0, requiredParams);
+                    } else {
+                        while (bodyParams.length < requiredParams) {
+                            bodyParams.push('---'); // Minimal padding
+                        }
                     }
                 }
+                // If requiredParams is 0 (detection failed), we send all available params (up to 6)
+                // which is safer than blindly slicing to 3.
 
                 const helperParams = { phoneNumberId, token: whatsappToken, io, clientConfig: req.clientConfig };
                 await sendWhatsAppTemplate({

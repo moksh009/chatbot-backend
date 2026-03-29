@@ -85,4 +85,25 @@ router.post('/:clientId/:segmentId/leads', protect, async (req, res) => {
   }
 });
 
+
+router.delete('/:clientId/:segmentId', protect, async (req, res) => {
+  try {
+    const { clientId, segmentId } = req.params;
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const segment = await Segment.findOneAndDelete({ _id: segmentId, clientId });
+    if (!segment) {
+      return res.status(404).json({ success: false, message: 'Segment not found' });
+    }
+
+    res.json({ success: true, message: 'Segment deleted successfully' });
+  } catch (error) {
+    console.error('Segment deletion error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 module.exports = router;
+

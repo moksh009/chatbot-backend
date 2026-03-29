@@ -90,6 +90,8 @@ function incrementNodeVisit(nodes, nodeId) {
   });
 }
 
+const { normalizePhone } = require("./phoneUtils");
+
 // ─────────────────────────────────────────────────────────────────────────────
 // VARIABLE REPLACEMENT UTILITY
 // ─────────────────────────────────────────────────────────────────────────────
@@ -119,8 +121,12 @@ function replaceVariables(text, client, lead, convo) {
 // Returns: true if message was handled
 // ─────────────────────────────────────────────────────────────────────────────
 async function runDualBrainEngine(parsedMessage, client) {
-  const phone = parsedMessage.from;
+  const rawPhone = parsedMessage.from;
   const channel = parsedMessage.channel || 'whatsapp';
+  
+  // Normalize phone for consistency
+  const phone = channel === 'whatsapp' ? normalizePhone(rawPhone) : rawPhone;
+  
   const io    = global.io;
   const profileName = parsedMessage.profileName || '';
 
