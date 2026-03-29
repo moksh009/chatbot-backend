@@ -184,13 +184,17 @@ router.get('/run-delitech-migration', async (req, res) => {
     };
 
     const DELITECH_NODES = [
-      // --- Root Trigger ---
-      { id: "trigger_start", type: "trigger", position: { x: 400, y: 0 }, 
+      // ─── FOLDERS (Containers) ───────────────────────────────────────────
+      { id: "f_welcome", type: "folder", position: { x: 400, y: 0 }, data: { label: "🏠 Welcome & Menu" } },
+      { id: "f_catalog", type: "folder", position: { x: 0, y: 300 }, data: { label: "🛍️ Product Catalog" } },
+      { id: "f_support", type: "folder", position: { x: 400, y: 300 }, data: { label: "🛠️ Technical Support" } },
+      { id: "f_orders",  type: "folder", position: { x: 800, y: 300 }, data: { label: "📞 Order Desk" } },
+
+      // ─── WELCOME FOLDER NODES ───────────────────────────────────────────
+      { id: "trigger_start", type: "trigger", parentId: "f_welcome", position: { x: 100, y: 50 }, 
         data: { label: "Main Entry Trigger", keyword: "hi,hello,hey,hola,details,price,doorbell,catalogue,info" } 
       },
-      
-      // --- Main Welcome (List) ---
-      { id: "menu_main", type: "interactive", position: { x: 400, y: 150 }, data: { 
+      { id: "menu_main", type: "interactive", parentId: "f_welcome", position: { x: 100, y: 200 }, data: { 
         label: "Welcome Concierge", 
         interactiveType: "list",
         header: "Delitech Smart Home",
@@ -214,8 +218,8 @@ router.get('/run-delitech-migration', async (req, res) => {
         ]
       }},
 
-      // --- Individual Product Nodes ---
-      { id: "card_5mp", type: "interactive", position: { x: 0, y: 450 }, data: { 
+      // ─── CATALOG FOLDER NODES ───────────────────────────────────────────
+      { id: "card_5mp", type: "interactive", parentId: "f_catalog", position: { x: 50, y: 50 }, data: { 
         label: "5MP Pro Card", 
         interactiveType: "button",
         imageUrl: IMAGES.hero_5mp,
@@ -226,7 +230,7 @@ router.get('/run-delitech-migration', async (req, res) => {
           { id: "back_main", title: "View Other" }
         ]
       }},
-      { id: "card_3mp", type: "interactive", position: { x: 400, y: 450 }, data: { 
+      { id: "card_3mp", type: "interactive", parentId: "f_catalog", position: { x: 450, y: 50 }, data: { 
         label: "3MP Plus Card", 
         interactiveType: "button",
         imageUrl: IMAGES.hero_3mp,
@@ -237,7 +241,7 @@ router.get('/run-delitech-migration', async (req, res) => {
           { id: "back_main_2", title: "View Other" }
         ]
       }},
-      { id: "card_2mp", type: "interactive", position: { x: 800, y: 450 }, data: { 
+      { id: "card_2mp", type: "interactive", parentId: "f_catalog", position: { x: 850, y: 50 }, data: { 
         label: "2MP Standard Card", 
         interactiveType: "button",
         imageUrl: IMAGES.hero_2mp,
@@ -248,59 +252,58 @@ router.get('/run-delitech-migration', async (req, res) => {
           { id: "back_main_3", title: "View Other" }
         ]
       }},
+      { id: "link_5mp", type: "message", parentId: "f_catalog", position: { x: 50, y: 350 }, data: { label: "Checkout 5MP", body: "⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 https://delitechsmarthome.in/cart/prod_5mp:1\n\n_Cash on Delivery Available_" } },
+      { id: "link_3mp", type: "message", parentId: "f_catalog", position: { x: 450, y: 350 }, data: { label: "Checkout 3MP", body: "⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 https://delitechsmarthome.in/cart/prod_mp:1\n\n_Cash on Delivery Available_" } },
+      { id: "link_2mp", type: "message", parentId: "f_catalog", position: { x: 850, y: 350 }, data: { label: "Checkout 2MP", body: "⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 https://delitechsmarthome.in/cart/prod_2mp:1\n\n_Cash on Delivery Available_" } },
 
-      // --- FAQ Nodes ---
-      { id: "ans_install", type: "message", position: { x: 1200, y: 400 }, data: { 
+      // ─── SUPPORT FOLDER NODES ───────────────────────────────────────────
+      { id: "ans_install", type: "message", parentId: "f_support", position: { x: 50, y: 50 }, data: { 
         label: "Installation FAQ", 
-        body: "🛠️ *Is it hard to install?*\nNot at all! It's *100% Wireless DIY*. No electricians or wiring needed. You can stick it or screw it to the wall in under 2 minutes. Setup through the CloudEdge App is instant." 
+        body: "🛠️ *Is it hard to install?*\nNot at all! It's *100% Wireless DIY*. Installation takes exactly 2 minutes. You can stick it or screw it to the wall instantly." 
       }},
-      { id: "ans_battery", type: "message", position: { x: 1200, y: 500 }, data: { 
+      { id: "ans_battery", type: "message", parentId: "f_support", position: { x: 450, y: 50 }, data: { 
         label: "Battery FAQ", 
-        body: "🔋 *How long does the battery last?*\nThe IP65 weatherproof battery lasts *up to 6 months* on a single charge (depending on motion alerts). Simply recharge it via the included USB cable." 
+        body: "🔋 *How long does the battery last?*\nThe IP65 weatherproof battery lasts *up to 6 months* on a single charge! Simply recharge it via the included USB cable." 
       }},
-      { id: "ans_warranty", type: "message", position: { x: 1200, y: 600 }, data: { 
+      { id: "ans_warranty", type: "message", parentId: "f_support", position: { x: 850, y: 50 }, data: { 
         label: "Warranty FAQ", 
-        body: "🛡️ *What about Warranty & Support?*\nEnjoy complete peace of mind with our *1-Year Replacement Warranty* on any manufacturing defects, plus free premium technical support." 
+        body: "🛡️ *What about Warranty?*\nEnjoy complete peace of mind with our *1-Year Replacement Warranty* on any manufacturing defects." 
       }},
+      { id: "trig_waterproof", type: "trigger", parentId: "f_support", position: { x: 50, y: 200 }, data: { label: "Waterproof Trigger", keyword: "waterproof,rain,weather" } },
+      { id: "msg_waterproof", type: "message", parentId: "f_support", position: { x: 50, y: 350 }, data: { label: "Waterproof Info", body: "🌦️ *IP65 Weatherproof Guarantee*\n\nYes! Our Doorbells are built to withstand the heaviest Indian monsoons and intense summer heat." } },
 
-      // --- Feature Specific Triggers ---
-      { id: "trig_waterproof", type: "trigger", position: { x: 1500, y: 100 }, data: { label: "Waterproof Trigger", keyword: "waterproof,rain,weather" } },
-      { id: "msg_waterproof", type: "message", position: { x: 1500, y: 250 }, data: { label: "Waterproof Info", body: "🌦️ *IP65 Weatherproof Guarantee*\n\nYes! Our Doorbells are built to withstand the heaviest Indian monsoons and intense summer heat. You never have to worry about water damage." } },
-
-      // --- Agent Handover ---
-      { id: "agent_handover", type: "livechat", position: { x: 100, y: 250 }, data: { 
+      // ─── ORDERS FOLDER NODES ───────────────────────────────────────────
+      { id: "track_order_msg", type: "message", parentId: "f_orders", position: { x: 100, y: 50 }, data: { label: "Track System", body: "📦 *Tracking your order...*\nPlease provide your Order ID (e.g. #1234) and I will fetch the live status for you!" } },
+      { id: "agent_handover", type: "livechat", parentId: "f_orders", position: { x: 100, y: 200 }, data: { 
         label: "Talk to Expert", 
-        body: "✅ *Request Received!*\n\nOur security expert has been notified. They will call you shortly on this number.\n\nIn the meantime, feel free to browse our features!" 
-      }},
-
-      // --- Purchase Nodes (External Links) ---
-      { id: "link_5mp", type: "message", position: { x: -250, y: 650 }, data: { label: "Checkout 5MP", body: "⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 https://delitechsmarthome.in/cart/prod_5mp:1?utm_source=whatsapp&utm_medium=chatbot\n\n_Cash on Delivery Available_" } },
-      { id: "link_3mp", type: "message", position: { x: 350, y: 650 }, data: { label: "Checkout 3MP", body: "⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 https://delitechsmarthome.in/cart/prod_mp:1?utm_source=whatsapp&utm_medium=chatbot\n\n_Cash on Delivery Available_" } },
-      { id: "link_2mp", type: "message", position: { x: 950, y: 650 }, data: { label: "Checkout 2MP", body: "⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 https://delitechsmarthome.in/cart/prod_2mp:1?utm_source=whatsapp&utm_medium=chatbot\n\n_Cash on Delivery Available_" } }
+        body: "✅ *Request Received!*\n\nOur security expert has been notified. They will call you shortly on this number to assist you." 
+      }}
     ];
 
     const DELITECH_EDGES = [
+      // Welcome Folder Edges
       { id: "e_start_menu", source: "trigger_start", target: "menu_main" },
-      { id: "e_menu_5mp", source: "menu_main", target: "card_5mp", sourceHandle: "sel_5mp" },
-      { id: "e_menu_3mp", source: "menu_main", target: "card_3mp", sourceHandle: "sel_3mp" },
-      { id: "e_menu_2mp", source: "menu_main", target: "card_2mp", sourceHandle: "sel_2mp" },
-      { id: "e_menu_agent", source: "menu_main", target: "agent_handover", sourceHandle: "menu_agent" },
-      { id: "e_menu_faqs", source: "menu_main", target: "ans_install", sourceHandle: "menu_faqs" },
+      { id: "e_menu_5mp", source: "menu_main", target: "f_catalog", sourceHandle: "sel_5mp" },
+      { id: "e_menu_3mp", source: "menu_main", target: "f_catalog", sourceHandle: "sel_3mp" },
+      { id: "e_menu_2mp", source: "menu_main", target: "f_catalog", sourceHandle: "sel_2mp" },
+      { id: "e_menu_agent", source: "menu_main", target: "f_orders", sourceHandle: "menu_agent" },
+      { id: "e_menu_faqs", source: "menu_main", target: "f_support", sourceHandle: "menu_faqs" },
       
+      // Catalog Folder Internal Edges
       { id: "e_card_5mp_buy", source: "card_5mp", target: "link_5mp", sourceHandle: "buy_5mp" },
-      { id: "e_card_5mp_call", source: "card_5mp", target: "agent_handover", sourceHandle: "agent_5mp" },
-      { id: "e_card_5mp_back", source: "card_5mp", target: "menu_main", sourceHandle: "back_main" },
+      { id: "e_card_5mp_call", source: "card_5mp", target: "f_orders", sourceHandle: "agent_5mp" },
+      { id: "e_card_5mp_back", source: "card_5mp", target: "f_welcome", sourceHandle: "back_main" },
 
       { id: "e_card_3mp_buy", source: "card_3mp", target: "link_3mp", sourceHandle: "buy_3mp" },
-      { id: "e_card_3mp_call", source: "card_3mp", target: "agent_handover", sourceHandle: "agent_3mp" },
-      { id: "e_card_3mp_back", source: "card_3mp", target: "menu_main", sourceHandle: "back_main_2" },
+      { id: "e_card_3mp_call", source: "card_3mp", target: "f_orders", sourceHandle: "agent_3mp" },
+      { id: "e_card_3mp_back", source: "card_3mp", target: "f_welcome", sourceHandle: "back_main_2" },
 
       { id: "e_card_2mp_buy", source: "card_2mp", target: "link_2mp", sourceHandle: "buy_2mp" },
-      { id: "e_card_2mp_call", source: "card_2mp", target: "agent_handover", sourceHandle: "agent_2mp" },
-      { id: "e_card_2mp_back", source: "card_2mp", target: "menu_main", sourceHandle: "back_main_3" },
+      { id: "e_card_2mp_call", source: "card_2mp", target: "f_orders", sourceHandle: "agent_2mp" },
+      { id: "e_card_2mp_back", source: "card_2mp", target: "f_welcome", sourceHandle: "back_main_3" },
 
-      { id: "e_trig_wp", source: "trig_waterproof", target: "msg_waterproof" },
-      { id: "e_wp_back", source: "msg_waterproof", target: "menu_main" }
+      // Support Folder Internal Edges
+      { id: "e_trig_wp", source: "trig_waterproof", target: "msg_waterproof" }
     ];
 
     await Client.findOneAndUpdate(
@@ -314,11 +317,12 @@ router.get('/run-delitech-migration', async (req, res) => {
       }}
     );
 
-    res.json({ success: true, message: "Delitech high-fidelity flow migrated successfully!" });
+    res.json({ success: true, message: "Delitech high-fidelity folderized flow migrated successfully!" });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
 // --- RUN GENERIC FOLDERIZATION (URL RUNNABLE) ---
 router.get('/folderize-clients', async (req, res) => {
   try {

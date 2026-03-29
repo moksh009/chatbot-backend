@@ -306,6 +306,16 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   const node = flowNodes.find(n => n.id === nodeId);
   if (!node) { console.warn(`[DualBrain] Node ${nodeId} not found`); return false; }
 
+  // Increment visitCount for Flow Convergence Analytics
+  try {
+    const updatedNodes = incrementNodeVisit(client.flowNodes || [], nodeId);
+    await Client.findByIdAndUpdate(client._id, { flowNodes: updatedNodes });
+    // Update local reference for this execution chain
+    client.flowNodes = updatedNodes;
+  } catch (err) {
+    console.error(`[DualBrain] Failed to increment visit count for node ${nodeId}:`, err.message);
+  }
+
   const sent = await sendNodeContent(node, client, phone, lead, convo, channel);
   if (!sent && node.type !== 'logic' && node.type !== 'delay') return false;
 
