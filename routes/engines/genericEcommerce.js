@@ -1035,11 +1035,36 @@ const updateOrderStatus = async (req, res) => {
         if (templateName) {
             const phone = order.customerPhone || order.phone;
             if (phone) {
-                const bodyParams = [
+                // Find template definition in syncedMetaTemplates to detect parameter count
+                const tplDef = (req.clientConfig.syncedMetaTemplates || []).find(t => t.name === templateName);
+                let requiredParams = 3; // Default fallback to 3
+                if (tplDef && tplDef.components) {
+                    const bodyComp = tplDef.components.find(c => c.type === 'BODY');
+                    if (bodyComp && bodyComp.text) {
+                        const matches = bodyComp.text.match(/\{\{\d+\}\}/g);
+                        if (matches) requiredParams = new Set(matches).size;
+                    }
+                }
+
+                // Prepare a comprehensive set of variables
+                let bodyParams = [
                     order.customerName || 'Customer',
                     order.orderNumber || order.orderId,
-                    status
+                    status.charAt(0).toUpperCase() + status.slice(1), // Title Case status
+                    `₹${order.totalPrice || '0'}`,
+                    trackingNumber || order.trackingNumber || req.clientConfig.businessName || 'Your Package',
+                    trackingUrl || order.trackingUrl || req.clientConfig.nicheData?.storeUrl || 'our store'
                 ];
+
+                // Ensure bodyParams matches Meta's required count EXACTLY
+                if (bodyParams.length > requiredParams) {
+                    bodyParams = bodyParams.slice(0, requiredParams);
+                } else {
+                    while (bodyParams.length < requiredParams) {
+                        bodyParams.push('---'); // Minimal padding if template expects more than 6
+                    }
+                }
+
                 const helperParams = { phoneNumberId, token: whatsappToken, io, clientConfig: req.clientConfig };
                 await sendWhatsAppTemplate({
                     ...helperParams,
