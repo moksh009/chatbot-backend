@@ -76,6 +76,8 @@ router.post('/send-template', protect, async (req, res) => {
     }
 
     res.json({ success: true, data: response.data, messageId: response.data?.messages?.[0]?.id });
+
+  } catch (error) {
     const errorData = error.response?.data || error.message;
     log.error('Failed to send individual template', { error: errorData });
     res.status(error.response?.status || 500).json({ 
