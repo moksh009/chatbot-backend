@@ -2,7 +2,9 @@ const express = require('express');
 const router = express.Router();
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
+const { fixFlowWithAI } = require('../controllers/flowFixController');
 
+router.post('/fix', protect, fixFlowWithAI);
 router.get('/:clientId/analytics', protect, async (req, res) => {
   try {
     const { clientId } = req.params;

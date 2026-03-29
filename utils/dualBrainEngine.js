@@ -438,7 +438,6 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         else if (data.header) interactive.header = { type: 'text', text: data.header.substring(0, 60) };
         await WhatsApp.sendInteractive(client, phone, interactive, data.text || data.body || '');
         return true;
-      }
 
       // Standard reply buttons
       const buttonsList = Array.isArray(data.buttonsList) && data.buttonsList.length > 0
