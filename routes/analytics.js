@@ -304,7 +304,7 @@ router.get('/lead-by-phone/:phone', protect, async (req, res) => {
 
     // --- PHASE 10 FIX: Shared Query for Delitech/CodeClinic ---
     const query = (['delitech_smarthomes', 'code_clinic_v1'].includes(clientId))
-      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'], phoneNumber: req.params.phone } }
+      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] }, phoneNumber: req.params.phone }
       : { clientId, phoneNumber: req.params.phone };
 
     const lead = await AdLead.findOne(query);

@@ -12,6 +12,12 @@ const { createMessage } = require('../utils/createMessage');
 // @access  Private
 router.get('/', protect, async (req, res) => {
   try {
+    const { days, clientId, phone } = req.query;
+    let query = {};
+    if (phone) {
+      query.phone = phone;
+    }
+
     // --- PHASE 10 FIX: Shared Query for Delitech/CodeClinic ---
     const activeClientId = req.user.role === 'SUPER_ADMIN' && clientId ? clientId : req.user.clientId;
     
