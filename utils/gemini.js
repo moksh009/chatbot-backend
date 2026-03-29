@@ -4,8 +4,8 @@ function getGeminiModel(apiKey) {
   const genAI = new GoogleGenerativeAI(
     apiKey || process.env.GEMINI_API_KEY
   );
-  // Using gemini-2.0-flash as the latest production model
-  return genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+  // Using gemini-1.5-flash as the most stable high-performance model
+  return genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 }
 
 async function generateText(prompt, apiKey, retries = 1) {

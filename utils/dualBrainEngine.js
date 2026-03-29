@@ -13,6 +13,19 @@ const { createMessage } = require("./createMessage");
 
 const { sendInstagramReply } = require("./omnichannel");
 
+/**
+ * WHATSAPP NAMESPACE WRAPPER
+ * Since there are multiple sendNodeContent calls to 'WhatsApp.sendX', 
+ * we map them to the local sendWhatsAppX helpers defined below.
+ */
+const WhatsApp = {
+  sendText: (...args) => sendWhatsAppText(...args),
+  sendImage: (...args) => sendWhatsAppImage(...args),
+  sendInteractive: (...args) => sendWhatsAppInteractive(...args),
+  sendTemplate: (...args) => sendWhatsAppTemplate(...args),
+  sendFlow: (...args) => sendWhatsAppFlow(...args),
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // FLOW BUILDER HELPERS — handle nested folders/groups
 // ─────────────────────────────────────────────────────────────────────────────
@@ -428,29 +441,37 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
 
     case 'interactive':
     case 'InteractiveNode': {
-        if (channel === 'instagram') {
-          const msg = `${data.btnUrlTitle || 'Visit Website'}: ${data.btnUrlLink}`;
-          await sendInstagramReply(client, phone, msg);
-          return true;
-        }
+      if (channel === 'instagram') {
+        const btnText = data.btnUrlTitle || 'Visit Website';
+        const msg = data.btnUrlLink 
+          ? `${btnText}: ${data.btnUrlLink}`
+          : (data.text || data.body || '');
+        await sendInstagramReply(client, phone, msg);
+        return true;
+      }
 
-        let interactive;
-        interactive = {
+      let body = data.text || data.body || 'Please Choose:';
+      body = replaceVariables(body, client, lead, convo);
+
+      // --- BRANCH A: CTA URL Button (Meta Template alternative) ---
+      if (data.btnUrlLink) {
+        let interactive = {
           type: 'cta_url',
           action: {
             name: 'cta_url',
             parameters: {
               display_text: (data.btnUrlTitle || 'Visit Website').substring(0, 20),
-              url: data.btnUrlLink || 'https://google.com'
+              url: data.btnUrlLink
             }
           }
         };
         if (data.imageUrl) interactive.header = { type: 'image', image: { link: data.imageUrl } };
         else if (data.header) interactive.header = { type: 'text', text: data.header.substring(0, 60) };
-        await WhatsApp.sendInteractive(client, phone, interactive, data.text || data.body || '');
+        await WhatsApp.sendInteractive(client, phone, interactive, body);
         return true;
+      }
 
-      // Standard reply buttons
+      // --- BRANCH B: Standard Reply Buttons or List ---
       const buttonsList = Array.isArray(data.buttonsList) && data.buttonsList.length > 0
         ? data.buttonsList
         : (data.buttons || '').split(',').map(b => b.trim()).filter(Boolean).map(b => ({ id: b.toLowerCase().replace(/\s+/g, '_'), title: b }));
@@ -537,9 +558,13 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         components.push({ type: 'header', parameters: [{ type: 'image', image: { link: headerImageUrl } }] });
       }
       if (data.variables) {
-        const params = data.variables.split(',').map(v => v.trim()).filter(Boolean);
-        if (params.length) {
-          components.push({ type: 'body', parameters: params.map(p => ({ type: 'text', text: p })) });
+        const rawParams = data.variables.split(',').map(v => v.trim()).filter(Boolean);
+        if (rawParams.length) {
+          const processedParams = rawParams.map(p => ({
+            type: 'text',
+            text: replaceVariables(p, client, lead, convo).substring(0, 1024)
+          }));
+          components.push({ type: 'body', parameters: processedParams });
         }
       }
 
@@ -682,6 +707,8 @@ async function runAIFallback(parsedMessage, client, phone, lead) {
     const bargainingInstruction = isHesitating 
         ? `The customer seems hesitant about price. You are authorized to offer a one-time discount code: "${discountCode}". Use it to close the deal!`
         : `If the customer asks for a deal, you can mention code "${discountCode}".`;
+
+    const knowledgeBase = (client.nicheData?.products || []).map(p => `PRODUCT: ${p.title} - ${p.price}. LINK: ${p.url}`).join('\n') || 'General product information available.';
 
     const prompt = [
       client.nicheData?.aiPromptContext || 'You are a friendly sales assistant.',
