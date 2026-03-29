@@ -935,7 +935,15 @@ async function sendInstagramInteractive(client, phone, interactive) {
     }
     
     const res = await sendInstagramMessage(client, phone, payload);
-    await saveOutboundMessage(phone, client.clientId, 'interactive', text || '[Interactive]', res.message_id || '', 'instagram');
+    await saveOutboundMessage(
+      phone, 
+      client.clientId, 
+      'interactive', 
+      text || '[Interactive]', 
+      res.message_id || '', 
+      'instagram',
+      { interactive: { type, action: { buttons: buttons.map(b => ({ reply: { title: b.title || b.label, id: b.id } })) } } }
+    );
     return true;
   } catch (err) {
     console.error('[DualBrain] IG sendInteractive error:', err.message);
@@ -1039,7 +1047,7 @@ async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = 
   }
 }
 
-async function saveOutboundMessage(phone, clientId, type, content, messageId, channel = "whatsapp") {
+async function saveOutboundMessage(phone, clientId, type, content, messageId, channel = "whatsapp", metadata = {}) {
   try {
     const msg = await createMessage({
       clientId,
@@ -1048,7 +1056,8 @@ async function saveOutboundMessage(phone, clientId, type, content, messageId, ch
       type,
       body:      content,
       messageId: messageId || '',
-      channel:   channel || 'whatsapp'
+      channel:   channel || 'whatsapp',
+      metadata:  metadata
     });
     // We don't usually update lastMessage on outbound in the engine (it's updated by webhook usually)
     // but doing it here ensures the UI stays snappy if webhook is slow
