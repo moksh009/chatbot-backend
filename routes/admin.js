@@ -33,13 +33,37 @@ const isSuperAdmin = async (req, res, next) => {
 // --- GET ALL CLIENTS ---
 router.get('/clients', protect, isSuperAdmin, async (req, res) => {
   try {
-    log.info(`Fetching all clients — requested by user: ${req.user?._id}`);
-    const clients = await Client.find().sort({ createdAt: -1 });
-    log.info(`Returned ${clients.length} clients`);
-    res.json(clients);
+    const page  = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip  = (page - 1) * limit;
+
+    const filter = { isActive: { $ne: false } };
+    if (req.query.search) {
+      filter.$or = [
+        { businessName: { $regex: req.query.search, $options: 'i' } },
+        { clientId: { $regex: req.query.search, $options: 'i' } }
+      ];
+    }
+
+    const clients = await Client.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+    
+    const total = await Client.countDocuments(filter);
+
+    res.json({
+      success: true,
+      data: clients,
+      pagination: {
+        total,
+        page,
+        pages: Math.ceil(total / limit)
+      }
+    });
   } catch (err) {
     log.error('Error fetching clients', { error: err.message });
-    res.status(500).json({ message: 'Server error fetching clients' });
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
@@ -329,46 +353,37 @@ router.get('/clients/:id', protect, isSuperAdmin, async (req, res) => {
 router.post('/clients', protect, isSuperAdmin, async (req, res) => {
   try {
     const {
-      clientId, name, businessType, niche, plan, isGenericBot, systemPrompt,
-      phoneNumberId, whatsappToken, verifyToken: webhookVerifyToken,
-      googleCalendarId, openaiApiKey, nicheData, flowData,
-      wabaId, emailUser, emailAppPassword, automationFlows, messageTemplates,
-      razorpayKeyId, razorpaySecret, adminPhone,
-      shopDomain, shopifyAccessToken, shopifyWebhookSecret, googleReviewUrl
+      clientId, businessName, businessType, tier, phoneNumberId, 
+      whatsappToken, verifyToken: webhookVerifyToken, wabaId
     } = req.body;
+
+    // 1. Mandatory Validation
+    if (!clientId || !businessName || !phoneNumberId) {
+      return res.status(400).json({ message: 'clientId, businessName, and phoneNumberId are required' });
+    }
 
     const existingClient = await Client.findOne({ clientId });
     if (existingClient) {
-      log.warn(`Create client failed — clientId already exists: ${clientId}`);
       return res.status(400).json({ message: 'Client ID already exists' });
     }
 
-    const newClient = new Client({
-      clientId, name, businessType: businessType || 'other', niche: niche || 'other',
-      plan: plan || 'CX Agent (V1)', isGenericBot: isGenericBot || false,
-      systemPrompt: systemPrompt || '',
-      phoneNumberId, whatsappToken, verifyToken: webhookVerifyToken, googleCalendarId,
-      openaiApiKey, nicheData: nicheData || {}, flowData: flowData || {},
-      automationFlows: (automationFlows && automationFlows.length > 0) ? automationFlows : defaultAutomationFlows,
-      messageTemplates: (messageTemplates && messageTemplates.length > 0) ? messageTemplates : defaultMessageTemplates,
-      wabaId: wabaId || '', emailUser: emailUser || '', emailAppPassword: emailAppPassword || '',
-      razorpayKeyId: razorpayKeyId || '', razorpaySecret: razorpaySecret || '',
-      adminPhone: adminPhone || '', shopDomain: shopDomain || '',
-      shopifyAccessToken: shopifyAccessToken || '', shopifyWebhookSecret: shopifyWebhookSecret || '',
-      googleReviewUrl: googleReviewUrl || '',
-      flowNodes: [], flowEdges: [],
-    });
-
-    // --- PHASE 10: Automatic Flow Generation during Onboarding ---
-    const aiFlow = await generateFlowForClient(newClient, systemPrompt);
-    if (aiFlow) {
-      newClient.flowNodes = aiFlow.nodes;
-      newClient.flowEdges = aiFlow.edges;
-    } else {
-      const defaultFlow = getDefaultFlowForNiche(niche || businessType);
-      newClient.flowNodes = defaultFlow.nodes;
-      newClient.flowEdges = defaultFlow.edges;
+    // 2. Auto-generate System Prompt if missing
+    let systemPrompt = req.body.systemPrompt;
+    if (!systemPrompt) {
+      const { generateText } = require('../utils/gemini');
+      systemPrompt = await generateText(`Generate a professional personality system prompt for a WhatsApp business named "${businessName}". Business type is ${businessType || 'general'}. Keep it concise, helpful, and friendly.`);
     }
+
+    const newClient = new Client({
+      ...req.body,
+      clientId: clientId.trim(),
+      businessName,
+      name: businessName, // Legacy sync
+      systemPrompt: systemPrompt || 'You are a helpful assistant.',
+      isActive: true,
+      flowNodes: [],
+      flowEdges: []
+    });
 
     const savedClient = await newClient.save();
 
@@ -453,17 +468,21 @@ router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
   }
 });
 
-// --- DELETE CLIENT ---
+// --- DELETE CLIENT (Soft Delete) ---
 router.delete('/clients/:id', protect, isSuperAdmin, async (req, res) => {
   try {
-    const deletedClient = await Client.findByIdAndDelete(req.params.id);
+    const deletedClient = await Client.findByIdAndUpdate(
+      req.params.id, 
+      { $set: { isActive: false } },
+      { new: true }
+    );
     if (!deletedClient) {
       return res.status(404).json({ message: 'Client not found' });
     }
-    res.json({ message: 'Client deleted successfully' });
+    res.json({ message: 'Client deactivated successfully (Soft Deleted)' });
   } catch (err) {
     console.error('Error deleting client:', err);
-    res.status(500).json({ message: 'Server error deleting client' });
+    res.status(500).json({ message: 'Server error' });
   }
 });
 

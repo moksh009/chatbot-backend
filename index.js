@@ -66,9 +66,12 @@ function resolveWhatsAppConfig() {
 const path = require('path');
 
 // Middleware
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(cors({
+  origin: process.env.FRONTEND_URL || '*', 
+  credentials: true
+}));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Serve static files from the 'public' directory
 app.use('/public', express.static(path.join(__dirname, 'public')));
@@ -444,5 +447,35 @@ connectDB()
     console.error("❌ MongoDB connection failed", err);
     process.exit(1);
   });
+
+// Global Error Handler
+app.use((err, req, res, next) => {
+  console.error(`[Global Error] ${req.method} ${req.url}:`, err.message, err.stack);
+  res.status(err.status || 500).json({
+    success: false,
+    message: err.message || "Internal Server Error",
+    error: process.env.NODE_ENV === 'development' ? err.stack : undefined
+  });
+});
+
+// Graceful Shutdown
+process.on("SIGTERM", async () => {
+  console.log("SIGTERM received. Closing server gracefully.");
+  server.close(async () => {
+    const mongoose = require('mongoose');
+    await mongoose.disconnect();
+    console.log("MongoDB disconnected. Process exiting.");
+    process.exit(0);
+  });
+});
+
+process.on("SIGINT", async () => {
+  console.log("SIGINT received. Closing server gracefully.");
+  server.close(async () => {
+    const mongoose = require('mongoose');
+    await mongoose.disconnect();
+    process.exit(0);
+  });
+});
 
 module.exports = app;

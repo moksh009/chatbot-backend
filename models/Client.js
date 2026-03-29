@@ -1,8 +1,15 @@
 const mongoose = require('mongoose');
 
 const ClientSchema = new mongoose.Schema({
-  clientId: { type: String, required: true, unique: true },
-  name: { type: String },
+  clientId: { type: String, required: true, unique: true, trim: true },
+  businessName: { type: String, required: true },
+  name: { type: String }, // Legacy alias for businessName
+  isActive: { type: Boolean, default: true },
+  tier: { 
+    type: String, 
+    enum: ['v1', 'v2'],
+    default: 'v1'
+  },
   businessType: { 
     type: String, 
     enum: ['ecommerce', 'salon', 'turf', 'clinic', 'choice_salon', 'choice_salon_new', 'agency', 'other'],
@@ -15,13 +22,7 @@ const ClientSchema = new mongoose.Schema({
   },
   plan: {
     type: String,
-    enum: ['CX Agent (V1)', 'CX Agent (V2)'],
     default: 'CX Agent (V1)'
-  },
-  subscriptionPlan: {
-    type: String,
-    enum: ['v1', 'v2'],
-    default: 'v2' // Deprecated, migrating to 'plan'
   },
   isGenericBot: { type: Boolean, default: false },
   isAIFallbackEnabled: { type: Boolean, default: true },

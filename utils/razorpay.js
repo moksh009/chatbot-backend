@@ -8,7 +8,12 @@ const Razorpay = require("razorpay");
  */
 async function createCODPaymentLink(order, client) {
   if (!client.razorpayKeyId || !client.razorpaySecret) {
-    throw new Error(`Client ${client.clientId} has no Razorpay keys configured`);
+    throw new Error(`[Razorpay] Client ${client.clientId} has no Razorpay keys configured`);
+  }
+
+  const amount = Math.round(parseFloat(order.totalPrice || order.amount || 0) * 100);
+  if (!amount || isNaN(amount) || amount <= 0) {
+    throw new Error(`[Razorpay] Invalid order amount: ${order.totalPrice}`);
   }
 
   const rzp = new Razorpay({
@@ -16,14 +21,15 @@ async function createCODPaymentLink(order, client) {
     key_secret: client.razorpaySecret
   });
 
-  const expiryTimestamp = Math.floor(Date.now() / 1000) + (2 * 60 * 60);
+  const baseUrl = process.env.BASE_URL || process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com';
+  const expiryTimestamp = Math.floor(Date.now() / 1000) + (2 * 60 * 60); // 2 hours
 
   const link = await rzp.paymentLink.create({
-    amount: Math.round(parseFloat(order.totalPrice) * 100),
+    amount,
     currency: "INR",
-    description: `Order ${order.orderNumber} - ${client.businessName || client.name || 'Store'}`,
+    description: `Order ${order.orderNumber || order._id} - ${client.businessName || client.name || 'Store'}`,
     customer: {
-      contact: `+91${order.phone || order.customerPhone}`,
+      contact: `+91${order.phone || order.customerPhone || ''}`.replace('+91+91', '+91'), // Guard against double prefix
       email: order.email || order.customerEmail || ""
     },
     notify: { sms: false, email: false, whatsapp: false },
@@ -33,7 +39,7 @@ async function createCODPaymentLink(order, client) {
       client_id: client._id.toString(),
       shopify_order_id: order.shopifyOrderId || ""
     },
-    callback_url: `${process.env.BASE_URL}/api/payment/success/${order._id}`,
+    callback_url: `${baseUrl}/api/payment/success/${order._id}`,
     callback_method: "get",
     expire_by: expiryTimestamp
   });

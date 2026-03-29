@@ -4,17 +4,23 @@ function getGeminiModel(apiKey) {
   const genAI = new GoogleGenerativeAI(
     apiKey || process.env.GEMINI_API_KEY
   );
-  return genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+  // Using gemini-2.0-flash as the latest production model
+  return genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 }
 
-async function generateText(prompt, apiKey) {
+async function generateText(prompt, apiKey, retries = 1) {
   try {
     const model  = getGeminiModel(apiKey);
     const result = await model.generateContent(prompt);
     return result.response.text().trim();
   } catch (err) {
+    if (err.message?.includes("429") && retries > 0) {
+      console.warn("[Gemini] Rate limited (429). Retrying in 2s...");
+      await new Promise(r => setTimeout(r, 2000));
+      return generateText(prompt, apiKey, retries - 1);
+    }
     console.error("[Gemini] API Error:", err.message);
-    throw err;
+    return null; // caller must handle null
   }
 }
 

@@ -4,6 +4,7 @@ const { discoverClientByPhoneId } = require('../utils/clientDiscovery');
 const genericAppointmentEngine = require('./engines/genericAppointment');
 const genericEcommerceEngine = require('./engines/genericEcommerce');
 const { runDualBrainEngine } = require('../utils/dualBrainEngine');
+const { parseWhatsAppPayload } = require('../utils/parseWhatsAppPayload');
 
 // 1. Webhook Verification (GET)
 // Meta sends a GET to verify the webhook URL
@@ -23,73 +24,44 @@ router.get('/', (req, res) => {
 // 2. Master Webhook Handling (POST)
 // ALL incoming messages from Meta hit this root endpoint
 router.post('/', async (req, res) => {
+    // Send 200 OK immediately as required by Meta
+    res.status(200).send('EVENT_RECEIVED');
+
     try {
-        const entry = req.body.entry?.[0];
-        const changes = entry?.changes?.[0];
-        const value = changes?.value;
-        
-        // Extract metadata
-        const phoneNumberId = value?.metadata?.phone_number_id;
-        const messages = value?.messages?.[0];
-        
-        if (!phoneNumberId || !messages) {
-            return res.status(200).end(); // Acknowledge status updates etc
-        }
+        const parsedMessage = parseWhatsAppPayload(req.body);
+        if (!parsedMessage) return;
+
+        const phoneNumberId = parsedMessage.phoneNumberId;
+        if (!phoneNumberId) return;
 
         // DISCOVER CLIENT
         const client = await discoverClientByPhoneId(phoneNumberId);
-        
         if (!client) {
             console.warn(`[MasterWebhook] Received message for unknown phoneId: ${phoneNumberId}`);
-            // Fallback: If this is the hardcoded 'code_clinic' number, we could manually route
-            // But better to have it in the database.
-            return res.status(200).end();
+            return;
         }
 
-        console.log(`[MasterWebhook] Routing to Client: ${client.clientId} (${client.name}) | Type: ${client.businessType}`);
+        console.log(`[MasterWebhook] Routing to Client: ${client.clientId} (${client.name})`);
 
-        // Set up the request object to look like what the engines expect
+        // Set up the request object if needed by legacy engines
         req.clientConfig = client;
         
-        // ROUTE BY BUSINESS TYPE OR FLOW DATA
-        const { businessType, flowNodes } = client;
-
-        // If client has Visual Flow Data, prioritize DualBrainEngine (The Dynamic Engine)
-        if (flowNodes && flowNodes.length > 0) {
-            console.log(`[MasterWebhook] Client ${client.clientId} has Visual Flow. Running DualBrain...`);
-            
-            // Standardize parsed message for DualBrain
-            const parsedMessage = {
-                ...messages,
-                from: messages.from,
-                profileName: value?.contacts?.[0]?.profile?.name || '',
-                messageId: messages.id
-            };
-            
-            const handled = await runDualBrainEngine(parsedMessage, client);
-            if (handled) return res.status(200).end();
-        }
-
-        // Fallback to Niche Engines if not handled by Visual Flow
-        if (businessType === 'ecommerce') {
-            await genericEcommerceEngine.handleWebhook(req, res);
-        } else if (businessType === 'salon' || businessType === 'clinic') {
-            await genericAppointmentEngine.handleWebhook(req, res);
-        } else {
-            // Ultimate Fallback: DualBrain even without nodes (to handle basic greetings/AI if enabled)
-            const parsedMessage = {
-                ...messages,
-                from: messages.from,
-                profileName: value?.contacts?.[0]?.profile?.name || '',
-                messageId: messages.id
-            };
+        // ROUTE BY FLOW DATA OR BUSINESS TYPE
+        if (client.flowNodes && client.flowNodes.length > 0) {
             await runDualBrainEngine(parsedMessage, client);
-            res.status(200).end();
+        } else {
+            // Fallback to Niche Engines
+            if (client.businessType === 'ecommerce') {
+                await genericEcommerceEngine.handleWebhook(req, res);
+            } else if (client.businessType === 'salon' || client.businessType === 'clinic') {
+                await genericAppointmentEngine.handleWebhook(req, res);
+            } else {
+                await runDualBrainEngine(parsedMessage, client);
+            }
         }
 
     } catch (err) {
-        console.error('[MasterWebhook] Critical Error:', err.message);
-        res.status(200).end(); // Always acknowledge to avoid Retries from Meta
+        console.error('[MasterWebhook] Error processing background event:', err.message, err.stack);
     }
 });
 

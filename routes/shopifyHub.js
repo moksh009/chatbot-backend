@@ -61,9 +61,15 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
 router.get('/:clientId/products', protect, verifyClientAccess, async (req, res) => {
   try {
     const client = await Client.findOne({ clientId: req.params.clientId });
+    
+    // Return empty products if Shopify not connected instead of crashing
+    if (!client?.shopifyAccessToken || !client?.shopDomain) {
+      return res.json({ success: true, products: [], message: 'Shopify not connected' });
+    }
+
     const shop = shopifyClient(client);
     
-    const response = await shop.get('/products.json?limit=100&fields=id,title,variants,images,status');
+    const response = await shop.get('/products.json?limit=100&fields=id,title,variants,images,status,handle');
     const shopifyProducts = response.data.products;
     
     const botProducts = client.nicheData?.products || [];
@@ -77,7 +83,9 @@ router.get('/:clientId/products', protect, verifyClientAccess, async (req, res) 
 
     res.json({ success: true, products });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    console.error('Shopify products error:', err.response?.data || err.message);
+    // Return empty instead of 500 so UI doesn't break
+    res.json({ success: true, products: [], error: err.message });
   }
 });
 

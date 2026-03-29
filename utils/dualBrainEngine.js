@@ -9,9 +9,65 @@ const Client       = require("../models/Client");
 const emailService = require("./emailService");
 const log = require("./logger")('DualBrain');
 const { generateText, getGeminiModel } = require('./gemini');
-
+const { createMessage } = require("./createMessage");
 
 const { sendInstagramReply } = require("./omnichannel");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FLOW BUILDER HELPERS — handle nested folders/groups
+// ─────────────────────────────────────────────────────────────────────────────
+
+function flattenFlowNodes(nodes) {
+  const flat = [];
+  
+  function traverse(nodeList) {
+    if (!Array.isArray(nodeList)) return;
+    for (const node of nodeList) {
+      // Add the node itself (if it's an actual conversation node)
+      if (node.type && node.type !== "folder" && node.type !== "group") {
+        flat.push(node);
+      }
+      // Recurse into children/nodes inside folder
+      if (node.children && Array.isArray(node.children)) {
+        traverse(node.children);
+      }
+      // ReactFlow GroupNode pattern — nodes inside data.nodes
+      if (node.data?.nodes && Array.isArray(node.data.nodes)) {
+        traverse(node.data.nodes);
+      }
+      // Some builders store sub-nodes in node.nodes
+      if (node.nodes && Array.isArray(node.nodes)) {
+        traverse(node.nodes);
+      }
+    }
+  }
+  
+  traverse(nodes);
+  return flat;
+}
+
+function incrementNodeVisit(nodes, nodeId) {
+  if (!Array.isArray(nodes)) return nodes;
+  return nodes.map(node => {
+    if (node.id === nodeId) {
+      return {
+        ...node,
+        data: { ...node.data, visitCount: (node.data?.visitCount || 0) + 1 }
+      };
+    }
+    // Recurse into children
+    if (node.children) {
+      return { ...node, children: incrementNodeVisit(node.children, nodeId) };
+    }
+    if (node.data?.nodes) {
+      return { ...node, data: { ...node.data, nodes: incrementNodeVisit(node.data.nodes, nodeId) } };
+    }
+    if (node.nodes) {
+      return { ...node, nodes: incrementNodeVisit(node.nodes, nodeId) };
+    }
+    return node;
+  });
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN ENGINE — called by ALL niche engines
@@ -113,8 +169,10 @@ async function runDualBrainEngine(parsedMessage, client) {
 // PRIORITY 1: GRAPH TRAVERSAL
 // ─────────────────────────────────────────────────────────────────────────────
 async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, channel = 'whatsapp') {
-  const flowNodes = client.flowNodes || [];
-  const flowEdges = client.flowEdges || [];
+  const rawNodes  = client.flowNodes || [];
+  const rawEdges  = client.flowEdges || [];
+  const flowNodes = flattenFlowNodes(rawNodes); 
+  const flowEdges = rawEdges;
 
   if (!flowNodes.length) return false;
 
@@ -135,7 +193,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
   if (jumpNode) {
     console.log(`[DualBrain] Graph: Jumping to node ${jumpNode.id} based on keyword/role match "${userText}"`);
     // Heatmap: Increment visit
-    await trackNodeVisit(client.clientId, jumpNode.id);
+    await trackNodeVisit(client, jumpNode.id);
     return await executeNode(jumpNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
   }
 
@@ -144,7 +202,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
       const triggerNode = findTriggerNode(userText, flowNodes);
       if (triggerNode) {
           console.log(`[DualBrain] Graph: Resetting to trigger node ${triggerNode.id} based on greeting "${userText}"`);
-          await trackNodeVisit(client.clientId, triggerNode.id);
+          await trackNodeVisit(client, triggerNode.id);
           return await executeNode(triggerNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
       }
   }
@@ -171,7 +229,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
       flowNodes[0];
     if (startNode) {
       console.log(`[DualBrain] Graph: Starting fresh from node ${startNode.id}`);
-      await trackNodeVisit(client.clientId, startNode.id);
+      await trackNodeVisit(client, startNode.id);
       return await executeNode(startNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
     }
     return false;
@@ -230,18 +288,18 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
   }
 
   console.log(`[DualBrain] Graph: edge match from ${currentStepId} → ${matchingEdge.target}`);
-  await trackNodeVisit(client.clientId, matchingEdge.target);
+  await trackNodeVisit(client, matchingEdge.target);
   return await executeNode(matchingEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EXECUTE A SPECIFIC NODE
 // ─────────────────────────────────────────────────────────────────────────────
-async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, phone, io) {
+async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, phone, io, channel = 'whatsapp') {
   const node = flowNodes.find(n => n.id === nodeId);
   if (!node) { console.warn(`[DualBrain] Node ${nodeId} not found`); return false; }
 
-  const sent = await sendNodeContent(node, client, phone, lead, convo);
+  const sent = await sendNodeContent(node, client, phone, lead, convo, channel);
   if (!sent && node.type !== 'logic' && node.type !== 'delay') return false;
 
   const action = node.data?.action;
@@ -340,18 +398,25 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'livechat': {
       let body = data.text || data.body || (type === 'livechat' ? 'Connecting you to a human...' : '');
       body = replaceVariables(body, client, lead, convo);
-      if (data.imageUrl) {
+      
+      if (channel === 'instagram') {
+        await sendInstagramReply(client, phone, body);
+      } else if (data.imageUrl) {
         await sendWhatsAppImage(client, phone, data.imageUrl, body);
       } else {
-        await sendReply(client, phone, body, channel);
+        await sendWhatsAppText(client, phone, body);
       }
       return true;
     }
 
     case 'interactive':
     case 'InteractiveNode': {
-      if (data.actionType === 'url') {
-        // CTA URL interactive
+        if (channel === 'instagram') {
+          const msg = `${data.btnUrlTitle || 'Visit Website'}: ${data.btnUrlLink}`;
+          await sendInstagramReply(client, phone, msg);
+          return true;
+        }
+
         const interactive = {
           type: 'cta_url',
           action: {
@@ -375,6 +440,15 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
 
       if (!buttonsList.length) {
         await sendWhatsAppText(client, phone, data.text || data.body || '');
+        return true;
+      }
+
+      if (channel === 'instagram') {
+        const optionsText = (buttonsList || [])
+          .map((b, i) => `${i+1}. ${b.title || b.label}`)
+          .join("\n");
+        const msg = `${data.text || data.body || ''}\n\n${optionsText}`;
+        await sendInstagramReply(client, phone, msg);
         return true;
       }
 
@@ -423,6 +497,12 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
 
     case 'template':
     case 'TemplateNode': {
+      if (channel === 'instagram') {
+        const fallback = data.instagramFallback || data.text || data.body || data.label || `[Template: ${data.templateName || data.metaTemplateName}]`;
+        await sendInstagramReply(client, phone, fallback);
+        return true;
+      }
+
       const templateName = data.templateName || data.metaTemplateName;
       if (!templateName) return false;
 
@@ -783,17 +863,16 @@ async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = 
     parsedMessage.interactive?.list_reply?.title ||
     `[${parsedMessage.type || 'unknown'}]`;
   try {
-    // Message schema: from, to, direction ('incoming'|'outgoing'), type, content, messageId
-    const msg = await Message.create({
+    // Message schema normalized via createMessage
+    const msg = await createMessage({
       clientId,
-      from:      phone,
-      to:        'BOT',
-      direction: 'incoming',
+      phone,
+      direction: 'inbound',
       type:      parsedMessage.type || 'text',
-      content,
+      body:      content,
       messageId: parsedMessage.messageId || '',
       channel:   channel, 
-      timestamp: new Date()
+      rawData:   parsedMessage
     });
     await Conversation.findOneAndUpdate(
       { phone, clientId },
@@ -815,16 +894,14 @@ async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = 
 
 async function saveOutboundMessage(phone, clientId, type, content, messageId, channel = "whatsapp") {
   try {
-    const msg = await Message.create({
+    const msg = await createMessage({
       clientId,
-      from:      'BOT',
-      to:        phone,
-      direction: 'outgoing',
+      phone,
+      direction: 'outbound',
       type,
-      content,
+      body:      content,
       messageId: messageId || '',
-      channel:   channel || 'whatsapp',
-      timestamp: new Date()
+      channel:   channel || 'whatsapp'
     });
     // We don't usually update lastMessage on outbound in the engine (it's updated by webhook usually)
     // but doing it here ensures the UI stays snappy if webhook is slow
@@ -858,16 +935,14 @@ function extractTrigger(parsedMessage) {
   };
 }
 
-async function trackNodeVisit(clientId, nodeId) {
+async function trackNodeVisit(client, nodeId) {
   try {
-    // Increment visitCount for this node in the Client document
-    await Client.updateOne(
-      { clientId, "flowNodes.id": nodeId },
-      { $inc: { "flowNodes.$.visitCount": 1 } }
-    );
+    const updatedNodes = incrementNodeVisit(client.flowNodes, nodeId);
+    await Client.findByIdAndUpdate(client._id, { flowNodes: updatedNodes });
+
     // Also emit to dashboard for real-time heatmap if needed
     const io = global.io;
-    if (io) io.to(`client_${clientId}`).emit('heatmap_update', { nodeId });
+    if (io) io.to(`client_${client.clientId}`).emit('heatmap_update', { nodeId });
   } catch (err) {
     console.error('[DualBrain] Heatmap tracking error:', err.message);
   }

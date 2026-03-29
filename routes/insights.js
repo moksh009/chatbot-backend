@@ -25,10 +25,19 @@ router.post('/generate/:clientId', protect, async (req, res) => {
       date: { $gte: weekAgo.toISOString().split('T')[0] }
     }).sort({ date: -1 });
 
-    // Initialize Gemini (falling back to server key if client has none)
-    const apiKey = client.openaiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
+    // Use geminiApiKey first, then openaiApiKey (legacy alias), then server key
+    const apiKey = client.geminiApiKey?.trim() || client.openaiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
+    
+    // If no AI key, return mock insights instead of crashing
     if (!apiKey) {
-      return res.status(500).json({ success: false, message: 'No AI token configured' });
+      const mockInsights = [
+        { type: 'info', message: 'Connect a Gemini API key in Settings → AI Engine to unlock AI-powered insights.', actionUrl: '/settings', estimatedValue: 0, generatedAt: new Date() },
+        { type: 'success', message: `${stats.length > 0 ? stats[0].messagesReceived || 0 : 0} messages received this week. Keep engaging your customers!`, actionUrl: '/analytics', estimatedValue: 0, generatedAt: new Date() },
+        { type: 'warning', message: 'Run a campaign to re-engage inactive leads and boost conversions.', actionUrl: '/campaigns', estimatedValue: 500, generatedAt: new Date() }
+      ];
+      client.insights = mockInsights;
+      await client.save();
+      return res.json({ success: true, insights: mockInsights });
     }
 
     const model = getGeminiModel(apiKey);
@@ -59,7 +68,11 @@ router.post('/generate/:clientId', protect, async (req, res) => {
     res.json({ success: true, insights: finalInsights });
   } catch (error) {
     console.error('Insight generation error:', error);
-    res.status(500).json({ success: false, message: error.message });
+    // Return graceful fallback instead of 500
+    const fallback = [
+      { type: 'warning', message: 'AI insight generation encountered an issue. Check your Gemini API key in Settings.', actionUrl: '/settings', estimatedValue: 0, generatedAt: new Date() }
+    ];
+    res.json({ success: true, insights: fallback });
   }
 });
 

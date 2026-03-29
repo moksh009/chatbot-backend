@@ -29,9 +29,10 @@ router.get('/realtime', protect, async (req, res) => {
       clientId = req.query.clientId;
     }
     
-    const query = (clientId === 'code_clinic_v1')
-      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
-      : { clientId };
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ message: 'Client not found' });
+
+    const query = { clientId };
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -138,6 +139,7 @@ router.get('/realtime', protect, async (req, res) => {
     const adminFollowupsPurchased = adminFollowupsPurchasedResult;
 
     res.json({
+      businessName: client.businessName || client.name,
       leads: { total: totalLeads, newToday: newLeadsToday },
       orders: { count: orderCountToday, revenue: revenueToday },
       linkClicks: totalLinkClicks,
@@ -611,13 +613,20 @@ router.get('/', protect, async (req, res) => {
       clientId = req.query.clientId;
     }
 
-    const clientIdQuery = (clientId === 'code_clinic_v1')
-      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
-      : { clientId };
-    const endDate = new Date();
-    const startDate = new Date();
-    const days = parseInt(req.query.days) || 30;
-    startDate.setDate(startDate.getDate() - days);
+    const clientIdQuery = { clientId };
+
+    // Date Range Prioritization
+    let { start, end, days } = req.query;
+    const endDate = end ? new Date(end) : new Date();
+    const startDate = start ? new Date(start) : new Date();
+    
+    if (!start) {
+      const dayCount = parseInt(days) || 7;
+      startDate.setDate(endDate.getDate() - dayCount);
+    }
+    
+    startDate.setHours(0, 0, 0, 0);
+    endDate.setHours(23, 59, 59, 999);
 
     // Helper to generate date range (YYYY-MM-DD)
     const dates = [];
