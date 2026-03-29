@@ -148,4 +148,45 @@ router.post('/:clientId/discounts', protect, verifyClientAccess, async (req, res
   }
 });
 
+/**
+ * @route   GET /api/shopify-hub/:clientId/settings
+ * @desc    Get ecommerce settings (automations, nicheData)
+ */
+router.get('/:clientId/settings', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const client = await Client.findOne({ clientId: req.params.clientId });
+    if (!client) return res.status(404).json({ error: 'Client not found' });
+    
+    res.json({
+      success: true,
+      automationFlows: client.automationFlows || [],
+      nicheData: client.nicheData || {},
+      syncedMetaTemplates: client.syncedMetaTemplates || []
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * @route   PATCH /api/shopify-hub/:clientId/settings
+ * @desc    Update ecommerce settings
+ */
+router.patch('/:clientId/settings', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const client = await Client.findOne({ clientId: req.params.clientId });
+    if (!client) return res.status(404).json({ error: 'Client not found' });
+    
+    const { automationFlows, nicheData } = req.body;
+    
+    if (automationFlows) client.automationFlows = automationFlows;
+    if (nicheData) client.nicheData = { ...client.nicheData, ...nicheData };
+    
+    await client.save();
+    res.json({ success: true, message: 'Settings updated successfully' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;

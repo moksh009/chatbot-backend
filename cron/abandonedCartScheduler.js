@@ -107,8 +107,17 @@ const scheduleAbandonedCartCron = () => {
                 if (hasOrdered) continue;
 
                 const customMsg = client.nicheData?.abandonedMsg1;
+                const abandonedTemplate = client.nicheData?.abandoned_cart_template;
 
-                if (customMsg) {
+                if (abandonedTemplate) {
+                    await WhatsApp.sendTemplate(client, lead.phoneNumber, abandonedTemplate, "en", [
+                        { type: 'body', parameters: [
+                            { type: "text", text: lead.name || "Customer" },
+                            { type: "text", text: lead.activityLog.filter(l => l.action === 'add_to_cart').map(l => l.details).join(', ').slice(0, 100) }
+                        ]}
+                    ]);
+                    await recordNudge(lead, `[Template: ${abandonedTemplate}]`, 'template');
+                } else if (customMsg) {
                     const discountCode = client.nicheData?.globalDiscountCode || "OFF10";
                     const personalizedMsg = customMsg
                         .replace(/{name}/g, lead.name || "there")

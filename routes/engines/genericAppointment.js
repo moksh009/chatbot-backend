@@ -11,6 +11,7 @@ const { getAvailableSlots } = require('../../utils/getAvailableSlots');
 const { createEvent } = require('../../utils/googleCalendar');
 const { decryptFlowData, encryptFlowResponse } = require('../../utils/flowEncryption');
 const { runDualBrainEngine } = require('../../utils/dualBrainEngine');
+const { normalizePhone } = require('../../utils/phoneUtils');
 
 // --- Helper Functions ---
 /**
@@ -44,8 +45,9 @@ async function executeNode({ nodeId, nodes, edges, to, phoneNumberId, io, client
     console.log(`[AppointmentFlow] Executing Node: ${node.id} (${node.type})`);
 
     // Update conversation's current step & Node analytics
+    const phone = normalizePhone(to);
     await Promise.all([
-        Conversation.findOneAndUpdate({ phone: to, clientId: clientConfig.clientId }, { lastStepId: node.id }),
+        Conversation.findOneAndUpdate({ phone, clientId: clientConfig.clientId }, { lastStepId: node.id }),
         Client.findOneAndUpdate(
             { clientId: clientConfig.clientId, "flowNodes.id": node.id },
             { $inc: { "flowNodes.$.visitCount": 1 } }
@@ -173,9 +175,10 @@ async function sendWhatsAppText({ phoneNumberId, to, body, token, io, clientId }
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
         });
 
-        let conversation = await Conversation.findOne({ phone: to, clientId });
+        const phone = normalizePhone(to);
+        let conversation = await Conversation.findOne({ phone, clientId });
         if (!conversation) {
-            conversation = await Conversation.create({ phone: to, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+            conversation = await Conversation.create({ phone, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
         }
         conversation.lastMessage = body;
         conversation.lastMessageAt = new Date();
@@ -267,9 +270,10 @@ async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons, t
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
         });
 
-        let conversation = await Conversation.findOne({ phone: to, clientId });
+        const phone = normalizePhone(to);
+        let conversation = await Conversation.findOne({ phone, clientId });
         if (!conversation) {
-            conversation = await Conversation.create({ phone: to, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+            conversation = await Conversation.create({ phone, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
         }
         conversation.lastMessage = body;
         conversation.lastMessageAt = new Date();
@@ -310,8 +314,9 @@ async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageC
             messaging_product: 'whatsapp', to, type: 'template', template: templateData
         }, { headers: { Authorization: `Bearer ${token}` } });
         
-        let conversation = await Conversation.findOne({ phone: to, clientId: clientConfig.clientId });
-        if (!conversation) conversation = await Conversation.create({ phone: to, clientId: clientConfig.clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+        const phone = normalizePhone(to);
+        let conversation = await Conversation.findOne({ phone, clientId: clientConfig.clientId });
+        if (!conversation) conversation = await Conversation.create({ phone, clientId: clientConfig.clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
         
         await saveAndEmitMessage({ clientId: clientConfig.clientId, from: 'bot', to, body: `[Template] ${templateName}`, type: 'template', direction: 'outgoing', status: 'sent', conversationId: conversation._id, io });
         return true;
@@ -385,9 +390,10 @@ async function sendWhatsAppFlow({ phoneNumberId, to, header, body, token, io, cl
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
         });
 
-        let conversation = await Conversation.findOne({ phone: to, clientId });
+        const phone = normalizePhone(to);
+        let conversation = await Conversation.findOne({ phone, clientId });
         if (!conversation) {
-            conversation = await Conversation.create({ phone: to, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+            conversation = await Conversation.create({ phone, clientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
         }
         conversation.lastMessage = 'Sent Booking Flow';
         conversation.lastMessageAt = new Date();

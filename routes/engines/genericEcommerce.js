@@ -10,6 +10,7 @@ const Client = require('../../models/Client');
 const { sendOrderConfirmationEmail, sendCODToPrepaidEmail } = require('../../utils/emailService');
 const { runDualBrainEngine } = require('../../utils/dualBrainEngine');
 const { generateText } = require('../../utils/gemini');
+const { normalizePhone } = require('../../utils/phoneUtils');
 
 // --- 1. CORE API WRAPPERS ---
 async function findNextNode(currentNodeId, handleId, edges) {
@@ -31,8 +32,9 @@ async function executeNode({ nodeId, nodes, edges, to, phoneNumberId, io, client
     console.log(`[FlowEngine] Executing Node: ${node.id} (${node.type})`);
 
     // Update conversation's current step & Node analytics
+    const phone = normalizePhone(to);
     await Promise.all([
-        Conversation.findOneAndUpdate({ phone: to, clientId: clientConfig.clientId }, { lastStepId: node.id }),
+        Conversation.findOneAndUpdate({ phone, clientId: clientConfig.clientId }, { lastStepId: node.id }),
         Client.findOneAndUpdate(
             { clientId: clientConfig.clientId, "flowNodes.id": node.id },
             { $inc: { "flowNodes.$.visitCount": 1 } }
@@ -127,8 +129,10 @@ async function executeNode({ nodeId, nodes, edges, to, phoneNumberId, io, client
 async function saveAndEmitMessage({ phoneNumberId, to, body, type, io, clientConfig, metadata }) {
     try {
         const resolvedClientId = clientConfig.clientId;
-        let conversation = await Conversation.findOne({ phone: to, clientId: resolvedClientId });
-        if (!conversation) conversation = await Conversation.create({ phone: to, clientId: resolvedClientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
+        const phone = normalizePhone(to);
+
+        let conversation = await Conversation.findOne({ phone, clientId: resolvedClientId });
+        if (!conversation) conversation = await Conversation.create({ phone, clientId: resolvedClientId, status: 'BOT_ACTIVE', lastMessageAt: new Date() });
 
         const savedMessage = await Message.create({
             clientId: resolvedClientId,
@@ -723,7 +727,7 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
 
         console.log(`[EcommerceEngine] Cart Update Webhook for ${clientId} | Phone: ${phoneRaw || 'NONE'}`);
         if (!phoneRaw) return res.status(200).end();
-        const phone = phoneRaw.replace(/\D/g, ''); // strip to digits
+        const phone = normalizePhone(phoneRaw);
 
         let lead = await AdLead.findOne({ phoneNumber: phone, clientId });
         if (!lead) lead = new AdLead({ phoneNumber: phone, clientId, status: 'new' });
@@ -763,7 +767,7 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
         
         console.log(`[EcommerceEngine] Order Complete Webhook for ${clientId} | Order: ${orderData.name} | Phone: ${phoneRaw}`);
         if (!phoneRaw) return res.status(200).end();
-        const phone = phoneRaw.replace(/\D/g, '');
+        const phone = normalizePhone(phoneRaw);
 
         const orderId = orderData.id;
         const orderNumber = orderData.name;
@@ -794,8 +798,24 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
 
         // Notify User via WhatsApp
         const helperParams = { phoneNumberId: req.clientConfig.phoneNumberId, token, io: req.app.get('socketio'), clientConfig: req.clientConfig };
-        const msg = `🎉 *Order Confirmed!* 🎉\n\nHi ${orderData.customer?.first_name || 'there'},\nThanks for your purchase! 🛍️\n\n📦 *Order Summary:* ${items}\n💰 *Total:* ₹${totalPrice}\n💳 *Payment:* ${isCOD ? 'Cash on Delivery (COD)' : 'Prepaid Online'}\n\nWe will update you once it ships.`;
-        await sendWhatsAppText({ ...helperParams, to: phone, body: msg });
+        
+        const confirmationTemplate = req.clientConfig.nicheData?.order_confirmation_template;
+        if (confirmationTemplate) {
+            await sendWhatsAppTemplate({
+                ...helperParams,
+                to: phone,
+                templateName: confirmationTemplate,
+                bodyParams: [
+                    orderData.customer?.first_name || 'Customer',
+                    orderNumber,
+                    `₹${totalPrice}`,
+                    isCOD ? 'Cash on Delivery' : 'Prepaid Online'
+                ]
+            });
+        } else {
+            const msg = `🎉 *Order Confirmed!* 🎉\n\nHi ${orderData.customer?.first_name || 'there'},\nThanks for your purchase! 🛍️\n\n📦 *Order Summary:* ${items}\n💰 *Total:* ₹${totalPrice}\n💳 *Payment:* ${isCOD ? 'Cash on Delivery (COD)' : 'Prepaid Online'}\n\nWe will update you once it ships.`;
+            await sendWhatsAppText({ ...helperParams, to: phone, body: msg });
+        }
 
         if (isCOD && req.clientConfig.razorpayKeyId) {
             const codFlow = (req.clientConfig.automationFlows || []).find(f => f.id === "cod_to_prepaid");
@@ -843,7 +863,7 @@ const handleShopifyOrderFulfilledWebhook = async (req, res) => {
         const payload = req.body;
         const phoneRaw = payload.phone || payload.customer?.phone || payload.billing_address?.phone || payload.shipping_address?.phone;
         if (!phoneRaw) return;
-        const phone = phoneRaw.replace(/\D/g, "");
+        const phone = normalizePhone(phoneRaw);
 
         const orderNumber = payload.order_number || payload.name;
         const productName = payload.line_items?.[0]?.title || "your product";
@@ -855,12 +875,27 @@ const handleShopifyOrderFulfilledWebhook = async (req, res) => {
             { status: "fulfilled", fulfilledAt: new Date(), trackingUrl, trackingNumber: trackingNum }
         );
 
-        const shippingMsg = `📦 Your order #${orderNumber} has been shipped!\n\n` +
-            (trackingUrl ? `🚚 Track here: ${trackingUrl}\n\n` : "") +
-            `Expected delivery in 3-5 business days. We'll keep you posted!`;
-
         const helperParams = { phoneNumberId: req.clientConfig.phoneNumberId, token: req.clientConfig.whatsappToken, io: req.app.get('socketio'), clientConfig: req.clientConfig };
-        await sendWhatsAppText({ ...helperParams, to: phone, body: shippingMsg });
+        
+        const shippingTemplate = req.clientConfig.nicheData?.shipping_updates_template;
+        if (shippingTemplate) {
+            await sendWhatsAppTemplate({
+                ...helperParams,
+                to: phone,
+                templateName: shippingTemplate,
+                bodyParams: [
+                    orderNumber,
+                    trackingNum || 'N/A',
+                    trackingUrl || 'N/A'
+                ],
+                buttonUrlParam: trackingUrl || null
+            });
+        } else {
+            const shippingMsg = `📦 Your order #${orderNumber} has been shipped!\n\n` +
+                (trackingUrl ? `🚚 Track here: ${trackingUrl}\n\n` : "") +
+                `Expected delivery in 3-5 business days. We'll keep you posted!`;
+            await sendWhatsAppText({ ...helperParams, to: phone, body: shippingMsg });
+        }
 
         const reviewFlow = (req.clientConfig.automationFlows || []).find(f => f.id === "review_collection");
         if (reviewFlow?.isActive) {
@@ -1046,8 +1081,9 @@ const updateOrderStatus = async (req, res) => {
         const templateName = statusMap[status.toLowerCase()];
 
         if (templateName) {
-            const phone = order.customerPhone || order.phone;
-            if (phone) {
+            const rawPhone = order.customerPhone || order.phone;
+            if (rawPhone) {
+                const phone = normalizePhone(rawPhone);
                 // Find template definition in waTemplates or syncedMetaTemplates to detect parameter count
                 const tplDef = (req.clientConfig.waTemplates || []).find(t => t.name === templateName) || 
                                (req.clientConfig.syncedMetaTemplates || []).find(t => t.name === templateName);
@@ -1094,8 +1130,9 @@ const updateOrderStatus = async (req, res) => {
                 });
             }
         } else if (status !== oldStatus) {
-            const phone = order.customerPhone || order.phone;
-            if (phone) {
+            const rawPhone = order.customerPhone || order.phone;
+            if (rawPhone) {
+                const phone = normalizePhone(rawPhone);
                 let msg = `Hi ${order.customerName || 'there'}, your order #${order.orderNumber || order.orderId} status has been updated to *${status}*.`;
                 if (status === 'shipped' && (trackingUrl || order.trackingUrl)) {
                     msg += `\n\nTrack here: ${trackingUrl || order.trackingUrl}`;
