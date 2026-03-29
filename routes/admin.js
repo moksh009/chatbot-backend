@@ -157,14 +157,21 @@ router.get('/run-migration', async (req, res) => {
   }
 });
 
-// --- SECURE MIGRATION (PROTECTED) ---
-router.get('/run-secure-migration', protect, isSuperAdmin, async (req, res) => {
-    try {
-        const result = await runFullMigration();
-        res.json({ success: true, ...result });
-    } catch (err) {
-        res.status(500).json({ error: 'Migration failed: ' + err.message });
+// --- ROLE PROMOTION (EMERGENCY DEBUG) ---
+router.get('/promote-me', async (req, res) => {
+  try {
+    const { email, role, secret } = req.query;
+    if (secret !== 'topedge_secure_admin_123') {
+      return res.status(401).json({ message: 'Unauthorized. Use ?secret=topedge_secure_admin_123' });
     }
+    const user = await User.findOne({ email });
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    user.role = role || 'SUPER_ADMIN';
+    await user.save();
+    res.json({ success: true, message: `User ${email} promoted to ${user.role}` });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // --- RUN DELITECH MIGRATION (URL RUNNABLE) ---
