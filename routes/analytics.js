@@ -302,16 +302,32 @@ router.get('/lead-by-phone/:phone', protect, async (req, res) => {
       clientId = req.query.clientId;
     }
 
-    // --- PHASE 10 FIX: Shared Query for Delitech/CodeClinic ---
-    const query = (['delitech_smarthomes', 'code_clinic_v1'].includes(clientId))
-      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] }, phoneNumber: req.params.phone }
-      : { clientId, phoneNumber: req.params.phone };
+    // --- PHASE 11 FIX: Robust Lead Lookup ---
+    const rawPhone = req.params.phone;
+    const phoneVariants = [
+      rawPhone,
+      rawPhone.startsWith('+') ? rawPhone.substring(1) : `+${rawPhone}`,
+      rawPhone.startsWith('91') ? `+${rawPhone}` : rawPhone // Specific fallback for IN
+    ];
 
-    const lead = await AdLead.findOne(query);
-    if (!lead) return res.status(404).json({ message: 'Lead not found' });
+    const leadQuery = (['delitech_smarthomes', 'code_clinic_v1'].includes(clientId))
+      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] }, phoneNumber: { $in: phoneVariants } }
+      : { clientId, phoneNumber: { $in: phoneVariants } };
+
+    const lead = await AdLead.findOne(leadQuery);
+    
+    if (!lead) {
+      return res.status(200).json({ 
+        success: false, 
+        message: 'Lead record not yet synchronized with CRM.',
+        phoneNumber: rawPhone
+      });
+    }
+    
     res.json(lead);
   } catch (error) {
-    res.status(500).json({ message: 'Server Error' });
+    console.error(`[Analytics] lead-by-phone error for ${req.params.phone}:`, error);
+    res.status(500).json({ message: 'Server error retrieving lead analytics.' });
   }
 });
 
@@ -353,7 +369,10 @@ router.get('/top-leads', protect, async (req, res) => {
     if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
       clientId = req.query.clientId;
     }
-    const query = (clientId === 'code_clinic_v1' || clientId === 'delitech_smarthomes') ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } } : { clientId };
+    // --- PHASE 11 FIX: Refined Hot Leads (Score >= 40) ---
+    const query = (['delitech_smarthomes', 'code_clinic_v1'].includes(clientId))
+      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] }, leadScore: { $gte: 40 } }
+      : { clientId, leadScore: { $gte: 40 } };
 
     const leads = await AdLead.aggregate([
       { $match: query },

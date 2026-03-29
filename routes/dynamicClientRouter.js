@@ -109,6 +109,43 @@ router.post('/webhook', async (req, res) => {
   }
 });
 
+// Configuration Sync Endpoints (GET/PATCH)
+// Used for Order Trigger Mappings & Niche Data
+router.get('/config', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+       return res.status(403).json({ error: 'Unauthorized configuration access.' });
+    }
+    const client = await Client.findOne({ clientId }).select('-shopifyAccessToken -emailAppPassword');
+    if (!client) return res.status(404).json({ error: 'Client configuration not found.' });
+    res.json(client);
+  } catch (err) {
+    res.status(500).json({ error: 'Internal server error fetching config.' });
+  }
+});
+
+router.patch('/config', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+       return res.status(403).json({ error: 'Unauthorized configuration update.' });
+    }
+    
+    // Whitelist allowable fields for dynamic patching
+    const { nicheData, instagramConnected, isGenericBot } = req.body;
+    const updates = {};
+    if (nicheData) updates.nicheData = nicheData;
+    if (instagramConnected !== undefined) updates.instagramConnected = instagramConnected;
+    if (isGenericBot !== undefined) updates.isGenericBot = isGenericBot;
+
+    const updated = await Client.findOneAndUpdate({ clientId }, { $set: updates }, { new: true });
+    res.json({ success: true, client: updated });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update configuration.' });
+  }
+});
+
 /**
  * ─────────────────────────────────────────────────────────────────────────────
  * Instagram Webhooks (Dynamic)

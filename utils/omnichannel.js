@@ -1,6 +1,4 @@
 const axios = require("axios");
-const { saveInboundMessage, saveOutboundMessage } = require("./dualBrainEngine");
-
 /**
  * Sends a rich message reply to an Instagram user via Meta Graph API
  */
@@ -24,6 +22,13 @@ async function sendInstagramMessage(client, recipientId, messageData) {
         headers: { Authorization: `Bearer ${client.instagramAccessToken}` }
       }
     );
+
+    // Lazy load saveOutboundMessage to avoid circular dependencies
+    const { saveOutboundMessage } = require("./dualBrainEngine");
+    if (saveOutboundMessage) {
+       await saveOutboundMessage(recipientId, client.clientId, 'text', messageData.text || '[IG Message]', res.data.message_id || '', 'instagram');
+    }
+
     return res.data;
   } catch (err) {
     console.error("[Omnichannel] Instagram send error:", JSON.stringify(err.response?.data || err.message));
@@ -43,6 +48,8 @@ async function sendInstagramReply(client, recipientId, text) {
  */
 async function saveOmnichannelMessage(parsedMessage, client, channel) {
   const io = global.io;
+  const { saveInboundMessage } = require("./dualBrainEngine");
+  if (!saveInboundMessage) return null;
   return await saveInboundMessage(parsedMessage.from, client.clientId, parsedMessage, io, channel);
 }
 

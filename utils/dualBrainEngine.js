@@ -100,21 +100,39 @@ async function runDualBrainEngine(parsedMessage, client) {
   const io    = global.io;
   const profileName = parsedMessage.profileName || '';
 
-  // STEP 0: Helper to replace variables in text
-  const replaceVariables = (text, client, lead, convo) => {
-    if (!text) return text;
-    let result = text;
-    const vars = {
-      '{{name}}': lead?.name || profileName || 'Customer',
-      '{{product_list}}': (client.nicheData?.products || []).map(p => `• *${p.title}* - ${p.price}\n  Link: ${p.url}`).join('\n\n') || 'No products available currently.',
-      '{{buy_url}}': client.nicheData?.storeUrl || 'https://google.com',
-      '{{order_status_summary}}': convo?.metadata?.lastOrderStatus || 'No recent orders found.',
-    };
-    Object.entries(vars).forEach(([key, val]) => {
-      result = result.replace(new RegExp(key, 'g'), val);
-    });
-    return result;
+// ─────────────────────────────────────────────────────────────────────────────
+// VARIABLE REPLACEMENT UTILITY
+// ─────────────────────────────────────────────────────────────────────────────
+function replaceVariables(text, client, lead, convo) {
+  if (!text) return text;
+  let result = text;
+  
+  // Standardize variables for both WhatsApp/IG content and Email templates
+  const vars = {
+    '{{name}}': lead?.name || 'Customer',
+    '{name}': lead?.name || 'Customer',
+    '{{product_list}}': (client.nicheData?.products || []).map(p => `• *${p.title}* - ${p.price}\n  Link: ${p.url}`).join('\n\n') || 'No products available currently.',
+    '{{buy_url}}': client.nicheData?.storeUrl || 'https://google.com',
+    '{{order_status_summary}}': convo?.metadata?.lastOrderStatus || 'No recent orders found.',
+    '{{id}}': lead?.phoneNumber || '',
+    '{id}': lead?.phoneNumber || ''
   };
+
+  Object.entries(vars).forEach(([key, val]) => {
+    result = result.replace(new RegExp(key, 'g'), val);
+  });
+  return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MAIN ENGINE — called by ALL niche engines
+// Returns: true if message was handled
+// ─────────────────────────────────────────────────────────────────────────────
+async function runDualBrainEngine(parsedMessage, client) {
+  const phone = parsedMessage.from;
+  const channel = parsedMessage.channel || 'whatsapp';
+  const io    = global.io;
+  const profileName = parsedMessage.profileName || '';
 
   // STEP 1: Upsert conversation state
   let convo = await Conversation.findOneAndUpdate(
@@ -1157,5 +1175,6 @@ module.exports = {
     trackNodeVisit,
     saveInboundMessage,
     saveOutboundMessage,
-    isGreeting
+    isGreeting,
+    replaceVariables
 };
