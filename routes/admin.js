@@ -168,6 +168,7 @@ router.get('/run-secure-migration', protect, isSuperAdmin, async (req, res) => {
 });
 
 // --- RUN DELITECH MIGRATION (URL RUNNABLE) ---
+// --- RUN DELITECH MIGRATION (URL RUNNABLE) ---
 router.get('/run-delitech-migration', async (req, res) => {
   try {
     const { key } = req.query;
@@ -175,86 +176,145 @@ router.get('/run-delitech-migration', async (req, res) => {
       return res.status(401).json({ message: 'Unauthorized. Use ?key=topedge_secure_admin_123' });
     }
 
+    const IMAGES = {
+        hero_3mp: 'https://delitechsmarthome.in/cdn/shop/files/Delitech_Main_photoswq.png?v=1760635732&width=1346',
+        hero_5mp: 'https://delitechsmarthome.in/cdn/shop/files/my1.png?v=1759746759&width=1346',
+        hero_2mp: 'https://delitechsmarthome.in/cdn/shop/files/DelitechMainphotos7i.png?v=1770617818&width=1346',
+        features: 'https://delitechsmarthome.in/cdn/shop/files/image241.png?v=1762148394&width=1346'
+    };
+
     const DELITECH_NODES = [
       // --- Root Trigger ---
-      { id: "trigger_start", type: "trigger", position: { x: 400, y: 0 }, data: { label: "Main Entry", keyword: "hi,hello,hey,hola" } },
+      { id: "trigger_start", type: "trigger", position: { x: 400, y: 0 }, 
+        data: { label: "Main Entry Trigger", keyword: "hi,hello,hey,hola,details,price,doorbell,catalogue,info" } 
+      },
       
-      // --- Welcome Message ---
-      { id: "welcome_node", type: "interactive", position: { x: 400, y: 200 }, data: { 
+      // --- Main Welcome (List) ---
+      { id: "menu_main", type: "interactive", position: { x: 400, y: 150 }, data: { 
         label: "Welcome Concierge", 
-        interactiveType: "button",
+        interactiveType: "list",
         header: "Delitech Smart Home",
-        body: "Welcome to Delitech! 🏠\n\nHow can we upgrade your home security today?",
-        buttonsList: [
-          { id: "btn_showroom", title: "🛍️ View Products" },
-          { id: "btn_support", title: "🛠️ Support & FAQ" },
-          { id: "btn_order", title: "📦 My Orders" }
+        body: "Welcome to Delitech! 🏠\nInvest in your family's safety. Select a model below to view exclusive photos and pricing:\n\n*(Tip: Over 80% of our customers choose the 3MP Pro for absolute clarity)*",
+        listButtonTitle: "Explore Options",
+        sections: [
+          { title: "Premium Security", rows: [
+              { id: "sel_5mp", title: "Doorbell Pro (5MP)", description: "Ultimate Clarity & Smart AI" },
+              { id: "sel_3mp", title: "Doorbell Plus (3MP)", description: "2K Video & Color Night Vision" }
+            ]
+          },
+          { title: "Essential Security", rows: [
+              { id: "sel_2mp", title: "Doorbell (2MP)", description: "Standard HD & 2-Way Talk" }
+            ]
+          },
+          { title: "Support & Help", rows: [
+              { id: "menu_agent", title: "Consult an Expert", description: "Get a free security callback" },
+              { id: "menu_faqs", title: "Setup & FAQ", description: "Installation & Battery info" }
+            ]
+          }
         ]
       }},
 
-      // --- Folders (The containers) ---
-      { id: "f_showroom", type: "folder", position: { x: 100, y: 500 }, data: { label: "🏢 Product Showroom" } },
-      { id: "f_support", type: "folder", position: { x: 400, y: 500 }, data: { label: "🛡️ Support Center" } },
-      { id: "f_order", type: "folder", position: { x: 700, y: 500 }, data: { label: "🧾 Order Desk" } },
-
-      // --- Showroom Sub-nodes ---
-      { id: "doorbell_catalog", type: "interactive", parentId: "f_showroom", position: { x: 50, y: 100 }, data: { 
-        label: "Smart Doorbell Selection", 
+      // --- Individual Product Nodes ---
+      { id: "card_5mp", type: "interactive", position: { x: 0, y: 450 }, data: { 
+        label: "5MP Pro Card", 
         interactiveType: "button",
-        body: "Our best-selling smart doorbells with 100% wireless DIY setup and IP65 waterproofing.",
+        imageUrl: IMAGES.hero_5mp,
+        body: "🛡️ *Delitech Smart Video Doorbell Pro (5MP)*\n\nThe ultimate peace-of-mind solution. Unmatched clarity and premium security.\n\n💎 *5MP Crystal-Clear Resolution*\n👀 *Ultra-Wide View*\n🌈 *Color Night Vision*\n\n💰 *Offer Price:* ₹6,999\n✅ 1 Year Warranty | 🚚 Free Shipping | 🛠️ Free Installation",
         buttonsList: [
-          { id: "btn_3mp", title: "📷 3MP Doorbell" },
-          { id: "btn_5mp", title: "📷 5MP Doorbell" }
+          { id: "buy_5mp", title: "🛒 Buy Now" },
+          { id: "agent_5mp", title: "📞 Call Me" },
+          { id: "back_main", title: "View Other" }
         ]
       }},
-      { id: "product_3mp", type: "template", parentId: "f_showroom", position: { x: 50, y: 250 }, data: { label: "3MP Promo", metaTemplateName: "3mp_final" } },
-      { id: "product_5mp", type: "template", parentId: "f_showroom", position: { x: 300, y: 250 }, data: { label: "5MP Promo", metaTemplateName: "5mp_final" } },
+      { id: "card_3mp", type: "interactive", position: { x: 400, y: 450 }, data: { 
+        label: "3MP Plus Card", 
+        interactiveType: "button",
+        imageUrl: IMAGES.hero_3mp,
+        body: "🛡️ *Delitech Smart Video Doorbell Plus (3MP)*\n\nThe perfect balance of affordability and HD security.\n\n📹 *2K Crisp Video*\n🌈 *Color Night Vision*\n🗣️ *Real-Time 2-Way Audio*\n\n💰 *Offer Price:* ₹6,499\n✅ 1 Year Warranty | 🚚 Free Shipping | 🛠️ Free Installation",
+        buttonsList: [
+          { id: "buy_3mp", title: "🛒 Buy Now" },
+          { id: "agent_3mp", title: "📞 Call Me" },
+          { id: "back_main_2", title: "View Other" }
+        ]
+      }},
+      { id: "card_2mp", type: "interactive", position: { x: 800, y: 450 }, data: { 
+        label: "2MP Standard Card", 
+        interactiveType: "button",
+        imageUrl: IMAGES.hero_2mp,
+        body: "🛡️ *Delitech Smart Video Doorbell (2MP)*\n\nEssential home security made simple.\n\n📹 *1080p HD Video*\n🌙 *Night Vision*\n🗣️ *2-Way Audio*\n\n💰 *Offer Price:* ₹5,499\n✅ 1 Year Warranty | 🚚 Free Shipping | 🛠️ Free Installation",
+        buttonsList: [
+          { id: "buy_2mp", title: "🛒 Buy Now" },
+          { id: "agent_2mp", title: "📞 Call Me" },
+          { id: "back_main_3", title: "View Other" }
+        ]
+      }},
 
-      // --- Support Sub-nodes ---
-      { id: "faq_main", type: "message", parentId: "f_support", position: { x: 50, y: 100 }, data: { 
-        label: "AI Knowledge Base", 
-        body: "Ask me anything about installation, battery life, or setup! 💡", 
-        action: "AI_FALLBACK" 
+      // --- FAQ Nodes ---
+      { id: "ans_install", type: "message", position: { x: 1200, y: 400 }, data: { 
+        label: "Installation FAQ", 
+        body: "🛠️ *Is it hard to install?*\nNot at all! It's *100% Wireless DIY*. No electricians or wiring needed. You can stick it or screw it to the wall in under 2 minutes. Setup through the CloudEdge App is instant." 
       }},
-      { id: "install_vid", type: "message", parentId: "f_support", position: { x: 50, y: 250 }, data: { 
-        label: "Install Video", 
-        body: "Watch the setup guide: https://youtu.be/example" 
+      { id: "ans_battery", type: "message", position: { x: 1200, y: 500 }, data: { 
+        label: "Battery FAQ", 
+        body: "🔋 *How long does the battery last?*\nThe IP65 weatherproof battery lasts *up to 6 months* on a single charge (depending on motion alerts). Simply recharge it via the included USB cable." 
+      }},
+      { id: "ans_warranty", type: "message", position: { x: 1200, y: 600 }, data: { 
+        label: "Warranty FAQ", 
+        body: "🛡️ *What about Warranty & Support?*\nEnjoy complete peace of mind with our *1-Year Replacement Warranty* on any manufacturing defects, plus free premium technical support." 
       }},
 
-      // --- Order Desk Sub-nodes ---
-      { id: "track_order", type: "message", parentId: "f_order", position: { x: 50, y: 100 }, data: { 
-        label: "Track My Order", 
-        body: "Please share your Order ID to tracking your shipment! 🚚" 
+      // --- Feature Specific Triggers ---
+      { id: "trig_waterproof", type: "trigger", position: { x: 1500, y: 100 }, data: { label: "Waterproof Trigger", keyword: "waterproof,rain,weather" } },
+      { id: "msg_waterproof", type: "message", position: { x: 1500, y: 250 }, data: { label: "Waterproof Info", body: "🌦️ *IP65 Weatherproof Guarantee*\n\nYes! Our Doorbells are built to withstand the heaviest Indian monsoons and intense summer heat. You never have to worry about water damage." } },
+
+      // --- Agent Handover ---
+      { id: "agent_handover", type: "livechat", position: { x: 100, y: 250 }, data: { 
+        label: "Talk to Expert", 
+        body: "✅ *Request Received!*\n\nOur security expert has been notified. They will call you shortly on this number.\n\nIn the meantime, feel free to browse our features!" 
       }},
-      { id: "escalate_human", type: "message", parentId: "f_order", position: { x: 50, y: 250 }, data: { 
-        label: "Talk to Agent", 
-        body: "An expert will be with you shortly... 👤",
-        action: "ESCALATE_HUMAN"
-      }}
+
+      // --- Purchase Nodes (External Links) ---
+      { id: "link_5mp", type: "message", position: { x: -250, y: 650 }, data: { label: "Checkout 5MP", body: "⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 https://delitechsmarthome.in/cart/prod_5mp:1?utm_source=whatsapp&utm_medium=chatbot\n\n_Cash on Delivery Available_" } },
+      { id: "link_3mp", type: "message", position: { x: 350, y: 650 }, data: { label: "Checkout 3MP", body: "⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 https://delitechsmarthome.in/cart/prod_mp:1?utm_source=whatsapp&utm_medium=chatbot\n\n_Cash on Delivery Available_" } },
+      { id: "link_2mp", type: "message", position: { x: 950, y: 650 }, data: { label: "Checkout 2MP", body: "⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 https://delitechsmarthome.in/cart/prod_2mp:1?utm_source=whatsapp&utm_medium=chatbot\n\n_Cash on Delivery Available_" } }
     ];
 
     const DELITECH_EDGES = [
-      { id: "e_trigger_welcome", source: "trigger_start", target: "welcome_node" },
-      { id: "e_welcome_showroom", source: "welcome_node", target: "f_showroom", sourceHandle: "btn_showroom" },
-      { id: "e_welcome_support", source: "welcome_node", target: "f_support", sourceHandle: "btn_support" },
-      { id: "e_welcome_order", source: "welcome_node", target: "f_order", sourceHandle: "btn_order" },
+      { id: "e_start_menu", source: "trigger_start", target: "menu_main" },
+      { id: "e_menu_5mp", source: "menu_main", target: "card_5mp", sourceHandle: "sel_5mp" },
+      { id: "e_menu_3mp", source: "menu_main", target: "card_3mp", sourceHandle: "sel_3mp" },
+      { id: "e_menu_2mp", source: "menu_main", target: "card_2mp", sourceHandle: "sel_2mp" },
+      { id: "e_menu_agent", source: "menu_main", target: "agent_handover", sourceHandle: "menu_agent" },
+      { id: "e_menu_faqs", source: "menu_main", target: "ans_install", sourceHandle: "menu_faqs" },
       
-      { id: "e_fold_catalog", source: "f_showroom", target: "doorbell_catalog" },
-      { id: "e_catalog_3mp", source: "doorbell_catalog", target: "product_3mp", sourceHandle: "btn_3mp" },
-      { id: "e_catalog_5mp", source: "doorbell_catalog", target: "product_5mp", sourceHandle: "btn_5mp" },
-      
-      { id: "e_fold_faq", source: "f_support", target: "faq_main" },
-      { id: "e_faq_install", source: "faq_main", target: "install_vid" }, // Optional link
-      
-      { id: "e_fold_track", source: "f_order", target: "track_order" }
+      { id: "e_card_5mp_buy", source: "card_5mp", target: "link_5mp", sourceHandle: "buy_5mp" },
+      { id: "e_card_5mp_call", source: "card_5mp", target: "agent_handover", sourceHandle: "agent_5mp" },
+      { id: "e_card_5mp_back", source: "card_5mp", target: "menu_main", sourceHandle: "back_main" },
+
+      { id: "e_card_3mp_buy", source: "card_3mp", target: "link_3mp", sourceHandle: "buy_3mp" },
+      { id: "e_card_3mp_call", source: "card_3mp", target: "agent_handover", sourceHandle: "agent_3mp" },
+      { id: "e_card_3mp_back", source: "card_3mp", target: "menu_main", sourceHandle: "back_main_2" },
+
+      { id: "e_card_2mp_buy", source: "card_2mp", target: "link_2mp", sourceHandle: "buy_2mp" },
+      { id: "e_card_2mp_call", source: "card_2mp", target: "agent_handover", sourceHandle: "agent_2mp" },
+      { id: "e_card_2mp_back", source: "card_2mp", target: "menu_main", sourceHandle: "back_main_3" },
+
+      { id: "e_trig_wp", source: "trig_waterproof", target: "msg_waterproof" },
+      { id: "e_wp_back", source: "msg_waterproof", target: "menu_main" }
     ];
 
     await Client.findOneAndUpdate(
       { clientId: "delitech_smarthomes" },
-      { $set: { flowNodes: DELITECH_NODES, flowEdges: DELITECH_EDGES } }
+      { $set: { 
+        flowNodes: DELITECH_NODES, 
+        flowEdges: DELITECH_EDGES,
+        businessType: "ecommerce",
+        niche: "ecommerce",
+        isGenericBot: false
+      }}
     );
 
-    res.json({ success: true, message: "Delitech flow migrated successfully!" });
+    res.json({ success: true, message: "Delitech high-fidelity flow migrated successfully!" });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
