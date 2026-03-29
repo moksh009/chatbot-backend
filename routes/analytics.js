@@ -1069,10 +1069,11 @@ router.get('/flow-heatmap', protect, async (req, res) => {
         id: n.id,
         label: n.data?.label || n.data?.text || n.data?.body || n.type,
         type: n.type,
-        visitCount: n.visitCount || 0
+        visitCount: n.data?.visitCount || n.visitCount || 0
       }))
+      .filter(n => n.visitCount > 0)
       .sort((a, b) => b.visitCount - a.visitCount)
-      .slice(0, 15); // Show top 15 nodes for visual clarity
+      .slice(0, 15);
 
     res.json(heatNodes);
   } catch (error) {
