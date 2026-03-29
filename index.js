@@ -34,7 +34,6 @@ const trackingRoutes = require('./routes/tracking');
 const dynamicClientRouter = require('./routes/dynamicClientRouter');
 const templatesRoutes = require('./routes/templates');
 const whatsappRoutes = require('./routes/whatsapp');
-const instagramWebhookRoutes = require('./routes/instagramWebhook');
 const wooWebhookRoutes = require('./routes/wooWebhook');
 
 const app = express();
@@ -70,7 +69,12 @@ app.use(cors({
   origin: process.env.FRONTEND_URL || '*', 
   credentials: true
 }));
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ 
+  limit: '10mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Serve static files from the 'public' directory
@@ -119,7 +123,7 @@ const adminRoutes = require('./routes/admin'); // Added for DFY SaaS Super Admin
 app.use('/api/client/:clientId', dynamicClientRouter);
 
 // Specific channel webhooks
-app.use('/api/client', instagramWebhookRoutes);
+// (Instagram now handled inside dynamicClientRouter)
 
 app.use('/api/business', businessRoutes);
 app.use('/api/admin', adminRoutes); // Super Admin Route Registration

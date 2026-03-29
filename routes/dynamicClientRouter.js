@@ -109,6 +109,97 @@ router.post('/webhook', async (req, res) => {
   }
 });
 
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Instagram Webhooks (Dynamic)
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+
+const crypto = require("crypto");
+const { runDualBrainEngine } = require("../utils/dualBrainEngine");
+
+// Verification handshake for Instagram Messenger API
+router.get("/webhook/instagram", async (req, res) => {
+  const mode      = req.query["hub.mode"];
+  const token     = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+  
+  try {
+    const client = req.clientConfig;
+    // Reuse the same verify token as WhatsApp for simplicity (or let it be defined in Client)
+    const clientVerifyToken = client.verifyToken || "topedge_ai_handshake";
+
+    if (mode === "subscribe" && token === clientVerifyToken) {
+      console.log(`[Instagram Webhook] Verified for client: ${client.clientId}`);
+      return res.status(200).send(challenge);
+    }
+    console.warn(`[Instagram Webhook] Verification FAILED for ${client.clientId}. Expected: ${clientVerifyToken}, Got: ${token}`);
+    res.sendStatus(403);
+  } catch (err) {
+    console.error("[Instagram Webhook] GET Error:", err.message);
+    res.sendStatus(500);
+  }
+});
+
+// Handle incoming Instagram DM events
+router.post("/webhook/instagram", async (req, res) => {
+  try {
+    const client = req.clientConfig;
+    if (!client?.instagramConnected) return res.sendStatus(200);
+    
+    // Verify Signature if appSecret is present
+    if (client.instagramAppSecret) {
+      const signature = req.get("x-hub-signature-256");
+      if (signature && req.rawBody) {
+        const elements = signature.split("=");
+        const signatureHash = elements[1];
+        const expectedHash = crypto.createHmac("sha256", client.instagramAppSecret).update(req.rawBody).digest("hex");
+        if (signatureHash !== expectedHash) {
+          console.error(`[Instagram Webhook] Invalid signature for ${client.clientId}`);
+          return res.sendStatus(403);
+        }
+      }
+    }
+
+    res.sendStatus(200); // Meta requirement
+    
+    const entries = req.body.entry || [];
+    for (const entry of entries) {
+      const messaging = entry.messaging || [];
+      for (const event of messaging) {
+        if (event.message && !event.message.is_echo) {
+            const parsedMessage = {
+                from:      event.sender.id,
+                profileName: "",
+                type:      "text",
+                text:      { body: event.message.text || "" },
+                messageId: event.message.mid,
+                timestamp: event.timestamp,
+                channel:   "instagram"
+            };
+            await runDualBrainEngine(parsedMessage, client);
+        } else if (event.postback) {
+            const parsedMessage = {
+                from:      event.sender.id,
+                type:      "interactive",
+                interactive: {
+                    type: "button_reply",
+                    button_reply: { id: event.postback.payload, title: event.postback.title || "" }
+                },
+                messageId: event.postback.mid || `pb_${event.timestamp}`,
+                timestamp: event.timestamp,
+                channel:   "instagram"
+            };
+            await runDualBrainEngine(parsedMessage, client);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[Instagram Webhook] POST Error:", err.message);
+    if (!res.headersSent) res.sendStatus(500);
+  }
+});
+
 router.post('/webhook/flow-endpoint', async (req, res) => {
   try {
     const { businessType } = req.clientConfig;

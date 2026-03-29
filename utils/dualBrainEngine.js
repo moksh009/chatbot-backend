@@ -11,7 +11,7 @@ const log = require("./logger")('DualBrain');
 const { generateText, getGeminiModel } = require('./gemini');
 const { createMessage } = require("./createMessage");
 
-const { sendInstagramReply } = require("./omnichannel");
+const { sendInstagramReply, sendInstagramMessage } = require("./omnichannel");
 
 /**
  * WHATSAPP NAMESPACE WRAPPER
@@ -24,6 +24,12 @@ const WhatsApp = {
   sendInteractive: (...args) => sendWhatsAppInteractive(...args),
   sendTemplate: (...args) => sendWhatsAppTemplate(...args),
   sendFlow: (...args) => sendWhatsAppFlow(...args),
+};
+
+const Instagram = {
+  sendText: (...args) => sendInstagramText(...args),
+  sendImage: (...args) => sendInstagramImage(...args),
+  sendInteractive: (...args) => sendInstagramInteractive(...args),
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -346,6 +352,8 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       result = cartValue > threshold;
     } else if (condition === 'has_phone') {
       result = !!phone;
+    } else if (condition === "channel == 'instagram'") {
+      result = channel === 'instagram';
     }
     
     const targetHandle = result ? 'true' : 'false';
@@ -409,7 +417,11 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       const imageUrl = data.imageUrl || '';
       const caption = data.caption || '';
       if (!imageUrl) return true;
-      await sendWhatsAppImage(client, phone, imageUrl, caption);
+      if (channel === 'instagram') {
+        await Instagram.sendImage(client, phone, imageUrl, caption);
+      } else {
+        await WhatsApp.sendImage(client, phone, imageUrl, caption);
+      }
       return true;
     }
 
@@ -430,7 +442,11 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       body = replaceVariables(body, client, lead, convo);
       
       if (channel === 'instagram') {
-        await sendInstagramReply(client, phone, body);
+        if (data.imageUrl) {
+          await Instagram.sendImage(client, phone, data.imageUrl, body);
+        } else {
+          await Instagram.sendText(client, phone, body);
+        }
       } else if (data.imageUrl) {
         await WhatsApp.sendImage(client, phone, data.imageUrl, body);
       } else {
@@ -441,20 +457,20 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
 
     case 'interactive':
     case 'InteractiveNode': {
-      if (channel === 'instagram') {
-        const btnText = data.btnUrlTitle || 'Visit Website';
-        const msg = data.btnUrlLink 
-          ? `${btnText}: ${data.btnUrlLink}`
-          : (data.text || data.body || '');
-        await sendInstagramReply(client, phone, msg);
-        return true;
-      }
-
       let body = data.text || data.body || 'Please Choose:';
       body = replaceVariables(body, client, lead, convo);
 
       // --- BRANCH A: CTA URL Button (Meta Template alternative) ---
       if (data.btnUrlLink) {
+        if (channel === 'instagram') {
+            // Instagram supports buttons via Generic Template/Buttons
+            await Instagram.sendInteractive(client, phone, {
+                type: 'button',
+                text: body,
+                buttons: [{ type: 'web_url', url: data.btnUrlLink, title: (data.btnUrlTitle || 'Visit Website').substring(0, 20) }]
+            });
+            return true;
+        }
         let interactive = {
           type: 'cta_url',
           action: {
@@ -477,22 +493,27 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         : (data.buttons || '').split(',').map(b => b.trim()).filter(Boolean).map(b => ({ id: b.toLowerCase().replace(/\s+/g, '_'), title: b }));
 
       if (!buttonsList.length) {
-        await WhatsApp.sendText(client, phone, data.text || data.body || '');
+        if (channel === 'instagram') await Instagram.sendText(client, phone, body);
+        else await WhatsApp.sendText(client, phone, body);
         return true;
       }
 
       if (channel === 'instagram') {
-        const optionsText = (buttonsList || [])
-          .map((b, i) => `${i+1}. ${b.title || b.label}`)
-          .join("\n");
-        const msg = `${data.text || data.body || ''}\n\n${optionsText}`;
-        await sendInstagramReply(client, phone, msg);
+        // Automatically map WhatsApp List/Buttons to Instagram Quick Replies
+        await Instagram.sendInteractive(client, phone, {
+            type: 'quick_reply',
+            text: body,
+            buttons: buttonsList.map(btn => ({
+                id: (btn.id || btn.title || 'opt').toLowerCase().replace(/\s+/g, '_'),
+                title: (btn.title || btn.label || 'Option').substring(0, 20)
+            }))
+        });
         return true;
       }
 
       // Standard reply buttons or List
       if (data.interactiveType === 'list') {
-        interactive = {
+        let interactive = {
           type: 'list',
           action: {
             button: 'Select Option',
@@ -512,11 +533,11 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         else if (data.header) interactive.header = { type: 'text', text: data.header.substring(0, 60) };
         if (data.footer) interactive.footer = { text: data.footer.substring(0, 60) };
 
-        await WhatsApp.sendInteractive(client, phone, interactive, data.text || data.body || 'Select an option:');
+        await WhatsApp.sendInteractive(client, phone, interactive, body);
         return true;
       }
 
-      interactive = {
+      let interactive = {
         type: 'button',
         action: {
           buttons: buttonsList.slice(0, 3).map(btn => ({
@@ -529,7 +550,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       else if (data.header) interactive.header = { type: 'text', text: data.header.substring(0, 60) };
       if (data.footer) interactive.footer = { text: data.footer.substring(0, 60) };
 
-      await WhatsApp.sendInteractive(client, phone, interactive, data.text || data.body || 'Choose an option:');
+      await WhatsApp.sendInteractive(client, phone, interactive, body);
       return true;
     }
 
@@ -840,6 +861,86 @@ async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, sc
       }
     }, { headers: { Authorization: `Bearer ${token}` } });
   } catch (err) { console.error('[DualBrain] sendFlow error:', err.response?.data || err.message); }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INSTAGRAM API HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function sendInstagramText(client, phone, text) {
+  try {
+    const res = await sendInstagramMessage(client, phone, { text });
+    await saveOutboundMessage(phone, client.clientId, 'text', text, res.message_id || '', 'instagram');
+    return true;
+  } catch (err) {
+    console.error('[DualBrain] IG sendText error:', err.message);
+    return false;
+  }
+}
+
+async function sendInstagramImage(client, phone, imageUrl, caption) {
+  try {
+    // IG supports image attachments. If there's a caption, we send it as a separate text message first
+    // because IG attachments don't natively support captions like WhatsApp in the same payload.
+    if (caption) {
+      await sendInstagramText(client, phone, caption);
+    }
+    
+    const res = await sendInstagramMessage(client, phone, {
+      attachment: {
+        type: 'image',
+        payload: { url: imageUrl }
+      }
+    });
+    
+    await saveOutboundMessage(phone, client.clientId, 'image', caption || '[Image]', res.message_id || '', 'instagram');
+    return true;
+  } catch (err) {
+    console.error('[DualBrain] IG sendImage error:', err.message);
+    return false;
+  }
+}
+
+async function sendInstagramInteractive(client, phone, interactive) {
+  const { type, text, buttons } = interactive;
+  
+  try {
+    let payload = { text };
+    
+    if (type === 'quick_reply') {
+      payload.quick_replies = buttons.slice(0, 13).map(btn => ({
+        content_type: 'text',
+        title: (btn.title || btn.label ||'Option').substring(0, 20),
+        payload: btn.id || btn.title?.toLowerCase().replace(/\s+/g, '_')
+      }));
+    } else if (type === 'button') {
+      // Instagram 'button' type usually uses a generic template for multiple buttons
+      payload = {
+        attachment: {
+          type: 'template',
+          payload: {
+            template_type: 'generic',
+            elements: [{
+              title: text.substring(0, 80) || 'Please Choose:',
+              buttons: buttons.slice(0, 3).map(btn => {
+                if (btn.type === 'web_url') {
+                  return { type: 'web_url', url: btn.url, title: btn.title.substring(0, 20) };
+                }
+                return { type: 'postback', title: btn.title.substring(0, 20), payload: btn.id || btn.title };
+              })
+            }]
+          }
+        }
+      };
+    }
+    
+    const res = await sendInstagramMessage(client, phone, payload);
+    await saveOutboundMessage(phone, client.clientId, 'interactive', text || '[Interactive]', res.message_id || '', 'instagram');
+    return true;
+  } catch (err) {
+    console.error('[DualBrain] IG sendInteractive error:', err.message);
+    return false;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

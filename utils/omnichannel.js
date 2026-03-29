@@ -2,19 +2,23 @@ const axios = require("axios");
 const { saveInboundMessage, saveOutboundMessage } = require("./dualBrainEngine");
 
 /**
- * Sends a message reply to an Instagram user via Meta Graph API
+ * Sends a rich message reply to an Instagram user via Meta Graph API
  */
-async function sendInstagramReply(client, recipientId, text) {
-  if (!client.instagramPageId || !client.instagramAccessToken) {
-    throw new Error("Instagram credentials missing for client");
+async function sendInstagramMessage(client, recipientId, messageData) {
+  if (!client.instagramAccessToken) {
+    throw new Error("Instagram Access Token missing for client");
   }
+  
+  // Use either the Page ID or 'me' if it's the token's owner
+  const accountId = client.instagramPageId || "me";
   
   try {
     const res = await axios.post(
-      `https://graph.facebook.com/v18.0/${client.instagramPageId}/messages`,
+      `https://graph.facebook.com/v18.0/${accountId}/messages`,
       {
         recipient: { id: recipientId },
-        message:   { text }
+        message:   messageData,
+        messaging_type: "RESPONSE" // Required for many IG message types
       },
       {
         headers: { Authorization: `Bearer ${client.instagramAccessToken}` }
@@ -22,9 +26,16 @@ async function sendInstagramReply(client, recipientId, text) {
     );
     return res.data;
   } catch (err) {
-    console.error("[Omnichannel] Instagram send error:", err.response?.data || err.message);
+    console.error("[Omnichannel] Instagram send error:", JSON.stringify(err.response?.data || err.message));
     throw err;
   }
+}
+
+/**
+ * Legacy wrapper for simple text
+ */
+async function sendInstagramReply(client, recipientId, text) {
+  return await sendInstagramMessage(client, recipientId, { text });
 }
 
 /**
@@ -36,6 +47,7 @@ async function saveOmnichannelMessage(parsedMessage, client, channel) {
 }
 
 module.exports = {
+  sendInstagramMessage,
   sendInstagramReply,
   saveOmnichannelMessage
 };
