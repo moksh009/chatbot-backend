@@ -97,7 +97,8 @@ const loadClientConfig = async (req, res, next) => {
 
       plan: client.plan || 'CX Agent (V1)',
       isGenericBot: client.isGenericBot || false,
-      subscriptionPlan: client.subscriptionPlan || 'v2'
+      subscriptionPlan: client.subscriptionPlan || 'v2',
+      isActive: client.isActive !== false // Default to true unless explicitly false
     };
 
     next();

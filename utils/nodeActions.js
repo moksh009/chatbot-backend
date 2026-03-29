@@ -171,7 +171,6 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
     case "CREATE_CHECKOUT": {
       // Feature 1: WhatsApp-Native Checkout
       const axios = require("axios");
-      const { sendWhatsAppText } = require("./dualBrainEngine");
 
       try {
         if (!client.shopifyAccessToken) break;
@@ -180,7 +179,7 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
         const flows = client.automationFlows || [];
         const isEnabled = flows.find(f => f.id === 'whatsapp_checkout')?.isActive;
         if (!isEnabled) {
-          await sendWhatsAppText(client, phone, `Please visit our store to complete your purchase: ${client.nicheData?.storeUrl || ''}`);
+          await WhatsApp.sendText(client, phone, `Please visit our store to complete your purchase: ${client.nicheData?.storeUrl || ''}`);
           break;
         }
 
@@ -193,7 +192,7 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
         
         if (!product.variantId && !product.id) {
           // No Shopify variant ID stored — fallback to store URL
-          await sendWhatsAppText(client, phone, `Ready to order? Here's your link: ${product.url || client.nicheData?.storeUrl}`);
+          await WhatsApp.sendText(client, phone, `Ready to order? Here's your link: ${product.url || client.nicheData?.storeUrl}`);
           break;
         }
 
@@ -209,11 +208,10 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
         );
 
         const checkoutUrl = response.data.checkout.web_url;
-        await sendWhatsAppText(client, phone, `🛒 Your cart is ready! Complete your order here:\n${checkoutUrl}\n\n_This link is personalized for you and expires in 24 hours._`);
+        await WhatsApp.sendText(client, phone, `🛒 Your cart is ready! Complete your order here:\n${checkoutUrl}\n\n_This link is personalized for you and expires in 24 hours._`);
       } catch (err) {
         console.error("[NodeActions] CREATE_CHECKOUT error:", err.message);
-        const { sendWhatsAppText } = require("./dualBrainEngine");
-        await sendWhatsAppText(client, phone, `Ready to order? Visit us: ${client.nicheData?.storeUrl || ''}`);
+        await WhatsApp.sendText(client, phone, `Ready to order? Visit us: ${client.nicheData?.storeUrl || ''}`);
       }
       break;
     }
@@ -222,21 +220,20 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
       // Feature 3: WhatsApp Return Flow
       const Order = require("../models/Order");
       const axios = require("axios");
-      const { sendWhatsAppText } = require("./dualBrainEngine");
 
       try {
         // Check if feature is toggled ON
         const flows = client.automationFlows || [];
         const isEnabled = flows.find(f => f.id === 'whatsapp_returns')?.isActive;
         if (!isEnabled) {
-          await sendWhatsAppText(client, phone, "For returns and refunds, please contact our support team directly. We'll get back to you shortly! 😊");
+          await WhatsApp.sendText(client, phone, "For returns and refunds, please contact our support team directly. We'll get back to you shortly! 😊");
           break;
         }
 
         const latestOrder = await Order.findOne({ customerPhone: phone, clientId: client.clientId }).sort({ createdAt: -1 });
         
         if (!latestOrder) {
-          await sendWhatsAppText(client, phone, "I couldn't find any recent orders for your number. Please contact us directly for help with returns.");
+          await WhatsApp.sendText(client, phone, "I couldn't find any recent orders for your number. Please contact us directly for help with returns.");
           break;
         }
 
@@ -245,10 +242,10 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
 
         // Notify admin
         if (client.adminPhone) {
-          await sendWhatsAppText(client, client.adminPhone, `⚠️ *Return Request* from ${phone}\nOrder: ${latestOrder.orderId}\nAmount: ₹${latestOrder.amount}\nPlease process this return.`);
+          await WhatsApp.sendText(client, client.adminPhone, `⚠️ *Return Request* from ${phone}\nOrder: ${latestOrder.orderId}\nAmount: ₹${latestOrder.amount}\nPlease process this return.`);
         }
 
-        await sendWhatsAppText(client, phone, `✅ *Return Request Received!*\n\nOrder *${latestOrder.orderId}* has been flagged for return.\n\nOur team will contact you within 24 hours to confirm the pickup details.\n\nRef: *RET-${latestOrder._id.toString().slice(-6).toUpperCase()}*`);
+        await WhatsApp.sendText(client, phone, `✅ *Return Request Received!*\n\nOrder *${latestOrder.orderId}* has been flagged for return.\n\nOur team will contact you within 24 hours to confirm the pickup details.\n\nRef: *RET-${latestOrder._id.toString().slice(-6).toUpperCase()}*`);
 
         // Emit to dashboard
         if (global.io) {

@@ -1012,5 +1012,8 @@ module.exports = {
     sendWhatsAppInteractive, 
     sendWhatsAppTemplate, 
     sendWhatsAppImage,
-    trackNodeVisit
+    trackNodeVisit,
+    saveInboundMessage,
+    saveOutboundMessage,
+    isGreeting
 };

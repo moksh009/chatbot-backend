@@ -50,11 +50,23 @@ Return the EXACT fixed JSON structure (nodes and edges). Do not add any markdown
     const cleanJson = aiResult.replace(/```json/g, '').replace(/```/g, '').trim();
     const fixedGraph = JSON.parse(cleanJson);
 
-    log.info(`✅ Flow fixed with AI for client: ${clientId}`);
+    // ─── VALIDATION & NORMALIZATION ──────────────────────────────────
+    let finalNodes = Array.isArray(fixedGraph.nodes) ? fixedGraph.nodes : nodes;
+    let finalEdges = Array.isArray(fixedGraph.edges) ? fixedGraph.edges : edges;
+
+    // Fix common AI mistake: returning an object with numeric keys instead of an array
+    if (!Array.isArray(fixedGraph.nodes) && typeof fixedGraph.nodes === 'object' && fixedGraph.nodes !== null) {
+      finalNodes = Object.values(fixedGraph.nodes);
+    }
+    if (!Array.isArray(fixedGraph.edges) && typeof fixedGraph.edges === 'object' && fixedGraph.edges !== null) {
+      finalEdges = Object.values(fixedGraph.edges);
+    }
+
+    log.info(`✅ Flow fixed and validated with AI for client: ${clientId}`);
     res.json({ 
       success: true, 
-      nodes: fixedGraph.nodes || nodes, 
-      edges: fixedGraph.edges || edges 
+      nodes: finalNodes, 
+      edges: finalEdges 
     });
 
   } catch (error) {

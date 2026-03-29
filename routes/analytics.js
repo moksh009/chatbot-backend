@@ -1062,12 +1062,12 @@ router.get('/flow-heatmap', protect, async (req, res) => {
     const heatNodes = (client.flowNodes || [])
       .map(n => ({
         id: n.id,
-        label: n.data?.label || n.data?.text || n.type,
+        label: n.data?.label || n.data?.text || n.data?.body || n.type,
         type: n.type,
         visitCount: n.visitCount || 0
       }))
-      .filter(n => n.visitCount > 0 || n.type === 'trigger' || n.type === 'TriggerNode')
-      .sort((a, b) => b.visitCount - a.visitCount);
+      .sort((a, b) => b.visitCount - a.visitCount)
+      .slice(0, 15); // Show top 15 nodes for visual clarity
 
     res.json(heatNodes);
   } catch (error) {
