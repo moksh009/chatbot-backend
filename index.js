@@ -136,6 +136,9 @@ app.use('/api/payment', require('./routes/payment'));
 // app.use('/api/client/0002', vedClientRoutes);
 app.use('/r', trackingRoutes);
 
+const notificationsRoutes = require('./routes/notifications');
+app.use('/api/notifications', notificationsRoutes);
+
 // Master Webhook (Root Route for WhatsApp Meta Cloud API)
 const masterWebhook = require('./routes/masterWebhook');
 app.use('/', masterWebhook);

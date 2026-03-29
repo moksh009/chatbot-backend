@@ -369,10 +369,10 @@ router.get('/top-leads', protect, async (req, res) => {
     if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
       clientId = req.query.clientId;
     }
-    // --- PHASE 11 FIX: Refined Hot Leads (Score >= 40) ---
+    // --- PHASE 11 FIX: Refined Hot Leads (Score >= 60) ---
     const query = (['delitech_smarthomes', 'code_clinic_v1'].includes(clientId))
-      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] }, leadScore: { $gte: 40 } }
-      : { clientId, leadScore: { $gte: 40 } };
+      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] }, leadScore: { $gte: 60 } }
+      : { clientId, leadScore: { $gte: 60 } };
 
     const leads = await AdLead.aggregate([
       { $match: query },
