@@ -1,28 +1,13 @@
 const mongoose = require("mongoose");
 
-async function connectDB() {
+
+async function connectDB(){
     try {
         console.log("Attempting to connect to MongoDB...");
-        const uri = process.env.MONGO_URI || process.env.MONGODB_URI;
-        if (!uri) {
-            console.error("❌ FATAL: No MongoDB URI found (MONGO_URI or MONGODB_URI)");
-            process.exit(1);
-        }
-
-        const connectionInstance = await mongoose.connect(uri, {
-            // ── Connection Pool (Phase 16) ──────────────────────────────
-            maxPoolSize:  20,   // Max simultaneous connections
-            minPoolSize:   5,   // Keep 5 warm at all times
-
-            // ── Timeouts ────────────────────────────────────────────────
-            connectTimeoutMS:            10000,  // Fail fast on initial connect
-            socketTimeoutMS:             45000,  // Allow longer queries
-            serverSelectionTimeoutMS:    10000,  // Replica set selection timeout
-
-            // ── Behavior ────────────────────────────────────────────────
-            bufferCommands:  false,  // Fail immediately if not connected (no queue)
-            readPreference: "primaryPreferred",
-        });
+        const connectionInstance = await mongoose.connect(`${process.env.MONGODB_URI}`, {
+            serverSelectionTimeoutMS: 5000, // Timeout after 5s instead of 30s
+            socketTimeoutMS: 45000, // Close sockets after 45s of inactivity
+        })
         console.log(`\n MongoDB connected !! DB HOST: ${connectionInstance.connection.host}`);
 
         // --- AUTO-FIX: Drop conflicting legacy index on adleads ---
