@@ -14,6 +14,27 @@ const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
 
+router.post('/shopify/force-sync', protect, async (req, res) => {
+  try {
+    const client = await Client.findOne({ clientId: req.user.clientId });
+    if (!client) {
+      return res.status(404).json({ message: 'Client not found' });
+    }
+
+    const { refreshShopifyToken } = require('../utils/shopifyHelper');
+    const result = await refreshShopifyToken(client);
+
+    if (result.success) {
+      res.json({ success: true, message: 'Shopify connection re-synchronized' });
+    } else {
+      res.status(500).json({ success: false, message: 'Failed to re-synchronize Shopify connection', error: result.error });
+    }
+  } catch (err) {
+    log.error('Error forcing Shopify sync', { error: err.message });
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 const CLIENT_CODE_DIR = path.join(__dirname, 'clientcodes');
 
 // Middleware to check if user is a Super Admin

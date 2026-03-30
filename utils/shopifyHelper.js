@@ -190,8 +190,21 @@ async function exchangeShopifyToken(clientId, shopDomain, shopifyClientId, shopi
     return await Client.findOneAndUpdate({ clientId }, { $set: update }, { new: true });
 }
 
+async function refreshShopifyToken(client) {
+  try {
+    console.log(`[ShopifyRotation] Proactively refreshing token for ${client.clientId}...`);
+    await getShopifyClient(client.clientId, true); // Force refresh
+    console.log(`✅ [ShopifyRotation] Proactive token refresh successful for ${client.clientId}`);
+    return { success: true };
+  } catch (error) {
+    console.error(`❌ [ShopifyRotation] Proactive token refresh failed for ${client.clientId}:`, error.message);
+    return { success: false, error: error.message };
+  }
+}
+
 module.exports = {
     getShopifyClient,
     withShopifyRetry,
-    exchangeShopifyToken
+    exchangeShopifyToken,
+    refreshShopifyToken
 };
