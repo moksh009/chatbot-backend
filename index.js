@@ -1,3 +1,6 @@
+// ── Environment Validation (must be first) ──────────────────────────────────
+require('./utils/validateEnv')();
+
 const express = require('express');
 const dotenv = require('dotenv');
 const connectDB = require('./db');
@@ -22,18 +25,22 @@ if (dotenvResult.error && dotenvResult.error.code !== 'ENOENT') {
 // If ENOENT, it just means no file, which is fine if envs are injected otherwise.
 
 
-const cors = require('cors');
-const authRoutes = require('./routes/auth');
+const cors            = require('cors');
+const helmet          = require('helmet');
+const rateLimit       = require('express-rate-limit');
+const mongoSanitize   = require('express-mongo-sanitize');
+const authRoutes       = require('./routes/auth');
 const conversationRoutes = require('./routes/conversations');
-const appointmentRoutes = require('./routes/appointments');
-const analyticsRoutes = require('./routes/analytics');
-const campaignsRoutes = require('./routes/campaigns');
-const trackingRoutes = require('./routes/tracking');
+const appointmentRoutes  = require('./routes/appointments');
+const analyticsRoutes    = require('./routes/analytics');
+const campaignsRoutes    = require('./routes/campaigns');
+const trackingRoutes     = require('./routes/tracking');
+const batchRoutes        = require('./routes/batch');
 // const turfClientRoutes = require('./routes/clientcodes/turf'); // Deprecated in favor of dynamic router
 // const vedClientRoutes = require('./routes/clientcodes/ved');   // Deprecated in favor of dynamic router
 const dynamicClientRouter = require('./routes/dynamicClientRouter');
 const templatesRoutes = require('./routes/templates');
-const whatsappRoutes = require('./routes/whatsapp');
+const whatsappRoutes  = require('./routes/whatsapp');
 const wooWebhookRoutes = require('./routes/wooWebhook');
 
 const app = express();
@@ -64,11 +71,19 @@ function resolveWhatsAppConfig() {
 
 const path = require('path');
 
-// Middleware
+// ── Security Middleware ───────────────────────────────────────────────────
+app.use(helmet({
+  contentSecurityPolicy: false,      // Configure separately for SPA compatibility
+  crossOriginEmbedderPolicy: false
+}));
+
+// ── CORS ──────────────────────────────────────────────────────────────────
 app.use(cors({
   origin: process.env.FRONTEND_URL || '*', 
   credentials: true
 }));
+
+// ── Body Parsers ──────────────────────────────────────────────────────────
 app.use(express.json({ 
   limit: '10mb',
   verify: (req, res, buf) => {
@@ -77,17 +92,56 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Serve static files from the 'public' directory
+// ── MongoDB Injection Sanitizer ───────────────────────────────────────────
+app.use(mongoSanitize());
+
+// ── Rate Limiters ─────────────────────────────────────────────────────────
+const authLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10,
+  message: { error: 'Too many login attempts. Try again in 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const generalLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  message: { error: 'Too many requests. Try again in 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.path.startsWith('/keepalive'), // Don't limit health checks
+});
+
+const webhookLimit = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 500,
+  keyGenerator: (req) => req.params?.clientId || req.ip,
+});
+
+// ── ClientId Format Validator ─────────────────────────────────────────────
+function validateClientId(req, res, next) {
+  const { clientId } = req.params;
+  if (clientId && !/^[a-zA-Z0-9_-]{3,64}$/.test(clientId)) {
+    return res.status(400).json({ error: 'Invalid client ID format' });
+  }
+  next();
+}
+
+app.use('/api/client/:clientId', validateClientId);
+app.use('/api/batch/:clientId',  validateClientId);
+
+// ── Static Files ──────────────────────────────────────────────────────────
 app.use('/public', express.static(path.join(__dirname, 'public')));
 
-// Debug Middleware: Log all incoming requests
+// ── Request Logger ────────────────────────────────────────────────────────
 app.use((req, res, next) => {
   console.log(`📨 ${req.method} ${req.originalUrl}`);
   next();
 });
 
-// API Routes
-app.use('/api/auth', authRoutes);
+// ── API Routes ────────────────────────────────────────────────────────────
+app.use('/api/auth', authLimit, authRoutes);
 app.use('/api/conversations', conversationRoutes);
 app.use('/api/appointments', appointmentRoutes);
 app.use('/api/analytics', analyticsRoutes);
@@ -116,6 +170,13 @@ app.use('/api/shopify-hub', shopifyHubRoutes);
 const shopifyWebhookRoutes = require('./routes/shopifyWebhook');
 app.use('/api/shopify/webhook', shopifyWebhookRoutes);
 app.use('/api/woocommerce/webhook', wooWebhookRoutes);
+
+// ── Batch Routes (Phase 16 — one call per page) ────────────────────────────
+const { protect, verifyClientAccess } = require('./middleware/auth');
+app.use('/api/batch', protect, verifyClientAccess, batchRoutes);
+
+// ── General API Rate Limit (after batch and auth routes) ──────────────────
+app.use('/api', generalLimit);
 const adminRoutes = require('./routes/admin'); // Added for DFY SaaS Super Admin
 
 // Dynamic Client Router (Replaces hardcoded client routes)
@@ -428,6 +489,29 @@ const io = socketIo(server, {
 
 app.set('socketio', io);
 global.io = io;
+
+// ── Socket Debounce Helper (Phase 16) ───────────────────────────────────────
+// Prevents hammering the frontend with high-frequency stat updates.
+// Use for non-urgent events; emit immediately for real-time chat/orders.
+const socketDebounce = new Map();
+
+function debouncedEmit(room, event, data, delayMs = 3000) {
+  const key = `${room}:${event}`;
+  if (socketDebounce.has(key)) {
+    clearTimeout(socketDebounce.get(key));
+  }
+  const timeout = setTimeout(() => {
+    io.to(room).emit(event, data);
+    socketDebounce.delete(key);
+  }, delayMs);
+  socketDebounce.set(key, timeout);
+}
+
+// Expose globally so route handlers can use it
+global.debouncedEmit = debouncedEmit;
+
+// Emit IMMEDIATELY for:  new_message, new_order, attention_required, cod_converted
+// Debounce (3s) for:     stats_update, lead_activity, conversation_update
 
 io.on('connection', (socket) => {
   console.log('New client connected:', socket.id);
