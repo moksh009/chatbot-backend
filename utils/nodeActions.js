@@ -261,6 +261,31 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
       break;
     }
 
+    case "SEND_PURCHASE_LINK": {
+      const productKey = node.data?.productKey;
+      const baseUrl = node.data?.baseUrl || client.nicheData?.storeUrl;
+      const checkoutUrl = `${baseUrl}?utm_source=whatsapp&utm_medium=chatbot&uid=${lead?._id || 'unknown'}&p=${productKey || 'doorbell'}`;
+      
+      const msg = node.data?.body ? node.data.body.replace(`{{buy_url_${productKey}}}`, checkoutUrl) : `👉 Order here: ${checkoutUrl}`;
+      
+      await WhatsApp.sendText(client, phone, msg);
+      
+      // Log activity
+      if (lead) {
+        const AdLead = require("../models/AdLead");
+        await AdLead.findByIdAndUpdate(lead._id, {
+          $push: {
+            activityLog: {
+              action: 'purchase_link_sent',
+              details: `Sent ${productKey} purchase link: ${checkoutUrl}`,
+              timestamp: new Date()
+            }
+          }
+        });
+      }
+      break;
+    }
+    
     case "AI_FALLBACK": {
 
       // Handled in dualBrainEngine.js by returning false or explicitly calling runAIFallback

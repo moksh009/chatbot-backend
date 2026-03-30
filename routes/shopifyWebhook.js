@@ -49,6 +49,8 @@ router.post('/', express.json(), verifyShopifyWebhook, async (req, res) => {
 
     log.info(`Received Shopify Webhook: ${topic} for ${client.clientId}`);
 
+    res.status(200).send('OK');
+
     try {
         switch (topic) {
             case 'checkouts/create':
@@ -61,19 +63,17 @@ router.post('/', express.json(), verifyShopifyWebhook, async (req, res) => {
             default:
                 log.info(`Unhandled topic: ${topic}`);
         }
-        res.status(200).send('OK');
     } catch (err) {
-        log.error(`Error processing webhook ${topic}:`, err.message);
-        res.status(500).send('Error');
+        log.error(`Error processing webhook ${topic}: ${err.message}`);
     }
 });
 
 async function handleCheckout(client, data) {
-    const phone = data.phone || data.customer?.phone || data.billing_address?.phone;
-    if (!phone) return;
-
-    // Standardize phone
-    const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+    // Robust phone normalization
+    const phoneRaw = data.phone || data.customer?.phone || data.billing_address?.phone;
+    if (!phoneRaw) return;
+    const { normalizePhone } = require('../utils/helpers');
+    const cleanPhone = normalizePhone(phoneRaw);
 
     const cartItems = data.line_items.map(item => item.title).join(', ');
     
@@ -106,10 +106,11 @@ async function handleCheckout(client, data) {
 }
 
 async function handleOrder(client, data) {
-    const phone = data.phone || data.customer?.phone || data.billing_address?.phone;
-    if (!phone) return;
-
-    const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+    // Robust phone normalization
+    const phoneRaw = data.phone || data.customer?.phone || data.billing_address?.phone;
+    if (!phoneRaw) return;
+    const { normalizePhone } = require('../utils/helpers');
+    const cleanPhone = normalizePhone(phoneRaw);
 
     // 1. Fetch Lead
     const lead = await AdLead.findOne({ phoneNumber: cleanPhone, clientId: client.clientId });

@@ -3,7 +3,7 @@ const router = express.Router();
 const axios = require('axios');
 const Client = require('../models/Client');
 const { protect, verifyClientAccess } = require('../middleware/auth');
-const { getShopifyClient, exchangeShopifyToken } = require('../utils/shopifyHelper');
+const { getShopifyClient, withShopifyRetry, exchangeShopifyToken } = require('../utils/shopifyHelper');
 
 async function registerWebhooks(shopDomain, accessToken, clientId) {
   const topics = ['checkouts/create', 'checkouts/update', 'orders/create'];
@@ -46,7 +46,6 @@ router.post('/:clientId/connect', protect, verifyClientAccess, async (req, res) 
     const access_token = clientUpdate.shopifyAccessToken;
     const scope = clientUpdate.shopifyScopes;
 
-    // ── NEW: Auto Register Webhooks ──
     await registerWebhooks(cleanShopDomain, access_token, clientId);
 
     res.json({ success: true, message: 'Shopify connected and webhooks registered!', scope });
@@ -59,150 +58,89 @@ router.post('/:clientId/connect', protect, verifyClientAccess, async (req, res) 
 // POST /api/shopify/:clientId/sync-products
 router.post('/:clientId/sync-products', protect, verifyClientAccess, async (req, res) => {
   try {
-    const shop = await getShopifyClient(req.params.clientId);
-    const client = await Client.findOne({ clientId: req.params.clientId });
-
-    const response = await shop.get('/products.json?limit=50');
-
-    const products = response.data.products.map(p => ({
-      id: p.id,
-      title: p.title,
-      handle: p.handle,
-      price: p.variants[0]?.price,
-      image: p.image?.src,
-      url: `https://${client.shopDomain}/products/${p.handle}`
-    }));
+    const { clientId } = req.params;
+    const products = await withShopifyRetry(clientId, async (shop) => {
+        const client = await Client.findOne({ clientId });
+        const response = await shop.get('/products.json?limit=50');
+        
+        return response.data.products.map(p => ({
+          id: p.id,
+          title: p.title,
+          handle: p.handle,
+          price: p.variants[0]?.price,
+          image: p.image?.src,
+          url: `https://${client.shopDomain}/products/${p.handle}`
+        }));
+    });
 
     await Client.findOneAndUpdate(
-      { clientId: client.clientId },
+      { clientId },
       { $set: { "nicheData.products": products } }
     );
 
     res.json({ success: true, count: products.length });
   } catch (err) {
-    if (err.response?.status === 401 || err.message?.includes('401')) {
-      return res.status(400).json({ success: false, message: 'Shopify token invalid or expired. Please reconnect.', isShopifyAuthError: true });
-    }
-    res.status(500).json({ success: false, error: err.message });
+    const isAuthError = err.response?.status === 401 || err.response?.status === 403;
+    res.status(isAuthError ? 400 : 500).json({ success: false, error: err.message, isShopifyAuthError: isAuthError });
   }
 });
 
 // POST /api/shopify/:clientId/sync-orders
 router.post('/:clientId/sync-orders', protect, verifyClientAccess, async (req, res) => {
   try {
-    const shop = await getShopifyClient(req.params.clientId);
-    const client = await Client.findOne({ clientId: req.params.clientId });
+    const { clientId } = req.params;
+    await withShopifyRetry(clientId, async (shop) => {
+        const client = await Client.findOne({ clientId });
+        const response = await shop.get('/orders.json?limit=50&status=any');
+        const orders = response.data.orders;
+        const Order = require('../models/Order');
 
-    const response = await shop.get('/orders.json?limit=50&status=any');
+        for (const data of orders) {
+          const phone = data.phone || data.customer?.phone || data.billing_address?.phone;
+          const cleanPhone = phone ? phone.replace(/\D/g, '').slice(-10) : '0000000000';
 
-    const orders = response.data.orders;
-    const Order = require('../models/Order');
+          await Order.findOneAndUpdate(
+            { orderId: data.name || `#${data.id}`, clientId },
+            {
+              $set: {
+                customerName: data.customer ? `${data.customer.first_name} ${data.customer.last_name || ''}` : 'Shopify Customer',
+                customerPhone: cleanPhone,
+                amount: parseFloat(data.total_price),
+                totalPrice: parseFloat(data.total_price),
+                status: data.financial_status === 'paid' ? 'Paid' : 'Pending',
+                items: data.line_items.map(item => ({
+                    name: item.title,
+                    quantity: item.quantity,
+                    price: parseFloat(item.price)
+                })),
+                address: data.shipping_address ? `${data.shipping_address.address1}, ${data.shipping_address.city}` : '',
+                createdAt: data.created_at
+              }
+            },
+            { upsert: true }
+          );
+        }
+        return orders.length;
+    });
 
-    for (const data of orders) {
-      const phone = data.phone || data.customer?.phone || data.billing_address?.phone;
-      const cleanPhone = phone ? phone.replace(/\D/g, '').slice(-10) : '0000000000';
-
-      await Order.findOneAndUpdate(
-        { orderId: data.name || `#${data.id}`, clientId: client.clientId },
-        {
-          $set: {
-            customerName: data.customer ? `${data.customer.first_name} ${data.customer.last_name || ''}` : 'Shopify Customer',
-            customerPhone: cleanPhone,
-            amount: parseFloat(data.total_price),
-            totalPrice: parseFloat(data.total_price),
-            status: data.financial_status === 'paid' ? 'Paid' : 'Pending',
-            items: data.line_items.map(item => ({
-                name: item.title,
-                quantity: item.quantity,
-                price: parseFloat(item.price)
-            })),
-            address: data.shipping_address ? `${data.shipping_address.address1}, ${data.shipping_address.city}` : '',
-            createdAt: data.created_at
-          }
-        },
-        { upsert: true }
-      );
-    }
-
-    res.json({ success: true, count: orders.length });
+    res.json({ success: true, message: 'Sync complete' });
   } catch (err) {
-    if (err.response?.status === 401 || err.message?.includes('401')) {
-      return res.status(400).json({ success: false, message: 'Shopify token invalid or expired. Please reconnect.', isShopifyAuthError: true });
-    }
-    res.status(500).json({ success: false, error: err.message });
+    const isAuthError = err.response?.status === 401 || err.response?.status === 403;
+    res.status(isAuthError ? 400 : 500).json({ success: false, error: err.message, isShopifyAuthError: isAuthError });
   }
 });
 
-// GET /api/shopify/:clientId/payouts — Feature 4: Revenue & Payout Dashboard
+// GET /api/shopify/:clientId/payouts
 router.get('/:clientId/payouts', protect, verifyClientAccess, async (req, res) => {
   try {
-    const shop = await getShopifyClient(req.params.clientId);
-    const response = await shop.get('/shopify_payments/payouts.json?limit=5');
-    res.json({ success: true, payouts: response.data.payouts || [] });
-  } catch (err) {
-    // Shopify Payments may not be available on all accounts
-    res.json({ success: true, payouts: [], note: 'Shopify Payments not enabled or not applicable for this store.' });
-  }
-});
-
-// POST /api/shopify/:clientId/create-checkout — Feature 1: WhatsApp-Native Checkout
-router.post('/:clientId/create-checkout', protect, verifyClientAccess, async (req, res) => {
-  try {
-    const shop = await getShopifyClient(req.params.clientId);
-    const { variantId, quantity = 1, customerPhone, customerEmail, customerName } = req.body;
-    if (!variantId) return res.status(400).json({ error: 'variantId is required' });
-
-    const checkoutPayload = {
-      checkout: {
-        line_items: [{ variant_id: variantId, quantity }],
-        ...(customerPhone && { phone: customerPhone }),
-        ...(customerEmail && { email: customerEmail }),
-      }
-    };
-
-    const response = await shop.post('/checkouts.json', checkoutPayload);
-    const checkout = response.data.checkout;
-    res.json({ success: true, checkoutUrl: checkout.web_url, token: checkout.token });
-  } catch (err) {
-    console.error('❌ Create Checkout Error:', err.response?.data || err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// POST /api/shopify/:clientId/create-discount-code — Feature 2: Dynamic Discount Codes
-router.post('/:clientId/create-discount-code', protect, verifyClientAccess, async (req, res) => {
-  try {
-    const shop = await getShopifyClient(req.params.clientId);
-    const { discountPercent = 10, customerPhone } = req.body;
-    const codeSuffix = Math.random().toString(36).substring(2, 8).toUpperCase();
-    const code = `COMEBACK-${codeSuffix}`;
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24h expiry
-
-    // Step 1: Create Price Rule
-    const priceRuleRes = await shop.post('/price_rules.json', {
-      price_rule: {
-        title: code,
-        target_type: 'line_item',
-        target_selection: 'all',
-        allocation_method: 'across',
-        value_type: 'percentage',
-        value: `-${discountPercent}`,
-        customer_selection: 'all',
-        starts_at: new Date().toISOString(),
-        ends_at: expiresAt,
-        usage_limit: 1,
-        once_per_customer: true
-      }
+    const { clientId } = req.params;
+    const payouts = await withShopifyRetry(clientId, async (shop) => {
+        const response = await shop.get('/shopify_payments/payouts.json?limit=5');
+        return response.data.payouts || [];
     });
-    const priceRuleId = priceRuleRes.data.price_rule.id;
-
-    // Step 2: Create Discount Code under the Price Rule
-    await shop.post(`/price_rules/${priceRuleId}/discount_codes.json`, { discount_code: { code } });
-
-    res.json({ success: true, code, discountPercent, expiresAt });
+    res.json({ success: true, payouts });
   } catch (err) {
-    console.error('❌ Create Discount Code Error:', err.response?.data || err.message);
-    res.status(500).json({ success: false, error: err.message });
+    res.json({ success: true, payouts: [], note: 'Shopify Payments not enabled or not applicable.' });
   }
 });
 

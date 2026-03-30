@@ -57,6 +57,8 @@ const ClientSchema = new mongoose.Schema({
   shopifyClientId: { type: String, default: "" },
   shopifyClientSecret: { type: String, default: "" },
   shopifyApiVersion: { type: String, default: "2024-01" },
+  shopifyConnectionStatus: { type: String, enum: ['connected', 'error', 'disconnected'], default: 'connected' },
+  lastShopifyError: { type: String, default: "" },
   
   // Phase 13 Store & Instagram Integration
   storeType: {

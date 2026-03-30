@@ -10,6 +10,7 @@ const emailService = require("./emailService");
 const log = require("./logger")('DualBrain');
 const { generateText, getGeminiModel } = require('./gemini');
 const { createMessage } = require("./createMessage");
+const { injectVariables } = require("./variableInjector");
 
 /**
  * WHATSAPP & INSTAGRAM NAMESPACE WRAPPERS
@@ -96,24 +97,7 @@ const { normalizePhone } = require("./helpers");
 // VARIABLE REPLACEMENT UTILITY
 // ─────────────────────────────────────────────────────────────────────────────
 function replaceVariables(text, client, lead, convo) {
-  if (!text) return text;
-  let result = text;
-  
-  // Standardize variables for both WhatsApp/IG content and Email templates
-  const vars = {
-    '{{name}}': lead?.name || 'Customer',
-    '{name}': lead?.name || 'Customer',
-    '{{product_list}}': (client.nicheData?.products || []).map(p => `• *${p.title}* - ${p.price}\n  Link: ${p.url}`).join('\n\n') || 'No products available currently.',
-    '{{buy_url}}': client.nicheData?.storeUrl || 'https://google.com',
-    '{{order_status_summary}}': convo?.metadata?.lastOrderStatus || 'No recent orders found.',
-    '{{id}}': lead?.phoneNumber || '',
-    '{id}': lead?.phoneNumber || ''
-  };
-
-  Object.entries(vars).forEach(([key, val]) => {
-    result = result.replace(new RegExp(key, 'g'), val);
-  });
-  return result;
+  return injectVariables(text, { lead, client, order: convo?.metadata?.lastOrder });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -168,11 +152,6 @@ async function runDualBrainEngine(parsedMessage, client) {
 
   // STEP 4: Human Takeover — bot is paused
   if (convo.botPaused || convo.status === 'HUMAN_TAKEOVER') {
-    if (io) io.to(`client_${client.clientId}`).emit('new_message', {
-      phone, direction: 'inbound',
-      content: parsedMessage.text?.body || '[non-text]',
-      timestamp: new Date(), botPaused: true
-    });
     return true;
   }
 
@@ -183,7 +162,6 @@ async function runDualBrainEngine(parsedMessage, client) {
       parsedMessage = { ...parsedMessage, type: 'text', text: { body: transcription }, _transcribedFrom: 'audio' };
     } else {
       await WhatsApp.sendText(client, phone, "Sorry, I couldn't understand the voice note. Please type your message. 🙏");
-      await createMessage({ clientId: client.clientId, phone, direction: 'outbound', type: 'text', body: "Transcription failed message" });
       return true;
     }
   }
@@ -403,13 +381,6 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     });
   }
 
-  // Emit to dashboard
-  if (io) io.to(`client_${client.clientId}`).emit('new_message', {
-    phone, direction: 'outbound',
-    content: node.data?.text || node.data?.body || '[bot message]',
-    timestamp: new Date(), nodeId, nodeType: node.type
-  });
-
   // Auto-forward if there is exactly one outgoing edge with no trigger (auto-edge)
   const autoEdge = flowEdges.find(e => e.source === nodeId && (!e.trigger || e.trigger?.type === 'auto') && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom'));
   if (autoEdge) {
@@ -594,6 +565,17 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       if (headerImageUrl) {
         components.push({ type: 'header', parameters: [{ type: 'image', image: { link: headerImageUrl } }] });
       }
+
+      // Handle LEAD_ID replacement in buttons
+      if (data.buttonUrlParam === 'LEAD_ID' && lead) {
+        components.push({
+          type: 'button',
+          index: '0', 
+          sub_type: 'url',
+          parameters: [{ type: 'text', text: lead._id.toString() }]
+        });
+      }
+
       if (data.variables) {
         const rawParams = data.variables.split(',').map(v => v.trim()).filter(Boolean);
         if (rawParams.length) {
@@ -760,13 +742,11 @@ async function runAIFallback(parsedMessage, client, phone, lead) {
     ].join('\n\n');
 
     const reply = await generateText(prompt, client.geminiApiKey || client.config?.geminiApiKey);
-    await WhatsApp.sendText(client, phone, reply);
-    await createMessage({ clientId: client.clientId, phone, direction: 'outbound', type: 'text', body: reply, metadata: { is_ai_reply: true } });
+    await WhatsApp.sendText(client, phone, reply, channel);
     console.log(`[DualBrain] AI Fallback (${isHesitating ? 'Bargaining' : 'Info'}) used for "${text.substring(0, 50)}..."`);
   } catch (err) {
     console.error('[DualBrain] AI Fallback error:', err.message);
     await WhatsApp.sendText(client, phone, "I didn't quite understand that. Type 'Hi' to see how I can help! 😊");
-    await createMessage({ clientId: client.clientId, phone, direction: 'outbound', type: 'text', body: "AI error fallback" });
   }
 }
 

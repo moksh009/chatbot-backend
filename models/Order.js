@@ -24,7 +24,8 @@ const OrderSchema = new mongoose.Schema({
   paidViaLink: { type: Boolean, default: false },
   paidAt: { type: Date },
   codNudgeSentAt: { type: Date },
-  codNudgePendingAt: { type: Date }, // Phase 13: scheduled nudge time
+  codNudgeScheduledAt: { type: Date }, 
+  codNudgeStatus: { type: String, default: 'none' }, // none, scheduled, sent, failed
   source: { type: String },
   address: { type: String },
   city: { type: String },

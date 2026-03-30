@@ -175,7 +175,6 @@ router.get('/promote-me', async (req, res) => {
 });
 
 // --- RUN DELITECH MIGRATION (URL RUNNABLE) ---
-// --- RUN DELITECH MIGRATION (URL RUNNABLE) ---
 router.get('/run-delitech-migration', async (req, res) => {
   try {
     const { key } = req.query;
@@ -232,7 +231,7 @@ router.get('/run-delitech-migration', async (req, res) => {
         imageUrl: IMAGES.hero_5mp,
         body: "🛡️ *Delitech Smart Video Doorbell Pro (5MP)*\n\nThe ultimate peace-of-mind solution. Unmatched clarity and premium security.\n\n💎 *5MP Crystal-Clear Resolution*\n👀 *Ultra-Wide View*\n🌈 *Color Night Vision*\n\n💰 *Offer Price:* ₹6,999\n✅ 1 Year Warranty | 🚚 Free Shipping | 🛠️ Free Installation",
         buttonsList: [
-          { id: "buy_5mp", title: "🛒 Buy Now" },
+          { id: "buy_5mp_node", title: "🛒 Buy Now" },
           { id: "agent_5mp", title: "📞 Call Me" },
           { id: "back_main", title: "View Other" }
         ]
@@ -243,7 +242,7 @@ router.get('/run-delitech-migration', async (req, res) => {
         imageUrl: IMAGES.hero_3mp,
         body: "🛡️ *Delitech Smart Video Doorbell Plus (3MP)*\n\nThe perfect balance of affordability and HD security.\n\n📹 *2K Crisp Video*\n🌈 *Color Night Vision*\n🗣️ *Real-Time 2-Way Audio*\n\n💰 *Offer Price:* ₹6,499\n✅ 1 Year Warranty | 🚚 Free Shipping | 🛠️ Free Installation",
         buttonsList: [
-          { id: "buy_3mp", title: "🛒 Buy Now" },
+          { id: "buy_3mp_node", title: "🛒 Buy Now" },
           { id: "agent_3mp", title: "📞 Call Me" },
           { id: "back_main_2", title: "View Other" }
         ]
@@ -254,14 +253,31 @@ router.get('/run-delitech-migration', async (req, res) => {
         imageUrl: IMAGES.hero_2mp,
         body: "🛡️ *Delitech Smart Video Doorbell (2MP)*\n\nEssential home security made simple.\n\n📹 *1080p HD Video*\n🌙 *Night Vision*\n🗣️ *2-Way Audio*\n\n💰 *Offer Price:* ₹5,499\n✅ 1 Year Warranty | 🚚 Free Shipping | 🛠️ Free Installation",
         buttonsList: [
-          { id: "buy_2mp", title: "🛒 Buy Now" },
+          { id: "buy_2mp_node", title: "🛒 Buy Now" },
           { id: "agent_2mp", title: "📞 Call Me" },
           { id: "back_main_3", title: "View Other" }
         ]
       }},
-      { id: "link_5mp", type: "message", parentId: "f_catalog", position: { x: 50, y: 350 }, data: { label: "Checkout 5MP", body: "⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 https://delitechsmarthome.in/cart/prod_5mp:1\n\n_Cash on Delivery Available_" } },
-      { id: "link_3mp", type: "message", parentId: "f_catalog", position: { x: 450, y: 350 }, data: { label: "Checkout 3MP", body: "⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 https://delitechsmarthome.in/cart/prod_mp:1\n\n_Cash on Delivery Available_" } },
-      { id: "link_2mp", type: "message", parentId: "f_catalog", position: { x: 850, y: 350 }, data: { label: "Checkout 2MP", body: "⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 https://delitechsmarthome.in/cart/prod_2mp:1\n\n_Cash on Delivery Available_" } },
+      
+      // Node Actions for Purchasing (Variable Injector handled)
+      { id: "act_buy_5mp", type: "action", parentId: "f_catalog", position: { x: 50, y: 350 }, data: {
+          label: "Send 5MP Link",
+          actionType: "SEND_PURCHASE_LINK",
+          productType: "5mp",
+          message: "⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 {{buy_url_5mp}}\n\n_Cash on Delivery Available_"
+      }},
+      { id: "act_buy_3mp", type: "action", parentId: "f_catalog", position: { x: 450, y: 350 }, data: {
+          label: "Send 3MP Link",
+          actionType: "SEND_PURCHASE_LINK",
+          productType: "3mp",
+          message: "⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 {{buy_url_3mp}}\n\n_Cash on Delivery Available_"
+      }},
+      { id: "act_buy_2mp", type: "action", parentId: "f_catalog", position: { x: 850, y: 350 }, data: {
+          label: "Send 2MP Link",
+          actionType: "SEND_PURCHASE_LINK",
+          productType: "2mp",
+          message: "⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 {{buy_url_2mp}}\n\n_Cash on Delivery Available_"
+      }},
 
       // ─── SUPPORT FOLDER NODES ───────────────────────────────────────────
       { id: "ans_install", type: "message", parentId: "f_support", position: { x: 50, y: 50 }, data: { 
@@ -297,15 +313,15 @@ router.get('/run-delitech-migration', async (req, res) => {
       { id: "e_menu_faqs", source: "menu_main", target: "f_support", sourceHandle: "menu_faqs" },
       
       // Catalog Folder Internal Edges
-      { id: "e_card_5mp_buy", source: "card_5mp", target: "link_5mp", sourceHandle: "buy_5mp" },
+      { id: "e_card_5mp_buy", source: "card_5mp", target: "act_buy_5mp", sourceHandle: "buy_5mp_node" },
       { id: "e_card_5mp_call", source: "card_5mp", target: "f_orders", sourceHandle: "agent_5mp" },
       { id: "e_card_5mp_back", source: "card_5mp", target: "f_welcome", sourceHandle: "back_main" },
 
-      { id: "e_card_3mp_buy", source: "card_3mp", target: "link_3mp", sourceHandle: "buy_3mp" },
+      { id: "e_card_3mp_buy", source: "card_3mp", target: "act_buy_3mp", sourceHandle: "buy_3mp_node" },
       { id: "e_card_3mp_call", source: "card_3mp", target: "f_orders", sourceHandle: "agent_3mp" },
       { id: "e_card_3mp_back", source: "card_3mp", target: "f_welcome", sourceHandle: "back_main_2" },
 
-      { id: "e_card_2mp_buy", source: "card_2mp", target: "link_2mp", sourceHandle: "buy_2mp" },
+      { id: "e_card_2mp_buy", source: "card_2mp", target: "act_buy_2mp", sourceHandle: "buy_2mp_node" },
       { id: "e_card_2mp_call", source: "card_2mp", target: "f_orders", sourceHandle: "agent_2mp" },
       { id: "e_card_2mp_back", source: "card_2mp", target: "f_welcome", sourceHandle: "back_main_3" },
 
@@ -320,11 +336,11 @@ router.get('/run-delitech-migration', async (req, res) => {
         flowEdges: DELITECH_EDGES,
         businessType: "ecommerce",
         niche: "ecommerce",
-        isGenericBot: false
+        isGenericBot: true // Dual Brain Enabled
       }}
     );
 
-    res.json({ success: true, message: "Delitech high-fidelity folderized flow migrated successfully!" });
+    res.json({ success: true, message: "Delitech high-fidelity Dual-Brain flow migrated successfully!" });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

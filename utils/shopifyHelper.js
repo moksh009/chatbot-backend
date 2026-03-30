@@ -1,72 +1,153 @@
 const axios = require('axios');
 const Client = require('../models/Client');
+const { encrypt, decrypt } = require('./encryption');
 
 /**
- * Robust Shopify Client Generator with Auto-Refresh
+ * Robust Shopify Client Generator with Auto-Refresh & Self-Healing
  * Standardizes API communication and handles OAuth token rotation automatically.
  */
-async function getShopifyClient(clientId) {
+async function getShopifyClient(clientId, forceRefresh = false) {
     const client = await Client.findOne({ clientId });
     if (!client) throw new Error('Client not found');
 
-    let token = client.shopifyAccessToken;
+    let token = decrypt(client.shopifyAccessToken);
     const domain = client.shopDomain;
     const apiVersion = client.shopifyApiVersion || '2024-01';
 
     // 1. Check if token needs refresh
-    // We refresh if token is within 5 minutes of expiry OR if it's missing but we have credentials
     const fiveMinutes = 5 * 60 * 1000;
     const isNextToExpiry = client.shopifyTokenExpiresAt && (new Date(client.shopifyTokenExpiresAt).getTime() - Date.now()) < fiveMinutes;
     const hasCredentials = client.shopifyClientId && client.shopifyClientSecret;
 
-    if (isNextToExpiry || (!token && hasCredentials)) {
-        console.log(`[ShopifyRotation] Renewer triggered for ${clientId}...`);
-        try {
-            let res;
-            if (client.shopifyRefreshToken) {
-                // Scenario A: Standard OAuth Refresh Hub (Public/Custom with rotation)
-                res = await axios.post(`https://${domain}/admin/oauth/access_token`, {
+    // FORCE: If forceRefresh is true, we ignore the current token and fetch a new one
+    if (forceRefresh || isNextToExpiry || (!token && hasCredentials)) {
+        console.log(`[ShopifyRotation] ${forceRefresh ? 'FORCED' : 'Auto'} Renewer triggered for ${clientId}...`);
+        
+        let success = false;
+        let lastError = null;
+
+        // --- SEQUENTIAL RECOVERY FLOW ---
+        
+        // Step A: Try Refresh Token (Standard OAuth)
+        if (client.shopifyRefreshToken) {
+            try {
+                console.log(`[ShopifyRotation] Attempting Refresh Token rotation for ${clientId}...`);
+                const res = await axios.post(`https://${domain}/admin/oauth/access_token`, {
                     client_id: client.shopifyClientId,
                     client_secret: client.shopifyClientSecret,
                     grant_type: 'refresh_token',
-                    refresh_token: client.shopifyRefreshToken
+                    refresh_token: decrypt(client.shopifyRefreshToken)
                 });
-            } else if (hasCredentials) {
-                // Scenario B: Client Credentials Re-Auth (Custom Apps with stable credentials)
-                res = await axios.post(`https://${domain}/admin/oauth/access_token`, {
+
+                if (res.data.access_token) {
+                    token = res.data.access_token;
+                    client.shopifyAccessToken = encrypt(token);
+                    client.shopifyRefreshToken = encrypt(res.data.refresh_token || decrypt(client.shopifyRefreshToken));
+                    if (res.data.expires_in) {
+                        client.shopifyTokenExpiresAt = new Date(Date.now() + (res.data.expires_in * 1000));
+                    } else {
+                        client.shopifyTokenExpiresAt = null; 
+                    }
+                    success = true;
+                    console.log(`✅ [ShopifyRotation] Token restored via Refresh Token for ${clientId}`);
+                }
+            } catch (err) {
+                lastError = err.response?.data?.errors || err.message;
+                console.warn(`[ShopifyRotation] Refresh token attempt failed for ${clientId}:`, lastError);
+            }
+        }
+
+        // Step B: Try Client Credentials (Fallback for Custom Apps or if Refresh Token is dead/revoked)
+        if (!success && hasCredentials) {
+            try {
+                console.log(`[ShopifyRotation] Attempting Client Credentials re-auth for ${clientId}...`);
+                const res = await axios.post(`https://${domain}/admin/oauth/access_token`, {
                     client_id: client.shopifyClientId,
                     client_secret: client.shopifyClientSecret,
                     grant_type: 'client_credentials'
                 });
-            }
 
-            if (res?.data?.access_token) {
-                token = res.data.access_token;
-                client.shopifyAccessToken = token;
-                client.shopifyRefreshToken = res.data.refresh_token || client.shopifyRefreshToken;
-                if (res.data.expires_in) {
-                    client.shopifyTokenExpiresAt = new Date(Date.now() + (res.data.expires_in * 1000));
-                } else {
-                    client.shopifyTokenExpiresAt = null; 
+                if (res.data.access_token) {
+                    token = res.data.access_token;
+                    client.shopifyAccessToken = encrypt(token);
+                    client.shopifyTokenExpiresAt = null; // Client credentials usually issue semi-permanent tokens
+                    success = true;
+                    console.log(`✅ [ShopifyRotation] Token restored via Client Credentials for ${clientId}`);
                 }
-                await client.save();
-                console.log(`✅ [ShopifyRotation] Token renewed successfully for ${clientId}`);
+            } catch (err) {
+                lastError = err.response?.data?.errors || err.message;
+                console.error(`❌ [ShopifyRotation] Client Credentials attempt failed for ${clientId}:`, lastError);
             }
-        } catch (err) {
-            console.error(`❌ [ShopifyRotation] Renewal failed for ${clientId}:`, err.response?.data || err.message);
-            // If it's a 401/403 and we have credentials, we might need a full reconnect, but for now we fallback
+        }
+
+        if (success) {
+            client.shopifyConnectionStatus = 'connected';
+            client.lastShopifyError = '';
+            await client.save();
+        } else if (forceRefresh || isNextToExpiry) {
+            await Client.updateOne({ clientId }, { 
+                $set: { 
+                    shopifyConnectionStatus: 'error', 
+                    lastShopifyError: `Self-Healing Failed: ${JSON.stringify(lastError)}` 
+                } 
+            });
+            if (forceRefresh) throw new Error(`Shopify rotation failed: ${JSON.stringify(lastError)}`);
         }
     }
 
-    if (!token || !domain) throw new Error('Shopify credentials incomplete');
+    if (!token || !domain) throw new Error('Shopify credentials incomplete or invalid');
 
-    return axios.create({
+    const instance = axios.create({
         baseURL: `https://${domain}/admin/api/${apiVersion}`,
         headers: { 
             'X-Shopify-Access-Token': token,
             'Content-Type': 'application/json'
         }
     });
+
+    instance.interceptors.response.use(
+        response => response,
+        async (error) => {
+            if (error.response?.status === 401) {
+                console.warn(`[ShopifyAuth] 401 Unauthorized detected for ${clientId}. Flagging for recovery.`);
+                await Client.updateOne(
+                    { clientId }, 
+                    { $set: { shopifyConnectionStatus: 'error', lastShopifyError: 'Session Expired (401)' } }
+                );
+            }
+            return Promise.reject(error);
+        }
+    );
+
+    return instance;
+}
+
+/**
+ * SELF-HEALING WRAPPER
+ * Automatically detects 401s, rotates tokens, and retries the request up to 3 times.
+ */
+async function withShopifyRetry(clientId, operation, retryCount = 0) {
+    try {
+        const shop = await getShopifyClient(clientId);
+        return await operation(shop);
+    } catch (err) {
+        if (err.response?.status === 401 && retryCount < 3) {
+            console.warn(`[SelfHealing] 401 detected for ${clientId}. Attempt ${retryCount + 1}/3...`);
+            try {
+                const shop = await getShopifyClient(clientId, true); 
+                console.log(`[SelfHealing] Rotation successful for ${clientId}. Retrying operation...`);
+                return await withShopifyRetry(clientId, operation, retryCount + 1);
+            } catch (retryErr) {
+                console.error(`[SelfHealing] Rotation retry failed for ${clientId}:`, retryErr.message);
+                throw retryErr;
+            }
+        }
+        if (retryCount >= 3) {
+            console.error(`[SelfHealing] MAX RETRIES reached for ${clientId}. Flagging for manual review.`);
+            await Client.updateOne({ clientId }, { $set: { shopifyConnectionStatus: 'error', lastShopifyError: 'Max Retry Failure' } });
+        }
+        throw err;
+    }
 }
 
 /**
@@ -75,29 +156,35 @@ async function getShopifyClient(clientId) {
 async function exchangeShopifyToken(clientId, shopDomain, shopifyClientId, shopifyClientSecret, code) {
     const cleanDomain = shopDomain.replace('https://', '').replace('http://', '').split('/')[0];
     
-    // Shopify allows grant_type: 'client_credentials' for certain private apps, 
-    // but standard OAuth uses 'authorization_code'. We support both based on 'code' presence.
+    // OFFLINE ACCESS: Explicitly request offline access mode
     const payload = {
         client_id: shopifyClientId,
         client_secret: shopifyClientSecret,
         grant_type: code ? 'authorization_code' : 'client_credentials'
     };
-    if (code) payload.code = code;
+    if (code) {
+        payload.code = code;
+        payload['grant_options[]'] = 'offline'; 
+    }
 
     const res = await axios.post(`https://${cleanDomain}/admin/oauth/access_token`, payload);
     const { access_token, refresh_token, expires_in, scope } = res.data;
 
     const update = {
-        shopifyAccessToken: access_token,
-        shopifyRefreshToken: refresh_token || "",
+        shopifyAccessToken: encrypt(access_token),
+        shopifyRefreshToken: encrypt(refresh_token || ""),
         shopifyScopes: scope || "",
         shopifyClientId,
         shopifyClientSecret,
-        shopDomain: cleanDomain
+        shopDomain: cleanDomain,
+        shopifyConnectionStatus: 'connected',
+        lastShopifyError: ''
     };
 
     if (expires_in) {
         update.shopifyTokenExpiresAt = new Date(Date.now() + expires_in * 1000);
+    } else {
+        update.shopifyTokenExpiresAt = null; 
     }
 
     return await Client.findOneAndUpdate({ clientId }, { $set: update }, { new: true });
@@ -105,5 +192,6 @@ async function exchangeShopifyToken(clientId, shopDomain, shopifyClientId, shopi
 
 module.exports = {
     getShopifyClient,
+    withShopifyRetry,
     exchangeShopifyToken
 };

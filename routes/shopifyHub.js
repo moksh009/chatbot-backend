@@ -6,7 +6,7 @@ const Order = require('../models/Order');
 const { protect, verifyClientAccess } = require('../middleware/auth');
 const { addHours } = require('date-fns');
 
-const { getShopifyClient } = require('../utils/shopifyHelper');
+const { getShopifyClient, withShopifyRetry } = require('../utils/shopifyHelper');
 
 /**
  * @route   GET /api/shopify-hub/:clientId/pulse
@@ -14,68 +14,64 @@ const { getShopifyClient } = require('../utils/shopifyHelper');
  */
 router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
-    if (!client?.shopifyAccessToken || !client?.shopDomain) {
-      return res.status(400).json({ error: 'Shopify connection incomplete (Access Token or Domain missing)' });
-    }
-
-    const shop = await getShopifyClient(req.params.clientId);
+    const { clientId } = req.params;
     
-    // Fetch last 30 days of orders
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    
-    // FETCH ORDERS
-    const ordersRes = await shop.get(`/orders.json?status=any&created_at_min=${thirtyDaysAgo.toISOString()}&limit=250`);
-    const orders = ordersRes.data?.orders || [];
-
-    // AUTOMATIC SYNC: If no orders found in our DB but Shopify has some, trigger background sync
-    const internalOrderCount = await Order.countDocuments({ clientId: req.params.clientId });
-    if (internalOrderCount === 0 && orders.length > 0) {
-        console.log(`[ShopifyHub] Auto-sync triggered for ${req.params.clientId} (0 local orders found)`);
-        // Use axios to hit our own internal sync routes to ensure logic parity
-        const protocol = req.secure ? 'https' : 'http';
-        const host = req.get('host');
-        axios.post(`${protocol}://${host}/api/shopify/${req.params.clientId}/sync-orders`, {}, {
-            headers: { Authorization: req.headers.authorization }
-        }).catch(e => console.error('[AutoSync] Order sync failed:', e.message));
+    const result = await withShopifyRetry(clientId, async (shop) => {
+        // Fetch last 30 days of orders
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
         
-        axios.post(`${protocol}://${host}/api/shopify/${req.params.clientId}/sync-products`, {}, {
-            headers: { Authorization: req.headers.authorization }
-        }).catch(e => console.error('[AutoSync] Product sync failed:', e.message));
-    }
+        const ordersRes = await shop.get(`/orders.json?status=any&created_at_min=${thirtyDaysAgo.toISOString()}&limit=250`);
+        const orders = ordersRes.data?.orders || [];
 
-    let payouts = [];
-    try {
-      const payoutsRes = await shop.get('/shopify_payments/payouts.json?limit=5');
-      payouts = payoutsRes.data?.payouts || [];
-    } catch (payoutErr) {
-      // Common if shop doesn't use Shopify Payments or has insufficient scopes
-      console.warn('[Pulse] Payouts Fetch skipped:', payoutErr.message);
-    }
+        // AUTOMATIC SYNC: If no orders found in our DB but Shopify has some, trigger background sync
+        const internalOrderCount = await Order.countDocuments({ clientId });
+        if (internalOrderCount === 0 && orders.length > 0) {
+            console.log(`[ShopifyHub] Auto-sync triggered for ${clientId} (0 local orders found)`);
+            const protocol = req.secure ? 'https' : 'http';
+            const host = req.get('host');
+            axios.post(`${protocol}://${host}/api/shopify/${clientId}/sync-orders`, {}, {
+                headers: { Authorization: req.headers.authorization }
+            }).catch(e => console.error('[AutoSync] Order sync failed:', e.message));
+            
+            axios.post(`${protocol}://${host}/api/shopify/${clientId}/sync-products`, {}, {
+                headers: { Authorization: req.headers.authorization }
+            }).catch(e => console.error('[AutoSync] Product sync failed:', e.message));
+        }
 
-    const revenue = orders.reduce((sum, o) => sum + (parseFloat(o.total_price) || 0), 0);
-    const aov = orders.length ? (revenue / orders.length) : 0;
-    
-    res.json({
-      success: true,
-      stats: {
-        revenue,
-        orderCount: orders.length,
-        aov,
-        pendingFulfillment: orders.filter(o => !o.fulfillment_status).length,
-      },
-      payouts: payouts,
-      shopDomain: client.shopDomain
+        let payouts = [];
+        try {
+          const payoutsRes = await shop.get('/shopify_payments/payouts.json?limit=5');
+          payouts = payoutsRes.data?.payouts || [];
+        } catch (payoutErr) {
+          console.warn('[Pulse] Payouts Fetch skipped:', payoutErr.message);
+        }
+
+        const revenue = orders.reduce((sum, o) => sum + (parseFloat(o.total_price) || 0), 0);
+        const aov = orders.length ? (revenue / orders.length) : 0;
+
+        return {
+            stats: { revenue, orderCount: orders.length, aov, pendingFulfillment: orders.filter(o => !o.fulfillment_status).length },
+            payouts
+        };
     });
+
+    const client = await Client.findOne({ clientId });
+    res.json({
+        success: true,
+        ...result,
+        shopDomain: client.shopDomain,
+        shopifyConnectionStatus: client.shopifyConnectionStatus,
+        lastShopifyError: client.lastShopifyError
+    });
+
   } catch (err) {
-    const shopifyError = err.response?.data?.errors;
-    const isAuthError = shopifyError === '[API] Invalid API key or access token (unrecognized login or wrong password)' || err.response?.status === 401;
-    console.error('Pulse Critical Error:', err.message);
+    const shopifyError = err.response?.data?.errors || err.message;
+    const isAuthError = err.response?.status === 401 || err.response?.status === 403;
+    console.error('Pulse Critical Error:', shopifyError);
     res.status(isAuthError ? 400 : 500).json({ 
       success: false, 
-      error: err.message, 
-      details: err.response?.data || null,
+      error: shopifyError, 
       isShopifyAuthError: isAuthError
     });
   }
@@ -87,31 +83,26 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
  */
 router.get('/:clientId/products', protect, verifyClientAccess, async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
-    
-    // Return empty products if Shopify not connected instead of crashing
-    if (!client?.shopifyAccessToken || !client?.shopDomain) {
-      return res.json({ success: true, products: [], message: 'Shopify not connected' });
-    }
+    const { clientId } = req.params;
 
-    const shop = await getShopifyClient(req.params.clientId);
-    
-    const response = await shop.get('/products.json?limit=100&fields=id,title,variants,images,status,handle');
-    const shopifyProducts = response.data.products;
-    
-    const botProducts = client.nicheData?.products || [];
-    const botProductIds = new Set(botProducts.map(p => String(p.id)));
+    const products = await withShopifyRetry(clientId, async (shop) => {
+        const response = await shop.get('/products.json?limit=100&fields=id,title,variants,images,status,handle');
+        const shopifyProducts = response.data.products;
+        
+        const client = await Client.findOne({ clientId });
+        const botProducts = client.nicheData?.products || [];
+        const botProductIds = new Set(botProducts.map(p => String(p.id)));
 
-    const products = shopifyProducts.map(p => ({
-      ...p,
-      isWhatsAppReady: botProductIds.has(String(p.id)),
-      inventory: p.variants.reduce((sum, v) => sum + (v.inventory_quantity || 0), 0)
-    }));
+        return shopifyProducts.map(p => ({
+          ...p,
+          isWhatsAppReady: botProductIds.has(String(p.id)),
+          inventory: p.variants.reduce((sum, v) => sum + (v.inventory_quantity || 0), 0)
+        }));
+    });
 
     res.json({ success: true, products });
   } catch (err) {
-    const shopifyError = err.response?.data?.errors;
-    const isAuthError = shopifyError === '[API] Invalid API key or access token (unrecognized login or wrong password)' || err.response?.status === 401;
+    const isAuthError = err.response?.status === 401 || err.response?.status === 403;
     res.status(isAuthError ? 400 : 500).json({ 
       success: false, 
       products: [], 
@@ -127,12 +118,13 @@ router.get('/:clientId/products', protect, verifyClientAccess, async (req, res) 
  */
 router.put('/:clientId/products/:productId/price', protect, verifyClientAccess, async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
+    const { clientId } = req.params;
     const { variantId, price } = req.body;
-    const shop = await getShopifyClient(req.params.clientId);
 
-    await shop.put(`/variants/${variantId}.json`, {
-      variant: { id: variantId, price }
+    await withShopifyRetry(clientId, async (shop) => {
+        return await shop.put(`/variants/${variantId}.json`, {
+          variant: { id: variantId, price }
+        });
     });
 
     res.json({ success: true });
@@ -147,33 +139,36 @@ router.put('/:clientId/products/:productId/price', protect, verifyClientAccess, 
  */
 router.post('/:clientId/discounts', protect, verifyClientAccess, async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
+    const { clientId } = req.params;
     const { title, type, value, expiryHours = 24, prefix = 'TOPAI' } = req.body;
-    const shop = await getShopifyClient(req.params.clientId);
 
-    const priceRuleRes = await shop.post('/price_rules.json', {
-      price_rule: {
-        title: title || `${prefix}-${Date.now()}`,
-        target_type: 'line_item',
-        target_selection: 'all',
-        allocation_method: 'across',
-        value_type: type === 'percentage' ? 'percentage' : 'fixed_amount',
-        value: `-${value}`,
-        customer_selection: 'all',
-        starts_at: new Date().toISOString(),
-        ends_at: addHours(new Date(), expiryHours).toISOString(),
-        usage_limit: 1
-      }
+    const discount = await withShopifyRetry(clientId, async (shop) => {
+        const priceRuleRes = await shop.post('/price_rules.json', {
+          price_rule: {
+            title: title || `${prefix}-${Date.now()}`,
+            target_type: 'line_item',
+            target_selection: 'all',
+            allocation_method: 'across',
+            value_type: type === 'percentage' ? 'percentage' : 'fixed_amount',
+            value: `-${value}`,
+            customer_selection: 'all',
+            starts_at: new Date().toISOString(),
+            ends_at: addHours(new Date(), expiryHours).toISOString(),
+            usage_limit: 1
+          }
+        });
+
+        const priceRuleId = priceRuleRes.data.price_rule.id;
+        const code = `${prefix}-${Math.random().toString(36).substring(7).toUpperCase()}`;
+
+        const discountRes = await shop.post(`/price_rules/${priceRuleId}/discount_codes.json`, {
+          discount_code: { code }
+        });
+
+        return discountRes.data.discount_code;
     });
 
-    const priceRuleId = priceRuleRes.data.price_rule.id;
-    const code = `${prefix}-${Math.random().toString(36).substring(7).toUpperCase()}`;
-
-    const discountRes = await shop.post(`/price_rules/${priceRuleId}/discount_codes.json`, {
-      discount_code: { code }
-    });
-
-    res.json({ success: true, discount: discountRes.data.discount_code });
+    res.json({ success: true, discount });
   } catch (err) {
     console.error('Discount Error:', err.response?.data || err.message);
     res.status(500).json({ success: false, error: err.message });
@@ -193,7 +188,9 @@ router.get('/:clientId/settings', protect, verifyClientAccess, async (req, res) 
       success: true,
       automationFlows: client.automationFlows || [],
       nicheData: client.nicheData || {},
-      syncedMetaTemplates: client.syncedMetaTemplates || []
+      syncedMetaTemplates: client.syncedMetaTemplates || [],
+      shopifyConnectionStatus: client.shopifyConnectionStatus || 'connected',
+      lastShopifyError: client.lastShopifyError || ''
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

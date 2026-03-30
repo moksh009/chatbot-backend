@@ -33,4 +33,21 @@ async function sendWhatsAppText({ phoneNumberId, to, body, token }) {
     }
 }
 
-module.exports = { sendWhatsAppText };
+/**
+ * Fetches message templates from Meta WABA.
+ */
+async function syncWhatsAppTemplates({ wabaId, token }) {
+    const apiVersion = process.env.API_VERSION || 'v18.0';
+    const url = `https://graph.facebook.com/${apiVersion}/${wabaId}/message_templates?fields=name,status,category,language,components`;
+    try {
+        const response = await axios.get(url, {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        return { success: true, templates: response.data.data || [] };
+    } catch (err) {
+        console.error('[WhatsAppHelpers] Sync Error:', err.response?.data || err.message);
+        return { success: false, error: err.response?.data || err.message };
+    }
+}
+
+module.exports = { sendWhatsAppText, syncWhatsAppTemplates };

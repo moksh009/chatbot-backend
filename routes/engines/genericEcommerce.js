@@ -12,6 +12,7 @@ const { runDualBrainEngine } = require('../../utils/dualBrainEngine');
 const { generateText } = require('../../utils/gemini');
 const { normalizePhone } = require('../../utils/helpers');
 const { getShopifyClient } = require('../../utils/shopifyHelper');
+const { syncWhatsAppTemplates } = require('../../utils/whatsappHelpers');
 
 // --- 1. CORE API WRAPPERS ---
 async function findNextNode(currentNodeId, handleId, edges) {
@@ -523,7 +524,8 @@ const handleWebhook = async (req, res) => {
         const phoneNumberId = value?.metadata?.phone_number_id;
         const from = messages?.from;
 
-        if (!messages || !from) return res.status(200).end();
+        res.status(200).end();
+        if (!messages || !from) return;
 
         const { clientId, whatsappToken: token, nicheData, plan } = req.clientConfig;
         const io = req.app.get('socketio');
@@ -726,8 +728,9 @@ const handleShopifyCartUpdatedWebhook = async (req, res) => {
         const phoneRaw = cartData.phone || cartData.customer?.phone || cartData.billing_address?.phone || cartData.shipping_address?.phone;
         const { clientId } = req.clientConfig;
 
+        res.status(200).end();
         console.log(`[EcommerceEngine] Cart Update Webhook for ${clientId} | Phone: ${phoneRaw || 'NONE'}`);
-        if (!phoneRaw) return res.status(200).end();
+        if (!phoneRaw) return;
         const phone = normalizePhone(phoneRaw);
 
         let lead = await AdLead.findOne({ phoneNumber: phone, clientId });
@@ -766,8 +769,9 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
         const phoneRaw = orderData.phone || orderData.customer?.phone || orderData.billing_address?.phone || orderData.shipping_address?.phone;
         const { clientId, whatsappToken: token } = req.clientConfig;
         
+        res.status(200).end();
         console.log(`[EcommerceEngine] Order Complete Webhook for ${clientId} | Order: ${orderData.name} | Phone: ${phoneRaw}`);
-        if (!phoneRaw) return res.status(200).end();
+        if (!phoneRaw) return;
         const phone = normalizePhone(phoneRaw);
 
         const orderId = orderData.id;
@@ -824,14 +828,13 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
 
             if (isActive) {
                 const delayMs = (codFlow?.config?.delayMinutes || 3) * 60 * 1000;
-                setTimeout(async () => {
-                    try {
-                        const refreshedClient = await require('../../models/Client').findOne({ clientId });
-                        await sendCODToPrepaidNudge(savedOrder, refreshedClient, phone);
-                    } catch (err) {
-                        console.error("[EcommerceEngine] COD nudge failed:", err.message);
+                await Order.findByIdAndUpdate(savedOrder._id, {
+                    $set: {
+                        codNudgeScheduledAt: new Date(Date.now() + delayMs),
+                        codNudgeStatus: 'scheduled'
                     }
-                }, delayMs);
+                });
+                console.log(`[EcommerceEngine] COD nudge scheduled for ${phone} in ${delayMs/60000}m`);
             }
         }
 
@@ -1070,7 +1073,7 @@ const updateOrderStatus = async (req, res) => {
                     await shopifyApi.post(`/orders/${order.shopifyOrderId}/cancel.json`);
                 }
             } catch (err) {
-                console.error(`[ShopifySync] Failed for order ${order.orderNumber}:`, err.response?.data || err.message);
+                console.error(`[ShopifySync] Failed for order ${order.orderNumber || order.orderId}:`, err.response?.data || err.message);
             }
         }
 
@@ -1086,18 +1089,30 @@ const updateOrderStatus = async (req, res) => {
                 const tplDef = (req.clientConfig.waTemplates || []).find(t => t.name === templateName) || 
                                (req.clientConfig.syncedMetaTemplates || []).find(t => t.name === templateName);
                 
-                let requiredParams = 0;
+                let requiredParams = null; // Use null to indicate "unknown"
                 if (tplDef) {
                     const bodyComp = (tplDef.components || []).find(c => c.type === 'BODY');
                     if (bodyComp && bodyComp.text) {
                         const matches = bodyComp.text.match(/\{\{\d+\}\}/g);
-                        if (matches) {
-                          requiredParams = new Set(matches).size;
-                          console.log(`[TemplateDetection] Found ${requiredParams} params for ${templateName}`);
-                        }
+                        requiredParams = matches ? new Set(matches).size : 0;
+                        console.log(`[TemplateDetection] Found ${requiredParams} params for ${templateName}`);
+                    } else {
+                        requiredParams = 0; // No body component or no matches means 0 params
                     }
                 } else {
                   console.warn(`[TemplateDetection] Warning: Template ${templateName} not found in client configuration for parameter detection.`);
+                  // Trigger background sync so future messages for this client have correct data
+                  if (req.clientConfig.wabaId) {
+                      syncWhatsAppTemplates({ wabaId: req.clientConfig.wabaId, token: whatsappToken })
+                        .then(res => {
+                            if (res.success) {
+                                Client.updateOne({ clientId }, { $set: { syncedMetaTemplates: res.templates, templatesSyncedAt: new Date() } })
+                                    .then(() => console.log(`[TemplateDetection] Background sync successful for ${clientId}`))
+                                    .catch(e => console.error(`[TemplateDetection] DB update failed for ${clientId}`, e.message));
+                            }
+                        })
+                        .catch(e => console.error(`[TemplateDetection] Trigger failed for ${clientId}`, e.message));
+                  }
                 }
 
                 // Prepare a comprehensive set of variables
@@ -1111,7 +1126,7 @@ const updateOrderStatus = async (req, res) => {
                 ];
 
                 // Ensure bodyParams matches Meta's required count EXACTLY if we know the count
-                if (requiredParams > 0) {
+                if (requiredParams !== null) {
                     if (bodyParams.length > requiredParams) {
                         bodyParams = bodyParams.slice(0, requiredParams);
                     } else {
@@ -1119,9 +1134,14 @@ const updateOrderStatus = async (req, res) => {
                             bodyParams.push('---'); // Minimal padding
                         }
                     }
+                } else {
+                    // If we don't know the count, we default to 0 for safety to avoid Meta errors
+                    // OR we could send a few basic ones, but 0 is safer for unknown templates.
+                    // Actually, most templates have {{1}}, so sending 1 is a common fallback
+                    // but better to send 0 if we don't know to avoid the "6 does not match" error.
+                    bodyParams = [order.customerName || 'Customer']; // Fallback to just name
+                    console.warn(`[TemplateDetection] Defaulting to 1 param for unknown template ${templateName}`);
                 }
-                // If requiredParams is 0 (detection failed), we send all available params (up to 6)
-                // which is safer than blindly slicing to 3.
 
                 const helperParams = { phoneNumberId, token: whatsappToken, io, clientConfig: req.clientConfig };
                 await sendWhatsAppTemplate({
