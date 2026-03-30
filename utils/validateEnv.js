@@ -4,10 +4,10 @@
  */
 
 const REQUIRED = [
-  "MONGO_URI",
-  "JWT_SECRET",
   "GEMINI_API_KEY",
 ];
+
+const MONGO_KEYS = ["MONGO_URI", "MONGODB_URI"];
 
 const OPTIONAL_WITH_WARNING = [
   "PORT",
@@ -19,6 +19,20 @@ const OPTIONAL_WITH_WARNING = [
 
 function validateEnv() {
   const missing = REQUIRED.filter((key) => !process.env[key]);
+  
+  // Custom check for MongoDB (allows either MONGO_URI or MONGODB_URI)
+  const hasMongo = MONGO_KEYS.some(k => process.env[k]);
+  if (!hasMongo) missing.push("MONGO_URI|MONGODB_URI");
+
+  // Custom check for JWT_SECRET (provides default if missing)
+  if (!process.env.JWT_SECRET) {
+      if (process.env.NODE_ENV === 'production') {
+          missing.push("JWT_SECRET");
+      } else {
+          process.env.JWT_SECRET = 'dev_secret_only';
+          console.warn("⚠️  JWT_SECRET missing. Using insecure development default.");
+      }
+  }
 
   if (missing.length) {
     console.error("❌ FATAL: Missing required environment variables:");
