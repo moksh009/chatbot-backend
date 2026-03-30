@@ -3,6 +3,7 @@ const router = express.Router();
 const axios = require('axios');
 const Client = require('../models/Client');
 const { protect, verifyClientAccess } = require('../middleware/auth');
+const { getShopifyClient, exchangeShopifyToken } = require('../utils/shopifyHelper');
 
 async function registerWebhooks(shopDomain, accessToken, clientId) {
   const topics = ['checkouts/create', 'checkouts/update', 'orders/create'];
@@ -41,18 +42,9 @@ router.post('/:clientId/connect', protect, verifyClientAccess, async (req, res) 
     const cleanShopDomain = shopDomain.replace('https://', '').replace('http://', '').split('/')[0];
     console.log(`🔄 Attempting Shopify token exchange for ${cleanShopDomain}...`);
 
-    const response = await axios.post(`https://${cleanShopDomain}/admin/oauth/access_token`, {
-      client_id: shopifyClientId,
-      client_secret: shopifyClientSecret,
-      grant_type: 'client_credentials'
-    });
-
-    const { access_token, scope } = response.data;
-    if (!access_token) throw new Error('No access token received');
-
-    await Client.findOneAndUpdate({ clientId }, { 
-      $set: { shopifyAccessToken: access_token, shopifyClientId, shopifyClientSecret, shopDomain: cleanShopDomain } 
-    });
+    const clientUpdate = await exchangeShopifyToken(clientId, cleanShopDomain, shopifyClientId, shopifyClientSecret);
+    const access_token = clientUpdate.shopifyAccessToken;
+    const scope = clientUpdate.shopifyScopes;
 
     // ── NEW: Auto Register Webhooks ──
     await registerWebhooks(cleanShopDomain, access_token, clientId);
@@ -67,13 +59,10 @@ router.post('/:clientId/connect', protect, verifyClientAccess, async (req, res) 
 // POST /api/shopify/:clientId/sync-products
 router.post('/:clientId/sync-products', protect, verifyClientAccess, async (req, res) => {
   try {
+    const shop = await getShopifyClient(req.params.clientId);
     const client = await Client.findOne({ clientId: req.params.clientId });
-    if (!client?.shopifyAccessToken) return res.status(400).json({ error: 'Shopify not connected' });
 
-    const response = await axios.get(
-      `https://${client.shopDomain}/admin/api/2024-01/products.json?limit=50`,
-      { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
-    );
+    const response = await shop.get('/products.json?limit=50');
 
     const products = response.data.products.map(p => ({
       id: p.id,
@@ -98,13 +87,10 @@ router.post('/:clientId/sync-products', protect, verifyClientAccess, async (req,
 // POST /api/shopify/:clientId/sync-orders
 router.post('/:clientId/sync-orders', protect, verifyClientAccess, async (req, res) => {
   try {
+    const shop = await getShopifyClient(req.params.clientId);
     const client = await Client.findOne({ clientId: req.params.clientId });
-    if (!client?.shopifyAccessToken) return res.status(400).json({ error: 'Shopify not connected' });
 
-    const response = await axios.get(
-      `https://${client.shopDomain}/admin/api/2024-01/orders.json?limit=50&status=any`,
-      { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
-    );
+    const response = await shop.get('/orders.json?limit=50&status=any');
 
     const orders = response.data.orders;
     const Order = require('../models/Order');
@@ -144,13 +130,8 @@ router.post('/:clientId/sync-orders', protect, verifyClientAccess, async (req, r
 // GET /api/shopify/:clientId/payouts — Feature 4: Revenue & Payout Dashboard
 router.get('/:clientId/payouts', protect, verifyClientAccess, async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
-    if (!client?.shopifyAccessToken) return res.status(400).json({ error: 'Shopify not connected' });
-
-    const response = await axios.get(
-      `https://${client.shopDomain}/admin/api/2024-01/shopify_payments/payouts.json?limit=5`,
-      { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
-    );
+    const shop = await getShopifyClient(req.params.clientId);
+    const response = await shop.get('/shopify_payments/payouts.json?limit=5');
     res.json({ success: true, payouts: response.data.payouts || [] });
   } catch (err) {
     // Shopify Payments may not be available on all accounts
@@ -161,9 +142,7 @@ router.get('/:clientId/payouts', protect, verifyClientAccess, async (req, res) =
 // POST /api/shopify/:clientId/create-checkout — Feature 1: WhatsApp-Native Checkout
 router.post('/:clientId/create-checkout', protect, verifyClientAccess, async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
-    if (!client?.shopifyAccessToken) return res.status(400).json({ error: 'Shopify not connected' });
-
+    const shop = await getShopifyClient(req.params.clientId);
     const { variantId, quantity = 1, customerPhone, customerEmail, customerName } = req.body;
     if (!variantId) return res.status(400).json({ error: 'variantId is required' });
 
@@ -175,11 +154,7 @@ router.post('/:clientId/create-checkout', protect, verifyClientAccess, async (re
       }
     };
 
-    const response = await axios.post(
-      `https://${client.shopDomain}/admin/api/2024-01/checkouts.json`,
-      checkoutPayload,
-      { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
-    );
+    const response = await shop.post('/checkouts.json', checkoutPayload);
     const checkout = response.data.checkout;
     res.json({ success: true, checkoutUrl: checkout.web_url, token: checkout.token });
   } catch (err) {
@@ -191,42 +166,32 @@ router.post('/:clientId/create-checkout', protect, verifyClientAccess, async (re
 // POST /api/shopify/:clientId/create-discount-code — Feature 2: Dynamic Discount Codes
 router.post('/:clientId/create-discount-code', protect, verifyClientAccess, async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
-    if (!client?.shopifyAccessToken) return res.status(400).json({ error: 'Shopify not connected' });
-
+    const shop = await getShopifyClient(req.params.clientId);
     const { discountPercent = 10, customerPhone } = req.body;
     const codeSuffix = Math.random().toString(36).substring(2, 8).toUpperCase();
     const code = `COMEBACK-${codeSuffix}`;
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24h expiry
 
     // Step 1: Create Price Rule
-    const priceRuleRes = await axios.post(
-      `https://${client.shopDomain}/admin/api/2024-01/price_rules.json`,
-      {
-        price_rule: {
-          title: code,
-          target_type: 'line_item',
-          target_selection: 'all',
-          allocation_method: 'across',
-          value_type: 'percentage',
-          value: `-${discountPercent}`,
-          customer_selection: 'all',
-          starts_at: new Date().toISOString(),
-          ends_at: expiresAt,
-          usage_limit: 1,
-          once_per_customer: true
-        }
-      },
-      { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
-    );
+    const priceRuleRes = await shop.post('/price_rules.json', {
+      price_rule: {
+        title: code,
+        target_type: 'line_item',
+        target_selection: 'all',
+        allocation_method: 'across',
+        value_type: 'percentage',
+        value: `-${discountPercent}`,
+        customer_selection: 'all',
+        starts_at: new Date().toISOString(),
+        ends_at: expiresAt,
+        usage_limit: 1,
+        once_per_customer: true
+      }
+    });
     const priceRuleId = priceRuleRes.data.price_rule.id;
 
     // Step 2: Create Discount Code under the Price Rule
-    await axios.post(
-      `https://${client.shopDomain}/admin/api/2024-01/price_rules/${priceRuleId}/discount_codes.json`,
-      { discount_code: { code } },
-      { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
-    );
+    await shop.post(`/price_rules/${priceRuleId}/discount_codes.json`, { discount_code: { code } });
 
     res.json({ success: true, code, discountPercent, expiresAt });
   } catch (err) {

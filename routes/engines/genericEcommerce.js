@@ -10,7 +10,8 @@ const Client = require('../../models/Client');
 const { sendOrderConfirmationEmail, sendCODToPrepaidEmail } = require('../../utils/emailService');
 const { runDualBrainEngine } = require('../../utils/dualBrainEngine');
 const { generateText } = require('../../utils/gemini');
-const { normalizePhone } = require('../../utils/phoneUtils');
+const { normalizePhone } = require('../../utils/helpers');
+const { getShopifyClient } = require('../../utils/shopifyHelper');
 
 // --- 1. CORE API WRAPPERS ---
 async function findNextNode(currentNodeId, handleId, edges) {
@@ -1042,10 +1043,7 @@ const updateOrderStatus = async (req, res) => {
         // 1. SHOPIFY SYNC
         if (shopDomain && shopifyAccessToken && order.shopifyOrderId) {
             try {
-                const shopifyApi = axios.create({
-                    baseURL: `https://${shopDomain}/admin/api/2023-10`,
-                    headers: { 'X-Shopify-Access-Token': shopifyAccessToken }
-                });
+                const shopifyApi = await getShopifyClient(clientId);
 
                 if (status === 'shipped' || status === 'fulfilled') {
                     // --- PHASE 11 ROBUSTNESS FIX ---
@@ -1088,13 +1086,18 @@ const updateOrderStatus = async (req, res) => {
                 const tplDef = (req.clientConfig.waTemplates || []).find(t => t.name === templateName) || 
                                (req.clientConfig.syncedMetaTemplates || []).find(t => t.name === templateName);
                 
-                let requiredParams = 0; 
-                if (tplDef && tplDef.components) {
-                    const bodyComp = tplDef.components.find(c => c.type === 'BODY');
+                let requiredParams = 0;
+                if (tplDef) {
+                    const bodyComp = (tplDef.components || []).find(c => c.type === 'BODY');
                     if (bodyComp && bodyComp.text) {
                         const matches = bodyComp.text.match(/\{\{\d+\}\}/g);
-                        if (matches) requiredParams = new Set(matches).size;
+                        if (matches) {
+                          requiredParams = new Set(matches).size;
+                          console.log(`[TemplateDetection] Found ${requiredParams} params for ${templateName}`);
+                        }
                     }
+                } else {
+                  console.warn(`[TemplateDetection] Warning: Template ${templateName} not found in client configuration for parameter detection.`);
                 }
 
                 // Prepare a comprehensive set of variables

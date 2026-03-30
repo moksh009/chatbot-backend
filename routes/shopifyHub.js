@@ -6,13 +6,7 @@ const Order = require('../models/Order');
 const { protect, verifyClientAccess } = require('../middleware/auth');
 const { addHours } = require('date-fns');
 
-// Helper to create Shopify Client
-const shopifyClient = (client) => {
-  return axios.create({
-    baseURL: `https://${client.shopDomain}/admin/api/2024-01`,
-    headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken }
-  });
-};
+const { getShopifyClient } = require('../utils/shopifyHelper');
 
 /**
  * @route   GET /api/shopify-hub/:clientId/pulse
@@ -21,21 +15,35 @@ const shopifyClient = (client) => {
 router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => {
   try {
     const client = await Client.findOne({ clientId: req.params.clientId });
-    if (!client?.shopifyAccessToken) return res.status(400).json({ error: 'Shopify not connected' });
+    if (!client?.shopifyAccessToken || !client?.shopDomain) {
+      return res.status(400).json({ error: 'Shopify connection incomplete (Access Token or Domain missing)' });
+    }
 
-    const shop = shopifyClient(client);
+    const shop = await getShopifyClient(req.params.clientId);
     
     // Fetch last 30 days of orders
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
     
-    const [ordersRes, payoutsRes] = await Promise.all([
-      shop.get(`/orders.json?status=any&created_at_min=${thirtyDaysAgo.toISOString()}&limit=250`),
-      shop.get('/shopify_payments/payouts.json?limit=5').catch(() => ({ data: { payouts: [] } }))
-    ]);
+    // Defensively fetch orders and payouts separately to prevent total failure if one fails
+    let orders = [];
+    try {
+      const ordersRes = await shop.get(`/orders.json?status=any&created_at_min=${thirtyDaysAgo.toISOString()}&limit=250`);
+      orders = ordersRes.data?.orders || [];
+    } catch (orderErr) {
+      console.error('[Pulse] Order Fetch Error:', orderErr.message);
+    }
 
-    const orders = ordersRes.data.orders;
-    const revenue = orders.reduce((sum, o) => sum + parseFloat(o.total_price), 0);
+    let payouts = [];
+    try {
+      const payoutsRes = await shop.get('/shopify_payments/payouts.json?limit=5');
+      payouts = payoutsRes.data?.payouts || [];
+    } catch (payoutErr) {
+      // Common if shop doesn't use Shopify Payments or has insufficient scopes
+      console.warn('[Pulse] Payouts Fetch skipped:', payoutErr.message);
+    }
+
+    const revenue = orders.reduce((sum, o) => sum + (parseFloat(o.total_price) || 0), 0);
     const aov = orders.length ? (revenue / orders.length) : 0;
     
     res.json({
@@ -46,11 +54,16 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
         aov,
         pendingFulfillment: orders.filter(o => !o.fulfillment_status).length,
       },
-      payouts: payoutsRes.data.payouts
+      payouts: payouts,
+      shopDomain: client.shopDomain
     });
   } catch (err) {
-    console.error('Pulse Error:', err.response?.data || err.message);
-    res.status(500).json({ success: false, error: err.message });
+    console.error('Pulse Critical Error:', err.message);
+    res.status(500).json({ 
+      success: false, 
+      error: err.message, 
+      details: err.response?.data || null 
+    });
   }
 });
 
@@ -67,7 +80,7 @@ router.get('/:clientId/products', protect, verifyClientAccess, async (req, res) 
       return res.json({ success: true, products: [], message: 'Shopify not connected' });
     }
 
-    const shop = shopifyClient(client);
+    const shop = await getShopifyClient(req.params.clientId);
     
     const response = await shop.get('/products.json?limit=100&fields=id,title,variants,images,status,handle');
     const shopifyProducts = response.data.products;
@@ -84,8 +97,9 @@ router.get('/:clientId/products', protect, verifyClientAccess, async (req, res) 
     res.json({ success: true, products });
   } catch (err) {
     console.error('Shopify products error:', err.response?.data || err.message);
-    // Return empty instead of 500 so UI doesn't break
-    res.json({ success: true, products: [], error: err.message });
+    const shopifyError = err.response?.data?.errors;
+    const isAuthError = shopifyError === '[API] Invalid API key or access token (unrecognized login or wrong password)';
+    res.status(isAuthError ? 401 : 200).json({ success: isAuthError ? false : true, products: [], error: err.message, isShopifyAuthError: isAuthError });
   }
 });
 
@@ -97,7 +111,7 @@ router.put('/:clientId/products/:productId/price', protect, verifyClientAccess, 
   try {
     const client = await Client.findOne({ clientId: req.params.clientId });
     const { variantId, price } = req.body;
-    const shop = shopifyClient(client);
+    const shop = await getShopifyClient(req.params.clientId);
 
     await shop.put(`/variants/${variantId}.json`, {
       variant: { id: variantId, price }
@@ -117,7 +131,7 @@ router.post('/:clientId/discounts', protect, verifyClientAccess, async (req, res
   try {
     const client = await Client.findOne({ clientId: req.params.clientId });
     const { title, type, value, expiryHours = 24, prefix = 'TOPAI' } = req.body;
-    const shop = shopifyClient(client);
+    const shop = await getShopifyClient(req.params.clientId);
 
     const priceRuleRes = await shop.post('/price_rules.json', {
       price_rule: {

@@ -90,7 +90,7 @@ function incrementNodeVisit(nodes, nodeId) {
   });
 }
 
-const { normalizePhone } = require("./phoneUtils");
+const { normalizePhone } = require("./helpers");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // VARIABLE REPLACEMENT UTILITY

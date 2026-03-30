@@ -46,9 +46,13 @@ const ClientSchema = new mongoose.Schema({
   adminPhone: { type: String, default: "" },
   shopDomain: { type: String, default: "" },
   shopifyAccessToken: { type: String, default: "" },
+  shopifyRefreshToken: { type: String, default: "" },
+  shopifyTokenExpiresAt: { type: Date },
+  shopifyScopes: { type: String, default: "" },
   shopifyWebhookSecret: { type: String, default: "" },
   shopifyClientId: { type: String, default: "" },
   shopifyClientSecret: { type: String, default: "" },
+  shopifyApiVersion: { type: String, default: "2024-01" },
   
   // Phase 13 Store & Instagram Integration
   storeType: {

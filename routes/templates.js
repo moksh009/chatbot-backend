@@ -39,7 +39,15 @@ router.get('/sync', protect, async (req, res) => {
             const response = await axios.get(url, {
                 headers: { Authorization: `Bearer ${client.whatsappToken}` }
             });
-            res.json({ success: true, data: response.data.data });
+            const templates = response.data.data || [];
+            
+            // PERSIST to Client model so backend can use them for param detection
+            await Client.updateOne(
+                { clientId },
+                { $set: { syncedMetaTemplates: templates, templatesSyncedAt: new Date() } }
+            );
+
+            res.json({ success: true, data: templates });
         } catch (metaErr) {
             console.error('[Template API] Meta Sync Error:', metaErr.response?.data || metaErr.message);
             res.status(500).json({ success: false, message: 'Failed to sync templates from Meta', details: metaErr.response?.data });

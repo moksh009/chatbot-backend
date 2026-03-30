@@ -11,7 +11,7 @@ const { getAvailableSlots } = require('../../utils/getAvailableSlots');
 const { createEvent } = require('../../utils/googleCalendar');
 const { decryptFlowData, encryptFlowResponse } = require('../../utils/flowEncryption');
 const { runDualBrainEngine } = require('../../utils/dualBrainEngine');
-const { normalizePhone } = require('../../utils/phoneUtils');
+const { normalizePhone } = require('../../utils/helpers');
 
 // --- Helper Functions ---
 /**

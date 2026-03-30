@@ -89,11 +89,19 @@ router.post('/:clientId/:segmentId/leads', protect, async (req, res) => {
 router.delete('/:clientId/:segmentId', protect, async (req, res) => {
   try {
     const { clientId, segmentId } = req.params;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const sharedPool = ['delitech_smarthomes', 'code_clinic_v1'];
+    const isAuthorized = req.user.role === 'SUPER_ADMIN' || 
+                        req.user.clientId === clientId || 
+                        (sharedPool.includes(req.user.clientId) && sharedPool.includes(clientId));
+
+    if (!isAuthorized) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
-    const segment = await Segment.findOneAndDelete({ _id: segmentId, clientId });
+    const segment = await Segment.findOneAndDelete({ 
+      _id: segmentId, 
+      clientId: sharedPool.includes(clientId) ? { $in: sharedPool } : clientId 
+    });
     if (!segment) {
       return res.status(404).json({ success: false, message: 'Segment not found' });
     }

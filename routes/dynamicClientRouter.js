@@ -114,7 +114,11 @@ router.post('/webhook', async (req, res) => {
 router.get('/config', protect, async (req, res) => {
   try {
     const { clientId } = req.params;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const isAuthorized = req.user.role === 'SUPER_ADMIN' || 
+                        req.user.clientId === clientId || 
+                        (req.user.linkedClients && req.user.linkedClients.includes(clientId));
+
+    if (!isAuthorized) {
        return res.status(403).json({ error: 'Unauthorized configuration access.' });
     }
     const client = await Client.findOne({ clientId }).select('-shopifyAccessToken -emailAppPassword');
@@ -128,20 +132,32 @@ router.get('/config', protect, async (req, res) => {
 router.patch('/config', protect, async (req, res) => {
   try {
     const { clientId } = req.params;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const isAuthorized = req.user.role === 'SUPER_ADMIN' || 
+                        req.user.clientId === clientId || 
+                        (req.user.linkedClients && req.user.linkedClients.includes(clientId));
+
+    if (!isAuthorized) {
        return res.status(403).json({ error: 'Unauthorized configuration update.' });
     }
     
     // Whitelist allowable fields for dynamic patching
     const { nicheData, instagramConnected, isGenericBot } = req.body;
     const updates = {};
-    if (nicheData) updates.nicheData = nicheData;
+    
+    // Surgical update for nicheData to prevent overwriting other keys
+    if (nicheData && typeof nicheData === 'object') {
+      Object.keys(nicheData).forEach(key => {
+        updates[`nicheData.${key}`] = nicheData[key];
+      });
+    }
+
     if (instagramConnected !== undefined) updates.instagramConnected = instagramConnected;
     if (isGenericBot !== undefined) updates.isGenericBot = isGenericBot;
 
     const updated = await Client.findOneAndUpdate({ clientId }, { $set: updates }, { new: true });
     res.json({ success: true, client: updated });
   } catch (err) {
+    console.error(`[Config Patch] Error for ${clientId}:`, err);
     res.status(500).json({ error: 'Failed to update configuration.' });
   }
 });
