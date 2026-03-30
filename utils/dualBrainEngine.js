@@ -158,7 +158,7 @@ async function runDualBrainEngine(parsedMessage, client) {
   );
 
   // STEP 3: Save inbound message to DB + emit to dashboard
-  await saveInboundMessage(phone, client.clientId, parsedMessage, io, channel);
+  await saveInboundMessage(phone, client.clientId, parsedMessage, io, channel, convo._id);
 
   // STEP 0.1: Check if client is active
   if (!client.isActive) {
@@ -1027,16 +1027,24 @@ async function handleUniversalEscalate(client, phone, convo) {
 // ─────────────────────────────────────────────────────────────────────────────
 // INBOUND MESSAGE SAVER
 // ─────────────────────────────────────────────────────────────────────────────
-async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = "whatsapp") {
+async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = "whatsapp", conversationId = null) {
   const content =
     parsedMessage.text?.body ||
     parsedMessage.interactive?.button_reply?.title ||
     parsedMessage.interactive?.list_reply?.title ||
     `[${parsedMessage.type || 'unknown'}]`;
   try {
+    // If conversationId not provided, try to find it
+    let finalConvoId = conversationId;
+    if (!finalConvoId) {
+      const c = await Conversation.findOne({ phone, clientId });
+      finalConvoId = c?._id;
+    }
+
     // Message schema normalized via createMessage
     const msg = await createMessage({
       clientId,
+      conversationId: finalConvoId, // CRITICAL FIX
       phone,
       direction: 'inbound',
       type:      parsedMessage.type || 'text',
@@ -1065,8 +1073,11 @@ async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = 
 
 async function saveOutboundMessage(phone, clientId, type, content, messageId, channel = "whatsapp", metadata = {}) {
   try {
+    const convo = await Conversation.findOne({ phone, clientId });
+    
     const msg = await createMessage({
       clientId,
+      conversationId: convo?._id, // CRITICAL FIX
       phone,
       direction: 'outbound',
       type,

@@ -89,6 +89,13 @@ router.post('/:clientId/:segmentId/leads', protect, async (req, res) => {
 router.delete('/:clientId/:segmentId', protect, async (req, res) => {
   try {
     const { clientId, segmentId } = req.params;
+    
+    // Validate segmentId
+    const mongoose = require('mongoose');
+    if (!mongoose.Types.ObjectId.isValid(segmentId)) {
+      return res.status(400).json({ success: false, message: 'Invalid segment ID format' });
+    }
+
     const sharedPool = ['delitech_smarthomes', 'code_clinic_v1'];
     const isAuthorized = req.user.role === 'SUPER_ADMIN' || 
                         req.user.clientId === clientId || 
@@ -102,6 +109,7 @@ router.delete('/:clientId/:segmentId', protect, async (req, res) => {
       _id: segmentId, 
       clientId: sharedPool.includes(clientId) ? { $in: sharedPool } : clientId 
     });
+
     if (!segment) {
       return res.status(404).json({ success: false, message: 'Segment not found' });
     }

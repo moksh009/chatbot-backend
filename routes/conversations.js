@@ -140,6 +140,7 @@ router.post('/:id/messages', protect, async (req, res) => {
       await WhatsApp.sendImage(client, conversation.phone, mediaUrl, content);
       newMessage = await createMessage({
         clientId: conversation.clientId,
+        conversationId: conversation._id, // CRITICAL FIX
         phone: conversation.phone,
         direction: 'outbound',
         type: 'image',
@@ -150,6 +151,7 @@ router.post('/:id/messages', protect, async (req, res) => {
       await WhatsApp.sendText(client, conversation.phone, content);
       newMessage = await createMessage({
         clientId: conversation.clientId,
+        conversationId: conversation._id, // CRITICAL FIX
         phone: conversation.phone,
         direction: 'outbound',
         type: 'text',
@@ -334,6 +336,7 @@ router.post('/:id/send-template', protect, async (req, res) => {
     // Save outbound message
     const newMessage = await createMessage({
       clientId: conversation.clientId,
+      conversationId: conversation._id, // CRITICAL FIX
       phone: conversation.phone,
       direction: 'outbound',
       type: 'template',

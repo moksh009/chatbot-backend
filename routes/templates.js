@@ -50,7 +50,8 @@ router.get('/sync', protect, async (req, res) => {
             res.json({ success: true, data: templates });
         } catch (metaErr) {
             console.error('[Template API] Meta Sync Error:', metaErr.response?.data || metaErr.message);
-            res.status(500).json({ success: false, message: 'Failed to sync templates from Meta', details: metaErr.response?.data });
+            // Ensure we NEVER return 401 here as it would trigger a dashboard logout
+            res.status(400).json({ success: false, message: 'Failed to sync templates from Meta', details: metaErr.response?.data });
         }
 
     } catch (error) {

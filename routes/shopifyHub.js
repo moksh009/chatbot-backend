@@ -96,10 +96,14 @@ router.get('/:clientId/products', protect, verifyClientAccess, async (req, res) 
 
     res.json({ success: true, products });
   } catch (err) {
-    console.error('Shopify products error:', err.response?.data || err.message);
     const shopifyError = err.response?.data?.errors;
-    const isAuthError = shopifyError === '[API] Invalid API key or access token (unrecognized login or wrong password)';
-    res.status(isAuthError ? 401 : 200).json({ success: isAuthError ? false : true, products: [], error: err.message, isShopifyAuthError: isAuthError });
+    const isAuthError = shopifyError === '[API] Invalid API key or access token (unrecognized login or wrong password)' || err.response?.status === 401;
+    res.status(isAuthError ? 400 : 500).json({ 
+      success: false, 
+      products: [], 
+      error: err.message, 
+      isShopifyAuthError: isAuthError 
+    });
   }
 });
 

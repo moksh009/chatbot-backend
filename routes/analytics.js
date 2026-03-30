@@ -64,6 +64,30 @@ router.get('/notifications', protect, async (req, res) => {
   }
 });
 
+// GET /api/analytics/bot-health
+// @desc    Get real-time health status of the bot (mocked/calculated)
+// @access  Private
+router.get('/bot-health', protect, async (req, res) => {
+  try {
+    const clientId = req.user.clientId;
+    const client = await Client.findOne({ clientId });
+    
+    // In a real scenario, we might check WhatsApp Cloud API health or recent message success rate
+    // For now, we return a healthy status if the client exists and is active
+    res.json({
+      success: true,
+      status: client?.isActive ? 'operational' : 'degraded',
+      latency: Math.floor(Math.random() * (150 - 20 + 1)) + 20, // Mock latency 20-150ms
+      protocol: 'WhatsApp Cloud 2.1',
+      lastPulse: new Date(),
+      neuralSync: true
+    });
+  } catch (error) {
+    console.error('Bot Health Error:', error);
+    res.status(500).json({ success: false, message: 'Server Error' });
+  }
+});
+
 router.get('/realtime', protect, async (req, res) => {
   try {
     let clientId = req.user.clientId;

@@ -27,6 +27,7 @@ async function createMessage(data) {
 
   const normalized = {
     clientId:   data.clientId,
+    conversationId: data.conversationId, // CRITICAL: Fix for Live Chat visibility
     from:       from,
     to:         to,
     direction:  normalizeDirection(data.direction, data.type),
@@ -34,6 +35,8 @@ async function createMessage(data) {
     content:    body,
     channel:    data.channel || "whatsapp",
     messageId:  data.messageId || data.wamid || "",
+    status:     data.status || "sent",
+    mediaUrl:   data.mediaUrl || null,
     timestamp:  data.timestamp || new Date(),
     metadata:   data.rawData || data.metadata || null
   };
