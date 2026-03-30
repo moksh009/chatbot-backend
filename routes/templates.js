@@ -86,13 +86,16 @@ router.get('/:clientId/stats', protect, async (req, res) => {
         
         const revenue = stats.length > 0 ? stats[0].totalRevenue : 0;
 
+        // Fetch the list of synced templates from the client document for the count
+        const client = await Client.findOne({ clientId });
+        
         res.json({
             success: true,
             globalReadRate: readRate || 32, // Weighted fallback
             globalRevenue: revenue || 0,
             deliveryRate: deliveryRate || 98,
             totalSent,
-            activeTemplates: (req.clientConfig?.syncedMetaTemplates || []).length,
+            activeTemplates: (client?.syncedMetaTemplates || []).length,
             attribution: {
                 direct: Math.round(revenue * 0.45), // 45% estimated from templates
                 organic: Math.round(revenue * 0.55),
