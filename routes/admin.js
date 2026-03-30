@@ -462,7 +462,8 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
   try {
     const {
       clientId, businessName, businessType, tier, phoneNumberId, 
-      whatsappToken, verifyToken: webhookVerifyToken, wabaId
+      whatsappToken, verifyToken: webhookVerifyToken, wabaId,
+      adminEmail // Admin can specify client's primary email
     } = req.body;
 
     // 1. Mandatory Validation
@@ -494,6 +495,22 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
     });
 
     const savedClient = await newClient.save();
+
+    // ── AUTOMATED USER PROVISIONING ──
+    const crypto = require('crypto');
+    const generatedPassword = crypto.randomBytes(4).toString('hex'); // 8 chars
+    const loginEmail = adminEmail || `${clientId.trim().toLowerCase()}@chatbot.com`;
+
+    const newUser = new User({
+      name: businessName,
+      email: loginEmail,
+      password: generatedPassword,
+      role: 'CLIENT_ADMIN',
+      clientId: clientId.trim(),
+      business_type: businessType || 'ecommerce'
+    });
+    
+    await newUser.save();
 
     // ── PHASE 10: Inject pre-built flow template if available ──────────────
     const flowTemplates = require('../data/flowTemplates');
@@ -530,12 +547,48 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
       log.success(`Pre-built flow template injected for: ${clientId} (type: ${businessType || niche})`);
     }
 
-    log.success(`New client provisioned: ${clientId} | Plan: ${plan || 'CX Agent (V1)'}`);
-    res.status(201).json({ ...savedClient.toObject(), flowReady: !!template });
+    log.success(`New client provisioned: ${clientId} | Plan: ${tier || 'Growth'}`);
+    res.status(201).json({ 
+      ...savedClient.toObject(), 
+      flowReady: !!template,
+      credentials: {
+        email: loginEmail,
+        password: generatedPassword
+      }
+    });
 
   } catch (err) {
     log.error('Error creating client', { error: err.message });
     res.status(500).json({ message: 'Server error creating client', error: err.message });
+  }
+});
+});
+
+// --- RESET CLIENT PASSWORD ---
+router.put('/clients/:clientId/reset-password', protect, isSuperAdmin, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const crypto = require('crypto');
+    const newPassword = crypto.randomBytes(4).toString('hex');
+
+    const user = await User.findOne({ clientId, role: 'CLIENT_ADMIN' });
+    if (!user) return res.status(404).json({ message: 'Client Admin user not found' });
+
+    user.password = newPassword;
+    await user.save();
+
+    log.success(`Password reset for client: ${clientId}`);
+    res.json({
+      success: true,
+      message: 'Password reset successful',
+      credentials: {
+        email: user.email,
+        password: newPassword
+      }
+    });
+  } catch (err) {
+    log.error('Password reset failed', { error: err.message });
+    res.status(500).json({ message: 'Failed to reset password' });
   }
 });
 

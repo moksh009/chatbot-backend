@@ -60,6 +60,15 @@ const ClientSchema = new mongoose.Schema({
   shopifyConnectionStatus: { type: String, enum: ['connected', 'error', 'disconnected'], default: 'connected' },
   lastShopifyError: { type: String, default: "" },
   
+  // Phase 14 Multi-Gateway Support
+  activePaymentGateway: { 
+    type: String, 
+    enum: ['cashfree', 'razorpay', 'none'], 
+    default: 'none' 
+  },
+  cashfreeAppId: { type: String, default: "" },
+  cashfreeSecretKey: { type: String, default: "" },
+  
   // Phase 13 Store & Instagram Integration
   storeType: {
     type: String,

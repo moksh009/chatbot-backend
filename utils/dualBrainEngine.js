@@ -287,6 +287,22 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
   });
 
   if (!matchingEdge) {
+    // Gap Fix: If a button was clicked but no edge matches, don't just fail.
+    // Use AI to recover the conversation based on the button intent.
+    if (incomingTrigger.buttonId || incomingTrigger.buttonText) {
+      console.log(`[DualBrain] Graph: No edge match for button "${incomingTrigger.buttonId}". Falling back to AI recovery.`);
+      const buttonLabel = incomingTrigger.buttonText || incomingTrigger.buttonId;
+      const recoveryPrompt = `The user clicked a button labeled "${buttonLabel}" in the previous message, but the automated flow is currently being updated. Please respond to this intent naturally and guide them back to the main goal.`;
+      
+      // We pass this as a virtual message to the AI fallback
+      const virtualMessage = {
+        ...parsedMessage,
+        text: { body: `(User clicked: ${buttonLabel}) ${recoveryPrompt}` }
+      };
+      await runAIFallback(virtualMessage, client, phone, lead, channel);
+      return true;
+    }
+
     // Fallback: Check if the user's text matches a button title in the current node
     const currentNode = flowNodes.find(n => n.id === currentStepId);
     if (currentNode?.type === 'interactive') {

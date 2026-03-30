@@ -50,12 +50,34 @@ router.get('/sync', protect, async (req, res) => {
             res.json({ success: true, data: templates });
         } catch (metaErr) {
             console.error('[Template API] Meta Sync Error:', metaErr.response?.data || metaErr.message);
-            // Ensure we NEVER return 401 here as it would trigger a dashboard logout
             res.status(400).json({ success: false, message: 'Failed to sync templates from Meta', details: metaErr.response?.data });
         }
-
     } catch (error) {
         console.error('[Template API] Sync Error:', error.message);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// 1b. Fetch Templates from Local DB Cache (Lightweight)
+router.get('/list', protect, async (req, res) => {
+    try {
+        const { clientId } = req.query;
+        if (!clientId) return res.status(400).json({ success: false, message: 'clientId is required' });
+
+        const user = await User.findById(req.user.id);
+        if (user.role !== 'SUPER_ADMIN' && user.clientId !== clientId) {
+           return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
+
+        const client = await Client.findOne({ clientId }, 'syncedMetaTemplates templatesSyncedAt');
+        if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+        res.json({ 
+          success: true, 
+          data: client.syncedMetaTemplates || [],
+          syncedAt: client.templatesSyncedAt
+        });
+    } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
 });
