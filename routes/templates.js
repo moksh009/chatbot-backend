@@ -54,6 +54,9 @@ router.get('/sync', protect, async (req, res) => {
             res.status(400).json({ success: false, message: 'Failed to sync templates from Meta', details: metaErr.response?.data });
         }
 
+    } catch (error) {
+        console.error('[Template API] Sync Error:', error.message);
+        res.status(500).json({ success: false, message: error.message });
     }
 });
 
