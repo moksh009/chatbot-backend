@@ -3,6 +3,7 @@ const Client = require('../models/Client');
 const DailyStat = require('../models/DailyStat');
 const Conversation = require('../models/Conversation');
 const { sendAbandonedCartEmail } = require('../utils/emailService');
+const { trackEcommerceEvent } = require('../utils/analyticsHelper');
 const log = require('../utils/logger')('AbandonedCart');
 const { generateText } = require('../utils/gemini');
 const WhatsApp = require('../utils/whatsapp');
@@ -103,6 +104,7 @@ const scheduleAbandonedCartCron = () => {
                     const msg = `Hi ${lead.name || 'there'}! 👋 We noticed you checking out some amazing items. Need any help? We're here! 😊`;
                     await WhatsApp.sendText(client, lead.phoneNumber, msg);
                     await recordNudge(lead, msg);
+                    await trackEcommerceEvent(client.clientId, { browseAbandonedCount: 1 });
                     await AdLead.findByIdAndUpdate(lead._id, { 
                         recoveryStep: 0, 
                         $push: { activityLog: { action: 'automation_nudge', details: 'browse_abandon', timestamp: new Date() } }
@@ -133,6 +135,7 @@ const scheduleAbandonedCartCron = () => {
                         recoveryStartedAt: new Date(),
                         $push: { activityLog: { action: 'automation_nudge', details: 'cart_step_1', timestamp: new Date() } }
                     });
+                    await trackEcommerceEvent(client.clientId, { abandonedCartSent: 1, cartRecoveryMessagesSent: 1 });
                 }
 
                 // --- Step 2: Second Nudge (Dynamic Delay, Image) ---
@@ -157,6 +160,7 @@ const scheduleAbandonedCartCron = () => {
                         recoveryStartedAt: new Date(),
                         $push: { activityLog: { action: 'automation_nudge', details: 'cart_step_2', timestamp: new Date() } }
                     });
+                    await trackEcommerceEvent(client.clientId, { cartRecoveryMessagesSent: 1 });
                 }
 
                 // --- Step 3: Final Nudge (Dynamic Delay, Image) ---
@@ -180,6 +184,7 @@ const scheduleAbandonedCartCron = () => {
                         recoveryStep: 3,
                         $push: { activityLog: { action: 'automation_nudge', details: 'cart_step_3', timestamp: new Date() } }
                     });
+                    await trackEcommerceEvent(client.clientId, { cartRecoveryMessagesSent: 1 });
                 }
 
                 // --- Step 4: Post-Purchase Cross-sell (1 hour after order) ---
@@ -203,6 +208,7 @@ const scheduleAbandonedCartCron = () => {
 
                     await WhatsApp.sendText(client, lead.phoneNumber, upsellMsg);
                     await recordNudge(lead, upsellMsg);
+                    await trackEcommerceEvent(client.clientId, { upsellSentCount: 1 });
                     await AdLead.findByIdAndUpdate(lead._id, { 
                         recoveryStep: 11,
                         $push: { activityLog: { action: 'automation_nudge', details: 'upsell_1', timestamp: new Date() } }

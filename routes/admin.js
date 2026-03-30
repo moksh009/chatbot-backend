@@ -562,7 +562,6 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
     res.status(500).json({ message: 'Server error creating client', error: err.message });
   }
 });
-});
 
 // --- RESET CLIENT PASSWORD ---
 router.put('/clients/:clientId/reset-password', protect, isSuperAdmin, async (req, res) => {

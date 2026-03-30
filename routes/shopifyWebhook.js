@@ -194,6 +194,11 @@ async function handleOrder(client, data) {
     if (isRecovered) {
         statsUpdate.cartsRecovered = 1;
         statsUpdate.cartRevenueRecovered = parseFloat(data.total_price);
+        
+        // Granular Step Attribution
+        if (lead.recoveryStep === 1) statsUpdate.recoveredViaStep1 = 1;
+        else if (lead.recoveryStep === 2) statsUpdate.recoveredViaStep2 = 1;
+        else if (lead.recoveryStep === 3) statsUpdate.recoveredViaStep3 = 1;
     }
     await trackEcommerceEvent(client.clientId, statsUpdate);
 

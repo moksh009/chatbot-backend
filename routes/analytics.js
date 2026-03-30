@@ -929,6 +929,14 @@ router.get('/', protect, async (req, res) => {
       const checkoutCount = checkoutEvents.find(c => c._id === date)?.count || 0;
       const abandonedCartSent = dayReminder?.abandonedCartSent || 0;
       const abandonedCartClicks = dayReminder?.abandonedCartClicks || 0;
+      const recoveredViaStep1 = dayReminder?.recoveredViaStep1 || 0;
+      const recoveredViaStep2 = dayReminder?.recoveredViaStep2 || 0;
+      const recoveredViaStep3 = dayReminder?.recoveredViaStep3 || 0;
+      const codNudgesSent = dayReminder?.codNudgesSent || 0;
+      const rtoCostSaved = dayReminder?.rtoCostSaved || 0;
+      const codConvertedRevenue = dayReminder?.codConvertedRevenue || 0;
+      const codConvertedCount = dayReminder?.codConvertedCount || 0;
+      const cartRevenueRecovered = dayReminder?.cartRevenueRecovered || 0;
 
       const dayAppointment = appointments.find(c => c._id === date);
       const apptRevenue = dayAppointment?.revenue || 0;
@@ -952,7 +960,15 @@ router.get('/', protect, async (req, res) => {
         linkClicks: linkClickCount,
         checkouts: checkoutCount,
         abandonedCartSent,
-        abandonedCartClicks
+        abandonedCartClicks,
+        recoveredViaStep1,
+        recoveredViaStep2,
+        recoveredViaStep3,
+        codNudgesSent,
+        rtoCostSaved,
+        codConvertedRevenue,
+        codConvertedCount,
+        cartRevenueRecovered
       };
     });
 
@@ -1057,8 +1073,12 @@ router.get("/:clientId/roi", protect, async (req, res) => {
           _id: null,
           cartRevenueRecovered: { $sum: "$cartRevenueRecovered" },
           cartsRecovered: { $sum: "$cartsRecovered" },
+          recoveredViaStep1: { $sum: "$recoveredViaStep1" },
+          recoveredViaStep2: { $sum: "$recoveredViaStep2" },
+          recoveredViaStep3: { $sum: "$recoveredViaStep3" },
           codConvertedCount: { $sum: "$codConvertedCount" },
           codConvertedRevenue: { $sum: "$codConvertedRevenue" },
+          codNudgesSent: { $sum: "$codNudgesSent" },
           rtoCostSaved: { $sum: "$rtoCostSaved" },
           reviewsCollected: { $sum: "$reviewsCollected" },
           reviewsPositive: { $sum: "$reviewsPositive" },
@@ -1081,9 +1101,13 @@ router.get("/:clientId/roi", protect, async (req, res) => {
       period,
       totalRecovered,
       cartsRecovered: data.cartsRecovered || 0,
+      recoveredViaStep1: data.recoveredViaStep1 || 0,
+      recoveredViaStep2: data.recoveredViaStep2 || 0,
+      recoveredViaStep3: data.recoveredViaStep3 || 0,
       cartRevenue: data.cartRevenueRecovered || 0,
       codConverted: data.codConvertedCount || 0,
       codRevenue: data.codConvertedRevenue || 0,
+      codNudgesSent: data.codNudgesSent || 0,
       rtoCostSaved: data.rtoCostSaved || 0,
       reviewsCollected: data.reviewsCollected || 0,
       reviewsPositive: data.reviewsPositive || 0,

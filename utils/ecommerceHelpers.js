@@ -1,6 +1,7 @@
 const axios = require('axios');
 const Order = require('../models/Order');
 const { sendCODToPrepaidEmail } = require('./emailService');
+const { trackEcommerceEvent } = require('./analyticsHelper');
 const log = require('./logger')('EcommerceHelpers');
 
 /**
@@ -139,6 +140,7 @@ async function sendCODToPrepaidNudge(order, client, phone) {
         
         log.success(`COD WhatsApp nudge sent | order: ${order.orderId} | phone: ${phone}`);
         await Order.findByIdAndUpdate(order._id, { codNudgeSentAt: new Date() });
+        await trackEcommerceEvent(client.clientId, { codNudgesSent: 1 });
 
         // 📧 Also send COD nudge via email if available
         const customerEmail = order.customerEmail || order.email;
