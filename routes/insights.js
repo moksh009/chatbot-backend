@@ -35,18 +35,17 @@ router.post('/generate/:clientId', protect, async (req, res) => {
         { type: 'success', message: `${stats.length > 0 ? stats[0].messagesReceived || 0 : 0} messages received this week. Keep engaging your customers!`, actionUrl: '/analytics', estimatedValue: 0, generatedAt: new Date() },
         { type: 'warning', message: 'Run a campaign to re-engage inactive leads and boost conversions.', actionUrl: '/campaigns', estimatedValue: 500, generatedAt: new Date() }
       ];
+      if (!client.businessName) client.businessName = clientId;
       client.insights = mockInsights;
       await client.save();
       return res.json({ success: true, insights: mockInsights });
     }
 
     const model = getGeminiModel(apiKey);
-
-    // Construct prompt
     const prompt = `
     Analyze the following 7-day stats for a business on WhatsApp:
     ${JSON.stringify(stats)}
-    Generate exactly 3 extremely short, actionable "Smart Insights" (max 2 sentences each).
+    Generate exactly 3 extremely short, actionable "Smart Insights" (max 2 sentences each). 
     Return a valid JSON array of objects with keys: { "type": "info"|"warning"|"success", "message": "string", "actionUrl": "/campaigns" | "/leads" | "/analytics", "estimatedValue": number }
     No markdown blocks, just raw JSON.
     `;
@@ -54,14 +53,30 @@ router.post('/generate/:clientId', protect, async (req, res) => {
     const result = await model.generateContent(prompt);
     let outputText = result.response.text().trim();
     
-    // Clean markdown blocks if present
-    outputText = outputText.replace(/```(?:json)?/g, '').trim();
+    // Improved JSON extraction: find the first '[' and last ']'
+    const jsonMatch = outputText.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) {
+      throw new Error("Could not find JSON array in AI response");
+    }
+    outputText = jsonMatch[0];
 
     const newInsights = JSON.parse(outputText);
+    if (!Array.isArray(newInsights)) {
+      throw new Error("AI response is not a JSON array");
+    }
     
-    // Append generated date
-    const finalInsights = newInsights.map(i => ({ ...i, generatedAt: new Date() }));
+    // Validate and Clean: Filter out invalid objects and map to schema
+    const finalInsights = newInsights
+      .filter(i => i && typeof i === 'object' && i.message)
+      .map(i => ({ 
+        type: ['info', 'warning', 'success'].includes(i.type) ? i.type : 'info',
+        message: String(i.message).slice(0, 500),
+        actionUrl: String(i.actionUrl || '/analytics'),
+        estimatedValue: Number(i.estimatedValue) || 0,
+        generatedAt: new Date()
+      }));
     
+    if (!client.businessName) client.businessName = client.clientId || clientId;
     client.insights = finalInsights;
     await client.save();
     

@@ -2,7 +2,11 @@ const mongoose = require('mongoose');
 
 const ClientSchema = new mongoose.Schema({
   clientId: { type: String, required: true, unique: true, trim: true },
-  businessName: { type: String, required: true },
+  businessName: { 
+    type: String, 
+    required: true,
+    default: function() { return this.clientId; } 
+  },
   name: { type: String }, // Legacy alias for businessName
   isActive: { type: Boolean, default: true },
   tier: { 
@@ -151,7 +155,7 @@ const ClientSchema = new mongoose.Schema({
     note: String
   }],
   insights: [{
-    type: String,
+    type: { type: String },
     message: String,
     actionUrl: String,
     estimatedValue: Number,

@@ -80,6 +80,9 @@ router.post('/:clientId/sync-products', protect, verifyClientAccess, async (req,
 
     res.json({ success: true, count: products.length });
   } catch (err) {
+    if (err.response?.status === 401 || err.message?.includes('401')) {
+      return res.status(400).json({ success: false, message: 'Shopify token invalid or expired. Please reconnect.', isShopifyAuthError: true });
+    }
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -123,6 +126,9 @@ router.post('/:clientId/sync-orders', protect, verifyClientAccess, async (req, r
 
     res.json({ success: true, count: orders.length });
   } catch (err) {
+    if (err.response?.status === 401 || err.message?.includes('401')) {
+      return res.status(400).json({ success: false, message: 'Shopify token invalid or expired. Please reconnect.', isShopifyAuthError: true });
+    }
     res.status(500).json({ success: false, error: err.message });
   }
 });

@@ -16,22 +16,23 @@ async function getShopifyClient(clientId) {
     // 1. Check if token needs refresh
     // We refresh if token is within 5 minutes of expiry OR if it's missing but we have credentials
     const fiveMinutes = 5 * 60 * 1000;
-    const isExpired = client.shopifyTokenExpiresAt && (new Date(client.shopifyTokenExpiresAt).getTime() - Date.now()) < fiveMinutes;
+    const isNextToExpiry = client.shopifyTokenExpiresAt && (new Date(client.shopifyTokenExpiresAt).getTime() - Date.now()) < fiveMinutes;
+    const hasCredentials = client.shopifyClientId && client.shopifyClientSecret;
 
-    if (isExpired || (!token && client.shopifyClientId && client.shopifyClientSecret)) {
+    if (isNextToExpiry || (!token && hasCredentials)) {
         console.log(`[ShopifyRotation] Renewer triggered for ${clientId}...`);
         try {
             let res;
             if (client.shopifyRefreshToken) {
-                // Scenario A: Standard OAuth Refresh Hub
+                // Scenario A: Standard OAuth Refresh Hub (Public/Custom with rotation)
                 res = await axios.post(`https://${domain}/admin/oauth/access_token`, {
                     client_id: client.shopifyClientId,
                     client_secret: client.shopifyClientSecret,
                     grant_type: 'refresh_token',
                     refresh_token: client.shopifyRefreshToken
                 });
-            } else if (client.shopifyClientId && client.shopifyClientSecret) {
-                // Scenario B: Client Credentials Re-Auth (for Custom Apps or when Refresh Token is missing)
+            } else if (hasCredentials) {
+                // Scenario B: Client Credentials Re-Auth (Custom Apps with stable credentials)
                 res = await axios.post(`https://${domain}/admin/oauth/access_token`, {
                     client_id: client.shopifyClientId,
                     client_secret: client.shopifyClientSecret,
@@ -46,7 +47,6 @@ async function getShopifyClient(clientId) {
                 if (res.data.expires_in) {
                     client.shopifyTokenExpiresAt = new Date(Date.now() + (res.data.expires_in * 1000));
                 } else {
-                    // If no expiry returned, we assume it's a permanent token for internal/private apps
                     client.shopifyTokenExpiresAt = null; 
                 }
                 await client.save();
@@ -54,7 +54,7 @@ async function getShopifyClient(clientId) {
             }
         } catch (err) {
             console.error(`❌ [ShopifyRotation] Renewal failed for ${clientId}:`, err.response?.data || err.message);
-            // If it's a 401/403, we should probably clear the token, but for now we fallback to existing
+            // If it's a 401/403 and we have credentials, we might need a full reconnect, but for now we fallback
         }
     }
 

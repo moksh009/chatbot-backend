@@ -25,13 +25,24 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
     
-    // Defensively fetch orders and payouts separately to prevent total failure if one fails
-    let orders = [];
-    try {
-      const ordersRes = await shop.get(`/orders.json?status=any&created_at_min=${thirtyDaysAgo.toISOString()}&limit=250`);
-      orders = ordersRes.data?.orders || [];
-    } catch (orderErr) {
-      console.error('[Pulse] Order Fetch Error:', orderErr.message);
+    // FETCH ORDERS
+    const ordersRes = await shop.get(`/orders.json?status=any&created_at_min=${thirtyDaysAgo.toISOString()}&limit=250`);
+    const orders = ordersRes.data?.orders || [];
+
+    // AUTOMATIC SYNC: If no orders found in our DB but Shopify has some, trigger background sync
+    const internalOrderCount = await Order.countDocuments({ clientId: req.params.clientId });
+    if (internalOrderCount === 0 && orders.length > 0) {
+        console.log(`[ShopifyHub] Auto-sync triggered for ${req.params.clientId} (0 local orders found)`);
+        // Use axios to hit our own internal sync routes to ensure logic parity
+        const protocol = req.secure ? 'https' : 'http';
+        const host = req.get('host');
+        axios.post(`${protocol}://${host}/api/shopify/${req.params.clientId}/sync-orders`, {}, {
+            headers: { Authorization: req.headers.authorization }
+        }).catch(e => console.error('[AutoSync] Order sync failed:', e.message));
+        
+        axios.post(`${protocol}://${host}/api/shopify/${req.params.clientId}/sync-products`, {}, {
+            headers: { Authorization: req.headers.authorization }
+        }).catch(e => console.error('[AutoSync] Product sync failed:', e.message));
     }
 
     let payouts = [];
@@ -58,11 +69,14 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
       shopDomain: client.shopDomain
     });
   } catch (err) {
+    const shopifyError = err.response?.data?.errors;
+    const isAuthError = shopifyError === '[API] Invalid API key or access token (unrecognized login or wrong password)' || err.response?.status === 401;
     console.error('Pulse Critical Error:', err.message);
-    res.status(500).json({ 
+    res.status(isAuthError ? 400 : 500).json({ 
       success: false, 
       error: err.message, 
-      details: err.response?.data || null 
+      details: err.response?.data || null,
+      isShopifyAuthError: isAuthError
     });
   }
 });
@@ -197,12 +211,22 @@ router.patch('/:clientId/settings', protect, verifyClientAccess, async (req, res
     
     const { automationFlows, nicheData } = req.body;
     
-    if (automationFlows) client.automationFlows = automationFlows;
-    if (nicheData) client.nicheData = { ...client.nicheData, ...nicheData };
+    if (automationFlows) {
+        client.automationFlows = automationFlows;
+        client.markModified('automationFlows');
+    }
+    if (nicheData) {
+        client.nicheData = { ...client.nicheData, ...nicheData };
+        client.markModified('nicheData');
+    }
     
+    if (!client.businessName) {
+        client.businessName = client.clientId || req.params.clientId;
+    }
     await client.save();
     res.json({ success: true, message: 'Settings updated successfully' });
   } catch (err) {
+    console.error('Settings Update Error:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
