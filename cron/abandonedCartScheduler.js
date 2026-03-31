@@ -123,11 +123,11 @@ const scheduleAbandonedCartCron = () => {
 
                 for (const lead of batch1) {
                     if (await shouldSkipLead(lead)) continue;
-                    const msg = niche.abandonedMsg1?.replace(/{name}/g, lead.name || 'there') || `Hi! 👋 We noticed you left something in your cart. Check it out now!`;
+                    const msg = (niche.abandonedMsg15m || niche.abandonedMsg1)?.replace(/{name}/g, lead.name || 'there') || `Hi! 👋 We noticed you left something in your cart. Check it out now!`;
                     
                     await sendRichNudge(client, lead, msg, {
                         includeImage: niche.abandonedIncludeImage1,
-                        buttons: [niche.abandonedBtn1_1, niche.abandonedBtn1_2]
+                        buttons: [niche.abandonedMsg15m_btn1, niche.abandonedMsg15m_btn2]
                     });
 
                     await AdLead.findByIdAndUpdate(lead._id, { 
@@ -149,10 +149,11 @@ const scheduleAbandonedCartCron = () => {
 
                 for (const lead of batch2) {
                     if (await shouldSkipLead(lead)) continue;
-                    const msg = niche.abandonedMsg2?.replace(/{name}/g, lead.name || 'there') || `Hey! Your items are still waiting for you. 😊`;
+                    const msg = (niche.abandonedMsg2h || niche.abandonedMsg2)?.replace(/{name}/g, lead.name || 'there') || `Hey! Your items are still waiting for you. 😊`;
                     
                     await sendRichNudge(client, lead, msg, {
-                        includeImage: niche.abandonedIncludeImage2
+                        includeImage: niche.abandonedIncludeImage2,
+                        buttons: [niche.abandonedMsg2h_btn1, niche.abandonedMsg2h_btn2]
                     });
 
                     await AdLead.findByIdAndUpdate(lead._id, { 
@@ -174,10 +175,11 @@ const scheduleAbandonedCartCron = () => {
 
                 for (const lead of batch3) {
                     if (await shouldSkipLead(lead)) continue;
-                    const msg = niche.abandonedMsg3?.replace(/{name}/g, lead.name || 'there') || `Final call! Your cart is about to expire. 🛒`;
+                    const msg = (niche.abandonedMsg24h || niche.abandonedMsg3)?.replace(/{name}/g, lead.name || 'there') || `Final call! Your cart is about to expire. 🛒`;
                     
                     await sendRichNudge(client, lead, msg, {
-                        includeImage: niche.abandonedIncludeImage3
+                        includeImage: niche.abandonedIncludeImage3,
+                        buttons: [niche.abandonedMsg24h_btn1, niche.abandonedMsg24h_btn2]
                     });
 
                     await AdLead.findByIdAndUpdate(lead._id, { 

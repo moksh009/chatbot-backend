@@ -102,19 +102,17 @@ async function sendCODToPrepaidNudge(order, client, phone) {
     const phoneId = client.phoneNumberId || client.config?.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
 
     try {
-        const buttons = [
-            { 
-                type: "reply", 
-                reply: { id: `cod_pay_${order._id}`, title: "💳 Pay via UPI Now" }
-            },
-            { 
-                type: "reply", 
-                reply: { id: `cod_keep_${order._id}`, title: "Keep COD" }
-            }
-        ];
+        const nd = client.nicheData || {};
+        const bodyText = (nd.codMsg || "Hi {name}, convert your COD order for {item} to Prepaid and get an extra discount!")
+            .replace(/{name}/g, order.customerName || order.name || 'Customer')
+            .replace(/{order_id}/g, order.orderNumber || order.orderId)
+            .replace(/{total}/g, order.totalPrice)
+            .replace(/{item}/g, itemName);
 
-        // If we successfully generated a payment link, we can use a URL button if preferred, 
-        // but keeping current button flow for consistency in tracking.
+        const buttons = [
+            { type: "reply", reply: { id: `cod_pay_${order._id}`, title: (nd.codMsg_btn1 || "💳 Pay via UPI").substring(0, 20) } },
+            { type: "reply", reply: { id: `cod_keep_${order._id}`, title: (nd.codMsg_btn2 || "Keep COD").substring(0, 20) } }
+        ];
         
         await axios.post(
             `https://graph.facebook.com/v18.0/${phoneId}/messages`,
@@ -123,16 +121,11 @@ async function sendCODToPrepaidNudge(order, client, phone) {
                 to: phone,
                 type: 'interactive',
                 interactive: {
-                    type: "button",
-                    header: {
-                        type: "text",
-                        text: "💳 Save on Your Order!"
-                    },
-                    body: {
-                        text: `Hi! Your order ${order.orderId} for *${itemName}* (₹${order.totalPrice}) is confirmed as COD.\n\n🎁 Pay via UPI right now and get:\n✅ ₹50 cashback\n✅ Priority shipping\n\nOffer expires in 2 hours!`
-                    },
+                    type: 'button',
+                    header: { type: 'text', text: "💳 Save on Your Order!" },
+                    body: { text: bodyText },
                     footer: { text: client.name || "Smart Store" },
-                    action: { buttons }
+                    action: { buttons: buttons }
                 }
             },
             { headers: { Authorization: `Bearer ${token}` } }

@@ -169,15 +169,29 @@ async function handleOrder(client, data) {
         
         try {
             // 1. Create Draft Order for Payment Link
-            const draftOrder = await createDraftOrder(client, data, niche.cod_discount_code || 'PREPAID5');
+            const draftOrder = await createDraftOrder(client, data, niche.cod_discount_code || niche.globalDiscountCode || 'PREPAID5');
             
             if (draftOrder && draftOrder.invoice_url) {
-                const msg = (niche.cod_nudge_msg || `Hi {name}! 🎁 Want to save more on your order? Pay online now and get an extra discount! Click here: {link}`)
+                const bodyMsg = (niche.codMsg || niche.cod_nudge_msg || `Hi {name}! 🎁 Want to save more on your order? Pay online now and get an extra discount!\n\nPay here: {link}`)
                     .replace(/{name}/g, data.customer?.first_name || 'there')
+                    .replace(/{order_id}/g, data.name || data.id)
+                    .replace(/{total}/g, data.total_price)
                     .replace(/{link}/g, draftOrder.invoice_url);
 
                 const WhatsApp = require('../utils/whatsapp');
-                await WhatsApp.sendText(client, cleanPhone, msg);
+                const interactive = {
+                    type: 'button',
+                    header: { type: 'text', text: '💳 Save on Your Order!' },
+                    body: { text: bodyMsg },
+                    footer: { text: client.name || 'Smart Store' },
+                    action: {
+                        buttons: [
+                            { type: 'reply', reply: { id: `cod_upi_${data.id}`, title: (niche.codMsg_btn1 || '💳 Pay via UPI').substring(0, 20) } },
+                            { type: 'reply', reply: { id: `cod_keep_${data.id}`, title: (niche.codMsg_btn2 || 'Keep COD').substring(0, 20) } }
+                        ]
+                    }
+                };
+                await WhatsApp.sendInteractive(client, cleanPhone, interactive, bodyMsg);
                 log.info(`COD nudge sent to ${cleanPhone}`);
             }
         } catch (err) {
