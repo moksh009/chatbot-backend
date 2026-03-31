@@ -711,7 +711,15 @@ router.get('/my-settings', protect, async (req, res) => {
 
 router.patch('/my-settings', protect, async (req, res) => {
   try {
-    const { nicheData, flowData, automationFlows, messageTemplates, flowNodes, flowEdges, simpleSettings, clientId, isAIFallbackEnabled, flowFolders, visualFlows } = req.body;
+    const { 
+      nicheData, flowData, automationFlows, messageTemplates, flowNodes, flowEdges, 
+      simpleSettings, clientId, isAIFallbackEnabled, flowFolders, visualFlows,
+      wabaId, phoneNumberId, whatsappToken,
+      shopDomain, shopifyClientId, shopifyClientSecret, shopifyAccessToken, shopifyWebhookSecret,
+      woocommerceUrl, woocommerceKey, woocommerceSecret,
+      instagramConnected, instagramPageId, instagramAccessToken, instagramAppSecret,
+      googleReviewUrl, adminPhone, adminEmail
+    } = req.body;
     
     // If Super Admin and clientId provided, use that. Otherwise use user's own.
     let targetClientId = req.user.clientId;
@@ -734,6 +742,26 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (isAIFallbackEnabled !== undefined) updateFields.isAIFallbackEnabled = isAIFallbackEnabled;
     if (flowFolders !== undefined) updateFields.flowFolders = flowFolders;
     if (visualFlows !== undefined) updateFields.visualFlows = visualFlows;
+
+    // Commercial & Meta Fields
+    if (wabaId !== undefined) updateFields.wabaId = wabaId;
+    if (phoneNumberId !== undefined) updateFields.phoneNumberId = phoneNumberId;
+    if (whatsappToken !== undefined) updateFields.whatsappToken = whatsappToken;
+    if (shopDomain !== undefined) updateFields.shopDomain = shopDomain;
+    if (shopifyClientId !== undefined) updateFields.shopifyClientId = shopifyClientId;
+    if (shopifyClientSecret !== undefined) updateFields.shopifyClientSecret = shopifyClientSecret;
+    if (shopifyAccessToken !== undefined) updateFields.shopifyAccessToken = shopifyAccessToken;
+    if (shopifyWebhookSecret !== undefined) updateFields.shopifyWebhookSecret = shopifyWebhookSecret;
+    if (woocommerceUrl !== undefined) updateFields.woocommerceUrl = woocommerceUrl;
+    if (woocommerceKey !== undefined) updateFields.woocommerceKey = woocommerceKey;
+    if (woocommerceSecret !== undefined) updateFields.woocommerceSecret = woocommerceSecret;
+    if (instagramConnected !== undefined) updateFields.instagramConnected = instagramConnected;
+    if (instagramPageId !== undefined) updateFields.instagramPageId = instagramPageId;
+    if (instagramAccessToken !== undefined) updateFields.instagramAccessToken = instagramAccessToken;
+    if (instagramAppSecret !== undefined) updateFields.instagramAppSecret = instagramAppSecret;
+    if (googleReviewUrl !== undefined) updateFields.googleReviewUrl = googleReviewUrl;
+    if (adminPhone !== undefined) updateFields.adminPhone = adminPhone;
+    if (adminEmail !== undefined) updateFields.adminEmail = adminEmail;
 
     const updated = await Client.findOneAndUpdate(
       { clientId: targetClientId },

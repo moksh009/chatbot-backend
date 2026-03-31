@@ -40,7 +40,9 @@ router.get('/me', protect, async (req, res) => {
       razorpayKeyId: client.razorpayKeyId || '',
       googleReviewUrl: client.googleReviewUrl || '',
       wabaId: client.wabaId || '',
-      phoneNumberId: client.phoneNumberId || ''
+      phoneNumberId: client.phoneNumberId || '',
+      whatsappToken: client.whatsappToken || '',
+      instagramConnected: client.instagramConnected || false
     } : {
       nicheData: {},
       flowData: {},
@@ -135,7 +137,9 @@ router.post('/login', async (req, res) => {
           razorpayKeyId: client.razorpayKeyId || '',
           googleReviewUrl: client.googleReviewUrl || '',
           wabaId: client.wabaId || '',
-          phoneNumberId: client.phoneNumberId || ''
+          phoneNumberId: client.phoneNumberId || '',
+          whatsappToken: client.whatsappToken || '',
+          instagramConnected: client.instagramConnected || false
         } : {},
         clientTemplates: client && client.config && client.config.templates ? client.config.templates : null
       });
