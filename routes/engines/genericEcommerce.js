@@ -111,7 +111,7 @@ async function executeNode({ nodeId, nodes, edges, to, phoneNumberId, io, client
         const bodyParams = variables.split(',').map(v => v.trim()).filter(Boolean);
         
         let finalImageUrl = headerImageUrl;
-        const tplDef = (clientConfig.waTemplates || []).find(t => t.name === templateName);
+        const tplDef = (clientConfig.syncedMetaTemplates || []).find(t => t.name === templateName);
         if (tplDef) {
              const needsImage = tplDef.components?.some(c => c.type === 'HEADER' && c.format === 'IMAGE');
              if (needsImage && !headerImageUrl) {
@@ -1086,8 +1086,7 @@ const updateOrderStatus = async (req, res) => {
             if (rawPhone) {
                 const phone = normalizePhone(rawPhone);
                 // Find template definition in waTemplates or syncedMetaTemplates to detect parameter count
-                const tplDef = (req.clientConfig.waTemplates || []).find(t => t.name === templateName) || 
-                               (req.clientConfig.syncedMetaTemplates || []).find(t => t.name === templateName);
+                const tplDef = (req.clientConfig.syncedMetaTemplates || []).find(t => t.name === templateName);
                 
                 let requiredParams = null; // Use null to indicate "unknown"
                 if (tplDef) {
@@ -1135,12 +1134,8 @@ const updateOrderStatus = async (req, res) => {
                         }
                     }
                 } else {
-                    // If we don't know the count, we default to 0 for safety to avoid Meta errors
-                    // OR we could send a few basic ones, but 0 is safer for unknown templates.
-                    // Actually, most templates have {{1}}, so sending 1 is a common fallback
-                    // but better to send 0 if we don't know to avoid the "6 does not match" error.
-                    bodyParams = [order.customerName || 'Customer']; // Fallback to just name
-                    console.warn(`[TemplateDetection] Defaulting to 1 param for unknown template ${templateName}`);
+                    // Fallback to all parameters if template structure is unknown
+                    console.warn(`[TemplateDetection] Template ${templateName} not found. Sending 6 parameters as baseline fallback.`);
                 }
 
                 const helperParams = { phoneNumberId, token: whatsappToken, io, clientConfig: req.clientConfig };

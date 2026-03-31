@@ -121,7 +121,7 @@ async function executeNode({ nodeId, nodes, edges, to, phoneNumberId, io, client
         const { templateName, headerImageUrl } = node.data;
 
         let finalImageUrl = headerImageUrl;
-        const tplDef = (clientConfig.waTemplates || []).find(t => t.name === templateName);
+        const tplDef = (clientConfig.syncedMetaTemplates || []).find(t => t.name === templateName);
         if (tplDef) {
              const needsImage = tplDef.components?.some(c => c.type === 'HEADER' && c.format === 'IMAGE');
              if (needsImage && !headerImageUrl) {
