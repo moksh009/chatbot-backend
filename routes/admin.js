@@ -600,18 +600,25 @@ router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
       verifyToken: webhookVerifyToken, googleCalendarId, openaiApiKey, nicheData, flowData,
       automationFlows, messageTemplates, wabaId, emailUser, emailAppPassword,
       razorpayKeyId, razorpaySecret, adminPhone,
-      shopDomain, shopifyAccessToken, shopifyWebhookSecret, googleReviewUrl
+      shopDomain, shopifyAccessToken, shopifyWebhookSecret, googleReviewUrl,
+      trialActive, trialEndsAt
     } = req.body;
+
+    // Handle trialEndsAt parsing if it's sent as a string
+    const updateData = {
+      name, businessType, niche, plan, isGenericBot, phoneNumberId, whatsappToken,
+      verifyToken: webhookVerifyToken, googleCalendarId, openaiApiKey, nicheData, flowData,
+      automationFlows, messageTemplates, wabaId, emailUser, emailAppPassword,
+      razorpayKeyId, razorpaySecret, adminPhone,
+      shopDomain, shopifyAccessToken, shopifyWebhookSecret, googleReviewUrl
+    };
+
+    if (trialActive !== undefined) updateData.trialActive = trialActive;
+    if (trialEndsAt !== undefined) updateData.trialEndsAt = new Date(trialEndsAt);
 
     const updatedClient = await Client.findByIdAndUpdate(
       req.params.id,
-      { $set: {
-        name, businessType, niche, plan, isGenericBot, phoneNumberId, whatsappToken,
-        verifyToken: webhookVerifyToken, googleCalendarId, openaiApiKey, nicheData, flowData,
-        automationFlows, messageTemplates, wabaId, emailUser, emailAppPassword,
-        razorpayKeyId, razorpaySecret, adminPhone,
-        shopDomain, shopifyAccessToken, shopifyWebhookSecret, googleReviewUrl
-      }},
+      { $set: updateData },
       { new: true, runValidators: false }
     );
 
