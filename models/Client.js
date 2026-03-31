@@ -30,7 +30,7 @@ const ClientSchema = new mongoose.Schema({
   },
   isGenericBot: { type: Boolean, default: false },
   isAIFallbackEnabled: { type: Boolean, default: true },
-  phoneNumberId: { type: String, required: true },
+  phoneNumberId: { type: String, default: "" },
   whatsappToken: { type: String }, // Store the client's specific WhatsApp token
   wabaId: { type: String }, // WhatsApp Business Account ID (Required for Templates)
   verifyToken: { type: String }, // Store the client's specific Webhook Verify Token
