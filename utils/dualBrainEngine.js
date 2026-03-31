@@ -731,13 +731,23 @@ async function tryKeywordFallback(parsedMessage, client, convo, phone) {
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIORITY 3: GEMINI AI FALLBACK
 // ─────────────────────────────────────────────────────────────────────────────
-async function runAIFallback(parsedMessage, client, phone, lead) {
+async function runAIFallback(parsedMessage, client, phone, lead, channel = 'whatsapp') {
   const text = parsedMessage.text?.body;
   if (!text) return false;
 
   try {
     const ctaHint = client.nicheData?.ctaButtonText || 'Get Started';
-    const discountCode = client.nicheData?.globalDiscountCode || 'OFF10';
+
+    // ── Dynamic Discount: use the most recently generated code if the AI toggle is ON ──
+    let discountCode = client.nicheData?.globalDiscountCode || 'OFF10';
+    if (client.aiUseGeneratedDiscounts && Array.isArray(client.generatedDiscounts) && client.generatedDiscounts.length > 0) {
+      const latestDiscount = client.generatedDiscounts[client.generatedDiscounts.length - 1];
+      if (latestDiscount?.code) {
+        discountCode = latestDiscount.code;
+        console.log(`[DualBrain] AI using dynamic discount code: ${discountCode}`);
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
     
     // Check if user is asking about price or hesitation
     const isHesitating = /price|expensive|cost|discount|offer|deal|cheap|money/i.test(text);

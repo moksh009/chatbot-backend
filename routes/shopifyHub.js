@@ -106,7 +106,10 @@ router.get('/:clientId/products', protect, verifyClientAccess, async (req, res) 
         }));
     });
 
-    res.json({ success: true, products });
+    const client = await Client.findOne({ clientId });
+    const shopDomain = client ? client.shopDomain : '';
+
+    res.json({ success: true, products, shopDomain });
   } catch (err) {
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
@@ -227,8 +230,24 @@ router.get('/:clientId/customers', protect, verifyClientAccess, async (req, res)
 
 
 /**
+ * @route   GET /api/shopify-hub/:clientId/discounts
+ * @desc    Fetch history of all generated discount codes from DB
+ */
+router.get('/:clientId/discounts', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const client = await Client.findOne({ clientId: req.params.clientId });
+    if (!client) return res.status(404).json({ error: 'Client not found' });
+    // Return newest first
+    const discounts = (client.generatedDiscounts || []).slice().reverse();
+    res.json({ success: true, discounts, aiUseGeneratedDiscounts: client.aiUseGeneratedDiscounts ?? false });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
  * @route   POST /api/shopify-hub/:clientId/discounts
- * @desc    Create a real Shopify discount code
+ * @desc    Create a real Shopify discount code and persist it to DB
  */
 router.post('/:clientId/discounts', protect, verifyClientAccess, async (req, res) => {
   try {
@@ -261,9 +280,47 @@ router.post('/:clientId/discounts', protect, verifyClientAccess, async (req, res
         return discountRes.data.discount_code;
     });
 
-    res.json({ success: true, discount });
+    // ── Persist to DB ──────────────────────────────────────────────────────────
+    const savedEntry = {
+      code: discount.code,
+      title: title || discount.code,
+      type: type === 'percentage' ? 'percentage' : 'fixed_amount',
+      value: Number(value),
+      expiryHours: Number(expiryHours),
+      priceRuleId: discount.price_rule_id,
+      shopifyId: discount.id,
+      createdAt: new Date()
+    };
+
+    await Client.findOneAndUpdate(
+      { clientId },
+      { $push: { generatedDiscounts: savedEntry } }
+    );
+    // ──────────────────────────────────────────────────────────────────────────
+
+    res.json({ success: true, discount: { ...discount, ...savedEntry } });
   } catch (err) {
     console.error('Discount Error:', err.response?.data || err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * @route   PATCH /api/shopify-hub/:clientId/discounts/ai-toggle
+ * @desc    Toggle whether the AI uses dynamically generated discount codes
+ */
+router.patch('/:clientId/discounts/ai-toggle', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { enabled } = req.body;
+    const client = await Client.findOneAndUpdate(
+      { clientId },
+      { $set: { aiUseGeneratedDiscounts: !!enabled } },
+      { new: true }
+    );
+    if (!client) return res.status(404).json({ error: 'Client not found' });
+    res.json({ success: true, aiUseGeneratedDiscounts: client.aiUseGeneratedDiscounts });
+  } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });

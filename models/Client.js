@@ -59,6 +59,8 @@ const ClientSchema = new mongoose.Schema({
   shopifyApiVersion: { type: String, default: "2024-01" },
   shopifyConnectionStatus: { type: String, enum: ['connected', 'error', 'disconnected'], default: 'connected' },
   lastShopifyError: { type: String, default: "" },
+  generatedDiscounts: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  aiUseGeneratedDiscounts: { type: Boolean, default: false }, // AI uses latest generated discount code when true
   
   // Phase 14 Multi-Gateway Support
   activePaymentGateway: { 
