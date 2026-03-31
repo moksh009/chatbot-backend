@@ -692,7 +692,9 @@ router.get('/my-settings', protect, async (req, res) => {
       automationFlows: client.automationFlows,
       messageTemplates: client.messageTemplates,
       nicheData: client.nicheData,
-      workingHours: client.workingHours
+      workingHours: client.workingHours,
+      flowFolders: client.flowFolders,
+      visualFlows: client.visualFlows
     });
   } catch (err) {
     log.error('Settings fetch error', { error: err.message });
@@ -702,7 +704,7 @@ router.get('/my-settings', protect, async (req, res) => {
 
 router.patch('/my-settings', protect, async (req, res) => {
   try {
-    const { nicheData, flowData, automationFlows, messageTemplates, flowNodes, flowEdges, simpleSettings, clientId, isAIFallbackEnabled } = req.body;
+    const { nicheData, flowData, automationFlows, messageTemplates, flowNodes, flowEdges, simpleSettings, clientId, isAIFallbackEnabled, flowFolders, visualFlows } = req.body;
     
     // If Super Admin and clientId provided, use that. Otherwise use user's own.
     let targetClientId = req.user.clientId;
@@ -723,6 +725,8 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (flowEdges !== undefined) updateFields.flowEdges = flowEdges;
     if (simpleSettings !== undefined) updateFields.simpleSettings = simpleSettings;
     if (isAIFallbackEnabled !== undefined) updateFields.isAIFallbackEnabled = isAIFallbackEnabled;
+    if (flowFolders !== undefined) updateFields.flowFolders = flowFolders;
+    if (visualFlows !== undefined) updateFields.visualFlows = visualFlows;
 
     const updated = await Client.findOneAndUpdate(
       { clientId: targetClientId },
@@ -738,7 +742,9 @@ router.patch('/my-settings', protect, async (req, res) => {
       nicheData: updated.nicheData, 
       flowData: updated.flowData,
       automationFlows: updated.automationFlows,
-      messageTemplates: updated.messageTemplates
+      messageTemplates: updated.messageTemplates,
+      flowFolders: updated.flowFolders,
+      visualFlows: updated.visualFlows
     });
   } catch (err) {
     log.error('Settings update error', { error: err.message });
@@ -776,7 +782,9 @@ router.get('/settings/:clientId', protect, isSuperAdmin, async (req, res) => {
       flowNodes: client.flowNodes || [],
       flowEdges: client.flowEdges || [],
       plan: client.plan,
-      isAIFallbackEnabled: client.isAIFallbackEnabled
+      isAIFallbackEnabled: client.isAIFallbackEnabled,
+      flowFolders: client.flowFolders || [],
+      visualFlows: client.visualFlows || []
     });
   } catch (err) {
     res.status(500).json({ message: 'Server error' });

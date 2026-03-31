@@ -30,6 +30,8 @@ router.get('/me', protect, async (req, res) => {
       flowNodes: client.flowNodes || [],
       flowEdges: client.flowEdges || [],
       syncedMetaFlows: client.syncedMetaFlows || [],
+      flowFolders: client.flowFolders || [],
+      visualFlows: client.visualFlows || [],
       adminPhone: client.adminPhone || '',
       shopDomain: client.shopDomain || '',
       shopifyAccessToken: client.shopifyAccessToken || '',
@@ -46,7 +48,9 @@ router.get('/me', protect, async (req, res) => {
       messageTemplates: [],
       flowNodes: [],
       flowEdges: [],
-      syncedMetaFlows: []
+      syncedMetaFlows: [],
+      flowFolders: [],
+      visualFlows: []
     };
 
     res.json({
@@ -59,11 +63,32 @@ router.get('/me', protect, async (req, res) => {
         clientName: client ? client.name : null,
         subscriptionPlan: client ? client.subscriptionPlan || 'v2' : 'v2',
         plan: client ? client.plan || 'CX Agent (V1)' : 'CX Agent (V1)',
+        hasCompletedTour: user.hasCompletedTour,
+        trialActive: client ? client.trialActive : null,
+        trialEndsAt: client ? client.trialEndsAt : null,
         clientConfig,
         clientTemplates: client?.config?.templates || null
     });
   } catch (error) {
     console.error(error);
+    res.status(500).json({ message: 'Server Error', error: error.message });
+  }
+});
+
+router.patch('/me', protect, async (req, res) => {
+  try {
+    const { hasCompletedTour } = req.body;
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    if (hasCompletedTour !== undefined) {
+      user.hasCompletedTour = hasCompletedTour;
+    }
+    
+    await user.save();
+    res.json({ success: true, user });
+  } catch (error) {
+    console.error('Update user error:', error);
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
 });
@@ -89,6 +114,9 @@ router.post('/login', async (req, res) => {
         clientName: client ? client.name : null, // Add client name
         subscriptionPlan: client ? client.subscriptionPlan || 'v2' : 'v2',
         plan: client ? client.plan || 'CX Agent (V1)' : 'CX Agent (V1)',
+        hasCompletedTour: user.hasCompletedTour,
+        trialActive: client ? client.trialActive : null,
+        trialEndsAt: client ? client.trialEndsAt : null,
         clientConfig: client ? {
           ...client.config,
           nicheData: client.nicheData || {},
@@ -97,6 +125,8 @@ router.post('/login', async (req, res) => {
           messageTemplates: client.messageTemplates || [],
           flowNodes: client.flowNodes || [],
           flowEdges: client.flowEdges || [],
+          flowFolders: client.flowFolders || [],
+          visualFlows: client.visualFlows || [],
           adminPhone: client.adminPhone || '',
           shopDomain: client.shopDomain || '',
           shopifyAccessToken: client.shopifyAccessToken || '',
@@ -118,25 +148,49 @@ router.post('/login', async (req, res) => {
 });
 
 router.post('/register', async (req, res) => {
-  const { name, email, password, role, clientId } = req.body;
+  const { name, email, password, businessName } = req.body;
 
   try {
     const userExists = await User.findOne({ email });
-
     if (userExists) {
       return res.status(400).json({ message: 'User already exists' });
     }
 
+    if (!businessName || !name || !email || !password) {
+      return res.status(400).json({ message: 'All fields are required' });
+    }
+
+    // Generate unique clientId from business name + random hex
+    const crypto = require('crypto');
+    const safeName = businessName.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const uniqueId = crypto.randomBytes(3).toString('hex');
+    const newClientId = `${safeName}_${uniqueId}`;
+
+    // 1. Create the Client (Trial mode default)
+    const newClient = await Client.create({
+      clientId: newClientId,
+      businessName: businessName,
+      name: businessName,
+      isActive: true,
+      trialActive: true,
+      trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      plan: 'CX Agent (V1)',
+      businessType: 'ecommerce', // default
+      flowNodes: [],
+      flowEdges: []
+    });
+
+    // 2. Create the User linked to this new Client
     const user = await User.create({
       name,
       email,
       password,
-      role: role || 'CLIENT_ADMIN',
-      business_type: req.body.business_type || 'clinic',
-      clientId: clientId || 'delitech_smarthomes' // Updated default for Delitech project
+      role: 'CLIENT_ADMIN',
+      business_type: 'ecommerce',
+      clientId: newClientId
     });
 
-    if (user) {
+    if (user && newClient) {
       res.status(201).json({
         _id: user._id,
         name: user.name,
@@ -147,9 +201,10 @@ router.post('/register', async (req, res) => {
         token: generateToken(user._id),
       });
     } else {
-      res.status(400).json({ message: 'Invalid user data' });
+      res.status(400).json({ message: 'Failed to create user or client' });
     }
   } catch (error) {
+    console.error('Registration Error:', error);
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
 });

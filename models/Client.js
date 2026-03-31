@@ -100,6 +100,11 @@ const ClientSchema = new mongoose.Schema({
   flowNodes: { type: [mongoose.Schema.Types.Mixed], default: [] },
   flowEdges: { type: [mongoose.Schema.Types.Mixed], default: [] },
   
+  // Phase 15 Visual Builder Multi-Flow Architecture
+  flowFolders: { type: [mongoose.Schema.Types.Mixed], default: [] }, // { id: String, name: String, createdAt: Date }
+  visualFlows: { type: [mongoose.Schema.Types.Mixed], default: [] }, // { id: String, name: String, folderId: String, platform: String, isActive: Boolean, nodes: [], edges: [], createdAt: Date, updatedAt: Date }
+
+  
   // Phase 9 AI & Settings
   systemPrompt: { type: String, default: '' },
   syncedMetaTemplates: { type: mongoose.Schema.Types.Mixed, default: [] },
@@ -174,6 +179,10 @@ const ClientSchema = new mongoose.Schema({
     estimatedValue: Number,
     generatedAt: Date
   }],
+
+  // Phase 15 Trial & Admin Flags
+  trialActive: { type: Boolean, default: true },
+  trialEndsAt: { type: Date, default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) }, // 7 days
 
   createdAt: { type: Date, default: Date.now }
 });
