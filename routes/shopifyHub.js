@@ -9,6 +9,12 @@ const { addHours } = require('date-fns');
 const { getShopifyClient, withShopifyRetry } = require('../utils/shopifyHelper');
 
 /**
+ * @route   GET /api/shopify-hub/ping
+ * @desc    Health check for Shopify Hub routes
+ */
+router.get('/ping', (req, res) => res.json({ success: true, message: 'Shopify Hub Router is active' }));
+
+/**
  * @route   GET /api/shopify-hub/:clientId/pulse
  * @desc    Get store overview (Revenue, Orders, Payouts)
  */
@@ -195,67 +201,7 @@ router.get('/:clientId/customers', protect, verifyClientAccess, async (req, res)
   }
 });
 
-/**
- * @route   PUT /api/shopify-hub/:clientId/inventory/set
- * @desc    Update product inventory level in Shopify
- */
-router.put('/:clientId/inventory/set', protect, verifyClientAccess, async (req, res) => {
-  try {
-    const { clientId } = req.params;
-    const { inventoryItemId, locationId, available } = req.body;
 
-    if (!inventoryItemId || !locationId) {
-      return res.status(400).json({ success: false, error: 'Missing required inventory data' });
-    }
-
-    await withShopifyRetry(clientId, async (shop) => {
-        return await shop.post('/inventory_levels/set.json', {
-          inventory_item_id: inventoryItemId,
-          location_id: locationId,
-          available: parseInt(available)
-        });
-    });
-
-    res.json({ success: true });
-  } catch (err) {
-    console.error('[InventoryUpdate] Error:', err.response?.data || err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * @route   GET /api/shopify-hub/:clientId/locations
- * @desc    Get Shopify store locations (needed for inventory updates)
- */
-router.get('/:clientId/locations', protect, verifyClientAccess, async (req, res) => {
-  try {
-    const { clientId } = req.params;
-    const locations = await withShopifyRetry(clientId, async (shop) => {
-        const response = await shop.get('/locations.json');
-        return response.data.locations;
-    });
-    res.json({ success: true, locations });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * @route   GET /api/shopify-hub/:clientId/customers
- * @desc    Get top customers from Shopify
- */
-router.get('/:clientId/customers', protect, verifyClientAccess, async (req, res) => {
-  try {
-    const { clientId } = req.params;
-    const customers = await withShopifyRetry(clientId, async (shop) => {
-        const response = await shop.get('/customers.json?limit=50&order=total_spent+DESC');
-        return response.data.customers;
-    });
-    res.json({ success: true, customers });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
 
 /**
  * @route   POST /api/shopify-hub/:clientId/discounts
