@@ -7,6 +7,7 @@ const Message      = require("../models/Message");
 const DailyStat    = require("../models/DailyStat");
 const Client       = require("../models/Client");
 const emailService = require("./emailService");
+const NotificationService = require("./notificationService");
 const BillingService = require('./billingService');
 const log = require("./logger")('DualBrain');
 const { generateText, getGeminiModel } = require('./gemini');
@@ -840,8 +841,31 @@ async function runAIFallback(parsedMessage, client, phone, lead, channel = 'what
   if (!text) return false;
 
   try {
-    const ctaHint = client.nicheData?.ctaButtonText || 'Get Started';
+    // ── Active Listener: "Call Now" Detection ──
+    const callIntentRegex = /\b(call|phone|talk|speak|representative|human|agent|person|connect|callback|calling)\b/i;
+    if (callIntentRegex.test(text)) {
+      console.log(`[DualBrain] Active Listener: Detect "Call Now" intent for ${phone}`);
+      
+      // 1. Notify Admin
+      await NotificationService.sendAdminAlert(client, {
+        customerPhone: phone,
+        topic: 'Customer Requesting Call/Human',
+        triggerSource: 'AI Active Listener (Intent: Call Now)'
+      });
 
+      // 2. Update Conversation Status
+      await Conversation.findOneAndUpdate(
+        { phone, clientId: client.clientId },
+        { $set: { status: 'HUMAN_TAKEOVER', lastInteraction: new Date() } }
+      );
+
+      // 3. Inform Customer
+      const callReply = `I've just notified our team that you'd like to speak with someone. A representative will reach out to you or call you shortly! 📞✨`;
+      await WhatsApp.sendText(client, phone, callReply, channel);
+      return true;
+    }
+    // ─────────────────────────────────────────────
+    
     // ── Dynamic Discount: use the most recently generated code if the AI toggle is ON ──
     let discountCode = client.nicheData?.globalDiscountCode || 'OFF10';
     if (client.aiUseGeneratedDiscounts && Array.isArray(client.generatedDiscounts) && client.generatedDiscounts.length > 0) {
