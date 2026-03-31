@@ -13,6 +13,7 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
+const { encrypt } = require('../utils/encryption');
 
 router.post('/shopify/force-sync', protect, async (req, res) => {
   try {
@@ -746,19 +747,23 @@ router.patch('/my-settings', protect, async (req, res) => {
     // Commercial & Meta Fields
     if (wabaId !== undefined) updateFields.wabaId = wabaId;
     if (phoneNumberId !== undefined) updateFields.phoneNumberId = phoneNumberId;
-    if (whatsappToken !== undefined) updateFields.whatsappToken = whatsappToken;
+    if (whatsappToken !== undefined) updateFields.whatsappToken = encrypt(whatsappToken);
+    
     if (shopDomain !== undefined) updateFields.shopDomain = shopDomain;
     if (shopifyClientId !== undefined) updateFields.shopifyClientId = shopifyClientId;
-    if (shopifyClientSecret !== undefined) updateFields.shopifyClientSecret = shopifyClientSecret;
-    if (shopifyAccessToken !== undefined) updateFields.shopifyAccessToken = shopifyAccessToken;
-    if (shopifyWebhookSecret !== undefined) updateFields.shopifyWebhookSecret = shopifyWebhookSecret;
+    if (shopifyClientSecret !== undefined) updateFields.shopifyClientSecret = encrypt(shopifyClientSecret);
+    if (shopifyAccessToken !== undefined) updateFields.shopifyAccessToken = encrypt(shopifyAccessToken);
+    if (shopifyWebhookSecret !== undefined) updateFields.shopifyWebhookSecret = encrypt(shopifyWebhookSecret);
+
     if (woocommerceUrl !== undefined) updateFields.woocommerceUrl = woocommerceUrl;
-    if (woocommerceKey !== undefined) updateFields.woocommerceKey = woocommerceKey;
-    if (woocommerceSecret !== undefined) updateFields.woocommerceSecret = woocommerceSecret;
+    if (woocommerceKey !== undefined) updateFields.woocommerceKey = encrypt(woocommerceKey);
+    if (woocommerceSecret !== undefined) updateFields.woocommerceSecret = encrypt(woocommerceSecret);
+
     if (instagramConnected !== undefined) updateFields.instagramConnected = instagramConnected;
     if (instagramPageId !== undefined) updateFields.instagramPageId = instagramPageId;
-    if (instagramAccessToken !== undefined) updateFields.instagramAccessToken = instagramAccessToken;
-    if (instagramAppSecret !== undefined) updateFields.instagramAppSecret = instagramAppSecret;
+    if (instagramAccessToken !== undefined) updateFields.instagramAccessToken = encrypt(instagramAccessToken);
+    if (instagramAppSecret !== undefined) updateFields.instagramAppSecret = encrypt(instagramAppSecret);
+
     if (googleReviewUrl !== undefined) updateFields.googleReviewUrl = googleReviewUrl;
     if (adminPhone !== undefined) updateFields.adminPhone = adminPhone;
     if (adminEmail !== undefined) updateFields.adminEmail = adminEmail;

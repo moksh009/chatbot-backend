@@ -74,7 +74,17 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
   } catch (err) {
     const shopifyError = err.response?.data?.errors || err.message;
     const isAuthError = err.response?.status === 401 || err.response?.status === 403;
-    console.error('Pulse Critical Error:', shopifyError);
+    const isMissingConfig = err.message === 'Shopify credentials incomplete or invalid';
+
+    if (isMissingConfig) {
+       return res.json({ 
+         success: false, 
+         isShopifyConnected: false, 
+         error: 'Shopify is not connected' 
+       });
+    }
+
+    console.error('Pulse Error:', shopifyError);
     res.status(isAuthError ? 400 : 500).json({ 
       success: false, 
       error: shopifyError, 
