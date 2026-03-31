@@ -118,9 +118,6 @@ const NotificationService = {
 
     return results;
   }
-
-    return results;
-  }
 };
 
 module.exports = NotificationService;
