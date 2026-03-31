@@ -214,53 +214,38 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     return await executeNode(jumpNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
   }
 
-  // B) Handle CAPTURE_INPUT Node (Special Case)
+  // B) Handle CAPTURE_INPUT Node
   const currentNode = flowNodes.find(n => n.id === currentStepId);
   if (currentNode && (currentNode.type === 'capture_input' || currentNode.type === 'CaptureNode')) {
     const varName = currentNode.data?.variable || 'last_input';
     console.log(`[DualBrain] Capture: Saving "${userText}" to variable "${varName}" for convo ${phone}`);
-    
-    // Update metadata
     const updatedMetadata = { ...(convo.metadata || {}), [varName]: userText };
     await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
-    convo.metadata = updatedMetadata; // update local ref
+    convo.metadata = updatedMetadata;
 
-    // Move to next node via auto-edge
     const nextEdge = flowEdges.find(e => e.source === currentStepId);
-    if (nextEdge) {
-      return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
-    }
+    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+    return true; 
   }
 
-  // C) User is in the middle of a flow — find matching edge from currentStep
+  // C) User is in the middle of a flow
   let matchingEdge = flowEdges.find(e => {
     if (e.source !== currentStepId) return false;
-
-    // No trigger = auto edge.
     if (!e.trigger && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom')) return true;
-
-    // Match by sourceHandle (button id)
     if (e.sourceHandle) {
       const sid = e.sourceHandle.toLowerCase();
       const bid = (incomingTrigger.buttonId || '').toLowerCase();
       const txt = userTextLower;
       return sid === bid || sid === txt || txt === sid;
     }
-    
-    // Match by trigger object
-    if (e.trigger?.type === 'button') {
-      return (incomingTrigger.buttonId || '').toLowerCase() === e.trigger.value.toLowerCase();
-    }
-    if (e.trigger?.type === 'keyword') {
-      return userTextLower.includes(e.trigger.value.toLowerCase());
-    }
+    if (e.trigger?.type === 'button') return (incomingTrigger.buttonId || '').toLowerCase() === e.trigger.value.toLowerCase();
+    if (e.trigger?.type === 'keyword') return userTextLower.includes(e.trigger.value.toLowerCase());
     return false;
   });
 
-  // GAP FIX: Fallback edge check (if no standard matching edge found)
+  // GAP FIX: Fallback edge
   if (!matchingEdge && currentStepId) {
     matchingEdge = flowEdges.find(e => e.source === currentStepId && e.sourceHandle === 'fallback');
-    if (matchingEdge) console.log(`[DualBrain] Graph: No standard match, taking FALLBACK edge for ${currentStepId}`);
   }
 
   if (matchingEdge) {
@@ -271,9 +256,9 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 
   // D) GLOBAL RESET / GREETING
   if (!incomingTrigger.buttonId && (isGreeting(userTextLower) || userTextLower === 'start' || userTextLower === 'menu')) {
-      const triggerNode = findTriggerNode(userTextLower, flowNodes);
+      const triggerNode = flowNodes.find(n => (n.type === 'trigger' || n.type === 'TriggerNode') && (n.data?.keyword || '').toLowerCase().split(',').map(k => k.trim()).includes(userTextLower));
       if (triggerNode) {
-          console.log(`[DualBrain] Graph: Resetting to trigger node ${triggerNode.id} based on greeting "${userTextLower}"`);
+          console.log(`[DualBrain] Graph: Resetting to trigger node ${triggerNode.id}`);
           await trackNodeVisit(client, triggerNode.id);
           return await executeNode(triggerNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
       }
@@ -281,8 +266,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 
   // E) No currentStepId — Fresh Start
   if (!currentStepId) {
-    const triggerNode = flowNodes.find(n => n.type === 'trigger' || n.type === 'TriggerNode');
-    const startNode = triggerNode || flowNodes.find(n => n.data?.role === 'welcome') || flowNodes[0];
+    const startNode = flowNodes.find(n => n.type === 'trigger' || n.type === 'TriggerNode') || flowNodes.find(n => n.data?.role === 'welcome') || flowNodes[0];
     if (startNode) {
       console.log(`[DualBrain] Graph: Starting fresh from node ${startNode.id}`);
       await trackNodeVisit(client, startNode.id);
@@ -290,32 +274,20 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     }
   }
 
-  // F) Recovery Logic
-  if (incomingTrigger.buttonId || incomingTrigger.buttonText) {
-    const buttonLabel = incomingTrigger.buttonText || incomingTrigger.buttonId;
-    };
-    await runAIFallback(virtualMessage, client, phone, lead, channel);
-    return true;
-  }
-
-  // Fallback: Check if the user's text matches a button title in the current node
-  const currentNode = flowNodes.find(n => n.id === currentStepId);
+  // Fallback: Check if the user's text matches a button title
   if (currentNode?.type === 'interactive') {
     const btns = currentNode.data?.buttonsList || [];
-    const matchedBtn = btns.find(b => b.title?.toLowerCase() === userText);
+    const matchedBtn = btns.find(b => b.title?.toLowerCase() === userTextLower);
     if (matchedBtn) {
       const handleEdge = flowEdges.find(e =>
         e.source === currentStepId &&
-        (e.sourceHandle === matchedBtn.id || e.sourceHandle === matchedBtn.title?.toLowerCase().replace(/\s+/g, '_'))
+        (e.sourceHandle === (matchedBtn.id || matchedBtn.title?.toLowerCase().replace(/\s+/g, '_')))
       );
-      if (handleEdge) {
-        console.log(`[DualBrain] Graph: button title match "${userText}" → node ${handleEdge.target}`);
-        return await executeNode(handleEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
-      }
+      if (handleEdge) return await executeNode(handleEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
     }
   }
   
-  console.log(`[DualBrain] Graph: no matching edge from ${currentStepId} for "${userText || incomingTrigger.buttonId}"`);
+  console.log(`[DualBrain] Graph: no match from ${currentStepId} for "${userText || incomingTrigger.buttonId}"`);
   return false;
 }
 
