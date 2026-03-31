@@ -2393,11 +2393,12 @@ const handleFlowWebhook = async (req, res) => {
     const { encrypted_flow_data, encrypted_aes_key, initial_vector } = req.body;
 
     // 1. Decrypt AES Key
-    const privateKey = process.env.PRIVATE_PEM.replace(/\\n/g, '\n');
-    if (!privateKey) {
+    const rawPem = process.env.PRIVATE_PEM;
+    if (!rawPem) {
       console.error('[Choice Salon Flow] Critical Error: PRIVATE_PEM environment variable not set.');
       return res.status(500).json({ error: 'Server configuration error.' });
     }
+    const privateKey = rawPem.replace(/\\n/g, '\n');
     const aesKey = crypto.privateDecrypt({
       key: privateKey,
       padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
