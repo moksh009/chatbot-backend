@@ -108,12 +108,13 @@ router.get('/:clientId/products', protect, verifyClientAccess, async (req, res) 
 
     res.json({ success: true, products });
   } catch (err) {
-    const shopifyError = err.response?.data?.errors || err.message;
+    const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
+    const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     const isAuthError = err.response?.status === 401 || err.response?.status === 403;
     res.status(isAuthError ? 400 : 500).json({ 
       success: false, 
       products: [], 
-      error: shopifyError, 
+      error: errorString, 
       isShopifyAuthError: isAuthError 
     });
   }
@@ -153,11 +154,12 @@ router.get('/:clientId/locations', protect, verifyClientAccess, async (req, res)
     });
     res.json({ success: true, locations });
   } catch (err) {
-    const shopifyError = err.response?.data?.errors || err.message;
+    const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
+    const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     const isAuthError = err.response?.status === 401 || err.response?.status === 403;
     res.status(isAuthError ? 400 : 500).json({ 
       success: false, 
-      error: shopifyError, 
+      error: errorString, 
       isShopifyAuthError: isAuthError 
     });
   }
@@ -186,12 +188,13 @@ router.put('/:clientId/inventory/set', protect, verifyClientAccess, async (req, 
 
     res.json({ success: true });
   } catch (err) {
-    const shopifyError = err.response?.data?.errors || err.message;
+    const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
+    const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     const isAuthError = err.response?.status === 401 || err.response?.status === 403;
-    console.error('[InventoryUpdate] Error:', shopifyError);
+    console.error('[InventoryUpdate] Error:', errorString);
     res.status(isAuthError ? 400 : 500).json({ 
       success: false, 
-      error: shopifyError, 
+      error: errorString, 
       isShopifyAuthError: isAuthError 
     });
   }
@@ -210,11 +213,12 @@ router.get('/:clientId/customers', protect, verifyClientAccess, async (req, res)
     });
     res.json({ success: true, customers });
   } catch (err) {
-    const shopifyError = err.response?.data?.errors || err.message;
+    const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
+    const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     const isAuthError = err.response?.status === 401 || err.response?.status === 403;
     res.status(isAuthError ? 400 : 500).json({ 
       success: false, 
-      error: shopifyError, 
+      error: errorString, 
       isShopifyAuthError: isAuthError 
     });
   }
