@@ -217,45 +217,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     return await executeNode(jumpNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
   }
 
-  // --- NEW: Global Reset (If user says 'hi' or 'start', always try to find a trigger node) ---
-  if (isGreeting(userText) || userText === 'start' || userText === 'menu') {
-      const triggerNode = findTriggerNode(userText, flowNodes);
-      if (triggerNode) {
-          console.log(`[DualBrain] Graph: Resetting to trigger node ${triggerNode.id} based on greeting "${userText}"`);
-          await trackNodeVisit(client, triggerNode.id);
-          return await executeNode(triggerNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
-      }
-  }
-
-  // B) No currentStepId (or it looks like a phone number) — guard + find trigger/start node
-  const looksLikePhone = currentStepId && /^\d{7,}$/.test(String(currentStepId));
-  if (!currentStepId || looksLikePhone) {
-    if (looksLikePhone) {
-      console.warn(`[DualBrain] Graph: lastStepId "${currentStepId}" looks like a phone number — resetting`);
-      await Conversation.findByIdAndUpdate(convo._id, { lastStepId: null });
-    }
-    // Try keyword greeting trigger first
-    const incomingText = (userText || '').toLowerCase().trim();
-    const triggerNode = flowNodes.find(n => {
-      if (n.type !== 'trigger' && n.type !== 'TriggerNode') return false;
-      const keyword = (n.data?.keyword || n.data?.label || 'hi').toLowerCase();
-      return incomingText.includes(keyword) || 
-             keyword === 'start' || 
-             keyword === '*';
-    });
-    const startNode = triggerNode ||
-      flowNodes.find(n => n.data?.role === 'welcome') ||
-      flowNodes.find(n => n.data?.isStartNode === true) ||
-      flowNodes[0];
-    if (startNode) {
-      console.log(`[DualBrain] Graph: Starting fresh from node ${startNode.id}`);
-      await trackNodeVisit(client, startNode.id);
-      return await executeNode(startNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
-    }
-    return false;
-  }
-
-  // C) User is in the middle of a flow — find matching edge from currentStep
+  // B) User is in the middle of a flow — find matching edge from currentStep
   const matchingEdge = flowEdges.find(e => {
     if (e.source !== currentStepId) return false;
 
@@ -286,46 +248,87 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     return false;
   });
 
-  if (!matchingEdge) {
-    // Gap Fix: If a button was clicked but no edge matches, don't just fail.
-    // Use AI to recover the conversation based on the button intent.
-    if (incomingTrigger.buttonId || incomingTrigger.buttonText) {
-      console.log(`[DualBrain] Graph: No edge match for button "${incomingTrigger.buttonId}". Falling back to AI recovery.`);
-      const buttonLabel = incomingTrigger.buttonText || incomingTrigger.buttonId;
-      const recoveryPrompt = `The user clicked a button labeled "${buttonLabel}" in the previous message, but the automated flow is currently being updated. Please respond to this intent naturally and guide them back to the main goal.`;
-      
-      // We pass this as a virtual message to the AI fallback
-      const virtualMessage = {
-        ...parsedMessage,
-        text: { body: `(User clicked: ${buttonLabel}) ${recoveryPrompt}` }
-      };
-      await runAIFallback(virtualMessage, client, phone, lead, channel);
-      return true;
-    }
+  if (matchingEdge) {
+    console.log(`[DualBrain] Graph: edge match from ${currentStepId} → ${matchingEdge.target}`);
+    await trackNodeVisit(client, matchingEdge.target);
+    return await executeNode(matchingEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+  }
 
-    // Fallback: Check if the user's text matches a button title in the current node
-    const currentNode = flowNodes.find(n => n.id === currentStepId);
-    if (currentNode?.type === 'interactive') {
-      const btns = currentNode.data?.buttonsList || [];
-      const matchedBtn = btns.find(b => b.title?.toLowerCase() === userText);
-      if (matchedBtn) {
-        const handleEdge = flowEdges.find(e =>
-          e.source === currentStepId &&
-          (e.sourceHandle === matchedBtn.id || e.sourceHandle === matchedBtn.title?.toLowerCase().replace(/\s+/g, '_'))
-        );
-        if (handleEdge) {
-          console.log(`[DualBrain] Graph: button title match "${userText}" → node ${handleEdge.target}`);
-          return await executeNode(handleEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
-        }
+  // C) GLOBAL RESET / GREETING (Fallback: Only if not in middle of flow or if explicit greeting)
+  const isButtonPayload = !!incomingTrigger.buttonId;
+  if (!isButtonPayload && (isGreeting(userText) || userText === 'start' || userText === 'menu')) {
+      const triggerNode = findTriggerNode(userText, flowNodes);
+      if (triggerNode) {
+          console.log(`[DualBrain] Graph: Resetting to trigger node ${triggerNode.id} based on greeting "${userText}"`);
+          await trackNodeVisit(client, triggerNode.id);
+          return await executeNode(triggerNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
       }
+  }
+
+  // D) No currentStepId (or it looks like a phone number) — guard + find trigger/start node
+  const looksLikePhone = currentStepId && /^\d{7,}$/.test(String(currentStepId));
+  if (!currentStepId || looksLikePhone) {
+    if (looksLikePhone) {
+      console.warn(`[DualBrain] Graph: lastStepId "${currentStepId}" looks like a phone number — resetting`);
+      await Conversation.findByIdAndUpdate(convo._id, { lastStepId: null });
     }
-    console.log(`[DualBrain] Graph: no matching edge from ${currentStepId} for "${userText || incomingTrigger.buttonId}"`);
+    // Try keyword greeting trigger first
+    const incomingText = (userText || '').toLowerCase().trim();
+    const triggerNode = flowNodes.find(n => {
+      if (n.type !== 'trigger' && n.type !== 'TriggerNode') return false;
+      const keyword = (n.data?.keyword || n.data?.label || 'hi').toLowerCase();
+      return incomingText.includes(keyword) || 
+             keyword === 'start' || 
+             keyword === '*';
+    });
+    const startNode = triggerNode ||
+      flowNodes.find(n => n.data?.role === 'welcome') ||
+      flowNodes.find(n => n.data?.isStartNode === true) ||
+      flowNodes[0];
+    if (startNode) {
+      console.log(`[DualBrain] Graph: Starting fresh from node ${startNode.id}`);
+      await trackNodeVisit(client, startNode.id);
+      return await executeNode(startNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+    }
     return false;
   }
 
-  console.log(`[DualBrain] Graph: edge match from ${currentStepId} → ${matchingEdge.target}`);
-  await trackNodeVisit(client, matchingEdge.target);
-  return await executeNode(matchingEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+  // E) Fallback Logic (If no edge match AND not a greeting reset)
+  // Gap Fix: If a button was clicked but no edge matches, don't just fail.
+  // Use AI to recover the conversation based on the button intent.
+  if (incomingTrigger.buttonId || incomingTrigger.buttonText) {
+    console.log(`[DualBrain] Graph: No edge match for button "${incomingTrigger.buttonId}". Falling back to AI recovery.`);
+    const buttonLabel = incomingTrigger.buttonText || incomingTrigger.buttonId;
+    const recoveryPrompt = `The user clicked a button labeled "${buttonLabel}" in the previous message, but the automated flow is currently being updated. Please respond to this intent naturally and guide them back to the main goal.`;
+    
+    // We pass this as a virtual message to the AI fallback
+    const virtualMessage = {
+      ...parsedMessage,
+      text: { body: `(User clicked: ${buttonLabel}) ${recoveryPrompt}` }
+    };
+    await runAIFallback(virtualMessage, client, phone, lead, channel);
+    return true;
+  }
+
+  // Fallback: Check if the user's text matches a button title in the current node
+  const currentNode = flowNodes.find(n => n.id === currentStepId);
+  if (currentNode?.type === 'interactive') {
+    const btns = currentNode.data?.buttonsList || [];
+    const matchedBtn = btns.find(b => b.title?.toLowerCase() === userText);
+    if (matchedBtn) {
+      const handleEdge = flowEdges.find(e =>
+        e.source === currentStepId &&
+        (e.sourceHandle === matchedBtn.id || e.sourceHandle === matchedBtn.title?.toLowerCase().replace(/\s+/g, '_'))
+      );
+      if (handleEdge) {
+        console.log(`[DualBrain] Graph: button title match "${userText}" → node ${handleEdge.target}`);
+        return await executeNode(handleEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+      }
+    }
+  }
+  
+  console.log(`[DualBrain] Graph: no matching edge from ${currentStepId} for "${userText || incomingTrigger.buttonId}"`);
+  return false;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
