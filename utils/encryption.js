@@ -9,6 +9,9 @@ const KEY = crypto.createHash('sha256').update(String(process.env.ENCRYPTION_KEY
  */
 function encrypt(text) {
   if (!text) return "";
+  // --- ROBUSTNESS: Avoid double encryption ---
+  if (typeof text === 'string' && text.includes(':') && text.length > 32) return text; 
+  
   const iv = crypto.randomBytes(16);
   const cipher = crypto.createCipheriv(ALGORITHM, KEY, iv);
   let encrypted = cipher.update(text, 'utf8', 'hex');
