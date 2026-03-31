@@ -680,23 +680,26 @@ router.get('/my-settings', protect, async (req, res) => {
       businessType: client.businessType,
       niche: client.niche,
       storeType: client.storeType || 'shopify',
+      wabaId: client.wabaId,
+      phoneNumberId: client.phoneNumberId,
+      whatsappToken: client.whatsappToken ? '••••••••' : '',
       shopDomain: client.shopDomain,
       shopifyClientId: client.shopifyClientId,
-      shopifyClientSecret: client.shopifyClientSecret,
-      shopifyAccessToken: client.shopifyAccessToken,
-      shopifyWebhookSecret: client.shopifyWebhookSecret,
+      shopifyClientSecret: client.shopifyClientSecret ? '••••••••' : '',
+      shopifyAccessToken: client.shopifyAccessToken ? '••••••••' : '',
+      shopifyWebhookSecret: client.shopifyWebhookSecret ? '••••••••' : '',
       woocommerceUrl: client.woocommerceUrl,
-      woocommerceKey: client.woocommerceKey,
-      woocommerceSecret: client.woocommerceSecret,
+      woocommerceKey: client.woocommerceKey ? '••••••••' : '',
+      woocommerceSecret: client.woocommerceSecret ? '••••••••' : '',
       instagramConnected: client.instagramConnected,
       instagramPageId: client.instagramPageId,
-      geminiApiKey: client.geminiApiKey,
+      geminiApiKey: client.geminiApiKey ? '••••••••' : '',
       systemPrompt: client.systemPrompt || client.flowData?.systemPrompt || '',
       isAIFallbackEnabled: client.isAIFallbackEnabled,
       adminPhone: client.adminPhone,
       googleReviewUrl: client.googleReviewUrl,
       emailUser: client.emailUser,
-      emailAppPassword: client.emailAppPassword,
+      emailAppPassword: client.emailAppPassword ? '••••••••' : '',
       automationFlows: client.automationFlows,
       messageTemplates: client.messageTemplates,
       nicheData: client.nicheData,
@@ -750,22 +753,22 @@ router.patch('/my-settings', protect, async (req, res) => {
     // Commercial & Meta Fields
     if (wabaId !== undefined) updateFields.wabaId = wabaId;
     if (phoneNumberId !== undefined) updateFields.phoneNumberId = phoneNumberId;
-    if (whatsappToken !== undefined) updateFields.whatsappToken = encrypt(whatsappToken);
+    if (whatsappToken !== undefined && whatsappToken !== '••••••••' && whatsappToken.trim() !== '') updateFields.whatsappToken = encrypt(whatsappToken);
     
     if (shopDomain !== undefined) updateFields.shopDomain = shopDomain;
     if (shopifyClientId !== undefined) updateFields.shopifyClientId = shopifyClientId;
-    if (shopifyClientSecret !== undefined) updateFields.shopifyClientSecret = encrypt(shopifyClientSecret);
-    if (shopifyAccessToken !== undefined) updateFields.shopifyAccessToken = encrypt(shopifyAccessToken);
-    if (shopifyWebhookSecret !== undefined) updateFields.shopifyWebhookSecret = encrypt(shopifyWebhookSecret);
+    if (shopifyClientSecret !== undefined && shopifyClientSecret !== '••••••••' && shopifyClientSecret.trim() !== '') updateFields.shopifyClientSecret = encrypt(shopifyClientSecret);
+    if (shopifyAccessToken !== undefined && shopifyAccessToken !== '••••••••' && shopifyAccessToken.trim() !== '') updateFields.shopifyAccessToken = encrypt(shopifyAccessToken);
+    if (shopifyWebhookSecret !== undefined && shopifyWebhookSecret !== '••••••••' && shopifyWebhookSecret.trim() !== '') updateFields.shopifyWebhookSecret = encrypt(shopifyWebhookSecret);
 
     if (woocommerceUrl !== undefined) updateFields.woocommerceUrl = woocommerceUrl;
-    if (woocommerceKey !== undefined) updateFields.woocommerceKey = encrypt(woocommerceKey);
-    if (woocommerceSecret !== undefined) updateFields.woocommerceSecret = encrypt(woocommerceSecret);
+    if (woocommerceKey !== undefined && woocommerceKey !== '••••••••' && woocommerceKey.trim() !== '') updateFields.woocommerceKey = encrypt(woocommerceKey);
+    if (woocommerceSecret !== undefined && woocommerceSecret !== '••••••••' && woocommerceSecret.trim() !== '') updateFields.woocommerceSecret = encrypt(woocommerceSecret);
 
     if (instagramConnected !== undefined) updateFields.instagramConnected = instagramConnected;
     if (instagramPageId !== undefined) updateFields.instagramPageId = instagramPageId;
-    if (instagramAccessToken !== undefined) updateFields.instagramAccessToken = encrypt(instagramAccessToken);
-    if (instagramAppSecret !== undefined) updateFields.instagramAppSecret = encrypt(instagramAppSecret);
+    if (instagramAccessToken !== undefined && instagramAccessToken !== '••••••••' && instagramAccessToken.trim() !== '') updateFields.instagramAccessToken = encrypt(instagramAccessToken);
+    if (instagramAppSecret !== undefined && instagramAppSecret !== '••••••••' && instagramAppSecret.trim() !== '') updateFields.instagramAppSecret = encrypt(instagramAppSecret);
 
     if (googleReviewUrl !== undefined) updateFields.googleReviewUrl = googleReviewUrl;
     if (adminPhone !== undefined) updateFields.adminPhone = adminPhone;
