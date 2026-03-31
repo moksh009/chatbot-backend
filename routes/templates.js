@@ -7,6 +7,8 @@ const { decrypt } = require('../utils/encryption');
 const Client = require('../models/Client');
 const User = require('../models/User');
 const { STANDARD_TEMPLATES } = require('../constants/standardTemplates');
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage() });
 
 // --- Helper Functions ---
 async function getClientCredentials(clientId, userId) {
@@ -240,17 +242,25 @@ router.get('/standard', protect, async (req, res) => {
 // 7. Push Standard Template to Meta
 router.post('/push-standard', protect, async (req, res) => {
     try {
-        const { clientId, templateId } = req.body;
+        const { clientId, templateId, headerHandle } = req.body;
         if (!clientId || !templateId) {
             return res.status(400).json({ success: false, message: 'clientId and templateId are required' });
         }
 
-        const standardTemplate = STANDARD_TEMPLATES.find(t => t.id === templateId);
+        const standardTemplate = JSON.parse(JSON.stringify(STANDARD_TEMPLATES.find(t => t.id === templateId)));
         if (!standardTemplate) {
             return res.status(404).json({ success: false, message: 'Standard template not found' });
         }
 
         const client = await getClientCredentials(clientId, req.user.id);
+
+        // Inject Custom Header Handle if provided
+        if (headerHandle) {
+            const headerComp = standardTemplate.components.find(c => c.type === 'HEADER' && c.format === 'IMAGE');
+            if (headerComp) {
+                headerComp.example = { header_handle: [headerHandle] };
+            }
+        }
 
         const payload = {
             name: standardTemplate.name,
@@ -270,11 +280,55 @@ router.post('/push-standard', protect, async (req, res) => {
             });
             res.json({ success: true, data: response.data });
         } catch (metaErr) {
-            console.error('[Template API] Meta Push Error:', metaErr.response?.data || metaErr.message);
-            res.status(400).json({ success: false, message: 'Failed to push template to Meta', details: metaErr.response?.data });
+            const errData = metaErr.response?.data || metaErr.message;
+            console.error('[Template API] Meta Push Error:', JSON.stringify(errData, null, 2));
+            res.status(400).json({ success: false, message: 'Failed to push template to Meta', details: errData });
         }
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// 8. Upload Media to Meta (Resumable Upload API)
+router.post('/upload-media', protect, upload.single('file'), async (req, res) => {
+    try {
+        const { clientId } = req.body;
+        if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
+
+        const client = await getClientCredentials(clientId, req.user.id);
+        const accessToken = client.whatsappToken;
+
+        // Meta requires App ID for uploads. We try to find it in process.env or fallback to a known common one if suitable.
+        // Ideally, this should be configured in the Client settings.
+        const appId = process.env.META_APP_ID || "1487843075253818"; // Fallback to provided project AppID if available
+        
+        // 1. Initialize Upload
+        const initUrl = `https://graph.facebook.com/v18.0/${appId}/uploads`;
+        const initRes = await axios.post(initUrl, null, {
+            params: {
+                file_length: req.file.size,
+                file_type: req.file.mimetype,
+                access_token: accessToken
+            }
+        });
+
+        const sessionId = initRes.data.id;
+
+        // 2. Upload Data
+        const uploadUrl = `https://graph.facebook.com/v18.0/${sessionId}`;
+        const uploadRes = await axios.post(uploadUrl, req.file.buffer, {
+            headers: {
+                'Authorization': `OAuth ${accessToken}`,
+                'file_offset': 0,
+                'Content-Type': req.file.mimetype
+            }
+        });
+
+        res.json({ success: true, handle: uploadRes.data.h });
+    } catch (error) {
+        const errData = error.response?.data || error.message;
+        console.error('[Template API] Media Upload Error:', JSON.stringify(errData, null, 2));
+        res.status(500).json({ success: false, message: 'Failed to upload media to Meta', details: errData });
     }
 });
 
