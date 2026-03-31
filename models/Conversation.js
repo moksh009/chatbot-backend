@@ -37,6 +37,23 @@ const ConversationSchema = new mongoose.Schema({
   afterHours: { type: Boolean, default: false },
 
   metadata: { type: Object, default: {} },
+  
+  // Phase 17 Enterprise Robustness
+  processedMessageIds: { 
+    type: [String], 
+    default: [],
+    index: true // index for deduplication search
+  },
+  consecutiveFailedMessages: { type: Number, default: 0 },
+  lastNodeVisited: {
+    nodeId:   String,
+    nodeType: String,
+    nodeLabel:String,
+    visitedAt:Date
+  },
+  flowPausedUntil: { type: Date },
+  pausedAtNodeId:  { type: String },
+  abVariant:       { type: String },
 
   // Phase 13 Omnichannel
   channel: {
@@ -51,5 +68,14 @@ const ConversationSchema = new mongoose.Schema({
 
 // Compound index for unique conversation per phone + client
 ConversationSchema.index({ phone: 1, clientId: 1 }, { unique: true });
+
+// Pre-save hook to cap processedMessageIds
+ConversationSchema.pre('save', function(next) {
+  if (this.processedMessageIds.length > 50) {
+    this.processedMessageIds = this.processedMessageIds.slice(-50);
+  }
+  this.updatedAt = new Date();
+  next();
+});
 
 module.exports = mongoose.model('Conversation', ConversationSchema);

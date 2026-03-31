@@ -7,10 +7,26 @@ const Message      = require("../models/Message");
 const DailyStat    = require("../models/DailyStat");
 const Client       = require("../models/Client");
 const emailService = require("./emailService");
+const BillingService = require('./billingService');
 const log = require("./logger")('DualBrain');
 const { generateText, getGeminiModel } = require('./gemini');
 const { createMessage } = require("./createMessage");
 const { injectVariables } = require("./variableInjector");
+
+// Phase 17: Concurrency & Robustness
+const processingLocks = new Map(); // phone -> timestamp
+const SESSION_LOCK_TIMEOUT = 10000; // 10 seconds
+
+/**
+ * Helper to wrap promises with a timeout
+ */
+async function withTimeout(promise, ms, label = "Operation") {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
+}
 
 /**
  * WHATSAPP & INSTAGRAM NAMESPACE WRAPPERS
@@ -100,6 +116,62 @@ function replaceVariables(text, client, lead, convo) {
   return injectVariables(text, { lead, client, convo, order: convo?.metadata?.lastOrder });
 }
 
+/**
+ * Phase 17: Entry Point for Webhook Messages
+ * Handles locking, client discovery, and final deduplication.
+ */
+async function handleWhatsAppMessage(from, message, phoneNumberId) {
+  // 1. Session Lock to prevent race conditions
+  if (processingLocks.has(from)) {
+    const lockTime = processingLocks.get(from);
+    if (Date.now() - lockTime < SESSION_LOCK_TIMEOUT) {
+      console.warn(`🔒 Session locked for ${from}. Skipping rapid message.`);
+      return;
+    }
+  }
+  processingLocks.set(from, Date.now());
+
+  try {
+    const { discoverClientByPhoneId } = require("./clientDiscovery");
+    const { parseWhatsAppPayload } = require("./parseWhatsAppPayload");
+
+    // Discover client
+    const client = await discoverClientByPhoneId(phoneNumberId);
+    if (!client) {
+      console.warn(`[DualBrain] Unknown phoneId: ${phoneNumberId}`);
+      return;
+    }
+
+    // Parse the payload into engine format
+    // (In masterWebhook we did some rough parsing, here we ensure consistency)
+    const parsedMessage = {
+      from,
+      phone: from,
+      messageId: message.id,
+      timestamp: message.timestamp,
+      type: message.type,
+      phoneNumberId,
+      text: message.text,
+      interactive: message.interactive,
+      button: message.button,
+      image: message.image,
+      audio: message.audio,
+      video: message.video,
+      document: message.document,
+      channel: 'whatsapp'
+    };
+
+    // run engine
+    await runDualBrainEngine(parsedMessage, client);
+
+  } catch (err) {
+    console.error(`[DualBrain] handleWhatsAppMessage Error:`, err.message);
+  } finally {
+    // Release lock
+    processingLocks.delete(from);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN ENGINE — called by ALL niche engines
 // Returns: true if message was handled
@@ -144,6 +216,14 @@ async function runDualBrainEngine(parsedMessage, client) {
   // STEP 3: Save inbound message to DB + emit to dashboard
   await saveInboundMessage(phone, client.clientId, parsedMessage, io, channel, convo._id);
 
+  // Phase 17: Deduplication Update
+  // Mark this message as processed to prevent duplicate engine runs
+  if (parsedMessage.messageId) {
+    await Conversation.findByIdAndUpdate(convo._id, {
+      $addToSet: { processedMessageIds: parsedMessage.messageId }
+    });
+  }
+
   // STEP 0.1: Check if client is active
   if (!client.isActive) {
     log.warn(`[DualBrain] Skipping message for INACTIVE client ${client.clientId}`);
@@ -153,6 +233,19 @@ async function runDualBrainEngine(parsedMessage, client) {
   // STEP 4: Human Takeover — bot is paused
   if (convo.botPaused || convo.status === 'HUMAN_TAKEOVER') {
     return true;
+  }
+
+  // Phase 17: Check for Flow Delay
+  if (convo.flowPausedUntil && new Date() < convo.flowPausedUntil) {
+    console.log(`⏳ Flow still paused for ${phone}. Responding via AI or skipping...`);
+    // If user messages DURING a delay, we can either ignore or respond via AI
+    // For now, we skip to avoid disrupting the scheduled flow
+    return true;
+  }
+  
+  // Clear delay if past time
+  if (convo.flowPausedUntil && new Date() >= convo.flowPausedUntil) {
+    await Conversation.findByIdAndUpdate(convo._id, { $unset: { flowPausedUntil: 1, pausedAtNodeId: 1 } });
   }
 
   // STEP 4B: Handle voice notes — transcribe → re-process as text
@@ -308,7 +401,22 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     console.error(`[DualBrain] Failed to increment visit count for node ${nodeId}:`, err.message);
   }
 
-  const sent = await sendNodeContent(node, client, phone, lead, convo, channel);
+  const sent = await withTimeout(
+    sendNodeContent(node, client, phone, lead, convo, channel),
+    8000, 
+    `Node Content (${node.type})`
+  );
+
+  // Phase 17: Save Last Node Visited
+  await Conversation.findByIdAndUpdate(convo._id, {
+    lastNodeVisited: {
+      nodeId: node.id,
+      nodeType: node.type,
+      nodeLabel: node.data?.label || node.type,
+      visitedAt: new Date()
+    }
+  });
+
   if (!sent && node.type !== 'logic' && node.type !== 'delay' && node.type !== 'set_variable' && node.type !== 'shopify_call' && node.type !== 'http_request') return false;
 
   // --- SPECIAL NODE LOGIC (Automated Traversal) ---
@@ -339,6 +447,45 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     const targetHandle = result ? 'true' : 'false';
     const nextEdge = flowEdges.find(e => e.source === nodeId && e.sourceHandle === targetHandle);
     if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+  }
+
+  // Phase 17: AB Test Node
+  if (node.type === 'ab_test' || node.type === 'ABTestNode') {
+    // Persistent split based on phone number hash
+    const hash = crypto.createHash('md5').update(phone).digest('hex');
+    const firstChar = hash.charAt(0);
+    const variant = parseInt(firstChar, 16) < 8 ? 'A' : 'B'; // 50/50 split
+    
+    await Conversation.findByIdAndUpdate(convo._id, { abVariant: variant });
+    const nextEdge = flowEdges.find(e => e.source === nodeId && e.sourceHandle === variant.toLowerCase());
+    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+  }
+
+  // Phase 17: Tag Lead Node
+  if (node.type === 'tag_lead' || node.type === 'TagNode') {
+    const { action, tag } = node.data; // action: 'add' or 'remove'
+    if (tag && lead) {
+       const update = action === 'remove' ? { $pull: { tags: tag } } : { $addToSet: { tags: tag } };
+       await AdLead.findByIdAndUpdate(lead._id, update);
+    }
+  }
+
+  // Phase 17: Delay / Wait Node
+  if (node.type === 'delay' || node.type === 'WaitNode') {
+    const { duration, unit } = node.data; // duration: 5, unit: 'minutes'
+    let delayMs = 60000; // default 1 min
+    if (unit === 'minutes') delayMs = duration * 60000;
+    else if (unit === 'hours') delayMs = duration * 3600000;
+    else if (unit === 'seconds') delayMs = duration * 1000;
+
+    const resumeAt = new Date(Date.now() + delayMs);
+    await Conversation.findByIdAndUpdate(convo._id, { 
+      flowPausedUntil: resumeAt,
+      pausedAtNodeId: nodeId 
+    });
+    
+    console.log(`⏳ Flow paused for ${phone} until ${resumeAt.toISOString()}`);
+    return true; // Stop traversal here, cron will resume
   }
 
   // New: Set Variable Node
@@ -606,6 +753,24 @@ async function tryKeywordFallback(parsedMessage, client, convo, phone) {
         console.log(`[DualBrain] Keyword: restart_flow for "${text}"`);
         await Conversation.findByIdAndUpdate(convo._id, { lastStepId: null });
 
+        // --- PHASE 17 SAAS BILLING ENFORCEMENT ---
+        const usage = await BillingService.checkLimit(client.clientId, 'aiCallsMade');
+        if (!usage.allowed) {
+            console.warn(`[DualBrainEngine] Billing Limit Reached for client: ${client.clientId}. Total AI calls: ${usage.current}/${usage.limit}`);
+            // Fallback: Notify Admin instead of allowing AI to run
+            if (global.NotificationService) {
+                await global.NotificationService.sendAdminAlert(client.clientId, `SaaS Limit Reached: ${usage.current}/${usage.limit} AI calls used. AI responses paused for ${client.clientId}.`, 'email');
+            }
+            return {
+                text: "Our AI assistant is temporarily resting due to high volume. A human teammate will be with you shortly.",
+                status: 'HUMAN_TAKEOVER'
+            };
+        }
+        
+        // Track the attempt
+        await BillingService.incrementUsage(client.clientId, 'aiCallsMade');
+        await BillingService.incrementUsage(client.clientId, 'messagesSent');
+
         // Re-run graph with cleared state
         const welcomeNodeId = client.simpleSettings?.welcomeStartNodeId;
         const flowNodes = client.flowNodes || [];
@@ -688,11 +853,32 @@ async function runAIFallback(parsedMessage, client, phone, lead, channel = 'what
     ].join('\n\n');
 
     const reply = await generateText(prompt, client.geminiApiKey || client.config?.geminiApiKey);
+    
+    // Clear failure counter on success
+    await Conversation.findOneAndUpdate(
+      { phone, clientId: client.clientId },
+      { $set: { consecutiveFailedMessages: 0 } }
+    );
+
     await WhatsApp.sendText(client, phone, reply, channel);
     console.log(`[DualBrain] AI Fallback (${isHesitating ? 'Bargaining' : 'Info'}) used for "${text.substring(0, 50)}..."`);
   } catch (err) {
     console.error('[DualBrain] AI Fallback error:', err.message);
-    await WhatsApp.sendText(client, phone, "I didn't quite understand that. Type 'Hi' to see how I can help! 😊");
+
+    // Phase 17: Consecutive Failure Tracking
+    const updatedConvo = await Conversation.findOneAndUpdate(
+      { phone, clientId: client.clientId },
+      { $inc: { consecutiveFailedMessages: 1 } },
+      { new: true }
+    );
+
+    if (updatedConvo.consecutiveFailedMessages >= 3) {
+      log.warn(`🚨 3 consecutive AI failures for ${phone}. Escalating to human.`);
+      await handleUniversalEscalate(client, phone, updatedConvo);
+      return;
+    }
+
+    await WhatsApp.sendText(client, phone, "I'm having a bit of trouble understanding. Let me check with my team! 😊");
   }
 }
 
@@ -1098,6 +1284,7 @@ function isGreeting(text) {
 }
 
 module.exports = { 
+    handleWhatsAppMessage,
     runDualBrainEngine, 
     executeNode, 
     sendNodeContent, 

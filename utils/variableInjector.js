@@ -1,46 +1,70 @@
+"use strict";
+
+const { DateTime } = require('luxon');
+
 /**
- * Utility to inject dynamic lead/order variables into message strings.
- * Used for personalization in WhatsApp templates and interactive messages.
+ * Enterprise Variable Injector
+ * Supports 20+ dynamic variables using a resolver map.
  */
-function injectVariables(text, { lead, client, order, convo }) {
-  if (!text) return "";
+function injectVariables(text, { lead, client, convo, order }) {
+  if (!text || typeof text !== 'string') return text;
 
-  let result = text;
-
-  // 1. Lead Variables
-  if (lead) {
-    result = result.replace(/{{name}}/g, lead.name || "Customer");
-    result = result.replace(/{{first_name}}/g, lead.name?.split(" ")[0] || "Customer");
-    result = result.replace(/{{phone}}/g, lead.phoneNumber || "");
+  // 1. Define Variable Resolvers
+  const RESOLVERS = {
+    // --- Lead / Customer Variables ---
+    'name':           () => lead?.name || 'Customer',
+    'first_name':     () => (lead?.name || 'Customer').split(' ')[0],
+    'phone':          () => lead?.phoneNumber || convo?.phone || 'N/A',
+    'email':          () => lead?.email || 'N/A',
+    'city':           () => lead?.city || 'your city',
+    'tags':           () => (lead?.tags || []).join(', ') || 'None',
+    'score':          () => lead?.score || 0,
     
-    // Dynamic Buy URLs with UTMs
-    if (client?.nicheData?.storeUrl) {
-      const baseUrl = client.nicheData.storeUrl;
-      result = result.replace(/{{buy_url_5mp}}/g, `${baseUrl}/products/delitech-smart-wireless-video-doorbell-5mp?utm_source=whatsapp&utm_medium=chatbot&uid=${lead._id}`);
-      result = result.replace(/{{buy_url_3mp}}/g, `${baseUrl}/products/delitech-smart-wireless-video-doorbell-3mp?utm_source=whatsapp&utm_medium=chatbot&uid=${lead._id}`);
-      result = result.replace(/{{buy_url_2mp}}/g, `${baseUrl}/products/delitech-smart-wireless-video-doorbell-2mp?utm_source=whatsapp&utm_medium=chatbot&uid=${lead._id}`);
-      result = result.replace(/{{cart_url}}/g, `${baseUrl}/cart?uid=${lead._id}`);
+    // --- Business / Client Variables ---
+    'business_name':  () => client?.name || 'our store',
+    'business_phone': () => client?.adminPhone || 'our support',
+    'store_url':      () => client?.nicheData?.storeUrl || '',
+    
+    // --- Order / Cart Variables ---
+    'order_id':       () => order?.orderId || convo?.metadata?.order_id || 'N/A',
+    'order_status':   () => order?.status || convo?.metadata?.order_status || 'Processing',
+    'order_total':    () => order?.amount || order?.totalPrice || convo?.metadata?.order_total || 0,
+    'tracking_link':  () => order?.trackingUrl || 'Pending',
+    'cart_total':     () => lead?.cartValue || convo?.metadata?.cart_total || 0,
+    'items_count':    () => (lead?.cartSnapshot?.items?.length) || 0,
+    'last_product':   () => lead?.cartSnapshot?.items?.[0]?.title || 'Product',
+    
+    // --- System / Context Variables ---
+    'current_day':    () => DateTime.now().setZone('Asia/Kolkata').toFormat('EEEE'),
+    'current_time':   () => DateTime.now().setZone('Asia/Kolkata').toFormat('h:mm a'),
+    'agent_name':     () => client?.config?.agentName || 'AI Assistant',
+    'greeting':       () => {
+      const hour = DateTime.now().setZone('Asia/Kolkata').hour;
+      if (hour < 12) return 'Good Morning';
+      if (hour < 17) return 'Good Afternoon';
+      return 'Good Evening';
+    },
+    
+    // --- Custom Metadata Fallback ---
+    'last_input':     () => convo?.metadata?.last_input || '',
+  };
+
+  // 2. Perform Replacement
+  let result = text;
+  
+  // Replace standard {{variable}} syntax
+  const regex = /\{\{([a-zA-Z0-9_]+)\}\}/g;
+  result = result.replace(regex, (match, key) => {
+    const resolver = RESOLVERS[key];
+    if (resolver) return resolver();
+    
+    // Fallback to conversation metadata if no resolver exists
+    if (convo?.metadata && convo.metadata[key] !== undefined) {
+      return convo.metadata[key];
     }
-  }
-
-  // 2. Client Variables
-  if (client) {
-    result = result.replace(/{{business_name}}/g, client.businessName || "Delitech Smart Homes");
-  }
-
-  // 3. Order Variables (for COD Nudges / Status)
-  if (order) {
-    result = result.replace(/{{order_id}}/g, order.orderId || "");
-    result = result.replace(/{{amount}}/g, order.amount?.toLocaleString() || "0");
-  }
-
-  // 4. Conversation Metadata (Captured Variables)
-  if (convo?.metadata) {
-    // Replace {{var:variable_name}} with metadata value
-    result = result.replace(/{{var:([^}]+)}}/g, (match, varName) => {
-      return convo.metadata[varName.trim()] || "";
-    });
-  }
+    
+    return match; // Return as is if not found
+  });
 
   return result;
 }

@@ -1,13 +1,38 @@
 const express = require('express');
 const router = express.Router();
-const { discoverClientByPhoneId } = require('../utils/clientDiscovery');
-const genericAppointmentEngine = require('./engines/genericAppointment');
-const genericEcommerceEngine = require('./engines/genericEcommerce');
-const { runDualBrainEngine } = require('../utils/dualBrainEngine');
-const { parseWhatsAppPayload } = require('../utils/parseWhatsAppPayload');
+const crypto = require('crypto');
+const Conversation = require('../models/Conversation');
+const { handleWhatsAppMessage } = require('../utils/dualBrainEngine');
+
+/**
+ * Middleware to verify Meta X-Hub-Signature-256
+ */
+const verifyMetaSignature = (req, res, next) => {
+  const signature = req.headers['x-hub-signature-256'];
+  if (!signature) {
+    console.warn("⚠️ Meta Signature Missing");
+    if (process.env.META_APP_SECRET) return res.status(401).send('Signature missing');
+    return next();
+  }
+
+  const elements = signature.split('=');
+  const signatureHash = elements[1];
+  
+  // Use req.rawBody if available for accurate HMAC verification
+  const payload = req.rawBody ? req.rawBody : JSON.stringify(req.body);
+  const expectedHash = crypto
+    .createHmac('sha256', process.env.META_APP_SECRET || 'fallback_secret')
+    .update(payload)
+    .digest('hex');
+
+  if (signatureHash !== expectedHash) {
+    console.error("❌ Meta Signature Mismatch");
+    return res.status(401).send('Signature mismatch');
+  }
+  next();
+};
 
 // 1. Webhook Verification (GET)
-// Meta sends a GET to verify the webhook URL
 router.get('/', (req, res) => {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
@@ -22,51 +47,56 @@ router.get('/', (req, res) => {
 });
 
 // 2. Master Webhook Handling (POST)
-// ALL incoming messages from Meta hit this root endpoint
-router.post('/', async (req, res) => {
-    // Send 200 OK immediately as required by Meta
-    res.status(200).send('EVENT_RECEIVED');
+router.post('/', verifyMetaSignature, async (req, res) => {
+  const body = req.body;
 
+  // Send 200 OK immediately as required by Meta to avoid retries
+  res.status(200).send('EVENT_RECEIVED');
+
+  if (body.object === 'whatsapp_business_account' && body.entry) {
     try {
-        const parsedMessage = parseWhatsAppPayload(req.body);
-        if (!parsedMessage) return;
+      for (const entry of body.entry) {
+        for (const change of entry.changes) {
+          const value = change.value;
+          
+          // A. Handle Status Updates (delivered, read, failed)
+          if (value.statuses) {
+             // We can handle status updates here if needed for analytics
+             // For now, logged for debugging
+             // console.log("📉 Status Update:", JSON.stringify(value.statuses[0]));
+          }
 
-        const phoneNumberId = parsedMessage.phoneNumberId;
-        if (!phoneNumberId) return;
+          // B. Handle Incoming Messages
+          if (value.messages) {
+            for (const message of value.messages) {
+              const from = message.from; 
+              const messageId = message.id;
 
-        // DISCOVER CLIENT
-        const client = await discoverClientByPhoneId(phoneNumberId);
-        if (!client) {
-            console.warn(`[MasterWebhook] Received message for unknown phoneId: ${phoneNumberId}`);
-            return;
-        }
+              // 1. DEDUPLICATION CHECK
+              const existingConvo = await Conversation.findOne({ 
+                phone: from, 
+                processedMessageIds: messageId 
+              });
+              
+              if (existingConvo) {
+                console.log(`♻️ Skipping duplicate message ${messageId} from ${from}`);
+                continue; 
+              }
 
-        console.log(`[MasterWebhook] Routing to Client: ${client.clientId} (${client.name})`);
+              console.log(`📩 Incoming message from ${from}:`, message.text?.body || message.type);
 
-        // 1. HANDLE STATUS UPDATES (delivered, read, failed)
-        if (parsedMessage.type === 'status_update') {
-            const { updateCampaignStats } = require('../utils/campaignStatsHelper');
-            await updateCampaignStats(parsedMessage, client);
-            return;
-        }
-
-        // 2. ROUTE BY FLOW DATA OR BUSINESS TYPE
-        if (client.flowNodes && client.flowNodes.length > 0) {
-            await runDualBrainEngine(parsedMessage, client);
-        } else {
-            // Fallback to Niche Engines
-            if (client.businessType === 'ecommerce') {
-                await genericEcommerceEngine.handleWebhook(req, res);
-            } else if (client.businessType === 'salon' || client.businessType === 'clinic') {
-                await genericAppointmentEngine.handleWebhook(req, res);
-            } else {
-                await runDualBrainEngine(parsedMessage, client);
+              // Pass to processing engine
+              // engine handles locking, conversation creation, and processing
+              handleWhatsAppMessage(from, message, value.metadata?.phone_number_id)
+                .catch(err => console.error("Engine Error:", err));
             }
+          }
         }
-
+      }
     } catch (err) {
-        console.error('[MasterWebhook] Error processing background event:', err.message, err.stack);
+      console.error('[MasterWebhook] Error processing webhook:', err.message);
     }
+  }
 });
 
 module.exports = router;

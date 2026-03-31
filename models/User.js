@@ -16,6 +16,8 @@ const UserSchema = new mongoose.Schema({
   },
   clientId: { type: String, required: true }, // Tenant ID
   hasCompletedTour: { type: Boolean, default: false }, // For frontend Onboarding
+  tourCompletedAt:  { type: Date },
+  tourSkippedAt:    { type: Date },
   createdAt: { type: Date, default: Date.now }
 });
 

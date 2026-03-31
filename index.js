@@ -198,6 +198,10 @@ scheduleBirthdayCron();
 const scheduleProductSyncCron = require('./cron/productSyncCron');
 scheduleProductSyncCron();
 
+// Initialize Flow Resumption Cron Job (Phase 17)
+const scheduleFlowResumption = require('./cron/flowResumptionCron');
+scheduleFlowResumption();
+
 // Phase 11 Cron Jobs
 require('./cron/followUpSequenceCron')();
 require('./cron/campaignSchedulerCron')();

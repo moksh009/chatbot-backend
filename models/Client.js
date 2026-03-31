@@ -181,11 +181,28 @@ const ClientSchema = new mongoose.Schema({
   }],
 
   // Phase 15 Trial & Admin Flags
-  trialActive: { type: Boolean, default: true },
-  trialEndsAt: { type: Date, default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) }, // 7 days
+  trialActive:   { type: Boolean, default: true },
+  trialEndsAt:   { type: Date,    default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) }, // 7 days
+  isPaidAccount: { type: Boolean, default: false },
+  suspendedAt:   { type: Date },
+
+  // Phase 17 Usage Tracking
+  usage: {
+    month:            { type: String, default: () => new Date().toISOString().slice(0, 7) }, // "2026-03"
+    messagesSent:     { type: Number, default: 0 },
+    aiCallsMade:      { type: Number, default: 0 },
+    campaignsSent:    { type: Number, default: 0 },
+    leadsCreated:     { type: Number, default: 0 },
+    lastResetAt:      { type: Date,   default: Date.now }
+  },
+  limits: {
+    messagesPerMonth:  { type: Number, default: 1000 },
+    campaignsPerMonth: { type: Number, default: 5 },
+    aiCallsPerMonth:   { type: Number, default: 500 },
+  },
 
   // Admin Alert Notifications
-  adminAlertEmail: { type: String, default: "" },
+  adminAlertEmail:    { type: String, default: "" },
   adminAlertWhatsapp: { type: String, default: "" },
 
   createdAt: { type: Date, default: Date.now }
