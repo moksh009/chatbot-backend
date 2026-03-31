@@ -121,6 +121,69 @@ const WhatsApp = {
   },
 
   /**
+   * Smartly builds components and sends a Meta Template based on its synced structure.
+   * Prevents parameter mismatch errors and handles image headers.
+   */
+  async sendSmartTemplate(client, phone, templateName, variables = [], headerImage = null, languageCode = 'en') {
+    const syncedTemplates = client.syncedMetaTemplates || [];
+    const template = syncedTemplates.find(t => t.name === templateName);
+    
+    let components = [];
+
+    if (template) {
+      // 1. Process Header (Support for IMAGE)
+      const header = template.components?.find(c => c.type === 'HEADER');
+      if (header && header.format === 'IMAGE' && headerImage) {
+        components.push({
+          type: 'header',
+          parameters: [{ type: 'image', image: { link: headerImage } }]
+        });
+      }
+
+      // 2. Process Body (Match variable count exactly)
+      const body = template.components?.find(c => c.type === 'BODY');
+      if (body) {
+        // Find max variable index like {{5}}
+        const paramMatches = body.text.match(/{{(\d+)}}/g) || [];
+        const paramCount = paramMatches.length > 0 
+          ? Math.max(...paramMatches.map(m => parseInt(m.match(/\d+/)[0]))) 
+          : 0;
+
+        const parameters = [];
+        for (let i = 1; i <= paramCount; i++) {
+          const val = variables[i - 1] === undefined ? "" : variables[i - 1];
+          parameters.push({ type: 'text', text: String(val) });
+        }
+        
+        if (parameters.length > 0) {
+          components.push({ type: 'body', parameters });
+        }
+
+        if (variables.length < paramCount) {
+          log.warn(`[WhatsApp] Template ${templateName} mismatch: Expected ${paramCount}, got ${variables.length}. Sent empty strings.`);
+        }
+      }
+    } else {
+      // Fallback: If template not synced, send variables as body params sequentially
+      log.warn(`[WhatsApp] Template ${templateName} not synced. Using sequential fallback.`);
+      if (variables.length > 0) {
+        components.push({
+          type: 'body',
+          parameters: variables.map(v => ({ type: 'text', text: String(v) }))
+        });
+      }
+      if (headerImage) {
+        components.push({
+          type: 'header',
+          parameters: [{ type: 'image', image: { link: headerImage } }]
+        });
+      }
+    }
+
+    return this.sendTemplate(client, phone, templateName, languageCode, components);
+  },
+
+  /**
    * Internal helper to extract credentials with validation
    */
   getCredentials(client) {

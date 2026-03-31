@@ -36,23 +36,44 @@ async function shouldSkipLead(lead) {
 // Universal Rich Nudge Helper
 async function sendRichNudge(client, lead, text, options = {}) {
     try {
-        const { includeImage, buttons = [] } = options;
+        const { includeImage, buttons = [], templateName } = options;
         const phone = lead.phoneNumber;
 
-        // 1. Prepare Image if requested
+        // 1. Prepare Data
         let imageUrl = null;
         if (includeImage && lead.cartSnapshot?.items?.[0]?.image) {
             imageUrl = lead.cartSnapshot.items[0].image;
         }
 
-        // 2. Prepare Buttons if provided (Max 3)
+        const itemName = lead.cartSnapshot?.items?.[0]?.title || "items in your cart";
+        const totalValue = lead.cartSnapshot?.totalPrice ? `₹${lead.cartSnapshot.totalPrice}` : "";
+        const checkoutUrl = lead.checkoutUrl || "";
+
+        // 2. If Meta Template is configured, use Smart Template
+        if (templateName) {
+            log.info(`[Nudge] Sending Smart Template ${templateName} to ${phone}`);
+            
+            // Standard Variable Mapping:
+            // {{1}}: Name, {{2}}: Product, {{3}}: Total, {{4}}: Link
+            const variables = [
+                lead.name || 'there',
+                itemName,
+                totalValue,
+                checkoutUrl
+            ];
+
+            await WhatsApp.sendSmartTemplate(client, phone, templateName, variables, imageUrl);
+            await recordNudge(lead, `[Template: ${templateName}]`, 'template');
+            return;
+        }
+
+        // 3. Fallback to Interactive/Image/Text
         const activeButtons = buttons.filter(b => b && b.trim()).slice(0, 3).map((b, i) => ({
             type: 'reply',
             reply: { id: `cart_btn_${i}_${lead._id}`, title: b.substring(0, 20) }
         }));
 
         if (activeButtons.length > 0) {
-            // Interactive Message (Buttons)
             const interactive = {
                 type: 'button',
                 header: imageUrl ? { type: 'image', image: { link: imageUrl } } : undefined,
@@ -62,12 +83,10 @@ async function sendRichNudge(client, lead, text, options = {}) {
             await WhatsApp.sendInteractive(client, phone, interactive, text);
             await recordNudge(lead, `[Interactive: ${text}]`, 'interactive');
         } else if (imageUrl) {
-            // Image Message with Caption
             await WhatsApp.sendImage(client, phone, imageUrl, text);
             await recordNudge(lead, `[Image: ${text}]`, 'image');
         } else {
-            // Standard Text Message
-            await WhatsApp.sendText(client, phone, text);
+            await WhatsApp.sendText(client, lead.phoneNumber, text);
             await recordNudge(lead, text, 'text');
         }
     } catch (err) {
@@ -89,14 +108,15 @@ const scheduleAbandonedCartCron = () => {
             for (const client of clients) {
                 const niche = client.nicheData || {};
 
-                // --- Step 0: Browse Abandonment (30 mins ago) ---
+                // --- Step 0: Browse Abandonment (Customizable Delay) ---
+                const browseDelayMin = parseInt(niche.browseDelay) || 30;
                 const browseBatch = await AdLead.find({
                     clientId: client.clientId,
                     isOrderPlaced: { $ne: true },
                     addToCartCount: 0,
                     linkClicks: { $gt: 0 },
                     recoveryStep: { $exists: false },
-                    updatedAt: { $lte: new Date(now - 30 * 60 * 1000), $gte: sevenDaysAgo }
+                    updatedAt: { $lte: new Date(now - browseDelayMin * 60 * 1000), $gte: sevenDaysAgo }
                 }).limit(20);
 
                 for (const lead of browseBatch) {
@@ -126,7 +146,8 @@ const scheduleAbandonedCartCron = () => {
                     const msg = (niche.abandonedMsg15m || niche.abandonedMsg1)?.replace(/{name}/g, lead.name || 'there') || `Hi! 👋 We noticed you left something in your cart. Check it out now!`;
                     
                     await sendRichNudge(client, lead, msg, {
-                        includeImage: niche.abandonedIncludeImage1,
+                        templateName: niche.abandonedTpl15m,
+                        includeImage: niche.abandonedIncludeImage1 || !!niche.abandonedTpl15m,
                         buttons: [niche.abandonedMsg15m_btn1, niche.abandonedMsg15m_btn2]
                     });
 
@@ -152,7 +173,8 @@ const scheduleAbandonedCartCron = () => {
                     const msg = (niche.abandonedMsg2h || niche.abandonedMsg2)?.replace(/{name}/g, lead.name || 'there') || `Hey! Your items are still waiting for you. 😊`;
                     
                     await sendRichNudge(client, lead, msg, {
-                        includeImage: niche.abandonedIncludeImage2,
+                        templateName: niche.abandonedTpl2h,
+                        includeImage: niche.abandonedIncludeImage2 || !!niche.abandonedTpl2h,
                         buttons: [niche.abandonedMsg2h_btn1, niche.abandonedMsg2h_btn2]
                     });
 
@@ -178,7 +200,8 @@ const scheduleAbandonedCartCron = () => {
                     const msg = (niche.abandonedMsg24h || niche.abandonedMsg3)?.replace(/{name}/g, lead.name || 'there') || `Final call! Your cart is about to expire. 🛒`;
                     
                     await sendRichNudge(client, lead, msg, {
-                        includeImage: niche.abandonedIncludeImage3,
+                        templateName: niche.abandonedTpl24h || niche.abandonedTplFinal,
+                        includeImage: niche.abandonedIncludeImage3 || !!niche.abandonedTplFinal,
                         buttons: [niche.abandonedMsg24h_btn1, niche.abandonedMsg24h_btn2]
                     });
 

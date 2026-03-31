@@ -33,6 +33,14 @@ function injectVariables(text, { lead, client, convo, order }) {
     'cart_total':     () => lead?.cartValue || convo?.metadata?.cart_total || 0,
     'items_count':    () => (lead?.cartSnapshot?.items?.length) || 0,
     'last_product':   () => lead?.cartSnapshot?.items?.[0]?.title || 'Product',
+    'checkout_url':   () => {
+      const baseUrl = client?.nicheData?.storeUrl || '';
+      return lead?.cartSnapshot?.token 
+        ? `${baseUrl}/cart/${lead.cartSnapshot.token}?utm_source=whatsapp` 
+        : baseUrl;
+    },
+    'payment_link':   () => order?.razorpayUrl || order?.cashfreeUrl || convo?.metadata?.payment_link || 'N/A',
+    'discount_amount':() => client?.automationFlows?.find(f => f.id === 'cod_to_prepaid')?.config?.discountAmount || 50,
     
     // --- System / Context Variables ---
     'current_day':    () => DateTime.now().setZone('Asia/Kolkata').toFormat('EEEE'),
@@ -52,8 +60,8 @@ function injectVariables(text, { lead, client, convo, order }) {
   // 2. Perform Replacement
   let result = text;
   
-  // Replace standard {{variable}} syntax
-  const regex = /\{\{([a-zA-Z0-9_]+)\}\}/g;
+  // Support both {{var}} and {var} for maximum robustness
+  const regex = /\{+([a-zA-Z0-9_]+)\}+/g;
   result = result.replace(regex, (match, key) => {
     const resolver = RESOLVERS[key];
     if (resolver) return resolver();

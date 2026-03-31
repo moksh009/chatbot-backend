@@ -215,6 +215,28 @@ async function runDualBrainEngine(parsedMessage, client) {
 
   // STEP 3: Save inbound message to DB + emit to dashboard
   await saveInboundMessage(phone, client.clientId, parsedMessage, io, channel, convo._id);
+  
+  // --- SMART ALERT DETECTION: "Call Now" ---
+  const userText = (parsedMessage.text?.body || '').toLowerCase().trim();
+  const callKeywords = ['call me', 'call now', 'want to talk', 'need a call', 'phone call', 'speak to a human', 'support agent'];
+  if (callKeywords.some(k => userText.includes(k))) {
+      const NotificationService = require('./notificationService');
+      await NotificationService.sendAdminAlert(client, {
+          customerPhone: phone,
+          topic: "📞 Lead requested a call",
+          triggerSource: `Keyword: "${userText}"`,
+          channel: 'both'
+      });
+      if (io) {
+          io.to(`client_${client.clientId}`).emit('attention_required', {
+              phone,
+              reason: "Lead requested a call — prioritize!",
+              priority: 'high'
+          });
+      }
+      // Optional: Pause bot or mark for takeover
+      await Conversation.findByIdAndUpdate(convo._id, { status: 'HUMAN_TAKEOVER', requiresAttention: true });
+  }
 
   // Phase 17: Deduplication Update
   // Mark this message as processed to prevent duplicate engine runs

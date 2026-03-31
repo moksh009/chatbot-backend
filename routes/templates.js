@@ -6,6 +6,7 @@ const log = require('../utils/logger')('TemplateAPI');
 const { decrypt } = require('../utils/encryption');
 const Client = require('../models/Client');
 const User = require('../models/User');
+const { STANDARD_TEMPLATES } = require('../constants/standardTemplates');
 
 // --- Helper Functions ---
 async function getClientCredentials(clientId, userId) {
@@ -229,6 +230,52 @@ router.post('/:clientId/ai-generate', protect, async (req, res) => {
 router.get('/:clientId/:templateId/history', protect, async (req, res) => {
     // Dummy return, ideally we store historical documents in a separate collection.
     res.json({ success: true, history: [] });
+});
+
+// 6. Fetch Standard Templates Library
+router.get('/standard', protect, async (req, res) => {
+    res.json({ success: true, data: STANDARD_TEMPLATES });
+});
+
+// 7. Push Standard Template to Meta
+router.post('/push-standard', protect, async (req, res) => {
+    try {
+        const { clientId, templateId } = req.body;
+        if (!clientId || !templateId) {
+            return res.status(400).json({ success: false, message: 'clientId and templateId are required' });
+        }
+
+        const standardTemplate = STANDARD_TEMPLATES.find(t => t.id === templateId);
+        if (!standardTemplate) {
+            return res.status(404).json({ success: false, message: 'Standard template not found' });
+        }
+
+        const client = await getClientCredentials(clientId, req.user.id);
+
+        const payload = {
+            name: standardTemplate.name,
+            language: standardTemplate.language,
+            category: standardTemplate.category,
+            components: standardTemplate.components
+        };
+
+        const url = `https://graph.facebook.com/v18.0/${client.wabaId}/message_templates`;
+
+        try {
+            const response = await axios.post(url, payload, {
+                headers: { 
+                    'Authorization': `Bearer ${client.whatsappToken}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+            res.json({ success: true, data: response.data });
+        } catch (metaErr) {
+            console.error('[Template API] Meta Push Error:', metaErr.response?.data || metaErr.message);
+            res.status(400).json({ success: false, message: 'Failed to push template to Meta', details: metaErr.response?.data });
+        }
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
 });
 
 module.exports = router;
