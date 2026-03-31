@@ -2393,9 +2393,22 @@ const handleFlowWebhook = async (req, res) => {
     const { encrypted_flow_data, encrypted_aes_key, initial_vector } = req.body;
 
     // 1. Decrypt AES Key
-    const rawPem = process.env.PRIVATE_PEM;
+    let rawPem = process.env.PRIVATE_PEM;
     if (!rawPem) {
-      console.error('[Choice Salon Flow] Critical Error: PRIVATE_PEM environment variable not set.');
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        const pemPath = path.join(process.cwd(), 'private.pem');
+        if (fs.existsSync(pemPath)) {
+          rawPem = fs.readFileSync(pemPath, 'utf8');
+        }
+      } catch (pemErr) {
+        console.error('[Choice Salon Flow] Error reading private.pem file:', pemErr);
+      }
+    }
+
+    if (!rawPem) {
+      console.error('[Choice Salon Flow] Critical Error: PRIVATE_PEM environment variable and private.pem file both missing.');
       return res.status(500).json({ error: 'Server configuration error.' });
     }
     const privateKey = rawPem.replace(/\\n/g, '\n');

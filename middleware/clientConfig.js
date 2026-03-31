@@ -1,4 +1,5 @@
 const Client = require('../models/Client');
+const { decrypt } = require('../utils/encryption');
 
 /**
  * Middleware to load client configuration based on route parameter 'clientId'
@@ -66,8 +67,8 @@ const loadClientConfig = async (req, res, next) => {
       phoneNumber: client.config?.phoneNumber || process.env[`PHONE_NUMBER${envSuffix}`] || process.env.PHONE_NUMBER,
       adminPhoneNumber: client.adminPhone || client.adminPhoneNumber || client.config?.adminPhoneNumber || process.env[`ADMIN_PHONE_NUMBER${envSuffix}`] || process.env.ADMIN_PHONE_NUMBER,
 
-      // Use the resolved finalToken
-      whatsappToken: finalToken,
+      // Use the resolved finalToken, ensuring it is decrypted if stored in encrypted format
+      whatsappToken: decrypt(finalToken),
       verifyToken: process.env[`VERIFY_TOKEN${envSuffix}`] || client.verifyToken || process.env.WHATSAPP_VERIFY_TOKEN,
       googleCalendarId: client.googleCalendarId || process.env[`GOOGLE_CALENDAR_ID${envSuffix}`] || process.env.GOOGLE_CALENDAR_ID,
       

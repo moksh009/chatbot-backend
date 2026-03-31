@@ -3,6 +3,7 @@ const router = express.Router();
 const axios = require('axios');
 const { protect } = require('../middleware/auth');
 const log = require('../utils/logger')('TemplateAPI');
+const { decrypt } = require('../utils/encryption');
 const Client = require('../models/Client');
 const User = require('../models/User');
 
@@ -21,6 +22,7 @@ async function getClientCredentials(clientId, userId) {
     if (!client) throw new Error('Client not found');
     if (!client.wabaId) throw new Error('WABA ID (WhatsApp Business Account ID) is not configured for this client.');
     if (!client.whatsappToken) throw new Error('WhatsApp Token is not configured for this client.');
+    client.whatsappToken = decrypt(client.whatsappToken);
 
     return client;
 }
