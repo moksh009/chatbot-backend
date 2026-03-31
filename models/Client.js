@@ -184,6 +184,10 @@ const ClientSchema = new mongoose.Schema({
   trialActive: { type: Boolean, default: true },
   trialEndsAt: { type: Date, default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) }, // 7 days
 
+  // Admin Alert Notifications
+  adminAlertEmail: { type: String, default: "" },
+  adminAlertWhatsapp: { type: String, default: "" },
+
   createdAt: { type: Date, default: Date.now }
 });
 

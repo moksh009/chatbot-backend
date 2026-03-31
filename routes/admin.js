@@ -702,7 +702,9 @@ router.get('/my-settings', protect, async (req, res) => {
       nicheData: client.nicheData,
       workingHours: client.workingHours,
       flowFolders: client.flowFolders,
-      visualFlows: client.visualFlows
+      visualFlows: client.visualFlows,
+      adminAlertEmail: client.adminAlertEmail,
+      adminAlertWhatsapp: client.adminAlertWhatsapp
     });
   } catch (err) {
     log.error('Settings fetch error', { error: err.message });
@@ -719,7 +721,8 @@ router.patch('/my-settings', protect, async (req, res) => {
       shopDomain, shopifyClientId, shopifyClientSecret, shopifyAccessToken, shopifyWebhookSecret,
       woocommerceUrl, woocommerceKey, woocommerceSecret,
       instagramConnected, instagramPageId, instagramAccessToken, instagramAppSecret,
-      googleReviewUrl, adminPhone, adminEmail
+      googleReviewUrl, adminPhone, adminEmail,
+      adminAlertEmail, adminAlertWhatsapp
     } = req.body;
     
     // If Super Admin and clientId provided, use that. Otherwise use user's own.
@@ -767,6 +770,8 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (googleReviewUrl !== undefined) updateFields.googleReviewUrl = googleReviewUrl;
     if (adminPhone !== undefined) updateFields.adminPhone = adminPhone;
     if (adminEmail !== undefined) updateFields.adminEmail = adminEmail;
+    if (adminAlertEmail !== undefined) updateFields.adminAlertEmail = adminAlertEmail;
+    if (adminAlertWhatsapp !== undefined) updateFields.adminAlertWhatsapp = adminAlertWhatsapp;
 
     const updated = await Client.findOneAndUpdate(
       { clientId: targetClientId },

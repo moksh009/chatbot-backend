@@ -285,6 +285,47 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
       }
       break;
     }
+
+    case "ADMIN_ALERT": {
+      const NotificationService = require("./notificationService");
+      const Conversation = require("../models/Conversation");
+      
+      const topic = node.data?.topic || "New Priority Request";
+      const triggerSource = node.data?.triggerSource || "Automation Flow";
+      const channel = node.data?.alertChannel || "both"; 
+
+      try {
+        // 1. Mark for attention in Dashboard
+        await Conversation.findOneAndUpdate(
+          { phone, clientId: client.clientId },
+          { 
+            requiresAttention: true, 
+            attentionReason: topic,
+            updatedAt: new Date()
+          }
+        );
+
+        // 2. Dispatch Alerts
+        await NotificationService.sendAdminAlert(client, {
+          customerPhone: phone,
+          topic,
+          triggerSource,
+          channel
+        });
+      } catch (err) {
+        log.error("[NodeActions] ADMIN_ALERT failure:", err.message);
+      }
+
+      // 3. Emit real-time signal
+      if (global.io) {
+        global.io.to(`client_${client.clientId}`).emit('attention_required', {
+          phone,
+          reason: `Admin Alert: ${topic}`,
+          priority: 'high'
+        });
+      }
+      break;
+    }
     
     case "AI_FALLBACK": {
 
