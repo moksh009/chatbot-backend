@@ -348,6 +348,8 @@ router.get('/:clientId/settings', protect, verifyClientAccess, async (req, res) 
       success: true,
       automationFlows: client.automationFlows || [],
       nicheData: client.nicheData || {},
+      flowNodes: client.flowNodes || [],
+      flowEdges: client.flowEdges || [],
       syncedMetaTemplates: client.syncedMetaTemplates || [],
       shopifyConnectionStatus: client.shopifyConnectionStatus || 'connected',
       lastShopifyError: client.lastShopifyError || ''
@@ -366,7 +368,7 @@ router.patch('/:clientId/settings', protect, verifyClientAccess, async (req, res
     const client = await Client.findOne({ clientId: req.params.clientId });
     if (!client) return res.status(404).json({ error: 'Client not found' });
     
-    const { automationFlows, nicheData } = req.body;
+    const { automationFlows, nicheData, flowNodes, flowEdges } = req.body;
     
     if (automationFlows) {
         client.automationFlows = automationFlows;
@@ -375,6 +377,14 @@ router.patch('/:clientId/settings', protect, verifyClientAccess, async (req, res
     if (nicheData) {
         client.nicheData = { ...client.nicheData, ...nicheData };
         client.markModified('nicheData');
+    }
+    if (flowNodes) {
+        client.flowNodes = flowNodes;
+        client.markModified('flowNodes');
+    }
+    if (flowEdges) {
+        client.flowEdges = flowEdges;
+        client.markModified('flowEdges');
     }
     
     if (!client.businessName) {
