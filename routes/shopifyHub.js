@@ -108,11 +108,12 @@ router.get('/:clientId/products', protect, verifyClientAccess, async (req, res) 
 
     res.json({ success: true, products });
   } catch (err) {
+    const shopifyError = err.response?.data?.errors || err.message;
     const isAuthError = err.response?.status === 401 || err.response?.status === 403;
     res.status(isAuthError ? 400 : 500).json({ 
       success: false, 
       products: [], 
-      error: err.message, 
+      error: shopifyError, 
       isShopifyAuthError: isAuthError 
     });
   }
@@ -152,7 +153,13 @@ router.get('/:clientId/locations', protect, verifyClientAccess, async (req, res)
     });
     res.json({ success: true, locations });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    const shopifyError = err.response?.data?.errors || err.message;
+    const isAuthError = err.response?.status === 401 || err.response?.status === 403;
+    res.status(isAuthError ? 400 : 500).json({ 
+      success: false, 
+      error: shopifyError, 
+      isShopifyAuthError: isAuthError 
+    });
   }
 });
 
@@ -179,8 +186,14 @@ router.put('/:clientId/inventory/set', protect, verifyClientAccess, async (req, 
 
     res.json({ success: true });
   } catch (err) {
-    console.error('[InventoryUpdate] Error:', err.response?.data || err.message);
-    res.status(500).json({ success: false, error: err.message });
+    const shopifyError = err.response?.data?.errors || err.message;
+    const isAuthError = err.response?.status === 401 || err.response?.status === 403;
+    console.error('[InventoryUpdate] Error:', shopifyError);
+    res.status(isAuthError ? 400 : 500).json({ 
+      success: false, 
+      error: shopifyError, 
+      isShopifyAuthError: isAuthError 
+    });
   }
 });
 
@@ -197,7 +210,13 @@ router.get('/:clientId/customers', protect, verifyClientAccess, async (req, res)
     });
     res.json({ success: true, customers });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    const shopifyError = err.response?.data?.errors || err.message;
+    const isAuthError = err.response?.status === 401 || err.response?.status === 403;
+    res.status(isAuthError ? 400 : 500).json({ 
+      success: false, 
+      error: shopifyError, 
+      isShopifyAuthError: isAuthError 
+    });
   }
 });
 
