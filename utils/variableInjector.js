@@ -2,7 +2,7 @@
  * Utility to inject dynamic lead/order variables into message strings.
  * Used for personalization in WhatsApp templates and interactive messages.
  */
-function injectVariables(text, { lead, client, order }) {
+function injectVariables(text, { lead, client, order, convo }) {
   if (!text) return "";
 
   let result = text;
@@ -32,6 +32,14 @@ function injectVariables(text, { lead, client, order }) {
   if (order) {
     result = result.replace(/{{order_id}}/g, order.orderId || "");
     result = result.replace(/{{amount}}/g, order.amount?.toLocaleString() || "0");
+  }
+
+  // 4. Conversation Metadata (Captured Variables)
+  if (convo?.metadata) {
+    // Replace {{var:variable_name}} with metadata value
+    result = result.replace(/{{var:([^}]+)}}/g, (match, varName) => {
+      return convo.metadata[varName.trim()] || "";
+    });
   }
 
   return result;

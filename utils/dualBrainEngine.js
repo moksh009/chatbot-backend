@@ -97,7 +97,7 @@ const { normalizePhone } = require("./helpers");
 // VARIABLE REPLACEMENT UTILITY
 // ─────────────────────────────────────────────────────────────────────────────
 function replaceVariables(text, client, lead, convo) {
-  return injectVariables(text, { lead, client, order: convo?.metadata?.lastOrder });
+  return injectVariables(text, { lead, client, convo, order: convo?.metadata?.lastOrder });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -198,55 +198,70 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 
   const currentStepId   = convo.lastStepId;
   const incomingTrigger = extractTrigger(parsedMessage);
-  const userText        = (parsedMessage.text?.body || '').toLowerCase().trim();
+  const userText        = (parsedMessage.text?.body || '').trim();
+  const userTextLower   = userText.toLowerCase();
 
   // A) GLOBAL KEYWORD / ROLE JUMP
-  // Check if user is trying to jump to a specific topic (e.g. "Pricing", "Products")
   const jumpNode = flowNodes.find(n => {
     const role = (n.data?.role || '').toLowerCase();
     const keywords = (n.data?.keywords || '').toLowerCase().split(',').map(k => k.trim());
-    const isExactRole = role && userText === role;
-    const isKeywordMatch = keywords.length > 0 && keywords.includes(userText);
-    return isExactRole || isKeywordMatch;
+    return (role && userTextLower === role) || (keywords.length > 0 && keywords.includes(userTextLower));
   });
 
   if (jumpNode) {
-    console.log(`[DualBrain] Graph: Jumping to node ${jumpNode.id} based on keyword/role match "${userText}"`);
-    // Heatmap: Increment visit
+    console.log(`[DualBrain] Graph: Jumping to node ${jumpNode.id} based on keyword/role match "${userTextLower}"`);
     await trackNodeVisit(client, jumpNode.id);
     return await executeNode(jumpNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
   }
 
-  // B) User is in the middle of a flow — find matching edge from currentStep
-  const matchingEdge = flowEdges.find(e => {
+  // B) Handle CAPTURE_INPUT Node (Special Case)
+  const currentNode = flowNodes.find(n => n.id === currentStepId);
+  if (currentNode && (currentNode.type === 'capture_input' || currentNode.type === 'CaptureNode')) {
+    const varName = currentNode.data?.variable || 'last_input';
+    console.log(`[DualBrain] Capture: Saving "${userText}" to variable "${varName}" for convo ${phone}`);
+    
+    // Update metadata
+    const updatedMetadata = { ...(convo.metadata || {}), [varName]: userText };
+    await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
+    convo.metadata = updatedMetadata; // update local ref
+
+    // Move to next node via auto-edge
+    const nextEdge = flowEdges.find(e => e.source === currentStepId);
+    if (nextEdge) {
+      return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+    }
+  }
+
+  // C) User is in the middle of a flow — find matching edge from currentStep
+  let matchingEdge = flowEdges.find(e => {
     if (e.source !== currentStepId) return false;
 
-    // No trigger = auto edge. (Default message nodes use 'a' for their bottom port)
+    // No trigger = auto edge.
     if (!e.trigger && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom')) return true;
 
-    // Match by sourceHandle (button id from React Flow)
+    // Match by sourceHandle (button id)
     if (e.sourceHandle) {
       const sid = e.sourceHandle.toLowerCase();
       const bid = (incomingTrigger.buttonId || '').toLowerCase();
-      const txt = userText;
+      const txt = userTextLower;
       return sid === bid || sid === txt || txt === sid;
     }
     
-    // NEW: Handle complex button payloads (e.g. from Meta)
-    const buttonPayload = incomingTrigger.buttonId || '';
-    if (buttonPayload && e.sourceHandle && buttonPayload.includes(e.sourceHandle)) return true;
-
-    // Match by trigger object (legacy edge format)
+    // Match by trigger object
     if (e.trigger?.type === 'button') {
       return (incomingTrigger.buttonId || '').toLowerCase() === e.trigger.value.toLowerCase();
     }
     if (e.trigger?.type === 'keyword') {
-      return userText.includes(e.trigger.value.toLowerCase());
+      return userTextLower.includes(e.trigger.value.toLowerCase());
     }
-    if (e.trigger?.type === 'auto') return true;
-
     return false;
   });
+
+  // GAP FIX: Fallback edge check (if no standard matching edge found)
+  if (!matchingEdge && currentStepId) {
+    matchingEdge = flowEdges.find(e => e.source === currentStepId && e.sourceHandle === 'fallback');
+    if (matchingEdge) console.log(`[DualBrain] Graph: No standard match, taking FALLBACK edge for ${currentStepId}`);
+  }
 
   if (matchingEdge) {
     console.log(`[DualBrain] Graph: edge match from ${currentStepId} → ${matchingEdge.target}`);
@@ -254,57 +269,30 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     return await executeNode(matchingEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
   }
 
-  // C) GLOBAL RESET / GREETING (Fallback: Only if not in middle of flow or if explicit greeting)
-  const isButtonPayload = !!incomingTrigger.buttonId;
-  if (!isButtonPayload && (isGreeting(userText) || userText === 'start' || userText === 'menu')) {
-      const triggerNode = findTriggerNode(userText, flowNodes);
+  // D) GLOBAL RESET / GREETING
+  if (!incomingTrigger.buttonId && (isGreeting(userTextLower) || userTextLower === 'start' || userTextLower === 'menu')) {
+      const triggerNode = findTriggerNode(userTextLower, flowNodes);
       if (triggerNode) {
-          console.log(`[DualBrain] Graph: Resetting to trigger node ${triggerNode.id} based on greeting "${userText}"`);
+          console.log(`[DualBrain] Graph: Resetting to trigger node ${triggerNode.id} based on greeting "${userTextLower}"`);
           await trackNodeVisit(client, triggerNode.id);
           return await executeNode(triggerNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
       }
   }
 
-  // D) No currentStepId (or it looks like a phone number) — guard + find trigger/start node
-  const looksLikePhone = currentStepId && /^\d{7,}$/.test(String(currentStepId));
-  if (!currentStepId || looksLikePhone) {
-    if (looksLikePhone) {
-      console.warn(`[DualBrain] Graph: lastStepId "${currentStepId}" looks like a phone number — resetting`);
-      await Conversation.findByIdAndUpdate(convo._id, { lastStepId: null });
-    }
-    // Try keyword greeting trigger first
-    const incomingText = (userText || '').toLowerCase().trim();
-    const triggerNode = flowNodes.find(n => {
-      if (n.type !== 'trigger' && n.type !== 'TriggerNode') return false;
-      const keyword = (n.data?.keyword || n.data?.label || 'hi').toLowerCase();
-      return incomingText.includes(keyword) || 
-             keyword === 'start' || 
-             keyword === '*';
-    });
-    const startNode = triggerNode ||
-      flowNodes.find(n => n.data?.role === 'welcome') ||
-      flowNodes.find(n => n.data?.isStartNode === true) ||
-      flowNodes[0];
+  // E) No currentStepId — Fresh Start
+  if (!currentStepId) {
+    const triggerNode = flowNodes.find(n => n.type === 'trigger' || n.type === 'TriggerNode');
+    const startNode = triggerNode || flowNodes.find(n => n.data?.role === 'welcome') || flowNodes[0];
     if (startNode) {
       console.log(`[DualBrain] Graph: Starting fresh from node ${startNode.id}`);
       await trackNodeVisit(client, startNode.id);
       return await executeNode(startNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
     }
-    return false;
   }
 
-  // E) Fallback Logic (If no edge match AND not a greeting reset)
-  // Gap Fix: If a button was clicked but no edge matches, don't just fail.
-  // Use AI to recover the conversation based on the button intent.
+  // F) Recovery Logic
   if (incomingTrigger.buttonId || incomingTrigger.buttonText) {
-    console.log(`[DualBrain] Graph: No edge match for button "${incomingTrigger.buttonId}". Falling back to AI recovery.`);
     const buttonLabel = incomingTrigger.buttonText || incomingTrigger.buttonId;
-    const recoveryPrompt = `The user clicked a button labeled "${buttonLabel}" in the previous message, but the automated flow is currently being updated. Please respond to this intent naturally and guide them back to the main goal.`;
-    
-    // We pass this as a virtual message to the AI fallback
-    const virtualMessage = {
-      ...parsedMessage,
-      text: { body: `(User clicked: ${buttonLabel}) ${recoveryPrompt}` }
     };
     await runAIFallback(virtualMessage, client, phone, lead, channel);
     return true;
@@ -349,64 +337,106 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   }
 
   const sent = await sendNodeContent(node, client, phone, lead, convo, channel);
-  if (!sent && node.type !== 'logic' && node.type !== 'delay') return false;
-
-  const action = node.data?.action;
+  if (!sent && node.type !== 'logic' && node.type !== 'delay' && node.type !== 'set_variable' && node.type !== 'shopify_call' && node.type !== 'http_request') return false;
 
   // --- SPECIAL NODE LOGIC (Automated Traversal) ---
   if (node.type === 'logic') {
-    const condition = node.data?.condition || '';
+    const { condition, operator, value, variable } = node.data;
     let result = false;
     
-    // Simple evaluation engine (can be expanded)
-    if (condition.includes('cart_total')) {
-      const threshold = parseInt(condition.match(/\d+/)[0]) || 0;
-      const cartValue = lead?.cartValue || convo?.metadata?.cartValue || 0;
-      result = cartValue > threshold;
-    } else if (condition === 'has_phone') {
-      result = !!phone;
-    } else if (condition === "channel == 'instagram'") {
-      result = channel === 'instagram';
+    // Get comparison value
+    let leftValue = '';
+    if (variable) {
+      leftValue = convo.metadata?.[variable] || lead?.[variable] || '';
+    } else if (condition) {
+      if (condition.includes('cart_total')) leftValue = lead?.cartValue || convo?.metadata?.cartValue || 0;
+      else if (condition === 'has_phone') leftValue = !!phone;
+      else if (condition === "channel == 'instagram'") leftValue = channel === 'instagram';
+    }
+
+    // Advanced Evaluation
+    const compValue = value || (condition?.match(/\d+/) || [0])[0];
+    switch (operator) {
+      case 'contains': result = String(leftValue).toLowerCase().includes(String(compValue).toLowerCase()); break;
+      case 'greater_than': result = Number(leftValue) > Number(compValue); break;
+      case 'less_than': result = Number(leftValue) < Number(compValue); break;
+      case 'equals': 
+      default: result = String(leftValue).toLowerCase() === String(compValue).toLowerCase(); break;
     }
     
     const targetHandle = result ? 'true' : 'false';
     const nextEdge = flowEdges.find(e => e.source === nodeId && e.sourceHandle === targetHandle);
-    
-    if (nextEdge) {
-      console.log(`[DualBrain] Logic Check Result: ${result} -> Jumping to ${nextEdge.target}`);
-      return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
-    }
+    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+  }
+
+  // New: Set Variable Node
+  if (node.type === 'set_variable' || node.type === 'SetVariableNode') {
+    const { variable, value } = node.data;
+    const processedValue = replaceVariables(value, client, lead, convo);
+    const updatedMetadata = { ...(convo.metadata || {}), [variable]: processedValue };
+    await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
+    convo.metadata = updatedMetadata;
+  }
+
+  // New: Shopify Call Node
+  if (node.type === 'shopify_call' || node.type === 'ShopifyNode') {
+    const { action, query, variable } = node.data;
+    const { getShopifyClient } = require("./shopifyHelper");
+    try {
+      const shopify = getShopifyClient(client);
+      let data = null;
+      if (action === 'search_products') data = await shopify.searchProducts(query);
+      else if (action === 'get_order') data = await shopify.getOrderStatus(query || phone);
+      
+      if (variable) {
+        const updatedMetadata = { ...(convo.metadata || {}), [variable]: data };
+        await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
+        convo.metadata = updatedMetadata;
+      }
+    } catch (err) { console.error("[DualBrain] Shopify Node Error:", err.message); }
+  }
+
+  // New: HTTP Request Node
+  if (node.type === 'http_request' || node.type === 'HttpRequestNode') {
+    const { url, method, body, variable } = node.data;
+    try {
+      const resp = await axios({
+        url: replaceVariables(url, client, lead, convo),
+        method: method || 'GET',
+        data: body ? JSON.parse(replaceVariables(body, client, lead, convo)) : null,
+        timeout: 5000
+      });
+      if (variable) {
+        const updatedMetadata = { ...(convo.metadata || {}), [variable]: resp.data };
+        await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
+        convo.metadata = updatedMetadata;
+      }
+    } catch (err) { console.error("[DualBrain] HTTP Node Error:", err.message); }
   }
 
   if (node.type === 'livechat') {
-    // Force set conversation status to HUMAN_SUPPORT
     await Conversation.findByIdAndUpdate(convo._id, { status: 'HUMAN_SUPPORT' });
-    console.log(`[DualBrain] LiveChat Handover: Pausing bot for phone ${phone}`);
-    // Optional: Follow fallback edge after delay if no human joins (advanced)
   }
 
   // Update lastStepId logic
+  const isWaitNode = (node.type === 'capture_input' || node.type === 'CaptureNode');
+  const action = node.data?.action;
+
   if (action === "AI_FALLBACK" || node.type === 'logic') {
-    // Don't update lastStepId — let AI handle and return here next time
-    await Conversation.findByIdAndUpdate(convo._id, { 
-      lastStepId: convo.lastStepId,
-      lastInteraction: new Date()
-    });
+    await Conversation.findByIdAndUpdate(convo._id, { lastStepId: convo.lastStepId, lastInteraction: new Date() });
   } else {
-    // Normal: update lastStepId to this node
-    await Conversation.findByIdAndUpdate(convo._id, {
-      lastStepId: nodeId,
-      lastInteraction: new Date()
-    });
+    await Conversation.findByIdAndUpdate(convo._id, { lastStepId: nodeId, lastInteraction: new Date() });
   }
 
-  // Auto-forward if there is exactly one outgoing edge with no trigger (auto-edge)
-  const autoEdge = flowEdges.find(e => e.source === nodeId && (!e.trigger || e.trigger?.type === 'auto') && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom'));
-  if (autoEdge) {
-    setTimeout(async () => {
-      const freshConvo = await Conversation.findById(convo._id);
-      await executeNode(autoEdge.target, flowNodes, flowEdges, client, freshConvo, lead, phone, io, channel);
-    }, 800);
+  // Auto-forward if not a wait node or logic node (logic already handled)
+  if (!isWaitNode && node.type !== 'logic') {
+    const autoEdge = flowEdges.find(e => e.source === nodeId && (!e.trigger || e.trigger?.type === 'auto') && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom'));
+    if (autoEdge) {
+      setTimeout(async () => {
+        const freshConvo = await Conversation.findById(convo._id);
+        await executeNode(autoEdge.target, flowNodes, flowEdges, client, freshConvo, lead, phone, io, channel);
+      }, 600);
+    }
   }
 
   return true;
@@ -431,8 +461,14 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       return true;
     }
 
-    case 'folder': {
-      // Folders are logical containers. They don't send content.
+    case 'folder': return true;
+
+    case 'capture_input':
+    case 'CaptureNode': {
+      let body = data.text || data.body || data.label || 'Please provide the requested information:';
+      body = replaceVariables(body, client, lead, convo);
+      if (channel === 'instagram') await Instagram.sendText(client, phone, body);
+      else await WhatsApp.sendText(client, phone, body);
       return true;
     }
 
@@ -448,11 +484,8 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       body = replaceVariables(body, client, lead, convo);
       
       if (channel === 'instagram') {
-        if (data.imageUrl) {
-          await Instagram.sendImage(client, phone, data.imageUrl, body);
-        } else {
-          await Instagram.sendText(client, phone, body);
-        }
+        if (data.imageUrl) await Instagram.sendImage(client, phone, data.imageUrl, body);
+        else await Instagram.sendText(client, phone, body);
       } else if (data.imageUrl) {
         await WhatsApp.sendImage(client, phone, data.imageUrl, body);
       } else {
@@ -466,14 +499,12 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       let body = data.text || data.body || 'Please Choose:';
       body = replaceVariables(body, client, lead, convo);
 
-      // --- BRANCH A: CTA URL Button (Meta Template alternative) ---
       if (data.btnUrlLink) {
         if (channel === 'instagram') {
-            // Instagram supports buttons via Generic Template/Buttons
             await Instagram.sendInteractive(client, phone, {
                 type: 'button',
                 text: body,
-                buttons: [{ type: 'web_url', url: data.btnUrlLink, title: (data.btnUrlTitle || 'Visit Website').substring(0, 20) }]
+                buttons: [{ type: 'web_url', url: data.btnUrlLink, title: (data.btnUrlTitle || 'Visit').substring(0, 20) }]
             });
             return true;
         }
@@ -481,10 +512,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
           type: 'cta_url',
           action: {
             name: 'cta_url',
-            parameters: {
-              display_text: (data.btnUrlTitle || 'Visit Website').substring(0, 20),
-              url: data.btnUrlLink
-            }
+            parameters: { display_text: (data.btnUrlTitle || 'Visit').substring(0, 20), url: data.btnUrlLink }
           }
         };
         if (data.imageUrl) interactive.header = { type: 'image', image: { link: data.imageUrl } };
@@ -493,7 +521,6 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         return true;
       }
 
-      // --- BRANCH B: Standard Reply Buttons or List ---
       const buttonsList = Array.isArray(data.buttonsList) && data.buttonsList.length > 0
         ? data.buttonsList
         : (data.buttons || '').split(',').map(b => b.trim()).filter(Boolean).map(b => ({ id: b.toLowerCase().replace(/\s+/g, '_'), title: b }));
@@ -505,96 +532,47 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       }
 
       if (channel === 'instagram') {
-        // Automatically map WhatsApp List/Buttons to Instagram Quick Replies
         await Instagram.sendInteractive(client, phone, {
             type: 'quick_reply',
             text: body,
             buttons: buttonsList.map(btn => ({
-                id: (btn.id || btn.title || 'opt').toLowerCase().replace(/\s+/g, '_'),
-                title: (btn.title || btn.label || 'Option').substring(0, 20)
+                id: (btn.id || btn.title).toLowerCase().replace(/\s+/g, '_'),
+                title: (btn.title || 'Option').substring(0, 20)
             }))
         });
         return true;
       }
 
-      // Standard reply buttons or List
       if (data.interactiveType === 'list') {
         let interactive = {
           type: 'list',
           action: {
-            button: 'Select Option',
-            sections: [
-              {
-                title: 'Choose one:',
-                rows: buttonsList.slice(0, 10).map(btn => ({
-                  id: (btn.id || btn.title || 'opt').toLowerCase().replace(/\s+/g, '_'),
-                  title: (btn.title || 'Option').substring(0, 24),
-                  description: ''
-                }))
-              }
-            ]
+            button: 'Select',
+            sections: [{ title: 'Options', rows: buttonsList.slice(0, 10).map(btn => ({ id: (btn.id || btn.title).toLowerCase().replace(/\s+/g, '_'), title: (btn.title || 'Opt').substring(0, 24) })) }]
           }
         };
         if (data.imageUrl) interactive.header = { type: 'image', image: { link: data.imageUrl } };
         else if (data.header) interactive.header = { type: 'text', text: data.header.substring(0, 60) };
-        if (data.footer) interactive.footer = { text: data.footer.substring(0, 60) };
-
         await WhatsApp.sendInteractive(client, phone, interactive, body);
         return true;
       }
 
       let interactive = {
         type: 'button',
-        action: {
-          buttons: buttonsList.slice(0, 3).map(btn => ({
-            type: 'reply',
-            reply: { id: (btn.id || btn.title || 'btn').toLowerCase().replace(/\s+/g, '_'), title: (btn.title || 'Option').substring(0, 20) }
-          }))
-        }
+        action: { buttons: buttonsList.slice(0, 3).map(btn => ({ type: 'reply', reply: { id: (btn.id || btn.title).toLowerCase().replace(/\s+/g, '_'), title: (btn.title || 'Opt').substring(0, 20) } })) }
       };
       if (data.imageUrl) interactive.header = { type: 'image', image: { link: data.imageUrl } };
       else if (data.header) interactive.header = { type: 'text', text: data.header.substring(0, 60) };
-      if (data.footer) interactive.footer = { text: data.footer.substring(0, 60) };
-
       await WhatsApp.sendInteractive(client, phone, interactive, body);
       return true;
     }
 
     case 'template':
     case 'TemplateNode': {
-      if (channel === 'instagram') {
-        const fallback = data.instagramFallback || data.text || data.body || data.label || `[Template: ${data.templateName || data.metaTemplateName}]`;
-        await sendInstagramReply(client, phone, fallback);
-        return true;
-      }
-
       const templateName = data.templateName || data.metaTemplateName;
       if (!templateName) return false;
-
-      let headerImageUrl = data.headerImageUrl;
-      const tplDef = (client.syncedMetaTemplates || client.waTemplates || []).find(t => t.name === templateName);
-      if (tplDef) {
-        const needsImage = tplDef.components?.some(c => c.type === 'HEADER' && c.format === 'IMAGE');
-        if (needsImage && !headerImageUrl) {
-          headerImageUrl = 'https://images.unsplash.com/photo-1560066984-138dadb4c035?auto=format&fit=crop&q=80&w=1000';
-        }
-      }
-
       const components = [];
-      if (headerImageUrl) {
-        components.push({ type: 'header', parameters: [{ type: 'image', image: { link: headerImageUrl } }] });
-      }
-
-      // Handle LEAD_ID replacement in buttons
-      if (data.buttonUrlParam === 'LEAD_ID' && lead) {
-        components.push({
-          type: 'button',
-          index: '0', 
-          sub_type: 'url',
-          parameters: [{ type: 'text', text: lead._id.toString() }]
-        });
-      }
-
+      if (data.headerImageUrl) components.push({ type: 'header', parameters: [{ type: 'image', image: { link: data.headerImageUrl } }] });
       if (data.variables) {
         const rawParams = data.variables.split(',').map(v => v.trim()).filter(Boolean);
         if (rawParams.length) {
@@ -605,61 +583,28 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
           components.push({ type: 'body', parameters: processedParams });
         }
       }
-
       await WhatsApp.sendTemplate(client, phone, templateName, data.languageCode || 'en', components);
       return true;
     }
 
     case 'email': {
-      const recipient = lead?.email || (data.recipientEmail);
-      if (!recipient) {
-        log.warn(`[DualBrain] Skipping email node: no recipient email for lead ${phone}`);
-        return true; 
-      }
-
-      if (!client.emailUser || !client.emailAppPassword) {
-        log.warn(`[DualBrain] Skipping email node: client ${client.clientId} missing SMTP credentials.`);
-        return true;
-      }
-
-      let subject = data.subject || 'Follow up from ' + (client.name || 'Store');
-      let body = data.body || '';
-
-      // Variable Replacement
-      const vars = {
-        '{name}': lead?.name || 'Customer',
-        '{items}': lead?.lastItems || 'your selected items',
-        '{total}': lead?.lastTotal || '0',
-        '{id}': lead?.phoneNumber || '',
-        '{order_id}': lead?.lastOrderId || 'your order'
-      };
-
-      Object.entries(vars).forEach(([key, val]) => {
-        subject = subject.replace(new RegExp(key, 'g'), val);
-        body = body.replace(new RegExp(key, 'g'), val);
-      });
-
-      await emailService.sendEmail(client, {
-        to: recipient,
-        subject,
-        html: `
-          <div style="font-family: sans-serif; max-width: 600px; line-height: 1.6;">
-            ${body.replace(/\n/g, '<br/>')}
-            <br/><br/>
-            <p style="color: #666; font-size: 12px;">Sent via ${client.name || 'TopEdge AI'}</p>
-          </div>
-        `
-      });
+      const recipient = lead?.email || data.recipientEmail;
+      if (!recipient || !client.emailUser) return true;
+      let subject = replaceVariables(data.subject || 'Update', client, lead, convo);
+      let body = replaceVariables(data.body || '', client, lead, convo);
+      await emailService.sendEmail(client, { to: recipient, subject, html: body.replace(/\n/g, '<br/>') });
       return true;
     }
 
-    case 'trigger':
-      // Trigger node has no outbound message content, just traverse to children
-      return true;
+    case 'trigger': return true;
+    case 'logic': return true;
+    case 'set_variable': return true;
+    case 'shopify_call': return true;
+    case 'http_request': return true;
 
     default:
-      console.warn(`[DualBrain] Unknown node type: ${type}`);
-      return false;
+      console.warn(`[DualBrain] Skipping send content for node type: ${type}`);
+      return true;
   }
 
   // After sending the message, check for special actions
