@@ -62,14 +62,14 @@ async function getShopifyClient(clientId, forceRefresh = false) {
             try {
                 const rotationPayload = {
                     client_id: client.shopifyClientId,
-                    client_secret: client.shopifyClientSecret ? '***' + client.shopifyClientSecret.slice(-4) : 'MISSING',
+                    client_secret: client.shopifyClientSecret ? '***' + decrypt(client.shopifyClientSecret).slice(-4) : 'MISSING',
                     grant_type: 'client_credentials'
                 };
-                console.log(`[ShopifyRotation] Rotation Payload for ${clientId}:`, JSON.stringify(rotationPayload));
+                console.log(`[ShopifyRotation] Rotation Payload for ${clientId}:`, JSON.stringify({ ...rotationPayload, client_secret: '***' }));
 
                 const res = await axios.post(`https://${domain}/admin/oauth/access_token`, {
                     client_id: client.shopifyClientId,
-                    client_secret: client.shopifyClientSecret,
+                    client_secret: decrypt(client.shopifyClientSecret),
                     grant_type: 'client_credentials'
                 });
 
@@ -170,7 +170,7 @@ async function exchangeShopifyToken(clientId, shopDomain, shopifyClientId, shopi
     // OFFLINE ACCESS: Explicitly request offline access mode
     const payload = {
         client_id: shopifyClientId,
-        client_secret: shopifyClientSecret,
+        client_secret: decrypt(shopifyClientSecret),
         grant_type: code ? 'authorization_code' : 'client_credentials'
     };
     if (code) {
@@ -186,7 +186,7 @@ async function exchangeShopifyToken(clientId, shopDomain, shopifyClientId, shopi
         shopifyRefreshToken: encrypt(refresh_token || ""),
         shopifyScopes: scope || "",
         shopifyClientId,
-        shopifyClientSecret,
+        shopifyClientSecret: encrypt(shopifyClientSecret),
         shopDomain: cleanDomain,
         shopifyConnectionStatus: 'connected',
         lastShopifyError: ''
