@@ -299,11 +299,11 @@ router.post('/upload-media', protect, upload.single('file'), async (req, res) =>
         const accessToken = client.whatsappToken;
 
         // Meta requires App ID for uploads. 
-        // We prioritize process.env.META_APP_ID, then fallback to client.config.metaAppId if set.
-        const appId = process.env.META_APP_ID || client.config?.metaAppId; 
+        // We prioritize process.env.META_APP_ID, then fallback to client.metaAppId from DB.
+        const appId = process.env.META_APP_ID || client.metaAppId; 
         
         if (!appId) {
-            throw new Error('Meta App ID is not configured. Please set META_APP_ID in your environment or client settings to use media templates.');
+            throw new Error('Meta App ID is not configured. Please set META_APP_ID in your environment or add it in Settings → WhatsApp to use media templates.');
         }
         
         // 1. Initialize Upload
