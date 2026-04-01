@@ -654,6 +654,73 @@ router.delete('/clients/:id', protect, isSuperAdmin, async (req, res) => {
   }
 });
 
+// --- PUBLISH FLOW (Draft to Production) ---
+router.post('/publish', protect, async (req, res) => {
+  try {
+    const { flowId, clientId } = req.body;
+    let targetClientId = req.user.clientId;
+    if (req.user.role === 'SUPER_ADMIN' && clientId) {
+      targetClientId = clientId;
+    }
+
+    const client = await Client.findOne({ clientId: targetClientId });
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const flow = (client.visualFlows || []).find(f => f.id === flowId);
+    if (!flow) {
+      return res.status(404).json({ success: false, message: 'Flow not found' });
+    }
+
+    // 1. Maintain history (last 20 versions)
+    const historyEntry = {
+      version: (client.flowHistory?.length || 0) + 1,
+      flowId: flow.id,
+      name: flow.name,
+      platform: flow.platform,
+      nodes: client.flowNodes || [], 
+      edges: client.flowEdges || [],
+      publishedAt: new Date()
+    };
+
+    const updatedHistory = [historyEntry, ...(client.flowHistory || [])].slice(0, 20);
+
+    // 2. Update visualFlows statuses
+    const updatedVisualFlows = (client.visualFlows || []).map(f => {
+      if (f.platform === flow.platform) {
+        return { ...f, isActive: f.id === flowId };
+      }
+      return f;
+    });
+
+    const updateFields = {
+      visualFlows: updatedVisualFlows,
+      flowHistory: updatedHistory,
+      updatedAt: new Date()
+    };
+
+    // 3. Sync to live engine (WhatsApp/IG)
+    if (flow.platform === 'whatsapp' || flow.platform === 'omnichannel' || flow.platform === 'instagram') {
+        // We use standardized flowNodes/Edges for engine execution
+        updateFields.flowNodes = flow.nodes || [];
+        updateFields.flowEdges = flow.edges || [];
+    }
+
+    await Client.updateOne({ _id: client._id }, { $set: updateFields });
+
+    log.success(`Published flow "${flow.name}" for ${targetClientId}`);
+    res.json({ 
+      success: true, 
+      message: `Flow "${flow.name}" is now LIVE on ${flow.platform}!`,
+      version: historyEntry.version
+    });
+  } catch (err) {
+    log.error('Publish error', { error: err.message });
+    res.status(500).json({ success: false, message: 'Publishing failed', error: err.message });
+  }
+});
+
 // --- CLIENT SELF-SERVICE: Update own nicheData/flowData ---
 // Any authenticated user can update their OWN client's editable fields
 router.get('/my-settings', protect, async (req, res) => {

@@ -53,8 +53,12 @@ function injectVariables(text, { lead, client, convo, order }) {
       return 'Good Evening';
     },
     
-    // --- Custom Metadata Fallback ---
+    // --- Custom Metadata & Capture ---
     'last_input':     () => convo?.metadata?.last_input || '',
+    'captured_input': () => convo?.metadata?.captured_input || convo?.metadata?.last_input || '',
+    
+    // --- Dynamic Lead Data (Captured via flow) ---
+    'captured_var':   (key) => lead?.capturedData?.[key] || convo?.metadata?.[key] || 'N/A',
   };
 
   // 2. Perform Replacement

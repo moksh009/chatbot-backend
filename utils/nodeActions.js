@@ -12,8 +12,56 @@ const { createPaymentLink } = require("./razorpay");
  */
 async function handleNodeAction(action, node, client, phone, convo, lead) {
   const io = global.io;
+  const { flowEdges, flowNodes } = client;
   
   switch (action) {
+    
+    case "Capture":
+    case "CaptureNode": {
+      const questionText = node.data?.text || "Please enter your response:";
+      // We use WhatsApp as defined in dualBrainEngine or imported here
+      const WhatsAppLocal = require("./whatsapp"); 
+      await WhatsAppLocal.sendText(client, phone, questionText);
+      
+      // Set conversation to waiting mode
+      const nextEdge = (flowEdges || []).find(e => e.source === node.id);
+      
+      await Conversation.findByIdAndUpdate(convo._id, {
+        status:             "WAITING_FOR_INPUT",
+        waitingForVariable: node.data?.variable || "captured_input",
+        captureResumeNodeId: nextEdge?.target || null,
+        lastStepId:          node.id
+      });
+      return true;
+    }
+
+    case "Logic":
+    case "LogicNode": {
+      const { variable, operator, value } = node.data || {};
+      const Order = require("../models/Order");
+
+      const context = {
+        lead,
+        convo,
+        order:    await Order.findOne({ phone, clientId: client.clientId }).sort({ createdAt: -1 }),
+        metadata: convo.metadata || {}
+      };
+      
+      const result = evaluateCondition({ variable, operator, value }, context);
+      const handle = result ? "true" : "false";
+      
+      const nextEdge = (flowEdges || []).find(e => 
+        e.source === node.id && 
+        (normalizeHandleId(e.sourceHandle) === handle || e.label === handle)
+      );
+      
+      if (nextEdge) {
+        const { executeNode, flattenFlowNodes } = require("./dualBrainEngine");
+        const flatNodes = flattenFlowNodes(client.flowNodes || []);
+        return await executeNode(nextEdge.target, flatNodes, flowEdges, client, convo, lead, phone, io);
+      }
+      return true;
+    }
     
     case "ESCALATE_HUMAN": {
       await Conversation.findByIdAndUpdate(convo._id, {
@@ -376,4 +424,34 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
   }
 }
 
-module.exports = { handleNodeAction };
+function normalizeHandleId(handleId) {
+  if (!handleId) return handleId;
+  const parts = handleId.split("__");
+  return parts[parts.length - 1];
+}
+
+function evaluateCondition({ variable, operator, value }, context) {
+  const parts = variable?.split(".") || [];
+  const actual = parts.reduce((obj, k) => obj?.[k], context);
+  
+  switch (operator) {
+    case "eq":
+    case "equals":       return String(actual || "") === String(value);
+    case "neq":
+    case "not_equals":   return String(actual || "") !== String(value);
+    case "gt":
+    case "greater_than": return Number(actual) > Number(value);
+    case "lt":
+    case "less_than":    return Number(actual) < Number(value);
+    case "gte":          return Number(actual) >= Number(value);
+    case "lte":          return Number(actual) <= Number(value);
+    case "contains":     return String(actual || "").toLowerCase().includes(String(value || "").toLowerCase());
+    case "not_contains": return !String(actual || "").toLowerCase().includes(String(value || "").toLowerCase());
+    case "exists":       return actual !== undefined && actual !== null && actual !== "";
+    case "not_exists":   return actual === undefined || actual === null || actual === "";
+    case "in":           return String(value).split(",").map(v=>v.trim()).includes(String(actual || ""));
+    default:             return false;
+  }
+}
+
+module.exports = { handleNodeAction, evaluateCondition, normalizeHandleId };
