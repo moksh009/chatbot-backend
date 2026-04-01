@@ -426,13 +426,44 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     return await executeNode(matchingEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
   }
 
-  // D) GLOBAL RESET / GREETING
-  if (!incomingTrigger.buttonId && (isGreeting(userTextLower) || userTextLower === 'start' || userTextLower === 'menu')) {
-      const triggerNode = flowNodes.find(n => (n.type === 'trigger' || n.type === 'TriggerNode') && (n.data?.keyword || '').toLowerCase().split(',').map(k => k.trim()).includes(userTextLower));
-      if (triggerNode) {
-          console.log(`[DualBrain] Graph: Resetting to trigger node ${triggerNode.id}`);
-          await trackNodeVisit(client, triggerNode.id);
-          return await executeNode(triggerNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+  // D) GLOBAL RESET / GREETING / AI INTENT
+  if (!incomingTrigger.buttonId) {
+      // 1. Check Keywords
+      let matchingTrigger = flowNodes.find(n => (n.type === 'trigger' || n.type === 'TriggerNode') && (n.data?.keyword || '').toLowerCase().split(',').map(k => k.trim()).includes(userTextLower));
+      
+      // 2. AI Intent Detection Fallback (Priority 1B)
+      if (!matchingTrigger && userText.length > 3) {
+          const intentNodes = flowNodes.filter(n => (n.type === 'trigger' || n.type === 'TriggerNode') && n.data?.triggerType === 'intent' && n.data?.intentDescription);
+          const apiKey = process.env.GEMINI_API_KEY;
+          
+          if (intentNodes.length > 0 && apiKey) {
+              console.log(`[DualBrain] AI Intent: Checking ${intentNodes.length} intent triggers for "${userText}"`);
+              // limit to first 3 intent nodes to prevent excessive API calls
+              for (const node of intentNodes.slice(0, 3)) {
+                  const matched = await checkIntent(userText, node.data.intentDescription, apiKey);
+                  if (matched) {
+                      console.log(`[DualBrain] AI Intent: Matched intent "${node.data.intentDescription}" for node ${node.id}`);
+                      matchingTrigger = node;
+                      break; 
+                  }
+              }
+          }
+      }
+
+      if (matchingTrigger) {
+          console.log(`[DualBrain] Graph: Triggering node ${matchingTrigger.id}`);
+          await trackNodeVisit(client, matchingTrigger.id);
+          return await executeNode(matchingTrigger.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+      }
+      
+      // If none matched, check for basic greeting reset
+      if (isGreeting(userTextLower) || userTextLower === 'start' || userTextLower === 'menu') {
+          const firstTrigger = flowNodes.find(n => n.type === 'trigger' || n.type === 'TriggerNode');
+          if (firstTrigger) {
+              console.log(`[DualBrain] Graph: Greeting reset to node ${firstTrigger.id}`);
+              await trackNodeVisit(client, firstTrigger.id);
+              return await executeNode(firstTrigger.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+          }
       }
   }
 
@@ -597,22 +628,93 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     convo.metadata = updatedMetadata;
   }
 
-  // New: Shopify Call Node
+  // USP Section: Shopify-Native AI Actions
   if (node.type === 'shopify_call' || node.type === 'ShopifyNode') {
     const { action, query, variable } = node.data;
-    const { getShopifyClient } = require("./shopifyHelper");
+    const { getShopifyClient, withShopifyRetry } = require("./shopifyHelper");
+    
     try {
-      const shopify = getShopifyClient(client);
-      let data = null;
-      if (action === 'search_products') data = await shopify.searchProducts(query);
-      else if (action === 'get_order') data = await shopify.getOrderStatus(query || phone);
+      let resultData = null;
+
+      // --- USP 1: DYNAMNIC PRODUCT CARDS ---
+      if (action === 'PRODUCT_CARD') {
+        const products = client.knowledgeBase?.products || [];
+        if (products.length > 0) {
+          const rand = products[Math.floor(Math.random() * products.length)];
+          const msg = `Check this out! 🛍️\n\n*${rand.name}*\n${rand.description?.substring(0, 100)}...\n\n*Price:* ₹${rand.price}\n\nLink: ${rand.url || 'Visit our store'}`;
+          await sendWhatsAppText(client, phone, msg);
+          resultData = { product: rand.name, status: 'sent' };
+        } else {
+          await sendWhatsAppText(client, phone, "I'd love to show you our products, but our catalog is being updated. One moment! 🛒");
+        }
+      } 
       
-      if (variable) {
-        const updatedMetadata = { ...(convo.metadata || {}), [variable]: data };
+      // --- USP 2: REAL-TIME ORDER TRACKING ---
+      else if (action === 'ORDER_STATUS' || action === 'get_order') {
+        resultData = await withShopifyRetry(client.clientId, async (shopify) => {
+          const res = await shopify.get(`/orders.json?status=any&limit=1&phone=${phone.replace('+', '')}`);
+          const order = res.data.orders?.[0];
+          if (!order) return { error: 'No order found for this number' };
+          
+          const status = order.fulfillment_status || 'Unfulfilled';
+          const msg = `📦 *Order #${order.order_number} Update*\n\nStatus: *${status.toUpperCase()}*\nItems: ${order.line_items.map(i => i.title).join(', ')}\nTotal: ${order.currency} ${order.total_price}\n\nTrack here: ${order.order_status_url}`;
+          await sendWhatsAppText(client, phone, msg);
+          return { status, id: order.id };
+        });
+      }
+
+      // --- USP 3: DYNAMIC AI DISCOUNTS ---
+      else if (action === 'CREATE_DISCOUNT') {
+        resultData = await withShopifyRetry(client.clientId, async (shopify) => {
+          const code = `VIP${Math.floor(1000 + Math.random() * 9000)}`;
+          const ruleRes = await shopify.post('/price_rules.json', {
+            price_rule: {
+              title: `AI_Generated_${code}`,
+              target_type: "line_item",
+              target_selection: "all",
+              allocation_method: "across",
+              value_type: "percentage",
+              value: "-10.0",
+              customer_selection: "all",
+              starts_at: new Date().toISOString()
+            }
+          });
+          const ruleId = ruleRes.data.price_rule.id;
+          await shopify.post(`/price_rules/${ruleId}/discount_codes.json`, {
+            discount_code: { code }
+          });
+
+          await sendWhatsAppText(client, phone, `🎁 Surprise! Use code *${code}* for 10% OFF your next order! Valid for the next 24 hours only. ⚡️`);
+          return { code, discount: '10%' };
+        });
+      }
+
+      // --- USP 4: COD TO PREPAID CONVERSION ---
+      else if (action === 'COD_TO_PREPAID') {
+        const { createCODPaymentLink } = require("./razorpay");
+        const AdOrder = require("../models/AdOrder");
+        const latestOrder = await AdOrder.findOne({ customerPhone: phone, paymentStatus: 'pending' }).sort({ createdAt: -1 });
+        
+        if (latestOrder && latestOrder.paymentMethod === 'cod') {
+          const rzpLink = await createCODPaymentLink(latestOrder, client);
+          const msg = `Hey! We noticed you chose COD for Order #${latestOrder.orderNumber}. 💳\n\nIf you pre-pay now via this link, we'll fulfill your order *Priority Faster* and add a surprise gift! 🎁\n\nPay here: ${rzpLink.short_url}`;
+          await sendWhatsAppText(client, phone, msg);
+          resultData = { link: rzpLink.short_url, status: 'sent' };
+        } else {
+          console.log(`[COD_TO_PREPAID] No eligible COD order found for ${phone}`);
+        }
+      }
+
+      // Save to variable if requested
+      if (variable && resultData) {
+        const updatedMetadata = { ...(convo.metadata || {}), [variable]: resultData };
         await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
         convo.metadata = updatedMetadata;
       }
-    } catch (err) { console.error("[DualBrain] Shopify Node Error:", err.message); }
+    } catch (err) {
+      console.error(`[dualBrainEngine] Shopify Action ${action} Failed:`, err.message);
+      await sendWhatsAppText(client, phone, "I'm having a bit of trouble connecting to the store right now. Please try again in a minute! 🔄");
+    }
   }
 
   // New: HTTP Request Node
@@ -1421,6 +1523,21 @@ function findTriggerNode(text, flowNodes) {
 
 function isGreeting(text) {
   return /^(hi|hello|hey|namaste|start|hola|hii|hey there|menu|options)\b/i.test((text || '').trim());
+}
+
+async function checkIntent(userText, intentDescription, apiKey) {
+  try {
+    const { getGeminiModel } = require('./gemini');
+    const model = getGeminiModel(apiKey);
+    const result = await model.generateContent(
+      `Does this message express the intent: "${intentDescription}"?\nMessage: "${userText}"\nAnswer only YES or NO.`
+    );
+    const text = result.response.text().toUpperCase();
+    return text.includes("YES");
+  } catch (err) {
+    console.error(`[checkIntent] Error:`, err.message);
+    return false;
+  }
 }
 
 module.exports = { 
