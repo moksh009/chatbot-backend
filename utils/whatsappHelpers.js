@@ -34,20 +34,45 @@ async function sendWhatsAppText({ phoneNumberId, to, body, token }) {
 }
 
 /**
- * Fetches message templates from Meta WABA.
+ * Sends a WhatsApp template message via the Cloud API.
+ * 
+ * @param {Object} params
+ * @param {string} params.phoneNumberId
+ * @param {string} params.to
+ * @param {string} params.templateName
+ * @param {string} params.languageCode
+ * @param {Array} params.components
+ * @param {string} params.token
  */
-async function syncWhatsAppTemplates({ wabaId, token }) {
+async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageCode = 'en_US', components = [], token }) {
     const apiVersion = process.env.API_VERSION || 'v18.0';
-    const url = `https://graph.facebook.com/${apiVersion}/${wabaId}/message_templates?fields=name,status,category,language,components`;
+    const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
+    const data = {
+        messaging_product: 'whatsapp',
+        to,
+        type: 'template',
+        template: {
+            name: templateName,
+            language: { code: languageCode },
+            components
+        }
+    };
     try {
-        const response = await axios.get(url, {
-            headers: { Authorization: `Bearer ${token}` }
+        const response = await axios.post(url, data, {
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`
+            }
         });
-        return { success: true, templates: response.data.data || [] };
+        return { success: true, data: response.data };
     } catch (err) {
-        console.error('[WhatsAppHelpers] Sync Error:', err.response?.data || err.message);
+        console.error('Error sending WhatsApp template:', err.response?.data || err.message);
         return { success: false, error: err.response?.data || err.message };
     }
 }
 
-module.exports = { sendWhatsAppText, syncWhatsAppTemplates };
+module.exports = { 
+    sendWhatsAppText, 
+    sendWhatsAppTemplate,
+    syncWhatsAppTemplates 
+};

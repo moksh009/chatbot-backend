@@ -85,17 +85,22 @@ async function getShopifyClient(clientId, forceRefresh = false) {
             client.lastShopifyError = '';
             await client.save();
         } else if (forceRefresh || isNextToExpiry) {
+            const errorMsg = `Self-Healing Failed for ${clientId}: ${JSON.stringify(lastError)}`;
+            console.error(`❌ [ShopifyRotation] ${errorMsg}`);
             await Client.updateOne({ clientId }, { 
                 $set: { 
                     shopifyConnectionStatus: 'error', 
-                    lastShopifyError: `Self-Healing Failed: ${JSON.stringify(lastError)}` 
+                    lastShopifyError: errorMsg 
                 } 
             });
             if (forceRefresh) throw new Error(`Shopify rotation failed: ${JSON.stringify(lastError)}`);
         }
     }
 
-    if (!token || !domain) throw new Error('Shopify credentials incomplete or invalid');
+    if (!token || !domain) {
+        console.error(`❌ [ShopifyClient] Missing credentials for ${clientId}. Token: ${!!token}, Domain: ${domain}`);
+        throw new Error('Shopify credentials incomplete or invalid');
+    }
 
     const instance = axios.create({
         baseURL: `https://${domain}/admin/api/${apiVersion}`,

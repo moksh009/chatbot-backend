@@ -3,14 +3,22 @@ const mongoose = require('mongoose');
 const FollowUpSequenceSchema = new mongoose.Schema({
   clientId: { type: String, required: true },
   leadId: { type: mongoose.Schema.Types.ObjectId, ref: 'AdLead' },
-  phone: { type: String, required: true },
-  status: { type: String, enum: ["active","completed","cancelled"], default: "active" },
+  phone: { type: String },
+  email: { type: String },
+  name: { type: String, default: 'Untitled Sequence' },
+  status: { type: String, enum: ["active", "completed", "cancelled", "paused"], default: "active" },
   steps: [{
-    message: String,
-    templateId: String,
+    type: { type: String, enum: ['whatsapp', 'email'], default: 'whatsapp' },
+    templateId: String, // For Meta WhatsApp Templates
+    templateName: String,
+    subject: String, // For Email
+    content: String, // For Email or Custom Text
+    delayValue: Number, // Value (e.g. 15)
+    delayUnit: { type: String, enum: ['m', 'h', 'd'], default: 'm' },
     sendAt: Date,
-    status: { type: String, enum: ["pending","sent","failed"], default: "pending" },
-    sentAt: Date
+    status: { type: String, enum: ["pending", "sent", "failed", "skipped"], default: "pending" },
+    sentAt: Date,
+    errorLog: String
   }]
 }, { timestamps: true });
 

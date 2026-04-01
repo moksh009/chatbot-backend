@@ -3,6 +3,10 @@ const router = express.Router();
 const FollowUpSequence = require('../models/FollowUpSequence');
 const AdLead = require('../models/AdLead');
 const { protect } = require('../middleware/auth');
+const moment = require('moment');
+
+// Max active sequences per lead
+const MAX_ACTIVE_SEQUENCES = 2;
 
 router.post('/:clientId', protect, async (req, res) => {
   try {
@@ -11,25 +15,74 @@ router.post('/:clientId', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
-    const { leadId, phone, steps } = req.body;
+    const { leads, name, steps } = req.body; // leads is [{ leadId, phone, email }]
     
-    // Parse times
-    const mappedSteps = steps.map(s => ({
-      message: s.message,
-      templateId: s.templateId,
-      sendAt: new Date(s.sendAt),
-      status: "pending"
-    }));
+    if (!Array.isArray(leads) || leads.length === 0) {
+      return res.status(400).json({ success: false, message: 'No leads provided' });
+    }
 
-    const sequence = new FollowUpSequence({
-      clientId,
-      leadId,
-      phone,
-      steps: mappedSteps
+    const enrolledSequences = [];
+    const errors = [];
+
+    for (const lead of leads) {
+      const { leadId, phone, email } = lead;
+
+      // Check for existing active sequences
+      const activeCount = await FollowUpSequence.countDocuments({
+        clientId,
+        leadId,
+        status: "active"
+      });
+
+      if (activeCount >= MAX_ACTIVE_SEQUENCES) {
+        errors.push({ leadId, message: 'Active sequence limit reached' });
+        continue;
+      }
+      
+      // Parse and schedule steps
+      let currentSendAt = moment();
+      const mappedSteps = steps.map(s => {
+        const { delayValue, delayUnit, type, templateId, templateName, subject, content } = s;
+        currentSendAt = currentSendAt.add(delayValue || 0, delayUnit || 'm');
+
+        return {
+          type: type || 'whatsapp',
+          templateId,
+          templateName,
+          subject,
+          content,
+          delayValue,
+          delayUnit,
+          sendAt: currentSendAt.toDate(),
+          status: "pending"
+        };
+      });
+
+      const sequence = new FollowUpSequence({
+        clientId,
+        leadId,
+        phone,
+        email,
+        name: name || 'Untitled Sequence',
+        steps: mappedSteps
+      });
+
+      await sequence.save();
+      
+      if (leadId) {
+        await AdLead.findByIdAndUpdate(leadId, { 
+          $set: { "metaData.hasActiveSequence": true }
+        });
+      }
+      enrolledSequences.push(sequence);
+    }
+
+    res.json({ 
+      success: true, 
+      count: enrolledSequences.length, 
+      skipped: errors.length,
+      errors: errors.length > 0 ? errors : undefined 
     });
-
-    await sequence.save();
-    res.json({ success: true, sequence });
   } catch (error) {
     console.error('Sequence creation error:', error);
     res.status(500).json({ success: false, message: error.message });
@@ -51,6 +104,26 @@ router.get('/:clientId', protect, async (req, res) => {
     res.json({ success: true, sequences });
   } catch (error) {
     console.error('Sequence fetch error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Cancel a sequence
+router.patch('/:clientId/:sequenceId/cancel', protect, async (req, res) => {
+  try {
+    const { clientId, sequenceId } = req.params;
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const seq = await FollowUpSequence.findOneAndUpdate(
+      { _id: sequenceId, clientId },
+      { $set: { status: 'cancelled' } },
+      { new: true }
+    );
+    
+    res.json({ success: true, sequence: seq });
+  } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 });

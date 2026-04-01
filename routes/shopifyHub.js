@@ -66,12 +66,16 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
     });
 
     const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).json({ success: false, error: 'Client not found' });
+    }
+
     res.json({
         success: true,
         ...result,
-        shopDomain: client.shopDomain,
-        shopifyConnectionStatus: client.shopifyConnectionStatus,
-        lastShopifyError: client.lastShopifyError
+        shopDomain: client.shopDomain || '',
+        shopifyConnectionStatus: client.shopifyConnectionStatus || 'disconnected',
+        lastShopifyError: client.lastShopifyError || ''
     });
 
   } catch (err) {
@@ -109,20 +113,24 @@ router.get('/:clientId/products', protect, verifyClientAccess, async (req, res) 
         const shopifyProducts = response.data.products;
         
         const client = await Client.findOne({ clientId });
+        if (!client) throw new Error('Client context lost during fetch');
+
         const botProducts = client.nicheData?.products || [];
         const botProductIds = new Set(botProducts.map(p => String(p.id)));
+
+        if (!Array.isArray(shopifyProducts)) return [];
 
         return shopifyProducts.map(p => ({
           ...p,
           isWhatsAppReady: botProductIds.has(String(p.id)),
-          inventory: p.variants.reduce((sum, v) => sum + (v.inventory_quantity || 0), 0)
+          inventory: Array.isArray(p.variants) ? p.variants.reduce((sum, v) => sum + (v.inventory_quantity || 0), 0) : 0
         }));
     });
 
     const client = await Client.findOne({ clientId });
     const shopDomain = client ? client.shopDomain : '';
 
-    res.json({ success: true, products, shopDomain });
+    res.json({ success: true, products: products || [], shopDomain });
   } catch (err) {
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
