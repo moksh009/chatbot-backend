@@ -1006,6 +1006,83 @@ router.post('/generate-flow', protect, async (req, res) => {
   }
 });
 
+// --- AI SMART FIX AUTOMATION ---
+router.post('/flow/fix', protect, async (req, res) => {
+  try {
+    const { diagnostics, nodes, edges } = req.body;
+    if (!diagnostics || !nodes || !edges) return res.status(400).json({ error: 'Missing diagnostic or graph data' });
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not configured on server' });
+
+    let model = getGeminiModel(apiKey);
+
+    const systemPrompt = `You are a WhatsApp chatbot flow engineer debugging a ReactFlow JSON graph.
+    You will receive the current graph (nodes and edges) and a list of diagnostic errors.
+    Your task is to fix the errors by intelligently modifying the "nodes" or "edges" array.
+    
+    Diagnostics:
+    ${JSON.stringify(diagnostics, null, 2)}
+    
+    Current Nodes:
+    ${JSON.stringify(nodes, null, 2)}
+    
+    Current Edges:
+    ${JSON.stringify(edges, null, 2)}
+    
+    Return ONLY valid JSON with exactly two properties: "nodes" and "edges".
+    DO NOT DELETE nodes unless absolutely necessary. Just fix the broken edges or properties.
+    The response MUST be a valid JSON object. Do not add markdown formatting or explanations.`;
+
+    console.log('[flow/fix] Calling Gemini API for smart fix...');
+    let result;
+    try {
+      result = await model.generateContent(systemPrompt);
+    } catch (apiErr) {
+      console.warn('[flow/fix] Flash failed, falling back to Pro:', apiErr.message);
+      model = getGeminiModel(apiKey);
+      result = await model.generateContent(systemPrompt);
+    }
+
+    const rawText = result.response.text().trim();
+    
+    let cleaned = rawText
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+
+    const startIdx = cleaned.indexOf('{');
+    const endIdx = cleaned.lastIndexOf('}');
+    if (startIdx !== -1 && endIdx !== -1) {
+      cleaned = cleaned.substring(startIdx, endIdx + 1);
+    }
+
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      console.error('[flow/fix] No JSON found in response:', rawText.slice(0, 300));
+      return res.status(500).json({ error: 'AI did not return valid JSON' });
+    }
+
+    let fixedGraph;
+    try {
+      fixedGraph = JSON.parse(jsonMatch[0]);
+    } catch (parseErr) {
+      return res.status(500).json({ error: 'Failed to parse AI JSON: ' + parseErr.message });
+    }
+
+    if (!fixedGraph.nodes || !fixedGraph.edges) {
+      return res.status(500).json({ error: 'AI output missing nodes/edges' });
+    }
+
+    console.log('[flow/fix] Success - Returning fixed graph.');
+    res.json({ success: true, nodes: fixedGraph.nodes, edges: fixedGraph.edges });
+  } catch (err) {
+    console.error('[flow/fix] FATAL:', err.message);
+    res.status(500).json({ error: 'AI Auto-Fix Failed: ' + err.message });
+  }
+});
+
 // --- GEMINI KEY PROBE (no auth — for diagnostics) ---
 router.get('/test-gemini', async (req, res) => {
   const apiKey = process.env.GEMINI_API_KEY;
