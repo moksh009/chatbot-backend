@@ -299,9 +299,12 @@ router.post('/upload-media', protect, upload.single('file'), async (req, res) =>
         const accessToken = client.whatsappToken;
 
         // Meta requires App ID for uploads. 
-        // We try to find it in process.env or fallback to the provided project AppID.
-        // For Template media headers, it must be the ID of the app that generated the token.
-        const appId = process.env.META_APP_ID || "1487843075253818"; 
+        // We prioritize process.env.META_APP_ID, then fallback to client.config.metaAppId if set.
+        const appId = process.env.META_APP_ID || client.config?.metaAppId; 
+        
+        if (!appId) {
+            throw new Error('Meta App ID is not configured. Please set META_APP_ID in your environment or client settings to use media templates.');
+        }
         
         // 1. Initialize Upload
         // Documentation: https://developers.facebook.com/docs/graph-api/resumable-upload-api/
