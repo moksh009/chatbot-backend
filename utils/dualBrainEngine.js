@@ -56,14 +56,6 @@ const { sendInstagramReply, sendInstagramMessage } = require("./omnichannel");
 // FLOW BUILDER HELPERS — handle nested folders/groups
 // ─────────────────────────────────────────────────────────────────────────────
 
-function normalizeHandleId(handleId) {
-  // ReactFlow groups prefix handles: "group_123__button_buy"
-  // We only want: "button_buy"
-  if (!handleId) return handleId;
-  const parts = handleId.split("__");
-  return parts[parts.length - 1];
-}
-
 function flattenFlowNodes(nodes) {
   const flat = [];
   
@@ -261,51 +253,6 @@ async function runDualBrainEngine(parsedMessage, client) {
     return true;
   }
 
-  // ── PRIORITY 0: CAPTURE MODE ──────────────────────────────────────────
-  // If bot is waiting for input from this user, capture it now
-  if (convo.status === "WAITING_FOR_INPUT" && convo.waitingForVariable) {
-    const userInput = parsedMessage.text?.body?.trim() || "";
-    if (userInput) {
-      const variableName = convo.waitingForVariable;
-      console.log(`[DualBrain] Priority 0 Capture: Saving "${userInput}" to "${variableName}" for ${phone}`);
-      
-      const updatedMetadata = {
-        ...(convo.metadata || {}),
-        [variableName]: userInput
-      };
-      
-      // Update Conversation
-      await Conversation.findByIdAndUpdate(convo._id, {
-        $set: {
-          metadata:           updatedMetadata,
-          status:             "BOT_ACTIVE",
-          waitingForVariable: null,
-          lastStepId:         convo.captureResumeNodeId || convo.lastStepId
-        }
-      });
-      
-      // Update AdLead with captured data
-      await AdLead.findOneAndUpdate(
-        { phoneNumber: phone, clientId: client.clientId },
-        { $set: { [`capturedData.${variableName}`]: userInput } }
-      );
-      
-      // Resume the flow
-      const freshConvo = await Conversation.findById(convo._id);
-      const rawNodes   = client.flowNodes || [];
-      const rawEdges   = client.flowEdges || [];
-      const flowNodes  = flattenFlowNodes(rawNodes);
-      const flowEdges  = rawEdges;
-
-      if (convo.captureResumeNodeId) {
-        return await executeNode(convo.captureResumeNodeId, flowNodes, flowEdges, client, freshConvo, lead, phone, io, channel);
-      } else {
-        // Just continue from where we were (fallback)
-        return await tryGraphTraversal(parsedMessage, client, freshConvo, lead, phone, io, channel);
-      }
-    }
-  }
-
   // STEP 4: Human Takeover — bot is paused
   if (convo.botPaused || convo.status === 'HUMAN_TAKEOVER') {
     return true;
@@ -383,33 +330,29 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     return await executeNode(jumpNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
   }
 
-  // B) Handle CAPTURE_INPUT Node (Legacy inline handling - keeping for backward compatibility but Priority 0 takes precedence)
+  // B) Handle CAPTURE_INPUT Node
   const currentNode = flowNodes.find(n => n.id === currentStepId);
   if (currentNode && (currentNode.type === 'capture_input' || currentNode.type === 'CaptureNode')) {
-    // Priority 0 now handles the actual capture on next message. 
-    // This block might still run if multiple captures are chained or for legacy nodes.
+    const varName = currentNode.data?.variable || 'last_input';
+    console.log(`[DualBrain] Capture: Saving "${userText}" to variable "${varName}" for convo ${phone}`);
+    const updatedMetadata = { ...(convo.metadata || {}), [varName]: userText };
+    await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
+    convo.metadata = updatedMetadata;
+
+    const nextEdge = flowEdges.find(e => e.source === currentStepId);
+    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+    return true; 
   }
 
   // C) User is in the middle of a flow
   let matchingEdge = flowEdges.find(e => {
     if (e.source !== currentStepId) return false;
-    
-    // Auto/Default transitions
-    if (!e.trigger && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom' || e.sourceHandle === 'output')) return true;
-    
-    // Handle specific markers (buttons/keywords)
-    const incomingButton = normalizeHandleId(
-      incomingTrigger.buttonId || 
-      parsedMessage.interactive?.button_reply?.id || 
-      parsedMessage.interactive?.list_reply?.id
-    );
-    
+    if (!e.trigger && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom')) return true;
     if (e.sourceHandle) {
-      const eHandleNorm = normalizeHandleId(e.sourceHandle).toLowerCase();
-      const bidNorm = incomingButton?.toLowerCase();
-      const txtNorm = userTextLower;
-      
-      return eHandleNorm === bidNorm || eHandleNorm === txtNorm || txtNorm === eHandleNorm;
+      const sid = e.sourceHandle.toLowerCase();
+      const bid = (incomingTrigger.buttonId || '').toLowerCase();
+      const txt = userTextLower;
+      return sid === bid || sid === txt || txt === sid;
     }
     if (e.trigger?.type === 'button') return (incomingTrigger.buttonId || '').toLowerCase() === e.trigger.value.toLowerCase();
     if (e.trigger?.type === 'keyword') return userTextLower.includes(e.trigger.value.toLowerCase());
@@ -500,9 +443,33 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   if (!sent && node.type !== 'logic' && node.type !== 'delay' && node.type !== 'set_variable' && node.type !== 'shopify_call' && node.type !== 'http_request') return false;
 
   // --- SPECIAL NODE LOGIC (Automated Traversal) ---
-  if (node.type === 'logic' || node.type === 'LogicNode') {
-    const { handleNodeAction } = require("./nodeActions");
-    return await handleNodeAction("LogicNode", node, client, phone, convo, lead);
+  if (node.type === 'logic') {
+    const { condition, operator, value, variable } = node.data;
+    let result = false;
+    
+    // Get comparison value
+    let leftValue = '';
+    if (variable) {
+      leftValue = convo.metadata?.[variable] || lead?.[variable] || '';
+    } else if (condition) {
+      if (condition.includes('cart_total')) leftValue = lead?.cartValue || convo?.metadata?.cartValue || 0;
+      else if (condition === 'has_phone') leftValue = !!phone;
+      else if (condition === "channel == 'instagram'") leftValue = channel === 'instagram';
+    }
+
+    // Advanced Evaluation
+    const compValue = value || (condition?.match(/\d+/) || [0])[0];
+    switch (operator) {
+      case 'contains': result = String(leftValue).toLowerCase().includes(String(compValue).toLowerCase()); break;
+      case 'greater_than': result = Number(leftValue) > Number(compValue); break;
+      case 'less_than': result = Number(leftValue) < Number(compValue); break;
+      case 'equals': 
+      default: result = String(leftValue).toLowerCase() === String(compValue).toLowerCase(); break;
+    }
+    
+    const targetHandle = result ? 'true' : 'false';
+    const nextEdge = flowEdges.find(e => e.source === nodeId && e.sourceHandle === targetHandle);
+    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
   }
 
   // Phase 17: AB Test Node
@@ -603,24 +570,14 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     await Conversation.findByIdAndUpdate(convo._id, { lastStepId: nodeId, lastInteraction: new Date() });
   }
 
-  // ── AUTO-FORWARD (Automated Traversal) ──────────────────────────────────
-  if (!isWaitNode && node.type !== 'logic' && node.type !== 'LogicNode') {
-    // Look for an 'auto' or default edge (no button/keyword/trigger)
-    const autoEdge = flowEdges.find(e => 
-      e.source === nodeId && 
-      (!e.trigger || e.trigger?.type === 'auto') && 
-      (!e.sourceHandle || ["a", "bottom", "output", "next"].includes(normalizeHandleId(e.sourceHandle)))
-    );
-    
+  // Auto-forward if not a wait node or logic node (logic already handled)
+  if (!isWaitNode && node.type !== 'logic') {
+    const autoEdge = flowEdges.find(e => e.source === nodeId && (!e.trigger || e.trigger?.type === 'auto') && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom'));
     if (autoEdge) {
-      const delay = node.data?.forwardDelay || 600; // default 600ms for smooth bubble sequence
-      console.log(`[DualBrain] Auto-forwarding from ${nodeId} → ${autoEdge.target} in ${delay}ms`);
-      
       setTimeout(async () => {
         const freshConvo = await Conversation.findById(convo._id);
-        // We use the already flattened nodes/edges from the current scope
         await executeNode(autoEdge.target, flowNodes, flowEdges, client, freshConvo, lead, phone, io, channel);
-      }, delay);
+      }, 600);
     }
   }
 

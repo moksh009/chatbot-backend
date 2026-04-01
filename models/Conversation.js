@@ -6,13 +6,9 @@ const ConversationSchema = new mongoose.Schema({
   customerName: { type: String, default: '' }, // WhatsApp profile name or provided name
   status: { 
     type: String, 
-    enum: ['BOT_ACTIVE', 'HUMAN_TAKEOVER', 'CLOSED', 'WAITING_FOR_INPUT'], 
+    enum: ['BOT_ACTIVE', 'HUMAN_TAKEOVER', 'CLOSED'], 
     default: 'BOT_ACTIVE' 
   },
-  waitingForVariable:   { type: String, default: null },
-  captureResumeNodeId:  { type: String, default: null },
-  capturedData:         { type: mongoose.Schema.Types.Mixed, default: {} },
-
   assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Agent ID
   unreadCount: { type: Number, default: 0 },
   lastMessage: { type: String },
