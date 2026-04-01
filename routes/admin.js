@@ -707,7 +707,8 @@ router.get('/my-settings', protect, async (req, res) => {
       flowFolders: client.flowFolders,
       visualFlows: client.visualFlows,
       adminAlertEmail: client.adminAlertEmail,
-      adminAlertWhatsapp: client.adminAlertWhatsapp
+      adminAlertWhatsapp: client.adminAlertWhatsapp,
+      metaAppId: client.metaAppId
     });
   } catch (err) {
     log.error('Settings fetch error', { error: err.message });
@@ -725,7 +726,7 @@ router.patch('/my-settings', protect, async (req, res) => {
       woocommerceUrl, woocommerceKey, woocommerceSecret,
       instagramConnected, instagramPageId, instagramAccessToken, instagramAppSecret,
       googleReviewUrl, adminPhone, adminEmail,
-      adminAlertEmail, adminAlertWhatsapp
+      adminAlertEmail, adminAlertWhatsapp, metaAppId
     } = req.body;
     
     // If Super Admin and clientId provided, use that. Otherwise use user's own.
@@ -775,6 +776,7 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (adminEmail !== undefined) updateFields.adminEmail = adminEmail;
     if (adminAlertEmail !== undefined) updateFields.adminAlertEmail = adminAlertEmail;
     if (adminAlertWhatsapp !== undefined) updateFields.adminAlertWhatsapp = adminAlertWhatsapp;
+    if (metaAppId !== undefined) updateFields.metaAppId = metaAppId;
 
     const updated = await Client.findOneAndUpdate(
       { clientId: targetClientId },

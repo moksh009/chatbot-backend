@@ -213,6 +213,7 @@ const ClientSchema = new mongoose.Schema({
   // Admin Alert Notifications
   adminAlertEmail:    { type: String, default: "" },
   adminAlertWhatsapp: { type: String, default: "" },
+  metaAppId:          { type: String, default: "" },
 
   createdAt: { type: Date, default: Date.now }
 });

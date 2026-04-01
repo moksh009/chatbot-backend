@@ -50,7 +50,10 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
           const payoutsRes = await shop.get('/shopify_payments/payouts.json?limit=5');
           payouts = payoutsRes.data?.payouts || [];
         } catch (payoutErr) {
-          console.warn('[Pulse] Payouts Fetch skipped:', payoutErr.message);
+          // If 404, it just means Shopify Payments isn't enabled for this store.
+          if (payoutErr.response?.status !== 404) {
+            console.warn('[Pulse] Payouts Fetch error:', payoutErr.message);
+          }
         }
 
         const revenue = orders.reduce((sum, o) => sum + (parseFloat(o.total_price) || 0), 0);
