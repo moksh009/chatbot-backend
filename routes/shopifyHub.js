@@ -91,10 +91,11 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
        });
     }
 
-    console.error('Pulse Error:', shopifyError);
+    const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
+    console.error(`[Pulse Error] Client: ${clientId}:`, errorString);
     res.status(isAuthError ? 400 : 500).json({ 
       success: false, 
-      error: shopifyError, 
+      error: `Shopify Hub Pulse Error: ${errorString}`, 
       isShopifyAuthError: isAuthError
     });
   }
@@ -135,10 +136,11 @@ router.get('/:clientId/products', protect, verifyClientAccess, async (req, res) 
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     const isAuthError = err.response?.status === 401 || err.response?.status === 403;
+    console.error(`[Products Error] Client: ${clientId}:`, errorString);
     res.status(isAuthError ? 400 : 500).json({ 
       success: false, 
       products: [], 
-      error: errorString, 
+      error: `Shopify Hub Products Error: ${errorString}`, 
       isShopifyAuthError: isAuthError 
     });
   }
