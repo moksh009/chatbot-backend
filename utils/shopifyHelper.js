@@ -52,7 +52,8 @@ async function getShopifyClient(clientId, forceRefresh = false) {
                     console.log(`✅ [ShopifyRotation] Token restored via Refresh Token for ${clientId}`);
                 }
             } catch (err) {
-                lastError = err.response?.data || err.message;
+                const eData = err.response?.data;
+                lastError = typeof eData === 'string' && eData.length > 200 ? `${eData.substring(0, 100)}... [HTML truncated]` : (eData || err.message);
                 console.warn(`[ShopifyRotation] Refresh token attempt failed for ${clientId}:`, JSON.stringify(lastError));
             }
         }
@@ -81,7 +82,8 @@ async function getShopifyClient(clientId, forceRefresh = false) {
                     console.log(`✅ [ShopifyRotation] Token restored via Client Credentials for ${clientId}`);
                 }
             } catch (err) {
-                lastError = err.response?.data || err.message;
+                const eData = err.response?.data;
+                lastError = typeof eData === 'string' && eData.length > 200 ? `${eData.substring(0, 100)}... [HTML truncated]` : (eData || err.message);
                 console.error(`❌ [ShopifyRotation] Client Credentials attempt failed for ${clientId}:`, JSON.stringify(lastError));
             }
         }
