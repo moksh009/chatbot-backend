@@ -4,6 +4,7 @@ const axios = require('axios');
 const { protect } = require('../middleware/auth');
 const Client = require('../models/Client');
 const log = require('../utils/logger')('WhatsAppAPI');
+const { decrypt } = require('../utils/encryption');
 
 // @route   POST /api/whatsapp/send-template
 // @desc    Send an individual WhatsApp template message
@@ -15,9 +16,10 @@ router.post('/send-template', protect, async (req, res) => {
     return res.status(400).json({ success: false, message: 'phoneNumber and templateName are required' });
   }
 
+  let targetClientId = 'unknown';
   try {
     // If Super Admin, use provided clientId, otherwise use user's own
-    const targetClientId = (req.user.role === 'SUPER_ADMIN' && clientId) ? clientId : req.user.clientId;
+    targetClientId = (req.user.role === 'SUPER_ADMIN' && clientId) ? clientId : req.user.clientId;
     
     const client = await Client.findOne({ clientId: targetClientId });
     if (!client) {
@@ -25,7 +27,18 @@ router.post('/send-template', protect, async (req, res) => {
     }
 
     const phoneNumberId = client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
-    const accessToken = client.whatsappToken || process.env.WHATSAPP_TOKEN;
+    
+    // --- ROOT CAUSE FIX: Decrypt the token if it exists in the DB ---
+    let accessToken = process.env.WHATSAPP_TOKEN;
+    if (client.whatsappToken) {
+        try {
+            accessToken = decrypt(client.whatsappToken);
+        } catch (decErr) {
+            log.error(`Failed to decrypt WhatsApp token for ${targetClientId}`, decErr.message);
+            // Fallback to env or raw (though raw will likely fail at Meta)
+            accessToken = client.whatsappToken; 
+        }
+    }
 
     if (!phoneNumberId || !accessToken) {
       return res.status(400).json({ success: false, message: 'WhatsApp credentials (Phone ID/Token) not configured for this client' });
@@ -68,7 +81,7 @@ router.post('/send-template', protect, async (req, res) => {
             content: `[Individual Outreach] Template: ${templateName}`,
             messageId: metaMessageId,
             status: 'sent',
-            campaignId: req.body.campaignId || null, // Link to campaign if provided
+            campaignId: req.body.campaignId || null, 
             channel: 'whatsapp'
         });
     } catch (msgErr) {
@@ -79,8 +92,14 @@ router.post('/send-template', protect, async (req, res) => {
 
   } catch (error) {
     const errorData = error.response?.data || error.message;
-    log.error('Failed to send individual template', { error: errorData });
-    res.status(error.response?.status || 500).json({ 
+    const statusCode = error.response?.status || 500;
+    
+    log.error('Failed to send individual template', { clientId: targetClientId, error: errorData });
+
+    // --- LOGOUT PREVENTION FIX: Map 401 to 400 for the frontend ---
+    const finalStatus = statusCode === 401 ? 400 : statusCode;
+
+    res.status(finalStatus).json({ 
       success: false, 
       message: 'Failed to send WhatsApp template', 
       details: errorData 

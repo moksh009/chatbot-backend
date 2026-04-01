@@ -19,8 +19,8 @@ router.get('/ping', (req, res) => res.json({ success: true, message: 'Shopify Hu
  * @desc    Get store overview (Revenue, Orders, Payouts)
  */
 router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => {
+  const { clientId } = req.params;
   try {
-    const { clientId } = req.params;
     
     const result = await withShopifyRetry(clientId, async (shop) => {
         // Fetch last 30 days of orders
@@ -106,8 +106,8 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
  * @desc    Get all Shopify products with "in bot" status
  */
 router.get('/:clientId/products', protect, verifyClientAccess, async (req, res) => {
+  const { clientId } = req.params;
   try {
-    const { clientId } = req.params;
 
     const products = await withShopifyRetry(clientId, async (shop) => {
         const response = await shop.get('/products.json?limit=100&fields=id,title,variants,images,status,handle');
@@ -172,17 +172,19 @@ router.put('/:clientId/products/:productId/price', protect, verifyClientAccess, 
  * @desc    Get Shopify store locations (needed for inventory updates)
  */
 router.get('/:clientId/locations', protect, verifyClientAccess, async (req, res) => {
+  const { clientId } = req.params;
   try {
-    const { clientId } = req.params;
     const locations = await withShopifyRetry(clientId, async (shop) => {
         const response = await shop.get('/locations.json');
         return response.data.locations;
     });
     res.json({ success: true, locations });
   } catch (err) {
+    const { clientId } = req.params;
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     const isAuthError = err.response?.status === 401 || err.response?.status === 403;
+    console.error(`[Locations Error] Client: ${clientId}:`, errorString);
     res.status(isAuthError ? 400 : 500).json({ 
       success: false, 
       error: errorString, 
@@ -196,8 +198,8 @@ router.get('/:clientId/locations', protect, verifyClientAccess, async (req, res)
  * @desc    Update product inventory level in Shopify
  */
 router.put('/:clientId/inventory/set', protect, verifyClientAccess, async (req, res) => {
+  const { clientId } = req.params;
   try {
-    const { clientId } = req.params;
     const { inventoryItemId, locationId, available } = req.body;
 
     if (!inventoryItemId || locationId === undefined || available === undefined) {
@@ -217,7 +219,7 @@ router.put('/:clientId/inventory/set', protect, verifyClientAccess, async (req, 
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     const isAuthError = err.response?.status === 401 || err.response?.status === 403;
-    console.error('[InventoryUpdate] Error:', errorString);
+    console.error(`[InventoryUpdate Error] Client: ${clientId}:`, errorString);
     res.status(isAuthError ? 400 : 500).json({ 
       success: false, 
       error: errorString, 
@@ -231,17 +233,19 @@ router.put('/:clientId/inventory/set', protect, verifyClientAccess, async (req, 
  * @desc    Get top customers from Shopify ordered by total spend
  */
 router.get('/:clientId/customers', protect, verifyClientAccess, async (req, res) => {
+  const { clientId } = req.params;
   try {
-    const { clientId } = req.params;
     const customers = await withShopifyRetry(clientId, async (shop) => {
         const response = await shop.get('/customers.json?limit=50&order=total_spent+DESC');
         return response.data.customers;
     });
     res.json({ success: true, customers });
   } catch (err) {
+    const { clientId } = req.params;
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     const isAuthError = err.response?.status === 401 || err.response?.status === 403;
+    console.error(`[Customers Error] Client: ${clientId}:`, errorString);
     res.status(isAuthError ? 400 : 500).json({ 
       success: false, 
       error: errorString, 
@@ -273,8 +277,8 @@ router.get('/:clientId/discounts', protect, verifyClientAccess, async (req, res)
  * @desc    Create a real Shopify discount code and persist it to DB
  */
 router.post('/:clientId/discounts', protect, verifyClientAccess, async (req, res) => {
+  const { clientId } = req.params;
   try {
-    const { clientId } = req.params;
     const { title, type, value, expiryHours = 24, prefix = 'TOPAI' } = req.body;
 
     const discount = await withShopifyRetry(clientId, async (shop) => {
@@ -323,7 +327,8 @@ router.post('/:clientId/discounts', protect, verifyClientAccess, async (req, res
 
     res.json({ success: true, discount: { ...discount, ...savedEntry } });
   } catch (err) {
-    console.error('Discount Error:', err.response?.data || err.message);
+    const { clientId } = req.params;
+    console.error(`[Discounts Error] Client: ${clientId}:`, err.response?.data || err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });

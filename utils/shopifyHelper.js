@@ -52,15 +52,21 @@ async function getShopifyClient(clientId, forceRefresh = false) {
                     console.log(`✅ [ShopifyRotation] Token restored via Refresh Token for ${clientId}`);
                 }
             } catch (err) {
-                lastError = err.response?.data?.errors || err.message;
-                console.warn(`[ShopifyRotation] Refresh token attempt failed for ${clientId}:`, lastError);
+                lastError = err.response?.data || err.message;
+                console.warn(`[ShopifyRotation] Refresh token attempt failed for ${clientId}:`, JSON.stringify(lastError));
             }
         }
 
         // Step B: Try Client Credentials (Fallback for Custom Apps or if Refresh Token is dead/revoked)
         if (!success && hasCredentials) {
             try {
-                console.log(`[ShopifyRotation] Attempting Client Credentials re-auth for ${clientId}...`);
+                const rotationPayload = {
+                    client_id: client.shopifyClientId,
+                    client_secret: client.shopifyClientSecret ? '***' + client.shopifyClientSecret.slice(-4) : 'MISSING',
+                    grant_type: 'client_credentials'
+                };
+                console.log(`[ShopifyRotation] Rotation Payload for ${clientId}:`, JSON.stringify(rotationPayload));
+
                 const res = await axios.post(`https://${domain}/admin/oauth/access_token`, {
                     client_id: client.shopifyClientId,
                     client_secret: client.shopifyClientSecret,
@@ -75,8 +81,8 @@ async function getShopifyClient(clientId, forceRefresh = false) {
                     console.log(`✅ [ShopifyRotation] Token restored via Client Credentials for ${clientId}`);
                 }
             } catch (err) {
-                lastError = err.response?.data?.errors || err.message;
-                console.error(`❌ [ShopifyRotation] Client Credentials attempt failed for ${clientId}:`, lastError);
+                lastError = err.response?.data || err.message;
+                console.error(`❌ [ShopifyRotation] Client Credentials attempt failed for ${clientId}:`, JSON.stringify(lastError));
             }
         }
 
