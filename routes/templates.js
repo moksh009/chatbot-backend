@@ -298,14 +298,17 @@ router.post('/upload-media', protect, upload.single('file'), async (req, res) =>
         const client = await getClientCredentials(clientId, req.user.id);
         const accessToken = client.whatsappToken;
 
-        // Meta requires App ID for uploads. We try to find it in process.env or fallback to a known common one if suitable.
-        // Ideally, this should be configured in the Client settings.
-        const appId = process.env.META_APP_ID || "1487843075253818"; // Fallback to provided project AppID if available
+        // Meta requires App ID for uploads. 
+        // We try to find it in process.env or fallback to the provided project AppID.
+        // For Template media headers, it must be the ID of the app that generated the token.
+        const appId = process.env.META_APP_ID || "1487843075253818"; 
         
         // 1. Initialize Upload
-        const initUrl = `https://graph.facebook.com/v18.0/${appId}/uploads`;
+        // Documentation: https://developers.facebook.com/docs/graph-api/resumable-upload-api/
+        const initUrl = `https://graph.facebook.com/v19.0/${appId}/uploads`;
         const initRes = await axios.post(initUrl, null, {
             params: {
+                file_name: req.file.originalname || `upload_${Date.now()}.jpg`,
                 file_length: req.file.size,
                 file_type: req.file.mimetype,
                 access_token: accessToken
@@ -313,22 +316,40 @@ router.post('/upload-media', protect, upload.single('file'), async (req, res) =>
         });
 
         const sessionId = initRes.data.id;
+        if (!sessionId) {
+            throw new Error('Failed to initialize upload session with Meta.');
+        }
 
-        // 2. Upload Data
-        const uploadUrl = `https://graph.facebook.com/v18.0/${sessionId}`;
+        // 2. Upload Data (Binary)
+        const uploadUrl = `https://graph.facebook.com/v19.0/${sessionId}`;
         const uploadRes = await axios.post(uploadUrl, req.file.buffer, {
             headers: {
                 'Authorization': `OAuth ${accessToken}`,
-                'file_offset': 0,
+                'file_offset': '0',
                 'Content-Type': req.file.mimetype
             }
         });
 
+        if (!uploadRes.data.h) {
+            throw new Error('Meta did not return a media handle (h).');
+        }
+
         res.json({ success: true, handle: uploadRes.data.h });
     } catch (error) {
         const errData = error.response?.data || error.message;
-        console.error('[Template API] Media Upload Error:', JSON.stringify(errData, null, 2));
-        res.status(500).json({ success: false, message: 'Failed to upload media to Meta', details: errData });
+        console.error('[Template API] Media Upload Error Details:', JSON.stringify(errData, null, 2));
+        
+        // Provide cleaner message for common Meta errors
+        let userMsg = 'Failed to upload media to Meta';
+        if (error.response?.data?.error?.message) {
+            userMsg += `: ${error.response.data.error.message}`;
+        }
+
+        res.status(500).json({ 
+            success: false, 
+            message: userMsg, 
+            details: errData 
+        });
     }
 });
 
