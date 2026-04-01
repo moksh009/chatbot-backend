@@ -87,6 +87,7 @@ function flattenFlowNodes(nodes) {
 
 function incrementNodeVisit(nodes, nodeId) {
   if (!Array.isArray(nodes)) return nodes;
+  const flat = flattenFlowNodes(nodes);
   return nodes.map(node => {
     if (node.id === nodeId) {
       return {
@@ -106,6 +107,16 @@ function incrementNodeVisit(nodes, nodeId) {
     }
     return node;
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HANDLE ID NORMALIZER — strips ReactFlow group/folder prefixes from handle IDs
+// e.g. "group_123__button_buy" → "button_buy"
+// ─────────────────────────────────────────────────────────────────────────────
+function normalizeHandleId(handleId) {
+  if (!handleId) return handleId;
+  const parts = handleId.split('__');
+  return parts[parts.length - 1];
 }
 
 const { normalizePhone } = require("./helpers");
@@ -258,6 +269,49 @@ async function runDualBrainEngine(parsedMessage, client) {
     return true;
   }
 
+  // ── PRIORITY 0: CAPTURE MODE ─────────────────────────────────────────────
+  // If bot is waiting for text input from this user, capture it NOW before
+  // anything else (keywords, AI fallback, etc.) can swallow the message.
+  if (convo.status === 'WAITING_FOR_INPUT' && convo.waitingForVariable) {
+    const capturedText = (parsedMessage.text?.body || '').trim();
+    if (capturedText) {
+      const varName = convo.waitingForVariable;
+      const updatedMetadata = { ...(convo.metadata || {}), [varName]: capturedText };
+      await Conversation.findByIdAndUpdate(convo._id, {
+        $set: {
+          metadata:            updatedMetadata,
+          status:              'BOT_ACTIVE',
+          waitingForVariable:  null,
+          captureResumeNodeId: null,
+          lastStepId:          convo.captureResumeNodeId || convo.lastStepId
+        }
+      });
+      // Also persist to AdLead so {{varName}} can be used anywhere
+      try {
+        await AdLead.findOneAndUpdate(
+          { phoneNumber: phone, clientId: client.clientId },
+          { $set: { [`capturedData.${varName}`]: capturedText } }
+        );
+      } catch (_) {}
+
+      console.log(`[DualBrain] Priority0: captured "${capturedText}" → variable "${varName}" — resuming from ${convo.captureResumeNodeId}`);
+
+      // Resume the flow from captureResumeNodeId
+      if (convo.captureResumeNodeId) {
+        const resumeConvo = await Conversation.findById(convo._id);
+        resumeConvo.metadata = updatedMetadata;
+        const flatNodes = flattenFlowNodes(client.flowNodes || []);
+        return await executeNode(
+          convo.captureResumeNodeId, flatNodes, client.flowEdges || [],
+          client, resumeConvo, lead, phone, io, channel
+        );
+      }
+      return true; // captured but no resume node
+    }
+    return true; // no text to capture, ignore
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   // Phase 17: Check for Flow Delay
   if (convo.flowPausedUntil && new Date() < convo.flowPausedUntil) {
     console.log(`⏳ Flow still paused for ${phone}. Responding via AI or skipping...`);
@@ -347,21 +401,23 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
   // C) User is in the middle of a flow
   let matchingEdge = flowEdges.find(e => {
     if (e.source !== currentStepId) return false;
-    if (!e.trigger && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom')) return true;
+    // Auto-forward edge: no trigger and no real button handle (or handle is a/bottom/output)
+    const autoHandles = ['a', 'bottom', 'output', 'default', null, undefined, ''];
+    if (!e.trigger && autoHandles.includes(normalizeHandleId(e.sourceHandle))) return true;
     if (e.sourceHandle) {
-      const sid = e.sourceHandle.toLowerCase();
-      const bid = (incomingTrigger.buttonId || '').toLowerCase();
+      const sid = normalizeHandleId(e.sourceHandle).toLowerCase();
+      const bid = normalizeHandleId(incomingTrigger.buttonId || '').toLowerCase();
       const txt = userTextLower;
       return sid === bid || sid === txt || txt === sid;
     }
-    if (e.trigger?.type === 'button') return (incomingTrigger.buttonId || '').toLowerCase() === e.trigger.value.toLowerCase();
+    if (e.trigger?.type === 'button') return normalizeHandleId(incomingTrigger.buttonId || '').toLowerCase() === normalizeHandleId(e.trigger.value).toLowerCase();
     if (e.trigger?.type === 'keyword') return userTextLower.includes(e.trigger.value.toLowerCase());
     return false;
   });
 
   // GAP FIX: Fallback edge
   if (!matchingEdge && currentStepId) {
-    matchingEdge = flowEdges.find(e => e.source === currentStepId && e.sourceHandle === 'fallback');
+    matchingEdge = flowEdges.find(e => e.source === currentStepId && normalizeHandleId(e.sourceHandle) === 'fallback');
   }
 
   if (matchingEdge) {
@@ -397,7 +453,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     if (matchedBtn) {
       const handleEdge = flowEdges.find(e =>
         e.source === currentStepId &&
-        (e.sourceHandle === (matchedBtn.id || matchedBtn.title?.toLowerCase().replace(/\s+/g, '_')))
+        (normalizeHandleId(e.sourceHandle) === (matchedBtn.id || matchedBtn.title?.toLowerCase().replace(/\s+/g, '_')))
       );
       if (handleEdge) return await executeNode(handleEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
     }
@@ -440,41 +496,62 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     }
   });
 
-  if (!sent && node.type !== 'logic' && node.type !== 'delay' && node.type !== 'set_variable' && node.type !== 'shopify_call' && node.type !== 'http_request') return false;
+  if (!sent && node.type !== 'logic' && node.type !== 'delay' && node.type !== 'set_variable' && node.type !== 'shopify_call' && node.type !== 'http_request' && node.type !== 'link' && node.type !== 'restart') return false;
 
   // --- SPECIAL NODE LOGIC (Automated Traversal) ---
   if (node.type === 'logic') {
-    const { condition, operator, value, variable } = node.data;
-    let result = false;
-    
-    // Get comparison value
+    const { condition, operator, value, variable } = node.data || {};
+
+    // Resolve the left-hand value from multiple possible contexts
     let leftValue = '';
     if (variable) {
-      leftValue = convo.metadata?.[variable] || lead?.[variable] || '';
+      // Support dot-path: e.g. "lead.leadScore", "metadata.captured_email"
+      const parts = variable.split('.');
+      const ctx = { lead, convo, metadata: convo.metadata || {} };
+      leftValue = parts.reduce((obj, k) => (obj != null ? obj[k] : undefined), ctx);
+      if (leftValue === undefined) leftValue = convo.metadata?.[variable] ?? '';
     } else if (condition) {
       if (condition.includes('cart_total')) leftValue = lead?.cartValue || convo?.metadata?.cartValue || 0;
       else if (condition === 'has_phone') leftValue = !!phone;
       else if (condition === "channel == 'instagram'") leftValue = channel === 'instagram';
     }
 
-    // Advanced Evaluation
-    const compValue = value || (condition?.match(/\d+/) || [0])[0];
+    const compValue = value !== undefined ? value : (condition?.match(/[\d.]+/) || [0])[0];
+    let result = false;
     switch (operator) {
-      case 'contains': result = String(leftValue).toLowerCase().includes(String(compValue).toLowerCase()); break;
-      case 'greater_than': result = Number(leftValue) > Number(compValue); break;
-      case 'less_than': result = Number(leftValue) < Number(compValue); break;
-      case 'equals': 
-      default: result = String(leftValue).toLowerCase() === String(compValue).toLowerCase(); break;
+      case 'eq':
+      case 'equals':        result = String(leftValue ?? '').toLowerCase() === String(compValue).toLowerCase(); break;
+      case 'neq':
+      case 'not_equals':    result = String(leftValue ?? '').toLowerCase() !== String(compValue).toLowerCase(); break;
+      case 'gt':
+      case 'greater_than':  result = Number(leftValue) > Number(compValue); break;
+      case 'lt':
+      case 'less_than':     result = Number(leftValue) < Number(compValue); break;
+      case 'gte':           result = Number(leftValue) >= Number(compValue); break;
+      case 'lte':           result = Number(leftValue) <= Number(compValue); break;
+      case 'contains':      result = String(leftValue ?? '').toLowerCase().includes(String(compValue).toLowerCase()); break;
+      case 'not_contains':  result = !String(leftValue ?? '').toLowerCase().includes(String(compValue).toLowerCase()); break;
+      case 'exists':        result = leftValue !== undefined && leftValue !== null && leftValue !== ''; break;
+      case 'not_exists':    result = leftValue === undefined || leftValue === null || leftValue === ''; break;
+      case 'in':            result = String(compValue).split(',').map(v => v.trim()).includes(String(leftValue ?? '')); break;
+      case 'starts_with':   result = String(leftValue ?? '').toLowerCase().startsWith(String(compValue).toLowerCase()); break;
+      case 'ends_with':     result = String(leftValue ?? '').toLowerCase().endsWith(String(compValue).toLowerCase()); break;
+      default:              result = String(leftValue ?? '').toLowerCase() === String(compValue).toLowerCase(); break;
     }
-    
+
+    console.log(`[DualBrain] Logic: ${variable}(${leftValue}) ${operator} ${compValue} → ${result ? 'TRUE' : 'FALSE'}`);
     const targetHandle = result ? 'true' : 'false';
-    const nextEdge = flowEdges.find(e => e.source === nodeId && e.sourceHandle === targetHandle);
+    const nextEdge = flowEdges.find(e =>
+      e.source === nodeId && (e.sourceHandle === targetHandle || normalizeHandleId(e.sourceHandle) === targetHandle)
+    );
     if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+    return true;
   }
 
   // Phase 17: AB Test Node
   if (node.type === 'ab_test' || node.type === 'ABTestNode') {
     // Persistent split based on phone number hash
+    const crypto = require('crypto');
     const hash = crypto.createHash('md5').update(phone).digest('hex');
     const firstChar = hash.charAt(0);
     const variant = parseInt(firstChar, 16) < 8 ? 'A' : 'B'; // 50/50 split
@@ -743,6 +820,11 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'set_variable': return true;
     case 'shopify_call': return true;
     case 'http_request': return true;
+    case 'tag_lead': return true;
+    case 'admin_alert': return true;
+    case 'jump': return true;
+    case 'link': return true;
+    case 'restart': return true;
 
     default:
       console.warn(`[DualBrain] Skipping send content for node type: ${type}`);
@@ -900,6 +982,18 @@ async function runAIFallback(parsedMessage, client, phone, lead, channel = 'what
 
     const reply = await generateText(prompt, client.geminiApiKey || client.config?.geminiApiKey);
     
+    // Phase 18: Log Unanswered Question
+    if (!client.unansweredQuestions) client.unansweredQuestions = [];
+    client.unansweredQuestions.push({
+      question: text,
+      phone: phone,
+      aiResponse: reply,
+      askedAt: new Date(),
+      status: 'pending'
+    });
+    if (client.unansweredQuestions.length > 50) client.unansweredQuestions.shift();
+    await Client.findByIdAndUpdate(client._id, { unansweredQuestions: client.unansweredQuestions });
+
     // Clear failure counter on success
     await Conversation.findOneAndUpdate(
       { phone, clientId: client.clientId },

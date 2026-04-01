@@ -6,7 +6,7 @@ const ConversationSchema = new mongoose.Schema({
   customerName: { type: String, default: '' }, // WhatsApp profile name or provided name
   status: { 
     type: String, 
-    enum: ['BOT_ACTIVE', 'HUMAN_TAKEOVER', 'CLOSED'], 
+    enum: ['BOT_ACTIVE', 'HUMAN_TAKEOVER', 'CLOSED', 'WAITING_FOR_INPUT'], 
     default: 'BOT_ACTIVE' 
   },
   assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Agent ID
@@ -54,6 +54,10 @@ const ConversationSchema = new mongoose.Schema({
   flowPausedUntil: { type: Date },
   pausedAtNodeId:  { type: String },
   abVariant:       { type: String },
+
+  // Phase 18: Capture Node State
+  waitingForVariable:   { type: String,  default: null }, // variable name being captured
+  captureResumeNodeId:  { type: String,  default: null }, // node to resume after capture
 
   // Phase 13 Omnichannel
   channel: {

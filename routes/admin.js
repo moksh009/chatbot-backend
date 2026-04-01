@@ -1437,5 +1437,56 @@ router.get('/phase13-migration', async (req, res) => {
     res.status(500).send(`<h1>❌ Migration Failed</h1><pre>${err.message}</pre>`);
   }
 });
+// --- PHASE 18: PUBLISH FLOW (Sync draft to live) ---
+router.post('/flow/publish/:clientId', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ error: 'Client not found' });
+
+    const { nodes, edges, note } = req.body;
+    let nodesToPublish = nodes;
+    let edgesToPublish = edges;
+
+    if (!nodesToPublish || !edgesToPublish) {
+       const activeFlow = client.visualFlows?.find(f => f.isActive) || client.visualFlows?.[0];
+       if (activeFlow) {
+           nodesToPublish = activeFlow.nodes;
+           edgesToPublish = activeFlow.edges;
+       } else {
+           return res.status(400).json({ error: 'No flow data provided to publish.' });
+       }
+    }
+
+    if (!client.flowHistory) client.flowHistory = [];
+    client.flowHistory.push({
+      version: client.flowHistory.length + 1,
+      nodes: client.flowNodes,
+      edges: client.flowEdges,
+      savedAt: new Date(),
+      note: note || 'Auto-backup before publish'
+    });
+
+    client.flowNodes = nodesToPublish;
+    client.flowEdges = edgesToPublish;
+
+    await client.save();
+    res.json({ success: true, message: 'Flow published to live engine.', version: client.flowHistory.length });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to publish flow: ' + err.message });
+  }
+});
+
+// --- PHASE 18: UNANSWERED QUESTIONS ---
+router.get('/unanswered-questions/:clientId', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ error: 'Client not found' });
+    res.json({ success: true, unansweredQuestions: client.unansweredQuestions || [] });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
 
 module.exports = router;

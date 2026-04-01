@@ -180,6 +180,15 @@ const ClientSchema = new mongoose.Schema({
     generatedAt: Date
   }],
 
+  // Phase 18: AI Log
+  unansweredQuestions: [{
+    question: String,
+    phone: String,
+    aiResponse: String,
+    askedAt: { type: Date, default: Date.now },
+    status: { type: String, enum: ['pending', 'resolved'], default: 'pending' }
+  }],
+
   // Phase 15 Trial & Admin Flags
   trialActive:   { type: Boolean, default: true },
   trialEndsAt:   { type: Date,    default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) }, // 7 days
