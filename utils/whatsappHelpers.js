@@ -71,6 +71,28 @@ async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageC
     }
 }
 
+/**
+ * Fetches approved templates from Meta WABA.
+ * 
+ * @param {Object} params
+ * @param {string} params.wabaId
+ * @param {string} params.token
+ */
+async function syncWhatsAppTemplates({ wabaId, token }) {
+    if (!wabaId || !token) return { success: false, error: 'Missing WABA ID or Token' };
+    const apiVersion = process.env.API_VERSION || 'v18.0';
+    const url = `https://graph.facebook.com/${apiVersion}/${wabaId}/message_templates?limit=500`;
+    try {
+        const response = await axios.get(url, {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        return { success: true, templates: response.data.data };
+    } catch (err) {
+        console.error('Error syncing WhatsApp templates:', err.response?.data || err.message);
+        return { success: false, error: err.response?.data || err.message };
+    }
+}
+
 module.exports = { 
     sendWhatsAppText, 
     sendWhatsAppTemplate,
