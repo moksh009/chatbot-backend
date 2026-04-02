@@ -243,7 +243,7 @@ async function logActivity(leadId, action, details) {
     } catch (err) { console.error("[EcommerceEngine] Activity log error:", err.message); }
 }
 
-async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageCode = 'en', headerImageUrl = null, bodyParams = [], buttonUrlParam = null, io, clientConfig }) {
+async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageCode = 'en_US', headerImageUrl = null, bodyParams = [], buttonUrlParam = null, io, clientConfig }) {
     const token = clientConfig.whatsappToken;
     try {
         const templateData = { name: templateName, language: { code: languageCode }, components: [] };
@@ -300,7 +300,7 @@ async function sendDynamicMessage({ stepId, fallbackInteractive, phoneNumberId, 
             headerImageUrl: mappedTpl.headerImage || null,
             bodyParams,
             buttonUrlParam,
-            languageCode: 'en'
+            languageCode: 'en_US'
         });
         if (success) return true;
         console.warn(`[EcommerceEngine] Meta template ${mappedTpl.templateName} failed. Falling back to interactive.`);

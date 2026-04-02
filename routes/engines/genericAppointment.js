@@ -290,7 +290,7 @@ async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons, t
     }
 }
 
-async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageCode = 'en', headerImageUrl = null, bodyParams = [], buttonUrlParam = null, io, clientConfig }) {
+async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageCode = 'en_US', headerImageUrl = null, bodyParams = [], buttonUrlParam = null, io, clientConfig }) {
     const token = clientConfig.whatsappToken;
     const apiVersion = process.env.API_VERSION || 'v18.0';
     try {
@@ -340,7 +340,7 @@ async function sendDynamicMessage({ stepId, fallbackInteractive, phoneNumberId, 
             headerImageUrl: mappedTpl.headerImage || null,
             bodyParams,
             buttonUrlParam,
-            languageCode: 'en'
+            languageCode: 'en_US'
         });
         if (success) return true;
         console.warn(`[GenericEngine] Meta template ${mappedTpl.templateName} failed. Falling back to interactive.`);
