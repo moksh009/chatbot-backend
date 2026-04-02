@@ -131,10 +131,56 @@ async function sendCODToPrepaidEmail(client, { customerEmail, customerName, orde
         html
     });
 }
+/**
+ * Send a System OTP using the dedicated TopEdge AI credentials.
+ */
+async function sendSystemOTPEmail(toAddress, otpCode, purpose = 'SIGNUP') {
+    const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+            user: process.env.SYSTEM_EMAIL_USER,
+            pass: process.env.SYSTEM_EMAIL_PASS
+        }
+    });
+
+    let subject = 'TopEdge AI - Your Verification Code';
+    let activityText = purpose === 'SIGNUP' ? 'verify your email address and complete registration' : 'reset your password';
+
+    const html = `
+        <div style="font-family: 'Inter', Arial, sans-serif; max-width: 500px; margin: 40px auto; padding: 32px; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+            <div style="text-align: center; margin-bottom: 24px;">
+                <h2 style="color: #0f172a; margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.02em;">TopEdge AI</h2>
+            </div>
+            <p style="color: #475569; font-size: 15px; line-height: 1.6; margin-top: 0;">Hi there,</p>
+            <p style="color: #475569; font-size: 15px; line-height: 1.6;">Use the following 6-digit code to ${activityText}. This code is valid for <strong>5 minutes</strong>.</p>
+            <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 24px; text-align: center; margin: 32px 0;">
+                <span style="font-size: 32px; font-weight: 800; letter-spacing: 6px; color: #6366f1;">${otpCode}</span>
+            </div>
+            <p style="color: #64748b; font-size: 13px; line-height: 1.5; margin-bottom: 0;">If you didn't request this code, you can safely ignore this email.</p>
+            <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 32px 0;" />
+            <p style="text-align: center; color: #94a3b8; font-size: 12px; margin: 0;">&copy; ${new Date().getFullYear()} TopEdge AI. All rights reserved.</p>
+        </div>
+    `;
+
+    try {
+        await transporter.sendMail({
+            from: `"TopEdge AI Security" <${process.env.SYSTEM_EMAIL_USER}>`,
+            to: toAddress,
+            subject,
+            html
+        });
+        console.log(`[EmailService] System OTP sent to ${toAddress}`);
+        return true;
+    } catch (err) {
+        console.error(`[EmailService] ❌ Failed to send System OTP to ${toAddress}:`, err.message);
+        return false;
+    }
+}
 
 module.exports = {
     sendEmail,
     sendAbandonedCartEmail,
     sendOrderConfirmationEmail,
-    sendCODToPrepaidEmail
+    sendCODToPrepaidEmail,
+    sendSystemOTPEmail
 };

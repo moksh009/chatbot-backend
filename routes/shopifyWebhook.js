@@ -178,33 +178,69 @@ async function handleOrder(client, data) {
     if (codActive && isCOD) {
         log.info(`Converting COD order ${data.name} to Prepaid for ${client.clientId}`);
         const niche = client.nicheData || {};
+        const WhatsApp = require('../utils/whatsapp');
         
         try {
-            // 1. Create Draft Order for Payment Link
-            const draftOrder = await createDraftOrder(client, data, niche.cod_discount_code || niche.globalDiscountCode || 'PREPAID5');
-            
-            if (draftOrder && draftOrder.invoice_url) {
-                const bodyMsg = (niche.codMsg || niche.cod_nudge_msg || `Hi {name}! 🎁 Want to save more on your order? Pay online now and get an extra discount!\n\nPay here: {link}`)
-                    .replace(/{name}/g, data.customer?.first_name || 'there')
-                    .replace(/{order_id}/g, data.name || data.id)
-                    .replace(/{total}/g, data.total_price)
-                    .replace(/{link}/g, draftOrder.invoice_url);
+            // Determine the Payment Gateway Strategy
+            let paymentLinkUrl = null;
+            let paymentGateway = client.activePaymentGateway || 'none';
 
-                const WhatsApp = require('../utils/whatsapp');
-                const interactive = {
-                    type: 'button',
-                    header: { type: 'text', text: '💳 Save on Your Order!' },
-                    body: { text: bodyMsg },
-                    footer: { text: client.name || 'Smart Store' },
-                    action: {
-                        buttons: [
-                            { type: 'reply', reply: { id: `cod_upi_${data.id}`, title: (niche.codMsg_btn1 || '💳 Pay via UPI').substring(0, 20) } },
-                            { type: 'reply', reply: { id: `cod_keep_${data.id}`, title: (niche.codMsg_btn2 || 'Keep COD').substring(0, 20) } }
-                        ]
-                    }
-                };
-                await WhatsApp.sendInteractive(client, cleanPhone, interactive, bodyMsg);
-                log.info(`COD nudge sent to ${cleanPhone}`);
+            if (paymentGateway === 'razorpay' && client.razorpayKeyId) {
+                const { createCODPaymentLink } = require('../utils/razorpay');
+                const link = await createCODPaymentLink(newOrder, client);
+                paymentLinkUrl = link.short_url;
+            } else if (paymentGateway === 'cashfree' && client.cashfreeAppId) {
+                const { createCashfreePaymentLink } = require('../utils/cashfree');
+                const link = await createCashfreePaymentLink(newOrder, client);
+                paymentLinkUrl = link.short_url;
+            } else {
+                // Fallback to Shopify Draft Order for Native Checkout
+                const draftOrder = await createDraftOrder(client, data, niche.cod_discount_code || niche.globalDiscountCode || 'PREPAID5');
+                paymentLinkUrl = draftOrder?.invoice_url;
+            }
+            
+            if (paymentLinkUrl) {
+                // Prepare dynamic template dispatch
+                const firstItemImage = data.line_items?.[0]?.variant_id ? data.line_items[0].image_url : null;
+                const orderId = data.name || data.id;
+                const total = data.total_price;
+                const customerName = data.customer?.first_name || 'Guest';
+
+                // Determine template name logic based on gateway (user requested distinct tracking/brands via templates)
+                let templateName = 'cod_to_prepaid_discount'; // DEFAULT FALLBACK
+                
+                if (paymentGateway === 'razorpay') templateName = 'razorpay_cod_converter';
+                else if (paymentGateway === 'cashfree') templateName = 'cashfree_cod_converter';
+                else templateName = 'shopify_cod_converter';
+
+                // We try to send smartly using predefined sync list
+                // If it fails, our smart sender gracefully falls back to sequential text params
+                try {
+                    await WhatsApp.sendSmartTemplate(
+                        client, 
+                        cleanPhone, 
+                        templateName, 
+                        [customerName, orderId, total, paymentLinkUrl], // Assumes {{1}}=Name, {{2}}=Order, {{3}}=Total, {{4}}=Link
+                        firstItemImage
+                    );
+                    log.info(`COD Payment link (${paymentGateway}) sent to ${cleanPhone}`);
+                } catch (metaErr) {
+                    log.warn(`[ShopifyWebhook] Meta Template ${templateName} failed or not synced. Falling back to simple interactive message.`);
+                    
+                    const fallbackBody = `Hi ${customerName}! 🎁 Want to save more on your order? Pay online securely now and get an extra discount!\n\n💳 Pay here: ${paymentLinkUrl}\n\n*Order:* #${orderId}\n*Amount:* ₹${total}`;
+                    const interactive = {
+                        type: 'button',
+                        header: { type: 'text', text: '💳 Convert to Prepaid' },
+                        body: { text: fallbackBody },
+                        footer: { text: client.businessName || 'Smart Store' },
+                        action: {
+                            buttons: [
+                                { type: 'reply', reply: { id: `cod_upi_${data.id}`, title: '✅ Confirmed' } }
+                            ]
+                        }
+                    };
+                    await WhatsApp.sendInteractive(client, cleanPhone, interactive, fallbackBody);
+                }
             }
         } catch (err) {
             log.error(`COD Conversion failed: ${err.message}`);

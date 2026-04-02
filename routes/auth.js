@@ -2,8 +2,10 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
 const Client = require('../models/Client');
+const OTP = require('../models/OTP'); // Added OTP Model
 const { protect } = require('../middleware/auth');
 const jwt = require('jsonwebtoken');
+const { sendSystemOTPEmail } = require('../utils/emailService');
 
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET || 'fallback_secret_dev', {
@@ -152,7 +154,7 @@ router.post('/login', async (req, res) => {
 });
 
 router.post('/register', async (req, res) => {
-  const { name, email, password, businessName } = req.body;
+  const { name, email, password, businessName, otp } = req.body;
 
   try {
     const userExists = await User.findOne({ email });
@@ -160,9 +162,17 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ message: 'User already exists' });
     }
 
-    if (!businessName || !name || !email || !password) {
-      return res.status(400).json({ message: 'All fields are required' });
+    if (!businessName || !name || !email || !password || !otp) {
+      return res.status(400).json({ message: 'All fields including OTP are required' });
     }
+
+    // -- OTP Verification --
+    const validOtp = await OTP.findOne({ email, otp, purpose: 'SIGNUP' });
+    if (!validOtp) {
+      return res.status(400).json({ message: 'Invalid or expired OTP.' });
+    }
+    // Delete OTP so it can't be reused
+    await OTP.deleteOne({ _id: validOtp._id });
 
     // Generate unique clientId from business name + random hex
     const crypto = require('crypto');
@@ -215,6 +225,73 @@ router.post('/register', async (req, res) => {
 
 router.get('/ping', async (_req, res) => {
   res.json({ status: 'ok', time: Date.now() });
+});
+
+// ----------------------------------------------------
+// OTP AND PASSWORD CHANGING LOGIC
+// ----------------------------------------------------
+
+router.post('/send-otp', async (req, res) => {
+  const { email, purpose } = req.body;
+  if (!email) return res.status(400).json({ message: 'Email required' });
+
+  // If purpose is RESET_PASSWORD, ensure user exists
+  if (purpose === 'RESET_PASSWORD') {
+    const userExists = await User.findOne({ email });
+    if (!userExists) return res.status(404).json({ message: 'Account not found' });
+  }
+
+  // Clear existing OTPs for this email+purpose to prevent conflicts
+  await OTP.deleteMany({ email, purpose: purpose || 'SIGNUP' });
+
+  // Generate 6-digit numeric OTP
+  const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+
+  try {
+    await OTP.create({ email, otp: otpCode, purpose: purpose || 'SIGNUP' });
+    const emailSent = await sendSystemOTPEmail(email, otpCode, purpose);
+    
+    if (emailSent) {
+      res.json({ success: true, message: 'OTP sent successfully' });
+    } else {
+      res.status(500).json({ message: 'Failed to send OTP email' });
+    }
+  } catch (error) {
+    console.error('Send OTP Error:', error);
+    res.status(500).json({ message: 'Server error generating OTP' });
+  }
+});
+
+router.post('/change-password', async (req, res) => {
+  const { email, otp, newPassword } = req.body;
+
+  if (!email || !otp || !newPassword) {
+    return res.status(400).json({ message: 'Email, OTP, and new password are required' });
+  }
+
+  try {
+    const validOtp = await OTP.findOne({ email, otp, purpose: 'RESET_PASSWORD' });
+    if (!validOtp) {
+      return res.status(400).json({ message: 'Invalid or expired OTP.' });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Update password (pre-save hook will hash it)
+    user.password = newPassword;
+    await user.save();
+
+    // Clear OTP
+    await OTP.deleteOne({ _id: validOtp._id });
+
+    res.json({ success: true, message: 'Password changed successfully' });
+  } catch (error) {
+    console.error('Change Password Error:', error);
+    res.status(500).json({ message: 'Server error changing password' });
+  }
 });
 
 module.exports = router;
