@@ -378,6 +378,60 @@ router.post('/:id/send-template', protect, async (req, res) => {
   }
 });
 
+// @route   POST /api/conversations/:id/generate-outreach
+// @desc    Generate personalized AI outreach copy (Email/WhatsApp)
+// @access  Private
+router.post('/:id/generate-outreach', protect, async (req, res) => {
+  const { goal, channel = 'email' } = req.body;
+
+  try {
+    const query = { _id: req.params.id };
+    if (req.user.role !== 'SUPER_ADMIN') {
+      query.clientId = req.user.clientId;
+    }
+    const conversation = await Conversation.findOne(query);
+    if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
+
+    const messages = await Message.find({ conversationId: conversation._id })
+      .sort({ timestamp: 1 })
+      .limit(20);
+
+    const chatLog = messages.map(m => `${m.from}: ${m.content}`).join('\n');
+    const { generateText } = require('../utils/gemini');
+
+    const prompt = `
+      Act as an expert ecommerce conversion specialist.
+      Generate a highly personalized ${channel} outreach message for this customer.
+      
+      GOAL: ${goal}
+      CUSTOMER NAME: ${conversation.customerName || 'Customer'}
+      HISTORY:
+      ${chatLog}
+      
+      Requirements:
+      1. One compelling subject line (max 10 words).
+      2. A concise, persuasive message body.
+      3. Tone should be professional, empathetic, and premium.
+      
+      Return ONLY raw JSON: {"subject": "...", "body": "..."}
+    `;
+
+    const aiResponse = await generateText(prompt);
+    
+    try {
+      const jsonStr = aiResponse.replace(/```json/g, '').replace(/```/g, '').trim();
+      const result = JSON.parse(jsonStr);
+      res.json(result);
+    } catch (e) {
+      // Logic fallback if AI returns plain text
+      res.json({ subject: "Personalized Outreach", body: aiResponse });
+    }
+  } catch (error) {
+    console.error("AI Generation Error:", error);
+    res.status(500).json({ message: 'AI processing failed' });
+  }
+});
+
 // @route   POST /api/conversations/:id/send-email
 // @desc    Send an email to a lead from LiveChat
 // @access  Private
