@@ -172,8 +172,20 @@ router.post('/:id/messages', protect, async (req, res) => {
 
     res.json(newMessage);
   } catch (error) {
-    console.error('Error sending message:', error.response?.data || error.message);
-    res.status(500).json({ message: 'Failed to send message', error: error.message });
+    const errorData = error.response?.data?.error || error.data || error.message;
+    const statusCode = error.status || error.response?.status || 500;
+    
+    console.error('Error sending message:', errorData);
+
+    // Map 401/403 to 400 to prevent frontend Interceptor from logging out the user
+    // if it's just a WhatsApp configuration issue.
+    const finalStatus = [401, 403].includes(statusCode) ? 400 : statusCode;
+    
+    res.status(finalStatus).json({ 
+      success: false,
+      message: error.friendlyMessage || 'Failed to send message', 
+      error: errorData 
+    });
   }
 });
 

@@ -484,8 +484,21 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
       systemPrompt = await generateText(`Generate a professional personality system prompt for a WhatsApp business named "${businessName}". Business type is ${businessType || 'general'}. Keep it concise, helpful, and friendly.`);
     }
 
+    const clientData = { ...req.body };
+    const sensitiveFields = [
+      'whatsappToken', 'shopifyAccessToken', 'shopifyClientSecret', 'shopifyWebhookSecret',
+      'openaiApiKey', 'geminiApiKey', 'emailAppPassword', 'razorpaySecret', 
+      'woocommerceSecret', 'instagramAccessToken', 'instagramAppSecret'
+    ];
+    
+    sensitiveFields.forEach(field => {
+      if (clientData[field]) {
+        clientData[field] = encrypt(clientData[field]);
+      }
+    });
+
     const newClient = new Client({
-      ...req.body,
+      ...clientData,
       clientId: clientId.trim(),
       businessName,
       name: businessName, // Legacy sync
@@ -606,12 +619,23 @@ router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
     } = req.body;
 
     // Handle trialEndsAt parsing if it's sent as a string
+    // --- ENCRYPTION FIX: Protect sensitive credentials at rest ---
     const updateData = {
-      name, businessType, niche, plan, isGenericBot, phoneNumberId, whatsappToken,
-      verifyToken: webhookVerifyToken, googleCalendarId, openaiApiKey, nicheData, flowData,
-      automationFlows, messageTemplates, wabaId, emailUser, emailAppPassword,
-      razorpayKeyId, razorpaySecret, adminPhone,
-      shopDomain, shopifyAccessToken, shopifyWebhookSecret, googleReviewUrl
+      name, businessType, niche, plan, isGenericBot, phoneNumberId,
+      whatsappToken: whatsappToken ? encrypt(whatsappToken) : whatsappToken,
+      verifyToken: webhookVerifyToken, 
+      googleCalendarId, 
+      openaiApiKey: openaiApiKey ? encrypt(openaiApiKey) : openaiApiKey,
+      nicheData, flowData,
+      automationFlows, messageTemplates, wabaId, emailUser, 
+      emailAppPassword: emailAppPassword ? encrypt(emailAppPassword) : emailAppPassword,
+      razorpayKeyId, 
+      razorpaySecret: razorpaySecret ? encrypt(razorpaySecret) : razorpaySecret,
+      adminPhone,
+      shopDomain, 
+      shopifyAccessToken: shopifyAccessToken ? encrypt(shopifyAccessToken) : shopifyAccessToken,
+      shopifyWebhookSecret: shopifyWebhookSecret ? encrypt(shopifyWebhookSecret) : shopifyWebhookSecret,
+      googleReviewUrl
     };
 
     if (trialActive !== undefined) updateData.trialActive = trialActive;

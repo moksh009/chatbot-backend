@@ -4,7 +4,7 @@ const axios = require('axios');
 const { protect } = require('../middleware/auth');
 const Client = require('../models/Client');
 const log = require('../utils/logger')('WhatsAppAPI');
-const { decrypt } = require('../utils/encryption');
+const WhatsApp = require('../utils/whatsapp');
 const { translateWhatsAppError } = require('../utils/whatsappErrors');
 
 // @route   POST /api/whatsapp/send-template
@@ -27,53 +27,29 @@ router.post('/send-template', protect, async (req, res) => {
       return res.status(404).json({ success: false, message: 'Client configuration not found' });
     }
 
-    const phoneNumberId = client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
-    
-    // --- ROOT CAUSE FIX: Decrypt the token if it exists in the DB ---
-    let accessToken = process.env.WHATSAPP_TOKEN;
-    if (client.whatsappToken) {
-        try {
-            accessToken = decrypt(client.whatsappToken);
-        } catch (decErr) {
-            log.error(`Failed to decrypt WhatsApp token for ${targetClientId}`, decErr.message);
-            // Fallback to env or raw (though raw will likely fail at Meta)
-            accessToken = client.whatsappToken; 
-        }
-    }
-
-    if (!phoneNumberId || !accessToken) {
-      return res.status(400).json({ success: false, message: 'WhatsApp credentials (Phone ID/Token) not configured for this client' });
-    }
-
-    const apiVersion = process.env.API_VERSION || 'v18.0';
-    const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
-    
-    const payload = {
-      messaging_product: 'whatsapp',
-      to: phoneNumber,
-      type: 'template',
-      template: {
-        name: templateName,
-        language: { code: languageCode || 'en' },
-        components: components || []
-      }
-    };
-
-    const response = await axios.post(url, payload, {
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${accessToken}`
-      }
-    });
+    const responseData = await WhatsApp.sendTemplate(
+        client, 
+        phoneNumber, 
+        templateName, 
+        languageCode || 'en', 
+        components || []
+    );
 
     log.info(`Individual template sent: ${templateName} to ${phoneNumber} (clientId: ${targetClientId})`);
     
     // Create Message record for tracking
     try {
         const Message = require('../models/Message');
-        const metaMessageId = response.data?.messages?.[0]?.id;
+        const metaMessageId = responseData?.messages?.[0]?.id;
+        const phoneNumberId = client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
         
-        await Message.create({
+        // --- FIX: Sanitize campaignId to ensure it's a valid ObjectId or null ---
+        let sanitizedCampaignId = req.body.campaignId;
+        if (typeof sanitizedCampaignId === 'string' && !sanitizedCampaignId.match(/^[0-9a-fA-F]{24}$/)) {
+            sanitizedCampaignId = null;
+        }
+
+        const newMessage = await Message.create({
             clientId: targetClientId,
             from: phoneNumberId,
             to: phoneNumber,
@@ -82,14 +58,31 @@ router.post('/send-template', protect, async (req, res) => {
             content: `[Individual Outreach] Template: ${templateName}`,
             messageId: metaMessageId,
             status: 'sent',
-            campaignId: req.body.campaignId || null, 
+            campaignId: sanitizedCampaignId, 
             channel: 'whatsapp'
         });
+
+        // --- REAL-TIME SYNC: Emit socket events so UI updates immediately ---
+        const io = req.app.get('socketio');
+        if (io) {
+            io.to(`client_${targetClientId}`).emit('new_message', newMessage);
+            // Also trigger conversation list update
+            const Conversation = require('../models/Conversation');
+            const conv = await Conversation.findOneAndUpdate(
+                { phone: phoneNumber, clientId: { $in: [targetClientId, 'code_clinic_v1', 'delitech_smarthomes'] } },
+                { lastMessage: `[Template: ${templateName}]`, lastMessageAt: new Date() },
+                { new: true }
+            );
+            if (conv) {
+                io.to(`client_${targetClientId}`).emit('conversation_update', conv);
+            }
+        }
+
     } catch (msgErr) {
         log.error('Failed to create message record for tracking', msgErr.message);
     }
 
-    res.json({ success: true, data: response.data, messageId: response.data?.messages?.[0]?.id });
+    res.json({ success: true, data: responseData, messageId: responseData?.messages?.[0]?.id });
 
   } catch (error) {
     const errorData = error.response?.data || error.message;

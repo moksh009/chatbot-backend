@@ -1114,15 +1114,55 @@ const updateOrderStatus = async (req, res) => {
                   }
                 }
 
-                // Prepare a comprehensive set of variables
+                // 3. DYNAMIC MEDIA (PHASE 11 - ECO-DYNAMIC IMAGES)
+                let headerImageUrl = null;
+                const ecoImageStatuses = ['paid', 'shipped', 'fulfilled', 'delivered', 'processing'];
+                
+                if (templateName.startsWith('eco_') && ecoImageStatuses.includes(status.toLowerCase())) {
+                    // Try to get the image from the first order item
+                    if (order.items && order.items.length > 0) {
+                        headerImageUrl = order.items[0].image || order.items[0].imageUrl;
+                        console.log(`[EcoDynamic] Using product image for ${templateName}: ${headerImageUrl}`);
+                    }
+                    
+                    // Fallback to nicheData banner if no product image
+                    if (!headerImageUrl) {
+                        headerImageUrl = req.clientConfig.nicheData?.bannerImage;
+                    }
+                }
+
+                // 4. PREPARE STANDARDIZED VARIABLES (PHASE 11)
+                // Standard order: 1:Name, 2:Order#, 3:Total/Tracking#, 4:Method/TrackingURL
                 let bodyParams = [
                     order.customerName || 'Customer',
                     order.orderNumber || order.orderId,
-                    status.charAt(0).toUpperCase() + status.slice(1), // Title Case status
-                    `₹${order.totalPrice || '0'}`,
-                    trackingNumber || order.trackingNumber || req.clientConfig.businessName || 'Your Package',
-                    trackingUrl || order.trackingUrl || req.clientConfig.nicheData?.storeUrl || 'our store'
                 ];
+
+                if (status.toLowerCase() === 'shipped' || status.toLowerCase() === 'fulfilled') {
+                   // Variable mapping for eco_shipping_update: 1:Name, 2:Order#, 3:TrackingURL (from standardTemplates.js)
+                   let finalTrackingUrl = trackingUrl || order.trackingUrl;
+                   if (!finalTrackingUrl && (trackingNumber || order.trackingNumber) && req.clientConfig.nicheData?.trackingLinkPattern) {
+                       const pattern = req.clientConfig.nicheData.trackingLinkPattern;
+                       finalTrackingUrl = pattern.replace('{{tracking_number}}', trackingNumber || order.trackingNumber);
+                   }
+                   bodyParams.push(finalTrackingUrl || 'Check your dashboard');
+                } 
+                else if (status.toLowerCase() === 'delivered') {
+                   // eco_delivered: 1:Name, 2:Order#
+                   // Already have these 2 in bodyParams.
+                }
+                else if (status.toLowerCase() === 'paid' || status.toLowerCase() === 'processing') {
+                   // eco_order_confirmed: 1:Name, 2:Order#, 3:Total, 4:PaymentMethod
+                   bodyParams.push(`₹${order.totalPrice || '0'}`);
+                   bodyParams.push(order.paymentMethod || 'Prepaid');
+                }
+                else {
+                   // Fallback for others
+                   bodyParams.push(status.charAt(0).toUpperCase() + status.slice(1));
+                   bodyParams.push(`₹${order.totalPrice || '0'}`);
+                   bodyParams.push(trackingNumber || order.trackingNumber || 'N/A');
+                   bodyParams.push(trackingUrl || order.trackingUrl || 'N/A');
+                }
 
                 // Ensure bodyParams matches Meta's required count EXACTLY if we know the count
                 if (requiredParams !== null) {
@@ -1133,9 +1173,6 @@ const updateOrderStatus = async (req, res) => {
                             bodyParams.push('---'); // Minimal padding
                         }
                     }
-                } else {
-                    // Fallback to all parameters if template structure is unknown
-                    console.warn(`[TemplateDetection] Template ${templateName} not found. Sending 6 parameters as baseline fallback.`);
                 }
 
                 const helperParams = { phoneNumberId, token: whatsappToken, io, clientConfig: req.clientConfig };
@@ -1144,6 +1181,7 @@ const updateOrderStatus = async (req, res) => {
                     to: phone,
                     templateName,
                     bodyParams,
+                    headerImageUrl, // Dynamic Product Image!
                     buttonUrlParam: trackingUrl || order.trackingUrl || null
                 });
             }

@@ -3,6 +3,7 @@
 const axios = require('axios');
 const log = require('./logger')('WhatsApp');
 const { translateWhatsAppError } = require('./whatsappErrors');
+const { decrypt } = require('./encryption');
 
 /**
  * Validates a phone number is a valid string of digits.
@@ -192,8 +193,17 @@ const WhatsApp = {
    * Internal helper to extract credentials with validation
    */
   getCredentials(client) {
-    const token = client.whatsappToken || process.env.WHATSAPP_TOKEN;
+    let token = client.whatsappToken || process.env.WHATSAPP_TOKEN;
     const phoneNumberId = client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
+
+    // --- DECRYPTION FIX: Always decrypt if exists (supports plain-text fallback) ---
+    if (token) {
+        try {
+            token = decrypt(token);
+        } catch (err) {
+            log.error(`[WhatsApp] Decryption failed for client ${client.clientId}`, err.message);
+        }
+    }
 
     if (!token || !phoneNumberId) {
       throw new Error(`[WhatsApp] Missing credentials for client ${client.clientId}`);
