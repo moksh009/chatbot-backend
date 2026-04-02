@@ -5,6 +5,7 @@ const { protect } = require('../middleware/auth');
 const Client = require('../models/Client');
 const log = require('../utils/logger')('WhatsAppAPI');
 const { decrypt } = require('../utils/encryption');
+const { translateWhatsAppError } = require('../utils/whatsappErrors');
 
 // @route   POST /api/whatsapp/send-template
 // @desc    Send an individual WhatsApp template message
@@ -98,10 +99,12 @@ router.post('/send-template', protect, async (req, res) => {
 
     // --- LOGOUT PREVENTION FIX: Map 401 to 400 for the frontend ---
     const finalStatus = statusCode === 401 ? 400 : statusCode;
+    
+    const friendlyMessage = translateWhatsAppError(errorData);
 
     res.status(finalStatus).json({ 
       success: false, 
-      message: 'Failed to send WhatsApp template', 
+      message: friendlyMessage, 
       details: errorData 
     });
   }

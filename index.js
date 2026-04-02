@@ -139,6 +139,10 @@ app.use('/r', trackingRoutes);
 const notificationsRoutes = require('./routes/notifications');
 app.use('/api/notifications', notificationsRoutes);
 
+// Phase 19: Pre-flight Validation Routes
+const validationRoutes = require('./routes/validation');
+app.use('/api/validate', validationRoutes);
+
 // Master Webhook (Root Route for WhatsApp Meta Cloud API)
 const masterWebhook = require('./routes/masterWebhook');
 app.use('/', masterWebhook);

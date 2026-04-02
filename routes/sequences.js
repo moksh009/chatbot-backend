@@ -128,6 +128,31 @@ router.patch('/:clientId/:sequenceId/cancel', protect, async (req, res) => {
   }
 });
 
+// Update sequence status (e.g., pause, resume)
+router.patch('/:clientId/:sequenceId/status', protect, async (req, res) => {
+  try {
+    const { clientId, sequenceId } = req.params;
+    const { status } = req.body;
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    if (!['active', 'paused'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid status' });
+    }
+
+    const seq = await FollowUpSequence.findOneAndUpdate(
+      { _id: sequenceId, clientId },
+      { $set: { status } },
+      { new: true }
+    );
+    
+    res.json({ success: true, sequence: seq });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 router.delete('/:clientId/:sequenceId', protect, async (req, res) => {
   try {
     const { clientId, sequenceId } = req.params;

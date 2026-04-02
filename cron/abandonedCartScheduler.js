@@ -90,7 +90,8 @@ async function sendRichNudge(client, lead, text, options = {}) {
             await recordNudge(lead, text, 'text');
         }
     } catch (err) {
-        log.error(`Nudge failed for ${lead.phoneNumber}: ${err.message}`);
+        const errorMsg = err.friendlyMessage || err.message;
+        log.error(`Nudge failed for ${lead.phoneNumber}: ${errorMsg}`);
     }
 }
 

@@ -1,7 +1,7 @@
 const cron = require('node-cron');
 const FollowUpSequence = require('../models/FollowUpSequence');
 const AdLead = require('../models/AdLead');
-const { sendWhatsAppText, sendWhatsAppTemplate } = require('../utils/whatsappHelpers');
+const WhatsApp = require('../utils/whatsapp');
 const { sendEmail } = require('../utils/emailService');
 const Client = require('../models/Client');
 const { decrypt } = require('../utils/encryption');
@@ -97,27 +97,30 @@ const scheduleFollowUpSequenceCron = () => {
                     if (!client.whatsappToken || !client.phoneNumberId) {
                         errorMessage = "WhatsApp not configured";
                     } else {
-                        const token = decrypt(client.whatsappToken);
-                        const phoneId = client.phoneNumberId;
-
+                        // Ensure WhatsApp configuration is synced into the client instance for WhatsApp.sendSmartTemplate
                         if (dueStep.templateName) {
-                            const res = await sendWhatsAppTemplate({
-                                phoneNumberId: phoneId,
-                                to: seq.phone,
-                                templateName: dueStep.templateName,
-                                token: token
-                            });
-                            sentSuccess = res.success;
-                            errorMessage = res.error || "";
+                            try {
+                                await WhatsApp.sendSmartTemplate(
+                                    client, 
+                                    seq.phone, 
+                                    dueStep.templateName, 
+                                    [lead?.name || "there", lead?.email || "-", lead?.city || "-"],
+                                    null,
+                                    client.languageCode || 'en'
+                                );
+                                sentSuccess = true;
+                            } catch (e) {
+                                sentSuccess = false;
+                                errorMessage = e.friendlyMessage || e.message || "Failed to send WhatsApp template.";
+                            }
                         } else {
-                            const res = await sendWhatsAppText({
-                                phoneNumberId: phoneId,
-                                to: seq.phone,
-                                body: hydratedContent,
-                                token: token
-                            });
-                            sentSuccess = res.success;
-                            errorMessage = res.error || "";
+                             try {
+                                await WhatsApp.sendText(client, seq.phone, hydratedContent);
+                                sentSuccess = true;
+                             } catch (e) {
+                                sentSuccess = false;
+                                errorMessage = e.friendlyMessage || e.message || "Failed to send WhatsApp text.";
+                             }
                         }
                     }
                 } else if (dueStep.type === 'email') {

@@ -2,6 +2,7 @@
 
 const axios = require('axios');
 const log = require('./logger')('WhatsApp');
+const { translateWhatsAppError } = require('./whatsappErrors');
 
 /**
  * Validates a phone number is a valid string of digits.
@@ -151,7 +152,11 @@ const WhatsApp = {
 
         const parameters = [];
         for (let i = 1; i <= paramCount; i++) {
-          const val = variables[i - 1] === undefined ? "" : variables[i - 1];
+          let val = variables[i - 1];
+          // Meta API strictly rejects empty strings or whitespace-only params
+          if (val === undefined || val === null || String(val).trim() === "") {
+             val = "-";
+          }
           parameters.push({ type: 'text', text: String(val) });
         }
         
@@ -160,7 +165,7 @@ const WhatsApp = {
         }
 
         if (variables.length < paramCount) {
-          log.warn(`[WhatsApp] Template ${templateName} mismatch: Expected ${paramCount}, got ${variables.length}. Sent empty strings.`);
+          log.warn(`[WhatsApp] Template ${templateName} mismatch: Expected ${paramCount}, got ${variables.length}. Padded with placeholders.`);
         }
       }
     } else {
@@ -203,6 +208,7 @@ const WhatsApp = {
     const status = err.response?.status;
     const errorData = err.response?.data?.error || err.message;
     const message = errorData.message || errorData;
+    const friendlyMessage = translateWhatsAppError(errorData);
     
     log.error(`[WhatsApp] ${operation} failed: ${message}`, {
       url,
@@ -214,6 +220,7 @@ const WhatsApp = {
     const error = new Error(`WhatsApp API Error: ${message}`);
     error.status = status;
     error.data = errorData;
+    error.friendlyMessage = friendlyMessage;
     throw error;
   }
 };
