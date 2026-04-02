@@ -20,9 +20,9 @@ async function findNextNode(currentNodeId, handleId, edges) {
     // Prioritize sourceHandle match, fallback to any edge from that node if no handle is specified
     const edge = edges.find(e => e.source === currentNodeId && (handleId ? e.sourceHandle === handleId : true));
     if (!edge) {
-         // Fallback: look for ANY edge from this node if handleId didn't match (sometimes handles IDs are messy)
-         const fallbackEdge = edges.find(e => e.source === currentNodeId);
-         if (fallbackEdge && !handleId) return fallbackEdge.target;
+        // Fallback: look for ANY edge from this node if handleId didn't match (sometimes handles IDs are messy)
+        const fallbackEdge = edges.find(e => e.source === currentNodeId);
+        if (fallbackEdge && !handleId) return fallbackEdge.target;
     }
     return edge ? edge.target : null;
 }
@@ -53,7 +53,7 @@ async function executeNode({ nodeId, nodes, edges, to, phoneNumberId, io, client
         // Auto-traverse to next if there's only one outgoing edge
         const nextNodeId = await findNextNode(node.id, null, edges);
         if (nextNodeId) await executeNode({ nodeId: nextNodeId, nodes, edges, to, phoneNumberId, io, clientConfig });
-    } 
+    }
     else if (node.type === 'interactive') {
         const { header, text, imageUrl, buttonsList = [], buttons, footer, actionType, btnUrlTitle, btnUrlLink } = node.data;
         let interactive = {};
@@ -71,7 +71,7 @@ async function executeNode({ nodeId, nodes, edges, to, phoneNumberId, io, client
             };
         } else {
             const finalButtons = Array.isArray(buttonsList) && buttonsList.length > 0
-                ? buttonsList 
+                ? buttonsList
                 : (buttons || '').split(',').map(b => b.trim()).filter(Boolean).map(b => ({ id: b.toLowerCase().replace(/\s+/g, '_'), title: b }));
 
             if (finalButtons.length === 0) {
@@ -85,9 +85,9 @@ async function executeNode({ nodeId, nodes, edges, to, phoneNumberId, io, client
                 action: {
                     buttons: finalButtons.slice(0, 3).map(btn => ({
                         type: 'reply',
-                        reply: { 
-                            id: btn.id || btn.title.toLowerCase().replace(/\s+/g, '_'), 
-                            title: (btn.title || 'click').substring(0, 20) 
+                        reply: {
+                            id: btn.id || btn.title.toLowerCase().replace(/\s+/g, '_'),
+                            title: (btn.title || 'click').substring(0, 20)
                         }
                     }))
                 }
@@ -109,14 +109,14 @@ async function executeNode({ nodeId, nodes, edges, to, phoneNumberId, io, client
     else if (node.type === 'template') {
         const { templateName, variables = '', headerImageUrl } = node.data;
         const bodyParams = variables.split(',').map(v => v.trim()).filter(Boolean);
-        
+
         let finalImageUrl = headerImageUrl;
         const tplDef = (clientConfig.syncedMetaTemplates || []).find(t => t.name === templateName);
         if (tplDef) {
-             const needsImage = tplDef.components?.some(c => c.type === 'HEADER' && c.format === 'IMAGE');
-             if (needsImage && !headerImageUrl) {
-                 finalImageUrl = 'https://images.unsplash.com/photo-1560066984-138dadb4c035?auto=format&fit=crop&q=80&w=1000';
-             }
+            const needsImage = tplDef.components?.some(c => c.type === 'HEADER' && c.format === 'IMAGE');
+            if (needsImage && !headerImageUrl) {
+                finalImageUrl = 'https://images.unsplash.com/photo-1560066984-138dadb4c035?auto=format&fit=crop&q=80&w=1000';
+            }
         }
 
         await sendWhatsAppTemplate({
@@ -147,8 +147,8 @@ async function saveAndEmitMessage({ phoneNumberId, to, body, type, io, clientCon
             status: 'sent',
             metadata
         });
-        conversation.lastMessage = body; 
-        conversation.lastMessageAt = new Date(); 
+        conversation.lastMessage = body;
+        conversation.lastMessageAt = new Date();
         await conversation.save();
         if (io) { io.to(`client_${resolvedClientId}`).emit('new_message', savedMessage); }
     } catch (e) { console.error('[EcommerceEngine] DB Error:', e); }
@@ -184,11 +184,11 @@ async function sendWhatsAppImage({ phoneNumberId, to, imageUrl, caption, io, cli
 
 async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, io, clientConfig }) {
     const token = clientConfig.whatsappToken;
-    
+
     // Strict Sanitization to avoid 400 Bad Request
     const sanitizedBody = (body || 'Choose an option:').substring(0, 1024);
     const sanitizedAction = { ...interactive.action };
-    
+
     if (sanitizedAction.buttons) {
         // IDs must be unique and <= 256 chars, Titles <= 20 chars
         const seenIds = new Set();
@@ -206,15 +206,15 @@ async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, i
         });
     }
 
-    const data = { 
-        messaging_product: 'whatsapp', to, type: 'interactive', 
-        interactive: { 
-            type: interactive.type, 
-            body: { text: sanitizedBody }, 
-            action: sanitizedAction 
-        } 
+    const data = {
+        messaging_product: 'whatsapp', to, type: 'interactive',
+        interactive: {
+            type: interactive.type,
+            body: { text: sanitizedBody },
+            action: sanitizedAction
+        }
     };
-    
+
     if (interactive.header) {
         if (interactive.header.type === 'text') {
             data.interactive.header = { type: 'text', text: interactive.header.text.substring(0, 60) };
@@ -230,9 +230,9 @@ async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, i
         await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
         await saveAndEmitMessage({ phoneNumberId, to, body: `[Interactive] ${sanitizedBody}`, type: 'interactive', io, clientConfig, metadata: { interactive: data.interactive } });
         return true;
-    } catch (err) { 
-        console.error('[EcommerceEngine] Interactive Error Detail:', JSON.stringify(err.response?.data || err.message)); 
-        return false; 
+    } catch (err) {
+        console.error('[EcommerceEngine] Interactive Error Detail:', JSON.stringify(err.response?.data || err.message));
+        return false;
     }
 }
 
@@ -265,34 +265,34 @@ async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageC
         await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
             messaging_product: 'whatsapp', to, type: 'template', template: templateData
         }, { headers: { Authorization: `Bearer ${token}` } });
-        
+
         await saveAndEmitMessage({ phoneNumberId, to, body: `[Template Sent] ${templateName}`, type: 'template', io, clientConfig });
         return true;
-    } catch (err) { 
+    } catch (err) {
         console.error(`[EcommerceEngine] Template Error [${templateName}]:`, JSON.stringify(err.response?.data || err.message));
         if (err.response?.data?.error?.details) {
             console.error(`[EcommerceEngine] Meta Error Details: ${err.response.data.error.details}`);
         }
-        return false; 
+        return false;
     }
 }
 
 async function sendDynamicMessage({ stepId, fallbackInteractive, phoneNumberId, to, io, clientConfig, templateParams = {} }) {
     const mappedTpl = (clientConfig.messageTemplates || []).find(t => t.id === stepId);
     console.log(`[sendDynamicMessage] Resolve Step: ${stepId} | Found Template: ${mappedTpl?.templateName || 'NONE'} | Type: ${mappedTpl?.type || 'standard'}`);
-    
+
     if (mappedTpl && mappedTpl.type === 'meta_template' && mappedTpl.templateName) {
         let bodyParams = templateParams.variables || [];
         // Extract common params if they exist in nicheData for dynamic body
         if (bodyParams.length === 0 && clientConfig.nicheData) {
-           const nd = clientConfig.nicheData;
-           // If welcome message, try to extract from nicheData
-           if (stepId === 'welcome_menu') {
-              // Usually welcome templates don't take params, but if they do:
-           }
+            const nd = clientConfig.nicheData;
+            // If welcome message, try to extract from nicheData
+            if (stepId === 'welcome_menu') {
+                // Usually welcome templates don't take params, but if they do:
+            }
         }
-        
-        let buttonUrlParam = templateParams.buttonUrlParam || to; 
+
+        let buttonUrlParam = templateParams.buttonUrlParam || to;
 
         const success = await sendWhatsAppTemplate({
             phoneNumberId, to, io, clientConfig,
@@ -327,7 +327,7 @@ async function sendMainMenu({ phoneNumberId, to, io, clientConfig }) {
     const { nicheData = {} } = clientConfig;
     const bannerUrl = nicheData.bannerImage;
     const websiteUrl = nicheData.storeUrl || nicheData.websiteUrl;
-    
+
     // Use simplified setting if available
     const welcomeText = nicheData.welcomeMessage || `Welcome to our store! How can we help you today?`;
     const btnText = nicheData.flowButtonText || '🛍️ Shop Now';
@@ -352,7 +352,7 @@ async function sendMainMenu({ phoneNumberId, to, io, clientConfig }) {
 async function sendCatalogue({ phoneNumberId, to, io, clientConfig }) {
     const { nicheData = {} } = clientConfig;
     const products = nicheData.products || [];
-    
+
     if (products.length === 0) {
         return sendWhatsAppText({ phoneNumberId, to, body: "Our product catalog is currently being updated. Please check back soon!", io, clientConfig });
     }
@@ -382,7 +382,7 @@ async function sendCatalogue({ phoneNumberId, to, io, clientConfig }) {
 async function sendSupportMenu({ phoneNumberId, to, io, clientConfig }) {
     const { nicheData = {} } = clientConfig;
     const faqs = nicheData.faqs || [];
-    
+
     // If simplified support reply is set, send that instead of the list
     if (nicheData.supportReply) {
         await sendWhatsAppText({
@@ -400,7 +400,7 @@ async function sendSupportMenu({ phoneNumberId, to, io, clientConfig }) {
         id: `faq_${f.id}`,
         title: f.question.substring(0, 24)
     }));
-    
+
     rows.push({ id: 'menu_agent', title: '📞 Talk to Agent' });
 
     const interactive = {
@@ -457,7 +457,7 @@ function extractProductUrl(product, clientConfig, to) {
     // Fallback store structure
     const storeUrl = clientConfig.nicheData?.storeUrl || '';
     if (storeUrl) return `${storeUrl}/products/${product.id}?utm_source=whatsapp&utm_medium=bot&uid=${to}`;
-    return 'https://example.com'; 
+    return 'https://example.com';
 }
 
 async function sendCODToPrepaidNudge(order, clientConfig, phone) {
@@ -703,8 +703,8 @@ const handleWebhook = async (req, res) => {
                 try {
                     const aiText = await generateText(`${prompt}\n\nUser: ${userMessage}`, req.clientConfig.geminiApiKey);
                     if (aiText) await sendWhatsAppText({ ...helperParams, to: from, body: aiText });
-                } catch (e) { 
-                    console.error('[EcommerceEngine] AI FATAL Error:', e.message); 
+                } catch (e) {
+                    console.error('[EcommerceEngine] AI FATAL Error:', e.message);
                 }
                 return res.status(200).end();
             }
@@ -768,7 +768,7 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
         const orderData = req.body;
         const phoneRaw = orderData.phone || orderData.customer?.phone || orderData.billing_address?.phone || orderData.shipping_address?.phone;
         const { clientId, whatsappToken: token } = req.clientConfig;
-        
+
         res.status(200).end();
         console.log(`[EcommerceEngine] Order Complete Webhook for ${clientId} | Order: ${orderData.name} | Phone: ${phoneRaw}`);
         if (!phoneRaw) return;
@@ -803,7 +803,7 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
 
         // Notify User via WhatsApp
         const helperParams = { phoneNumberId: req.clientConfig.phoneNumberId, token, io: req.app.get('socketio'), clientConfig: req.clientConfig };
-        
+
         const confirmationTemplate = req.clientConfig.nicheData?.order_confirmation_template;
         if (confirmationTemplate) {
             await sendWhatsAppTemplate({
@@ -834,7 +834,7 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
                         codNudgeStatus: 'scheduled'
                     }
                 });
-                console.log(`[EcommerceEngine] COD nudge scheduled for ${phone} in ${delayMs/60000}m`);
+                console.log(`[EcommerceEngine] COD nudge scheduled for ${phone} in ${delayMs / 60000}m`);
             }
         }
 
@@ -880,7 +880,7 @@ const handleShopifyOrderFulfilledWebhook = async (req, res) => {
         );
 
         const helperParams = { phoneNumberId: req.clientConfig.phoneNumberId, token: req.clientConfig.whatsappToken, io: req.app.get('socketio'), clientConfig: req.clientConfig };
-        
+
         const shippingTemplate = req.clientConfig.nicheData?.shipping_updates_template;
         if (shippingTemplate) {
             await sendWhatsAppTemplate({
@@ -938,9 +938,23 @@ const handleShopifyLinkOpenedWebhook = async (req, res) => {
 const getClientOrders = async (req, res) => {
     try {
         const clientConfig = req.clientConfig;
-        const orders = await Order.find({ clientId: clientConfig.clientId }).sort({ createdAt: -1 }).limit(100);
-        res.json(orders);
+        const { phone } = req.query;
+        
+        let query = { clientId: clientConfig.clientId };
+        
+        if (phone) {
+            // Standardize phone (remove +, spaces, leading zeros for matching)
+            const cleanPhone = phone.replace(/\D/g, '').slice(-10); 
+            query.$or = [
+                { phone: new RegExp(cleanPhone + '$') },
+                { customerPhone: new RegExp(cleanPhone + '$') }
+            ];
+        }
+
+        const orders = await Order.find(query).sort({ createdAt: -1 }).limit(100);
+        res.json({ success: true, orders });
     } catch (error) {
+        console.error('[getClientOrders] Error:', error);
         res.status(500).json({ error: 'Server configuration error' });
     }
 };
@@ -1053,11 +1067,11 @@ const updateOrderStatus = async (req, res) => {
                     let activeLocId = nicheData.shopifyLocationId;
                     if (!activeLocId) {
                         try {
-                           const locRes = await shopifyApi.get('/locations.json');
-                           activeLocId = locRes.data.locations?.[0]?.id;
-                           console.log(`[ShopifySync] Auto-detected Location ID: ${activeLocId}`);
+                            const locRes = await shopifyApi.get('/locations.json');
+                            activeLocId = locRes.data.locations?.[0]?.id;
+                            console.log(`[ShopifySync] Auto-detected Location ID: ${activeLocId}`);
                         } catch (locErr) {
-                           console.error("[ShopifySync] Failed to fetch locations:", locErr.message);
+                            console.error("[ShopifySync] Failed to fetch locations:", locErr.message);
                         }
                     }
 
@@ -1087,7 +1101,7 @@ const updateOrderStatus = async (req, res) => {
                 const phone = normalizePhone(rawPhone);
                 // Find template definition in waTemplates or syncedMetaTemplates to detect parameter count
                 const tplDef = (req.clientConfig.syncedMetaTemplates || []).find(t => t.name === templateName);
-                
+
                 let requiredParams = null; // Use null to indicate "unknown"
                 if (tplDef) {
                     const bodyComp = (tplDef.components || []).find(c => c.type === 'BODY');
@@ -1099,32 +1113,32 @@ const updateOrderStatus = async (req, res) => {
                         requiredParams = 0; // No body component or no matches means 0 params
                     }
                 } else {
-                  console.warn(`[TemplateDetection] Warning: Template ${templateName} not found in client configuration for parameter detection.`);
-                  // Trigger background sync so future messages for this client have correct data
-                  if (req.clientConfig.wabaId) {
-                      syncWhatsAppTemplates({ wabaId: req.clientConfig.wabaId, token: whatsappToken })
-                        .then(res => {
-                            if (res.success) {
-                                Client.updateOne({ clientId }, { $set: { syncedMetaTemplates: res.templates, templatesSyncedAt: new Date() } })
-                                    .then(() => console.log(`[TemplateDetection] Background sync successful for ${clientId}`))
-                                    .catch(e => console.error(`[TemplateDetection] DB update failed for ${clientId}`, e.message));
-                            }
-                        })
-                        .catch(e => console.error(`[TemplateDetection] Trigger failed for ${clientId}`, e.message));
-                  }
+                    console.warn(`[TemplateDetection] Warning: Template ${templateName} not found in client configuration for parameter detection.`);
+                    // Trigger background sync so future messages for this client have correct data
+                    if (req.clientConfig.wabaId) {
+                        syncWhatsAppTemplates({ wabaId: req.clientConfig.wabaId, token: whatsappToken })
+                            .then(res => {
+                                if (res.success) {
+                                    Client.updateOne({ clientId }, { $set: { syncedMetaTemplates: res.templates, templatesSyncedAt: new Date() } })
+                                        .then(() => console.log(`[TemplateDetection] Background sync successful for ${clientId}`))
+                                        .catch(e => console.error(`[TemplateDetection] DB update failed for ${clientId}`, e.message));
+                                }
+                            })
+                            .catch(e => console.error(`[TemplateDetection] Trigger failed for ${clientId}`, e.message));
+                    }
                 }
 
                 // 3. DYNAMIC MEDIA (PHASE 11 - ECO-DYNAMIC IMAGES)
                 let headerImageUrl = null;
                 const ecoImageStatuses = ['paid', 'shipped', 'fulfilled', 'delivered', 'processing'];
-                
+
                 if (templateName.startsWith('eco_') && ecoImageStatuses.includes(status.toLowerCase())) {
                     // Try to get the image from the first order item
                     if (order.items && order.items.length > 0) {
                         headerImageUrl = order.items[0].image || order.items[0].imageUrl;
                         console.log(`[EcoDynamic] Using product image for ${templateName}: ${headerImageUrl}`);
                     }
-                    
+
                     // Fallback to nicheData banner if no product image
                     if (!headerImageUrl) {
                         headerImageUrl = req.clientConfig.nicheData?.bannerImage;
@@ -1139,29 +1153,29 @@ const updateOrderStatus = async (req, res) => {
                 ];
 
                 if (status.toLowerCase() === 'shipped' || status.toLowerCase() === 'fulfilled') {
-                   // Variable mapping for eco_shipping_update: 1:Name, 2:Order#, 3:TrackingURL (from standardTemplates.js)
-                   let finalTrackingUrl = trackingUrl || order.trackingUrl;
-                   if (!finalTrackingUrl && (trackingNumber || order.trackingNumber) && req.clientConfig.nicheData?.trackingLinkPattern) {
-                       const pattern = req.clientConfig.nicheData.trackingLinkPattern;
-                       finalTrackingUrl = pattern.replace('{{tracking_number}}', trackingNumber || order.trackingNumber);
-                   }
-                   bodyParams.push(finalTrackingUrl || 'Check your dashboard');
-                } 
+                    // Variable mapping for eco_shipping_update: 1:Name, 2:Order#, 3:TrackingURL (from standardTemplates.js)
+                    let finalTrackingUrl = trackingUrl || order.trackingUrl;
+                    if (!finalTrackingUrl && (trackingNumber || order.trackingNumber) && req.clientConfig.nicheData?.trackingLinkPattern) {
+                        const pattern = req.clientConfig.nicheData.trackingLinkPattern;
+                        finalTrackingUrl = pattern.replace('{{tracking_number}}', trackingNumber || order.trackingNumber);
+                    }
+                    bodyParams.push(finalTrackingUrl || 'Check your dashboard');
+                }
                 else if (status.toLowerCase() === 'delivered') {
-                   // eco_delivered: 1:Name, 2:Order#
-                   // Already have these 2 in bodyParams.
+                    // eco_delivered: 1:Name, 2:Order#
+                    // Already have these 2 in bodyParams.
                 }
                 else if (status.toLowerCase() === 'paid' || status.toLowerCase() === 'processing') {
-                   // eco_order_confirmed: 1:Name, 2:Order#, 3:Total, 4:PaymentMethod
-                   bodyParams.push(`₹${order.totalPrice || '0'}`);
-                   bodyParams.push(order.paymentMethod || 'Prepaid');
+                    // eco_order_confirmed: 1:Name, 2:Order#, 3:Total, 4:PaymentMethod
+                    bodyParams.push(`₹${order.totalPrice || '0'}`);
+                    bodyParams.push(order.paymentMethod || 'Prepaid');
                 }
                 else {
-                   // Fallback for others
-                   bodyParams.push(status.charAt(0).toUpperCase() + status.slice(1));
-                   bodyParams.push(`₹${order.totalPrice || '0'}`);
-                   bodyParams.push(trackingNumber || order.trackingNumber || 'N/A');
-                   bodyParams.push(trackingUrl || order.trackingUrl || 'N/A');
+                    // Fallback for others
+                    bodyParams.push(status.charAt(0).toUpperCase() + status.slice(1));
+                    bodyParams.push(`₹${order.totalPrice || '0'}`);
+                    bodyParams.push(trackingNumber || order.trackingNumber || 'N/A');
+                    bodyParams.push(trackingUrl || order.trackingUrl || 'N/A');
                 }
 
                 // Ensure bodyParams matches Meta's required count EXACTLY if we know the count

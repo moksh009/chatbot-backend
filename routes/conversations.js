@@ -20,7 +20,7 @@ router.get('/', protect, async (req, res) => {
 
     // --- PHASE 10 FIX: Shared Query for Delitech/CodeClinic ---
     const activeClientId = req.user.role === 'SUPER_ADMIN' && clientId ? clientId : req.user.clientId;
-    
+
     if (req.user.role !== 'SUPER_ADMIN' || (req.user.role === 'SUPER_ADMIN' && clientId)) {
       if (['delitech_smarthomes', 'code_clinic_v1'].includes(activeClientId)) {
         query.clientId = { $in: ['code_clinic_v1', 'delitech_smarthomes'] };
@@ -46,7 +46,7 @@ router.get('/', protect, async (req, res) => {
       .skip(skip)
       .limit(limit)
       .populate('assignedTo', 'name');
-    
+
     const total = await Conversation.countDocuments(query);
 
     res.json({
@@ -162,6 +162,8 @@ router.post('/:id/messages', protect, async (req, res) => {
     // Update Conversation
     conversation.lastMessage = content.substring(0, 100);
     conversation.lastMessageAt = Date.now();
+    conversation.requiresAttention = false; // Reset attention flag on manual reply
+    if (conversation.attentionReason) conversation.attentionReason = '';
     await conversation.save();
 
     const io = req.app.get('socketio');
@@ -174,17 +176,17 @@ router.post('/:id/messages', protect, async (req, res) => {
   } catch (error) {
     const errorData = error.response?.data?.error || error.data || error.message;
     const statusCode = error.status || error.response?.status || 500;
-    
+
     console.error('Error sending message:', errorData);
 
     // Map 401/403 to 400 to prevent frontend Interceptor from logging out the user
     // if it's just a WhatsApp configuration issue.
     const finalStatus = [401, 403].includes(statusCode) ? 400 : statusCode;
-    
-    res.status(finalStatus).json({ 
+
+    res.status(finalStatus).json({
       success: false,
-      message: error.friendlyMessage || 'Failed to send message', 
-      error: errorData 
+      message: error.friendlyMessage || 'Failed to send message',
+      error: errorData
     });
   }
 });
@@ -209,6 +211,8 @@ router.put('/:id/takeover', protect, async (req, res) => {
 
     conversation.status = 'HUMAN_TAKEOVER';
     conversation.assignedTo = req.user._id;
+    conversation.requiresAttention = false; // Reset attention flag on manual takeover
+    if (conversation.attentionReason) conversation.attentionReason = '';
     await conversation.save();
 
     res.json(conversation);
@@ -284,15 +288,15 @@ router.post('/:id/summarize', protect, async (req, res) => {
     const messages = await Message.find({ conversationId: conversation._id })
       .sort({ timestamp: 1 })
       .limit(50);
-    
+
     if (messages.length === 0) {
       return res.json({ summary: "No messages found to summarize.", sentiment: "neutral" });
     }
 
     const chatLog = messages.map(m => `${m.from}: ${m.content}`).join('\n');
-    
+
     const { generateText } = require('../utils/gemini');
-    
+
     const prompt = `
       Analyze this WhatsApp conversation and provide:
       1. A one-sentence summary of the user's intent or current status.
@@ -303,9 +307,9 @@ router.post('/:id/summarize', protect, async (req, res) => {
       CONVERSATION:
       ${chatLog}
     `;
-    
+
     const aiResponse = await generateText(prompt);
-    
+
     try {
       // Clean potential markdown formatting from AI
       const jsonStr = aiResponse.replace(/```json/g, '').replace(/```/g, '').trim();
@@ -357,6 +361,8 @@ router.post('/:id/send-template', protect, async (req, res) => {
 
     conversation.lastMessage = `[Template: ${templateName}]`;
     conversation.lastMessageAt = Date.now();
+    conversation.requiresAttention = false; // Reset attention flag on manual template send
+    if (conversation.attentionReason) conversation.attentionReason = '';
     await conversation.save();
 
     const io = req.app.get('socketio');
@@ -412,6 +418,8 @@ router.post('/:id/send-email', protect, async (req, res) => {
 
     conversation.lastMessage = `[Email] ${subject}`;
     conversation.lastMessageAt = Date.now();
+    conversation.requiresAttention = false; // Reset attention flag on manual email send
+    if (conversation.attentionReason) conversation.attentionReason = '';
     await conversation.save();
 
     const io = req.app.get('socketio');
@@ -433,7 +441,7 @@ router.post('/:id/csat', protect, async (req, res) => {
     const { rating } = req.body;
     const conversation = await Conversation.findOne({ _id: req.params.id });
     if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
-    
+
     conversation.csatScore = { rating, respondedAt: new Date() };
     await conversation.save();
     res.json(conversation);
@@ -448,10 +456,10 @@ router.post('/:id/assign', protect, async (req, res) => {
     const { agentId, priority } = req.body;
     const conversation = await Conversation.findOne({ _id: req.params.id });
     if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
-    
+
     if (agentId) conversation.assignedTo = agentId;
     if (priority) conversation.priority = priority;
-    
+
     await conversation.save();
     res.json(conversation);
   } catch (err) {

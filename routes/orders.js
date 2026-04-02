@@ -11,9 +11,19 @@ router.get('/', protect, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Phone number required' });
     }
 
+    // Standardize phone: strip non-digits and take last 10 digits for robust matching
+    const cleanPhone = phone.replace(/\D/g, '');
+    const phoneSuffix = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
+    const phoneRegex = new RegExp(`${phoneSuffix}$`);
+
     let clientId = req.user.clientId;
     const query = { 
-      $or: [{ phone: phone }, { customerPhone: phone }] 
+      $or: [
+        { phone: phoneRegex }, 
+        { customerPhone: phoneRegex },
+        { phone: phone }, // Fallback to exact match
+        { customerPhone: phone }
+      ] 
     };
     
     // If super admin and query clientId provided, use it
