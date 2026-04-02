@@ -1034,9 +1034,10 @@ router.get('/insights', protect, async (req, res) => {
 
     res.json({
       heatmap,
-      retention: { returning, new: newLeads },
-      aov,
-      ltv,
+      returningLeads: returning,
+      newLeads: newLeads,
+      avgOrderValue: aov,
+      avgLTV: ltv,
       totalRevenueGlobally: totalRev
     });
   } catch (e) {
@@ -1226,8 +1227,28 @@ router.get('/abandoned-products', protect, async (req, res) => {
       }
     }
 
+    // Try to fetch images from recent orders for these products
+    const productNames = Object.keys(productMap);
+    const recentOrders = await Order.find({ 
+      clientId, 
+      "items.name": { $in: productNames } 
+    }).sort({ createdAt: -1 }).limit(50);
+
+    const imageMap = {};
+    recentOrders.forEach(order => {
+      order.items.forEach(item => {
+        if (item.image && !imageMap[item.name]) {
+          imageMap[item.name] = item.image;
+        }
+      });
+    });
+
     const data = Object.entries(productMap)
-      .map(([name, count]) => ({ name, value: count }))
+      .map(([name, count]) => ({ 
+        name, 
+        value: count,
+        image: imageMap[name] || null
+      }))
       .sort((a, b) => b.value - a.value)
       .slice(0, 10); // Top 10
 
