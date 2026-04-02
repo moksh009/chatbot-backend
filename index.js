@@ -139,6 +139,9 @@ app.use('/r', trackingRoutes);
 const notificationsRoutes = require('./routes/notifications');
 app.use('/api/notifications', notificationsRoutes);
 
+const supportRoutes = require('./routes/support');
+app.use('/api/support', supportRoutes);
+
 // Phase 19: Pre-flight Validation Routes
 const validationRoutes = require('./routes/validation');
 app.use('/api/validate', validationRoutes);
@@ -445,6 +448,13 @@ io.on('connection', (socket) => {
   if (clientId) {
     socket.join(`client_${clientId}`);
     console.log(`Socket ${socket.id} joined room client_${clientId}`);
+  }
+
+  // Join Super Admin room if role is provided
+  const userRole = socket.handshake.query.role;
+  if (userRole === 'SUPER_ADMIN') {
+    socket.join('super_admin_room');
+    console.log(`Socket ${socket.id} joined super_admin_room`);
   }
 
   socket.on('disconnect', () => {

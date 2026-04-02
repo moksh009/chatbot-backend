@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const OrderSchema = new mongoose.Schema({
   clientId: { type: String, required: true },
   shopifyOrderId: { type: String },
-  orderId: { type: String, required: true, unique: true },
+  orderId: { type: String, required: true },
   orderNumber: { type: String },
   customerName: { type: String },
   name: { type: String },              // Alias of customerName (Shopify compat)
@@ -43,5 +43,7 @@ const OrderSchema = new mongoose.Schema({
   shippingAddress: { type: Object },
   createdAt: { type: Date, default: Date.now }
 });
+
+OrderSchema.index({ orderId: 1, clientId: 1 }, { unique: true });
 
 module.exports = mongoose.model('Order', OrderSchema);

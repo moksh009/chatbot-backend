@@ -89,42 +89,62 @@ router.post('/:clientId/sync-products', protect, verifyClientAccess, async (req,
 router.post('/:clientId/sync-orders', protect, verifyClientAccess, async (req, res) => {
   try {
     const { clientId } = req.params;
-    await withShopifyRetry(clientId, async (shop) => {
-        const client = await Client.findOne({ clientId });
-        const response = await shop.get('/orders.json?limit=50&status=any');
-        const orders = response.data.orders;
+    let syncedCount = 0;
+    let failedCount = 0;
+
+    const result = await withShopifyRetry(clientId, async (shop) => {
+        const response = await shop.get('/orders.json?limit=100&status=any');
+        const orders = response.data.orders || [];
         const Order = require('../models/Order');
 
         for (const data of orders) {
-          const phone = data.phone || data.customer?.phone || data.billing_address?.phone;
-          const cleanPhone = phone ? phone.replace(/\D/g, '').slice(-10) : '0000000000';
+          try {
+            const phone = data.phone || data.customer?.phone || data.billing_address?.phone;
+            const cleanPhone = phone ? phone.replace(/\D/g, '').slice(-10) : '0000000000';
 
-          await Order.findOneAndUpdate(
-            { orderId: data.name || `#${data.id}`, clientId },
-            {
-              $set: {
-                customerName: data.customer ? `${data.customer.first_name} ${data.customer.last_name || ''}` : 'Shopify Customer',
-                customerPhone: cleanPhone,
-                amount: parseFloat(data.total_price),
-                totalPrice: parseFloat(data.total_price),
-                status: data.financial_status === 'paid' ? 'Paid' : 'Pending',
-                items: data.line_items.map(item => ({
-                    name: item.title,
-                    quantity: item.quantity,
-                    price: parseFloat(item.price)
-                })),
-                address: data.shipping_address ? `${data.shipping_address.address1}, ${data.shipping_address.city}` : '',
-                createdAt: data.created_at
-              }
-            },
-            { upsert: true }
-          );
+            await Order.findOneAndUpdate(
+              { orderId: data.name || `#${data.id}`, clientId },
+              {
+                $set: {
+                  shopifyOrderId: data.id.toString(),
+                  orderNumber: data.name,
+                  customerName: data.customer ? `${data.customer.first_name} ${data.customer.last_name || ''}`.trim() : 'Shopify Customer',
+                  customerPhone: cleanPhone,
+                  customerEmail: data.email || data.customer?.email || null,
+                  amount: parseFloat(data.total_price),
+                  totalPrice: parseFloat(data.total_price),
+                  status: data.financial_status === 'paid' ? 'paid' : (data.financial_status === 'refunded' ? 'cancelled' : 'pending'),
+                  paymentMethod: data.gateway || 'Shopify',
+                  isCOD: (data.gateway || '').toLowerCase().includes('cash on delivery') || (data.gateway || '').toLowerCase().includes('cod'),
+                  items: (data.line_items || []).map(item => ({
+                      name: item.title,
+                      quantity: item.quantity,
+                      price: parseFloat(item.price),
+                      sku: item.sku
+                  })),
+                  address: data.shipping_address ? `${data.shipping_address.address1}, ${data.shipping_address.city}` : '',
+                  city: data.shipping_address?.city || '',
+                  state: data.shipping_address?.province || '',
+                  zip: data.shipping_address?.zip || '',
+                  shippingAddress: data.shipping_address,
+                  createdAt: data.created_at,
+                  storeString: 'Shopify'
+                }
+              },
+              { upsert: true, new: true, setDefaultsOnInsert: true }
+            );
+            syncedCount++;
+          } catch (individualErr) {
+            console.error(`[Sync] Failed to process order ${data.name} for ${clientId}:`, individualErr.message);
+            failedCount++;
+          }
         }
-        return orders.length;
+        return { synced: syncedCount, failed: failedCount, total: orders.length };
     });
 
-    res.json({ success: true, message: 'Sync complete' });
+    res.json({ success: true, message: 'Sync complete', ...result });
   } catch (err) {
+    console.error(`[Sync Error] for ${req.params.clientId}:`, err.message);
     const isAuthError = err.response?.status === 401 || err.response?.status === 403;
     res.status(isAuthError ? 400 : 500).json({ success: false, error: err.message, isShopifyAuthError: isAuthError });
   }
