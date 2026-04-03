@@ -177,10 +177,118 @@ async function sendSystemOTPEmail(toAddress, otpCode, purpose = 'SIGNUP') {
     }
 }
 
+/**
+ * Send a team invitation email to a new agent.
+ */
+async function sendTeamInviteEmail(toAddress, { adminName, businessName, password, loginUrl }) {
+    const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+            user: process.env.SYSTEM_EMAIL_USER,
+            pass: process.env.SYSTEM_EMAIL_PASS
+        }
+    });
+
+    const html = `
+        <div style="font-family: 'Inter', Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 40px; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 24px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05);">
+            <div style="text-align: center; margin-bottom: 32px;">
+                <h2 style="color: #6366f1; margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.025em;">TopEdge AI</h2>
+                <p style="color: #64748b; font-size: 14px; margin-top: 8px; font-weight: 500;">Invitation to join workspace</p>
+            </div>
+            
+            <p style="color: #0f172a; font-size: 18px; font-weight: 600; line-height: 1.4; margin-top: 0;">You're Invited! 👋</p>
+            <p style="color: #475569; font-size: 15px; line-height: 1.6;"><strong>${adminName}</strong> has invited you to join the <strong>${businessName}</strong> team on TopEdge AI.</p>
+            
+            <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 16px; padding: 24px; margin: 32px 0;">
+                <p style="color: #64748b; font-size: 13px; margin: 0 0 12px 0; text-transform: uppercase; font-weight: 700; letter-spacing: 0.05em;">Your Login Credentials</p>
+                <div style="margin-bottom: 12px;">
+                    <span style="color: #475569; font-size: 14px;">Email:</span>
+                    <span style="color: #0f172a; font-size: 14px; font-weight: 600; margin-left: 8px;">${toAddress}</span>
+                </div>
+                <div>
+                    <span style="color: #475569; font-size: 14px;">Temporary Password:</span>
+                    <span style="color: #6366f1; font-size: 14px; font-weight: 700; margin-left: 8px;">${password}</span>
+                </div>
+            </div>
+            
+            <div style="text-align: center;">
+                <a href="${loginUrl}" style="display: inline-block; padding: 16px 32px; background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%); color: white; border-radius: 12px; text-decoration: none; font-weight: 700; font-size: 16px; box-shadow: 0 4px 6px -1px rgba(79, 70, 229, 0.2);">
+                    Accept Invitation & Login →
+                </a>
+            </div>
+            
+            <p style="color: #64748b; font-size: 13px; line-height: 1.5; margin-top: 32px; text-align: center;">
+                For security, please change your password immediately after your first login.
+            </p>
+            
+            <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 40px 0;" />
+            <p style="text-align: center; color: #94a3b8; font-size: 12px; margin: 0;">&copy; ${new Date().getFullYear()} TopEdge AI. Enterprise Team Operations Layer.</p>
+        </div>
+    `;
+
+    try {
+        await transporter.sendMail({
+            from: `"TopEdge AI" <${process.env.SYSTEM_EMAIL_USER}>`,
+            to: toAddress,
+            subject: `👋 You've been invited to join ${businessName} on TopEdge AI`,
+            html
+        });
+        return true;
+    } catch (err) {
+        console.error(`[EmailService] ❌ Failed to send Team Invite to ${toAddress}:`, err.message);
+        return false;
+    }
+}
+
+/**
+ * Send an admin confirmation email when a new member is invited.
+ */
+async function sendAdminConfirmationEmail(adminEmail, { agentName, agentEmail, businessName }) {
+    const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+            user: process.env.SYSTEM_EMAIL_USER,
+            pass: process.env.SYSTEM_EMAIL_PASS
+        }
+    });
+
+    const html = `
+        <div style="font-family: 'Inter', Arial, sans-serif; max-width: 500px; margin: 40px auto; padding: 32px; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px;">
+            <div style="text-align: center; margin-bottom: 24px;">
+                <h2 style="color: #0f172a; margin: 0; font-size: 20px; font-weight: 700;">TopEdge AI Admin</h2>
+            </div>
+            <p style="color: #475569; font-size: 15px; line-height: 1.6;">Invitation sent successfully! 🚀</p>
+            <p style="color: #475569; font-size: 15px; line-height: 1.6;">
+                You have successfully invited <strong>${agentName}</strong> (${agentEmail}) to join the <strong>${businessName}</strong> workspace.
+            </p>
+            <p style="color: #64748b; font-size: 14px; margin-top: 24px;">
+                They will appear in your Team Directory once they accept the invitation.
+            </p>
+            <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+            <p style="text-align: center; color: #94a3b8; font-size: 12px; margin: 0;">&copy; ${new Date().getFullYear()} TopEdge AI.</p>
+        </div>
+    `;
+
+    try {
+        await transporter.sendMail({
+            from: `"TopEdge AI" <${process.env.SYSTEM_EMAIL_USER}>`,
+            to: adminEmail,
+            subject: `✅ Invitation Sent: ${agentName} has been invited`,
+            html
+        });
+        return true;
+    } catch (err) {
+        console.error(`[EmailService] ❌ Failed to send Admin Confirmation:`, err.message);
+        return false;
+    }
+}
+
 module.exports = {
     sendEmail,
     sendAbandonedCartEmail,
     sendOrderConfirmationEmail,
     sendCODToPrepaidEmail,
-    sendSystemOTPEmail
+    sendSystemOTPEmail,
+    sendTeamInviteEmail,
+    sendAdminConfirmationEmail
 };

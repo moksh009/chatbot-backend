@@ -153,6 +153,8 @@ const oauthRoutes = require('./routes/oauth');
 app.use('/api/oauth', oauthRoutes);
 const wizardRoutes = require('./routes/wizard');
 app.use('/api/wizard', wizardRoutes);
+const teamRoutes = require('./routes/team');
+app.use('/api/team', teamRoutes);
 
 // --- CRON JOBS (Phase 21 Resumption) ---
 const scheduleFlowResumption = require('./cron/flowResumptionCron');

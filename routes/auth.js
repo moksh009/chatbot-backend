@@ -154,7 +154,7 @@ router.post('/login', async (req, res) => {
 });
 
 router.post('/register', async (req, res) => {
-  const { name, email, password, businessName, otp } = req.body;
+  const { name, email, password, businessName, businessType, otp } = req.body;
 
   try {
     const userExists = await User.findOne({ email });
@@ -180,6 +180,10 @@ router.post('/register', async (req, res) => {
     const uniqueId = crypto.randomBytes(3).toString('hex');
     const newClientId = `${safeName}_${uniqueId}`;
 
+    // Valid business types for client and user models
+    const validTypes = ['ecommerce', 'salon', 'turf', 'clinic', 'choice_salon', 'choice_salon_new', 'agency', 'other'];
+    const chosenType = (businessType && validTypes.includes(businessType)) ? businessType : 'other';
+
     // 1. Create the Client (Trial mode default)
     const newClient = await Client.create({
       clientId: newClientId,
@@ -189,7 +193,7 @@ router.post('/register', async (req, res) => {
       trialActive: true,
       trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       plan: 'CX Agent (V1)',
-      businessType: 'ecommerce', // default
+      businessType: chosenType, 
       flowNodes: [],
       flowEdges: []
     });
@@ -200,7 +204,7 @@ router.post('/register', async (req, res) => {
       email,
       password,
       role: 'CLIENT_ADMIN',
-      business_type: 'ecommerce',
+      business_type: chosenType,
       clientId: newClientId
     });
 
