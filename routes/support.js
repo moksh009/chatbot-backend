@@ -258,5 +258,92 @@ router.post('/:id/resolve', protect, async (req, res) => {
   }
 });
 
+// ── PUBLIC: Widget config (no auth required) ──────────────────────────────
+// @route   GET /api/support-chat/config/:clientId
+// @desc    Returns public branding info for the chat widget
+// @access  Public
+const Client = require('../models/Client');
+router.get('/config/:clientId', async (req, res) => {
+  try {
+    const client = await Client.findOne({ clientId: req.params.clientId }).select('businessName activeConfig.whatsappNumber');
+    if (!client) return res.status(404).json({ message: 'Client not found' });
+
+    const name = client.businessName || 'Support';
+    res.json({
+      businessName: name,
+      avatarLetter: name.charAt(0).toUpperCase(),
+      greeting: `Hi! Welcome to ${name}. How can we help you today? 👋`
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ── PUBLIC: Widget lead capture (no auth required) ────────────────────────
+// @route   POST /api/support-chat/widget-lead
+// @desc    Capture a lead from the website chat widget form
+// @access  Public
+const AdLead = require('../models/AdLead');
+const NotificationService = require('../utils/notificationService');
+router.post('/widget-lead', async (req, res) => {
+  try {
+    const { clientId, name, phone, email, message, source, pageUrl } = req.body;
+    if (!clientId || !phone || !message) {
+      return res.status(400).json({ message: 'clientId, phone, and message are required' });
+    }
+
+    const normalizedPhone = phone.replace(/\D/g, '');
+    
+    // Upsert lead
+    const lead = await AdLead.findOneAndUpdate(
+      { phoneNumber: normalizedPhone, clientId },
+      {
+        $setOnInsert: {
+          phoneNumber: normalizedPhone,
+          clientId,
+          optStatus: 'opted_in',
+          optInDate: new Date(),
+          optInSource: 'website_widget',
+          source: 'Website Widget'
+        },
+        $set: {
+          ...(name  && { name }),
+          ...(email && { email }),
+          lastInteraction: new Date(),
+          'adAttribution.source': 'website_widget',
+          'adAttribution.adSourceUrl': pageUrl || ''
+        },
+        $push: {
+          activityLog: {
+            action: 'widget_message',
+            details: message.substring(0, 200),
+            timestamp: new Date()
+          }
+        }
+      },
+      { upsert: true, new: true }
+    );
+
+    // Notify admin via WhatsApp
+    const client = await Client.findOne({ clientId });
+    if (client) {
+      try {
+        await NotificationService.sendAdminAlert(client, {
+          customerPhone: normalizedPhone,
+          topic: `🌐 New Website Enquiry from ${name || 'a visitor'}`,
+          triggerSource: `📄 Page: ${pageUrl || 'Unknown'}\n💬 "${message}"`,
+          channel: 'whatsapp'
+        });
+      } catch (notifErr) {
+        console.warn('[WidgetLead] Admin alert failed:', notifErr.message);
+      }
+    }
+
+    res.json({ success: true, leadId: lead._id });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 module.exports = router;
 

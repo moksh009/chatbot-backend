@@ -232,6 +232,47 @@ const WhatsApp = {
     error.data = errorData;
     error.friendlyMessage = friendlyMessage;
     throw error;
+  },
+
+  /**
+   * Fetches the WhatsApp Business Account status
+   */
+  async getAccountStatus(client) {
+    const { token } = this.getCredentials(client);
+    const wabaId = client.wabaId || process.env.WHATSAPP_WABA_ID;
+    if (!wabaId) return { status: 'UNKNOWN', reason: 'Missing WABA ID' };
+
+    const url = `https://graph.facebook.com/v18.0/${wabaId}`;
+    try {
+      const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
+      return {
+        status: res.data.account_review_status || 'APPROVED',
+        id: res.data.id,
+        name: res.data.name
+      };
+    } catch (err) {
+      log.error(`[WhatsApp] getAccountStatus failed: ${err.message}`);
+      return { status: 'UNAVAILABLE', error: err.message };
+    }
+  },
+
+  /**
+   * Fetches Phone Number Quality and Tiering
+   */
+  async getPhoneNumberQuality(client) {
+    const { token, phoneNumberId } = this.getCredentials(client);
+    const url = `https://graph.facebook.com/v18.0/${phoneNumberId}`;
+    try {
+      const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
+      return {
+        qualityRating: res.data.quality_rating || 'GREEN',
+        tier: res.data.messaging_limit_tier || 'Tier 1 (1k/day)',
+        status: res.data.status || 'CONNECTED'
+      };
+    } catch (err) {
+      log.error(`[WhatsApp] getPhoneNumberQuality failed: ${err.message}`);
+      return { qualityRating: 'UNKNOWN', tier: 'N/A' };
+    }
   }
 };
 

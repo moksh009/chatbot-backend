@@ -141,6 +141,8 @@ app.use('/api/notifications', notificationsRoutes);
 
 const supportRoutes = require('./routes/support');
 app.use('/api/support', supportRoutes);
+app.use('/api/support-chat', supportRoutes); // Public alias for website chat widget
+
 
 // Phase 19: Pre-flight Validation Routes
 const validationRoutes = require('./routes/validation');

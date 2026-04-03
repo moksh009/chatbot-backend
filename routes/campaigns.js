@@ -282,7 +282,7 @@ router.post('/:clientId/ab-test', protect, async (req, res) => {
 router.get('/overview', protect, async (req, res) => {
   try {
     const clientId = req.user.clientId;
-    const campaigns = await Campaign.find({ clientId });
+    const campaigns = await Campaign.find({ clientId }).sort({ createdAt: -1 });
     
     // Aggregate stats
     const totalSent = campaigns.reduce((acc, c) => acc + (c.sentCount || 0), 0);
@@ -290,16 +290,35 @@ router.get('/overview', protect, async (req, res) => {
     const totalRead = campaigns.reduce((acc, c) => acc + (c.readCount || 0), 0);
     const totalReplied = campaigns.reduce((acc, c) => acc + (c.repliedCount || 0), 0);
     
-    const deliveryRate = totalSent > 0 ? (totalDelivered / totalSent * 100) : 0;
-    const readRate = totalDelivered > 0 ? (totalRead / totalDelivered * 100) : 0;
-    
-    // Meta Health (Mock for now, would integrate with Meta Business API)
-    const metaHealth = {
+    const deliveryRate = totalSent > 0 ? Math.round((totalDelivered / totalSent) * 100) : 0;
+    const readRate = totalDelivered > 0 ? Math.round((totalRead / totalDelivered) * 100) : 0;
+    const replyRate = totalSent > 0 ? Math.round((totalReplied / totalSent) * 100) : 0;
+
+    // Meta Health (Real Integration with Cloud API)
+    let metaHealth = {
       status: 'HEALTHY',
-      tier: 'Tier 2 (10k/day)',
-      qualityRating: 'HIGH',
+      tier: 'Tier 1 (1k/day)',
+      qualityRating: 'GREEN',
       lastTemplateUpdate: new Date()
     };
+
+    try {
+      const client = await Client.findOne({ clientId });
+      if (client?.whatsappToken && (client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID)) {
+        const [acc, qual] = await Promise.all([
+          WhatsApp.getAccountStatus(client),
+          WhatsApp.getPhoneNumberQuality(client)
+        ]);
+        metaHealth = {
+          status: acc.status === 'UNAVAILABLE' ? 'UNAVAILABLE' : (qual.status || 'HEALTHY'),
+          tier: qual.tier || 'Tier 1 (1k/day)',
+          qualityRating: qual.qualityRating || 'GREEN',
+          lastTemplateUpdate: new Date()
+        };
+      }
+    } catch (healthErr) {
+      console.warn(`[Campaigns] Could not fetch Meta health for ${clientId}:`, healthErr.message);
+    }
 
     res.json({
       success: true,
@@ -308,11 +327,13 @@ router.get('/overview', protect, async (req, res) => {
         totalDelivered,
         totalRead,
         totalReplied,
-        deliveryRate: deliveryRate.toFixed(1),
-        readRate: readRate.toFixed(1)
+        deliveryRate,
+        readRate,
+        replyRate
       },
       metaHealth,
-      recentCampaigns: campaigns.slice(0, 5)
+      recentCampaigns: campaigns.slice(0, 10)
+
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

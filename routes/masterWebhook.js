@@ -111,10 +111,33 @@ router.post('/', verifyMetaSignature, async (req, res) => {
                 continue; 
               }
 
-              console.log(`📩 Incoming message from ${from}:`, message.text?.body || message.type);
+              console.log(`📩 Incoming from ${from}:`, message.text?.body?.substring(0, 60) || message.type);
 
-              // Pass to processing engine
-              // engine handles locking, conversation creation, and processing
+              // 2. Extract Meta Referral (Ad Attribution) — populated on click-to-WhatsApp ads
+              if (message.referral) {
+                message.referral = {
+                  source_url:  message.referral.source_url,
+                  source_type: message.referral.source_type, // 'ad' | 'post'
+                  source_id:   message.referral.source_id,   // Facebook Ad ID
+                  headline:    message.referral.headline,
+                  body:        message.referral.body,
+                  image_url:   message.referral.image_url,
+                  video_url:   message.referral.video_url,
+                };
+                console.log(`🎯 [AdAttribution] Ad referral detected for ${from}:`, message.referral.headline || message.referral.source_id);
+              }
+
+              // 3. Mark message as replied-to in any open Campaign (for analytics)
+              CampaignMessage.findOneAndUpdate(
+                { phone: from, status: { $in: ['sent', 'delivered', 'read'] } },
+                { $set: { repliedAt: new Date(), status: 'replied' } }
+              ).then(msg => {
+                if (msg?.campaignId) {
+                  Campaign.findByIdAndUpdate(msg.campaignId, { $inc: { repliedCount: 1 } }).catch(() => {});
+                }
+              }).catch(() => {});
+
+              // 4. Pass to processing engine (engine handles locking, lead upsert, flow execution)
               handleWhatsAppMessage(from, message, value.metadata?.phone_number_id)
                 .catch(err => console.error("Engine Error:", err));
             }

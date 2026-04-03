@@ -46,9 +46,9 @@ const WhatsApp = {
 };
 
 const Instagram = {
-  sendText: (...args) => sendInstagramText(...args),
-  sendImage: (...args) => sendInstagramImage(...args),
-  sendInteractive: (...args) => sendInstagramInteractive(...args),
+  sendText: (client, phone, text, options = {}) => sendInstagramText(client, phone, text, options),
+  sendImage: (client, phone, imageUrl, caption, options = {}) => sendInstagramImage(client, phone, imageUrl, caption, options),
+  sendInteractive: (client, phone, interactive, bodyText, options = {}) => sendInstagramInteractive(client, phone, interactive, bodyText, options),
 };
 
 const { sendInstagramReply, sendInstagramMessage } = require("./omnichannel");
@@ -121,6 +121,52 @@ function normalizeHandleId(handleId) {
 }
 
 const { normalizePhone } = require("./helpers");
+
+/**
+ * Phase 21: Universal Flow Executor
+ * Starts a visual flow for a user, handling convo/lead setup and extra context (like commentId).
+ */
+async function runFlow(client, from, flow, startNodeId, extraContext = {}) {
+  const channel = extraContext.channel || 'whatsapp';
+  const phone = channel === 'whatsapp' ? normalizePhone(from) : from;
+  const io = global.io;
+
+  try {
+    // 1. Ensure Convo & Lead exist
+    let convo = await Conversation.findOneAndUpdate(
+      { phone, clientId: client.clientId },
+      {
+        $setOnInsert: { phone, clientId: client.clientId, lastStepId: null, botPaused: false, status: 'BOT_ACTIVE' },
+        $set: { lastInteraction: new Date() }
+      },
+      { upsert: true, new: true }
+    );
+
+    let lead = await AdLead.findOneAndUpdate(
+      { phoneNumber: phone, clientId: client.clientId },
+      { 
+        $setOnInsert: { phoneNumber: phone, clientId: client.clientId, optStatus: 'opted_in', optInDate: new Date(), optInSource: extraContext.triggerSource || 'flow' },
+        $set: { lastInteraction: new Date() }
+      },
+      { upsert: true, new: true }
+    );
+
+    // 2. Build Context
+    const variableContext = await buildVariableContext(client, phone, convo, lead);
+    const parsedMessage = {
+      from,
+      channel,
+      _variableContext: variableContext,
+      commentId: extraContext.commentId
+    };
+
+    // 3. Execute
+    console.log(`[DualBrain] Manual runFlow: Executing ${flow.name} starting at ${startNodeId}`);
+    return await executeNode(startNodeId, flattenFlowNodes(flow.nodes), flow.edges, client, convo, lead, from, io, channel, parsedMessage);
+  } catch (err) {
+    console.error(`[DualBrain] runFlow Error:`, err.message);
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // VARIABLE REPLACEMENT UTILITY
@@ -214,14 +260,27 @@ async function runDualBrainEngine(parsedMessage, client) {
   );
 
   // STEP 2: Upsert lead
+  const referral = parsedMessage.referral;
+  const adUpdate = referral ? {
+    $set: {
+      "adAttribution.source": referral.source_type === 'ad' ? 'meta_ad' : 'organic',
+      "adAttribution.adId": referral.source_id,
+      "adAttribution.adHeadline": referral.headline,
+      "adAttribution.adBody": referral.body,
+      "adAttribution.adMediaUrl": referral.image_url || referral.video_url,
+      "adAttribution.firstMessageAt": new Date()
+    }
+  } : {};
+
   let lead = await AdLead.findOneAndUpdate(
     { phoneNumber: phone, clientId: client.clientId },
     { 
-      $setOnInsert: { phoneNumber: phone, clientId: client.clientId },
+      $setOnInsert: { phoneNumber: phone, clientId: client.clientId, source: referral ? 'Meta Ad' : 'Direct' },
       $set: { 
         ...(profileName && { name: profileName }), // Sync WhatsApp name
         lastInteraction: new Date()
-      }
+      },
+      ...adUpdate
     },
     { upsert: true, new: true }
   );
@@ -242,7 +301,96 @@ async function runDualBrainEngine(parsedMessage, client) {
   
   // --- SMART ALERT DETECTION: "Call Now" ---
   // --- SMART ALERT DETECTION: "Call Now" & Escalation (Phase 21) ---
-  const userText = (parsedMessage.text?.body || '').toLowerCase().trim();
+  // --- PHASE 21: DUAL-BRAIN PRIORITY KEYWORDS (OPT-IN/OUT) ---
+  const userTextRaw   = (parsedMessage.text?.body || '').trim();
+  const userTextLower = userTextRaw.toLowerCase();
+  
+  const optOutKeywords = ['stop', 'unsubscribe', 'opt out', 'halt', 'cancel', 'block bot'];
+  const optInKeywords  = ['start', 'opt in', 'subscribe', 'resume', 'unpause'];
+
+  if (optOutKeywords.some(k => userTextLower === k)) {
+    console.log(`[DualBrain] 🛑 Opt-out detected for ${phone}. Pausing bot.`);
+    
+    await Conversation.findByIdAndUpdate(convo._id, { 
+       botPaused: true, 
+       isBotPaused: true, 
+       status: 'OPTED_OUT' 
+    });
+
+    await AdLead.findOneAndUpdate(
+      { phoneNumber: phone, clientId: client.clientId },
+      { 
+        $set: { 
+          optStatus: 'opted_out', 
+          optOutDate: new Date(), 
+          optOutReason: 'user_keyword',
+          optOutKeyword: userTextRaw 
+        },
+        $addToSet: { tags: 'Opted Out' },
+        $push: {
+          optInHistory: {
+            action: 'opted_out',
+            timestamp: new Date(),
+            source: 'user_keyword',
+            note: `User sent: "${userTextRaw}"`
+          }
+        }
+      }
+    );
+
+    // Broadcast update
+    if (io) io.to(`client_${client.clientId}`).emit('lead_opted_out', { phone });
+
+    await sendWhatsAppText(client, phone, "You've been unsubscribed. You will no longer receive automated messages. Reply START anytime to re-subscribe.");
+    
+    // Notify Admin
+    const NotificationService = require('./notificationService');
+    await NotificationService.sendAdminAlert(client, {
+      customerPhone: phone,
+      topic: "🔕 USER OPTED OUT",
+      triggerSource: `User sent "${userTextRaw}". Bot is now PAUSED for this user.`,
+      channel: 'both'
+    });
+    return true; // Stop execution
+  }
+
+  if (optInKeywords.some(k => userTextLower === k)) {
+    console.log(`[DualBrain] ✅ Opt-in detected for ${phone}. Resuming bot.`);
+    
+    await Conversation.findByIdAndUpdate(convo._id, { 
+      botPaused: false, 
+      isBotPaused: false, 
+      status: 'BOT_ACTIVE' 
+    });
+
+    await AdLead.findOneAndUpdate(
+      { phoneNumber: phone, clientId: client.clientId },
+      { 
+        $set: { 
+          optStatus: 'opted_in', 
+          optInDate: new Date(), 
+          optInSource: 'whatsapp_re_optin' 
+        },
+        $pull: { tags: 'Opted Out' },
+        $addToSet: { tags: 'Opted In' },
+        $push: {
+          optInHistory: {
+            action: 're_opted_in',
+            timestamp: new Date(),
+            source: 'user_keyword'
+          }
+        }
+      }
+    );
+
+    // Broadcast update
+    if (io) io.to(`client_${client.clientId}`).emit('lead_opted_in', { phone });
+
+    await sendWhatsAppText(client, phone, "Welcome back! Automations have been resumed. How can I help you today?");
+    return true; // Stop execution
+  }
+
+  const userText = userTextLower;
   const escalationKeywords = [
     // Phone/call requests
     'call me', 'call now', 'want to talk', 'need a call', 'phone call', 'speak to a human', 'support agent', 'give me a call', 'call karo', 'callback',
@@ -561,7 +709,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
       if (matchingTrigger) {
           console.log(`[DualBrain] Graph: Triggering node ${matchingTrigger.id}`);
           await trackNodeVisit(client, matchingTrigger.id);
-          return await executeNode(matchingTrigger.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+          return await executeNode(matchingTrigger.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
       }
       
       // If none matched, check for basic greeting reset
@@ -570,7 +718,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
           if (firstTrigger) {
               console.log(`[DualBrain] Graph: Greeting reset to node ${firstTrigger.id}`);
               await trackNodeVisit(client, firstTrigger.id);
-              return await executeNode(firstTrigger.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+              return await executeNode(firstTrigger.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
           }
       }
   }
@@ -581,7 +729,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     if (startNode) {
       console.log(`[DualBrain] Graph: Starting fresh from node ${startNode.id}`);
       await trackNodeVisit(client, startNode.id);
-      return await executeNode(startNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+      return await executeNode(startNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
     }
   }
 
@@ -594,7 +742,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
         e.source === currentStepId &&
         (normalizeHandleId(e.sourceHandle) === (matchedBtn.id || matchedBtn.title?.toLowerCase().replace(/\s+/g, '_')))
       );
-      if (handleEdge) return await executeNode(handleEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+      if (handleEdge) return await executeNode(handleEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
     }
   }
   
@@ -605,7 +753,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 // ─────────────────────────────────────────────────────────────────────────────
 // EXECUTE A SPECIFIC NODE
 // ─────────────────────────────────────────────────────────────────────────────
-async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, phone, io, channel = 'whatsapp') {
+async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, phone, io, channel = 'whatsapp', parsedMessage = {}) {
   const rawNode = flowNodes.find(n => n.id === nodeId);
   if (!rawNode) { console.warn(`[DualBrain] Node ${nodeId} not found`); return false; }
 
@@ -632,7 +780,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   }
 
   const sent = await withTimeout(
-    sendNodeContent(node, client, phone, lead, convo, channel),
+    sendNodeContent(node, client, phone, lead, convo, channel, parsedMessage),
     8000, 
     `Node Content (${node.type})`
   );
@@ -695,7 +843,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     const nextEdge = flowEdges.find(e =>
       e.source === nodeId && (e.sourceHandle === targetHandle || normalizeHandleId(e.sourceHandle) === targetHandle)
     );
-    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
     return true;
   }
 
@@ -709,7 +857,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     
     await Conversation.findByIdAndUpdate(convo._id, { abVariant: variant });
     const nextEdge = flowEdges.find(e => e.source === nodeId && e.sourceHandle === variant.toLowerCase());
-    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
 
   // Phase 17: Tag Lead Node
@@ -721,7 +869,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
        console.log(`[DualBrain] TagNode: ${action} tag "${tag}" for lead ${lead._id}`);
     }
     const nextEdge = flowEdges.find(e => e.source === nodeId && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'output'));
-    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
 
   // Phase 21: Admin Alert Node
@@ -751,7 +899,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     console.log(`[DualBrain] AdminAlert triggered for ${phone}: ${alertMsg}`);
     
     const nextEdge = flowEdges.find(e => e.source === nodeId && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'output'));
-    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
 
   // Phase 17: Delay / Wait Node
@@ -918,7 +1066,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     if (autoEdge) {
       setTimeout(async () => {
         const freshConvo = await Conversation.findById(convo._id);
-        await executeNode(autoEdge.target, flowNodes, flowEdges, client, freshConvo, lead, phone, io, channel);
+        await executeNode(autoEdge.target, flowNodes, flowEdges, client, freshConvo, lead, phone, io, channel, parsedMessage);
       }, 600);
     }
   }
@@ -929,8 +1077,9 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 // ─────────────────────────────────────────────────────────────────────────────
 // SEND NODE CONTENT — handles all node types
 // ─────────────────────────────────────────────────────────────────────────────
-async function sendNodeContent(node, client, phone, lead = null, convo = null, channel = 'whatsapp') {
+async function sendNodeContent(node, client, phone, lead = null, convo = null, channel = 'whatsapp', parsedMessage = {}) {
   const { type, data } = node;
+  const options = { commentId: parsedMessage?.commentId };
 
   switch (type) {
     case 'image': {
@@ -938,7 +1087,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       const caption = data.caption || '';
       if (!imageUrl) return true;
       if (channel === 'instagram') {
-        await Instagram.sendImage(client, phone, imageUrl, caption);
+        await Instagram.sendImage(client, phone, imageUrl, caption, options);
       } else {
         await WhatsApp.sendImage(client, phone, imageUrl, caption);
       }
@@ -951,7 +1100,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'CaptureNode': {
       let body = data.text || data.body || data.label || 'Please provide the requested information:';
       body = replaceVariables(body, client, lead, convo);
-      if (channel === 'instagram') await Instagram.sendText(client, phone, body);
+      if (channel === 'instagram') await Instagram.sendText(client, phone, body, options);
       else await WhatsApp.sendText(client, phone, body);
       return true;
     }
@@ -968,8 +1117,8 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       body = replaceVariables(body, client, lead, convo);
       
       if (channel === 'instagram') {
-        if (data.imageUrl) await Instagram.sendImage(client, phone, data.imageUrl, body);
-        else await Instagram.sendText(client, phone, body);
+        if (data.imageUrl) await Instagram.sendImage(client, phone, data.imageUrl, body, options);
+        else await Instagram.sendText(client, phone, body, options);
       } else if (data.imageUrl) {
         await WhatsApp.sendImage(client, phone, data.imageUrl, body);
       } else {
@@ -989,7 +1138,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
                 type: 'button',
                 text: body,
                 buttons: [{ type: 'web_url', url: data.btnUrlLink, title: (data.btnUrlTitle || 'Visit').substring(0, 20) }]
-            });
+            }, body, options);
             return true;
         }
         let interactive = {
@@ -1010,7 +1159,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         : (data.buttons || '').split(',').map(b => b.trim()).filter(Boolean).map(b => ({ id: b.toLowerCase().replace(/\s+/g, '_'), title: b }));
 
       if (!buttonsList.length) {
-        if (channel === 'instagram') await Instagram.sendText(client, phone, body);
+        if (channel === 'instagram') await Instagram.sendText(client, phone, body, options);
         else await WhatsApp.sendText(client, phone, body);
         return true;
       }
@@ -1023,7 +1172,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
                 id: (btn.id || btn.title).toLowerCase().replace(/\s+/g, '_'),
                 title: (btn.title || 'Option').substring(0, 20)
             }))
-        });
+        }, body, options);
         return true;
       }
 
@@ -1705,7 +1854,8 @@ async function checkIntent(userText, intentDescription, apiKey) {
 
 module.exports = { 
     handleWhatsAppMessage,
-    runDualBrainEngine, 
+    runDualBrainEngine,
+    runFlow,
     executeNode, 
     sendNodeContent, 
     sendWhatsAppText, 

@@ -130,6 +130,30 @@ const adLeadSchema = new mongoose.Schema({
     flowNodeId: String
   }],
 
+  // Phase 21: Opt Management & Attribution
+  optStatus:        { type: String, enum: ["opted_in","opted_out","unknown"], default: "unknown" },
+  optInDate:        { type: Date, default: null },
+  optInSource:      { type: String, default: "" },  // "whatsapp_message" | "website_widget" | "qr_code" | "form" | "manual"
+  optOutDate:       { type: Date, default: null },
+  optOutReason:     { type: String, default: "" },  // "user_keyword" | "admin_removed" | "inactive"
+  optOutKeyword:    { type: String, default: "" },  // the keyword they sent to opt out
+  optInHistory: [{
+    action:    String,   // "opted_in" | "opted_out" | "re_opted_in"
+    timestamp: Date,
+    source:    String,
+    note:      String
+  }],
+  adAttribution: {
+    source:         String,  // "meta_ad" | "instagram_ad" | "organic" | "direct"
+    adId:           String,
+    adSourceUrl:    String,
+    adType:         String,
+    adHeadline:     String,
+    adBody:         String,
+    adMediaUrl:     String,
+    firstMessageAt: Date
+  },
+
   createdAt: {
     type: Date,
     default: Date.now

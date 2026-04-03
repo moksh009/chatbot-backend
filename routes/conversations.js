@@ -273,6 +273,114 @@ router.put('/:id/read', protect, async (req, res) => {
   }
 });
 
+// @route   PUT /api/conversations/:id/bot-status
+// @desc    Toggle bot status
+// @access  Private
+router.put('/:id/bot-status', protect, async (req, res) => {
+  try {
+    const { paused } = req.body;
+    const query = { _id: req.params.id };
+    if (req.user.role !== 'SUPER_ADMIN') {
+      query.clientId = req.user.clientId;
+    }
+    const conversation = await Conversation.findOneAndUpdate(
+      query,
+      { $set: { botPaused: paused } },
+      { new: true }
+    );
+
+    if (!conversation) {
+      return res.status(404).json({ message: 'Conversation not found' });
+    }
+
+    const io = req.app.get('socketio');
+    if (io) {
+      io.to(`client_${conversation.clientId}`).emit('support_update', conversation);
+    }
+
+    res.json(conversation);
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// @route   PATCH /api/conversations/:id/assign
+// @desc    Assign conversation to an agent
+// @access  Private
+router.patch('/:id/assign', protect, async (req, res) => {
+  try {
+    const { agentId, agentName } = req.body;
+    const query = { _id: req.params.id };
+    if (req.user.role !== 'SUPER_ADMIN') query.clientId = req.user.clientId;
+
+    const update = agentId
+      ? { $set: { assignedTo: agentId, assignedAt: new Date(), assignedBy: agentName || req.user.name, status: 'HUMAN_SUPPORT' } }
+      : { $unset: { assignedTo: 1, assignedAt: 1, assignedBy: 1 } };
+
+    const conversation = await Conversation.findOneAndUpdate(query, update, { new: true }).populate('assignedTo', 'name email');
+    if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
+
+    const io = req.app.get('socketio');
+    if (io) io.to(`client_${conversation.clientId}`).emit('conversation_assigned', { conversationId: conversation._id, agentId, agentName });
+
+    res.json({ success: true, conversation });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// @route   PATCH /api/conversations/:id/labels
+// @desc    Update conversation labels
+// @access  Private
+router.patch('/:id/labels', protect, async (req, res) => {
+  try {
+    const { labels } = req.body; // array of strings
+    const query = { _id: req.params.id };
+    if (req.user.role !== 'SUPER_ADMIN') query.clientId = req.user.clientId;
+
+    const conversation = await Conversation.findOneAndUpdate(query, { $set: { labels } }, { new: true });
+    if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
+
+    res.json({ success: true, conversation });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// @route   POST /api/conversations/:id/notes
+// @desc    Add an internal note to a conversation
+// @access  Private
+router.post('/:id/notes', protect, async (req, res) => {
+  try {
+    const { content } = req.body;
+    if (!content?.trim()) return res.status(400).json({ message: 'Note content is required' });
+
+    const query = { _id: req.params.id };
+    if (req.user.role !== 'SUPER_ADMIN') query.clientId = req.user.clientId;
+
+    const note = {
+      content: content.trim(),
+      authorId: req.user._id,
+      authorName: req.user.name || req.user.email,
+      createdAt: new Date()
+    };
+
+    const conversation = await Conversation.findOneAndUpdate(
+      query,
+      { $push: { internalNotes: note } },
+      { new: true }
+    );
+    if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
+
+    const io = req.app.get('socketio');
+    if (io) io.to(`client_${conversation.clientId}`).emit('internal_note_added', { conversationId: conversation._id, note });
+
+    res.json({ success: true, note, conversation });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // @route   POST /api/conversations/:id/summarize
 // @desc    Summarize conversation using AI
 // @access  Private

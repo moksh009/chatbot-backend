@@ -45,6 +45,16 @@ async function findMatchingFlow(parsedMessage, client, convo) {
     return { flow: keywordFlow, triggerType: "keyword" };
   }
 
+  // ── PRIORITY 1.5: Check event triggers (e.g. story_mention) ────────────────
+  if (parsedMessage.event === "story_mention") {
+    const eventFlow = flows.find((flow) => {
+      if (!flow.isActive) return false;
+      const trigger = flow.trigger || getTriggerFromNodes(flow.nodes || []);
+      return trigger?.type === "story_mention";
+    });
+    if (eventFlow) return { flow: eventFlow, triggerType: "story_mention" };
+  }
+
   // ── PRIORITY 2: Check first_message triggers ────────────────────────────────
   // Only fires for truly new conversations (no prior messages / no lastStepId)
   const isNewConversation = !convo
@@ -102,10 +112,15 @@ function getTriggerFromNodes(nodes) {
 
   // Legacy format from TriggerNode.jsx: data.triggerType, data.keyword
   const legacyKeyword = d.keyword || d.keywords || "";
-  const type = d.triggerType === "first_message" ? "first_message" : "keyword";
+  
+  const type = d.triggerType === "first_message" ? "first_message" : (d.triggerType === "story_mention" ? "story_mention" : "keyword");
 
   if (type === "first_message") {
     return { type: "first_message", channel: d.channel || "both" };
+  }
+
+  if (type === "story_mention") {
+    return { type: "story_mention", channel: d.channel || "instagram" };
   }
 
   // Parse comma-separated keywords into array

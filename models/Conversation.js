@@ -6,10 +6,12 @@ const ConversationSchema = new mongoose.Schema({
   customerName: { type: String, default: '' }, // WhatsApp profile name or provided name
   status: { 
     type: String, 
-    enum: ['BOT_ACTIVE', 'HUMAN_TAKEOVER', 'CLOSED', 'WAITING_FOR_INPUT'], 
+    enum: ['BOT_ACTIVE', 'HUMAN_TAKEOVER', 'HUMAN_SUPPORT', 'CLOSED', 'WAITING_FOR_INPUT', 'OPTED_OUT', 'new'], 
     default: 'BOT_ACTIVE' 
   },
   assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Agent ID
+  assignedAt:  { type: Date, default: null },
+  assignedBy:  { type: String, default: null }, // User name who assigned
   unreadCount: { type: Number, default: 0 },
   lastMessage: { type: String },
   lastMessageAt: { type: Date, default: Date.now },
@@ -19,8 +21,16 @@ const ConversationSchema = new mongoose.Schema({
   lastAppointment: { type: Date },
   appointmentStatus: { type: String }, // e.g., 'Booked', 'Completed', 'Cancelled'
   
-  tags: [{ type: String }], // e.g., 'Lead', 'Complaint', 'VIP'
+  tags: [{ type: String }],    // e.g., 'Lead', 'Complaint', 'VIP'
+  labels: [{ type: String }],  // Phase 21: Team inbox labels e.g. 'billing', 'support'
+  internalNotes: [{
+    content:   String,
+    authorId:  mongoose.Schema.Types.ObjectId,
+    authorName:String,
+    createdAt: { type: Date, default: Date.now }
+  }],
   lastStepId: { type: String, default: null }, // For ReactFlow graph traversal state
+  isBotPaused: { type: Boolean, default: false }, // Alias for UI compatibility
   
   // Phase 9 fields
   botPaused:         { type: Boolean, default: false },

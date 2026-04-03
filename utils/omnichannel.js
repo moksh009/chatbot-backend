@@ -11,10 +11,14 @@ async function sendInstagramMessage(client, recipientId, messageData) {
   const accountId = client.instagramPageId || "me";
   
   try {
+    const recipient = messageData.commentId 
+      ? { comment_id: messageData.commentId } 
+      : { id: recipientId };
+
     const res = await axios.post(
       `https://graph.facebook.com/v18.0/${accountId}/messages`,
       {
-        recipient: { id: recipientId },
+        recipient,
         message:   messageData,
         messaging_type: "RESPONSE" // Required for many IG message types
       },

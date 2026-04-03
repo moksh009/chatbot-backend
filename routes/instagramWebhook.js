@@ -124,7 +124,43 @@ async function handleInstagramComment(commentData, client) {
     // Ignore our own comments/replies
     if (from.id === client.instagramPageId) return;
 
-    // Find active comment automations
+    // --- INTEGRATE WITH FLOW BUILDER TRIGGER ENGINE ---
+    const { findMatchingFlow, findFlowStartNode } = require("../utils/triggerEngine");
+    const { runFlow } = require("../utils/dualBrainEngine");
+
+    // 1. Check for matching visual flow
+    const parsedMessage = {
+      text: { body: text },
+      channel: "instagram",
+      from: from.id, // PSID
+      commentId: commentId,
+      mediaId: media.id
+    };
+
+    const match = await findMatchingFlow(parsedMessage, client, null);
+    
+    if (match && !match.isLegacy) {
+      console.log(`[IG Auto] Flow match found: ${match.flow.name} for comment`);
+      
+      // Execute Public Reply if configured in the TriggerNode or use a default shoutout
+      // Note: Typically Flow Builder doesn't handle public replies yet, 
+      // so we check if there's a specific InstagramAutomation manual override or use a generic one.
+      await replyToInstagramComment(commentId, "Sent you a DM! Check your inbox. 📩", client.instagramAccessToken);
+
+      // Execute the Flow
+      const startNodeId = findFlowStartNode(match.flow.nodes, match.flow.edges);
+      if (startNodeId) {
+        // We pass commentId in the 'extraParams' so sendInstagramDM can use it
+        await runFlow(client, from.id, match.flow, startNodeId, { 
+          commentId, 
+          channel: "instagram",
+          triggerSource: "comment"
+        });
+        return;
+      }
+    }
+
+    // --- FALLBACK: Legacy InstagramAutomation Matching ---
     const automations = await InstagramAutomation.find({
       clientId: client.clientId,
       isActive: true,
@@ -132,6 +168,7 @@ async function handleInstagramComment(commentData, client) {
     });
 
     if (!automations || automations.length === 0) return;
+    // ... (rest of legacy logic remains as fallback)
 
     for (const auto of automations) {
       // 1. Post Match Check
@@ -221,7 +258,40 @@ async function handleInstagramStoryMention(mentionData, client) {
 
     console.log(`[IG Auto] Story mention received: ${mentionCommentId} for story ${storyId}`);
 
-    // Find active story mention automations
+    // --- INTEGRATE WITH FLOW BUILDER TRIGGER ENGINE ---
+    const { findMatchingFlow, findFlowStartNode } = require("../utils/triggerEngine");
+    const { runFlow } = require("../utils/dualBrainEngine");
+
+    const parsedMessage = {
+      type: "event",
+      event: "story_mention",
+      channel: "instagram",
+      commentId: mentionCommentId,
+      mediaId: storyId
+    };
+
+    // Find flow with 'story_mention' trigger
+    const flows = client.visualFlows || [];
+    const storyFlow = flows.find(f => {
+      if (!f.isActive) return false;
+      const trigger = f.trigger || (f.nodes?.find(n => n.type === 'TriggerNode')?.data?.trigger);
+      return trigger?.type === 'story_mention';
+    });
+
+    if (storyFlow) {
+      console.log(`[IG Auto] Flow match found for Story Mention: ${storyFlow.name}`);
+      const startNodeId = findFlowStartNode(storyFlow.nodes, storyFlow.edges);
+      if (startNodeId) {
+        await runFlow(client, null, storyFlow, startNodeId, { 
+          commentId: mentionCommentId, 
+          channel: "instagram",
+          triggerSource: "story_mention"
+        });
+        return;
+      }
+    }
+
+    // --- FALLBACK: Legacy InstagramAutomation Matching ---
     const automations = await InstagramAutomation.find({
       clientId: client.clientId,
       isActive: true,

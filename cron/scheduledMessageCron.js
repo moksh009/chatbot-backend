@@ -33,16 +33,28 @@ module.exports = () => {
                 if (msg.cancelIf) {
                     const lead = await AdLead.findOne({ phoneNumber: msg.phone, clientId: client._id || client.clientId });
                     if (lead) {
-                        // e.g. cancelIf: { linkClicked: true }
                         let shouldCancel = false;
+                        
+                        // 1. Cancel if user replied after message was scheduled
+                        if (msg.cancelIf.userReplied && lead.lastInteraction > msg.createdAt) {
+                            shouldCancel = true;
+                        }
+
+                        // 2. Cancel if link was clicked
+                        if (msg.cancelIf.linkClicked && lead.linkClicks > 0) {
+                            shouldCancel = true;
+                        }
+
+                        // 3. Dynamic field checks
                         for (const [key, value] of Object.entries(msg.cancelIf)) {
-                            if (lead[key] === value || (key === 'linkClicked' && lead.linkClicks > 0)) {
+                            if (key !== 'userReplied' && key !== 'linkClicked' && lead[key] === value) {
                                 shouldCancel = true;
                                 break;
                             }
                         }
+
                         if (shouldCancel) {
-                            console.log(`[ScheduledMessageCron] Cancelling message for ${msg.phone} due to cancelIf condition.`);
+                            console.log(`[ScheduledMessageCron] 🚫 Cancelling message for ${msg.phone} (ID: ${msg._id}) due to 'cancelIf' trigger.`);
                             await ScheduledMessage.findByIdAndUpdate(msg._id, { status: 'cancelled' });
                             continue;
                         }
