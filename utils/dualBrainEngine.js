@@ -293,9 +293,39 @@ async function runDualBrainEngine(parsedMessage, client) {
     return true;
   }
 
-  // STEP 4: Human Takeover — bot is paused
+  // STEP 4: Human Takeover or Manual Mode Checks
+  const handoffMode = client.handoffMode || 'AUTO';
+  const handoffTimeoutMin = client.handoffTimeout || 30;
+
+  // Check if a human recently replied (Hybrid Mode)
+  if (handoffMode === 'HYBRID' || convo.status === 'HUMAN_SUPPORT') {
+    const lastHumanMsg = await Message.findOne({ 
+      conversationId: convo._id, 
+      direction: 'outbound',
+      sender: { $ne: 'assistant' } // Not bot
+    }).sort({ createdAt: -1 });
+
+    if (lastHumanMsg) {
+      const minutesSinceHuman = (new Date() - new Date(lastHumanMsg.createdAt)) / 60000;
+      if (minutesSinceHuman < handoffTimeoutMin) {
+        console.log(`[DualBrain] ⏸️ Hybrid Handoff: Human replied ${minutesSinceHuman.toFixed(1)}m ago. Bot silent.`);
+        return true;
+      }
+    }
+  }
+
   if (convo.botPaused || convo.status === 'HUMAN_TAKEOVER') {
+    console.log(`[DualBrain] ⏸️ Bot paused for ${phone}. Skipping.`);
     return true;
+  }
+
+  // MANUAL MODE: Only respond if an EXPLICIT trigger is matched
+  if (handoffMode === 'MANUAL') {
+    const trigger = findMatchingFlow(userText, client.flowNodes, client.flowEdges);
+    if (!trigger) {
+      console.log(`[DualBrain] 🙊 Manual Mode: No trigger match for "${userText}". Bot silent.`);
+      return true;
+    }
   }
 
   // ── PRIORITY 0: CAPTURE MODE ─────────────────────────────────────────────
@@ -456,8 +486,6 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
     convo.metadata = updatedMetadata;
 
-    // Phase 21: Also save to Lead with full history
-    const AdLead = require("../models/AdLead");
     await AdLead.findByIdAndUpdate(lead._id, {
       $set: { [`capturedData.${varName}`]: userText },
       $push: {
@@ -632,7 +660,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       const parts = variable.split('.');
       const ctx = { lead, convo, metadata: convo.metadata || {} };
       leftValue = parts.reduce((obj, k) => (obj != null ? obj[k] : undefined), ctx);
-      if (leftValue === undefined) leftValue = convo.metadata?.[variable] ?? '';
+      if (leftValue === undefined) leftValue = (lead?.capturedData?.[variable] || convo?.metadata?.[variable]) ?? '';
     } else if (condition) {
       if (condition.includes('cart_total')) leftValue = lead?.cartValue || convo?.metadata?.cartValue || 0;
       else if (condition === 'has_phone') leftValue = !!phone;
@@ -686,11 +714,44 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 
   // Phase 17: Tag Lead Node
   if (node.type === 'tag_lead' || node.type === 'TagNode') {
-    const { action, tag } = node.data; // action: 'add' or 'remove'
+    const { action, tag } = node.data || {}; // action: 'add' or 'remove'
     if (tag && lead) {
        const update = action === 'remove' ? { $pull: { tags: tag } } : { $addToSet: { tags: tag } };
        await AdLead.findByIdAndUpdate(lead._id, update);
+       console.log(`[DualBrain] TagNode: ${action} tag "${tag}" for lead ${lead._id}`);
     }
+    const nextEdge = flowEdges.find(e => e.source === nodeId && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'output'));
+    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+  }
+
+  // Phase 21: Admin Alert Node
+  if (node.type === 'admin_alert' || node.type === 'AdminAlertNode') {
+    const { topic, channel: alertChannel, priority } = node.data || {};
+    const alertMsg = topic || "🚨 Human Support Requested";
+    
+    // 1. Mark conversation as needing attention
+    await Conversation.findByIdAndUpdate(convo._id, { 
+      requiresAttention: true, 
+      attentionReason: alertMsg,
+      lastInteraction: new Date()
+    });
+
+    // 2. Emit real-time socket event to dashboard
+    if (io) {
+      io.to(`client_${client.clientId}`).emit('admin_alert', {
+        type: 'escalation',
+        topic: alertMsg,
+        priority: priority || 'high',
+        phone,
+        leadName: lead?.name || 'Customer',
+        timestamp: new Date()
+      });
+    }
+
+    console.log(`[DualBrain] AdminAlert triggered for ${phone}: ${alertMsg}`);
+    
+    const nextEdge = flowEdges.find(e => e.source === nodeId && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'output'));
+    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
   }
 
   // Phase 17: Delay / Wait Node

@@ -97,8 +97,8 @@ router.get('/:clientId/posts/fetch', protect, async (req, res) => {
       return res.status(400).json({ success: false, error: 'Instagram not properly connected.' });
     }
 
-    // Fetch media from Instagram Graph API
-    const url = \`https://graph.facebook.com/v21.0/\${client.instagramAccountId}/media?fields=id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,comments_count,like_count&access_token=\${client.instagramAccessToken}&limit=24\`;
+    // Fetch media from Instagram Graph API (Unified v18.0)
+    const url = `https://graph.facebook.com/v18.0/${client.instagramAccountId}/media?fields=id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,comments_count,like_count&access_token=${client.instagramAccessToken}&limit=24`;
     
     const response = await axios.get(url);
     if (response.data && response.data.data) {

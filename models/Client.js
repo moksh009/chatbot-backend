@@ -223,10 +223,14 @@ const ClientSchema = new mongoose.Schema({
     aiCallsPerMonth:   { type: Number, default: 500 },
   },
 
-  // Admin Alert Notifications
-  adminAlertEmail:    { type: String, default: "" },
-  adminAlertWhatsapp: { type: String, default: "" },
-  metaAppId:          { type: String, default: "" },
+  // Phase 21: Handoff & Automation Control
+  handoffMode: {
+    type: String,
+    enum: ['AUTO', 'MANUAL', 'HYBRID'],
+    default: 'AUTO' // AUTO: Bot handles all, MANUAL: Human handles all, HYBRID: Bot handles flows, human handles context
+  },
+  handoffTimeout: { type: Number, default: 30 }, // Minutes before bot takes back control in HYBRID mode
+  manualSwitchAlert: { type: Boolean, default: true },
 
   createdAt: { type: Date, default: Date.now }
 });

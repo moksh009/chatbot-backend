@@ -120,7 +120,7 @@ async function handleInstagramComment(commentData, client) {
     if (!commentId || !from || !media || !text) return;
     
     // Ignore our own comments/replies
-    if (from.id === client.instagramAccountId) return;
+    if (from.id === client.instagramPageId) return;
 
     // Find active comment automations
     const automations = await InstagramAutomation.find({

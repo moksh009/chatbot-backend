@@ -40,7 +40,8 @@ Write the following messages. Keep each under 3 lines. Use WhatsApp formatting (
 Format response as VALID JSON ONLY with these exact keys:
 
 {
-  "welcome": "greeting message that introduces the bot and invites to explore",
+  "welcome_a": "friendly greeting introduces bot and invites to explore",
+  "welcome_b": "promotional greeting mentions a gift/discount and invites to explore",
   "product_menu": "message asking which product they want to know about (3 lines max)",
   "catalog_list_header": "short header (max 8 chars)",
   "catalog_list_button": "view button label (max 18 chars)",
@@ -73,11 +74,20 @@ Format response as VALID JSON ONLY with these exact keys:
   const ts = Date.now();
   const IDS = {
     TRIGGER:         `gen_trigger_${ts}`,
-    WELCOME:         `gen_welcome_${ts}`,
+    AB_WELCOME:      `gen_ab_welcome_${ts}`,
+    WELCOME_A:       `gen_welcome_a_${ts}`,
+    WELCOME_B:       `gen_welcome_b_${ts}`,
     PRODUCT_MENU:    `gen_menu_${ts}`,
     ORDER_STATUS:    `gen_order_${ts}`,
     AI_FALLBACK:     `gen_ai_${ts}`,
-    ESCALATE:        `gen_escalate_${ts}`,
+    
+    // Human Support Path
+    ESCALATE_CHECK:  `gen_esc_check_${ts}`,
+    ESCALATE_CAPTURE:`gen_esc_cap_${ts}`,
+    ESCALATE_TAG:    `gen_esc_tag_${ts}`,
+    ESCALATE_ALERT:  `gen_esc_alert_${ts}`,
+    ESCALATE_FINAL:  `gen_escalate_${ts}`,
+    
     CART_1:          `gen_cart1_${ts}`,
     CART_2:          `gen_cart2_${ts}`,
     CART_3:          `gen_cart3_${ts}`,
@@ -106,21 +116,38 @@ Format response as VALID JSON ONLY with these exact keys:
         label:       "Welcome Trigger",
         triggerType: "first_message",
         channel:     "both",
-        trigger: {
-          type:    "first_message",
-          channel: "both"
-        }
+        trigger: { type: "first_message", channel: "both" }
       }
     },
 
-    // ── WELCOME MESSAGE ──────────────────────────────────────────────────────
+    // ── AB TEST WELCOME ──────────────────────────────────────────────────────
     {
-      id:   IDS.WELCOME,
+      id:   IDS.AB_WELCOME,
+      type: "ABTestNode",
+      position: { x: COL, y: 120 },
+      data: { label: "Split Test: Welcome", variantA: "friendly", variantB: "promo" }
+    },
+
+    // ── WELCOME A (Friendly) ─────────────────────────────────────────────────
+    {
+      id:   IDS.WELCOME_A,
       type: "MessageNode",
-      position: { x: COL, y: 150 },
+      position: { x: COL - 200, y: 250 },
       data: {
-        label: "Welcome Message",
-        text:  content.welcome || `Hi {{customer_name}}! 👋 Welcome to *${businessName}*. I'm ${botName} — how can I help you today?`,
+        label: "Welcome A (Friendly)",
+        text:  content.welcome_a || content.welcome || `Hi {{customer_name}}! 👋 Welcome to *${businessName}*. I'm ${botName} — how can I help you today?`,
+        role:  "welcome"
+      }
+    },
+
+    // ── WELCOME B (Promo) ────────────────────────────────────────────────────
+    {
+      id:   IDS.WELCOME_B,
+      type: "MessageNode",
+      position: { x: COL + 200, y: 250 },
+      data: {
+        label: "Welcome B (Promo)",
+        text:  content.welcome_b || `Hey {{customer_name}}! 🎁 *Special Surprise Inside!* Welcome to ${businessName}. I'm ${botName}, your personal shopping assistant.`,
         role:  "welcome"
       }
     },
@@ -129,7 +156,7 @@ Format response as VALID JSON ONLY with these exact keys:
     {
       id:   IDS.PRODUCT_MENU,
       type: "ListNode",
-      position: { x: COL, y: 320 },
+      position: { x: COL, y: 450 },
       data: {
         label:      "Product Menu",
         role:       "main_menu",
@@ -137,15 +164,11 @@ Format response as VALID JSON ONLY with these exact keys:
         body:       content.product_menu || "Select a product to see details and pricing:",
         buttonText: content.catalog_list_button || "View Products",
         sections: [
-          {
-            title: "Our Products",
-            rows:  productRows
-          },
+          { title: "Our Products", rows: productRows },
           {
             title: "Help & Support",
             rows: [
               { id: "check_order",   title: "Check My Order",   description: "Track your order status" },
-              { id: "exclusive_offer", title: "🎁 Exclusive Offers", description: "Get 10% off your next purchase" },
               { id: "talk_to_agent", title: "Talk to a Person", description: "Get personalized help" }
             ]
           }
@@ -157,7 +180,7 @@ Format response as VALID JSON ONLY with these exact keys:
     ...products.slice(0, 10).map((p, i) => ({
       id:   `gen_prod_detail_${i}_${ts}`,
       type: "InteractiveNode",
-      position: { x: (i - products.length / 2) * 300 + COL, y: 540 },
+      position: { x: (i - products.length / 2) * 320 + COL, y: 700 },
       data: {
         label: `${p.name} Detail`,
         body:  `*${p.name}*\n\n${p.description ? p.description.substring(0, 100) + "..." : ""}\n\n💰 Price: *₹${p.price}*\n🚚 Free Shipping | ✅ Easy Returns`,
@@ -174,7 +197,7 @@ Format response as VALID JSON ONLY with these exact keys:
     {
       id:   IDS.ORDER_STATUS,
       type: "ShopifyNode",
-      position: { x: COL + 400, y: 540 },
+      position: { x: COL + 450, y: 700 },
       data: {
         label:  "Check Order Status",
         action: "ORDER_STATUS",
@@ -186,35 +209,70 @@ Format response as VALID JSON ONLY with these exact keys:
     {
       id:   IDS.AI_FALLBACK,
       type: "AINode",
-      position: { x: COL + 700, y: 320 },
+      position: { x: COL + 800, y: 450 },
       data: {
-        label:          "AI Assistant",
-        role:           "ai_fallback",
-        overridePrompt: null // uses client.systemPrompt
+        label: "AI Assistant",
+        role: "ai_fallback",
+        overridePrompt: null
       }
     },
 
-    // ── ESCALATE TO HUMAN ────────────────────────────────────────────────────
+    // ── ADVANCED ESCALATION PATH ─────────────────────────────────────────────
+    // 1. Condition: Does email exist?
     {
-      id:   IDS.ESCALATE,
-      type: "EscalateNode",
-      position: { x: COL + 700, y: 540 },
+      id:   IDS.ESCALATE_CHECK,
+      type: "LogicNode",
+      position: { x: COL + 800, y: 800 },
+      data: { label: "Check Contact Info", variable: "email", operator: "exists", value: "" }
+    },
+    // 2. Capture: Ask for email if missing
+    {
+      id:   IDS.ESCALATE_CAPTURE,
+      type: "CaptureNode",
+      position: { x: COL + 1100, y: 700 },
       data: {
-        label:             "Human Handoff",
-        role:              "escalate",
-        userMessage:       content.agent_request_response || `✅ *Got it!* Our team has been notified and will reach out on this number shortly.\n\nFeel free to browse our products in the meantime! 😊`,
-        adminNotification: true,
-        trackStat:         "agentRequests"
+        label: "Capture Contact",
+        variable: "email",
+        question: "To connect you with the right person, could you please share your *email or contact number*? 👤"
+      }
+    },
+    // 3. Tag: High Intent
+    {
+      id:   IDS.ESCALATE_TAG,
+      type: "TagNode",
+      position: { x: COL + 1400, y: 800 },
+      data: { label: "Tag: High Support", action: "add", tag: "High_Intent_Support" }
+    },
+    // 4. Admin Alert: Premium Notification
+    {
+      id:   IDS.ESCALATE_ALERT,
+      type: "AdminAlertNode",
+      position: { x: COL + 1650, y: 800 },
+      data: {
+        label: "Dashboard Alert",
+        topic: "🚨 URGENT: Human Agent Requested",
+        channel: "both",
+        priority: "high"
+      }
+    },
+    // 5. Final Message
+    {
+      id:   IDS.ESCALATE_FINAL,
+      type: "MessageNode",
+      position: { x: COL + 1900, y: 800 },
+      data: {
+        label: "Hand-off Confirmation",
+        text:  content.agent_request_response || `✅ *Got it!* I've alerted my team. Someone will reach out to you on this chat shortly. 😊`
       }
     },
 
-    // ── CART RECOVERY NODES (triggered by cron automation) ──────────────────
+    // ── CART RECOVERY ───────────────────────────────────────────────────────
     {
       id:   IDS.CART_1,
       type: "MessageNode",
-      position: { x: 0, y: 800 },
+      position: { x: 0, y: 1000 },
       data: {
-        label: `Cart Recovery 1 (${cartTiming.msg1}min)`,
+        label: "Cart Recovery 1",
         text:  content.cart_recovery_1 || `Hey {{customer_name}}! 👋 You left something in your cart.\n\n🛒 *{{cart_items}}*\n💰 Total: *{{cart_total}}*\n\nComplete your order: {{checkout_url}}`,
         role:  "cart_recovery_1"
       }
@@ -222,21 +280,11 @@ Format response as VALID JSON ONLY with these exact keys:
     {
       id:   IDS.CART_2,
       type: "MessageNode",
-      position: { x: 320, y: 800 },
+      position: { x: 350, y: 1000 },
       data: {
-        label: `Cart Recovery 2 (${cartTiming.msg2}hr)`,
-        text:  content.cart_recovery_2 || `⏰ Still thinking, {{customer_name}}? Your cart is waiting!\n\nItems may sell out soon. Order now: {{checkout_url}}`,
-        role:  "cart_recovery_2"
-      }
-    },
-    {
-      id:   IDS.CART_3,
-      type: "MessageNode",
-      position: { x: 640, y: 800 },
-      data: {
-        label: `Cart Recovery 3 (${cartTiming.msg3}hr)`,
-        text:  content.cart_recovery_3 || `🚨 Last chance, {{customer_name}}! Your cart expires soon.\n\nDon't miss out: {{checkout_url}}`,
-        role:  "cart_recovery_3"
+        label: "Cart Recovery 2",
+        text:  content.cart_recovery_2 || `⏰ Still thinking, {{customer_name}}?\n\nYour items are waiting — but stock is limited! \nOrder now: {{checkout_url}}`,
+        role: "cart_recovery_2"
       }
     },
 
@@ -244,10 +292,10 @@ Format response as VALID JSON ONLY with these exact keys:
     {
       id:   IDS.COD_NUDGE,
       type: "InteractiveNode",
-      position: { x: 960, y: 800 },
+      position: { x: 700, y: 1000 },
       data: {
         label: "COD → Prepaid Nudge",
-        body:  content.cod_nudge || `🎉 Your COD order *{{order_id}}* is confirmed!\n\nPay online now & save *₹{{discount_amount}}* instantly:\n{{payment_link}}`,
+        body:  content.cod_nudge || `🎉 Your COD order *{{order_id}}* is confirmed!\n\nPay online now & save *₹{{discount_amount}}* instantly: {{payment_link}}`,
         role:  "cod_nudge",
         buttons: [
           { id: "cod_pay_link",  title: "💳 Pay via UPI/Card" },
@@ -260,64 +308,11 @@ Format response as VALID JSON ONLY with these exact keys:
     {
       id:   IDS.ORDER_CONFIRMED,
       type: "MessageNode",
-      position: { x: 1280, y: 800 },
+      position: { x: 1050, y: 1000 },
       data: {
         label: "Order Confirmed",
-        text:  content.order_confirmed || `✅ *Order Confirmed!*\n\nOrder *{{order_id}}* | Total: *{{order_total}}*\nWe'll notify you when it ships! 📦`,
+        text:  content.order_confirmed || `✅ *Order Confirmed!*\nOrder *{{order_id}}* | Total: *{{order_total}}*\nWe'll notify you when it ships! 📦`,
         role:  "order_confirmation"
-      }
-    },
-
-    // ── EXCLUSIVE OFFERS ADVANCED SEQUENCE ────────────────────────────────────
-    {
-      id:   `gen_capture_email_${ts}`,
-      type: "CaptureNode",
-      position: { x: COL + 1050, y: 320 },
-      data: {
-        label:          "Capture Email",
-        captureType:    "text",
-        variableName:   "email",
-        question:       "Let's get you that 10% discount! 🎁\n\nPlease reply with your *email address* to receive the promo code."
-      }
-    },
-    {
-      id:   `gen_logic_email_${ts}`,
-      type: "LogicNode",
-      position: { x: COL + 1350, y: 320 },
-      data: {
-        label:    "Check Email Given",
-        variable: "lead.capturedData.email",
-        operator: "exists",
-        value:    ""
-      }
-    },
-    {
-      id:   `gen_tag_subscriber_${ts}`,
-      type: "TagNode",
-      position: { x: COL + 1650, y: 220 },
-      data: {
-        label:  "Tag Subscriber",
-        action: "add",
-        tag:    "Email_Subscriber"
-      }
-    },
-    {
-      id:   `gen_delay_offer_${ts}`,
-      type: "DelayNode",
-      position: { x: COL + 1950, y: 220 },
-      data: {
-        label:    "Wait Before Sending",
-        duration: "5s",
-        unit:     "seconds" 
-      }
-    },
-    {
-      id:   `gen_msg_offer_${ts}`,
-      type: "MessageNode",
-      position: { x: COL + 2250, y: 220 },
-      data: {
-        label: "Send Coupon",
-        text:  `Thanks for subscribing! 🎉\n\nHere is your 10% off code: *WELCOME10*\n\nEnjoy shopping! 🛍️`
       }
     },
 
@@ -325,64 +320,55 @@ Format response as VALID JSON ONLY with these exact keys:
     ...(googleReviewUrl ? [{
       id:   IDS.REVIEW,
       type: "InteractiveNode",
-      position: { x: 1600, y: 800 },
+      position: { x: 1400, y: 1000 },
       data: {
         label: "Review Request",
-        body:  content.review_request || `Hi {{customer_name}}! 😊 How was your experience with *${businessName}*?\n\nYour feedback helps us improve for everyone!`,
+        body:  content.review_request || `Hi {{customer_name}}! 😊 Hope you're loving your purchase from *${businessName}*! Would you mind leaving us a quick review?`,
         role:  "review_request",
-        buttons: [
-          { id: "review_yes", title: `⭐ Leave a Review` },
-          { id: "review_no",  title:  "Not Now" }
-        ]
+        buttons: [{ id: "review_yes", title: `⭐ Leave a Review` }]
       }
     }] : [])
   ];
 
   // ── STEP 4: Build edges ────────────────────────────────────────────────────
   const edges = [
-    // Trigger → Welcome (auto)
-    { id: `e_trig_welcome_${ts}`,   source: IDS.TRIGGER,      target: IDS.WELCOME,   data: { trigger: { type: "auto" } } },
-    // Welcome → Product Menu (auto)
-    { id: `e_welcome_menu_${ts}`,   source: IDS.WELCOME,      target: IDS.PRODUCT_MENU, sourceHandle: "a" },
-    // Menu → Order Status
-    { id: `e_menu_order_${ts}`,     source: IDS.PRODUCT_MENU, target: IDS.ORDER_STATUS,  sourceHandle: "check_order" },
-    // Menu → Agent
-    { id: `e_menu_agent_${ts}`,     source: IDS.PRODUCT_MENU, target: IDS.ESCALATE,      sourceHandle: "talk_to_agent" },
-    // Order Status → AI Fallback (when no order found)
-    { id: `e_order_ai_${ts}`,       source: IDS.ORDER_STATUS, target: IDS.AI_FALLBACK,   sourceHandle: "a" },
+    // Trigger → AB Split
+    { id: `e_trig_ab_${ts}`, source: IDS.TRIGGER, target: IDS.AB_WELCOME, data: { trigger: { type: "auto" } } },
+    
+    // AB Split → Welcome Variants
+    { id: `e_ab_a_${ts}`, source: IDS.AB_WELCOME, target: IDS.WELCOME_A, sourceHandle: "a" },
+    { id: `e_ab_b_${ts}`, source: IDS.AB_WELCOME, target: IDS.WELCOME_B, sourceHandle: "b" },
+    
+    // Welcome → Menu (Auto)
+    { id: `e_wel_a_menu_${ts}`, source: IDS.WELCOME_A, target: IDS.PRODUCT_MENU, sourceHandle: "a" },
+    { id: `e_wel_b_menu_${ts}`, source: IDS.WELCOME_B, target: IDS.PRODUCT_MENU, sourceHandle: "a" },
 
-    // Menu → each product detail
+    // Menu Connections
+    { id: `e_menu_order_${ts}`, source: IDS.PRODUCT_MENU, target: IDS.ORDER_STATUS, sourceHandle: "check_order" },
+    { id: `e_menu_agent_${ts}`, source: IDS.PRODUCT_MENU, target: IDS.ESCALATE_CHECK, sourceHandle: "talk_to_agent" },
+    { id: `e_order_ai_${ts}`, source: IDS.ORDER_STATUS, target: IDS.AI_FALLBACK, sourceHandle: "a" },
+
+    // Product Grid Edges
     ...products.slice(0, 10).map((p, i) => ({
-      id:           `e_menu_prod_${i}_${ts}`,
-      source:       IDS.PRODUCT_MENU,
-      target:       `gen_prod_detail_${i}_${ts}`,
-      sourceHandle: `sel_prod_${i}`
+      id: `e_menu_prod_${i}_${ts}`, source: IDS.PRODUCT_MENU, target: `gen_prod_detail_${i}_${ts}`, sourceHandle: `sel_prod_${i}`
+    })),
+    ...products.slice(0, 10).map((p, i) => ({
+      id: `e_prod_agent_${i}_${ts}`, source: `gen_prod_detail_${i}_${ts}`, target: IDS.ESCALATE_CHECK, sourceHandle: `agent_prod_${i}`
+    })),
+    ...products.slice(0, 10).map((p, i) => ({
+      id: `e_prod_back_${i}_${ts}`, source: `gen_prod_detail_${i}_${ts}`, target: IDS.PRODUCT_MENU, sourceHandle: "back_to_menu"
     })),
 
-    // Product detail → Agent
-    ...products.slice(0, 10).map((p, i) => ({
-      id:           `e_prod_agent_${i}_${ts}`,
-      source:       `gen_prod_detail_${i}_${ts}`,
-      target:       IDS.ESCALATE,
-      sourceHandle: `agent_prod_${i}`
-    })),
-
-    // Product detail → Back to Menu
-    ...products.slice(0, 10).map((p, i) => ({
-      id:           `e_prod_back_${i}_${ts}`,
-      source:       `gen_prod_detail_${i}_${ts}`,
-      target:       IDS.PRODUCT_MENU,
-      sourceHandle: "back_to_menu"
-    })),
-
-    // Advanced Sequence Edges
-    { id: `e_menu_offer_${ts}`,     source: IDS.PRODUCT_MENU,           target: `gen_capture_email_${ts}`,  sourceHandle: "exclusive_offer" },
-    { id: `e_capture_logic_${ts}`,  source: `gen_capture_email_${ts}`,  target: `gen_logic_email_${ts}`,    sourceHandle: "a" },
-    { id: `e_logic_true_${ts}`,     source: `gen_logic_email_${ts}`,    target: `gen_tag_subscriber_${ts}`, sourceHandle: "true" },
-    { id: `e_logic_false_${ts}`,    source: `gen_logic_email_${ts}`,    target: IDS.PRODUCT_MENU,           sourceHandle: "false" },
-    { id: `e_tag_delay_${ts}`,      source: `gen_tag_subscriber_${ts}`, target: `gen_delay_offer_${ts}`,    sourceHandle: "a" },
-    { id: `e_delay_msg_${ts}`,      source: `gen_delay_offer_${ts}`,    target: `gen_msg_offer_${ts}`,      sourceHandle: "a" }
+    // Advanced Escalation Path Edges
+    { id: `e_esc_check_true_${ts}`,  source: IDS.ESCALATE_CHECK, target: IDS.ESCALATE_TAG, sourceHandle: "true" },
+    { id: `e_esc_check_false_${ts}`, source: IDS.ESCALATE_CHECK, target: IDS.ESCALATE_CAPTURE, sourceHandle: "false" },
+    { id: `e_esc_cap_tag_${ts}`,    source: IDS.ESCALATE_CAPTURE, target: IDS.ESCALATE_TAG, sourceHandle: "a" },
+    { id: `e_esc_tag_alert_${ts}`,  source: IDS.ESCALATE_TAG, target: IDS.ESCALATE_ALERT, sourceHandle: "a" },
+    { id: `e_esc_alert_final_${ts}`,source: IDS.ESCALATE_ALERT, target: IDS.ESCALATE_FINAL, sourceHandle: "a" }
   ];
+
+  return { nodes, edges };
+}
 
   return { nodes, edges };
 }

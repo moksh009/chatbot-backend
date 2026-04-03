@@ -220,9 +220,8 @@ scheduleBirthdayCron();
 const scheduleProductSyncCron = require('./cron/productSyncCron');
 scheduleProductSyncCron();
 
-// Initialize Flow Resumption Cron Job (Phase 17)
-const scheduleFlowResumption = require('./cron/flowResumptionCron');
-scheduleFlowResumption();
+// Initialize Flow Resumption Cron Job (Phase 17) - ALREADY INITIALIZED ABOVE AT LINE 156
+
 
 // Phase 20: Instagram Token Refresh Cron (daily at 8AM IST)
 const { refreshExpiringInstagramTokens } = require('./routes/oauth');
