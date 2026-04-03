@@ -152,6 +152,11 @@ app.use('/api/oauth', oauthRoutes);
 const wizardRoutes = require('./routes/wizard');
 app.use('/api/wizard', wizardRoutes);
 
+// --- CRON JOBS (Phase 21 Resumption) ---
+const scheduleFlowResumption = require('./cron/flowResumptionCron');
+scheduleFlowResumption();
+
+
 const instagramAutomationRoutes = require('./routes/instagramAutomation');
 app.use('/api/instagram-automations', instagramAutomationRoutes);
 

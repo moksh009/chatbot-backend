@@ -24,6 +24,7 @@ router.get("/instagram/initiate/:clientId", protect, async (req, res) => {
     const scope = [
       "pages_messaging",
       "instagram_manage_messages",
+      "instagram_manage_comments",
       "pages_show_list",
       "instagram_basic",
       "pages_read_engagement"
@@ -290,7 +291,7 @@ async function registerInstagramWebhook(fbPageId, pageToken) {
       null,
       {
         params: {
-          subscribed_fields: "messages,messaging_postbacks,feed",
+          subscribed_fields: "messages,messaging_postbacks,comments,mentions,feed",
           access_token:      pageToken
         }
       }
