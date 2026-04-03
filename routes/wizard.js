@@ -108,23 +108,19 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       }),
     };
 
-    const updateQuery = { 
+    let updateQuery = { 
       $set: settingsUpdate,
       $push: { visualFlows: newFlow }
     };
 
-    const updateQuery = { $set: settingsUpdate };
-
     if (wizardData.customTemplates && wizardData.customTemplates.length > 0) {
-      updateQuery.$push = {
-        messageTemplates: {
-          $each: wizardData.customTemplates.map(t => ({
-            ...t,
-            status: 'PENDING',
-            source: 'wizard_custom',
-            createdAt: new Date()
-          }))
-        }
+      updateQuery.$push.messageTemplates = {
+        $each: wizardData.customTemplates.map(t => ({
+          ...t,
+          status: 'PENDING',
+          source: 'wizard_custom',
+          createdAt: new Date()
+        }))
       };
     }
 
