@@ -143,22 +143,50 @@ async function sendSystemOTPEmail(toAddress, otpCode, purpose = 'SIGNUP') {
         }
     });
 
-    let subject = 'TopEdge AI - Your Verification Code';
-    let activityText = purpose === 'SIGNUP' ? 'verify your email address and complete registration' : 'reset your password';
+    const isReset = purpose === 'RESET_PASSWORD';
+    const subject = isReset 
+        ? '🔐 Important: Password Reset Verification Code' 
+        : '👋 Welcome to TopEdge AI - Verify Your Account';
+    
+    const themeColor = isReset ? '#ef4444' : '#6366f1';
+    const headerTitle = isReset ? 'Security Protocol' : 'Identity Verification';
+    const actionText = isReset 
+        ? 'authorize your request to reset your enterprise account password' 
+        : 'verify your email address and finish setting up your TopEdge AI workspace';
 
     const html = `
-        <div style="font-family: 'Inter', Arial, sans-serif; max-width: 500px; margin: 40px auto; padding: 32px; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
-            <div style="text-align: center; margin-bottom: 24px;">
-                <h2 style="color: #0f172a; margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.02em;">TopEdge AI</h2>
+        <div style="font-family: 'Inter', -apple-system, Arial, sans-serif; max-width: 520px; margin: 40px auto; background-color: #ffffff; border: 1px solid #f1f5f9; border-radius: 24px; overflow: hidden; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.05);">
+            <div style="background: linear-gradient(135deg, ${themeColor} 0%, #000000 100%); padding: 40px 32px; text-align: center;">
+                <h2 style="color: #ffffff; margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.03em;">TopEdge AI</h2>
+                <div style="margin-top: 12px; display: inline-block; padding: 6px 12px; background: rgba(255,255,255,0.1); border-radius: 100px; color: rgba(255,255,255,0.9); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; border: 1px solid rgba(255,255,255,0.1);">
+                    ${headerTitle}
+                </div>
             </div>
-            <p style="color: #475569; font-size: 15px; line-height: 1.6; margin-top: 0;">Hi there,</p>
-            <p style="color: #475569; font-size: 15px; line-height: 1.6;">Use the following 6-digit code to ${activityText}. This code is valid for <strong>5 minutes</strong>.</p>
-            <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 24px; text-align: center; margin: 32px 0;">
-                <span style="font-size: 32px; font-weight: 800; letter-spacing: 6px; color: #6366f1;">${otpCode}</span>
+            
+            <div style="padding: 40px 40px 32px 40px;">
+                <p style="color: #0f172a; font-size: 16px; font-weight: 600; margin-top: 0;">Verification Code Generated</p>
+                <p style="color: #475569; font-size: 15px; line-height: 1.6; margin-bottom: 32px;">
+                    Hi, use the 6-digit code below to ${actionText}. This code is valid for <strong>5 minutes</strong>.
+                </p>
+                
+                <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 20px; padding: 32px; text-align: center; margin-bottom: 32px;">
+                    <span style="font-size: 38px; font-weight: 800; letter-spacing: 8px; color: ${themeColor}; font-family: 'Courier New', Courier, monospace;">${otpCode}</span>
+                </div>
+                
+                <div style="padding: 20px; background-color: #fff7ed; border: 1px solid #ffedd5; border-radius: 16px; margin-bottom: 32px;">
+                    <p style="color: #9a3412; font-size: 13px; font-weight: 700; margin: 0 0 4px 0; text-transform: uppercase; letter-spacing: 0.05em;">Security Notice</p>
+                    <p style="color: #c2410c; font-size: 12px; font-weight: 500; margin: 0; line-height: 1.4;">
+                        If you did not initiate this request, please ignore this email or contact support immediately if you suspect unauthorized activity.
+                    </p>
+                </div>
+                
+                <hr style="border: none; border-top: 1px solid #f1f5f9; margin-bottom: 24px;" />
+                
+                <div style="text-align: center;">
+                    <p style="color: #94a3b8; font-size: 11px; margin-bottom: 4px;">Sent from <strong>support@topedgeai.com</strong></p>
+                    <p style="color: #cbd5e1; font-size: 10px; margin: 0;">&copy; ${new Date().getFullYear()} TopEdge AI System Architecture. Verified Environment.</p>
+                </div>
             </div>
-            <p style="color: #64748b; font-size: 13px; line-height: 1.5; margin-bottom: 0;">If you didn't request this code, you can safely ignore this email.</p>
-            <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 32px 0;" />
-            <p style="text-align: center; color: #94a3b8; font-size: 12px; margin: 0;">&copy; ${new Date().getFullYear()} TopEdge AI. All rights reserved.</p>
         </div>
     `;
 
@@ -169,7 +197,7 @@ async function sendSystemOTPEmail(toAddress, otpCode, purpose = 'SIGNUP') {
             subject,
             html
         });
-        console.log(`[EmailService] System OTP sent to ${toAddress}`);
+        console.log(`[EmailService] System OTP sent to ${toAddress} | Purpose: ${purpose}`);
         return true;
     } catch (err) {
         console.error(`[EmailService] ❌ Failed to send System OTP to ${toAddress}:`, err.message);
