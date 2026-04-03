@@ -18,13 +18,14 @@ router.get('/', protect, async (req, res) => {
         const users = await User.find({ clientId }).select('-password');
 
         // 2. Fetch conversation assignment metrics for these users
-        // Performance Metric: How many active/total conversations are assigned to each agent
         const performanceMetrics = await Conversation.aggregate([
-            { $match: { clientId } },
+            { $match: { clientId, assignedTo: { $exists: true, $ne: null } } },
             { $group: {
                 _id: "$assignedTo",
                 totalAssigned: { $sum: 1 },
-                unassigned: { $sum: { $cond: [{ $ifNull: ["$assignedTo", false] }, 0, 1] } }
+                resolvedCount: { $sum: { $cond: [{ $eq: ["$status", "CLOSED"] }, 1, 0] } },
+                avgCsat: { $avg: "$csatScore.rating" },
+                lastActive: { $max: "$lastInteraction" }
             }}
         ]);
 
@@ -34,7 +35,10 @@ router.get('/', protect, async (req, res) => {
             return {
                 ...user.toObject(),
                 metrics: {
-                    assignedChats: metric ? metric.totalAssigned : 0
+                    assignedChats: metric ? metric.totalAssigned : 0,
+                    resolvedChats: metric ? metric.resolvedCount : 0,
+                    avgCsat: metric && metric.avgCsat ? Number(metric.avgCsat.toFixed(1)) : 0,
+                    lastActive: metric ? metric.lastActive : null
                 }
             };
         });

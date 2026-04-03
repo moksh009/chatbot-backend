@@ -179,7 +179,7 @@ function replaceVariables(text, client, lead, convo) {
  * Phase 17: Entry Point for Webhook Messages
  * Handles locking, client discovery, and final deduplication.
  */
-async function handleWhatsAppMessage(from, message, phoneNumberId) {
+async function handleWhatsAppMessage(from, message, phoneNumberId, profileName = '') {
   // 1. Session Lock to prevent race conditions
   if (processingLocks.has(from)) {
     const lockTime = processingLocks.get(from);
@@ -217,7 +217,8 @@ async function handleWhatsAppMessage(from, message, phoneNumberId) {
       audio: message.audio,
       video: message.video,
       document: message.document,
-      channel: 'whatsapp'
+      channel: 'whatsapp',
+      profileName
     };
 
     // run engine

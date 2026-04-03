@@ -139,7 +139,10 @@ router.post('/', verifyMetaSignature, async (req, res) => {
               }).catch(() => {});
 
               // 4. Pass to processing engine (engine handles locking, lead upsert, flow execution)
-              handleWhatsAppMessage(from, message, value.metadata?.phone_number_id)
+              const contact = (value.contacts || []).find(c => c.wa_id === from);
+              const profileName = contact?.profile?.name || '';
+              
+              handleWhatsAppMessage(from, message, value.metadata?.phone_number_id, profileName)
                 .catch(err => console.error("Engine Error:", err));
             }
           }
