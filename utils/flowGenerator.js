@@ -243,11 +243,18 @@ Format response as VALID JSON ONLY with these exact keys:
       position: { x: COL + 1400, y: 800 },
       data: { label: "Tag: High Support", action: "add", tag: "High_Intent_Support" }
     },
+    // 3.5 Delay: Wait 1m for agent assignment simulation
+    {
+      id:   `gen_esc_delay_${ts}`,
+      type: "DelayNode",
+      position: { x: COL + 1600, y: 700 },
+      data: { label: "Wait 1m", duration: 1, unit: "minutes" }
+    },
     // 4. Admin Alert: Premium Notification
     {
       id:   IDS.ESCALATE_ALERT,
       type: "AdminAlertNode",
-      position: { x: COL + 1650, y: 800 },
+      position: { x: COL + 1850, y: 800 },
       data: {
         label: "Dashboard Alert",
         topic: "🚨 URGENT: Human Agent Requested",
@@ -363,7 +370,8 @@ Format response as VALID JSON ONLY with these exact keys:
     { id: `e_esc_check_true_${ts}`,  source: IDS.ESCALATE_CHECK, target: IDS.ESCALATE_TAG, sourceHandle: "true" },
     { id: `e_esc_check_false_${ts}`, source: IDS.ESCALATE_CHECK, target: IDS.ESCALATE_CAPTURE, sourceHandle: "false" },
     { id: `e_esc_cap_tag_${ts}`,    source: IDS.ESCALATE_CAPTURE, target: IDS.ESCALATE_TAG, sourceHandle: "a" },
-    { id: `e_esc_tag_alert_${ts}`,  source: IDS.ESCALATE_TAG, target: IDS.ESCALATE_ALERT, sourceHandle: "a" },
+    { id: `e_esc_tag_delay_${ts}`,  source: IDS.ESCALATE_TAG, target: `gen_esc_delay_${ts}`, sourceHandle: "a" },
+    { id: `e_esc_delay_alert_${ts}`,source: `gen_esc_delay_${ts}`, target: IDS.ESCALATE_ALERT, sourceHandle: "a" },
     { id: `e_esc_alert_final_${ts}`,source: IDS.ESCALATE_ALERT, target: IDS.ESCALATE_FINAL, sourceHandle: "a" }
   ];
 
