@@ -74,6 +74,16 @@ router.post('/new', protect, async (req, res) => {
   }
 });
 
+// Get chat history for a client
+router.get('/history', protect, async (req, res) => {
+  try {
+    const chats = await SupportChat.find({ clientId: req.user.clientId, status: 'resolved' }).sort({ updatedAt: -1 }).limit(10);
+    res.json(chats);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // Send message to Support AI
 router.post('/message', protect, async (req, res) => {
   try {
