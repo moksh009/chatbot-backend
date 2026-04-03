@@ -12,7 +12,8 @@ const BillingService = require('./billingService');
 const log = require("./logger")('DualBrain');
 const { generateText, getGeminiModel } = require('./gemini');
 const { createMessage } = require("./createMessage");
-const { injectVariables } = require("./variableInjector");
+const { injectVariablesLegacy, buildVariableContext, injectNodeVariables } = require("./variableInjector");
+const { findMatchingFlow, findFlowStartNode } = require("./triggerEngine");
 
 // Phase 17: Concurrency & Robustness
 const processingLocks = new Map(); // phone -> timestamp
@@ -125,7 +126,7 @@ const { normalizePhone } = require("./helpers");
 // VARIABLE REPLACEMENT UTILITY
 // ─────────────────────────────────────────────────────────────────────────────
 function replaceVariables(text, client, lead, convo) {
-  return injectVariables(text, { lead, client, convo, order: convo?.metadata?.lastOrder });
+  return injectVariablesLegacy(text, { lead, client, convo, order: convo?.metadata?.lastOrder });
 }
 
 /**
@@ -227,6 +228,17 @@ async function runDualBrainEngine(parsedMessage, client) {
 
   // STEP 3: Save inbound message to DB + emit to dashboard
   await saveInboundMessage(phone, client.clientId, parsedMessage, io, channel, convo._id);
+
+  // ── PHASE 20: Build Variable Context ONCE per message ────────────────────
+  // This is passed to executeNode so variables are injected into all nodes
+  let variableContext = {};
+  try {
+    variableContext = await buildVariableContext(client, phone, convo, lead);
+  } catch (vcErr) {
+    console.warn('[DualBrain] buildVariableContext failed:', vcErr.message);
+  }
+  // Store on parsedMessage so all downstream functions can access it
+  parsedMessage._variableContext = variableContext;
   
   // --- SMART ALERT DETECTION: "Call Now" ---
   const userText = (parsedMessage.text?.body || '').toLowerCase().trim();
@@ -335,6 +347,40 @@ async function runDualBrainEngine(parsedMessage, client) {
       return true;
     }
   }
+
+  // ── PHASE 20: TRIGGER ENGINE — Route to correct visualFlow ───────────────
+  // Only fires when user is NOT already mid-flow (no lastStepId)
+  const isUserMidFlow = convo.lastStepId && convo.lastStepId.trim();
+  if (!isUserMidFlow) {
+    try {
+      const match = await findMatchingFlow(parsedMessage, client, convo);
+      if (match && !match.isLegacy && match.flow) {
+        const flow       = match.flow;
+        const flowNodes  = flattenFlowNodes(flow.nodes || []);
+        const flowEdges  = flow.edges || [];
+        const startNodeId = findFlowStartNode(flowNodes, flowEdges);
+
+        console.log(`[TriggerEngine] Matched flow "${flow.name || flow.id}" via ${match.triggerType}. Starting at node: ${startNodeId}`);
+
+        if (startNodeId && flowNodes.length) {
+          // Track which flow is now active
+          await Conversation.findByIdAndUpdate(convo._id, {
+            activeFlowId: flow.id || null,
+            lastMessageAt: new Date()
+          });
+          const freshConvo = await Conversation.findById(convo._id);
+          return await executeNode(
+            startNodeId, flowNodes, flowEdges,
+            client, freshConvo, lead, phone, io, channel
+          );
+        }
+      }
+    } catch (triggerErr) {
+      console.error('[TriggerEngine] Error matching flow:', triggerErr.message);
+      // Fall through to regular graph traversal
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
 
   // STEP 5: PRIORITY 1 — Graph Traversal
   const graphHandled = await tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, channel);
@@ -498,8 +544,20 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 // EXECUTE A SPECIFIC NODE
 // ─────────────────────────────────────────────────────────────────────────────
 async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, phone, io, channel = 'whatsapp') {
-  const node = flowNodes.find(n => n.id === nodeId);
-  if (!node) { console.warn(`[DualBrain] Node ${nodeId} not found`); return false; }
+  const rawNode = flowNodes.find(n => n.id === nodeId);
+  if (!rawNode) { console.warn(`[DualBrain] Node ${nodeId} not found`); return false; }
+
+  // Phase 20: Inject variables into node data before sending
+  // This resolves {{customer_name}}, {{order_id}}, etc. in all text fields
+  let node = rawNode;
+  try {
+    // Build context fresh if not already built (fallback for legacy paths)
+    const ctx = convo?._variableContext || await buildVariableContext(client, phone, convo, lead);
+    node = injectNodeVariables(rawNode, ctx);
+  } catch (varErr) {
+    console.warn('[DualBrain] Variable injection failed for node', nodeId, varErr.message);
+    node = rawNode; // fallback to raw node
+  }
 
   // Increment visitCount for Flow Convergence Analytics
   try {

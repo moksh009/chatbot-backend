@@ -66,6 +66,9 @@ const ConversationSchema = new mongoose.Schema({
     default: "whatsapp"
   },
 
+  // Phase 20: Active Flow Tracking
+  activeFlowId: { type: String, default: null }, // Which visualFlow is currently running
+
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });

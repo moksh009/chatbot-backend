@@ -146,6 +146,12 @@ app.use('/api/support', supportRoutes);
 const validationRoutes = require('./routes/validation');
 app.use('/api/validate', validationRoutes);
 
+// Phase 20: Instagram OAuth + AI Wizard Routes
+const oauthRoutes = require('./routes/oauth');
+app.use('/api/oauth', oauthRoutes);
+const wizardRoutes = require('./routes/wizard');
+app.use('/api/wizard', wizardRoutes);
+
 // Master Webhook (Root Route for WhatsApp Meta Cloud API)
 const masterWebhook = require('./routes/masterWebhook');
 app.use('/', masterWebhook);
@@ -208,6 +214,14 @@ scheduleProductSyncCron();
 // Initialize Flow Resumption Cron Job (Phase 17)
 const scheduleFlowResumption = require('./cron/flowResumptionCron');
 scheduleFlowResumption();
+
+// Phase 20: Instagram Token Refresh Cron (daily at 8AM IST)
+const { refreshExpiringInstagramTokens } = require('./routes/oauth');
+cron.schedule('0 8 * * *', async () => {
+  console.log('[Cron] Running Instagram token refresh check...');
+  try { await refreshExpiringInstagramTokens(); }
+  catch (err) { console.error('[Cron] Instagram token refresh error:', err.message); }
+}, { timezone: 'Asia/Kolkata' });
 
 // Phase 11 Cron Jobs
 require('./cron/followUpSequenceCron')();

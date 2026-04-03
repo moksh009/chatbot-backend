@@ -86,6 +86,19 @@ const ClientSchema = new mongoose.Schema({
   instagramAppSecret:   { type: String, default: "" },
   instagramConnected:   { type: Boolean, default: false },
   
+  // Phase 20: Instagram OAuth Extended Fields
+  instagramUsername:     { type: String, default: "" },
+  instagramTokenExpiry:  { type: Date,   default: null },
+  instagramProfilePic:   { type: String, default: "" },
+  instagramFollowers:    { type: Number, default: 0 },
+  instagramFbPageId:     { type: String, default: "" },
+  instagramPendingPages: { type: mongoose.Schema.Types.Mixed, default: null },
+  instagramPendingToken: { type: String, default: "" },
+
+  // Phase 20: AI Onboarding Wizard
+  wizardCompleted:       { type: Boolean, default: false },
+  wizardCompletedAt:     { type: Date,    default: null },
+  
   // messageTemplates stored as flexible Mixed array to support both 
   // legacy sub-documents and new flow-based template references
   messageTemplates: { type: mongoose.Schema.Types.Mixed, default: [] },

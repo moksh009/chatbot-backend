@@ -1,0 +1,339 @@
+"use strict";
+
+const express = require("express");
+const axios   = require("axios");
+const router  = express.Router();
+const Client  = require("../models/Client");
+
+const { protect } = require("../middleware/auth");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STEP 1: Initiate OAuth Flow
+// Called when user clicks "Connect Instagram" button in Settings
+// Returns a Meta OAuth URL that the frontend opens in a popup
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/instagram/initiate/:clientId", protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+
+    // Validate client exists
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ error: "Client not found" });
+
+    // Required Meta permissions for Instagram DM via Facebook Login
+    const scope = [
+      "pages_messaging",
+      "instagram_manage_messages",
+      "pages_show_list",
+      "instagram_basic",
+      "pages_read_engagement"
+    ].join(",");
+
+    // Encode clientId in state to retrieve after callback
+    const state = Buffer.from(JSON.stringify({
+      clientId,
+      timestamp: Date.now()
+    })).toString("base64");
+
+    const authUrl = new URL("https://www.facebook.com/v18.0/dialog/oauth");
+    authUrl.searchParams.set("client_id",     process.env.META_APP_ID);
+    authUrl.searchParams.set("redirect_uri",  process.env.META_APP_REDIRECT_URI || `${process.env.BACKEND_URL || "https://chatbot-backend-lg5y.onrender.com"}/api/oauth/instagram/callback`);
+    authUrl.searchParams.set("scope",         scope);
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("state",         state);
+
+    res.json({ authUrl: authUrl.toString() });
+  } catch (err) {
+    console.error("[Instagram OAuth] Initiate error:", err.message);
+    res.status(500).json({ error: "Failed to generate OAuth URL" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STEP 2: OAuth Callback
+// Meta redirects here after user authorizes
+// Exchanges code for tokens, finds Instagram account, saves to Client
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/instagram/callback", async (req, res) => {
+  const { code, state, error, error_description } = req.query;
+  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+
+  if (error) {
+    console.error("[Instagram OAuth] Auth denied:", error_description);
+    return res.redirect(`${frontendUrl}/settings?tab=channels&instagram_error=${encodeURIComponent(error_description || error)}`);
+  }
+
+  if (!code || !state) {
+    return res.redirect(`${frontendUrl}/settings?tab=channels&instagram_error=missing_params`);
+  }
+
+  let clientId;
+  try {
+    const decoded = JSON.parse(Buffer.from(state, "base64").toString());
+    clientId = decoded.clientId;
+  } catch (_) {
+    return res.redirect(`${frontendUrl}/settings?tab=channels&instagram_error=invalid_state`);
+  }
+
+  try {
+    const redirectUri = process.env.META_APP_REDIRECT_URI ||
+      `${process.env.BACKEND_URL || "https://chatbot-backend-lg5y.onrender.com"}/api/oauth/instagram/callback`;
+
+    // ── Exchange code for short-lived user token ──────────────────────────
+    const tokenResp = await axios.get("https://graph.facebook.com/v18.0/oauth/access_token", {
+      params: {
+        client_id:     process.env.META_APP_ID,
+        client_secret: process.env.META_APP_SECRET,
+        redirect_uri:  redirectUri,
+        code
+      }
+    });
+    const shortToken = tokenResp.data.access_token;
+
+    // ── Exchange for long-lived token (60 days) ───────────────────────────
+    const longTokenResp = await axios.get("https://graph.facebook.com/v18.0/oauth/access_token", {
+      params: {
+        grant_type:        "fb_exchange_token",
+        client_id:         process.env.META_APP_ID,
+        client_secret:     process.env.META_APP_SECRET,
+        fb_exchange_token: shortToken
+      }
+    });
+    const longToken = longTokenResp.data.access_token;
+    const expiresIn = longTokenResp.data.expires_in || (60 * 24 * 60 * 60); // default 60 days
+    const tokenExpiry = new Date(Date.now() + (expiresIn * 1000));
+
+    // ── Get Facebook Pages with Instagram Business accounts ───────────────
+    const pagesResp = await axios.get("https://graph.facebook.com/v18.0/me/accounts", {
+      params: {
+        access_token: longToken,
+        fields:       "id,name,access_token,instagram_business_account"
+      }
+    });
+    const pages = pagesResp.data.data || [];
+    const igPages = pages.filter(p => p.instagram_business_account?.id);
+
+    if (igPages.length === 0) {
+      console.warn(`[Instagram OAuth] No Instagram Business account found for clientId: ${clientId}`);
+      return res.redirect(`${frontendUrl}/settings?tab=channels&instagram_error=no_instagram_account`);
+    }
+
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.redirect(`${frontendUrl}/settings?tab=channels&instagram_error=client_not_found`);
+    }
+
+    // ── Single Instagram account: auto-connect ───────────────────────────
+    if (igPages.length === 1) {
+      const page      = igPages[0];
+      const igAccount = page.instagram_business_account;
+
+      // Get Instagram account details
+      const igDetails = await getInstagramDetails(igAccount.id, page.access_token);
+
+      await Client.findByIdAndUpdate(client._id, {
+        instagramConnected:    true,
+        instagramPageId:       igDetails.id,
+        instagramUsername:     igDetails.username || "",
+        instagramAccessToken:  page.access_token, // Use PAGE token for messaging
+        instagramTokenExpiry:  tokenExpiry,
+        instagramProfilePic:   igDetails.profile_picture_url || "",
+        instagramFollowers:    igDetails.followers_count || 0,
+        instagramFbPageId:     page.id,
+        instagramPendingPages: null,
+        instagramPendingToken: ""
+      });
+
+      // Register webhook subscription
+      await registerInstagramWebhook(page.id, page.access_token);
+
+      console.log(`[Instagram OAuth] Connected @${igDetails.username} for client ${clientId}`);
+      return res.redirect(`${frontendUrl}/settings?tab=channels&instagram_connected=true`);
+    }
+
+    // ── Multiple Instagram accounts: save pending, let user choose ────────
+    await Client.findByIdAndUpdate(client._id, {
+      instagramPendingPages: igPages.map(p => ({
+        pageId:      p.id,
+        pageName:    p.name,
+        pageToken:   p.access_token,
+        igAccountId: p.instagram_business_account.id
+      })),
+      instagramPendingToken: longToken,
+      instagramTokenExpiry:  tokenExpiry
+    });
+
+    return res.redirect(`${frontendUrl}/settings?tab=channels&instagram_select_page=true&clientId=${clientId}`);
+
+  } catch (err) {
+    console.error("[Instagram OAuth] Callback error:", err.response?.data || err.message);
+    return res.redirect(`${frontendUrl}/settings?tab=channels&instagram_error=callback_failed`);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STEP 3: Select Page (when multiple Instagram accounts exist)
+// ─────────────────────────────────────────────────────────────────────────────
+router.post("/instagram/select-page/:clientId", protect, async (req, res) => {
+  try {
+    const { pageId }  = req.body;
+    const { clientId }= req.params;
+
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ error: "Client not found" });
+
+    const page = (client.instagramPendingPages || []).find(p => p.pageId === pageId);
+    if (!page) return res.status(400).json({ error: "Page not found in pending list" });
+
+    // Get Instagram account details
+    const igDetails = await getInstagramDetails(page.igAccountId, page.pageToken);
+    const tokenExpiry = client.instagramTokenExpiry || new Date(Date.now() + 60 * 24 * 60 * 60 * 1000);
+
+    await Client.findByIdAndUpdate(client._id, {
+      instagramConnected:    true,
+      instagramPageId:       igDetails.id,
+      instagramUsername:     igDetails.username || "",
+      instagramAccessToken:  page.pageToken,
+      instagramTokenExpiry:  tokenExpiry,
+      instagramProfilePic:   igDetails.profile_picture_url || "",
+      instagramFollowers:    igDetails.followers_count || 0,
+      instagramFbPageId:     page.pageId,
+      instagramPendingPages: null,
+      instagramPendingToken: ""
+    });
+
+    await registerInstagramWebhook(page.pageId, page.pageToken);
+
+    res.json({
+      success:  true,
+      username: igDetails.username,
+      message:  `Connected @${igDetails.username} successfully!`
+    });
+  } catch (err) {
+    console.error("[Instagram OAuth] Select page error:", err.message);
+    res.status(500).json({ error: "Failed to connect selected page" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DISCONNECT Instagram
+// ─────────────────────────────────────────────────────────────────────────────
+router.post("/instagram/disconnect/:clientId", protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    await Client.findOneAndUpdate({ clientId }, {
+      instagramConnected:    false,
+      instagramPageId:       "",
+      instagramUsername:     "",
+      instagramAccessToken:  "",
+      instagramAppSecret:    "",
+      instagramTokenExpiry:  null,
+      instagramProfilePic:   "",
+      instagramFollowers:    0,
+      instagramFbPageId:     "",
+      instagramPendingPages: null,
+      instagramPendingToken: ""
+    });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET Instagram Connection Status (for frontend page selector)
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/instagram/status/:clientId", protect, async (req, res) => {
+  try {
+    const client = await Client.findOne({ clientId: req.params.clientId })
+      .select("instagramConnected instagramUsername instagramProfilePic instagramFollowers instagramTokenExpiry instagramPendingPages instagramFbPageId");
+
+    if (!client) return res.status(404).json({ error: "Client not found" });
+
+    res.json({
+      connected:    client.instagramConnected,
+      username:     client.instagramUsername,
+      profilePic:   client.instagramProfilePic,
+      followers:    client.instagramFollowers,
+      tokenExpiry:  client.instagramTokenExpiry,
+      hasPending:   !!(client.instagramPendingPages?.length),
+      pendingPages: client.instagramPendingPages || []
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function getInstagramDetails(igAccountId, pageToken) {
+  try {
+    const resp = await axios.get(`https://graph.facebook.com/v18.0/${igAccountId}`, {
+      params: {
+        fields:       "id,name,username,profile_picture_url,followers_count",
+        access_token: pageToken
+      }
+    });
+    return resp.data;
+  } catch (err) {
+    console.error("[Instagram OAuth] Failed to get IG details:", err.response?.data || err.message);
+    return { id: igAccountId };
+  }
+}
+
+async function registerInstagramWebhook(fbPageId, pageToken) {
+  try {
+    await axios.post(
+      `https://graph.facebook.com/v18.0/${fbPageId}/subscribed_apps`,
+      null,
+      {
+        params: {
+          subscribed_fields: "messages,messaging_postbacks,feed",
+          access_token:      pageToken
+        }
+      }
+    );
+    console.log(`[Instagram OAuth] Webhook registered for page ${fbPageId}`);
+  } catch (err) {
+    console.error("[Instagram OAuth] Webhook registration failed:", err.response?.data || err.message);
+    // Non-fatal — user is still connected, webhook can be re-registered later
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Export token refresh function for use in cron job
+// ─────────────────────────────────────────────────────────────────────────────
+async function refreshExpiringInstagramTokens() {
+  const fourteenDaysFromNow = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+
+  const clients = await Client.find({
+    instagramConnected:  true,
+    instagramTokenExpiry: { $lt: fourteenDaysFromNow, $exists: true, $ne: null }
+  });
+
+  console.log(`[Instagram Cron] Checking ${clients.length} clients for token refresh...`);
+
+  for (const client of clients) {
+    try {
+      const resp = await axios.get("https://graph.facebook.com/v18.0/oauth/access_token", {
+        params: {
+          grant_type:   "ig_refresh_token",
+          access_token: client.instagramAccessToken
+        }
+      });
+      const newExpiry = new Date(Date.now() + (resp.data.expires_in * 1000));
+      await Client.findByIdAndUpdate(client._id, {
+        instagramAccessToken: resp.data.access_token,
+        instagramTokenExpiry: newExpiry
+      });
+      console.log(`[Instagram Cron] Token refreshed for @${client.instagramUsername} (${client.clientId})`);
+    } catch (err) {
+      console.error(`[Instagram Cron] Token refresh failed for ${client.clientId}:`, err.response?.data || err.message);
+    }
+  }
+}
+
+module.exports = router;
+module.exports.refreshExpiringInstagramTokens = refreshExpiringInstagramTokens;

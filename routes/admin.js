@@ -715,8 +715,18 @@ router.get('/my-settings', protect, async (req, res) => {
       woocommerceUrl: client.woocommerceUrl,
       woocommerceKey: client.woocommerceKey ? '••••••••' : '',
       woocommerceSecret: client.woocommerceSecret ? '••••••••' : '',
-      instagramConnected: client.instagramConnected,
-      instagramPageId: client.instagramPageId,
+      instagramConnected:      client.instagramConnected,
+      instagramPageId:          client.instagramPageId,
+      // Phase 20: New Instagram OAuth fields
+      instagramUsername:        client.instagramUsername     || '',
+      instagramProfilePic:      client.instagramProfilePic   || '',
+      instagramFollowers:       client.instagramFollowers    || 0,
+      instagramTokenExpiry:     client.instagramTokenExpiry  || null,
+      instagramPendingPages:    client.instagramPendingPages || [],
+      instagramFbPageId:        client.instagramFbPageId     || '',
+      // Phase 20: Wizard
+      wizardCompleted:          client.wizardCompleted       || false,
+      wizardCompletedAt:        client.wizardCompletedAt     || null,
       geminiApiKey: client.geminiApiKey ? '••••••••' : '',
       systemPrompt: client.systemPrompt || client.flowData?.systemPrompt || '',
       isAIFallbackEnabled: client.isAIFallbackEnabled,
@@ -724,6 +734,8 @@ router.get('/my-settings', protect, async (req, res) => {
       googleReviewUrl: client.googleReviewUrl,
       emailUser: client.emailUser,
       emailAppPassword: client.emailAppPassword ? '••••••••' : '',
+      razorpayKeyId:    client.razorpayKeyId  || '',
+      razorpaySecret:   client.razorpaySecret ? '••••••••' : '',
       automationFlows: client.automationFlows,
       messageTemplates: client.messageTemplates,
       nicheData: client.nicheData,
@@ -750,7 +762,11 @@ router.patch('/my-settings', protect, async (req, res) => {
       woocommerceUrl, woocommerceKey, woocommerceSecret,
       instagramConnected, instagramPageId, instagramAccessToken, instagramAppSecret,
       googleReviewUrl, adminPhone, adminEmail,
-      adminAlertEmail, adminAlertWhatsapp, metaAppId
+      adminAlertEmail, adminAlertWhatsapp, metaAppId,
+      // Phase 20: Razorpay
+      razorpayKeyId, razorpaySecret,
+      // Phase 20: System prompt / AI
+      systemPrompt, geminiApiKey
     } = req.body;
     
     // If Super Admin and clientId provided, use that. Otherwise use user's own.
@@ -791,16 +807,24 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (woocommerceSecret !== undefined && woocommerceSecret !== '••••••••' && woocommerceSecret.trim() !== '') updateFields.woocommerceSecret = encrypt(woocommerceSecret);
 
     if (instagramConnected !== undefined) updateFields.instagramConnected = instagramConnected;
-    if (instagramPageId !== undefined) updateFields.instagramPageId = instagramPageId;
+    if (instagramPageId !== undefined)    updateFields.instagramPageId    = instagramPageId;
     if (instagramAccessToken !== undefined && instagramAccessToken !== '••••••••' && instagramAccessToken.trim() !== '') updateFields.instagramAccessToken = encrypt(instagramAccessToken);
-    if (instagramAppSecret !== undefined && instagramAppSecret !== '••••••••' && instagramAppSecret.trim() !== '') updateFields.instagramAppSecret = encrypt(instagramAppSecret);
+    if (instagramAppSecret   !== undefined && instagramAppSecret   !== '••••••••' && instagramAppSecret.trim()   !== '') updateFields.instagramAppSecret   = encrypt(instagramAppSecret);
 
     if (googleReviewUrl !== undefined) updateFields.googleReviewUrl = googleReviewUrl;
-    if (adminPhone !== undefined) updateFields.adminPhone = adminPhone;
-    if (adminEmail !== undefined) updateFields.adminEmail = adminEmail;
-    if (adminAlertEmail !== undefined) updateFields.adminAlertEmail = adminAlertEmail;
+    if (adminPhone !== undefined)      updateFields.adminPhone      = adminPhone;
+    if (adminEmail !== undefined)      updateFields.adminEmail      = adminEmail;
+    if (adminAlertEmail !== undefined)    updateFields.adminAlertEmail    = adminAlertEmail;
     if (adminAlertWhatsapp !== undefined) updateFields.adminAlertWhatsapp = adminAlertWhatsapp;
-    if (metaAppId !== undefined) updateFields.metaAppId = metaAppId;
+    if (metaAppId !== undefined)          updateFields.metaAppId          = metaAppId;
+
+    // Phase 20: Razorpay
+    if (razorpayKeyId !== undefined && razorpayKeyId.trim() !== '')    updateFields.razorpayKeyId = razorpayKeyId;
+    if (razorpaySecret !== undefined && razorpaySecret !== '••••••••' && razorpaySecret.trim() !== '') updateFields.razorpaySecret = encrypt(razorpaySecret);
+
+    // Phase 20: AI / System Prompt
+    if (systemPrompt !== undefined)   updateFields.systemPrompt  = systemPrompt;
+    if (geminiApiKey !== undefined && geminiApiKey !== '••••••••' && geminiApiKey.trim() !== '') updateFields.geminiApiKey = encrypt(geminiApiKey);
 
     const updated = await Client.findOneAndUpdate(
       { clientId: targetClientId },
