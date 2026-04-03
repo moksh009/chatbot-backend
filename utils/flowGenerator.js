@@ -378,8 +378,7 @@ Format response as VALID JSON ONLY with these exact keys:
   return { nodes, edges };
 }
 
-  return { nodes, edges };
-}
+
 
 /**
  * Generate the AI system prompt from wizard data.
