@@ -145,6 +145,7 @@ Format response as VALID JSON ONLY with these exact keys:
             title: "Help & Support",
             rows: [
               { id: "check_order",   title: "Check My Order",   description: "Track your order status" },
+              { id: "exclusive_offer", title: "🎁 Exclusive Offers", description: "Get 10% off your next purchase" },
               { id: "talk_to_agent", title: "Talk to a Person", description: "Get personalized help" }
             ]
           }
@@ -267,6 +268,59 @@ Format response as VALID JSON ONLY with these exact keys:
       }
     },
 
+    // ── EXCLUSIVE OFFERS ADVANCED SEQUENCE ────────────────────────────────────
+    {
+      id:   `gen_capture_email_${ts}`,
+      type: "CaptureNode",
+      position: { x: COL + 1050, y: 320 },
+      data: {
+        label:          "Capture Email",
+        captureType:    "text",
+        variableName:   "email",
+        question:       "Let's get you that 10% discount! 🎁\n\nPlease reply with your *email address* to receive the promo code."
+      }
+    },
+    {
+      id:   `gen_logic_email_${ts}`,
+      type: "LogicNode",
+      position: { x: COL + 1350, y: 320 },
+      data: {
+        label:    "Check Email Given",
+        variable: "lead.capturedData.email",
+        operator: "exists",
+        value:    ""
+      }
+    },
+    {
+      id:   `gen_tag_subscriber_${ts}`,
+      type: "TagNode",
+      position: { x: COL + 1650, y: 220 },
+      data: {
+        label:  "Tag Subscriber",
+        action: "add",
+        tag:    "Email_Subscriber"
+      }
+    },
+    {
+      id:   `gen_delay_offer_${ts}`,
+      type: "DelayNode",
+      position: { x: COL + 1950, y: 220 },
+      data: {
+        label:    "Wait Before Sending",
+        duration: "5s",
+        unit:     "seconds" 
+      }
+    },
+    {
+      id:   `gen_msg_offer_${ts}`,
+      type: "MessageNode",
+      position: { x: COL + 2250, y: 220 },
+      data: {
+        label: "Send Coupon",
+        text:  `Thanks for subscribing! 🎉\n\nHere is your 10% off code: *WELCOME10*\n\nEnjoy shopping! 🛍️`
+      }
+    },
+
     // ── REVIEW REQUEST ───────────────────────────────────────────────────────
     ...(googleReviewUrl ? [{
       id:   IDS.REVIEW,
@@ -320,6 +374,14 @@ Format response as VALID JSON ONLY with these exact keys:
       target:       IDS.PRODUCT_MENU,
       sourceHandle: "back_to_menu"
     })),
+
+    // Advanced Sequence Edges
+    { id: `e_menu_offer_${ts}`,     source: IDS.PRODUCT_MENU,           target: `gen_capture_email_${ts}`,  sourceHandle: "exclusive_offer" },
+    { id: `e_capture_logic_${ts}`,  source: `gen_capture_email_${ts}`,  target: `gen_logic_email_${ts}`,    sourceHandle: "a" },
+    { id: `e_logic_true_${ts}`,     source: `gen_logic_email_${ts}`,    target: `gen_tag_subscriber_${ts}`, sourceHandle: "true" },
+    { id: `e_logic_false_${ts}`,    source: `gen_logic_email_${ts}`,    target: IDS.PRODUCT_MENU,           sourceHandle: "false" },
+    { id: `e_tag_delay_${ts}`,      source: `gen_tag_subscriber_${ts}`, target: `gen_delay_offer_${ts}`,    sourceHandle: "a" },
+    { id: `e_delay_msg_${ts}`,      source: `gen_delay_offer_${ts}`,    target: `gen_msg_offer_${ts}`,      sourceHandle: "a" }
   ];
 
   return { nodes, edges };

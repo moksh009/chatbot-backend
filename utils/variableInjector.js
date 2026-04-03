@@ -107,10 +107,11 @@ async function buildVariableContext(client, phone, convo, lead) {
     ),
   };
 
-  // Merge: captured variables from conversation.metadata OVERRIDE system variables
+  // Merge: captured variables from lead.capturedData and convo.metadata OVERRIDE system variables
   // (so if someone captures {{customer_name}} it updates the value)
   return {
     ...systemContext,
+    ...(lead?.capturedData || {}),
     ...(convo?.metadata || {}),
   };
 }

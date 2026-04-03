@@ -117,6 +117,19 @@ const adLeadSchema = new mongoose.Schema({
   lifetimeValue:  { type: Number, default: 0 },
   birthday:       { type: Date,   default: null },
   birthdayMsgSent:{ type: Boolean,default: false },
+  
+  // Phase 21: Captured Variables Storage
+  capturedData: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
+  },
+  captureHistory: [{
+    field:      String,
+    value:      String,
+    capturedAt: { type: Date, default: Date.now },
+    flowNodeId: String
+  }],
+
   createdAt: {
     type: Date,
     default: Date.now

@@ -152,6 +152,10 @@ app.use('/api/oauth', oauthRoutes);
 const wizardRoutes = require('./routes/wizard');
 app.use('/api/wizard', wizardRoutes);
 
+const instagramAutomationRoutes = require('./routes/instagramAutomation');
+app.use('/api/instagram-automations', instagramAutomationRoutes);
+
+
 // Master Webhook (Root Route for WhatsApp Meta Cloud API)
 const masterWebhook = require('./routes/masterWebhook');
 app.use('/', masterWebhook);

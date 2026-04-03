@@ -241,20 +241,37 @@ async function runDualBrainEngine(parsedMessage, client) {
   parsedMessage._variableContext = variableContext;
   
   // --- SMART ALERT DETECTION: "Call Now" ---
+  // --- SMART ALERT DETECTION: "Call Now" & Escalation (Phase 21) ---
   const userText = (parsedMessage.text?.body || '').toLowerCase().trim();
-  const callKeywords = ['call me', 'call now', 'want to talk', 'need a call', 'phone call', 'speak to a human', 'support agent'];
-  if (callKeywords.some(k => userText.includes(k))) {
+  const escalationKeywords = [
+    // Phone/call requests
+    'call me', 'call now', 'want to talk', 'need a call', 'phone call', 'speak to a human', 'support agent', 'give me a call', 'call karo', 'callback',
+    // Human requests
+    'talk to human', 'talk to person', 'talk to agent', 'real person',
+    'customer care', 'customer support', 'support team',
+    'insaan se baat', 'banda chahiye',
+    // Frustration signals
+    'not happy', 'very bad', 'worst service', 'frustrated', 'where is my order',
+    'money back', 'refund', 'complaint', 'escalate'
+  ];
+
+  if (escalationKeywords.some(k => userText.includes(k))) {
       const NotificationService = require('./notificationService');
+      
+      const DashboardLink = `https://dash.topedgeai.com/live-chat?phone=${encodeURIComponent(phone)}`;
+      const cartInfo = parseInt(lead?.addToCartCount) > 0 ? `Total Carts: ${lead.addToCartCount}` : 'No carts yet';
+      const orderInfo = lead?.isOrderPlaced ? `Orders: ${lead.ordersCount} | Spent: ${lead.totalSpent}` : 'No orders yet';
+
       await NotificationService.sendAdminAlert(client, {
           customerPhone: phone,
-          topic: "📞 Lead requested a call",
-          triggerSource: `Keyword: "${userText}"`,
+          topic: "🚨 AGENT REQUEST — Attention Needed",
+          triggerSource: `💬 "${userText}"\n👤 ${lead?.name || 'Unknown'}\n🛒 ${cartInfo}\n📦 ${orderInfo}\n🔗 ${DashboardLink}`,
           channel: 'both'
       });
       if (io) {
           io.to(`client_${client.clientId}`).emit('attention_required', {
               phone,
-              reason: "Lead requested a call — prioritize!",
+              reason: "Lead requested human intervention — prioritize!",
               priority: 'high'
           });
       }
@@ -438,6 +455,23 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     const updatedMetadata = { ...(convo.metadata || {}), [varName]: userText };
     await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
     convo.metadata = updatedMetadata;
+
+    // Phase 21: Also save to Lead with full history
+    const AdLead = require("../models/AdLead");
+    await AdLead.findByIdAndUpdate(lead._id, {
+      $set: { [`capturedData.${varName}`]: userText },
+      $push: {
+        captureHistory: {
+          field: varName,
+          value: userText,
+          capturedAt: new Date(),
+          flowNodeId: currentNode.id
+        }
+      }
+    });
+
+    // Update local lead object so subsequent nodes see it
+    lead.capturedData = { ...(lead.capturedData || {}), [varName]: userText };
 
     const nextEdge = flowEdges.find(e => e.source === currentStepId);
     if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
@@ -661,11 +695,21 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 
   // Phase 17: Delay / Wait Node
   if (node.type === 'delay' || node.type === 'WaitNode') {
-    const { duration, unit } = node.data; // duration: 5, unit: 'minutes'
+    let { duration, unit } = node.data; // duration: 5, unit: 'minutes' or duration: '15m'
     let delayMs = 60000; // default 1 min
-    if (unit === 'minutes') delayMs = duration * 60000;
-    else if (unit === 'hours') delayMs = duration * 3600000;
-    else if (unit === 'seconds') delayMs = duration * 1000;
+    
+    if (typeof duration === 'string' && !unit) {
+      const val = parseInt(duration);
+      if (duration.endsWith('m')) delayMs = val * 60000;
+      else if (duration.endsWith('h')) delayMs = val * 3600000;
+      else if (duration.endsWith('d')) delayMs = val * 86400000;
+      else if (duration.endsWith('s')) delayMs = val * 1000;
+    } else {
+      if (unit === 'minutes') delayMs = duration * 60000;
+      else if (unit === 'hours') delayMs = duration * 3600000;
+      else if (unit === 'seconds') delayMs = duration * 1000;
+      else if (unit === 'days') delayMs = duration * 86400000;
+    }
 
     const resumeAt = new Date(Date.now() + delayMs);
     await Conversation.findByIdAndUpdate(convo._id, { 
