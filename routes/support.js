@@ -36,7 +36,8 @@ Return your response in a supportive, premium, human-like tone, optimized for qu
 // Get current support chat for a client
 router.get('/', protect, async (req, res) => {
   try {
-    let chat = await SupportChat.findOne({ clientId: req.user.clientId, status: { $ne: 'resolved' } });
+    // Find the most recent non-resolved chat
+    let chat = await SupportChat.findOne({ clientId: req.user.clientId, status: { $ne: 'resolved' } }).sort({ createdAt: -1 });
     if (!chat) {
       chat = await SupportChat.create({
         clientId: req.user.clientId,
@@ -50,33 +51,78 @@ router.get('/', protect, async (req, res) => {
   }
 });
 
+// Create a new support chat (forces resolution of previous)
+router.post('/new', protect, async (req, res) => {
+  try {
+    // Resolve all previous active chats
+    await SupportChat.updateMany({ clientId: req.user.clientId, status: { $ne: 'resolved' } }, { status: 'resolved' });
+    
+    const chat = await SupportChat.create({
+      clientId: req.user.clientId,
+      clientName: req.user.name || 'User',
+      messages: [{ sender: 'ai', text: 'New session started. How can I assist you further?' }]
+    });
+    
+    const io = req.app.get('socketio');
+    if (io) {
+      io.to('super_admin_room').emit('new_support_activity', chat);
+    }
+    
+    res.json(chat);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // Send message to Support AI
 router.post('/message', protect, async (req, res) => {
   try {
     const { text } = req.body;
-    let chat = await SupportChat.findOne({ clientId: req.user.clientId, status: { $ne: 'resolved' } });
+    let chat = await SupportChat.findOne({ clientId: req.user.clientId, status: { $ne: 'resolved' } }).sort({ createdAt: -1 });
     
     if (!chat) return res.status(404).json({ message: 'No active support chat' });
+
+    // AI Intent Detection for human handover
+    const humanIntents = ['talk to human', 'human support', 'representative', 'customer service', 'human expert', 'speak to someone', 'real person'];
+    const lowerText = text.toLowerCase();
+    const needsHuman = humanIntents.some(intent => lowerText.includes(intent));
 
     // Add user message
     chat.messages.push({ sender: 'user', text });
     chat.lastMessageAt = Date.now();
-    chat.hasUnreadAdmin = true; // Admin should see new activity
+    chat.hasUnreadAdmin = true; 
+    chat.hasUnreadUser = false; // User just sent a message, so they've seen the chat
 
-    // Generate AI response
-    const history = chat.messages.map(m => `${m.sender.toUpperCase()}: ${m.text}`).join('\n');
-    const prompt = `${SUPPORT_PROMPT}\n\nCONVERSATION HISTORY:\n${history}\n\nAI:`;
-    
-    const aiResponse = await generateText(prompt);
-    chat.messages.push({ sender: 'ai', text: aiResponse });
+    if (needsHuman && chat.status === 'active') {
+      chat.status = 'human_requested';
+      chat.messages.push({ sender: 'ai', text: 'I understand you\'d like to speak with a human expert. I\'m connecting you now!' });
+      
+      // Create a System Notification for Super Admins
+      await Notification.create({
+        clientId: 'TOPEDGE_ADMIN',
+        title: 'Support Handoff Triggered',
+        message: `${chat.clientName} requested human assistance via AI detection.`,
+        type: 'system',
+        metadata: { chatId: chat._id, clientId: req.user.clientId }
+      });
+    } else if (chat.status === 'active') {
+      // Only generate AI response if status is active
+      const history = chat.messages.map(m => `${m.sender.toUpperCase()}: ${m.text}`).join('\n');
+      const prompt = `${SUPPORT_PROMPT}\n\nCONVERSATION HISTORY:\n${history}\n\nAI:`;
+      
+      const aiResponse = await generateText(prompt);
+      chat.messages.push({ sender: 'ai', text: aiResponse });
+    }
     
     await chat.save();
 
     const io = req.app.get('socketio');
     if (io) {
       io.to(`client_${req.user.clientId}`).emit('support_update', chat);
-      // Notify super admins in their room
       io.to('super_admin_room').emit('new_support_activity', chat);
+      if (needsHuman) {
+        io.to('super_admin_room').emit('support_handoff_alert', chat);
+      }
     }
 
     res.json(chat);
@@ -85,7 +131,7 @@ router.post('/message', protect, async (req, res) => {
   }
 });
 
-// Human Handoff Request
+// Human Handoff Request (Manual button)
 router.post('/handoff', protect, async (req, res) => {
   try {
     let chat = await SupportChat.findOne({ clientId: req.user.clientId, status: { $ne: 'resolved' } });
@@ -93,11 +139,12 @@ router.post('/handoff', protect, async (req, res) => {
 
     chat.status = 'human_requested';
     chat.messages.push({ sender: 'ai', text: 'I am connecting you with one of our human experts. They will be with you shortly!' });
+    chat.hasUnreadAdmin = true;
     await chat.save();
 
     // Create a System Notification for Super Admins
     await Notification.create({
-      clientId: 'TOPEDGE_ADMIN', // Internal identifier for us
+      clientId: 'TOPEDGE_ADMIN',
       title: 'Support Handoff Required',
       message: `${chat.clientName} requires human assistance in dashboard support.`,
       type: 'system',
@@ -106,6 +153,7 @@ router.post('/handoff', protect, async (req, res) => {
 
     const io = req.app.get('socketio');
     if (io) {
+      io.to(`client_${req.user.clientId}`).emit('support_update', chat);
       io.to('super_admin_room').emit('support_handoff_alert', chat);
     }
 
@@ -119,7 +167,7 @@ router.post('/handoff', protect, async (req, res) => {
 router.get('/all', protect, async (req, res) => {
   if (req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ message: 'Unauthorized' });
   try {
-    const chats = await SupportChat.find().sort({ lastMessageAt: -1 });
+    const chats = await SupportChat.find().sort({ lastMessageAt: -1 }).limit(50);
     res.json(chats);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -136,6 +184,8 @@ router.post('/:id/reply', protect, async (req, res) => {
 
     chat.messages.push({ sender: 'admin', text });
     chat.hasUnreadUser = true;
+    chat.hasUnreadAdmin = false; // Admin just replied
+    chat.status = 'human_takeover'; 
     chat.lastMessageAt = Date.now();
     await chat.save();
 
@@ -150,4 +200,53 @@ router.post('/:id/reply', protect, async (req, res) => {
   }
 });
 
+// Admin: Release to AI
+router.post('/:id/release', protect, async (req, res) => {
+  if (req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ message: 'Unauthorized' });
+  try {
+    const chat = await SupportChat.findById(req.params.id);
+    if (!chat) return res.status(404).json({ message: 'Chat not found' });
+
+    chat.status = 'active'; // Reset to active
+    chat.messages.push({ sender: 'ai', text: 'Human expert has released control. AI is now back online.' });
+    chat.lastMessageAt = Date.now();
+    chat.hasUnreadAdmin = false;
+    await chat.save();
+
+    const io = req.app.get('socketio');
+    if (io) {
+      io.to(`client_${chat.clientId}`).emit('support_update', chat);
+    }
+
+    res.json(chat);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Admin: Resolve Chat
+router.post('/:id/resolve', protect, async (req, res) => {
+  if (req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ message: 'Unauthorized' });
+  try {
+    const chat = await SupportChat.findById(req.params.id);
+    if (!chat) return res.status(404).json({ message: 'Chat not found' });
+
+    chat.status = 'resolved';
+    chat.messages.push({ sender: 'ai', text: 'This conversation has been marked as resolved. Feel free to start a new chat if you need more help!' });
+    chat.lastMessageAt = Date.now();
+    chat.hasUnreadAdmin = false;
+    await chat.save();
+
+    const io = req.app.get('socketio');
+    if (io) {
+      io.to(`client_${chat.clientId}`).emit('support_update', chat);
+    }
+
+    res.json(chat);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 module.exports = router;
+

@@ -8,7 +8,7 @@ const supportChatSchema = new mongoose.Schema({
     text: { type: String, required: true },
     timestamp: { type: Date, default: Date.now }
   }],
-  status: { type: String, enum: ['active', 'human_requested', 'resolved'], default: 'active' },
+  status: { type: String, enum: ['active', 'human_requested', 'human_takeover', 'resolved'], default: 'active' },
   lastMessageAt: { type: Date, default: Date.now },
   hasUnreadAdmin: { type: Boolean, default: false },
   hasUnreadUser: { type: Boolean, default: false }
