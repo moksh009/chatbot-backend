@@ -130,7 +130,8 @@ router.post('/', verifyMetaSignature, async (req, res) => {
               // 3. Mark message as replied-to in any open Campaign (for analytics)
               CampaignMessage.findOneAndUpdate(
                 { phone: from, status: { $in: ['sent', 'delivered', 'read'] } },
-                { $set: { repliedAt: new Date(), status: 'replied' } }
+                { $set: { repliedAt: new Date(), status: 'replied' } },
+                { sort: { createdAt: -1 } }
               ).then(msg => {
                 if (msg?.campaignId) {
                   Campaign.findByIdAndUpdate(msg.campaignId, { $inc: { repliedCount: 1 } }).catch(() => {});

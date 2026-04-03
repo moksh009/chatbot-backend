@@ -462,12 +462,13 @@ async function runDualBrainEngine(parsedMessage, client) {
     }
   }
 
-  if (convo.botPaused || convo.status === 'HUMAN_TAKEOVER') {
-    console.log(`[DualBrain] ⏸️ Bot paused for ${phone}. Skipping.`);
+  if (convo.botPaused || ['HUMAN_TAKEOVER', 'HUMAN_SUPPORT', 'OPTED_OUT'].includes(convo.status)) {
+    console.log(`[DualBrain] ⏸️ Bot paused for ${phone} (Status: ${convo.status}). Skipping.`);
     return true;
   }
 
   // MANUAL MODE: Only respond if an EXPLICIT trigger is matched
+
   if (handoffMode === 'MANUAL') {
     const trigger = findMatchingFlow(userText, client.flowNodes, client.flowEdges);
     if (!trigger) {
