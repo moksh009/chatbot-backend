@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const Conversation = require('../models/Conversation');
+const Campaign = require('../models/Campaign');
+const CampaignMessage = require('../models/CampaignMessage');
 const { handleWhatsAppMessage } = require('../utils/dualBrainEngine');
 
 /**
@@ -61,9 +63,35 @@ router.post('/', verifyMetaSignature, async (req, res) => {
           
           // A. Handle Status Updates (delivered, read, failed)
           if (value.statuses) {
-             // We can handle status updates here if needed for analytics
-             // For now, logged for debugging
-             // console.log("📉 Status Update:", JSON.stringify(value.statuses[0]));
+            for (const statusObj of value.statuses) {
+              const { id: messageId, status, recipient_id: phone, errors } = statusObj;
+              
+              const updateData = { status };
+              if (status === 'delivered') updateData.deliveredAt = new Date();
+              if (status === 'read') updateData.readAt = new Date();
+              if (status === 'failed') {
+                updateData.failedAt = new Date();
+                updateData.errorMessage = errors?.[0]?.message || 'Unknown error';
+              }
+
+              const msg = await CampaignMessage.findOneAndUpdate(
+                { messageId },
+                { $set: updateData },
+                { new: true }
+              );
+
+              if (msg) {
+                // Update Campaign aggregate stats
+                const inc = {};
+                if (status === 'delivered') inc.deliveredCount = 1;
+                if (status === 'read') inc.readCount = 1;
+                if (status === 'failed') inc.failedCount = 1;
+
+                if (Object.keys(inc).length > 0) {
+                  await Campaign.findByIdAndUpdate(msg.campaignId, { $inc: inc });
+                }
+              }
+            }
           }
 
           // B. Handle Incoming Messages

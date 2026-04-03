@@ -55,57 +55,80 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     // 4. SET flowNodes/flowEdges to the newest one (for legacy engine support)
     
     const settingsUpdate = {
-      $set: {
-        wizardCompleted:    true,
-        wizardCompletedAt:  new Date(),
-        flowNodes:   nodes,
-        flowEdges:   edges,
-        isAIFallbackEnabled: true,
-        ...(wizardData.businessName    && { businessName: wizardData.businessName, name: wizardData.businessName }),
-        ...(wizardData.botName         && { "nicheData.botName": wizardData.botName }),
-        ...(wizardData.googleReviewUrl && { googleReviewUrl: wizardData.googleReviewUrl }),
-        ...(systemPrompt               && { systemPrompt }),
-        ...(wizardData.razorpayKeyId    && { razorpayKeyId: wizardData.razorpayKeyId }),
-        ...(wizardData.razorpaySecret   && { razorpaySecret: wizardData.razorpaySecret }),
-        ...(wizardData.adminPhone       && { adminPhone: wizardData.adminPhone }),
-        ...(wizardData.cartTiming && {
-          "automationFlows": [
-            {
-              id:     "abandoned_cart",
-              type:   "abandoned_cart",
-              active: true,
-              config: {
-                delayMinutes1: wizardData.cartTiming.msg1 || 15,
-                delayHours2:   wizardData.cartTiming.msg2 || 2,
-                delayHours3:   wizardData.cartTiming.msg3 || 24
-              }
-            },
-            ...(wizardData.razorpayKeyId ? [{
-              id:     "cod_to_prepaid",
-              type:   "cod_to_prepaid",
-              active: true,
-              config: {
-                delayMinutes:    3,
-                discountAmount:  50,
-                razorpayEnabled: true
-              }
-            }] : []),
-            {
-              id:     "review_collection",
-              type:   "review_collection",
-              active: !!(wizardData.googleReviewUrl),
-              config: {
-                delayDays:    4,
-                reviewUrl:    wizardData.googleReviewUrl || ""
-              }
+      wizardCompleted:    true,
+      wizardCompletedAt:  new Date(),
+      isAIFallbackEnabled: true,
+      ...(wizardData.replaceExisting !== false && { 
+        flowNodes: nodes, 
+        flowEdges: edges 
+      }),
+      ...(wizardData.businessName    && { businessName: wizardData.businessName, name: wizardData.businessName }),
+      ...(wizardData.botName         && { "nicheData.botName": wizardData.botName }),
+      ...(wizardData.googleReviewUrl && { googleReviewUrl: wizardData.googleReviewUrl }),
+      ...(systemPrompt               && { systemPrompt }),
+      ...(wizardData.razorpayKeyId    && { razorpayKeyId: wizardData.razorpayKeyId }),
+      ...(wizardData.razorpaySecret   && { razorpaySecret: wizardData.razorpaySecret }),
+      ...(wizardData.cashfreeAppId    && { cashfreeAppId: wizardData.cashfreeAppId }),
+      ...(wizardData.cashfreeSecretKey && { cashfreeSecretKey: wizardData.cashfreeSecretKey }),
+      ...(wizardData.activePaymentGateway && { activePaymentGateway: wizardData.activePaymentGateway }),
+      ...(wizardData.adminPhone       && { adminPhone: wizardData.adminPhone }),
+      ...(wizardData.cartTiming && {
+        "automationFlows": [
+          {
+            id:     "abandoned_cart",
+            type:   "abandoned_cart",
+            active: true,
+            config: {
+              delayMinutes1: wizardData.cartTiming.msg1 || 15,
+              delayHours2:   wizardData.cartTiming.msg2 || 2,
+              delayHours3:   wizardData.cartTiming.msg3 || 24
             }
-          ]
-        }),
-      },
+          },
+          ...((wizardData.razorpayKeyId || wizardData.cashfreeAppId) ? [{
+            id:     "cod_to_prepaid",
+            type:   "cod_to_prepaid",
+            active: true,
+            config: {
+              delayMinutes:    3,
+              discountAmount:  50,
+              razorpayEnabled: !!wizardData.razorpayKeyId,
+              cashfreeEnabled: !!wizardData.cashfreeAppId
+            }
+          }] : []),
+          {
+            id:     "review_collection",
+            type:   "review_collection",
+            active: !!(wizardData.googleReviewUrl),
+            config: {
+              delayDays:    4,
+              reviewUrl:    wizardData.googleReviewUrl || ""
+            }
+          }
+        ]
+      }),
+    };
+
+    const updateQuery = { 
+      $set: settingsUpdate,
       $push: { visualFlows: newFlow }
     };
 
-    await Client.findByIdAndUpdate(client._id, settingsUpdate, { new: true });
+    const updateQuery = { $set: settingsUpdate };
+
+    if (wizardData.customTemplates && wizardData.customTemplates.length > 0) {
+      updateQuery.$push = {
+        messageTemplates: {
+          $each: wizardData.customTemplates.map(t => ({
+            ...t,
+            status: 'PENDING',
+            source: 'wizard_custom',
+            createdAt: new Date()
+          }))
+        }
+      };
+    }
+
+    await Client.findByIdAndUpdate(client._id, updateQuery, { new: true });
 
     console.log(`[Wizard] ✅ Complete! Flow generated with ${nodes.length} nodes for ${clientId}`);
 

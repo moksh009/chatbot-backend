@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Campaign = require('../models/Campaign');
+const CampaignMessage = require('../models/CampaignMessage');
 const { protect } = require('../middleware/auth');
 const multer = require('multer');
 const upload = multer({ dest: 'uploads/' });
@@ -178,7 +179,23 @@ router.post('/start', protect, async (req, res) => {
           }
           
           const respData = await WhatsApp.sendTemplate(client, recipientPhone, tName, req.body.languageCode || 'en', components);
-          const metaMsgId = respData?.messages?.[0]?.id;
+          const metaMsgId = respData?.messages?.[0]?.id || respData?.id;
+
+          if (metaMsgId) {
+            await CampaignMessage.create({
+              campaignId: campaign._id,
+              clientId: client.clientId,
+              phone: recipientPhone,
+              messageId: metaMsgId,
+              status: 'sent',
+              sentAt: new Date()
+            });
+            sent++;
+            await Campaign.findByIdAndUpdate(campaign._id, { $inc: { sentCount: 1 } });
+          } else {
+            failed++;
+            await Campaign.findByIdAndUpdate(campaign._id, { $inc: { failedCount: 1 } });
+          }
 
           const Message = require('../models/Message');
           await Message.create({
@@ -193,7 +210,6 @@ router.post('/start', protect, async (req, res) => {
             campaignId: campaign._id,
             channel: 'whatsapp'
           });
-          sent++;
         }
         await new Promise(r => setTimeout(r, 500));
       } catch (err) {
@@ -254,6 +270,50 @@ router.post('/:clientId/ab-test', protect, async (req, res) => {
       status: "DRAFT"
     });
     res.json({ success: true, campaign });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+// @route   GET /api/campaigns/overview
+// @desc    Get aggregate campaign metrics and Meta health
+// @access  Private
+router.get('/overview', protect, async (req, res) => {
+  try {
+    const clientId = req.user.clientId;
+    const campaigns = await Campaign.find({ clientId });
+    
+    // Aggregate stats
+    const totalSent = campaigns.reduce((acc, c) => acc + (c.sentCount || 0), 0);
+    const totalDelivered = campaigns.reduce((acc, c) => acc + (c.deliveredCount || 0), 0);
+    const totalRead = campaigns.reduce((acc, c) => acc + (c.readCount || 0), 0);
+    const totalReplied = campaigns.reduce((acc, c) => acc + (c.repliedCount || 0), 0);
+    
+    const deliveryRate = totalSent > 0 ? (totalDelivered / totalSent * 100) : 0;
+    const readRate = totalDelivered > 0 ? (totalRead / totalDelivered * 100) : 0;
+    
+    // Meta Health (Mock for now, would integrate with Meta Business API)
+    const metaHealth = {
+      status: 'HEALTHY',
+      tier: 'Tier 2 (10k/day)',
+      qualityRating: 'HIGH',
+      lastTemplateUpdate: new Date()
+    };
+
+    res.json({
+      success: true,
+      stats: {
+        totalSent,
+        totalDelivered,
+        totalRead,
+        totalReplied,
+        deliveryRate: deliveryRate.toFixed(1),
+        readRate: readRate.toFixed(1)
+      },
+      metaHealth,
+      recentCampaigns: campaigns.slice(0, 5)
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

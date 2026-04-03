@@ -21,7 +21,10 @@ async function generateEcommerceFlow(client, wizardData) {
     botLanguage = "Hinglish",
     cartTiming = { msg1: 15, msg2: 2, msg3: 24 },
     googleReviewUrl = "",
-    razorpayKeyId   = ""
+    razorpayKeyId   = "",
+    cashfreeAppId   = "",
+    adminPhone      = "",
+    abTestingEnabled = true
   } = wizardData;
 
   // ── STEP 1: Generate message text with Gemini ──────────────────────────────
@@ -120,13 +123,13 @@ Format response as VALID JSON ONLY with these exact keys:
       }
     },
 
-    // ── AB TEST WELCOME ──────────────────────────────────────────────────────
-    {
+    // ── AB TEST WELCOME (Only if enabled) ───────────────────────────────────
+    ...(abTestingEnabled ? [{
       id:   IDS.AB_WELCOME,
       type: "ABTestNode",
       position: { x: COL, y: 120 },
       data: { label: "Split Test: Welcome", variantA: "friendly", variantB: "promo" }
-    },
+    }] : []),
 
     // ── WELCOME A (Friendly) ─────────────────────────────────────────────────
     {
@@ -256,10 +259,12 @@ Format response as VALID JSON ONLY with these exact keys:
       type: "AdminAlertNode",
       position: { x: COL + 1850, y: 800 },
       data: {
-        label: "Dashboard Alert",
+        label: "WhatsApp Admin Alert",
         topic: "🚨 URGENT: Human Agent Requested",
-        channel: "both",
-        priority: "high"
+        channel: "whatsapp",
+        priority: "high",
+        recipientPhone: adminPhone,
+        templateId: "admin_handoff_alert"
       }
     },
     // 5. Final Message
@@ -339,16 +344,18 @@ Format response as VALID JSON ONLY with these exact keys:
 
   // ── STEP 4: Build edges ────────────────────────────────────────────────────
   const edges = [
-    // Trigger → AB Split
-    { id: `e_trig_ab_${ts}`, source: IDS.TRIGGER, target: IDS.AB_WELCOME, data: { trigger: { type: "auto" } } },
-    
-    // AB Split → Welcome Variants
-    { id: `e_ab_a_${ts}`, source: IDS.AB_WELCOME, target: IDS.WELCOME_A, sourceHandle: "a" },
-    { id: `e_ab_b_${ts}`, source: IDS.AB_WELCOME, target: IDS.WELCOME_B, sourceHandle: "b" },
+    // Trigger → AB Split (or direct to Welcome A)
+    ...(abTestingEnabled ? [
+      { id: `e_trig_ab_${ts}`, source: IDS.TRIGGER, target: IDS.AB_WELCOME, data: { trigger: { type: "auto" } } },
+      { id: `e_ab_a_${ts}`, source: IDS.AB_WELCOME, target: IDS.WELCOME_A, sourceHandle: "a" },
+      { id: `e_ab_b_${ts}`, source: IDS.AB_WELCOME, target: IDS.WELCOME_B, sourceHandle: "b" },
+    ] : [
+      { id: `e_trig_wel_a_${ts}`, source: IDS.TRIGGER, target: IDS.WELCOME_A, data: { trigger: { type: "auto" } } },
+    ]),
     
     // Welcome → Menu (Auto)
     { id: `e_wel_a_menu_${ts}`, source: IDS.WELCOME_A, target: IDS.PRODUCT_MENU, sourceHandle: "a" },
-    { id: `e_wel_b_menu_${ts}`, source: IDS.WELCOME_B, target: IDS.PRODUCT_MENU, sourceHandle: "a" },
+    ...(abTestingEnabled ? [{ id: `e_wel_b_menu_${ts}`, source: IDS.WELCOME_B, target: IDS.PRODUCT_MENU, sourceHandle: "a" }] : []),
 
     // Menu Connections
     { id: `e_menu_order_${ts}`, source: IDS.PRODUCT_MENU, target: IDS.ORDER_STATUS, sourceHandle: "check_order" },
@@ -448,20 +455,21 @@ Always be helpful, accurate, and keep your responses under 3 lines.`;
 // ─────────────────────────────────────────────────────────────────────────────
 // DEFAULT CONTENT FALLBACK
 // ─────────────────────────────────────────────────────────────────────────────
-function buildDefaultContent(businessName, botName, products, cartTiming = {}) {
+function buildDefaultContent(businessName, botName, products, cartTiming = {}, checkoutUrl = "") {
   const productList = products.slice(0, 3).map(p => `• *${p.name}* — ₹${p.price}`).join("\n");
+  const baseCheckoutUrl = checkoutUrl || "your-store.com/cart";
   return {
     welcome:               `Hi {{customer_name}}! 👋 Welcome to *${businessName}*!\n\nI'm ${botName}, your shopping assistant. ${productList ? "Here's what we offer:\n" + productList : ""}`,
     product_menu:          "Which product would you like to know more about? 👇",
     catalog_list_header:   "Products",
     catalog_list_button:   "View Products",
     price_enquiry:         `Our products start at just ₹${products[0]?.price || "999"}! 💰\n\nSelect a product from the menu below to see exact pricing.`,
-    buy_now:               `Great choice! 🛒\n\nClick here to order now: {{checkout_url}}\n\nFree shipping | Easy returns`,
+    buy_now:               `Great choice! 🛒\n\nClick here to order now: ${baseCheckoutUrl}/{{checkout_id}}\n\nFree shipping | Easy returns`,
     agent_request_response:`✅ *Perfect!* I've notified our team and they'll contact you shortly on this number.\n\nIn the meantime, feel free to browse our catalog! 😊`,
     fallback:              `That's a great question! 🤔\n\nLet me connect you with our team who can answer that perfectly. One moment...`,
-    cart_recovery_1:       `Hey {{customer_name}}! 👋 You left something in your cart!\n\n🛒 *{{cart_items}}*\n💰 Total: *{{cart_total}}*\n\nComplete your order: {{checkout_url}}`,
-    cart_recovery_2:       `⏰ Still thinking, {{customer_name}}?\n\nYour items are waiting — but stock is limited! \nOrder now: {{checkout_url}}`,
-    cart_recovery_3:       `🚨 Last chance, {{customer_name}}!\n\nYour cart expires soon. Don't miss out:\n{{checkout_url}}`,
+    cart_recovery_1:       `Hey {{customer_name}}! 👋 You left something in your cart!\n\n🛒 *{{cart_items}}*\n💰 Total: *{{cart_total}}*\n\nComplete your order: ${baseCheckoutUrl}/{{checkout_id}}`,
+    cart_recovery_2:       `⏰ Still thinking, {{customer_name}}?\n\nYour items are waiting — but stock is limited! \nOrder now: ${baseCheckoutUrl}/{{checkout_id}}`,
+    cart_recovery_3:       `🚨 Last chance, {{customer_name}}!\n\nYour cart expires soon. Don't miss out:\n${baseCheckoutUrl}/{{checkout_id}}`,
     cod_nudge:             `🎉 Your COD order *{{order_id}}* is confirmed!\n\nPay online now & save *₹{{discount_amount}}* instantly: {{payment_link}}`,
     review_request:        `Hi {{customer_name}}! 😊 Hope you're loving your purchase from *${businessName}*!\n\nWould you mind leaving us a quick review? It really helps! ⭐`,
     order_confirmed:       `✅ *Order Confirmed!* Thank you, {{customer_name}}!\n\nOrder *{{order_id}}* | Total: *{{order_total}}*\nWe'll keep you updated on your shipment! 📦`
@@ -475,8 +483,11 @@ function getPrebuiltTemplates(wizardData) {
     products     = [],
     cartTiming   = { msg1: 15, msg2: 2, msg3: 24 },
     googleReviewUrl = "",
-    razorpayKeyId   = ""
+    razorpayKeyId   = "",
+    cashfreeAppId   = ""
   } = wizardData;
+
+  const hasGateway = !!(razorpayKeyId || cashfreeAppId);
 
   return [
     {
@@ -501,7 +512,7 @@ function getPrebuiltTemplates(wizardData) {
       description: `Sent ${cartTiming.msg2} hours after cart abandon`,
       required:  true
     },
-    ...(razorpayKeyId ? [{
+    ...(hasGateway ? [{
       id:       "cod_to_prepaid",
       name:     `cod_prepaid_nudge`,
       category: "UTILITY",
@@ -510,7 +521,7 @@ function getPrebuiltTemplates(wizardData) {
       body:     `Hi {{1}}! Your COD order #{{2}} is confirmed! 🎉\n\nPay online now and save ₹{{3}}:\n{{4}}`,
       variables: ["customer_name", "order_id", "discount_amount", "payment_link"],
       description: "Sent 3 minutes after COD order placement",
-      required:  !!razorpayKeyId
+      required:  true
     }] : []),
     {
       id:       "order_confirmation",
@@ -533,7 +544,18 @@ function getPrebuiltTemplates(wizardData) {
       variables: ["customer_name"],
       description: "Sent 4 days after delivery",
       required:  false
-    }] : [])
+    }] : []),
+    {
+      id:       "admin_handoff_alert",
+      name:     "admin_human_alert",
+      category: "UTILITY",
+      language: "en",
+      status:   "not_submitted",
+      body:     `🚨 *Human Agent Requested!*\n\nCustomer: {{1}} ({{2}})\nMessage: {{3}}\n\nReply to them now: https://whatsapp.facebook.com/{{4}}`,
+      variables: ["customer_name", "customer_phone", "last_message", "waba_id"],
+      description: "Sent to Admin when a human is requested",
+      required:  true
+    }
   ];
 }
 

@@ -37,7 +37,7 @@ async function sendInstagramDM(igUserId, messageData, accessToken) {
   }
 
   const payload = {
-    recipient: { id: igUserId },
+    recipient: messageData.commentId ? { comment_id: messageData.commentId } : { id: igUserId },
     message: message
   };
 

@@ -103,6 +103,8 @@ router.post("/:clientId/webhook/instagram", express.json({ verify: verifyInstagr
       for (const change of changes) {
         if (change.field === "comments") {
           await handleInstagramComment(change.value, client);
+        } else if (change.field === "mentions") {
+          await handleInstagramStoryMention(change.value, client);
         }
       }
     }
@@ -194,7 +196,11 @@ async function handleInstagramComment(commentData, client) {
                   url: auto.actions.dmFlow.sendLink.url 
               });
           }
-          await sendInstagramDM(from.id, { text: dmText, buttons }, client.instagramAccessToken);
+          await sendInstagramDM(from.id, { 
+            text: dmText, 
+            buttons,
+            commentId: commentId // Use comment_id for DM to users who haven't messaged yet
+          }, client.instagramAccessToken);
         } catch (e) {
           console.error(`[IG Auto] Send DM failed:`, e.message);
         }
@@ -202,6 +208,55 @@ async function handleInstagramComment(commentData, client) {
     }
   } catch (error) {
     console.error("[IG Auto] Error handling comment:", error.message);
+  }
+}
+
+/**
+ * Process Instagram Story Mentions
+ */
+async function handleInstagramStoryMention(mentionData, client) {
+  try {
+    const { comment_id: mentionCommentId, media_id: storyId } = mentionData;
+    if (!mentionCommentId) return;
+
+    console.log(`[IG Auto] Story mention received: ${mentionCommentId} for story ${storyId}`);
+
+    // Find active story mention automations
+    const automations = await InstagramAutomation.find({
+      clientId: client.clientId,
+      isActive: true,
+      "trigger.type": "story_mention"
+    });
+
+    for (const auto of automations) {
+      // Prevent Duplicates
+      const alreadySent = auto.sentLogs && auto.sentLogs.some(log => log.postId === (storyId || mentionCommentId));
+      if (alreadySent) continue;
+
+      // Update stats
+      await InstagramAutomation.findByIdAndUpdate(auto._id, {
+        $inc: { "stats.totalSends": 1, "stats.uniqueSends": 1 },
+        $push: { sentLogs: { postId: storyId || mentionCommentId, sentAt: new Date() } }
+      });
+
+      // Send DM Reply
+      if (auto.actions.dmFlow?.openingDm?.text) {
+        try {
+          const dmText = auto.actions.dmFlow.openingDm.text;
+          const buttons = auto.actions.dmFlow.openingDm.buttons || [];
+          
+          await sendInstagramDM(null, { 
+            text: dmText, 
+            buttons,
+            commentId: mentionCommentId // Reply via DM to the person who mentioned you
+          }, client.instagramAccessToken);
+        } catch (e) {
+          console.error(`[IG Auto] Story Mention DM failed:`, e.message);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[IG Auto] Error handling story mention:", err.message);
   }
 }
 

@@ -20,10 +20,14 @@ const CampaignSchema = new mongoose.Schema({
   audienceCount: { type: Number, default: 0 },
   csvFile: { type: String }, // Path to uploaded CSV
   
-  // Phase 11 Fields
+  // Phase 11 & 21 Fields
+  sentCount:      { type: Number, default: 0 },
   deliveredCount: { type: Number, default: 0 },
-  readCount: { type: Number, default: 0 },
-  repliedCount: { type: Number, default: 0 },
+  readCount:      { type: Number, default: 0 },
+  repliedCount:   { type: Number, default: 0 },
+  failedCount:    { type: Number, default: 0 },
+  totalAudience:  { type: Number, default: 0 },
+  
   attributedRevenue: { type: Number, default: 0 },
   attributedOrders: { type: Number, default: 0 },
   isAbTest: { type: Boolean, default: false },
