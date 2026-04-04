@@ -18,11 +18,27 @@ router.post('/ai-generate', protect, async (req, res) => {
 
     try {
         const client = await Client.findOne({ clientId });
-        const apiKey = client?.openaiApiKey || process.env.GEMINI_API_KEY;
-        if (!apiKey) return res.status(403).json({ error: 'AI capabilities not configured for this account.' });
+        
+        // Ensure we only use Gemini keys for the Google AI library.
+        // openaiApiKey is for OpenAI-specific tasks only.
+        const apiKey = client?.geminiApiKey || process.env.GEMINI_API_KEY;
+        
+        if (!apiKey) {
+            return res.status(403).json({ 
+                error: 'AI capabilities not configured. Please set your Gemini API key in Settings.' 
+            });
+        }
 
         const genAI = new GoogleGenerativeAI(apiKey);
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const model = genAI.getGenerativeModel({ 
+            model: "gemini-1.5-flash",
+            safetySettings: [
+                { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+                { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+                { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+                { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+            ]
+        });
 
         const schemaContext = `
             You are an expert MongoDB query generator. Generate ONLY a valid JSON object representing a MongoDB query for the 'AdLead' collection.
@@ -61,7 +77,15 @@ router.post('/ai-generate', protect, async (req, res) => {
             `Generate a MongoDB query for this prompt: "${prompt}"`
         ]);
 
-        let responseText = result.response.text().trim();
+        let responseText = '';
+        try {
+            responseText = result.response.text().trim();
+        } catch (textErr) {
+            console.error('[AISegment] Response Blocked or Error:', textErr.message);
+            return res.status(500).json({ 
+                error: 'AI response was blocked or interrupted. Try a different prompt.' 
+            });
+        }
         // Clean markdown if present
         if (responseText.startsWith('```json')) responseText = responseText.replace(/```json|```/g, '').trim();
         else if (responseText.startsWith('```')) responseText = responseText.replace(/```/g, '').trim();
