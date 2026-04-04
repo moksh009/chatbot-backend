@@ -31,7 +31,7 @@ router.post('/ai-generate', protect, async (req, res) => {
 
         const genAI = new GoogleGenerativeAI(apiKey);
         const model = genAI.getGenerativeModel({ 
-            model: "gemini-1.5-flash",
+            model: "gemini-2.5-flash",
             safetySettings: [
                 { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
                 { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
@@ -79,34 +79,58 @@ router.post('/ai-generate', protect, async (req, res) => {
 
         let responseText = '';
         try {
-            responseText = result.response.text().trim();
+            const response = await result.response;
+            if (!response || !response.candidates || response.candidates.length === 0) {
+                throw new Error('No candidates returned from AI');
+            }
+            
+            const candidate = response.candidates[0];
+            if (candidate.finishReason === 'SAFETY' || candidate.finishReason === 'RECITATION') {
+                return res.status(403).json({ 
+                    error: `AI response blocked due to ${candidate.finishReason}. Try rephrasing your prompt.` 
+                });
+            }
+
+            responseText = response.text().trim();
         } catch (textErr) {
-            console.error('[AISegment] Response Blocked or Error:', textErr.message);
+            console.error('[AISegment] Response Processing Error:', textErr.message);
             return res.status(500).json({ 
                 error: 'AI response was blocked or interrupted. Try a different prompt.' 
             });
         }
+
         // Clean markdown if present
-        if (responseText.startsWith('```json')) responseText = responseText.replace(/```json|```/g, '').trim();
-        else if (responseText.startsWith('```')) responseText = responseText.replace(/```/g, '').trim();
+        if (responseText.includes('```')) {
+            responseText = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
+        }
 
         // Parse and validate
         let queryObj;
         try {
+            // Find the start of the JSON object if there's any preamble
+            const jsonStart = responseText.indexOf('{');
+            const jsonEnd = responseText.lastIndexOf('}');
+            if (jsonStart !== -1 && jsonEnd !== -1) {
+                responseText = responseText.substring(jsonStart, jsonEnd + 1);
+            }
             queryObj = JSON.parse(responseText);
         } catch (e) {
-            console.error('[AISegment] Parse Error:', responseText);
-            return res.status(500).json({ error: 'AI generated an invalid query. Please try rephrasing.' });
+            console.error('[AISegment] JSON Parse Error. Raw:', responseText);
+            return res.status(500).json({ error: 'AI generated an invalid query format. Please try again.' });
         }
 
         // Post-process "DATE_NOW_MINUS_X_DAYS" if any
         const processDates = (obj) => {
+            if (!obj || typeof obj !== 'object') return;
             for (let key in obj) {
                 if (typeof obj[key] === 'string' && obj[key].startsWith('DATE_NOW_MINUS_')) {
-                    const days = parseInt(obj[key].match(/\d+/)[0]);
-                    const date = new Date();
-                    date.setDate(date.getDate() - days);
-                    obj[key] = date;
+                    const match = obj[key].match(/\d+/);
+                    if (match) {
+                        const days = parseInt(match[0]);
+                        const date = new Date();
+                        date.setDate(date.getDate() - days);
+                        obj[key] = date;
+                    }
                 } else if (typeof obj[key] === 'object' && obj[key] !== null) {
                     processDates(obj[key]);
                 }

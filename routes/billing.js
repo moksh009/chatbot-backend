@@ -25,12 +25,26 @@ router.get('/usage', protect, async (req, res) => {
     }
 
     // 2. Find subscription by Client _id (ObjectId)
-    const sub = await Subscription.findOne({ clientId: client._id });
+    let sub = await Subscription.findOne({ clientId: client._id });
+    
+    // If no subscription exists, provide a default "trial" response instead of 404
     if (!sub) {
-      return res.status(404).json({ success: false, message: 'No subscription found' });
+      sub = {
+        plan: 'trial',
+        status: 'trial',
+        billingCycle: 'monthly',
+        usageThisPeriod: {
+          messages: 0,
+          contacts: 0,
+          campaigns: 0,
+          aiCallsMade: 0
+        },
+        currentPeriodStart: new Date(),
+        currentPeriodEnd: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days from now
+      };
     }
 
-    const planData = PLAN_LIMITS[sub.plan || 'trial'];
+    const planData = PLAN_LIMITS[sub.plan || 'trial'] || PLAN_LIMITS['trial'];
 
     res.json({
       success: true,

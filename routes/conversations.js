@@ -235,7 +235,6 @@ router.put('/:id/release', protect, async (req, res) => {
     if (!conversation) return res.status(404).json({ message: 'Not found' });
 
     conversation.status = 'BOT_ACTIVE';
-    conversation.assignedTo = null;
     await conversation.save();
 
     res.json(conversation);
@@ -314,7 +313,7 @@ router.patch('/:id/assign', protect, async (req, res) => {
     if (req.user.role !== 'SUPER_ADMIN') query.clientId = req.user.clientId;
 
     const update = agentId
-      ? { $set: { assignedTo: agentId, assignedAt: new Date(), assignedBy: agentName || req.user.name, status: 'HUMAN_SUPPORT' } }
+      ? { $set: { assignedTo: agentId, assignedAt: new Date(), assignedBy: agentName || req.user.name } }
       : { $unset: { assignedTo: 1, assignedAt: 1, assignedBy: 1 } };
 
     const conversation = await Conversation.findOneAndUpdate(query, update, { new: true }).populate('assignedTo', 'name email');
