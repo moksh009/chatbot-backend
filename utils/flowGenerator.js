@@ -24,7 +24,8 @@ async function generateEcommerceFlow(client, wizardData) {
     razorpayKeyId   = "",
     cashfreeAppId   = "",
     adminPhone      = "",
-    abTestingEnabled = true
+    abTestingEnabled = true,
+    templates = [] // Passed from wizard.js
   } = wizardData;
 
   // ── STEP 1: Generate message text with Gemini ──────────────────────────────
@@ -80,14 +81,16 @@ Format response as VALID JSON ONLY with these exact keys:
     AB_WELCOME:      `gen_ab_welcome_${ts}`,
     WELCOME_A:       `gen_welcome_a_${ts}`,
     WELCOME_B:       `gen_welcome_b_${ts}`,
+    WELCOME_MERGE:   `gen_wel_merge_${ts}`,
     PRODUCT_MENU:    `gen_menu_${ts}`,
     ORDER_STATUS:    `gen_order_${ts}`,
     AI_FALLBACK:     `gen_ai_${ts}`,
     
     // Human Support Path
-    ESCALATE_CHECK:  `gen_esc_check_${ts}`,
+    ESCALATE_CHECK:  `gen_esc_logic_${ts}`,
     ESCALATE_CAPTURE:`gen_esc_cap_${ts}`,
     ESCALATE_TAG:    `gen_esc_tag_${ts}`,
+    ESCALATE_LIMIT:  `gen_esc_delay_${ts}`,
     ESCALATE_ALERT:  `gen_esc_alert_${ts}`,
     ESCALATE_FINAL:  `gen_escalate_${ts}`,
     
@@ -106,280 +109,259 @@ Format response as VALID JSON ONLY with these exact keys:
     description: p.price ? `₹${p.price}` : ""
   }));
 
-  // ── STEP 3: Build nodes ────────────────────────────────────────────────────
-  const COL = 400; // center column x
+  // Helper for common node data (injecting templates everywhere)
+  const baseData = { waTemplates: templates };
+
+  // ── STEP 3: Build nodes (Production Schema) ────────────────────────────────
+  const COL = 600;
   const nodes = [
 
     // ── TRIGGER ─────────────────────────────────────────────────────────────
     {
       id:   IDS.TRIGGER,
-      type: "TriggerNode",
+      type: "trigger",
       position: { x: COL, y: 0 },
       data: {
-        label:       "Welcome Trigger",
-        triggerType: "first_message",
-        channel:     "both",
-        trigger: { type: "first_message", channel: "both" }
+        ...baseData,
+        label:       "Incoming Message",
+        triggerType: "keyword",
+        keyword:     "hi, hello, hey, help, menu",
+        trigger: {
+          type: "keyword",
+          keywords: ["hi", "hello", "hey", "help", "menu"],
+          channel: "both",
+          matchMode: "contains"
+        }
       }
     },
 
-    // ── AB TEST WELCOME (Only if enabled) ───────────────────────────────────
+    // ── AB TEST WELCOME ─────────────────────────────────────────────────────
     ...(abTestingEnabled ? [{
       id:   IDS.AB_WELCOME,
-      type: "ABTestNode",
-      position: { x: COL, y: 120 },
-      data: { label: "Split Test: Welcome", variantA: "friendly", variantB: "promo" }
+      type: "ab_test",
+      position: { x: COL, y: 150 },
+      data: { 
+        ...baseData,
+        label: "A/B Welcome Split", 
+        variantA: "Friendly Tone", 
+        variantB: "Promotional Tone" 
+      }
     }] : []),
 
     // ── WELCOME A (Friendly) ─────────────────────────────────────────────────
     {
       id:   IDS.WELCOME_A,
-      type: "MessageNode",
-      position: { x: COL - 200, y: 250 },
+      type: "message",
+      position: { x: COL - 300, y: 300 },
       data: {
-        label: "Welcome A (Friendly)",
-        text:  content.welcome_a || content.welcome || `Hi {{customer_name}}! 👋 Welcome to *${businessName}*. I'm ${botName} — how can I help you today?`,
-        role:  "welcome"
+        ...baseData,
+        label: "Welcome A",
+        text:  content.welcome_a,
       }
     },
 
     // ── WELCOME B (Promo) ────────────────────────────────────────────────────
     {
       id:   IDS.WELCOME_B,
-      type: "MessageNode",
-      position: { x: COL + 200, y: 250 },
+      type: "message",
+      position: { x: COL + 300, y: 300 },
       data: {
-        label: "Welcome B (Promo)",
-        text:  content.welcome_b || `Hey {{customer_name}}! 🎁 *Special Surprise Inside!* Welcome to ${businessName}. I'm ${botName}, your personal shopping assistant.`,
-        role:  "welcome"
+        ...baseData,
+        label: "Welcome B",
+        text:  content.welcome_b,
       }
     },
 
-    // ── PRODUCT MENU (List) ──────────────────────────────────────────────────
+    // ── PRODUCT MENU (High-Fidelity Interactive List) ──────────────────────
     {
       id:   IDS.PRODUCT_MENU,
-      type: "ListNode",
-      position: { x: COL, y: 450 },
+      type: "interactive",
+      position: { x: COL, y: 500 },
       data: {
-        label:      "Product Menu",
-        role:       "main_menu",
-        header:     content.catalog_list_header || "Products",
-        body:       content.product_menu || "Select a product to see details and pricing:",
-        buttonText: content.catalog_list_button || "View Products",
-        sections: [
-          { title: "Our Products", rows: productRows },
-          {
-            title: "Help & Support",
-            rows: [
-              { id: "check_order",   title: "Check My Order",   description: "Track your order status" },
-              { id: "talk_to_agent", title: "Talk to a Person", description: "Get personalized help" }
-            ]
-          }
+        ...baseData,
+        label:           "Main Product Menu",
+        interactiveType: "list",
+        text:            content.product_menu, // UI uses 'text'
+        header:          content.catalog_list_header || "Shop Now",
+        footer:          "Select an option below",
+        buttonText:      content.catalog_list_button || "View Items",
+        buttonsList: [
+          ...productRows,
+          { id: "check_order",   title: "📦 Track My Order" },
+          { id: "talk_to_agent", title: "📞 Talk to Expert" }
         ]
       }
     },
 
-    // ── PRODUCT DETAIL NODES (one per product) ───────────────────────────────
+    // ── PRODUCT DETAIL NODES (Rich Interactive Buttons) ──────────────────────
     ...products.slice(0, 10).map((p, i) => ({
       id:   `gen_prod_detail_${i}_${ts}`,
-      type: "InteractiveNode",
-      position: { x: (i - products.length / 2) * 320 + COL, y: 700 },
+      type: "interactive",
+      position: { x: (i - products.length / 2) * 350 + COL, y: 800 },
       data: {
-        label: `${p.name} Detail`,
-        body:  `*${p.name}*\n\n${p.description ? p.description.substring(0, 100) + "..." : ""}\n\n💰 Price: *₹${p.price}*\n🚚 Free Shipping | ✅ Easy Returns`,
-        header: p.imageUrl ? { type: "image", imageUrl: p.imageUrl } : undefined,
-        buttons: [
-          { id: `buy_prod_${i}`,   title: "🛒 Buy Now" },
-          { id: `agent_prod_${i}`, title: "📞 Talk to Us" },
-          { id: "back_to_menu",    title: "⬅️ Back" }
+        ...baseData,
+        label: `Prod: ${p.name}`,
+        interactiveType: "button",
+        text:  `*${p.name}*\n\n${p.description ? p.description.substring(0, 120) + "..." : ""}\n\n💰 Price: *₹${p.price}*\n🚚 *Express Shipping* | ✅ *100% Genuine*`,
+        imageUrl: p.imageUrl || undefined,
+        buttonsList: [
+          { id: `buy_prod_${i}`,   title: "🛒 Order Now" },
+          { id: `agent_prod_${i}`, title: "📱 WhatsApp Us" },
+          { id: "back_to_menu",    title: "⬅️ Show All" }
         ]
       }
     })),
 
-    // ── ORDER STATUS ─────────────────────────────────────────────────────────
+    // ── ORDER STATUS (Shopify Action Node) ───────────────────────────────────
     {
       id:   IDS.ORDER_STATUS,
-      type: "ShopifyNode",
-      position: { x: COL + 450, y: 700 },
+      type: "shopify_call",
+      position: { x: COL + 600, y: 800 },
       data: {
-        label:  "Check Order Status",
-        action: "ORDER_STATUS",
-        role:   "order_status"
+        ...baseData,
+        label:  "Shopify: Status",
+        action: "ORDER_STATUS"
       }
     },
 
-    // ── AI FALLBACK ──────────────────────────────────────────────────────────
+    // ── AI ASSISTANT (Fallback Path) ─────────────────────────────────────────
     {
       id:   IDS.AI_FALLBACK,
-      type: "AINode",
-      position: { x: COL + 800, y: 450 },
+      type: "message",
+      position: { x: COL + 1000, y: 500 },
       data: {
-        label: "AI Assistant",
-        role: "ai_fallback",
-        overridePrompt: null
+        ...baseData,
+        label: "AI Smart Help",
+        text:  content.fallback,
+        action: "AI_FALLBACK"
       }
     },
 
-    // ── ADVANCED ESCALATION PATH ─────────────────────────────────────────────
-    // 1. Condition: Does email exist?
+    // ── ADVANCED ESCALATION (Logic + Capture + Admin Alert) ──────────────────
     {
       id:   IDS.ESCALATE_CHECK,
-      type: "LogicNode",
-      position: { x: COL + 800, y: 800 },
-      data: { label: "Check Contact Info", variable: "email", operator: "exists", value: "" }
-    },
-    // 2. Capture: Ask for email if missing
-    {
-      id:   IDS.ESCALATE_CAPTURE,
-      type: "CaptureNode",
-      position: { x: COL + 1100, y: 700 },
-      data: {
-        label: "Capture Contact",
+      type: "logic",
+      position: { x: COL + 1000, y: 900 },
+      data: { 
+        ...baseData,
+        label: "Lead Check",
         variable: "email",
-        question: "To connect you with the right person, could you please share your *email or contact number*? 👤"
+        operator: "exists",
+        value: ""
       }
     },
-    // 3. Tag: High Intent
+    {
+      id:   IDS.ESCALATE_CAPTURE,
+      type: "capture_input",
+      position: { x: COL + 1350, y: 850 },
+      data: {
+        ...baseData,
+        label: "Capture Contact",
+        variable: "email",
+        text: "Could you please share your *contact number or email*? Our team will use this to reach you. 👤"
+      }
+    },
     {
       id:   IDS.ESCALATE_TAG,
-      type: "TagNode",
-      position: { x: COL + 1400, y: 800 },
-      data: { label: "Tag: High Support", action: "add", tag: "High_Intent_Support" }
+      type: "tag_lead",
+      position: { x: COL + 1700, y: 900 },
+      data: { 
+        ...baseData,
+        label: "Tag: Support Request", 
+        action: "add", 
+        tag: "Wizard_Generated_Support" 
+      }
     },
-    // 3.5 Delay: Wait 1m for agent assignment simulation
-    {
-      id:   `gen_esc_delay_${ts}`,
-      type: "DelayNode",
-      position: { x: COL + 1600, y: 700 },
-      data: { label: "Wait 1m", duration: 1, unit: "minutes" }
-    },
-    // 4. Admin Alert: Premium Notification
     {
       id:   IDS.ESCALATE_ALERT,
-      type: "AdminAlertNode",
-      position: { x: COL + 1850, y: 800 },
+      type: "admin_alert",
+      position: { x: COL + 2050, y: 900 },
       data: {
-        label: "WhatsApp Admin Alert",
-        topic: "🚨 URGENT: Human Agent Requested",
+        ...baseData,
+        label: "Admin: Handoff",
+        topic: "🚨 Enterprise Support Requested",
         channel: "whatsapp",
         priority: "high",
         recipientPhone: adminPhone,
         templateId: "admin_handoff_alert"
       }
     },
-    // 5. Final Message
     {
       id:   IDS.ESCALATE_FINAL,
-      type: "MessageNode",
-      position: { x: COL + 1900, y: 800 },
+      type: "message",
+      position: { x: COL + 2400, y: 900 },
       data: {
-        label: "Hand-off Confirmation",
-        text:  content.agent_request_response || `✅ *Got it!* I've alerted my team. Someone will reach out to you on this chat shortly. 😊`
+        ...baseData,
+        label: "Confirmation Msg",
+        text:  content.agent_request_response
       }
     },
 
-    // ── CART RECOVERY ───────────────────────────────────────────────────────
+    // ── AUTOMATIONS ──────────────────────────────────────────────────────────
     {
       id:   IDS.CART_1,
-      type: "MessageNode",
-      position: { x: 0, y: 1000 },
+      type: "message",
+      position: { x: -400, y: 1200 },
       data: {
-        label: "Cart Recovery 1",
-        text:  content.cart_recovery_1 || `Hey {{customer_name}}! 👋 You left something in your cart.\n\n🛒 *{{cart_items}}*\n💰 Total: *{{cart_total}}*\n\nComplete your order: {{checkout_url}}`,
-        role:  "cart_recovery_1"
+        ...baseData,
+        label: "Cart Recover 1",
+        text:  content.cart_recovery_1,
+        source: "automation_cart_msg1"
       }
     },
-    {
-      id:   IDS.CART_2,
-      type: "MessageNode",
-      position: { x: 350, y: 1000 },
-      data: {
-        label: "Cart Recovery 2",
-        text:  content.cart_recovery_2 || `⏰ Still thinking, {{customer_name}}?\n\nYour items are waiting — but stock is limited! \nOrder now: {{checkout_url}}`,
-        role: "cart_recovery_2"
-      }
-    },
-
-    // ── COD TO PREPAID NUDGE ─────────────────────────────────────────────────
     {
       id:   IDS.COD_NUDGE,
-      type: "InteractiveNode",
-      position: { x: 700, y: 1000 },
+      type: "interactive",
+      position: { x: 0, y: 1200 },
       data: {
-        label: "COD → Prepaid Nudge",
-        body:  content.cod_nudge || `🎉 Your COD order *{{order_id}}* is confirmed!\n\nPay online now & save *₹{{discount_amount}}* instantly: {{payment_link}}`,
-        role:  "cod_nudge",
-        buttons: [
-          { id: "cod_pay_link",  title: "💳 Pay via UPI/Card" },
+        ...baseData,
+        label: "COD → Prepaid",
+        interactiveType: "button",
+        text:  content.cod_nudge,
+        buttonsList: [
+          { id: "cod_pay_link",  title: "💳 Pay Online" },
           { id: "cod_keep_cod",  title: "Keep COD" }
         ]
       }
-    },
-
-    // ── ORDER CONFIRMATION ───────────────────────────────────────────────────
-    {
-      id:   IDS.ORDER_CONFIRMED,
-      type: "MessageNode",
-      position: { x: 1050, y: 1000 },
-      data: {
-        label: "Order Confirmed",
-        text:  content.order_confirmed || `✅ *Order Confirmed!*\nOrder *{{order_id}}* | Total: *{{order_total}}*\nWe'll notify you when it ships! 📦`,
-        role:  "order_confirmation"
-      }
-    },
-
-    // ── REVIEW REQUEST ───────────────────────────────────────────────────────
-    ...(googleReviewUrl ? [{
-      id:   IDS.REVIEW,
-      type: "InteractiveNode",
-      position: { x: 1400, y: 1000 },
-      data: {
-        label: "Review Request",
-        body:  content.review_request || `Hi {{customer_name}}! 😊 Hope you're loving your purchase from *${businessName}*! Would you mind leaving us a quick review?`,
-        role:  "review_request",
-        buttons: [{ id: "review_yes", title: `⭐ Leave a Review` }]
-      }
-    }] : [])
+    }
   ];
 
   // ── STEP 4: Build edges ────────────────────────────────────────────────────
   const edges = [
     // Trigger → AB Split (or direct to Welcome A)
     ...(abTestingEnabled ? [
-      { id: `e_trig_ab_${ts}`, source: IDS.TRIGGER, target: IDS.AB_WELCOME, data: { trigger: { type: "auto" } } },
-      { id: `e_ab_a_${ts}`, source: IDS.AB_WELCOME, target: IDS.WELCOME_A, sourceHandle: "a" },
-      { id: `e_ab_b_${ts}`, source: IDS.AB_WELCOME, target: IDS.WELCOME_B, sourceHandle: "b" },
+      { id: `e_trig_ab_${ts}`, source: IDS.TRIGGER, target: IDS.AB_WELCOME, animated: true },
+      { id: `e_ab_a_${ts}`, source: IDS.AB_WELCOME, target: IDS.WELCOME_A, sourceHandle: "a", animated: true },
+      { id: `e_ab_b_${ts}`, source: IDS.AB_WELCOME, target: IDS.WELCOME_B, sourceHandle: "b", animated: true },
+      // Merge results to menu
+      { id: `e_wel_a_menu_${ts}`, source: IDS.WELCOME_A, target: IDS.PRODUCT_MENU, animated: true },
+      { id: `e_wel_b_menu_${ts}`, source: IDS.WELCOME_B, target: IDS.PRODUCT_MENU, animated: true },
     ] : [
-      { id: `e_trig_wel_a_${ts}`, source: IDS.TRIGGER, target: IDS.WELCOME_A, data: { trigger: { type: "auto" } } },
+      { id: `e_trig_wel_a_${ts}`, source: IDS.TRIGGER, target: IDS.WELCOME_A, animated: true },
+      { id: `e_wel_a_menu_${ts}`, source: IDS.WELCOME_A, target: IDS.PRODUCT_MENU, animated: true },
     ]),
     
-    // Welcome → Menu (Auto)
-    { id: `e_wel_a_menu_${ts}`, source: IDS.WELCOME_A, target: IDS.PRODUCT_MENU, sourceHandle: "a" },
-    ...(abTestingEnabled ? [{ id: `e_wel_b_menu_${ts}`, source: IDS.WELCOME_B, target: IDS.PRODUCT_MENU, sourceHandle: "a" }] : []),
-
     // Menu Connections
-    { id: `e_menu_order_${ts}`, source: IDS.PRODUCT_MENU, target: IDS.ORDER_STATUS, sourceHandle: "check_order" },
-    { id: `e_menu_agent_${ts}`, source: IDS.PRODUCT_MENU, target: IDS.ESCALATE_CHECK, sourceHandle: "talk_to_agent" },
-    { id: `e_order_ai_${ts}`, source: IDS.ORDER_STATUS, target: IDS.AI_FALLBACK, sourceHandle: "a" },
+    { id: `e_menu_order_${ts}`, source: IDS.PRODUCT_MENU, target: IDS.ORDER_STATUS, sourceHandle: "check_order", animated: true },
+    { id: `e_menu_agent_${ts}`, source: IDS.PRODUCT_MENU, target: IDS.ESCALATE_CHECK, sourceHandle: "talk_to_agent", animated: true },
 
     // Product Grid Edges
     ...products.slice(0, 10).map((p, i) => ({
-      id: `e_menu_prod_${i}_${ts}`, source: IDS.PRODUCT_MENU, target: `gen_prod_detail_${i}_${ts}`, sourceHandle: `sel_prod_${i}`
+      id: `e_menu_prod_${i}_${ts}`, source: IDS.PRODUCT_MENU, target: `gen_prod_detail_${i}_${ts}`, sourceHandle: `sel_prod_${i}`, animated: true
     })),
     ...products.slice(0, 10).map((p, i) => ({
-      id: `e_prod_agent_${i}_${ts}`, source: `gen_prod_detail_${i}_${ts}`, target: IDS.ESCALATE_CHECK, sourceHandle: `agent_prod_${i}`
+      id: `e_prod_agent_${i}_${ts}`, source: `gen_prod_detail_${i}_${ts}`, target: IDS.ESCALATE_CHECK, sourceHandle: `agent_prod_${i}`, animated: true
     })),
     ...products.slice(0, 10).map((p, i) => ({
-      id: `e_prod_back_${i}_${ts}`, source: `gen_prod_detail_${i}_${ts}`, target: IDS.PRODUCT_MENU, sourceHandle: "back_to_menu"
+      id: `e_prod_back_${i}_${ts}`, source: `gen_prod_detail_${i}_${ts}`, target: IDS.PRODUCT_MENU, sourceHandle: "back_to_menu", animated: true
     })),
 
-    // Advanced Escalation Path Edges
-    { id: `e_esc_check_true_${ts}`,  source: IDS.ESCALATE_CHECK, target: IDS.ESCALATE_TAG, sourceHandle: "true" },
-    { id: `e_esc_check_false_${ts}`, source: IDS.ESCALATE_CHECK, target: IDS.ESCALATE_CAPTURE, sourceHandle: "false" },
-    { id: `e_esc_cap_tag_${ts}`,    source: IDS.ESCALATE_CAPTURE, target: IDS.ESCALATE_TAG, sourceHandle: "a" },
-    { id: `e_esc_tag_delay_${ts}`,  source: IDS.ESCALATE_TAG, target: `gen_esc_delay_${ts}`, sourceHandle: "a" },
-    { id: `e_esc_delay_alert_${ts}`,source: `gen_esc_delay_${ts}`, target: IDS.ESCALATE_ALERT, sourceHandle: "a" },
-    { id: `e_esc_alert_final_${ts}`,source: IDS.ESCALATE_ALERT, target: IDS.ESCALATE_FINAL, sourceHandle: "a" }
+    // Escalation Path Edges
+    { id: `e_esc_logic_t_${ts}`,  source: IDS.ESCALATE_CHECK, target: IDS.ESCALATE_TAG, sourceHandle: "true", animated: true },
+    { id: `e_esc_logic_f_${ts}`,  source: IDS.ESCALATE_CHECK, target: IDS.ESCALATE_CAPTURE, sourceHandle: "false", animated: true },
+    { id: `e_esc_cap_tag_${ts}`,  source: IDS.ESCALATE_CAPTURE, target: IDS.ESCALATE_TAG, animated: true },
+    { id: `e_esc_tag_alert_${ts}`,source: IDS.ESCALATE_TAG, target: IDS.ESCALATE_ALERT, animated: true },
+    { id: `e_esc_alt_final_${ts}`,source: IDS.ESCALATE_ALERT, target: IDS.ESCALATE_FINAL, animated: true }
   ];
 
   return { nodes, edges };

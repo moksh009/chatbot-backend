@@ -216,6 +216,8 @@ async function refreshShopifyToken(client) {
 }
 
 module.exports = {
+    getShopifyClient,
+    withShopifyRetry,
     refreshShopifyToken,
     injectPixelScript: async (clientId) => {
         return await withShopifyRetry(clientId, async (shop) => {

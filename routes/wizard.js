@@ -27,9 +27,12 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     }
 
     console.log(`[Wizard] Starting flow generation for ${clientId}...`);
-
-    // Generate the complete flow
-    const { nodes, edges } = await generateEcommerceFlow(client, wizardData);
+    
+    // Get pre-built templates based on user's wizard data (like business name, cart timing)
+    const templates = getPrebuiltTemplates(wizardData);
+    
+    // Generate the complete flow (passing templates so nodes can use them)
+    const { nodes, edges } = await generateEcommerceFlow(client, { ...wizardData, templates });
 
     // Generate system prompt
     const systemPrompt = await generateSystemPrompt(client, wizardData);

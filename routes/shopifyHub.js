@@ -79,24 +79,30 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
     });
 
   } catch (err) {
-    const shopifyError = err.response?.data?.errors || err.message;
+    const shopifyError = err.response?.data?.errors || err.response?.data?.message || err.message;
     const isAuthError = err.response?.status === 401 || err.response?.status === 403;
     const isMissingConfig = err.message === 'Shopify credentials incomplete or invalid';
 
+    console.error(`[Pulse Error] Client: ${clientId}:`, shopifyError);
+
     if (isMissingConfig) {
-       return res.json({ 
+       return res.status(200).json({ 
          success: false, 
          isShopifyConnected: false, 
          error: 'Shopify is not connected' 
        });
     }
 
+    // Capture the exact error string for the frontend to show
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
-    console.error(`[Pulse Error] Client: ${clientId}:`, errorString);
+    
+    // If it's an auth error, we return success: false but with extra flags
+    // This prevents the frontend analytics from completely crashing
     res.status(isAuthError ? 400 : 500).json({ 
       success: false, 
-      error: `Shopify Hub Pulse Error: ${errorString}`, 
-      isShopifyAuthError: isAuthError
+      error: `Shopify Sync Error: ${errorString}`, 
+      isShopifyAuthError: isAuthError,
+      isShopifyConnected: true // It's connected but auth failed
     });
   }
 });
