@@ -6,6 +6,8 @@ const PixelEvent = require('../models/PixelEvent');
 const FollowUpSequence = require('../models/FollowUpSequence');
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
 const moment = require('moment');
+const { protect } = require('../middleware/auth');
+const { injectPixelScript } = require('../utils/shopifyHelper');
 
 /**
  * Shopify Custom Pixel Endpoint
@@ -190,6 +192,26 @@ router.get('/pixel/:clientId/script.js', async (req, res) => {
 
     res.set('Content-Type', 'application/javascript');
     return res.send(script);
+});
+
+/**
+ * Trigger Automatic Injection
+ * POST /api/shopify/pixel/:clientId/inject
+ * Requires auth
+ */
+router.post('/pixel/:clientId/inject', protect, async (req, res) => {
+    const { clientId } = req.params;
+    if (req.user.clientId !== clientId && req.user.role !== 'SUPER_ADMIN') {
+        return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    try {
+        const result = await injectPixelScript(clientId);
+        res.json(result);
+    } catch (err) {
+        console.error('[PixelInject] Error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 module.exports = router;

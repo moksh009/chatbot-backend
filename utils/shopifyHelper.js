@@ -216,8 +216,43 @@ async function refreshShopifyToken(client) {
 }
 
 module.exports = {
-    getShopifyClient,
-    withShopifyRetry,
-    exchangeShopifyToken,
-    refreshShopifyToken
+    refreshShopifyToken,
+    injectPixelScript: async (clientId) => {
+        return await withShopifyRetry(clientId, async (shop) => {
+            const client = await Client.findOne({ clientId });
+            
+            // 1. Get Main Theme
+            const themesRes = await shop.get('/themes.json');
+            const mainTheme = (themesRes.data.themes || []).find(t => t.role === 'main');
+            if (!mainTheme) throw new Error('Main theme not found');
+
+            // 2. Get theme.liquid
+            const assetRes = await shop.get(`/themes/${mainTheme.id}/assets.json`, {
+                params: { 'asset[key]': 'layout/theme.liquid' }
+            });
+            let liquid = assetRes.data.asset?.value;
+            if (!liquid) throw new Error('Could not read theme.liquid');
+
+            const backendUrl = process.env.BACKEND_URL || 'https://topedgeai.com';
+            const scriptTag = `\n<!-- TopEdge Pixel -->\n<script src="${backendUrl}/api/shopify/pixel/${clientId}/script.js"></script>\n`;
+
+            if (liquid.includes(`/api/shopify/pixel/${clientId}/script.js`)) {
+                return { success: true, message: 'Pixel already injected' };
+            }
+
+            // 3. Inject before </head>
+            if (liquid.includes('</head>')) {
+                liquid = liquid.replace('</head>', `${scriptTag}</head>`);
+            } else {
+                liquid += scriptTag;
+            }
+
+            // 4. Save
+            await shop.put(`/themes/${mainTheme.id}/assets.json`, {
+                asset: { key: 'layout/theme.liquid', value: liquid }
+            });
+
+            return { success: true };
+        });
+    }
 };
