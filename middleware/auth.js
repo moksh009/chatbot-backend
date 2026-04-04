@@ -48,4 +48,4 @@ const verifyClientAccess = (req, res, next) => {
   next();
 };
 
-module.exports = { protect, authorize, verifyClientAccess };
+module.exports = { protect, verifyToken: protect, authorize, verifyClientAccess };

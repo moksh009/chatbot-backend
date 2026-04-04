@@ -170,4 +170,24 @@ router.get('/:clientId/export', protect, async (req, res) => {
     }
 });
 
+// GET /api/leads/:clientId/tags
+router.get('/:clientId/tags', protect, async (req, res) => {
+    try {
+        const { clientId } = req.params;
+        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+             return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
+        
+        let targetClientId = clientId;
+        // In case clientId string is passed and needs to be resolved to ObjectId or just string match
+        // based on how AdLead stores clientId. Typically stored as String or ObjectId.
+        
+        const tags = await AdLead.distinct('tags', { clientId: targetClientId });
+        res.json({ success: true, tags: tags || [] });
+    } catch (err) {
+        console.error('[Tags Fetch] Error:', err);
+        res.status(500).json({ success: false, message: 'General Server Error' });
+    }
+});
+
 module.exports = router;
