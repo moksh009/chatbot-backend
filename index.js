@@ -508,9 +508,11 @@ console.log(`Starting server on port ${PORT}...`);
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: '*',
-    methods: ['GET', 'POST', 'PUT', 'DELETE']
-  }
+    origin: process.env.FRONTEND_URL || '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    credentials: true
+  },
+  transports: ['websocket', 'polling']
 });
 
 app.set('socketio', io);

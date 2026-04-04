@@ -65,7 +65,7 @@ router.get('/me', protect, async (req, res) => {
         business_type: client ? client.businessType || user.business_type : user.business_type,
         clientId: user.clientId,
         clientName: client ? client.name : null,
-        subscriptionPlan: client ? client.subscriptionPlan || 'v2' : 'v2',
+        subscriptionPlan: client ? client.tier || 'v1' : 'v1',
         plan: client ? client.plan || 'CX Agent (V1)' : 'CX Agent (V1)',
         hasCompletedTour: user.hasCompletedTour,
         trialActive: client ? client.trialActive : null,
@@ -116,7 +116,7 @@ router.post('/login', async (req, res) => {
         clientId: user.clientId,
         token: generateToken(user._id),
         clientName: client ? client.name : null, // Add client name
-        subscriptionPlan: client ? client.subscriptionPlan || 'v2' : 'v2',
+        subscriptionPlan: client ? client.tier || 'v1' : 'v1',
         plan: client ? client.plan || 'CX Agent (V1)' : 'CX Agent (V1)',
         hasCompletedTour: user.hasCompletedTour,
         trialActive: client ? client.trialActive : null,
