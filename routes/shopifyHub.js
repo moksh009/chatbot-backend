@@ -36,13 +36,18 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
             console.log(`[ShopifyHub] Auto-sync triggered for ${clientId} (0 local orders found)`);
             const protocol = req.secure ? 'https' : 'http';
             const host = req.get('host');
-            axios.post(`${protocol}://${host}/api/shopify/${clientId}/sync-orders`, {}, {
-                headers: { Authorization: req.headers.authorization }
-            }).catch(e => console.error('[AutoSync] Order sync failed:', e.message));
             
-            axios.post(`${protocol}://${host}/api/shopify/${clientId}/sync-products`, {}, {
-                headers: { Authorization: req.headers.authorization }
-            }).catch(e => console.error('[AutoSync] Product sync failed:', e.message));
+            // Non-blocking internal triggers
+            if (host) {
+                const baseUrl = `${protocol}://${host}`;
+                axios.post(`${baseUrl}/api/shopify/${clientId}/sync-orders`, {}, {
+                    headers: { Authorization: req.headers.authorization }
+                }).catch(e => console.error('[AutoSync] Order sync failed:', e.message));
+                
+                axios.post(`${baseUrl}/api/shopify/${clientId}/sync-products`, {}, {
+                    headers: { Authorization: req.headers.authorization }
+                }).catch(e => console.error('[AutoSync] Product sync failed:', e.message));
+            }
         }
 
         let payouts = [];

@@ -11,12 +11,14 @@ const { checkLimit, incrementUsage } = require('../utils/planLimits');
 // @route   GET /api/team
 // @route   GET /api/team/:clientId
 // @desc    Get all team members for a client with performance metrics
-// @access  Private (Admin only recommended)
-router.get(['/', '/:clientId'], protect, async (req, res) => {
+// @access  Private
+router.get('/:clientId', protect, async (req, res) => {
     try {
-        const clientId = req.params.clientId || req.user.clientId;
+        const { clientId } = req.params;
+        console.log(`[TeamAPI] Fetching team for explicitly provided clientId: ${clientId}`);
 
         if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+           console.warn(`[TeamAPI] Unauthorized access attempt: ${req.user.clientId} tried to access ${clientId}`);
            return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
 
@@ -53,6 +55,47 @@ router.get(['/', '/:clientId'], protect, async (req, res) => {
         res.json({ success: true, team: teamWithMetrics });
     } catch (error) {
         console.error('[TeamAPI] Fetch Error:', error);
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+});
+
+router.get('/', protect, async (req, res) => {
+    try {
+        const clientId = req.user.clientId;
+        console.log(`[TeamAPI] Fetching team for authenticated user clientId: ${clientId}`);
+        
+        // REUSE LOGIC: Since we want same logic, we can either extract to helper or just call the same flow
+        // To keep it simple and avoid massive refactor, I'll just repeat the logic briefly or redirect
+        // But for efficiency, I'll just copy the core logic here
+        const users = await User.find({ clientId }).select('-password');
+        const performanceMetrics = await Conversation.aggregate([
+            { $match: { clientId, assignedTo: { $exists: true, $ne: null } } },
+            { $group: {
+                _id: "$assignedTo",
+                totalAssigned: { $sum: 1 },
+                resolvedCount: { $sum: { $cond: [{ $eq: ["$status", "CLOSED"] }, 1, 0] } },
+                avgCsat: { $avg: "$csatScore.rating" },
+                lastActive: { $max: "$lastInteraction" }
+            }}
+        ]);
+
+        const teamWithMetrics = users.map(user => {
+            const metric = performanceMetrics.find(m => m._id && m._id.toString() === user._id.toString());
+            return {
+                ...user.toObject(),
+                id: user._id.toString(),
+                metrics: {
+                    assignedChats: metric ? metric.totalAssigned : 0,
+                    resolvedChats: metric ? metric.resolvedCount : 0,
+                    avgCsat: metric && metric.avgCsat ? Number(metric.avgCsat.toFixed(1)) : 0,
+                    lastActive: metric ? metric.lastActive : null
+                }
+            };
+        });
+
+        res.json({ success: true, team: teamWithMetrics });
+    } catch (error) {
+        console.error('[TeamAPI] Root Fetch Error:', error);
         res.status(500).json({ message: 'Server Error', error: error.message });
     }
 });
