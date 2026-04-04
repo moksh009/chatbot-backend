@@ -214,5 +214,42 @@ router.post('/pixel/:clientId/inject', protect, async (req, res) => {
     }
 });
 
+/**
+ * GET /api/shopify/pixel/:clientId/status
+ * Returns real-time pixel performance metrics
+ */
+router.get('/pixel/:clientId/status', protect, async (req, res) => {
+    const { clientId } = req.params;
+    
+    try {
+        const fiveMinutesAgo = moment().subtract(5, 'minutes').toDate();
+        const fifteenMinutesAgo = moment().subtract(15, 'minutes').toDate();
+
+        // 1. Get Event Count in last 5 mins
+        const count = await PixelEvent.countDocuments({
+            clientId,
+            timestamp: { $gte: fiveMinutesAgo }
+        });
+
+        // 2. Get Last Event
+        const lastEvent = await PixelEvent.findOne({ clientId })
+            .sort({ timestamp: -1 });
+
+        const eventsPerMinute = (count / 5).toFixed(1);
+        const isActive = (lastEvent && moment(lastEvent.timestamp).isAfter(fifteenMinutesAgo)) || false;
+
+        res.json({
+            success: true,
+            isActive,
+            eventsPerMinute: parseFloat(eventsPerMinute),
+            lastEventAt: lastEvent ? lastEvent.timestamp : null,
+            totalEvents: count
+        });
+    } catch (err) {
+        console.error('[PixelStatus] Error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 module.exports = router;
 
