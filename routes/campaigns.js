@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const Campaign = require('../models/Campaign');
 const CampaignMessage = require('../models/CampaignMessage');
+const Segment = require('../models/Segment');
+const AdLead = require('../models/AdLead');
 const { protect } = require('../middleware/auth');
 const multer = require('multer');
 const upload = multer({ dest: 'uploads/' });
@@ -13,6 +15,7 @@ const { sendAppointmentReminder } = require('../utils/sendAppointmentReminder');
 const DailyStat = require('../models/DailyStat');
 const WhatsApp = require('../utils/whatsapp');
 const { createMessage } = require('../utils/createMessage');
+const { checkLimit, incrementUsage } = require('../utils/planLimits');
 const log = require('../utils/logger')('Campaigns');
 
 try {
@@ -37,14 +40,21 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
   }
 
   try {
-    // Check subscription plan (using new 'plan' field, fallback to subscriptionPlan for legacy)
+    // Check subscription plan (using new validation limits)
     const client = await Client.findOne({ clientId: req.user.clientId });
     const isV1 = client?.plan === 'CX Agent (V1)' || client?.subscriptionPlan === 'v1';
     if (!client || isV1) {
-      // Clean up uploaded file
       try { fs.unlinkSync(req.file.path); } catch {}
-      return res.status(403).json({ message: 'Marketing Broadcasting (CSV Upload) is locked for CX Agent (V1). Please upgrade to V2.' });
+      return res.status(403).json({ message: 'Marketing Broadcasting is locked for CX Agent (V1). Please upgrade.' });
     }
+
+    const limits = await checkLimit(client._id, 'campaigns');
+    if (!limits.allowed) {
+      try { fs.unlinkSync(req.file.path); } catch {}
+      return res.status(403).json({ message: limits.reason });
+    }
+
+    await incrementUsage(client._id, 'campaigns', 1);
 
     const rows = [];
     await new Promise((resolve, reject) => {
@@ -79,6 +89,31 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
   }
 });
 
+// @route   POST /api/campaigns/from-segment
+// @desc    Create a campaign from a saved AI Segment
+// @access  Private
+router.post('/from-segment', protect, async (req, res) => {
+    const { segmentId, name } = req.body;
+    try {
+        const segment = await Segment.findOne({ _id: segmentId, clientId: req.user.clientId });
+        if (!segment) return res.status(404).json({ error: 'Segment not found' });
+
+        const count = await AdLead.countDocuments({ ...segment.query, clientId: req.user.clientId });
+
+        const campaign = await Campaign.create({
+            clientId: req.user.clientId,
+            name: name || `Segment: ${segment.name}`,
+            status: 'DRAFT',
+            audienceCount: count,
+            segmentId: segmentId // We should add this to Campaign model
+        });
+
+        res.json(campaign);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to create campaign from segment' });
+    }
+});
+
 // @route   GET /api/campaigns
 // @desc    List campaigns
 // @access  Private
@@ -102,7 +137,12 @@ router.post('/start', protect, async (req, res) => {
   try {
     const campaign = await Campaign.findOne({ _id: campaignId, clientId: req.user.clientId });
     if (!campaign) return res.status(404).json({ message: 'Campaign not found' });
-    if (!campaign.csvFile) return res.status(400).json({ message: 'No CSV file attached to campaign' });
+    
+    // Support both CSV and Segment-based campaigns
+    if (!campaign.csvFile && !campaign.segmentId) {
+        return res.status(400).json({ message: 'No audience (CSV or Segment) attached to campaign' });
+    }
+
     log.info(`Campaign START: campaignId=${campaignId} | clientId=${req.user.clientId} | templateType=${templateType}`);
     campaign.status = 'SENDING';
     await campaign.save();
@@ -131,13 +171,28 @@ router.post('/start', protect, async (req, res) => {
     let failed = 0;
     const rows = [];
 
-    await new Promise((resolve, reject) => {
-      fs.createReadStream(campaign.csvFile)
-        .pipe(csv())
-        .on('data', (data) => rows.push(data))
-        .on('end', resolve)
-        .on('error', reject);
-    });
+    // --- Audience Sourcing (CSV or Segment) ---
+    if (campaign.segmentId) {
+        const segment = await Segment.findById(campaign.segmentId);
+        if (segment) {
+            const leads = await AdLead.find({ ...segment.query, clientId: req.user.clientId });
+            leads.forEach(l => {
+                rows.push({
+                    phone: l.phoneNumber,
+                    name: l.name || 'Customer',
+                    email: l.email || ''
+                });
+            });
+        }
+    } else if (campaign.csvFile) {
+        await new Promise((resolve, reject) => {
+            fs.createReadStream(campaign.csvFile)
+                .pipe(csv())
+                .on('data', (data) => rows.push(data))
+                .on('end', resolve)
+                .on('error', reject);
+        });
+    }
 
     total = rows.length;
     for (const row of rows) {
@@ -338,6 +393,94 @@ router.get('/overview', protect, async (req, res) => {
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
+});
+
+// @route   POST /api/campaigns/smart-send
+// @desc    Smart broadcast optimization with schedule/throttle execution (DB-queued)
+// @access  Private
+router.post('/smart-send', protect, async (req, res) => {
+    try {
+        const { campaignId, config } = req.body;
+        if (!campaignId) return res.status(400).json({ success: false, message: 'Campaign ID required' });
+
+        const campaign = await Campaign.findOne({ _id: campaignId, clientId: req.user.clientId });
+        if (!campaign) return res.status(404).json({ success: false, message: 'Not found' });
+        
+        campaign.status = 'SENDING';
+        campaign.isSmartSend = true;
+        campaign.smartSendConfig = config;
+        await campaign.save();
+
+        const FollowUpSequence = require('../models/FollowUpSequence');
+        const AdLead = require('../models/AdLead');
+        const moment = require('moment');
+
+        let rows = [];
+        fs.createReadStream(campaign.csvFile)
+            .pipe(csv())
+            .on('data', (d) => rows.push(d))
+            .on('end', async () => {
+                 let queuedCount = 0;
+                 
+                 for (let i = 0; i < rows.length; i++) {
+                     const row = rows[i];
+                     const phone = normalizePhone(row.phone || row.number || row.mobile || row.recipient || '');
+                     if (!phone) continue;
+                     
+                     const tName = campaign.templateName || req.body.templateName;
+                     if (!tName) continue;
+                     
+                     // Peak hour calculation logic
+                     let optimalSendAt = moment().add(Math.floor(Math.random() * 60) + 15, 'minutes'); // default jitter
+                     
+                     try {
+                         const lead = await AdLead.findOne({ phoneNumber: phone, clientId: req.user.clientId });
+                         if (lead && lead.lastInteractionAt) {
+                             const interactionHour = moment(lead.lastInteractionAt).hour();
+                             // Try to target their previous interaction hour today or tomorrow
+                             const targetToday = moment().set({ hour: interactionHour, minute: 0, second: 0 });
+                             if (targetToday.isAfter(moment())) {
+                                 optimalSendAt = targetToday;
+                             } else {
+                                 optimalSendAt = targetToday.add(1, 'day');
+                             }
+                         } else {
+                             // E.g., assume timezone offset logic here (default to India 10 AM ~ 4 PM staggered)
+                             // Fallback: stagger based on list index across the next 6 hours
+                             optimalSendAt = moment().add((i % 360) + 10, 'minutes');
+                         }
+                     } catch(e) {}
+                     
+                     // Push to DB Queue via FollowUpSequence
+                     const seq = new FollowUpSequence({
+                         clientId: req.user.clientId,
+                         leadId: null, // Lead might not exist yet
+                         phone: phone,
+                         name: `Smart Broadcast: ${campaign.name}`,
+                         status: 'active',
+                         steps: [{
+                             type: 'whatsapp',
+                             templateName: tName,
+                             sendAt: optimalSendAt.toDate(),
+                             status: 'pending'
+                         }]
+                     });
+                     
+                     await seq.save();
+                     queuedCount++;
+                 }
+                 
+                 campaign.audienceCount = rows.length;
+                 campaign.status = 'COMPLETED'; // Marking the parsing as completed
+                 await campaign.save();
+                 log.success(`[SmartSend] FINISHED QUEUING ${campaignId} - Queued: ${queuedCount}`);
+            });
+
+        // Close request immediately with 200 OK
+        res.json({ success: true, message: 'Smart Send is analyzing and queueing via DB Engine.' });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
 });
 
 module.exports = router;

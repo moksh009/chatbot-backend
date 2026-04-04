@@ -629,4 +629,38 @@ router.post('/:id/assign', protect, async (req, res) => {
   }
 });
 
+
+/**
+ * @route   PUT /api/conversations/:id/resolve
+ * @desc    Mark conversation as resolved
+ * @access  Private
+ */
+router.put('/:id/resolve', protect, async (req, res) => {
+  try {
+    const query = { _id: req.params.id };
+    if (req.user.role !== 'SUPER_ADMIN') query.clientId = req.user.clientId;
+
+    const conversation = await Conversation.findOne(query);
+    if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
+
+    conversation.status = 'CLOSED';
+    conversation.resolvedAt = new Date();
+    conversation.requiresAttention = false;
+    await conversation.save();
+
+    // --- Phase 23: Track 6 CSAT Trigger ---
+    const { triggerCSAT } = require('../utils/csatService');
+    await triggerCSAT(conversation); 
+
+    const io = req.app.get('socketio');
+
+    if (io) io.to(`client_${conversation.clientId}`).emit('conversation_resolved', conversation);
+
+    res.json({ success: true, conversation });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 module.exports = router;
+

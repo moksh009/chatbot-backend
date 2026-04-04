@@ -43,7 +43,11 @@ const ConversationSchema = new mongoose.Schema({
   csatScore: { rating: Number, respondedAt: Date },
   csatSent: { type: Boolean, default: false },
   priority: { type: String, enum: ["normal","high","vip"], default: "normal" },
-  resolvedAt: { type: Date },
+  // Phase 23: Enterprise Metrics
+  firstInboundAt:  { type: Date },
+  firstResponseAt: { type: Date },
+  resolvedAt:      { type: Date },
+
   afterHours: { type: Boolean, default: false },
 
   metadata: { type: Object, default: {} },
@@ -78,6 +82,17 @@ const ConversationSchema = new mongoose.Schema({
 
   // Phase 20: Active Flow Tracking
   activeFlowId: { type: String, default: null }, // Which visualFlow is currently running
+
+  // Phase 23: Track 6 - AI Intelligence
+  sentiment: { 
+    type: String, 
+    enum: ['Positive', 'Neutral', 'Negative', 'Unknown'], 
+    default: 'Neutral' 
+  },
+  lastSummaryUpdate: { type: Date },
+
+  // Phase 23: Track 7 - Multi-Language
+  detectedLanguage: { type: String, default: 'en' },
 
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }

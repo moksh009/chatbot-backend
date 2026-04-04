@@ -207,6 +207,39 @@ router.get('/realtime', protect, async (req, res) => {
     });
     const adminFollowupsPurchased = adminFollowupsPurchasedResult;
 
+    // 10. Deep Attribution ROI (Phase 23)
+    const attributionResult = await AdLead.aggregate([
+      { $match: query },
+      { $unwind: { path: "$commerceEvents", preserveNullAndEmptyArrays: false } },
+      { $match: { "commerceEvents.event": "checkout_completed" } },
+      {
+        $group: {
+          _id: { $ifNull: ["$adAttribution.source", "Organic/Direct"] },
+          revenue: { $sum: "$commerceEvents.amount" },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // 10. Sentiment Analysis Summary (Phase 23 Track 6)
+    const sentimentAgg = await Conversation.aggregate([
+      { $match: query },
+      { $group: { _id: "$sentiment", count: { $sum: 1 } } }
+    ]);
+    const sentimentCounts = {
+      Positive: 0,
+      Neutral: 0,
+      Negative: 0,
+      Unknown: 0
+    };
+    sentimentAgg.forEach(s => {
+      if (s._id && sentimentCounts.hasOwnProperty(s._id)) {
+        sentimentCounts[s._id] = s.count;
+      } else {
+        sentimentCounts.Unknown += s.count;
+      }
+    });
+
     res.json({
       businessName: client.businessName || client.name,
       leads: { total: totalLeads, newToday: newLeadsToday },
@@ -223,7 +256,13 @@ router.get('/realtime', protect, async (req, res) => {
         totalOrdersAllTime,
         whatsappRecoveriesPurchased,
         adminFollowupsPurchased
-      }
+      },
+      attribution: attributionResult.map(a => ({
+        source: a._id,
+        revenue: a.revenue,
+        count: a.count
+      })),
+      sentiment: sentimentCounts
     });
 
   } catch (error) {
@@ -1489,4 +1528,86 @@ router.get('/usage-stats', protect, async (req, res) => {
   }
 });
 
+
+/**
+ * Phase 23: Track 6 - Agent Performance Metrics
+ * GET /api/analytics/agent-performance
+ */
+router.get('/agent-performance', protect, async (req, res) => {
+  try {
+    const clientId = req.user.clientId;
+    const query = { clientId };
+
+    // 1. Fetch Conversations with metrics
+    const convos = await Conversation.find({ 
+        ...query, 
+        firstInboundAt: { $exists: true },
+        firstResponseAt: { $exists: true }
+    });
+
+    // 2. Calculate Avg FRT
+    let totalFRT = 0;
+    convos.forEach(c => {
+        const diff = (c.firstResponseAt - c.firstInboundAt) / 1000; // seconds
+        totalFRT += diff;
+    });
+    const avgFRT = convos.length > 0 ? (totalFRT / convos.length) : 0;
+
+    // 3. Resolution Rate & Avg Resolution Time
+    const totalConvos = await Conversation.countDocuments(query);
+    const resolvedConvos = await Conversation.find({ ...query, resolvedAt: { $exists: true } });
+    const resolutionRate = totalConvos > 0 ? (resolvedConvos.length / totalConvos * 100).toFixed(1) : "0";
+    
+    let totalResolutionTime = 0;
+    resolvedConvos.forEach(c => {
+        totalResolutionTime += (c.resolvedAt - c.firstInboundAt) / (1000 * 60 * 60); // hours
+    });
+    const avgResolutionTime = resolvedConvos.length > 0 ? (totalResolutionTime / resolvedConvos.length).toFixed(1) : 0;
+
+    // 4. CSAT Calculation
+    const csatConvos = await Conversation.find({ ...query, "csatScore.rating": { $exists: true } });
+    const totalScore = csatConvos.reduce((sum, c) => sum + c.csatScore.rating, 0);
+    const avgCSAT = csatConvos.length > 0 ? (totalScore / csatConvos.length).toFixed(1) : "0";
+
+    // 5. Agent Leaderboard (Aggregate by assignedTo)
+
+    const agentStats = await Conversation.aggregate([
+        { $match: { ...query, assignedTo: { $exists: true } } },
+        { $group: {
+            _id: "$assignedTo",
+            resolutions: { $sum: { $cond: [{ $gt: ["$resolvedAt", null] }, 1, 0] } },
+            totalHandled: { $sum: 1 }
+        }},
+        { $lookup: {
+            from: 'users',
+            localField: '_id',
+            foreignField: '_id',
+            as: 'agentInfo'
+        }},
+        { $unwind: "$agentInfo" },
+        { $project: {
+            name: "$agentInfo.name",
+            email: "$agentInfo.email",
+            role: "$agentInfo.role",
+            resolutions: 1,
+            totalHandled: 1
+        }}
+    ]);
+
+    res.json({
+        success: true,
+        avgFRT: avgFRT > 60 ? `${(avgFRT/60).toFixed(1)}m` : `${avgFRT.toFixed(0)}s`,
+        resolutionRate: `${resolutionRate}%`,
+        avgResolutionTime: `${avgResolutionTime}h`,
+        activeAgents: agentStats.length,
+        avgCSAT: `${avgCSAT}/5`,
+        agents: agentStats
+    });
+
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 module.exports = router;
+

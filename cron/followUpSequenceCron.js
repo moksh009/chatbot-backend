@@ -6,67 +6,34 @@ const { sendEmail } = require('../utils/emailService');
 const Client = require('../models/Client');
 const { decrypt } = require('../utils/encryption');
 
-const hydrateContent = (content, lead, client) => {
-    if (!content) return "";
-    let hydrated = content;
+const { buildVariableContext, injectVariables } = require('../utils/variableInjector');
 
-    // Standard Variables
-    hydrated = hydrated.replace(/{{name}}/g, lead?.name || "there");
-    hydrated = hydrated.replace(/{{first_name}}/g, lead?.name?.split(' ')[0] || "there");
-    hydrated = hydrated.replace(/{{store_name}}/g, client?.name || "our store");
-
-    // Cart Variables
-    if (lead?.cartSnapshot?.items?.length > 0 || lead?.cartItems?.length > 0) {
-        const items = lead.cartSnapshot?.items || lead.cartItems || [];
-        const cartUrl = lead.cartUrl || lead.cartSnapshot?.url || "#";
-        const cartTotal = lead.cartValue || 0;
-
-        // Generate Premium HTML Table for Cart Items
-        const itemsHtml = items.map(item => `
-            <div style="display: flex; align-items: center; gap: 16px; padding: 16px 0; border-bottom: 1px solid #f1f5f9;">
-                <img src="${item.image || "https://via.placeholder.com/100"}" alt="${item.title || "Product"}" style="width: 80px; height: 80px; border-radius: 12px; object-fit: cover; border: 1px solid #e2e8f0;" />
-                <div style="flex: 1;">
-                    <p style="margin: 0; font-size: 14px; font-weight: 700; color: #0f172a;">${item.title || "Selected Item"}</p>
-                    <p style="margin: 4px 0 0; font-size: 12px; font-weight: 500; color: #64748b;">Qty: ${item.quantity || 1}</p>
-                    <p style="margin: 4px 0 0; font-size: 14px; font-weight: 800; color: #6d28d9;">₹${item.price || ""}</p>
-                </div>
-            </div>
-        `).join('');
-
-        const cartBlock = `
-            <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 24px; padding: 24px; margin: 24px 0; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.05);">
-                <p style="margin: 0 0 16px; font-size: 10px; font-weight: 900; letter-spacing: 0.1em; color: #94a3b8; text-transform: uppercase;">YOUR RESERVED ITEMS</p>
-                ${itemsHtml}
-                <div style="margin-top: 20px; display: flex; justify-content: space-between; align-items: center;">
-                    <p style="margin: 0; font-size: 14px; font-weight: 600; color: #64748b;">Subtotal</p>
-                    <p style="margin: 0; font-size: 18px; font-weight: 900; color: #0f172a;">₹${cartTotal}</p>
-                </div>
-            </div>
-        `;
-
-        hydrated = hydrated.replace(/{{cart_items_html}}/g, cartBlock);
-        hydrated = hydrated.replace(/{{cart_url}}/g, cartUrl);
-        hydrated = hydrated.replace(/{{cart_total}}/g, cartTotal);
-    } else {
-        // Fallback for missing cart data
-        hydrated = hydrated.replace(/{{cart_items_html}}/g, `<div style="padding: 20px; border: 1px dashed #cbd5e1; border-radius: 16px; text-align: center; color: #94a3b8; font-size: 12px;">Your selected items are waiting for you.</div>`);
-        hydrated = hydrated.replace(/{{cart_url}}/g, "#");
-        hydrated = hydrated.replace(/{{cart_total}}/g, "0");
-    }
-
-    return hydrated;
+// Helper to evaluate step conditions
+const evaluateStepCondition = (conditionStr, lead, convo) => {
+    if (!conditionStr || conditionStr === "always") return true;
+    if (conditionStr === "no_purchase" && lead?.ordersCount > 0) return false;
+    // can add more custom conditions here later
+    return true;
 };
+
+let cronRunning = false;
 
 const scheduleFollowUpSequenceCron = () => {
     // Run every 5 minutes
     cron.schedule("*/5 * * * *", async () => {
+        if (cronRunning) { 
+            console.log("[SequenceCron] Previous run still active, skipping"); 
+            return; 
+        }
+        cronRunning = true;
         try {
             const now = new Date();
+            // Fetch limits mapped to index status and pending checks 
             const sequences = await FollowUpSequence.find({
                 status: "active",
                 "steps.status": "pending",
                 "steps.sendAt": { $lte: now }
-            });
+            }).limit(500);
 
             console.log(`[SequenceCron] Found ${sequences.length} sequences with due steps.`);
 
@@ -79,9 +46,16 @@ const scheduleFollowUpSequenceCron = () => {
                     AdLead.findById(seq.leadId)
                 ]);
 
-                if (!client) {
+                if (!client || !lead) {
                     dueStep.status = "failed";
-                    dueStep.errorLog = "Client not found";
+                    dueStep.errorLog = !client ? "Client not found" : "Lead not found";
+                    await seq.save();
+                    continue;
+                }
+
+                if (dueStep.condition && !evaluateStepCondition(dueStep.condition, lead, null)) {
+                    dueStep.status = "skipped";
+                    dueStep.errorLog = "Condition not met";
                     await seq.save();
                     continue;
                 }
@@ -89,9 +63,10 @@ const scheduleFollowUpSequenceCron = () => {
                 let sentSuccess = false;
                 let errorMessage = "";
 
-                // Hydrate content with lead data
-                const hydratedContent = hydrateContent(dueStep.content, lead, client);
-                const hydratedSubject = hydrateContent(dueStep.subject, lead, client);
+                // Hydrate content with centralized variable mapping via context
+                const ctx = await buildVariableContext(client, seq.phone, null, lead);
+                const hydratedContent = injectVariables(dueStep.content, ctx);
+                const hydratedSubject = injectVariables(dueStep.subject, ctx);
 
                 if (dueStep.type === 'whatsapp') {
                     if (!client.whatsappToken || !client.phoneNumberId) {
@@ -153,6 +128,8 @@ const scheduleFollowUpSequenceCron = () => {
             }
         } catch (err) {
             console.error('❌ Error in follow-up sequence cron:', err);
+        } finally {
+            cronRunning = false;
         }
     });
 };

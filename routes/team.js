@@ -6,6 +6,7 @@ const Conversation = require('../models/Conversation');
 const { protect } = require('../middleware/auth');
 const crypto = require('crypto');
 const { sendTeamInviteEmail, sendAdminConfirmationEmail } = require('../utils/emailService');
+const { checkLimit, incrementUsage } = require('../utils/planLimits');
 
 // @route   GET /api/team
 // @desc    Get all team members for a client with performance metrics
@@ -71,6 +72,12 @@ router.post('/invite', protect, async (req, res) => {
         const client = await Client.findOne({ clientId });
         if (!client) return res.status(404).json({ message: 'Client configuration not found' });
 
+        // --- Phase 23: Track 8 - Billing Enforcement (Agents) ---
+        const limitCheck = await checkLimit(client._id, 'agents');
+        if (!limitCheck.allowed) {
+            return res.status(403).json({ success: false, message: limitCheck.reason });
+        }
+
         // Generate a secure temporary password
         const tempPassword = crypto.randomBytes(4).toString('hex'); // 8 char hex
 
@@ -83,6 +90,9 @@ router.post('/invite', protect, async (req, res) => {
             clientId,
             business_type: client.businessType || 'ecommerce'
         });
+
+        // Increment usage
+        await incrementUsage(client._id, 'agents', 1);
 
         // 2. Send Invitation Email to Agent
         const loginUrl = (process.env.FRONTEND_URL || 'https://dash.topedgeai.com') + '/login';

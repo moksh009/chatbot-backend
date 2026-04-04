@@ -236,8 +236,10 @@ router.get('/ping', async (_req, res) => {
 // ----------------------------------------------------
 
 router.post('/send-otp', async (req, res) => {
-  const { email, purpose } = req.body;
+  let { email, purpose } = req.body;
   if (!email) return res.status(400).json({ message: 'Email required' });
+
+  email = email.toLowerCase().trim();
 
   // If purpose is RESET_PASSWORD, ensure user exists
   if (purpose === 'RESET_PASSWORD') {

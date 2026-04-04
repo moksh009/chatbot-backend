@@ -153,6 +153,13 @@ const adLeadSchema = new mongoose.Schema({
     adMediaUrl:     String,
     firstMessageAt: Date
   },
+  commerceEvents: [{
+    event:     String, // 'product_added_to_cart', 'checkout_started', 'checkout_completed'
+    amount:    Number,
+    currency:  String,
+    timestamp: { type: Date, default: Date.now },
+    metadata:  mongoose.Schema.Types.Mixed
+  }],
 
   createdAt: {
     type: Date,

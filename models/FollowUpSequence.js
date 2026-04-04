@@ -18,8 +18,12 @@ const FollowUpSequenceSchema = new mongoose.Schema({
     sendAt: Date,
     status: { type: String, enum: ["pending", "sent", "failed", "skipped"], default: "pending" },
     sentAt: Date,
-    errorLog: String
+    errorLog: String,
+    condition: String
   }]
 }, { timestamps: true });
+
+FollowUpSequenceSchema.index({ status: 1, "steps.sendAt": 1 });
+FollowUpSequenceSchema.index({ clientId: 1, status: 1 });
 
 module.exports = mongoose.model('FollowUpSequence', FollowUpSequenceSchema);

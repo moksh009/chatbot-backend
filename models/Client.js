@@ -46,6 +46,7 @@ const ClientSchema = new mongoose.Schema({
   // Phase 7 Added Fields
   razorpayKeyId: { type: String, default: "" },
   razorpaySecret: { type: String, default: "" },
+  razorpayCustomerId: { type: String, default: "" },
   googleReviewUrl: { type: String, default: "" },
   adminPhone: { type: String, default: "" },
   shopDomain: { type: String, default: "" },
@@ -77,9 +78,11 @@ const ClientSchema = new mongoose.Schema({
     enum: ["shopify", "woocommerce", "manual"],
     default: "shopify"
   },
+  woocommerceConnected: { type: Boolean, default: false },
   woocommerceUrl:    { type: String, default: "" },
   woocommerceKey:    { type: String, default: "" },
   woocommerceSecret: { type: String, default: "" },
+  woocommerceWebhookSecret: { type: String, default: "" },
   
   instagramPageId:      { type: String, default: "" },
   instagramAccessToken: { type: String, default: "" },
@@ -136,6 +139,7 @@ const ClientSchema = new mongoose.Schema({
         { word: 'return', action: 'initiate_return' },
         { word: 'refund', action: 'initiate_return' }
       ],
+      aiLanguages: ['en', 'hi', 'gu', 'hinglish', 'guajarlish'], // Default enabled languages
       welcomeStartNodeId: '',
       storeUrl: '',
       knowledgeBase: '',
@@ -231,6 +235,10 @@ const ClientSchema = new mongoose.Schema({
   },
   handoffTimeout: { type: Number, default: 30 }, // Minutes before bot takes back control in HYBRID mode
   manualSwitchAlert: { type: Boolean, default: true },
+
+  // Phase 22: Rules Engine
+  automationRules: { type: [mongoose.Schema.Types.Mixed], default: [] }, // { id, name, trigger, conditions, actions, priority, isActive }
+  routingRules: { type: [mongoose.Schema.Types.Mixed], default: [] }, // { id, priority, conditions, fallbackAgentId, agentIds, routeType }
 
   createdAt: { type: Date, default: Date.now }
 });

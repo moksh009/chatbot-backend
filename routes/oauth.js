@@ -6,6 +6,7 @@ const router  = express.Router();
 const Client  = require("../models/Client");
 
 const { protect } = require("../middleware/auth");
+const { checkLimit } = require("../utils/planLimits");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STEP 1: Initiate OAuth Flow
@@ -19,6 +20,12 @@ router.get("/instagram/initiate/:clientId", protect, async (req, res) => {
     // Validate client exists
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ error: "Client not found" });
+
+    // Validate Subscription limits
+    const limits = await checkLimit(client._id, 'instagram');
+    if (!limits.allowed) {
+        return res.status(403).json({ error: limits.reason || "Instagram integration is locked on your current plan." });
+    }
 
     // Required Meta permissions for Instagram DM via Facebook Login
     const scope = [

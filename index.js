@@ -97,7 +97,10 @@ const insightsRoutes = require('./routes/insights');
 app.use('/api/insights', insightsRoutes);
 const segmentsRoutes = require('./routes/segments');
 app.use('/api/segments', segmentsRoutes);
+const ecommerceRoutes = require('./routes/ecommerce');
+app.use('/api/ecommerce', ecommerceRoutes);
 const sequencesRoutes = require('./routes/sequences');
+
 app.use('/api/sequences', sequencesRoutes);
 const settingsRoutes = require('./routes/settings');
 app.use('/api/settings', settingsRoutes);
@@ -129,8 +132,11 @@ app.use('/api/business', businessRoutes);
 app.use('/api/admin', adminRoutes); // Super Admin Route Registration
 app.use('/api/templates', templatesRoutes); 
 app.use('/api/whatsapp', whatsappRoutes);
+const whatsappFlowsRoutes = require('./routes/whatsappFlows');
+app.use('/api/whatsapp-flows', whatsappFlowsRoutes);
 app.use('/api/campaigns', campaignsRoutes);
 app.use('/api/payment', require('./routes/payment')); 
+app.use('/api/billing', require('./routes/billing')); 
 
 // app.use('/api/client/0001', turfClientRoutes);
 // app.use('/api/client/0002', vedClientRoutes);
@@ -155,6 +161,22 @@ const wizardRoutes = require('./routes/wizard');
 app.use('/api/wizard', wizardRoutes);
 const teamRoutes = require('./routes/team');
 app.use('/api/team', teamRoutes);
+
+// Phase 22: Rules Engine & Leads Engine & Routing Engine
+const rulesRoutes = require('./routes/rules');
+app.use('/api/rules', rulesRoutes);
+const leadsRoutes = require('./routes/leads');
+app.use('/api/leads', leadsRoutes);
+const routingRoutes = require('./routes/routingRules');
+app.use('/api/routing', routingRoutes);
+
+// Phase 23: Billing Engine
+const billingRoutes = require('./routes/billing');
+app.use('/api/billing', billingRoutes);
+const shopifyPixelRoutes = require('./routes/shopifyPixel');
+app.use('/api/shopify-pixel', shopifyPixelRoutes);
+const segmentRoutes = require('./routes/segments');
+app.use('/api/segments', segmentRoutes);
 
 // --- CRON JOBS (Phase 21 Resumption) ---
 const scheduleFlowResumption = require('./cron/flowResumptionCron');

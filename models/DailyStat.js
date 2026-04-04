@@ -40,7 +40,11 @@ const DailyStatSchema = new mongoose.Schema({
   upsellSentCount:       { type: Number, default: 0 },
   upsellConvertedCount:  { type: Number, default: 0 },
   upsellRevenue:         { type: Number, default: 0 },
-  abandonedProducts:      { type: Map, of: Number, default: {} } // { "product_id": count }
+  abandonedProducts:      { type: Map, of: Number, default: {} }, // { "product_id": count }
+  
+  // Phase 23: Track 5 - WhatsApp Flows
+  flowsSent:              { type: Number, default: 0 },
+  flowsCompleted:         { type: Number, default: 0 }
 });
 
 // Ensure unique stats per client per day

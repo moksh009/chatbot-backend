@@ -11,6 +11,12 @@ const CampaignSchema = new mongoose.Schema({
   },
   scheduledAt: { type: Date },
   csvFile: { type: String }, // Path to uploaded CSV
+  segmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Segment' },
+  
+  // Phase 22: Smart Send logic
+  isSmartSend: { type: Boolean, default: false },
+  smartSendConfig: { type: mongoose.Schema.Types.Mixed },
+
   recipientCount:  { type: Number, default: 0 },
   sentCount:       { type: Number, default: 0 },
   deliveredCount:  { type: Number, default: 0 },

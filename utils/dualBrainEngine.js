@@ -14,6 +14,11 @@ const { generateText, getGeminiModel } = require('./gemini');
 const { createMessage } = require("./createMessage");
 const { injectVariablesLegacy, buildVariableContext, injectNodeVariables } = require("./variableInjector");
 const { findMatchingFlow, findFlowStartNode } = require("./triggerEngine");
+const { evaluateRules, executeRuleActions } = require("./rulesEngine");
+const { evaluateRouting } = require("./routingEngine");
+const { sendEmail } = require("./emailService");
+const { checkLimit, incrementUsage } = require("../utils/planLimits");
+const { detectLanguage, translateToUserLanguage, normalizeIntent, getLanguageInstructions } = require("./languageEngine");
 
 // Phase 17: Concurrency & Robustness
 const processingLocks = new Map(); // phone -> timestamp
@@ -194,7 +199,49 @@ async function handleWhatsAppMessage(from, message, phoneNumberId, profileName =
     const { discoverClientByPhoneId } = require("./clientDiscovery");
     const { parseWhatsAppPayload } = require("./parseWhatsAppPayload");
 
-    // Discover client
+    const parsed = await parseWhatsAppPayload(message);
+    if (!parsed) return;
+
+    // --- PHASE 23: Track 5 - Meta Flow Response (nfm_reply) ---
+    if (parsed.interactive?.type === 'nfm_reply') {
+        const flowResponse = parsed.interactive.nfm_reply;
+        console.log(`[DualBrain] 🌊 Flow Submission detected from ${from}:`, flowResponse.response_json);
+        
+        try {
+            const data = JSON.parse(flowResponse.response_json || '{}');
+            const lead = await AdLead.findOneAndUpdate(
+                { phoneNumber: from, clientId: client.clientId },
+                { 
+                    $set: { lastInteraction: new Date(), capturedData: { ...( (await AdLead.findOne({phoneNumber: from, clientId: client.clientId}))?.capturedData || {} ), ...data } },
+                    $push: { activityLog: { action: 'whatsapp_flow_submitted', details: `Submitted Meta Flow ID: ${flowResponse.flow_id}` } }
+                },
+                { upsert: true, new: true }
+            );
+
+            // Increment Analytics Completion
+            await DailyStat.findOneAndUpdate(
+                { clientId: client.clientId, date: new Date().toISOString().split('T')[0] },
+                { $inc: { flowsCompleted: 1 } },
+                { upsert: true }
+            );
+
+            // Find next node in flow
+            const convo = await Conversation.findOne({ phone: from, clientId: client.clientId });
+            if (convo && convo.lastStepId) {
+                const flowNodes = client.flowNodes || [];
+                const flowEdges = client.flowEdges || [];
+                const nextEdge = flowEdges.find(e => e.source === convo.lastStepId);
+                if (nextEdge) {
+                    return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, from, global.io);
+                }
+            }
+        } catch (err) {
+            console.error('[DualBrain] Flow processing error:', err.message);
+        }
+        return;
+    }
+
+    // 2. Discover Client
     const client = await discoverClientByPhoneId(phoneNumberId);
     if (!client) {
       console.warn(`[DualBrain] Unknown phoneId: ${phoneNumberId}`);
@@ -246,6 +293,93 @@ async function runDualBrainEngine(parsedMessage, client) {
   const io    = global.io;
   const profileName = parsedMessage.profileName || '';
 
+  // --- Phase 23: Track 7 - Language Intelligence ---
+  const inboundText = parsedMessage.text?.body || parsedMessage.interactive?.button_reply?.title || '';
+  let detectedLanguage = 'en';
+  if (inboundText) {
+      try {
+          const langResult = await detectLanguage(inboundText);
+          detectedLanguage = langResult.languageCode || 'en';
+      } catch (err) { console.debug("[DualBrain] Language detection failed:", err.message); }
+  }
+
+  // ── PHASE 23: Track 5 — WhatsApp Flow Responses ──────────────────────────
+  if (parsedMessage.type === 'interactive' && parsedMessage.interactive?.type === 'nfm_reply') {
+      const flowDataStr = parsedMessage.interactive.nfm_reply?.response_json;
+      if (flowDataStr) {
+          try {
+              const flowData = JSON.parse(flowDataStr);
+              log.info(`[DualBrain] 🌊 Flow Response Received from ${phone}:`, flowData);
+              
+              // 1. Sync flow data to AdLead attributes
+              const updates = {};
+              for (const [key, val] of Object.entries(flowData)) {
+                  if (['email', 'name', 'city', 'requirement', 'phone'].includes(key.toLowerCase())) {
+                      updates[key.toLowerCase()] = val;
+                  }
+                  updates[`metadata.${key}`] = val;
+              }
+              
+              const lead = await AdLead.findOneAndUpdate(
+                  { phoneNumber: phone, clientId: client.clientId },
+                  { $set: { ...updates, lastInteraction: new Date() } },
+                  { upsert: true, new: true }
+              );
+
+              await AdLead.findByIdAndUpdate(lead._id, { $addToSet: { tags: 'Flow Completed' } });
+
+              // --- Phase 23: Track 1 & 2 - Sequence Cancellation on Reply ---
+              const FollowUpSequence = require('../models/FollowUpSequence');
+              await FollowUpSequence.updateMany(
+                  { clientId: client.clientId, leadId: lead._id, status: 'active' },
+                  { $set: { status: 'cancelled', cancellationReason: 'User replied to flow' } }
+              );
+
+              if (io) io.to(`client_${client.clientId}`).emit('flow_completed', { phone, flowData });
+
+              // Increment Analytics
+              try {
+                  const today = new Date().toISOString().split('T')[0];
+                  await DailyStat.findOneAndUpdate(
+                      { clientId: client.clientId, date: today },
+                      { $inc: { flowsCompleted: 1 } },
+                      { upsert: true }
+                  );
+              } catch (err) { console.error('[Analytics] Flow completion error:', err.message); }
+
+              // 2. Transition to next node if in an active flow
+              const convo = await Conversation.findOne({ phone, clientId: client.clientId });
+              if (convo?.activeFlowId && convo?.lastStepId) {
+                  const flow = (client.visualFlows || []).find(f => f.id === convo.activeFlowId);
+                  if (flow) {
+                      const flowNodes = flattenFlowNodes(flow.nodes || []);
+                      const flowEdges = flow.edges || [];
+                      
+                      const autoEdge = flowEdges.find(e => 
+                          e.source === convo.lastStepId && 
+                          (!e.sourceHandle || e.sourceHandle === 'bottom' || e.sourceHandle === 'a')
+                      );
+
+                      if (autoEdge) {
+                          log.info(`[FlowEngine] Flow logic resuming: ${convo.lastStepId} → ${autoEdge.target}`);
+                          return await executeNode(
+                              autoEdge.target, flowNodes, flowEdges,
+                              client, convo, lead, phone, io, channel, parsedMessage
+                          );
+                      }
+                  }
+              }
+              
+              // 3. Fallback confirmation
+              await sendWhatsAppText(client, phone, "Thank you! I've received your information.");
+              analyzeConversationIntelligence(client, phone, convo);
+              return true;
+          } catch (e) {
+              console.error('[DualBrain] Flow Parse Error:', e.message);
+          }
+      }
+  }
+
   // STEP 1: Upsert conversation state
   let convo = await Conversation.findOneAndUpdate(
     { phone, clientId: client.clientId },
@@ -289,6 +423,24 @@ async function runDualBrainEngine(parsedMessage, client) {
   // STEP 3: Save inbound message to DB + emit to dashboard
   await saveInboundMessage(phone, client.clientId, parsedMessage, io, channel, convo._id);
 
+  // STEP 3.5: SUBSCRIPTION LIMIT CHECK (Phase 23)
+  const limits = await checkLimit(client._id, 'messages');
+  if (!limits.allowed) {
+      log.warn(`Limit Reached for ${client.clientId}. Halting DualBrain Engine processing.`);
+      return; 
+  }
+  // Track this transaction 
+  await incrementUsage(client._id, 'messages', 1);
+
+  // STEP 3.6: LANGUAGE DETECTION (Phase 23 Track 7)
+  const incomingText = parsedMessage.text?.body || '';
+  const detectedLang = await detectLanguage(incomingText, client);
+  if (detectedLang !== 'en') {
+      await Conversation.findByIdAndUpdate(convo._id, { $set: { detectedLanguage: detectedLang } });
+      convo.detectedLanguage = detectedLang; // Update local copy
+  }
+  parsedMessage._detectedLanguage = detectedLang;
+
   // ── PHASE 20: Build Variable Context ONCE per message ────────────────────
   // This is passed to executeNode so variables are injected into all nodes
   let variableContext = {};
@@ -299,6 +451,92 @@ async function runDualBrainEngine(parsedMessage, client) {
   }
   // Store on parsedMessage so all downstream functions can access it
   parsedMessage._variableContext = variableContext;
+
+  // ── PHASE 22: EVALUATE AUTOMATION RULES ────────────────────────────────────
+  const rulesActions = evaluateRules(client.automationRules, parsedMessage.text?.body, variableContext);
+  if (rulesActions && rulesActions.length > 0) {
+    const results = await executeRuleActions(rulesActions, client, phone, {});
+    let ruleIntercepted = false;
+
+    for (const msg of results.messages) {
+      if (msg.startsWith('[TEMPLATE]')) {
+        const tName = msg.replace('[TEMPLATE]', '').trim();
+        await sendWhatsAppTemplate(client, phone, tName, [variableContext.first_name || '']);
+      } else {
+        await sendWhatsAppText(client, phone, msg);
+      }
+      ruleIntercepted = true;
+    }
+
+    if (results.tags && results.tags.length > 0) {
+      await AdLead.findByIdAndUpdate(lead._id, { $addToSet: { tags: { $each: results.tags } } });
+    }
+
+    if (results.enrollSequences && results.enrollSequences.length > 0) {
+      // Basic enrollment implementation for rules
+      const FollowUpSequence = require('../models/FollowUpSequence');
+      for (const seqId of results.enrollSequences) {
+         try {
+           const seqData = require('../data/sequenceTemplates').find(t => t.id === seqId);
+           if (seqData) {
+               const mappedSteps = seqData.steps.map(s => {
+                  return {
+                     type: s.type || 'whatsapp',
+                     templateName: s.templateName,
+                     content: s.content,
+                     delayValue: s.delayValue,
+                     delayUnit: s.delayUnit,
+                     sendAt: new Date(Date.now() + (s.delayValue || 0) * 60000), // simplified
+                     status: "pending"
+                  };
+               });
+               await FollowUpSequence.create({
+                  clientId: client.clientId,
+                  leadId: lead._id,
+                  phone: lead.phoneNumber,
+                  name: seqData.name,
+                  steps: mappedSteps
+               });
+           }
+         } catch(e) {}
+      }
+    }
+
+    if (results.pauseBot) {
+       await Conversation.findByIdAndUpdate(convo._id, { botPaused: true, isBotPaused: true });
+       ruleIntercepted = true;
+    }
+
+    // Phase 22 Routing Handoff trigger
+    if (results.handoff) {
+       // Just flag for routing engine processing (done later in phase 22)
+       convo.assignedAgent = results.handoff;
+       await Conversation.findByIdAndUpdate(convo._id, { assignedAgent: results.handoff });
+    }
+
+    if (ruleIntercepted) {
+      console.log(`[DualBrain] Rules Engine Intercepted message processing for ${phone}`);
+      return; 
+    }
+  }
+
+  // ── PHASE 22: ROUTING ENGINE EVALUATION ──────────────────────────────────
+  if (client.routingRules && client.routingRules.length > 0) {
+     const routingDirective = evaluateRouting(client.routingRules, variableContext);
+     if (routingDirective) {
+        let assigned = null;
+        if (routingDirective.type === 'specific') {
+           assigned = routingDirective.agentId;
+        } else if (routingDirective.type === 'round_robin' && routingDirective.agentIds?.length > 0) {
+           assigned = routingDirective.agentIds[Math.floor(Math.random() * routingDirective.agentIds.length)];
+        }
+        if (assigned && convo.assignedAgent !== assigned) {
+           convo.assignedAgent = assigned;
+           await Conversation.findByIdAndUpdate(convo._id, { assignedAgent: assigned });
+           if (io) io.to(`client_${client.clientId}`).emit('agent_assigned', { phone, agentId: assigned });
+        }
+     }
+  }
   
   // --- SMART ALERT DETECTION: "Call Now" ---
   // --- SMART ALERT DETECTION: "Call Now" & Escalation (Phase 21) ---
@@ -465,6 +703,7 @@ async function runDualBrainEngine(parsedMessage, client) {
 
   if (convo.botPaused || ['HUMAN_TAKEOVER', 'HUMAN_SUPPORT', 'OPTED_OUT'].includes(convo.status)) {
     console.log(`[DualBrain] ⏸️ Bot paused for ${phone} (Status: ${convo.status}). Skipping.`);
+    analyzeConversationIntelligence(client, phone, convo);
     return true;
   }
 
@@ -591,10 +830,12 @@ async function runDualBrainEngine(parsedMessage, client) {
   // Only use AI if there is text body. Otherwise, let the caller handle it.
   if (parsedMessage.text?.body) {
     await runAIFallback(parsedMessage, client, phone, lead, channel);
+    analyzeConversationIntelligence(client, phone, convo);
     return true;
   }
   
   // Return false so the engine can process legacy interactive IDs
+  analyzeConversationIntelligence(client, phone, convo);
   return false;
 }
 
@@ -771,15 +1012,25 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     node = rawNode; // fallback to raw node
   }
 
-  // Increment visitCount for Flow Convergence Analytics
+  // Increment visitCount for Flow Convergence Analytics (Phase 23 Track 5)
   try {
     const updatedNodes = incrementNodeVisit(client.flowNodes || [], nodeId);
     await Client.findByIdAndUpdate(client._id, { flowNodes: updatedNodes });
     // Update local reference for this execution chain
     client.flowNodes = updatedNodes;
+
+    // Track on the specific Visual Flow if it's a multi-flow architecture
+    if (convo?.currentFlowId) {
+       await Client.updateOne(
+         { _id: client._id, "visualFlows.id": convo.currentFlowId },
+         { $inc: { "visualFlows.$.nodes.$[n].visitCount": 1 } },
+         { arrayFilters: [{ "n.id": nodeId }] }
+       );
+    }
   } catch (err) {
     console.error(`[DualBrain] Failed to increment visit count for node ${nodeId}:`, err.message);
   }
+
 
   const sent = await withTimeout(
     sendNodeContent(node, client, phone, lead, convo, channel, parsedMessage),
@@ -1102,14 +1353,16 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'CaptureNode': {
       let body = data.text || data.body || data.label || 'Please provide the requested information:';
       body = replaceVariables(body, client, lead, convo);
+      body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
       if (channel === 'instagram') await Instagram.sendText(client, phone, body, options);
       else await WhatsApp.sendText(client, phone, body);
       return true;
     }
 
     case 'flow':
-    case 'FlowNode': {
-      await sendWhatsAppFlow(client, phone, data.header, data.body || data.text, data.flowId, data.flowCta, data.screen);
+    case 'FlowNode':
+    case 'whatsapp_flow': {
+      await sendWhatsAppFlow(client, phone, data.header, data.body || data.text, data.flowId, data.buttonLabel || data.flowCta, data.screen);
       return true;
     }
     case 'message':
@@ -1117,6 +1370,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'livechat': {
       let body = data.text || data.body || (type === 'livechat' ? 'Connecting you to a human...' : '');
       body = replaceVariables(body, client, lead, convo);
+      body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
       
       if (channel === 'instagram') {
         if (data.imageUrl) await Instagram.sendImage(client, phone, data.imageUrl, body, options);
@@ -1133,6 +1387,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'InteractiveNode': {
       let body = data.text || data.body || 'Please Choose:';
       body = replaceVariables(body, client, lead, convo);
+      body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
 
       if (data.btnUrlLink) {
         if (channel === 'instagram') {
@@ -1275,35 +1530,22 @@ async function tryKeywordFallback(parsedMessage, client, convo, phone) {
         await Conversation.findByIdAndUpdate(convo._id, { lastStepId: null });
 
         // --- PHASE 17 SAAS BILLING ENFORCEMENT ---
+        await Conversation.findByIdAndUpdate(convo._id, { lastStepId: null });
         const usage = await BillingService.checkLimit(client.clientId, 'aiCallsMade');
         if (!usage.allowed) {
-            console.warn(`[DualBrainEngine] Billing Limit Reached for client: ${client.clientId}. Total AI calls: ${usage.current}/${usage.limit}`);
-            // Fallback: Notify Admin instead of allowing AI to run
             if (global.NotificationService) {
-                await global.NotificationService.sendAdminAlert(client.clientId, `SaaS Limit Reached: ${usage.current}/${usage.limit} AI calls used. AI responses paused for ${client.clientId}.`, 'email');
+                await global.NotificationService.sendAdminAlert(client.clientId, `SaaS Limit Reached: ${usage.current}/${usage.limit} AI calls used.`, 'email');
             }
-            return {
-                text: "Our AI assistant is temporarily resting due to high volume. A human teammate will be with you shortly.",
-                status: 'HUMAN_TAKEOVER'
-            };
+            return { text: "Our AI assistant is temporarily resting. A human teammate will be with you shortly.", status: 'HUMAN_TAKEOVER' };
         }
-        
-        // Track the attempt
         await BillingService.incrementUsage(client.clientId, 'aiCallsMade');
         await BillingService.incrementUsage(client.clientId, 'messagesSent');
-
-        // Re-run graph with cleared state
         const welcomeNodeId = client.simpleSettings?.welcomeStartNodeId;
         const flowNodes = client.flowNodes || [];
-        // const flowNodes = client.flowNodes || []; // Already defined above
         const flowEdges = client.flowEdges || [];
         const freshConvo = { ...convo.toObject(), lastStepId: null };
         const lead = await AdLead.findOne({ phoneNumber: phone, clientId: client.clientId });
-
-        if (welcomeNodeId) {
-          return await executeNode(welcomeNodeId, flowNodes, flowEdges, client, freshConvo, lead, phone, global.io);
-        }
-        // Trigger first trigger node
+        if (welcomeNodeId) return await executeNode(welcomeNodeId, flowNodes, flowEdges, client, freshConvo, lead, phone, global.io);
         const firstTrigger = flowNodes.find(n => n.type === 'trigger');
         if (firstTrigger) {
           const startEdge = flowEdges.find(e => e.source === firstTrigger.id);
@@ -1311,17 +1553,13 @@ async function tryKeywordFallback(parsedMessage, client, convo, phone) {
         }
         break;
       }
-      case 'track_order':
-        await handleUniversalOrderTracking(client, phone);
-        return true;
+      case 'track_order': await handleUniversalOrderTracking(client, phone); return true;
       case 'initiate_return': {
         const { handleNodeAction } = require('./nodeActions');
         await handleNodeAction('INITIATE_RETURN', {}, client, phone, convo, lead);
         return true;
       }
-      case 'escalate':
-        await handleUniversalEscalate(client, phone, convo);
-        return true;
+      case 'escalate': await handleUniversalEscalate(client, phone, convo); return true;
       case 'cancel_flow':
         await Conversation.findByIdAndUpdate(convo._id, { lastStepId: null });
         await WhatsApp.sendText(client, phone, "Flow reset. Type 'Hi' to start over. 😊");
@@ -1331,118 +1569,64 @@ async function tryKeywordFallback(parsedMessage, client, convo, phone) {
   return false;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PRIORITY 3: GEMINI AI FALLBACK
-// ─────────────────────────────────────────────────────────────────────────────
 async function runAIFallback(parsedMessage, client, phone, lead, channel = 'whatsapp') {
   const text = parsedMessage.text?.body;
   if (!text) return false;
 
   try {
-    // ── Active Listener: "Call Now" Detection ──
     const callIntentRegex = /\b(call|phone|talk|speak|representative|human|agent|person|connect|callback|calling)\b/i;
     if (callIntentRegex.test(text)) {
-      console.log(`[DualBrain] Active Listener: Detect "Call Now" intent for ${phone}`);
-      
-      // 1. Notify Admin
-      await NotificationService.sendAdminAlert(client, {
-        customerPhone: phone,
-        topic: 'Customer Requesting Call/Human',
-        triggerSource: 'AI Active Listener (Intent: Call Now)'
-      });
-
-      // 2. Update Conversation Status
-      await Conversation.findOneAndUpdate(
-        { phone, clientId: client.clientId },
-        { $set: { status: 'HUMAN_TAKEOVER', lastInteraction: new Date() } }
-      );
-
-      // 3. Inform Customer
-      const callReply = `I've just notified our team that you'd like to speak with someone. A representative will reach out to you or call you shortly! 📞✨`;
-      await WhatsApp.sendText(client, phone, callReply, channel);
+      await NotificationService.sendAdminAlert(client, { customerPhone: phone, topic: 'Customer Requesting Call/Human', triggerSource: 'AI Active Listener' });
+      await Conversation.findOneAndUpdate({ phone, clientId: client.clientId }, { $set: { status: 'HUMAN_TAKEOVER', lastInteraction: new Date() } });
+      await sendWhatsAppText(client, phone, `I've just notified our team that you'd like to speak with someone. A representative will reach out to you shortly! 📞✨`);
       return true;
     }
-    // ─────────────────────────────────────────────
-    
-    // ── Dynamic Discount: use the most recently generated code if the AI toggle is ON ──
+
+    // Billing: Check and Increment AI usage
+    const usage = await checkLimit(client.clientId, 'aiCallsMade');
+    if (!usage.allowed) {
+        if (global.NotificationService) {
+            await global.NotificationService.sendAdminAlert(client.clientId, `SaaS Limit Reached: ${usage.current}/${usage.limit} AI calls used.`, 'email');
+        }
+        return false;
+    }
+    await incrementUsage(client.clientId, 'aiCallsMade');
+    await incrementUsage(client.clientId, 'messagesSent');
+
     let discountCode = client.nicheData?.globalDiscountCode || 'OFF10';
+
     if (client.aiUseGeneratedDiscounts && Array.isArray(client.generatedDiscounts) && client.generatedDiscounts.length > 0) {
       const latestDiscount = client.generatedDiscounts[client.generatedDiscounts.length - 1];
-      if (latestDiscount?.code) {
-        discountCode = latestDiscount.code;
-        console.log(`[DualBrain] AI using dynamic discount code: ${discountCode}`);
-      }
+      if (latestDiscount?.code) discountCode = latestDiscount.code;
     }
-    // ─────────────────────────────────────────────────────────────────────────
-    
-    // Check if user is asking about price or hesitation
+
     const isHesitating = /price|expensive|cost|discount|offer|deal|cheap|money/i.test(text);
-    
     const bargainingInstruction = isHesitating 
         ? `The customer seems hesitant about price. You are authorized to offer a one-time discount code: "${discountCode}". Use it to close the deal!`
         : `If the customer asks for a deal, you can mention code "${discountCode}".`;
 
+    const langInstruction = getLanguageInstructions(parsedMessage._detectedLanguage || 'en');
     const knowledgeBase = (client.nicheData?.products || []).map(p => `PRODUCT: ${p.title} - ${p.price}. LINK: ${p.url}`).join('\n') || 'General product information available.';
 
     const prompt = [
       client.nicheData?.aiPromptContext || 'You are a friendly sales assistant.',
       knowledgeBase,
-      `INSTRUCTIONS:
-- Keep response under 3 sentences.
-- Be warm and conversational.
-- ${bargainingInstruction}
-- End by steering toward: "${ctaHint}"
-- If unsure, say: "Let me connect you to our team."`,
+      `INSTRUCTIONS:\n- Keep response under 3 sentences.\n- Be warm and conversational.\n- ${langInstruction}\n- ${bargainingInstruction}\n- If unsure, say: "Let me connect you to our team."`,
       `Customer: ${text}`
     ].join('\n\n');
 
     const reply = await generateText(prompt, client.geminiApiKey || client.config?.geminiApiKey);
-    
-    // Phase 18: Log Unanswered Question
-    if (!client.unansweredQuestions) client.unansweredQuestions = [];
-    client.unansweredQuestions.push({
-      question: text,
-      phone: phone,
-      aiResponse: reply,
-      askedAt: new Date(),
-      status: 'pending'
-    });
-    if (client.unansweredQuestions.length > 50) client.unansweredQuestions.shift();
-    await Client.findByIdAndUpdate(client._id, { unansweredQuestions: client.unansweredQuestions });
-
-    // Clear failure counter on success
-    await Conversation.findOneAndUpdate(
-      { phone, clientId: client.clientId },
-      { $set: { consecutiveFailedMessages: 0 } }
-    );
-
-    await WhatsApp.sendText(client, phone, reply, channel);
-    console.log(`[DualBrain] AI Fallback (${isHesitating ? 'Bargaining' : 'Info'}) used for "${text.substring(0, 50)}..."`);
+    await Conversation.findOneAndUpdate({ phone, clientId: client.clientId }, { $set: { consecutiveFailedMessages: 0 } });
+    await sendWhatsAppText(client, phone, reply);
   } catch (err) {
     console.error('[DualBrain] AI Fallback error:', err.message);
-
-    // Phase 17: Consecutive Failure Tracking
-    const updatedConvo = await Conversation.findOneAndUpdate(
-      { phone, clientId: client.clientId },
-      { $inc: { consecutiveFailedMessages: 1 } },
-      { new: true }
-    );
-
-    if (updatedConvo.consecutiveFailedMessages >= 3) {
-      log.warn(`🚨 3 consecutive AI failures for ${phone}. Escalating to human.`);
+    const updatedConvo = await Conversation.findOneAndUpdate({ phone, clientId: client.clientId }, { $inc: { consecutiveFailedMessages: 1 } }, { new: true });
+    if (updatedConvo && updatedConvo.consecutiveFailedMessages >= 3) {
       await handleUniversalEscalate(client, phone, updatedConvo);
       return;
     }
-
-    await WhatsApp.sendText(client, phone, "I'm having a bit of trouble understanding. Let me check with my team! 😊");
+    await sendWhatsAppText(client, phone, "I'm having a bit of trouble understanding. Let me check with my team! 😊");
   }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WHATSAPP API HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
-async function sendReply(client, phone, body, channel = 'whatsapp') {
-  return await sendWhatsAppText(client, phone, body, channel);
 }
 
 async function sendWhatsAppText(client, phone, body, channel = 'whatsapp') {
@@ -1451,54 +1635,80 @@ async function sendWhatsAppText(client, phone, body, channel = 'whatsapp') {
       const resp = await sendInstagramReply(client, phone, body);
       await saveOutboundMessage(phone, client.clientId, 'text', body, resp.message_id || '', 'instagram');
       return resp;
-    } catch (err) {
-      console.error('[DualBrain] IG sendReply error:', err.message);
-      return;
-    }
+    } catch (err) { console.error('[DualBrain] IG sendReply error:', err.message); return; }
   }
-
-  const token = client.whatsappToken;
-  const phoneNumberId = client.phoneNumberId;
+  const token = client.premiumAccessToken || client.whatsappToken;
+  const phoneNumberId = client.premiumPhoneId || client.phoneNumberId;
   if (!token || !phoneNumberId) return;
   try {
-    const res = await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
-      messaging_product: 'whatsapp', to: phone, type: 'text', text: { body }
+    const convo = await Conversation.findOne({ phone, clientId: client.clientId });
+    const translated = await translateToUserLanguage(body, convo?.detectedLanguage, client);
+    const res = await axios.post(`https://graph.facebook.com/v19.0/${phoneNumberId}/messages`, {
+      messaging_product: 'whatsapp', to: phone, type: 'text', text: { body: translated || body }
     }, { headers: { Authorization: `Bearer ${token}` } });
-    
-    await saveOutboundMessage(phone, client.clientId, 'text', body, res.data.messages[0].id);
+    await saveOutboundMessage(phone, client.clientId, 'text', translated || body, res.data.messages[0].id);
   } catch (err) { console.error('[DualBrain] sendText error:', err.response?.data?.error?.message || err.message); }
 }
 
 async function sendWhatsAppImage(client, phone, imageUrl, caption) {
-  const token = client.whatsappToken;
-  const phoneNumberId = client.phoneNumberId;
+  const token = client.premiumAccessToken || client.whatsappToken;
+  const phoneNumberId = client.premiumPhoneId || client.phoneNumberId;
   if (!token || !phoneNumberId) return;
   try {
-    const res = await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
-      messaging_product: 'whatsapp', to: phone, type: 'image', image: { link: imageUrl, caption }
+    const convo = await Conversation.findOne({ phone, clientId: client.clientId });
+    const translatedCaption = await translateToUserLanguage(caption, convo?.detectedLanguage, client);
+    const res = await axios.post(`https://graph.facebook.com/v19.0/${phoneNumberId}/messages`, {
+      messaging_product: 'whatsapp', to: phone, type: 'image', image: { link: imageUrl, caption: translatedCaption || caption }
     }, { headers: { Authorization: `Bearer ${token}` } });
-    
-    await saveOutboundMessage(phone, client.clientId, 'image', caption || '[Image]', res.data.messages[0].id);
+    await saveOutboundMessage(phone, client.clientId, 'image', translatedCaption || caption || '[Image]', res.data.messages[0].id);
   } catch (err) { console.error('[DualBrain] sendImage error:', err.response?.data?.error?.message || err.message); }
 }
 
-async function sendWhatsAppInteractive(client, phone, interactive, bodyText) {
-  const token = client.whatsappToken;
-  const phoneNumberId = client.phoneNumberId;
+
+async function sendWhatsAppInteractive(client, phone, interactive) {
+  const token = client.premiumAccessToken || client.whatsappToken;
+  const phoneNumberId = client.premiumPhoneId || client.phoneNumberId;
   if (!token || !phoneNumberId) return false;
 
-  const sanitizedBody = (bodyText || '').substring(0, 1024);
-  const data = {
-    messaging_product: 'whatsapp', to: phone, type: 'interactive',
-    interactive: { ...interactive, body: { text: sanitizedBody } }
-  };
-
-  // Sanitize footer (no 'type' field)
-  if (interactive.footer) data.interactive.footer = { text: (interactive.footer?.text || interactive.footer || '').substring(0, 60) };
-
   try {
-    const res = await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
-    await saveOutboundMessage(phone, client.clientId, 'interactive', sanitizedBody, res.data.messages[0].id);
+    const convo = await Conversation.findOne({ phone, clientId: client.clientId });
+    const lang = convo?.detectedLanguage;
+
+    if (lang && lang !== 'en') {
+        if (interactive.body?.text) interactive.body.text = await translateToUserLanguage(interactive.body.text, lang, client);
+        if (interactive.header?.text) interactive.header.text = await translateToUserLanguage(interactive.header.text, lang, client);
+        if (interactive.action?.buttons) {
+            for (const btn of interactive.action.buttons) {
+                if (btn.reply?.title) {
+                    const transTitle = await translateToUserLanguage(btn.reply.title, lang, client);
+                    btn.reply.title = transTitle.substring(0, 20);
+                }
+            }
+        }
+        if (interactive.action?.sections) {
+            for (const sec of interactive.action.sections) {
+                if (sec.title) sec.title = (await translateToUserLanguage(sec.title, lang, client)).substring(0, 24);
+                if (sec.rows) {
+                    for (const row of sec.rows) {
+                        if (row.title) row.title = (await translateToUserLanguage(row.title, lang, client)).substring(0, 24);
+                        if (row.description) row.description = (await translateToUserLanguage(row.description, lang, client)).substring(0, 72);
+                    }
+                }
+            }
+        }
+    }
+
+    const data = {
+      messaging_product: 'whatsapp', to: phone, type: 'interactive',
+      interactive
+    };
+
+    if (interactive.footer) {
+      data.interactive.footer = { text: (interactive.footer.text || interactive.footer || '').substring(0, 60) };
+    }
+
+    const res = await axios.post(`https://graph.facebook.com/v19.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
+    await saveOutboundMessage(phone, client.clientId, 'interactive', interactive.body?.text || '[Interactive]', res.data.messages[0].id);
     return true;
   } catch (err) {
     console.error('[DualBrain] sendInteractive error:', JSON.stringify(err.response?.data || err.message));
@@ -1521,30 +1731,61 @@ async function sendWhatsAppTemplate(client, phone, templateName, languageCode = 
 }
 
 async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, screen) {
-  const token = client.whatsappToken;
-  const phoneNumberId = client.phoneNumberId;
+  const token = client.premiumAccessToken || client.whatsappToken;
+  const phoneNumberId = client.premiumPhoneId || client.phoneNumberId;
   if (!token || !phoneNumberId) return;
+
   try {
-    await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
-      messaging_product: 'whatsapp', to: phone, type: 'interactive',
+    const convo = await Conversation.findOne({ phone, clientId: client.clientId });
+    const lang = convo?.detectedLanguage;
+
+    let finalHeader = (header || '').substring(0, 60);
+    let finalBody = (body || 'Tap below to open the form and continue.').substring(0, 1024);
+    let finalCta = (flowCta || 'Get Started').substring(0, 20);
+
+    if (lang && lang !== 'en') {
+        finalHeader = (await translateToUserLanguage(header, lang, client)).substring(0, 60);
+        finalBody = (await translateToUserLanguage(body, lang, client)).substring(0, 1024);
+        finalCta = (await translateToUserLanguage(flowCta, lang, client)).substring(0, 20);
+    }
+
+    const res = await axios.post(`https://graph.facebook.com/v19.0/${phoneNumberId}/messages`, {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: phone,
+      type: "interactive",
       interactive: {
         type: 'flow',
-        header: { type: 'text', text: header || 'Action Required' },
-        body: { text: body || 'Tap below to open the form and continue.' },
+        header: { type: 'text', text: finalHeader || 'Action Required' },
+        body: { text: finalBody },
         action: {
           name: 'flow',
           parameters: {
             flow_message_version: '3',
-            flow_token: `flow_${Date.now()}`,
+            flow_token: `flow_${Date.now()}_${phone}`,
             flow_id: flowId || '1244048577247022',
-            flow_cta: flowCta || 'Get Started',
+            flow_cta: finalCta || 'Get Started',
             flow_action: 'navigate',
             flow_action_payload: { screen: screen || 'MAIN_SCREEN' }
           }
         }
       }
     }, { headers: { Authorization: `Bearer ${token}` } });
-  } catch (err) { console.error('[DualBrain] sendFlow error:', err.response?.data || err.message); }
+
+    await saveOutboundMessage(phone, client.clientId, 'interactive', `[WhatsApp Flow] ${finalHeader}`, res.data.messages[0].id);
+
+    // Increment Analytics
+    try {
+        const today = new Date().toISOString().split('T')[0];
+        await DailyStat.findOneAndUpdate(
+            { clientId: client.clientId, date: today },
+            { $inc: { flowsSent: 1 } },
+            { upsert: true }
+        );
+    } catch (err) { console.error('[Analytics] Flow send error:', err.message); }
+  } catch (err) { 
+    console.error('[DualBrain] sendFlow error:', JSON.stringify(err.response?.data || err.message)); 
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1721,16 +1962,36 @@ async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = 
       channel:   channel, 
       rawData:   parsedMessage
     });
+    // --- Phase 23: Track 6 CSAT Interceptor ---
+    if (parsedMessage.interactive?.button_reply?.id?.startsWith('csat_')) {
+      const { handleCSATResponse } = require('./csatService');
+      const response = await handleCSATResponse(finalConvoId, parsedMessage.interactive.button_reply.id);
+      if (response && channel === 'whatsapp') {
+        const client = await Client.findOne({ clientId });
+        const WhatsApp = require('./whatsapp');
+        await WhatsApp.sendText(client, phone, response);
+      }
+    }
+
+    // Phase 23: Track Metrics
+    const updateFields = { 
+      lastMessage: content.substring(0, 100), 
+      lastMessageAt: new Date(),
+      channel: channel 
+    };
+
+    // If this is the start of a new interaction cycle, set firstInboundAt
+    const existingConvo = await Conversation.findOne({ phone, clientId });
+    if (!existingConvo?.firstInboundAt || (Date.now() - existingConvo?.lastInteraction > 24 * 60 * 60 * 1000)) {
+        updateFields.firstInboundAt = new Date();
+        updateFields.firstResponseAt = null; // Reset response timer for new cycle
+    }
+
     await Conversation.findOneAndUpdate(
       { phone, clientId },
-      { 
-        $set: { 
-          lastMessage: content.substring(0, 100), 
-          lastMessageAt: new Date(),
-          channel: channel // Ensure conversation channel is updated/set
-        } 
-      }
+      { $set: updateFields }
     );
+
     if (io) io.to(`client_${clientId}`).emit('new_message', msg);
     return msg;
   } catch (err) {
@@ -1756,16 +2017,22 @@ async function saveOutboundMessage(phone, clientId, type, content, messageId, ch
     });
     // We don't usually update lastMessage on outbound in the engine (it's updated by webhook usually)
     // but doing it here ensures the UI stays snappy if webhook is slow
+    // Phase 23: Track FRT
+    const updateFields = { 
+      lastMessage: `Bot: ${content.substring(0, 90)}`, 
+      lastMessageAt: new Date(),
+      channel: channel || 'whatsapp'
+    };
+
+    if (convo && convo.firstInboundAt && !convo.firstResponseAt) {
+        updateFields.firstResponseAt = new Date();
+    }
+
     await Conversation.findOneAndUpdate(
       { phone, clientId },
-      { 
-        $set: { 
-          lastMessage: `Bot: ${content.substring(0, 90)}`, 
-          lastMessageAt: new Date(),
-          channel: channel || 'whatsapp'
-        } 
-      }
+      { $set: updateFields }
     );
+
     const io = global.io;
     if (io) io.to(`client_${clientId}`).emit('new_message', msg);
     return msg;
@@ -1854,6 +2121,74 @@ async function checkIntent(userText, intentDescription, apiKey) {
   }
 }
 
+/**
+ * PHASE 23: Track 6 - Conversation Intelligence
+ * Analyzes sentiment and updates conversation summary in the background.
+ */
+async function analyzeConversationIntelligence(client, phone, convo) {
+  try {
+    const apiKey = client.geminiApiKey;
+    if (!apiKey) return;
+
+    // 1. Fetch last 10 messages to provide context
+    const Message = require('../models/Message');
+    const recentMessages = await Message.find({ 
+      clientId: client.clientId, 
+      $or: [{ from: phone }, { to: phone }] 
+    })
+    .sort({ timestamp: -1 })
+    .limit(10);
+
+    if (recentMessages.length < 2) return; // Not enough context yet
+
+    const historyText = recentMessages.reverse().map(m => 
+      `${m.direction === 'incoming' ? 'User' : 'Bot'}: ${m.content}`
+    ).join('\n');
+
+    const { getGeminiModel } = require('./gemini');
+    const model = getGeminiModel(apiKey);
+    
+    const prompt = `
+      Analyze the following chat history and provide two things in valid JSON format:
+      1. "sentiment": One of "Positive", "Neutral", "Negative".
+      2. "summary": A concise 1-sentence summary of the conversation status.
+
+      Chat History:
+      ${historyText}
+
+      JSON Response:
+    `;
+
+    const result = await model.generateContent(prompt);
+    const responseText = result.response.text();
+    const jsonMatch = responseText.match(/\{.*\}/s);
+    
+    if (jsonMatch) {
+      const { sentiment, summary } = JSON.parse(jsonMatch[0]);
+      
+      await Conversation.findByIdAndUpdate(convo._id, {
+        sentiment: sentiment || 'Neutral',
+        summary: summary || convo.summary,
+        lastSummaryUpdate: new Date()
+      });
+
+      // Emit update to dashboard
+      const io = global.io;
+      if (io) {
+        io.to(`client_${client.clientId}`).emit('conversation_intelligence_update', {
+          phone,
+          sentiment,
+          summary
+        });
+      }
+      
+      log.info(`[Intelligence] ${phone} -> ${sentiment} | ${summary}`);
+    }
+  } catch (err) {
+    console.error('[Intelligence] Error:', err.message);
+  }
+}
+
 module.exports = { 
     handleWhatsAppMessage,
     runDualBrainEngine,
@@ -1868,5 +2203,6 @@ module.exports = {
     saveInboundMessage,
     saveOutboundMessage,
     isGreeting,
-    replaceVariables
+    replaceVariables,
+    analyzeConversationIntelligence
 };
