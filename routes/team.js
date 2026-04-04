@@ -9,11 +9,16 @@ const { sendTeamInviteEmail, sendAdminConfirmationEmail } = require('../utils/em
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
 
 // @route   GET /api/team
+// @route   GET /api/team/:clientId
 // @desc    Get all team members for a client with performance metrics
 // @access  Private (Admin only recommended)
-router.get('/', protect, async (req, res) => {
+router.get(['/', '/:clientId'], protect, async (req, res) => {
     try {
-        const clientId = req.user.clientId;
+        const clientId = req.params.clientId || req.user.clientId;
+
+        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+           return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
 
         // 1. Fetch all users for this client
         const users = await User.find({ clientId }).select('-password');
@@ -35,6 +40,7 @@ router.get('/', protect, async (req, res) => {
             const metric = performanceMetrics.find(m => m._id && m._id.toString() === user._id.toString());
             return {
                 ...user.toObject(),
+                id: user._id.toString(), // Normalize for frontend
                 metrics: {
                     assignedChats: metric ? metric.totalAssigned : 0,
                     resolvedChats: metric ? metric.resolvedCount : 0,
@@ -44,7 +50,7 @@ router.get('/', protect, async (req, res) => {
             };
         });
 
-        res.json(teamWithMetrics);
+        res.json({ success: true, team: teamWithMetrics });
     } catch (error) {
         console.error('[TeamAPI] Fetch Error:', error);
         res.status(500).json({ message: 'Server Error', error: error.message });
