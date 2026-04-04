@@ -10,6 +10,12 @@ const UserSchema = new mongoose.Schema({
     enum: ['SUPER_ADMIN', 'CLIENT_ADMIN', 'AGENT', 'RECEPTIONIST', 'VIEWER'], 
     default: 'CLIENT_ADMIN' 
   },
+  // Phase 24: Reseller Portal
+  userType: {
+    type: String,
+    enum: ['client', 'agent', 'reseller', 'super_admin'],
+    default: 'client'
+  },
   business_type: {
     type: String,
     default: 'clinic'

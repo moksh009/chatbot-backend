@@ -4,22 +4,22 @@ const PLAN_LIMITS = {
   trial: {
     contacts: 100, messages: 1000, agents: 1, campaigns: 2,
     flows: 1, sequences: false, instagram: false, woocommerce: false,
-    analyticsdays: 7, waflows: false
+    analyticsdays: 7, waflows: false, aiSegments: false, aiCalls: 50
   },
   starter: {
     contacts: 1000, messages: 5000, agents: 1, campaigns: 3,
     flows: 2, sequences: false, instagram: false, woocommerce: false,
-    analyticsdays: 7, waflows: false
+    analyticsdays: 7, waflows: false, aiSegments: false, aiCalls: 100
   },
   growth: {
     contacts: 10000, messages: 50000, agents: 5, campaigns: -1,
     flows: 10, sequences: true, instagram: true, woocommerce: true,
-    analyticsdays: 30, waflows: true
+    analyticsdays: 30, waflows: true, aiSegments: false, aiCalls: 500
   },
   enterprise: {
     contacts: -1, messages: -1, agents: -1, campaigns: -1,
     flows: -1, sequences: true, instagram: true, woocommerce: true,
-    analyticsdays: 90, waflows: true
+    analyticsdays: 90, waflows: true, aiSegments: true, aiCalls: -1
   }
 };
 

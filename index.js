@@ -77,6 +77,10 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// Phase 24: White-label domain detection (runs on every request, before routes)
+const whitelabelMiddleware = require('./middleware/whitelabel');
+app.use(whitelabelMiddleware);
+
 // Serve static files from the 'public' directory
 app.use('/public', express.static(path.join(__dirname, 'public')));
 
@@ -115,7 +119,9 @@ const shopifyRoutes = require('./routes/shopify');
 app.use('/api/shopify', shopifyRoutes);
 
 const shopifyHubRoutes = require('./routes/shopifyHub');
+const wooHubRoutes = require('./routes/wooHub');
 app.use('/api/shopify-hub', shopifyHubRoutes);
+app.use('/api/woo-hub', wooHubRoutes);
 const shopifyWebhookRoutes = require('./routes/shopifyWebhook');
 app.use('/api/shopify/webhook', shopifyWebhookRoutes);
 app.use('/api/woocommerce/webhook', wooWebhookRoutes);
@@ -170,13 +176,23 @@ app.use('/api/leads', leadsRoutes);
 const routingRoutes = require('./routes/routingRules');
 app.use('/api/routing', routingRoutes);
 
-// Phase 23: Billing Engine
-const billingRoutes = require('./routes/billing');
-app.use('/api/billing', billingRoutes);
+// Phase 23: Billing Engine & Webhooks
+app.use('/api/billing', require('./routes/billing'));
+app.use('/api/razorpay', require('./routes/razorpayWebhook'));
 const shopifyPixelRoutes = require('./routes/shopifyPixel');
 app.use('/api/shopify-pixel', shopifyPixelRoutes);
+const wooPixelRoutes = require('./routes/wooPixel');
+app.use('/api/woocommerce-pixel', wooPixelRoutes);
 const segmentRoutes = require('./routes/segments');
 app.use('/api/segments', segmentRoutes);
+
+// Phase 24: Growth & Integration Layer
+app.use('/api/webhooks', require('./routes/webhooks'));
+app.use('/api/qrcodes', require('./routes/qrcodes'));
+app.use('/api/catalog', require('./routes/catalog'));
+app.use('/api/meta-ads', require('./routes/metaAds'));
+app.use('/api/whitelabel', require('./routes/whitelabel'));
+app.use('/api/reseller', require('./routes/reseller'));
 
 // --- CRON JOBS (Phase 21 Resumption) ---
 const scheduleFlowResumption = require('./cron/flowResumptionCron');
@@ -255,6 +271,18 @@ cron.schedule('0 8 * * *', async () => {
   console.log('[Cron] Running Instagram token refresh check...');
   try { await refreshExpiringInstagramTokens(); }
   catch (err) { console.error('[Cron] Instagram token refresh error:', err.message); }
+}, { timezone: 'Asia/Kolkata' });
+
+// Phase 24: Meta Ads Daily Sync (6AM IST — before business hours)
+const { syncMetaAds } = require('./utils/metaAdsAPI');
+cron.schedule('0 6 * * *', async () => {
+  console.log('[Cron] Running Meta Ads sync for all connected clients...');
+  try {
+    const connectedClients = await Client.find({ metaAdsConnected: true, isActive: true }).lean();
+    for (const c of connectedClients) {
+      syncMetaAds(c.clientId).catch(err => console.error(`[MetaAds] Cron sync error for ${c.clientId}:`, err.message));
+    }
+  } catch (err) { console.error('[Cron] MetaAds sync error:', err.message); }
 }, { timezone: 'Asia/Kolkata' });
 
 // Phase 11 Cron Jobs

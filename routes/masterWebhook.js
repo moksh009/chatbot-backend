@@ -138,6 +138,70 @@ router.post('/', verifyMetaSignature, async (req, res) => {
                 }
               }).catch(() => {});
 
+              // B2. Handle WA Catalog Orders (message.type === 'order')
+              if (message.type === 'order') {
+                try {
+                  const orderItems = message.order?.product_items || [];
+                  console.log(`[MasterWebhook] 🛒 WA Catalog order from ${from}:`, orderItems.length, 'items');
+
+                  const AdLead = require('../models/AdLead');
+                  const lead = await AdLead.findOneAndUpdate(
+                    { phoneNumber: from },
+                    {
+                      $set: {
+                        cartStatus:      'whatsapp_order_placed',
+                        lastInteraction: new Date(),
+                        'cartSnapshot.items': orderItems.map(i => ({
+                          variant_id: i.product_retailer_id,
+                          quantity:   i.quantity
+                        }))
+                      },
+                      $push: {
+                        activityLog: {
+                          action:    'whatsapp_catalog_order',
+                          details:   `WA Catalog order: ${orderItems.length} item(s)`,
+                          timestamp: new Date()
+                        },
+                        commerceEvents: {
+                          event:     'whatsapp_order_placed',
+                          amount:    0,
+                          currency:  'INR',
+                          timestamp: new Date(),
+                          metadata:  { items: orderItems, catalogOrderId: message.id }
+                        }
+                      }
+                    },
+                    { new: true }
+                  );
+
+                  // Send acknowledgment
+                  handleWhatsAppMessage(from, {
+                    ...message,
+                    type: 'text',
+                    text: { body: `✅ Thank you! We've received your order for ${orderItems.length} item(s). Our team will confirm shortly.` },
+                    _isCatalogAck: true
+                  }, value.metadata?.phone_number_id, contact?.profile?.name || '')
+                    .catch(() => {});
+
+                  // Fire webhook event
+                  try {
+                    const { fireWebhookEvent } = require('../utils/webhookDelivery');
+                    if (lead) {
+                      const clientDoc = await require('../models/Client').findOne({ phoneNumberId: value.metadata?.phone_number_id });
+                      if (clientDoc) fireWebhookEvent(clientDoc._id, 'order.created', { phone: from, items: orderItems, source: 'whatsapp_catalog' });
+                    }
+                  } catch (_) {}
+
+                  // Emit socket event
+                  if (global.io && lead) {
+                    global.io.emit('whatsapp_order_received', { phone: from, items: orderItems });
+                  }
+                } catch (orderErr) {
+                  console.error('[MasterWebhook] Catalog order error:', orderErr.message);
+                }
+                continue; // Don't process as regular message
+              }
+
               // 4. Pass to processing engine (engine handles locking, lead upsert, flow execution)
               const contact = (value.contacts || []).find(c => c.wa_id === from);
               const profileName = contact?.profile?.name || '';

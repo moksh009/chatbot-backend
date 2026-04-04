@@ -57,14 +57,32 @@ router.post('/sync', protect, async (req, res) => {
 });
 
 /**
- * GET /api/whatsapp-flows
+ * POST /api/whatsapp-flows/send
+ * Manually sends a flow to a user
  */
-router.get('/', protect, async (req, res) => {
+router.post('/send', protect, async (req, res) => {
+    const { phone, flowId, header, body, cta, screen } = req.body;
+    const clientId = req.user.clientId;
+
+    if (!phone || !flowId) return res.status(400).json({ error: 'Phone and Flow ID required.' });
+
     try {
-        const flows = await WhatsAppFlow.find({ clientId: req.user.clientId }).sort({ createdAt: -1 });
-        res.json(flows);
+        const client = await Client.findOne({ clientId });
+        if (!client) return res.status(404).json({ error: 'Client not found.' });
+
+        // Phase 23: Track 8 - Billing Enforcement (WA Flows)
+        const limitCheck = await checkLimit(client._id, 'waflows');
+        if (!limitCheck.allowed) {
+            return res.status(403).json({ success: false, message: limitCheck.reason });
+        }
+
+        const { sendWhatsAppFlow } = require('../utils/dualBrainEngine');
+        
+        await sendWhatsAppFlow(client, phone, header, body, flowId, cta, screen);
+        res.json({ success: true, message: 'Flow sent successfully.' });
     } catch (err) {
-        res.status(500).json({ error: 'Failed to fetch flows.' });
+        log.error('Send Flow Error:', err.message);
+        res.status(500).json({ error: 'Failed to send flow.' });
     }
 });
 

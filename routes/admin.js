@@ -759,7 +759,7 @@ router.patch('/my-settings', protect, async (req, res) => {
       simpleSettings, clientId, isAIFallbackEnabled, flowFolders, visualFlows,
       wabaId, phoneNumberId, whatsappToken,
       shopDomain, shopifyClientId, shopifyClientSecret, shopifyAccessToken, shopifyWebhookSecret,
-      woocommerceUrl, woocommerceKey, woocommerceSecret,
+      woocommerceUrl, woocommerceKey, woocommerceSecret, storeType,
       instagramConnected, instagramPageId, instagramAccessToken, instagramAppSecret,
       googleReviewUrl, adminPhone, adminEmail,
       adminAlertEmail, adminAlertWhatsapp, metaAppId,
@@ -805,6 +805,7 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (woocommerceUrl !== undefined) updateFields.woocommerceUrl = woocommerceUrl;
     if (woocommerceKey !== undefined && woocommerceKey !== '••••••••' && woocommerceKey.trim() !== '') updateFields.woocommerceKey = encrypt(woocommerceKey);
     if (woocommerceSecret !== undefined && woocommerceSecret !== '••••••••' && woocommerceSecret.trim() !== '') updateFields.woocommerceSecret = encrypt(woocommerceSecret);
+    if (storeType !== undefined) updateFields.storeType = storeType;
 
     if (instagramConnected !== undefined) updateFields.instagramConnected = instagramConnected;
     if (instagramPageId !== undefined)    updateFields.instagramPageId    = instagramPageId;

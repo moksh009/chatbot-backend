@@ -96,6 +96,70 @@ const WhatsApp = {
   },
 
   /**
+   * Sends a Catalog message (single product or full catalog)
+   */
+  async sendCatalog(client, phone, bodyText, footerText, productId = null) {
+    const validPhone = validatePhone(phone);
+    const { token, phoneNumberId } = this.getCredentials(client);
+    const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+
+    const interactive = {
+      type: 'catalog_message',
+      body: { text: bodyText.substring(0, 1024) },
+      action: {
+        name: 'catalog_message',
+        parameters: productId ? { thumbnail_product_retailer_id: productId } : undefined
+      }
+    };
+
+    if (footerText) interactive.footer = { text: footerText.substring(0, 60) };
+
+    try {
+      const res = await axios.post(url, {
+        messaging_product: 'whatsapp',
+        to: validPhone,
+        type: 'interactive',
+        interactive
+      }, { headers: { Authorization: `Bearer ${token}` } });
+      return res.data;
+    } catch (err) {
+      this.handleError(err, url, "sendCatalog");
+    }
+  },
+
+  /**
+   * Sends a Multi-Product message (MPM)
+   */
+  async sendMultiProduct(client, phone, headerText, bodyText, sections) {
+    const validPhone = validatePhone(phone);
+    const { token, phoneNumberId } = this.getCredentials(client);
+    const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+
+    // sections format: [{ title: '...', product_items: [{ product_retailer_id: '...' }] }]
+    const interactive = {
+      type: 'product_list',
+      header: { type: 'text', text: headerText.substring(0, 60) },
+      body: { text: bodyText.substring(0, 1024) },
+      action: {
+        catalog_id: client.metaCatalogId || process.env.META_CATALOG_ID,
+        sections
+      }
+    };
+
+    try {
+      const res = await axios.post(url, {
+        messaging_product: 'whatsapp',
+        to: validPhone,
+        type: 'interactive',
+        interactive
+      }, { headers: { Authorization: `Bearer ${token}` } });
+      return res.data;
+    } catch (err) {
+      this.handleError(err, url, "sendMultiProduct");
+    }
+  },
+
+  /**
    * Sends a Meta Template
    */
   async sendTemplate(client, phone, templateName, languageCode = 'en', components = []) {

@@ -30,12 +30,31 @@ router.post('/pixel/:clientId', async (req, res) => {
         const email = customer?.email || data?.checkout?.email;
         const phone = customer?.phone || data?.checkout?.phone;
 
-        if (email || phone) {
+        if ((email || phone) || eventName === 'contact_identified') {
             const query = {};
             if (email) query.email = email;
             if (phone) query.phoneNumber = phone.replace(/\D/g, ''); // Normalize
+            if (eventName === 'contact_identified') {
+                if (data.email) query.email = data.email;
+                if (data.phone) query.phoneNumber = data.phone.replace(/\D/g, '');
+            }
+
+            if (!Object.keys(query).length) return res.status(200).json({ success: true });
 
             let lead = await AdLead.findOne({ ...query, clientId });
+
+            if (!lead && (query.email || query.phoneNumber)) {
+                // Pre-create lead from pixel identification
+                lead = new AdLead({
+                    clientId,
+                    email: query.email || '',
+                    phoneNumber: query.phoneNumber || 'unknown_' + sessionId,
+                    source: 'Shopify Pixel (Identified)',
+                    lastInteraction: new Date()
+                });
+                await lead.save();
+                console.log(`[DeepPixel] New Lead Created from Identification: ${query.email || query.phoneNumber}`);
+            }
 
             if (lead) {
                 // Update Lead commerce state
@@ -44,19 +63,25 @@ router.post('/pixel/:clientId', async (req, res) => {
                     amount: data?.checkout?.totalPrice?.amount || data?.cart?.totalQuantity || 0,
                     currency: data?.checkout?.totalPrice?.currencyCode || 'INR',
                     timestamp: timestamp || new Date(),
-                    metadata: data
+                    metadata: { ...data, sessionId }
                 };
 
                 lead.commerceEvents = lead.commerceEvents || [];
                 lead.commerceEvents.push(eventEntry);
                 
-                // --- Phase 23: Track 1 & 8 - Pixel Logging & Abandonment Intelligence ---
+                // Track identified info if it was missing 
+                if (eventName === 'contact_identified') {
+                    if (data.email) lead.email = data.email;
+                    if (data.phone) lead.phoneNumber = data.phone.replace(/\D/g, '');
+                    lead.activityLog.push({ action: 'pixel_contact_identified', details: `Source: checkout_form`, timestamp: new Date() });
+                }
+
                 await PixelEvent.create({
                     clientId,
                     leadId: lead._id,
                     eventName: eventName === 'product_added_to_cart' ? 'add_to_cart' : eventName,
                     url: data?.url || '',
-                    metadata: data,
+                    metadata: { ...data, sessionId },
                     timestamp: timestamp || new Date()
                 });
 
@@ -67,7 +92,7 @@ router.post('/pixel/:clientId', async (req, res) => {
                     lead.lastCartEventAt = new Date();
 
                     // --- TRACK 1: Real-time Recovery Trigger (15m Delay) ---
-                    if (eventName === 'checkout_started') {
+                    if (eventName === 'checkout_started' && lead.phoneNumber && !lead.phoneNumber.startsWith('unknown_')) {
                         const canAutomate = await checkLimit(client._id, 'sequences');
                         if (canAutomate.allowed) {
                             // Schedule a recovery sequence
@@ -93,7 +118,7 @@ router.post('/pixel/:clientId', async (req, res) => {
                 // Track LTV 
                 if (eventName === 'checkout_completed') {
                     lead.totalSpent = (lead.totalSpent || 0) + parseFloat(eventEntry.amount);
-                    lead.orderCount = (lead.orderCount || 0) + 1;
+                    lead.ordersCount = (lead.ordersCount || 0) + 1;
                     lead.isOrderPlaced = true;
                     lead.cartStatus = 'purchased';
                 }
@@ -101,7 +126,6 @@ router.post('/pixel/:clientId', async (req, res) => {
                 await lead.save();
                 console.log(`[DeepPixel] Event ${eventName} tracked for Lead ${lead._id}`);
             }
-
         }
 
         res.status(200).json({ success: true });
@@ -150,6 +174,7 @@ router.get('/pixel/:clientId/script.js', async (req, res) => {
     const backendUrl = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
     
     // Premium Liquid Injection Script (unrestricted DOM access)
+    // PHASE 23: Enhanced with MutationObserver for real-time contact capture
     const script = `
 (function() {
     const CLIENT_ID = "${clientId}";
@@ -158,35 +183,86 @@ router.get('/pixel/:clientId/script.js', async (req, res) => {
     localStorage.setItem("te_pixel_sid", SESSION_ID);
 
     function sendEvent(name, data = {}) {
-        fetch(BACKEND_URL + "/api/shopify/pixel/" + CLIENT_ID + "/event", {
+        const payload = {
+            eventName: name,
+            url: window.location.href,
+            sessionId: SESSION_ID,
+            metadata: data,
+            timestamp: new Date().toISOString()
+        };
+        
+        // Capture context
+        if (window.Shopify) {
+            payload.shopify = {
+                shop: Shopify.shop,
+                currency: Shopify.currency?.active,
+                theme: Shopify.theme?.name
+            };
+        }
+
+        fetch(BACKEND_URL + "/api/shopify-pixel/pixel/" + CLIENT_ID + "/event", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                eventName: name,
-                url: window.location.href,
-                sessionId: SESSION_ID,
-                metadata: data
-            })
+            body: JSON.stringify(payload)
         }).catch(err => console.debug("[TE-Pixel] Skipped", err));
     }
 
+    // 1. Basic Page View
     sendEvent("page_view");
 
+    // 2. Checkout Monitoring (Liquid Context)
     if (window.Shopify && window.Shopify.checkout) {
         sendEvent("checkout_started", { checkout: window.Shopify.checkout });
     }
 
-    // Wrap Fetch to catch AJAX Add to Cart
+    // 3. Real-time Lead Capture (Checkout Form)
+    // Scans for email/phone fields and sends identifying events as they type
+    function setupMutationObserver() {
+        const observer = new MutationObserver((mutations) => {
+            const emailInput = document.querySelector('input[name="checkout[email]"], input[type="email"]');
+            const phoneInput = document.querySelector('input[name="checkout[phone]"], input[name*="phone"]');
+
+            if (emailInput && !emailInput.dataset.teTracked) {
+                emailInput.addEventListener('blur', (e) => {
+                    if (e.target.value.includes('@')) {
+                        sendEvent("contact_identified", { email: e.target.value });
+                        emailInput.dataset.teTracked = "true";
+                    }
+                });
+            }
+            if (phoneInput && !phoneInput.dataset.teTracked) {
+                phoneInput.addEventListener('blur', (e) => {
+                    if (e.target.value.length >= 10) {
+                        sendEvent("contact_identified", { phone: e.target.value });
+                        phoneInput.dataset.teTracked = "true";
+                    }
+                });
+            }
+        });
+
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    // 4. AJAX Cart Interceptor
     const originalFetch = window.fetch;
     window.fetch = function() {
         return originalFetch.apply(this, arguments).then(response => {
             const url = typeof arguments[0] === 'string' ? arguments[0] : arguments[0].url;
             if (url && (url.includes("/cart/add.js") || url.includes("/cart/add"))) {
-                sendEvent("product_added_to_cart", { url: url });
+                response.clone().json().then(data => {
+                    sendEvent("product_added_to_cart", { product: data });
+                }).catch(() => sendEvent("product_added_to_cart", { url }));
             }
             return response;
         });
     };
+
+    // Initialize 
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', setupMutationObserver);
+    } else {
+        setupMutationObserver();
+    }
 })();
     `.trim();
 

@@ -100,12 +100,19 @@ router.post('/from-segment', protect, async (req, res) => {
 
         const count = await AdLead.countDocuments({ ...segment.query, clientId: req.user.clientId });
 
+        const limits = await checkLimit(client._id, 'campaigns');
+        if (!limits.allowed) {
+            return res.status(403).json({ error: limits.reason });
+        }
+
+        await incrementUsage(client._id, 'campaigns', 1);
+
         const campaign = await Campaign.create({
             clientId: req.user.clientId,
             name: name || `Segment: ${segment.name}`,
             status: 'DRAFT',
             audienceCount: count,
-            segmentId: segmentId // We should add this to Campaign model
+            segmentId: segmentId
         });
 
         res.json(campaign);
@@ -156,6 +163,11 @@ router.post('/start', protect, async (req, res) => {
     const isV1 = client?.plan === 'CX Agent (V1)' || client?.subscriptionPlan === 'v1';
     if (isV1) {
       return res.status(403).json({ message: 'Marketing Broadcasting is locked for CX Agent (V1). Please upgrade to V2.' });
+    }
+
+    const limits = await checkLimit(client._id, 'messages'); // Check if messages allowed
+    if (!limits.allowed) {
+      return res.status(403).json({ message: limits.reason });
     }
 
     // Determine actual template name from client config

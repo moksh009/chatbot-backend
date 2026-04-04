@@ -240,6 +240,27 @@ const ClientSchema = new mongoose.Schema({
   automationRules: { type: [mongoose.Schema.Types.Mixed], default: [] }, // { id, name, trigger, conditions, actions, priority, isActive }
   routingRules: { type: [mongoose.Schema.Types.Mixed], default: [] }, // { id, priority, conditions, fallbackAgentId, agentIds, routeType }
 
+  // Phase 24: Meta Ads Manager
+  metaAdsConnected:    { type: Boolean, default: false },
+  metaAdAccountId:     { type: String, default: '' },
+  metaAdsToken:        { type: String, default: '' },
+  metaAdsTokenExpiry:  { type: Date },
+  metaAdsAccountName:  { type: String, default: '' },
+
+  // Phase 24: WhatsApp Catalog
+  waCatalogId:         { type: String, default: '' },
+  catalogSyncedAt:     { type: Date },
+  catalogProductCount: { type: Number, default: 0 },
+  catalogEnabled:      { type: Boolean, default: false },
+
+  // Phase 24: Smart Cart Recovery
+  smartCartRecovery:   { type: Boolean, default: false },
+
+  // Phase 24: Reseller Fields
+  resellerUserId:      { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  resellerPlan:        { type: String, default: '' },
+  billedToReseller:    { type: Boolean, default: false },
+
   createdAt: { type: Date, default: Date.now }
 });
 

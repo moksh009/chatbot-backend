@@ -8,39 +8,26 @@ const Razorpay = require('razorpay');
 const crypto = require('crypto');
 
 const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID || 'rzp_test_placeholder',
-  key_secret: process.env.RAZORPAY_KEY_SECRET || 'placeholder_secret',
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
 /**
  * GET /api/billing/usage
- * Returns current subscription usage and tier limits
  */
 router.get('/usage', protect, async (req, res) => {
   try {
-    // 1. Resolve string clientId to Client ObjectId
     const client = await Client.findOne({ clientId: req.user.clientId });
-    if (!client) {
-      return res.status(404).json({ success: false, message: 'Client not found' });
-    }
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
-    // 2. Find subscription by Client _id (ObjectId)
     let sub = await Subscription.findOne({ clientId: client._id });
     
-    // If no subscription exists, provide a default "trial" response instead of 404
     if (!sub) {
       sub = {
         plan: 'trial',
         status: 'trial',
-        billingCycle: 'monthly',
-        usageThisPeriod: {
-          messages: 0,
-          contacts: 0,
-          campaigns: 0,
-          aiCallsMade: 0
-        },
-        currentPeriodStart: new Date(),
-        currentPeriodEnd: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days from now
+        usageThisPeriod: { messages: 0, contacts: 0, campaigns: 0, aiCallsMade: 0 },
+        currentPeriodEnd: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
       };
     }
 
@@ -50,20 +37,19 @@ router.get('/usage', protect, async (req, res) => {
       success: true,
       subscription: sub,
       limits: planData,
-      razorpayKeyId: process.env.RAZORPAY_KEY_ID || 'rzp_test_placeholder'
+      razorpayKeyId: process.env.RAZORPAY_KEY_ID
     });
   } catch (error) {
-    console.error('Billing Usage Error:', error);
     res.status(500).json({ success: false, message: 'Server Error' });
   }
 });
 
 /**
  * POST /api/billing/subscribe
- * Create a new Razorpay order/subscription
+ * Creates a Razorpay Subscription
  */
 router.post('/subscribe', protect, async (req, res) => {
-  const { plan, cycle } = req.body;
+  const { plan, cycle = 'monthly' } = req.body;
 
   if (!['starter', 'growth', 'enterprise'].includes(plan)) {
     return res.status(400).json({ success: false, message: 'Invalid plan' });
@@ -73,36 +59,37 @@ router.post('/subscribe', protect, async (req, res) => {
     const client = await Client.findOne({ clientId: req.user.clientId });
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
-    const amountMap = {
-      starter: 99900,   // 999 INR
-      growth: 299900,   // 2999 INR
-      enterprise: 799900 // 7999 INR
+    // Plan IDs from .env (User must set these in Razorpay Dashboard)
+    const planIdMap = {
+      starter: process.env.RAZORPAY_PLAN_ID_STARTER,
+      growth: process.env.RAZORPAY_PLAN_ID_GROWTH,
+      enterprise: process.env.RAZORPAY_PLAN_ID_ENTERPRISE
     };
 
-    const amount = amountMap[plan];
+    const plan_id = planIdMap[plan];
+    if (!plan_id || plan_id.includes('PH_')) {
+      return res.status(400).json({ 
+        success: false, 
+        message: `Razorpay Plan ID not configured for ${plan}. Please contact support.` 
+      });
+    }
 
-    // Create Razorpay Order
-    const options = {
-      amount,
-      currency: 'INR',
-      receipt: `receipt_sub_${client.clientId}_${Date.now()}`,
+    const subscription = await razorpay.subscriptions.create({
+      plan_id: plan_id,
+      customer_notify: 1,
+      total_count: 12, // 1 year of monthly billing
       notes: {
-        plan,
         clientId: client.clientId,
-        email: client.email
+        plan: plan
       }
-    };
-
-    const order = await razorpay.orders.create(options);
+    });
 
     res.json({
       success: true,
-      orderId: order.id,
-      amount: order.amount,
-      currency: order.currency,
-      key: process.env.RAZORPAY_KEY_ID || 'rzp_test_placeholder',
-      name: 'TopEdge AI Subscription',
-      description: `Upgrade to ${plan.toUpperCase()} Plan`,
+      subscriptionId: subscription.id,
+      key: process.env.RAZORPAY_KEY_ID,
+      name: 'TopEdge AI',
+      description: `${plan.toUpperCase()} Plan Subscription`,
       prefill: {
         name: client.name,
         email: client.email
@@ -110,49 +97,51 @@ router.post('/subscribe', protect, async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Subscribe Error:', error);
-    res.status(500).json({ success: false, message: 'Failed to initiate payment', error: error.message });
+    console.error('Razorpay Sub Error:', error);
+    res.status(500).json({ success: false, message: error.description || 'Failed to initiate subscription' });
   }
 });
 
 /**
  * POST /api/billing/verify
- * Verify payment and update subscription
+ * Verification for Subscription Handshake
  */
 router.post('/verify', protect, async (req, res) => {
-  const { razorpay_order_id, razorpay_payment_id, razorpay_signature, plan } = req.body;
+  const { razorpay_payment_id, razorpay_subscription_id, razorpay_signature, plan } = req.body;
 
   try {
-    const secret = process.env.RAZORPAY_KEY_SECRET || 'placeholder_secret';
-    const hmac = crypto.createHmac('sha256', secret);
-    hmac.update(razorpay_order_id + "|" + razorpay_payment_id);
-    const generated_signature = hmac.digest('hex');
+    const secret = process.env.RAZORPAY_KEY_SECRET;
+    const expectedSignature = crypto
+      .createHmac('sha256', secret)
+      .update(razorpay_payment_id + "|" + razorpay_subscription_id)
+      .digest('hex');
 
-    if (generated_signature !== razorpay_signature) {
-      return res.status(400).json({ success: false, message: 'Invalid payment signature' });
+    if (expectedSignature !== razorpay_signature) {
+      return res.status(400).json({ success: false, message: 'Invalid signature' });
     }
 
     const client = await Client.findOne({ clientId: req.user.clientId });
     
-    // Update Subscription
+    // Update Subscription locally (Webhook will also confirm this later)
     const sub = await Subscription.findOneAndUpdate(
       { clientId: client._id },
       {
         plan,
         status: 'active',
+        razorpaySubId: razorpay_subscription_id,
         currentPeriodStart: new Date(),
-        currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // +30 days
-        amount: { starter: 99900, growth: 299900, enterprise: 799900 }[plan]
+        currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
       },
       { new: true, upsert: true }
     );
 
-    res.json({ success: true, message: 'Subscription active!', subscription: sub });
+    res.json({ success: true, message: 'Subscription activated!', subscription: sub });
 
   } catch (error) {
-    console.error('Verify Error:', error);
     res.status(500).json({ success: false, message: 'Verification failed' });
   }
 });
+
+module.exports = router;
 
 module.exports = router;

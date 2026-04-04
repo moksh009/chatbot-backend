@@ -2,8 +2,8 @@ const express = require('express');
 const router = express.Router();
 const Segment = require('../models/Segment');
 const AdLead = require('../models/AdLead');
-const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
+const { checkLimit, incrementUsage } = require('../utils/planLimits');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 /**
@@ -14,13 +14,30 @@ router.post('/ai-generate', protect, async (req, res) => {
     const { prompt } = req.body;
     const clientId = req.user.clientId;
 
+    // Phase 23: Plan Gating
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ error: 'Client not found' });
+
+    const segmentCheck = await checkLimit(client._id, 'aiSegments');
+    if (!segmentCheck.allowed) {
+        return res.status(403).json({ 
+            error: segmentCheck.reason,
+            upgradeRequired: true 
+        });
+    }
+
+    const aiCallsCheck = await checkLimit(client._id, 'aiCalls');
+    if (!aiCallsCheck.allowed) {
+        return res.status(403).json({ 
+            error: aiCallsCheck.reason,
+            upgradeRequired: true 
+        });
+    }
+
     if (!prompt) return res.status(400).json({ error: 'Prompt is required' });
 
     try {
         const client = await Client.findOne({ clientId });
-        
-        // Ensure we only use Gemini keys for the Google AI library.
-        // openaiApiKey is for OpenAI-specific tasks only.
         const apiKey = client?.geminiApiKey || process.env.GEMINI_API_KEY;
         
         if (!apiKey) {
@@ -31,74 +48,45 @@ router.post('/ai-generate', protect, async (req, res) => {
 
         const genAI = new GoogleGenerativeAI(apiKey);
         const model = genAI.getGenerativeModel({ 
-            model: "gemini-2.5-flash",
-            safetySettings: [
-                { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-                { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-                { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-                { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
-            ]
+            model: "gemini-2.0-flash" 
         });
 
         const schemaContext = `
-            You are an expert MongoDB query generator. Generate ONLY a valid JSON object representing a MongoDB query for the 'AdLead' collection.
-            The AdLead schema has these relevant fields:
+            You are an expert MongoDB query generator for an Ecommerce CRM. 
+            Generate ONLY a valid JSON object representing a MongoDB query for the 'AdLead' collection.
+            
+            SCHEMA FIELDS:
             - phoneNumber: (String)
             - name: (String)
             - email: (String)
-            - linkClicks: (Number)
             - addToCartCount: (Number)
             - checkoutInitiatedCount: (Number)
             - ordersCount: (Number)
             - totalSpent: (Number)
             - leadScore: (Number)
-            - tags: (Array of Strings)
-            - cartStatus: (String) ['active', 'abandoned', 'recovered', 'purchased', 'failed']
+            - tags: (Array of Strings) - Use { tags: { $in: ["VIP"] } } or { tags: "VIP" }
+            - cartStatus: (String) ['active', 'abandoned', 'recovered', 'purchased']
             - lastInteraction: (Date)
-            - createdAt: (Date)
-            - adAttribution: { source: String, adId: String, ... } source can be 'meta_ad', 'instagram_ad', 'organic'
+            - source: (String) ['Meta Ad', 'Direct', 'Shopify Pixel', 'WooCommerce Pixel']
+            - adAttribution.source: (String) ['meta_ad', 'instagram_ad', 'organic']
             
-            INTENT MAPPING:
-            - "Spent > 500": { totalSpent: { $gt: 500 } }
-            - "Top customers": { totalSpent: { $gte: 2000 }, ordersCount: { $gte: 2 } }
-            - "Abandoned": { cartStatus: 'abandoned' }
-            - "Active in last week": { lastInteraction: { $gte: "DATE_NOW_MINUS_7_DAYS" } }
+            DATE LOGIC:
+            - For "last 7 days", use: { "lastInteraction": { "$gte": "NOW_MINUS_7_DAYS" } }
+            - For "more than a month ago", use: { "lastInteraction": { "$lt": "NOW_MINUS_30_DAYS" } }
             
             RULES:
-
-            1. Return ONLY a valid JSON object. No markdown, no explanation.
-            2. The query must be compatible with mongoose find().
-            3. For dates, use "$gte" and relative expressions like new Date(Date.now() - X * 24 * 60 * 60 * 1000) will be replaced by YOU with a placeholder string "DATE_NOW_MINUS_X_DAYS" which I will post-process.
-            4. Do NOT include clientId in the generated query.
+            1. Return ONLY the JSON object. No markdown blocks, no preamble.
+            2. Do NOT include 'clientId' in the query.
+            3. Use MongoDB operators like $gt, $lt, $gte, $lte, $in, $ne.
         `;
 
         const result = await model.generateContent([
             schemaContext,
-            `Generate a MongoDB query for this prompt: "${prompt}"`
+            `Prompt: "${prompt}"`
         ]);
 
-        let responseText = '';
-        try {
-            const response = await result.response;
-            if (!response || !response.candidates || response.candidates.length === 0) {
-                throw new Error('No candidates returned from AI');
-            }
-            
-            const candidate = response.candidates[0];
-            if (candidate.finishReason === 'SAFETY' || candidate.finishReason === 'RECITATION') {
-                return res.status(403).json({ 
-                    error: `AI response blocked due to ${candidate.finishReason}. Try rephrasing your prompt.` 
-                });
-            }
-
-            responseText = response.text().trim();
-        } catch (textErr) {
-            console.error('[AISegment] Response Processing Error:', textErr.message);
-            return res.status(500).json({ 
-                error: 'AI response was blocked or interrupted. Try a different prompt.' 
-            });
-        }
-
+        let responseText = result.response.text().trim();
+        
         // Clean markdown if present
         if (responseText.includes('```')) {
             responseText = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
@@ -107,7 +95,6 @@ router.post('/ai-generate', protect, async (req, res) => {
         // Parse and validate
         let queryObj;
         try {
-            // Find the start of the JSON object if there's any preamble
             const jsonStart = responseText.indexOf('{');
             const jsonEnd = responseText.lastIndexOf('}');
             if (jsonStart !== -1 && jsonEnd !== -1) {
@@ -115,15 +102,14 @@ router.post('/ai-generate', protect, async (req, res) => {
             }
             queryObj = JSON.parse(responseText);
         } catch (e) {
-            console.error('[AISegment] JSON Parse Error. Raw:', responseText);
-            return res.status(500).json({ error: 'AI generated an invalid query format. Please try again.' });
+            return res.status(500).json({ error: 'AI generated an invalid query format.' });
         }
 
-        // Post-process "DATE_NOW_MINUS_X_DAYS" if any
+        // Post-process Date Placeholders
         const processDates = (obj) => {
             if (!obj || typeof obj !== 'object') return;
             for (let key in obj) {
-                if (typeof obj[key] === 'string' && obj[key].startsWith('DATE_NOW_MINUS_')) {
+                if (typeof obj[key] === 'string' && obj[key].includes('NOW_MINUS_')) {
                     const match = obj[key].match(/\d+/);
                     if (match) {
                         const days = parseInt(match[0]);
@@ -138,13 +124,19 @@ router.post('/ai-generate', protect, async (req, res) => {
         };
         processDates(queryObj);
 
-        // Preview count
+        // Security: Remove any attempts to query sensitive fields
+        delete queryObj.clientId;
+        delete queryObj._id;
+
         const count = await AdLead.countDocuments({ ...queryObj, clientId });
+
+        // Phase 23: Track Usage
+        await incrementUsage(client._id, 'aiCallsMade');
 
         res.json({ success: true, query: queryObj, estimatedCount: count });
     } catch (err) {
-        console.error('[AISegment] AI Error:', err.message);
-        res.status(500).json({ error: 'Failed to generate segment.' });
+        console.error('[AISegment] Error:', err.message);
+        res.status(500).json({ error: 'Failed to generate segment via AI.' });
     }
 });
 

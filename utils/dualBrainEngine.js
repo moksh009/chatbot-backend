@@ -788,6 +788,126 @@ async function runDualBrainEngine(parsedMessage, client) {
   // Only fires when user is NOT already mid-flow (no lastStepId)
   const isUserMidFlow = convo.lastStepId && convo.lastStepId.trim();
   if (!isUserMidFlow) {
+
+    // ── PHASE 24: QR CODE DETECTION (runs FIRST — highest priority on fresh conversations) ──
+    // Pattern: QR_[A-F0-9]{8} (e.g. "QR_A1B2C3D4")
+    const rawText = (parsedMessage.text?.body || '').trim();
+    const qrPattern = /^QR_[A-F0-9]{8}$/i;
+    if (qrPattern.test(rawText)) {
+      try {
+        const QRCode = require('../models/QRCode');
+        const QRScan = require('../models/QRScan');
+        const qr = await QRCode.findOne({ shortCode: rawText.toUpperCase(), isActive: true }).lean();
+        if (qr) {
+          console.log(`[DualBrain] 📱 QR code scanned by ${phone}: ${rawText}`);
+
+          // Track scan — compound index prevents duplicate unique scans
+          const isUnique = !(await QRScan.exists({ qrCodeId: qr._id, phone }));
+          await QRScan.findOneAndUpdate(
+            { qrCodeId: qr._id, phone },
+            { $setOnInsert: { qrCodeId: qr._id, phone, scannedAt: new Date() } },
+            { upsert: true }
+          );
+          await require('../models/QRCode').findByIdAndUpdate(qr._id, {
+            $inc: { scansTotal: 1, ...(isUnique ? { scansUnique: 1 } : {}) }
+          });
+
+          // Tag the lead
+          await AdLead.findOneAndUpdate(
+            { phoneNumber: phone, clientId: client.clientId },
+            {
+              $addToSet: { tags: `qr:${qr.name}` },
+              $set: { 'meta.lastQRCode': rawText, 'meta.lastQRCodeName': qr.name }
+            }
+          );
+
+          // Fire webhook event (fire-and-forget)
+          try {
+            const { fireWebhookEvent } = require('./webhookDelivery');
+            const clientDoc = await Client.findOne({ clientId: client.clientId });
+            fireWebhookEvent(clientDoc._id, 'qr.scanned', {
+              phone, qrCode: qr.name, shortCode: rawText, isFirstScan: isUnique
+            });
+          } catch (_) {}
+
+          // Apply discount if configured
+          if (qr.config?.discountCode) {
+            await AdLead.findOneAndUpdate(
+              { phoneNumber: phone, clientId: client.clientId },
+              { $set: { activeDiscountCode: qr.config.discountCode } }
+            );
+          }
+
+          // Execute attached flow if present
+          if (qr.config?.flowId) {
+            const attachedFlow = (client.visualFlows || []).find(f => f.id === qr.config.flowId);
+            if (attachedFlow && attachedFlow.nodes?.length) {
+              const qrFlowNodes = flattenFlowNodes(attachedFlow.nodes);
+              const qrStartNode = findFlowStartNode(qrFlowNodes, attachedFlow.edges || []);
+              if (qrStartNode) {
+                await Conversation.findByIdAndUpdate(convo._id, { activeFlowId: attachedFlow.id });
+                const freshConvo = await Conversation.findById(convo._id);
+                return await executeNode(qrStartNode, qrFlowNodes, attachedFlow.edges || [], client, freshConvo, lead, phone, io, channel);
+              }
+            }
+          }
+
+          // Send welcome message if no flow attached
+          if (qr.config?.welcomeMessage) {
+            await sendWhatsAppText(client, phone, qr.config.welcomeMessage);
+            return true;
+          }
+          // Fall through to normal flow processing if no flow/message configured
+        }
+      } catch (qrErr) {
+        console.error('[DualBrain] QR detection error:', qrErr.message);
+        // Non-fatal — fall through
+      }
+    }
+
+    // ── PHASE 24: META ADS FLOW ROUTING (after QR, before triggerEngine) ──
+    // If fresh conversation AND lead came from a Meta Ad, check for attached flow
+    if (!convo.lastStepId) {
+      try {
+        const adId = lead?.adAttribution?.adId;
+        if (adId) {
+          const MetaAd = require('../models/MetaAd');
+          const clientDoc = await Client.findOne({ clientId: client.clientId });
+          const metaAd = await MetaAd.findOne({ clientId: clientDoc?._id, metaAdId: adId }).lean();
+
+          if (metaAd) {
+            // Send custom welcome message if set
+            if (metaAd.customWelcomeMessage) {
+              await sendWhatsAppText(client, phone, metaAd.customWelcomeMessage);
+            }
+
+            // Execute attached flow
+            if (metaAd.attachedFlowId) {
+              const adFlow = (client.visualFlows || []).find(f => f.id === metaAd.attachedFlowId);
+              if (adFlow && adFlow.nodes?.length) {
+                const adFlowNodes = flattenFlowNodes(adFlow.nodes);
+                const adStartNode = findFlowStartNode(adFlowNodes, adFlow.edges || []);
+                if (adStartNode) {
+                  console.log(`[DualBrain] 🎯 Meta Ad flow: routing ${phone} to flow "${adFlow.name}" from ad "${metaAd.adName}"`);
+                  await Conversation.findByIdAndUpdate(convo._id, { activeFlowId: adFlow.id });
+                  const freshConvo = await Conversation.findById(convo._id);
+                  return await executeNode(adStartNode, adFlowNodes, adFlow.edges || [], client, freshConvo, lead, phone, io, channel);
+                }
+              }
+            }
+
+            // Update ad TopEdge stats (increment lead count)
+            await MetaAd.findByIdAndUpdate(metaAd._id, {
+              $inc: { 'topedgeStats.leadsCount': 1 }
+            });
+          }
+        }
+      } catch (adErr) {
+        console.error('[DualBrain] Meta Ad routing error:', adErr.message);
+        // Non-fatal — fall through to normalflow
+      }
+    }
+
     try {
       const match = await findMatchingFlow(parsedMessage, client, convo);
       if (match && !match.isLegacy && match.flow) {
@@ -1486,6 +1606,22 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       return true;
     }
 
+    case 'catalog': {
+      const { catalogType, productId, productIds, body, header, footer } = data;
+      const bodyText = (body || data.text || "Check out our collection!").substring(0, 1024);
+      const replacedBody = replaceVariables(bodyText, client, lead, convo);
+      
+      if (catalogType === 'multi') {
+        const ids = (productIds || '').split(',').map(id => id.trim()).filter(Boolean);
+        const sections = [{ title: 'Our Picks', product_items: ids.map(id => ({ product_retailer_id: id })) }];
+        await WhatsApp.sendMultiProduct(client, phone, header || 'Catalog', replacedBody, sections);
+      } else {
+        // Handle 'full' and 'single'
+        await WhatsApp.sendCatalog(client, phone, replacedBody, footer || '', catalogType === 'single' ? productId : null);
+      }
+      return true;
+    }
+
     case 'trigger': return true;
     case 'logic': return true;
     case 'set_variable': return true;
@@ -1605,7 +1741,8 @@ async function runAIFallback(parsedMessage, client, phone, lead, channel = 'what
         ? `The customer seems hesitant about price. You are authorized to offer a one-time discount code: "${discountCode}". Use it to close the deal!`
         : `If the customer asks for a deal, you can mention code "${discountCode}".`;
 
-    const langInstruction = getLanguageInstructions(parsedMessage._detectedLanguage || 'en');
+    const detectedLang = parsedMessage._detectedLanguage || convo?.detectedLanguage || 'en';
+    const langInstruction = getLanguageInstructions(detectedLang);
     const knowledgeBase = (client.nicheData?.products || []).map(p => `PRODUCT: ${p.title} - ${p.price}. LINK: ${p.url}`).join('\n') || 'General product information available.';
 
     const prompt = [
@@ -1716,14 +1853,21 @@ async function sendWhatsAppInteractive(client, phone, interactive) {
   }
 }
 
-async function sendWhatsAppTemplate(client, phone, templateName, languageCode = 'en', components = []) {
+async function sendWhatsAppTemplate(client, phone, templateName, languageCode, components = []) {
   const token = client.whatsappToken;
   const phoneNumberId = client.phoneNumberId;
   if (!token || !phoneNumberId) return;
+  
   try {
+    let finalLang = languageCode;
+    if (!finalLang) {
+      const convo = await Conversation.findOne({ phone, clientId: client.clientId });
+      finalLang = convo?.detectedLanguage || 'en';
+    }
+
     const res = await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
       messaging_product: 'whatsapp', to: phone, type: 'template',
-      template: { name: templateName, language: { code: languageCode }, components }
+      template: { name: templateName, language: { code: finalLang }, components }
     }, { headers: { Authorization: `Bearer ${token}` } });
     
     await saveOutboundMessage(phone, client.clientId, 'template', `[Template: ${templateName}]`, res.data.messages[0].id);
@@ -1992,6 +2136,12 @@ async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = 
       { $set: updateFields }
     );
 
+    // Phase 23: Track Conversation Intelligence
+    const client = await Client.findOne({ clientId });
+    if (client) {
+      analyzeConversationIntelligence(client, phone, existingConvo || { _id: finalConvoId });
+    }
+
     if (io) io.to(`client_${clientId}`).emit('new_message', msg);
     return msg;
   } catch (err) {
@@ -2035,6 +2185,14 @@ async function saveOutboundMessage(phone, clientId, type, content, messageId, ch
 
     const io = global.io;
     if (io) io.to(`client_${clientId}`).emit('new_message', msg);
+
+    // Phase 23: Track Conversation Intelligence (Sentiment/Summary)
+    const client = await Client.findOne({ clientId });
+    if (client) {
+      const convo = await Conversation.findOne({ phone, clientId });
+      if (convo) analyzeConversationIntelligence(client, phone, convo);
+    }
+
     return msg;
   } catch (err) {
     console.error('[DualBrain] saveOutboundMessage error:', err.message);

@@ -72,8 +72,26 @@ const scheduleFollowUpSequenceCron = () => {
                     if (!client.whatsappToken || !client.phoneNumberId) {
                         errorMessage = "WhatsApp not configured";
                     } else {
-                        // Ensure WhatsApp configuration is synced into the client instance for WhatsApp.sendSmartTemplate
-                        if (dueStep.templateName) {
+                        // Phase 24: Smart Cart Recovery Integration
+                        let finalContent = hydratedContent;
+                        let useAI = client.smartCartRecovery && seq.name?.toLowerCase().includes('recovery');
+
+                        if (useAI) {
+                            try {
+                                const { generateSmartRecoveryMessage } = require('../utils/smartCartRecovery');
+                                // Determine step number based on sequence progress (step 1, 2, or 3)
+                                const stepIndex = seq.steps.indexOf(dueStep) + 1;
+                                const aiMessage = await generateSmartRecoveryMessage(client, lead, stepIndex);
+                                if (aiMessage) {
+                                    finalContent = aiMessage;
+                                    console.log(`[SequenceCron] 🔮 Using AI Smart Recovery message for ${seq.phone} (Step ${stepIndex})`);
+                                }
+                            } catch (aiErr) {
+                                console.error("[SequenceCron] Smart Recovery AI failed, falling back to static:", aiErr.message);
+                            }
+                        }
+
+                        if (dueStep.templateName && !useAI) {
                             try {
                                 await WhatsApp.sendSmartTemplate(
                                     client, 
@@ -90,7 +108,7 @@ const scheduleFollowUpSequenceCron = () => {
                             }
                         } else {
                              try {
-                                await WhatsApp.sendText(client, seq.phone, hydratedContent);
+                                await WhatsApp.sendText(client, seq.phone, finalContent);
                                 sentSuccess = true;
                              } catch (e) {
                                 sentSuccess = false;
