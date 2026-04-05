@@ -151,7 +151,6 @@ const NotificationService = {
       return null;
     }
   }
-  }
 };
 
 module.exports = NotificationService;
