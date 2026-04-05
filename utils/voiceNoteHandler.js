@@ -36,15 +36,16 @@ async function processVoiceNote(message, client, phone, convoId, io, phoneNumber
     let audioBuffer;
     let mimeType = "audio/ogg; codecs=opus";
 
+    const waToken = client.whatsapp?.accessToken || client.whatsappToken || process.env.WHATSAPP_TOKEN;
     try {
       const urlResp = await axios.get(
         `https://graph.facebook.com/v18.0/${mediaId}`,
-        { headers: { Authorization: `Bearer ${client.whatsappToken || process.env.WHATSAPP_TOKEN}` } }
+        { headers: { Authorization: `Bearer ${waToken}` } }
       );
       const mediaUrl = urlResp.data.url;
       const audioResp = await axios.get(mediaUrl, {
         responseType: "arraybuffer",
-        headers: { Authorization: `Bearer ${client.whatsappToken || process.env.WHATSAPP_TOKEN}` }
+        headers: { Authorization: `Bearer ${waToken}` }
       });
       audioBuffer = Buffer.from(audioResp.data);
       mimeType = urlResp.data.mime_type || mimeType;
@@ -52,7 +53,7 @@ async function processVoiceNote(message, client, phone, convoId, io, phoneNumber
     } catch (metaErr) {
       console.warn("[VoiceNoteHandler] Meta Download Failed (Expected in Dev loop with mock payloads):", metaErr.message);
       // MOCK FALLBACK for development testing
-      if (process.env.NODE_ENV === 'development' || !client.whatsappToken) {
+      if (process.env.NODE_ENV === 'development' || !waToken) {
         console.log("[VoiceNoteHandler] Using Mock Audio Buffer for Dev Transcription Phase...");
         audioBuffer = Buffer.from("mock_audio_data_for_dev_bypassing_meta_strict_url"); // Mock payload
       } else {
@@ -61,7 +62,8 @@ async function processVoiceNote(message, client, phone, convoId, io, phoneNumber
     }
 
     // ── STEP 3: Transcribe with Gemini ─────────────────────
-    const genAI = new GoogleGenerativeAI(client.geminiApiKey || process.env.GEMINI_API_KEY);
+    const aiKey = client.ai?.geminiKey || client.geminiApiKey || process.env.GEMINI_API_KEY;
+    const genAI = new GoogleGenerativeAI(aiKey);
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
     let rawTranscript = "I am a recorded voice mock. Give me a discount!";
