@@ -359,7 +359,9 @@ router.get('/run-delitech-migration', async (req, res) => {
         flowEdges: DELITECH_EDGES,
         businessType: "ecommerce",
         niche: "ecommerce",
-        isGenericBot: true // Dual Brain Enabled
+        isGenericBot: true, // Dual Brain Enabled
+        plan: "CX Agent (V2)",
+        "billing.plan": "CX Agent (V2)"
       }}
     );
 
