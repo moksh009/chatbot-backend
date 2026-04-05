@@ -49,7 +49,7 @@ async function schedulePostDeliveryUpsell(client, orderData) {
         }
 
         const genAI = new GoogleGenerativeAI(apiKey);
-        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash', generationConfig: { responseMimeType: 'application/json' } });
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash', generationConfig: { responseMimeType: 'application/json' } });
 
         const prompt = `You are a post-purchase personalized upsell AI for ${client.businessName}.
 The customer just received: "${purchasedItems}".

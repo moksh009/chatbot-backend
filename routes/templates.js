@@ -209,7 +209,7 @@ router.post('/:clientId/ai-generate', protect, async (req, res) => {
         const { GoogleGenerativeAI } = require("@google/generative-ai");
         const apiKey = client.openaiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
         const genAI = new GoogleGenerativeAI(apiKey);
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         
         const finalPrompt = `
         Act as a master WhatsApp marketer.

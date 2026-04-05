@@ -81,7 +81,7 @@ Strict rules:
 Write ONLY the message text. No intro, no explanation, no quotes around the message.`;
 
     const genAI  = new GoogleGenerativeAI(geminiKey);
-    const model  = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model  = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
     const result = await model.generateContent(prompt);
     const text   = result.response.text().trim();
 

@@ -14,7 +14,9 @@ function createTransporter(client) {
     }
 
     return nodemailer.createTransport({
-        service: 'gmail',
+        host: 'smtp.gmail.com',
+        port: 465,
+        secure: true,
         auth: {
             user: emailUser,
             pass: emailPass
@@ -136,7 +138,9 @@ async function sendCODToPrepaidEmail(client, { customerEmail, customerName, orde
  */
 async function sendSystemOTPEmail(toAddress, otpCode, purpose = 'SIGNUP') {
     const transporter = nodemailer.createTransport({
-        service: 'gmail',
+        host: 'smtp.gmail.com',
+        port: 465,
+        secure: true,
         auth: {
             user: process.env.SYSTEM_EMAIL_USER,
             pass: process.env.SYSTEM_EMAIL_PASS
@@ -210,7 +214,9 @@ async function sendSystemOTPEmail(toAddress, otpCode, purpose = 'SIGNUP') {
  */
 async function sendTeamInviteEmail(toAddress, { adminName, businessName, password, loginUrl }) {
     const transporter = nodemailer.createTransport({
-        service: 'gmail',
+        host: 'smtp.gmail.com',
+        port: 465,
+        secure: true,
         auth: {
             user: process.env.SYSTEM_EMAIL_USER,
             pass: process.env.SYSTEM_EMAIL_PASS
@@ -273,7 +279,9 @@ async function sendTeamInviteEmail(toAddress, { adminName, businessName, passwor
  */
 async function sendAdminConfirmationEmail(adminEmail, { agentName, agentEmail, businessName }) {
     const transporter = nodemailer.createTransport({
-        service: 'gmail',
+        host: 'smtp.gmail.com',
+        port: 465,
+        secure: true,
         auth: {
             user: process.env.SYSTEM_EMAIL_USER,
             pass: process.env.SYSTEM_EMAIL_PASS

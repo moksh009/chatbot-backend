@@ -11,7 +11,7 @@ const Client = require('../models/Client');
 async function detectNegotiationIntent(userText, apiKey) {
   try {
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash', generationConfig: { responseMimeType: "application/json" } });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash', generationConfig: { responseMimeType: "application/json" } });
     
     const prompt = `Analyze this customer message: "${userText}"
     Is the customer asking for a discount, better price, offer, coupon code, or trying to negotiate/haggle?
@@ -102,7 +102,7 @@ async function processNegotiation(client, convo, phone, userText, lead) {
 
     // Invoke Gemini to generate reply and offer
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash', generationConfig: { responseMimeType: "application/json" } });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash', generationConfig: { responseMimeType: "application/json" } });
 
     const min = limits.minDiscountPercent || 5;
     const max = limits.maxDiscountPercent || 15;

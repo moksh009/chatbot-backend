@@ -64,7 +64,7 @@ async function processVoiceNote(message, client, phone, convoId, io, phoneNumber
     // ── STEP 3: Transcribe with Gemini ─────────────────────
     const aiKey = client.ai?.geminiKey || client.geminiApiKey || process.env.GEMINI_API_KEY;
     const genAI = new GoogleGenerativeAI(aiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     let rawTranscript = "I am a recorded voice mock. Give me a discount!";
     
