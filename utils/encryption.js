@@ -9,8 +9,10 @@ const KEY = crypto.createHash('sha256').update(String(process.env.ENCRYPTION_KEY
  */
 function encrypt(text) {
   if (!text) return "";
+  // --- ROBUSTNESS: Strictly handle non-string inputs (prevent crashes on objects/buffers) ---
+  if (typeof text !== 'string') return text; 
   // --- ROBUSTNESS: Avoid double encryption ---
-  if (typeof text === 'string' && text.includes(':') && text.length > 32) return text; 
+  if (text.includes(':') && text.length > 32) return text; 
   
   const iv = crypto.randomBytes(16);
   const cipher = crypto.createCipheriv(ALGORITHM, KEY, iv);
@@ -25,6 +27,8 @@ function encrypt(text) {
  */
 function decrypt(text) {
   if (!text) return "";
+  // --- ROBUSTNESS: Strictly handle non-string inputs (prevent crashes on objects/buffers) ---
+  if (typeof text !== 'string') return text; 
   if (!text.includes(':')) return text; // Backward compatibility for unencrypted tokens
 
   try {

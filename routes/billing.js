@@ -45,6 +45,65 @@ router.get('/usage', protect, async (req, res) => {
 });
 
 /**
+ * GET /api/billing/:clientId
+ * Returns combined billing and usage data for the frontend Billing page
+ */
+router.get('/:clientId', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const client = await Client.findOne({ clientId });
+    
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    // Get Subscription status
+    let sub = await Subscription.findOne({ clientId: client._id });
+    
+    // Master Plan from Client document
+    const masterPlan = client.plan || 'CX Agent (V1)';
+    const trialActive = client.billing?.trialActive ?? client.trialActive ?? true;
+    const tier = client.tier || 'v1';
+
+    // Calculate Usage based on Client's usage tracker
+    const planLimits = PLAN_LIMITS[masterPlan.toLowerCase()] || PLAN_LIMITS['starter'];
+    
+    const usage = {
+      contacts: {
+        used: client.usage?.leadsCreated || 0,
+        limit: planLimits.contacts,
+        percent: planLimits.contacts > 0 ? ((client.usage?.leadsCreated || 0) / planLimits.contacts) * 100 : 0
+      },
+      messages: {
+        used: client.usage?.messagesSent || 0,
+        limit: planLimits.messages,
+        percent: planLimits.messages > 0 ? ((client.usage?.messagesSent || 0) / planLimits.messages) * 100 : 0
+      },
+      campaigns: {
+        used: client.usage?.campaignsSent || 0,
+        limit: planLimits.campaigns,
+        percent: planLimits.campaigns > 0 ? ((client.usage?.campaignsSent || 0) / planLimits.campaigns) * 100 : 0
+      }
+    };
+
+    res.json({
+      success: true,
+      plan: masterPlan,
+      status: sub?.status || (trialActive ? 'trial' : 'inactive'),
+      tier: tier,
+      daysLeft: client.trialEndsAt ? Math.ceil((new Date(client.trialEndsAt) - new Date()) / (1000 * 60 * 60 * 24)) : 0,
+      usage,
+      nextBillingAmount: sub?.nextAmount || 0,
+      subscriptionId: sub?.razorpaySubId
+    });
+
+  } catch (error) {
+    console.error('Billing Fetch Error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch billing data' });
+  }
+});
+
+/**
  * POST /api/billing/subscribe
  * Creates a Razorpay Subscription
  */

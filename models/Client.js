@@ -364,38 +364,42 @@ const ClientSchema = new mongoose.Schema({
 // --- Mongoose Hooks: Encryption at the Database Layer ---
 
 function encryptSubDocs(doc) {
-  if (doc.whatsapp?.accessToken) doc.whatsapp.accessToken = encrypt(doc.whatsapp.accessToken);
-  if (doc.commerce?.shopify?.accessToken) doc.commerce.shopify.accessToken = encrypt(doc.commerce.shopify.accessToken);
-  if (doc.commerce?.shopify?.refreshToken) doc.commerce.shopify.refreshToken = encrypt(doc.commerce.shopify.refreshToken);
-  if (doc.commerce?.shopify?.clientSecret) doc.commerce.shopify.clientSecret = encrypt(doc.commerce.shopify.clientSecret);
-  if (doc.commerce?.shopify?.webhookSecret) doc.commerce.shopify.webhookSecret = encrypt(doc.commerce.shopify.webhookSecret);
-  if (doc.commerce?.woocommerce?.key) doc.commerce.woocommerce.key = encrypt(doc.commerce.woocommerce.key);
-  if (doc.commerce?.woocommerce?.secret) doc.commerce.woocommerce.secret = encrypt(doc.commerce.woocommerce.secret);
-  if (doc.commerce?.woocommerce?.webhookSecret) doc.commerce.woocommerce.webhookSecret = encrypt(doc.commerce.woocommerce.webhookSecret);
-  if (doc.ai?.geminiKey) doc.ai.geminiKey = encrypt(doc.ai.geminiKey);
-  if (doc.ai?.openaiKey) doc.ai.openaiKey = encrypt(doc.ai.openaiKey);
-  if (doc.social?.instagram?.accessToken) doc.social.instagram.accessToken = encrypt(doc.social.instagram.accessToken);
-  if (doc.social?.instagram?.appSecret) doc.social.instagram.appSecret = encrypt(doc.social.instagram.appSecret);
-  if (doc.social?.metaAds?.accessToken) doc.social.metaAds.accessToken = encrypt(doc.social.metaAds.accessToken);
+  const enc = (val) => (typeof val === 'string' ? encrypt(val) : val);
+  
+  if (doc.whatsapp?.accessToken) doc.whatsapp.accessToken = enc(doc.whatsapp.accessToken);
+  if (doc.commerce?.shopify?.accessToken) doc.commerce.shopify.accessToken = enc(doc.commerce.shopify.accessToken);
+  if (doc.commerce?.shopify?.refreshToken) doc.commerce.shopify.refreshToken = enc(doc.commerce.shopify.refreshToken);
+  if (doc.commerce?.shopify?.clientSecret) doc.commerce.shopify.clientSecret = enc(doc.commerce.shopify.clientSecret);
+  if (doc.commerce?.shopify?.webhookSecret) doc.commerce.shopify.webhookSecret = enc(doc.commerce.shopify.webhookSecret);
+  if (doc.commerce?.woocommerce?.key) doc.commerce.woocommerce.key = enc(doc.commerce.woocommerce.key);
+  if (doc.commerce?.woocommerce?.secret) doc.commerce.woocommerce.secret = enc(doc.commerce.woocommerce.secret);
+  if (doc.commerce?.woocommerce?.webhookSecret) doc.commerce.woocommerce.webhookSecret = enc(doc.commerce.woocommerce.webhookSecret);
+  if (doc.ai?.geminiKey) doc.ai.geminiKey = enc(doc.ai.geminiKey);
+  if (doc.ai?.openaiKey) doc.ai.openaiKey = enc(doc.ai.openaiKey);
+  if (doc.social?.instagram?.accessToken) doc.social.instagram.accessToken = enc(doc.social.instagram.accessToken);
+  if (doc.social?.instagram?.appSecret) doc.social.instagram.appSecret = enc(doc.social.instagram.appSecret);
+  if (doc.social?.metaAds?.accessToken) doc.social.metaAds.accessToken = enc(doc.social.metaAds.accessToken);
   
   // Legacy Encryptions
-  if (doc.whatsappToken) doc.whatsappToken = encrypt(doc.whatsappToken);
-  if (doc.shopifyAccessToken) doc.shopifyAccessToken = encrypt(doc.shopifyAccessToken);
-  if (doc.shopifyRefreshToken) doc.shopifyRefreshToken = encrypt(doc.shopifyRefreshToken);
-  if (doc.shopifyWebhookSecret) doc.shopifyWebhookSecret = encrypt(doc.shopifyWebhookSecret);
-  if (doc.shopifyClientSecret) doc.shopifyClientSecret = encrypt(doc.shopifyClientSecret);
-  if (doc.woocommerceSecret) doc.woocommerceSecret = encrypt(doc.woocommerceSecret);
-  if (doc.geminiApiKey) doc.geminiApiKey = encrypt(doc.geminiApiKey);
-  if (doc.openaiApiKey) doc.openaiApiKey = encrypt(doc.openaiApiKey);
-  if (doc.instagramAccessToken) doc.instagramAccessToken = encrypt(doc.instagramAccessToken);
-  if (doc.instagramAppSecret) doc.instagramAppSecret = encrypt(doc.instagramAppSecret);
-  if (doc.razorpaySecret) doc.razorpaySecret = encrypt(doc.razorpaySecret);
-  if (doc.emailAppPassword) doc.emailAppPassword = encrypt(doc.emailAppPassword);
+  if (doc.whatsappToken) doc.whatsappToken = enc(doc.whatsappToken);
+  if (doc.shopifyAccessToken) doc.shopifyAccessToken = enc(doc.shopifyAccessToken);
+  if (doc.shopifyRefreshToken) doc.shopifyRefreshToken = enc(doc.shopifyRefreshToken);
+  if (doc.shopifyWebhookSecret) doc.shopifyWebhookSecret = enc(doc.shopifyWebhookSecret);
+  if (doc.shopifyClientSecret) doc.shopifyClientSecret = enc(doc.shopifyClientSecret);
+  if (doc.woocommerceSecret) doc.woocommerceSecret = enc(doc.woocommerceSecret);
+  if (doc.geminiApiKey) doc.geminiApiKey = enc(doc.geminiApiKey);
+  if (doc.openaiApiKey) doc.openaiApiKey = enc(doc.openaiApiKey);
+  if (doc.instagramAccessToken) doc.instagramAccessToken = enc(doc.instagramAccessToken);
+  if (doc.instagramAppSecret) doc.instagramAppSecret = enc(doc.instagramAppSecret);
+  if (doc.razorpaySecret) doc.razorpaySecret = enc(doc.razorpaySecret);
+  if (doc.emailAppPassword) doc.emailAppPassword = enc(doc.emailAppPassword);
 }
 
 function encryptUpdateQuery(update) {
   if (!update) return;
   const setOps = update.$set || update;
+  const enc = (val) => (typeof val === 'string' ? encrypt(val) : val);
+  
   const encPaths = [
     'whatsapp.accessToken', 'commerce.shopify.accessToken', 'commerce.shopify.refreshToken', 'commerce.shopify.clientSecret', 'commerce.shopify.webhookSecret',
     'commerce.woocommerce.key', 'commerce.woocommerce.secret', 'commerce.woocommerce.webhookSecret',
@@ -406,7 +410,7 @@ function encryptUpdateQuery(update) {
   ];
 
   for (const path of encPaths) {
-    if (setOps[path]) setOps[path] = encrypt(setOps[path]);
+    if (setOps[path]) setOps[path] = enc(setOps[path]);
   }
 }
 

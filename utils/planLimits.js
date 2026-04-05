@@ -20,6 +20,16 @@ const PLAN_LIMITS = {
     contacts: -1, messages: -1, agents: -1, campaigns: -1,
     flows: -1, sequences: true, instagram: true, woocommerce: true,
     analyticsdays: 90, waflows: true, aiSegments: true, aiCalls: -1
+  },
+  "cx agent (v1)": {
+    contacts: 1000, messages: 5000, agents: 1, campaigns: 3,
+    flows: 2, sequences: false, instagram: false, woocommerce: false,
+    analyticsdays: 7, waflows: false, aiSegments: false, aiCalls: 100
+  },
+  "cx agent (v2)": {
+    contacts: -1, messages: -1, agents: -1, campaigns: -1,
+    flows: -1, sequences: true, instagram: true, woocommerce: true,
+    analyticsdays: 90, waflows: true, aiSegments: true, aiCalls: -1
   }
 };
 
