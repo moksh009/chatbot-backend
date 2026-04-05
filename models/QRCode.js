@@ -35,7 +35,5 @@ const qrCodeSchema = new mongoose.Schema({
   expiresAt: { type: Date, default: null }
 });
 
-qrCodeSchema.index({ clientId: 1 });
-qrCodeSchema.index({ shortCode: 1 }, { unique: true });
 
 module.exports = mongoose.model('QRCode', qrCodeSchema);

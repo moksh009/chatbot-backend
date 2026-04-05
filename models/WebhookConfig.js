@@ -33,7 +33,6 @@ const webhookConfigSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-webhookConfigSchema.index({ clientId: 1 });
 webhookConfigSchema.index({ clientId: 1, events: 1 });
 
 module.exports = mongoose.model('WebhookConfig', webhookConfigSchema);
