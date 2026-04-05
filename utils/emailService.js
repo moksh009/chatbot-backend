@@ -17,6 +17,7 @@ function createTransporter(client) {
         host: 'smtp.gmail.com',
         port: 465,
         secure: true,
+        family: 4,
         auth: {
             user: emailUser,
             pass: emailPass
@@ -141,6 +142,7 @@ async function sendSystemOTPEmail(toAddress, otpCode, purpose = 'SIGNUP') {
         host: 'smtp.gmail.com',
         port: 465,
         secure: true,
+        family: 4,
         auth: {
             user: process.env.SYSTEM_EMAIL_USER,
             pass: process.env.SYSTEM_EMAIL_PASS
@@ -217,6 +219,7 @@ async function sendTeamInviteEmail(toAddress, { adminName, businessName, passwor
         host: 'smtp.gmail.com',
         port: 465,
         secure: true,
+        family: 4,
         auth: {
             user: process.env.SYSTEM_EMAIL_USER,
             pass: process.env.SYSTEM_EMAIL_PASS
@@ -282,6 +285,7 @@ async function sendAdminConfirmationEmail(adminEmail, { agentName, agentEmail, b
         host: 'smtp.gmail.com',
         port: 465,
         secure: true,
+        family: 4,
         auth: {
             user: process.env.SYSTEM_EMAIL_USER,
             pass: process.env.SYSTEM_EMAIL_PASS

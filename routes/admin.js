@@ -705,8 +705,16 @@ router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
       updateData['billing.trialEndsAt'] = new Date(trialEndsAt);
     }
 
-    const updatedClient = await Client.findByIdAndUpdate(
-      req.params.id,
+    let query = {};
+    const mongoose = require('mongoose');
+    if (mongoose.Types.ObjectId.isValid(req.params.id)) {
+      query = { _id: req.params.id };
+    } else {
+      query = { clientId: req.params.id };
+    }
+
+    const updatedClient = await Client.findOneAndUpdate(
+      query,
       { $set: updateData },
       { new: true, runValidators: false }
     );
