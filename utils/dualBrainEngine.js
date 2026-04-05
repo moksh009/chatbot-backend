@@ -183,7 +183,14 @@ function replaceVariables(text, client, lead, convo) {
 }
 
 async function handleWhatsAppMessage(from, message, phoneNumberId, profileName = '') {
-  // 1. Session Lock is now handled after client discovery to ensure per-client scoping
+  let client;
+  try {
+    // 0. Find Client first to scope the session lock
+    client = await Client.findOne({ phoneNumberId });
+    if (!client) {
+        log.warn(`Client not found for phoneId: ${phoneNumberId}`);
+        return;
+    }
 
     // 1. Session Lock (Atomic via MongoDB)
     try {
