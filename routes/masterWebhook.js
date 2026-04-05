@@ -252,7 +252,5 @@ async function processMessages(messages, metadata, contacts) {
     }
   }
 }
-  }
-});
 
 module.exports = router;
