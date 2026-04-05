@@ -447,7 +447,6 @@ async function runDualBrainEngine(parsedMessage, client) {
   await incrementUsage(client._id, 'messages', 1);
 
   // STEP 3.6: LANGUAGE DETECTION (Phase 23 Track 7)
-  const incomingText = parsedMessage.text?.body || '';
   const detectedLang = await detectLanguage(incomingText, client);
   if (detectedLang !== 'en') {
       await Conversation.findByIdAndUpdate(convo._id, { $set: { detectedLanguage: detectedLang } });
