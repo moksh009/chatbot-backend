@@ -669,6 +669,24 @@ router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
       trialActive, trialEndsAt
     } = req.body;
 
+    // Fix SubDocument _id Buffer Cast Errors passed from specific frontend serialization edge cases
+    const cleanArrayIds = (arr) => {
+      if (!Array.isArray(arr)) return arr;
+      return arr.map(item => {
+        if (item && item._id && typeof item._id === 'object') {
+          if (item._id.buffer || item._id.$oid) {
+             item._id = item._id.buffer ? Buffer.from(item._id.buffer).toString('hex') : item._id.$oid;
+          } else {
+             delete item._id; // Let Mongoose safely generate a new uncorrupted ObjectId
+          }
+        }
+        return item;
+      });
+    };
+
+    if (automationFlows) automationFlows = cleanArrayIds(automationFlows);
+    if (messageTemplates) messageTemplates = cleanArrayIds(messageTemplates);
+
     // --- Dual-Write Construction for Parallel Run ---
     const updateData = {
       name, businessType, niche, plan, isGenericBot, phoneNumberId,
@@ -696,7 +714,15 @@ router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
     if (shopifyWebhookSecret !== undefined) updateData['commerce.shopify.webhookSecret'] = shopifyWebhookSecret;
     
     if (openaiApiKey !== undefined) updateData['ai.openaiKey'] = openaiApiKey;
-    if (plan !== undefined) updateData['billing.plan'] = plan;
+    if (plan !== undefined) {
+      updateData['billing.plan'] = plan;
+      // Master tier sync for UI PlanGate and Sidebar locks
+      if (plan === 'CX Agent (V2)' || plan === 'enterprise') {
+        updateData.tier = 'v2';
+      } else if (plan === 'CX Agent (V1)' || plan === 'v1' || plan === 'starter') {
+        updateData.tier = 'v1';
+      }
+    }
 
     if (trialActive !== undefined) {
       updateData.trialActive = trialActive;

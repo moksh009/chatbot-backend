@@ -6,6 +6,7 @@ const Client = require('../models/Client');
 const AdLead = require('../models/AdLead');
 const Order = require('../models/Order');
 const { trackEcommerceEvent } = require('../utils/analyticsHelper');
+const { decrypt } = require('../utils/encryption');
 const log = require('../utils/logger')('ShopifyWebhook');
 
 // Middleware to verify Shopify Webhook signature
@@ -26,7 +27,10 @@ const verifyShopifyWebhook = async (req, res, next) => {
     }
 
     // Use Webhook Secret if available, otherwise fallback to Client Secret
-    const secret = client.shopifyWebhookSecret || client.shopifyClientSecret;
+    // Support both Tier 2.5 modular sub-documents and legacy fields
+    const secretRaw = client.commerce?.shopify?.webhookSecret || client.shopifyWebhookSecret || client.shopifyClientSecret;
+    const secret = decrypt(secretRaw);
+
     if (!secret) {
         log.error(`Webhook verification failed: No secret for shop ${shop}`);
         return res.status(401).send('Secret not found');
@@ -54,7 +58,7 @@ const verifyShopifyWebhook = async (req, res, next) => {
 };
 
 // POST /api/shopify/webhook
-router.post('/', express.json(), verifyShopifyWebhook, async (req, res) => {
+router.post('/', verifyShopifyWebhook, async (req, res) => {
     const topic = req.topic;
     const client = req.client;
     const data = req.body;
