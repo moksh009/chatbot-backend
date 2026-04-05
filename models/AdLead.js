@@ -160,6 +160,17 @@ const adLeadSchema = new mongoose.Schema({
     timestamp: { type: Date, default: Date.now },
     metadata:  mongoose.Schema.Types.Mixed
   }],
+  
+  // Phase 25: Customer Journey Map
+  journeyLog: [{
+    eventName: String, // 'flow_started', 'campaign_opened', 'human_takeover', 'order_placed', 'booking_made'
+    timestamp: { type: Date, default: Date.now },
+    metadata: mongoose.Schema.Types.Mixed
+  }],
+
+  // Phase 25: Referral Tracking
+  referralCode: String, // Code belonging to THIS lead
+  referredBy: String,   // The code that brought THIS lead in
 
   createdAt: {
     type: Date,
@@ -205,6 +216,18 @@ adLeadSchema.virtual('derivedLeadState').get(function () {
 
 // Compound index for clientId + phoneNumber to ensure uniqueness per client
 adLeadSchema.index({ clientId: 1, phoneNumber: 1 }, { unique: true });
+
+// Static Helper for Phase 25 Customer Journey Map
+adLeadSchema.statics.pushJourneyEvent = async function(clientId, phoneNumber, eventName, metadata = {}) {
+  try {
+    await this.updateOne(
+      { clientId, phoneNumber },
+      { $push: { journeyLog: { eventName, timestamp: new Date(), metadata } } }
+    );
+  } catch (err) {
+    console.error(`[AdLead] pushJourneyEvent failed for ${phoneNumber}:`, err.message);
+  }
+};
 
 // Pre-save hook to calculate score and tags
 adLeadSchema.pre('save', function (next) {

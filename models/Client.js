@@ -1,6 +1,91 @@
 const mongoose = require('mongoose');
+const { encrypt } = require('../utils/encryption');
+
+// --- TIER 2.5 SUB-DOCUMENT SCHEMAS ---
+
+const BrandSchema = new mongoose.Schema({
+  businessName: { type: String, default: "" },
+  niche: { type: String, default: "other" },
+  businessType: { type: String, default: "other" },
+  adminPhone: { type: String, default: "" },
+  googleReviewUrl: { type: String, default: "" }
+}, { _id: false });
+
+const WhatsappSchema = new mongoose.Schema({
+  phoneNumberId: { type: String, default: "" },
+  wabaId: { type: String, default: "" },
+  accessToken: { type: String, default: "" }, 
+  verifyToken: { type: String, default: "" }
+}, { _id: false });
+
+const CommerceShopifySchema = new mongoose.Schema({
+  domain: { type: String, default: "" },
+  accessToken: { type: String, default: "" }, 
+  refreshToken: { type: String, default: "" }, 
+  clientId: { type: String, default: "" },
+  clientSecret: { type: String, default: "" }, 
+  webhookSecret: { type: String, default: "" } 
+}, { _id: false });
+
+const CommerceWooCommerceSchema = new mongoose.Schema({
+  url: { type: String, default: "" },
+  key: { type: String, default: "" }, 
+  secret: { type: String, default: "" }, 
+  webhookSecret: { type: String, default: "" } 
+}, { _id: false });
+
+const CommerceSchema = new mongoose.Schema({
+  storeType: { type: String, enum: ["shopify", "woocommerce", "manual"], default: "shopify" },
+  shopify: { type: CommerceShopifySchema, default: () => ({}) },
+  woocommerce: { type: CommerceWooCommerceSchema, default: () => ({}) }
+}, { _id: false });
+
+const AiSchema = new mongoose.Schema({
+  geminiKey: { type: String, default: "" }, 
+  openaiKey: { type: String, default: "" }, 
+  systemPrompt: { type: String, default: "" },
+  fallbackEnabled: { type: Boolean, default: true },
+  negotiationSettings: { type: mongoose.Schema.Types.Mixed, default: {} }
+}, { _id: false });
+
+const BillingSchema = new mongoose.Schema({
+  plan: { type: String, default: "CX Agent (V1)" },
+  tier: { type: String, enum: ['v1', 'v2'], default: 'v1' },
+  trialActive: { type: Boolean, default: true },
+  trialEndsAt: { type: Date },
+  isPaidAccount: { type: Boolean, default: false },
+  suspendedAt: { type: Date }
+}, { _id: false });
+
+const SocialInstagramSchema = new mongoose.Schema({
+  pageId: { type: String, default: "" },
+  accessToken: { type: String, default: "" }, 
+  appSecret: { type: String, default: "" }, 
+  connected: { type: Boolean, default: false },
+  username: { type: String, default: "" }
+}, { _id: false });
+
+const SocialMetaAdsSchema = new mongoose.Schema({
+  accountId: { type: String, default: "" },
+  accessToken: { type: String, default: "" }, 
+  tokenExpiry: { type: Date }
+}, { _id: false });
+
+const SocialSchema = new mongoose.Schema({
+  instagram: { type: SocialInstagramSchema, default: () => ({}) },
+  metaAds: { type: SocialMetaAdsSchema, default: () => ({}) }
+}, { _id: false });
 
 const ClientSchema = new mongoose.Schema({
+  // --- TIER 2.5: MODULAR SUB-DOCUMENTS (Parallel Run Phase) ---
+  brand: { type: BrandSchema, default: () => ({}) },
+  whatsapp: { type: WhatsappSchema, default: () => ({}) },
+  commerce: { type: CommerceSchema, default: () => ({}) },
+  ai: { type: AiSchema, default: () => ({}) },
+  billing: { type: BillingSchema, default: () => ({}) },
+  social: { type: SocialSchema, default: () => ({}) },
+
+  // --- LEGACY FIELDS (Do Not Remove Until Phase 24 Migration Complete) ---
   clientId: { type: String, required: true, unique: true, trim: true },
   businessName: { 
     type: String, 
@@ -62,6 +147,14 @@ const ClientSchema = new mongoose.Schema({
   lastShopifyError: { type: String, default: "" },
   generatedDiscounts: { type: [mongoose.Schema.Types.Mixed], default: [] },
   aiUseGeneratedDiscounts: { type: Boolean, default: false }, // AI uses latest generated discount code when true
+  
+  // Phase 25 Track 7: AI Price Negotiation Limits
+  negotiationSettings: {
+    enabled: { type: Boolean, default: false },
+    minDiscountPercent: { type: Number, default: 5 },
+    maxDiscountPercent: { type: Number, default: 15 },
+    maxDiscountAmountFlat: { type: Number, default: 1000 } // Hard flat ceiling to protect margins
+  },
   
   // Phase 14 Multi-Gateway Support
   activePaymentGateway: { 
@@ -261,8 +354,80 @@ const ClientSchema = new mongoose.Schema({
   resellerPlan:        { type: String, default: '' },
   billedToReseller:    { type: Boolean, default: false },
 
+  // Phase 25: Email Support Channel
+  resendApiKey:        { type: String, default: '' },
+  emailIdentity:       { type: String, default: '' },
+
   createdAt: { type: Date, default: Date.now }
 });
 
-module.exports = mongoose.model('Client', ClientSchema);
+// --- Mongoose Hooks: Encryption at the Database Layer ---
 
+function encryptSubDocs(doc) {
+  if (doc.whatsapp?.accessToken) doc.whatsapp.accessToken = encrypt(doc.whatsapp.accessToken);
+  if (doc.commerce?.shopify?.accessToken) doc.commerce.shopify.accessToken = encrypt(doc.commerce.shopify.accessToken);
+  if (doc.commerce?.shopify?.refreshToken) doc.commerce.shopify.refreshToken = encrypt(doc.commerce.shopify.refreshToken);
+  if (doc.commerce?.shopify?.clientSecret) doc.commerce.shopify.clientSecret = encrypt(doc.commerce.shopify.clientSecret);
+  if (doc.commerce?.shopify?.webhookSecret) doc.commerce.shopify.webhookSecret = encrypt(doc.commerce.shopify.webhookSecret);
+  if (doc.commerce?.woocommerce?.key) doc.commerce.woocommerce.key = encrypt(doc.commerce.woocommerce.key);
+  if (doc.commerce?.woocommerce?.secret) doc.commerce.woocommerce.secret = encrypt(doc.commerce.woocommerce.secret);
+  if (doc.commerce?.woocommerce?.webhookSecret) doc.commerce.woocommerce.webhookSecret = encrypt(doc.commerce.woocommerce.webhookSecret);
+  if (doc.ai?.geminiKey) doc.ai.geminiKey = encrypt(doc.ai.geminiKey);
+  if (doc.ai?.openaiKey) doc.ai.openaiKey = encrypt(doc.ai.openaiKey);
+  if (doc.social?.instagram?.accessToken) doc.social.instagram.accessToken = encrypt(doc.social.instagram.accessToken);
+  if (doc.social?.instagram?.appSecret) doc.social.instagram.appSecret = encrypt(doc.social.instagram.appSecret);
+  if (doc.social?.metaAds?.accessToken) doc.social.metaAds.accessToken = encrypt(doc.social.metaAds.accessToken);
+  
+  // Legacy Encryptions
+  if (doc.whatsappToken) doc.whatsappToken = encrypt(doc.whatsappToken);
+  if (doc.shopifyAccessToken) doc.shopifyAccessToken = encrypt(doc.shopifyAccessToken);
+  if (doc.shopifyRefreshToken) doc.shopifyRefreshToken = encrypt(doc.shopifyRefreshToken);
+  if (doc.shopifyWebhookSecret) doc.shopifyWebhookSecret = encrypt(doc.shopifyWebhookSecret);
+  if (doc.shopifyClientSecret) doc.shopifyClientSecret = encrypt(doc.shopifyClientSecret);
+  if (doc.woocommerceSecret) doc.woocommerceSecret = encrypt(doc.woocommerceSecret);
+  if (doc.geminiApiKey) doc.geminiApiKey = encrypt(doc.geminiApiKey);
+  if (doc.openaiApiKey) doc.openaiApiKey = encrypt(doc.openaiApiKey);
+  if (doc.instagramAccessToken) doc.instagramAccessToken = encrypt(doc.instagramAccessToken);
+  if (doc.instagramAppSecret) doc.instagramAppSecret = encrypt(doc.instagramAppSecret);
+  if (doc.razorpaySecret) doc.razorpaySecret = encrypt(doc.razorpaySecret);
+  if (doc.emailAppPassword) doc.emailAppPassword = encrypt(doc.emailAppPassword);
+}
+
+function encryptUpdateQuery(update) {
+  if (!update) return;
+  const setOps = update.$set || update;
+  const encPaths = [
+    'whatsapp.accessToken', 'commerce.shopify.accessToken', 'commerce.shopify.refreshToken', 'commerce.shopify.clientSecret', 'commerce.shopify.webhookSecret',
+    'commerce.woocommerce.key', 'commerce.woocommerce.secret', 'commerce.woocommerce.webhookSecret',
+    'ai.geminiKey', 'ai.openaiKey', 'social.instagram.accessToken', 'social.instagram.appSecret', 'social.metaAds.accessToken',
+    'whatsappToken', 'shopifyAccessToken', 'shopifyRefreshToken', 'shopifyWebhookSecret', 'shopifyClientSecret',
+    'woocommerceSecret', 'geminiApiKey', 'openaiApiKey', 'instagramAccessToken', 
+    'instagramAppSecret', 'razorpaySecret', 'emailAppPassword'
+  ];
+
+  for (const path of encPaths) {
+    if (setOps[path]) setOps[path] = encrypt(setOps[path]);
+  }
+}
+
+ClientSchema.pre('save', function(next) {
+  encryptSubDocs(this);
+  next();
+});
+
+ClientSchema.pre('findOneAndUpdate', function(next) {
+  encryptUpdateQuery(this.getUpdate());
+  next();
+});
+
+ClientSchema.pre('update', function(next) {
+  encryptUpdateQuery(this.getUpdate());
+  next();
+});
+
+ClientSchema.pre('updateOne', function(next) {
+  encryptUpdateQuery(this.getUpdate());
+  next();
+});
+
+module.exports = mongoose.model('Client', ClientSchema);

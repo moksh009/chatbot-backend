@@ -14,6 +14,7 @@ const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
 const { encrypt } = require('../utils/encryption');
+const { sanitizeMiddleware } = require('../utils/sanitize');
 
 router.post('/shopify/force-sync', protect, async (req, res) => {
   try {
@@ -53,7 +54,7 @@ const isSuperAdmin = async (req, res, next) => {
 };
 
 // --- GET ALL CLIENTS ---
-router.get('/clients', protect, isSuperAdmin, async (req, res) => {
+router.get('/clients', protect, isSuperAdmin, sanitizeMiddleware, async (req, res) => {
   try {
     const page  = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
@@ -445,7 +446,7 @@ router.get('/folderize-clients', async (req, res) => {
 });
 
 // --- GET CLIENT BY ID ---
-router.get('/clients/:id', protect, isSuperAdmin, async (req, res) => {
+router.get('/clients/:id', protect, isSuperAdmin, sanitizeMiddleware, async (req, res) => {
   try {
     const client = await Client.findById(req.params.id);
     if (!client) {
@@ -484,29 +485,77 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
       systemPrompt = await generateText(`Generate a professional personality system prompt for a WhatsApp business named "${businessName}". Business type is ${businessType || 'general'}. Keep it concise, helpful, and friendly.`);
     }
 
-    const clientData = { ...req.body };
-    const sensitiveFields = [
-      'whatsappToken', 'shopifyAccessToken', 'shopifyClientSecret', 'shopifyWebhookSecret',
-      'openaiApiKey', 'geminiApiKey', 'emailAppPassword', 'razorpaySecret', 
-      'woocommerceSecret', 'instagramAccessToken', 'instagramAppSecret'
-    ];
-    
-    sensitiveFields.forEach(field => {
-      if (clientData[field]) {
-        clientData[field] = encrypt(clientData[field]);
-      }
-    });
-
-    const newClient = new Client({
-      ...clientData,
+    // 3. Prepare Dual-Write Payload (Tier 2.5 Parallel Run)
+    // Map incoming flat fields to the new modular sub-documents
+    const clientData = {
+      ...req.body,
       clientId: clientId.trim(),
       businessName,
       name: businessName, // Legacy sync
       systemPrompt: systemPrompt || 'You are a helpful assistant.',
       isActive: true,
       flowNodes: [],
-      flowEdges: []
-    });
+      flowEdges: [],
+      
+      // -- NEW TIER 2.5 SUB-DOCUMENTS --
+      brand: {
+        businessName: businessName,
+        niche: req.body.niche || 'other',
+        businessType: businessType || 'other',
+        adminPhone: req.body.adminPhone || '',
+        googleReviewUrl: req.body.googleReviewUrl || ''
+      },
+      whatsapp: {
+        phoneNumberId: phoneNumberId,
+        wabaId: req.body.wabaId || '',
+        accessToken: req.body.whatsappToken || '',
+        verifyToken: req.body.verifyToken || ''
+      },
+      commerce: {
+        storeType: req.body.storeType || 'shopify',
+        shopify: {
+          domain: req.body.shopDomain || '',
+          accessToken: req.body.shopifyAccessToken || '',
+          clientId: req.body.shopifyClientId || '',
+          clientSecret: req.body.shopifyClientSecret || '',
+          webhookSecret: req.body.shopifyWebhookSecret || ''
+        },
+        woocommerce: {
+          url: req.body.woocommerceUrl || '',
+          key: req.body.woocommerceKey || '',
+          secret: req.body.woocommerceSecret || '',
+          webhookSecret: req.body.woocommerceWebhookSecret || ''
+        }
+      },
+      ai: {
+        geminiKey: req.body.geminiApiKey || '',
+        openaiKey: req.body.openaiApiKey || '',
+        systemPrompt: systemPrompt || 'You are a helpful assistant.',
+        fallbackEnabled: req.body.isAIFallbackEnabled !== false
+      },
+      billing: {
+        tier: req.body.tier || 'v1',
+        plan: req.body.plan || 'CX Agent (V1)',
+        trialActive: true,
+        trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+      },
+      social: {
+        instagram: {
+          pageId: req.body.instagramPageId || '',
+          accessToken: req.body.instagramAccessToken || '',
+          appSecret: req.body.instagramAppSecret || '',
+          username: req.body.instagramUsername || ''
+        },
+        metaAds: {
+          accountId: req.body.metaAdAccountId || '',
+          accessToken: req.body.metaAdsToken || ''
+        }
+      }
+    };
+
+    // Note: Manual encryption loop removed. TopEdge AI Client Schema pre-save hooks 
+    // now automatically encrypt all sensitive credentials (legacy + new sub-docs).
+    const newClient = new Client(clientData);
 
     const savedClient = await newClient.save();
 
@@ -618,28 +667,43 @@ router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
       trialActive, trialEndsAt
     } = req.body;
 
-    // Handle trialEndsAt parsing if it's sent as a string
-    // --- ENCRYPTION FIX: Protect sensitive credentials at rest ---
+    // --- Dual-Write Construction for Parallel Run ---
     const updateData = {
       name, businessType, niche, plan, isGenericBot, phoneNumberId,
-      whatsappToken: whatsappToken ? encrypt(whatsappToken) : whatsappToken,
-      verifyToken: webhookVerifyToken, 
-      googleCalendarId, 
-      openaiApiKey: openaiApiKey ? encrypt(openaiApiKey) : openaiApiKey,
-      nicheData, flowData,
+      whatsappToken, verifyToken: webhookVerifyToken, 
+      googleCalendarId, openaiApiKey, nicheData, flowData,
       automationFlows, messageTemplates, wabaId, emailUser, 
-      emailAppPassword: emailAppPassword ? encrypt(emailAppPassword) : emailAppPassword,
-      razorpayKeyId, 
-      razorpaySecret: razorpaySecret ? encrypt(razorpaySecret) : razorpaySecret,
-      adminPhone,
-      shopDomain, 
-      shopifyAccessToken: shopifyAccessToken ? encrypt(shopifyAccessToken) : shopifyAccessToken,
-      shopifyWebhookSecret: shopifyWebhookSecret ? encrypt(shopifyWebhookSecret) : shopifyWebhookSecret,
-      googleReviewUrl
+      emailAppPassword, razorpayKeyId, razorpaySecret, adminPhone,
+      shopDomain, shopifyAccessToken, shopifyWebhookSecret, googleReviewUrl
     };
 
-    if (trialActive !== undefined) updateData.trialActive = trialActive;
-    if (trialEndsAt !== undefined) updateData.trialEndsAt = new Date(trialEndsAt);
+    // Tier 2.5 Sub-document dual-writes
+    if (name) updateData['brand.businessName'] = name;
+    if (niche) updateData['brand.niche'] = niche;
+    if (businessType) updateData['brand.businessType'] = businessType;
+    if (adminPhone !== undefined) updateData['brand.adminPhone'] = adminPhone;
+    if (googleReviewUrl !== undefined) updateData['brand.googleReviewUrl'] = googleReviewUrl;
+    
+    if (phoneNumberId !== undefined) updateData['whatsapp.phoneNumberId'] = phoneNumberId;
+    if (wabaId !== undefined) updateData['whatsapp.wabaId'] = wabaId;
+    if (whatsappToken !== undefined) updateData['whatsapp.accessToken'] = whatsappToken;
+    if (webhookVerifyToken !== undefined) updateData['whatsapp.verifyToken'] = webhookVerifyToken;
+    
+    if (shopDomain !== undefined) updateData['commerce.shopify.domain'] = shopDomain;
+    if (shopifyAccessToken !== undefined) updateData['commerce.shopify.accessToken'] = shopifyAccessToken;
+    if (shopifyWebhookSecret !== undefined) updateData['commerce.shopify.webhookSecret'] = shopifyWebhookSecret;
+    
+    if (openaiApiKey !== undefined) updateData['ai.openaiKey'] = openaiApiKey;
+    if (plan !== undefined) updateData['billing.plan'] = plan;
+
+    if (trialActive !== undefined) {
+      updateData.trialActive = trialActive;
+      updateData['billing.trialActive'] = trialActive;
+    }
+    if (trialEndsAt !== undefined) {
+      updateData.trialEndsAt = new Date(trialEndsAt);
+      updateData['billing.trialEndsAt'] = new Date(trialEndsAt);
+    }
 
     const updatedClient = await Client.findByIdAndUpdate(
       req.params.id,
@@ -680,7 +744,7 @@ router.delete('/clients/:id', protect, isSuperAdmin, async (req, res) => {
 
 // --- CLIENT SELF-SERVICE: Update own nicheData/flowData ---
 // Any authenticated user can update their OWN client's editable fields
-router.get('/my-settings', protect, async (req, res) => {
+router.get('/my-settings', protect, sanitizeMiddleware, async (req, res) => {
   try {
     const { clientId } = req.query;
     
@@ -697,55 +761,8 @@ router.get('/my-settings', protect, async (req, res) => {
     const client = await Client.findOne({ clientId: targetClientId });
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
-    // Return full settings structure
-    res.json({
-      clientId: client.clientId,
-      name: client.name,
-      businessType: client.businessType,
-      niche: client.niche,
-      storeType: client.storeType || 'shopify',
-      wabaId: client.wabaId,
-      phoneNumberId: client.phoneNumberId,
-      whatsappToken: client.whatsappToken ? '••••••••' : '',
-      shopDomain: client.shopDomain,
-      shopifyClientId: client.shopifyClientId,
-      shopifyClientSecret: client.shopifyClientSecret ? '••••••••' : '',
-      shopifyAccessToken: client.shopifyAccessToken ? '••••••••' : '',
-      shopifyWebhookSecret: client.shopifyWebhookSecret ? '••••••••' : '',
-      woocommerceUrl: client.woocommerceUrl,
-      woocommerceKey: client.woocommerceKey ? '••••••••' : '',
-      woocommerceSecret: client.woocommerceSecret ? '••••••••' : '',
-      instagramConnected:      client.instagramConnected,
-      instagramPageId:          client.instagramPageId,
-      // Phase 20: New Instagram OAuth fields
-      instagramUsername:        client.instagramUsername     || '',
-      instagramProfilePic:      client.instagramProfilePic   || '',
-      instagramFollowers:       client.instagramFollowers    || 0,
-      instagramTokenExpiry:     client.instagramTokenExpiry  || null,
-      instagramPendingPages:    client.instagramPendingPages || [],
-      instagramFbPageId:        client.instagramFbPageId     || '',
-      // Phase 20: Wizard
-      wizardCompleted:          client.wizardCompleted       || false,
-      wizardCompletedAt:        client.wizardCompletedAt     || null,
-      geminiApiKey: client.geminiApiKey ? '••••••••' : '',
-      systemPrompt: client.systemPrompt || client.flowData?.systemPrompt || '',
-      isAIFallbackEnabled: client.isAIFallbackEnabled,
-      adminPhone: client.adminPhone,
-      googleReviewUrl: client.googleReviewUrl,
-      emailUser: client.emailUser,
-      emailAppPassword: client.emailAppPassword ? '••••••••' : '',
-      razorpayKeyId:    client.razorpayKeyId  || '',
-      razorpaySecret:   client.razorpaySecret ? '••••••••' : '',
-      automationFlows: client.automationFlows,
-      messageTemplates: client.messageTemplates,
-      nicheData: client.nicheData,
-      workingHours: client.workingHours,
-      flowFolders: client.flowFolders,
-      visualFlows: client.visualFlows,
-      adminAlertEmail: client.adminAlertEmail,
-      adminAlertWhatsapp: client.adminAlertWhatsapp,
-      metaAppId: client.metaAppId
-    });
+    // Return full settings structure - automatically sanitized via middleware
+    res.json(client);
   } catch (err) {
     log.error('Settings fetch error', { error: err.message });
     res.status(500).json({ message: 'Server error', error: err.message });
@@ -792,40 +809,100 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (visualFlows !== undefined) updateFields.visualFlows = visualFlows;
 
     // Commercial & Meta Fields
-    if (wabaId !== undefined) updateFields.wabaId = wabaId;
-    if (phoneNumberId !== undefined) updateFields.phoneNumberId = phoneNumberId;
-    if (whatsappToken !== undefined && whatsappToken !== '••••••••' && whatsappToken.trim() !== '') updateFields.whatsappToken = encrypt(whatsappToken);
+    if (wabaId !== undefined) {
+      updateFields.wabaId = wabaId;
+      updateFields['whatsapp.wabaId'] = wabaId;
+    }
+    if (phoneNumberId !== undefined) {
+      updateFields.phoneNumberId = phoneNumberId;
+      updateFields['whatsapp.phoneNumberId'] = phoneNumberId;
+    }
+    if (whatsappToken !== undefined && whatsappToken !== '••••••••' && whatsappToken.trim() !== '') {
+      updateFields.whatsappToken = whatsappToken;
+      updateFields['whatsapp.accessToken'] = whatsappToken;
+    }
     
-    if (shopDomain !== undefined) updateFields.shopDomain = shopDomain;
-    if (shopifyClientId !== undefined) updateFields.shopifyClientId = shopifyClientId;
-    if (shopifyClientSecret !== undefined && shopifyClientSecret !== '••••••••' && shopifyClientSecret.trim() !== '') updateFields.shopifyClientSecret = encrypt(shopifyClientSecret);
-    if (shopifyAccessToken !== undefined && shopifyAccessToken !== '••••••••' && shopifyAccessToken.trim() !== '') updateFields.shopifyAccessToken = encrypt(shopifyAccessToken);
-    if (shopifyWebhookSecret !== undefined && shopifyWebhookSecret !== '••••••••' && shopifyWebhookSecret.trim() !== '') updateFields.shopifyWebhookSecret = encrypt(shopifyWebhookSecret);
+    if (shopDomain !== undefined) {
+      updateFields.shopDomain = shopDomain;
+      updateFields['commerce.shopify.domain'] = shopDomain;
+    }
+    if (shopifyClientId !== undefined) {
+      updateFields.shopifyClientId = shopifyClientId;
+      updateFields['commerce.shopify.clientId'] = shopifyClientId;
+    }
+    if (shopifyClientSecret !== undefined && shopifyClientSecret !== '••••••••' && shopifyClientSecret.trim() !== '') {
+      updateFields.shopifyClientSecret = shopifyClientSecret;
+      updateFields['commerce.shopify.clientSecret'] = shopifyClientSecret;
+    }
+    if (shopifyAccessToken !== undefined && shopifyAccessToken !== '••••••••' && shopifyAccessToken.trim() !== '') {
+      updateFields.shopifyAccessToken = shopifyAccessToken;
+      updateFields['commerce.shopify.accessToken'] = shopifyAccessToken;
+    }
+    if (shopifyWebhookSecret !== undefined && shopifyWebhookSecret !== '••••••••' && shopifyWebhookSecret.trim() !== '') {
+      updateFields.shopifyWebhookSecret = shopifyWebhookSecret;
+      updateFields['commerce.shopify.webhookSecret'] = shopifyWebhookSecret;
+    }
 
-    if (woocommerceUrl !== undefined) updateFields.woocommerceUrl = woocommerceUrl;
-    if (woocommerceKey !== undefined && woocommerceKey !== '••••••••' && woocommerceKey.trim() !== '') updateFields.woocommerceKey = encrypt(woocommerceKey);
-    if (woocommerceSecret !== undefined && woocommerceSecret !== '••••••••' && woocommerceSecret.trim() !== '') updateFields.woocommerceSecret = encrypt(woocommerceSecret);
-    if (storeType !== undefined) updateFields.storeType = storeType;
+    if (woocommerceUrl !== undefined) {
+      updateFields.woocommerceUrl = woocommerceUrl;
+      updateFields['commerce.woocommerce.url'] = woocommerceUrl;
+    }
+    if (woocommerceKey !== undefined && woocommerceKey !== '••••••••' && woocommerceKey.trim() !== '') {
+      updateFields.woocommerceKey = woocommerceKey;
+      updateFields['commerce.woocommerce.key'] = woocommerceKey;
+    }
+    if (woocommerceSecret !== undefined && woocommerceSecret !== '••••••••' && woocommerceSecret.trim() !== '') {
+      updateFields.woocommerceSecret = woocommerceSecret;
+      updateFields['commerce.woocommerce.secret'] = woocommerceSecret;
+    }
+    if (storeType !== undefined) {
+      updateFields.storeType = storeType;
+      updateFields['commerce.storeType'] = storeType;
+    }
 
-    if (instagramConnected !== undefined) updateFields.instagramConnected = instagramConnected;
-    if (instagramPageId !== undefined)    updateFields.instagramPageId    = instagramPageId;
-    if (instagramAccessToken !== undefined && instagramAccessToken !== '••••••••' && instagramAccessToken.trim() !== '') updateFields.instagramAccessToken = encrypt(instagramAccessToken);
-    if (instagramAppSecret   !== undefined && instagramAppSecret   !== '••••••••' && instagramAppSecret.trim()   !== '') updateFields.instagramAppSecret   = encrypt(instagramAppSecret);
+    if (instagramConnected !== undefined) {
+      updateFields.instagramConnected = instagramConnected;
+      updateFields['social.instagram.connected'] = instagramConnected;
+    }
+    if (instagramPageId !== undefined) {
+      updateFields.instagramPageId = instagramPageId;
+      updateFields['social.instagram.pageId'] = instagramPageId;
+    }
+    if (instagramAccessToken !== undefined && instagramAccessToken !== '••••••••' && instagramAccessToken.trim() !== '') {
+      updateFields.instagramAccessToken = instagramAccessToken;
+      updateFields['social.instagram.accessToken'] = instagramAccessToken;
+    }
+    if (instagramAppSecret !== undefined && instagramAppSecret !== '••••••••' && instagramAppSecret.trim() !== '') {
+      updateFields.instagramAppSecret = instagramAppSecret;
+      updateFields['social.instagram.appSecret'] = instagramAppSecret;
+    }
 
-    if (googleReviewUrl !== undefined) updateFields.googleReviewUrl = googleReviewUrl;
-    if (adminPhone !== undefined)      updateFields.adminPhone      = adminPhone;
-    if (adminEmail !== undefined)      updateFields.adminEmail      = adminEmail;
-    if (adminAlertEmail !== undefined)    updateFields.adminAlertEmail    = adminAlertEmail;
+    if (googleReviewUrl !== undefined) {
+      updateFields.googleReviewUrl = googleReviewUrl;
+      updateFields['brand.googleReviewUrl'] = googleReviewUrl;
+    }
+    if (adminPhone !== undefined) {
+      updateFields.adminPhone = adminPhone;
+      updateFields['brand.adminPhone'] = adminPhone;
+    }
+    if (adminEmail !== undefined) updateFields.adminEmail = adminEmail;
+    if (adminAlertEmail !== undefined) updateFields.adminAlertEmail = adminAlertEmail;
     if (adminAlertWhatsapp !== undefined) updateFields.adminAlertWhatsapp = adminAlertWhatsapp;
-    if (metaAppId !== undefined)          updateFields.metaAppId          = metaAppId;
+    if (metaAppId !== undefined) updateFields.metaAppId = metaAppId;
 
     // Phase 20: Razorpay
-    if (razorpayKeyId !== undefined && razorpayKeyId.trim() !== '')    updateFields.razorpayKeyId = razorpayKeyId;
-    if (razorpaySecret !== undefined && razorpaySecret !== '••••••••' && razorpaySecret.trim() !== '') updateFields.razorpaySecret = encrypt(razorpaySecret);
+    if (razorpayKeyId !== undefined && razorpayKeyId.trim() !== '') updateFields.razorpayKeyId = razorpayKeyId;
+    if (razorpaySecret !== undefined && razorpaySecret !== '••••••••' && razorpaySecret.trim() !== '') updateFields.razorpaySecret = razorpaySecret;
 
     // Phase 20: AI / System Prompt
-    if (systemPrompt !== undefined)   updateFields.systemPrompt  = systemPrompt;
-    if (geminiApiKey !== undefined && geminiApiKey !== '••••••••' && geminiApiKey.trim() !== '') updateFields.geminiApiKey = encrypt(geminiApiKey);
+    if (systemPrompt !== undefined) {
+      updateFields.systemPrompt = systemPrompt;
+      updateFields['ai.systemPrompt'] = systemPrompt;
+    }
+    if (geminiApiKey !== undefined && geminiApiKey !== '••••••••' && geminiApiKey.trim() !== '') {
+      updateFields.geminiApiKey = geminiApiKey;
+      updateFields['ai.geminiKey'] = geminiApiKey;
+    }
 
     const updated = await Client.findOneAndUpdate(
       { clientId: targetClientId },

@@ -9,6 +9,10 @@ const WebhookDeliveryLog = require("../models/WebhookDeliveryLog");
 const { verifyToken }    = require("../middleware/auth");
 const { WEBHOOK_EVENTS, getSamplePayload, deliverWebhook } = require("../utils/webhookDelivery");
 
+// ─── POST /api/webhooks/resend/inbound — receive Resend email webhooks ────────
+const { handleIncomingEmail } = require('../utils/emailIntegration');
+router.post('/resend/inbound', handleIncomingEmail);
+
 // ─── GET /api/webhooks/:clientId — list all webhook configs ─────────────────
 router.get("/:clientId", verifyToken, async (req, res) => {
   try {

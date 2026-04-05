@@ -4,6 +4,7 @@ const User = require('../models/User');
 const Client = require('../models/Client');
 const OTP = require('../models/OTP'); // Added OTP Model
 const { protect } = require('../middleware/auth');
+const { sanitizeMiddleware } = require('../utils/sanitize');
 const jwt = require('jsonwebtoken');
 const { sendSystemOTPEmail } = require('../utils/emailService');
 
@@ -13,7 +14,7 @@ const generateToken = (id) => {
   });
 };
 
-router.get('/me', protect, async (req, res) => {
+router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
     if (!user) {
@@ -23,39 +24,7 @@ router.get('/me', protect, async (req, res) => {
     const client = await Client.findOne({ clientId: user.clientId });
 
     // --- PHASE 10 ROBUSTNESS: Ensure fallback for missing client ---
-    const clientConfig = client ? {
-      ...(client.config || {}),
-      nicheData: client.nicheData || {},
-      flowData: client.flowData || {},
-      automationFlows: client.automationFlows || [],
-      messageTemplates: client.messageTemplates || [],
-      flowNodes: client.flowNodes || [],
-      flowEdges: client.flowEdges || [],
-      syncedMetaFlows: client.syncedMetaFlows || [],
-      flowFolders: client.flowFolders || [],
-      visualFlows: client.visualFlows || [],
-      adminPhone: client.adminPhone || '',
-      shopDomain: client.shopDomain || '',
-      shopifyAccessToken: client.shopifyAccessToken || '',
-      shopifyClientId: client.shopifyClientId || '',
-      shopifyClientSecret: client.shopifyClientSecret || '',
-      razorpayKeyId: client.razorpayKeyId || '',
-      googleReviewUrl: client.googleReviewUrl || '',
-      wabaId: client.wabaId || '',
-      phoneNumberId: client.phoneNumberId || '',
-      whatsappToken: client.whatsappToken || '',
-      instagramConnected: client.instagramConnected || false
-    } : {
-      nicheData: {},
-      flowData: {},
-      automationFlows: [],
-      messageTemplates: [],
-      flowNodes: [],
-      flowEdges: [],
-      syncedMetaFlows: [],
-      flowFolders: [],
-      visualFlows: []
-    };
+    const clientConfig = client ? client.toObject() : {};
 
     res.json({
         _id: user._id,
@@ -97,7 +66,7 @@ router.patch('/me', protect, async (req, res) => {
   }
 });
 
-router.post('/login', async (req, res) => {
+router.post('/login', sanitizeMiddleware, async (req, res) => {
   const { email, password } = req.body;
 
   try {
@@ -121,28 +90,7 @@ router.post('/login', async (req, res) => {
         hasCompletedTour: user.hasCompletedTour,
         trialActive: client ? client.trialActive : null,
         trialEndsAt: client ? client.trialEndsAt : null,
-        clientConfig: client ? {
-          ...client.config,
-          nicheData: client.nicheData || {},
-          flowData: client.flowData || {},
-          automationFlows: client.automationFlows || [],
-          messageTemplates: client.messageTemplates || [],
-          flowNodes: client.flowNodes || [],
-          flowEdges: client.flowEdges || [],
-          flowFolders: client.flowFolders || [],
-          visualFlows: client.visualFlows || [],
-          adminPhone: client.adminPhone || '',
-          shopDomain: client.shopDomain || '',
-          shopifyAccessToken: client.shopifyAccessToken || '',
-          shopifyClientId: client.shopifyClientId || '',
-          shopifyClientSecret: client.shopifyClientSecret || '',
-          razorpayKeyId: client.razorpayKeyId || '',
-          googleReviewUrl: client.googleReviewUrl || '',
-          wabaId: client.wabaId || '',
-          phoneNumberId: client.phoneNumberId || '',
-          whatsappToken: client.whatsappToken || '',
-          instagramConnected: client.instagramConnected || false
-        } : {},
+        clientConfig: client ? client.toObject() : {},
         clientTemplates: client && client.config && client.config.templates ? client.config.templates : null
       });
     } else {

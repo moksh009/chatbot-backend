@@ -35,6 +35,7 @@ const CampaignMessageSchema = new mongoose.Schema({
   readAt: Date,
   repliedAt: Date,
   failedAt: Date,
+  abVariantLabel: { type: String }, // "A" or "B" if this was part of an A/B test
   metadata: {
     type: Object,
     default: {}

@@ -41,8 +41,13 @@ async function getShopifyClient(clientId, forceRefresh = false) {
 
                 if (res.data.access_token) {
                     token = res.data.access_token;
-                    client.shopifyAccessToken = encrypt(token);
-                    client.shopifyRefreshToken = encrypt(res.data.refresh_token || decrypt(client.shopifyRefreshToken));
+                    client.shopifyAccessToken = token;
+                    client.shopifyRefreshToken = res.data.refresh_token || decrypt(client.shopifyRefreshToken);
+                    
+                    if (!client.commerce) client.commerce = {};
+                    if (!client.commerce.shopify) client.commerce.shopify = {};
+                    client.commerce.shopify.accessToken = token;
+                    client.commerce.shopify.refreshToken = res.data.refresh_token || decrypt(client.shopifyRefreshToken);
                     if (res.data.expires_in) {
                         client.shopifyTokenExpiresAt = new Date(Date.now() + (res.data.expires_in * 1000));
                     } else {
@@ -76,7 +81,12 @@ async function getShopifyClient(clientId, forceRefresh = false) {
 
                 if (res.data.access_token) {
                     token = res.data.access_token;
-                    client.shopifyAccessToken = encrypt(token);
+                    client.shopifyAccessToken = token;
+                    
+                    if (!client.commerce) client.commerce = {};
+                    if (!client.commerce.shopify) client.commerce.shopify = {};
+                    client.commerce.shopify.accessToken = token;
+                    
                     client.shopifyTokenExpiresAt = null; // Client credentials usually issue semi-permanent tokens
                     success = true;
                     console.log(`✅ [ShopifyRotation] Token restored via Client Credentials for ${clientId}`);
@@ -184,12 +194,17 @@ async function exchangeShopifyToken(clientId, shopDomain, shopifyClientId, shopi
     const { access_token, refresh_token, expires_in, scope } = res.data;
 
     const update = {
-        shopifyAccessToken: encrypt(access_token),
-        shopifyRefreshToken: encrypt(refresh_token || ""),
+        shopifyAccessToken: access_token,
+        'commerce.shopify.accessToken': access_token,
+        shopifyRefreshToken: refresh_token || "",
+        'commerce.shopify.refreshToken': refresh_token || "",
         shopifyScopes: scope || "",
         shopifyClientId,
-        shopifyClientSecret: encrypt(shopifyClientSecret),
+        'commerce.shopify.clientId': shopifyClientId,
+        shopifyClientSecret: shopifyClientSecret,
+        'commerce.shopify.clientSecret': shopifyClientSecret,
         shopDomain: cleanDomain,
+        'commerce.shopify.domain': cleanDomain,
         shopifyConnectionStatus: 'connected',
         lastShopifyError: ''
     };

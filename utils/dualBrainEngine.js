@@ -9,6 +9,7 @@ const Client       = require("../models/Client");
 const emailService = require("./emailService");
 const NotificationService = require("./notificationService");
 const BillingService = require('./billingService');
+const ProcessingLock = require('../models/ProcessingLock');
 const log = require("./logger")('DualBrain');
 const { generateText, getGeminiModel } = require('./gemini');
 const { createMessage } = require("./createMessage");
@@ -20,9 +21,7 @@ const { sendEmail } = require("./emailService");
 const { checkLimit, incrementUsage } = require("../utils/planLimits");
 const { detectLanguage, translateToUserLanguage, normalizeIntent, getLanguageInstructions } = require("./languageEngine");
 
-// Phase 17: Concurrency & Robustness
-const processingLocks = new Map(); // phone -> timestamp
-const SESSION_LOCK_TIMEOUT = 10000; // 10 seconds
+const SESSION_LOCK_TIMEOUT = 10000; // 10 seconds (Fallback for TTL)
 
 /**
  * Helper to wrap promises with a timeout
@@ -165,11 +164,14 @@ async function runFlow(client, from, flow, startNodeId, extraContext = {}) {
       commentId: extraContext.commentId
     };
 
+    // 2.5 Log Journey
+    await AdLead.pushJourneyEvent(client.clientId, phone, 'flow_started', { flowId: flow.id, flowName: flow.name });
+
     // 3. Execute
-    console.log(`[DualBrain] Manual runFlow: Executing ${flow.name} starting at ${startNodeId}`);
+    log.info(`Manual runFlow: Executing ${flow.name} starting at ${startNodeId}`);
     return await executeNode(startNodeId, flattenFlowNodes(flow.nodes), flow.edges, client, convo, lead, from, io, channel, parsedMessage);
   } catch (err) {
-    console.error(`[DualBrain] runFlow Error:`, err.message);
+    log.error(`runFlow Error:`, { error: err.message });
   }
 }
 
@@ -180,39 +182,35 @@ function replaceVariables(text, client, lead, convo) {
   return injectVariablesLegacy(text, { lead, client, convo, order: convo?.metadata?.lastOrder });
 }
 
-/**
- * Phase 17: Entry Point for Webhook Messages
- * Handles locking, client discovery, and final deduplication.
- */
 async function handleWhatsAppMessage(from, message, phoneNumberId, profileName = '') {
-  // 1. Session Lock to prevent race conditions
-  if (processingLocks.has(from)) {
-    const lockTime = processingLocks.get(from);
-    if (Date.now() - lockTime < SESSION_LOCK_TIMEOUT) {
-      console.warn(`🔒 Session locked for ${from}. Skipping rapid message.`);
+  // 1. Session Lock is now handled after client discovery to ensure per-client scoping
+
+    // 1. Session Lock (Atomic via MongoDB)
+    try {
+      await ProcessingLock.create({ phone: from, clientId: client.clientId });
+    } catch (lockErr) {
+      log.warn(`Session locked for ${from} (Client: ${client.clientId}). Skipping rapid message.`);
       return;
     }
-  }
-  processingLocks.set(from, Date.now());
-
-  try {
-    const { discoverClientByPhoneId } = require("./clientDiscovery");
-    const { parseWhatsAppPayload } = require("./parseWhatsAppPayload");
 
     const parsed = await parseWhatsAppPayload(message);
-    if (!parsed) return;
+    if (!parsed) {
+      processingLocks.delete(from);
+      return;
+    }
 
     // --- PHASE 23: Track 5 - Meta Flow Response (nfm_reply) ---
     if (parsed.interactive?.type === 'nfm_reply') {
         const flowResponse = parsed.interactive.nfm_reply;
-        console.log(`[DualBrain] 🌊 Flow Submission detected from ${from}:`, flowResponse.response_json);
+        log.info(`🌊 Flow Submission detected from ${from}`, { response: flowResponse.response_json });
         
         try {
             const data = JSON.parse(flowResponse.response_json || '{}');
             const lead = await AdLead.findOneAndUpdate(
                 { phoneNumber: from, clientId: client.clientId },
                 { 
-                    $set: { lastInteraction: new Date(), capturedData: { ...( (await AdLead.findOne({phoneNumber: from, clientId: client.clientId}))?.capturedData || {} ), ...data } },
+                    $set: { lastInteraction: new Date() },
+                    $set: { capturedData: { ...( (await AdLead.findOne({phoneNumber: from, clientId: client.clientId}))?.capturedData || {} ), ...data } },
                     $push: { activityLog: { action: 'whatsapp_flow_submitted', details: `Submitted Meta Flow ID: ${flowResponse.flow_id}` } }
                 },
                 { upsert: true, new: true }
@@ -236,16 +234,11 @@ async function handleWhatsAppMessage(from, message, phoneNumberId, profileName =
                 }
             }
         } catch (err) {
-            console.error('[DualBrain] Flow processing error:', err.message);
+            log.error('Flow processing error:', { error: err.message });
+        } finally {
+            processingLocks.delete(from);
         }
         return;
-    }
-
-    // 2. Discover Client
-    const client = await discoverClientByPhoneId(phoneNumberId);
-    if (!client) {
-      console.warn(`[DualBrain] Unknown phoneId: ${phoneNumberId}`);
-      return;
     }
 
     // Parse the payload into engine format
@@ -272,10 +265,16 @@ async function handleWhatsAppMessage(from, message, phoneNumberId, profileName =
     await runDualBrainEngine(parsedMessage, client);
 
   } catch (err) {
-    console.error(`[DualBrain] handleWhatsAppMessage Error:`, err.message);
+    log.error(`handleWhatsAppMessage Error:`, { from, error: err.message });
   } finally {
-    // Release lock
-    processingLocks.delete(from);
+    // Release MongoDB distributed lock
+    try {
+      if (typeof client !== 'undefined' && client?.clientId) {
+        await ProcessingLock.deleteOne({ phone: from, clientId: client.clientId });
+      }
+    } catch (releaseErr) {
+      log.error(`Lock release failed for ${from}`, { error: releaseErr.message });
+    }
   }
 }
 
@@ -300,7 +299,7 @@ async function runDualBrainEngine(parsedMessage, client) {
       try {
           const langResult = await detectLanguage(inboundText);
           detectedLanguage = langResult.languageCode || 'en';
-      } catch (err) { console.debug("[DualBrain] Language detection failed:", err.message); }
+      } catch (err) { log.debug("Language detection failed:", { error: err.message }); }
   }
 
   // ── PHASE 23: Track 5 — WhatsApp Flow Responses ──────────────────────────
@@ -345,7 +344,7 @@ async function runDualBrainEngine(parsedMessage, client) {
                       { $inc: { flowsCompleted: 1 } },
                       { upsert: true }
                   );
-              } catch (err) { console.error('[Analytics] Flow completion error:', err.message); }
+              } catch (err) { log.error('[Analytics] Flow completion error:', { error: err.message }); }
 
               // 2. Transition to next node if in an active flow
               const convo = await Conversation.findOne({ phone, clientId: client.clientId });
@@ -375,7 +374,7 @@ async function runDualBrainEngine(parsedMessage, client) {
               analyzeConversationIntelligence(client, phone, convo);
               return true;
           } catch (e) {
-              console.error('[DualBrain] Flow Parse Error:', e.message);
+              log.error('Flow Parse Error:', { error: e.message });
           }
       }
   }
@@ -420,6 +419,14 @@ async function runDualBrainEngine(parsedMessage, client) {
     { upsert: true, new: true }
   );
 
+  // STEP 2.5: PHASE 25 - Referral Tracking & Fulfillment
+  const incomingText = Object.keys(parsedMessage.text || {}).length ? parsedMessage.text.body || '' : '';
+  const refCodeMatch = incomingText.match(/ref_([A-Z0-9]{6})/i);
+  if (refCodeMatch && refCodeMatch[1]) {
+    const ReferralEngine = require('./referralEngine');
+    await ReferralEngine.processReferral(refCodeMatch[1], lead);
+  }
+
   // STEP 3: Save inbound message to DB + emit to dashboard
   await saveInboundMessage(phone, client.clientId, parsedMessage, io, channel, convo._id);
 
@@ -447,10 +454,22 @@ async function runDualBrainEngine(parsedMessage, client) {
   try {
     variableContext = await buildVariableContext(client, phone, convo, lead);
   } catch (vcErr) {
-    console.warn('[DualBrain] buildVariableContext failed:', vcErr.message);
+    log.warn('buildVariableContext failed:', { error: vcErr.message });
   }
   // Store on parsedMessage so all downstream functions can access it
   parsedMessage._variableContext = variableContext;
+
+  // ── PHASE 25: Track 7 — AI PRICE NEGOTIATION (Priority 0.7) ────────────────
+  const NegotiationEngine = require('./negotiationEngine');
+  if (NegotiationEngine.isNegotiationAttempt(incomingText)) {
+      log.info(`[DualBrain] 🤖 Negotiation triggered for lead ${lead.phoneNumber}`);
+      const negotiatedResponse = await NegotiationEngine.processNegotiation(client, lead, incomingText);
+      if (negotiatedResponse) {
+          await sendWhatsAppText(client, phone, negotiatedResponse);
+          // Preempt further processing since we're handling the objection
+          return true;
+      }
+  }
 
   // ── PHASE 22: EVALUATE AUTOMATION RULES ────────────────────────────────────
   const rulesActions = evaluateRules(client.automationRules, parsedMessage.text?.body, variableContext);
@@ -515,7 +534,7 @@ async function runDualBrainEngine(parsedMessage, client) {
     }
 
     if (ruleIntercepted) {
-      console.log(`[DualBrain] Rules Engine Intercepted message processing for ${phone}`);
+      log.info(`Rules Engine Intercepted message processing for ${phone}`);
       return; 
     }
   }
@@ -548,7 +567,7 @@ async function runDualBrainEngine(parsedMessage, client) {
   const optInKeywords  = ['start', 'opt in', 'subscribe', 'resume', 'unpause'];
 
   if (optOutKeywords.some(k => userTextLower === k)) {
-    console.log(`[DualBrain] 🛑 Opt-out detected for ${phone}. Pausing bot.`);
+    log.info(`🛑 Opt-out detected for ${phone}. Pausing bot.`);
     
     await Conversation.findByIdAndUpdate(convo._id, { 
        botPaused: true, 
@@ -594,7 +613,7 @@ async function runDualBrainEngine(parsedMessage, client) {
   }
 
   if (optInKeywords.some(k => userTextLower === k)) {
-    console.log(`[DualBrain] ✅ Opt-in detected for ${phone}. Resuming bot.`);
+    log.info(`✅ Opt-in detected for ${phone}. Resuming bot.`);
     
     await Conversation.findByIdAndUpdate(convo._id, { 
       botPaused: false, 
@@ -695,14 +714,14 @@ async function runDualBrainEngine(parsedMessage, client) {
     if (lastHumanMsg) {
       const minutesSinceHuman = (new Date() - new Date(lastHumanMsg.createdAt)) / 60000;
       if (minutesSinceHuman < handoffTimeoutMin) {
-        console.log(`[DualBrain] ⏸️ Hybrid Handoff: Human replied ${minutesSinceHuman.toFixed(1)}m ago. Bot silent.`);
+        log.info(`⏸️ Hybrid Handoff: Human replied ${minutesSinceHuman.toFixed(1)}m ago. Bot silent.`);
         return true;
       }
     }
   }
 
   if (convo.botPaused || ['HUMAN_TAKEOVER', 'HUMAN_SUPPORT', 'OPTED_OUT'].includes(convo.status)) {
-    console.log(`[DualBrain] ⏸️ Bot paused for ${phone} (Status: ${convo.status}). Skipping.`);
+    log.info(`⏸️ Bot paused for ${phone} (Status: ${convo.status}). Skipping.`);
     analyzeConversationIntelligence(client, phone, convo);
     return true;
   }
@@ -712,7 +731,7 @@ async function runDualBrainEngine(parsedMessage, client) {
   if (handoffMode === 'MANUAL') {
     const trigger = findMatchingFlow(userText, client.flowNodes, client.flowEdges);
     if (!trigger) {
-      console.log(`[DualBrain] 🙊 Manual Mode: No trigger match for "${userText}". Bot silent.`);
+      log.info(`🙊 Manual Mode: No trigger match for "${userText}". Bot silent.`);
       return true;
     }
   }
@@ -742,7 +761,7 @@ async function runDualBrainEngine(parsedMessage, client) {
         );
       } catch (_) {}
 
-      console.log(`[DualBrain] Priority0: captured "${capturedText}" → variable "${varName}" — resuming from ${convo.captureResumeNodeId}`);
+      log.info(`Priority0: captured "${capturedText}" → variable "${varName}" — resuming from ${convo.captureResumeNodeId}`);
 
       // Resume the flow from captureResumeNodeId
       if (convo.captureResumeNodeId) {
@@ -762,7 +781,7 @@ async function runDualBrainEngine(parsedMessage, client) {
 
   // Phase 17: Check for Flow Delay
   if (convo.flowPausedUntil && new Date() < convo.flowPausedUntil) {
-    console.log(`⏳ Flow still paused for ${phone}. Responding via AI or skipping...`);
+    log.info(`⏳ Flow still paused for ${phone}. Responding via AI or skipping...`);
     // If user messages DURING a delay, we can either ignore or respond via AI
     // For now, we skip to avoid disrupting the scheduled flow
     return true;
@@ -784,6 +803,19 @@ async function runDualBrainEngine(parsedMessage, client) {
     }
   }
 
+  // ── PHASE 25: Track 7 — AI PRICE NEGOTIATION (Priority 0.7) ────────────────
+  if (parsedMessage.text?.body && client.negotiationSettings?.enabled) {
+    const { processNegotiation } = require('./negotiationEngine');
+    const negResult = await processNegotiation(client, convo, phone, parsedMessage.text.body, lead);
+    if (negResult.handled) {
+      if (negResult.reply) {
+        await sendWhatsAppText(client, phone, negResult.reply);
+      }
+      return true; // Stop traversal, AI negotiated
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────────
+
   // ── PHASE 20: TRIGGER ENGINE — Route to correct visualFlow ───────────────
   // Only fires when user is NOT already mid-flow (no lastStepId)
   const isUserMidFlow = convo.lastStepId && convo.lastStepId.trim();
@@ -799,7 +831,7 @@ async function runDualBrainEngine(parsedMessage, client) {
         const QRScan = require('../models/QRScan');
         const qr = await QRCode.findOne({ shortCode: rawText.toUpperCase(), isActive: true }).lean();
         if (qr) {
-          console.log(`[DualBrain] 📱 QR code scanned by ${phone}: ${rawText}`);
+          log.info(`📱 QR code scanned by ${phone}: ${rawText}`);
 
           // Track scan — compound index prevents duplicate unique scans
           const isUnique = !(await QRScan.exists({ qrCodeId: qr._id, phone }));
@@ -860,7 +892,7 @@ async function runDualBrainEngine(parsedMessage, client) {
           // Fall through to normal flow processing if no flow/message configured
         }
       } catch (qrErr) {
-        console.error('[DualBrain] QR detection error:', qrErr.message);
+        log.error('QR detection error:', { error: qrErr.message });
         // Non-fatal — fall through
       }
     }
@@ -888,7 +920,7 @@ async function runDualBrainEngine(parsedMessage, client) {
                 const adFlowNodes = flattenFlowNodes(adFlow.nodes);
                 const adStartNode = findFlowStartNode(adFlowNodes, adFlow.edges || []);
                 if (adStartNode) {
-                  console.log(`[DualBrain] 🎯 Meta Ad flow: routing ${phone} to flow "${adFlow.name}" from ad "${metaAd.adName}"`);
+                  log.info(`🎯 Meta Ad flow: routing ${phone} to flow "${adFlow.name}" from ad "${metaAd.adName}"`);
                   await Conversation.findByIdAndUpdate(convo._id, { activeFlowId: adFlow.id });
                   const freshConvo = await Conversation.findById(convo._id);
                   return await executeNode(adStartNode, adFlowNodes, adFlow.edges || [], client, freshConvo, lead, phone, io, channel);
@@ -903,7 +935,7 @@ async function runDualBrainEngine(parsedMessage, client) {
           }
         }
       } catch (adErr) {
-        console.error('[DualBrain] Meta Ad routing error:', adErr.message);
+        log.error('Meta Ad routing error:', { error: adErr.message });
         // Non-fatal — fall through to normalflow
       }
     }
@@ -916,7 +948,7 @@ async function runDualBrainEngine(parsedMessage, client) {
         const flowEdges  = flow.edges || [];
         const startNodeId = findFlowStartNode(flowNodes, flowEdges);
 
-        console.log(`[TriggerEngine] Matched flow "${flow.name || flow.id}" via ${match.triggerType}. Starting at node: ${startNodeId}`);
+        log.info(`[TriggerEngine] Matched flow "${flow.name || flow.id}" via ${match.triggerType}. Starting at node: ${startNodeId}`);
 
         if (startNodeId && flowNodes.length) {
           // Track which flow is now active
@@ -932,7 +964,7 @@ async function runDualBrainEngine(parsedMessage, client) {
         }
       }
     } catch (triggerErr) {
-      console.error('[TriggerEngine] Error matching flow:', triggerErr.message);
+      log.error('[TriggerEngine] Error matching flow:', { error: triggerErr.message });
       // Fall through to regular graph traversal
     }
   }
@@ -983,7 +1015,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
   });
 
   if (jumpNode) {
-    console.log(`[DualBrain] Graph: Jumping to node ${jumpNode.id} based on keyword/role match "${userTextLower}"`);
+    log.info(`Graph: Jumping to node ${jumpNode.id} based on keyword/role match "${userTextLower}"`);
     await trackNodeVisit(client, jumpNode.id);
     return await executeNode(jumpNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
   }
@@ -992,7 +1024,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
   const currentNode = flowNodes.find(n => n.id === currentStepId);
   if (currentNode && (currentNode.type === 'capture_input' || currentNode.type === 'CaptureNode')) {
     const varName = currentNode.data?.variable || 'last_input';
-    console.log(`[DualBrain] Capture: Saving "${userText}" to variable "${varName}" for convo ${phone}`);
+    log.info(`Capture: Saving "${userText}" to variable "${varName}" for convo ${phone}`);
     const updatedMetadata = { ...(convo.metadata || {}), [varName]: userText };
     await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
     convo.metadata = updatedMetadata;
@@ -1040,7 +1072,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
   }
 
   if (matchingEdge) {
-    console.log(`[DualBrain] Graph: edge match from ${currentStepId} → ${matchingEdge.target}`);
+    log.info(`Graph: edge match from ${currentStepId} → ${matchingEdge.target}`);
     await trackNodeVisit(client, matchingEdge.target);
     return await executeNode(matchingEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
   }
@@ -1056,12 +1088,12 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
           const apiKey = process.env.GEMINI_API_KEY;
           
           if (intentNodes.length > 0 && apiKey) {
-              console.log(`[DualBrain] AI Intent: Checking ${intentNodes.length} intent triggers for "${userText}"`);
+              log.info(`AI Intent: Checking ${intentNodes.length} intent triggers for "${userText}"`);
               // limit to first 3 intent nodes to prevent excessive API calls
               for (const node of intentNodes.slice(0, 3)) {
                   const matched = await checkIntent(userText, node.data.intentDescription, apiKey);
                   if (matched) {
-                      console.log(`[DualBrain] AI Intent: Matched intent "${node.data.intentDescription}" for node ${node.id}`);
+                      log.info(`AI Intent: Matched intent "${node.data.intentDescription}" for node ${node.id}`);
                       matchingTrigger = node;
                       break; 
                   }
@@ -1070,7 +1102,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
       }
 
       if (matchingTrigger) {
-          console.log(`[DualBrain] Graph: Triggering node ${matchingTrigger.id}`);
+          log.info(`Graph: Triggering node ${matchingTrigger.id}`);
           await trackNodeVisit(client, matchingTrigger.id);
           return await executeNode(matchingTrigger.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
       }
@@ -1079,7 +1111,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
       if (isGreeting(userTextLower) || userTextLower === 'start' || userTextLower === 'menu') {
           const firstTrigger = flowNodes.find(n => n.type === 'trigger' || n.type === 'TriggerNode');
           if (firstTrigger) {
-              console.log(`[DualBrain] Graph: Greeting reset to node ${firstTrigger.id}`);
+              log.info(`Graph: Greeting reset to node ${firstTrigger.id}`);
               await trackNodeVisit(client, firstTrigger.id);
               return await executeNode(firstTrigger.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
           }
@@ -1090,7 +1122,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
   if (!currentStepId) {
     const startNode = flowNodes.find(n => n.type === 'trigger' || n.type === 'TriggerNode') || flowNodes.find(n => n.data?.role === 'welcome') || flowNodes[0];
     if (startNode) {
-      console.log(`[DualBrain] Graph: Starting fresh from node ${startNode.id}`);
+      log.info(`Graph: Starting fresh from node ${startNode.id}`);
       await trackNodeVisit(client, startNode.id);
       return await executeNode(startNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
     }
@@ -1109,7 +1141,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     }
   }
   
-  console.log(`[DualBrain] Graph: no match from ${currentStepId} for "${userText || incomingTrigger.buttonId}"`);
+  log.info(`Graph: no match from ${currentStepId} for "${userText || incomingTrigger.buttonId}"`);
   return false;
 }
 
@@ -1118,7 +1150,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 // ─────────────────────────────────────────────────────────────────────────────
 async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, phone, io, channel = 'whatsapp', parsedMessage = {}) {
   const rawNode = flowNodes.find(n => n.id === nodeId);
-  if (!rawNode) { console.warn(`[DualBrain] Node ${nodeId} not found`); return false; }
+  if (!rawNode) { log.warn(`Node ${nodeId} not found`); return false; }
 
   // Phase 20: Inject variables into node data before sending
   // This resolves {{customer_name}}, {{order_id}}, etc. in all text fields
@@ -1128,7 +1160,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     const ctx = convo?._variableContext || await buildVariableContext(client, phone, convo, lead);
     node = injectNodeVariables(rawNode, ctx);
   } catch (varErr) {
-    console.warn('[DualBrain] Variable injection failed for node', nodeId, varErr.message);
+    log.warn('Variable injection failed for node', { nodeId, error: varErr.message });
     node = rawNode; // fallback to raw node
   }
 
@@ -1148,7 +1180,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
        );
     }
   } catch (err) {
-    console.error(`[DualBrain] Failed to increment visit count for node ${nodeId}:`, err.message);
+    log.error(`Failed to increment visit count for node ${nodeId}:`, { error: err.message });
   }
 
 
@@ -1211,7 +1243,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       default:              result = String(leftValue ?? '').toLowerCase() === String(compValue).toLowerCase(); break;
     }
 
-    console.log(`[DualBrain] Logic: ${variable}(${leftValue}) ${operator} ${compValue} → ${result ? 'TRUE' : 'FALSE'}`);
+    log.info(`Logic: ${variable}(${leftValue}) ${operator} ${compValue} → ${result ? 'TRUE' : 'FALSE'}`);
     const targetHandle = result ? 'true' : 'false';
     const nextEdge = flowEdges.find(e =>
       e.source === nodeId && (e.sourceHandle === targetHandle || normalizeHandleId(e.sourceHandle) === targetHandle)
@@ -1239,7 +1271,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     if (tag && lead) {
        const update = action === 'remove' ? { $pull: { tags: tag } } : { $addToSet: { tags: tag } };
        await AdLead.findByIdAndUpdate(lead._id, update);
-       console.log(`[DualBrain] TagNode: ${action} tag "${tag}" for lead ${lead._id}`);
+       log.info(`TagNode: ${action} tag "${tag}" for lead ${lead._id}`);
     }
     const nextEdge = flowEdges.find(e => e.source === nodeId && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'output'));
     if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
@@ -1269,7 +1301,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       });
     }
 
-    console.log(`[DualBrain] AdminAlert triggered for ${phone}: ${alertMsg}`);
+    log.info(`AdminAlert triggered for ${phone}: ${alertMsg}`);
     
     const nextEdge = flowEdges.find(e => e.source === nodeId && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'output'));
     if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
@@ -1299,7 +1331,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       pausedAtNodeId: nodeId 
     });
     
-    console.log(`⏳ Flow paused for ${phone} until ${resumeAt.toISOString()}`);
+    log.info(`⏳ Flow paused for ${phone} until ${resumeAt.toISOString()}`);
     return true; // Stop traversal here, cron will resume
   }
 
@@ -1385,7 +1417,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
           await sendWhatsAppText(client, phone, msg);
           resultData = { link: rzpLink.short_url, status: 'sent' };
         } else {
-          console.log(`[COD_TO_PREPAID] No eligible COD order found for ${phone}`);
+          log.info(`[COD_TO_PREPAID] No eligible COD order found for ${phone}`);
         }
       }
 
@@ -1396,7 +1428,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         convo.metadata = updatedMetadata;
       }
     } catch (err) {
-      console.error(`[dualBrainEngine] Shopify Action ${action} Failed:`, err.message);
+      log.error(`Shopify Action ${action} Failed:`, { error: err.message });
       await sendWhatsAppText(client, phone, "I'm having a bit of trouble connecting to the store right now. Please try again in a minute! 🔄");
     }
   }
@@ -1416,7 +1448,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
         convo.metadata = updatedMetadata;
       }
-    } catch (err) { console.error("[DualBrain] HTTP Node Error:", err.message); }
+    } catch (err) { log.error("HTTP Node Error:", { error: err.message }); }
   }
 
   if (node.type === 'livechat') {
@@ -1634,7 +1666,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'restart': return true;
 
     default:
-      console.warn(`[DualBrain] Skipping send content for node type: ${type}`);
+      log.warn(`Skipping send content for node type: ${type}`);
       return true;
   }
 
@@ -1643,7 +1675,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     const { handleNodeAction } = require("./nodeActions");
     // Execute action asynchronously
     handleNodeAction(node.data.action, node, client, phone, convo, lead).catch(err => {
-      console.error(`[DualBrain] Action Error (${node.data.action}):`, err.message);
+      log.error(`Action Error (${node.data.action}):`, { error: err.message });
     });
   }
 
@@ -1662,7 +1694,7 @@ async function tryKeywordFallback(parsedMessage, client, convo, phone) {
 
     switch (kw.action) {
       case 'restart_flow': {
-        console.log(`[DualBrain] Keyword: restart_flow for "${text}"`);
+        log.info(`Keyword: restart_flow for "${text}"`);
         await Conversation.findByIdAndUpdate(convo._id, { lastStepId: null });
 
         // --- PHASE 17 SAAS BILLING ENFORCEMENT ---
@@ -1756,7 +1788,7 @@ async function runAIFallback(parsedMessage, client, phone, lead, channel = 'what
     await Conversation.findOneAndUpdate({ phone, clientId: client.clientId }, { $set: { consecutiveFailedMessages: 0 } });
     await sendWhatsAppText(client, phone, reply);
   } catch (err) {
-    console.error('[DualBrain] AI Fallback error:', err.message);
+    log.error('AI Fallback error:', { error: err.message });
     const updatedConvo = await Conversation.findOneAndUpdate({ phone, clientId: client.clientId }, { $inc: { consecutiveFailedMessages: 1 } }, { new: true });
     if (updatedConvo && updatedConvo.consecutiveFailedMessages >= 3) {
       await handleUniversalEscalate(client, phone, updatedConvo);
@@ -1772,7 +1804,7 @@ async function sendWhatsAppText(client, phone, body, channel = 'whatsapp') {
       const resp = await sendInstagramReply(client, phone, body);
       await saveOutboundMessage(phone, client.clientId, 'text', body, resp.message_id || '', 'instagram');
       return resp;
-    } catch (err) { console.error('[DualBrain] IG sendReply error:', err.message); return; }
+    } catch (err) { log.error('IG sendReply error:', { error: err.message }); return; }
   }
   const token = client.premiumAccessToken || client.whatsappToken;
   const phoneNumberId = client.premiumPhoneId || client.phoneNumberId;
@@ -1784,7 +1816,7 @@ async function sendWhatsAppText(client, phone, body, channel = 'whatsapp') {
       messaging_product: 'whatsapp', to: phone, type: 'text', text: { body: translated || body }
     }, { headers: { Authorization: `Bearer ${token}` } });
     await saveOutboundMessage(phone, client.clientId, 'text', translated || body, res.data.messages[0].id);
-  } catch (err) { console.error('[DualBrain] sendText error:', err.response?.data?.error?.message || err.message); }
+  } catch (err) { log.error('sendText error:', { error: err.response?.data?.error?.message || err.message }); }
 }
 
 async function sendWhatsAppImage(client, phone, imageUrl, caption) {
@@ -1798,7 +1830,7 @@ async function sendWhatsAppImage(client, phone, imageUrl, caption) {
       messaging_product: 'whatsapp', to: phone, type: 'image', image: { link: imageUrl, caption: translatedCaption || caption }
     }, { headers: { Authorization: `Bearer ${token}` } });
     await saveOutboundMessage(phone, client.clientId, 'image', translatedCaption || caption || '[Image]', res.data.messages[0].id);
-  } catch (err) { console.error('[DualBrain] sendImage error:', err.response?.data?.error?.message || err.message); }
+  } catch (err) { log.error('sendImage error:', { error: err.response?.data?.error?.message || err.message }); }
 }
 
 
@@ -1848,7 +1880,7 @@ async function sendWhatsAppInteractive(client, phone, interactive) {
     await saveOutboundMessage(phone, client.clientId, 'interactive', interactive.body?.text || '[Interactive]', res.data.messages[0].id);
     return true;
   } catch (err) {
-    console.error('[DualBrain] sendInteractive error:', JSON.stringify(err.response?.data || err.message));
+    log.error('sendInteractive error:', { error: err.response?.data || err.message });
     return false;
   }
 }
@@ -1871,7 +1903,7 @@ async function sendWhatsAppTemplate(client, phone, templateName, languageCode, c
     }, { headers: { Authorization: `Bearer ${token}` } });
     
     await saveOutboundMessage(phone, client.clientId, 'template', `[Template: ${templateName}]`, res.data.messages[0].id);
-  } catch (err) { console.error('[DualBrain] sendTemplate error:', err.response?.data || err.message); }
+  } catch (err) { log.error('sendTemplate error:', { error: err.response?.data || err.message }); }
 }
 
 async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, screen) {
@@ -1926,9 +1958,9 @@ async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, sc
             { $inc: { flowsSent: 1 } },
             { upsert: true }
         );
-    } catch (err) { console.error('[Analytics] Flow send error:', err.message); }
+    } catch (err) { log.error('[Analytics] Flow send error:', { error: err.message }); }
   } catch (err) { 
-    console.error('[DualBrain] sendFlow error:', JSON.stringify(err.response?.data || err.message)); 
+    log.error('sendFlow error:', { error: err.response?.data || err.message });
   }
 }
 
@@ -1942,7 +1974,7 @@ async function sendInstagramText(client, phone, text) {
     await saveOutboundMessage(phone, client.clientId, 'text', text, res.message_id || '', 'instagram');
     return true;
   } catch (err) {
-    console.error('[DualBrain] IG sendText error:', err.message);
+    log.error('IG sendText error:', { error: err.message });
     return false;
   }
 }
@@ -1965,7 +1997,7 @@ async function sendInstagramImage(client, phone, imageUrl, caption) {
     await saveOutboundMessage(phone, client.clientId, 'image', caption || '[Image]', res.message_id || '', 'instagram');
     return true;
   } catch (err) {
-    console.error('[DualBrain] IG sendImage error:', err.message);
+    log.error('IG sendImage error:', { error: err.message });
     return false;
   }
 }
@@ -2015,7 +2047,7 @@ async function sendInstagramInteractive(client, phone, interactive) {
     );
     return true;
   } catch (err) {
-    console.error('[DualBrain] IG sendInteractive error:', err.message);
+    log.error('IG sendInteractive error:', { error: err.message });
     return false;
   }
 }
@@ -2044,7 +2076,7 @@ async function transcribeVoiceNote(parsedMessage, client) {
 
     return result.response.text().trim();
   } catch (err) {
-    console.error('[DualBrain] Voice transcription error:', err.message);
+    log.error('Voice transcription error:', { error: err.message });
     return null;
   }
 }
@@ -2145,7 +2177,7 @@ async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = 
     if (io) io.to(`client_${clientId}`).emit('new_message', msg);
     return msg;
   } catch (err) {
-    console.error('[DualBrain] saveInboundMessage error:', err.message);
+    log.error('saveInboundMessage error:', { error: err.message });
     return null; // never crash the engine on a save failure
   }
 }
@@ -2195,7 +2227,7 @@ async function saveOutboundMessage(phone, clientId, type, content, messageId, ch
 
     return msg;
   } catch (err) {
-    console.error('[DualBrain] saveOutboundMessage error:', err.message);
+    log.error('saveOutboundMessage error:', { error: err.message });
     return null;
   }
 }
@@ -2223,7 +2255,7 @@ async function trackNodeVisit(client, nodeId) {
     const io = global.io;
     if (io) io.to(`client_${client.clientId}`).emit('heatmap_update', { nodeId });
   } catch (err) {
-    console.error('[DualBrain] Heatmap tracking error:', err.message);
+    log.error('Heatmap tracking error:', { error: err.message });
   }
 }
 
@@ -2274,7 +2306,7 @@ async function checkIntent(userText, intentDescription, apiKey) {
     const text = result.response.text().toUpperCase();
     return text.includes("YES");
   } catch (err) {
-    console.error(`[checkIntent] Error:`, err.message);
+    log.error(`checkIntent Error:`, { error: err.message });
     return false;
   }
 }
@@ -2340,10 +2372,10 @@ async function analyzeConversationIntelligence(client, phone, convo) {
         });
       }
       
-      log.info(`[Intelligence] ${phone} -> ${sentiment} | ${summary}`);
+      log.info(`${phone} -> ${sentiment} | ${summary}`);
     }
   } catch (err) {
-    console.error('[Intelligence] Error:', err.message);
+    log.error('Intelligence Error:', { error: err.message });
   }
 }
 

@@ -22,7 +22,13 @@ const MessageSchema = new mongoose.Schema({
   },
   
   // Phase 14 Campaign Tracking
-  campaignId: { type: mongoose.Schema.Types.ObjectId, ref: 'Campaign' }
+  campaignId: { type: mongoose.Schema.Types.ObjectId, ref: 'Campaign' },
+
+  // Phase 25 Voice Note Transcriptions
+  voiceTranscript: { type: String, default: '' },
+  voiceTranslation: { type: String, default: '' },
+  voiceProcessed: { type: Boolean, default: false },
+  originalType: { type: String }
 });
 
 module.exports = mongoose.model('Message', MessageSchema);

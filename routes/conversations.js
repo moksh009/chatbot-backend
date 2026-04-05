@@ -66,6 +66,39 @@ router.get('/', protect, async (req, res) => {
   }
 });
 
+// @route   POST /api/conversations/:id/email
+// @desc    Send a manual email to the customer
+// @access  Private
+const { sendEmailMessage } = require('../utils/emailIntegration');
+router.post('/:id/email', protect, async (req, res) => {
+  try {
+    const { subject, text, html } = req.body;
+    const conversation = await Conversation.findById(req.params.id);
+    if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
+
+    const client = await Client.findOne({ clientId: req.user.clientId });
+    if (!client) return res.status(404).json({ message: 'Client not found' });
+
+    const toEmail = conversation.email || conversation.phone; // Fallback if email not set but phone is an email address
+    if (!toEmail || !toEmail.includes('@')) {
+      return res.status(400).json({ message: 'Customer does not have a valid email address associated with this conversation.' });
+    }
+
+    const result = await sendEmailMessage(client, toEmail, subject, text, html);
+    
+    // Update conversation last message
+    conversation.lastMessage = subject ? `Email: ${subject}` : text.substring(0, 50);
+    conversation.lastMessageAt = new Date();
+    conversation.unreadCount = 0;
+    await conversation.save();
+
+    res.json({ success: true, message: result });
+  } catch (error) {
+    console.error('[Conversations] Email send error:', error);
+    res.status(500).json({ message: error.message || 'Failed to send email' });
+  }
+});
+
 // @route   GET /api/conversations/:id
 // @desc    Get single conversation details
 // @access  Private
@@ -114,6 +147,55 @@ router.get('/:id/messages', protect, async (req, res) => {
     res.json(messages.reverse()); // Return in chronological order for UI
   } catch (error) {
     res.status(500).json({ message: 'Server Error', error: error.message });
+  }
+});
+
+// @route   GET /api/conversations/:id/smart-replies
+// @desc    Generate AI smart reply suggestions for the last message
+// @access  Private
+router.get('/:id/smart-replies', protect, async (req, res) => {
+  try {
+    const conversation = await Conversation.findById(req.params.id);
+    if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
+
+    // Fetch last 8 messages for context
+    const recentMessages = await Message.find({ conversationId: conversation._id })
+      .sort({ timestamp: -1 })
+      .limit(8);
+
+    if (recentMessages.length === 0) {
+      return res.json({ suggestions: [] });
+    }
+
+    const lastCustomerMsg = recentMessages.find(m => m.direction === 'incoming' || m.sender === 'user');
+    if (!lastCustomerMsg) return res.json({ suggestions: [] });
+
+    const { GoogleGenerativeAI } = require('@google/generative-ai');
+    const client = await Client.findOne({ clientId: conversation.clientId });
+    const apiKey = client?.geminiApiKey || process.env.GEMINI_API_KEY;
+    if (!apiKey) return res.json({ suggestions: [] });
+
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+
+    const context = recentMessages
+      .reverse()
+      .map(m => `${m.direction === 'incoming' || m.sender === 'user' ? 'Customer' : 'Agent'}: ${m.content || m.text}`)
+      .join('\n');
+
+    const prompt = `You are a customer support agent. Based on this conversation, suggest 3 short, helpful reply options (each max 12 words). Return ONLY a JSON array of strings. No markdown, no explanation.\n\nConversation:\n${context}\n\nSuggestions:`;
+
+    const result = await model.generateContent(prompt);
+    const text = result.response.text().trim();
+
+    // Parse JSON — strip markdown code blocks if present
+    const cleaned = text.replace(/```json?|```/g, '').trim();
+    const suggestions = JSON.parse(cleaned);
+
+    res.json({ suggestions: Array.isArray(suggestions) ? suggestions.slice(0, 3) : [] });
+  } catch (error) {
+    console.error('[SmartReplies] Error:', error.message);
+    res.json({ suggestions: [] }); // Always return gracefully
   }
 });
 
@@ -224,6 +306,9 @@ router.put('/:id/takeover', protect, async (req, res) => {
     if (conversation.attentionReason) conversation.attentionReason = '';
     await conversation.save();
 
+    const AdLead = require('../models/AdLead');
+    AdLead.pushJourneyEvent(conversation.clientId, conversation.phone, 'human_takeover', { agentId: req.user._id, agentName: req.user.name }).catch(() => {});
+
     res.json(conversation);
   } catch (error) {
     res.status(500).json({ message: 'Server Error' });
@@ -245,6 +330,9 @@ router.put('/:id/release', protect, async (req, res) => {
 
     conversation.status = 'BOT_ACTIVE';
     await conversation.save();
+
+    const AdLead = require('../models/AdLead');
+    AdLead.pushJourneyEvent(conversation.clientId, conversation.phone, 'bot_release', { agentId: req.user._id, agentName: req.user.name }).catch(() => {});
 
     res.json(conversation);
   } catch (error) {
@@ -563,28 +651,40 @@ router.post('/:id/send-email', protect, async (req, res) => {
     if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
 
     const client = await Client.findOne({ clientId: conversation.clientId });
-    if (!client?.emailUser || !client?.emailAppPassword) {
-      return res.status(400).json({ message: 'Email SMTP not configured for this client' });
+    
+    // Check if the old SMTP is configured, OR the new Resend config
+    if (!client?.resendApiKey && (!client?.emailUser || !client?.emailAppPassword)) {
+      return res.status(400).json({ message: 'Email not configured for this client' });
     }
 
-    const emailService = require('../utils/emailService');
-    await emailService.sendEmail(client, {
-      to: toEmail,
-      subject,
-      html: `<div>${body.replace(/\n/g, '<br/>')}</div>`
-    });
+    let newMessage;
+    if (client.resendApiKey && client.emailIdentity) {
+      const { sendEmailMessage } = require('../utils/emailIntegration');
+      newMessage = await sendEmailMessage(client, toEmail, subject, body, `<div>${body.replace(/\n/g, '<br/>')}</div>`);
+      
+      // Update Message to attach conversationId
+      newMessage.conversationId = conversation._id;
+      await newMessage.save();
+    } else {
+      // Fallback to legacy SMTP
+      const emailService = require('../utils/emailService');
+      await emailService.sendEmail(client, {
+        to: toEmail,
+        subject,
+        html: `<div>${body.replace(/\n/g, '<br/>')}</div>`
+      });
 
-    // Save outbound message as "email" type
-    const newMessage = await Message.create({
-      clientId: conversation.clientId,
-      conversationId: conversation._id,
-      from: 'agent',
-      to: conversation.phone,
-      content: `[Email] ${subject}`,
-      type: 'email',
-      direction: 'outgoing',
-      status: 'sent'
-    });
+      newMessage = await Message.create({
+        clientId: conversation.clientId,
+        conversationId: conversation._id,
+        from: 'agent',
+        to: conversation.phone,
+        content: `[Email] ${subject}\n\n${body}`,
+        type: 'email',
+        direction: 'outgoing',
+        status: 'sent'
+      });
+    }
 
     conversation.lastMessage = `[Email] ${subject}`;
     conversation.lastMessageAt = Date.now();
@@ -954,6 +1054,76 @@ router.get('/export-jobs/:id', protect, async (req, res) => {
   }
 });
 
-module.exports = router;
+// ─── GET /api/conversations/:id/smart-replies — AI Contextual Suggestions ──
+router.get('/:id/smart-replies', protect, async (req, res) => {
+  try {
+    const convoId = req.params.id;
+    const conversation = await Conversation.findById(convoId);
+    if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found' });
 
+    // Validate access
+    const clientId = req.user.role === 'SUPER_ADMIN' ? req.body.clientId || conversation.clientId : req.user.clientId;
+    if (conversation.clientId !== clientId && req.user.role !== 'SUPER_ADMIN') {
+        return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    // Fetch last 10 messages for context
+    const messages = await Message.find({ conversationId: convoId })
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean();
+    
+    if (messages.length === 0) {
+      return res.json({ success: true, replies: ['Hello! How can I help you today?', 'Hi there!', 'Welcome!'] });
+    }
+
+    const contextArr = messages.reverse().map(m => `${m.direction === 'inbound' ? 'Customer' : 'Agent'}: ${m.content || '(Media)'}`);
+    const contextStr = contextArr.join('\n');
+
+    const prompt = `
+    You are an AI assistant helping a human customer support agent for "${client.businessName || 'our business'}".
+    Below is the recent chat history with the customer (Customer Phone: ${conversation.phone}).
+    
+    Chat History:
+    ${contextStr}
+
+    Based on the context, suggest exactly 3 short, distinct, direct replies the human agent could send RIGHT NOW. 
+    They should be conversational, helpful, and under 15 words each.
+    Format your response STRICTLY as a JSON array of 3 strings. Example: ["Yes, we have it.", "I will check for you.", "Please provide your order number."]
+    Do not include any markdown, backticks, or explanation. Just the raw JSON array.
+    `;
+
+    const { generateText } = require('../utils/gemini');
+    const aiResponseRaw = await generateText(prompt, client.geminiApiKey || process.env.GEMINI_API_KEY);
+    
+    let replies = [];
+    if (aiResponseRaw) {
+       try {
+         const cleaned = aiResponseRaw.replace(/```json/g, '').replace(/```/g, '').trim();
+         replies = JSON.parse(cleaned);
+       } catch (parseErr) {
+         console.error('Smart reply parse error:', parseErr.message, 'Raw:', aiResponseRaw);
+       }
+    }
+
+    // Fallbacks if AI fails or returns malformed
+    if (!Array.isArray(replies) || replies.length < 3) {
+       replies = [
+         "Let me check that for you.",
+         "Could you provide more details?",
+         "I understand, give me a moment."
+       ];
+    }
+
+    res.json({ success: true, replies: replies.slice(0, 3) });
+  } catch (err) {
+    console.error('SmartReplies Error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+module.exports = router;
 

@@ -1,5 +1,6 @@
 const express = require('express');
 const dotenv = require('dotenv');
+const log = require('./utils/logger')('Server');
 const connectDB = require('./db');
 const Appointment = require('./models/Appointment');
 const DailyStat = require('./models/DailyStat');
@@ -17,7 +18,7 @@ const scheduleBirthdayCron = require('./cron/birthdayCron');
 // Silence .env missing warning
 const dotenvResult = dotenv.config();
 if (dotenvResult.error && dotenvResult.error.code !== 'ENOENT') {
-  console.error("Dotenv Error:", dotenvResult.error);
+  log.error("Dotenv Error:", dotenvResult.error);
 }
 // If ENOENT, it just means no file, which is fine if envs are injected otherwise.
 
@@ -56,8 +57,8 @@ function resolveWhatsAppConfig() {
   if (!token) missing.push('WHATSAPP_TOKEN|WHATSAPP_ACCESS_TOKEN');
   if (!phoneId) missing.push('WHATSAPP_PHONENUMBER_ID|WHATSAPP_PHONE_NUMBER_ID');
   if (missing.length) {
-    console.warn(`⚠️  WARNING: Missing default WhatsApp config: ${missing.join(', ')}`);
-    console.warn(`ℹ️  Server will rely on Client Database Configuration for WhatsApp credentials.`);
+    log.warn(`Missing default WhatsApp config: ${missing.join(', ')}`);
+    log.info(`Server will rely on Client Database Configuration for WhatsApp credentials.`);
     // throw new Error(`Missing WhatsApp config: ${missing.join(', ')}`);
   }
 })();
@@ -86,7 +87,7 @@ app.use('/public', express.static(path.join(__dirname, 'public')));
 
 // Debug Middleware: Log all incoming requests
 app.use((req, res, next) => {
-  console.log(`📨 ${req.method} ${req.originalUrl}`);
+  log.info(`${req.method} ${req.originalUrl}`);
   next();
 });
 
@@ -141,6 +142,8 @@ app.use('/api/whatsapp', whatsappRoutes);
 const whatsappFlowsRoutes = require('./routes/whatsappFlows');
 app.use('/api/whatsapp-flows', whatsappFlowsRoutes);
 app.use('/api/campaigns', campaignsRoutes);
+const emailWebhookRoutes = require('./routes/emailWebhook');
+app.use('/api/email', emailWebhookRoutes);
 app.use('/api/payment', require('./routes/payment')); 
 app.use('/api/billing', require('./routes/billing')); 
 
@@ -218,7 +221,7 @@ app.get('/homepage', (req, res) => {
 
 // Keep-alive endpoint
 app.post('/keepalive-ping', (req, res) => {
-  console.log(`🔁 Keepalive ping received at ${new Date().toISOString()}`);
+  log.info(`Keepalive ping received`);
   res.status(200).json({ message: 'Server is awake!' });
 });
 
@@ -237,14 +240,14 @@ app.get('/api/REMOVED_TEMP_ROUTES', (req, res) => res.status(410).json({ message
 
 cron.schedule('*/10 * * * *', () => {
   const url = process.env.SERVER_URL || `https://chatbot-backend-lg5y.onrender.com`;
-  console.log(`[Self-Ping] Pinging ${url}/keepalive-ping to prevent sleep...`);
+  log.info(`[Self-Ping] Pinging ${url}/keepalive-ping to prevent sleep...`);
   const https = require('https');
   https.get(`${url}/keepalive-ping`, (resp) => {
     let data = '';
     resp.on('data', (chunk) => data += chunk);
-    resp.on('end', () => console.log('[Self-Ping] awake!', data));
+    resp.on('end', () => log.info('[Self-Ping] awake!', { data }));
   }).on('error', (err) => {
-    console.error('[Self-Ping] Error:', err.message);
+    log.error('[Self-Ping] Error:', { message: err.message });
   });
 });
 
@@ -268,27 +271,28 @@ scheduleProductSyncCron();
 // Phase 20: Instagram Token Refresh Cron (daily at 8AM IST)
 const { refreshExpiringInstagramTokens } = require('./routes/oauth');
 cron.schedule('0 8 * * *', async () => {
-  console.log('[Cron] Running Instagram token refresh check...');
+  log.info('[Cron] Running Instagram token refresh check...');
   try { await refreshExpiringInstagramTokens(); }
-  catch (err) { console.error('[Cron] Instagram token refresh error:', err.message); }
+  catch (err) { log.error('[Cron] Instagram token refresh error:', { error: err.message }); }
 }, { timezone: 'Asia/Kolkata' });
 
 // Phase 24: Meta Ads Daily Sync (6AM IST — before business hours)
 const { syncMetaAds } = require('./utils/metaAdsAPI');
 cron.schedule('0 6 * * *', async () => {
-  console.log('[Cron] Running Meta Ads sync for all connected clients...');
+  log.info('[Cron] Running Meta Ads sync for all connected clients...');
   try {
     const connectedClients = await Client.find({ metaAdsConnected: true, isActive: true }).lean();
     for (const c of connectedClients) {
-      syncMetaAds(c.clientId).catch(err => console.error(`[MetaAds] Cron sync error for ${c.clientId}:`, err.message));
+      syncMetaAds(c.clientId).catch(err => log.error(`[MetaAds] Cron sync error for ${c.clientId}:`, { error: err.message }));
     }
-  } catch (err) { console.error('[Cron] MetaAds sync error:', err.message); }
+  } catch (err) { log.error('[Cron] MetaAds sync error:', { error: err.message }); }
 }, { timezone: 'Asia/Kolkata' });
 
 // Phase 11 Cron Jobs
 require('./cron/followUpSequenceCron')();
 require('./cron/campaignSchedulerCron')();
 require('./cron/abTestCron')();
+require('./cron/abTestWinner');
 require('./cron/insightsCron')();
 require('./cron/csatCron')();
 
@@ -297,7 +301,7 @@ cron.schedule('0 7 * * *', async () => {
   const istNow = DateTime.utc().setZone('Asia/Kolkata');
   const today = istNow.toFormat('EEEE, dd MMM');
 
-  console.log(`⏰ Running appointment reminder check for today (${today})...`);
+  log.info(`[Cron] Running appointment reminder check for today (${today})...`);
 
   try {
     const clients = await Client.find({});
@@ -313,7 +317,7 @@ cron.schedule('0 7 * * *', async () => {
 
       // USER REQUEST: Stop sending 7 AM reminders to Choice Salon & Choice Holi users
       if (clientId === 'choice_salon' || clientId === 'choice_salon_holi') {
-        console.log(`ℹ️ Skipping 7 AM user reminders for ${clientId} as requested by admin.`);
+        log.info(`[Cron] Skipping 7 AM user reminders for ${clientId} as requested by admin.`);
         continue;
       }
 
@@ -342,13 +346,13 @@ cron.schedule('0 7 * * *', async () => {
           const events = await listEvents(startOfDay, endOfDay, calendarId);
           allTodayEvents = allTodayEvents.concat(events);
         } catch (error) {
-          console.error(`❌ Error fetching events from calendar ${calendarId} for client ${clientId}:`, error.message);
+          log.error(`[Cron] Error fetching events from calendar ${calendarId} for client ${clientId}:`, { error: error.message });
         }
       }
 
       if (allTodayEvents.length === 0) continue;
 
-      console.log(`📅 Found ${allTodayEvents.length} events for client ${clientId}`);
+      log.info(`[Cron] Found ${allTodayEvents.length} events for client ${clientId}`);
 
       // Process each event and send reminders to users who have consented
       for (const event of allTodayEvents) {
@@ -395,7 +399,7 @@ cron.schedule('0 7 * * *', async () => {
             time: time
           }, clientId);
 
-          console.log(`✅ Appointment reminder sent to ${phoneNumber} for ${time}`);
+          log.info(`[Cron] Appointment reminder sent to ${phoneNumber} for ${time}`);
           try {
             const dateStr = istNow.toISODate();
             await DailyStat.updateOne(
@@ -409,20 +413,20 @@ cron.schedule('0 7 * * *', async () => {
           await new Promise(resolve => setTimeout(resolve, 1000));
 
         } catch (error) {
-          console.error(`❌ Error processing appointment reminder for event ${event.id}:`, error.message);
+          log.error(`[Cron] Error processing appointment reminder for event ${event.id}:`, { error: error.message });
         }
       }
-      console.log(`🎯 Appointment reminders completed for client ${clientId}`);
+      log.info(`[Cron] Appointment reminders completed for client ${clientId}`);
     }
   } catch (err) {
-    console.error('❌ Error in appointment reminder cron job:', err);
+    log.error('[Cron] Error in appointment reminder cron job:', { error: err.message });
   }
 });
 
 // Admin 1-Hour Appointment Reminder (Choice Salon Specific)
 // Runs every 10 minutes, looking for appointments exactly 1 hour (± 5 mins) from now.
 cron.schedule('*/10 * * * *', async () => {
-  console.log(`⏰ Running Admin 1-hour appointment reminder check...`);
+  log.info(`[Cron] Running Admin 1-hour appointment reminder check...`);
   try {
     const clients = await Client.find({ clientId: { $in: ['choice_salon', 'choice_salon_holi'] } });
     const { listEvents } = require('./utils/googleCalendar');
@@ -456,7 +460,7 @@ cron.schedule('*/10 * * * *', async () => {
           const events = await listEvents(windowStart, windowEnd, calendarId);
           upcomingEvents = upcomingEvents.concat(events);
         } catch (error) {
-          console.error(`❌ Admin Reminder GCal Error (${calendarId}):`, error.message);
+          log.error(`[Cron] Admin Reminder GCal Error (${calendarId}):`, { error: error.message });
         }
       }
 
@@ -489,21 +493,21 @@ cron.schedule('*/10 * * * *', async () => {
               token: token
             });
           }
-          console.log(`✅ Admin 1HR Reminder sent for ${patientName} at ${eventTime}`);
+          log.info(`[Cron] Admin 1HR Reminder sent for ${patientName} at ${eventTime}`);
         } catch (err) {
-          console.error(`❌ Error sending Admin Reminder:`, err.message);
+          log.error(`[Cron] Error sending Admin Reminder:`, { error: err.message });
         }
       }
     }
   } catch (err) {
-    console.error('❌ Error in admin 1HR reminder cron:', err);
+    log.error('[Cron] Error in admin 1HR reminder cron:', { error: err.message });
   }
 });
 
 const http = require('http');
 const socketIo = require('socket.io');
 
-console.log(`Starting server on port ${PORT}...`);
+log.info(`Starting server on port ${PORT}...`);
 
 const server = http.createServer(app);
 const io = socketIo(server, {
@@ -519,41 +523,41 @@ app.set('socketio', io);
 global.io = io;
 
 io.on('connection', (socket) => {
-  console.log('New client connected:', socket.id);
+  log.info('New client connected', { socketId: socket.id });
 
   // Join room based on clientId if provided in query
   const clientId = socket.handshake.query.clientId;
   if (clientId) {
     socket.join(`client_${clientId}`);
-    console.log(`Socket ${socket.id} joined room client_${clientId}`);
+    log.info(`Socket joined client room`, { socketId: socket.id, clientId });
   }
 
   // Join Super Admin room if role is provided
   const userRole = socket.handshake.query.role;
   if (userRole === 'SUPER_ADMIN') {
     socket.join('super_admin_room');
-    console.log(`Socket ${socket.id} joined super_admin_room`);
+    log.info(`Socket joined super_admin_room`, { socketId: socket.id });
   }
 
   socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
+    log.info('Client disconnected', { socketId: socket.id });
   });
 });
 
 connectDB()
   .then(() => {
     server.listen(PORT, () => {
-      console.log(`✅ Server is running on port ${PORT}`);
+      log.success(`Server is running on port ${PORT}`);
     });
   })
   .catch((err) => {
-    console.error("❌ MongoDB connection failed", err);
+    log.error("MongoDB connection failed", { error: err.message });
     process.exit(1);
   });
 
 // Global Error Handler
 app.use((err, req, res, next) => {
-  console.error(`[Global Error] ${req.method} ${req.url}:`, err.message, err.stack);
+  log.error(`Global Error: ${req.method} ${req.url}`, { error: err.message, stack: err.stack });
   res.status(err.status || 500).json({
     success: false,
     message: err.message || "Internal Server Error",
@@ -563,20 +567,21 @@ app.use((err, req, res, next) => {
 
 // Graceful Shutdown
 process.on("SIGTERM", async () => {
-  console.log("SIGTERM received. Closing server gracefully.");
+  log.warn("SIGTERM received. Closing server gracefully.");
   server.close(async () => {
     const mongoose = require('mongoose');
     await mongoose.disconnect();
-    console.log("MongoDB disconnected. Process exiting.");
+    log.info("MongoDB disconnected. Process exiting.");
     process.exit(0);
   });
 });
 
 process.on("SIGINT", async () => {
-  console.log("SIGINT received. Closing server gracefully.");
+  log.warn("SIGINT received. Closing server gracefully.");
   server.close(async () => {
     const mongoose = require('mongoose');
     await mongoose.disconnect();
+    log.info("MongoDB disconnected. Process exiting.");
     process.exit(0);
   });
 });

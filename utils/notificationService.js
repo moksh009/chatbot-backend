@@ -117,6 +117,40 @@ const NotificationService = {
     }
 
     return results;
+  },
+
+  /**
+   * Centralized Notification Creation
+   * Persists a notification to the DB and emits it to the frontend via Socket.io.
+   */
+  async createNotification(client, { type, title, message, customerPhone, metadata = {} }) {
+    try {
+      const Notification = require('../models/Notification');
+      const Client = require('../models/Client');
+      
+      const clientId = typeof client === 'string' ? client : (client.clientId || client._id);
+      
+      const notif = await Notification.create({
+        clientId: clientId.toString(),
+        type: type || 'system',
+        title: title || 'New Alert',
+        message: message || '',
+        metadata: {
+          customerPhone,
+          ...metadata
+        }
+      });
+
+      if (global.io) {
+        global.io.to(`client_${clientId}`).emit('new_notification', notif);
+      }
+
+      return notif;
+    } catch (err) {
+      log.error('Failed to create internal notification', { error: err.message });
+      return null;
+    }
+  }
   }
 };
 

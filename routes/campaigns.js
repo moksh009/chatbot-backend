@@ -206,10 +206,70 @@ router.post('/start', protect, async (req, res) => {
         });
     }
 
-    total = rows.length;
+    // Shuffle rows for random AB distribution
+    for (let i = rows.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [rows[i], rows[j]] = [rows[j], rows[i]];
+    }
+
+     if (req.body.isAbTest) {
+        campaign.isAbTest = true;
+        const testSizePct = req.body.abTestConfig?.testSizePercentage || 20;
+        campaign.abTestConfig = { 
+          testSizePercentage: testSizePct, 
+          winnerMetric: req.body.abTestConfig?.winnerMetric || 'reply_rate', 
+          holdbackHours: req.body.abTestConfig?.holdbackHours || 4, 
+          autoSendWinner: req.body.abTestConfig?.autoSendWinner !== false, 
+          holdbackProcessed: false 
+        };
+        campaign.abVariants = [
+          { label: 'A', templateName: req.body.templateName || campaign.templateName, recipientCount: 0 },
+          { label: 'B', templateName: req.body.templateTypeB, recipientCount: 0 }
+        ];
+        await campaign.save();
+        const sampleSize = Math.max(2, Math.floor(total * (testSizePct / 100))); 
+        abTestVariantSize = Math.floor(sampleSize / 2);
+
+        // Update recipient counts in variants
+        campaign.abVariants[0].recipientCount = abTestVariantSize;
+        campaign.abVariants[1].recipientCount = abTestVariantSize;
+        await campaign.save();
+     }
+
+    let currentIndex = 0;
     for (const row of rows) {
+      currentIndex++;
       const recipientPhone = normalizePhone(row.phone || row.number || row.mobile || row.recipient || '');
       if (!recipientPhone) { failed++; continue; }
+      
+      let variantLabel = null;
+      let targetTemplateName = req.body.templateName || campaign.templateName;
+      let isHoldout = false;
+      
+      if (req.body.isAbTest) {
+        if (currentIndex <= abTestVariantSize) {
+          variantLabel = 'A';
+        } else if (currentIndex <= abTestVariantSize * 2) {
+          variantLabel = 'B';
+          targetTemplateName = req.body.templateTypeB;
+        } else {
+          isHoldout = true;
+          variantLabel = 'holdout';
+        }
+      }
+
+      if (isHoldout) {
+        // Queue for later
+        await CampaignMessage.create({
+          campaignId: campaign._id,
+          clientId: client.clientId,
+          phone: recipientPhone,
+          status: 'queued',
+          abVariantLabel: 'holdout',
+          metadata: row // Store full row for variable injection later
+        });
+        continue;
+      }
       try {
         if (templateType === 'birthday') {
           const resp = await sendBirthdayWishWithImage(recipientPhone, null, null, req.user.clientId, actualTemplateName);
@@ -245,7 +305,7 @@ router.post('/start', protect, async (req, res) => {
               }
           }
           
-          const respData = await WhatsApp.sendTemplate(client, recipientPhone, tName, req.body.languageCode || 'en', components);
+          const respData = await WhatsApp.sendTemplate(client, recipientPhone, targetTemplateName, req.body.languageCode || 'en', components);
           const metaMsgId = respData?.messages?.[0]?.id || respData?.id;
 
           if (metaMsgId) {
@@ -255,10 +315,15 @@ router.post('/start', protect, async (req, res) => {
               phone: recipientPhone,
               messageId: metaMsgId,
               status: 'sent',
-              sentAt: new Date()
+              sentAt: new Date(),
+              abVariantLabel: variantLabel
             });
             sent++;
-            await Campaign.findByIdAndUpdate(campaign._id, { $inc: { sentCount: 1 } });
+            
+            const incQuery = { sentCount: 1 };
+            if (variantLabel) incQuery[`abVariants.$[variant].sentCount`] = 1;
+            
+            await Campaign.findByIdAndUpdate(campaign._id, { $inc: incQuery }, variantLabel ? { arrayFilters: [{ 'variant.label': variantLabel }] } : {});
           } else {
             failed++;
             await Campaign.findByIdAndUpdate(campaign._id, { $inc: { failedCount: 1 } });

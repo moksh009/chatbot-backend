@@ -6,6 +6,7 @@ const WhatsApp = require("./whatsapp");
 const Order = require("../models/Order");
 const Client = require("../models/Client");
 const { createPaymentLink } = require("./razorpay");
+const { injectVariablesLegacy: replaceVariables } = require("./variableInjector");
 
 /**
  * Handle special side-effects for nodes that have an "action" field.
@@ -304,9 +305,11 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
       const baseUrl = node.data?.baseUrl || client.nicheData?.storeUrl;
       const checkoutUrl = `${baseUrl}?utm_source=whatsapp&utm_medium=chatbot&uid=${lead?._id || 'unknown'}&p=${productKey || 'doorbell'}`;
       
-      const msg = node.data?.body ? node.data.body.replace(`{{buy_url_${productKey}}}`, checkoutUrl) : `👉 Order here: ${checkoutUrl}`;
+      const msg = node.data?.body 
+        ? replaceVariables(node.data.body, { client, lead, convo }) 
+        : `👉 Order here: ${checkoutUrl}`;
       
-      await WhatsApp.sendText(client, phone, msg);
+      await WhatsApp.sendText(client, phone, msg.replace(`{{buy_url_${productKey}}}`, checkoutUrl));
       
       // Log activity
       if (lead) {

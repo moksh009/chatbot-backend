@@ -72,11 +72,19 @@ router.post('/', express.json(), verifyShopifyWebhook, async (req, res) => {
             case 'orders/create':
                 await handleOrder(client, data);
                 break;
+            case 'orders/fulfilled':
+                const { schedulePostDeliveryUpsell } = require('../utils/upsellEngine');
+                await schedulePostDeliveryUpsell(client, data);
+                break;
+            case 'inventory_levels/update':
+            case 'inventory_items/update':
+                await handleInventoryUpdate(client, data);
+                break;
             default:
                 log.info(`Unhandled topic: ${topic}`);
         }
     } catch (err) {
-        log.error(`Error processing webhook ${topic}: ${err.message}`);
+        log.error(`Error processing webhook ${topic}:`, { error: err.message });
     }
 });
 
@@ -247,6 +255,25 @@ async function handleOrder(client, data) {
         }
     }
 
+    // --- PHASE 25: Track 8 - RTO Predictor ---
+    const RTOPredictor = require('../utils/rtoPredictor');
+    const rtoAssessment = await RTOPredictor.calculateRisk(data, data.customer, lead);
+    newOrder.rtoRiskScore = rtoAssessment.score;
+    newOrder.rtoRiskLevel = rtoAssessment.riskLevel;
+    await newOrder.save();
+
+    // Notify if high risk
+    if (rtoAssessment.riskLevel === 'High') {
+        const NotificationService = require('../utils/notificationService');
+        await NotificationService.createNotification(client.clientId, {
+            type: 'system',
+            title: '🚨 High RTO Risk Detected',
+            message: `Order #${newOrder.orderId} scored ${rtoAssessment.score}/100. Reasons: ${rtoAssessment.indicators.join(', ')}`,
+            customerPhone: cleanPhone,
+            metadata: { orderId: newOrder.orderId }
+        });
+    }
+
     // 4. Track in DailyStat
     const isRecovered = lead && lead.recoveryStep > 0;
     const statsUpdate = {
@@ -327,6 +354,48 @@ async function createDraftOrder(client, originalOrder, discountCode) {
     } catch (err) {
         log.error(`Shopify Draft Order API Error: ${err.response?.data ? JSON.stringify(err.response.data) : err.message}`);
         throw err;
+    }
+}
+
+async function handleInventoryUpdate(client, data) {
+    try {
+        // Handle inventory_levels/update
+        const inventoryItemId = data.inventory_item_id;
+        const available = data.available;
+
+        if (!inventoryItemId || typeof available === 'undefined') return;
+
+        // If it's back in stock or has enough stock
+        if (available > 0) {
+            const ProductWatch = require('../models/ProductWatch');
+            // Find anyone watching this item
+            const watches = await ProductWatch.find({ 
+                clientId: client.clientId, 
+                variantId: inventoryItemId.toString(), 
+                condition: { $in: ['back_in_stock', 'low_stock'] }, 
+                status: 'watching' 
+            });
+
+            if (watches.length > 0) {
+                const WhatsApp = require('../utils/whatsapp');
+                for (const watch of watches) {
+                    try {
+                        const message = `Good news! 🎉 The item you were looking for (*${watch.productName}*) is back in stock! Grab it before it's gone.`;
+                        await WhatsApp.sendText(client, watch.phone, message);
+                        
+                        watch.status = 'notified';
+                        watch.notifiedAt = new Date();
+                        await watch.save();
+                        
+                        log.info(`Notified ${watch.phone} about inventory update for ${watch.productName}`);
+                    } catch (e) {
+                        log.error(`Failed to notify ${watch.phone} for inventory update`, e.message);
+                    }
+                }
+            }
+        }
+    } catch (err) {
+        log.error(`Inventory update processing failed: ${err.message}`);
     }
 }
 

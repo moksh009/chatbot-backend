@@ -41,7 +41,11 @@ const OrderSchema = new mongoose.Schema({
     sku: String
   }],
   shippingAddress: { type: Object },
-  createdAt: { type: Date, default: Date.now }
+  createdAt: { type: Date, default: Date.now },
+  
+  // Phase 25: Track 8 RTO Predictor
+  rtoRiskScore: { type: Number, default: 0 },
+  rtoRiskLevel: { type: String, enum: ['Low', 'Medium', 'High'], default: 'Low' }
 });
 
 OrderSchema.index({ orderId: 1, clientId: 1 }, { unique: true });

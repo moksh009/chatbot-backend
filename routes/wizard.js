@@ -65,16 +65,29 @@ router.post("/:clientId/complete", protect, async (req, res) => {
         flowNodes: nodes, 
         flowEdges: edges 
       }),
-      ...(wizardData.businessName    && { businessName: wizardData.businessName, name: wizardData.businessName }),
+      ...(wizardData.businessName    && { 
+        businessName: wizardData.businessName, 
+        name: wizardData.businessName,
+        'brand.businessName': wizardData.businessName
+      }),
       ...(wizardData.botName         && { "nicheData.botName": wizardData.botName }),
-      ...(wizardData.googleReviewUrl && { googleReviewUrl: wizardData.googleReviewUrl }),
-      ...(systemPrompt               && { systemPrompt }),
+      ...(wizardData.googleReviewUrl && { 
+        googleReviewUrl: wizardData.googleReviewUrl,
+        'brand.googleReviewUrl': wizardData.googleReviewUrl
+      }),
+      ...(systemPrompt               && { 
+        systemPrompt,
+        'ai.systemPrompt': systemPrompt
+      }),
       ...(wizardData.razorpayKeyId    && { razorpayKeyId: wizardData.razorpayKeyId }),
       ...(wizardData.razorpaySecret   && { razorpaySecret: wizardData.razorpaySecret }),
       ...(wizardData.cashfreeAppId    && { cashfreeAppId: wizardData.cashfreeAppId }),
       ...(wizardData.cashfreeSecretKey && { cashfreeSecretKey: wizardData.cashfreeSecretKey }),
       ...(wizardData.activePaymentGateway && { activePaymentGateway: wizardData.activePaymentGateway }),
-      ...(wizardData.adminPhone       && { adminPhone: wizardData.adminPhone }),
+      ...(wizardData.adminPhone       && { 
+        adminPhone: wizardData.adminPhone,
+        'brand.adminPhone': wizardData.adminPhone
+      }),
       ...(wizardData.cartTiming && {
         "automationFlows": [
           {

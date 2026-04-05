@@ -35,11 +35,20 @@ const CampaignSchema = new mongoose.Schema({
 
   attributedOrders: { type: Number, default: 0 },
   isAbTest: { type: Boolean, default: false },
+  abTestConfig: {
+    testSizePercentage: { type: Number, default: 20 }, // 20% sent initially, 80% holdback
+    winnerMetric: { type: String, enum: ['read_rate', 'reply_rate', 'revenue'], default: 'reply_rate' },
+    holdbackHours: { type: Number, default: 4 }, // Hours to wait before deciding winner
+    autoSendWinner: { type: Boolean, default: true },
+    holdbackProcessed: { type: Boolean, default: false }
+  },
   abVariants: [{
-    label: String, // "A" or "B"
-    templateId: String,
-    recipients: [String],
+    label: String, // e.g., "A" or "B"
+    templateName: String,
+    languageCode: { type: String, default: 'en' },
+    recipientCount: { type: Number, default: 0 },
     sentCount: { type: Number, default: 0 },
+    deliveredCount: { type: Number, default: 0 },
     readCount: { type: Number, default: 0 },
     repliedCount: { type: Number, default: 0 },
     revenue: { type: Number, default: 0 }
