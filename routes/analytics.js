@@ -271,48 +271,6 @@ router.get('/realtime', protect, async (req, res) => {
   }
 });
 
-// GET /api/analytics/:clientId/sentiment
-// @desc    Get aggregate sentiment statistics for a client
-// @access  Private
-router.get('/:clientId/sentiment', protect, async (req, res) => {
-  try {
-    const { clientId } = req.params;
-    
-    // Authorization check
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
-      return res.status(403).json({ message: 'Access denied' });
-    }
-
-    const sentimentAgg = await Conversation.aggregate([
-      { $match: { clientId } },
-      { $group: { _id: "$sentiment", count: { $sum: 1 } } }
-    ]);
-
-    const stats = {
-      positive: 0,
-      neutral: 0,
-      negative: 0,
-      total: 0
-    };
-
-    sentimentAgg.forEach(s => {
-      const type = (s._id || 'neutral').toLowerCase();
-      if (stats.hasOwnProperty(type)) {
-        stats[type] = s.count;
-      }
-      stats.total += s.count;
-    });
-
-    res.json({
-      success: true,
-      data: stats
-    });
-  } catch (error) {
-    console.error('Sentiment Analytics Error:', error);
-    res.status(500).json({ success: false, message: 'Server Error' });
-  }
-});
-
 router.get('/leads', protect, async (req, res) => {
   try {
     let clientId = req.user.clientId;
