@@ -656,6 +656,39 @@ router.put('/clients/:clientId/reset-password', protect, isSuperAdmin, async (re
   }
 });
 
+// --- REPAIR ACCESS (For Delitech/Enterprise manual recovery) ---
+router.get('/repair-delitech', protect, isSuperAdmin, async (req, res) => {
+  try {
+    const clientId = 'delitech_smarthomes';
+    const update = {
+      plan: 'CX Agent (V2)',
+      'billing.plan': 'CX Agent (V2)',
+      tier: 'v2',
+      'billing.tier': 'v2',
+      trialActive: false,
+      'billing.trialActive': false,
+      trialEndsAt: null,
+      'billing.trialEndsAt': null,
+      isPaidAccount: true,
+      'billing.isPaidAccount': true
+    };
+
+    const client = await Client.findOneAndUpdate(
+      { clientId },
+      { $set: update },
+      { new: true, runValidators: false }
+    );
+
+    if (!client) return res.status(404).json({ message: 'Client not found' });
+
+    log.success(`Repaired client access: ${clientId}`);
+    res.json({ message: 'Account access successfully repaired and set to Enterprise Plan (V2).', client });
+  } catch (err) {
+    log.error('Repair failed', { error: err.message });
+    res.status(500).json({ message: 'Repair failed', error: err.message });
+  }
+});
+
 // --- UPDATE CLIENT ---
 router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
   try {
@@ -669,30 +702,41 @@ router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
       trialActive, trialEndsAt
     } = req.body;
 
-    // Fix SubDocument _id Buffer Cast Errors passed from specific frontend serialization edge cases
-    const cleanArrayIds = (arr) => {
-      if (!Array.isArray(arr)) return arr;
-      return arr.map(item => {
-        if (item && item._id && typeof item._id === 'object') {
-          if (item._id.buffer || item._id.$oid) {
-             item._id = item._id.buffer ? Buffer.from(item._id.buffer).toString('hex') : item._id.$oid;
-          } else {
-             delete item._id; // Let Mongoose safely generate a new uncorrupted ObjectId
-          }
+    // Recursively strip any _id fields that are not strings (prevents CastErrors/Buffer crashes)
+    const deepCleanIds = (obj) => {
+      if (!obj || typeof obj !== 'object') return obj;
+      if (Array.isArray(obj)) return obj.map(deepCleanIds);
+      
+      const newObj = { ...obj };
+      if (newObj._id && typeof newObj._id !== 'string') {
+        delete newObj._id;
+      }
+      // Also handle MongoDB Extended JSON $oid format
+      if (newObj.$oid) return undefined; 
+
+      for (const key in newObj) {
+        if (typeof newObj[key] === 'object') {
+          newObj[key] = deepCleanIds(newObj[key]);
         }
-        return item;
-      });
+      }
+      return newObj;
     };
 
-    if (automationFlows) automationFlows = cleanArrayIds(automationFlows);
-    if (messageTemplates) messageTemplates = cleanArrayIds(messageTemplates);
+    let cleanAutomationFlows = automationFlows ? deepCleanIds(automationFlows) : undefined;
+    let cleanMessageTemplates = messageTemplates ? deepCleanIds(messageTemplates) : undefined;
+    let cleanNicheData = nicheData ? deepCleanIds(nicheData) : undefined;
+    let cleanFlowData = flowData ? deepCleanIds(flowData) : undefined;
 
     // --- Dual-Write Construction for Parallel Run ---
     const updateData = {
       name, businessType, niche, plan, isGenericBot, phoneNumberId,
       whatsappToken, verifyToken: webhookVerifyToken, 
-      googleCalendarId, openaiApiKey, nicheData, flowData,
-      automationFlows, messageTemplates, wabaId, emailUser, 
+      googleCalendarId, openaiApiKey, 
+      nicheData: cleanNicheData, 
+      flowData: cleanFlowData,
+      automationFlows: cleanAutomationFlows, 
+      messageTemplates: cleanMessageTemplates, 
+      wabaId, emailUser, 
       emailAppPassword, razorpayKeyId, razorpaySecret, adminPhone,
       shopDomain, shopifyAccessToken, shopifyWebhookSecret, googleReviewUrl
     };

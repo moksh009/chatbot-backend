@@ -66,7 +66,8 @@ router.get('/:clientId', protect, async (req, res) => {
     const tier = client.tier || 'v1';
 
     // Calculate Usage based on Client's usage tracker
-    const planLimits = PLAN_LIMITS[masterPlan.toLowerCase()] || PLAN_LIMITS['starter'];
+    const normalizedPlan = masterPlan.toLowerCase().trim();
+    const planLimits = PLAN_LIMITS[normalizedPlan] || PLAN_LIMITS['starter'];
     
     const usage = {
       contacts: {

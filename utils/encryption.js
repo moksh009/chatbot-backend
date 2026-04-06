@@ -33,14 +33,19 @@ function decrypt(text) {
 
   try {
     const [ivHex, encryptedHex] = text.split(':');
+    if (!ivHex || !encryptedHex) return text;
+
+    // Buffer.from should handle hex strings, but we wrap in try-catch to be 100% safe
     const iv = Buffer.from(ivHex, 'hex');
     const decipher = crypto.createDecipheriv(ALGORITHM, KEY, iv);
     let decrypted = decipher.update(encryptedHex, 'hex', 'utf8');
     decrypted += decipher.final('utf8');
     return decrypted;
   } catch (err) {
-    console.error("[Encryption] Decryption failed. Returning raw value.", err.message);
-    return text; // Fallback to raw if decryption fails (e.g. key changed)
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn("[Encryption] Decryption failed parsing structure. Returning raw value.", err.message);
+    }
+    return text; // Fallback to raw if decryption fails (e.g. key changed or malformed)
   }
 }
 

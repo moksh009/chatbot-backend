@@ -364,7 +364,15 @@ const ClientSchema = new mongoose.Schema({
 // --- Mongoose Hooks: Encryption at the Database Layer ---
 
 function encryptSubDocs(doc) {
-  const enc = (val) => (typeof val === 'string' ? encrypt(val) : val);
+  // Use a strictly safe encryption helper
+  const enc = (val) => {
+    if (typeof val !== 'string') return val;
+    try {
+      return encrypt(val);
+    } catch (e) {
+      return val;
+    }
+  };
   
   if (doc.whatsapp?.accessToken) doc.whatsapp.accessToken = enc(doc.whatsapp.accessToken);
   if (doc.commerce?.shopify?.accessToken) doc.commerce.shopify.accessToken = enc(doc.commerce.shopify.accessToken);
@@ -398,7 +406,14 @@ function encryptSubDocs(doc) {
 function encryptUpdateQuery(update) {
   if (!update) return;
   const setOps = update.$set || update;
-  const enc = (val) => (typeof val === 'string' ? encrypt(val) : val);
+  const enc = (val) => {
+    if (typeof val !== 'string') return val;
+    try {
+      return encrypt(val);
+    } catch (e) {
+      return val;
+    }
+  };
   
   const encPaths = [
     'whatsapp.accessToken', 'commerce.shopify.accessToken', 'commerce.shopify.refreshToken', 'commerce.shopify.clientSecret', 'commerce.shopify.webhookSecret',
