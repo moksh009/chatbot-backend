@@ -87,9 +87,10 @@ const ConversationSchema = new mongoose.Schema({
   // Phase 23: Track 6 - AI Intelligence
   sentiment: { 
     type: String, 
-    enum: ['Positive', 'Neutral', 'Negative', 'Unknown'], 
+    enum: ['Positive', 'Neutral', 'Negative', 'Frustrated', 'Urgent', 'Unknown'], 
     default: 'Neutral' 
   },
+  sentimentScore: { type: Number, default: 0 },
   lastSummaryUpdate: { type: Date },
 
   // Phase 23: Track 7 - Multi-Language

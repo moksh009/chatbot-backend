@@ -20,6 +20,7 @@ const { evaluateRouting } = require("./routingEngine");
 const { sendEmail } = require("./emailService");
 const { checkLimit, incrementUsage } = require("../utils/planLimits");
 const { detectLanguage, translateToUserLanguage, normalizeIntent, getLanguageInstructions } = require("./languageEngine");
+const { analyzeSentiment } = require("./sentimentEngine");
 
 const SESSION_LOCK_TIMEOUT = 10000; // 10 seconds (Fallback for TTL)
 
@@ -56,6 +57,7 @@ const Instagram = {
 };
 
 const { sendInstagramReply, sendInstagramMessage } = require("./omnichannel");
+const { generateVoiceReply } = require("./voiceReply");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FLOW BUILDER HELPERS — handle nested folders/groups
@@ -1847,6 +1849,20 @@ async function runAIFallback(parsedMessage, client, phone, lead, channel = 'what
 
     const reply = await generateText(prompt, client.geminiApiKey || client.config?.geminiApiKey);
     await Conversation.findOneAndUpdate({ phone, clientId: client.clientId }, { $set: { consecutiveFailedMessages: 0 } });
+    
+    // Phase 26: Voice Reply Logic
+    const isVoiceInput = parsedMessage.type === 'audio' || parsedMessage.type === 'voice';
+    const voiceEnabled = client.ai?.voiceRepliesEnabled || client.voiceRepliesEnabled;
+    const voiceMode = client.ai?.voiceReplyMode || 'mirror';
+
+    if (voiceEnabled && (voiceMode === 'always' || (voiceMode === 'mirror' && isVoiceInput))) {
+      const voiceUrl = await generateVoiceReply(reply, client.ai?.voiceReplyLanguage || 'en-IN');
+      if (voiceUrl) {
+        await sendWhatsAppAudio(client, phone, voiceUrl);
+        return;
+      }
+    }
+
     await sendWhatsAppText(client, phone, reply);
   } catch (err) {
     log.error('AI Fallback error:', { error: err.message });
@@ -1892,6 +1908,19 @@ async function sendWhatsAppImage(client, phone, imageUrl, caption) {
     }, { headers: { Authorization: `Bearer ${token}` } });
     await saveOutboundMessage(phone, client.clientId, 'image', translatedCaption || caption || '[Image]', res.data.messages[0].id);
   } catch (err) { log.error('sendImage error:', { error: err.response?.data?.error?.message || err.message }); }
+}
+
+
+async function sendWhatsAppAudio(client, phone, audioUrl) {
+  const token = client.premiumAccessToken || client.whatsappToken;
+  const phoneNumberId = client.premiumPhoneId || client.phoneNumberId;
+  if (!token || !phoneNumberId) return;
+  try {
+    const res = await axios.post(`https://graph.facebook.com/v19.0/${phoneNumberId}/messages`, {
+      messaging_product: 'whatsapp', to: phone, type: 'audio', audio: { link: audioUrl }
+    }, { headers: { Authorization: `Bearer ${token}` } });
+    await saveOutboundMessage(phone, client.clientId, 'audio', '[Voice Note]', res.data.messages[0].id);
+  } catch (err) { log.error('sendAudio error:', { error: err.response?.data?.error?.message || err.message }); }
 }
 
 
@@ -2187,18 +2216,50 @@ async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = 
       finalConvoId = c?._id;
     }
 
+    // --- Phase 26: Sentiment Analysis ---
+    const client = await Client.findOne({ clientId }, { ai: 1, geminiApiKey: 1 });
+    const sentimentResult = await analyzeSentiment(content, client || {});
+    const sentiment = sentimentResult.sentiment || 'Neutral';
+    const sentimentScore = sentimentResult.score || 0;
+
     // Message schema normalized via createMessage
     const msg = await createMessage({
       clientId,
-      conversationId: finalConvoId, // CRITICAL FIX
+      conversationId: finalConvoId,
       phone,
       direction: 'inbound',
       type:      parsedMessage.type || 'text',
       body:      content,
       messageId: parsedMessage.messageId || '',
       channel:   channel, 
-      rawData:   parsedMessage
+      rawData:   parsedMessage,
+      sentiment,
+      sentimentScore
     });
+
+    // Update Conversation with sentiment and auto-escalation flags
+    if (finalConvoId) {
+      const isNegative = ['Frustrated', 'Urgent', 'Negative'].includes(sentiment);
+      await Conversation.findByIdAndUpdate(finalConvoId, {
+        $set: { 
+          sentiment, 
+          sentimentScore,
+          requiresAttention: isNegative,
+          attentionReason: isNegative ? `AI Detected: ${sentimentResult.summary || content.substring(0, 50)}` : ''
+        }
+      });
+
+      // Notify agents for frustrated/urgent cases
+      if (sentiment === 'Frustrated' || sentiment === 'Urgent') {
+        NotificationService.createNotification(clientId, {
+          type: 'alert',
+          title: `${sentiment} Sentiment Detected 🚨`,
+          message: `Customer ${phone} needs immediate attention. Summary: ${sentimentResult.summary || 'High priority alert.'}`,
+          customerPhone: phone,
+          priority: 'high'
+        }).catch(err => log.error("Sentiment notification failed", err.message));
+      }
+    }
     // --- Phase 23: Track 6 CSAT Interceptor ---
     if (parsedMessage.interactive?.button_reply?.id?.startsWith('csat_')) {
       const { handleCSATResponse } = require('./csatService');
@@ -2309,10 +2370,19 @@ function extractTrigger(parsedMessage) {
 
 async function trackNodeVisit(client, nodeId) {
   try {
+    // 1. LIFETIME VISIT (stored on graph)
     const updatedNodes = incrementNodeVisit(client.flowNodes, nodeId);
     await Client.findByIdAndUpdate(client._id, { flowNodes: updatedNodes });
 
-    // Also emit to dashboard for real-time heatmap if needed
+    // 2. DAILY ANALYTICS (Heatmap)
+    const today = new Date().toISOString().split('T')[0];
+    await DailyStat.findOneAndUpdate(
+      { clientId: client.clientId, date: today },
+      { $inc: { [`flowHeatmap.${nodeId}`]: 1 } },
+      { upsert: true }
+    );
+
+    // 3. Emit real-time socket event to dashboard
     const io = global.io;
     if (io) io.to(`client_${client.clientId}`).emit('heatmap_update', { nodeId });
   } catch (err) {

@@ -85,6 +85,8 @@ async function buildVariableContext(client, phone, convo, lead) {
     current_time:    time_ist,
     current_date:    date_ist,
     current_datetime: now_ist,
+    sentiment:       convo?.sentiment || "Neutral",
+    sentiment_score: String(convo?.sentimentScore || 0),
 
     // ── Cart ──────────────────────────────────────────────────────────
     cart_total:      cartTotalFormatted,

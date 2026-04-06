@@ -64,6 +64,45 @@ router.get('/notifications', protect, async (req, res) => {
   }
 });
 
+// GET /api/analytics/flow-heatmap
+// @desc    Get node visit distribution for visual heatmap overlay
+// @access  Private
+router.get('/flow-heatmap', protect, async (req, res) => {
+  try {
+    let clientId = req.user.clientId;
+    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
+      clientId = req.query.clientId;
+    }
+
+    const { start, end } = req.query;
+    const query = { clientId };
+    if (start || end) {
+      query.date = {};
+      if (start) query.date.$gte = start;
+      if (end) query.date.$lte = end;
+    }
+
+    const stats = await DailyStat.find(query).lean();
+    
+    // Aggregate node visits across selected timeframe
+    const aggregatedHeatmap = {};
+    stats.forEach(stat => {
+      if (stat.flowHeatmap) {
+        // Handle Map serialization (might be object or Map depending on lean/schema)
+        const heatmap = stat.flowHeatmap instanceof Map ? Object.fromEntries(stat.flowHeatmap) : stat.flowHeatmap;
+        for (const [nodeId, count] of Object.entries(heatmap)) {
+          aggregatedHeatmap[nodeId] = (aggregatedHeatmap[nodeId] || 0) + count;
+        }
+      }
+    });
+
+    res.json({ success: true, heatmap: aggregatedHeatmap });
+  } catch (error) {
+    console.error('Flow Heatmap Error:', error);
+    res.status(500).json({ success: false, message: 'Server Error' });
+  }
+});
+
 // GET /api/analytics/bot-health
 // @desc    Get real-time health status of the bot (mocked/calculated)
 // @access  Private
@@ -230,11 +269,14 @@ router.get('/realtime', protect, async (req, res) => {
       Positive: 0,
       Neutral: 0,
       Negative: 0,
+      Frustrated: 0,
+      Urgent: 0,
       Unknown: 0
     };
     sentimentAgg.forEach(s => {
-      if (s._id && sentimentCounts.hasOwnProperty(s._id)) {
-        sentimentCounts[s._id] = s.count;
+      const key = s._id || 'Unknown';
+      if (sentimentCounts.hasOwnProperty(key)) {
+        sentimentCounts[key] = s.count;
       } else {
         sentimentCounts.Unknown += s.count;
       }

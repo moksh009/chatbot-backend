@@ -6,6 +6,7 @@ const Conversation = require('../models/Conversation');
 const Campaign = require('../models/Campaign');
 const CampaignMessage = require('../models/CampaignMessage');
 const { handleWhatsAppMessage } = require('../utils/dualBrainEngine');
+const { processOrderForLoyalty } = require('../utils/walletService');
 
 /**
  * Middleware to verify Meta X-Hub-Signature-256
@@ -224,6 +225,16 @@ async function processMessages(messages, metadata, contacts) {
             const ReferralEngine = require('../utils/referralEngine');
             await ReferralEngine.markConverted(lead);
             AdLead.pushJourneyEvent(lead.clientId, from, 'order_placed', { itemsCount: orderItems.length }).catch(() => {});
+
+            // Phase 27: Loyalty Points Award (WhatsApp Catalog Order)
+            if (clientDoc.loyaltyConfig?.isEnabled) {
+                const totalAmount = orderItems.reduce((sum, item) => sum + (item.price || 0) * item.quantity, 0);
+                if (totalAmount > 0) {
+                   processOrderForLoyalty(clientDoc.clientId, from, totalAmount, `WACAT_${message.id}`)
+                     .then(res => { if (res) log.info(`Awarded ${res.pointsAwarded} points (WA Catalog) to ${from}`); })
+                     .catch(() => {});
+                }
+            }
           }
         } catch (orderErr) {
           log.error('Catalog order critical failure', { error: orderErr.message });

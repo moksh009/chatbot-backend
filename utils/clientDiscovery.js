@@ -7,14 +7,18 @@ const Client = require('../models/Client');
 async function discoverClientByPhoneId(phoneNumberId) {
     if (!phoneNumberId) return null;
     try {
-        // Search for client by specifically configured phoneNumberId
+        // 1. Primary configured phoneNumberId
         let client = await Client.findOne({ phoneNumberId });
         
         if (!client) {
-            // Fallback: check nested config if they used the older format
-            client = await Client.findOne({ 'config.phoneNumberId': phoneNumberId });
+            // 2. Multi-WABA linked accounts
+            client = await Client.findOne({ 'wabaAccounts.phoneNumberId': phoneNumberId });
         }
         
+        if (!client) {
+            // 3. Fallback: check nested config
+            client = await Client.findOne({ 'config.phoneNumberId': phoneNumberId });
+        }
         return client;
     } catch (err) {
         console.error('[ClientDiscovery] Error finding client:', err.message);

@@ -28,7 +28,11 @@ const MessageSchema = new mongoose.Schema({
   voiceTranscript: { type: String, default: '' },
   voiceTranslation: { type: String, default: '' },
   voiceProcessed: { type: Boolean, default: false },
-  originalType: { type: String }
+  originalType: { type: String },
+
+  // Phase 26 Sentiment Analysis
+  sentiment: { type: String, enum: ['Positive', 'Neutral', 'Negative', 'Frustrated', 'Urgent', 'Unknown'], default: 'Unknown' },
+  sentimentScore: { type: Number, default: 0 }
 });
 
 module.exports = mongoose.model('Message', MessageSchema);

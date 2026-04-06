@@ -64,6 +64,27 @@ const WhatsApp = {
   },
 
   /**
+   * Sends an audio message (Voice Note)
+   */
+  async sendAudio(client, phone, audioUrl) {
+    const validPhone = validatePhone(phone);
+    const { token, phoneNumberId } = this.getCredentials(client);
+    const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+
+    try {
+      const res = await axios.post(url, {
+        messaging_product: 'whatsapp',
+        to: validPhone,
+        type: 'audio',
+        audio: { link: audioUrl }
+      }, { headers: { Authorization: `Bearer ${token}` } });
+      return res.data;
+    } catch (err) {
+      this.handleError(err, url, "sendAudio");
+    }
+  },
+
+  /**
    * Sends an interactive message (buttons or list)
    */
   async sendInteractive(client, phone, interactive, bodyText) {

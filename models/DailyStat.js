@@ -44,7 +44,10 @@ const DailyStatSchema = new mongoose.Schema({
   
   // Phase 23: Track 5 - WhatsApp Flows
   flowsSent:              { type: Number, default: 0 },
-  flowsCompleted:         { type: Number, default: 0 }
+  flowsCompleted:         { type: Number, default: 0 },
+
+  // Phase 26: Flow Analytics Heatmap
+  flowHeatmap: { type: Map, of: Number, default: {} } // { "node_id": visitCount }
 });
 
 // Ensure unique stats per client per day

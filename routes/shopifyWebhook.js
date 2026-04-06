@@ -7,6 +7,7 @@ const AdLead = require('../models/AdLead');
 const Order = require('../models/Order');
 const { trackEcommerceEvent } = require('../utils/analyticsHelper');
 const { decrypt } = require('../utils/encryption');
+const { processOrderForLoyalty } = require('../utils/walletService');
 const log = require('../utils/logger')('ShopifyWebhook');
 
 // Middleware to verify Shopify Webhook signature
@@ -182,6 +183,15 @@ async function handleOrder(client, data) {
         address: data.shipping_address ? `${data.shipping_address.address1}, ${data.shipping_address.city}` : '',
         createdAt: data.created_at
     });
+
+    // --- PHASE 27: Loyalty Points Award ---
+    if (client.loyaltyConfig?.isEnabled) {
+        processOrderForLoyalty(client.clientId, cleanPhone, parseFloat(data.total_price), data.name || data.id)
+            .then(res => {
+                if (res) log.info(`Awarded ${res.pointsAwarded} points to ${cleanPhone}`);
+            })
+            .catch(e => log.error('Loyalty award failed', e.message));
+    }
 
     // --- COD to Prepaid Conversion ---
     const codActive = (client.automationFlows || []).find(f => f.id === 'cod_to_prepaid')?.isActive;

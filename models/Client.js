@@ -45,7 +45,11 @@ const AiSchema = new mongoose.Schema({
   openaiKey: { type: String, default: "" }, 
   systemPrompt: { type: String, default: "" },
   fallbackEnabled: { type: Boolean, default: true },
-  negotiationSettings: { type: mongoose.Schema.Types.Mixed, default: {} }
+  negotiationSettings: { type: mongoose.Schema.Types.Mixed, default: {} },
+  // Phase 26 Voice Settings
+  voiceRepliesEnabled: { type: Boolean, default: false },
+  voiceReplyLanguage: { type: String, default: "en-IN" },
+  voiceReplyMode: { type: String, enum: ["mirror", "always", "off"], default: "mirror" }
 }, { _id: false });
 
 const BillingSchema = new mongoose.Schema({
@@ -365,7 +369,33 @@ const ClientSchema = new mongoose.Schema({
   resendApiKey:        { type: String, default: '' },
   emailIdentity:       { type: String, default: '' },
 
-  createdAt: { type: Date, default: Date.now }
+  createdAt: { type: Date, default: Date.now },
+
+  // Phase 27: Multi-WABA & Enterprise
+  wabaAccounts: [{
+    phoneNumberId: String,
+    wabaId: String,
+    accessToken: String,
+    phoneNumber: String,
+    displayName: String,
+    qualityRating: String, // GREEN, YELLOW, RED
+    verifiedName: String
+  }],
+
+  // Phase 27: Loyalty Ecosystem Config
+  loyaltyConfig: {
+    enabled: { type: Boolean, default: false },
+    pointsPerUnit: { type: Number, default: 10 }, // e.g. 10 points per ₹100
+    currencyUnit: { type: Number, default: 100 },
+    tierThresholds: {
+      bronze: { type: Number, default: 0 },
+      silver: { type: Number, default: 5000 },
+      gold: { type: Number, default: 15000 },
+      platinum: { type: Number, default: 50000 }
+    },
+    redemptionRate: { type: Number, default: 0.1 }, // 1 point = ₹0.10
+    autoApplyDiscount: { type: Boolean, default: false }
+  }
 });
 
 // --- Mongoose Hooks: Encryption at the Database Layer ---
