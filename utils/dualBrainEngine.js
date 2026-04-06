@@ -2291,7 +2291,6 @@ async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = 
     );
 
     // Phase 23: Track Conversation Intelligence
-    const client = await Client.findOne({ clientId });
     if (client) {
       analyzeConversationIntelligence(client, phone, existingConvo || { _id: finalConvoId });
     }

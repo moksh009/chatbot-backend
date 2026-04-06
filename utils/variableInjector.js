@@ -107,6 +107,11 @@ async function buildVariableContext(client, phone, convo, lead) {
     discount_amount: String(
       client.automationFlows?.find(f => f.id === "cod_to_prepaid")?.config?.discountAmount || 50
     ),
+
+    // ── Ad Attribution ────────────────────────────────────────────────
+    ad_id:           lead?.adAttribution?.adId || "",
+    ad_name:         lead?.adAttribution?.adHeadline || "", // Using Headline as Name if explicit name not synced
+    ad_source:       lead?.adAttribution?.source || "",
   };
 
   // Merge: captured variables from lead.capturedData and convo.metadata OVERRIDE system variables
