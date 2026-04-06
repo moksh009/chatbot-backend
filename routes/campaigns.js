@@ -211,6 +211,8 @@ router.post('/start', protect, async (req, res) => {
         const j = Math.floor(Math.random() * (i + 1));
         [rows[i], rows[j]] = [rows[j], rows[i]];
     }
+    total = rows.length;
+    let abTestVariantSize = 0;
 
      if (req.body.isAbTest) {
         campaign.isAbTest = true;
@@ -226,7 +228,6 @@ router.post('/start', protect, async (req, res) => {
           { label: 'A', templateName: req.body.templateName || campaign.templateName, recipientCount: 0 },
           { label: 'B', templateName: req.body.templateTypeB, recipientCount: 0 }
         ];
-        await campaign.save();
         const sampleSize = Math.max(2, Math.floor(total * (testSizePct / 100))); 
         abTestVariantSize = Math.floor(sampleSize / 2);
 
@@ -234,6 +235,21 @@ router.post('/start', protect, async (req, res) => {
         campaign.abVariants[0].recipientCount = abTestVariantSize;
         campaign.abVariants[1].recipientCount = abTestVariantSize;
         await campaign.save();
+     }
+
+     if (req.body.isMultivariate && req.body.mvTest) {
+       campaign.isMultivariate = true;
+       campaign.mvTest = req.body.mvTest;
+       // Assign recipient counts to cells
+       let allocated = 0;
+       campaign.mvTest.cells.forEach((cell, idx) => {
+         const count = idx === campaign.mvTest.cells.length - 1 
+           ? total - allocated 
+           : Math.floor(total * (cell.splitPercent / 100));
+         cell.recipientCount = count;
+         allocated += count;
+       });
+       await campaign.save();
      }
 
     let currentIndex = 0;
@@ -255,6 +271,20 @@ router.post('/start', protect, async (req, res) => {
         } else {
           isHoldout = true;
           variantLabel = 'holdout';
+        }
+      }
+
+      if (req.body.isMultivariate && campaign.mvTest?.cells) {
+        let cumulative = 0;
+        for (const cell of campaign.mvTest.cells) {
+          cumulative += cell.recipientCount;
+          if (currentIndex <= cumulative) {
+            variantLabel = cell.id;
+            // Assuming the first variable contains the template template name if it's a message test
+            // Or look for a variable value that is a string
+            targetTemplateName = cell.variableValues.v1_value || cell.variableValues.message_value || targetTemplateName;
+            break;
+          }
         }
       }
 
