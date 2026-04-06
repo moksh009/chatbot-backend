@@ -1,0 +1,114 @@
+const mongoose = require('mongoose');
+
+const ConversationSchema = new mongoose.Schema({
+  phone: { type: String, required: true }, // User phone number
+  clientId: { type: String, required: true, default: 'code_clinic_v1' },
+  customerName: { type: String, default: '' }, // WhatsApp profile name or provided name
+  status: { 
+    type: String, 
+    enum: ['BOT_ACTIVE', 'HUMAN_TAKEOVER', 'HUMAN_SUPPORT', 'CLOSED', 'WAITING_FOR_INPUT', 'OPTED_OUT', 'new'], 
+    default: 'BOT_ACTIVE' 
+  },
+  assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Agent ID
+  assignedAt:  { type: Date, default: null },
+  assignedBy:  { type: String, default: null }, // User name who assigned
+  unreadCount: { type: Number, default: 0 },
+  lastMessage: { type: String },
+  lastMessageAt: { type: Date, default: Date.now },
+  
+  // Smart User Memory Summary
+  summary: { type: String, default: '' },
+  lastAppointment: { type: Date },
+  appointmentStatus: { type: String }, // e.g., 'Booked', 'Completed', 'Cancelled'
+  
+  tags: [{ type: String }],    // e.g., 'Lead', 'Complaint', 'VIP'
+  labels: [{ type: String }],  // Phase 21: Team inbox labels e.g. 'billing', 'support'
+  internalNotes: [{
+    content:   String,
+    authorId:  mongoose.Schema.Types.ObjectId,
+    authorName:String,
+    createdAt: { type: Date, default: Date.now }
+  }],
+  lastStepId: { type: String, default: null }, // For ReactFlow graph traversal state
+  isBotPaused: { type: Boolean, default: false }, // Alias for UI compatibility
+  
+  // Phase 9 fields
+  botPaused:         { type: Boolean, default: false },
+  requiresAttention: { type: Boolean, default: false },
+  attentionReason:   { type: String,  default: '' },
+  currentContext:    { type: String,  default: null },
+  lastInteraction:   { type: Date,    default: Date.now },
+
+  // Phase 11 Fields
+  csatScore: { rating: Number, respondedAt: Date },
+  csatSent: { type: Boolean, default: false },
+  priority: { type: String, enum: ["normal","high","vip"], default: "normal" },
+  // Phase 23: Enterprise Metrics
+  firstInboundAt:  { type: Date },
+  firstResponseAt: { type: Date },
+  resolvedAt:      { type: Date },
+
+  afterHours: { type: Boolean, default: false },
+
+  metadata: { type: Object, default: {} },
+  
+  // Phase 17 Enterprise Robustness
+  processedMessageIds: { 
+    type: [String], 
+    default: [],
+    index: true // index for deduplication search
+  },
+  consecutiveFailedMessages: { type: Number, default: 0 },
+  lastNodeVisited: {
+    nodeId:   String,
+    nodeType: String,
+    nodeLabel:String,
+    visitedAt:Date
+  },
+  flowPausedUntil: { type: Date },
+  pausedAtNodeId:  { type: String },
+  abVariant:       { type: String },
+
+  // Phase 18: Capture Node State
+  waitingForVariable:   { type: String,  default: null }, // variable name being captured
+  captureResumeNodeId:  { type: String,  default: null }, // node to resume after capture
+  captureRetries:       { type: Number,  default: 0 },    // current retry count
+
+  // Phase 13 Omnichannel
+  channel: {
+    type: String,
+    enum: ["whatsapp", "instagram", "email"],
+    default: "whatsapp"
+  },
+
+  // Phase 20: Active Flow Tracking
+  activeFlowId: { type: String, default: null }, // Which visualFlow is currently running
+
+  // Phase 23: Track 6 - AI Intelligence
+  sentiment: { 
+    type: String, 
+    enum: ['Positive', 'Neutral', 'Negative', 'Unknown'], 
+    default: 'Neutral' 
+  },
+  lastSummaryUpdate: { type: Date },
+
+  // Phase 23: Track 7 - Multi-Language
+  detectedLanguage: { type: String, default: 'en' },
+
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+
+// Compound index for unique conversation per phone + client
+ConversationSchema.index({ phone: 1, clientId: 1 }, { unique: true });
+
+// Pre-save hook to cap processedMessageIds
+ConversationSchema.pre('save', function(next) {
+  if (this.processedMessageIds.length > 50) {
+    this.processedMessageIds = this.processedMessageIds.slice(-50);
+  }
+  this.updatedAt = new Date();
+  next();
+});
+
+module.exports = mongoose.model('Conversation', ConversationSchema);

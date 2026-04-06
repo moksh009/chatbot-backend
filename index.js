@@ -197,12 +197,6 @@ app.use('/api/meta-ads', require('./routes/metaAds'));
 app.use('/api/whitelabel', require('./routes/whitelabel'));
 app.use('/api/reseller', require('./routes/reseller'));
 
-// Phase 26: Push Notifications, Shopify Flow, Affiliate Program
-app.use('/api/push', require('./routes/pushRoutes'));
-app.use('/api/shopify-flow', require('./routes/shopifyFlowRoutes'));
-app.use('/api/affiliates', require('./routes/affiliateRoutes'));
-app.use('/api/admin/affiliates', require('./routes/affiliateRoutes'));
-
 // --- CRON JOBS (Phase 21 Resumption) ---
 const scheduleFlowResumption = require('./cron/flowResumptionCron');
 scheduleFlowResumption();

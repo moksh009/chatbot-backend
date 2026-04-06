@@ -76,22 +76,10 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
             case 'orders/create':
                 await handleOrder(client, data);
                 break;
-            case 'orders/fulfilled': {
+            case 'orders/fulfilled':
                 const { schedulePostDeliveryUpsell } = require('../utils/upsellEngine');
                 await schedulePostDeliveryUpsell(client, data);
                 break;
-            }
-            // Phase 26 Track 2: Ground truth for ML RTO training
-            case 'refunds/create':
-            case 'orders/cancelled': {
-                const { markOrderReturned } = require('../utils/rtoMLPredictor');
-                const orderId = data.order_id || data.id;
-                const phone = data.phone || data.customer?.phone ||
-                    data.billing_address?.phone || data.shipping_address?.phone;
-                await markOrderReturned(client._id, orderId, phone);
-                log.info(`RTO ground truth updated for order ${orderId}`);
-                break;
-            }
             case 'inventory_levels/update':
             case 'inventory_items/update':
                 await handleInventoryUpdate(client, data);
@@ -271,38 +259,23 @@ async function handleOrder(client, data) {
         }
     }
 
-    // --- PHASE 26: Track 2 — ML-Enhanced RTO Predictor ---
-    try {
-        const { calculateRTORiskML } = require('../utils/rtoMLPredictor');
-        const rtoAssessment = await calculateRTORiskML(client, cleanPhone, data);
-        newOrder.rtoRiskScore = rtoAssessment.riskScore;
-        newOrder.rtoRiskLevel  = rtoAssessment.riskLevel;
-        await newOrder.save();
+    // --- PHASE 25: Track 8 - RTO Predictor ---
+    const RTOPredictor = require('../utils/rtoPredictor');
+    const rtoAssessment = await RTOPredictor.calculateRisk(data, data.customer, lead);
+    newOrder.rtoRiskScore = rtoAssessment.score;
+    newOrder.rtoRiskLevel = rtoAssessment.riskLevel;
+    await newOrder.save();
 
-        if (['HIGH', 'High', 'MEDIUM'].includes(rtoAssessment.riskLevel) && rtoAssessment.riskScore >= 65) {
-            const NotificationService = require('../utils/notificationService');
-            await NotificationService.createNotification(client.clientId, {
-                type: 'system',
-                title: `🚨 High RTO Risk — ${rtoAssessment.method === 'ml_enhanced' ? 'ML' : 'Rules'} (${rtoAssessment.riskScore}/100)`,
-                message: [
-                    `Order #${newOrder.orderId} is high-risk.`,
-                    rtoAssessment.reasoning ? rtoAssessment.reasoning : `Factors: ${(rtoAssessment.factors || []).slice(0,3).join(', ')}`,
-                    rtoAssessment.modelAccuracy != null ? `Model accuracy: ${rtoAssessment.modelAccuracy}%` : ''
-                ].filter(Boolean).join(' '),
-                customerPhone: cleanPhone,
-                metadata: { orderId: newOrder.orderId, rtoScore: rtoAssessment.riskScore, method: rtoAssessment.method }
-            });
-        }
-        log.info(`RTO (${rtoAssessment.method}): ${newOrder.orderId} → ${rtoAssessment.riskLevel} (${rtoAssessment.riskScore})`);
-    } catch (rtoErr) {
-        log.error('ML RTO assessment failed, falling back to rules:', { error: rtoErr.message });
-        try {
-            const RTOPredictor = require('../utils/rtoPredictor');
-            const rtoAssessment = await RTOPredictor.calculateRisk(data, data.customer, lead);
-            newOrder.rtoRiskScore = rtoAssessment.score;
-            newOrder.rtoRiskLevel = rtoAssessment.riskLevel;
-            await newOrder.save();
-        } catch { /* non-critical */ }
+    // Notify if high risk
+    if (rtoAssessment.riskLevel === 'High') {
+        const NotificationService = require('../utils/notificationService');
+        await NotificationService.createNotification(client.clientId, {
+            type: 'system',
+            title: '🚨 High RTO Risk Detected',
+            message: `Order #${newOrder.orderId} scored ${rtoAssessment.score}/100. Reasons: ${rtoAssessment.indicators.join(', ')}`,
+            customerPhone: cleanPhone,
+            metadata: { orderId: newOrder.orderId }
+        });
     }
 
     // 4. Track in DailyStat
