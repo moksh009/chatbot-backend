@@ -450,9 +450,55 @@ async function runDualBrainEngine(parsedMessage, client) {
   const detectedLang = await detectLanguage(incomingText, client);
   if (detectedLang !== 'en') {
       await Conversation.findByIdAndUpdate(convo._id, { $set: { detectedLanguage: detectedLang } });
-      convo.detectedLanguage = detectedLang; // Update local copy
+      convo.detectedLanguage = detectedLang;
   }
   parsedMessage._detectedLanguage = detectedLang;
+
+  // ── PHASE 26: Track 4 — Non-Blocking Sentiment Analysis ─────────────────
+  // Uses setImmediate so it never adds latency to the bot's response time.
+  if (incomingText && incomingText.length >= 3) {
+    setImmediate(async () => {
+      try {
+        const { analyzeSentiment } = require('./sentimentAnalyzer');
+        const sentimentResult = await analyzeSentiment(incomingText, client);
+        const convoUpdate = {
+          sentiment:       sentimentResult.sentiment,
+          sentimentScore:  sentimentResult.score,
+          lastSentimentAt: new Date(),
+          urgency:         sentimentResult.urgency
+        };
+        // Auto-escalate on very_negative or high urgency
+        const shouldEscalate = sentimentResult.sentiment === 'very_negative' || sentimentResult.urgency === 'high';
+        if (shouldEscalate) convoUpdate.requiresAttention = true;
+        await Conversation.findByIdAndUpdate(convo._id, { $set: convoUpdate });
+        // Admin alert for escalation (only if bot is currently handling it)
+        if (shouldEscalate && !['HUMAN_TAKEOVER', 'HUMAN_SUPPORT'].includes(convo.status)) {
+          const NS = require('./notificationService');
+          await NS.sendAdminAlert(client, {
+            customerPhone: phone,
+            topic: sentimentResult.urgency === 'high' ? '⚡ URGENT MESSAGE — Immediate Attention' : '😡 Negative Sentiment Detected',
+            triggerSource: `"${incomingText.substring(0, 120)}"\n\nSentiment: ${sentimentResult.sentiment} (Score: ${sentimentResult.score}) — ${phone}`,
+            channel: 'both'
+          });
+          // Also mark for human takeover if very negative
+          if (sentimentResult.sentiment === 'very_negative') {
+            await Conversation.findByIdAndUpdate(convo._id, { status: 'HUMAN_TAKEOVER', escalationReason: 'auto_sentiment' });
+            if (io) io.to(`client_${client.clientId}`).emit('attention_required', { phone, reason: 'Auto-escalated: Very negative sentiment', priority: 'high' });
+          }
+        }
+        // Emit real-time update to Live Chat
+        if (io) io.to(`client_${client.clientId}`).emit('sentiment_updated', {
+          phone,
+          sentiment:  sentimentResult.sentiment,
+          score:      sentimentResult.score,
+          urgency:    sentimentResult.urgency,
+          method:     sentimentResult.method
+        });
+      } catch (sentErr) {
+        log.debug('Sentiment analysis failed (non-critical)', { error: sentErr.message });
+      }
+    });
+  }
 
   // ── PHASE 20: Build Variable Context ONCE per message ────────────────────
   // This is passed to executeNode so variables are injected into all nodes

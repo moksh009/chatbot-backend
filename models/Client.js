@@ -365,6 +365,16 @@ const ClientSchema = new mongoose.Schema({
   resendApiKey:        { type: String, default: '' },
   emailIdentity:       { type: String, default: '' },
 
+  // Phase 26 Track 3: AI Voice Replies
+  voiceReplyEnabled:       { type: Boolean, default: false },
+  voiceReplyLanguageMatch: { type: Boolean, default: true }, // reply in same language as voice note
+
+  // Phase 26 Track 7: Shopify Flow Integration
+  shopifyFlowWebhookKey:   { type: String, default: '' }, // UUID secret key for X-TopEdge-Key header
+
+  // Phase 26 Track 8: Affiliate Program
+  affiliateRef:            { type: String, default: '' }, // affiliate code of who referred this client
+
   createdAt: { type: Date, default: Date.now }
 });
 

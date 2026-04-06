@@ -85,11 +85,20 @@ const ConversationSchema = new mongoose.Schema({
   activeFlowId: { type: String, default: null }, // Which visualFlow is currently running
 
   // Phase 23: Track 6 - AI Intelligence
+  // Phase 26: Expanded to 5-level sentiment system
   sentiment: { 
     type: String, 
-    enum: ['Positive', 'Neutral', 'Negative', 'Unknown'], 
-    default: 'Neutral' 
+    enum: ['very_positive', 'positive', 'neutral', 'negative', 'very_negative', 'Positive', 'Neutral', 'Negative', 'Unknown'], 
+    default: 'neutral' 
   },
+  sentimentScore:   { type: Number, default: 0 },         // -100 to +100
+  lastSentimentAt:  { type: Date },
+  urgency: {
+    type: String,
+    enum: ['low', 'medium', 'high'],
+    default: 'low'
+  },
+  escalationReason: { type: String, default: '' },         // 'auto_sentiment' | 'keyword' | 'manual'
   lastSummaryUpdate: { type: Date },
 
   // Phase 23: Track 7 - Multi-Language

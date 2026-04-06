@@ -55,6 +55,33 @@ const CampaignSchema = new mongoose.Schema({
   }],
   winnerVariant: String,
 
+  // Phase 26 Track 5: Multivariate A/B Testing
+  isMultivariate: { type: Boolean, default: false },
+  mvTest: {
+    variables: [{
+      id:      String,         // "message" | "time" | "audience_filter"
+      name:    String,         // "Message Copy"
+      options: [{
+        id:    String,
+        label: String,
+        value: mongoose.Schema.Types.Mixed
+      }]
+    }],
+    cells: [{
+      id:            String,
+      variableValues:mongoose.Schema.Types.Mixed,
+      splitPercent:  { type: Number, default: 0 },
+      recipientCount:{ type: Number, default: 0 },
+      sentCount:     { type: Number, default: 0 },
+      readCount:     { type: Number, default: 0 },
+      repliedCount:  { type: Number, default: 0 },
+      replyRate:     { type: Number, default: 0 }
+    }],
+    winnerCellId:      String,
+    winnerDeclaredAt:  Date,
+    significanceLevel: { type: Number, default: 95 }  // % confidence required
+  },
+
   createdAt: { type: Date, default: Date.now }
 });
 

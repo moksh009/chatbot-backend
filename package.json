@@ -8,6 +8,7 @@
     "dev": "nodemon index.js"
   },
   "dependencies": {
+    "@google-cloud/text-to-speech": "^6.4.0",
     "@google/generative-ai": "^0.24.1",
     "axios": "^1.11.0",
     "bcryptjs": "^3.0.3",
@@ -36,6 +37,7 @@
     "razorpay": "^2.9.6",
     "resend": "^6.10.0",
     "socket.io": "^4.8.1",
+    "web-push": "^3.6.7",
     "winston": "^3.19.0",
     "xlsx": "^0.18.5"
   },

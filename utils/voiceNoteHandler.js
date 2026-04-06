@@ -150,19 +150,57 @@ async function processVoiceNote(message, client, phone, convoId, io, phoneNumber
 
     // ── STEP 6: Feed transcript through dual-brain engine ──
     const { runDualBrainEngine } = require("./dualBrainEngine");
+
+    // Map Gemini language code to voice engine language name
+    const langMap = { hi: 'hindi', gu: 'gujarati', mr: 'marathi', 'hi-en': 'hinglish', 'gu-en': 'gujarlish' };
+    const rawLangCode = (convo?.detectedLanguage || 'en').toLowerCase().split('-')[0];
+    const voiceLanguage = langMap[rawLangCode] || 'english';
+
     const syntheticMessage = {
       ...message,
       type: "text",
       text: { body: englishTranslation || cleanTranscript },
       originalType: "voice",
       voiceTranscript: cleanTranscript,
+      requestVoiceReply: !!(client.voiceReplyEnabled), // Track 3 flag
+      _voiceLanguage: voiceLanguage,
       from: phone,
       channel: 'whatsapp',
       profileName,
       phoneNumberId
     };
-    
+
     await runDualBrainEngine(syntheticMessage, client);
+
+    // ── STEP 6.5: Phase 26 Track 3 — Send voice reply if enabled ─────────
+    // The engine already sent the text reply; if voice reply is enabled,
+    // we also send an audio version of the same reply.
+    if (client.voiceReplyEnabled) {
+      try {
+        const { sendVoiceReply } = require('./voiceReplyEngine');
+        const { generateText: getBotReply, getGeminiModel } = require('./gemini');
+        const config = client.config?.aiConfig || {};
+        const systemPrompt = config.systemPrompt || 'You are a helpful WhatsApp assistant.';
+        const aiKey = client.ai?.geminiKey || client.geminiApiKey || process.env.GEMINI_API_KEY;
+
+        // Generate a concise audio-friendly version of the response
+        const genAI = new (require('@google/generative-ai').GoogleGenerativeAI)(aiKey);
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+        const voicePrompt = `${systemPrompt}\n\nCustomer's voice message (transcribed): "${englishTranslation || cleanTranscript}"\n\nProvide a brief, conversational reply suitable for a voice message (max 2-3 sentences, no markdown formatting, no bullet points, natural spoken language).`;
+        const voiceResult = await model.generateContent(voicePrompt);
+        const voiceReplyText = voiceResult.response.text().trim();
+
+        if (voiceReplyText) {
+          const voiceRes = await sendVoiceReply(client, phone, voiceReplyText, voiceLanguage);
+          if (voiceRes.sent) {
+            console.log('[VoiceReply] Voice reply sent successfully', { phone, mediaId: voiceRes.mediaId });
+          }
+        }
+      } catch (vrErr) {
+        // Non-critical: voice reply failed, text reply already sent
+        console.debug('[VoiceReply] Voice reply generation skipped:', vrErr.message);
+      }
+    }
 
   } else {
     // Graceful fallback — send a text to agent and notify
