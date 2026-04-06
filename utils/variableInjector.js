@@ -118,7 +118,7 @@ async function buildVariableContext(client, phone, convo, lead) {
 
 /**
  * Replace all {{variable}} placeholders in a text string.
- * Unknown variables are left as-is (never removed — so user can see them in preview).
+ * Supports fallback pipes: {{variable_name | 'Fallback Value'}}
  * 
  * @param {string} text    - Text containing {{variable}} placeholders
  * @param {Object} context - Flat context object from buildVariableContext()
@@ -128,41 +128,74 @@ function injectVariables(text, context) {
   if (!text || typeof text !== "string") return text;
   if (!context || typeof context !== "object") return text;
 
-  // Support both {{var}} and {var} syntax
-  return text.replace(/\{+([a-zA-Z0-9_]+)\}+/g, (match, key) => {
-    const value = context[key];
+  // Robust Regex: handles {{var}}, {{var | 'fallback'}}, {{var|fallback}}, etc.
+  const variableRegex = /{{\s*([\w.]+)\s*(?:\|\s*['"]?([^'"]*)['"]?\s*)?}}/g;
+
+  return text.replace(variableRegex, (match, key, fallback) => {
+    // 1. Check direct context (e.g. {{customer_name}})
+    let value = context[key];
+
+    // 2. Support nested path notation (e.g. {{lead.name}})
+    if (value === undefined && key.includes('.')) {
+      const parts = key.split('.');
+      let current = context;
+      for (const part of parts) {
+        current = current?.[part];
+      }
+      value = current;
+    }
+
+    // 3. Resolve value or fallback
     if (value !== undefined && value !== null && String(value) !== "") {
       return String(value);
     }
+
+    // If no value, use fallback if provided, otherwise keep match
+    if (fallback !== undefined && fallback !== null) {
+      return fallback;
+    }
+
     return match; // Keep {{unknown_var}} as-is
   });
 }
 
 /**
- * Deep-inject variables into ALL text fields of a node's data object.
- * Returns a NEW node object with variables resolved (does not mutate original).
+ * Deep-inject variables into ALL fields of a node's data object recursively.
+ * Returns a NEW object with variables resolved.
  * 
- * @param {Object} node    - ReactFlow node object
+ * @param {any} target     - Target object or value (usually node.data)
  * @param {Object} context - Variable context from buildVariableContext()
- * @returns {Object}       - New node with all text fields resolved
+ * @returns {any}          - New object/value with all text fields resolved
  */
-function injectNodeVariables(node, context) {
-  if (!node?.data || !context) return node;
+function injectNodeVariables(target, context) {
+  if (!target || !context) return target;
 
   const injectDeep = (obj) => {
+    // String: Inject variables
     if (typeof obj === "string") return injectVariables(obj, context);
-    if (Array.isArray(obj))     return obj.map(injectDeep);
-    if (obj && typeof obj === "object") {
+    
+    // Array: Recursively process items
+    if (Array.isArray(obj)) return obj.map(item => injectDeep(item));
+    
+    // Object: Recursively process keys
+    if (obj !== null && typeof obj === "object" && obj.constructor === Object) {
       const result = {};
       for (const [key, val] of Object.entries(obj)) {
         result[key] = injectDeep(val);
       }
       return result;
     }
+    
+    // Primitive or other types: return as-is
     return obj;
   };
 
-  return { ...node, data: injectDeep(node.data) };
+  // If passed a full node, return a copy with injected data
+  if (target.id && target.data) {
+    return { ...target, data: injectDeep(target.data) };
+  }
+
+  return injectDeep(target);
 }
 
 /**

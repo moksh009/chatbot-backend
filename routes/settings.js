@@ -84,4 +84,20 @@ router.put('/:clientId/knowledge-base', protect, verifyClientAccess, async (req,
   }
 });
 
+router.put('/:clientId/custom-variables', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { customVariables } = req.body; // Array of objects
+    
+    const client = await Client.findOneAndUpdate(
+      { clientId },
+      { $set: { customVariables } },
+      { new: true }
+    );
+    res.json({ success: true, customVariables: client.customVariables });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 module.exports = router;

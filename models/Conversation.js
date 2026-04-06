@@ -72,6 +72,7 @@ const ConversationSchema = new mongoose.Schema({
   // Phase 18: Capture Node State
   waitingForVariable:   { type: String,  default: null }, // variable name being captured
   captureResumeNodeId:  { type: String,  default: null }, // node to resume after capture
+  captureRetries:       { type: Number,  default: 0 },    // current retry count
 
   // Phase 13 Omnichannel
   channel: {

@@ -13,7 +13,7 @@ const ProcessingLock = require('../models/ProcessingLock');
 const log = require("./logger")('DualBrain');
 const { generateText, getGeminiModel } = require('./gemini');
 const { createMessage } = require("./createMessage");
-const { injectVariablesLegacy, buildVariableContext, injectNodeVariables } = require("./variableInjector");
+const { injectVariables, buildVariableContext, injectNodeVariables, injectVariablesLegacy } = require("./variableInjector");
 const { findMatchingFlow, findFlowStartNode } = require("./triggerEngine");
 const { evaluateRules, executeRuleActions } = require("./rulesEngine");
 const { evaluateRouting } = require("./routingEngine");
@@ -743,12 +743,56 @@ async function runDualBrainEngine(parsedMessage, client) {
   }
 
   // ── PRIORITY 0: CAPTURE MODE ─────────────────────────────────────────────
-  // If bot is waiting for text input from this user, capture it NOW before
-  // anything else (keywords, AI fallback, etc.) can swallow the message.
+  // If bot is waiting for text input from this user, handle it NOW.
   if (convo.status === 'WAITING_FOR_INPUT' && convo.waitingForVariable) {
-    const capturedText = (parsedMessage.text?.body || '').trim();
-    if (capturedText) {
+    const lastInteraction = convo.updatedAt || convo.lastMessageAt || new Date();
+    const hoursSinceLast = (new Date() - new Date(lastInteraction)) / 3600000;
+    
+    // Safeguard 4: 24-hour TTL check
+    if (hoursSinceLast > 24) {
+      log.info(`⏰ Capture state expired (24h+). Clearing wait state for ${phone}.`);
+      await Conversation.findByIdAndUpdate(convo._id, {
+        $set: { status: 'BOT_ACTIVE', waitingForVariable: null, captureResumeNodeId: null, captureRetries: 0 }
+      });
+      // Fall through to normal processing (treat as fresh intent)
+    } else {
+      const capturedText = (parsedMessage.text?.body || '').trim();
+      if (!capturedText) return true; // Wait for actual text
+
       const varName = convo.waitingForVariable;
+      const flatNodes = flattenFlowNodes(client.flowNodes || []);
+      const captureNode = flatNodes.find(n => n.id === convo.lastStepId);
+      
+      // Safeguard 2: Validation Logic
+      const expectedType = captureNode?.data?.expectedType || 'string';
+      const validationErrorMsg = captureNode?.data?.validationErrorMessage || "Please provide a valid response.";
+      const maxRetries = captureNode?.data?.maxRetries || 3;
+      
+      let isValid = true;
+      if (expectedType === 'number') isValid = !isNaN(Number(capturedText));
+      else if (expectedType === 'email') isValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(capturedText);
+      else if (expectedType === 'phone') isValid = /^\+?[\d\s-]{8,20}$/.test(capturedText);
+      else if (expectedType === 'date')  isValid = !isNaN(Date.parse(capturedText));
+
+      if (!isValid) {
+        const retries = (convo.captureRetries || 0) + 1;
+        log.info(`⚠️ Validation failed for ${varName} (Type: ${expectedType}). Attempt: ${retries}/${maxRetries}`);
+        
+        if (retries >= maxRetries) {
+          // Safeguard 1: Infinite Loop Trap -> Escalate
+          log.warn(`🚨 Max retries (${maxRetries}) reached for ${phone}. Escalating to human.`);
+          await Conversation.findByIdAndUpdate(convo._id, {
+            $set: { status: 'HUMAN_SUPPORT', waitingForVariable: null, captureResumeNodeId: null, captureRetries: 0 }
+          });
+          await WhatsApp.sendText(client, phone, "I'm having trouble understanding. Let me connect you with a member of our team! 👤");
+        } else {
+          await Conversation.findByIdAndUpdate(convo._id, { $inc: { captureRetries: 1 } });
+          await WhatsApp.sendText(client, phone, validationErrorMsg);
+        }
+        return true; // Still waiting
+      }
+
+      // Successful capture
       const updatedMetadata = { ...(convo.metadata || {}), [varName]: capturedText };
       await Conversation.findByIdAndUpdate(convo._id, {
         $set: {
@@ -756,10 +800,12 @@ async function runDualBrainEngine(parsedMessage, client) {
           status:              'BOT_ACTIVE',
           waitingForVariable:  null,
           captureResumeNodeId: null,
-          lastStepId:          convo.captureResumeNodeId || convo.lastStepId
+          captureRetries:      0,
+          lastStepId:          nodeId
         }
       });
-      // Also persist to AdLead so {{varName}} can be used anywhere
+      
+      // Persist to AdLead
       try {
         await AdLead.findOneAndUpdate(
           { phoneNumber: phone, clientId: client.clientId },
@@ -767,21 +813,19 @@ async function runDualBrainEngine(parsedMessage, client) {
         );
       } catch (_) {}
 
-      log.info(`Priority0: captured "${capturedText}" → variable "${varName}" — resuming from ${convo.captureResumeNodeId}`);
+      log.info(`✅ Captured "${capturedText}" → "${varName}". Resuming flow...`);
 
-      // Resume the flow from captureResumeNodeId
+      // Resume from captureResumeNodeId
       if (convo.captureResumeNodeId) {
-        const resumeConvo = await Conversation.findById(convo._id);
-        resumeConvo.metadata = updatedMetadata;
-        const flatNodes = flattenFlowNodes(client.flowNodes || []);
+        const freshConvo = await Conversation.findById(convo._id);
+        freshConvo.metadata = updatedMetadata;
         return await executeNode(
           convo.captureResumeNodeId, flatNodes, client.flowEdges || [],
-          client, resumeConvo, lead, phone, io, channel
+          client, freshConvo, lead, phone, io, channel, parsedMessage
         );
       }
-      return true; // captured but no resume node
+      return true;
     }
-    return true; // no text to capture, ignore
   }
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -1471,9 +1515,22 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     await Conversation.findByIdAndUpdate(convo._id, { lastStepId: nodeId, lastInteraction: new Date() });
   }
 
-  // Auto-forward if not a wait node or logic node (logic already handled)
-  if (!isWaitNode && node.type !== 'logic') {
-    const autoEdge = flowEdges.find(e => e.source === nodeId && (!e.trigger || e.trigger?.type === 'auto') && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom'));
+  // Auto-forward or enter WAIT state
+  if (isWaitNode) {
+    // Correctly enter WAITING_FOR_INPUT state
+    const targetVar = node.data?.variable || 'last_input';
+    const nextEdge = flowEdges.find(e => e.source === nodeId && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'output'));
+    
+    log.info(`⏳ Node ${nodeId} entering wait state for variable "${targetVar}"`);
+    await Conversation.findByIdAndUpdate(convo._id, {
+      status: 'WAITING_FOR_INPUT',
+      waitingForVariable: targetVar,
+      captureResumeNodeId: nextEdge ? nextEdge.target : null,
+      captureRetries: 0,
+      lastStepId: nodeId
+    });
+  } else if (node.type !== 'logic') {
+    const autoEdge = flowEdges.find(e => e.source === nodeId && (!e.trigger || e.trigger?.type === 'auto') && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom' || e.sourceHandle === 'output'));
     if (autoEdge) {
       setTimeout(async () => {
         const freshConvo = await Conversation.findById(convo._id);
@@ -1510,7 +1567,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'capture_input':
     case 'CaptureNode': {
       let body = data.text || data.body || data.label || 'Please provide the requested information:';
-      body = replaceVariables(body, client, lead, convo);
+      // Variables already hydrated via deepInject in executeNode
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
       if (channel === 'instagram') await Instagram.sendText(client, phone, body, options);
       else await WhatsApp.sendText(client, phone, body);
@@ -1527,7 +1584,6 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'MessageNode':
     case 'livechat': {
       let body = data.text || data.body || (type === 'livechat' ? 'Connecting you to a human...' : '');
-      body = replaceVariables(body, client, lead, convo);
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
       
       if (channel === 'instagram') {
@@ -1544,7 +1600,6 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'interactive':
     case 'InteractiveNode': {
       let body = data.text || data.body || 'Please Choose:';
-      body = replaceVariables(body, client, lead, convo);
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
 
       if (data.btnUrlLink) {
@@ -1626,7 +1681,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         if (rawParams.length) {
           const processedParams = rawParams.map(p => ({
             type: 'text',
-            text: replaceVariables(p, client, lead, convo).substring(0, 1024)
+            text: p.substring(0, 1024)
           }));
           components.push({ type: 'body', parameters: processedParams });
         }
@@ -1638,8 +1693,8 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'email': {
       const recipient = lead?.email || data.recipientEmail;
       if (!recipient || !client.emailUser) return true;
-      let subject = replaceVariables(data.subject || 'Update', client, lead, convo);
-      let body = replaceVariables(data.body || '', client, lead, convo);
+      let subject = data.subject || 'Update';
+      let body = data.body || '';
       await emailService.sendEmail(client, { to: recipient, subject, html: body.replace(/\n/g, '<br/>') });
       return true;
     }
@@ -1647,7 +1702,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'catalog': {
       const { catalogType, productId, productIds, body, header, footer } = data;
       const bodyText = (body || data.text || "Check out our collection!").substring(0, 1024);
-      const replacedBody = replaceVariables(bodyText, client, lead, convo);
+      const replacedBody = bodyText;
       
       if (catalogType === 'multi') {
         const ids = (productIds || '').split(',').map(id => id.trim()).filter(Boolean);

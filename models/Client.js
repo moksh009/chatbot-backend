@@ -127,6 +127,13 @@ const ClientSchema = new mongoose.Schema({
   config: { type: mongoose.Schema.Types.Mixed, default: {} }, // Flexible config for other settings
   nicheData: { type: mongoose.Schema.Types.Mixed, default: {} }, // Flexible config for generic niche bots
   flowData: { type: mongoose.Schema.Types.Mixed, default: {} }, // Flexible config for generic WhatsApp text flows
+  customVariables: [{
+    name: { type: String, required: true },
+    type: { type: String, enum: ['string', 'number', 'date', 'phone', 'email'], default: 'string' },
+    label: String,
+    description: String,
+    defaultValue: String
+  }],
   
   // Phase 7 Added Fields
   razorpayKeyId: { type: String, default: "" },
