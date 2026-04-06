@@ -19,8 +19,16 @@ const protect = async (req, res, next) => {
 
       next();
     } catch (error) {
-      console.error(error);
-      res.status(401).json({ message: 'Not authorized, token failed' });
+      console.error('[Auth Middleware] Error validating token or fetching user:', error);
+      
+      // If it's a genuine JWT error (expired, malformed, signature mismatch), it's a 401
+      if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+        return res.status(401).json({ message: 'Not authorized, token failed' });
+      }
+
+      // If it's a MongoDB timeout or other server-side issue during cold start, return 500
+      // so the frontend knows it's a transient server issue and can retry, rather than logging out.
+      return res.status(500).json({ message: 'Server Error during authentication', error: error.message });
     }
   }
 
