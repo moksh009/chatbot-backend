@@ -2217,7 +2217,7 @@ async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = 
     }
 
     // --- Phase 26: Sentiment Analysis ---
-    const client = await Client.findOne({ clientId }, { ai: 1, geminiApiKey: 1 });
+    const client = await Client.findOne({ clientId });
     const sentimentResult = await analyzeSentiment(content, client || {});
     const sentiment = sentimentResult.sentiment || 'Neutral';
     const sentimentScore = sentimentResult.score || 0;
