@@ -27,12 +27,9 @@ const SENSITIVE_FIELDS = [
   'instagramAppSecret',
   'instagramPendingToken',
   'metaAdsAccessToken',
-  'accessToken',
-  'refreshToken',
   'secret',
   'apiKey',
-  'password',
-  'token'
+  'password'
 ];
 
 /**
