@@ -67,7 +67,10 @@ const path = require('path');
 
 // Middleware
 app.use(cors({
-  origin: process.env.FRONTEND_URL || '*', 
+  origin: function (origin, callback) {
+    // Allow all origins, mirroring the incoming origin
+    callback(null, true);
+  }, 
   credentials: true
 }));
 app.use(express.json({ 
