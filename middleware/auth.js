@@ -48,4 +48,13 @@ const verifyClientAccess = (req, res, next) => {
   next();
 };
 
-module.exports = { protect, verifyToken: protect, authorize, verifyClientAccess };
+const requireSuperAdmin = [protect, authorize('SUPER_ADMIN')];
+
+module.exports = { 
+  protect, 
+  authenticate: protect, 
+  verifyToken: protect, 
+  authorize, 
+  requireSuperAdmin,
+  verifyClientAccess 
+};
