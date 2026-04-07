@@ -36,7 +36,7 @@ router.post('/export-pdf', protect, async (req, res) => {
   try {
     const { generateDashboardPDF } = require('../utils/pdfExporter');
     const { widgetIds, period, data } = req.body;
-    const client = await require('../models/Client').findById(req.user.clientId).lean();
+    const client = await require('../models/Client').findOne({ clientId: req.user.clientId }).lean();
     
     if (!client) return res.status(404).json({ message: "Client not found" });
 
