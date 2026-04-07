@@ -154,10 +154,16 @@ async function withShopifyRetry(clientId, operation, retryCount = 0) {
         const shop = await getShopifyClient(clientId);
         return await operation(shop);
     } catch (err) {
-        if (err.response?.status === 401 && retryCount < 3) {
-            console.warn(`[SelfHealing] 401 detected for ${clientId}. Attempt ${retryCount + 1}/3...`);
+        const isAuthError = err.response?.status === 401;
+        const isForbidden = err.response?.status === 403;
+
+        if ((isAuthError || isForbidden) && retryCount < 2) {
+            const reason = isAuthError ? '401 Unauthorized' : '403 Forbidden';
+            console.warn(`[SelfHealing] ${reason} detected for ${clientId}. Attempt ${retryCount + 1}/2...`);
+            
             try {
-                const shop = await getShopifyClient(clientId, true); 
+                // For 403, we definitely want a force refresh as scopes might have changed
+                await getShopifyClient(clientId, true); 
                 console.log(`[SelfHealing] Rotation successful for ${clientId}. Retrying operation...`);
                 return await withShopifyRetry(clientId, operation, retryCount + 1);
             } catch (retryErr) {
@@ -165,9 +171,11 @@ async function withShopifyRetry(clientId, operation, retryCount = 0) {
                 throw retryErr;
             }
         }
-        if (retryCount >= 3) {
+
+        if (retryCount >= 2) {
             console.error(`[SelfHealing] MAX RETRIES reached for ${clientId}. Flagging for manual review.`);
-            await Client.updateOne({ clientId }, { $set: { shopifyConnectionStatus: 'error', lastShopifyError: 'Max Retry Failure' } });
+            const errorMsg = isForbidden ? 'Access Denied (403): Check App Scopes' : 'Max Retry Failure';
+            await Client.updateOne({ clientId }, { $set: { shopifyConnectionStatus: 'error', lastShopifyError: errorMsg } });
         }
         throw err;
     }

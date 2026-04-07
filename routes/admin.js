@@ -1049,8 +1049,16 @@ router.put('/client/settings', protect, async (req, res) => {
     
     // Construct deep update paths
     const updateFields = {};
-    if (req.body.ai && req.body.ai.persona) {
-       updateFields['ai.persona'] = req.body.ai.persona;
+    if (req.body.ai) {
+       // Update specific AI sub-fields while preserving the structure
+       if (req.body.ai.persona) updateFields['ai.persona'] = req.body.ai.persona;
+       if (req.body.ai.fallbackEnabled !== undefined) updateFields['ai.fallbackEnabled'] = req.body.ai.fallbackEnabled;
+       if (req.body.ai.languages) updateFields['ai.languages'] = req.body.ai.languages;
+       if (req.body.ai.translationConfig) updateFields['ai.translationConfig'] = req.body.ai.translationConfig;
+       if (req.body.ai.negotiationSettings) updateFields['ai.negotiationSettings'] = req.body.ai.negotiationSettings;
+       if (req.body.ai.orderTaking) updateFields['ai.orderTaking'] = req.body.ai.orderTaking;
+       if (req.body.ai.systemPrompt) updateFields['ai.systemPrompt'] = req.body.ai.systemPrompt;
+       if (req.body.ai.geminiKey) updateFields['ai.geminiKey'] = req.body.ai.geminiKey;
     }
 
     const updated = await Client.findOneAndUpdate(

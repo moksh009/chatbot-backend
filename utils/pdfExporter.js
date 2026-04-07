@@ -11,7 +11,7 @@ exports.generateDashboardPDF = async (client, data, options) => {
         size: 'A4', 
         margin: 50,
         info: {
-          Title: `TopEdge Intelligence Report - ${client.business_name}`,
+          Title: `TopEdge Intelligence Report - ${client.businessName || client.clientId}`,
           Author: 'TopEdge AI Core'
         }
       });
@@ -24,7 +24,7 @@ exports.generateDashboardPDF = async (client, data, options) => {
       doc.rect(0, 0, doc.page.width, 140).fill('#0f172a');
       doc.fillColor('#ffffff').fontSize(24).font('Helvetica-Bold').text('TopEdge AI Intelligence', 50, 45);
       doc.fontSize(10).font('Helvetica').text(`EXECUTIVE SUMMARY • ${new Date().toLocaleDateString('en-IN')}`, 50, 75);
-      doc.fontSize(14).text(client.business_name || 'Business Partner', 50, 100);
+      doc.fontSize(14).text(client.businessName || client.clientId || 'Business Partner', 50, 100);
 
       // 2. Main KPI Grid
       doc.fillColor('#0f172a').fontSize(16).font('Helvetica-Bold').text('Core Performance Matrix', 50, 180);
@@ -51,18 +51,20 @@ exports.generateDashboardPDF = async (client, data, options) => {
       y += 50;
       doc.fillColor('#0f172a').fontSize(11).font('Helvetica-Bold').text('Dimension Breakdown:', 50, y);
       
-      const dimensions = [
-        { name: 'Resolution Accuracy', score: 94 },
-        { name: 'Tone Consistency', score: 88 },
-        { name: 'Multilingual Fluidity', score: 92 },
-        { name: 'Sales Conversion Hinting', score: 85 }
-      ];
+      const dimensions = (data?.stats?.dimensions || []).length > 0
+        ? data.stats.dimensions.map(d => ({ name: d.subject, score: d.A }))
+        : [
+            { name: 'Resolution Accuracy', score: 94 },
+            { name: 'Tone Consistency', score: 88 },
+            { name: 'Multilingual Fluidity', score: 92 },
+            { name: 'Sales Conversion Hinting', score: 85 }
+          ];
 
       dimensions.forEach((d, i) => {
          const rowY = y + 25 + (i * 25);
          doc.fillColor('#64748b').fontSize(10).font('Helvetica').text(d.name, 50, rowY);
          doc.rect(200, rowY - 2, 300, 10).fill('#f1f5f9');
-         doc.rect(200, rowY - 2, (d.score / 100) * 300, 10).fill('#7c3aed');
+         doc.rect(200, rowY - 2, (Math.min(d.score, 100) / 100) * 300, 10).fill('#7c3aed');
          doc.fillColor('#0f172a').fontSize(9).font('Helvetica-Bold').text(`${d.score}%`, 510, rowY);
       });
 

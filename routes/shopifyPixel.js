@@ -287,11 +287,20 @@ router.post('/pixel/:clientId/inject', protect, async (req, res) => {
         res.json(result);
     } catch (err) {
         console.error('[PixelInject] Error:', err.message);
-        const isForbidden = err.message.includes('403') || (err.response && err.response.status === 403);
-        const errorMsg = isForbidden 
-            ? 'Permission Denied: Ensure your Shopify App has the "write_themes" scope enabled in Shopify Admin.' 
-            : err.message;
-        res.status(isForbidden ? 403 : 500).json({ error: errorMsg });
+        const isForbidden = err.response?.status === 403;
+        
+        let errorMsg = err.message;
+        if (isForbidden) {
+            errorMsg = 'Permission Denied: Ensure your Shopify App has "write_themes" and "read_themes" scopes enabled in Shopify Admin -> Settings -> Develop Apps -> Configuration.';
+        } else if (err.response?.data?.errors) {
+            errorMsg = `Shopify API Error: ${err.response.data.errors}`;
+        }
+
+        res.status(isForbidden ? 403 : 500).json({ 
+            success: false,
+            error: errorMsg,
+            details: err.response?.data || null
+        });
     }
 });
 

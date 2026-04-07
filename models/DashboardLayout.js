@@ -19,7 +19,7 @@ const WidgetSchema = new mongoose.Schema({
 });
 
 const DashboardLayoutSchema = new mongoose.Schema({
-  clientId:     { type: mongoose.Schema.Types.ObjectId, ref: 'Client', required: true },
+  clientId:     { type: String, required: true }, // Slug-based ID consistently used in auth
   userId:       { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // per-agent custom layout
   
   widgets:      [WidgetSchema],
