@@ -13,7 +13,14 @@ const logger = require('../utils/logger')('DashboardController');
 exports.getBatchData = async (req, res) => {
   try {
     const { widgets, days = 30 } = req.body;
-    const clientId = req.user.clientId;
+    const clientIdSlug = req.user.clientId; // Slug-based id
+    
+    // Resolve actual Client document first to support both slug and ObjectId models
+    const clientDoc = await Client.findOne({ clientId: clientIdSlug }).select('_id clientId').lean();
+    if (!clientDoc) return res.status(404).json({ success: false, message: "Client context lost" });
+
+    const clientId = clientIdSlug; // String for most models
+    const clientObjectId = clientDoc._id; // ObjectId for Competitor model
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
 
@@ -61,7 +68,8 @@ exports.getBatchData = async (req, res) => {
 
     // 4. Competitor Intel
     if (widgets.includes('competitor_intel')) {
-      data.competitor_intel = await Competitor.find({ clientId }).limit(3).lean();
+      // Competitor model uses ObjectId for clientId
+      data.competitor_intel = await Competitor.find({ clientId: clientObjectId }).limit(3).lean();
     }
 
     // 5. Demand Forecast
@@ -97,9 +105,9 @@ exports.getBatchData = async (req, res) => {
     // 8. Top Products
     if (widgets.includes('top_products')) {
         data.top_products = await Order.aggregate([
-            { $match: { clientId, createdAt: { $gte: startDate } } },
-            { $unwind: "$lineItems" },
-            { $group: { _id: "$lineItems.title", count: { $sum: 1 }, total: { $sum: "$lineItems.price" } } },
+            { $match: { clientId: clientIdSlug, createdAt: { $gte: startDate } } },
+            { $unwind: "$items" },
+            { $group: { _id: "$items.name", count: { $sum: 1 }, total: { $sum: "$items.price" } } },
             { $sort: { count: -1 } },
             { $limit: 5 }
         ]);
