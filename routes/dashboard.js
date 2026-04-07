@@ -25,7 +25,10 @@ router.get('/widget/:widgetType', protect, (req, res) => {
 });
 
 router.get('/forecast', protect, dashboardController.getForecast);
+router.get('/competitors', protect, dashboardController.getCompetitorIntel); // Alias to original
 router.get('/competitor-intel', protect, dashboardController.getCompetitorIntel);
+router.get('/suppliers', protect, dashboardController.getSuppliers);
+router.get('/flows', protect, dashboardController.getFlows);
 router.post('/export-pdf', protect, async (req, res) => {
   try {
     const { generateDashboardPDF } = require('../utils/pdfExporter');
