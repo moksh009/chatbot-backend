@@ -1965,7 +1965,7 @@ async function runAIFallback(parsedMessage, client, phone, lead, channel = 'what
     const systemPrompt = buildPersonaSystemPrompt(client, client.nicheData?.aiPromptContext);
     
     // Phase 29 Track 4: AI Training (Few-Shot Retrieval)
-    const examples = await getRelevantExamples(client._id, text);
+    const examples = await getRelevantExamples(client.clientId, text);
     const fewShot = buildFewShotPrompt(examples);
     
     // Personalization Context

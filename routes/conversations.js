@@ -778,6 +778,16 @@ router.put('/:id/resolve', protect, async (req, res) => {
     conversation.requiresAttention = false;
     await conversation.save();
 
+    // --- Phase 29: Track 2 AI Quality Scorer ---
+    setImmediate(async () => {
+      try {
+        const { scoreConversation } = require('../utils/qualityScorer');
+        await scoreConversation(conversation._id, conversation.clientId);
+      } catch (err) {
+        console.error('[QualityScorer] Error:', err.message);
+      }
+    });
+
     // --- Phase 23: Track 6 CSAT Trigger ---
     const { triggerCSAT } = require('../utils/csatService');
     await triggerCSAT(conversation); 

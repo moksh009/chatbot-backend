@@ -1021,6 +1021,53 @@ router.get('/flow/preset/:type', protect, async (req, res) => {
   return res.json({ success: true, ...preset });
 });
 
+// --- GET AND UPDATE CLIENT SPECIFIC SETTINGS (Like AI Persona) ---
+router.get('/client/settings', protect, async (req, res) => {
+  try {
+    const targetClientId = req.user.clientId;
+    if (!targetClientId) {
+      return res.status(400).json({ message: 'No target clientId specified' });
+    }
+
+    const client = await Client.findOne({ clientId: targetClientId });
+    if (!client) return res.status(404).json({ message: 'Client not found' });
+
+    // Send the settings required by the frontend client/settings route
+    res.json({ ai: client.ai });
+  } catch (err) {
+    log.error('Client settings fetch error', { error: err.message });
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+router.put('/client/settings', protect, async (req, res) => {
+  try {
+    const targetClientId = req.user.clientId;
+    if (!targetClientId) {
+      return res.status(400).json({ message: 'No target clientId specified' });
+    }
+    
+    // Construct deep update paths
+    const updateFields = {};
+    if (req.body.ai && req.body.ai.persona) {
+       updateFields['ai.persona'] = req.body.ai.persona;
+    }
+
+    const updated = await Client.findOneAndUpdate(
+      { clientId: targetClientId },
+      { $set: updateFields },
+      { new: true }
+    );
+
+    if (!updated) return res.status(404).json({ message: 'Client not found' });
+
+    res.json({ success: true, ai: updated.ai });
+  } catch (err) {
+    log.error('Client settings update error', { error: err.message });
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
 // --- GET SETTINGS BY CLIENTID (Super Admin) ---
 router.get('/settings/:clientId', protect, isSuperAdmin, async (req, res) => {
   try {
