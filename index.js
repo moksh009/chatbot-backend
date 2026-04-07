@@ -36,6 +36,7 @@ const dynamicClientRouter = require('./routes/dynamicClientRouter');
 const templatesRoutes = require('./routes/templates');
 const whatsappRoutes = require('./routes/whatsapp');
 const wooWebhookRoutes = require('./routes/wooWebhook');
+const intelligenceRoutes = require('./routes/intelligence');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -114,6 +115,13 @@ const settingsRoutes = require('./routes/settings');
 app.use('/api/settings', settingsRoutes);
 const flowRoutes = require('./routes/flow');
 app.use('/api/flow', flowRoutes);
+
+const biRoutes = require('./routes/bi'); // Phase 28 Track 4
+app.use('/api/bi', biRoutes);
+
+const intelligenceRoutesAPI = require('./routes/intelligence'); // Phase 28 Track 2
+app.use('/api/intelligence', intelligenceRoutesAPI);
+
 const ordersRoutes = require('./routes/orders');
 app.use('/api/orders', ordersRoutes);
 
@@ -156,6 +164,9 @@ app.use('/r', trackingRoutes);
 
 const notificationsRoutes = require('./routes/notifications');
 app.use('/api/notifications', notificationsRoutes);
+
+const dashboardRoutes = require('./routes/dashboard');
+app.use('/api/dashboard', dashboardRoutes);
 
 const supportRoutes = require('./routes/support');
 app.use('/api/support', supportRoutes);
@@ -269,6 +280,13 @@ const scheduleProductSyncCron = require('./cron/productSyncCron');
 scheduleProductSyncCron();
 
 // Initialize Flow Resumption Cron Job (Phase 17) - ALREADY INITIALIZED ABOVE AT LINE 156
+
+// Initialize Intelligence Crons (Phase 28 Track 2)
+require('./cron/intelligenceCrons');
+
+// Initialize Auto-Healing Reset (Phase 28 Track 8)
+const { resetDailyErrorCounts } = require('./utils/autoHealer');
+cron.schedule('0 0 * * *', resetDailyErrorCounts);
 
 
 // Phase 20: Instagram Token Refresh Cron (daily at 8AM IST)

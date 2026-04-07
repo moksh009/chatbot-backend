@@ -220,9 +220,27 @@ router.post('/:id/messages', protect, async (req, res) => {
     const client = await Client.findOne({ clientId: conversation.clientId });
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
+    // --- Phase 28: Bidirectional Translation (Outgoing) ---
+    const { translateText } = require('../utils/translationEngine');
+    let finalContent = content;
+    let translatedContent = '';
+    const translationConfig = client.translationConfig || {};
+
+    if (
+      translationConfig.enabled && 
+      conversation.detectedLanguage && 
+      conversation.detectedLanguage !== 'en' && 
+      conversation.detectedLanguage !== (translationConfig.agentLanguage || 'en')
+    ) {
+      translatedContent = await translateText(content, conversation.detectedLanguage, client?.geminiApiKey || process.env.GEMINI_API_KEY);
+      if (translatedContent && translatedContent !== content) {
+        finalContent = translatedContent;
+      }
+    }
+
     let newMessage;
     if (mediaUrl && (mediaType?.toLowerCase() === 'image')) {
-      await WhatsApp.sendImage(client, conversation.phone, mediaUrl, content);
+      await WhatsApp.sendImage(client, conversation.phone, mediaUrl, finalContent);
       newMessage = await createMessage({
         clientId: conversation.clientId,
         conversationId: conversation._id, // CRITICAL FIX
@@ -230,17 +248,21 @@ router.post('/:id/messages', protect, async (req, res) => {
         direction: 'outbound',
         type: 'image',
         body: content,
+        translatedContent: translatedContent,
+        detectedLanguage: conversation.detectedLanguage,
         mediaUrl
       });
     } else {
-      await WhatsApp.sendText(client, conversation.phone, content);
+      await WhatsApp.sendText(client, conversation.phone, finalContent);
       newMessage = await createMessage({
         clientId: conversation.clientId,
         conversationId: conversation._id, // CRITICAL FIX
         phone: conversation.phone,
         direction: 'outbound',
         type: 'text',
-        body: content
+        body: content,
+        translatedContent: translatedContent,
+        detectedLanguage: conversation.detectedLanguage
       });
     }
 
@@ -1121,6 +1143,60 @@ router.get('/:id/smart-replies', protect, async (req, res) => {
     res.json({ success: true, replies: replies.slice(0, 3) });
   } catch (err) {
     console.error('SmartReplies Error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// @route   POST /api/conversations/:id/ghost-complete
+// @desc    Live Copilot Autocomplete for Agent Typings
+// @access  Private
+router.post('/:id/ghost-complete', protect, async (req, res) => {
+  try {
+    const convoId = req.params.id;
+    const { currentInput } = req.body;
+    
+    if (!currentInput || currentInput.length < 3) {
+      return res.json({ success: true, completion: '' });
+    }
+
+    const conversation = await Conversation.findById(convoId);
+    if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found' });
+
+    const client = await Client.findOne({ clientId: conversation.clientId });
+    
+    // Fetch last 5 messages for context
+    const messages = await Message.find({ conversationId: convoId })
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .lean();
+      
+    const contextStr = messages.reverse().map(m => `${m.direction === 'inbound' ? 'Customer' : 'Agent'}: ${m.content || '(Media)'}`).join('\n');
+
+    const prompt = `
+    You are an AI Copilot assisting a customer support agent for "${client?.businessName || 'a business'}".
+    Here is the recent chat history:
+    ${contextStr}
+
+    The agent is currently typing: "${currentInput}"
+
+    Your task: Autocomplete the agent's message.
+    CRITICAL RULE: Output ONLY the EXACT text that should FOLLOW the agent's current input. 
+    Do NOT repeat what the agent has already typed.
+    Do NOT include quotes.
+    Keep the completion under 20 words.
+    `;
+
+    const { generateText } = require('../utils/gemini');
+    let aiResponseRaw = await generateText(prompt, client?.geminiApiKey || process.env.GEMINI_API_KEY, { temperature: 0.1, maxTokens: 40 });
+    
+    if (aiResponseRaw) {
+      // Clean up common AI prefixes that ignore instructions
+      const cleaned = aiResponseRaw.replace(/^["']/, '').replace(/["']$/, '').trim();
+      return res.json({ success: true, completion: cleaned });
+    }
+    
+    return res.json({ success: true, completion: '' });
+  } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });

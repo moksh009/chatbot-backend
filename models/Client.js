@@ -229,6 +229,19 @@ const ClientSchema = new mongoose.Schema({
   systemPrompt: { type: String, default: '' },
   syncedMetaTemplates: { type: mongoose.Schema.Types.Mixed, default: [] },
   syncedMetaFlows: { type: mongoose.Schema.Types.Mixed, default: [] },
+  
+  // Phase 28: Auto-Healing & Status Tracking
+  healthStatus: { 
+    type: String, 
+    enum: ['operational', 'degraded', 'offline', 'maintenance'], 
+    default: 'operational' 
+  },
+  maintenancePulse: {
+    lastError: String,
+    lastErrorAt: Date,
+    errorCount24h: { type: Number, default: 0 },
+    autoHealedCount: { type: Number, default: 0 }
+  },
 
   // Phase 9 Simple Settings Fallback (Priority 2 keywords)
   simpleSettings: {
@@ -393,12 +406,65 @@ const ClientSchema = new mongoose.Schema({
       gold: { type: Number, default: 15000 },
       platinum: { type: Number, default: 50000 }
     },
-    redemptionRate: { type: Number, default: 0.1 }, // 1 point = ₹0.10
+    redeemUrl: { type: String, default: "" }, // Phase 27: Loyalty UI redirect URL
     autoApplyDiscount: { type: Boolean, default: false }
-  }
-});
+  },
 
-// --- Mongoose Hooks: Encryption at the Database Layer ---
+  // Phase 28: Bidirectional Translation
+  translationConfig: {
+    enabled: { type: Boolean, default: false },
+    agentLanguage: { type: String, default: "en" }
+  },
+  
+  // Phase 28: Native Order Taking (Track 5)
+  waOrderTaking: {
+    enabled: { type: Boolean, default: false },
+    acceptCOD: { type: Boolean, default: true },
+    acceptOnline: { type: Boolean, default: false },
+    requireAddress: { type: Boolean, default: true },
+    confirmationTemplate: { type: String, default: "" }
+  },
+
+  // Phase 29: Dashboard Personalization
+  dashboardConfig: {
+    layout: { type: [mongoose.Schema.Types.Mixed], default: [] }, // [{ id, x, y, w, h, i }]
+    hiddenWidgets: { type: [String], default: [] }
+  },
+
+  // Phase 29: AI Persona & Customization
+  ai: {
+    persona: {
+      name: { type: String, default: "TopEdge AI Assistant" },
+      avatar: { type: String, default: "" },
+      tone: { type: String, default: "Professional & Helpful" },
+      description: { type: String, default: "You are an automated assistant dedicated to providing fast and accurate business support." }
+    },
+    trainingData: [{
+      userMessage: { type: String },
+      originalResponse: { type: String },
+      agentCorrection: { type: String },
+      context: { type: String },
+      createdAt: { type: Date, default: Date.now }
+    }]
+  },
+  
+  // Phase 29: B2B Supplier Channel
+  isSupplier: { type: Boolean, default: false },
+  b2bCatalog: [{
+    productId: String,
+    title: String,
+    wholesalePrice: Number,
+    minOrderQuantity: { type: Number, default: 1 },
+    sku: String
+  }],
+  b2bSettings: {
+    allowDirectWholesale: { type: Boolean, default: false },
+    autoApproveSuppliers: { type: Boolean, default: false },
+    commissionRate: { type: Number, default: 0 }
+  },
+
+  createdAt: { type: Date, default: Date.now }
+});
 
 function encryptSubDocs(doc) {
   // Use a strictly safe encryption helper

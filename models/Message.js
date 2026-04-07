@@ -32,7 +32,13 @@ const MessageSchema = new mongoose.Schema({
 
   // Phase 26 Sentiment Analysis
   sentiment: { type: String, enum: ['Positive', 'Neutral', 'Negative', 'Frustrated', 'Urgent', 'Unknown'], default: 'Unknown' },
-  sentimentScore: { type: Number, default: 0 }
+  sentimentScore: { type: Number, default: 0 },
+
+  // Phase 28 Bidirectional Translation
+  translatedContent: { type: String, default: '' },
+  detectedLanguage: { type: String, default: 'en' },
+  translations: { type: Map, of: String, default: {} }, // e.g., { 'es': 'Hola', 'hi': 'नमस्ते' }
+  originalText: { type: String, default: '' } // Stores agent raw input before translation
 });
 
 module.exports = mongoose.model('Message', MessageSchema);

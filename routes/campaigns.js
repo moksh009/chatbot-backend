@@ -560,4 +560,85 @@ router.post('/smart-send', protect, async (req, res) => {
     }
 });
 
+// @route   POST /api/campaigns/predictive-send
+// @desc    Phase 28 - AI-timed delivery using CustomerIntelligence peak hour data
+// @access  Private
+router.post('/predictive-send', protect, async (req, res) => {
+  try {
+    const { campaignId } = req.body;
+    if (!campaignId) return res.status(400).json({ success: false, message: 'campaignId required' });
+
+    const campaign = await Campaign.findOne({ _id: campaignId, clientId: req.user.clientId });
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+
+    const client = await Client.findOne({ clientId: req.user.clientId });
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    // Build phone list from CSV or Segment
+    const rows = [];
+    if (campaign.csvFile) {
+      await new Promise((resolve, reject) => {
+        fs.createReadStream(campaign.csvFile)
+          .pipe(csv())
+          .on('data', d => rows.push(d))
+          .on('end', resolve)
+          .on('error', reject);
+      });
+    } else if (campaign.segmentId) {
+      const Segment = require('../models/Segment');
+      const segment = await Segment.findById(campaign.segmentId);
+      if (segment) {
+        const leads = await AdLead.find({ ...segment.query, clientId: req.user.clientId });
+        leads.forEach(l => rows.push({ phone: l.phoneNumber, name: l.name || 'Customer' }));
+      }
+    }
+
+    if (rows.length === 0) return res.status(400).json({ success: false, message: 'No recipients found' });
+
+    // Enrich with predictive send windows
+    const { getOptimalSendTimes } = require('../utils/predictiveSend');
+    const phones = rows.map(r => normalizePhone(r.phone || r.number || r.mobile || r.recipient || '')).filter(Boolean);
+    const sendWindows = await getOptimalSendTimes(req.user.clientId, phones);
+    const windowMap = {};
+    sendWindows.forEach(w => { windowMap[w.phone] = w; });
+
+    const FollowUpSequence = require('../models/FollowUpSequence');
+    let queued = 0;
+    const tName = campaign.templateName;
+
+    for (const row of rows) {
+      const phone = normalizePhone(row.phone || row.number || row.mobile || row.recipient || '');
+      if (!phone || !tName) continue;
+
+      const window = windowMap[phone];
+      const sendAt = window?.sendAt || new Date();
+
+      await FollowUpSequence.create({
+        clientId: req.user.clientId,
+        phone,
+        name: `Predictive Broadcast: ${campaign.name}`,
+        status: 'active',
+        steps: [{
+          type: 'whatsapp',
+          templateName: tName,
+          sendAt,
+          status: 'pending',
+          metadata: { reason: window?.reason, peakHour: window?.peakHour }
+        }]
+      });
+      queued++;
+    }
+
+    campaign.status = 'SCHEDULED';
+    campaign.isPredictiveSend = true;
+    await campaign.save();
+
+    log.info(`[PredictiveSend] Queued ${queued} messages for campaign ${campaignId}`);
+    res.json({ success: true, queued, message: `${queued} messages queued with AI-optimized send times.` });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 module.exports = router;

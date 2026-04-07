@@ -386,12 +386,20 @@ router.get('/lead/:id', protect, async (req, res) => {
       messages = await Message.find({ conversationId: conversation._id }).sort({ timestamp: -1 }).limit(50);
     }
 
+    // --- Phase 28: Customer Intelligence DNA ---
+    let dna = null;
+    try {
+      const CustomerIntelligence = require('../models/CustomerIntelligence');
+      dna = await CustomerIntelligence.findOne({ clientId: lead.clientId, phone: lead.phoneNumber }).lean();
+    } catch (_) {}
+
     res.json({
       lead,
       orders,
       appointments,
       conversation,
-      messages
+      messages,
+      intelligence: dna || null
     });
   } catch (error) {
     console.error('Lead Detail Error:', error);

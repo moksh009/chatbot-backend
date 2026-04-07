@@ -9,6 +9,7 @@ const User = require('../models/User');
 const { STANDARD_TEMPLATES } = require('../constants/standardTemplates');
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
+const { getFastScore, analyzeWithGeminiAndRewrite } = require('../utils/templateScorer');
 
 // --- Helper Functions ---
 async function getClientCredentials(clientId, userId) {
@@ -224,6 +225,42 @@ router.post('/:clientId/ai-generate', protect, async (req, res) => {
         
         res.json({ success: true, copies: JSON.parse(outputText) });
     } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// 4b. Template Scorer & Fix Suggestion
+router.post('/:clientId/score', protect, async (req, res) => {
+    try {
+        const { clientId } = req.params;
+        const { templateContent, category, action } = req.body;
+        // action can be 'score' (fast, regex based) or 'suggest' (deep Gemini analysis)
+
+        if (!templateContent || !category) {
+            return res.status(400).json({ success: false, message: 'Missing templateContent or category' });
+        }
+
+        if (action === 'score') {
+            const scoreData = getFastScore(templateContent, category);
+            return res.json({ success: true, ...scoreData });
+        } else if (action === 'suggest') {
+            const client = await Client.findOne({ clientId });
+            if (!client) throw new Error('Client not found');
+
+            const apiKey = client.geminiKey?.trim() || client.openaiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
+            if (!apiKey) throw new Error('AI API Key not configured');
+
+            const geminiAnalysis = await analyzeWithGeminiAndRewrite(templateContent, category, apiKey);
+            if (!geminiAnalysis) {
+                return res.status(500).json({ success: false, message: 'Failed to generate suggestions' });
+            }
+
+            return res.json({ success: true, data: geminiAnalysis });
+        } else {
+            return res.status(400).json({ success: false, message: 'Invalid action type' });
+        }
+    } catch (error) {
+        console.error('[Template Scorer API] Error:', error.message);
         res.status(500).json({ success: false, message: error.message });
     }
 });

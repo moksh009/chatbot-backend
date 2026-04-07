@@ -99,6 +99,12 @@ async function processStatuses(statuses) {
         updateData.failedAt = new Date();
         updateData.errorMessage = errors?.[0]?.message || 'Unknown error';
         log.warn(`Message failure for ${phone}`, { messageId, error: updateData.errorMessage });
+        
+        // Phase 28: Auto-Healing
+        if (msg?.clientId) {
+            const { reportApiFailure } = require('../utils/autoHealer');
+            reportApiFailure(msg.clientId, { response: { data: { error: errors?.[0] } } }).catch(() => {});
+        }
       }
 
       const msg = await CampaignMessage.findOneAndUpdate(
@@ -242,10 +248,41 @@ async function processMessages(messages, metadata, contacts) {
         continue; // Don't process as regular message
       }
 
-      // 4. Pass to processing engine
+      // 4. pass to processing engine
       const contact = (contacts || []).find(c => c.wa_id === from);
       const profileName = contact?.profile?.name || '';
       
+      // Phase 29: Track 6 - Supplier B2B Bypass
+      const Supplier = require('../models/Supplier');
+      const Client = require('../models/Client');
+      const client = await Client.findOne({ phoneNumberId: phone_number_id }).lean();
+      
+      if (client) {
+        const isSupplier = await Supplier.exists({ clientId: client._id, phone: from });
+        if (isSupplier) {
+          log.info(`[B2B] Supplier message detected from ${from}. Bypassing AI engine.`);
+          // Mark convo as supplier and notify agent
+          await Conversation.findOneAndUpdate(
+            { phone: from, clientId: client.clientId },
+            { $set: { isSupplierMessage: true, status: 'HUMAN_TAKEOVER' } },
+            { upsert: true }
+          );
+          
+          const NotificationService = require('../utils/notificationService');
+          NotificationService.notifyAgent(client.clientId, {
+            type: 'alert',
+            title: 'Vendor Message 📦',
+            message: `New message from supplier ${from}.`,
+            customerPhone: from
+          }).catch(() => {});
+          
+          // Still save message but skip dualBrainEngine
+          const { saveInboundMessage } = require('../utils/dualBrainEngine');
+          await saveInboundMessage(from, client.clientId, message, global.io, 'whatsapp');
+          return;
+        }
+      }
+
       if (message.type === 'audio' || message.type === 'voice') {
         const { discoverClientByPhoneId } = require('../utils/clientDiscovery');
         const client = await discoverClientByPhoneId(phone_number_id);

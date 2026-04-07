@@ -38,7 +38,10 @@ async function createMessage(data) {
     status:     data.status || "sent",
     mediaUrl:   data.mediaUrl || null,
     timestamp:  data.timestamp || new Date(),
-    metadata:   data.rawData || data.metadata || null
+    metadata:   data.rawData || data.metadata || null,
+    translatedContent: data.translatedContent || '',
+    detectedLanguage: data.detectedLanguage || 'en',
+    originalText: data.originalText || ''
   };
 
   // Remove keys not in schema

@@ -17,6 +17,14 @@ const CampaignSchema = new mongoose.Schema({
   isSmartSend: { type: Boolean, default: false },
   smartSendConfig: { type: mongoose.Schema.Types.Mixed },
 
+  // Phase 28: Predictive Send (AI-timed delivery)
+  isPredictiveSend: { type: Boolean, default: false },
+  predictiveSendConfig: {
+    enabled: { type: Boolean, default: false },
+    windowHours: { type: Number, default: 24 }, // max delay window
+    fallbackImmediate: { type: Boolean, default: true } // send now if no data
+  },
+
   recipientCount:  { type: Number, default: 0 },
   sentCount:       { type: Number, default: 0 },
   deliveredCount:  { type: Number, default: 0 },

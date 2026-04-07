@@ -28,6 +28,13 @@ async function buildVariableContext(client, phone, convo, lead) {
     }).sort({ createdAt: -1 }).lean();
   } catch (_) {}
 
+  // Fetch Customer Intelligence DNA (Phase 28)
+  let dna = null;
+  try {
+    const CustomerIntelligence = require('../models/CustomerIntelligence');
+    dna = await CustomerIntelligence.findOne({ clientId: client.clientId, phone }).lean();
+  } catch (_) {}
+
   // India timezone dates
   const now_ist = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   const date_ist = new Date().toLocaleDateString("en-IN", {
@@ -112,6 +119,12 @@ async function buildVariableContext(client, phone, convo, lead) {
     ad_id:           lead?.adAttribution?.adId || "",
     ad_name:         lead?.adAttribution?.adHeadline || "", // Using Headline as Name if explicit name not synced
     ad_source:       lead?.adAttribution?.source || "",
+
+    // ── Customer Intelligence DNA (Phase 28) ──────────────────────────
+    persona:         dna?.persona || "unknown",
+    ai_summary:      dna?.aiSummary || "",
+    engagement_score: String(dna?.engagementScore || 0),
+    churn_risk:      String(dna?.churnRiskScore || 0),
   };
 
   // Merge: captured variables from lead.capturedData and convo.metadata OVERRIDE system variables

@@ -21,6 +21,11 @@ const { sendEmail } = require("./emailService");
 const { checkLimit, incrementUsage } = require("../utils/planLimits");
 const { detectLanguage, translateToUserLanguage, normalizeIntent, getLanguageInstructions } = require("./languageEngine");
 const { analyzeSentiment } = require("./sentimentEngine");
+const { extractOrderDetails } = require("./orderParser"); // Phase 28 Track 5
+const { executeNativeOrder } = require("./orderCreator"); // Phase 28 Track 5
+const { buildPersonaSystemPrompt, applyPersonaPostProcess } = require("./personaEngine"); // Phase 29 Track 3
+const { getRelevantExamples, buildFewShotPrompt } = require("./trainingEngine"); // Phase 29 Track 4
+const { generatePaymentLink } = require("./paymentLinkGenerator"); // Phase 29 Track 7
 
 const SESSION_LOCK_TIMEOUT = 10000; // 10 seconds (Fallback for TTL)
 
@@ -301,14 +306,14 @@ async function runDualBrainEngine(parsedMessage, client) {
   const io    = global.io;
   const profileName = parsedMessage.profileName || '';
 
-  // --- Phase 23: Track 7 - Language Intelligence ---
-  const inboundText = parsedMessage.text?.body || parsedMessage.interactive?.button_reply?.title || '';
+  // --- Phase 28: Track 3 - Bidirectional Translation (Incoming) ---
+  const { detectLanguage, translateText } = require('./translationEngine');
+  const inboundText = parsedMessage.text?.body || parsedMessage.interactive?.button_reply?.title || parsedMessage.interactive?.list_reply?.title || '';
+  
   let detectedLanguage = 'en';
   if (inboundText) {
-      try {
-          const langResult = await detectLanguage(inboundText);
-          detectedLanguage = langResult.languageCode || 'en';
-      } catch (err) { log.debug("Language detection failed:", { error: err.message }); }
+      detectedLanguage = await detectLanguage(inboundText, client?.geminiApiKey || process.env.GEMINI_API_KEY);
+      parsedMessage.detectedLanguage = detectedLanguage;
   }
 
   // ── PHASE 23: Track 5 — WhatsApp Flow Responses ──────────────────────────
@@ -428,12 +433,30 @@ async function runDualBrainEngine(parsedMessage, client) {
     { upsert: true, new: true }
   );
 
+  // STEP 2.4: Track Customer Intelligence (Phase 28 Track 2)
+  const CI = require('./customerIntelligence');
+  await CI.trackInteraction(client.clientId, phone, lead._id);
+
   // STEP 2.5: PHASE 25 - Referral Tracking & Fulfillment
   const incomingText = Object.keys(parsedMessage.text || {}).length ? parsedMessage.text.body || '' : '';
   const refCodeMatch = incomingText.match(/ref_([A-Z0-9]{6})/i);
   if (refCodeMatch && refCodeMatch[1]) {
     const ReferralEngine = require('./referralEngine');
     await ReferralEngine.processReferral(refCodeMatch[1], lead);
+  }
+
+  // --- Phase 28: Track 3 - Multilingual Translation (Incoming Context) ---
+  const translationConfig = client.translationConfig || {};
+  if (
+      translationConfig.enabled && 
+      inboundText && 
+      detectedLanguage !== (translationConfig.agentLanguage || 'en')
+  ) {
+      const translated = await translateText(inboundText, translationConfig.agentLanguage || 'en', client?.geminiApiKey || process.env.GEMINI_API_KEY);
+      if (translated && translated !== inboundText) {
+          parsedMessage.translatedContent = translated;
+          parsedMessage.originalText = inboundText;
+      }
   }
 
   // STEP 3: Save inbound message to DB + emit to dashboard
@@ -447,14 +470,6 @@ async function runDualBrainEngine(parsedMessage, client) {
   }
   // Track this transaction 
   await incrementUsage(client._id, 'messages', 1);
-
-  // STEP 3.6: LANGUAGE DETECTION (Phase 23 Track 7)
-  const detectedLang = await detectLanguage(incomingText, client);
-  if (detectedLang !== 'en') {
-      await Conversation.findByIdAndUpdate(convo._id, { $set: { detectedLanguage: detectedLang } });
-      convo.detectedLanguage = detectedLang; // Update local copy
-  }
-  parsedMessage._detectedLanguage = detectedLang;
 
   // ── PHASE 20: Build Variable Context ONCE per message ────────────────────
   // This is passed to executeNode so variables are injected into all nodes
@@ -570,6 +585,16 @@ async function runDualBrainEngine(parsedMessage, client) {
   // --- PHASE 21: DUAL-BRAIN PRIORITY KEYWORDS (OPT-IN/OUT) ---
   const userTextRaw   = (parsedMessage.text?.body || '').trim();
   const userTextLower = userTextRaw.toLowerCase();
+  
+  // ── PHASE 29: Track 7 — WALLET & PAYMENT COMMANDS (Priority -0.5) ──────────
+  if (['wallet', 'redeem', 'pay'].includes(userTextLower)) {
+    if (userTextLower === 'pay' && convo.metadata?.lastOrder) {
+      const payLink = await generatePaymentLink(client, lead, convo.metadata.lastOrder);
+      await sendWhatsAppText(client, phone, `💳 *Complete your payment:*\n\nYour order #${convo.metadata.lastOrder.orderNumber} is ready. Total: ₹${convo.metadata.lastOrder.totalPrice}\n\nLink: ${payLink}\n\n_Valid for 30 minutes._`);
+      return true;
+    }
+    // Wallet/Redeem existing logic would go here
+  }
   
   const optOutKeywords = ['stop', 'unsubscribe', 'opt out', 'halt', 'cancel', 'block bot'];
   const optInKeywords  = ['start', 'opt in', 'subscribe', 'resume', 'unpause'];
@@ -1813,6 +1838,96 @@ async function runAIFallback(parsedMessage, client, phone, lead, channel = 'what
       return true;
     }
 
+    // --- PHASE 28: NATIVE ORDER TAKING (TRACK 5) ---
+    const orderSettings = client.waOrderTaking || { enabled: false };
+    const leadState = lead?.capturedData?.orderTakingState || 'idle';
+
+    // A. State Breakout Logic (Sanity Check)
+    if (leadState === 'awaiting_address' && text.length > 3) {
+      const breakoutRegex = /\b(return|refund|cancel|help|support|agent|human|stop|who are you|what is)\b/i;
+      if (breakoutRegex.test(text) || text.length > 100) {
+        log.info(`[NativeOrder] State breakout detected for ${phone}. Clearing pending order.`);
+        await AdLead.updateOne({ _id: lead._id }, { 
+          $set: { "capturedData.orderTakingState": 'idle', "capturedData.pendingOrderItems": null } 
+        });
+        // Continue to normal AI flow below
+      } else {
+        // Assume this IS the address
+        log.info(`[NativeOrder] Address captured for ${phone}`);
+        const pendingItems = lead.capturedData?.pendingOrderItems;
+        const paymentMethod = lead.capturedData?.pendingPaymentMethod || 'cod';
+
+        if (pendingItems && Array.isArray(pendingItems)) {
+          const result = await executeNativeOrder(client, phone, pendingItems, text, paymentMethod);
+          if (result.success) {
+            await AdLead.updateOne({ _id: lead._id }, { 
+              $set: { "capturedData.orderTakingState": 'idle', "capturedData.pendingOrderItems": null, address: text } 
+            });
+            let confirmMsg = `✅ *Order Confirmed!* #${result.order.orderNumber}\n\n`;
+            confirmMsg += result.order.items.map(i => `• ${i.name} (x${i.quantity})`).join('\n');
+            confirmMsg += `\n\n💰 *Total:* ₹${result.order.totalPrice}`;
+            
+            if (result.paymentLink) {
+              confirmMsg += `\n\n💳 *Complete Payment:* ${result.paymentLink}`;
+            } else if (result.order.isCOD) {
+              confirmMsg += `\n\n🏠 *Payment:* Cash on Delivery`;
+            }
+            
+            await sendWhatsAppText(client, phone, confirmMsg);
+            return true;
+          }
+        }
+      }
+    }
+
+    // B. Order Intent Detection
+    if (orderSettings.enabled && !leadState.startsWith('awaiting_')) {
+      const orderIntentRegex = /\b(buy|order|purchase|want|get|send|need|pack|add to my order)\b/i;
+      if (orderIntentRegex.test(text)) {
+        log.info(`[NativeOrder] Detecting products in message: "${text}"`);
+        const products = client.nicheData?.products || [];
+        const parsed = await extractOrderDetails(text, products, client.geminiApiKey || process.env.GEMINI_API_KEY);
+
+        if (parsed.isOrderIntent && Array.isArray(parsed.items) && parsed.items.length > 0) {
+          log.info(`[NativeOrder] Valid items parsed: ${parsed.items.length}`);
+          
+          // Check for address
+          const shippingAddress = parsed.address || lead?.address;
+          const paymentMethod = parsed.paymentMethod === 'unspecified' ? (orderSettings.acceptCOD ? 'cod' : 'online') : parsed.paymentMethod;
+
+          if (shippingAddress && shippingAddress.length > 5) {
+            const result = await executeNativeOrder(client, phone, parsed.items, shippingAddress, paymentMethod);
+            if (result.success) {
+              let confirmMsg = `✅ *Order Confirmed!* #${result.order.orderNumber}\n\n`;
+              confirmMsg += result.order.items.map(i => `• ${i.name} (x${i.quantity})`).join('\n');
+              confirmMsg += `\n\n💰 *Total:* ₹${result.order.totalPrice}`;
+              
+              if (result.paymentLink) {
+                confirmMsg += `\n\n💳 *Complete Payment:* ${result.paymentLink}`;
+              } else if (result.order.isCOD) {
+                confirmMsg += `\n\n🏠 *Payment:* Cash on Delivery`;
+              }
+              
+              await sendWhatsAppText(client, phone, confirmMsg);
+              return true;
+            }
+          } else {
+            // Missing Address -> Enter State
+            log.info(`[NativeOrder] Address missing, entering awaiting_address state for ${phone}`);
+            await AdLead.updateOne({ _id: lead._id }, { 
+              $set: { 
+                "capturedData.orderTakingState": 'awaiting_address', 
+                "capturedData.pendingOrderItems": parsed.items,
+                "capturedData.pendingPaymentMethod": paymentMethod
+              } 
+            });
+            await sendWhatsAppText(client, phone, `Great choice! I've noted down your items. 🛍️\n\n*Where should we ship this to?* Please provide your full delivery address.`);
+            return true;
+          }
+        }
+      }
+    }
+
     // Billing: Check and Increment AI usage
     const usage = await checkLimit(client.clientId, 'aiCallsMade');
     if (!usage.allowed) {
@@ -1838,16 +1953,64 @@ async function runAIFallback(parsedMessage, client, phone, lead, channel = 'what
 
     const detectedLang = parsedMessage._detectedLanguage || convo?.detectedLanguage || 'en';
     const langInstruction = getLanguageInstructions(detectedLang);
-    const knowledgeBase = (client.nicheData?.products || []).map(p => `PRODUCT: ${p.title} - ${p.price}. LINK: ${p.url}`).join('\n') || 'General product information available.';
+    
+    // Structured Knowledge Architecture
+    const productCatalog = (client.nicheData?.products || [])
+      .map(p => `- ${p.title}: ₹${p.price}. ${p.description || ''} ${p.url ? `Link: ${p.url}` : ''}`)
+      .join('\n');
+    
+    const policyStore = client.nicheData?.policies || "Standard 7-day return policy applies unless specified.";
+    // Phase 29 Track 3: AI Persona
+    const persona = client.ai?.persona;
+    const systemPrompt = buildPersonaSystemPrompt(client, client.nicheData?.aiPromptContext);
+    
+    // Phase 29 Track 4: AI Training (Few-Shot Retrieval)
+    const examples = await getRelevantExamples(client._id, text);
+    const fewShot = buildFewShotPrompt(examples);
+    
+    // Personalization Context
+    const personalization = `
+CUSTOMER CONTEXT:
+- Name: ${lead.name || 'Friend'}
+- Last Order: ${convo.metadata?.lastOrder?.orderNumber || 'None'}
+- Cart Status: ${lead.cartStatus || 'Empty'}
+- Loyalty Points: ${lead. LoyaltyPoints || 0}
+`.trim();
 
-    const prompt = [
-      client.nicheData?.aiPromptContext || 'You are a friendly sales assistant.',
-      knowledgeBase,
-      `INSTRUCTIONS:\n- Keep response under 3 sentences.\n- Be warm and conversational.\n- ${langInstruction}\n- ${bargainingInstruction}\n- If unsure, say: "Let me connect you to our team."`,
-      `Customer: ${text}`
-    ].join('\n\n');
+    const prompt = `${systemPrompt}
 
-    const reply = await generateText(prompt, client.geminiApiKey || client.config?.geminiApiKey);
+${personalization}
+
+KNOWLEDGE BASE:
+[Products]
+${productCatalog || "General inquiry handling."}
+
+[Policies & FAQ]
+${policyStore}
+
+${fewShot}
+
+INSTRUCTIONS:
+1. RESPONSE STYLE: Concise (under 50 words) and helpful.
+2. DISCOUNTS: ${bargainingInstruction}
+3. MULTILINGUAL: ${langInstruction}
+4. ESCALATION: If the customer asks for a human, is angry, or you cannot answer, say: "I'm connecting you to our specialist now. ⏳"
+5. GOAL: Guide the user towards a purchase or booking.
+
+CONVERSATION HISTORY (Last 5):
+${(convo?.messages || []).slice(-5).map(m => `${m.direction}: ${m.content}`).join('\n')}
+
+CUSTOMER MESSAGE:
+"${text}"
+
+REPLY:
+`;
+
+    let reply = await generateText(prompt, client.geminiApiKey || client.config?.geminiApiKey);
+    
+    // Phase 29 Track 3: Post-Process Persona Consistency
+    reply = applyPersonaPostProcess(reply, persona);
+
     await Conversation.findOneAndUpdate({ phone, clientId: client.clientId }, { $set: { consecutiveFailedMessages: 0 } });
     
     // Phase 26: Voice Reply Logic
@@ -2229,7 +2392,10 @@ async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = 
       phone,
       direction: 'inbound',
       type:      parsedMessage.type || 'text',
-      body:      content,
+      body:      parsedMessage.translatedContent || content, // Agent sees translated version in Live Chat
+      originalText: parsedMessage.originalText || content,
+      translatedContent: parsedMessage.translatedContent || '',
+      detectedLanguage: parsedMessage.detectedLanguage || 'en',
       messageId: parsedMessage.messageId || '',
       channel:   channel, 
       rawData:   parsedMessage,

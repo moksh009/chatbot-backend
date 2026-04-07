@@ -96,6 +96,11 @@ const ConversationSchema = new mongoose.Schema({
   // Phase 23: Track 7 - Multi-Language
   detectedLanguage: { type: String, default: 'en' },
 
+  // Phase 29: AI Quality Scorer
+  aiQualityScore: { type: Number, default: 0 }, // 0-100
+  aiAuditFeedback: { type: String, default: "" },
+  lastAuditedAt: { type: Date },
+
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
