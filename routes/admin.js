@@ -828,24 +828,49 @@ router.get('/my-settings', protect, sanitizeMiddleware, async (req, res) => {
   try {
     const { clientId } = req.query;
     
-    // If Super Admin and clientId provided, use that. Otherwise use user's own.
-    let targetClientId = req.user.clientId;
-    if (req.user.role === 'SUPER_ADMIN' && clientId) {
-      targetClientId = clientId;
-    }
+    // 1. Resolve Target Client ID with Fallback
+    // Priority: Query Param (SuperAdmin only) > User Object > "unknown"
+    let targetClientId = (req.user?.role === 'SUPER_ADMIN' && clientId) ? clientId : req.user?.clientId;
 
     if (!targetClientId) {
-      return res.status(400).json({ message: 'No target clientId specified' });
+      log.warn('Settings access attempted without clientId', { user: req.user?.email });
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Identity mismatch: No target clientId established.' 
+      });
     }
 
-    const client = await Client.findOne({ clientId: targetClientId });
-    if (!client) return res.status(404).json({ message: 'Client not found' });
+    log.info('Fetching settings stream', { targetClientId, requester: req.user?.email });
 
-    // Return full settings structure - automatically sanitized via middleware
+    // 2. Fetch with simple retry logic (via await)
+    const client = await Client.findOne({ clientId: targetClientId }).maxTimeMS(5000); // 5s timeout
+    
+    if (!client) {
+      log.warn('Client registry missing', { targetClientId });
+      return res.status(404).json({ 
+        success: false, 
+        message: `No configuration payload found for id: ${targetClientId}` 
+      });
+    }
+
+    // 3. Return payload (sanitized via middleware)
     res.json(client);
+
   } catch (err) {
-    log.error('Settings fetch error', { error: err.message });
-    res.status(500).json({ message: 'Server error', error: err.message });
+    log.error('Critical Settings Failure (500)', { 
+      error: err.message, 
+      stack: err.stack,
+      user: req.user?.email 
+    });
+
+    // Handle generic server errors vs database timeouts
+    const isTimeout = err.name === 'MongooseError' && err.message.includes('timeout');
+    
+    res.status(500).json({ 
+      success: false,
+      message: isTimeout ? 'Database connection timed out. Please retry.' : 'Persistent internal server error',
+      error: err.message 
+    });
   }
 });
 

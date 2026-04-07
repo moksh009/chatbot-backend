@@ -4,6 +4,7 @@ const Conversation = require('../models/Conversation');
 const Order = require('../models/Order');
 const AdLead = require('../models/AdLead');
 const Competitor = require('../models/Competitor');
+const Supplier = require('../models/Supplier');
 const PurchaseOrder = require('../models/PurchaseOrder');
 const logger = require('../utils/logger')('DashboardController');
 
@@ -388,8 +389,11 @@ exports.getQualityStats = async (req, res) => {
 exports.createCompetitor = async (req, res) => {
   try {
     const { name, website, products } = req.body;
+    const clientDoc = await Client.findOne({ clientId: req.user.clientId }).select('_id').lean();
+    if (!clientDoc) return res.status(404).json({ success: false, message: "Client not found" });
+
     const competitor = await Competitor.create({
-      clientId: req.user.clientId,
+      clientId: clientDoc._id,
       name,
       website,
       products,
@@ -397,6 +401,7 @@ exports.createCompetitor = async (req, res) => {
     });
     res.json({ success: true, competitor });
   } catch (error) {
+    logger.error("Create Competitor Error", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -404,15 +409,19 @@ exports.createCompetitor = async (req, res) => {
 exports.createSupplier = async (req, res) => {
   try {
     const { name, phone, category } = req.body;
-    const supplier = await PurchaseOrder.create({
-      clientId: req.user.clientId,
-      supplierName: name,
+    const clientDoc = await Client.findOne({ clientId: req.user.clientId }).select('_id').lean();
+    if (!clientDoc) return res.status(404).json({ success: false, message: "Client not found" });
+
+    const supplier = await Supplier.create({
+      clientId: clientDoc._id,
+      name,
       phone,
       category,
-      status: 'active'
+      products: []
     });
-    res.json({ success: true, supplier: { ...supplier.toObject(), name: supplier.supplierName } });
+    res.json({ success: true, supplier });
   } catch (error) {
+    logger.error("Create Supplier Error", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };

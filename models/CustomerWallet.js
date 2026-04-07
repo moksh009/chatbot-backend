@@ -15,10 +15,13 @@ const CustomerWalletSchema = new mongoose.Schema({
   },
 
   transactions: [{
-    type: { type: String, enum: ['earn', 'redeem', 'expired', 'adjustment'] },
+    type: { type: String, enum: ['earn', 'redeem', 'expired', 'adjustment', 'adjust'] },
     amount: Number,
     reason: String,
     orderId: String,
+    isReversed: { type: Boolean, default: false },
+    expiresAt: Date,
+    isNotified: { type: Boolean, default: false },
     timestamp: { type: Date, default: Date.now }
   }],
 

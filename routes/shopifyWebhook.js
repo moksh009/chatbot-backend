@@ -77,6 +77,10 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
             case 'orders/create':
                 await handleOrder(client, data);
                 break;
+            case 'orders/cancelled':
+            case 'orders/refunded':
+                await handleRefund(client, data);
+                break;
             case 'orders/fulfilled':
                 const { schedulePostDeliveryUpsell } = require('../utils/upsellEngine');
                 await schedulePostDeliveryUpsell(client, data);
@@ -334,6 +338,27 @@ async function handleOrder(client, data) {
     }
     
     log.info(`Order processed from Shopify: ${newOrder.orderId}`);
+}
+
+async function handleRefund(client, data) {
+    const orderId = data.name || data.id;
+    log.info(`Processing refund/cancellation for order ${orderId}`, { clientId: client.clientId });
+
+    try {
+        const { reverseOrderPoints } = require('../utils/walletService');
+        const result = await reverseOrderPoints(client.clientId, orderId);
+
+        if (result) {
+            log.info(`Successfully reversed ${result.pointsDeducted} points for ${orderId}. New Balance: ${result.newBalance}`);
+            
+            // Optional: Notify customer about point deduction via WhatsApp
+            // We can add this later in Phase 3
+        } else {
+            log.warn(`Point reversal not needed or no loyalty points were awarded for order ${orderId}`);
+        }
+    } catch (err) {
+        log.error(`Error processing refund for ${orderId}:`, err.message);
+    }
 }
 
 async function createDraftOrder(client, originalOrder, discountCode) {

@@ -65,17 +65,21 @@ async function getWallet(clientId, phone) {
 /**
  * Redeems points for a discount/reward.
  */
-async function redeemPoints(clientId, phone, pointsToRedeem, reason = 'Redemption') {
+async function redeemPoints(clientId, phone, pointsToRedeem, metadata = 'Redemption') {
     const wallet = await CustomerWallet.findOne({ clientId, phone });
     if (!wallet || wallet.balance < pointsToRedeem) {
         throw new Error('Insufficient points balance');
     }
+
+    const reason = typeof metadata === 'string' ? metadata : metadata.reason;
+    const expiresAt = typeof metadata === 'object' ? metadata.expiresAt : null;
 
     wallet.balance -= pointsToRedeem;
     wallet.transactions.push({
         type: 'redeem',
         amount: -pointsToRedeem,
         reason,
+        expiresAt,
         timestamp: new Date()
     });
 
@@ -83,8 +87,62 @@ async function redeemPoints(clientId, phone, pointsToRedeem, reason = 'Redemptio
     return wallet.balance;
 }
 
+/**
+ * Reverses loyalty points previously awarded for an order (Refund/Cancellation logic).
+ * Deducts points from current balance and marks the specific transaction as reversed.
+ */
+async function reverseOrderPoints(clientId, orderId) {
+    try {
+        // Find the wallet that contains a transaction for this orderId
+        const wallet = await CustomerWallet.findOne({ 
+            clientId, 
+            'transactions.orderId': orderId,
+            'transactions.type': 'earn'
+        });
+
+        if (!wallet) {
+            log.warn(`No loyalty transaction found to reverse for order ${orderId}`, { clientId });
+            return null;
+        }
+
+        // Find the specific 'earn' transaction for this order
+        const earnTx = wallet.transactions.find(tx => tx.orderId === orderId && tx.type === 'earn' && !tx.isReversed);
+        if (!earnTx) {
+            log.warn(`Order ${orderId} already reversed or no active 'earn' tx found`, { clientId });
+            return null;
+        }
+
+        const pointsToDeduct = earnTx.amount;
+
+        // Deduct from balance (careful not to go below zero unless that's intended)
+        wallet.balance = Math.max(0, wallet.balance - pointsToDeduct);
+        
+        // Mark transaction as reversed to prevent double reversal
+        earnTx.isReversed = true;
+        earnTx.reason = `(REVERSED) ${earnTx.reason}`;
+
+        // Add a reversal audit transaction
+        wallet.transactions.push({
+            type: 'adjust',
+            amount: -pointsToDeduct,
+            reason: `Refund/Cancellation reversal for #${orderId}`,
+            orderId,
+            timestamp: new Date()
+        });
+
+        await wallet.save();
+        log.info(`Reversed ${pointsToDeduct} points for order ${orderId} from ${wallet.phone}`);
+
+        return { pointsDeducted: pointsToDeduct, newBalance: wallet.balance };
+    } catch (err) {
+        log.error('Point reversal failed', { error: err.message, clientId, orderId });
+        return null;
+    }
+}
+
 module.exports = {
     processOrderForLoyalty,
     getWallet,
-    redeemPoints
+    redeemPoints,
+    reverseOrderPoints
 };

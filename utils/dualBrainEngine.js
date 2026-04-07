@@ -587,7 +587,65 @@ async function runDualBrainEngine(parsedMessage, client) {
   const userTextLower = userTextRaw.toLowerCase();
   
   // ── PHASE 29: Track 7 — WALLET & PAYMENT COMMANDS (Priority -0.5) ──────────
-  if (['wallet', 'redeem', 'pay'].includes(userTextLower)) {
+  // ── PHASE 27 — LOYALTY & REWARDS COMMANDS (Priority -0.5) ──────────────────
+  const loyaltyKeywords = ['wallet', 'points', 'redeem', 'rewards', 'point'];
+  const isLoyaltyIntent = loyaltyKeywords.some(k => userTextLower.includes(k));
+  
+  if (isLoyaltyIntent || (parsedMessage.type === 'interactive' && parsedMessage.interactive?.button_reply?.id?.startsWith('loyalty_'))) {
+    const { getLoyaltyStatus, redeemLoyaltyPoints } = require('../controllers/loyaltyController');
+    const walletService = require('./walletService');
+    const wallet = await walletService.getWallet(client.clientId, phone);
+
+    // Handle Button Clicks (Redemption)
+    if (parsedMessage.type === 'interactive' && parsedMessage.interactive?.button_reply?.id?.startsWith('loyalty_redeem_')) {
+        const amount = parseInt(parsedMessage.interactive.button_reply.id.split('_').pop());
+        log.info(`[Loyalty] User clicked redeem button for ₹${amount}`, { phone });
+        
+        // Wrap for express-like req/res compatibility if needed, or call controller logic directly
+        const mockReq = { body: { clientId: client.clientId, phone, amount } };
+        const mockRes = { 
+            json: (data) => sendWhatsAppText(client, phone, `✅ *Success!* Your code *${data.code}* is ready. Use it for ₹${data.amount || amount} OFF!`),
+            status: () => ({ json: (data) => sendWhatsAppText(client, phone, `❌ ${data.message}`) })
+        };
+        await require('../controllers/loyaltyController').redeemLoyaltyPoints(mockReq, mockRes);
+        return true;
+    }
+
+    // Handle Balance Inquiry
+    const balance = wallet?.balance || 0;
+    const tier = wallet?.tier || 'Bronze';
+    const currencyUnit = client.loyaltyConfig?.currencyUnit || 100;
+    const pointsPerCurrency = client.loyaltyConfig?.pointsPerCurrency || 100;
+    const cashValue = (balance / pointsPerCurrency).toFixed(0);
+
+    let message = `🎁 *Your Loyalty Hub*\n\n`;
+    message += `💰 Balance: *${balance} Points*\n`;
+    message += `✨ Tier: *${tier}*\n`;
+    message += `🎫 Value: *₹${cashValue} Credits*\n\n`;
+
+    if (balance >= pointsPerCurrency * 10) { // Min ₹10 to show redeem
+        message += `Ready to treat yourself? Click a button below to redeem your points for an instant discount code! 👇`;
+        
+        const buttons = [
+            { id: 'loyalty_redeem_50', title: 'Redeem ₹50' },
+            { id: 'loyalty_redeem_100', title: 'Redeem ₹100' }
+        ];
+        // Only show ₹100 if they have enough
+        const finalButtons = balance >= pointsPerCurrency * 100 ? buttons : [buttons[0]];
+
+        await sendWhatsAppInteractive(client, phone, {
+            type: 'button',
+            body: { text: message },
+            action: { buttons: finalButtons.map(b => ({ type: 'reply', reply: b })) }
+        });
+    } else {
+        message += `Earn more points by shopping! For every ₹${currencyUnit} spent, you get 10 points. 🛍️`;
+        await sendWhatsAppText(client, phone, message);
+    }
+    return true;
+  }
+
+  if (['pay'].includes(userTextLower)) {
     if (userTextLower === 'pay' && convo.metadata?.lastOrder) {
       const payLink = await generatePaymentLink(client, lead, convo.metadata.lastOrder);
       await sendWhatsAppText(client, phone, `💳 *Complete your payment:*\n\nYour order #${convo.metadata.lastOrder.orderNumber} is ready. Total: ₹${convo.metadata.lastOrder.totalPrice}\n\nLink: ${payLink}\n\n_Valid for 30 minutes._`);

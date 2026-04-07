@@ -35,45 +35,66 @@ const SENSITIVE_FIELDS = [
 /**
  * Recursively removes sensitive fields from an object or array.
  * @param {Object|Array} data - The data to sanitize.
+ * @param {number} depth - Recursion depth tracker.
  * @returns {Object|Array} The sanitized data.
  */
-function sanitize(data) {
+function sanitize(data, depth = 0) {
+  // Prevent infinite recursion on circular structures or excessively deep objects
+  if (depth > 10) return '[Max Depth Reached]';
+  
   if (data === null || data === undefined) return data;
 
-  // Handle Mongoose documents
+  // Handle Mongoose documents or objects with toObject (convert to POJO)
   let target = data;
   if (typeof data.toObject === 'function') {
-    target = data.toObject();
+    try {
+      target = data.toObject();
+    } catch (e) {
+      console.error('[Sanitize] toObject conversion failed:', e.message);
+      return '[Error: Serialization Failed]';
+    }
   }
 
+  // Handle arrays
   if (Array.isArray(target)) {
-    return target.map(item => sanitize(item));
+    return target.map(item => sanitize(item, depth + 1));
   }
 
-  if (typeof target !== 'object') {
+  // If not an object (primitive), return as is
+  if (target === null || typeof target !== 'object') {
+    return target;
+  }
+
+  // Avoid processing Buffer, Date, or other specialized objects as generic POJOs
+  if (target instanceof Date || target instanceof RegExp) {
     return target;
   }
 
   const sanitized = {};
 
-  for (let [key, value] of Object.entries(target)) {
-    // Check if key is sensitive (case-insensitive check)
-    const isSensitive = SENSITIVE_FIELDS.some(field => 
-      key.toLowerCase().includes(field.toLowerCase())
-    );
+  try {
+    for (const [key, value] of Object.entries(target)) {
+      // Check if key is sensitive (case-insensitive check)
+      const isSensitive = SENSITIVE_FIELDS.some(field => 
+        key.toLowerCase().includes(field.toLowerCase())
+      );
 
-    if (isSensitive) {
-      // Sensitive field: Replace with masked string instead of dropping
-      // to avoid breaking frontend logic that checks for existence.
-      sanitized[key] = '••••••••';
-      continue;
-    }
+      if (isSensitive) {
+        // Replace sensitive fields with masking instead of dropping
+        sanitized[key] = '••••••••';
+        continue;
+      }
 
-    if (value && typeof value === 'object') {
-      sanitized[key] = sanitize(value);
-    } else {
-      sanitized[key] = value;
+      // Recursively sanitize nested objects/arrays
+      if (value && typeof value === 'object') {
+        sanitized[key] = sanitize(value, depth + 1);
+      } else {
+        sanitized[key] = value;
+      }
     }
+  } catch (err) {
+    console.error('[Sanitize] Critical error during object traversal:', err.message);
+    return '[Error: Traversal Failed]';
   }
 
   return sanitized;

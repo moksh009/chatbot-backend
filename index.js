@@ -211,9 +211,16 @@ app.use('/api/meta-ads', require('./routes/metaAds'));
 app.use('/api/whitelabel', require('./routes/whitelabel'));
 app.use('/api/reseller', require('./routes/reseller'));
 
+// Phase 27: Loyalty Hub & Enterprise Rewards
+app.use('/api/loyalty', require('./routes/loyalty'));
+
 // --- CRON JOBS (Phase 21 Resumption) ---
 const scheduleFlowResumption = require('./cron/flowResumptionCron');
 scheduleFlowResumption();
+
+// Phase 27: Loyalty Hub & Enterprise Rewards
+const scheduleLoyaltyUrgency = require('./cron/loyaltyCron');
+scheduleLoyaltyUrgency();
 
 
 const instagramAutomationRoutes = require('./routes/instagramAutomation');
