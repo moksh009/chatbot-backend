@@ -12,7 +12,7 @@ async function registerWebhooks(shopDomain, accessToken, clientId) {
   for (const topic of topics) {
     try {
       await axios.post(
-        `https://${shopDomain}/admin/api/2024-01/webhooks.json`,
+        `https://${shopDomain}/admin/api/2026-01/webhooks.json`,
         {
           webhook: {
             topic,

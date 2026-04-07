@@ -153,7 +153,7 @@ const ClientSchema = new mongoose.Schema({
   shopifyWebhookSecret: { type: String, default: "" },
   shopifyClientId: { type: String, default: "" },
   shopifyClientSecret: { type: String, default: "" },
-  shopifyApiVersion: { type: String, default: "2024-01" },
+  shopifyApiVersion: { type: String, default: "2026-01" },
   shopifyConnectionStatus: { type: String, enum: ['connected', 'error', 'disconnected'], default: 'connected' },
   lastShopifyError: { type: String, default: "" },
   generatedDiscounts: { type: [mongoose.Schema.Types.Mixed], default: [] },

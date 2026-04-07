@@ -12,7 +12,7 @@ async function getShopifyClient(clientId, forceRefresh = false) {
 
     let token = decrypt(client.shopifyAccessToken);
     const domain = client.shopDomain;
-    const apiVersion = client.shopifyApiVersion || '2024-01';
+    const apiVersion = client.shopifyApiVersion || '2026-01';
 
     // 1. Check if token needs refresh
     const fiveMinutes = 5 * 60 * 1000;
@@ -234,7 +234,7 @@ module.exports = {
     getShopifyClient,
     withShopifyRetry,
     refreshShopifyToken,
-    injectPixelScript: async (clientId) => {
+    injectPixelScript: async (clientId, backendUrl) => {
         return await withShopifyRetry(clientId, async (shop) => {
             const client = await Client.findOne({ clientId });
             
@@ -250,10 +250,10 @@ module.exports = {
             let liquid = assetRes.data.asset?.value;
             if (!liquid) throw new Error('Could not read theme.liquid');
 
-            const backendUrl = process.env.BACKEND_URL || 'https://topedgeai.com';
-            const scriptTag = `\n<!-- TopEdge Pixel -->\n<script src="${backendUrl}/api/shopify/pixel/${clientId}/script.js"></script>\n`;
+            const finalBackendUrl = backendUrl || process.env.BACKEND_URL || 'https://topedgeai.com';
+            const scriptTag = `\n<!-- TopEdge Pixel -->\n<script src="${finalBackendUrl}/api/shopify-pixel/pixel/${clientId}/script.js"></script>\n`;
 
-            if (liquid.includes(`/api/shopify/pixel/${clientId}/script.js`)) {
+            if (liquid.includes(`/api/shopify-pixel/pixel/${clientId}/script.js`)) {
                 return { success: true, message: 'Pixel already injected' };
             }
 

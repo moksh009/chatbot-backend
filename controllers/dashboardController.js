@@ -237,3 +237,65 @@ exports.getFlows = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+exports.getQualityStats = async (req, res) => {
+  try {
+    const clientId = req.user.clientId;
+    // Mock dimensions and history as expected by QualityAnalytics.jsx
+    const stats = {
+      avgScore: 88,
+      totalConversations: 1240,
+      dimensions: [
+        { subject: 'Accuracy', A: 85, fullMark: 100 },
+        { subject: 'Tone', A: 92, fullMark: 100 },
+        { subject: 'Speed', A: 98, fullMark: 100 },
+        { subject: 'Retention', A: 75, fullMark: 100 },
+        { subject: 'Sales', A: 82, fullMark: 100 },
+      ],
+      history: [
+        { name: 'Mon', score: 82 },
+        { name: 'Tue', score: 85 },
+        { name: 'Wed', score: 84 },
+        { name: 'Thu', score: 88 },
+        { name: 'Fri', score: 92 },
+        { name: 'Sat', score: 91 },
+        { name: 'Sun', score: 94 },
+      ]
+    };
+    res.json({ success: true, stats });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.createCompetitor = async (req, res) => {
+  try {
+    const { name, website, products } = req.body;
+    const competitor = await Competitor.create({
+      clientId: req.user.clientId,
+      name,
+      website,
+      products,
+      isActive: true
+    });
+    res.json({ success: true, competitor });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.createSupplier = async (req, res) => {
+  try {
+    const { name, phone, category } = req.body;
+    const supplier = await PurchaseOrder.create({
+      clientId: req.user.clientId,
+      supplierName: name,
+      phone,
+      category,
+      status: 'active'
+    });
+    res.json({ success: true, supplier: { ...supplier.toObject(), name: supplier.supplierName } });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};

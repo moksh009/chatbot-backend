@@ -19,7 +19,7 @@ const { injectPixelScript } = require('../utils/shopifyHelper');
  */
 router.post('/pixel/:clientId', async (req, res) => {
     const { clientId } = req.params;
-    const { eventName, data, customer, timestamp } = req.body;
+    const { eventName, data, customer, timestamp, sessionId } = req.body;
 
     try {
         const client = await Client.findOne({ clientId });
@@ -282,11 +282,16 @@ router.post('/pixel/:clientId/inject', protect, async (req, res) => {
     }
 
     try {
-        const result = await injectPixelScript(clientId);
+        const backendUrl = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
+        const result = await injectPixelScript(clientId, backendUrl);
         res.json(result);
     } catch (err) {
         console.error('[PixelInject] Error:', err.message);
-        res.status(500).json({ error: err.message });
+        const isForbidden = err.message.includes('403') || (err.response && err.response.status === 403);
+        const errorMsg = isForbidden 
+            ? 'Permission Denied: Ensure your Shopify App has the "write_themes" scope enabled in Shopify Admin.' 
+            : err.message;
+        res.status(isForbidden ? 403 : 500).json({ error: errorMsg });
     }
 });
 
