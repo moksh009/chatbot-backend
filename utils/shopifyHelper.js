@@ -33,8 +33,8 @@ async function getShopifyClient(clientId, forceRefresh = false) {
             try {
                 console.log(`[ShopifyRotation] Attempting Refresh Token rotation for ${clientId}...`);
                 const res = await axios.post(`https://${domain}/admin/oauth/access_token`, {
-                    client_id: client.shopifyClientId,
-                    client_secret: client.shopifyClientSecret,
+                    client_id: decrypt(client.shopifyClientId),
+                    client_secret: decrypt(client.shopifyClientSecret),
                     grant_type: 'refresh_token',
                     refresh_token: decrypt(client.shopifyRefreshToken)
                 });

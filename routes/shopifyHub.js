@@ -101,13 +101,14 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
     // Capture the exact error string for the frontend to show
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     
-    // If it's an auth error, we return success: false but with extra flags
-    // This prevents the frontend analytics from completely crashing
-    res.status(isAuthError ? 400 : 500).json({ 
+    // RELAY: Instead of hardcoded 400, we forward the actual status and data from Shopify
+    // This allows the frontend to distinguish between Expired Tokens (401) and Configuration Errors (400)
+    res.status(err.response?.status || 500).json({ 
       success: false, 
-      error: `Shopify Sync Error: ${errorString}`, 
+      error: `Shopify Hub Error: ${errorString}`, 
       isShopifyAuthError: isAuthError,
-      isShopifyConnected: true // It's connected but auth failed
+      isShopifyConnected: true,
+      details: err.response?.data
     });
   }
 });
@@ -196,10 +197,13 @@ router.get('/:clientId/locations', protect, verifyClientAccess, async (req, res)
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     const isAuthError = err.response?.status === 401 || err.response?.status === 403;
     console.error(`[Locations Error] Client: ${clientId}:`, errorString);
-    res.status(isAuthError ? 400 : 500).json({ 
+    
+    // RELAY: Forward the real status from Shopify to eliminate hardcoded 400 masking
+    res.status(err.response?.status || 500).json({ 
       success: false, 
       error: errorString, 
-      isShopifyAuthError: isAuthError 
+      isShopifyAuthError: isAuthError,
+      details: err.response?.data
     });
   }
 });
