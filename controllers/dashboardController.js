@@ -247,10 +247,8 @@ exports.getForecast = async (req, res) => {
       totalInventoryValue,
       criticalSkus: inventoryHealth.filter(i => i.depletionDays < 7).length,
       forecastData,
-      inventoryHealth: inventoryHealth.length > 0 ? inventoryHealth : [
-        { name: 'Pods 2.0', stock: 120, dailyDemand: 8, depletionDays: 15 },
-        { name: 'Ultra Hub', stock: 45, dailyDemand: 12, depletionDays: 3 }
-      ]
+      inventoryHealth: inventoryHealth.length > 0 ? inventoryHealth : [],
+      isBaselining: orders.length < 5 // Flag if history is too thin
     };
 
     res.json({ success: true, forecast: data });
@@ -263,18 +261,17 @@ exports.getForecast = async (req, res) => {
 exports.getCompetitorIntel = async (req, res) => {
   try {
     const { competitorUrl } = req.query;
+    // In a real scenario, this would trigger a scrape or fetch from a scraping service
+    // For now, we return a schema that the frontend can use to show "scanning" state
     res.json({ 
       success: true, 
       data: { 
         competitorName: competitorUrl ? new URL(competitorUrl).hostname : "Target Analytics",
-        pricingStrategy: "Dynamic / Aggressive SKU matching",
-        confidenceScore: 0.94,
-        weaknessesToExploit: [
-          "Standard Shipping (> 4 days)",
-          "Manual customer support (slow response)",
-          "Higher pricing on Top-Tier bundles"
-        ],
-        winRateRecommendation: "Launch a 'Fast Shipping' WhatsApp campaign to capture their weekend traffic."
+        status: "analyzing", // Explicit status for newly added targets
+        pricingStrategy: "Scanning pricing protocols...",
+        confidenceScore: 0.0,
+        weaknessesToExploit: [],
+        winRateRecommendation: "Awaiting sufficient telemetry to provide strategic recommendations."
       } 
     });
   } catch (error) {
