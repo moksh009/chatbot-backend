@@ -123,8 +123,15 @@ async function backfillOrderPoints(req, res) {
 
     try {
         const client = await Client.findOne({ clientId }).select('loyaltyConfig');
-        if (!client?.loyaltyConfig?.isEnabled) {
-            return res.status(400).json({ message: 'Loyalty is not enabled for this client. Please enable it in settings first.' });
+        if (!client) return res.status(404).json({ message: 'Client not found.' });
+
+        // Auto-apply defaults if loyaltyConfig not configured yet — never block an admin backfill
+        if (!client.loyaltyConfig) {
+            client.loyaltyConfig = { isEnabled: true, currencyUnit: 100, pointsPerUnit: 10, pointsPerCurrency: 100, expiryDays: 90 };
+        }
+        if (!client.loyaltyConfig.isEnabled) {
+            // Force-enable for this backfill run so processOrderForLoyalty doesn't skip
+            client.loyaltyConfig.isEnabled = true;
         }
 
         // Fetch up to 1000 paid orders for this client

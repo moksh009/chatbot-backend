@@ -9,9 +9,13 @@ const log = require('./logger')('WalletService');
 async function processOrderForLoyalty(clientId, phone, orderAmount, orderId) {
     try {
         const client = await Client.findOne({ clientId }).select('loyaltyConfig');
-        if (!client || !client.loyaltyConfig?.isEnabled) return null;
+        if (!client) return null;
 
-        const config = client.loyaltyConfig;
+        // Use config defaults if loyalty hasn't been explicitly configured yet
+        const config = client.loyaltyConfig || {
+            isEnabled: true, currencyUnit: 100, pointsPerUnit: 10, pointsPerCurrency: 100, expiryDays: 90
+        };
+
         
         // IDEMPOTENCY GUARD: Don't award points twice for the same order
         const existingWallet = await CustomerWallet.findOne({ 
