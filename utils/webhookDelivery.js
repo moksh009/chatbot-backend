@@ -1,4 +1,5 @@
 "use strict";
+const _ = require("lodash");
 
 const axios              = require("axios");
 const crypto             = require("crypto");
@@ -36,6 +37,48 @@ const WEBHOOK_EVENTS = {
   "qr.scanned": "A QR code was scanned"
 };
 
+/**
+ * Transforms an internal payload to match the client's custom Webhook mapping.
+ * Supports flat mapping (order.id -> transactionId) and array mapping (items[].name -> products[].title).
+ */
+const transformEnterprisePayload = (sourceData, mappingConfig) => {
+    if (!mappingConfig || Object.keys(mappingConfig).length === 0) return sourceData;
+    
+    const output = {};
+
+    Object.entries(mappingConfig).forEach(([targetKey, sourcePath]) => {
+        // Handle Array Mapping (e.g., target: "products[].title", source: "line_items[].name")
+        if (sourcePath.includes('[]') && targetKey.includes('[]')) {
+            const [sourceArrayPath, sourceItemPath] = sourcePath.split('[]');
+            const [targetArrayPath, targetItemPath] = targetKey.split('[]');
+
+            const sourceArray = _.get(sourceData, sourceArrayPath, []);
+            
+            // Ensure the target array exists
+            let targetArray = _.get(output, targetArrayPath);
+            if (!targetArray || !Array.isArray(targetArray)) {
+                targetArray = Array.from({ length: sourceArray.length }, () => ({}));
+                _.set(output, targetArrayPath, targetArray);
+            }
+
+            // Map each item in the array
+            sourceArray.forEach((item, index) => {
+                const extractedValue = _.get(item, sourceItemPath.replace(/^\./, '')); // Remove leading dot
+                _.set(targetArray[index], targetItemPath.replace(/^\./, ''), extractedValue);
+            });
+        } 
+        // Handle Standard Flat Mapping
+        else {
+            const extractedValue = _.get(sourceData, sourcePath);
+            if (extractedValue !== undefined) {
+                _.set(output, targetKey, extractedValue);
+            }
+        }
+    });
+
+    return output;
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // FILTER EVALUATION
 // ─────────────────────────────────────────────────────────────────────────────
@@ -59,7 +102,8 @@ function evaluateCondition(value, operator, expected) {
 // ─────────────────────────────────────────────────────────────────────────────
 // DELIVERY — with retry (exponential backoff, max 3 attempts)
 // ─────────────────────────────────────────────────────────────────────────────
-async function deliverWebhook(config, body, headers, attempt = 1) {
+async function deliverWebhook(config, body, headers, attempt = 1, clientId = null) {
+
   try {
     const resp = await axios.post(config.url, body, {
       headers,
@@ -75,6 +119,7 @@ async function deliverWebhook(config, body, headers, attempt = 1) {
 
     await WebhookDeliveryLog.create({
       webhookConfigId: config._id,
+      clientId:        clientId || config.clientId,
       event:           body.event,
       status:          resp.status,
       responseBody:    String(resp.data || "").substring(0, 500),
@@ -82,6 +127,7 @@ async function deliverWebhook(config, body, headers, attempt = 1) {
       attempt,
       failed:          false
     });
+
 
   } catch (err) {
     const statusCode = err.response?.status || 0;
@@ -92,21 +138,28 @@ async function deliverWebhook(config, body, headers, attempt = 1) {
       lastError:   err.message
     });
 
+    const isFinalAttempt = attempt >= 3;
+
     await WebhookDeliveryLog.create({
       webhookConfigId: config._id,
+      clientId:        clientId || config.clientId,
       event:           body.event,
       status:          statusCode,
       error:           err.message,
       deliveredAt:     new Date(),
       attempt,
-      failed:          attempt >= 3
+      failed:          true,
+      isDead:          isFinalAttempt,
+      rawPayload:      isFinalAttempt ? body : null // Only store payload if we're giving up
     });
+
 
     // Retry with exponential backoff (2s → 4s)
     if (attempt < 3) {
       const delay = Math.pow(2, attempt) * 1000;
-      setTimeout(() => deliverWebhook(config, body, headers, attempt + 1), delay);
+      setTimeout(() => deliverWebhook(config, body, headers, attempt + 1, clientId), delay);
     }
+
   }
 }
 
@@ -138,7 +191,7 @@ async function fireWebhookEvent(clientId, event, payload) {
           event,
           timestamp: new Date().toISOString(),
           clientId:  clientId.toString(),
-          data:      payload,
+          data:      transformEnterprisePayload(payload, config.mapping || {}),
           webhookId: config._id
         };
 
@@ -160,7 +213,8 @@ async function fireWebhookEvent(clientId, event, payload) {
           }, {})
         };
 
-        deliverWebhook(config, body, headers);
+        deliverWebhook(config, body, headers, 1, clientId);
+
       }
     } catch (err) {
       console.error("[WebhookDelivery] fireWebhookEvent error:", err.message);
@@ -193,4 +247,4 @@ function getSamplePayload(event) {
   return samples[event] || { sampleData: true, event };
 }
 
-module.exports = { fireWebhookEvent, WEBHOOK_EVENTS, getSamplePayload, deliverWebhook };
+module.exports = { fireWebhookEvent, WEBHOOK_EVENTS, getSamplePayload, deliverWebhook, transformEnterprisePayload };

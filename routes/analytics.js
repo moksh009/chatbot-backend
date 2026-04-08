@@ -322,8 +322,7 @@ router.get('/leads', protect, async (req, res) => {
 
     const query = (clientId === 'code_clinic_v1' || clientId === 'delitech_smarthomes') ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } } : { clientId };
 
-    const { page = 1, limit = 10, search = '' } = req.query;
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const { limit = 10, search = '', next_cursor } = req.query;
 
     if (search) {
       const searchRegex = new RegExp(search, 'i');
@@ -333,17 +332,20 @@ router.get('/leads', protect, async (req, res) => {
       ];
     }
 
+    if (next_cursor) {
+      query._id = { $lt: next_cursor };
+    }
+
     const leads = await AdLead.find(query)
-      .sort({ lastInteraction: -1 })
-      .skip(skip)
+      .sort({ _id: -1 })
       .limit(parseInt(limit));
 
     const total = await AdLead.countDocuments(query);
+    const new_cursor = leads.length > 0 ? leads[leads.length - 1]._id : null;
 
     res.json({
       leads,
-      currentPage: page,
-      totalPages: Math.ceil(total / limit),
+      next_cursor: new_cursor,
       totalLeads: total
     });
 
@@ -393,13 +395,20 @@ router.get('/lead/:id', protect, async (req, res) => {
       dna = await CustomerIntelligence.findOne({ clientId: lead.clientId, phone: lead.phoneNumber }).lean();
     } catch (_) {}
 
+    let wallet = null;
+    try {
+      const CustomerWallet = require('../models/CustomerWallet');
+      wallet = await CustomerWallet.findOne({ clientId: lead.clientId, phone: lead.phoneNumber }).lean();
+    } catch (_) {}
+
     res.json({
       lead,
       orders,
       appointments,
       conversation,
       messages,
-      intelligence: dna || null
+      intelligence: dna || null,
+      wallet: wallet || null
     });
   } catch (error) {
     console.error('Lead Detail Error:', error);

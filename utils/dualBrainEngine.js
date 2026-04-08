@@ -471,6 +471,69 @@ async function runDualBrainEngine(parsedMessage, client) {
   // Track this transaction 
   await incrementUsage(client._id, 'messages', 1);
 
+  // ── PHASE 30: Custom QR Scan Matching (Enterprise) ────────────────────────────────
+  const qrRefMatch = incomingText.match(/(\(Ref:\s*(QR_[a-zA-Z0-9_]+)\))/i);
+  if (qrRefMatch && qrRefMatch[2]) {
+    const qrRefId = qrRefMatch[2].toUpperCase();
+    const QRCodeModel = require('../models/QRCode');
+    const scannedQr = await QRCodeModel.findOne({ shortCode: qrRefId, clientId: client._id });
+    
+    if (scannedQr) {
+      log.info(`[DualBrain] 📷 QR Scan Detected for lead ${lead.phoneNumber}: ${scannedQr.name}`);
+      
+      // Update analytics
+      await QRCodeModel.findByIdAndUpdate(scannedQr._id, { $inc: { scansTotal: 1 } });
+      
+      // CRM Integration: Tag the user
+      const tagsToAdd = scannedQr.config?.tags || [];
+      if (scannedQr.config?.utmSource) tagsToAdd.push(`Source: ${scannedQr.config.utmSource}`);
+      tagsToAdd.push(`Scanned_${qrRefId}`);
+      if (tagsToAdd.length > 0) {
+        await AdLead.findByIdAndUpdate(lead._id, { $addToSet: { tags: { $each: tagsToAdd } } });
+      }
+
+      // FIX THE DEAD END: Award Instant Scan Points (Loyalty Hub)
+      try {
+        const walletService = require('./walletService');
+        // Award 50 bonus points for stickiness
+        await walletService.awardPoints(
+          client.clientId, 
+          phone, 
+          'qr_scan_bonus', 
+          50, 
+          `Scanned Campaign QR: ${qrRefId}`
+        );
+        log.info(`[Loyalty] Awarded 50 points to ${phone} for scanning ${qrRefId}`);
+      } catch (loyaltyErr) {
+        log.error(`[Loyalty] Failed to award scan points:`, loyaltyErr.message);
+      }
+
+      // Fire webhook
+      const { fireWebhookEvent } = require('./webhookDelivery');
+      fireWebhookEvent(client.clientId, 'qr.scanned', { phone: lead.phoneNumber, qrCode: scannedQr.name, shortCode: scannedQr.shortCode });
+
+      // Check for Direct-To-Flow logic
+      if (scannedQr.config?.flowId && scannedQr.config.flowId !== '') {
+        log.info(`[QR Logic] Redirecting ${lead.phoneNumber} to flow ${scannedQr.config.flowId}`);
+        const targetFlow = (client.visualFlows || []).find(f => f.id === scannedQr.config.flowId);
+        if (targetFlow) {
+           const { findFlowStartNode } = require('./triggerEngine');
+           const startNodeId = findFlowStartNode(targetFlow.nodes || []);
+           if (startNodeId) {
+              await sendWhatsAppText(client, phone, scannedQr.config?.welcomeMessage || `🎉 Welcome! We just added 50 VIP Points to your wallet for scanning that code! Loading ${scannedQr.name}...`);
+              // Run the target flow directly
+              return await runFlow(client, phone, targetFlow, startNodeId, { channel, triggerSource: `QR_${scannedQr.shortCode}` });
+           }
+        }
+      } 
+      
+      // Standard reply
+      const welcomeMsg = scannedQr.config?.welcomeMessage || `🎉 Welcome! We just added 50 VIP Points to your wallet for scanning that code! Type "WALLET" to check your balance.`;
+      await sendWhatsAppText(client, phone, welcomeMsg);
+      return true;
+    }
+  }
+
   // ── PHASE 20: Build Variable Context ONCE per message ────────────────────
   // This is passed to executeNode so variables are injected into all nodes
   let variableContext = {};

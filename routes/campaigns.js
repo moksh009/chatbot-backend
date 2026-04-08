@@ -214,26 +214,34 @@ router.post('/start', protect, async (req, res) => {
 
      if (req.body.isAbTest) {
         campaign.isAbTest = true;
-        const testSizePct = req.body.abTestConfig?.testSizePercentage || 20;
+        
+        // ENTERPRISE 10/10/80 SPLIT LOGIC
+        const testSizePct = 20; // 10% for A, 10% for B
+        const holdbackSizePct = 80;
+        
         campaign.abTestConfig = { 
           testSizePercentage: testSizePct, 
           winnerMetric: req.body.abTestConfig?.winnerMetric || 'reply_rate', 
-          holdbackHours: req.body.abTestConfig?.holdbackHours || 4, 
-          autoSendWinner: req.body.abTestConfig?.autoSendWinner !== false, 
+          holdbackHours: req.body.abTestConfig?.holdbackHours || 2, 
+          autoSendWinner: true, 
           holdbackProcessed: false 
         };
-        campaign.abVariants = [
-          { label: 'A', templateName: req.body.templateName || campaign.templateName, recipientCount: 0 },
-          { label: 'B', templateName: req.body.templateTypeB, recipientCount: 0 }
-        ];
-        await campaign.save();
-        const sampleSize = Math.max(2, Math.floor(total * (testSizePct / 100))); 
-        abTestVariantSize = Math.floor(sampleSize / 2);
 
-        // Update recipient counts in variants
-        campaign.abVariants[0].recipientCount = abTestVariantSize;
-        campaign.abVariants[1].recipientCount = abTestVariantSize;
+        campaign.abVariants = [
+          { label: 'A', templateName: req.body.templateName || campaign.templateName, recipientCount: Math.floor(rows.length * 0.1) },
+          { label: 'B', templateName: req.body.templateTypeB, recipientCount: Math.floor(rows.length * 0.1) }
+        ];
+
+        // Set evaluation time
+        campaign.scheduledAt = new Date(Date.now() + (campaign.abTestConfig.holdbackHours * 60 * 60 * 1000));
+        
         await campaign.save();
+        
+        const groupASize = Math.floor(rows.length * 0.1);
+        const groupBSize = Math.floor(rows.length * 0.1);
+        
+        abTestVariantSize = groupASize; // Used in logic below
+        abTestVariantBSize = groupASize + groupBSize; 
      }
 
     let currentIndex = 0;
@@ -249,7 +257,7 @@ router.post('/start', protect, async (req, res) => {
       if (req.body.isAbTest) {
         if (currentIndex <= abTestVariantSize) {
           variantLabel = 'A';
-        } else if (currentIndex <= abTestVariantSize * 2) {
+        } else if (currentIndex <= abTestVariantBSize) {
           variantLabel = 'B';
           targetTemplateName = req.body.templateTypeB;
         } else {

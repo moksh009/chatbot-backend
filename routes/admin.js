@@ -1854,4 +1854,20 @@ router.get('/unanswered-questions/:clientId', protect, async (req, res) => {
   }
 });
 
+// --- GET AUDIT LOGS (Client Admin or Super Admin) ---
+router.get('/audit-logs', protect, authorize('ADMIN', 'SUPER_ADMIN'), async (req, res) => {
+  try {
+    const AuditLog = require('../models/AuditLog');
+    const logs = await AuditLog.find({ clientId: req.user.clientId })
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .populate('user_id', 'name email');
+    
+    res.json({ success: true, data: logs });
+  } catch (err) {
+    log.error('Error fetching audit logs', { error: err.message });
+    res.status(500).json({ message: 'Server error fetching audit logs' });
+  }
+});
+
 module.exports = router;

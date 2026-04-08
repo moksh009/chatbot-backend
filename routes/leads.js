@@ -6,6 +6,8 @@ const fs = require('fs');
 const path = require('path');
 const AdLead = require('../models/AdLead');
 const { protect } = require('../middleware/auth');
+const { logAction } = require('../middleware/audit');
+
 
 const { stringify } = require('csv-stringify');
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
@@ -14,7 +16,8 @@ const { checkLimit, incrementUsage } = require('../utils/planLimits');
 const upload = multer({ dest: '/tmp/csv_uploads/' });
 
 // POST /api/leads/:clientId/import
-router.post('/:clientId/import', protect, upload.single('file'), async (req, res) => {
+router.post('/:clientId/import', protect, logAction('IMPORT_LEADS'), upload.single('file'), async (req, res) => {
+
     try {
         const { clientId } = req.params;
         
@@ -124,7 +127,8 @@ router.post('/:clientId/import', protect, upload.single('file'), async (req, res
 });
 
 // GET /api/leads/:clientId/export
-router.get('/:clientId/export', protect, async (req, res) => {
+router.get('/:clientId/export', protect, logAction('EXPORT_LEADS'), async (req, res) => {
+
     try {
         const { clientId } = req.params;
         if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {

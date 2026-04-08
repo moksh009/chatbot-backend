@@ -15,15 +15,15 @@ function generateShortCode() {
 /**
  * Generate a base64 PNG data URL from a text string (WA deep link)
  */
-async function generateQRImage(text) {
+async function generateQRImage(text, fgColor = "#000000", bgColor = "#FFFFFF") {
   return await QRCodeLib.toDataURL(text, {
     errorCorrectionLevel: "H",
     type:                 "image/png",
     width:                512,
     margin:               2,
     color: {
-      dark:  "#000000",
-      light: "#FFFFFF"
+      dark:  fgColor,
+      light: bgColor
     }
   });
 }
@@ -46,11 +46,19 @@ async function createQRCode(client, qrData) {
 
   // Build WA deep link using the client's phone number
   const phone  = (client.adminPhone || "").replace(/\D/g, "");
-  const waLink = phone
-    ? `https://wa.me/${phone}?text=${encodeURIComponent(shortCode)}`
-    : `https://wa.me/?text=${encodeURIComponent(shortCode)}`;
+  
+  // Format user-provided prefilled text + the background Ref ID.
+  const customText = qrData.config?.prefilledText 
+    ? `${qrData.config.prefilledText} (Ref: ${shortCode})`
+    : `I want to connect! (Ref: ${shortCode})`;
 
-  const qrImage = await generateQRImage(waLink);
+  const waLink = phone
+    ? `https://wa.me/${phone}?text=${encodeURIComponent(customText)}`
+    : `https://wa.me/?text=${encodeURIComponent(customText)}`;
+
+  const fgColor = qrData.config?.styleConfig?.fgColor || "#000000";
+  const bgColor = qrData.config?.styleConfig?.bgColor || "#FFFFFF";
+  const qrImage = await generateQRImage(waLink, fgColor, bgColor);
 
   const qr = await QRCodeModel.create({
     clientId:   client._id,

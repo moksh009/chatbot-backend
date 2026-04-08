@@ -167,6 +167,15 @@ const ClientSchema = new mongoose.Schema({
     maxDiscountAmountFlat: { type: Number, default: 1000 } // Hard flat ceiling to protect margins
   },
   
+  // Phase 30.5: Dynamic Intent Weighting
+  intentWeights: {
+    scan: { type: Number, default: 10 },
+    message: { type: Number, default: 2 },
+    purchase: { type: Number, default: 50 },
+    linkClick: { type: Number, default: 5 },
+    optOut: { type: Number, default: -100 }
+  },
+  
   // Phase 14 Multi-Gateway Support
   activePaymentGateway: { 
     type: String, 

@@ -351,8 +351,17 @@ async function handleRefund(client, data) {
         if (result) {
             log.info(`Successfully reversed ${result.pointsDeducted} points for ${orderId}. New Balance: ${result.newBalance}`);
             
-            // Optional: Notify customer about point deduction via WhatsApp
-            // We can add this later in Phase 3
+            // Revert points in CustomerIntelligence if it tracks them
+            const phoneRaw = data.phone || data.customer?.phone || data.billing_address?.phone;
+            if (phoneRaw) {
+                const { normalizePhone } = require('../utils/helpers');
+                const cleanPhone = normalizePhone(phoneRaw);
+                const CustomerIntelligence = require('../models/CustomerIntelligence');
+                await CustomerIntelligence.findOneAndUpdate(
+                    { clientId: client.clientId, phone: cleanPhone },
+                    { $inc: { totalPoints: -result.pointsDeducted } }
+                ).catch(() => {}); // Optional fail-safe
+            }
         } else {
             log.warn(`Point reversal not needed or no loyalty points were awarded for order ${orderId}`);
         }

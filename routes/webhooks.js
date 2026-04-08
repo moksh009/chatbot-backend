@@ -6,7 +6,8 @@ const crypto             = require("crypto");
 const axios              = require("axios");
 const WebhookConfig      = require("../models/WebhookConfig");
 const WebhookDeliveryLog = require("../models/WebhookDeliveryLog");
-const { verifyToken }    = require("../middleware/auth");
+const { protect, verifyToken } = require("../middleware/auth");
+const { logAction } = require("../middleware/audit");
 const { WEBHOOK_EVENTS, getSamplePayload, deliverWebhook } = require("../utils/webhookDelivery");
 
 // ─── POST /api/webhooks/resend/inbound — receive Resend email webhooks ────────
@@ -163,24 +164,26 @@ router.get("/:clientId/:id/logs", verifyToken, async (req, res) => {
 });
 
 // ─── POST /api/webhooks/:clientId/:id/redeliver/:logId — retry failed ───────
-router.post("/:clientId/:id/redeliver/:logId", verifyToken, async (req, res) => {
+router.post("/:clientId/:id/redeliver/:logId", verifyToken, logAction('WEBHOOK_REPLAY'), async (req, res) => {
   try {
-    const log     = await WebhookDeliveryLog.findById(req.params.logId).lean();
+    // Find log (not lean because we need to update it)
+    const log = await WebhookDeliveryLog.findById(req.params.logId);
     const webhook = await WebhookConfig.findById(req.params.id).lean();
     if (!log || !webhook) return res.status(404).json({ success: false, message: "Not found" });
 
-    // Rebuild body from log (we stored the event)
-    const event   = log.event;
-    const payload = getSamplePayload(event);
-    const body = {
-      event,
-      timestamp:  new Date().toISOString(),
-      clientId:   webhook.clientId.toString(),
-      data:       payload,
-      webhookId:  webhook._id,
-      isRedeliver: true
+    // Use stored rawPayload if available, fallback to sample for legacy logs
+    const body = log.rawPayload || {
+      event: log.event,
+      timestamp: new Date().toISOString(),
+      clientId: webhook.clientId.toString(),
+      data: getSamplePayload(log.event),
+      webhookId: webhook._id
     };
 
+    body.isRedeliver = true; // Mark as replayed attempt
+    body.originalDeliveryAt = log.deliveredAt;
+
+    // HMAC signature
     const signature = crypto
       .createHmac("sha256", webhook.secret)
       .update(JSON.stringify(body))
@@ -188,18 +191,26 @@ router.post("/:clientId/:id/redeliver/:logId", verifyToken, async (req, res) => 
 
     const headers = {
       "Content-Type":        "application/json",
-      "X-TopEdge-Event":     event,
+      "X-TopEdge-Event":     log.event,
       "X-TopEdge-Signature": "sha256=" + signature,
       "X-TopEdge-Delivery":  crypto.randomUUID()
     };
 
-    // Fire async
-    deliverWebhook(webhook, body, headers, 1);
+    // Mark current log as replayed to distinguish from fresh failures
+    log.replayed = true;
+    await log.save();
 
-    res.json({ success: true, message: "Redelivery queued" });
+    // Fire async - this will create a BRAND NEW log entry for the retry
+    deliverWebhook(webhook, body, headers, 1, log.clientId);
+
+    res.json({ 
+      success: true, 
+      message: "Redelivery sequence initiated with original payload." 
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
+
 
 module.exports = router;

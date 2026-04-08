@@ -19,7 +19,13 @@ const qrCodeSchema = new mongoose.Schema({
     discountValue:  { type: Number, default: 0 },
     welcomeMessage: { type: String, default: '' },
     tags:           [{ type: String }],
-    utmSource:      { type: String, default: '' }
+    utmSource:      { type: String, default: '' },
+    prefilledText:  { type: String, default: '' },
+    styleConfig: {
+      fgColor: { type: String, default: '#000000' },
+      bgColor: { type: String, default: '#ffffff' },
+      logoUrl: { type: String, default: '' }
+    }
   },
 
   // Generated WhatsApp deep link
