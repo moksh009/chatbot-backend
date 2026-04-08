@@ -209,9 +209,9 @@ app.use('/api/segments', segmentRoutes);
 app.use('/api/webhooks', require('./routes/webhooks'));
 app.use('/api/qrcodes', require('./routes/qrcodes'));
 app.use('/api/catalog', require('./routes/catalog'));
-app.use('/api/payout', protect, require('./routes/payout'));
+// app.use('/api/payout', protect, require('./routes/payout')); // REMOVED: File doesn't exist
 app.use('/api/training', require('./routes/training'));
-app.use('/api/ig-automation', protect, require('./routes/igAutomation'));
+// app.use('/api/ig-automation', protect, require('./routes/igAutomation')); // REMOVED: Redundant and points to missing igAutomation.js (use /api/instagram-automations instead)
 app.use('/api/meta-ads', require('./routes/metaAds'));
 app.use('/api/whitelabel', require('./routes/whitelabel'));
 app.use('/api/reseller', require('./routes/reseller'));
