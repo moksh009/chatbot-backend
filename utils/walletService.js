@@ -13,6 +13,17 @@ async function processOrderForLoyalty(clientId, phone, orderAmount, orderId) {
 
         const config = client.loyaltyConfig;
         
+        // IDEMPOTENCY GUARD: Don't award points twice for the same order
+        const existingWallet = await CustomerWallet.findOne({ 
+            clientId, phone, 
+            'transactions.orderId': orderId,
+            'transactions.type': 'earn'
+        });
+        if (existingWallet) {
+            log.info(`Skipping duplicate points for order ${orderId} on ${phone}`);
+            return { skipped: true };
+        }
+
         // 1. Calculate points: (Amount / Unit) * PointsPerUnit
         // e.g. (1000 / 100) * 10 = 100 points
         const pointsToAward = Math.floor((orderAmount / (config.currencyUnit || 100)) * (config.pointsPerUnit || 10));
@@ -38,8 +49,7 @@ async function processOrderForLoyalty(clientId, phone, orderAmount, orderId) {
             timestamp: new Date()
         });
 
-        // 4. Update Tiers (Simple implementation based on lifetime points)
-        // Hardcoded tiers for now, can be moved to config later
+        // 4. Update Tiers
         if (wallet.lifetimePoints > 5000) wallet.tier = 'Platinum';
         else if (wallet.lifetimePoints > 2000) wallet.tier = 'Gold';
         else if (wallet.lifetimePoints > 500) wallet.tier = 'Silver';
