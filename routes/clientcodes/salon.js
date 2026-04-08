@@ -2268,7 +2268,7 @@ Please provide a helpful, human-like response:`;
 
     let aiResponse = '';
     try {
-      // Using gemini-2.0-flash (gemini-1.5-flash is deprecated and returns 404)
+      // Using gemini-2.0-flash (gemini-2.5-flash is deprecated and returns 404)
       const model = getGeminiModel(resolvedGeminiKey);
       const fullPrompt = `System: You are Ava, a friendly turf booking assistant for Turf Booking in ahmedabad. Be conversational, warm, and helpful. Use natural language, appropriate emojis, and always sound like a real person. Reference the knowledge base for accurate information.\n\nUser: ${prompt}`;
       const result = await model.generateContent(fullPrompt);
@@ -2530,7 +2530,7 @@ const handleWebhook = async (req, res) => {
             "${userText}"
           `.trim();
           try {
-            // Using gemini-2.0-flash (gemini-1.5-flash is deprecated and returns 404)
+            // Using gemini-2.0-flash (gemini-2.5-flash is deprecated and returns 404)
             const model = getGeminiModel(process.env.GEMINI_API_KEY);
             const result = await model.generateContent(prompt);
             const jsonString = result.response.text().replace(/```json/g, '').replace(/```/g, '').trim();

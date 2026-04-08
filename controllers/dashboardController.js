@@ -11,112 +11,121 @@ const logger = require('../utils/logger')('DashboardController');
 /**
  * Handle batch data fetching for multiple widgets in one request
  */
+/**
+ * Handle batch data fetching for multiple widgets in one request
+ */
 exports.getBatchData = async (req, res) => {
   try {
-    const { widgets, days = 30 } = req.body;
-    const clientIdSlug = req.user.clientId; // Slug-based id
+    const { widgets = [], days = 30 } = req.body;
+    const clientIdSlug = req.user.clientId; 
     
     // Resolve actual Client document first to support both slug and ObjectId models
     const clientDoc = await Client.findOne({ clientId: clientIdSlug }).select('_id clientId').lean();
     if (!clientDoc) return res.status(404).json({ success: false, message: "Client context lost" });
 
-    const clientId = clientIdSlug; // String for most models
-    const clientObjectId = clientDoc._id; // ObjectId for Competitor model
+    const clientId = clientIdSlug; 
+    const clientObjectId = clientDoc._id; 
+    
+    // Use the IST-aware helper for accurate daily filtering
+    function startOfDayIST() {
+      const now = new Date();
+      const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
+      ist.setHours(0, 0, 0, 0);
+      return new Date(ist.getTime() - 5.5 * 60 * 60 * 1000);
+    }
+    
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
 
     const data = {};
 
-    // 1. Basic Stats Widget
-    if (widgets.includes('stats_grid')) {
-      const [leads, orders, conversations] = await Promise.all([
-        AdLead.countDocuments({ clientId, createdAt: { $gte: startDate } }),
-        Order.aggregate([
-          { $match: { clientId, createdAt: { $gte: startDate } } },
-          { $group: { _id: null, total: { $sum: "$totalAmount" }, count: { $sum: 1 } } }
-        ]),
-        Conversation.countDocuments({ clientId, createdAt: { $gte: startDate } })
-      ]);
-      
-      data.stats_grid = {
-        leads: { total: leads },
-        orders: { count: orders[0]?.count || 0, revenue: orders[0]?.total || 0 },
-        conversations: { total: conversations }
-      };
-    }
+    // Execute all widget data fetchers in parallel with allSettled to prevent global 500s
+    const results = await Promise.allSettled([
+      // 0: stats_grid
+      widgets.includes('stats_grid') ? (async () => {
+        const [leads, orders, conversations] = await Promise.all([
+          AdLead.countDocuments({ clientId, createdAt: { $gte: startDate } }),
+          Order.aggregate([
+            { $match: { clientId, createdAt: { $gte: startDate } } },
+            { $group: { _id: null, total: { $sum: "$totalPrice" }, count: { $sum: 1 } } }
+          ]),
+          Conversation.countDocuments({ clientId, createdAt: { $gte: startDate } })
+        ]);
+        return {
+          leads: { total: leads },
+          orders: { count: orders[0]?.count || 0, revenue: orders[0]?.total || 0 },
+          conversations: { total: conversations }
+        };
+      })() : Promise.resolve(null),
 
-    // 2. Revenue Trend
-    if (widgets.includes('revenue_chart')) {
-      data.revenue_chart = await Order.aggregate([
+      // 1: revenue_chart
+      widgets.includes('revenue_chart') ? Order.aggregate([
         { $match: { clientId, createdAt: { $gte: startDate } } },
         { $group: { 
             _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
-            revenue: { $sum: "$totalAmount" }
+            revenue: { $sum: "$totalPrice" }
           }
         },
         { $sort: { "_id": 1 } },
         { $project: { date: "$_id", revenue: 1, _id: 0 } }
-      ]);
-    }
+      ]) : Promise.resolve(null),
 
-    // 3. Pending Human Support
-    if (widgets.includes('pending_support')) {
-      data.pending_support = await Conversation.find({ 
+      // 2: pending_support
+      widgets.includes('pending_support') ? Conversation.find({ 
         clientId, 
-        status: 'HUMAN_TAKEOVER' 
-      }).limit(5).sort({ updatedAt: -1 }).lean();
-    }
+        $or: [{ status: 'HUMAN_TAKEOVER' }, { botPaused: true }]
+      }).limit(5).sort({ updatedAt: -1 }).lean() : Promise.resolve(null),
 
-    // 4. Competitor Intel
-    if (widgets.includes('competitor_intel')) {
-      // Competitor model uses ObjectId for clientId
-      data.competitor_intel = await Competitor.find({ clientId: clientObjectId }).limit(3).lean();
-    }
+      // 3: competitor_intel
+      widgets.includes('competitor_intel') ? Competitor.find({ 
+        clientId: clientObjectId,
+        isActive: true
+      }).limit(5).lean() : Promise.resolve(null),
 
-    // 5. Demand Forecast
-    if (widgets.includes('demand_forecast')) {
-      data.demand_forecast = {
-        velocity: 12.4,
-        nextPeak: "Sunday, April 12",
-        criticalSkus: [
-          { name: "Premium Blue Tee", status: "low", count: 12 },
-          { name: "Urban Cargo Pant", status: "critical", count: 3 }
-        ]
-      };
-    }
+      // 4: demand_forecast
+      widgets.includes('demand_forecast') ? (async () => {
+        const recentOrders = await Order.find({ 
+          clientId, 
+          createdAt: { $gte: startDate } 
+        }).select('totalPrice items createdAt').lean();
+        
+        const totalUnits = recentOrders.reduce((acc, o) => acc + (o.items?.reduce((ia, ii) => ia + (ii.quantity || 1), 0) || 1), 0);
+        return {
+          velocity: (totalUnits / days).toFixed(1),
+          orderCount: recentOrders.length,
+          isBaselining: recentOrders.length < 5
+        };
+      })() : Promise.resolve(null),
 
-    // 6. Suppliers Widget
-    if (widgets.includes('suppliers')) {
-        data.suppliers = [
-            { name: "Apex Textiles", reliability: 98, leadTime: "3 days", status: "active" },
-            { name: "Global Fasteners", reliability: 85, leadTime: "7 days", status: "warning" }
-        ];
-    }
+      // 5: top_products
+      widgets.includes('top_products') ? Order.aggregate([
+        { $match: { clientId: clientIdSlug, createdAt: { $gte: startDate } } },
+        { $unwind: "$items" },
+        { $group: { _id: "$items.name", count: { $sum: "$items.quantity" }, total: { $sum: { $multiply: ["$items.quantity", "$items.price"] } } } },
+        { $sort: { count: -1 } },
+        { $limit: 5 }
+      ]) : Promise.resolve(null)
+    ]);
 
-    // 7. Active Flows
-    if (widgets.includes('flows')) {
-         const client = await Client.findOne({ clientId });
-         data.flows = {
-            activeFlows: 4,
-            completionRate: 92,
-            topPerforming: "Order Tracking"
-         };
-    }
+    // Map results back to the data object
+    const widgetOrder = [
+      'stats_grid', 'revenue_chart', 'pending_support', 
+      'competitor_intel', 'demand_forecast', 'top_products'
+    ];
 
-    // 8. Top Products
-    if (widgets.includes('top_products')) {
-        data.top_products = await Order.aggregate([
-            { $match: { clientId: clientIdSlug, createdAt: { $gte: startDate } } },
-            { $unwind: "$items" },
-            { $group: { _id: "$items.name", count: { $sum: 1 }, total: { $sum: "$items.price" } } },
-            { $sort: { count: -1 } },
-            { $limit: 5 }
-        ]);
-    }
+    results.forEach((res, idx) => {
+      const widgetType = widgetOrder[idx];
+      if (res.status === 'fulfilled' && res.value !== null) {
+        data[widgetType] = res.value;
+      } else if (res.status === 'rejected') {
+        logger.error(`Widget ${widgetType} failed:`, res.reason);
+        data[widgetType] = null;
+      }
+    });
 
     res.json({ success: true, data });
   } catch (error) {
-    logger.error("Batch Data Error", error);
+    logger.error("Batch Data Global Error", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
