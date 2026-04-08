@@ -115,6 +115,7 @@ const settingsRoutes = require('./routes/settings');
 app.use('/api/settings', settingsRoutes);
 const flowRoutes = require('./routes/flow');
 app.use('/api/flow', flowRoutes);
+app.use('/api/flows', flowRoutes);
 
 const biRoutes = require('./routes/bi'); // Phase 28 Track 4
 app.use('/api/bi', biRoutes);
