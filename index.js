@@ -65,6 +65,7 @@ function resolveWhatsAppConfig() {
 })();
 
 const path = require('path');
+const { protect } = require('./middleware/auth');
 
 // Middleware
 app.use(cors({
