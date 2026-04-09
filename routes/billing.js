@@ -105,6 +105,28 @@ router.get('/:clientId', protect, async (req, res) => {
 });
 
 /**
+ * GET /api/billing/:clientId/invoices
+ */
+router.get('/:clientId/invoices', protect, async (req, res) => {
+    try {
+        const { clientId } = req.params;
+        const client = await Client.findOne({ clientId });
+        if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+        const Invoice = require('../models/Invoice');
+        const invoices = await Invoice.find({ clientId: client._id }).sort({ createdAt: -1 }).limit(10);
+        
+        res.json({
+            success: true,
+            invoices
+        });
+    } catch (error) {
+        console.error('Invoice Fetch Error:', error);
+        res.status(500).json({ success: false, message: 'Failed to fetch invoices' });
+    }
+});
+
+/**
  * POST /api/billing/subscribe
  * Creates a Razorpay Subscription
  */
