@@ -88,6 +88,14 @@ router.post("/:clientId/complete", protect, async (req, res) => {
         adminPhone: wizardData.adminPhone,
         'brand.adminPhone': wizardData.adminPhone
       }),
+      ...(wizardData.metaAdsToken && {
+        metaAdsConnected:   true,
+        metaAdAccountId:    wizardData.metaAdAccountId,
+        metaAdsToken:       wizardData.metaAdsToken,
+        'social.metaAds.accountId':   wizardData.metaAdAccountId,
+        'social.metaAds.accessToken': wizardData.metaAdsToken,
+      }),
+      ...(wizardData.metaAppId && { metaAppId: wizardData.metaAppId }),
       ...(wizardData.cartTiming && {
         "automationFlows": [
           {
