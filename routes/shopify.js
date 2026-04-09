@@ -164,4 +164,30 @@ router.get('/:clientId/payouts', protect, verifyClientAccess, async (req, res) =
   }
 });
 
+// POST /api/shopify/:clientId/reconnect-store
+router.post('/:clientId/reconnect-store', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    console.log(`[Shopify] Force reconnection triggered for ${clientId}...`);
+    
+    // Call getShopifyClient with forceRefresh = true to trigger credential rotation/refresh
+    await getShopifyClient(clientId, true);
+    
+    // Also trigger a fresh sync of orders and products to verify the new scopes
+    const protocol = req.secure ? 'https' : 'http';
+    const host = req.get('host');
+    if (host) {
+        const baseUrl = `${protocol}://${host}`;
+        axios.post(`${baseUrl}/api/shopify/${clientId}/sync-products`, {}, { headers: { Authorization: req.headers.authorization } }).catch(e => {});
+        axios.post(`${baseUrl}/api/shopify/${clientId}/sync-orders`, {}, { headers: { Authorization: req.headers.authorization } }).catch(e => {});
+    }
+
+    res.json({ success: true, message: 'Store connection refreshed and sync triggered.' });
+  } catch (err) {
+    console.error(`[Shopify Reconnect Error] for ${req.params.clientId}:`, err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;
+
