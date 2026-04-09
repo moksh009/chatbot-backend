@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Segment = require('../models/Segment');
 const AdLead = require('../models/AdLead');
+const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
 const { GoogleGenerativeAI } = require("@google/generative-ai");

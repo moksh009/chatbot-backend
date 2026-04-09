@@ -99,6 +99,7 @@ router.post('/from-segment', protect, async (req, res) => {
         if (!segment) return res.status(404).json({ error: 'Segment not found' });
 
         const count = await AdLead.countDocuments({ ...segment.query, clientId: req.user.clientId });
+        const client = await Client.findOne({ clientId: req.user.clientId });
 
         const limits = await checkLimit(client._id, 'campaigns');
         if (!limits.allowed) {

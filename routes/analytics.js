@@ -64,6 +64,24 @@ router.get('/notifications', protect, async (req, res) => {
   }
 });
 
+// GET /api/analytics/import-sessions
+// @desc    Get CSV import history
+// @access  Private
+router.get('/import-sessions', protect, async (req, res) => {
+    try {
+        let clientId = req.user.clientId;
+        if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
+            clientId = req.query.clientId;
+        }
+        
+        const ImportSession = require('../models/ImportSession');
+        const sessions = await ImportSession.find({ clientId }).sort({ createdAt: -1 }).limit(20);
+        res.json(sessions);
+    } catch (error) {
+        res.status(500).json({ message: 'History fetch failed' });
+    }
+});
+
 // GET /api/analytics/flow-heatmap
 // @desc    Get node visit distribution for visual heatmap overlay
 // @access  Private

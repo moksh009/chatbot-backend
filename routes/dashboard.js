@@ -28,6 +28,7 @@ router.get('/forecast', protect, dashboardController.getForecast);
 router.get('/competitors', protect, dashboardController.getCompetitorIntel); // Alias to original
 router.get('/competitor-intel', protect, dashboardController.getCompetitorIntel);
 router.get('/suppliers', protect, dashboardController.getSuppliers);
+router.get('/restock-drafts', protect, dashboardController.getRestockDrafts);
 router.get('/quality-stats', protect, dashboardController.getQualityStats);
 router.post('/competitors', protect, dashboardController.createCompetitor);
 router.post('/suppliers', protect, dashboardController.createSupplier);

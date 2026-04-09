@@ -36,7 +36,6 @@ const dynamicClientRouter = require('./routes/dynamicClientRouter');
 const templatesRoutes = require('./routes/templates');
 const whatsappRoutes = require('./routes/whatsapp');
 const wooWebhookRoutes = require('./routes/wooWebhook');
-const intelligenceRoutes = require('./routes/intelligence');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -195,15 +194,11 @@ app.use('/api/leads', leadsRoutes);
 const routingRoutes = require('./routes/routingRules');
 app.use('/api/routing', routingRoutes);
 
-// Phase 23: Billing Engine & Webhooks
-app.use('/api/billing', require('./routes/billing'));
 app.use('/api/razorpay', require('./routes/razorpayWebhook'));
 const shopifyPixelRoutes = require('./routes/shopifyPixel');
 app.use('/api/shopify-pixel', shopifyPixelRoutes);
 const wooPixelRoutes = require('./routes/wooPixel');
 app.use('/api/woocommerce-pixel', wooPixelRoutes);
-const segmentRoutes = require('./routes/segments');
-app.use('/api/segments', segmentRoutes);
 
 // Phase 24: Growth & Integration Layer
 app.use('/api/webhooks', require('./routes/webhooks'));

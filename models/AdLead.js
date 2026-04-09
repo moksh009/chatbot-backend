@@ -91,7 +91,8 @@ const adLeadSchema = new mongoose.Schema({
     default: 0
   },
   tags: [{
-    type: String
+    type: String,
+    index: true
   }],
   lastInteraction: {
     type: Date,

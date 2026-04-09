@@ -431,3 +431,75 @@ exports.createSupplier = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+exports.getRestockDrafts = async (req, res) => {
+  try {
+    const clientId = req.user.clientId;
+    const days = 30;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    // 1. Fetch Orders and Suppliers in parallel
+    const [orders, suppliers, clientDoc] = await Promise.all([
+      Order.find({ clientId, createdAt: { $gte: startDate } }).select('items').lean(),
+      Supplier.find({ clientId: req.user._id }).lean(), // Assuming req.user is the client doc from protect middleware
+      Client.findOne({ clientId }).select('_id').lean()
+    ]);
+    
+    // Fallback for supplier search if protect didn't attach full doc
+    const actualSuppliers = suppliers.length > 0 ? suppliers : await Supplier.find({ clientId: clientDoc?._id }).lean();
+
+    // 2. Identify SKUs and Demand
+    const skuMap = {};
+    orders.forEach(o => {
+        o.items?.forEach(item => {
+            if (!skuMap[item.name]) skuMap[item.name] = { name: item.name, count: 0, productId: item.productId };
+            skuMap[item.name].count += (item.quantity || 1);
+        });
+    });
+
+    const drafts = [];
+
+    // 3. For each high demand SKU, check stock and find supplier
+    Object.values(skuMap).forEach(sku => {
+      const dailyDemand = sku.count / days;
+      const stock = Math.floor(sku.count * 1.5); // Mock stock logic
+      const depletionDays = Math.ceil(stock / dailyDemand);
+
+      if (depletionDays <= 15) { // Threshold for restock
+        // Find best supplier for this product
+        const linkedSupplier = actualSuppliers.find(s => 
+          s.products?.some(p => p.productId === sku.productId || p.productTitle === sku.name)
+        ) || actualSuppliers[0]; // Fallback to first partner if no direct link
+
+        if (linkedSupplier) {
+          const quantityToOrder = Math.max(Math.ceil(dailyDemand * 30), 20); // 30 days worth, min 20
+          
+          drafts.push({
+            id: sku.productId || sku.name,
+            productName: sku.name,
+            currentStock: stock,
+            dailyDemand: dailyDemand.toFixed(1),
+            depletionDays,
+            partner: {
+              name: linkedSupplier.name,
+              phone: linkedSupplier.phone,
+              id: linkedSupplier._id
+            },
+            draftMessage: `Hi ${linkedSupplier.name}, this is an automated restock request for ${sku.name}. 
+
+Current Stock: ${stock} units
+Daily Demand: ${dailyDemand.toFixed(1)} units/day
+Estimated Exhaustion: ${depletionDays} days
+
+We would like to place an order for ${quantityToOrder} units to maintain inventory continuity. Please confirm if fulfillment is possible by end of week.`
+          });
+        }
+      }
+    });
+
+    res.json({ success: true, drafts: drafts.slice(0, 5) });
+  } catch (error) {
+    logger.error("Restock Drafts Error", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
