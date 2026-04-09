@@ -44,8 +44,8 @@ router.post('/ask', protect, async (req, res) => {
       ? req.body.clientId 
       : req.user.clientId;
 
-    if (!query || query.trim().length < 3) {
-      return res.status(400).json({ success: false, message: "Please provide a valid question." });
+    if (!query || query.trim().length < 2) {
+      return res.status(400).json({ success: false, message: "Please provide a valid question (at least 2 characters)." });
     }
 
     if (!clientId) {

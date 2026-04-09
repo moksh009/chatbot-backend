@@ -119,14 +119,14 @@ async function processBIQuery(clientId, queryText, apiKey) {
   // Step 3: Execute with 5s Kill Switch
   let rawData;
   try {
-    rawData = await TargetModel.aggregate(pipeline).maxTimeMS(5000);
+    rawData = await TargetModel.aggregate(pipeline).option({ maxTimeMS: 5000 });
   } catch (e) {
     console.error("[BI Engine] Execution Error:", e.message);
     throw new Error(`Data extraction failed: ${e.message}`);
   }
 
   // Step 4: Narrative Generation
-  const narrativeModel = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+  const narrativeModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
   const finalPrompt = `
     Context: You are a BI Assistant.
     User Question: "${queryText}"
@@ -156,7 +156,7 @@ async function generateQuerySuggestions(clientId, apiKey) {
   if (!apiKey) return ["Show my total revenue", "Who are my top 5 customers?", "Sales trend this week"];
 
   const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
   const prompt = `
 Context: You are a BI Assistant for an AI CRM.
