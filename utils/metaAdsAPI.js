@@ -164,6 +164,9 @@ async function syncMetaAds(clientId) {
     console.log(`[MetaAds] Sync complete for client ${clientId}`);
   } catch (err) {
     console.error(`[MetaAds] Sync error for ${clientId}:`, err.message);
+    if (err.response?.data) {
+       console.error(`[MetaAds] Graph API Error Details:`, JSON.stringify(err.response.data, null, 2));
+    }
   }
 }
 

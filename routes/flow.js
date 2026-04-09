@@ -59,6 +59,35 @@ router.post('/ai-save', protect, async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
+
+// GET /api/flow
+// Returns all visual flow configurations for the client
+router.get('/', protect, async (req, res) => {
+  try {
+    const clientId = req.query.clientId || req.user.clientId;
+    
+    // Auth validation
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized access to flows' });
+    }
+
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    res.json({ 
+      success: true, 
+      flows: client.visualFlows || [],
+      legacy: {
+        nodes: client.flowNodes || [],
+        edges: client.flowEdges || []
+      }
+    });
+  } catch (error) {
+    console.error('[Flow API] List error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 router.get('/:clientId/analytics', protect, async (req, res) => {
   try {
     const { clientId } = req.params;
