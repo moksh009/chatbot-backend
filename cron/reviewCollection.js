@@ -19,8 +19,33 @@ module.exports = function scheduleReviewCron() {
         if (!client) continue;
 
         // Check for Human Takeover
-        const conv = await Conversation.findOne({ phone: review.phone, clientId: client._id });
+        const conv = await Conversation.findOne({ phone: review.phone, clientId: client.clientId });
         if (conv && conv.status === 'HUMAN_TAKEOVER') continue;
+
+        // --- PHASE 7: Reputation Shield (Sentiment Filtering) ---
+        if (conv && (conv.sentiment === 'Negative' || conv.sentiment === 'Frustrated')) {
+            console.log(`[ReviewCron] Skipping review for ${review.phone} due to negative sentiment (${conv.sentiment})`);
+            
+            // 1. Mark as skipped
+            await ReviewRequest.findByIdAndUpdate(review._id, { status: "skipped" });
+
+            // 2. Notify Admin
+            const Notification = require('../models/Notification');
+            await Notification.create({
+                clientId: client.clientId,
+                title: '🛑 Review Blocked: Negative Sentiment',
+                message: `Review request for ${review.phone} was automatically blocked. Sentiment: ${conv.sentiment}. Please contact customer to resolve.`,
+                type: 'sentiment',
+                metadata: { phone: review.phone, orderId: review.orderId }
+            });
+
+            // 3. Optional: Send "Make it Right" message
+            const makeItRightMsg = `Hi! We noticed you might have had a less-than-perfect experience recently. We're truly sorry! 🙏 Our team is looking into this. If there's something specific we can fix, please let us know right away.`;
+            await WhatsApp.sendText(client, review.phone, makeItRightMsg);
+            
+            continue;
+        }
+
 
         // Get template or use default
         const template = (client.messageTemplates || []).find(t => t.id === "review_request");

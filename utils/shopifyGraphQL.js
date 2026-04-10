@@ -119,7 +119,67 @@ async function createLoyaltyDiscount(clientId, { code, amount, customerId, daysV
     }
 }
 
+/**
+ * Fetches all store locations for a client.
+ */
+async function getLocations(clientId) {
+    const query = `
+    query {
+      locations(first: 10) {
+        nodes {
+          id
+          name
+          isActive
+        }
+      }
+    }
+    `;
+    try {
+        const result = await executeGraphQL(clientId, query);
+        return result.locations.nodes;
+    } catch (err) {
+        log.error(`Failed to fetch locations for ${clientId}:`, err.message);
+        return [];
+    }
+}
+
+/**
+ * Fetches inventory levels for specific product variants across all locations.
+ */
+async function getInventoryLevels(clientId, variantIds) {
+    const query = `
+    query getInventory($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on ProductVariant {
+          id
+          sku
+          inventoryItem {
+            inventoryLevels(first: 10) {
+              nodes {
+                available
+                location {
+                  name
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    `;
+    try {
+        const result = await executeGraphQL(clientId, query, { ids: variantIds });
+        return result.nodes;
+    } catch (err) {
+        log.error(`Failed to fetch inventory for ${clientId}:`, err.message);
+        return [];
+    }
+}
+
 module.exports = {
     executeGraphQL,
-    createLoyaltyDiscount
+    createLoyaltyDiscount,
+    getLocations,
+    getInventoryLevels
 };
+

@@ -1253,6 +1253,27 @@ const updateOrderStatus = async (req, res) => {
     }
 };
 
+const updateOrderAddress = async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const { shippingAddress } = req.body;
+        const { clientId } = req.clientConfig;
+
+        const order = await Order.findOneAndUpdate(
+            { _id: orderId, clientId },
+            { $set: { shippingAddress } },
+            { new: true }
+        );
+
+        if (!order) return res.status(404).json({ error: 'Order not found' });
+
+        res.json({ success: true, order });
+    } catch (error) {
+        console.error('[UpdateOrderAddress] Error:', error);
+        res.status(500).json({ error: 'Failed to update order address' });
+    }
+};
+
 module.exports = {
     handleWebhook,
     handleShopifyLinkOpenedWebhook,
@@ -1264,5 +1285,6 @@ module.exports = {
     getCartSnapshot,
     restoreCart,
     logRestoreEvent,
-    updateOrderStatus
+    updateOrderStatus,
+    updateOrderAddress
 };

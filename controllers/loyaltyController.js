@@ -3,6 +3,7 @@ const { getWallet, redeemPoints, processOrderForLoyalty } = require('../utils/wa
 const CustomerWallet = require('../models/CustomerWallet');
 const Client = require('../models/Client');
 const Order = require('../models/Order');
+const ReviewRequest = require('../models/ReviewRequest');
 const log = require('../utils/logger')('LoyaltyController');
 const WhatsApp = require('../utils/whatsapp');
 
@@ -10,24 +11,27 @@ const WhatsApp = require('../utils/whatsapp');
  * GET /api/loyalty/stats
  * Real aggregate stats for the Loyalty Hub dashboard.
  */
+// ✅ Phase R2: Fixed clientId ObjectId mismatch in loyalty stats — 2026-04-10
+const { resolveClient, startOfDayIST } = require('../utils/queryHelpers');
+
 async function getLoyaltyStats(req, res) {
-    const clientId = req.query.clientId || req.user?.clientId;
-    if (!clientId) return res.status(400).json({ message: 'Missing clientId' });
-
     try {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+        const { client, clientOid } = await resolveClient(req);
 
-        // Run all aggregations in parallel for speed
+        const today = startOfDayIST();
+
+        // Run all aggregations in parallel for speed — using client.clientId (String slug)
         const [
             walletStats,
             issuedTodayResult,
             redemptionStats,
+            recentTransactions,
             topCustomers
         ] = await Promise.all([
+
             // Total points in circulation, active members
             CustomerWallet.aggregate([
-                { $match: { clientId } },
+                { $match: { clientId: client.clientId } },
                 { $group: {
                     _id: null,
                     totalPoints: { $sum: '$balance' },
@@ -37,9 +41,9 @@ async function getLoyaltyStats(req, res) {
             ]),
             // Points issued today
             CustomerWallet.aggregate([
-                { $match: { clientId } },
+                { $match: { clientId: client.clientId } },
                 { $unwind: '$transactions' },
-                { $match: { 
+                { $match: {
                     'transactions.type': 'earn',
                     'transactions.timestamp': { $gte: today }
                 }},
@@ -47,18 +51,34 @@ async function getLoyaltyStats(req, res) {
             ]),
             // Redemption stats
             CustomerWallet.aggregate([
-                { $match: { clientId } },
+                { $match: { clientId: client.clientId } },
                 { $unwind: '$transactions' },
                 { $match: { 'transactions.type': 'redeem' } },
-                { $group: { 
-                    _id: null, 
+                { $group: {
+                    _id: null,
                     totalRedeemed: { $sum: { $abs: '$transactions.amount' } },
                     redemptionCount: { $sum: 1 },
                     uniqueRedeemers: { $addToSet: '$phone' }
                 }}
             ]),
+            // Recent Transactions (Global)
+            CustomerWallet.aggregate([
+                { $match: { clientId: client.clientId } },
+                { $unwind: '$transactions' },
+                { $sort: { 'transactions.timestamp': -1 } },
+                { $limit: 10 },
+                { $project: {
+                    _id: 0,
+                    phone: 1,
+                    type: '$transactions.type',
+                    amount: '$transactions.amount',
+                    reason: '$transactions.reason',
+                    timestamp: '$transactions.timestamp'
+                }}
+            ]),
             // Top 5 customers by balance
-            CustomerWallet.find({ clientId, balance: { $gt: 0 } })
+            CustomerWallet.find({ clientId: client.clientId, balance: { $gt: 0 } })
+
                 .sort({ balance: -1 })
                 .limit(5)
                 .select('phone balance tier lifetimePoints')
@@ -68,9 +88,9 @@ async function getLoyaltyStats(req, res) {
         const ws = walletStats[0] || { totalPoints: 0, activeMembers: 0, totalMembers: 0 };
         const rd = redemptionStats[0] || { totalRedeemed: 0, redemptionCount: 0, uniqueRedeemers: [] };
         const issuedToday = issuedTodayResult[0]?.issuedToday || 0;
-        
+
         // Redemption velocity = % of members who have ever redeemed
-        const redemptionVelocity = ws.totalMembers > 0 
+        const redemptionVelocity = ws.totalMembers > 0
             ? ((rd.uniqueRedeemers.length / ws.totalMembers) * 100).toFixed(1)
             : 0;
 
@@ -82,10 +102,66 @@ async function getLoyaltyStats(req, res) {
             totalRedeemed: rd.totalRedeemed,
             redemptionCount: rd.redemptionCount,
             redemptionVelocity: parseFloat(redemptionVelocity),
+            recentTransactions: recentTransactions || [],
             topCustomers
         });
+
     } catch (err) {
         log.error('Stats error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+}
+
+/**
+ * GET /api/loyalty/reputation-stats
+ * Returns sentiment-based review funnel data.
+ */
+async function getReputationStats(req, res) {
+    try {
+        const { client } = await resolveClient(req);
+        const clientId = client.clientId;
+
+        const [counts, recentReviews] = await Promise.all([
+            ReviewRequest.aggregate([
+                { $match: { clientId } },
+                { $group: {
+                    _id: "$status",
+                    count: { $sum: 1 }
+                }}
+            ]),
+            ReviewRequest.find({ clientId, status: { $regex: /responded/ } })
+                .sort({ updatedAt: -1 })
+                .limit(10)
+                .lean()
+        ]);
+
+        // Format counts into a usable object
+        const stats = {
+            scheduled: 0,
+            sent: 0,
+            positive: 0,
+            negative: 0,
+            skipped: 0
+        };
+
+        counts.forEach(c => {
+            if (c._id === 'scheduled') stats.scheduled = c.count;
+            if (c._id === 'sent') stats.sent = c.count;
+            if (c._id === 'responded_positive') stats.positive = c.count;
+            if (c._id === 'responded_negative') stats.negative = c.count;
+            if (c._id === 'skipped') stats.skipped = c.count;
+        });
+
+        res.json({
+            summary: stats,
+            totalRequests: stats.scheduled + stats.sent + stats.positive + stats.negative,
+            sentimentRatio: stats.positive + stats.negative > 0 
+                ? ((stats.positive / (stats.positive + stats.negative)) * 100).toFixed(1)
+                : 100,
+            recentReviews
+        });
+    } catch (err) {
+        log.error('Reputation stats error:', err.message);
         res.status(500).json({ error: err.message });
     }
 }
@@ -452,5 +528,6 @@ module.exports = {
     redeemLoyaltyPoints,
     adjustWalletBalance,
     generateAIRewardCode,
-    getLoyaltyStatus
+    getLoyaltyStatus,
+    getReputationStats
 };

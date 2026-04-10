@@ -9,7 +9,8 @@ const {
     redeemLoyaltyPoints,
     adjustWalletBalance,
     generateAIRewardCode,
-    getLoyaltyStatus
+    getLoyaltyStatus,
+    getReputationStats
 } = require('../controllers/loyaltyController');
 const { protect } = require('../middleware/auth');
 
@@ -26,5 +27,8 @@ router.post('/redeem', protect, redeemLoyaltyPoints);
 // Admin-Only Adjustment & Rewards
 router.post('/adjust', protect, adjustWalletBalance);
 router.post('/generate-reward', protect, generateAIRewardCode);
+
+// Reputation & Review Stats
+router.get('/reputation-stats', protect, getReputationStats);
 
 module.exports = router;

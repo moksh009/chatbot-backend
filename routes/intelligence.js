@@ -51,4 +51,23 @@ router.post('/dna/:phone/recompute', protect, async (req, res) => {
   }
 });
 
+/**
+ * GET /api/intelligence/footprint
+ * Returns the bot efficiency metrics and drop-off analysis.
+ */
+router.get('/footprint', protect, async (req, res) => {
+  try {
+    const { getBotEfficiency } = require('../utils/footprintEngine');
+    const footprint = await getBotEfficiency(req.user.clientId);
+    
+    if (!footprint) {
+      return res.status(500).json({ success: false, message: 'Failed to analyze footprint' });
+    }
+
+    res.json({ success: true, footprint });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 module.exports = router;

@@ -22,13 +22,13 @@ router.get("/:clientId", protect, async (req, res) => {
       todayRev, codOrders,
       hotLeads
     ] = await Promise.allSettled([
-      safeCount(AdLead, { clientId: clientOid, createdAt: { $gte: today } }),
-      safeCount(AdLead, { clientId: clientOid, createdAt: { $gte: yesterday, $lt: today } }),
-      safeCount(AdLead, { clientId: clientOid, cartStatus: "cart_added", lastMessageAt: { $gte: new Date(Date.now() - 3*3600000) } }),
-      safeCount(Conversation, { clientId: clientOid, botPaused: true, assignedTo: null }),
-      Order.aggregate([{ $match: { clientId: clientOid, createdAt: { $gte: today } } }, { $group: { _id: null, total: { $sum: "$totalPrice" } } }]).catch(() => []),
-      safeCount(Order, { clientId: clientOid, paymentMethod: /cod/i, createdAt: { $gte: today } }),
-      safeCount(AdLead, { clientId: clientOid, leadScore: { $gte: 70 } })
+      safeCount(AdLead, { clientId: client.clientId, createdAt: { $gte: today } }),
+      safeCount(AdLead, { clientId: client.clientId, createdAt: { $gte: yesterday, $lt: today } }),
+      safeCount(AdLead, { clientId: client.clientId, cartStatus: "cart_added", lastMessageAt: { $gte: new Date(Date.now() - 3*3600000) } }),
+      safeCount(Conversation, { clientId: client.clientId, botPaused: true, assignedTo: null }),
+      Order.aggregate([{ $match: { clientId: client.clientId, createdAt: { $gte: today } } }, { $group: { _id: null, total: { $sum: "$totalPrice" } } }]).catch(() => []),
+      safeCount(Order, { clientId: client.clientId, paymentMethod: /cod/i, createdAt: { $gte: today } }),
+      safeCount(AdLead, { clientId: client.clientId, leadScore: { $gte: 70 } })
     ]);
     
     const get = (r, fb) => r.status === "fulfilled" ? r.value : fb;

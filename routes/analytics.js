@@ -13,12 +13,10 @@ const { listEvents } = require('../utils/googleCalendar');
 const { protect } = require('../middleware/auth');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
-// Utility function to initialize Gemini API with fallback key
-const getGeminiClient = async (req) => {
-  const clientId = req.user.clientId;
-  const client = await Client.findOne({ clientId });
-  // trim() prevents invisible copy-paste spaces causing API_KEY_INVALID
-  const apiKey = (client?.openaiApiKey?.trim()) || (process.env.GEMINI_API_KEY?.trim());
+// Platform-funded analytics routes always use the platform API key
+const getGeminiClient = () => {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey) throw new Error('Platform GEMINI_API_KEY is not configured');
   return new GoogleGenerativeAI(apiKey);
 };
 
@@ -1716,24 +1714,24 @@ router.get("/:clientId/home", protect, async (req, res) => {
       topProductsRaw,
       realtimeAgg
     ] = await Promise.all([
-      AdLead.countDocuments({ clientId: clientOid }),
-      AdLead.countDocuments({ clientId: clientOid, createdAt: { $gte: today } }),
+      AdLead.countDocuments({ clientId: client.clientId }),
+      AdLead.countDocuments({ clientId: client.clientId, createdAt: { $gte: today } }),
       Order.aggregate([
-        { $match: { clientId: clientOid, createdAt: { $gte: today } } },
+        { $match: { clientId: client.clientId, createdAt: { $gte: today } } },
         { $group: { _id: null, total: { $sum: "$totalPrice" }, count: { $sum: 1 } } }
       ]),
-      Conversation.countDocuments({ clientId: clientOid }),
-      Conversation.find({ clientId: clientOid, status: 'HUMAN_TAKEOVER' }).sort({ lastMessageAt: -1 }).limit(10),
-      AdLead.find({ clientId: clientOid, leadScore: { $gte: 60 } }).sort({ leadScore: -1 }).limit(5),
+      Conversation.countDocuments({ clientId: client.clientId }),
+      Conversation.find({ clientId: client.clientId, status: 'HUMAN_TAKEOVER' }).sort({ lastMessageAt: -1 }).limit(10),
+      AdLead.find({ clientId: client.clientId, leadScore: { $gte: 60 } }).sort({ leadScore: -1 }).limit(5),
       Order.aggregate([
-        { $match: { clientId: clientOid } },
+        { $match: { clientId: client.clientId } },
         { $unwind: "$items" },
         { $group: { _id: "$items.name", revenue: { $sum: { $multiply: ["$items.price", "$items.quantity"] } }, sold: { $sum: "$items.quantity" } } },
         { $sort: { revenue: -1 } },
         { $limit: 10 }
       ]),
       AdLead.aggregate([
-        { $match: { clientId: clientOid } },
+        { $match: { clientId: client.clientId } },
         { $group: { 
             _id: null, 
             addToCarts: { $sum: "$addToCartCount" }, 

@@ -41,10 +41,12 @@ const PLAN_LIMITS = {
  */
 async function checkLimit(clientId, limitType) {
   // --- BLOCK 6: ENTERPRISE OVERRIDE & GOD MODE ---
+  // delitech_smarthomes and topedge_admin are LIFETIME ENTERPRISE — never gated, never billed
   const Client = require('../models/Client');
   const client = await Client.findOne({ clientId });
   
-  if (client?.isLifetimeAdmin || ['topedge_admin'].includes(clientId)) {
+  const LIFETIME_CLIENTS = ['topedge_admin', 'delitech_smarthomes'];
+  if (client?.isLifetimeAdmin || LIFETIME_CLIENTS.includes(clientId)) {
     return { allowed: true, limit: Infinity, usage: 0, isOverride: true };
   }
 

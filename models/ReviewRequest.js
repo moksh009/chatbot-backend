@@ -1,9 +1,9 @@
 const mongoose = require("mongoose");
 
 const ReviewRequestSchema = new mongoose.Schema({
-  clientId: { type: mongoose.Schema.Types.ObjectId, ref: "Client", required: true },
+  clientId: { type: String, required: true },
   phone: { type: String, required: true },
-  orderId: { type: mongoose.Schema.Types.ObjectId, ref: "Order" },
+  orderId: { type: String },
   orderNumber: String,
   productName: String,
   reviewUrl: String,

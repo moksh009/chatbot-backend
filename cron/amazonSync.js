@@ -4,6 +4,8 @@ const Order = require('../models/Order');
 const AmazonSPAPI = require('../utils/amazonSPAPI');
 const log = require('../utils/logger')('AmazonSync');
 const { trackEcommerceEvent } = require('../utils/analyticsHelper');
+const { processOrderForLoyalty } = require('../utils/walletService');
+
 
 /**
  * Amazon Order Sync Cron (Phase 2 Foundation)
@@ -74,7 +76,18 @@ const scheduleAmazonSync = () => {
                         }
                     }
 
+                    // Integration Hook: Award Loyalty Points for Amazon Orders
+                    if (newOrder.customerPhone && newOrder.amount > 0) {
+                        processOrderForLoyalty(
+                            client.clientId, 
+                            newOrder.customerPhone, 
+                            newOrder.amount, 
+                            newOrder.orderId
+                        ).catch(e => log.error('Amazon loyalty credit failed:', e.message));
+                    }
+
                     await trackEcommerceEvent(client.clientId, { amazonOrdersSynced: 1 });
+
                 }
             }
         } catch (err) {

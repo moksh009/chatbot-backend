@@ -298,7 +298,8 @@ Format response as VALID JSON ONLY with these exact keys:
     },
 
     // ── AUTOMATIONS: EXTERNAL TRIGGERS ──────────────────────────────────────
-    ...(wizardData.selectedTemplates?.includes('cart_recovery_1') ? [{
+    // Auto-generate if timing data exists, even if selection was skipped in wizard
+    ...((wizardData.cartTiming?.msg1 || wizardData.selectedTemplates?.includes('cart_recovery_1')) ? [{
       id:   `trig_cart_${ts}`,
       type: "trigger",
       position: { x: -800, y: 1200 },
@@ -309,7 +310,7 @@ Format response as VALID JSON ONLY with these exact keys:
         event: "checkout_abandoned"
       }
     }] : []),
-    ...(wizardData.selectedTemplates?.includes('order_confirmation') ? [{
+    ...((wizardData.selectedTemplates?.includes('order_confirmation')) ? [{
       id:   `trig_order_${ts}`,
       type: "trigger",
       position: { x: -400, y: 1600 },
@@ -320,7 +321,7 @@ Format response as VALID JSON ONLY with these exact keys:
         event: "order_created"
       }
     }] : []),
-    ...(wizardData.selectedTemplates?.includes('review_request') ? [{
+    ...((wizardData.googleReviewUrl || wizardData.selectedTemplates?.includes('review_request')) ? [{
       id:   `trig_delivered_${ts}`,
       type: "trigger",
       position: { x: 400, y: 1600 },
@@ -333,7 +334,7 @@ Format response as VALID JSON ONLY with these exact keys:
     }] : []),
 
     // ── AUTOMATIONS: MESSAGE NODES ──────────────────────────────────────────
-    ...(wizardData.selectedTemplates?.includes('cart_recovery_1') ? [{
+    ...((wizardData.cartTiming?.msg1 || wizardData.selectedTemplates?.includes('cart_recovery_1')) ? [{
       id:   IDS.CART_1,
       type: "message",
       position: { x: -400, y: 1200 },
@@ -344,7 +345,7 @@ Format response as VALID JSON ONLY with these exact keys:
         source: "automation_cart_msg1"
       }
     }] : []),
-    ...(wizardData.selectedTemplates?.includes('cart_recovery_2') ? [{
+    ...((wizardData.cartTiming?.msg2 || wizardData.selectedTemplates?.includes('cart_recovery_2')) ? [{
       id:   IDS.CART_2,
       type: "message",
       position: { x: 0, y: 1200 },
@@ -355,7 +356,7 @@ Format response as VALID JSON ONLY with these exact keys:
         source: "automation_cart_msg2"
       }
     }] : []),
-    ...(wizardData.selectedTemplates?.includes('cart_recovery_3') ? [{
+    ...((wizardData.cartTiming?.msg3 || wizardData.selectedTemplates?.includes('cart_recovery_3')) ? [{
       id:   IDS.CART_3,
       type: "message",
       position: { x: 400, y: 1200 },
@@ -376,7 +377,7 @@ Format response as VALID JSON ONLY with these exact keys:
         text:  content.order_confirmed
       }
     }] : []),
-    ...(wizardData.selectedTemplates?.includes('cod_to_prepaid') ? [{
+    ...((wizardData.razorpayKeyId || wizardData.cashfreeAppId || wizardData.selectedTemplates?.includes('cod_to_prepaid')) ? [{
       id:   IDS.COD_NUDGE,
       type: "interactive",
       position: { x: 0, y: 1800 },
@@ -391,7 +392,7 @@ Format response as VALID JSON ONLY with these exact keys:
         ]
       }
     }] : []),
-    ...(wizardData.selectedTemplates?.includes('review_request') ? [{
+    ...((wizardData.googleReviewUrl || wizardData.selectedTemplates?.includes('review_request')) ? [{
       id:   IDS.REVIEW,
       type: "message",
       position: { x: 400, y: 1800 },
@@ -441,14 +442,14 @@ Format response as VALID JSON ONLY with these exact keys:
     { id: `e_esc_alt_final_${ts}`,source: IDS.ESCALATE_ALERT, target: IDS.ESCALATE_FINAL, animated: true },
 
     // ── AUTOMATION EDGES ─────────────────────────────────────────────────────
-    ...(wizardData.selectedTemplates?.includes('cart_recovery_1') ? [{ id: `e_trig_cart_c1_${ts}`, source: `trig_cart_${ts}`, target: IDS.CART_1, animated: true }] : []),
-    ...(wizardData.selectedTemplates?.includes('cart_recovery_1') && wizardData.selectedTemplates?.includes('cart_recovery_2') ? [{ id: `e_c1_c2_${ts}`, source: IDS.CART_1, target: IDS.CART_2, animated: true }] : []),
-    ...(wizardData.selectedTemplates?.includes('cart_recovery_2') && wizardData.selectedTemplates?.includes('cart_recovery_3') ? [{ id: `e_c2_c3_${ts}`, source: IDS.CART_2, target: IDS.CART_3, animated: true }] : []),
+    ...((wizardData.cartTiming?.msg1 || wizardData.selectedTemplates?.includes('cart_recovery_1')) ? [{ id: `e_trig_cart_c1_${ts}`, source: `trig_cart_${ts}`, target: IDS.CART_1, animated: true }] : []),
+    ...((wizardData.cartTiming?.msg1 && wizardData.cartTiming?.msg2) ? [{ id: `e_c1_c2_${ts}`, source: IDS.CART_1, target: IDS.CART_2, animated: true }] : []),
+    ...((wizardData.cartTiming?.msg2 && wizardData.cartTiming?.msg3) ? [{ id: `e_c2_c3_${ts}`, source: IDS.CART_2, target: IDS.CART_3, animated: true }] : []),
 
     ...(wizardData.selectedTemplates?.includes('order_confirmation') ? [{ id: `e_trig_order_conf_${ts}`, source: `trig_order_${ts}`, target: IDS.ORDER_CONFIRMED, animated: true }] : []),
-    ...(wizardData.selectedTemplates?.includes('cod_to_prepaid') ? [{ id: `e_trig_order_nudge_${ts}`, source: `trig_order_${ts}`, target: IDS.COD_NUDGE, animated: true }] : []),
+    ...((wizardData.razorpayKeyId || wizardData.cashfreeAppId || wizardData.selectedTemplates?.includes('cod_to_prepaid')) ? [{ id: `e_trig_order_nudge_${ts}`, source: `trig_order_${ts}`, target: IDS.COD_NUDGE, animated: true }] : []),
     
-    ...(wizardData.selectedTemplates?.includes('review_request') ? [{ id: `e_trig_deliv_rev_${ts}`,  source: `trig_delivered_${ts}`, target: IDS.REVIEW, animated: true }] : [])
+    ...((wizardData.googleReviewUrl || wizardData.selectedTemplates?.includes('review_request')) ? [{ id: `e_trig_deliv_rev_${ts}`,  source: `trig_delivered_${ts}`, target: IDS.REVIEW, animated: true }] : [])
   ].filter(e => e !== null);
 
   return { nodes, edges };

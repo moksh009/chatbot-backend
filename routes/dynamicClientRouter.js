@@ -129,6 +129,18 @@ router.get('/config', protect, async (req, res) => {
   }
 });
 
+// Get Client Configuration (Used for Dashboard initialization)
+router.get('/config', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ error: 'Client not found' });
+    res.json(client);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch config' });
+  }
+});
+
 router.patch('/config', protect, async (req, res) => {
   try {
     const { clientId } = req.params;
@@ -369,6 +381,20 @@ router.patch('/orders/:orderId/status', async (req, res) => {
   } catch (error) {
     console.error('Error updating order status:', error);
     res.status(500).json({ error: 'Failed' });
+  }
+});
+
+router.patch('/orders/:orderId/address', async (req, res) => {
+  try {
+    const { businessType } = req.clientConfig;
+    if (businessType === 'ecommerce') {
+      await genericEcommerceEngine.updateOrderAddress(req, res);
+    } else {
+      res.status(400).json({ error: 'Orders not supported for this business type' });
+    }
+  } catch (error) {
+    console.error('Error updating order address:', error);
+    res.status(500).json({ error: 'Failed to update address' });
   }
 });
 

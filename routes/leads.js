@@ -374,6 +374,63 @@ router.post('/bulk-template', protect, async (req, res) => {
     }
 });
 
+// POST /api/leads/bulk-sequence
+// Triggers an automated multi-step sequence for multiple leads
+router.post('/bulk-sequence', protect, async (req, res) => {
+    try {
+        const { leadIds, sequenceName, steps } = req.body;
+        const clientId = req.user.clientId;
+
+        if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
+            return res.status(400).json({ success: false, message: 'Valid leadIds required' });
+        }
+
+        const FollowUpSequence = require('../models/FollowUpSequence');
+        const leads = await AdLead.find({ _id: { $in: leadIds }, clientId });
+
+        const results = [];
+        for (const lead of leads) {
+            // Calculate send times for steps based on delays
+            let cumulativeDelay = 0;
+            const sequenceSteps = steps.map(step => {
+                const delayMs = (step.delayValue || 0) * (step.delayUnit === 'm' ? 60000 : step.delayUnit === 'h' ? 3600000 : 86400000);
+                cumulativeDelay += delayMs;
+                
+                return {
+                    ...step,
+                    sendAt: new Date(Date.now() + cumulativeDelay),
+                    status: 'pending'
+                };
+            });
+
+            const sequence = await FollowUpSequence.create({
+                clientId,
+                leadId: lead._id,
+                phone: lead.phoneNumber,
+                email: lead.email,
+                name: sequenceName || 'Abandoned Cart Recovery',
+                status: 'active',
+                steps: sequenceSteps
+            });
+
+            // Mark lead as recovery-in-progress
+            await AdLead.findByIdAndUpdate(lead._id, { 
+                cartStatus: 'abandoned',
+                recoveryStep: 1,
+                recoveryStartedAt: new Date()
+            });
+
+            results.push(sequence._id);
+        }
+
+        res.json({ success: true, count: results.length, message: `Started ${results.length} recovery sequences.` });
+    } catch (err) {
+        console.error('[BulkSequence] Error:', err);
+        res.status(500).json({ success: false, message: 'Failed to start bulk sequence' });
+    }
+});
+
+
 // GET /api/leads/high-intent
 router.get('/high-intent', protect, async (req, res) => {
     try {

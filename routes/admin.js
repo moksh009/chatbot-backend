@@ -1109,6 +1109,19 @@ router.put('/client/settings', protect, async (req, res) => {
 
     if (!updated) return res.status(404).json({ message: 'Client not found' });
 
+    // --- PHASE 30: AUTOMATIC PERSONA ALIGNMENT ---
+    if (req.body.ai?.persona) {
+      try {
+        const { syncPersonaToFlows } = require('../utils/personaEngine');
+        // Synchronize in background to keep API response fast
+        syncPersonaToFlows(targetClientId, req.body.ai.persona).catch(e => {
+            log.error('Auto persona sync background failed', e.message);
+        });
+      } catch (err) {
+        log.warn('Persona engine utility missing or failed to load during auto-sync');
+      }
+    }
+
     res.json({ success: true, ai: updated.ai });
   } catch (err) {
     log.error('Client settings update error', { error: err.message });

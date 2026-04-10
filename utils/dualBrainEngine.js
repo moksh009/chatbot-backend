@@ -23,6 +23,8 @@ const { detectLanguage, translateToUserLanguage, normalizeIntent, getLanguageIns
 const { analyzeSentiment } = require("./sentimentEngine");
 const { extractOrderDetails } = require("./orderParser"); // Phase 28 Track 5
 const { executeNativeOrder } = require("./orderCreator"); // Phase 28 Track 5
+const TrainingCase = require("../models/TrainingCase");
+const BotAnalytics = require("../models/BotAnalytics");
 const { buildPersonaSystemPrompt, applyPersonaPostProcess } = require("./personaEngine"); // Phase 29 Track 3
 const { getRelevantExamples, buildFewShotPrompt } = require("./trainingEngine"); // Phase 29 Track 4
 const { generatePaymentLink } = require("./paymentLinkGenerator"); // Phase 29 Track 7
@@ -2128,7 +2130,27 @@ CUSTOMER MESSAGE:
 REPLY:
 `;
 
+    // --- PHASE 30: LOG AI START ---
+    try {
+      await BotAnalytics.create({
+        clientId: client.clientId,
+        phoneNumber: phone,
+        event: 'AI_START',
+        metadata: { text: text.substring(0, 100) }
+      });
+    } catch (_) {}
+
     let reply = await generateText(prompt, client.geminiApiKey || client.config?.geminiApiKey);
+    
+    // --- PHASE 30: LOG AI SUCCESS ---
+    try {
+      await BotAnalytics.create({
+        clientId: client.clientId,
+        phoneNumber: phone,
+        event: 'AI_SUCCESS',
+        metadata: { replyLength: reply.length }
+      });
+    } catch (_) {}
     
     // Phase 29 Track 3: Post-Process Persona Consistency
     reply = applyPersonaPostProcess(reply, persona);
@@ -2151,6 +2173,16 @@ REPLY:
     await sendWhatsAppText(client, phone, reply);
   } catch (err) {
     log.error('AI Fallback error:', { error: err.message });
+    // --- PHASE 30: LOG AI FAILURE ---
+    try {
+      await BotAnalytics.create({
+        clientId: client.clientId,
+        phoneNumber: phone,
+        event: 'AI_FAILURE',
+        metadata: { error: err.message, text: text.substring(0, 50) }
+      });
+    } catch (_) {}
+
     const updatedConvo = await Conversation.findOneAndUpdate({ phone, clientId: client.clientId }, { $inc: { consecutiveFailedMessages: 1 } }, { new: true });
     if (updatedConvo && updatedConvo.consecutiveFailedMessages >= 3) {
       await handleUniversalEscalate(client, phone, updatedConvo);

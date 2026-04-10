@@ -467,12 +467,13 @@ router.post('/:clientId/ab-test', protect, async (req, res) => {
 });
 
 
-// @route   GET /api/campaigns/overview
+// @route   GET /api/campaigns/:clientId/overview
 // @desc    Get aggregate campaign metrics and Meta health
 // @access  Private
-router.get('/overview', protect, async (req, res) => {
+router.get('/:clientId/overview', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    const { client } = await resolveClient(req);
+    const clientId = client.clientId;
     const campaigns = await Campaign.find({ clientId }).sort({ createdAt: -1 });
     const CampaignMessage = require('../models/CampaignMessage');
 
