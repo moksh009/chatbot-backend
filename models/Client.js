@@ -160,6 +160,10 @@ const ClientSchema = new mongoose.Schema({
   generatedDiscounts: { type: [mongoose.Schema.Types.Mixed], default: [] },
   aiUseGeneratedDiscounts: { type: Boolean, default: false }, // AI uses latest generated discount code when true
   
+  // Phase 3: Operational Admin Alerts
+  adminAlertWhatsapp: { type: String, default: "" }, // comma separated numbers
+  adminAlertEmail: { type: String, default: "" }, // comma separated emails
+  
   // Phase 25 Track 7: AI Price Negotiation Limits
   negotiationSettings: {
     enabled: { type: Boolean, default: false },
@@ -434,6 +438,19 @@ const ClientSchema = new mongoose.Schema({
     requireAddress: { type: Boolean, default: true },
     confirmationTemplate: { type: String, default: "" }
   },
+  
+  // Phase 2: SKU-to-Template Trigger Engine
+  skuAutomations: [{
+    sku: { type: String, required: true },
+    templateName: { type: String, required: true },
+    language: { type: String, default: 'en' },
+    triggerEvent: { type: String, enum: ['paid', 'shipped', 'abandoned', 'stock_alert'], default: 'paid' },
+    isActive: { type: Boolean, default: true },
+    description: String,
+    imageUrl: String, // Optional override image
+    inventoryThreshold: { type: Number, default: 0 },
+    supplierPhone: { type: String, default: "" }
+  }],
 
   // Phase 29: Dashboard Personalization
   dashboardConfig: {
@@ -455,7 +472,12 @@ const ClientSchema = new mongoose.Schema({
       agentCorrection: { type: String },
       context: { type: String },
       createdAt: { type: Date, default: Date.now }
-    }]
+    }],
+    supplierAlerts: {
+      enabled: { type: Boolean, default: true },
+      autoSend: { type: Boolean, default: false },
+      notificationSent: { type: Boolean, default: false }
+    }
   },
   
   // Phase 29: B2B Supplier Channel

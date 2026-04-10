@@ -15,6 +15,8 @@ const { uploadToCloud } = require('../utils/cloudinary');
 const { correctAIResponse } = require('../controllers/flowFixController');
 const Notification = require('../models/Notification');
 
+router.post('/correct-ai', protect, correctAIResponse);
+
 const upload = multer({ storage: multer.memoryStorage() });
 
 // @route   GET /api/conversations
@@ -55,13 +57,37 @@ router.get('/', protect, async (req, res) => {
       .sort({ lastMessageAt: -1 })
       .skip(skip)
       .limit(limit)
-      .populate('assignedTo', 'name');
+      .populate('assignedTo', 'name')
+      .lean();
+
+    // Enterprise Enrichment: Attach Lead Intent Data
+    const AdLead = require('../models/AdLead');
+    const enrichedConversations = await Promise.all(conversations.map(async (conv) => {
+        const lead = await AdLead.findOne({ phoneNumber: conv.phone, clientId: conv.clientId });
+        if (lead) {
+            // We can't use virtuals on lean objects easily, so we manually derive or just use leadScore/tags
+            // Actually, let's manually derive the status for the UI to keep it consistent with Dashboard
+            let derivedIntent = 'Browsing';
+            if (lead.cartStatus === 'abandoned') derivedIntent = 'Cart Abandoned';
+            else if (lead.checkoutInitiatedCount > 0 && !lead.isOrderPlaced) derivedIntent = 'High Intent';
+            else if (lead.addToCartCount > 0) derivedIntent = 'Browsing with Intent';
+            else if (lead.cartStatus === 'recovered') derivedIntent = 'Recovered Cart';
+            
+            return {
+                ...conv,
+                leadScore: lead.leadScore,
+                derivedLeadState: derivedIntent,
+                leadTags: lead.tags
+            };
+        }
+        return conv;
+    }));
 
     const total = await Conversation.countDocuments(query);
 
     res.json({
       success: true,
-      data: conversations,
+      data: enrichedConversations,
       pagination: {
         total,
         page,

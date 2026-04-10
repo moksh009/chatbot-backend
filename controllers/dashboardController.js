@@ -270,18 +270,17 @@ exports.getForecast = async (req, res) => {
 exports.getCompetitorIntel = async (req, res) => {
   try {
     const { competitorUrl } = req.query;
-    // In a real scenario, this would trigger a scrape or fetch from a scraping service
-    // For now, we return a schema that the frontend can use to show "scanning" state
+    const Client = require('../models/Client');
+    const Competitor = require('../models/Competitor');
+    const clientDoc = await Client.findOne({ clientId: req.user.clientId }).select('_id').lean();
+    if (!clientDoc) return res.status(404).json({ success: false, message: "Client not found" });
+
+    // Fetch competitors
+    const competitors = await Competitor.find({ clientId: clientDoc._id, isActive: true }).lean();
+
     res.json({ 
       success: true, 
-      data: { 
-        competitorName: competitorUrl ? new URL(competitorUrl).hostname : "Target Analytics",
-        status: "analyzing", // Explicit status for newly added targets
-        pricingStrategy: "Scanning pricing protocols...",
-        confidenceScore: 0.0,
-        weaknessesToExploit: [],
-        winRateRecommendation: "Awaiting sufficient telemetry to provide strategic recommendations."
-      } 
+      competitor_intel: competitors 
     });
   } catch (error) {
      res.status(500).json({ success: false, message: error.message });
@@ -326,12 +325,27 @@ exports.getQualityStats = async (req, res) => {
     startDate.setDate(startDate.getDate() - days);
 
     // 1. Fetch Conversations with AI Scores
-    const [qualityDocs, allConvs, orders, totalLosingOrderConvs] = await Promise.all([
+    const TrainingCase = require('../models/TrainingCase');
+    const [qualityDocs, allConvs, orders, totalLosingOrderConvs, totalCorrections, dropoffs] = await Promise.all([
       Conversation.find({ clientId, aiQualityScore: { $gt: 0 }, createdAt: { $gte: startDate } }).select('aiQualityScore csatScore sentimentScore firstInboundAt firstResponseAt').lean(),
       Conversation.countDocuments({ clientId, createdAt: { $gte: startDate } }),
       Order.find({ clientId, createdAt: { $gte: startDate } }).select('phone customerPhone').lean(),
-      Conversation.countDocuments({ clientId, createdAt: { $gte: startDate }, lastMessage: /buy|price|order|cost/i })
+      Conversation.countDocuments({ clientId, createdAt: { $gte: startDate }, lastMessage: /buy|price|order|cost/i }),
+      TrainingCase.countDocuments({ clientId, createdAt: { $gte: startDate } }),
+      Conversation.aggregate([
+        { $match: { clientId, createdAt: { $gte: startDate }, "lastNodeVisited.nodeLabel": { $exists: true, $ne: null } } },
+        { $group: { _id: "$lastNodeVisited.nodeLabel", count: { $sum: 1 }, nodeId: { $first: "$lastNodeVisited.nodeId" } } },
+        { $sort: { count: -1 } },
+        { $limit: 3 }
+      ])
     ]);
+
+    // Format Dropoffs
+    const dropoffNodes = dropoffs.map(d => ({
+      label: d._id || 'Unknown Step',
+      count: d.count,
+      nodeId: d.nodeId
+    }));
 
     // 2. Aggregate Dimensions
     const avgScore = qualityDocs.length > 0 
@@ -375,6 +389,8 @@ exports.getQualityStats = async (req, res) => {
       winRate,
       csat: avgCsat,
       drift: -4, // Comparative logic can be added later
+      totalCorrections,
+      dropoffNodes,
       dimensions: [
         { subject: 'Accuracy', A: avgScore, fullMark: 100 },
         { subject: 'Tone', A: Math.min(avgScore + 5, 100), fullMark: 100 },
@@ -408,6 +424,58 @@ exports.createCompetitor = async (req, res) => {
     res.json({ success: true, competitor });
   } catch (error) {
     logger.error("Create Competitor Error", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.generateBattlePlan = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const Competitor = require('../models/Competitor');
+    const { generateText } = require('../utils/gemini');
+
+    const competitor = await Competitor.findById(id);
+    if (!competitor) return res.status(404).json({ success: false, message: "Competitor not found" });
+
+    // Build the prompt for Gemini
+    const prompt = `
+You are a top-tier retail and e-commerce strategist. Create a highly specific, actionable, 3-step "Battle Plan" to beat this competitor:
+Competitor Name: ${competitor.name}
+Website: ${competitor.website}
+Tracked Products: ${competitor.products?.length || 'Unknown amount'}
+
+Requirements:
+1. Provide exactly 3 clear, actionable steps focused on pricing, marketing, and customer experience.
+2. Output ONLY a valid JSON array of strings. No markdown, no introductory text.
+Example: ["Launch a targeted Instagram retargeting campaign highlighting faster delivery times.", "Match pricing on their top 2 selling SKUs to neutralize their price advantage.", "Implement an aggressive abandoned cart sequence via WhatsApp for leads browsing similar items."]
+    `;
+
+    const aiResult = await generateText(prompt, process.env.GEMINI_API_KEY);
+    
+    let battlePlan = [];
+    try {
+      const cleanJson = aiResult.replace(/```json/g, '').replace(/```/g, '').trim();
+      battlePlan = JSON.parse(cleanJson);
+      if (!Array.isArray(battlePlan)) {
+        throw new Error("AI did not return an array");
+      }
+    } catch (e) {
+      // Fallback
+      battlePlan = [
+        `Audit ${competitor.name}'s top pricing and undercut by 5% on key "hook" items.`,
+        "Deploy a WhatsApp campaign highlighting your superior return policy.",
+        "Target their brand keywords in your Meta Ads."
+      ];
+    }
+
+    competitor.battlePlan = battlePlan;
+    competitor.status = 'monitored';
+    competitor.lastBattlePlanGeneratedAt = new Date();
+    await competitor.save();
+
+    res.json({ success: true, battlePlan: competitor.battlePlan });
+  } catch (error) {
+    logger.error("Generate Battle Plan Error", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };

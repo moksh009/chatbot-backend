@@ -312,6 +312,117 @@ async function redeemLoyaltyPoints(req, res) {
 }
 
 /**
+ * POST /api/loyalty/adjust
+ * Manual admin adjustment of wallet points.
+ */
+async function adjustWalletBalance(req, res) {
+    const { clientId, phone, amount, reason } = req.body;
+    const resolvedClientId = clientId || req.user?.clientId;
+
+    if (!resolvedClientId || !phone || amount === undefined) {
+        return res.status(400).json({ message: 'Missing required parameters' });
+    }
+
+    try {
+        let wallet = await CustomerWallet.findOne({ clientId: resolvedClientId, phone });
+        
+        if (!wallet) {
+            // Create wallet if it doesn't exist
+            wallet = await CustomerWallet.create({ 
+                clientId: resolvedClientId, 
+                phone, 
+                balance: 0, 
+                lifetimePoints: 0 
+            });
+        }
+
+        const adjustmentAmount = parseInt(amount);
+        wallet.balance += adjustmentAmount;
+        if (adjustmentAmount > 0) {
+            wallet.lifetimePoints += adjustmentAmount;
+        }
+
+        wallet.transactions.push({
+            type: 'adjust', // mapped from 'adjustment' or 'adjust' in schema
+            amount: adjustmentAmount,
+            reason: reason || 'Admin manual adjustment',
+            timestamp: new Date()
+        });
+
+        await wallet.save();
+
+        log.info(`Manual adjustment of ${adjustmentAmount} points for ${phone} (${resolvedClientId})`);
+        
+        res.json({ 
+            success: true, 
+            newBalance: wallet.balance, 
+            message: `Successfully ${adjustmentAmount >= 0 ? 'added' : 'deducted'} ${Math.abs(adjustmentAmount)} points.` 
+        });
+
+    } catch (err) {
+        log.error('Adjustment error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+}
+
+/**
+ * POST /api/loyalty/generate-reward
+ * AI-driven or manual button to generate a specific reward for a customer.
+ */
+async function generateAIRewardCode(req, res) {
+    const { clientId, phone, rewardType, customValue } = req.body;
+    const resolvedClientId = clientId || req.user?.clientId;
+
+    try {
+        const client = await Client.findOne({ clientId: resolvedClientId });
+        if (!client) return res.status(404).json({ message: 'Client not found' });
+
+        const wallet = await getWallet(resolvedClientId, phone);
+        
+        let amount = customValue || 50; // Default or AI suggested
+        
+        // If type is 'points_exchange', verify balance
+        if (rewardType === 'points_exchange') {
+            const pointsPerCurrency = client.loyaltyConfig?.pointsPerCurrency || 100;
+            const pointsNeeded = amount * pointsPerCurrency;
+            if (!wallet || wallet.balance < pointsNeeded) {
+                return res.status(400).json({ message: 'Insufficient points for this reward' });
+            }
+        }
+
+        // Generate Code logic (reuse redeem logic but decoupled)
+        const uniqueSuffix = Math.random().toString(36).substring(2, 6).toUpperCase();
+        const discountCode = `REWARD-${amount}-${uniqueSuffix}`;
+
+        const shopifyResult = await createLoyaltyDiscount(resolvedClientId, {
+            code: discountCode,
+            amount: amount,
+            daysValid: client.loyaltyConfig?.expiryDays || 30
+        });
+
+        if (!shopifyResult.success) throw new Error(shopifyResult.error);
+
+        // Record as transaction if it was an exchange
+        if (rewardType === 'points_exchange') {
+            const pointsPerCurrency = client.loyaltyConfig?.pointsPerCurrency || 100;
+            await redeemPoints(resolvedClientId, phone, amount * pointsPerCurrency, {
+                reason: `Exchanged points for reward: ${discountCode}`
+            });
+        }
+
+        // Notify via WhatsApp
+        const msg = `🎁 *Special Reward for You!*\n\nWe've generated a special discount code just for you: *${discountCode}*\n\nEnjoy ₹${amount} OFF on your next order! 🛍️`;
+        await WhatsApp.sendText(client, phone, msg);
+
+        res.json({ success: true, code: discountCode, amount });
+
+    } catch (err) {
+        log.error('Reward generation error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+}
+
+/**
  * GET /api/loyalty/status (Legacy - kept for bot compatibility)
  */
 async function getLoyaltyStatus(req, res) {
@@ -339,5 +450,7 @@ module.exports = {
     backfillOrderPoints,
     sendLoyaltyReminderTemplate,
     redeemLoyaltyPoints,
+    adjustWalletBalance,
+    generateAIRewardCode,
     getLoyaltyStatus
 };

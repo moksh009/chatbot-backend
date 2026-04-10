@@ -32,6 +32,7 @@ router.get('/suppliers', protect, dashboardController.getSuppliers);
 router.get('/restock-drafts', protect, dashboardController.getRestockDrafts);
 router.get('/quality-stats', protect, dashboardController.getQualityStats);
 router.post('/competitors', protect, dashboardController.createCompetitor);
+router.post('/competitors/:id/battle-plan', protect, dashboardController.generateBattlePlan);
 router.post('/suppliers', protect, dashboardController.createSupplier);
 router.get('/flows', protect, dashboardController.getFlows);
 router.post('/export-pdf', protect, async (req, res) => {

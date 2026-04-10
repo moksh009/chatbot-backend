@@ -674,12 +674,22 @@ const handleWebhook = async (req, res) => {
                 conversation.requiresAttention = true;
                 conversation.attentionReason = "Negative review — needs follow-up";
                 await conversation.save();
+
+                // Optimization Shield: Direct Admin Notification for Negative Review
+                const NotificationService = require('../../utils/notificationService');
+                await NotificationService.sendAdminAlert(req.clientConfig, {
+                    customerPhone: from,
+                    topic: `Negative Review (${review?.productName || 'General'})`,
+                    triggerSource: 'Review Hub Guardrail',
+                    channel: 'whatsapp'
+                }).catch(e => console.error("[ReviewGuard] Alert failed", e.message));
+
                 if (io) io.to(`client_${req.clientConfig.clientId}`).emit("attention_required", {
                     phone: from,
                     reason: "Customer unhappy with product",
                     priority: "high"
                 });
-                await sendWhatsAppText({ ...helperParams, to: from, body: "We're really sorry to hear that 😔 Our team will reach out within a few hours to make it right. Your satisfaction is our priority! 💙" });
+                await sendWhatsAppText({ ...helperParams, to: from, body: "We're really sorry to hear that 😔 Our team will reach out within a few hours to make it right. Your satisfaction is our priority! 蓝" });
                 return res.status(200).end();
             }
         }
@@ -838,18 +848,42 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
             }
         }
 
-        // 📧 Also send order confirmation email if customer email is available
-        const customerEmail = orderData.customer?.email || orderData.email;
-        if (customerEmail) {
-            await sendOrderConfirmationEmail(req.clientConfig, {
-                customerEmail,
-                customerName: orderData.customer?.first_name || 'Customer',
-                orderId: orderId.toString(),
-                orderNumber,
-                items: orderData.line_items?.map(i => `${i.name} (x${i.quantity})`) || [],
-                totalPrice,
-                paymentMethod: isCOD ? 'Cash on Delivery (COD)' : 'Prepaid Online'
-            });
+        // 📦 SKU Inventory Threshold Alerts (Phase 3)
+        const NotificationService = require('../../utils/notificationService');
+        if (req.clientConfig.skuAutomations?.length > 0 && req.clientConfig.shopDomain) {
+            try {
+                const shopifyApi = await getShopifyClient(clientId);
+                for (const item of orderData.line_items || []) {
+                    const sku = item.sku;
+                    const automation = req.clientConfig.skuAutomations.find(a => a.sku === sku && a.inventoryThreshold > 0);
+                    
+                    if (automation) {
+                        // Fetch current inventory for this variant
+                        const variantRes = await shopifyApi.get(`/variants/${item.variant_id}.json`);
+                        const currentInventory = variantRes.data.variant?.inventory_quantity;
+                        
+                        if (currentInventory <= automation.inventoryThreshold) {
+                            const alertMsg = `⚠️ *inventory Alert* ⚠️\n\n*SKU:* ${sku}\n*Model:* ${item.name}\n*Stock:* ${currentInventory}\n*Threshold:* ${automation.inventoryThreshold}\n\nRestock required immediately.`;
+                            
+                            // 1. Notify Admin
+                            await NotificationService.sendAdminAlert(req.clientConfig, {
+                                customerPhone: req.clientConfig.adminPhone || 'ADMIN',
+                                topic: `Low Stock: ${sku}`,
+                                triggerSource: `Inventory Tracker`,
+                                channel: 'whatsapp'
+                            });
+
+                            // 2. Notify Supplier if configured
+                            if (automation.supplierPhone) {
+                                const WhatsApp = require('../../utils/whatsapp');
+                                await WhatsApp.sendText(req.clientConfig, automation.supplierPhone, alertMsg);
+                            }
+                        }
+                    }
+                }
+            } catch (invErr) {
+                console.error("[InventoryAlert] Verification failed", invErr.message);
+            }
         }
 
         return res.status(200).end();

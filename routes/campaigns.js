@@ -128,9 +128,58 @@ router.post('/from-segment', protect, async (req, res) => {
 // @access  Private
 router.get('/', protect, async (req, res) => {
   try {
-    const campaigns = await Campaign.find({ clientId: req.user.clientId }).sort({ createdAt: -1 });
-    res.json(campaigns);
+    const clientId = req.user.clientId;
+    const campaigns = await Campaign.find({ clientId }).sort({ createdAt: -1 }).lean();
+    
+    // Aggregate stats for all campaigns of this client to avoid N+1 queries
+    const campaignStats = await CampaignMessage.aggregate([
+      { $match: { clientId } },
+      {
+        $group: {
+          _id: { campaignId: "$campaignId", status: "$status" },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Map stats back to campaigns
+    const statsMap = campaignStats.reduce((acc, curr) => {
+      const cId = curr._id.campaignId.toString();
+      if (!acc[cId]) acc[cId] = { sent: 0, delivered: 0, read: 0, replied: 0 };
+      
+      const status = curr._id.status;
+      if (status === 'sent') acc[cId].sent += curr.count;
+      if (status === 'delivered') acc[cId].delivered += curr.count;
+      if (status === 'read') acc[cId].read += curr.count;
+      if (status === 'replied') acc[cId].replied += curr.count;
+      
+      return acc;
+    }, {});
+
+    const enrichedCampaigns = campaigns.map(c => {
+      const stats = statsMap[c._id.toString()] || { sent: 0, delivered: 0, read: 0, replied: 0 };
+      // Note: Delivered should include Read and Replied for funnel logic
+      const totalDelivered = stats.delivered + stats.read + stats.replied;
+      const totalRead = stats.read + stats.replied;
+      
+      return {
+        ...c,
+        sentCount: stats.sent,
+        deliveredCount: totalDelivered,
+        readCount: totalRead,
+        repliedCount: stats.replied,
+        stats: {
+          sent: stats.sent,
+          delivered: totalDelivered,
+          read: totalRead,
+          replied: stats.replied
+        }
+      };
+    });
+
+    res.json(enrichedCampaigns);
   } catch (error) {
+    console.error('[Campaigns] List error:', error);
     res.status(500).json({ message: 'Server Error' });
   }
 });
@@ -425,13 +474,29 @@ router.get('/overview', protect, async (req, res) => {
   try {
     const clientId = req.user.clientId;
     const campaigns = await Campaign.find({ clientId }).sort({ createdAt: -1 });
-    
-    // Aggregate stats
-    const totalSent = campaigns.reduce((acc, c) => acc + (c.sentCount || 0), 0);
-    const totalDelivered = campaigns.reduce((acc, c) => acc + (c.deliveredCount || 0), 0);
-    const totalRead = campaigns.reduce((acc, c) => acc + (c.readCount || 0), 0);
-    const totalReplied = campaigns.reduce((acc, c) => acc + (c.repliedCount || 0), 0);
-    
+    const CampaignMessage = require('../models/CampaignMessage');
+
+    // Aggregate stats from CampaignMessage for ground-truth data
+    const statsArray = await CampaignMessage.aggregate([
+      { $match: { clientId } },
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    const statsMap = statsArray.reduce((acc, curr) => {
+      acc[curr._id] = curr.count;
+      return acc;
+    }, {});
+
+    const totalSent = statsMap['sent'] || 0;
+    const totalDelivered = (statsMap['delivered'] || 0) + (statsMap['read'] || 0) + (statsMap['replied'] || 0);
+    const totalRead = (statsMap['read'] || 0) + (statsMap['replied'] || 0);
+    const totalReplied = statsMap['replied'] || 0;
+
     const deliveryRate = totalSent > 0 ? Math.round((totalDelivered / totalSent) * 100) : 0;
     const readRate = totalDelivered > 0 ? Math.round((totalRead / totalDelivered) * 100) : 0;
     const replyRate = totalSent > 0 ? Math.round((totalReplied / totalSent) * 100) : 0;

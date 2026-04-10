@@ -70,7 +70,13 @@ router.post("/:clientId/complete", protect, async (req, res) => {
         name: wizardData.businessName,
         'brand.businessName': wizardData.businessName
       }),
-      ...(wizardData.botName         && { "nicheData.botName": wizardData.botName }),
+      ...(wizardData.botName         && { 
+        "nicheData.botName": wizardData.botName,
+        "ai.persona.name": wizardData.botName
+      }),
+      ...(wizardData.tone && { "ai.persona.tone": wizardData.tone }),
+      ...(wizardData.botLanguage && { "ai.persona.language": wizardData.botLanguage }),
+      ...(wizardData.businessDescription && { "ai.persona.description": wizardData.businessDescription }),
       ...(wizardData.googleReviewUrl && { 
         googleReviewUrl: wizardData.googleReviewUrl,
         'brand.googleReviewUrl': wizardData.googleReviewUrl
@@ -148,7 +154,13 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       };
     }
 
-    await Client.findByIdAndUpdate(client._id, updateQuery, { new: true });
+    const updatedClient = await Client.findByIdAndUpdate(client._id, updateQuery, { new: true });
+
+    // Sync persona to flows (Goal 1: Alignment)
+    if (updatedClient.ai?.persona) {
+      const { syncPersonaToFlows } = require("../utils/personaEngine");
+      syncPersonaToFlows(clientId, updatedClient.ai.persona);
+    }
 
     console.log(`[Wizard] ✅ Complete! Flow generated with ${nodes.length} nodes for ${clientId}`);
 

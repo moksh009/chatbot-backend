@@ -45,6 +45,19 @@ async function findMatchingFlow(parsedMessage, client, convo) {
     return { flow: keywordFlow, triggerType: "keyword" };
   }
 
+  // ── PRIORITY 1.2: Check Meta Ad triggers ───────────────────────────────────
+  if (parsedMessage.referral && parsedMessage.referral.source_id) {
+    const adId = parsedMessage.referral.source_id;
+    const adFlow = flows.find(flow => {
+       if (!flow.isActive) return false;
+       const trigger = flow.trigger || getTriggerFromNodes(flow.nodes || []);
+       if (!trigger || trigger.type !== "meta_ad") return false;
+       
+       return trigger.adId === adId || trigger.adId === "any";
+    });
+    if (adFlow) return { flow: adFlow, triggerType: "meta_ad" };
+  }
+
   // ── PRIORITY 1.5: Check event triggers (e.g. story_mention) ────────────────
   if (parsedMessage.event === "story_mention") {
     const eventFlow = flows.find((flow) => {
@@ -113,7 +126,9 @@ function getTriggerFromNodes(nodes) {
   // Legacy format from TriggerNode.jsx: data.triggerType, data.keyword
   const legacyKeyword = d.keyword || d.keywords || "";
   
-  const type = d.triggerType === "first_message" ? "first_message" : (d.triggerType === "story_mention" ? "story_mention" : "keyword");
+  const type = d.triggerType === "first_message" ? "first_message" : 
+               (d.triggerType === "story_mention" ? "story_mention" : 
+               (d.triggerType === "meta_ad" ? "meta_ad" : "keyword"));
 
   if (type === "first_message") {
     return { type: "first_message", channel: d.channel || "both" };
@@ -121,6 +136,10 @@ function getTriggerFromNodes(nodes) {
 
   if (type === "story_mention") {
     return { type: "story_mention", channel: d.channel || "instagram" };
+  }
+
+  if (type === "meta_ad") {
+    return { type: "meta_ad", adId: d.adId || "any", channel: d.channel || "both" };
   }
 
   // Parse comma-separated keywords into array

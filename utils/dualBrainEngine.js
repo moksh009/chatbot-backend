@@ -272,6 +272,7 @@ async function handleWhatsAppMessage(from, message, phoneNumberId, profileName =
       video: message.video,
       document: message.document,
       channel: 'whatsapp',
+      referral: message.referral,
       profileName
     };
 

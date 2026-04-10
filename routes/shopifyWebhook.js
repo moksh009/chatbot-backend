@@ -189,12 +189,45 @@ async function handleOrder(client, data) {
     });
 
     // --- PHASE 27: Loyalty Points Award ---
-    if (client.loyaltyConfig?.isEnabled) {
-        processOrderForLoyalty(client.clientId, cleanPhone, parseFloat(data.total_price), data.name || data.id)
+    if (client.loyaltyConfig?.isEnabled && newOrder.amount > 0) {
+        processOrderForLoyalty(client.clientId, cleanPhone, newOrder.amount, newOrder.orderId)
             .then(res => {
-                if (res) log.info(`Awarded ${res.pointsAwarded} points to ${cleanPhone}`);
+                if (res) log.info(`Awarded ${res.pointsAwarded} points to ${cleanPhone} for order ${newOrder.orderId}`);
             })
             .catch(e => log.error('Loyalty award failed', e.message));
+    }
+
+    // --- SKU-to-Template Automation ---
+    if (client.skuAutomations?.length > 0) {
+        const WhatsApp = require('../utils/whatsapp');
+        const paidItems = data.line_items; // Shopify order line items
+        
+        for (const item of paidItems) {
+            const automation = client.skuAutomations.find(a => 
+                (a.sku === item.sku || a.sku === String(item.product_id)) && 
+                a.isActive && a.triggerEvent === 'paid'
+            );
+
+            if (automation) {
+                log.info(`SKU Automation Match found for SKU: ${item.sku}. Template: ${automation.templateName}`);
+                
+                const customerName = data.customer?.first_name || 'Customer';
+                const productImage = automation.imageUrl || item.image_url || null;
+
+                // Send the template
+                WhatsApp.sendSmartTemplate(
+                    client,
+                    cleanPhone,
+                    automation.templateName,
+                    [customerName, item.title], // Default params: Name, Product
+                    productImage,
+                    automation.language || 'en'
+                ).catch(err => log.error(`SKU automation template send failed for ${item.sku}:`, err.message));
+                
+                // We break after first match per order to avoid spamming multiple guides if they bought 5 of same thing
+                // OR we could process all unique SKUs. Let's do unique SKUs.
+            }
+        }
     }
 
     // --- COD to Prepaid Conversion ---

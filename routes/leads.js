@@ -327,4 +327,89 @@ router.get('/:clientId/tags', protect, async (req, res) => {
     }
 });
 
+// POST /api/leads/bulk-template
+router.post('/bulk-template', protect, async (req, res) => {
+    try {
+        const { leadIds, templateName, languageCode, components } = req.body;
+        const clientId = req.user.clientId;
+
+        if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
+            return res.status(400).json({ success: false, message: 'Valid leadIds array is required' });
+        }
+        if (!templateName) {
+            return res.status(400).json({ success: false, message: 'templateName is required' });
+        }
+
+        const client = await Client.findOne({ clientId });
+        if (!client) return res.status(404).json({ message: 'Client not found' });
+
+        const { sendWhatsAppTemplate } = require('../utils/whatsappHelpers');
+        
+        const leads = await AdLead.find({ _id: { $in: leadIds }, clientId });
+        
+        let successCount = 0;
+        let failCount = 0;
+
+        for (const lead of leads) {
+            try {
+                await sendWhatsAppTemplate({
+                    phoneNumberId: client.phoneNumberId,
+                    to: lead.phoneNumber,
+                    templateName,
+                    languageCode: languageCode || 'en',
+                    components: components || [],
+                    token: client.whatsappToken
+                });
+                successCount++;
+            } catch (err) {
+                console.error(`[BulkSend] Failed for ${lead.phoneNumber}:`, err.message);
+                failCount++;
+            }
+        }
+
+        res.json({ success: true, summary: { total: leads.length, success: successCount, failed: failCount } });
+    } catch (err) {
+        console.error('[BulkSend] Critical Error:', err);
+        res.status(500).json({ success: false, message: 'Bulk send failed' });
+    }
+});
+
+// GET /api/leads/high-intent
+router.get('/high-intent', protect, async (req, res) => {
+    try {
+        const clientId = req.user.clientId;
+        const { limit = 50, next_cursor } = req.query;
+
+        const query = { 
+            clientId,
+            $or: [
+                { cartStatus: 'abandoned' },
+                { addToCartCount: { $gt: 0 }, isOrderPlaced: { $ne: true } },
+                { checkoutInitiatedCount: { $gt: 0 }, isOrderPlaced: { $ne: true } }
+            ]
+        };
+
+        if (next_cursor) {
+            query._id = { $lt: next_cursor };
+        }
+
+        const leads = await AdLead.find(query)
+            .sort({ lastInteraction: -1 })
+            .limit(parseInt(limit));
+
+        const total = await AdLead.countDocuments(query);
+        const new_cursor = leads.length > 0 ? leads[leads.length - 1]._id : null;
+
+        res.json({
+            success: true,
+            leads,
+            next_cursor: new_cursor,
+            total
+        });
+    } catch (err) {
+        console.error('[HighIntentLeads] Error:', err);
+        res.status(500).json({ success: false, message: 'Failed to fetch high-intent leads' });
+    }
+});
+
 module.exports = router;

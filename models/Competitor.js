@@ -22,8 +22,11 @@ const CompetitorSchema = new mongoose.Schema({
   products:      [CompetitorProductSchema],
   
   isActive:      { type: Boolean, default: true },
+  status:        { type: String, enum: ['analyzing', 'monitored', 'error'], default: 'monitored' },
+  battlePlan:    { type: [String], default: [] },
   notes:         { type: String },
-  createdAt:     { type: Date, default: Date.now }
+  createdAt:     { type: Date, default: Date.now },
+  lastBattlePlanGeneratedAt: { type: Date }
 });
 
 CompetitorSchema.index({ clientId: 1, isActive: 1 });

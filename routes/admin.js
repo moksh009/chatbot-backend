@@ -1116,6 +1116,25 @@ router.put('/client/settings', protect, async (req, res) => {
   }
 });
 
+// @route   POST /api/admin/persona/sync
+// @desc    Manually push global AI persona to all Flow Builder nodes
+// @access  Private
+router.post('/persona/sync', protect, async (req, res) => {
+  try {
+    const clientId = req.user.clientId;
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ message: 'Client not found' });
+
+    const { syncPersonaToFlows } = require('../utils/personaEngine');
+    await syncPersonaToFlows(clientId, client.ai?.persona || {});
+
+    res.json({ success: true, message: 'AI Persona pushed to all flows successfully.' });
+  } catch (error) {
+    log.error('Persona sync error:', error);
+    res.status(500).json({ message: 'Failed to synchronize flows', error: error.message });
+  }
+});
+
 // --- GET SETTINGS BY CLIENTID (Super Admin) ---
 router.get('/settings/:clientId', protect, isSuperAdmin, async (req, res) => {
   try {
@@ -1870,12 +1889,27 @@ router.get('/unanswered-questions/:clientId', protect, async (req, res) => {
 });
 
 // --- GET AUDIT LOGS (Client Admin or Super Admin) ---
-router.get('/audit-logs', protect, authorize('CLIENT_ADMIN', 'SUPER_ADMIN'), async (req, res) => {
+router.get('/audit-logs', protect, authorize('SUPER_ADMIN', 'CLIENT_ADMIN'), async (req, res) => {
   try {
     const AuditLog = require('../models/AuditLog');
-    const logs = await AuditLog.find({ clientId: req.user.clientId })
+    
+    // For SUPER_ADMIN, allow filtering by clientId query param. Otherwise default to nothing or everything?
+    // Let's allow SUPER_ADMIN to see all if no clientId provided, or filter if provided.
+    // For CLIENT_ADMIN, force filter by their own clientId.
+    
+    let query = {};
+    if (req.user.role === 'SUPER_ADMIN') {
+        if (req.query.clientId) {
+            query.clientId = req.query.clientId;
+        }
+        // If no clientId, they see everything from all clients
+    } else {
+        query.clientId = req.user.clientId;
+    }
+
+    const logs = await AuditLog.find(query)
       .sort({ createdAt: -1 })
-      .limit(100)
+      .limit(200) // Increased limit for audit trail
       .populate('user_id', 'name email');
     
     res.json({ success: true, data: logs });

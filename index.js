@@ -88,6 +88,7 @@ app.use(whitelabelMiddleware);
 
 // Serve static files from the 'public' directory
 app.use('/public', express.static(path.join(__dirname, 'public')));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Debug Middleware: Log all incoming requests
 app.use((req, res, next) => {
@@ -139,6 +140,7 @@ const shopifyWebhookRoutes = require('./routes/shopifyWebhook');
 app.use('/api/shopify/webhook', shopifyWebhookRoutes);
 app.use('/api/woocommerce/webhook', wooWebhookRoutes);
 const adminRoutes = require('./routes/admin'); // Added for DFY SaaS Super Admin
+const mediaRoutes = require('./routes/media');
 
 // Dynamic Client Router (Replaces hardcoded client routes)
 // Handles /api/client/:clientId/webhook
@@ -209,6 +211,7 @@ app.use('/api/training', require('./routes/training'));
 // app.use('/api/ig-automation', protect, require('./routes/igAutomation')); // REMOVED: Redundant and points to missing igAutomation.js (use /api/instagram-automations instead)
 app.use('/api/meta-ads', require('./routes/metaAds'));
 app.use('/api/whitelabel', require('./routes/whitelabel'));
+app.use('/api/media', mediaRoutes);
 app.use('/api/reseller', require('./routes/reseller'));
 
 // Phase 27: Loyalty Hub & Enterprise Rewards
@@ -285,6 +288,10 @@ scheduleBirthdayCron();
 // Initialize Product Sync Cron Job
 const scheduleProductSyncCron = require('./cron/productSyncCron');
 scheduleProductSyncCron();
+ 
+// Initialize Amazon SP-API Sync (Phase 2)
+const scheduleAmazonSync = require('./cron/amazonSync');
+scheduleAmazonSync();
 
 // Initialize Flow Resumption Cron Job (Phase 17) - ALREADY INITIALIZED ABOVE AT LINE 156
 

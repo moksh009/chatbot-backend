@@ -7,6 +7,8 @@ const {
     backfillOrderPoints,
     sendLoyaltyReminderTemplate,
     redeemLoyaltyPoints,
+    adjustWalletBalance,
+    generateAIRewardCode,
     getLoyaltyStatus
 } = require('../controllers/loyaltyController');
 const { protect } = require('../middleware/auth');
@@ -20,5 +22,9 @@ router.post('/send-reminder', protect, sendLoyaltyReminderTemplate);
 // Shared routes (used by both chat engine and admin panel)
 router.get('/status', getLoyaltyStatus);
 router.post('/redeem', protect, redeemLoyaltyPoints);
+
+// Admin-Only Adjustment & Rewards
+router.post('/adjust', protect, adjustWalletBalance);
+router.post('/generate-reward', protect, generateAIRewardCode);
 
 module.exports = router;

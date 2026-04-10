@@ -46,6 +46,10 @@ function buildPersonaSystemPrompt(client, baseSystemPrompt = "") {
     ? `Refer to the business as "we/our" and yourself as "I" (you are part of the team).`
     : `Refer to yourself as "I" and the business by name.`;
   
+  const languageContext = client.ai?.persona?.language 
+    ? `\nRESPONSE LANGUAGE:\nAlways respond in ${client.ai.persona.language}. If the customer speaks a different language, ${client.ai.persona.autoTranslate ? "translate your response to their language" : "politely continue in " + client.ai.persona.language}.`
+    : "";
+
   return `
 You are ${persona.name}, ${persona.role || "a customer support specialist"} at ${client.businessName}.
 
@@ -60,6 +64,8 @@ SPEAKING STYLE:
   - ${emojiGuide}
   - ${referenceSelf}
   - Sentence length preference: ${sentenceLength}${sigPhrases}
+
+${languageContext}
 
 CRITICAL RULES:
   - You are ALWAYS ${persona.name}. Never break character.
@@ -132,7 +138,9 @@ async function syncPersonaToFlows(clientId, personaData) {
                             ...node.data,
                             botName: personaData.name || node.data.botName,
                             tone: personaData.tone || node.data.tone,
-                            instructions: personaData.description || node.data.instructions
+                            instructions: personaData.description || node.data.instructions,
+                            language: personaData.language || node.data.language,
+                            autoTranslate: personaData.autoTranslate ?? node.data.autoTranslate
                         }
                     };
                 }
@@ -166,7 +174,9 @@ async function syncPersonaToFlows(clientId, personaData) {
                             ...node.data,
                             botName: personaData.name || node.data.botName,
                             tone: personaData.tone || node.data.tone,
-                            instructions: personaData.description || node.data.instructions
+                            instructions: personaData.description || node.data.instructions,
+                            language: personaData.language || node.data.language,
+                            autoTranslate: personaData.autoTranslate ?? node.data.autoTranslate
                         }
                     };
                 }

@@ -156,6 +156,7 @@ async function validateCampaign(client, campaignData) {
   const warnings = [];
 
   const { templateName, audience, variables = [], scheduledAt } = campaignData;
+  const isLargeCampaign = audience?.count >= 1000;
 
   // 1. Must have a template
   if (!templateName) {
@@ -166,6 +167,23 @@ async function validateCampaign(client, campaignData) {
     });
   } else {
     const templateValidation = await validateTemplateForSend(client, templateName, variables);
+    
+    // Optimization Shield: Upgrade warnings to errors for 1,000+ blasts
+    if (isLargeCampaign) {
+      templateValidation.warnings.forEach(w => {
+        if (w.code === 'MISSING_HEADER_IMAGE') {
+          errors.push({
+            ...w,
+            code: 'SHIELD_IMAGE_PROTECT',
+            message: `Optimization Shield: Sending to 1,000+ leads without an image header will result in low engagement.`,
+            fix: 'Add a header image URL or switch to a text-only template to protect your ROI.'
+          });
+        }
+      });
+      // Filter out the warnings that became errors
+      templateValidation.warnings = templateValidation.warnings.filter(w => w.code !== 'MISSING_HEADER_IMAGE');
+    }
+
     errors.push(...templateValidation.errors);
     warnings.push(...templateValidation.warnings);
   }
@@ -197,12 +215,12 @@ async function validateCampaign(client, campaignData) {
     });
   }
 
-  // 5. Large audience warning
-  if (audience?.count > 1000) {
+  // 5. Optimization Shield: Large audience warning
+  if (isLargeCampaign) {
     warnings.push({
-      code:    'LARGE_AUDIENCE',
-      message: `Sending to ${audience.count} recipients. This will take approximately ${Math.ceil(audience.count / 80)} minutes.`,
-      fix:     'Meta allows ~80 messages/second per phone number.'
+      code:    'SHIELD_THROTTLING_ACTIVE',
+      message: `Optimization Shield: Sending to ${audience.count} recipients. System will automatically throttle delivery across 24 hours to prevent Meta SPAM flags.`,
+      fix:     'No action needed. Our AI is managing the bitrate for maximum delivery.'
     });
   }
 
@@ -210,7 +228,8 @@ async function validateCampaign(client, campaignData) {
     valid:          errors.length === 0,
     errors,
     warnings,
-    recipientCount: audience?.count || 0
+    recipientCount: audience?.count || 0,
+    shieldActive: isLargeCampaign
   };
 }
 
