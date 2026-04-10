@@ -1,35 +1,21 @@
-const cloudinary = require('cloudinary').v2;
-
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
-});
+// const cloudinary = require('cloudinary').v2;
+// 
+// cloudinary.config({
+//   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+//   api_key: process.env.CLOUDINARY_API_KEY,
+//   api_secret: process.env.CLOUDINARY_API_SECRET
+// });
 
 /**
- * Uploads a file buffer to Cloudinary and returns the secure URL
- * @param {Buffer} fileBuffer - The file buffer from multer
- * @param {String} folder - Optional folder name
- * @param {String} resourceType - 'image', 'video', or 'raw'
+ * [MOCK] Uploads a file buffer to Cloudinary and returns the secure URL
+ * Cloudinary has been removed as per user request. AWS S3 implementation pending.
  */
 exports.uploadToCloud = async (fileBuffer, folder = 'chat_media', resourceType = 'auto') => {
-  return new Promise((resolve, reject) => {
-    const uploadStream = cloudinary.uploader.upload_stream(
-      {
-        folder,
-        resource_type: resourceType,
-      },
-      (error, result) => {
-        if (error) {
-          console.error('[Cloudinary] Upload error:', error);
-          return reject(error);
-        }
-        resolve(result.secure_url);
-      }
-    );
-
-    uploadStream.end(fileBuffer);
-  });
+  console.log('[Mock Cloudinary] Media upload requested but Cloudinary is disabled.');
+  // Return a local public URL if you have a local upload folder, 
+  // or just throw an error that the feature is temporarily disabled.
+  return "https://via.placeholder.com/500?text=Cloudinary+Disabled";
 };
 
-exports.cloudinary = cloudinary;
+exports.cloudinary = null;
+
