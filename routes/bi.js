@@ -15,11 +15,26 @@ router.get('/:clientId/suggestions', protect, async (req, res) => {
     const { generateQuerySuggestions } = require('../utils/biEngine');
 
     // biEngine will use platformGenerateJSON, no need to pass apiKey
-    const suggestions = await generateQuerySuggestions(clientOid.toString());
+    let suggestions = await generateQuerySuggestions(clientOid.toString());
+    
+    // Safety Fallback for new clients or AI failure
+    if (!suggestions || !Array.isArray(suggestions) || suggestions.length === 0) {
+      suggestions = [
+        "Show my total revenue this month",
+        "Who are my top 5 customers?",
+        "How many orders are pending?",
+        "Which products are running low in stock?"
+      ];
+    }
+
     res.json({ success: true, suggestions });
   } catch (error) {
     logger.error('Suggestions Error:', error.message);
-    res.status(500).json({ success: false, message: error.message });
+    // Even on error, return defaults to keep the UI functional
+    res.json({ 
+      success: true, 
+      suggestions: ["Show my sales", "Who are my top clients?", "Check stock levels"] 
+    });
   }
 });
 

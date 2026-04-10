@@ -879,6 +879,7 @@ router.patch('/my-settings', protect, async (req, res) => {
   try {
     const { 
       nicheData, flowData, automationFlows, messageTemplates, flowNodes, flowEdges, 
+      skuAutomations,
       simpleSettings, clientId, isAIFallbackEnabled, flowFolders, visualFlows,
       wabaId, phoneNumberId, whatsappToken,
       shopDomain, shopifyClientId, shopifyClientSecret, shopifyAccessToken, shopifyWebhookSecret,
@@ -908,6 +909,7 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (nicheData !== undefined) updateFields.nicheData = nicheData;
     if (flowData !== undefined) updateFields.flowData = flowData;
     if (automationFlows !== undefined) updateFields.automationFlows = automationFlows;
+    if (skuAutomations !== undefined) updateFields.skuAutomations = skuAutomations;
     if (messageTemplates !== undefined) updateFields.messageTemplates = messageTemplates;
     if (flowNodes !== undefined) updateFields.flowNodes = flowNodes;
     if (flowEdges !== undefined) updateFields.flowEdges = flowEdges;

@@ -381,7 +381,7 @@ cron.schedule('0 7 * * *', async () => {
           const events = await listEvents(startOfDay, endOfDay, calendarId);
           allTodayEvents = allTodayEvents.concat(events);
         } catch (error) {
-          log.error(`[Cron] Error fetching events from calendar ${calendarId} for client ${clientId}:`, { error: error.message });
+          log.warn(`[Cron] GCal Fetch skipped for client ${clientId} (${calendarId}):`, { error: error.message });
         }
       }
 
@@ -495,7 +495,7 @@ cron.schedule('*/10 * * * *', async () => {
           const events = await listEvents(windowStart, windowEnd, calendarId);
           upcomingEvents = upcomingEvents.concat(events);
         } catch (error) {
-          log.error(`[Cron] Admin Reminder GCal Error (${calendarId}):`, { error: error.message });
+          log.warn(`[Cron] Admin Reminder GCal Error (${calendarId}):`, { error: error.message });
         }
       }
 
