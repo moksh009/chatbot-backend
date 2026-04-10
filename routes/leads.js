@@ -1,4 +1,5 @@
 const express = require('express');
+const { resolveClient } = require('../utils/queryHelpers');
 const router = express.Router();
 const multer = require('multer');
 const csv = require('csv-parser');

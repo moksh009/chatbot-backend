@@ -1,6 +1,5 @@
 const express = require('express');
 const router = express.Router();
-const { resolveClient, startOfDayIST } = require('../utils/queryHelpers');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Appointment = require('../models/Appointment');
@@ -420,17 +419,6 @@ router.get('/lead/:id', protect, async (req, res) => {
       wallet = await CustomerWallet.findOne({ clientId: lead.clientId, phone: lead.phoneNumber }).lean();
     } catch (_) {}
 
-    // --- PHASE R2: Marketing Hub Logs ---
-    let marketingLogs = [];
-    try {
-      const CampaignMessage = require('../models/CampaignMessage');
-      marketingLogs = await CampaignMessage.find({ clientId: lead.clientId, phone: lead.phoneNumber })
-        .populate('campaignId', 'name type')
-        .sort({ sentAt: -1 })
-        .limit(20)
-        .lean();
-    } catch (_) {}
-
     res.json({
       lead,
       orders,
@@ -438,8 +426,7 @@ router.get('/lead/:id', protect, async (req, res) => {
       conversation,
       messages,
       intelligence: dna || null,
-      wallet: wallet || null,
-      marketingLogs
+      wallet: wallet || null
     });
   } catch (error) {
     console.error('Lead Detail Error:', error);
@@ -1695,84 +1682,6 @@ router.get('/agent-performance', protect, async (req, res) => {
     });
 
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// GET /api/analytics/:clientId/home (NEW DASHBOARD ROOT)
-router.get("/:clientId/home", protect, async (req, res) => {
-  try {
-    const { client, clientOid } = await resolveClient(req);
-    const today = startOfDayIST();
-    
-    // BUILD COMPREHENSIVE PAYLOAD (Phase R1 Block 9)
-    const [
-      leadsTotal, 
-      leadsToday, 
-      ordersTodayRaw, 
-      convsTotal,
-      escalations,
-      topLeads,
-      topProductsRaw,
-      realtimeAgg
-    ] = await Promise.all([
-      AdLead.countDocuments({ clientId: clientOid }),
-      AdLead.countDocuments({ clientId: clientOid, createdAt: { $gte: today } }),
-      Order.aggregate([
-        { $match: { clientId: clientOid, createdAt: { $gte: today } } },
-        { $group: { _id: null, total: { $sum: "$totalPrice" }, count: { $sum: 1 } } }
-      ]),
-      Conversation.countDocuments({ clientId: clientOid }),
-      Conversation.find({ clientId: clientOid, status: 'HUMAN_TAKEOVER' }).sort({ lastMessageAt: -1 }).limit(10),
-      AdLead.find({ clientId: clientOid, leadScore: { $gte: 60 } }).sort({ leadScore: -1 }).limit(5),
-      Order.aggregate([
-        { $match: { clientId: clientOid } },
-        { $unwind: "$items" },
-        { $group: { _id: "$items.name", revenue: { $sum: { $multiply: ["$items.price", "$items.quantity"] } }, sold: { $sum: "$items.quantity" } } },
-        { $sort: { revenue: -1 } },
-        { $limit: 10 }
-      ]),
-      AdLead.aggregate([
-        { $match: { clientId: clientOid } },
-        { $group: { 
-            _id: null, 
-            addToCarts: { $sum: "$addToCartCount" }, 
-            checkouts: { $sum: "$checkoutInitiatedCount" },
-            linkClicks: { $sum: "$linkClicks" },
-            abandoned: { $sum: { $cond: [{ $eq: ["$cartStatus", "abandoned"] }, 1, 0] } },
-            recovered: { $sum: { $cond: [{ $eq: ["$cartStatus", "recovered"] }, 1, 0] } }
-        } }
-      ])
-    ]);
-    
-    const revenue = ordersTodayRaw[0]?.total || 0;
-    const ordersCount = ordersTodayRaw[0]?.count || 0;
-    const rt = realtimeAgg[0] || { addToCarts: 0, checkouts: 0, linkClicks: 0, abandoned: 0, recovered: 0 };
-
-    return res.json({
-      success: true,
-      data: {
-        stats_grid: {
-          leads: { total: leadsTotal, newToday: leadsToday },
-          orders: { 
-            count: ordersCount, 
-            revenue: revenue,
-            cartAdds: rt.addToCarts,
-            checkouts: rt.checkouts,
-            linkClicks: rt.linkClicks,
-            abandonedCarts: rt.abandoned,
-            recoveredCarts: rt.recovered
-          },
-          conversations: { total: convsTotal }
-        },
-        pending_escalations: escalations,
-        top_leads: topLeads,
-        top_products: topProductsRaw.map(p => ({ name: p._id, revenue: p.revenue, sold: p.sold })),
-        recent_activities: [] // Handled by separate feed or logic
-      }
-    });
-  } catch (err) {
-    console.error('[Dashboard Home] Failed:', err.message);
     res.status(500).json({ success: false, message: err.message });
   }
 });

@@ -1,4 +1,5 @@
 const express = require('express');
+const { resolveClient } = require('../utils/queryHelpers');
 const router = express.Router();
 const FollowUpSequence = require('../models/FollowUpSequence');
 const AdLead = require('../models/AdLead');

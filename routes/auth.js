@@ -223,6 +223,10 @@ router.post('/change-password', async (req, res) => {
     return res.status(400).json({ message: 'Email, OTP, and new password are required' });
   }
 
+  if (newPassword.length < 8) {
+    return res.status(400).json({ message: 'Password must be at least 8 characters long' });
+  }
+
   try {
     const validOtp = await OTP.findOne({ email, otp, purpose: 'RESET_PASSWORD' });
     if (!validOtp) {

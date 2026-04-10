@@ -17,6 +17,11 @@ const protect = async (req, res, next) => {
           return res.status(401).json({ message: 'Not authorized, user not found' });
       }
 
+      // Objective 1: Attach God Mode status
+      const Client = require('../models/Client');
+      const client = await Client.findOne({ clientId: req.user.clientId });
+      req.user.isLifetimeAdmin = req.user.role === 'SUPER_ADMIN' || (client && client.isLifetimeAdmin);
+
       next();
     } catch (error) {
       console.error('[Auth Middleware] Error validating token or fetching user:', error);

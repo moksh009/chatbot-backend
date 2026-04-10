@@ -24,6 +24,7 @@ const UserSchema = new mongoose.Schema({
   hasCompletedTour: { type: Boolean, default: false }, // For frontend Onboarding
   tourCompletedAt:  { type: Date },
   tourSkippedAt:    { type: Date },
+  isLifetimeAdmin: { type: Boolean, default: false }, // Objective 1: God Mode Bypass
   createdAt: { type: Date, default: Date.now }
 });
 

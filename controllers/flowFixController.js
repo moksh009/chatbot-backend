@@ -1,6 +1,8 @@
 const { generateText } = require('../utils/gemini');
 const Client = require('../models/Client');
 const log = require('../utils/logger')('FlowFixAI');
+const TrainingCase = require('../models/TrainingCase');
+const Conversation = require('../models/Conversation');
 
 /**
  * AI Flow Healer
@@ -73,4 +75,41 @@ Return the EXACT fixed JSON structure (nodes and edges). Do not add any markdown
     log.error('Flow Fix error:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
+};
+
+/**
+ * AI Auto-Correction Pipeline
+ * Logs agent corrections for AI training.
+ */
+exports.correctAIResponse = async (req, res) => {
+    try {
+        const { userMessage, botResponse, agentCorrection, conversationId, phone } = req.body;
+        const clientId = req.user.clientId;
+
+        if (!agentCorrection || !botResponse) {
+            return res.status(400).json({ success: false, message: "Missing correction data." });
+        }
+
+        // Save the correction as a pending training case for the AI to learn from
+        const trainingCase = await TrainingCase.create({
+            clientId,
+            conversationId,
+            phone,
+            userMessage: userMessage || "Unknown Context",
+            botResponse,
+            agentCorrection,
+            status: 'pending',
+            createdBy: req.user._id
+        });
+
+        // Optionally flag the conversation so the admin knows it was corrected
+        await Conversation.findByIdAndUpdate(conversationId, {
+            $set: { aiNeedsTuning: true }
+        });
+
+        res.status(200).json({ success: true, message: "Correction logged for AI training.", trainingCase });
+    } catch (error) {
+        console.error("[FlowFixController] Error logging correction:", error);
+        res.status(500).json({ success: false, message: "Internal server error" });
+    }
 };

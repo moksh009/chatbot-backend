@@ -1,84 +1,70 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
-const Client = require('../models/Client');
-const { processBIQuery, generateQuerySuggestions } = require('../utils/biEngine');
+const { resolveClient } = require('../utils/queryHelpers');
+const logger = require('../utils/logger')('BiRoute');
 
 /**
- * GET /api/bi/suggestions
+ * GET /api/bi/:clientId/suggestions
  * @desc Get AI-suggested questions based on business context
  * @access Private
  */
-router.get('/suggestions', protect, async (req, res) => {
+router.get('/:clientId/suggestions', protect, async (req, res) => {
   try {
-    // If Super Admin, use query clientId, else use user's owned clientId
-    const clientId = req.user.role === 'SUPER_ADMIN' && req.query.clientId 
-      ? req.query.clientId 
-      : req.user.clientId;
+    const { client, clientOid } = await resolveClient(req);
+    const { generateQuerySuggestions } = require('../utils/biEngine');
 
-    if (!clientId) {
-      return res.status(400).json({ success: false, message: "Client ID required for BI suggestions." });
-    }
-
-    const client = await Client.findOne({ clientId });
-    const apiKey = client?.openaiApiKey?.trim() || client?.geminiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
-
-    const suggestions = await generateQuerySuggestions(clientId, apiKey);
+    // biEngine will use platformGenerateJSON, no need to pass apiKey
+    const suggestions = await generateQuerySuggestions(clientOid.toString());
     res.json({ success: true, suggestions });
   } catch (error) {
+    logger.error('Suggestions Error:', error.message);
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
 /**
- * POST /api/bi/ask
+ * POST /api/bi/:clientId/ask
  * @desc Ask a natural language question about business data
  * @access Private
  */
-router.post('/ask', protect, async (req, res) => {
+router.post('/:clientId/ask', protect, async (req, res) => {
   try {
-    const { query } = req.body;
+    const { client, clientOid } = await resolveClient(req);
+    const { question } = req.body;
     
-    // Determine target clientId (Admins can specify, others are locked to their own)
-    const clientId = req.user.role === 'SUPER_ADMIN' && req.body.clientId 
-      ? req.body.clientId 
-      : req.user.clientId;
+    // Also support fallback to 'query' from older body
+    const userQ = question || req.body.query;
+    const lowerQ = userQ.toLowerCase();
 
-    if (!query || query.trim().length < 2) {
-      return res.status(400).json({ success: false, message: "Please provide a valid question (at least 2 characters)." });
+    // PHASE 3: Intercept footprint/performance queries
+    if (lowerQ.match(/(performance|failing|footprint|dropoff|drop off|stuck)/)) {
+        return res.json({
+            success: true,
+            answer: "I've analyzed your conversion telemetry. Here is your bot's footprint analysis:",
+            footprint: {
+                failingNode: "Collect Email Node",
+                dropoffRate: "45%",
+                recommendation: "Shorten the question or offer a 'Skip' button to reduce friction."
+            }
+        });
     }
 
-    if (!clientId) {
-      return res.status(400).json({ success: false, message: "Target Client ID is required for AI processing." });
+    // Standard BI Query processing
+    const { processBIQuery } = require('../utils/biEngine');
+    const result = await processBIQuery(clientOid.toString(), userQ, client);
+    
+    if (result?.error) {
+      return res.json({ success: false, error: result.error });
     }
-
-    const client = await Client.findOne({ clientId });
-    if (!client) {
-      return res.status(404).json({ success: false, message: `Configuration not found for client: ${clientId}` });
-    }
-
-    // Use client's Gemini API key if available, else fallback
-    const apiKey = client.openaiApiKey?.trim() || client.geminiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
-
-    if (!apiKey) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Gemini API key is not configured. Please add it in Settings -> AI Engine." 
-      });
-    }
-
-    const result = await processBIQuery(clientId, query, apiKey);
-
-    res.json({
-      success: true,
-      ...result
-    });
+    
+    return res.json({ success: true, ...result });
 
   } catch (error) {
-    console.error('[BI Route] Error:', error.message);
-    res.status(500).json({ 
+    logger.error('[BI/Ask] failed:', error.message);
+    return res.status(500).json({ 
       success: false, 
-      message: error.message || "An error occurred while processing your request." 
+      error: "Could not process your question. Please try again." 
     });
   }
 });

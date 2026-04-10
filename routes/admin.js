@@ -15,6 +15,7 @@ const fs = require('fs');
 const axios = require('axios');
 const { encrypt } = require('../utils/encryption');
 const { sanitizeMiddleware } = require('../utils/sanitize');
+const { syncPersonaToFlows } = require('../utils/personaEngine');
 
 router.post('/shopify/force-sync', protect, async (req, res) => {
   try {
@@ -888,7 +889,9 @@ router.patch('/my-settings', protect, async (req, res) => {
       // Phase 20: Razorpay
       razorpayKeyId, razorpaySecret,
       // Phase 20: System prompt / AI
-      systemPrompt, geminiApiKey
+      systemPrompt, geminiApiKey,
+      // Phase 29: AI Persona
+      ai
     } = req.body;
     
     // If Super Admin and clientId provided, use that. Otherwise use user's own.
@@ -1008,6 +1011,10 @@ router.patch('/my-settings', protect, async (req, res) => {
       updateFields.geminiApiKey = geminiApiKey;
       updateFields['ai.geminiKey'] = geminiApiKey;
     }
+    
+    if (ai?.persona !== undefined) {
+      updateFields['ai.persona'] = ai.persona;
+    }
 
     const updated = await Client.findOneAndUpdate(
       { clientId: targetClientId },
@@ -1018,6 +1025,14 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (!updated) return res.status(404).json({ message: 'Client not found' });
 
     log.success(`${req.user.role} updated settings for: ${targetClientId}`);
+    
+    // PHASE 3: Trigger AI Node Sync asynchronously
+    if (ai && ai.persona) {
+      syncPersonaToFlows(targetClientId, ai.persona).catch(err => {
+        console.error('[PersonaSync] Async Exception:', err);
+      });
+    }
+
     res.json({ 
       success: true, 
       nicheData: updated.nicheData, 
@@ -1855,7 +1870,7 @@ router.get('/unanswered-questions/:clientId', protect, async (req, res) => {
 });
 
 // --- GET AUDIT LOGS (Client Admin or Super Admin) ---
-router.get('/audit-logs', protect, authorize('ADMIN', 'SUPER_ADMIN'), async (req, res) => {
+router.get('/audit-logs', protect, authorize('CLIENT_ADMIN', 'SUPER_ADMIN'), async (req, res) => {
   try {
     const AuditLog = require('../models/AuditLog');
     const logs = await AuditLog.find({ clientId: req.user.clientId })

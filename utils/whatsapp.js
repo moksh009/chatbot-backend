@@ -64,6 +64,48 @@ const WhatsApp = {
   },
 
   /**
+   * Sends a video message
+   */
+  async sendVideo(client, phone, videoUrl, caption = "") {
+    const validPhone = validatePhone(phone);
+    const { token, phoneNumberId } = this.getCredentials(client);
+    const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+
+    try {
+      const res = await axios.post(url, {
+        messaging_product: 'whatsapp',
+        to: validPhone,
+        type: 'video',
+        video: { link: videoUrl, caption }
+      }, { headers: { Authorization: `Bearer ${token}` } });
+      return res.data;
+    } catch (err) {
+      this.handleError(err, url, "sendVideo");
+    }
+  },
+
+  /**
+   * Sends a document message
+   */
+  async sendDocument(client, phone, documentUrl, filename = "") {
+    const validPhone = validatePhone(phone);
+    const { token, phoneNumberId } = this.getCredentials(client);
+    const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+
+    try {
+      const res = await axios.post(url, {
+        messaging_product: 'whatsapp',
+        to: validPhone,
+        type: 'document',
+        document: { link: documentUrl, filename: filename || "document.pdf" }
+      }, { headers: { Authorization: `Bearer ${token}` } });
+      return res.data;
+    } catch (err) {
+      this.handleError(err, url, "sendDocument");
+    }
+  },
+
+  /**
    * Sends an audio message (Voice Note)
    */
   async sendAudio(client, phone, audioUrl) {

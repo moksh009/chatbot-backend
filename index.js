@@ -567,6 +567,11 @@ io.on('connection', (socket) => {
     log.info(`Socket joined super_admin_room`, { socketId: socket.id });
   }
 
+  socket.on('join_agent', (agentId) => {
+    socket.join(`agent_${agentId}`);
+    log.info(`Socket joined agent room`, { socketId: socket.id, agentId });
+  });
+
   socket.on('disconnect', () => {
     log.info('Client disconnected', { socketId: socket.id });
   });

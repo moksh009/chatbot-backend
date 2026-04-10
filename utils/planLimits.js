@@ -40,19 +40,30 @@ const PLAN_LIMITS = {
  * @returns {Promise<{allowed: Boolean, reason?: String, usage?: Number, limit?: Number|Boolean}>}
  */
 async function checkLimit(clientId, limitType) {
-  const sub = await Subscription.findOne({ clientId });
-  if (!sub) return { allowed: false, reason: "No active subscription" };
-  if (sub.status === "cancelled") return { allowed: false, reason: "Subscription cancelled" };
-  if (sub.status === "frozen") return { allowed: false, reason: "Subscription frozen" };
+  // --- BLOCK 6: ENTERPRISE OVERRIDE & GOD MODE ---
+  const Client = require('../models/Client');
+  const client = await Client.findOne({ clientId });
+  
+  if (client?.isLifetimeAdmin || ['topedge_admin'].includes(clientId)) {
+    return { allowed: true, limit: Infinity, usage: 0, isOverride: true };
+  }
 
-  const plan = sub.plan || "trial";
+  const sub = await Subscription.findOne({ clientId });
+  if (!sub) return { allowed: false, reason: "No active subscription", code: "NO_SUBSCRIPTION" };
+  if (sub.status === "frozen") return { allowed: false, reason: "Subscription frozen", code: "ACCOUNT_FROZEN" };
+
+  const plan = sub.plan?.toLowerCase() || "trial";
   const limits = PLAN_LIMITS[plan];
-  if (!limits) return { allowed: false, reason: "Unknown plan configuration" };
+  if (!limits) return { allowed: false, reason: "Unknown plan configuration", code: "PLAN_ERROR" };
 
   const limit = limits[limitType];
   
   // Boolean locks (Gated features)
-  if (limit === false) return { allowed: false, reason: `${limitType} not available on ${plan} plan` };
+  if (limit === false) return { 
+    allowed: false, 
+    reason: `${limitType} not available on ${plan} plan`,
+    code: "LIMIT_REACHED" 
+  };
   
   // Unlimited hooks
   if (limit === -1) return { allowed: true };
@@ -64,6 +75,7 @@ async function checkLimit(clientId, limitType) {
         return {
           allowed: false,
           reason: `${limitType} limit reached (${usage}/${limit}). Upgrade your plan to increase limits.`,
+          code: "LIMIT_REACHED",
           usage,
           limit
         };

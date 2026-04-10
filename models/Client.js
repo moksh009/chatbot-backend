@@ -91,6 +91,7 @@ const ClientSchema = new mongoose.Schema({
 
   // --- LEGACY FIELDS (Do Not Remove Until Phase 24 Migration Complete) ---
   clientId: { type: String, required: true, unique: true, trim: true },
+  isLifetimeAdmin: { type: Boolean, default: false }, // Objective 1: God Mode Bypass
   businessName: { 
     type: String, 
     required: true,

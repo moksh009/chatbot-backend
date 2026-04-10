@@ -1,7 +1,7 @@
 "use strict";
 
 const mongoose = require("mongoose");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { platformGenerateJSON, platformGenerateText } = require("./gemini");
 
 // Models
 const AdLead = require("../models/AdLead");
@@ -81,25 +81,14 @@ function sanitizeIds(obj) {
 /**
  * Main BI Engine Processor
  */
-async function processBIQuery(clientId, queryText, apiKey) {
-  if (!apiKey) throw new Error("Missing Gemini API Key");
-
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ 
-    model: "gemini-2.5-flash",
-    systemInstruction: SYSTEM_PROMPT 
-  });
-
+async function processBIQuery(clientId, queryText, clientContext) {
   // Step 1: Intent to Query Plan
-  const result = await model.generateContent(`Current Date: ${new Date().toISOString()}. Question: ${queryText}`);
-  const responseText = result.response.text().trim();
+  const prompt = SYSTEM_PROMPT + `\n\nCurrent Date: ${new Date().toISOString()}.\nQuestion: ${queryText}\nProvide the JSON strictly:`;
   
-  let queryPlan;
-  try {
-    const cleaned = responseText.replace(/```json\n?|```/g, "").trim();
-    queryPlan = JSON.parse(cleaned);
-  } catch (e) {
-    console.error("[BI Engine] JSON Parse Error:", responseText);
+  let queryPlan = await platformGenerateJSON(prompt);
+  
+  if (!queryPlan || !queryPlan.model) {
+    console.error("[BI Engine] AI failed to return valid JSON model wrapper.");
     throw new Error("AI failed to generate a valid data plan. Try rephrasing.");
   }
 
@@ -111,9 +100,8 @@ async function processBIQuery(clientId, queryText, apiKey) {
   let pipeline = sanitizeIds(queryPlan.pipeline || []);
   
   // FORCE Client Isolation as requested
-  // Unshift a match stage to index 0
   pipeline.unshift({ 
-    $match: { clientId: clientId } 
+    $match: { clientId: new mongoose.Types.ObjectId(clientId) } // Ensure it's correctly cast
   });
 
   // Step 3: Execute with 5s Kill Switch
@@ -126,7 +114,6 @@ async function processBIQuery(clientId, queryText, apiKey) {
   }
 
   // Step 4: Narrative Generation
-  const narrativeModel = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
   const finalPrompt = `
     Context: You are a BI Assistant.
     User Question: "${queryText}"
@@ -139,12 +126,13 @@ async function processBIQuery(clientId, queryText, apiKey) {
     4. Format numbers clearly (e.g. currency, commas).
   `;
 
-  const finalResult = await narrativeModel.generateContent(finalPrompt);
+  const narrativeText = await platformGenerateText(finalPrompt);
   
   return {
-    answer: finalResult.response.text().trim(),
+    answer: narrativeText || "Here is what I found. (Narrative unavailable)",
+    data: rawData, // Passing data optionally for frontend visual rendering logic if applicable
     modelUsed: queryPlan.model,
-    extractedCount: rawData.length,
+    extractedCount: rawData?.length || 0,
     timestamp: new Date()
   };
 }
@@ -152,12 +140,7 @@ async function processBIQuery(clientId, queryText, apiKey) {
 /**
  * Suggests 3 relevant business questions based on the client's current data volume.
  */
-async function generateQuerySuggestions(clientId, apiKey) {
-  if (!apiKey) return ["Show my total revenue", "Who are my top 5 customers?", "Sales trend this week"];
-
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-
+async function generateQuerySuggestions(clientId) {
   const prompt = `
 Context: You are a BI Assistant for an AI CRM.
 Based on the data we track (Leads, Orders, Appointments, DailyStats), generate 3 diverse natural language questions a business owner should ask to gain insights.
@@ -170,9 +153,9 @@ Return ONLY a JSON array of strings.
 `;
 
   try {
-    const result = await model.generateContent(prompt);
-    const cleaned = result.response.text().replace(/```json|```/g, '').trim();
-    return JSON.parse(cleaned);
+    const questions = await platformGenerateJSON(prompt);
+    if (Array.isArray(questions)) return questions;
+    return ["Show my top 5 products", "Total sales today", "Lead growth this month"];
   } catch (e) {
     return ["Show my top 5 products", "Total sales today", "Lead growth this month"];
   }

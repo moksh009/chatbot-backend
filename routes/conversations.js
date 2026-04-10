@@ -1,4 +1,5 @@
 const express = require('express');
+const { resolveClient } = require('../utils/queryHelpers');
 const router = express.Router();
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
@@ -9,6 +10,12 @@ const { createMessage } = require('../utils/createMessage');
 const ExportJob = require('../models/ExportJob');
 const fs = require('fs');
 const path = require('path');
+const multer = require('multer');
+const { uploadToCloud } = require('../utils/cloudinary');
+const { correctAIResponse } = require('../controllers/flowFixController');
+const Notification = require('../models/Notification');
+
+const upload = multer({ storage: multer.memoryStorage() });
 
 // @route   GET /api/conversations
 // @desc    Get all conversations for the client
@@ -239,14 +246,27 @@ router.post('/:id/messages', protect, async (req, res) => {
     }
 
     let newMessage;
-    if (mediaUrl && (mediaType?.toLowerCase() === 'image')) {
-      await WhatsApp.sendImage(client, conversation.phone, mediaUrl, finalContent);
+    if (mediaUrl) {
+      const type = mediaType?.toLowerCase() || 'image';
+      
+      if (type === 'image') {
+        await WhatsApp.sendImage(client, conversation.phone, mediaUrl, finalContent);
+      } else if (type === 'video') {
+        if (WhatsApp.sendVideo) await WhatsApp.sendVideo(client, conversation.phone, mediaUrl, finalContent);
+        else await WhatsApp.sendText(client, conversation.phone, `${finalContent}\n\nVideo: ${mediaUrl}`);
+      } else if (type === 'document' || type === 'file') {
+        if (WhatsApp.sendDocument) await WhatsApp.sendDocument(client, conversation.phone, mediaUrl, finalContent);
+        else await WhatsApp.sendText(client, conversation.phone, `${finalContent}\n\nDocument: ${mediaUrl}`);
+      } else {
+        await WhatsApp.sendText(client, conversation.phone, `${finalContent}\n\nWait: ${mediaUrl}`);
+      }
+
       newMessage = await createMessage({
         clientId: conversation.clientId,
         conversationId: conversation._id, // CRITICAL FIX
         phone: conversation.phone,
         direction: 'outbound',
-        type: 'image',
+        type: type === 'file' ? 'document' : type,
         body: content,
         translatedContent: translatedContent,
         detectedLanguage: conversation.detectedLanguage,
@@ -438,14 +458,55 @@ router.patch('/:id/assign', protect, async (req, res) => {
     const conversation = await Conversation.findOneAndUpdate(query, update, { new: true }).populate('assignedTo', 'name email');
     if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
 
+    // Save persistent notification in database
+    if (agentId) {
+      await Notification.create({
+        clientId: conversation.clientId,
+        title: 'New Assignment',
+        message: `${agentName || req.user.name} assigned a conversation to you.`,
+        type: 'assignment',
+        metadata: { conversationId: conversation._id, phone: conversation.phone }
+      });
+    }
+
     const io = req.app.get('socketio');
-    if (io) io.to(`client_${conversation.clientId}`).emit('conversation_assigned', { conversationId: conversation._id, agentId, agentName });
+    if (io) {
+      // Emit task_assigned for the specific agent to receive real-time toast
+      if (agentId) {
+        io.to(`agent_${agentId}`).emit('task_assigned', {
+          agentId,
+          message: 'Admin assigned a new conversation to you.',
+          conversationId: conversation._id
+        });
+      }
+      io.to(`client_${conversation.clientId}`).emit('conversation_assigned', { conversationId: conversation._id, agentId, agentName });
+    }
 
     res.json({ success: true, conversation });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 });
+
+// @route   POST /api/conversations/:id/upload-media
+// @desc    Upload media to Cloudinary and return URL
+// @access  Private
+router.post('/:id/upload-media', protect, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+    
+    const mediaUrl = await uploadToCloud(req.file.buffer, 'chat_media', 'auto');
+    res.json({ success: true, mediaUrl });
+  } catch (error) {
+    console.error('[UploadMedia] Error:', error);
+    res.status(500).json({ message: 'Media upload failed' });
+  }
+});
+
+// @route   POST /api/conversations/correct-ai
+// @desc    Log agent correction for AI training
+// @access  Private
+router.post('/correct-ai', protect, correctAIResponse);
 
 // @route   PATCH /api/conversations/:id/labels
 // @desc    Update conversation labels

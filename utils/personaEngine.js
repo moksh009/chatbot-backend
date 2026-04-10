@@ -106,4 +106,81 @@ function applyPersonaPostProcess(responseText, persona) {
   return processed.trim();
 }
 
-module.exports = { buildPersonaSystemPrompt, applyPersonaPostProcess };
+/**
+ * Synchronizes the global AI Persona settings down to individual Flow Builder nodes.
+ */
+async function syncPersonaToFlows(clientId, personaData) {
+    try {
+        const WhatsAppFlow = require('../models/WhatsAppFlow'); 
+        const Client = require('../models/Client');
+
+        // 1. Update standalone WhatsAppFlow documents
+        const flows = await WhatsAppFlow.find({ clientId });
+        const bulkOps = [];
+
+        for (const flow of flows) {
+            let isModified = false;
+            // Ensure nodes exists (it might be in flowData for legacy or just 'nodes' for new)
+            const currentNodes = flow.nodes || [];
+            
+            const updatedNodes = currentNodes.map(node => {
+                if (node.type === 'botIntelligence' || node.type === 'ai_agent') {
+                    isModified = true;
+                    return {
+                        ...node,
+                        data: {
+                            ...node.data,
+                            botName: personaData.name || node.data.botName,
+                            tone: personaData.tone || node.data.tone,
+                            instructions: personaData.description || node.data.instructions
+                        }
+                    };
+                }
+                return node;
+            });
+
+            if (isModified) {
+                bulkOps.push({
+                    updateOne: {
+                        filter: { _id: flow._id },
+                        update: { $set: { nodes: updatedNodes } }
+                    }
+                });
+            }
+        }
+
+        if (bulkOps.length > 0) {
+            await WhatsAppFlow.bulkWrite(bulkOps);
+        }
+
+        // 2. Update embedded flowNodes in Client config (if used in your architecture)
+        const client = await Client.findOne({ clientId });
+        if (client?.flowNodes) {
+            let clientModified = false;
+            const updatedClientNodes = client.flowNodes.map(node => {
+                if (node.type === 'botIntelligence' || node.type === 'ai_agent') {
+                    clientModified = true;
+                    return {
+                        ...node,
+                        data: {
+                            ...node.data,
+                            botName: personaData.name || node.data.botName,
+                            tone: personaData.tone || node.data.tone,
+                            instructions: personaData.description || node.data.instructions
+                        }
+                    };
+                }
+                return node;
+            });
+
+            if (clientModified) {
+                await Client.updateOne({ clientId }, { $set: { flowNodes: updatedClientNodes } });
+            }
+        }
+        console.log(`[PersonaSync] Successfully synchronized persona for client ${clientId}`);
+    } catch (error) {
+        console.error("[PersonaSync] Failed to sync persona to flows:", error);
+    }
+}
+
+module.exports = { buildPersonaSystemPrompt, applyPersonaPostProcess, syncPersonaToFlows };

@@ -1,6 +1,7 @@
 "use strict";
 
 const express           = require("express");
+const { resolveClient } = require('../utils/queryHelpers');
 const router            = express.Router();
 const QRCode            = require("../models/QRCode");
 const QRScan            = require("../models/QRScan");

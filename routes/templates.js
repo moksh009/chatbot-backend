@@ -1,4 +1,5 @@
 const express = require('express');
+const { resolveClient } = require('../utils/queryHelpers');
 const router = express.Router();
 const axios = require('axios');
 const { protect } = require('../middleware/auth');
