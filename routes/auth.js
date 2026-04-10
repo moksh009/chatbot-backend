@@ -21,9 +21,22 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
         return res.status(404).json({ message: 'User not found' });
     }
 
-    if (user.email === 'delitech2708@gmail.com') {
+    // Admin Booster: Ensure admin@topedgeai.com is always Super Admin
+    if (user.email === 'admin@topedgeai.com') {
       if (user.role !== 'SUPER_ADMIN' || !user.isLifetimeAdmin) {
         user.role = 'SUPER_ADMIN';
+        user.isLifetimeAdmin = true;
+        await user.save();
+      }
+    }
+
+    // Delitech demotion: Land on normal dashboard but keep best plan
+    if (user.email === 'delitech2708@gmail.com') {
+      if (user.role === 'SUPER_ADMIN') {
+        user.role = 'CLIENT_ADMIN';
+        await user.save();
+      }
+      if (!user.isLifetimeAdmin) {
         user.isLifetimeAdmin = true;
         await user.save();
       }
@@ -81,9 +94,22 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
   try {
     let user = await User.findOne({ email });
 
-    if (user && user.email === 'delitech2708@gmail.com') {
+    // Admin Booster
+    if (user && user.email === 'admin@topedgeai.com') {
       if (user.role !== 'SUPER_ADMIN' || !user.isLifetimeAdmin) {
         user.role = 'SUPER_ADMIN';
+        user.isLifetimeAdmin = true;
+        await user.save();
+      }
+    }
+
+    // Delitech demotion
+    if (user && user.email === 'delitech2708@gmail.com') {
+      if (user.role === 'SUPER_ADMIN') {
+        user.role = 'CLIENT_ADMIN';
+        await user.save();
+      }
+      if (!user.isLifetimeAdmin) {
         user.isLifetimeAdmin = true;
         await user.save();
       }
