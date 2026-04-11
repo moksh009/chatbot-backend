@@ -218,6 +218,11 @@ async function handleOrder(client, data) {
             .catch(e => log.error('Loyalty award failed', e.message));
     }
 
+    // --- PHASE 30.5: Enterprise Warranty Auto-Assign ---
+    const { assignWarranty } = require('../utils/warrantyService');
+    assignWarranty(client, cleanPhone, data)
+        .catch(e => log.error('Warranty auto-assignment failed', e.message));
+
     // --- SKU-to-Template Automation ---
     if (client.skuAutomations?.length > 0) {
         const WhatsApp = require('../utils/whatsapp');

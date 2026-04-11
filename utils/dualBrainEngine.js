@@ -1543,15 +1543,20 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 
   // 6. Schedule Node: Business Hours check
   if (node.type === 'schedule') {
+    const { openTime = "10:00", closeTime = "19:00", days = [1, 2, 3, 4, 5] } = node.data || {};
     const now = new Date();
-    const day = now.getDay(); // 0-6
-    const hour = now.getHours(); // 0-23
+    const day = now.getDay();
     
-    // Default: Mon-Fri (1-5), 10:00 - 19:00
-    const isOpen = (day >= 1 && day <= 5) && (hour >= 10 && hour < 19);
+    // Convert current time to HH:MM format for string comparison
+    const currentHHMM = now.getHours().toString().padStart(2, '0') + ":" + now.getMinutes().toString().padStart(2, '0');
+    
+    const isDayOpen = days.includes(day);
+    const isTimeOpen = currentHHMM >= openTime && currentHHMM < closeTime;
+    const isOpen = isDayOpen && isTimeOpen;
+    
     const targetHandle = isOpen ? 'open' : 'closed';
     
-    log.info(`[FlowEngine] Schedule check: ${isOpen ? 'OPEN' : 'CLOSED'}`);
+    log.info(`[FlowEngine] Schedule check: ${currentHHMM} on Day ${day} → ${isOpen ? 'OPEN' : 'CLOSED'}`);
     const nextEdge = flowEdges.find(e => e.source === nodeId && normalizeHandleId(e.sourceHandle) === targetHandle);
     if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
@@ -1617,6 +1622,56 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     log.info(`AdminAlert triggered for ${phone}: ${alertMsg}`);
     
     const nextEdge = flowEdges.find(e => e.source === nodeId && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'output'));
+    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+  }
+
+  // Enterprise Expansion: Warranty Lookup Engine
+  if (node.type === 'warranty_lookup') {
+    const serial = convo?.metadata?.lookup_serial || '';
+    const { normalizePhone } = require('./helpers');
+    const cleanPhone = normalizePhone(phone);
+    
+    // Fetch real records from DB
+    const leadRecord = await AdLead.findOne({ phoneNumber: cleanPhone, clientId: client.clientId });
+    const records = leadRecord?.warrantyRecords || [];
+    
+    let message = '';
+    
+    if (serial) {
+        // Search by Serial (Intelligent Match: Full or last 4 digits)
+        const match = records.find(r => 
+            r.serialNumber === serial || 
+            r.orderId === serial ||
+            (serial.length >= 4 && r.serialNumber.endsWith(serial))
+        );
+        if (match) {
+            const expiryDate = new Date(match.expiryDate);
+            const isExpired = new Date() > expiryDate;
+            const dateStr = expiryDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+            
+            if (isExpired) {
+                message = `⚠️ *Warranty Expired*\n\nYour product *${match.productName}* (*${serial}*) was covered until ${dateStr}. Please contact support for repair options.`;
+            } else {
+                message = `✅ *Active Warranty Found*\n\nProduct: *${match.productName}*\nSerial: *${serial}*\nValid Until: *${dateStr}*\n\nYou are fully protected! 🛡️`;
+                if (client.brand?.warrantySupportPhone) {
+                    message += `\n\nSupport: ${client.brand.warrantySupportPhone}`;
+                }
+            }
+        } else {
+            message = `❌ *Serial Not Found*\n\nI couldn't find a warranty record for *${serial}*. Please ensure the serial number is correct.`;
+        }
+    } else {
+        // Just show all active warranties if no serial provided
+        const activeOnes = records.filter(r => new Date(r.expiryDate) > new Date());
+        if (activeOnes.length > 0) {
+            message = `📋 *Your Active Warranties*\n\n${activeOnes.map(r => `• ${r.productName} (${r.serialNumber}) - Exp: ${new Date(r.expiryDate).toLocaleDateString()}`).join('\n')}`;
+        } else {
+            message = `📋 *Warranty Status*\n\nYou don't have any active warranties registered with this phone number. 🛡️`;
+        }
+    }
+    
+    await WhatsApp.sendText(client, phone, message);
+    const nextEdge = flowEdges.find(e => e.source === nodeId && (!e.sourceHandle || e.sourceHandle === 'output'));
     if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
 

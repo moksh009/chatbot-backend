@@ -139,6 +139,29 @@ router.post("/:clientId/complete", protect, async (req, res) => {
           }
         ]
       }),
+      // Enterprise Ops Sync
+      ...(wizardData.activePersona && { "ai.enterprisePersona": wizardData.activePersona }),
+      ...(wizardData.referralPoints && { "brand.referralPoints": wizardData.referralPoints }),
+      ...(wizardData.signupPoints   && { "brand.signupPoints": wizardData.signupPoints }),
+      ...(wizardData.openTime && { "config.businessHours.openTime": wizardData.openTime }),
+      ...(wizardData.closeTime && { "config.businessHours.closeTime": wizardData.closeTime }),
+      ...(wizardData.workingDays && { "config.businessHours.workingDays": wizardData.workingDays }),
+      ...(wizardData.b2bEnabled !== undefined && { 
+        "brand.b2bEnabled": wizardData.b2bEnabled,
+        "config.b2bEnabled": wizardData.b2bEnabled 
+      }),
+      ...(wizardData.b2bThreshold && { "brand.b2bThreshold": wizardData.b2bThreshold }),
+      ...(wizardData.b2bAdminPhone && { "brand.b2bAdminPhone": wizardData.b2bAdminPhone }),
+      ...(wizardData.businessLogo && { 
+        "brand.businessLogo": wizardData.businessLogo,
+        "businessLogo": wizardData.businessLogo 
+      }),
+      ...(wizardData.authorizedSignature && { 
+        "brand.authorizedSignature": wizardData.authorizedSignature,
+        "authorizedSignature": wizardData.authorizedSignature 
+      }),
+      ...(wizardData.warrantyDuration && { "brand.warrantyDuration": wizardData.warrantyDuration }),
+      ...(wizardData.warrantyPolicy && { "brand.warrantyPolicy": wizardData.warrantyPolicy })
     };
 
     let updateQuery = { 

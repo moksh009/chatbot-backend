@@ -8,7 +8,14 @@ const BrandSchema = new mongoose.Schema({
   niche: { type: String, default: "other" },
   businessType: { type: String, default: "other" },
   adminPhone: { type: String, default: "" },
-  googleReviewUrl: { type: String, default: "" }
+  googleReviewUrl: { type: String, default: "" },
+  // Enterprise Warranty
+  warrantyDefaultDuration: { type: String, default: "1 Year" },
+  warrantySupportPhone: { type: String, default: "" },
+  warrantyClaimUrl: { type: String, default: "" },
+  warrantyEmailEnabled: { type: Boolean, default: false },
+  warrantyWhatsappEnabled: { type: Boolean, default: false },
+  productWarranties: { type: mongoose.Schema.Types.Mixed, default: {} } // SKU -> Duration
 }, { _id: false });
 
 const WhatsappSchema = new mongoose.Schema({

@@ -183,6 +183,18 @@ const adLeadSchema = new mongoose.Schema({
   // Phase 25: Referral Tracking
   referralCode: String, // Code belonging to THIS lead
   referredBy: String,   // The code that brought THIS lead in
+  
+  // Phase 30.5: Enterprise Warranty Records
+  warrantyRecords: [{
+    orderId: String,
+    serialNumber: String,
+    productName: String,
+    productImage: String,
+    purchaseDate: { type: Date, default: Date.now },
+    expiryDate: Date,
+    status: { type: String, enum: ['active', 'expired', 'claimed'], default: 'active' },
+    registeredAt: { type: Date, default: Date.now }
+  }],
 
   createdAt: {
     type: Date,
