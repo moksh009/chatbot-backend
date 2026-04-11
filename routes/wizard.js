@@ -5,6 +5,7 @@ const router  = express.Router();
 const Client  = require("../models/Client");
 const { protect } = require("../middleware/auth");
 const { generateEcommerceFlow, generateSystemPrompt, getPrebuiltTemplates } = require("../utils/flowGenerator");
+const { withShopifyRetry } = require("../utils/shopifyHelper");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/wizard/:clientId/complete
@@ -164,23 +165,54 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       ...(wizardData.warrantyPolicy && { "brand.warrantyPolicy": wizardData.warrantyPolicy })
     };
 
-    let updateQuery = { 
-      $set: settingsUpdate,
-      $push: { visualFlows: newFlow }
-    };
+    // Handle customTemplates (push them separately after main update)
+    const customTemplatesPush = (wizardData.customTemplates && wizardData.customTemplates.length > 0)
+      ? wizardData.customTemplates.map(t => ({ ...t, status: 'PENDING', source: 'wizard_custom', createdAt: new Date() }))
+      : [];
 
-    if (wizardData.customTemplates && wizardData.customTemplates.length > 0) {
-      updateQuery.$push.messageTemplates = {
-        $each: wizardData.customTemplates.map(t => ({
-          ...t,
-          status: 'PENDING',
-          source: 'wizard_custom',
-          createdAt: new Date()
-        }))
+    // If replaceExisting, update the active main flow's nodes instead of always pushing
+    let updateQuery;
+    if (wizardData.replaceExisting !== false) {
+      // Replace the active whatsapp flow's nodes
+      const existingFlows = client.visualFlows || [];
+      const activeFlowIdx = existingFlows.findIndex(f => f.isActive && f.platform === 'whatsapp');
+      
+      if (activeFlowIdx !== -1) {
+        // Update in-place
+        existingFlows[activeFlowIdx] = {
+          ...existingFlows[activeFlowIdx],
+          nodes,
+          edges,
+          updatedAt: new Date(),
+          generatedBy: 'wizard'
+        };
+        updateQuery = {
+          $set: { ...settingsUpdate, visualFlows: existingFlows }
+        };
+      } else {
+        // No active flow found, push the new one
+        newFlow.isActive = true;
+        updateQuery = {
+          $set: settingsUpdate,
+          $push: { visualFlows: newFlow }
+        };
+      }
+    } else {
+      // Add as new flow (keep existing active ones)
+      updateQuery = {
+        $set: settingsUpdate,
+        $push: { visualFlows: newFlow }
       };
     }
 
     const updatedClient = await Client.findByIdAndUpdate(client._id, updateQuery, { new: true });
+
+    // Push customTemplates separately if any
+    if (customTemplatesPush.length > 0) {
+      await Client.findByIdAndUpdate(client._id, {
+        $push: { messageTemplates: { $each: customTemplatesPush } }
+      });
+    }
 
     // Sync persona to flows (Goal 1: Alignment)
     if (updatedClient.ai?.persona) {
@@ -188,13 +220,15 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       syncPersonaToFlows(clientId, updatedClient.ai.persona);
     }
 
-    console.log(`[Wizard] ✅ Complete! Flow generated with ${nodes.length} nodes for ${clientId}`);
+    const action = wizardData.replaceExisting !== false ? 'replaced' : 'added';
+    console.log(`[Wizard] ✅ Complete! Flow ${action} with ${nodes.length} nodes for ${clientId}`);
 
     res.json({
       success:        true,
       flowId:         newFlow.id,
       nodesGenerated: nodes.length,
-      message:        `Your bot is live! ${nodes.length} nodes generated.`
+      action,
+      message:        `Your bot is live! ${nodes.length} nodes generated and ${action} successfully.`
     });
 
   } catch (err) {
@@ -209,35 +243,135 @@ router.post("/:clientId/complete", protect, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/:clientId/shopify-products", protect, async (req, res) => {
   const { clientId } = req.params;
+  const axios = require("axios");
+  const { decrypt } = require("../utils/encryption");
 
   try {
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ error: "Client not found" });
 
-    if (!client.shopDomain || !client.shopifyAccessToken) {
-      return res.json({ success: false, products: [], message: "Shopify not connected" });
+    const shopDomain = client.shopDomain || client['commerce.shopify.domain'];
+    const rawToken = client.shopifyAccessToken || client.commerce?.shopify?.accessToken;
+
+    if (!shopDomain || !rawToken) {
+      return res.json({ 
+        success: false, 
+        products: [], 
+        message: "Shopify not connected. Please add your store credentials in Hub Settings first." 
+      });
     }
 
-    const axios = require("axios");
-    const resp = await axios.get(
-      `https://${client.shopDomain}/admin/api/2023-10/products.json?limit=10&fields=id,title,variants,images`,
-      { headers: { "X-Shopify-Access-Token": client.shopifyAccessToken } }
-    );
+    console.log(`[WizardProducts] Fetching products for ${clientId} | domain: ${shopDomain} | token starts: ${rawToken?.substring(0,10)}...`);
 
-    const products = (resp.data.products || []).map(p => ({
-      name:        p.title,
-      price:       p.variants?.[0]?.price || "",
-      description: "",
-      imageUrl:    p.images?.[0]?.src || "",
-      shopifyId:   p.id
-    }));
+    // Helper to map a Shopify product list to our format
+    const mapProducts = (list) => (list || [])
+      .filter(p => p.status === 'active' || !p.status)
+      .slice(0, 20)
+      .map(p => ({
+        name:        p.title,
+        price:       p.variants?.[0]?.price || '',
+        description: p.variants?.[0]?.title !== 'Default Title' ? p.variants?.[0]?.title : '',
+        imageUrl:    p.images?.[0]?.src || '',
+        shopifyId:   p.id,
+        handle:      p.handle
+      }));
 
-    res.json({ success: true, products });
+    // ── STRATEGY 1: Use withShopifyRetry (auto-decrypts + auto-rotates) ──────
+    try {
+      const products = await withShopifyRetry(clientId, async (shop) => {
+        const resp = await shop.get('/products.json?limit=30&fields=id,title,variants,images,status,handle');
+        return mapProducts(resp.data.products);
+      });
+      console.log(`[WizardProducts] ✅ Strategy 1 (withShopifyRetry) success for ${clientId}: ${products.length} products`);
+      return res.json({ success: true, products });
+    } catch (strategy1Err) {
+      console.warn(`[WizardProducts] Strategy 1 failed for ${clientId}:`, strategy1Err.response?.status, strategy1Err.message);
+    }
+
+    // ── STRATEGY 2: Try raw token (may be plain-text Admin API token) ─────────
+    const decryptedToken = decrypt(rawToken);
+    const apiVersion = client.shopifyApiVersion || '2023-10';
+    const adminBaseUrl = `https://${shopDomain}/admin/api/${apiVersion}`;
+
+    try {
+      const resp = await axios.get(`${adminBaseUrl}/products.json?limit=30&fields=id,title,variants,images,status,handle`, {
+        headers: { 'X-Shopify-Access-Token': decryptedToken, 'Content-Type': 'application/json' }
+      });
+      const products = mapProducts(resp.data.products);
+      console.log(`[WizardProducts] ✅ Strategy 2 (raw admin token) success for ${clientId}: ${products.length} products`);
+      return res.json({ success: true, products });
+    } catch (strategy2Err) {
+      console.warn(`[WizardProducts] Strategy 2 failed for ${clientId}:`, strategy2Err.response?.status, strategy2Err.message);
+    }
+
+    // ── STRATEGY 3: Try Storefront API (read-only public products) ────────────
+    const storefrontToken = client.storefrontAccessToken || client.shopifyStorefrontToken;
+    if (storefrontToken) {
+      try {
+        const sfResp = await axios.post(
+          `https://${shopDomain}/api/${apiVersion}/graphql.json`,
+          { query: `{ products(first: 20, query: "status:active") { edges { node { id title handle variants(first: 1) { edges { node { price } } } images(first: 1) { edges { node { url } } } } } } }` },
+          { headers: { 'X-Shopify-Storefront-Access-Token': storefrontToken, 'Content-Type': 'application/json' } }
+        );
+        const edges = sfResp.data?.data?.products?.edges || [];
+        const products = edges.map(({ node: p }) => ({
+          name:      p.title,
+          price:     p.variants?.edges?.[0]?.node?.price || '',
+          imageUrl:  p.images?.edges?.[0]?.node?.url || '',
+          shopifyId: p.id,
+          handle:    p.handle
+        }));
+        console.log(`[WizardProducts] ✅ Strategy 3 (storefront token) success for ${clientId}: ${products.length} products`);
+        return res.json({ success: true, products });
+      } catch (strategy3Err) {
+        console.warn(`[WizardProducts] Strategy 3 failed for ${clientId}:`, strategy3Err.message);
+      }
+    }
+
+    // All strategies failed
+    console.error(`[WizardProducts] ❌ All strategies failed for ${clientId}`);
+    return res.json({ 
+      success: false, 
+      products: [], 
+      isAuthError: true,
+      message: 'Shopify authentication failed on all attempts. Your Admin API token may be invalid or have insufficient scopes (needs read_products). Please reconnect from Hub Settings → Store Connection.' 
+    });
+
   } catch (err) {
-    console.error(`[Wizard] Shopify product fetch error for ${clientId}:`, err.message);
+    console.error(`[WizardProducts] Unexpected error for ${clientId}:`, err.message);
     res.json({ success: false, products: [], message: err.message });
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/wizard/:clientId/debug-shopify  (SUPER_ADMIN only)
+// Returns safe debug info about stored Shopify credentials
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/:clientId/debug-shopify", protect, async (req, res) => {
+  if (req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ error: 'SUPER_ADMIN only' });
+  const { clientId } = req.params;
+  const { decrypt } = require("../utils/encryption");
+  try {
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ error: "Client not found" });
+    const rawToken = client.shopifyAccessToken || '';
+    const decrypted = decrypt(rawToken);
+    res.json({
+      shopDomain: client.shopDomain,
+      connectionStatus: client.shopifyConnectionStatus,
+      lastError: client.lastShopifyError,
+      tokenStored: rawToken ? `${rawToken.substring(0,8)}...${rawToken.slice(-4)} (${rawToken.length} chars)` : 'NONE',
+      tokenDecrypted: decrypted ? `${decrypted.substring(0,8)}...${decrypted.slice(-4)} (${decrypted.length} chars)` : 'NONE',
+      tokenLooksEncrypted: rawToken.includes(':') && rawToken.length > 40,
+      hasStorefrontToken: !!(client.storefrontAccessToken || client.shopifyStorefrontToken),
+      apiVersion: client.shopifyApiVersion || '2023-10'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/wizard/:clientId/templates
