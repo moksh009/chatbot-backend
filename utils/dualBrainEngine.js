@@ -1627,44 +1627,51 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 
   // Enterprise Expansion: Warranty Lookup Engine
   if (node.type === 'warranty_lookup') {
-    const serial = convo?.metadata?.lookup_serial || '';
+    const serialQuery = (convo?.metadata?.lookup_serial || '').trim().toLowerCase();
     const { normalizePhone } = require('./helpers');
     const cleanPhone = normalizePhone(phone);
     
     // Fetch real records from DB
-    const leadRecord = await AdLead.findOne({ phoneNumber: cleanPhone, clientId: client.clientId });
+    const leadRecord = await AdLead.findOne({ phoneNumber: cleanPhone, clientId: client.clientId }).lean();
     const records = leadRecord?.warrantyRecords || [];
     
     let message = '';
     
-    if (serial) {
-        // Search by Serial (Intelligent Match: Full or last 4 digits)
-        const match = records.find(r => 
-            r.serialNumber === serial || 
-            r.orderId === serial ||
-            (serial.length >= 4 && r.serialNumber.endsWith(serial))
-        );
-        if (match) {
+    if (serialQuery) {
+        // Search by Serial (Intelligent Match: Full or last N digits, case-insensitive)
+        // Match against Serial Number or Order ID
+        const matches = records.filter(r => {
+            const sn = (r.serialNumber || "").toLowerCase();
+            const oid = (r.orderId || "").toLowerCase();
+            return sn === serialQuery || 
+                   oid === serialQuery ||
+                   (serialQuery.length >= 4 && sn.endsWith(serialQuery));
+        });
+
+        if (matches.length === 1) {
+            const match = matches[0];
             const expiryDate = new Date(match.expiryDate);
             const isExpired = new Date() > expiryDate;
             const dateStr = expiryDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
             
             if (isExpired) {
-                message = `⚠️ *Warranty Expired*\n\nYour product *${match.productName}* (*${serial}*) was covered until ${dateStr}. Please contact support for repair options.`;
+                message = `⚠️ *Warranty Expired*\n\nYour product *${match.productName}* (${match.serialNumber}) was covered until ${dateStr}. Please contact support for repair options.`;
             } else {
-                message = `✅ *Active Warranty Found*\n\nProduct: *${match.productName}*\nSerial: *${serial}*\nValid Until: *${dateStr}*\n\nYou are fully protected! 🛡️`;
+                message = `✅ *Active Warranty Found*\n\nProduct: *${match.productName}*\nSerial: *${match.serialNumber}*\nValid Until: *${dateStr}*\n\nYou are fully protected! 🛡️`;
                 if (client.brand?.warrantySupportPhone) {
                     message += `\n\nSupport: ${client.brand.warrantySupportPhone}`;
                 }
             }
+        } else if (matches.length > 1) {
+            message = `📋 *Multiple Matches Found*\n\nI found ${matches.length} products matching "${serialQuery}":\n\n${matches.map(r => `• *${r.productName}*\n  SN: ${r.serialNumber} | Exp: ${new Date(r.expiryDate).toLocaleDateString()}`).join('\n\n')}\n\n_Please provide the full serial number for details on a specific unit._`;
         } else {
-            message = `❌ *Serial Not Found*\n\nI couldn't find a warranty record for *${serial}*. Please ensure the serial number is correct.`;
+            message = `❌ *Serial Not Found*\n\nI couldn't find a warranty record for *${serialQuery}*. Please ensure the serial number is correct.`;
         }
     } else {
         // Just show all active warranties if no serial provided
         const activeOnes = records.filter(r => new Date(r.expiryDate) > new Date());
         if (activeOnes.length > 0) {
-            message = `📋 *Your Active Warranties*\n\n${activeOnes.map(r => `• ${r.productName} (${r.serialNumber}) - Exp: ${new Date(r.expiryDate).toLocaleDateString()}`).join('\n')}`;
+            message = `📋 *Your Active Warranties*\n\n${activeOnes.map(r => `• ${r.productName} (${r.serialNumber})\n  Exp: ${new Date(r.expiryDate).toLocaleDateString()}`).join('\n')}`;
         } else {
             message = `📋 *Warranty Status*\n\nYou don't have any active warranties registered with this phone number. 🛡️`;
         }

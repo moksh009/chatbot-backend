@@ -92,17 +92,20 @@ async function sendNotifications(client, phone, record) {
   const businessName = client.brand?.businessName || client.businessName || 'Our Store';
   const expiryStr = record.expiryDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 
+  // Try to find lead to get name
+  const lead = await AdLead.findOne({ phoneNumber: phone, clientId: client.clientId }).select('name');
+  const customerName = lead?.name || "Customer";
+
   // 1. WhatsApp Notification
   if (client.brand?.warrantyWhatsappEnabled) {
     try {
       // Template: warranty_confirmation
-      // Params: {{1}}=Name, {{2}}=Product, {{3}}=Expiry
-      const customerName = "Customer"; // Fallback
+      // Params: {{1}}=Name, {{2}}=Product, {{3}}=Expiry, {{4}}=StoreName
       await WhatsApp.sendSmartTemplate(
         client,
         phone,
         'warranty_confirmation',
-        [customerName, record.productName, expiryStr],
+        [customerName, record.productName, expiryStr, businessName],
         record.productImage
       );
       log.info(`WhatsApp warranty confirmation sent to ${phone}`);
@@ -119,7 +122,54 @@ async function sendNotifications(client, phone, record) {
   }
 }
 
+/**
+ * Manually registers a warranty record.
+ */
+async function manualRegister(client, phoneNumber, data) {
+  try {
+    const { normalizePhone } = require('./helpers');
+    const cleanPhone = normalizePhone(phoneNumber);
+    
+    const lead = await AdLead.findOne({ phoneNumber: cleanPhone, clientId: client.clientId });
+    if (!lead) {
+      throw new Error(`No customer found with phone ${cleanPhone}`);
+    }
+
+    const now = new Date();
+    const purchaseDate = data.purchaseDate ? new Date(data.purchaseDate) : now;
+    const expiryDate = calculateExpiry(purchaseDate, data.duration || "1 Year");
+
+    const record = {
+      orderId: data.orderId || 'MANUAL',
+      serialNumber: data.serialNumber || `SN-REG-${Date.now()}`,
+      productName: data.productName || 'General Product',
+      productImage: null,
+      purchaseDate,
+      expiryDate,
+      status: 'active',
+      registeredAt: now
+    };
+
+    await AdLead.updateOne(
+      { _id: lead._id },
+      { $push: { warrantyRecords: record } }
+    );
+
+    log.info(`Manually registered warranty for ${cleanPhone}`);
+
+    // Dispatch Notifications if enabled
+    await sendNotifications(client, cleanPhone, record);
+
+    return record;
+  } catch (err) {
+    log.error('Manual registration failed:', err.message);
+    throw err;
+  }
+}
+
 module.exports = {
   assignWarranty,
-  calculateExpiry
+  calculateExpiry,
+  manualRegister,
+  sendNotifications
 };

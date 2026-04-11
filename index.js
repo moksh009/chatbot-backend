@@ -216,6 +216,7 @@ app.use('/api/reseller', require('./routes/reseller'));
 
 // Phase 27: Loyalty Hub & Enterprise Rewards
 app.use('/api/loyalty', require('./routes/loyalty'));
+app.use('/api/warranty', require('./routes/warranty'));
 
 // --- CRON JOBS (Phase 21 Resumption) ---
 const scheduleFlowResumption = require('./cron/flowResumptionCron');

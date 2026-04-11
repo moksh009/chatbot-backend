@@ -37,10 +37,10 @@ async function generateEcommerceFlow(client, wizardData) {
   } = wizardData;
 
   const personaMap = {
-    concierge: { label: "Elite Concierge", type: "Luxury/Formal" },
-    hacker:    { label: "Growth Hacker", type: "Sales/Aggressive" },
-    sidekick:  { label: "Friendly Sidekick", type: "Casual/Friendly" },
-    efficiency: { label: "Efficiency Expert", type: "Direct/Minimalist" }
+    concierge: { label: "Elite Concierge", type: "Luxury/Formal", tone_markers: "Use 'Sir/Ma'am', extremely polite, high-end vocabulary, boutique feel." },
+    hacker:    { label: "Growth Hacker", type: "Sales/Aggressive", tone_markers: "FOMO-driven, enthusiastic, use emojis like 🚀🔥, fast-paced, direct." },
+    sidekick:  { label: "Friendly Sidekick", type: "Casual/Friendly", tone_markers: "Warm, empathetic, uses 'friend/buddy', very approachable, uses 😊✨." },
+    efficiency: { label: "Efficiency Expert", type: "Direct/Minimalist", tone_markers: "No fluff, bullet points, ultra-fast, professional but dry." }
   };
   const selectedPersona = personaMap[activePersona] || personaMap.sidekick;
 
@@ -50,14 +50,16 @@ async function generateEcommerceFlow(client, wizardData) {
 Business: ${businessName}
 Description: ${businessDescription}
 Bot Name: ${botName}
-Tone: ${tone} (Persona: ${selectedPersona.label})
+Tone Style: ${tone}
+Persona Identity: ${selectedPersona.label} (${selectedPersona.type})
+Persona Tone Guidelines: ${selectedPersona.tone_markers}
 Language: ${botLanguage}
 FAQs: ${faqText}
 Returns Info: ${returnsInfo}
 Loyalty: Referral=${referralPoints} pts, Signup=${signupPoints} pts
 Business Hours: ${openTime} - ${closeTime}
 
-Generate a JSON object for 28 different UI touchpoints.
+Generate a JSON object for 28 different UI touchpoints. Ensure the language strictly follows the Persona Tone Guidelines above.
 REQUIRED KEYS:
 "welcome_a", "welcome_b", "product_menu_text", "product_list_btn", 
 "order_status_msg", "fallback_msg", "returns_policy_short", "refund_policy_short",
