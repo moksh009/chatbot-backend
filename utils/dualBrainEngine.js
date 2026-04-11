@@ -1467,6 +1467,104 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     return true;
   }
 
+  // --- ENTERPRISE NODE LOGIC (Structural & Pro) ---
+
+  // 1. Sequence Node: Series of messages with delays
+  if (node.type === 'sequence') {
+    const steps = node.data?.steps || [];
+    if (steps.length > 0) {
+      const FollowUpSequence = require('../models/FollowUpSequence');
+      const mappedSteps = steps.map((s, idx) => ({
+        type: channel,
+        content: s.text,
+        delayValue: s.delay || 0,
+        delayUnit: 'minutes',
+        sendAt: new Date(Date.now() + (s.delay || 0) * 60000),
+        status: "pending",
+        order: idx
+      }));
+
+      await FollowUpSequence.create({
+        clientId: client.clientId,
+        leadId: lead?._id,
+        phone,
+        name: `Sequence from node ${node.id}`,
+        steps: mappedSteps
+      });
+      log.info(`[FlowEngine] Sequence enrolled for ${phone} with ${steps.length} steps.`);
+    }
+  }
+
+  // 2. Segment Node: CRM-based branching
+  if (node.type === 'segment') {
+    const segments = node.data?.segments || [];
+    let selectedSegment = 'fallback';
+
+    for (const seg of segments) {
+      let match = false;
+      const score = lead?.leadScore || 0;
+      const purchaseCount = lead?.ordersCount || 0;
+      const totalSpend = lead?.totalSpent || 0;
+
+      if (seg.type === 'vip' && score > 500) match = true;
+      else if (seg.type === 'returning' && purchaseCount > 1) match = true;
+      else if (seg.type === 'high_spend' && totalSpend > 5000) match = true;
+      else if (seg.type === 'new' && !purchaseCount) match = true;
+
+      if (match) {
+        selectedSegment = seg.id;
+        break;
+      }
+    }
+
+    const nextEdge = flowEdges.find(e => e.source === nodeId && normalizeHandleId(e.sourceHandle) === selectedSegment);
+    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+  }
+
+  // 3. Review Node: Sentiment-based routing
+  if (node.type === 'review') {
+    // This node usually waits for input, but if it's executed, we send the prompt.
+    // The branching happens in runDualBrainEngine when the user replies with a rating.
+  }
+
+  // 4. Abandoned Cart Node
+  if (node.type === 'abandoned_cart') {
+    // Visual entry point for cart recovery. Usually triggered by shopify check.
+    // If reached in flow (e.g. via direct link), we just proceed to recovery logic.
+    const { handleNodeAction } = require('./nodeActions');
+    await handleNodeAction('CART_RECOVERY_START', node, client, phone, convo, lead);
+  }
+
+  // 5. COD to Prepaid Node
+  if (node.type === 'cod_prepaid') {
+    const { handleNodeAction } = require('./nodeActions');
+    await handleNodeAction('CONVERT_COD_TO_PREPAID', node, client, phone, convo, lead);
+  }
+
+  // 6. Schedule Node: Business Hours check
+  if (node.type === 'schedule') {
+    const now = new Date();
+    const day = now.getDay(); // 0-6
+    const hour = now.getHours(); // 0-23
+    
+    // Default: Mon-Fri (1-5), 10:00 - 19:00
+    const isOpen = (day >= 1 && day <= 5) && (hour >= 10 && hour < 19);
+    const targetHandle = isOpen ? 'open' : 'closed';
+    
+    log.info(`[FlowEngine] Schedule check: ${isOpen ? 'OPEN' : 'CLOSED'}`);
+    const nextEdge = flowEdges.find(e => e.source === nodeId && normalizeHandleId(e.sourceHandle) === targetHandle);
+    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+  }
+
+  // 7. Persona Node: Tone shifting
+  if (node.type === 'persona') {
+    const persona = node.data?.personaType || 'Concierge';
+    await Conversation.findByIdAndUpdate(convo._id, { 'metadata.activePersona': persona });
+    log.info(`[FlowEngine] Persona shifted to ${persona} for ${phone}`);
+    const nextEdge = flowEdges.find(e => e.source === nodeId);
+    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+  }
+
   // Phase 17: AB Test Node
   if (node.type === 'ab_test' || node.type === 'ABTestNode') {
     // Persistent split based on phone number hash

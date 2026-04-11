@@ -354,7 +354,7 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
           channel
         });
       } catch (err) {
-        log.error("[NodeActions] ADMIN_ALERT failure:", err.message);
+        console.error("[NodeActions] ADMIN_ALERT failure:", err.message);
       }
 
       // 3. Emit real-time signal
@@ -367,7 +367,27 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
       }
       break;
     }
-    
+
+    case "CART_RECOVERY_START": {
+      try {
+        const { createCheckout } = require("./shopifyHelper"); // Assuming this exists or using CREATE_CHECKOUT logic
+        const cartValue = lead?.metadata?.cartValue || 0;
+        
+        // 1. Tag lead for tracking
+        await AdLead.findByIdAndUpdate(lead._id, { $addToSet: { tags: 'Recovery Started' } });
+
+        // 2. Logic: If high value, offer immediate discount
+        if (cartValue > 2000) {
+            await WhatsApp.sendText(client, phone, "🛍️ We noticed you left some premium items in your cart! To help you decide, here's a one-time 15% discount code: *SAVE15*\n\nComplete your order here: {{buy_url}}");
+        } else {
+            await WhatsApp.sendText(client, phone, "👋 Still thinking about those items in your cart? They're waiting for you! 🛒\n\nCheck out now: {{buy_url}}");
+        }
+      } catch (err) {
+        console.error("[NodeActions] CART_RECOVERY_START error:", err.message);
+      }
+      break;
+    }
+
     case "AI_FALLBACK": {
 
       // Handled in dualBrainEngine.js by returning false or explicitly calling runAIFallback

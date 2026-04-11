@@ -14,13 +14,16 @@ async function generateEcommerceFlow(client, wizardData) {
   const {
     businessName,
     businessDescription,
-    products   = [],
-    botName    = "Assistant",
-    tone       = "friendly",
-    botLanguage = "Hinglish",
-    cartTiming = { msg1: 15, msg2: 2, msg3: 24 },
+    products        = [],
+    botName         = "Assistant",
+    tone            = "friendly",
+    botLanguage     = "Hinglish",
+    cartTiming      = { msg1: 15, msg2: 2, msg3: 24 },
     googleReviewUrl = "",
-    adminPhone      = ""
+    adminPhone      = "",
+    faqText         = "",
+    returnsInfo     = "",
+    fallbackMessage = "I'm still learning! Let me connect you with a human expert. 😊"
   } = wizardData;
 
   // ── STEP 1: Generate message text via Gemini ──────────────────────────────
@@ -30,9 +33,11 @@ Business: ${businessName}
 Description: ${businessDescription}
 Bot Name: ${botName}
 Tone: ${tone}
-Language: ${botLanguage} (Mix of English and local warmth)
+Language: ${botLanguage}
+FAQs: ${faqText}
+Returns Info: ${returnsInfo}
 
-Generate a JSON object for 25 different UI touchpoints.
+Generate a JSON object for 28 different UI touchpoints.
 REQUIRED KEYS:
 "welcome_a", "welcome_b", "product_menu_text", "product_list_btn", 
 "order_status_msg", "fallback_msg", "returns_policy_short", "refund_policy_short",
@@ -40,14 +45,16 @@ REQUIRED KEYS:
 "loyalty_welcome", "loyalty_points_msg", "referral_msg",
 "sentiment_ask", "review_positive", "review_negative",
 "upsell_intro", "cross_sell_msg", "cart_recovery_1", "cart_recovery_2",
-"cart_recovery_3", "cod_nudge", "order_confirmed_msg", "agent_handoff_msg"
+"cart_recovery_3", "cod_nudge", "order_confirmed_msg", "agent_handoff_msg",
+"faq_response", "ad_welcome", "ig_welcome"
 `;
 
   try {
     const res = await generateText(prompt, client.geminiApiKey || process.env.GEMINI_API_KEY);
     if (res) {
       const jsonStr = res.replace(/```json|```/g, "").trim();
-      content = JSON.parse(jsonStr);
+      const parsed = JSON.parse(jsonStr);
+      content = parsed;
     }
   } catch (err) {
     console.warn("[FlowGenerator] AI failure, using hardcoded enterprise logic.");
@@ -60,11 +67,20 @@ REQUIRED KEYS:
   const IDS = {
     // Entry
     TRIGGER: `trig_${ts}`,
+    AD_TRIGGER: `ad_trig_${ts}`,
+    IG_TRIGGER: `ig_trig_${ts}`,
     AB_TEST: `ab_${ts}`,
     W_A: `w_a_${ts}`,
     W_B: `w_b_${ts}`,
+    W_AD: `w_ad_${ts}`,
+    W_IG: `w_ig_${ts}`,
     MENU: `menu_${ts}`,
     
+    // Knowledge Base
+    FAQ_NODE: `faq_${ts}`,
+    RET_NODE: `ret_p_${ts}`,
+    FB_NODE: `fallback_${ts}`,
+
     // Discovery (1 + 15 = 16 nodes)
     CATALOG: `cat_${ts}`,
     DETAIL_PREFIX: `det_${ts}_`,
@@ -125,6 +141,7 @@ REQUIRED KEYS:
 
   const LAYOUT = {
     ENTRY_X: 600,
+    KNOWLEDGE_X: 200,
     MENU_X: 1000,
     ORDER_X: 1400,
     PRODUCT_X: 1800,
@@ -139,17 +156,37 @@ REQUIRED KEYS:
   const nodes = [];
   const edges = [];
 
-  // --- 1. ENTRY MODULE (4 Nodes) ---
+  // --- 1. ENTRY MODULE (8 Nodes) ---
   nodes.push(
     { id: IDS.TRIGGER, type: "trigger", position: { x: LAYOUT.ENTRY_X, y: 0 }, data: { label: "Main Trigger", triggerType: "keyword", keywords: ["hi", "hello", "menu", "start"] } },
+    { id: IDS.AD_TRIGGER, type: "trigger", position: { x: LAYOUT.ENTRY_X - 400, y: 0 }, data: { label: "Meta Ad Entry", triggerType: "meta_ad", keywords: ["ad_click"] } },
+    { id: IDS.IG_TRIGGER, type: "trigger", position: { x: LAYOUT.ENTRY_X + 400, y: 0 }, data: { label: "IG Mention", triggerType: "ig_story_mention", keywords: ["story_mention"] } },
+    
+    { id: IDS.W_AD, type: "message", position: { x: LAYOUT.ENTRY_X - 400, y: LAYOUT.Y_STEP }, data: { label: "Ad Welcome", text: content.ad_welcome || `Thanks for clicking our ad! How can I help you?` } },
+    { id: IDS.W_IG, type: "message", position: { x: LAYOUT.ENTRY_X + 400, y: LAYOUT.Y_STEP }, data: { label: "IG Welcome", text: content.ig_welcome || `Thanks for the mention! Glad you're here.` } },
+
     { id: IDS.AB_TEST, type: "ab_test", position: { x: LAYOUT.ENTRY_X, y: LAYOUT.Y_STEP }, data: { label: "Split Test Welcome", variantA: "Tone A", variantB: "Tone B" } },
     { id: IDS.W_A, type: "message", position: { x: LAYOUT.ENTRY_X - 250, y: LAYOUT.Y_STEP * 2 }, data: { label: "Welcome A", text: content.welcome_a } },
     { id: IDS.W_B, type: "message", position: { x: LAYOUT.ENTRY_X + 250, y: LAYOUT.Y_STEP * 2 }, data: { label: "Welcome B", text: content.welcome_b } }
   );
   edges.push(
     { id: `e_tr_ab`, source: IDS.TRIGGER, target: IDS.AB_TEST },
+    { id: `e_ad_wa`, source: IDS.AD_TRIGGER, target: IDS.W_AD },
+    { id: `e_ig_wa`, source: IDS.IG_TRIGGER, target: IDS.W_IG },
     { id: `e_ab_wa`, source: IDS.AB_TEST, target: IDS.W_A, sourceHandle: "a" },
     { id: `e_ab_wb`, source: IDS.AB_TEST, target: IDS.W_B, sourceHandle: "b" }
+  );
+
+  // --- 1.2 KNOWLEDGE BASE (3 Nodes) ---
+  nodes.push(
+    { id: IDS.FAQ_NODE, type: "message", position: { x: LAYOUT.KNOWLEDGE_X, y: LAYOUT.Y_STEP * 4 }, data: { label: "General FAQs", text: faqText || content.faq_response || "Our delivery takes 3-5 days. Support is available 24/7." } },
+    { id: IDS.RET_NODE, type: "message", position: { x: LAYOUT.KNOWLEDGE_X, y: LAYOUT.Y_STEP * 5 }, data: { label: "Returns Policy", text: returnsInfo || content.returns_policy_short } },
+    { id: IDS.FB_NODE, type: "message", position: { x: LAYOUT.KNOWLEDGE_X, y: LAYOUT.Y_STEP * 6 }, data: { label: "AI Fallback", text: fallbackMessage } }
+  );
+  // These are linked from the Menu usually
+  edges.push(
+    { id: `e_w_ad_m`, source: IDS.W_AD, target: IDS.MENU },
+    { id: `e_w_ig_m`, source: IDS.W_IG, target: IDS.MENU }
   );
 
   // --- 2. HUB (1 Node) ---
@@ -169,52 +206,73 @@ REQUIRED KEYS:
           { id: "orders", title: "📦 Order Status" },
           { id: "ops", title: "⚙️ Return & Cancel" },
           { id: "loyalty", title: "💎 Rewards Hub" },
-          { id: "support", title: "🎧 Customer Help" }
+          { id: "support", title: "🎧 Customer Help" },
+          { id: "faq", title: "❓ General FAQs" }
         ]
       }]
     }
   });
   edges.push(
     { id: `e_wa_menu`, source: IDS.W_A, target: IDS.MENU },
-    { id: `e_wb_menu`, source: IDS.W_B, target: IDS.MENU }
+    { id: `e_wb_menu`, source: IDS.W_B, target: IDS.MENU },
+    { id: `e_m_faq`, source: IDS.MENU, target: IDS.FAQ_NODE, sourceHandle: "faq" }
   );
 
   // --- 3. DISCOVERY (16 Nodes) ---
-  nodes.push({
-    id: IDS.CATALOG,
-    type: "interactive",
-    position: { x: LAYOUT.PRODUCT_X, y: LAYOUT.Y_STEP * 4 },
-    data: {
-      label: "Categorized Catalog",
-      interactiveType: "list",
-      text: "Select a category to browse our best-sellers:",
-      rows: products.slice(0, 15).map((p, i) => ({ id: `p_${i}`, title: p.name.substring(0, 24) }))
-    }
-  });
-  edges.push({ id: `e_menu_cat`, source: IDS.MENU, target: IDS.CATALOG, sourceHandle: "discovery" });
-
-  products.slice(0, 15).forEach((p, i) => {
-    const pId = `${IDS.DETAIL_PREFIX}${i}`;
+  if (products.length === 0) {
+    // Handle empty catalog by pointing back to website
     nodes.push({
-      id: pId,
+      id: IDS.CATALOG,
       type: "interactive",
-      position: { x: LAYOUT.PRODUCT_X + 400, y: LAYOUT.Y_STEP * (4 + i) },
+      position: { x: LAYOUT.PRODUCT_X, y: LAYOUT.Y_STEP * 4 },
       data: {
-        label: `Prod: ${p.name}`,
+        label: "Store Redirect",
         interactiveType: "button",
-        text: `*${p.name}*\n\nPrice: ₹${p.price}\n\n${p.description || "Premium quality guaranteed."}`,
-        imageUrl: p.imageUrl,
-        buttonsList: [
-          { id: "buy", title: "🛒 Buy on Web" },
-          { id: "menu", title: "⬅️ Main Menu" }
-        ]
+        text: "We are currently updating our WhatsApp catalog. Check out our latest collection on our website!",
+        buttonsList: [{ id: "menu", title: "⬅️ Main Menu" }]
       }
     });
     edges.push(
-      { id: `e_cat_p${i}`, source: IDS.CATALOG, target: pId, sourceHandle: `p_${i}` },
-      { id: `e_p${i}_menu`, source: pId, target: IDS.MENU, sourceHandle: "menu" }
+      { id: `e_menu_cat`, source: IDS.MENU, target: IDS.CATALOG, sourceHandle: "discovery" },
+      { id: `e_cat_m`, source: IDS.CATALOG, target: IDS.MENU, sourceHandle: "menu" }
     );
-  });
+  } else {
+    nodes.push({
+      id: IDS.CATALOG,
+      type: "interactive",
+      position: { x: LAYOUT.PRODUCT_X, y: LAYOUT.Y_STEP * 4 },
+      data: {
+        label: "Categorized Catalog",
+        interactiveType: "list",
+        text: "Select a category to browse our best-sellers:",
+        rows: products.slice(0, 15).map((p, i) => ({ id: `p_${i}`, title: (p.name || "Product").substring(0, 24) }))
+      }
+    });
+    edges.push({ id: `e_menu_cat`, source: IDS.MENU, target: IDS.CATALOG, sourceHandle: "discovery" });
+  
+    products.slice(0, 15).forEach((p, i) => {
+      const pId = `${IDS.DETAIL_PREFIX}${i}`;
+      nodes.push({
+        id: pId,
+        type: "interactive",
+        position: { x: LAYOUT.PRODUCT_X + 400, y: LAYOUT.Y_STEP * (4 + i) },
+        data: {
+          label: `Prod: ${p.name}`,
+          interactiveType: "button",
+          text: `*${p.name}*\n\nPrice: ₹${p.price}\n\n${p.description || "Premium quality guaranteed."}`,
+          imageUrl: p.imageUrl,
+          buttonsList: [
+            { id: "buy", title: "🛒 Buy on Web" },
+            { id: "menu", title: "⬅️ Main Menu" }
+          ]
+        }
+      });
+      edges.push(
+        { id: `e_cat_p${i}`, source: IDS.CATALOG, target: pId, sourceHandle: `p_${i}` },
+        { id: `e_p${i}_menu`, source: pId, target: IDS.MENU, sourceHandle: "menu" }
+      );
+    });
+  }
 
   // --- 4. OPERATIONS (14 Nodes) ---
   nodes.push(
@@ -287,39 +345,25 @@ REQUIRED KEYS:
     { id: `e_vip_t`, source: IDS.LOY_VIP, target: IDS.LOY_REDEEM, sourceHandle: "true" }
   );
 
-  // --- 7. AUTOMATION (7 Nodes) ---
+  // --- 7. AUTOMATION (ENTERPRISE PRO NODES) ---
   nodes.push(
-    { id: IDS.CART_TR, type: "trigger", position: { x: LAYOUT.AUTO_X, y: LAYOUT.Y_STEP * 3 }, data: { label: "Abandoned Signal", triggerType: "shopify_event", event: "checkout_abandoned" } },
-    { id: IDS.CART_1, type: "message", position: { x: LAYOUT.AUTO_X + 400, y: LAYOUT.Y_STEP * 2 }, data: { label: "Recover 1 (15m)", text: content.cart_recovery_1, delay: 15 } },
-    { id: IDS.CART_2, type: "message", position: { x: LAYOUT.AUTO_X + 800, y: LAYOUT.Y_STEP * 2 }, data: { label: "Recover 2 (2h)", text: content.cart_recovery_2, delay: 120 } },
-    { id: IDS.CART_3, type: "message", position: { x: LAYOUT.AUTO_X + 1200, y: LAYOUT.Y_STEP * 2 }, data: { label: "Recover 3 (24h)", text: content.cart_recovery_3, delay: 1440 } },
-    
-    { id: IDS.CONF_TR, type: "trigger", position: { x: LAYOUT.AUTO_X, y: LAYOUT.Y_STEP * 6 }, data: { label: "Payment Signal", triggerType: "shopify_event", event: "order_created" } },
-    { id: IDS.CONF_MSG, type: "message", position: { x: LAYOUT.AUTO_X + 400, y: LAYOUT.Y_STEP * 6 }, data: { label: "Confirm TXN", text: content.order_confirmed_msg } },
-    { id: IDS.COD_NUDGE, type: "interactive", position: { x: LAYOUT.AUTO_X + 800, y: LAYOUT.Y_STEP * 6 }, data: { label: "Prepaid Nudge", interactiveType: "button", text: content.cod_nudge, buttonsList: [{id:"pay", title:"Pay Prepaid"}] } }
+    { id: IDS.CART_TR, type: "abandoned_cart", position: { x: LAYOUT.AUTO_X, y: LAYOUT.Y_STEP * 3 }, data: { label: "Shopify Recovery Funnel", intervals: [cartTiming.msg1, cartTiming.msg2, cartTiming.msg3], autoDiscount: true } },
+    { id: IDS.CONF_TR, type: "trigger", position: { x: LAYOUT.AUTO_X, y: LAYOUT.Y_STEP * 6 }, data: { label: "Order Created", triggerType: "shopify_event", event: "order_created" } },
+    { id: IDS.CONF_MSG, type: "message", position: { x: LAYOUT.AUTO_X + 400, y: LAYOUT.Y_STEP * 6 }, data: { label: "Confirmation", text: content.order_confirmed_msg } },
+    { id: IDS.COD_NUDGE, type: "cod_prepaid", position: { x: LAYOUT.AUTO_X + 800, y: LAYOUT.Y_STEP * 6 }, data: { label: "Prepay & Save", discountAmount: 50, text: content.cod_nudge } }
   );
   edges.push(
-    { id: `e_c_t1`, source: IDS.CART_TR, target: IDS.CART_1 },
-    { id: `e_c_12`, source: IDS.CART_1, target: IDS.CART_2 },
-    { id: `e_c_23`, source: IDS.CART_2, target: IDS.CART_3 },
-    { id: `e_f_t1`, source: IDS.CONF_TR, target: IDS.CONF_MSG },
-    { id: `e_f_nudge`, source: IDS.CONF_MSG, target: IDS.COD_NUDGE }
+    { id: `e_pay_conf`, source: IDS.CONF_TR, target: IDS.CONF_MSG },
+    { id: `e_conf_cod`, source: IDS.CONF_MSG, target: IDS.COD_NUDGE }
   );
 
-  // --- 8. REVIEWS (5 Nodes) ---
+  // --- 8. REVIEWS (PRO ENTERPRISE NODE) ---
   nodes.push(
-    { id: IDS.REV_TRIG, type: "trigger", position: { x: LAYOUT.REVIEW_X, y: LAYOUT.Y_STEP * 10 }, data: { label: "Delivery Pulse", triggerType: "shopify_event", event: "order_fulfilled" } },
-    { id: IDS.REV_ASK, type: "interactive", position: { x: LAYOUT.REVIEW_X + 400, y: LAYOUT.Y_STEP * 10 }, data: { label: "Exp Feedback", interactiveType: "button", text: content.sentiment_ask, buttonsList:[{id:"pos", title:"Loved It!"},{id:"neg", title:"Need Help"}] } },
-    { id: IDS.REV_LOGIC, type: "logic", position: { x: LAYOUT.REVIEW_X + 800, y: LAYOUT.Y_STEP * 10 }, data: { label: "Is Positive?", variable: "last_sentiment", operator: "equals", value: "pos" } },
-    { id: IDS.REV_POS_LINK, type: "message", position: { x: LAYOUT.REVIEW_X + 1200, y: LAYOUT.Y_STEP * 9.5 }, data: { label: "Review Redirect", text: content.review_positive + " " + googleReviewUrl } },
-    { id: IDS.REV_NEG_SUPPORT, type: "message", position: { x: LAYOUT.REVIEW_X + 1200, y: LAYOUT.Y_STEP * 10.5 }, data: { label: "Concierge Direct", text: content.review_negative } }
+    { id: IDS.REV_TRIG, type: "trigger", position: { x: LAYOUT.REVIEW_X, y: LAYOUT.Y_STEP * 9 }, data: { label: "Delivered Signal", triggerType: "shopify_event", event: "order_fulfilled" } },
+    { id: IDS.REV_ASK, type: "review", position: { x: LAYOUT.REVIEW_X + 400, y: LAYOUT.Y_STEP * 9 }, data: { label: "Customer Experience", text: content.sentiment_ask, rewardText: "COUPON15" } }
   );
   edges.push(
-    { id: `e_r_tr`, source: IDS.REV_TRIG, target: IDS.REV_ASK },
-    { id: `e_r_pos`, source: IDS.REV_ASK, target: IDS.REV_LOGIC, sourceHandle: "pos" },
-    { id: `e_r_neg`, source: IDS.REV_ASK, target: IDS.REV_NEG_SUPPORT, sourceHandle: "neg" },
-    { id: `e_r_l`, source: IDS.REV_LOGIC, target: IDS.REV_POS_LINK, sourceHandle: "true" },
-    { id: `e_r_s`, source: IDS.REV_LOGIC, target: IDS.REV_NEG_SUPPORT, sourceHandle: "false" }
+    { id: `e_rev_start`, source: IDS.REV_TRIG, target: IDS.REV_ASK }
   );
 
   return { nodes, edges };
