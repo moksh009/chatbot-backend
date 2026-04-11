@@ -1,5 +1,9 @@
 const Order = require('../models/Order');
 const Message = require('../models/Message');
+const CustomerIntelligence = require('../models/CustomerIntelligence');
+const AdLead = require('../models/AdLead');
+const Conversation = require('../models/Conversation');
+const { generateText } = require('./gemini');
 
 /**
  * Tracks an interaction for a customer, updating peak hours and engagement score.
@@ -40,8 +44,11 @@ async function trackInteraction(clientId, phone, leadId) {
  */
 async function computeDNA(clientId, phone, geminiKey) {
   try {
-    const dna = await CustomerIntelligence.findOne({ clientId, phone });
-    if (!dna) return null;
+    let dna = await CustomerIntelligence.findOne({ clientId, phone });
+    if (!dna) {
+      // Create skeleton if not found
+      dna = new CustomerIntelligence({ clientId, phone });
+    }
 
     const [orders, messages, lead, convo] = await Promise.all([
       Order.find({ clientId, $or: [{ phone }, { customerPhone: phone }] }).lean(),
@@ -113,7 +120,16 @@ Return ONLY JSON.
  */
 async function getPersonalizationContext(clientId, phone) {
   const dna = await CustomerIntelligence.findOne({ clientId, phone }).lean();
-  if (!dna) return null;
+  
+  if (!dna) {
+    return {
+      isVIP: false,
+      toneRecommendation: "Keep it friendly and professional.",
+      closingTips: ["Initiate conversation", "Assess needs"],
+      churnRisk: "LOW",
+      personaIcon: "👤"
+    };
+  }
 
   return {
     isVIP: dna.persona === 'vip' || dna.lifetimeValue > 5000,

@@ -15,9 +15,16 @@ router.get('/dna/:phone', protect, async (req, res) => {
     const { phone } = req.params;
     const clientId = req.user.clientId;
 
-    let dna = await CustomerIntelligence.findOne({ clientId, phone }).lean();
+    let dna = await CustomerIntelligence.findOne({ clientId, phone });
     if (!dna) {
-      return res.status(404).json({ success: false, message: 'DNA profile not found' });
+      // Upsert skeletal DNA
+      dna = new CustomerIntelligence({ 
+        clientId, 
+        phone,
+        engagementScore: 10,
+        aiSummary: 'New lead detected. Behavioral synthesis in progress...'
+      });
+      await dna.save();
     }
 
     const brief = await getPersonalizationContext(clientId, phone);
