@@ -894,7 +894,7 @@ router.patch('/my-settings', protect, async (req, res) => {
       adminAlertEmail, adminAlertWhatsapp, metaAppId,
       // Phase 20: Razorpay
       razorpayKeyId, razorpaySecret,
-      cashfreeAppId, cashfreeSecretKey,
+      cashfreeAppId, cashfreeSecretKey, activePaymentGateway,
       stripePublishableKey, stripeSecretKey,
       payuMerchantKey, payuMerchantSalt,
       phonepeMerchantId, phonepeSaltKey, phonepeSaltIndex,
