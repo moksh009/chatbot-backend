@@ -1,6 +1,7 @@
 const IntentRule = require('../models/IntentRule');
 const UnrecognizedPhrase = require('../models/UnrecognizedPhrase');
 const NlpEngineService = require('../services/NlpEngineService');
+const IntentAnalytics = require('../models/IntentAnalytics');
 
 /**
  * Controller for managing Intent Rules and resolving unrecognized phrases.
@@ -102,5 +103,44 @@ exports.getPendingPhrases = async (req, res) => {
     res.status(200).json({ success: true, phrases });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Fetch failed' });
+  }
+};
+
+// 5. Get Brain Stats for Intelligence Hub
+exports.getIntentStats = async (req, res) => {
+  try {
+    const { clientId } = req.user;
+    
+    const [intentsCount, pendingCount, analytics] = await Promise.all([
+      IntentRule.countDocuments({ clientId, isActive: true }),
+      UnrecognizedPhrase.countDocuments({ clientId, status: 'PENDING' }),
+      IntentAnalytics.find({ clientId })
+    ]);
+
+    // Aggregate lifetime matching stats
+    let totalProcessed = 0;
+    let totalMatched = 0;
+    
+    analytics.forEach(stat => {
+      totalProcessed += (stat.totalMessagesProcessed || 0);
+      totalMatched += (stat.intentsMatched || 0);
+    });
+
+    const accuracy = totalProcessed > 0 
+      ? ((totalMatched / totalProcessed) * 100).toFixed(1) 
+      : "100.0"; // New bots start with perfect (theoretical) accuracy
+
+    res.status(200).json({
+      success: true,
+      stats: {
+        activeIntents: intentsCount,
+        pendingPhrases: pendingCount,
+        totalLearningHits: totalProcessed,
+        accuracy: parseFloat(accuracy)
+      }
+    });
+  } catch (error) {
+    console.error('[IntentApi] Stats Error:', error);
+    res.status(500).json({ success: false, message: 'Stats calculation failed' });
   }
 };

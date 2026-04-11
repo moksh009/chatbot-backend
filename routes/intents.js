@@ -7,6 +7,7 @@ const { verifyDashboardToken } = require('../middleware/IntentAuthMiddleware');
 router.post('/', verifyDashboardToken, IntentApiController.upsertIntent);
 router.get('/', verifyDashboardToken, IntentApiController.getIntents);
 router.get('/pending-phrases', verifyDashboardToken, IntentApiController.getPendingPhrases);
+router.get('/stats', verifyDashboardToken, IntentApiController.getIntentStats);
 router.post('/resolve-phrase', verifyDashboardToken, IntentApiController.resolvePhrase);
 
 module.exports = router;
