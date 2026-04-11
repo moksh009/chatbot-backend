@@ -6,7 +6,8 @@ const Client  = require("../models/Client");
 const { protect } = require("../middleware/auth");
 const { generateEcommerceFlow, generateSystemPrompt, getPrebuiltTemplates } = require("../utils/flowGenerator");
 const { withShopifyRetry } = require("../utils/shopifyHelper");
-
+const { scrapeWebsiteText } = require("../utils/urlScraper");
+const { generateText } = require("../utils/gemini");
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/wizard/:clientId/complete
 // Called when user clicks Launch in Step 10 of the onboarding wizard
@@ -142,8 +143,17 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       }),
       // Enterprise Ops Sync
       ...(wizardData.activePersona && { "ai.enterprisePersona": wizardData.activePersona }),
-      ...(wizardData.referralPoints && { "brand.referralPoints": wizardData.referralPoints }),
-      ...(wizardData.signupPoints   && { "brand.signupPoints": wizardData.signupPoints }),
+      ...(wizardData.referralPoints && { 
+        "brand.referralPoints": wizardData.referralPoints,
+        "loyaltyConfig.pointsPerCurrency": wizardData.referralPoints,
+        "loyaltyConfig.pointsPerUnit": wizardData.referralPoints,
+        "loyaltyConfig.isEnabled": true
+      }),
+      ...(wizardData.signupPoints   && { 
+        "brand.signupPoints": wizardData.signupPoints,
+        "loyaltyConfig.welcomeBonus": wizardData.signupPoints
+      }),
+      ...(wizardData.is247 !== undefined && { "config.businessHours.is247": wizardData.is247 }),
       ...(wizardData.openTime && { "config.businessHours.openTime": wizardData.openTime }),
       ...(wizardData.closeTime && { "config.businessHours.closeTime": wizardData.closeTime }),
       ...(wizardData.workingDays && { "config.businessHours.workingDays": wizardData.workingDays }),
@@ -401,6 +411,58 @@ router.post("/:clientId/reset", protect, async (req, res) => {
     res.json({ success: true, message: "Wizard reset. Will show on next login." });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/wizard/:clientId/generate-from-url
+// Scrapes the provided URL and generates a robust AI system prompt + FAQs
+// ─────────────────────────────────────────────────────────────────────────────
+router.post("/:clientId/generate-from-url", protect, async (req, res) => {
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: "URL is required" });
+
+  try {
+    // 1. Scrape the URL
+    const scrapeResult = await scrapeWebsiteText(url);
+    if (!scrapeResult.success) {
+      return res.status(400).json({ error: scrapeResult.error });
+    }
+
+    const rawData = scrapeResult.text;
+
+    // 2. Fetch Gemini API key (client-level or fallback to process.env)
+    const client = await Client.findOne({ clientId: req.params.clientId });
+    const apiKey = client?.geminiApiKey || process.env.GEMINI_API_KEY;
+
+    // 3. Build Prompt for Gemini
+    const prompt = `As an expert AI architect, extract core business intelligence from the following website text:
+---
+${rawData}
+---
+Generate a highly structured JSON object with two fields:
+1. "systemPrompt": A comprehensive system prompt instructing how an AI Assistant should represent this business on WhatsApp. Include their tone, policies, core offerings, and rules.
+2. "faqText": A concise string of 3-5 of the most important frequently asked questions and their answers based ONLY on the text above.
+
+Output strictly valid JSON exactly in this format: { "systemPrompt": "...", "faqText": "..." }`;
+
+    // 4. Generate with Gemini
+    const generated = await generateText(prompt, apiKey);
+    
+    // Parse the JSON output
+    let parsedData = { systemPrompt: "Failed to generate prompt.", faqText: "" };
+    try {
+      const jsonStr = generated.replace(/```json|```/g, "").trim();
+      parsedData = JSON.parse(jsonStr);
+    } catch(e) {
+      console.warn("Failed to parse Gemini output as JSON. Output:", generated);
+      parsedData.systemPrompt = generated; // Fallback to raw text
+    }
+
+    res.json({ success: true, data: parsedData });
+  } catch (err) {
+    console.error("URL Prompt Gen Error:", err);
+    res.status(500).json({ error: "Failed to generate AI brain from URL." });
   }
 });
 

@@ -191,11 +191,18 @@ const ClientSchema = new mongoose.Schema({
   // Phase 14 Multi-Gateway Support
   activePaymentGateway: { 
     type: String, 
-    enum: ['cashfree', 'razorpay', 'none'], 
+    enum: ['cashfree', 'razorpay', 'stripe', 'payu', 'phonepe', 'none'], 
     default: 'none' 
   },
   cashfreeAppId: { type: String, default: "" },
   cashfreeSecretKey: { type: String, default: "" },
+  stripePublishableKey: { type: String, default: "" },
+  stripeSecretKey: { type: String, default: "" },
+  payuMerchantKey: { type: String, default: "" },
+  payuMerchantSalt: { type: String, default: "" },
+  phonepeMerchantId: { type: String, default: "" },
+  phonepeSaltKey: { type: String, default: "" },
+  phonepeSaltIndex: { type: String, default: "" },
   
   // Phase 13 Store & Instagram Integration
   storeType: {
@@ -542,6 +549,10 @@ function encryptSubDocs(doc) {
   if (doc.instagramAccessToken) doc.instagramAccessToken = enc(doc.instagramAccessToken);
   if (doc.instagramAppSecret) doc.instagramAppSecret = enc(doc.instagramAppSecret);
   if (doc.razorpaySecret) doc.razorpaySecret = enc(doc.razorpaySecret);
+  if (doc.cashfreeSecretKey) doc.cashfreeSecretKey = enc(doc.cashfreeSecretKey);
+  if (doc.stripeSecretKey) doc.stripeSecretKey = enc(doc.stripeSecretKey);
+  if (doc.payuMerchantSalt) doc.payuMerchantSalt = enc(doc.payuMerchantSalt);
+  if (doc.phonepeSaltKey) doc.phonepeSaltKey = enc(doc.phonepeSaltKey);
   if (doc.emailAppPassword) doc.emailAppPassword = enc(doc.emailAppPassword);
 }
 
@@ -563,7 +574,8 @@ function encryptUpdateQuery(update) {
     'ai.geminiKey', 'ai.openaiKey', 'social.instagram.accessToken', 'social.instagram.appSecret', 'social.metaAds.accessToken',
     'whatsappToken', 'shopifyAccessToken', 'shopifyRefreshToken', 'shopifyWebhookSecret', 'shopifyClientSecret',
     'woocommerceSecret', 'geminiApiKey', 'openaiApiKey', 'instagramAccessToken', 
-    'instagramAppSecret', 'razorpaySecret', 'emailAppPassword'
+    'instagramAppSecret', 'razorpaySecret', 'cashfreeSecretKey', 'stripeSecretKey', 
+    'payuMerchantSalt', 'phonepeSaltKey', 'emailAppPassword'
   ];
 
   for (const path of encPaths) {

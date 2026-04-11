@@ -699,6 +699,9 @@ router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
       verifyToken: webhookVerifyToken, googleCalendarId, openaiApiKey, nicheData, flowData,
       automationFlows, messageTemplates, wabaId, emailUser, emailAppPassword,
       razorpayKeyId, razorpaySecret, adminPhone,
+      cashfreeAppId, cashfreeSecretKey, activePaymentGateway,
+      stripePublishableKey, stripeSecretKey, payuMerchantKey, payuMerchantSalt,
+      phonepeMerchantId, phonepeSaltKey, phonepeSaltIndex,
       shopDomain, shopifyAccessToken, shopifyWebhookSecret, googleReviewUrl,
       trialActive, trialEndsAt
     } = req.body;
@@ -739,7 +742,9 @@ router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
       messageTemplates: cleanMessageTemplates, 
       wabaId, emailUser, 
       emailAppPassword, razorpayKeyId, razorpaySecret, adminPhone,
-      shopDomain, shopifyAccessToken, shopifyWebhookSecret, googleReviewUrl
+      cashfreeAppId, cashfreeSecretKey, activePaymentGateway,
+      stripePublishableKey, stripeSecretKey, payuMerchantKey, payuMerchantSalt,
+      phonepeMerchantId, phonepeSaltKey, phonepeSaltIndex, shopDomain, shopifyAccessToken, shopifyWebhookSecret, googleReviewUrl
     };
 
     // Tier 2.5 Sub-document dual-writes
@@ -889,6 +894,10 @@ router.patch('/my-settings', protect, async (req, res) => {
       adminAlertEmail, adminAlertWhatsapp, metaAppId,
       // Phase 20: Razorpay
       razorpayKeyId, razorpaySecret,
+      cashfreeAppId, cashfreeSecretKey,
+      stripePublishableKey, stripeSecretKey,
+      payuMerchantKey, payuMerchantSalt,
+      phonepeMerchantId, phonepeSaltKey, phonepeSaltIndex,
       // Phase 20: System prompt / AI
       systemPrompt, geminiApiKey,
       // Phase 29: AI Persona
@@ -1000,9 +1009,18 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (adminAlertWhatsapp !== undefined) updateFields.adminAlertWhatsapp = adminAlertWhatsapp;
     if (metaAppId !== undefined) updateFields.metaAppId = metaAppId;
 
-    // Phase 20: Razorpay
+    if (activePaymentGateway !== undefined) updateFields.activePaymentGateway = activePaymentGateway;
     if (razorpayKeyId !== undefined && razorpayKeyId.trim() !== '') updateFields.razorpayKeyId = razorpayKeyId;
     if (razorpaySecret !== undefined && razorpaySecret !== '••••••••' && razorpaySecret.trim() !== '') updateFields.razorpaySecret = razorpaySecret;
+    if (cashfreeAppId !== undefined && cashfreeAppId.trim() !== '') updateFields.cashfreeAppId = cashfreeAppId;
+    if (cashfreeSecretKey !== undefined && cashfreeSecretKey !== '••••••••' && cashfreeSecretKey.trim() !== '') updateFields.cashfreeSecretKey = cashfreeSecretKey;
+    if (stripePublishableKey !== undefined && stripePublishableKey.trim() !== '') updateFields.stripePublishableKey = stripePublishableKey;
+    if (stripeSecretKey !== undefined && stripeSecretKey !== '••••••••' && stripeSecretKey.trim() !== '') updateFields.stripeSecretKey = stripeSecretKey;
+    if (payuMerchantKey !== undefined && payuMerchantKey.trim() !== '') updateFields.payuMerchantKey = payuMerchantKey;
+    if (payuMerchantSalt !== undefined && payuMerchantSalt !== '••••••••' && payuMerchantSalt.trim() !== '') updateFields.payuMerchantSalt = payuMerchantSalt;
+    if (phonepeMerchantId !== undefined && phonepeMerchantId.trim() !== '') updateFields.phonepeMerchantId = phonepeMerchantId;
+    if (phonepeSaltKey !== undefined && phonepeSaltKey !== '••••••••' && phonepeSaltKey.trim() !== '') updateFields.phonepeSaltKey = phonepeSaltKey;
+    if (phonepeSaltIndex !== undefined && phonepeSaltIndex.trim() !== '') updateFields.phonepeSaltIndex = phonepeSaltIndex;
 
     // Phase 20: AI / System Prompt
     if (systemPrompt !== undefined) {
