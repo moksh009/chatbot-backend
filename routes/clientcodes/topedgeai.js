@@ -3,6 +3,7 @@ const router = express.Router();
 const dotenv = require('dotenv');
 const axios = require('axios');
 const AdLead = require('../../models/AdLead');
+const { updateLeadWithScoring } = require('../../utils/leadScoring');
 const { generateText } = require('../../utils/gemini');
 const Conversation = require('../../models/Conversation');
 const Message = require('../../models/Message');
@@ -285,10 +286,10 @@ function EventsFilter(events, eventName) {
 
 
 async function incrementLeadScore(lead, points) {
-    ensureLeadMeta(lead);
-    lead.meta.leadScore = (lead.meta.leadScore || 0) + points;
-    lead.markModified('meta');
-    await lead.save();
+    if (!lead) return;
+    // Instead of manual points, we increment inboundMessageCount
+    // which allows the atomic engine to derive the correct tiered score.
+    await updateLeadWithScoring(lead.phoneNumber, lead.clientId, { inboundMessageCount: 1 });
 }
 
 function getLeadTemperature(score) {
@@ -430,20 +431,24 @@ async function calculateAndShowROI(phone, lead, phoneNumberId, io, clientConfig)
         `*You're leaving ₹${displayGain.toLocaleString('en-IN')}/month on the table.*\n` +
         `Want to fix that? 👇`
 
-    // Save to DB
-    lead.meta.roiStep = 0
-    lead.meta.roiCalculated = true
-    lead.meta.roiResult = {
-        monthlyGain: displayGain,
-        currentMonthlyLoss: displayLost,
-        yearlyGain: displayYearly,
-        leadsRecovered: displayRecovered,
-        dailyLoss: displayDaily,
-        roiPercent: displayRoi
-    }
-    lead.markModified('meta')
-    await incrementLeadScore(lead, 20)
-    await lead.save()
+    // Save to DB atomically
+    await updateLeadWithScoring(
+        phone,
+        clientConfig.clientId,
+        { linkClicks: 1 }, // Derive score from this major activity
+        {
+            'meta.roiStep': 0,
+            'meta.roiCalculated': true,
+            'meta.roiResult': {
+                monthlyGain: displayGain,
+                currentMonthlyLoss: displayLost,
+                yearlyGain: displayYearly,
+                leadsRecovered: displayRecovered,
+                dailyLoss: displayDaily,
+                roiPercent: displayRoi
+            }
+        }
+    );
     await trackEvent(phone, EVENTS.ROI_COMPLETED, clientConfig, { vertical, monthlyGain: displayGain, service })
 
     await sendPostDemoOptions(phone, vertical, phoneNumberId, io, clientConfig, resultMsg)
@@ -570,16 +575,21 @@ async function routeToIndustryDemo(phone, vertical, userName, phoneNumberId, io,
     const caption = welcomeCaptions[vertical] || `Welcome to ${vertical} Demo!`;
     const buttons = actionButtons[vertical] || actionButtons.salon;
 
-    // Pre-save lead state BEFORE sending so WhatsApp retries are blocked by sessionState check
+    // Update lead state atomically
     const lead = await AdLead.findOne({ phoneNumber: phone, clientId: clientConfig.clientId });
-    ensureLeadMeta(lead);
     if (lead) {
-        if (!lead.meta.demosViewed) lead.meta.demosViewed = [];
-        if (!lead.meta.demosViewed.includes(vertical)) lead.meta.demosViewed.push(vertical);
-        lead.meta.sessionState = 'viewing_demo';
-        lead.markModified('meta');
-        await incrementLeadScore(lead, 5);
-        await lead.save();
+        const currentDemos = lead.meta?.demosViewed || [];
+        const newDemos = currentDemos.includes(vertical) ? currentDemos : [...currentDemos, vertical];
+        
+        await updateLeadWithScoring(
+            phone, 
+            clientConfig.clientId, 
+            { linkClicks: 1 }, // Derive score from activity
+            { 
+                'meta.demosViewed': newDemos, 
+                'meta.sessionState': 'viewing_demo' 
+            }
+        );
     }
 
     // Send ONE combined message: image header + text body + 3 action buttons
@@ -661,17 +671,14 @@ async function sendSocialProof(phone, vertical, phoneNumberId, io, clientConfig)
         if (lead.meta.businessVertical && lead.meta.businessVertical !== vertical) return;
 
         const key = `proofShown_${vertical}`;
-        const idx = lead.meta[key] || 0;
-        const proofs = PROOF_MESSAGES[vertical];
-        const msg = proofs[idx % proofs.length];
+        const currentIdx = lead.meta?.[key] || 0;
 
-        // Send the social proof + options as ONE message
-        await sendPostDemoOptions(phone, vertical, phoneNumberId, io, clientConfig, msg);
-
-        lead.meta[key] = idx + 1;
-        lead.markModified('meta');
-        await incrementLeadScore(lead, 3);
-        await lead.save();
+        await updateLeadWithScoring(
+            phone, 
+            clientConfig.clientId, 
+            { inboundMessageCount: 1 }, 
+            { [`meta.${key}`]: currentIdx + 1 }
+        );
     } catch (err) { console.error('Social Proof Error:', err.message); }
 }
 
@@ -740,14 +747,18 @@ async function handleCallBooked(phone, payload, clientConfig, io) {
 
         await sendWhatsAppText({ phoneNumberId: clientConfig.phoneNumberId, to: phone, body: confirmMsg, io, clientConfig });
 
-        // Update DB
+        // Update DB atomically
         if (lead) {
-            lead.meta.callBooked = { day, time, cust_name, business, bookedAt: new Date() };
-            lead.meta.sessionState = 'call_booked';
-            lead.humanIntervention = true; // Mute bot after booking
-            lead.markModified('meta');
-            await incrementLeadScore(lead, 25);
-            await lead.save();
+            await updateLeadWithScoring(
+                phone, 
+                clientConfig.clientId, 
+                { appointmentsBooked: 1 }, 
+                { 
+                    'meta.callBooked': { day, time, cust_name, business, bookedAt: new Date() },
+                    'meta.sessionState': 'call_booked'
+                },
+                { humanIntervention: true } // Mute bot after booking
+            );
 
             // Alert admin
             await sendAdminAlert(phone, lead, 'Call booked 📞', clientConfig);

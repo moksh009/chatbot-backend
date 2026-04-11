@@ -146,7 +146,6 @@ async function handleCheckout(client, data) {
     const cartItems = data.line_items.map(item => item.title).join(', ');
     const firstItemImage = enrichedItems[0]?.image || client.logoUrl || null;
     
-    // 2. Update Lead using atomic scoring engine
     const { updateLeadWithScoring } = require('../utils/leadScoring');
     await updateLeadWithScoring(
         cleanPhone, 
@@ -163,13 +162,7 @@ async function handleCheckout(client, data) {
                 updatedAt: new Date()
             }
         }, // String/Value updates
-        { 
-            activityLog: {
-                action: 'shopify_checkout',
-                details: `Checkout ${data.id} updated. Items: ${cartItems}`,
-                timestamp: new Date()
-            }
-        } // Push fields
+        {} // Boolean updates
     );
 
     // Track in DailyStat
@@ -190,7 +183,13 @@ async function handleOrder(client, data) {
 
     // 2. Update AdLead status to stop abandonment flows and score lead
     const { updateLeadWithScoring } = require('../utils/leadScoring');
-    await updateLeadWithScoring(cleanPhone, client.clientId, { ordersCount: 1 }, { cartStatus: "purchased", lastOrderAt: new Date() });
+    await updateLeadWithScoring(
+        cleanPhone, 
+        client.clientId, 
+        { ordersCount: 1 }, // Increments
+        { cartStatus: "purchased", lastOrderAt: new Date() }, // String/Date Updates
+        { isRtoRisk: false } // Reset RTO risk on new successful order
+    );
 
     // 3. Create internal Order record
     const newOrder = await Order.create({
@@ -342,7 +341,13 @@ async function handleOrder(client, data) {
     // Notify if high risk
     if (rtoAssessment.riskLevel === 'High') {
         const { updateLeadWithScoring } = require('../utils/leadScoring');
-        await updateLeadWithScoring(cleanPhone, client.clientId, {}, {}, { isRtoRisk: true });
+        await updateLeadWithScoring(
+            cleanPhone, 
+            client.clientId, 
+            {}, // No increments
+            {}, // No string updates
+            { isRtoRisk: true } // Boolean Update: Flags them as RTO Risk instantly
+        );
 
         const NotificationService = require('../utils/notificationService');
         await NotificationService.createNotification(client.clientId, {
@@ -418,6 +423,11 @@ async function handleRefund(client, data) {
             if (phoneRaw) {
                 const { normalizePhone } = require('../utils/helpers');
                 const cleanPhone = normalizePhone(phoneRaw);
+                
+                // Flag as RTO Risk in AdLead
+                const { updateLeadWithScoring } = require('../utils/leadScoring');
+                await updateLeadWithScoring(cleanPhone, client.clientId, {}, {}, { isRtoRisk: true });
+
                 const CustomerIntelligence = require('../models/CustomerIntelligence');
                 await CustomerIntelligence.findOneAndUpdate(
                     { clientId: client.clientId, phone: cleanPhone },

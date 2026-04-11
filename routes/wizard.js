@@ -93,6 +93,13 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       ...(wizardData.razorpaySecret   && { razorpaySecret: wizardData.razorpaySecret }),
       ...(wizardData.cashfreeAppId    && { cashfreeAppId: wizardData.cashfreeAppId }),
       ...(wizardData.cashfreeSecretKey && { cashfreeSecretKey: wizardData.cashfreeSecretKey }),
+      ...(wizardData.stripePublishableKey && { stripePublishableKey: wizardData.stripePublishableKey }),
+      ...(wizardData.stripeSecretKey && { stripeSecretKey: wizardData.stripeSecretKey }),
+      ...(wizardData.payuMerchantKey && { payuMerchantKey: wizardData.payuMerchantKey }),
+      ...(wizardData.payuMerchantSalt && { payuMerchantSalt: wizardData.payuMerchantSalt }),
+      ...(wizardData.phonepeMerchantId && { phonepeMerchantId: wizardData.phonepeMerchantId }),
+      ...(wizardData.phonepeSaltKey && { phonepeSaltKey: wizardData.phonepeSaltKey }),
+      ...(wizardData.phonepeSaltIndex && { phonepeSaltIndex: wizardData.phonepeSaltIndex }),
       ...(wizardData.activePaymentGateway && { activePaymentGateway: wizardData.activePaymentGateway }),
       ...(wizardData.adminPhone       && { 
         adminPhone: wizardData.adminPhone,

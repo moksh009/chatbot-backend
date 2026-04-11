@@ -17,6 +17,7 @@ const Appointment = require('../../models/Appointment');
 const DailyStat = require('../../models/DailyStat');
 const Client = require('../../models/Client');
 const AdLead = require('../../models/AdLead');
+const { updateLeadWithScoring } = require('../../utils/leadScoring');
 const { DateTime } = require('luxon');
 const { generateText, getGeminiModel } = require('../../utils/gemini');
 
@@ -1380,20 +1381,20 @@ Provide a SHORT, PRECISE response:`;
 
         await Appointment.create(appointmentData);
 
-        // Update AdLead with booking points
+        // Update AdLead with booking points atomically
         try {
-          await AdLead.updateOne(
-            { clientId, phoneNumber: session.data.phone },
+          await updateLeadWithScoring(
+            session.data.phone,
+            clientId,
+            { appointmentsBooked: 1 },
             {
-              $inc: { appointmentsBooked: 1 },
-              $set: {
-                lastInteraction: new Date(),
-                name: session.data.name // Ensure name is up to date
-              }
+              lastInteraction: new Date(),
+              name: session.data.name // Ensure name is up to date
             },
-            { upsert: true }
+            {},
+            { upsert: true, new: true }
           );
-          console.log('✅ AdLead updated with booking points for:', session.data.phone);
+          console.log('✅ AdLead updated with booking for:', session.data.phone);
         } catch (adErr) {
           console.error('❌ Error updating AdLead:', adErr);
         }

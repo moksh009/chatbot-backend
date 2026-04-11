@@ -24,7 +24,7 @@ router.get('/:uid/:productId', async (req, res) => {
         let lead = null;
         if (existingLead) {
             const { updateLeadWithScoring } = require('../utils/leadScoring');
-            lead = await updateLeadWithScoring(existingLead.phoneNumber, existingLead.clientId, { linkClicks: 1 }, {});
+            lead = await updateLeadWithScoring(existingLead.phoneNumber, existingLead.clientId, { linkClicks: 1 });
         }
 
         if (lead) {
@@ -286,17 +286,107 @@ router.get('/cashfree-callback/:orderId', async (req, res) => {
                     { headers: { Authorization: `Bearer ${token}` } }
                 );
 
-                // Update Lead Scoring: Upgrade to "Customer" if not already
+            // Update Lead Scoring: Upgrade to "Customer" if not already
                 const { updateLeadWithScoring } = require('../utils/leadScoring');
                 await updateLeadWithScoring(order.phone, order.clientId, {}, { cartStatus: 'paid', lastInteraction: new Date() });
             }
         }
 
-        res.redirect(`https://delitechsmarthome.in`);
+        const redirectUrl = client.shopDomain ? `https://${client.shopDomain}` : `https://delitechsmarthome.in`;
+        res.redirect(redirectUrl);
     } catch (err) {
         console.error("Cashfree callback error:", err.response?.data || err.message);
-        res.redirect(`https://delitechsmarthome.in`);
+        res.redirect('https://chatbot-dashboard-frontend-main-3j9k.onrender.com'); // Dashboard fallback
     }
+});
+
+// GET /r/razorpay-callback/:orderId
+router.get('/razorpay-callback/:orderId', async (req, res) => {
+    try {
+        const Order = require('../models/Order');
+        const Client = require('../models/Client');
+        const DailyStat = require('../models/DailyStat');
+        const Razorpay = require('razorpay');
+        
+        const order = await Order.findById(req.params.orderId);
+        if (!order) return res.status(404).send("Order not found");
+
+        const client = await Client.findOne({ clientId: order.clientId });
+        if (!client) return res.status(404).send("Client not found");
+
+        const rzp = new Razorpay({ key_id: client.razorpayKeyId, key_secret: client.razorpaySecret });
+        const link = await rzp.paymentLink.fetch(req.query.razorpay_payment_link_id || order.razorpayLinkId);
+
+        if (link.status === 'paid') {
+            await Order.findByIdAndUpdate(order._id, { 
+                isCOD: false, paidViaLink: true, status: 'paid', paidAt: new Date() 
+            });
+
+            const today = new Date().toISOString().split('T')[0];
+            await DailyStat.findOneAndUpdate(
+                { clientId: order.clientId, date: today },
+                { $inc: { codConvertedCount: 1, codConvertedRevenue: order.totalPrice }, $setOnInsert: { clientId: order.clientId, date: today } },
+                { upsert: true }
+            );
+
+            if (order.phone) {
+                const { updateLeadWithScoring } = require('../utils/leadScoring');
+                await updateLeadWithScoring(order.phone, order.clientId, {}, { cartStatus: 'paid', lastInteraction: new Date() });
+            }
+        }
+
+        const redirectUrl = client.shopDomain ? `https://${client.shopDomain}` : `https://delitechsmarthome.in`;
+        res.redirect(redirectUrl);
+    } catch (err) {
+        console.error("Razorpay callback error:", err.message);
+        res.redirect('https://delitechsmarthome.in');
+    }
+});
+
+// GET /r/stripe-callback/:orderId
+router.get('/stripe-callback/:orderId', async (req, res) => {
+    try {
+        const Order = require('../models/Order');
+        const Client = require('../models/Client');
+        const axios = require('axios');
+        
+        const order = await Order.findById(req.params.orderId);
+        const { session_id } = req.query;
+        if (!order || !session_id) return res.status(404).send("Invalid callback");
+
+        const client = await Client.findOne({ clientId: order.clientId });
+        if (!client) return res.status(404).send("Client not found");
+
+        // Verify with Stripe session
+        const response = await axios.get(`https://api.stripe.com/v1/checkout/sessions/${session_id}`, {
+            headers: { 'Authorization': `Bearer ${client.stripeSecretKey}` }
+        });
+
+        if (response.data.payment_status === 'paid') {
+            await Order.findByIdAndUpdate(order._id, { isCOD: false, paidViaLink: true, status: 'paid', paidAt: new Date() });
+            if (order.phone) {
+                const { updateLeadWithScoring } = require('../utils/leadScoring');
+                await updateLeadWithScoring(order.phone, order.clientId, {}, { cartStatus: 'paid', lastInteraction: new Date() });
+            }
+        }
+
+        const redirectUrl = client.shopDomain ? `https://${client.shopDomain}` : `https://delitechsmarthome.in`;
+        res.redirect(redirectUrl);
+    } catch (err) {
+        console.error("Stripe callback error:", err.message);
+        res.redirect('https://delitechsmarthome.in');
+    }
+});
+
+// POST /r/phonepe-callback/:orderId
+router.post('/phonepe-callback/:orderId', async (req, res) => {
+    // PhonePe redirect logic
+    const Order = require('../models/Order');
+    const Client = require('../models/Client');
+    const order = await Order.findById(req.params.orderId);
+    const client = await Client.findOne({ clientId: order?.clientId });
+    const redirectUrl = client?.shopDomain ? `https://${client.shopDomain}` : `https://delitechsmarthome.in`;
+    res.redirect(redirectUrl);
 });
 
 // POST /api/tracking/fulfillment-webhook

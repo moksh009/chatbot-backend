@@ -19,6 +19,7 @@ const ServiceModel = require('../../models/Service');
 const DailyStat = require('../../models/DailyStat');
 const Client = require('../../models/Client');
 const AdLead = require('../../models/AdLead');
+const { updateLeadWithScoring } = require('../../utils/leadScoring');
 const { DateTime } = require('luxon');
 const { generateText } = require('../../utils/gemini');
 
@@ -1029,16 +1030,14 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, clien
 
   // Track lead interaction for Active Leads display
   try {
-    await AdLead.updateOne(
-      { clientId, phoneNumber: from },
+    await updateLeadWithScoring(
+      from,
+      clientId,
+      { inboundMessageCount: 1 }, // Derive score from interaction
       {
-        $set: {
-          lastInteraction: new Date(),
-          chatSummary: userMsg ? userMsg.substring(0, 50) : 'Interaction'
-        },
-        $setOnInsert: { source: 'WhatsApp', leadScore: 10 }
-      },
-      { upsert: true }
+        lastInteraction: new Date(),
+        chatSummary: userMsg ? userMsg.substring(0, 50) : 'Interaction'
+      }
     );
   } catch (e) {
     console.error('AdLead update error:', e);

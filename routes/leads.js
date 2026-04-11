@@ -484,7 +484,7 @@ router.post('/:clientId/deploy-weights', protect, async (req, res) => {
             { clientId }, 
             {
                 $set: {
-                    'ai.scoringWeights': {
+                    'intentWeights': {
                         baseWeight: baseWeight || 20,
                         interactionMultiplier: interactionMultiplier || 5,
                         cartAbandonBonus: cartAbandonBonus || 30,
@@ -495,9 +495,11 @@ router.post('/:clientId/deploy-weights', protect, async (req, res) => {
             { new: true }
         );
 
-        // Optionally recompute scores asynchronously based on new weights
+        // Immediately trigger score recomputation asynchronously
         const { recomputeAllScores } = require('../utils/leadScoring');
-        recomputeAllScores(clientId).catch(console.error);
+        recomputeAllScores(clientId).catch(err => {
+            console.error(`[DeployWeights] Background recompute failed for ${clientId}:`, err)
+        });
 
         res.json({ success: true, message: 'Scoring weights deployed successfully. Recomputing standard scores...' });
     } catch (err) {

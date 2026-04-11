@@ -86,7 +86,107 @@ async function sendCODToPrepaidNudge(order, client, phone) {
                 if (link && link.short_url) {
                     paymentUrl = link.short_url;
                     log.success(`Razorpay payment link created: ${paymentUrl}`);
-                    await Order.findByIdAndUpdate(order._id, { razorpayLinkId: link.id, razorpayUrl: paymentUrl });
+                    await Order.findByIdAndUpdate(order._id, { 
+                        razorpayLinkId: link.id, 
+                        razorpayUrl: paymentUrl,
+                        gatewayPaymentId: link.id,
+                        gatewayPaymentUrl: paymentUrl
+                    });
+                }
+            }
+        }
+        // --- BRANCH C: STRIPE ---
+        else if (gateway === 'stripe') {
+            const stripeSecret = client.stripeSecretKey;
+            if (stripeSecret) {
+                // Using axios for Stripe to avoid extra SDK dependency
+                const params = new URLSearchParams();
+                params.append('line_items[0][price_data][currency]', 'inr');
+                params.append('line_items[0][price_data][product_data][name]', `Order ${order.orderNumber || order.orderId}`);
+                params.append('line_items[0][price_data][unit_amount]', Math.round(order.totalPrice * 100));
+                params.append('line_items[0][quantity]', '1');
+                params.append('mode', 'payment');
+                params.append('success_url', `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/r/stripe-callback/${order._id}?session_id={CHECKOUT_SESSION_ID}`);
+                params.append('cancel_url', `https://${client.shopDomain || 'store'}/cart`);
+
+                const response = await axios.post('https://api.stripe.com/v1/checkout/sessions', params, {
+                    headers: {
+                        'Authorization': `Bearer ${stripeSecret}`,
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    }
+                });
+
+                if (response.data && response.data.url) {
+                    paymentUrl = response.data.url;
+                    log.success(`Stripe checkout URL created: ${paymentUrl}`);
+                    await Order.findByIdAndUpdate(order._id, { 
+                        stripeLinkId: response.data.id, 
+                        stripeUrl: paymentUrl,
+                        gatewayPaymentId: response.data.id,
+                        gatewayPaymentUrl: paymentUrl
+                    });
+                }
+            }
+        }
+        // --- BRANCH D: PAYU ---
+        else if (gateway === 'payu') {
+            const key = client.payuMerchantKey;
+            const salt = client.payuMerchantSalt;
+            if (key && salt) {
+                const crypto = require('crypto');
+                const txnid = `PAYU_${order._id}_${Date.now()}`;
+                const amount = order.totalPrice.toFixed(2);
+                const productinfo = `Order ${order.orderNumber || order.orderId}`;
+                const firstname = order.customerName || "Customer";
+                const email = order.customerEmail || "customer@example.com";
+                
+                // key|txnid|amount|productinfo|firstname|email|||||||||||salt
+                const hashString = `${key}|${txnid}|${amount}|${productinfo}|${firstname}|email|||||||||||${salt}`;
+                const hash = crypto.createHash('sha512').update(hashString).digest('hex');
+
+                // Note: PayU usually requires a form redirect, but they have a Link API as well.
+                // For simplicity in a bot, we'll suggest using their Link API or a hosted session if available.
+                // Here we'll implement a placeholder logic that would match their API Link creation if possible via axios.
+                log.info("PayU Link API initiated (v1 logic)...");
+                // (Detailed PayU Link API implementation would go here)
+            }
+        }
+        // --- BRANCH E: PHONEPE ---
+        else if (gateway === 'phonepe') {
+            const merchantId = client.phonepeMerchantId;
+            const saltKey = client.phonepeSaltKey;
+            const saltIndex = client.phonepeSaltIndex || '1';
+
+            if (merchantId && saltKey) {
+                const crypto = require('crypto');
+                const payload = {
+                    merchantId,
+                    merchantTransactionId: `T${Date.now()}`,
+                    merchantUserId: `U${order._id}`,
+                    amount: Math.round(order.totalPrice * 100),
+                    redirectUrl: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/r/phonepe-callback/${order._id}`,
+                    redirectMode: 'POST',
+                    callbackUrl: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/api/payment/phonepe/webhook`,
+                    paymentInstrument: { type: 'PAY_PAGE' }
+                };
+
+                const base64Payload = Buffer.from(JSON.stringify(payload)).toString('base64');
+                const stringToHash = base64Payload + "/pg/v1/pay" + saltKey;
+                const sha256 = crypto.createHash('sha256').update(stringToHash).digest('hex');
+                const checksum = sha256 + "###" + saltIndex;
+
+                const response = await axios.post('https://api.phonepe.com/apis/hermes/pg/v1/pay', 
+                    { request: base64Payload },
+                    { headers: { 'X-VERIFY': checksum, 'Content-Type': 'application/json' } }
+                );
+
+                if (response.data && response.data.data && response.data.data.instrumentResponse.redirectInfo.url) {
+                    paymentUrl = response.data.data.instrumentResponse.redirectInfo.url;
+                    log.success(`PhonePe payment URL created: ${paymentUrl}`);
+                    await Order.findByIdAndUpdate(order._id, { 
+                        gatewayPaymentId: response.data.data.merchantTransactionId, 
+                        gatewayPaymentUrl: paymentUrl 
+                    });
                 }
             }
         }

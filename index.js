@@ -196,6 +196,12 @@ app.use('/api/leads', leadsRoutes);
 const routingRoutes = require('./routes/routingRules');
 app.use('/api/routing', routingRoutes);
 
+// --- DETERMINISTIC INTENT ENGINE ROUTES ---
+const intentRoutes = require('./routes/intents');
+const intentWebhookRoutes = require('./routes/intentWebhooks');
+app.use('/api/intents', intentRoutes);
+app.use('/api/webhooks', intentWebhookRoutes); // Mounts /api/webhooks/meta
+
 app.use('/api/razorpay', require('./routes/razorpayWebhook'));
 const shopifyPixelRoutes = require('./routes/shopifyPixel');
 app.use('/api/shopify-pixel', shopifyPixelRoutes);
@@ -587,7 +593,15 @@ io.on('connection', (socket) => {
 });
 
 connectDB()
-  .then(() => {
+  .then(async () => {
+    // Phase 9: Prime the NLP Engine for all clients
+    const { bootIntentEngine } = require('./services/EngineInitializer');
+    require('./services/NlpWorker'); // Starts the BullMQ worker process
+
+    bootIntentEngine().catch(err => {
+      log.error("[NLP_BOOT] Engine priming failed:", err.message);
+    });
+
     server.listen(PORT, () => {
       log.success(`Server is running on port ${PORT}`);
     });

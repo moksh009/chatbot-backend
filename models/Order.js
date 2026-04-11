@@ -21,6 +21,12 @@ const OrderSchema = new mongoose.Schema({
   razorpayUrl: { type: String },
   cashfreeLinkId: { type: String },
   cashfreeUrl: { type: String },
+  stripeLinkId: { type: String },
+  stripeUrl: { type: String },
+  payuLinkId: { type: String },
+  payuUrl: { type: String },
+  gatewayPaymentId: { type: String }, // Unified generic ID
+  gatewayPaymentUrl: { type: String }, // Unified generic URL
   paidViaLink: { type: Boolean, default: false },
   paidAt: { type: Date },
   codNudgeSentAt: { type: Date },
