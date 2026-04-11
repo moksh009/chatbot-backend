@@ -866,176 +866,80 @@ router.get('/', protect, async (req, res) => {
     }
     if (calendarIds.size === 0) calendarIds.add('primary');
 
+    // --- FETCH GCAL EVENTS & AGGREGATIONS IN PARALLEL ---
+    const [
+      gcalResults,
+      conversationActivity,
+      appointments,
+      messages,
+      reminderStats,
+      orders,
+      cartEvents,
+      linkClickEvents,
+      checkoutEvents
+    ] = await Promise.all([
+      // GCal
+      Promise.all(Array.from(calendarIds).map(calId =>
+        listEvents(startDate.toISOString(), endDate.toISOString(), calId).catch(() => [])
+      )),
+      // 1. Conversations
+      Message.aggregate([
+        { $match: { ...clientIdQuery, timestamp: { $gte: startDate, $lte: endDate } } },
+        { $group: { _id: { date: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } }, conversationId: '$conversationId' } } },
+        { $group: { _id: '$_id.date', count: { $sum: 1 } } }
+      ]),
+      // 3. Appointments
+      Appointment.aggregate([
+        { $match: { ...clientIdQuery, createdAt: { $gte: startDate, $lte: endDate } } },
+        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } }, count: { $sum: 1 }, revenue: { $sum: { $ifNull: ["$revenue", 0] } } } }
+      ]),
+      // 4. Messages
+      Message.aggregate([
+        { $match: { ...clientIdQuery, timestamp: { $gte: startDate, $lte: endDate } } },
+        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } }, count: { $sum: 1 } } }
+      ]),
+      // 5. DailyStat
+      DailyStat.find({ ...clientIdQuery, date: { $gte: dates[0], $lte: dates[dates.length - 1] } }),
+      // 6. Orders
+      Order.aggregate([
+        { $match: { ...clientIdQuery, createdAt: { $gte: startDate, $lte: endDate } } },
+        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } }, count: { $sum: 1 }, revenue: { $sum: "$amount" } } }
+      ]),
+      // 7. Add to Cart
+      AdLead.aggregate([
+        { $match: { ...clientIdQuery, 'activityLog.action': 'add_to_cart', 'activityLog.timestamp': { $gte: startDate, $lte: endDate } } },
+        { $unwind: '$activityLog' },
+        { $match: { 'activityLog.action': 'add_to_cart', 'activityLog.timestamp': { $gte: startDate, $lte: endDate } } },
+        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$activityLog.timestamp" } }, count: { $sum: 1 } } }
+      ]),
+      // 8. Link Clicks
+      AdLead.aggregate([
+        { $match: { ...clientIdQuery, 'activityLog.action': { $in: ['link_click', 'whatsapp_restore_link_clicked'] }, 'activityLog.timestamp': { $gte: startDate, $lte: endDate } } },
+        { $unwind: '$activityLog' },
+        { $match: { 'activityLog.action': { $in: ['link_click', 'whatsapp_restore_link_clicked'] }, 'activityLog.timestamp': { $gte: startDate, $lte: endDate } } },
+        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$activityLog.timestamp" } }, count: { $sum: 1 } } }
+      ]),
+      // 9. Checkouts
+      AdLead.aggregate([
+        { $match: { ...clientIdQuery, 'activityLog.action': 'checkout_initiated', 'activityLog.timestamp': { $gte: startDate, $lte: endDate } } },
+        { $unwind: '$activityLog' },
+        { $match: { 'activityLog.action': 'checkout_initiated', 'activityLog.timestamp': { $gte: startDate, $lte: endDate } } },
+        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$activityLog.timestamp" } }, count: { $sum: 1 } } }
+      ])
+    ]);
+
+    // Process GCal results into same flat map
     let gcalCounts = {};
-    try {
-      const calendarPromises = Array.from(calendarIds).map(calId =>
-        listEvents(startDate.toISOString(), endDate.toISOString(), calId)
-          .catch(() => [])
-      );
-      const results = await Promise.all(calendarPromises);
-      const allEvents = results.flat();
+    const allEvents = gcalResults.flat();
+    allEvents.forEach(event => {
+      const start = event.start.dateTime || event.start.date;
+      if (start) {
+        const dateStr = start.split('T')[0];
+        gcalCounts[dateStr] = (gcalCounts[dateStr] || 0) + 1;
+      }
+    });
 
-      // Group by date
-      allEvents.forEach(event => {
-        const start = event.start.dateTime || event.start.date;
-        if (start) {
-          const dateStr = start.split('T')[0];
-          gcalCounts[dateStr] = (gcalCounts[dateStr] || 0) + 1;
-        }
-      });
-    } catch (e) {
-      console.error('Analytics GCal Fetch Error:', e);
-    }
     // ------------------------------------------
-
-    // 1. Aggregation for Conversations active per day (based on messages)
-    const conversationActivity = await Message.aggregate([
-      {
-        $match: {
-          ...clientIdQuery,
-          timestamp: { $gte: startDate, $lte: endDate }
-        }
-      },
-      {
-        $group: {
-          _id: {
-            date: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } },
-            conversationId: '$conversationId'
-          }
-        }
-      },
-      {
-        $group: {
-          _id: '$_id.date',
-          count: { $sum: 1 }
-        }
-      }
-    ]);
-
-    // 3. Aggregation for Appointments (Count & Revenue)
-    const appointments = await Appointment.aggregate([
-      {
-        $match: {
-          ...clientIdQuery,
-          createdAt: { $gte: startDate, $lte: endDate }
-        }
-      },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
-          count: { $sum: 1 },
-          revenue: { $sum: { $ifNull: ["$revenue", 0] } }
-        }
-      }
-    ]);
-
-    // 4. Aggregation for Messages
-    const messages = await Message.aggregate([
-      {
-        $match: {
-          ...clientIdQuery,
-          timestamp: { $gte: startDate, $lte: endDate }
-        }
-      },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } },
-          count: { $sum: 1 }
-        }
-      }
-    ]);
-
-    // 5. DailyStat for reminders
-    const reminderStats = await DailyStat.find({ ...clientIdQuery, date: { $gte: dates[0], $lte: dates[dates.length - 1] } });
-
-    // 6. Aggregation for Orders (Revenue & Count)
-    const orders = await Order.aggregate([
-      {
-        $match: {
-          ...clientIdQuery,
-          createdAt: { $gte: startDate, $lte: endDate }
-        }
-      },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
-          count: { $sum: 1 },
-          revenue: { $sum: "$amount" }
-        }
-      }
-    ]);
-
-    // 7. Aggregation for Add to Cart Events (per day)
-    const cartEvents = await AdLead.aggregate([
-      {
-        $match: {
-          ...clientIdQuery,
-          'activityLog.action': 'add_to_cart',
-          'activityLog.timestamp': { $gte: startDate, $lte: endDate }
-        }
-      },
-      { $unwind: '$activityLog' },
-      {
-        $match: {
-          'activityLog.action': 'add_to_cart',
-          'activityLog.timestamp': { $gte: startDate, $lte: endDate }
-        }
-      },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$activityLog.timestamp" } },
-          count: { $sum: 1 }
-        }
-      }
-    ]);
-
-    // 8. Aggregation for Link Click Events (per day)
-    const linkClickEvents = await AdLead.aggregate([
-      {
-        $match: {
-          ...clientIdQuery,
-          'activityLog.action': { $in: ['link_click', 'whatsapp_restore_link_clicked'] },
-          'activityLog.timestamp': { $gte: startDate, $lte: endDate }
-        }
-      },
-      { $unwind: '$activityLog' },
-      {
-        $match: {
-          'activityLog.action': { $in: ['link_click', 'whatsapp_restore_link_clicked'] },
-          'activityLog.timestamp': { $gte: startDate, $lte: endDate }
-        }
-      },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$activityLog.timestamp" } },
-          count: { $sum: 1 }
-        }
-      }
-    ]);
-
-    // 9. Aggregation for Checkouts (per day)
-    const checkoutEvents = await AdLead.aggregate([
-      {
-        $match: {
-          ...clientIdQuery,
-          'activityLog.action': 'checkout_initiated',
-          'activityLog.timestamp': { $gte: startDate, $lte: endDate }
-        }
-      },
-      { $unwind: '$activityLog' },
-      {
-        $match: {
-          'activityLog.action': 'checkout_initiated',
-          'activityLog.timestamp': { $gte: startDate, $lte: endDate }
-        }
-      },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$activityLog.timestamp" } },
-          count: { $sum: 1 }
-        }
-      }
-    ]);
 
     // Merge Data
     const stats = dates.map(date => {

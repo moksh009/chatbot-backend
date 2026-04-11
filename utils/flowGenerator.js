@@ -59,7 +59,7 @@ Returns Info: ${returnsInfo}
 Loyalty: Referral=${referralPoints} pts, Signup=${signupPoints} pts
 Business Hours: ${openTime} - ${closeTime}
 
-Generate a JSON object for 28 different UI touchpoints. Ensure the language strictly follows the Persona Tone Guidelines above.
+Generate a JSON object for 28 different UI touchpoints. Ensure the language strictly follows the Persona Tone Guidelines above. Be concise but impactful.
 REQUIRED KEYS:
 "welcome_a", "welcome_b", "product_menu_text", "product_list_btn", 
 "order_status_msg", "fallback_msg", "returns_policy_short", "refund_policy_short",

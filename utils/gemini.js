@@ -26,8 +26,8 @@ async function generateText(prompt, apiKey, options = {}) {
   const {
     maxTokens  = 1024,
     temperature = 0.7,
-    timeout     = 20000,
-    maxRetries  = 3
+    timeout     = 35000,
+    maxRetries  = 2
   } = options;
   
   if (!apiKey?.trim()) {

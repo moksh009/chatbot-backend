@@ -2407,7 +2407,7 @@ const handleFlowWebhook = async (req, res) => {
     }
 
     if (!rawPem) {
-      console.error('[Choice Salon Flow] Critical Error: PRIVATE_PEM environment variable and private.pem file both missing.');
+      // console.error('[Choice Salon Flow] Critical Error: PRIVATE_PEM environment variable and private.pem file both missing.');
       return res.status(500).json({ error: 'Server configuration error.' });
     }
     const privateKey = rawPem.replace(/\\n/g, '\n');
