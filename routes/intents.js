@@ -1,13 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const IntentApiController = require('../controllers/IntentApiController');
-const { verifyDashboardToken } = require('../middleware/IntentAuthMiddleware');
+const { protect } = require('../middleware/auth');
 
 // Dashboard management routes
-router.post('/', verifyDashboardToken, IntentApiController.upsertIntent);
-router.get('/', verifyDashboardToken, IntentApiController.getIntents);
-router.get('/pending-phrases', verifyDashboardToken, IntentApiController.getPendingPhrases);
-router.get('/stats', verifyDashboardToken, IntentApiController.getIntentStats);
-router.post('/resolve-phrase', verifyDashboardToken, IntentApiController.resolvePhrase);
+router.post('/', protect, IntentApiController.upsertIntent);
+router.get('/', protect, IntentApiController.getIntents);
+router.get('/pending-phrases', protect, IntentApiController.getPendingPhrases);
+router.get('/stats', protect, IntentApiController.getIntentStats);
+router.post('/resolve-phrase', protect, IntentApiController.resolvePhrase);
 
 module.exports = router;
