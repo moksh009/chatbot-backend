@@ -25,6 +25,20 @@ const UserSchema = new mongoose.Schema({
   tourCompletedAt:  { type: Date },
   tourSkippedAt:    { type: Date },
   isLifetimeAdmin: { type: Boolean, default: false }, // Objective 1: God Mode Bypass
+  tasks: [{
+    title:       { type: String, required: true },
+    description: { type: String },
+    type:        { type: String, enum: ['respond_to_lead', 'review_campaign', 'fix_flow', 'custom'], default: 'custom' },
+    assignedBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    assignedAt:  { type: Date, default: Date.now },
+    dueAt:       { type: Date },
+    status:      { type: String, enum: ['pending', 'in_progress', 'completed'], default: 'pending' },
+    completedAt: { type: Date },
+    linkedEntity: {
+      entityType: { type: String, enum: ['conversation', 'campaign', 'flow', 'none'], default: 'none' },
+      entityId:   { type: String }
+    }
+  }],
   createdAt: { type: Date, default: Date.now }
 });
 

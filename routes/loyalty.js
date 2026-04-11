@@ -25,8 +25,12 @@ router.get('/status', getLoyaltyStatus);
 router.post('/redeem', protect, redeemLoyaltyPoints);
 
 // Admin-Only Adjustment & Rewards
-router.post('/adjust', protect, adjustWalletBalance);
+router.post('/adjust', protect, adjustWalletBalance); // Legacy
 router.post('/generate-reward', protect, generateAIRewardCode);
+
+// Client specific phase 7 requests
+router.post('/:clientId/manual-assign', protect, adjustWalletBalance);
+router.post('/:clientId/send-reminder', protect, sendLoyaltyReminderTemplate);
 
 // Reputation & Review Stats
 router.get('/reputation-stats', protect, getReputationStats);

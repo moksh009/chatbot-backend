@@ -125,6 +125,30 @@ router.post('/pixel/:clientId', async (req, res) => {
 
                 await lead.save();
                 console.log(`[DeepPixel] Event ${eventName} tracked for Lead ${lead._id}`);
+
+                // Emit real-time socket for dashboard live updates
+                if (global.io) {
+                    // Cart intent badge
+                    if (eventName === 'product_added_to_cart' || eventName === 'checkout_started') {
+                        global.io.to(`client_${clientId}`).emit('lead_cart_update', {
+                            leadId: lead._id,
+                            phone: lead.phoneNumber,
+                            cartStatus: 'abandoned',
+                            event: eventName,
+                            timestamp: new Date()
+                        });
+                    }
+                    // Purchase badge
+                    if (eventName === 'checkout_completed') {
+                        global.io.to(`client_${clientId}`).emit('lead_purchased', {
+                            leadId: lead._id,
+                            phone: lead.phoneNumber,
+                            cartStatus: 'purchased',
+                            timestamp: new Date()
+                        });
+                    }
+                }
+
             }
         }
 

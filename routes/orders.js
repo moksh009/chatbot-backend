@@ -91,4 +91,45 @@ router.post('/:clientId/bulk-action', protect, async (req, res) => {
   }
 });
 
+// POST /api/client/:clientId/orders/:orderId/send-review-request
+// Manually triggers a WhatsApp review request for a fulfilled order
+router.post('/:clientId/orders/:orderId/send-review-request', protect, async (req, res) => {
+  try {
+    const { clientId, orderId } = req.params;
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const order = await Order.findOne({ _id: orderId, clientId });
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    const phone = order.customerPhone || order.phone;
+    if (!phone) return res.status(400).json({ success: false, message: 'Order has no customer phone' });
+
+    const Client = require('../models/Client');
+    const ReviewRequest = require('../models/ReviewRequest');
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    // Schedule immediately (scheduledFor = now)
+    await ReviewRequest.findOneAndUpdate(
+      { clientId: client._id, phone, orderNumber: order.orderNumber || order.orderId },
+      {
+        clientId: client._id,
+        phone,
+        orderNumber: order.orderNumber || order.orderId,
+        productName: order.items?.[0]?.name || 'your order',
+        reviewUrl: client.googleReviewUrl || '',
+        scheduledFor: new Date(), // Immediate
+        status: 'scheduled'
+      },
+      { upsert: true }
+    );
+
+    res.json({ success: true, message: 'Review request scheduled for immediate dispatch' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 module.exports = router;

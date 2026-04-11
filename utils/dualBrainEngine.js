@@ -423,6 +423,15 @@ async function runDualBrainEngine(parsedMessage, client) {
     }
   } : {};
 
+  let existingLeadForDbounce = await AdLead.findOne({ phoneNumber: phone, clientId: client.clientId });
+  let shouldIncrementMsg = false;
+  if (!existingLeadForDbounce || !existingLeadForDbounce.lastInteraction) {
+    shouldIncrementMsg = true;
+  } else {
+    const minSince = (new Date() - existingLeadForDbounce.lastInteraction) / 60000;
+    if (minSince > 10) shouldIncrementMsg = true; // 10 minute debounce session
+  }
+
   let lead = await AdLead.findOneAndUpdate(
     { phoneNumber: phone, clientId: client.clientId },
     { 
@@ -435,6 +444,11 @@ async function runDualBrainEngine(parsedMessage, client) {
     },
     { upsert: true, new: true }
   );
+
+  if (shouldIncrementMsg) {
+     const { updateLeadWithScoring } = require('./leadScoring');
+     lead = await updateLeadWithScoring(phone, client.clientId, { inboundMessageCount: 1 }, {});
+  }
 
   // STEP 2.4: Track Customer Intelligence (Phase 28 Track 2)
   const CI = require('./customerIntelligence');

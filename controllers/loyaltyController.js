@@ -258,8 +258,8 @@ async function backfillOrderPoints(req, res) {
  * Requires a Meta-approved template named 'loyalty_points_reminder'.
  */
 async function sendLoyaltyReminderTemplate(req, res) {
-    const { clientId, phone } = req.body;
-    const resolvedClientId = clientId || req.user?.clientId;
+    const { phone } = req.body;
+    const resolvedClientId = req.params.clientId || req.body.clientId || req.user?.clientId;
     if (!resolvedClientId || !phone) return res.status(400).json({ message: 'Missing clientId or phone' });
 
     try {
@@ -392,8 +392,8 @@ async function redeemLoyaltyPoints(req, res) {
  * Manual admin adjustment of wallet points.
  */
 async function adjustWalletBalance(req, res) {
-    const { clientId, phone, amount, reason } = req.body;
-    const resolvedClientId = clientId || req.user?.clientId;
+    const { phone, amount, reason } = req.body;
+    const resolvedClientId = req.params.clientId || req.body.clientId || req.user?.clientId;
 
     if (!resolvedClientId || !phone || amount === undefined) {
         return res.status(400).json({ message: 'Missing required parameters' });

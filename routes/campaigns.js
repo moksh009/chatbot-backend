@@ -243,7 +243,9 @@ router.post('/start', protect, async (req, res) => {
                 rows.push({
                     phone: l.phoneNumber,
                     name: l.name || 'Customer',
-                    email: l.email || ''
+                    email: l.email || '',
+                    capturedData: l.capturedData || {},
+                    ...l.toObject() // surface all fields for mapping
                 });
             });
         }
@@ -345,10 +347,31 @@ router.post('/start', protect, async (req, res) => {
         } else if (templateType === 'whatsapp') {
           const tName = req.body.templateName || campaign.templateName;
           if (!tName) { failed++; continue; }
-          const components = req.body.templateComponents || [];
+          const components = req.body.templateComponents ? JSON.parse(JSON.stringify(req.body.templateComponents)) : [];
           
+          if (req.body.variableMapping && Object.keys(req.body.variableMapping).length > 0) {
+              const bodyParams = [];
+              const sortedKeys = Object.keys(req.body.variableMapping).sort((a,b) => parseInt(a) - parseInt(b));
+              
+              sortedKeys.forEach(k => {
+                  const dataField = req.body.variableMapping[k];
+                  let val = row[dataField] || row.capturedData?.[dataField] || '';
+                  if (dataField === 'name') val = row.name || 'Customer';
+                  bodyParams.push({ type: 'text', text: String(val) });
+              });
+
+              if (bodyParams.length > 0) {
+                  const existingBodyIndex = components.findIndex(c => c.type === 'body');
+                  if (existingBodyIndex !== -1) {
+                      components[existingBodyIndex].parameters = bodyParams;
+                  } else {
+                      components.push({ type: 'body', parameters: bodyParams });
+                  }
+              }
+          }
+
           // Auto-inject default header image if required and missing
-          if (components.length === 0) {
+          if (components.length === 0 && (!req.body.variableMapping || Object.keys(req.body.variableMapping).length === 0)) {
               const tplDef = (client.syncedMetaTemplates || []).find(t => t.name === tName);
               if (tplDef) {
                   const headerComp = tplDef.components?.find(c => c.type === 'HEADER' && c.format === 'IMAGE');

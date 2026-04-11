@@ -345,5 +345,32 @@ router.post('/widget-lead', async (req, res) => {
   }
 });
 
+// ── PUBLIC: Widget flow retrieval ───────────────────────────────────────────
+// @route   GET /api/support-chat/widget-flow/:clientId
+// @desc    Returns the active flow for the website widget
+// @access  Public
+router.get('/widget-flow/:clientId', async (req, res) => {
+  try {
+    const client = await Client.findOne({ clientId: req.params.clientId }).select('visualFlows avatar botName businessName themeColor');
+    if (!client) return res.status(404).json({ message: 'Client not found' });
+
+    // Find the primary flow (e.g., first one or one marked as 'active')
+    const activeFlow = client.visualFlows?.find(f => f.isActive) || client.visualFlows?.[0];
+    
+    res.json({
+      success: true,
+      flow: activeFlow || null,
+      branding: {
+        botName: client.botName || 'AI Assistant',
+        avatar: client.avatar || '',
+        businessName: client.businessName || 'Our Store',
+        themeColor: client.themeColor || '#7C3AED'
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 module.exports = router;
 

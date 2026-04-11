@@ -20,23 +20,12 @@ router.get('/:uid/:productId', async (req, res) => {
 
     try {
         const now = new Date();
-        const update = {
-            $inc: { linkClicks: 1 },
-            $set: { lastInteraction: now },
-            $push: {
-                activityLog: {
-                    action: 'link_click',
-                    details: `clicked product ${productId}`,
-                    timestamp: now
-                }
-            }
-        };
-
-        const lead = await AdLead.findByIdAndUpdate(
-            uid,
-            update,
-            { new: true }
-        );
+        const existingLead = await AdLead.findById(uid);
+        let lead = null;
+        if (existingLead) {
+            const { updateLeadWithScoring } = require('../utils/leadScoring');
+            lead = await updateLeadWithScoring(existingLead.phoneNumber, existingLead.clientId, { linkClicks: 1 }, {});
+        }
 
         if (lead) {
             console.log(`Link clicked by ${lead.phoneNumber} for ${productId}`);
@@ -79,26 +68,12 @@ router.post('/cart', async (req, res) => {
         }
 
         // If we have a phone, update the lead
-        const lead = await AdLead.findOneAndUpdate(
-            { phoneNumber: phone, clientId },
-            { 
-                $inc: { addToCartCount: 1 },
-                $set: { lastInteraction: new Date() },
-                $push: { 
-                    activityLog: { 
-                        action: 'add_to_cart', 
-                        details: `Added ${product} (₹${price})`,
-                        timestamp: new Date()
-                    }
-                },
-                $setOnInsert: { 
-                    phoneNumber: phone, 
-                    clientId, 
-                    createdAt: new Date(), 
-                    source: 'Website' 
-                }
-            },
-            { upsert: true, new: true }
+        const { updateLeadWithScoring } = require('../utils/leadScoring');
+        const lead = await updateLeadWithScoring(
+            phone,
+            clientId,
+            { addToCartCount: 1 },
+            { cartStatus: "cart_added", lastCartAt: new Date() }
         );
 
         if (lead && io) {
@@ -184,20 +159,12 @@ router.post('/order-webhook', async (req, res) => {
             if (phone) leadQuery.phoneNumber = phone;
             else leadQuery.email = orderData.email;
 
-            const lead = await AdLead.findOneAndUpdate(
-                leadQuery,
-                {
-                    $inc: { ordersCount: 1, totalSpent: amount },
-                    $set: { isOrderPlaced: true, lastInteraction: new Date() },
-                    $push: {
-                        activityLog: {
-                            action: 'order_placed',
-                            details: `Order ${orderId} for ₹${amount}`,
-                            timestamp: new Date()
-                        }
-                    }
-                },
-                { upsert: true, new: true }
+            const { updateLeadWithScoring } = require('../utils/leadScoring');
+            const lead = await updateLeadWithScoring(
+                phone,
+                clientId,
+                { ordersCount: 1, totalSpent: amount },
+                { cartStatus: "purchased", lastOrderAt: new Date() }
             );
 
             if (lead && io) {
@@ -318,6 +285,10 @@ router.get('/cashfree-callback/:orderId', async (req, res) => {
                     },
                     { headers: { Authorization: `Bearer ${token}` } }
                 );
+
+                // Update Lead Scoring: Upgrade to "Customer" if not already
+                const { updateLeadWithScoring } = require('../utils/leadScoring');
+                await updateLeadWithScoring(order.phone, order.clientId, {}, { cartStatus: 'paid', lastInteraction: new Date() });
             }
         }
 
@@ -391,6 +362,10 @@ router.post('/fulfillment-webhook', async (req, res) => {
             },
             { upsert: true, new: true }
         );
+
+        // Update Lead Scoring: Mark as Fulfilled/Shipped
+        const { updateLeadWithScoring } = require('../utils/leadScoring');
+        await updateLeadWithScoring(order.phone, order.clientId, {}, { cartStatus: 'shipped', lastInteraction: new Date() });
 
         res.status(200).send("Fulfillment processed, notification sent & review scheduled");
     } catch (err) {

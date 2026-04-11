@@ -469,4 +469,41 @@ router.get('/high-intent', protect, async (req, res) => {
     }
 });
 
+// POST /api/leads/:clientId/deploy-weights
+// Used by the Intent Simulator to save custom lead scoring rules
+router.post('/:clientId/deploy-weights', protect, async (req, res) => {
+    try {
+        const { clientId } = req.params;
+        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+             return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
+        
+        const { baseWeight, interactionMultiplier, cartAbandonBonus, tagWeights } = req.body;
+        
+        const client = await Client.findOneAndUpdate(
+            { clientId }, 
+            {
+                $set: {
+                    'ai.scoringWeights': {
+                        baseWeight: baseWeight || 20,
+                        interactionMultiplier: interactionMultiplier || 5,
+                        cartAbandonBonus: cartAbandonBonus || 30,
+                        tagWeights: tagWeights || []
+                    }
+                }
+            },
+            { new: true }
+        );
+
+        // Optionally recompute scores asynchronously based on new weights
+        const { recomputeAllScores } = require('../utils/leadScoring');
+        recomputeAllScores(clientId).catch(console.error);
+
+        res.json({ success: true, message: 'Scoring weights deployed successfully. Recomputing standard scores...' });
+    } catch (err) {
+        console.error('[DeployWeights] Error:', err);
+        res.status(500).json({ success: false, message: 'Failed to deploy weights' });
+    }
+});
+
 module.exports = router;

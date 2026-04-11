@@ -139,4 +139,81 @@ router.post("/:clientId/select-account", verifyToken, async (req, res) => {
   }
 });
 
+// ─── POST /api/meta-ads/:clientId/analyze — Gemini AI analysis ──────────────
+router.post("/:clientId/analyze", verifyToken, async (req, res) => {
+  try {
+    const client = await Client.findOne({ clientId: req.params.clientId });
+    if (!client) return res.status(404).json({ success: false, message: "Client not found" });
+
+    const { adId } = req.body;
+    const filter = { clientId: client._id };
+    if (adId) filter.metaAdId = adId;
+
+    const ads = await MetaAd.find(filter).sort({ updatedAt: -1 }).limit(10).lean();
+    if (ads.length === 0) return res.status(404).json({ success: false, message: "No ads found to analyze" });
+
+    // Build metrics snapshot for Gemini
+    const metricsBlock = ads.map(a => ({
+      name: a.adName,
+      status: a.adStatus,
+      ctr: a.insights?.ctr ?? 0,
+      cpm: a.insights?.cpm ?? 0,
+      spend: a.insights?.spend ?? 0,
+      impressions: a.insights?.impressions ?? 0,
+      clicks: a.insights?.clicks ?? 0,
+      leadsCount: a.topedgeStats?.leadsCount ?? 0,
+      revenue: a.topedgeStats?.revenue ?? 0,
+      roiPercent: a.topedgeStats?.roiPercent ?? 0,
+      cpl: a.topedgeStats?.leadsCount > 0 ? (a.insights?.spend / a.topedgeStats.leadsCount).toFixed(2) : 0,
+    }));
+
+    const { GoogleGenerativeAI } = require("@google/generative-ai");
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+    const prompt = `You are a world-class Meta Ads conversion engineer for an Indian D2C brand.
+Analyze these ad metrics for ${client.name || 'this brand'} and provide 4 surgical, data-backed suggestions.
+
+Focus on:
+1. "Creative Fatigue": High CPM or low CTR.
+2. "Middle-Funnel Leak": High CTR but low LeadsCount.
+3. "ROAS Optimization": Scaling best ROI ads and killing the losers.
+4. "Conversion Bitrate": Leads per 1000 impressions.
+
+Metrics (Top 10 Ads):
+${JSON.stringify(metricsBlock, null, 2)}
+
+Return ONLY a JSON array with this schema:
+[{ "title": string, "suggestion": string, "priority": "high"|"medium"|"low", "metric": "CTR"|"CPL"|"ROI"|"CPM", "impact": string }]`;
+
+    const result = await model.generateContent(prompt);
+    let text = result.response.text().trim();
+    
+    // Clean JSON response from potential AI markdown
+    if (text.startsWith('```')) {
+      text = text.replace(/```json|```/g, '').trim();
+    }
+
+    let suggestions = [];
+    try { 
+      suggestions = JSON.parse(text); 
+    } catch (parseErr) {
+      console.warn("[MetaAds] AI Parse Error, falling back to basic analysis.");
+      suggestions = [{ 
+        title: "Intelligence Ready", 
+        suggestion: "Your ads are being analyzed. High-level observation: Your average CPL is ₹" + (metricsBlock.reduce((s, m) => s + Number(m.cpl), 0) / metricsBlock.length).toFixed(2), 
+        priority: "medium", 
+        metric: "CPL",
+        impact: "Medium"
+      }];
+    }
+
+    res.json({ success: true, suggestions, analyzedAds: ads.length });
+
+    res.json({ success: true, suggestions, analyzedAds: ads.length });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 module.exports = router;

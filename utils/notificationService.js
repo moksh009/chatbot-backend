@@ -18,7 +18,13 @@ const NotificationService = {
    */
   async sendAdminAlert(client, { customerPhone, topic, triggerSource, channel = 'both' }) {
     const adminEmails = (client.adminAlertEmail || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 5);
-    const adminWhatsapps = (client.adminAlertWhatsapp || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 5);
+    let adminWhatsapps = (client.adminAlertWhatsapp || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (client.config?.adminPhones && Array.isArray(client.config.adminPhones)) {
+        adminWhatsapps = [...new Set([...adminWhatsapps, ...client.config.adminPhones.map(String)])];
+    } else {
+        adminWhatsapps = [...new Set(adminWhatsapps)];
+    }
+    adminWhatsapps = adminWhatsapps.slice(0, 5);
     
     // Construct the Deep Link for Takeover
     const baseUrl = process.env.DASHBOARD_URL || 'https://whatsappchatbot-6u7a.onrender.com';

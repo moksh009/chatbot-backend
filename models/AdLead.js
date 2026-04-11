@@ -105,8 +105,19 @@ const adLeadSchema = new mongoose.Schema({
   // Phase 9 fields
   intentState: {
     type: String,
-    enum: ['browsing', 'high_intent', 'cart_abandoned', 'recovered', 'converted'],
-    default: 'browsing'
+    default: "Cold"
+  },
+  inboundMessageCount: {
+    type: Number,
+    default: 0
+  },
+  isRtoRisk: {
+    type: Boolean,
+    default: false
+  },
+  isTimeWaster: {
+    type: Boolean,
+    default: false
   },
   cartItems: { type: mongoose.Schema.Types.Mixed, default: [] },
   cartValue:  { type: Number, default: 0 },
@@ -229,75 +240,6 @@ adLeadSchema.statics.pushJourneyEvent = async function(clientId, phoneNumber, ev
     console.error(`[AdLead] pushJourneyEvent failed for ${phoneNumber}:`, err.message);
   }
 };
-
-// Pre-save hook to calculate score and tags
-adLeadSchema.pre('save', function (next) {
-  let score = 0;
-
-  // Base activity points
-  score += (this.ordersCount || 0) * 50;
-  score += (this.appointmentsBooked || 0) * 50; // Points for booking
-  score += (this.checkoutInitiatedCount || 0) * 30; // Points for checkout initiated
-  score += (this.addToCartCount || 0) * 20;
-  score += (this.linkClicks || 0) * 5;
-
-  // Recency bonus (if interaction within last 7 days)
-  const daysSinceLastInteraction = (new Date() - new Date(this.lastInteraction)) / (1000 * 60 * 60 * 24);
-  if (daysSinceLastInteraction < 7) {
-    score += 10;
-  }
-
-  this.leadScore = score;
-
-  // Update Tags
-  const tags = new Set(this.tags || []);
-  if (this.ordersCount > 0) tags.add('customer');
-  if (this.ordersCount > 3) tags.add('loyal');
-  if (score > 100) tags.add('high-value');
-  if (score > 50 && score <= 100) tags.add('warm');
-
-  // Auto-manage new dynamic tags
-  if (this.totalSpent > 0) tags.add('repeat-buyer');
-  if (this.checkoutInitiatedCount >= 2) tags.add('high-intent');
-
-  if (this.cartStatus === 'abandoned') {
-    tags.add('cart-abandoned');
-  } else if (this.cartStatus === 'recovered' || this.cartStatus === 'purchased') {
-    tags.delete('cart-abandoned');
-  }
-
-  if (this.checkoutInitiatedCount > 0 && !this.isOrderPlaced) {
-    tags.add('checkout-initiated');
-  } else if (this.isOrderPlaced) {
-    tags.delete('checkout-initiated');
-  }
-
-  this.tags = Array.from(tags);
-
-  // Data Consistency Auto-Correction
-  if (this.cartStatus === 'purchased' && this.cartSnapshot?.updatedAt) {
-    const orderLogs = this.activityLog?.filter(log => log.action === 'order_placed') || [];
-    if (orderLogs.length > 0) {
-      const lastOrderDate = new Date(orderLogs[orderLogs.length - 1].timestamp);
-      if (new Date(this.cartSnapshot.updatedAt) > lastOrderDate) {
-        this.cartStatus = 'active'; // Cart was updated *after* the last purchase event
-      }
-    }
-  }
-
-  next();
-});
-
-// Post-hook for findOneAndUpdate to ensure score is recalculated
-adLeadSchema.post('findOneAndUpdate', async function (doc) {
-  if (doc) {
-    // Re-fetch to ensure we have the latest data before saving (triggers pre-save score calculation)
-    const latest = await doc.constructor.findById(doc._id);
-    if (latest) {
-      await latest.save();
-    }
-  }
-});
 
 const AdLead = mongoose.model('AdLead', adLeadSchema);
 

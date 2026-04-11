@@ -81,10 +81,12 @@ router.post("/:clientId/complete", protect, async (req, res) => {
         googleReviewUrl: wizardData.googleReviewUrl,
         'brand.googleReviewUrl': wizardData.googleReviewUrl
       }),
-      ...(systemPrompt               && { 
+      ...(wizardData.systemPrompt               && { 
         systemPrompt,
         'ai.systemPrompt': systemPrompt
       }),
+      ...(wizardData.returnsInfo && { "ai.persona.returnsInfo": wizardData.returnsInfo }),
+      ...(wizardData.faqText && { "ai.persona.faqText": wizardData.faqText }),
       ...(wizardData.razorpayKeyId    && { razorpayKeyId: wizardData.razorpayKeyId }),
       ...(wizardData.razorpaySecret   && { razorpaySecret: wizardData.razorpaySecret }),
       ...(wizardData.cashfreeAppId    && { cashfreeAppId: wizardData.cashfreeAppId }),
@@ -92,7 +94,8 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       ...(wizardData.activePaymentGateway && { activePaymentGateway: wizardData.activePaymentGateway }),
       ...(wizardData.adminPhone       && { 
         adminPhone: wizardData.adminPhone,
-        'brand.adminPhone': wizardData.adminPhone
+        'brand.adminPhone': wizardData.adminPhone,
+        'config.adminPhones': wizardData.adminPhone.split(',').map(p => p.trim())
       }),
       ...(wizardData.metaAdsToken && {
         metaAdsConnected:   true,

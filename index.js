@@ -330,6 +330,7 @@ require('./cron/abTestCron')();
 require('./cron/abTestWinner');
 require('./cron/insightsCron')();
 require('./cron/csatCron')();
+require('./cron/leadScoringCron');
 
 // Cron job for appointment reminders (run daily at 7 AM)
 cron.schedule('0 7 * * *', async () => {

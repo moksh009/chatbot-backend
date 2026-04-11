@@ -10,6 +10,22 @@ const { decrypt } = require('../utils/encryption');
 const { processOrderForLoyalty } = require('../utils/walletService');
 const log = require('../utils/logger')('ShopifyWebhook');
 
+async function getProductImageForOrder(order, client) {
+  // Try to get from order line items first (fastest)
+  const lineItem = order.line_items?.[0];
+  if (lineItem?.product_id && client.shopifyAccessToken) {
+    try {
+      const res = await axios.get(
+        `https://${client.shopDomain}/admin/api/2024-01/products/${lineItem.product_id}.json`,
+        { headers: { "X-Shopify-Access-Token": client.shopifyAccessToken } }
+      );
+      return res.data.product?.images?.[0]?.src || null;
+    } catch { return null; }
+  }
+  // Fallback: client logo or generic image
+  return client.logoUrl || null;
+}
+
 // Middleware to verify Shopify Webhook signature
 const verifyShopifyWebhook = async (req, res, next) => {
     const hmac = req.get('X-Shopify-Hmac-Sha256');
@@ -104,39 +120,56 @@ async function handleCheckout(client, data) {
     const { normalizePhone } = require('../utils/helpers');
     const cleanPhone = normalizePhone(phoneRaw);
 
-    const cartItems = data.line_items.map(item => item.title).join(', ');
-    const firstItemImage = data.line_items?.[0]?.variant_id ? 
-        data.line_items[0].image_url || null : null;
-    
-    await AdLead.findOneAndUpdate(
-        { phoneNumber: cleanPhone, clientId: client.clientId },
-        {
-            $set: {
-                name: data.customer?.first_name ? `${data.customer.first_name} ${data.customer.last_name || ''}` : undefined,
-                email: data.email || data.customer?.email,
-                lastSeen: new Date(),
-                checkoutUrl: data.abandoned_checkout_url,
-                addToCartCount: data.line_items.length,
-                isOrderPlaced: false,
-                cartSnapshot: {
-                    items: data.line_items.map(item => ({
-                        variant_id: item.variant_id,
-                        quantity: item.quantity,
-                        image: item.image_url || null,
-                        title: item.title
-                    })),
-                    updatedAt: new Date()
-                }
-            },
-            $push: {
-                activityLog: {
-                    action: 'shopify_checkout',
-                    details: `Checkout ${data.id} updated. Items: ${cartItems}`,
-                    timestamp: new Date()
-                }
+    // Auto-fetch product images for the cart snapshot
+    const enrichedItems = await Promise.all(data.line_items.map(async item => {
+        let imageUrl = item.image_url || null;
+        if (!imageUrl && item.product_id && client.shopifyAccessToken) {
+            try {
+                const res = await axios.get(
+                    `https://${client.shopDomain}/admin/api/2024-01/products/${item.product_id}.json`,
+                    { headers: { "X-Shopify-Access-Token": client.shopifyAccessToken } }
+                );
+                imageUrl = res.data.product?.images?.[0]?.src || null;
+            } catch (err) {
+                // Silently omit missing image
             }
-        },
-        { upsert: true }
+        }
+        return {
+            variant_id: item.variant_id,
+            quantity: item.quantity,
+            image: imageUrl,
+            title: item.title,
+            price: item.price
+        };
+    }));
+
+    const cartItems = data.line_items.map(item => item.title).join(', ');
+    const firstItemImage = enrichedItems[0]?.image || client.logoUrl || null;
+    
+    // 2. Update Lead using atomic scoring engine
+    const { updateLeadWithScoring } = require('../utils/leadScoring');
+    await updateLeadWithScoring(
+        cleanPhone, 
+        client.clientId, 
+        { addToCartCount: data.line_items.length }, // Increments
+        { 
+            name: data.customer?.first_name ? `${data.customer.first_name} ${data.customer.last_name || ''}` : undefined,
+            email: data.email || data.customer?.email,
+            lastSeen: new Date(),
+            checkoutUrl: data.abandoned_checkout_url,
+            isOrderPlaced: false,
+            cartSnapshot: {
+                items: enrichedItems,
+                updatedAt: new Date()
+            }
+        }, // String/Value updates
+        { 
+            activityLog: {
+                action: 'shopify_checkout',
+                details: `Checkout ${data.id} updated. Items: ${cartItems}`,
+                timestamp: new Date()
+            }
+        } // Push fields
     );
 
     // Track in DailyStat
@@ -155,21 +188,9 @@ async function handleOrder(client, data) {
     // 1. Fetch Lead
     const lead = await AdLead.findOne({ phoneNumber: cleanPhone, clientId: client.clientId });
 
-    // 2. Update AdLead status to stop abandonment flows
-    await AdLead.findOneAndUpdate(
-        { phoneNumber: cleanPhone, clientId: client.clientId },
-        { 
-            isOrderPlaced: true,
-            $set: { cartStatus: 'purchased' },
-            $push: {
-                activityLog: {
-                    action: 'order_placed',
-                    details: `Shopify Order ${data.name || data.id} placed.`,
-                    timestamp: new Date()
-                }
-            }
-        }
-    );
+    // 2. Update AdLead status to stop abandonment flows and score lead
+    const { updateLeadWithScoring } = require('../utils/leadScoring');
+    await updateLeadWithScoring(cleanPhone, client.clientId, { ordersCount: 1 }, { cartStatus: "purchased", lastOrderAt: new Date() });
 
     // 3. Create internal Order record
     const newOrder = await Order.create({
@@ -260,7 +281,7 @@ async function handleOrder(client, data) {
             
             if (paymentLinkUrl) {
                 // Prepare dynamic template dispatch
-                const firstItemImage = data.line_items?.[0]?.variant_id ? data.line_items[0].image_url : null;
+                const firstItemImage = await getProductImageForOrder(data, client);
                 const orderId = data.name || data.id;
                 const total = data.total_price;
                 const customerName = data.customer?.first_name || 'Guest';
@@ -315,6 +336,9 @@ async function handleOrder(client, data) {
 
     // Notify if high risk
     if (rtoAssessment.riskLevel === 'High') {
+        const { updateLeadWithScoring } = require('../utils/leadScoring');
+        await updateLeadWithScoring(cleanPhone, client.clientId, {}, {}, { isRtoRisk: true });
+
         const NotificationService = require('../utils/notificationService');
         await NotificationService.createNotification(client.clientId, {
             type: 'system',

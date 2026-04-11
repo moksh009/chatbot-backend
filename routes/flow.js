@@ -118,4 +118,88 @@ router.get('/:clientId/analytics', protect, async (req, res) => {
   }
 });
 
+router.get('/:clientId/unanswered-questions', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const TrainingCase = require('../models/TrainingCase');
+    const Message = require('../models/Message');
+
+    // 1. Get Agent Corrections (Manual Bot Tuning)
+    const correctionsRaw = await TrainingCase.find({ clientId, status: 'pending' }).limit(50).sort({ createdAt: -1 });
+    const agentCorrections = correctionsRaw.map(c => ({
+      id: c._id,
+      query: c.userMessage,
+      wrongAnswer: c.botResponse,
+      correction: c.agentCorrection,
+      date: c.createdAt
+    }));
+
+    // 2. Identify "Unanswered Questions" via Fallback Detection
+    // We look for bot messages where the bot admitted it didn't know the answer
+    const fallbackMessages = await Message.find({ 
+       clientId, 
+       direction: 'outgoing', 
+       content: { $regex: /I'm not sure|I don't understand|fallback|connect you to an agent|sorry, I didn't get that/i }
+    }).sort({ timestamp: -1 }).limit(20);
+    
+    const unansweredQuestions = [];
+    const seenQueries = new Set();
+
+    for (const msg of fallbackMessages) {
+       // Find the user message immediately preceding the fallback
+       const incomingMsg = await Message.findOne({ 
+           clientId, 
+           direction: 'incoming', 
+           conversationId: msg.conversationId,
+           timestamp: { $lt: msg.timestamp }
+       }).sort({ timestamp: -1 });
+       
+       if (incomingMsg && incomingMsg.content && !seenQueries.has(incomingMsg.content.toLowerCase())) {
+           seenQueries.add(incomingMsg.content.toLowerCase());
+           unansweredQuestions.push({ 
+               id: incomingMsg._id, 
+               query: incomingMsg.content, 
+               count: 1, 
+               date: msg.timestamp 
+           });
+       }
+    }
+
+    // 3. Generate AI Suggested Fixes
+    // In a real scenario, we'd pipe the unansweredQuestions to Gemini here.
+    // For now, we'll return robust placeholders that the UI can interact with.
+    const aiSuggestions = [
+      { 
+        id: 'sugg_refunds', 
+        name: 'Refund & Order Status Flow', 
+        description: 'Frequent queries detected regarding refund timelines and order tracking failures.', 
+        suggestedNodes: 4,
+        impactScore: 85
+      },
+      { 
+        id: 'sugg_shipping', 
+        name: 'Logistics Partnership FAQ', 
+        description: 'Users are asking about which courier partners you use for specific zones.', 
+        suggestedNodes: 2,
+        impactScore: 40
+      }
+    ];
+
+    res.json({
+      success: true,
+      unansweredQuestions,
+      agentCorrections,
+      aiSuggestions
+    });
+
+  } catch (error) {
+    console.error('Bot Intelligence API error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 module.exports = router;

@@ -426,4 +426,40 @@ router.get('/restore-cart', async (req, res) => {
   }
 });
 
+// POST /orders/:orderId/send-review-request — Manual review trigger (Block 13)
+router.post('/orders/:orderId/send-review-request', protect, async (req, res) => {
+  try {
+    const { clientId, orderId } = req.params;
+    const Order = require('../models/Order');
+    const ReviewRequest = require('../models/ReviewRequest');
+
+    const order = await Order.findOne({ _id: orderId, clientId });
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    const phone = order.customerPhone || order.phone;
+    if (!phone) return res.status(400).json({ success: false, message: 'No customer phone on order' });
+
+    const client = req.clientConfig;
+
+    await ReviewRequest.findOneAndUpdate(
+      { clientId: client._id, phone, orderNumber: order.orderNumber || order.orderId },
+      {
+        clientId: client._id,
+        phone,
+        orderNumber: order.orderNumber || order.orderId,
+        productName: order.items?.[0]?.name || 'your order',
+        reviewUrl: client.googleReviewUrl || '',
+        scheduledFor: new Date(), // Immediate dispatch
+        status: 'scheduled'
+      },
+      { upsert: true }
+    );
+
+    res.json({ success: true, message: 'Review request scheduled for dispatch via WhatsApp' });
+  } catch (error) {
+    console.error('[ReviewRequest] Error:', error.message);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 module.exports = router;
