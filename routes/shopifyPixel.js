@@ -10,183 +10,210 @@ const { protect } = require('../middleware/auth');
 const { injectPixelScript } = require('../utils/shopifyHelper');
 
 /**
- * Shopify Custom Pixel Endpoint
- * This receives events from Shopify's Web Pixel API:
- * - cart_viewed
- * - product_added_to_cart
- * - checkout_started
- * - checkout_completed
+ * Helper: Process any Shopify or Script-based Pixel Event
+ * Handles Lead Identification, commerceEvents tracking, and real-time ROI stats
  */
-router.post('/pixel/:clientId', async (req, res) => {
-    const { clientId } = req.params;
-    const { eventName, data, customer, timestamp, sessionId } = req.body;
+async function processPixelEvent(clientId, eventData) {
+    const { eventName, data, customer, timestamp, sessionId, url, userAgent, ip } = eventData;
+    
+    const client = await Client.findOne({ clientId });
+    if (!client) return { error: 'Client not found' };
 
-    try {
-        const client = await Client.findOne({ clientId });
-        if (!client) return res.status(404).json({ error: 'Client not found' });
+    // 1. Identify Customer
+    const email = customer?.email || data?.checkout?.email || data?.email;
+    const rawPhone = customer?.phone || data?.checkout?.phone || data?.phone;
+    const phone = rawPhone ? rawPhone.toString().replace(/\D/g, '') : null;
 
-        // Attribution Logic
-        // 1. Identify customer (Email or Phone)
-        const email = customer?.email || data?.checkout?.email;
-        const phone = customer?.phone || data?.checkout?.phone;
-
-        if ((email || phone) || eventName === 'contact_identified') {
-            const query = {};
-            if (email) query.email = email;
-            if (phone) query.phoneNumber = phone.replace(/\D/g, ''); // Normalize
-            if (eventName === 'contact_identified') {
-                if (data.email) query.email = data.email;
-                if (data.phone) query.phoneNumber = data.phone.replace(/\D/g, '');
-            }
-
-            if (!Object.keys(query).length) return res.status(200).json({ success: true });
-
-            let lead = await AdLead.findOne({ ...query, clientId });
-
-            if (!lead && (query.email || query.phoneNumber)) {
-                // Pre-create lead from pixel identification
-                lead = new AdLead({
-                    clientId,
-                    email: query.email || '',
-                    phoneNumber: query.phoneNumber || 'unknown_' + sessionId,
-                    source: 'Shopify Pixel (Identified)',
-                    lastInteraction: new Date()
-                });
-                await lead.save();
-                console.log(`[DeepPixel] New Lead Created from Identification: ${query.email || query.phoneNumber}`);
-            }
-
-            if (lead) {
-                // Update Lead commerce state
-                const eventEntry = {
-                    event: eventName,
-                    amount: data?.checkout?.totalPrice?.amount || data?.cart?.totalQuantity || 0,
-                    currency: data?.checkout?.totalPrice?.currencyCode || 'INR',
-                    timestamp: timestamp || new Date(),
-                    metadata: { ...data, sessionId }
-                };
-
-                lead.commerceEvents = lead.commerceEvents || [];
-                lead.commerceEvents.push(eventEntry);
-                
-                // Track identified info if it was missing 
-                if (eventName === 'contact_identified') {
-                    if (data.email) lead.email = data.email;
-                    if (data.phone) lead.phoneNumber = data.phone.replace(/\D/g, '');
-                    lead.activityLog.push({ action: 'pixel_contact_identified', details: `Source: checkout_form`, timestamp: new Date() });
-                }
-
-                await PixelEvent.create({
-                    clientId,
-                    leadId: lead._id,
-                    eventName: eventName === 'product_added_to_cart' ? 'add_to_cart' : eventName,
-                    url: data?.url || '',
-                    metadata: { ...data, sessionId },
-                    timestamp: timestamp || new Date()
-                });
-
-                if (eventName === 'checkout_started' || eventName === 'product_added_to_cart') {
-                    lead.addToCartCount = (lead.addToCartCount || 0) + 1;
-                    lead.cartStatus = 'abandoned';
-                    lead.isOrderPlaced = false; 
-                    lead.lastCartEventAt = new Date();
-
-                    // --- TRACK 1: Real-time Recovery Trigger (15m Delay) ---
-                    if (eventName === 'checkout_started' && lead.phoneNumber && !lead.phoneNumber.startsWith('unknown_')) {
-                        const canAutomate = await checkLimit(client._id, 'sequences');
-                        if (canAutomate.allowed) {
-                            // Schedule a recovery sequence
-                            const recoverySeq = new FollowUpSequence({
-                                clientId,
-                                leadId: lead._id,
-                                phone: lead.phoneNumber,
-                                name: `Recovery: ${lead.phoneNumber}`,
-                                status: 'active',
-                                steps: [{
-                                    type: 'whatsapp',
-                                    templateName: 'abandoned_cart_reminder',
-                                    sendAt: moment().add(15, 'minutes').toDate(),
-                                    status: 'pending'
-                                }]
-                            });
-                            await recoverySeq.save();
-                            console.log(`[DeepPixel] Scheduled 15m recovery for ${lead.phoneNumber}`);
-                        }
-                    }
-                }
-
-                // Track LTV 
-                if (eventName === 'checkout_completed') {
-                    lead.totalSpent = (lead.totalSpent || 0) + parseFloat(eventEntry.amount);
-                    lead.ordersCount = (lead.ordersCount || 0) + 1;
-                    lead.isOrderPlaced = true;
-                    lead.cartStatus = 'purchased';
-                }
-
-                await lead.save();
-                console.log(`[DeepPixel] Event ${eventName} tracked for Lead ${lead._id}`);
-
-                // Emit real-time socket for dashboard live updates
-                if (global.io) {
-                    // Cart intent badge
-                    if (eventName === 'product_added_to_cart' || eventName === 'checkout_started') {
-                        global.io.to(`client_${clientId}`).emit('lead_cart_update', {
-                            leadId: lead._id,
-                            phone: lead.phoneNumber,
-                            cartStatus: 'abandoned',
-                            event: eventName,
-                            timestamp: new Date()
-                        });
-                    }
-                    // Purchase badge
-                    if (eventName === 'checkout_completed') {
-                        global.io.to(`client_${clientId}`).emit('lead_purchased', {
-                            leadId: lead._id,
-                            phone: lead.phoneNumber,
-                            cartStatus: 'purchased',
-                            timestamp: new Date()
-                        });
-                    }
-                }
-
-            }
+    if ((email || phone) || eventName === 'contact_identified') {
+        const query = {};
+        if (email) query.email = email;
+        if (phone) query.phoneNumber = phone;
+        
+        if (eventName === 'contact_identified') {
+            if (data.email) query.email = data.email;
+            if (data.phone) query.phoneNumber = data.phone.toString().replace(/\D/g, '');
         }
 
-        res.status(200).json({ success: true });
+        if (!Object.keys(query).length) return { success: true, status: 'no_id' };
+
+        let lead = await AdLead.findOne({ ...query, clientId });
+
+        if (!lead && (query.email || query.phoneNumber)) {
+            lead = new AdLead({
+                clientId,
+                email: query.email || '',
+                phoneNumber: query.phoneNumber || 'unknown_' + sessionId,
+                source: 'DeepPixel (Identified)',
+                lastInteraction: new Date()
+            });
+            await lead.save();
+            console.log(`[DeepPixel] New Lead Created: ${query.email || query.phoneNumber}`);
+        }
+
+        if (lead) {
+            // --- Phase 23: UTM Attribution Capture ---
+            const currentUrl = url || data?.url || '';
+            if (currentUrl && currentUrl.includes('?')) {
+                try {
+                    const params = new URLSearchParams(currentUrl.split('?')[1]);
+                    const utmSource = params.get('utm_source');
+                    const utmMedium = params.get('utm_medium');
+                    const utmCampaign = params.get('utm_campaign');
+                    
+                    if (utmSource || utmMedium) {
+                        lead.adAttribution = lead.adAttribution || {};
+                        // Only update if it was organic/direct or missing
+                        if (!lead.adAttribution.source || ['organic', 'direct', 'Organic/Direct'].includes(lead.adAttribution.source)) {
+                            lead.adAttribution.source = utmSource || utmMedium;
+                            lead.adAttribution.adSourceUrl = currentUrl;
+                            if (utmCampaign) lead.adAttribution.adHeadline = utmCampaign;
+                            console.log(`[DeepPixel] Attribution Updated: ${lead.adAttribution.source}`);
+                        }
+                    }
+                } catch (e) {
+                    console.error('[DeepPixel] UTM Parse Error:', e.message);
+                }
+            }
+
+            // Update Lead commerce state
+            const amount = data?.checkout?.totalPrice?.amount || data?.total_price || data?.cart?.totalQuantity || 0;
+            const eventEntry = {
+                event: eventName,
+                amount: parseFloat(amount) || 0,
+                currency: data?.checkout?.totalPrice?.currencyCode || data?.currency || 'INR',
+                timestamp: timestamp || new Date(),
+                metadata: { ...data, sessionId, url }
+            };
+
+            lead.commerceEvents = lead.commerceEvents || [];
+            lead.commerceEvents.push(eventEntry);
+            
+            if (eventName === 'contact_identified') {
+                if (data.email) lead.email = data.email;
+                if (data.phone) lead.phoneNumber = data.phone.toString().replace(/\D/g, '');
+                lead.activityLog.push({ action: 'pixel_contact_identified', details: `Source: pixel_capture`, timestamp: new Date() });
+            }
+
+            // Consistent event naming for analytics
+            const mappedEvent = eventName === 'product_added_to_cart' ? 'add_to_cart' : eventName;
+
+            await PixelEvent.create({
+                clientId,
+                leadId: lead._id,
+                eventName: mappedEvent,
+                url: url || data?.url || '',
+                metadata: { ...data, sessionId },
+                timestamp: timestamp || new Date(),
+                userAgent,
+                ip
+            });
+
+            if (eventName === 'checkout_started' || eventName === 'product_added_to_cart') {
+                lead.addToCartCount = (lead.addToCartCount || 0) + 1;
+                lead.cartStatus = 'abandoned';
+                lead.isOrderPlaced = false; 
+                lead.lastCartEventAt = new Date();
+
+                // Recovery Automation
+                if (eventName === 'checkout_started' && lead.phoneNumber && !lead.phoneNumber.startsWith('unknown_')) {
+                    const canAutomate = await checkLimit(client._id, 'sequences');
+                    if (canAutomate.allowed) {
+                        const recoverySeq = new FollowUpSequence({
+                            clientId,
+                            leadId: lead._id,
+                            phone: lead.phoneNumber,
+                            name: `Recovery: ${lead.phoneNumber}`,
+                            status: 'active',
+                            steps: [{
+                                type: 'whatsapp',
+                                templateName: 'abandoned_cart_reminder',
+                                sendAt: moment().add(15, 'minutes').toDate(),
+                                status: 'pending'
+                            }]
+                        });
+                        await recoverySeq.save();
+                    }
+                }
+            }
+
+            if (eventName === 'checkout_completed') {
+                lead.totalSpent = (lead.totalSpent || 0) + (parseFloat(amount) || 0);
+                lead.ordersCount = (lead.ordersCount || 0) + 1;
+                lead.isOrderPlaced = true;
+                lead.cartStatus = 'purchased';
+            }
+
+            await lead.save();
+
+            // Real-time Dashboard Sync
+            if (global.io) {
+                const room = `client_${clientId}`;
+                if (eventName === 'product_added_to_cart' || eventName === 'checkout_started') {
+                    global.io.to(room).emit('lead_cart_update', { leadId: lead._id, phone: lead.phoneNumber, cartStatus: 'abandoned', event: mappedEvent });
+                }
+                if (eventName === 'checkout_completed') {
+                    global.io.to(room).emit('lead_purchased', { leadId: lead._id, phone: lead.phoneNumber, cartStatus: 'purchased' });
+                }
+            }
+            return { success: true, leadId: lead._id };
+        }
+    } else {
+        // Fallback: Just log raw event if no identification possible
+        await PixelEvent.create({
+            clientId,
+            eventName,
+            url,
+            sessionId,
+            metadata: data,
+            timestamp: timestamp || new Date(),
+            userAgent,
+            ip
+        });
+    }
+    return { success: true };
+}
+
+/**
+ * Shopify Custom Pixel Endpoint (Official)
+ */
+router.post('/pixel/:clientId', async (req, res) => {
+    try {
+        const result = await processPixelEvent(req.params.clientId, {
+            ...req.body,
+            userAgent: req.headers['user-agent'],
+            ip: req.ip
+        });
+        if (result.error) return res.status(404).json(result);
+        res.status(200).json(result);
     } catch (err) {
         console.error('[DeepPixel] Error:', err.message);
         res.status(500).json({ error: 'Internal Server Error' });
     }
 });
 
+
 /**
  * Public Pixel Event Endpoint (for script.js)
  * POST /api/shopify/pixel/:clientId/event
  */
 router.post('/pixel/:clientId/event', async (req, res) => {
-    const { clientId } = req.params;
-    const { eventName, url, sessionId, metadata } = req.body;
-
     try {
-        const client = await Client.findOne({ clientId });
-        if (!client) return res.status(404).json({ error: 'Client not found' });
-
-        // Log the raw event
-        await PixelEvent.create({
-            clientId,
+        const { eventName, url, sessionId, metadata } = req.body;
+        const result = await processPixelEvent(req.params.clientId, {
             eventName,
+            data: metadata, // metadata is the data payload for script events
             url,
             sessionId,
-            metadata,
             userAgent: req.headers['user-agent'],
             ip: req.ip
         });
-
-        res.status(200).json({ success: true });
+        if (result.error) return res.status(404).json(result);
+        res.status(200).json(result);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
+
 
 
 /**
@@ -215,6 +242,12 @@ router.get('/pixel/:clientId/script.js', async (req, res) => {
             timestamp: new Date().toISOString()
         };
         
+        // Attach persisted identification if available
+        const persistedEmail = localStorage.getItem("te_pixel_email");
+        const persistedPhone = localStorage.getItem("te_pixel_phone");
+        if (persistedEmail) payload.email = persistedEmail;
+        if (persistedPhone) payload.phone = persistedPhone;
+
         // Capture context
         if (window.Shopify) {
             payload.shopify = {
@@ -234,9 +267,17 @@ router.get('/pixel/:clientId/script.js', async (req, res) => {
     // 1. Basic Page View
     sendEvent("page_view");
 
-    // 2. Checkout Monitoring (Liquid Context)
+    // 2. Checkout & Thank You Monitoring
     if (window.Shopify && window.Shopify.checkout) {
-        sendEvent("checkout_started", { checkout: window.Shopify.checkout });
+        const eventName = window.location.pathname.includes("thank_you") ? "checkout_completed" : "checkout_started";
+        sendEvent(eventName, { 
+            checkout: window.Shopify.checkout,
+            total_price: window.Shopify.checkout.total_price || window.Shopify.checkout.totalPrice,
+            currency: window.Shopify.checkout.currency
+        });
+    } else if (window.location.pathname.includes("thank_you")) {
+        // Fallback for thank you page if Shopify object is different
+        sendEvent("checkout_completed", { url: window.location.href });
     }
 
     // 3. Real-time Lead Capture (Checkout Form)
@@ -249,6 +290,7 @@ router.get('/pixel/:clientId/script.js', async (req, res) => {
             if (emailInput && !emailInput.dataset.teTracked) {
                 emailInput.addEventListener('blur', (e) => {
                     if (e.target.value.includes('@')) {
+                        localStorage.setItem("te_pixel_email", e.target.value);
                         sendEvent("contact_identified", { email: e.target.value });
                         emailInput.dataset.teTracked = "true";
                     }
@@ -256,8 +298,10 @@ router.get('/pixel/:clientId/script.js', async (req, res) => {
             }
             if (phoneInput && !phoneInput.dataset.teTracked) {
                 phoneInput.addEventListener('blur', (e) => {
-                    if (e.target.value.length >= 10) {
-                        sendEvent("contact_identified", { phone: e.target.value });
+                    const cleanPhone = e.target.value.replace(/\D/g, '');
+                    if (cleanPhone.length >= 10) {
+                        localStorage.setItem("te_pixel_phone", cleanPhone);
+                        sendEvent("contact_identified", { phone: cleanPhone });
                         phoneInput.dataset.teTracked = "true";
                     }
                 });
