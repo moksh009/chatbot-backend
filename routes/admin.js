@@ -1947,7 +1947,7 @@ router.get('/audit-logs', protect, authorize('SUPER_ADMIN', 'CLIENT_ADMIN'), asy
     
     res.json({ success: true, data: logs });
   } catch (err) {
-    log.error('Error fetching audit logs', { error: err.message });
+    console.error('Error fetching audit logs', { error: err.message });
     res.status(500).json({ message: 'Server error fetching audit logs' });
   }
 });

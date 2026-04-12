@@ -279,5 +279,44 @@ module.exports = {
 
             return { success: true };
         });
+    },
+
+    /**
+     * Phase 3: Dynamic Discount Generator
+     * Creates a unique Shopify discount code for a specific customer.
+     */
+    generatePriceRuleAndDiscount: async (clientId, discountPercent = 10, suffix = 'SAVE') => {
+        return await withShopifyRetry(clientId, async (shop) => {
+            const code = `${suffix}${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+            const now = new Date();
+            
+            // 1. Create Price Rule
+            const priceRuleRes = await shop.post('/price_rules.json', {
+                price_rule: {
+                    title: `Abandoned Cart ${discountPercent}% - ${code}`,
+                    target_type: "line_item",
+                    target_selection: "all",
+                    allocation_method: "across",
+                    value_type: "percentage",
+                    value: `-${discountPercent}.0`,
+                    customer_selection: "all",
+                    starts_at: now.toISOString(),
+                    ends_at: new Date(now.getTime() + 48 * 60 * 60 * 1000).toISOString(), // 48h expiry
+                    usage_limit: 1
+                }
+            });
+
+            const priceRuleId = priceRuleRes.data.price_rule.id;
+
+            // 2. Create Discount Code
+            const discountRes = await shop.post(`/price_rules/${priceRuleId}/discount_codes.json`, {
+                discount_code: { code }
+            });
+
+            return {
+                code: discountRes.data.discount_code.code,
+                priceRuleId
+            };
+        });
     }
 };

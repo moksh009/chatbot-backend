@@ -327,6 +327,13 @@ const ClientSchema = new mongoose.Schema({
     contact: { phone: String, email: String, address: String },
     tone: String
   },
+  pendingKnowledge: [{
+    type: { type: String, enum: ['faq', 'fact', 'product'], default: 'fact' },
+    content: mongoose.Schema.Types.Mixed,
+    sourceLead: { type: mongoose.Schema.Types.ObjectId, ref: 'AdLead' },
+    extractedAt: { type: Date, default: Date.now },
+    status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' }
+  }],
   flowHistory: [{
     version: Number,
     nodes: mongoose.Schema.Types.Mixed,

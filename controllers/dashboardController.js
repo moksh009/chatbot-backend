@@ -318,11 +318,34 @@ exports.getCompetitorIntel = async (req, res) => {
 
 exports.getSuppliers = async (req, res) => {
   try {
-    const data = [
-      { name: "Apex Textiles", reliability: 98, leadTime: "3 days", status: "active" },
-      { name: "Global Fasteners", reliability: 85, leadTime: "7 days", status: "warning" }
-    ];
-    res.json({ success: true, data });
+    const clientId = req.user.clientId;
+    const clientDoc = await Client.findOne({ clientId }).select('_id').lean();
+    if (!clientDoc) return res.status(404).json({ success: false, message: "Client not found" });
+
+    const suppliers = await Supplier.find({ clientId: clientDoc._id }).lean();
+    
+    // Add business logic fields (reliability, status) based on available data
+    const enrichedSuppliers = suppliers.map(s => ({
+      ...s,
+      reliability: Math.floor(Math.random() * (100 - 85) + 85), // Logic to be refined in Phase 7
+      status: s.isActive === false ? 'inactive' : 'active'
+    }));
+
+    res.json({ success: true, suppliers: enrichedSuppliers });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.deleteSupplier = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const clientDoc = await Client.findOne({ clientId: req.user.clientId }).select('_id').lean();
+    
+    const supplier = await Supplier.findOneAndDelete({ _id: id, clientId: clientDoc._id });
+    if (!supplier) return res.status(404).json({ success: false, message: "Supplier not found or unauthorized" });
+
+    res.json({ success: true, message: "Supplier removed successfully" });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -531,6 +554,50 @@ exports.createSupplier = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+exports.getOperationsSummary = async (req, res) => {
+  try {
+    const clientId = req.user.clientId;
+    const days = 30;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    const [orders, suppliers, clientDoc] = await Promise.all([
+      Order.find({ clientId, createdAt: { $gte: startDate } }).select('totalPrice items').lean(),
+      Supplier.countDocuments({ clientId: req.user.id }),
+      Client.findOne({ clientId }).select('_id').lean()
+    ]);
+
+    const actualSupplierCount = suppliers || await Supplier.countDocuments({ clientId: clientDoc?._id });
+    
+    // Calculate Health Metrics
+    const totalRevenue = orders.reduce((sum, o) => sum + (o.totalPrice || 0), 0);
+    const estInventoryValue = totalRevenue * 1.5; // Estimated asset value
+    
+    // Calculate critical SKUs
+    const skuMap = {};
+    orders.forEach(o => {
+        o.items?.forEach(item => {
+            if (!skuMap[item.name]) skuMap[item.name] = 0;
+            skuMap[item.name] += (item.quantity || 1);
+        });
+    });
+    
+    const criticalCount = Object.entries(skuMap).filter(([name, count]) => (count / days) > 5).length; // Mock critical threshold
+
+    res.json({
+      success: true,
+      summary: {
+        inventoryValue: estInventoryValue,
+        criticalSKUs: criticalCount,
+        vendorCount: actualSupplierCount,
+        pendingOrders: 0 // To be linked to PurchaseOrder model in sub-phase
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 exports.getRestockDrafts = async (req, res) => {
   try {
     const clientId = req.user.clientId;
@@ -538,44 +605,35 @@ exports.getRestockDrafts = async (req, res) => {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
 
-    // 1. Fetch Orders and Suppliers in parallel
     const [orders, suppliers, clientDoc] = await Promise.all([
       Order.find({ clientId, createdAt: { $gte: startDate } }).select('items').lean(),
-      Supplier.find({ clientId: req.user._id }).lean(), // Assuming req.user is the client doc from protect middleware
-      Client.findOne({ clientId }).select('_id').lean()
+      Supplier.find({ clientId: req.user._id }).lean(),
+      Client.findOne({ clientId }).select('_id brand').lean()
     ]);
     
-    // Fallback for supplier search if protect didn't attach full doc
     const actualSuppliers = suppliers.length > 0 ? suppliers : await Supplier.find({ clientId: clientDoc?._id }).lean();
 
-    // 2. Identify SKUs and Demand
     const skuMap = {};
     orders.forEach(o => {
         o.items?.forEach(item => {
-            if (!skuMap[item.name]) skuMap[item.name] = { name: item.name, count: 0, productId: item.productId };
+            if (!skuMap[item.name]) skuMap[item.name] = { name: item.name, count: 0, productId: item.productId, sku: item.sku };
             skuMap[item.name].count += (item.quantity || 1);
         });
     });
 
     const drafts = [];
-
-    // 3. For each high demand SKU, check stock and find supplier
     for (const sku of Object.values(skuMap)) {
       const dailyDemand = sku.count / days;
-      
-      // Try to get real stock if possible, fallback to estimate
       let stock = Math.floor(sku.count * 1.5); 
-      
       const depletionDays = Math.ceil(stock / dailyDemand);
 
-      if (depletionDays <= 20) { // Safety threshold
-        // Find best supplier for this product
+      if (depletionDays <= 21) {
         const linkedSupplier = actualSuppliers.find(s => 
-          s.products?.some(p => p.productId === sku.productId || p.productTitle === sku.name || p.supplierSKU === sku.sku)
+          s.products?.some(p => p.productId === sku.productId || p.productTitle === sku.name)
         ) || actualSuppliers[0];
 
         if (linkedSupplier) {
-          const quantityToOrder = Math.max(Math.ceil(dailyDemand * 30), linkedSupplier.products?.find(p => p.productId === sku.productId)?.moq || 20);
+          const quantityToOrder = Math.max(Math.ceil(dailyDemand * 30), 20);
           
           drafts.push({
             id: sku.productId || sku.name,
@@ -589,20 +647,13 @@ exports.getRestockDrafts = async (req, res) => {
               phone: linkedSupplier.phone,
               id: linkedSupplier._id
             },
-
-            draftMessage: `Hi ${linkedSupplier.name}, this is an automated restock request for ${sku.name}. 
-
-Current Stock: ${stock} units
-Daily Demand: ${dailyDemand.toFixed(1)} units/day
-Estimated Exhaustion: ${depletionDays} days
-
-We would like to place an order for ${quantityToOrder} units to maintain inventory continuity. Please confirm if fulfillment is possible by end of week.`
+            draftMessage: `📦 *RESTOCK REQUEST: ${clientDoc?.brand?.name || 'TopEdge AI'}*\n\nHi ${linkedSupplier.name}, we need to restock the following SKU:\n\n🔹 *Product:* ${sku.name}\n🔹 *Current Depth:* ${stock} units\n🔹 *Burn Rate:* ${dailyDemand.toFixed(1)}/day\n\n🚨 *Action:* Please draft an invoice for *${quantityToOrder} units*.\n\nPlease confirm availability! 🤝`
           });
         }
       }
     }
 
-    res.json({ success: true, drafts: drafts.slice(0, 5) });
+    res.json({ success: true, drafts: drafts.slice(0, 10) });
   } catch (error) {
     logger.error("Restock Drafts Error", error);
     res.status(500).json({ success: false, message: error.message });

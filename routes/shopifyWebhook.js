@@ -8,6 +8,7 @@ const Order = require('../models/Order');
 const { trackEcommerceEvent } = require('../utils/analyticsHelper');
 const { decrypt } = require('../utils/encryption');
 const { processOrderForLoyalty } = require('../utils/walletService');
+const { logActivity } = require('../utils/activityLogger');
 const log = require('../utils/logger')('ShopifyWebhook');
 
 async function getProductImageForOrder(order, client) {
@@ -99,7 +100,9 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
                 break;
             case 'orders/fulfilled':
                 const { schedulePostDeliveryUpsell } = require('../utils/upsellEngine');
+                const { scheduleReviewRequest } = require('../utils/reputationService');
                 await schedulePostDeliveryUpsell(client, data);
+                await scheduleReviewRequest(client, data);
                 break;
             case 'inventory_levels/update':
             case 'inventory_items/update':
@@ -167,6 +170,21 @@ async function handleCheckout(client, data) {
 
     // Track in DailyStat
     await trackEcommerceEvent(client.clientId, { checkoutInitiatedCount: 1 });
+
+    // Enterprise Pulse Log: Checkout Initiated
+    await logActivity(client.clientId, {
+        type: 'LEAD',
+        status: 'info',
+        title: 'Checkout Started',
+        message: `${data.customer?.first_name || 'A customer'} is at the checkout with ${data.line_items.length} items.`,
+        icon: 'ShoppingCart',
+        url: `/leads/${cleanPhone}`,
+        metadata: {
+            phone: cleanPhone,
+            itemCount: data.line_items.length,
+            amount: data.total_price
+        }
+    });
 
     log.info(`Lead updated from checkout: ${cleanPhone}`);
 }
@@ -430,6 +448,22 @@ async function handleOrder(client, data) {
         global.io.to(`client_${client.clientId}`).emit('new_order', newOrder);
     }
     
+    // Enterprise Pulse Log: New Order
+    await logActivity(client.clientId, {
+        type: 'ORDER',
+        status: 'success',
+        title: 'New Shopify Order!',
+        message: `Order ${newOrder.orderId} received for ₹${newOrder.amount} from ${newOrder.customerName}.`,
+        icon: 'ShoppingBag',
+        url: `/orders`,
+        metadata: {
+            orderId: newOrder.orderId,
+            amount: newOrder.amount,
+            customer: newOrder.customerName,
+            isCritical: newOrder.amount > 1000 // Flag as VIP order if > 1000
+        }
+    });
+
     log.info(`Order processed from Shopify: ${newOrder.orderId}`);
 }
 

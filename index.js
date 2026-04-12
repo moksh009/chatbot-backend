@@ -141,6 +141,9 @@ app.use('/api/conversations', conversationRoutes);
 app.use('/api/appointments', appointmentRoutes);
 app.use('/api/analytics', analyticsRoutes);
 
+const knowledgeRoutes = require('./routes/knowledge');
+app.use('/api/knowledge', knowledgeRoutes);
+
 // Phase 11 Routes
 const insightsRoutes = require('./routes/insights');
 app.use('/api/insights', insightsRoutes);
@@ -156,6 +159,9 @@ app.use('/api/settings', settingsRoutes);
 const flowRoutes = require('./routes/flow');
 app.use('/api/flow', flowRoutes);
 app.use('/api/flows', flowRoutes);
+
+const publicWarrantyRoutes = require('./routes/publicWarranty');
+app.use('/api/public/warranty', publicWarrantyRoutes);
 
 const biRoutes = require('./routes/bi'); // Phase 28 Track 4
 app.use('/api/bi', biRoutes);

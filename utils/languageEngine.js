@@ -84,8 +84,38 @@ function getLanguageInstructions(language) {
   return instructions[language] || `The user's language code is ${language}. Respond in that language.`;
 }
 
+/**
+ * Phase 3: NLP Intent Normalizer
+ * Simplifies raw AI intent descriptions into standardized CRM triggers.
+ */
+async function normalizeIntent(text, client) {
+  if (!text || !client.geminiApiKey) return 'general';
+  
+  try {
+    const { getGeminiModel } = require('./gemini');
+    const model = getGeminiModel(client.geminiApiKey);
+    
+    const prompt = `
+      Classify the intent of this customer message for a CRM.
+      Categories: 'purchase', 'pricing', 'support', 'complaint', 'browsing', 'general'.
+      Answer with ONLY the category name.
+
+      Message: "${text}"
+    `;
+
+    const result = await model.generateContent(prompt);
+    const intent = result.response.text().trim().toLowerCase();
+    
+    const allowed = ['purchase', 'pricing', 'support', 'complaint', 'browsing', 'general'];
+    return allowed.includes(intent) ? intent : 'general';
+  } catch (err) {
+    return 'general';
+  }
+}
+
 module.exports = { 
   detectLanguage, 
   translateToUserLanguage,
+  normalizeIntent,
   getLanguageInstructions 
 };

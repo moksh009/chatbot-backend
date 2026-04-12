@@ -194,7 +194,7 @@ const scheduleAbandonedCartCron = () => {
                     await trackEcommerceEvent(client.clientId, { cartRecoveryMessagesSent: 1 });
                 }
 
-                // --- Step 3: Final Nudge (Dynamic Delay, Image) ---
+                // --- Step 3: Final Nudge (Dynamic Delay, Image, Conditional Discount) ---
                 const delay3Hr = parseInt(niche.abandonedDelay3) || 24;
                 const batch3 = await AdLead.find({
                     clientId: client.clientId,
@@ -205,17 +205,42 @@ const scheduleAbandonedCartCron = () => {
 
                 for (const lead of batch3) {
                     if (await shouldSkipLead(lead)) continue;
-                    const msg = (niche.abandonedMsg24h || niche.abandonedMsg3)?.replace(/{name}/g, lead.name || 'there') || `Final call! Your cart is about to expire. 🛒`;
                     
+                    // Phase 3: Conditional Discount Logic
+                    const cartFlow = client.automationFlows?.find(f => f.id === 'abandoned_cart');
+                    const flowConfig = cartFlow?.config || {};
+                    
+                    let discountCode = "";
+                    let msg = (niche.abandonedMsg24h || niche.abandonedMsg3 || "Final call! Your cart is about to expire. 🛒").replace(/{name}/g, lead.name || 'there');
+                    let templateName = niche.abandonedTpl24h || niche.abandonedTplFinal;
+
+                    if (flowConfig.discountEnabled && client.storeType === 'shopify') {
+                        try {
+                            const { generatePriceRuleAndDiscount } = require('../utils/shopifyHelper');
+                            const discount = await generatePriceRuleAndDiscount(client.clientId, flowConfig.discountPercent || 10);
+                            discountCode = discount.code;
+                            
+                            // Prefer specialized discount template if provided
+                            templateName = flowConfig.discountTemplate || templateName;
+                            msg = `Hi ${lead.name || 'there'}! Use code *${discountCode}* to get ${flowConfig.discountPercent || 10}% OFF your cart! 🎁 Complete your order here: ${lead.checkoutUrl || ''}`;
+                        } catch (err) {
+                            log.error(`Discount generation failed for ${lead.phoneNumber}:`, err.message);
+                        }
+                    } else {
+                        // Use "No Discount" template if configured
+                        templateName = flowConfig.noDiscountTemplate || templateName;
+                    }
+
                     await sendRichNudge(client, lead, msg, {
-                        templateName: niche.abandonedTpl24h || niche.abandonedTplFinal,
-                        includeImage: niche.abandonedIncludeImage3 || !!niche.abandonedTplFinal,
+                        templateName: templateName,
+                        includeImage: niche.abandonedIncludeImage3 || !!templateName,
                         buttons: [niche.abandonedMsg24h_btn1, niche.abandonedMsg24h_btn2]
                     });
 
                     await AdLead.findByIdAndUpdate(lead._id, { 
                         recoveryStep: 3,
-                        $push: { activityLog: { action: 'automation_nudge', details: 'cart_step_3', timestamp: new Date() } }
+                        activeDiscountCode: discountCode, // Store for AI to reference in Smart Recovery
+                        $push: { activityLog: { action: 'automation_nudge', details: 'cart_step_3_discount', timestamp: new Date() } }
                     });
                     await trackEcommerceEvent(client.clientId, { cartRecoveryMessagesSent: 1 });
                 }

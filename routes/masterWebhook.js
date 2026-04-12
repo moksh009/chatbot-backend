@@ -7,6 +7,7 @@ const Campaign = require('../models/Campaign');
 const CampaignMessage = require('../models/CampaignMessage');
 const { handleWhatsAppMessage } = require('../utils/dualBrainEngine');
 const { processOrderForLoyalty } = require('../utils/walletService');
+const { logActivity } = require('../utils/activityLogger');
 
 /**
  * Middleware to verify Meta X-Hub-Signature-256
@@ -258,6 +259,21 @@ async function processMessages(messages, metadata, contacts) {
                      .catch(() => {});
                 }
             }
+
+            // Enterprise Pulse Log: WhatsApp Order
+            await logActivity(clientDoc.clientId, {
+                type: 'ORDER',
+                status: 'success',
+                title: 'WhatsApp Catalog Order 🛒',
+                message: `New catalog order from ${from} for ${orderItems.length} items.`,
+                icon: 'ShoppingBag',
+                url: `/conversations?phone=${from}`,
+                metadata: {
+                    phone: from,
+                    itemCount: orderItems.length,
+                    source: 'whatsapp_catalog'
+                }
+            });
           }
         } catch (orderErr) {
           log.error('Catalog order critical failure', { error: orderErr.message });

@@ -34,11 +34,16 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
     if (user.email === 'delitech2708@gmail.com') {
       if (user.role === 'SUPER_ADMIN') {
         user.role = 'CLIENT_ADMIN';
-        await user.save();
       }
-      if (!user.isLifetimeAdmin) {
-        user.isLifetimeAdmin = true;
-        await user.save();
+      user.isLifetimeAdmin = true;
+      await user.save();
+
+      // Ensure client is also lifetime admin
+      if (client && !client.isLifetimeAdmin) {
+        client.isLifetimeAdmin = true;
+        client.plan = 'CX Agent (V2)'; // Give the best plan
+        client.tier = 'v2';
+        await client.save();
       }
     }
 
@@ -107,11 +112,17 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
     if (user && user.email === 'delitech2708@gmail.com') {
       if (user.role === 'SUPER_ADMIN') {
         user.role = 'CLIENT_ADMIN';
-        await user.save();
       }
-      if (!user.isLifetimeAdmin) {
-        user.isLifetimeAdmin = true;
-        await user.save();
+      user.isLifetimeAdmin = true;
+      await user.save();
+      
+      // Also sync client status
+      const client = await Client.findOne({ clientId: user.clientId });
+      if (client && !client.isLifetimeAdmin) {
+        client.isLifetimeAdmin = true;
+        client.plan = 'CX Agent (V2)';
+        client.tier = 'v2';
+        await client.save();
       }
     }
 

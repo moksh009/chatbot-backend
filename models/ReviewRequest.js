@@ -9,7 +9,7 @@ const ReviewRequestSchema = new mongoose.Schema({
   reviewUrl: String,
   status: { 
     type: String, 
-    enum: ["scheduled","sent","responded_positive","responded_negative","skipped"],
+    enum: ["scheduled","sent","responded_positive","responded_negative","responded_neutral","skipped"],
     default: "scheduled"
   },
   scheduledFor: { type: Date, required: true },

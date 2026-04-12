@@ -3,7 +3,9 @@ const router = express.Router();
 const User = require('../models/User');
 const Client = require('../models/Client');
 const Conversation = require('../models/Conversation');
+const Task = require('../models/Task');
 const { protect } = require('../middleware/auth');
+const { logActivity } = require('../utils/activityLogger');
 const crypto = require('crypto');
 const { sendTeamInviteEmail, sendAdminConfirmationEmail } = require('../utils/emailService');
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
@@ -283,6 +285,20 @@ router.post('/:clientId/assign-task', protect, async (req, res) => {
             relatedLeadId,
             relatedOrderId,
             assignedBy: req.user._id
+        });
+
+        // Pulse Log: Task Assigned
+        await logActivity(clientId, {
+            type: 'TASK',
+            status: 'info',
+            title: 'New Task Assigned',
+            message: `"${title}" has been assigned.`,
+            icon: 'ClipboardList',
+            url: `/team`, // Or appropriate hub
+            metadata: {
+                taskId: newTask._id,
+                priority
+            }
         });
 
         res.json({ success: true, task: newTask, message: 'Task assigned successfully' });

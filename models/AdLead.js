@@ -130,6 +130,11 @@ const adLeadSchema = new mongoose.Schema({
   birthday:       { type: Date,   default: null },
   birthdayMsgSent:{ type: Boolean,default: false },
   
+  // Phase 3: Sales Velocity & CRM Alpha
+  sentimentScore:  { type: Number, default: 50 }, // 0-100 (Negative to Positive)
+  inboundIntent:   { type: String, default: 'neutral' }, // 'inquiry', 'purchase', 'complaint', 'support'
+  lastScoredAt:    { type: Date },
+  
   // Phase 21: Captured Variables Storage
   capturedData: {
     type: mongoose.Schema.Types.Mixed,

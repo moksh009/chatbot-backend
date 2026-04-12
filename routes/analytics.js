@@ -11,6 +11,7 @@ const Client = require('../models/Client');
 const Service = require('../models/Service');
 const { listEvents } = require('../utils/googleCalendar');
 const { protect } = require('../middleware/auth');
+const ActivityLog = require('../models/ActivityLog');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 // Platform-funded analytics routes always use the platform API key
@@ -61,6 +62,27 @@ router.get('/notifications', protect, async (req, res) => {
     console.error('Notifications Error:', error);
     res.status(500).json({ success: false, message: 'Server Error' });
   }
+});
+
+// GET /api/analytics/:clientId/activities
+// @desc    Get real-time activity pulse history
+// @access  Private
+router.get('/:clientId/activities', protect, async (req, res) => {
+    try {
+        const { clientId } = req.params;
+        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
+
+        const activities = await ActivityLog.find({ clientId })
+            .sort({ createdAt: -1 })
+            .limit(50);
+
+        res.json({ success: true, activities });
+    } catch (err) {
+        console.error('Activities Fetch Error:', err);
+        res.status(500).json({ success: false, message: 'Server Error' });
+    }
 });
 
 // GET /api/analytics/import-sessions

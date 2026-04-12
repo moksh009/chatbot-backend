@@ -29,7 +29,9 @@ router.get('/forecast', protect, dashboardController.getForecast);
 router.get('/competitors', protect, dashboardController.getCompetitorIntel); // Alias to original
 router.get('/competitor-intel', protect, dashboardController.getCompetitorIntel);
 router.get('/suppliers', protect, dashboardController.getSuppliers);
+router.delete('/suppliers/:id', protect, dashboardController.deleteSupplier);
 router.get('/restock-drafts', protect, dashboardController.getRestockDrafts);
+router.get('/operations-summary', protect, dashboardController.getOperationsSummary);
 router.get('/quality-stats', protect, dashboardController.getQualityStats);
 router.post('/competitors', protect, dashboardController.createCompetitor);
 router.post('/competitors/:id/battle-plan', protect, dashboardController.generateBattlePlan);

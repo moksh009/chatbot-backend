@@ -768,6 +768,43 @@ async function runDualBrainEngine(parsedMessage, client) {
     return true;
   }
 
+  // ── PHASE 5: REPUTATION HUB DIVERTER (Sentiment Routing) ───────────────────
+  if (parsedMessage.type === 'interactive' && parsedMessage.interactive?.button_reply?.id?.startsWith('rv_')) {
+    const { id } = parsedMessage.interactive.button_reply;
+    const reviewId = id.split('_').pop();
+    const ReviewRequest = require('../models/ReviewRequest');
+    const review = await ReviewRequest.findById(reviewId);
+
+    if (review) {
+      if (id.startsWith('rv_good_')) {
+        const reviewUrl = review.reviewUrl || client.brand?.googleReviewUrl || 'https://google.com';
+        await sendWhatsAppText(client, phone, `We're thrilled to hear that! 😍 Could you share this love on Google? It means the world to us.\n\n🔗 Review here: ${reviewUrl}`);
+        review.status = 'responded_positive';
+        review.response = 'positive';
+      } else if (id.startsWith('rv_bad_')) {
+        await sendWhatsAppText(client, phone, "I'm so sorry to hear that. 😔 We strive for excellence, and it seems we missed the mark. I've alerted a human manager to reach out to you personally to make this right.");
+        review.status = 'responded_negative';
+        review.response = 'negative';
+        
+        // Divert to Human
+        await Conversation.findByIdAndUpdate(convo._id, { status: 'HUMAN_TAKEOVER', botPaused: true });
+        const NotificationService = require('./notificationService');
+        await NotificationService.createNotification(client.clientId, {
+          type: 'alert',
+          title: '⚠️ Negative Feedback Received',
+          message: `Customer ${phone} gave negative feedback on order ${review.orderNumber}. Human intervention required.`,
+          customerPhone: phone
+        });
+      } else {
+        await sendWhatsAppText(client, phone, "Thank you for your honest feedback! We'll use it to improve our service. 🙏");
+        review.status = 'responded_neutral';
+        review.response = 'neutral';
+      }
+      await review.save();
+      return true;
+    }
+  }
+
   if (['pay'].includes(userTextLower)) {
     if (userTextLower === 'pay' && convo.metadata?.lastOrder) {
       const payLink = await generatePaymentLink(client, lead, convo.metadata.lastOrder);
@@ -2832,6 +2869,22 @@ async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = 
       channel: channel 
     };
 
+    // Phase 3: Active CRM Intelligence Bridge
+    const { updateLeadWithScoring } = require('./leadScoring');
+    const { normalizeIntent } = require('./languageEngine');
+    const inboundIntent = await normalizeIntent(content, client || {});
+    
+    await updateLeadWithScoring(
+      phone,
+      clientId,
+      { inboundMessageCount: 1 }, // Auto-increment engagement
+      { lastInteraction: new Date() }, // Stamp
+      { 
+        sentimentScore, 
+        inboundIntent 
+      } // NLP Signals pass-through
+    ).catch(err => log.error("[NLP-Bridge] Scoring update failed", err.message));
+
     // If this is the start of a new interaction cycle, set firstInboundAt
     const existingConvo = await Conversation.findOne({ phone, clientId });
     if (!existingConvo?.firstInboundAt || (Date.now() - existingConvo?.lastInteraction > 24 * 60 * 60 * 1000)) {
@@ -3057,6 +3110,20 @@ async function analyzeConversationIntelligence(client, phone, convo) {
       }
       
       log.info(`${phone} -> ${sentiment} | ${summary}`);
+
+      // Phase 4: Autonomous Learning Hook
+      // If sentiment is POSITIVE or history length indicates deep engagement, propose knowledge
+      if (sentiment === 'Positive' || recentMessages.length >= 8) {
+        const AdLead = require('../models/AdLead');
+        const lead = await AdLead.findOne({ phoneNumber: phone, clientId: client.clientId });
+        
+        // Only trigger for high-value or high-intent leads
+        if (lead && (lead.leadScore >= 60 || lead.linkClicks > 2)) {
+          const { extractAndProposeKnowledge } = require('./autonomousLearner');
+          // Non-blocking trigger
+          extractAndProposeKnowledge(client.clientId, phone, lead._id).catch(err => log.error("[Learning-Hook] Failed:", err.message));
+        }
+      }
     }
   } catch (err) {
     log.error('Intelligence Error:', { error: err.message });

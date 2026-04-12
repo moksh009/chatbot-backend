@@ -2,186 +2,95 @@
 const AdLead = require("../models/AdLead");
 
 /**
- * Builds the atomic aggregation pipeline for lead scoring.
+ * Lead Scoring Weight Matrix (Phase 3 Enterprise Standards)
  */
-function buildScoringPipeline(incrementFields = {}, stringUpdates = {}, rtoUpdate = {}) {
+const SCORING_WEIGHTS = {
+  INBOUND_MESSAGE: 2,        // +2 per message
+  LINK_CLICK: 5,             // +5 per CTA link click
+  PRODUCT_VIEW: 3,           // +3 per catalog view
+  ADD_TO_CART: 15,           // +15 per ATC
+  CHECKOUT_INITIATED: 35,    // +35 per Checkout Attempt
+  ORDER_COMPLETED: 50,       // Reset/Conversion High Point
+  APPOINTMENT_BOOKED: 40,    // High intent conversion
+  POSITIVE_SENTIMENT: 10,    // AI detected positive sentiment
+  NEGOTIATION_ATTEMPT: 20    // High interest indicator
+};
+
+const SCORE_CAP = 100;
+
+/**
+ * Builds the atomic aggregation pipeline for lead scoring.
+ * Integrates with AI Intent and Sentiment data.
+ */
+function buildScoringPipeline(incrementFields = {}, stringUpdates = {}, booleanUpdates = {}, extraData = {}) {
   const stage1SetFields = {};
 
-  // Stage 1: Increments
+  // Stage 0: Basic Increments
   for (const [field, inc] of Object.entries(incrementFields)) {
     stage1SetFields[field] = { $add: [{ $ifNull: [`$${field}`, 0] }, inc] };
   }
 
-  // Stage 1: String/Date updates
+  // Stage 0: Basic Attribute Updates
   for (const [field, val] of Object.entries(stringUpdates)) {
-    stage1SetFields[field] = (val instanceof Date) ? val : val;
+    stage1SetFields[field] = val;
   }
 
-  // Stage 1: RTO Risk
-  if (rtoUpdate.isRtoRisk) {
-    stage1SetFields.isRtoRisk = true;
-  }
+  // Stage 0: Advanced NLP Integration (Sentiment/Intent)
+  if (extraData.sentimentScore !== undefined) stage1SetFields.sentimentScore = extraData.sentimentScore;
+  if (extraData.inboundIntent) stage1SetFields.inboundIntent = extraData.inboundIntent;
 
-  // Stage 2: Scoring Logic (Strict 0-100)
-  const stage2Score = {
-    $switch: {
-      branches: [
-        { case: { $gte: ["$ordersCount", 5] }, then: 100 },
-        { case: { $gte: ["$ordersCount", 2] }, then: 85 },
-        { case: { $eq: ["$ordersCount", 1] }, then: 70 },
-        {
-          case: {
-            $and: [
-              { $eq: ["$ordersCount", 0] },
-              { $eq: ["$cartStatus", "abandoned"] },
-              { $gt: ["$inboundMessageCount", 10] }
-            ]
-          },
-          then: 50
-        },
-        {
-          case: {
-            $and: [
-              { $eq: ["$ordersCount", 0] },
-              { $gt: ["$addToCartCount", 0] },
-              { $ne: ["$cartStatus", "abandoned"] }
-            ]
-          },
-          then: 30
-        },
-        {
-          case: {
-            $and: [
-              { $eq: ["$ordersCount", 0] },
-              { $eq: ["$addToCartCount", 0] },
-              { $gt: ["$linkClicks", 0] }
-            ]
-          },
-          then: 10
-        }
-      ],
-      default: 0
-    }
+  // Logic Phase: calculateLeadScore
+  const calculateLeadScore = {
+    $min: [
+      SCORE_CAP,
+      {
+        $add: [
+          // Basic engagement (Messages capped at 20 pts)
+          { $min: [20, { $multiply: [{ $ifNull: ["$inboundMessageCount", 0] }, SCORING_WEIGHTS.INBOUND_MESSAGE] }] },
+          // High intent triggers
+          { $multiply: [{ $ifNull: ["$linkClicks", 0] }, SCORING_WEIGHTS.LINK_CLICK] },
+          { $multiply: [{ $ifNull: ["$addToCartCount", 0] }, SCORING_WEIGHTS.ADD_TO_CART] },
+          { $multiply: [{ $ifNull: ["$checkoutInitiatedCount", 0] }, SCORING_WEIGHTS.CHECKOUT_INITIATED] },
+          // Appointment Bonus
+          { $multiply: [{ $ifNull: ["$appointmentsBooked", 0] }, SCORING_WEIGHTS.APPOINTMENT_BOOKED] },
+          // Sentiment Bonus (if > 80 sentiment, add 10 points)
+          { $cond: [{ $gt: [{ $ifNull: ["$sentimentScore", 50] }, 80] }, SCORING_WEIGHTS.POSITIVE_SENTIMENT, 0] },
+          // Manual VIP override via tags
+          { $cond: [{ $in: ["VIP", { $ifNull: ["$tags", []] }] }, 50, 0] }
+        ]
+      }
+    ]
   };
 
-  // Stage 2: Intent State Logic
-  const stage2Intent = {
-    $switch: {
-      branches: [
-        { case: { $gte: ["$ordersCount", 5] }, then: "VIP" },
-        { case: { $gte: ["$ordersCount", 2] }, then: "Repeat Customer" },
-        { case: { $eq: ["$ordersCount", 1] }, then: "Customer" },
-        {
-          case: {
-            $and: [
-              { $eq: ["$ordersCount", 0] },
-              { $eq: ["$cartStatus", "abandoned"] },
-              { $gt: ["$inboundMessageCount", 10] }
-            ]
-          },
-          then: "High Intent"
-        },
-        {
-          case: {
-            $and: [
-              { $eq: ["$ordersCount", 0] },
-              { $gt: ["$addToCartCount", 0] },
-              { $ne: ["$cartStatus", "abandoned"] }
-            ]
-          },
-          then: "Considering"
-        },
-        {
-          case: {
-            $and: [
-              { $eq: ["$ordersCount", 0] },
-              { $eq: ["$addToCartCount", 0] },
-              { $gt: ["$linkClicks", 0] }
-            ]
-          },
-          then: "Browsing"
+  // Logic Phase: deriveIntentState (Phase 3: NLP-First)
+  const deriveIntentState = {
+    $cond: [
+      { $and: [{ $ne: [{ $ifNull: ["$inboundIntent", ""] }, ""] }, { $ne: ["$inboundIntent", "general"] }] },
+      { $toUpper: "$inboundIntent" }, // Prioritize NLP detected intent
+      {
+        $switch: {
+          branches: [
+            { case: { $gte: [calculateLeadScore, 90] }, then: "HOT (VIP)" },
+            { case: { $gte: [calculateLeadScore, 70] }, then: "HOT" },
+            { case: { $gte: [calculateLeadScore, 40] }, then: "WARM" },
+            { case: { $gte: [calculateLeadScore, 10] }, then: "ENGAGED" },
+            { case: { $and: [{ $eq: ["$cartStatus", "abandoned"] }, { $lt: [calculateLeadScore, 70] }] }, then: "ABANDONED" }
+          ],
+          default: "COLD"
         }
-      ],
-      default: "Cold"
-    }
-  };
-
-  // Stage 2: Tag Cleanup (Mutually Exclusive)
-  const stage2Tags = {
-    $switch: {
-      branches: [
-        {
-          case: { $eq: ["$isRtoRisk", true] },
-          then: {
-            $setUnion: [
-              { $setDifference: [{ $ifNull: ["$tags", []] }, ["customer", "repeat-buyer", "loyal", "warm", "checkout-initiated", "cart-abandoned"]] },
-              ["rto-risk"]
-            ]
-          }
-        },
-        {
-          case: { $gt: ["$ordersCount", 0] },
-          then: {
-            $setUnion: [
-              { $setDifference: [{ $ifNull: ["$tags", []] }, ["checkout-initiated", "cart-abandoned", "warm", "rto-risk"]] },
-              ["customer"]
-            ]
-          }
-        },
-        {
-          case: {
-            $and: [
-              { $eq: ["$ordersCount", 0] },
-              { $eq: ["$cartStatus", "abandoned"] }
-            ]
-          },
-          then: {
-            $setUnion: [
-              { $setDifference: [{ $ifNull: ["$tags", []] }, ["customer", "checkout-initiated", "warm"]] },
-              ["cart-abandoned"]
-            ]
-          }
-        },
-        {
-          case: {
-            $and: [
-              { $eq: ["$ordersCount", 0] },
-              { $eq: ["$cartStatus", "checkout_started"] }
-            ]
-          },
-          then: {
-            $setUnion: [
-              { $setDifference: [{ $ifNull: ["$tags", []] }, ["customer", "cart-abandoned"]] },
-              ["checkout-initiated"]
-            ]
-          }
-        }
-      ],
-      default: { $ifNull: ["$tags", []] }
-    }
-  };
-
-  // Stage 2: Time Waster Flag
-  const stage2TimeWaster = {
-    $cond: {
-      if: { $and: [{ $gt: ["$inboundMessageCount", 40] }, { $eq: ["$ordersCount", 0] }] },
-      then: true,
-      else: { $ifNull: ["$isTimeWaster", false] }
-    }
+      }
+    ]
   };
 
   const pipeline = [];
-
   if (Object.keys(stage1SetFields).length > 0) {
     pipeline.push({ $set: stage1SetFields });
   }
 
   pipeline.push({
     $set: {
-      leadScore: stage2Score,
-      intentState: stage2Intent,
-      tags: stage2Tags,
-      isTimeWaster: stage2TimeWaster,
+      leadScore: calculateLeadScore,
+      intentState: deriveIntentState,
       lastScoredAt: new Date()
     }
   });
@@ -190,17 +99,27 @@ function buildScoringPipeline(incrementFields = {}, stringUpdates = {}, rtoUpdat
 }
 
 /**
- * Universal wrapper for updating leads atomically.
+ * Universal wrapper for updating leads atomically with the new scoring engine.
  */
-async function updateLeadWithScoring(phoneNumber, clientId, incrementFields = {}, stringUpdates = {}, booleanUpdates = {}, options = { new: true, upsert: false }) {
+async function updateLeadWithScoring(phoneNumber, clientId, incrementFields = {}, stringUpdates = {}, extraData = {}) {
   try {
-    const pipeline = buildScoringPipeline(incrementFields, stringUpdates, booleanUpdates);
+    const pipeline = buildScoringPipeline(incrementFields, stringUpdates, {}, extraData);
 
     const updatedLead = await AdLead.findOneAndUpdate(
       { phoneNumber, clientId },
       pipeline, 
-      options
+      { new: true, upsert: true }
     );
+
+    // If score crossed threshold to HOT, emit real-time pulse
+    if (updatedLead && updatedLead.leadScore >= 70) {
+        const { logPulse } = require('./activityLogger');
+        await logPulse(clientId, 'SYSTEM', 'High Intent Detected', 
+            `Lead ${phoneNumber} just crossed score threshold: ${updatedLead.leadScore}`, 
+            'success', 
+            { leadId: updatedLead._id, score: updatedLead.leadScore }
+        );
+    }
 
     return updatedLead;
   } catch (err) {
@@ -213,31 +132,12 @@ async function updateLeadWithScoring(phoneNumber, clientId, incrementFields = {}
  * Recomputes scores for all leads for a specific client.
  */
 async function recomputeAllScores(clientId) {
+  const leads = await AdLead.find({ clientId });
   let processed = 0;
-  let page = 0;
-  const pageSize = 100;
-
-  while (true) {
-    const leads = await AdLead.find({ clientId })
-      .select("_id isRtoRisk")
-      .skip(page * pageSize)
-      .limit(pageSize)
-      .lean();
-
-    if (!leads.length) break;
-
-    const bulkOps = leads.map(lead => ({
-      updateOne: {
-        filter: { _id: lead._id },
-        update: buildScoringPipeline({}, {}, { isRtoRisk: lead.isRtoRisk })
-      }
-    }));
-
-    await AdLead.bulkWrite(bulkOps, { ordered: false });
-    processed += leads.length;
-    page++;
+  for (const lead of leads) {
+      await updateLeadWithScoring(lead.phoneNumber, clientId, {}, {});
+      processed++;
   }
-
   return processed;
 }
 
