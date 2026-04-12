@@ -41,6 +41,7 @@ const whatsappRoutes = require('./routes/whatsapp');
 const wooWebhookRoutes = require('./routes/wooWebhook');
 
 const app = express();
+app.set('trust proxy', 1); // ✅ Phase R3: Trust first proxy (Render/Nginx) for accurate rate limiting
 const PORT = process.env.PORT || 3000;
 
 // WhatsApp Cloud API env validation (hard fail if missing)
