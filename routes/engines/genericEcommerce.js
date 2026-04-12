@@ -805,11 +805,13 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
             items: orderData.line_items?.map(i => ({ name: i.name, quantity: i.quantity, price: i.price })) || []
         });
 
-        // Mark Lead as Purchased
-        await AdLead.findOneAndUpdate(
-            { phoneNumber: phone, clientId },
-            { $set: { status: 'purchased', cartStatus: 'purchased' } }
-        );
+        // Mark Lead as Purchased via Unified Journey Tracker
+        const { trackEvent } = require('../../utils/journeyTracker');
+        await trackEvent(clientId, phone, 'order_placed', { 
+            orderId: orderId.toString(),
+            total: totalPrice,
+            isCOD: isCOD
+        });
 
         // Notify User via WhatsApp
         const helperParams = { phoneNumberId: req.clientConfig.phoneNumberId, token, io: req.app.get('socketio'), clientConfig: req.clientConfig };

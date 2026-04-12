@@ -1297,6 +1297,55 @@ router.post('/:id/ghost-complete', protect, async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 });
+// GAP 4: Context endpoint to fetch Active Sequences and Campaigns
+router.get('/:clientId/:phone/context', protect, async (req, res) => {
+    try {
+        const { clientId, phone } = req.params;
+        const FollowUpSequence = require('../models/FollowUpSequence');
+        const CampaignMessage = require('../models/CampaignMessage');
+        const AdLead = require('../models/AdLead');
+
+        // Optional verifyClientAccess-equivalent since we are using protect
+        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+           return res.status(403).json({ success: false, message: 'Unauthorized client access' });
+        }
+
+        const lead = await AdLead.findOne({ clientId, phoneNumber: phone });
+        
+        // Fetch specific active sequences
+        const activeSequences = await FollowUpSequence.find({ 
+            clientId, 
+            phone, 
+            status: { $in: ["active", "pending"] } 
+        });
+        
+        // Fetch recent outbound campaigns sent to lead
+        const recentCampaigns = await CampaignMessage.find({ 
+            clientId, 
+            phone 
+        }).sort({ sentAt: -1 }).limit(5);
+
+        res.json({
+            success: true,
+            lead,
+            activeSequences: activeSequences.map(seq => ({
+                id: seq._id,
+                name: seq.name,
+                status: seq.status,
+                progress: `${seq.steps.filter(s => s.status === 'sent').length}/${seq.steps.length}`,
+                nextSendAt: seq.steps.find(s => s.status === 'pending')?.sendAt
+            })),
+            recentCampaigns: recentCampaigns.map(camp => ({
+                id: camp._id,
+                name: camp.campaignName || "Broadcast",
+                status: camp.status,
+                sentAt: camp.sentAt
+            }))
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
 
 module.exports = router;
 

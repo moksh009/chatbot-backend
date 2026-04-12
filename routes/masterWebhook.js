@@ -113,6 +113,23 @@ async function processStatuses(statuses) {
         { new: true }
       ).lean();
 
+      // ✅ Phase R3: Emit real-time status update to Live Chat UI — was missing, ticks never updated
+      // Frontend LiveChat listens for 'message_status_update' to show ✓ / ✓✓ / blue ✓✓
+      if (global.io) {
+        // Find the conversation's clientId to emit to correct room
+        const Message = require('../models/Message');
+        const liveMsg = await Message.findOne({ messageId }).lean();
+        if (liveMsg?.clientId) {
+          global.io.to(`client_${liveMsg.clientId}`).emit('message_status_update', {
+            messageId,
+            status,
+            conversationId: liveMsg.conversationId,
+            deliveredAt: updateData.deliveredAt,
+            readAt: updateData.readAt
+          });
+        }
+      }
+
       if (msg) {
         // Update Campaign aggregate stats
         const inc = {};

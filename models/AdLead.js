@@ -241,6 +241,13 @@ adLeadSchema.virtual('derivedLeadState').get(function () {
 // Compound index for clientId + phoneNumber to ensure uniqueness per client
 adLeadSchema.index({ clientId: 1, phoneNumber: 1 }, { unique: true });
 
+// ✅ Phase R3: Performance indexes — were missing, causing full-collection scans on dashboard queries
+adLeadSchema.index({ clientId: 1, lastInteraction: -1 }); // Dashboard "Recent Activity" sorts
+adLeadSchema.index({ clientId: 1, tags: 1 });              // Segment tag filtering queries
+adLeadSchema.index({ clientId: 1, cartStatus: 1 });        // Abandoned cart recovery queries
+adLeadSchema.index({ clientId: 1, leadScore: -1 });        // Lead scoring leaderboard queries
+adLeadSchema.index({ clientId: 1, optStatus: 1 });         // Opt-in/out management queries
+
 // Static Helper for Phase 25 Customer Journey Map
 adLeadSchema.statics.pushJourneyEvent = async function(clientId, phoneNumber, eventName, metadata = {}) {
   try {

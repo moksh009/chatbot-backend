@@ -159,8 +159,9 @@ router.get('/realtime', protect, async (req, res) => {
       ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
       : { clientId };
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    // ✅ Phase R3: IST midnight fix — was using UTC midnight (new Date().setHours(0,0,0,0))
+    // Dashboard 'Today' counter was resetting at 5:30 AM IST instead of IST midnight
+    const today = startOfDayIST();
 
     // 1. Leads Count (Total & Today)
     const totalLeads = await AdLead.countDocuments(query);
@@ -674,8 +675,8 @@ router.get('/receptionist-overview', protect, async (req, res) => {
     }
     const daysToFetch = parseInt(req.query.days) || 1; // Default to 1 day (today)
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    // ✅ Phase R3: IST midnight fix — was using UTC midnight for appointment date window
+    const today = startOfDayIST();
 
     const endDate = new Date(today);
     endDate.setDate(endDate.getDate() + daysToFetch); // Fetch for N days

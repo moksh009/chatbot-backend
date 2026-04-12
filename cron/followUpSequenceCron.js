@@ -139,8 +139,37 @@ const scheduleFollowUpSequenceCron = () => {
                     dueStep.errorLog = typeof errorMessage === 'string' ? errorMessage : JSON.stringify(errorMessage);
                 }
 
+                // GAP 6: HARD AUTO-CANCEL IF CUSTOMER CONVERTED NATURALLY
+                if (seq.name?.toLowerCase().includes('recovery') && lead?.ordersCount > 0) {
+                    seq.status = "cancelled";
+                    seq.steps.forEach(s => {
+                        if (s.status === "pending") {
+                            s.status = "cancelled";
+                            s.errorLog = "Customer Purchased - Auto Cancelled";
+                        }
+                    });
+                    
+                    // Update Lead Schema Tags & Status for Analytics
+                    if (lead.cartStatus !== 'purchased') {
+                        lead.cartStatus = 'purchased';
+                        lead.leadScore = (lead.leadScore || 0) + 50; 
+                        lead.tags = [...new Set([...(lead.tags || []), "customer", "converted"])];
+                        await lead.save();
+                    }
+                    
+                    await seq.save();
+                    console.log(`[SequenceCron] 🛑 Cancelled recovery seq ${seq._id} for ${seq.phone} - Customer purchased!`);
+                    continue; // Skip further completion logic this turn
+                }
+
                 const stillPending = seq.steps.some(s => s.status === "pending");
-                if (!stillPending) seq.status = "completed";
+                if (!stillPending && seq.status !== "cancelled") {
+                   if (seq.name?.toLowerCase().includes("recovery") && lead?.ordersCount === 0) {
+                       lead.tags = [...new Set([...(lead.tags || []), "recovery_failed"])];
+                       await lead.save();
+                   }
+                   seq.status = "completed"; 
+                }
 
                 await seq.save();
             }

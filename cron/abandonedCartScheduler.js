@@ -109,6 +109,13 @@ const scheduleAbandonedCartCron = () => {
             for (const client of clients) {
                 const niche = client.nicheData || {};
 
+                // ✅ Phase R3: GAP 2 — Respect the abandoned cart toggle setting
+                // Was sending recovery messages even when the feature was disabled in settings
+                if (client.settings?.abandonedCartEnabled === false) {
+                    log.debug(`[AbandonedCart] Skipping client ${client.clientId} — feature disabled`);
+                    continue;
+                }
+
                 // --- Step 0: Browse Abandonment (Customizable Delay) ---
                 const browseDelayMin = parseInt(niche.browseDelay) || 30;
                 const browseBatch = await AdLead.find({

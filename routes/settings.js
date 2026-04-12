@@ -100,4 +100,37 @@ router.put('/:clientId/custom-variables', protect, verifyClientAccess, async (re
   }
 });
 
+// GAP 1: Canonical source syncing for AI Persona
+router.put('/:clientId/ai-persona', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { 
+      botName, tone, language, knowledgeBase, 
+      emojiLevel, signaturePhrases, avoidTopics, autoTranslate, systemPrompt 
+    } = req.body;
+    
+    // Canonical Path: Mutating client.ai.persona definitively
+    const client = await Client.findOneAndUpdate(
+      { clientId },
+      { 
+        $set: { 
+          "ai.persona.name": botName,
+          "ai.persona.tone": tone,
+          "ai.persona.language": language,
+          "ai.persona.knowledgeBase": knowledgeBase,
+          "ai.persona.emojiLevel": emojiLevel,
+          "ai.persona.signaturePhrases": signaturePhrases,
+          "ai.persona.avoidTopics": avoidTopics,
+          "ai.persona.autoTranslate": autoTranslate,
+          "ai.systemPrompt": systemPrompt // Flat level system prompt override
+        } 
+      },
+      { new: true }
+    );
+    res.json({ success: true, persona: client.ai.persona, systemPrompt: client.ai.systemPrompt });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 module.exports = router;

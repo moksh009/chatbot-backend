@@ -108,6 +108,13 @@ const ConversationSchema = new mongoose.Schema({
 // Compound index for unique conversation per phone + client
 ConversationSchema.index({ phone: 1, clientId: 1 }, { unique: true });
 
+// ✅ Phase R3: Performance indexes — were missing, causing full-collection scans on Live Chat inbox load
+ConversationSchema.index({ clientId: 1, lastInteraction: -1 }); // Inbox sort by most recent
+ConversationSchema.index({ clientId: 1, status: 1 });            // Status filter (BOT_ACTIVE, HUMAN_TAKEOVER etc.)
+ConversationSchema.index({ clientId: 1, requiresAttention: 1 }); // Attention queue in Live Chat
+ConversationSchema.index({ clientId: 1, assignedAgent: 1 });     // Agent workload filter
+ConversationSchema.index({ clientId: 1, botPaused: 1 });         // Bot-paused conversations filter
+
 // Pre-save hook to cap processedMessageIds
 ConversationSchema.pre('save', function(next) {
   if (this.processedMessageIds.length > 50) {

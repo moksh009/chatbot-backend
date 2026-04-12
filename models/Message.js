@@ -41,4 +41,9 @@ const MessageSchema = new mongoose.Schema({
   originalText: { type: String, default: '' } // Stores agent raw input before translation
 });
 
+// ✅ Phase R3: Performance indexes — conversationId+timestamp was missing, causing full-collection scans on Live Chat load
+MessageSchema.index({ conversationId: 1, timestamp: -1 }); // Primary Live Chat history query
+MessageSchema.index({ clientId: 1, timestamp: -1 });        // Analytics queries (messages per period)
+MessageSchema.index({ messageId: 1 }, { sparse: true });    // Webhook deduplication lookup
+
 module.exports = mongoose.model('Message', MessageSchema);

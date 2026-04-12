@@ -191,6 +191,14 @@ async function handleOrder(client, data) {
         { isRtoRisk: false } // Reset RTO risk on new successful order
     );
 
+    // Track Journey Event
+    const { trackEvent } = require('../utils/journeyTracker');
+    await trackEvent(client.clientId, cleanPhone, 'order_placed', {
+        orderId: data.name || `#${data.id}`,
+        total: data.total_price,
+        isCOD: (data.gateway === 'Cash on Delivery (COD)' || (data.payment_gateway_names || []).join('').toLowerCase().includes('cod'))
+    });
+
     // 3. Create internal Order record
     const newOrder = await Order.create({
         clientId: client.clientId,
@@ -215,6 +223,24 @@ async function handleOrder(client, data) {
                 if (res) log.info(`Awarded ${res.pointsAwarded} points to ${cleanPhone} for order ${newOrder.orderId}`);
             })
             .catch(e => log.error('Loyalty award failed', e.message));
+    }
+
+    // ✅ Phase R3: Cancel active cart recovery sequences on purchase — GAP 6
+    // Customer paid → stop all recovery messages so they don't get spammed post-purchase
+    try {
+        const FollowUpSequence = require('../models/FollowUpSequence');
+        await FollowUpSequence.updateMany(
+            { 
+                clientId: client.clientId, 
+                leadPhone: { $in: [cleanPhone, `+${cleanPhone}`, cleanPhone.replace(/^\+/, '')] },
+                status: 'active', 
+                type: { $in: ['cart_recovery', 'abandoned_cart', 'followup'] }
+            },
+            { $set: { status: 'cancelled', cancelledReason: 'customer_purchased', cancelledAt: new Date() } }
+        );
+        log.info(`[CartRecovery] Cancelled active sequences for ${cleanPhone} after purchase`);
+    } catch (seqErr) {
+        log.warn('[CartRecovery] Failed to cancel sequences after purchase:', seqErr.message);
     }
 
     // --- PHASE 30.5: Enterprise Warranty Auto-Assign ---

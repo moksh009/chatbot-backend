@@ -450,6 +450,49 @@ async function runDualBrainEngine(parsedMessage, client) {
      lead = await updateLeadWithScoring(phone, client.clientId, { inboundMessageCount: 1 }, {});
   }
 
+  // --- PHASE 30: AUTO-KEYWORDS (Intent Brain) ---
+  if (inboundText && !convo.botPaused) {
+      const KeywordTrigger = require('../models/KeywordTrigger');
+      const triggers = await KeywordTrigger.find({ clientId: client.clientId, isActive: true });
+      
+      const txtLower = inboundText.toLowerCase().trim();
+      const matchedTrigger = triggers.find(t => {
+          if (t.type === 'exact') return txtLower === t.keyword.toLowerCase();
+          return txtLower.includes(t.keyword.toLowerCase()); // fuzzy
+      });
+
+      if (matchedTrigger) {
+          log.info(`[KeywordEngine] Match found: ${matchedTrigger.keyword} for ${phone}`);
+          
+          if (matchedTrigger.actionType === 'add_tag') {
+              await AdLead.findByIdAndUpdate(lead._id, { $addToSet: { tags: matchedTrigger.targetId } });
+              // Continue normal processing for tags
+          } else if (matchedTrigger.actionType === 'trigger_flow') {
+              const flow = (client.visualFlows || []).find(f => f.id === matchedTrigger.targetId);
+              if (flow) {
+                  const startNode = findFlowStartNode(flattenFlowNodes(flow.nodes));
+                  if (startNode) {
+                      await runFlow(client, phone, flow, startNode.id, { triggerSource: 'keyword' });
+                      return true; // Stop execution, handed to Flow
+                  }
+              }
+          } else if (matchedTrigger.actionType === 'send_template') {
+              const tpl = (client.messageTemplates || []).find(t => t.id === matchedTrigger.targetId);
+              if (tpl && tpl.templateName) {
+                  await sendWhatsAppTemplate({
+                      phoneNumberId: client.phoneNumberId,
+                      to: phone,
+                      io,
+                      clientConfig: client,
+                      templateName: tpl.templateName,
+                      languageCode: 'en_US'
+                  });
+                  return true; // Stop execution, template sent
+              }
+          }
+      }
+  }
+
   // STEP 2.4: Track Customer Intelligence (Phase 28 Track 2)
   const CI = require('./customerIntelligence');
   await CI.trackInteraction(client.clientId, phone, lead._id);
@@ -1379,20 +1422,21 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     node = rawNode; // fallback to raw node
   }
 
-  // Increment visitCount for Flow Convergence Analytics (Phase 23 Track 5)
+  // ✅ Phase R3: Atomic node visit counter — was replacing entire flowNodes[] array on every message
+  // Old: const updatedNodes = incrementNodeVisit(...); await Client.findByIdAndUpdate(client._id, { flowNodes: updatedNodes })
+  // New: Targeted $inc on exactly one node — O(1) not O(N) writes
   try {
-    const updatedNodes = incrementNodeVisit(client.flowNodes || [], nodeId);
-    await Client.findByIdAndUpdate(client._id, { flowNodes: updatedNodes });
-    // Update local reference for this execution chain
-    client.flowNodes = updatedNodes;
-
-    // Track on the specific Visual Flow if it's a multi-flow architecture
-    if (convo?.currentFlowId) {
-       await Client.updateOne(
-         { _id: client._id, "visualFlows.id": convo.currentFlowId },
-         { $inc: { "visualFlows.$.nodes.$[n].visitCount": 1 } },
-         { arrayFilters: [{ "n.id": nodeId }] }
-       );
+    await Client.updateOne(
+      { _id: client._id, 'flowNodes.id': nodeId },
+      { $inc: { 'flowNodes.$.data.visitCount': 1 } }
+    );
+    // Also track on the specific Visual Flow if active
+    if (convo?.activeFlowId) {
+      await Client.updateOne(
+        { _id: client._id, 'visualFlows.id': convo.activeFlowId },
+        { $inc: { 'visualFlows.$[flow].nodes.$[node].data.visitCount': 1 } },
+        { arrayFilters: [{ 'flow.id': convo.activeFlowId }, { 'node.id': nodeId }] }
+      ).catch(() => {}); // Non-fatal if arrayFilters path doesn't match
     }
   } catch (err) {
     log.error(`Failed to increment visit count for node ${nodeId}:`, { error: err.message });
@@ -2266,6 +2310,22 @@ async function runAIFallback(parsedMessage, client, phone, lead, channel = 'what
     const examples = await getRelevantExamples(client.clientId, text);
     const fewShot = buildFewShotPrompt(examples);
     
+    // ✅ Phase R3: Fetch REAL conversation history — convo.messages doesn't exist on Conversation schema
+    // Was always [] causing AI to have zero memory of the ongoing conversation
+    let recentMessageHistory = '';
+    try {
+      const recentMsgs = await Message.find({ conversationId: convo._id })
+        .sort({ timestamp: -1 })
+        .limit(5)
+        .lean();
+      recentMessageHistory = recentMsgs
+        .reverse()
+        .map(m => `${m.direction === 'incoming' ? 'Customer' : 'Bot'}: ${m.content || '[media]'}`)
+        .join('\n');
+    } catch (histErr) {
+      log.warn('[AI] Failed to fetch message history:', histErr.message);
+    }
+    
     // Personalization Context
     const personalization = `
 CUSTOMER CONTEXT:
@@ -2296,7 +2356,7 @@ INSTRUCTIONS:
 5. GOAL: Guide the user towards a purchase or booking.
 
 CONVERSATION HISTORY (Last 5):
-${(convo?.messages || []).slice(-5).map(m => `${m.direction}: ${m.content}`).join('\n')}
+${recentMessageHistory}
 
 CUSTOMER MESSAGE:
 "${text}"

@@ -24,6 +24,9 @@ if (dotenvResult.error && dotenvResult.error.code !== 'ENOENT') {
 
 
 const cors = require('cors');
+const helmet = require('helmet'); // ✅ Phase R3: HTTP security headers — was installed, never applied
+const mongoSanitize = require('express-mongo-sanitize'); // ✅ Phase R3: NoSQL injection protection — was installed, never applied
+const rateLimit = require('express-rate-limit'); // ✅ Phase R3: Rate limiting — was installed, never applied
 const authRoutes = require('./routes/auth');
 const conversationRoutes = require('./routes/conversations');
 const appointmentRoutes = require('./routes/appointments');
@@ -66,6 +69,39 @@ function resolveWhatsAppConfig() {
 const path = require('path');
 const { protect } = require('./middleware/auth');
 
+// ✅ Phase R3: Security Middleware Stack — helmet + mongoSanitize applied globally
+app.use(helmet({
+  // Allow cross-origin for media assets (WhatsApp media proxy, etc.)
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  // CSP disabled — managed at CDN/Nginx layer for this SPA
+  contentSecurityPolicy: false
+}));
+
+// ✅ Phase R3: Rate Limiters — brute-force and API flood protection
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20, // 20 attempts per window
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many login attempts. Please try again in 15 minutes.' }
+});
+
+const aiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 80, // 80 AI calls/minute per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'AI rate limit exceeded. Please wait before sending another message.' }
+});
+
+const bulkLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 10, // 10 bulk ops/minute (campaigns, broadcasts)
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Bulk operation rate limit exceeded. Please wait before sending another campaign.' }
+});
+
 // Middleware
 app.use(cors({
   origin: function (origin, callback) {
@@ -75,12 +111,15 @@ app.use(cors({
   credentials: true
 }));
 app.use(express.json({ 
-  limit: '10mb',
+  limit: '5mb', // ✅ Phase R3: Reduced from 10mb — prevents oversized payload DoS
   verify: (req, res, buf) => {
     req.rawBody = buf;
   }
 }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '5mb' }));
+
+// ✅ Phase R3: NoSQL injection sanitization — strips $ and . from request body/query
+app.use(mongoSanitize({ replaceWith: '_' }));
 
 // Phase 24: White-label domain detection (runs on every request, before routes)
 const whitelabelMiddleware = require('./middleware/whitelabel');
@@ -97,7 +136,7 @@ app.use((req, res, next) => {
 });
 
 // API Routes
-app.use('/api/auth', authRoutes);
+app.use('/api/auth', authLimiter, authRoutes); // ✅ Phase R3: Brute-force protection on auth
 app.use('/api/conversations', conversationRoutes);
 app.use('/api/appointments', appointmentRoutes);
 app.use('/api/analytics', analyticsRoutes);
@@ -155,7 +194,7 @@ app.use('/api/templates', templatesRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 const whatsappFlowsRoutes = require('./routes/whatsappFlows');
 app.use('/api/whatsapp-flows', whatsappFlowsRoutes);
-app.use('/api/campaigns', campaignsRoutes);
+app.use('/api/campaigns', bulkLimiter, campaignsRoutes); // ✅ Phase R3: Bulk send protection
 const emailWebhookRoutes = require('./routes/emailWebhook');
 app.use('/api/email', emailWebhookRoutes);
 app.use('/api/payment', require('./routes/payment')); 
@@ -223,6 +262,9 @@ app.use('/api/reseller', require('./routes/reseller'));
 // Phase 27: Loyalty Hub & Enterprise Rewards
 app.use('/api/loyalty', require('./routes/loyalty'));
 app.use('/api/warranty', require('./routes/warranty'));
+
+// Phase 30: Auto-Keywords
+app.use('/api/keywords', require('./routes/keywords'));
 
 // --- CRON JOBS (Phase 21 Resumption) ---
 const scheduleFlowResumption = require('./cron/flowResumptionCron');
@@ -553,14 +595,30 @@ const socketIo = require('socket.io');
 log.info(`Starting server on port ${PORT}...`);
 
 const server = http.createServer(app);
-const io = socketIo(server, {
+
+// Phase 5: Redis Adapter for Horizontal Scaling
+const Redis = require('ioredis');
+const { createAdapter } = require('@socket.io/redis-adapter');
+
+let ioOptions = {
   cors: {
     origin: process.env.FRONTEND_URL || '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     credentials: true
   },
   transports: ['websocket', 'polling']
-});
+};
+
+const io = socketIo(server, ioOptions);
+
+// Connect Redis Adapter if REDIS_URL exists
+if (process.env.REDIS_URL) {
+  const pubClient = new Redis(process.env.REDIS_URL);
+  const subClient = pubClient.duplicate();
+  io.adapter(createAdapter(pubClient, subClient));
+  log.info('✅ Socket.io Redis Adapter connected');
+}
+
 
 app.set('socketio', io);
 global.io = io;
@@ -587,6 +645,15 @@ io.on('connection', (socket) => {
     log.info(`Socket joined agent room`, { socketId: socket.id, agentId });
   });
 
+  // ✅ Phase R3: Dynamic room join — frontend emits this after connect (e.g. SuperAdmin switching clients)
+  // Was missing — socket would not join new room when clientId changes post-connection
+  socket.on('join_client_room', ({ clientId: roomClientId } = {}) => {
+    if (roomClientId) {
+      socket.join(`client_${roomClientId}`);
+      log.info(`Socket dynamically joined client room`, { socketId: socket.id, clientId: roomClientId });
+    }
+  });
+
   socket.on('disconnect', () => {
     log.info('Client disconnected', { socketId: socket.id });
   });
@@ -594,9 +661,10 @@ io.on('connection', (socket) => {
 
 connectDB()
   .then(async () => {
-    // Phase 9: Prime the NLP Engine for all clients
+    // Phase 9 & 5: Prime the NLP Engine and Start Task Workers
     const { bootIntentEngine } = require('./services/EngineInitializer');
-    require('./services/NlpWorker'); // Starts the BullMQ worker process
+    require('./services/NlpWorker'); // Starts the BullMQ NLP worker process
+    require('./services/TaskWorker'); // Starts the Generic Enterprise Task Worker process (Phase 5)
 
     bootIntentEngine().catch(err => {
       log.error("[NLP_BOOT] Engine priming failed:", err.message);
