@@ -620,10 +620,25 @@ const io = socketIo(server, ioOptions);
 
 // Connect Redis Adapter if REDIS_URL exists
 if (process.env.REDIS_URL) {
-  const pubClient = new Redis(process.env.REDIS_URL);
+  const pubClient = new Redis(process.env.REDIS_URL, {
+    maxRetriesPerRequest: 3,
+    retryStrategy: (times) => {
+      if (times > 3) return null; // stop retrying after 3 attempts
+      return Math.min(times * 50, 2000);
+    }
+  });
+  
+  pubClient.on('error', (err) => {
+    log.error('Redis PubClient Error:', { message: err.message, code: err.code });
+  });
+
   const subClient = pubClient.duplicate();
+  subClient.on('error', (err) => {
+    log.error('Redis SubClient Error:', { message: err.message, code: err.code });
+  });
+
   io.adapter(createAdapter(pubClient, subClient));
-  log.info('✅ Socket.io Redis Adapter connected');
+  log.info('✅ Socket.io Redis Adapter initialization attempted');
 }
 
 
