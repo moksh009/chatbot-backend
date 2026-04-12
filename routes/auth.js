@@ -30,6 +30,8 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
       }
     }
 
+    const client = await Client.findOne({ clientId: user.clientId });
+
     // Delitech demotion: Land on normal dashboard but keep best plan
     if (user.email === 'delitech2708@gmail.com') {
       if (user.role === 'SUPER_ADMIN') {
@@ -46,8 +48,6 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
         await client.save();
       }
     }
-
-    const client = await Client.findOne({ clientId: user.clientId });
 
     // --- PHASE 10 ROBUSTNESS: Ensure fallback for missing client ---
     const clientConfig = client ? client.toObject() : {};
