@@ -225,13 +225,15 @@ router.get('/pixel/:clientId/script.js', async (req, res) => {
     const backendUrl = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
     
     // Premium Liquid Injection Script (unrestricted DOM access)
-    // PHASE 23: Enhanced with MutationObserver for real-time contact capture
+    // PHASE 23: Enhanced with MutationObserver for GoKwik/Razorpay/Third-party capture
     const script = `
 (function() {
     const CLIENT_ID = "${clientId}";
     const BACKEND_URL = "${backendUrl}";
     const SESSION_ID = localStorage.getItem("te_pixel_sid") || "sess_" + Math.random().toString(36).substr(2, 9);
     localStorage.setItem("te_pixel_sid", SESSION_ID);
+
+    let debounceTimer;
 
     function sendEvent(name, data = {}) {
         const payload = {
@@ -242,13 +244,11 @@ router.get('/pixel/:clientId/script.js', async (req, res) => {
             timestamp: new Date().toISOString()
         };
         
-        // Attach persisted identification if available
         const persistedEmail = localStorage.getItem("te_pixel_email");
         const persistedPhone = localStorage.getItem("te_pixel_phone");
         if (persistedEmail) payload.email = persistedEmail;
         if (persistedPhone) payload.phone = persistedPhone;
 
-        // Capture context
         if (window.Shopify) {
             payload.shopify = {
                 shop: Shopify.shop,
@@ -261,13 +261,13 @@ router.get('/pixel/:clientId/script.js', async (req, res) => {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
-        }).catch(err => console.debug("[TE-Pixel] Skipped", err));
+        }).catch(err => console.debug("[TE-Pixel] Service Unavailable", err));
     }
 
-    // 1. Basic Page View
+    // 1. Basic Tracking
     sendEvent("page_view");
 
-    // 2. Checkout & Thank You Monitoring
+    // 2. Official Shopify Checkout detection (Native)
     if (window.Shopify && window.Shopify.checkout) {
         const eventName = window.location.pathname.includes("thank_you") ? "checkout_completed" : "checkout_started";
         sendEvent(eventName, { 
@@ -275,60 +275,93 @@ router.get('/pixel/:clientId/script.js', async (req, res) => {
             total_price: window.Shopify.checkout.total_price || window.Shopify.checkout.totalPrice,
             currency: window.Shopify.checkout.currency
         });
-    } else if (window.location.pathname.includes("thank_you")) {
-        // Fallback for thank you page if Shopify object is different
-        sendEvent("checkout_completed", { url: window.location.href });
     }
 
-    // 3. Real-time Lead Capture (Checkout Form)
-    // Scans for email/phone fields and sends identifying events as they type
+    // 3. Third-party Checkout Interceptor (GoKwik, Razorpay, Simpl, COD)
+    function setupInterceptors() {
+        document.addEventListener('click', (e) => {
+            const el = e.target.closest('button, a, input[type="submit"]');
+            if (!el) return;
+
+            const text = (el.innerText || el.value || "").toLowerCase();
+            const classes = el.className || "";
+            const id = el.id || "";
+
+            // GoKwik Detection
+            if (classes.includes('gokwik') || id.includes('gokwik') || text.includes('gokwik')) {
+                sendEvent("checkout_started", { gateway: "gokwik", element: "button_click" });
+            }
+            // Razorpay Detection
+            if (classes.includes('razorpay') || text.includes('razorpay')) {
+                sendEvent("checkout_started", { gateway: "razorpay", element: "button_click" });
+            }
+            // Generic Buy Now / Checkout
+            if (text === 'buy it now' || text === 'checkout') {
+                sendEvent("checkout_started", { gateway: "native_or_generic", element: "button_click" });
+            }
+        }, true);
+    }
+
+    // 4. Aggressive Lead Identification (Any form)
     function setupMutationObserver() {
         const observer = new MutationObserver((mutations) => {
-            const emailInput = document.querySelector('input[name="checkout[email]"], input[type="email"]');
-            const phoneInput = document.querySelector('input[name="checkout[phone]"], input[name*="phone"]');
+            const inputs = document.querySelectorAll('input:not([data-te-tracked])');
+            
+            inputs.forEach(input => {
+                const type = input.type;
+                const name = (input.name || "").toLowerCase();
+                const placeholder = (input.placeholder || "").toLowerCase();
 
-            if (emailInput && !emailInput.dataset.teTracked) {
-                emailInput.addEventListener('blur', (e) => {
-                    if (e.target.value.includes('@')) {
-                        localStorage.setItem("te_pixel_email", e.target.value);
-                        sendEvent("contact_identified", { email: e.target.value });
-                        emailInput.dataset.teTracked = "true";
-                    }
-                });
-            }
-            if (phoneInput && !phoneInput.dataset.teTracked) {
-                phoneInput.addEventListener('blur', (e) => {
-                    const cleanPhone = e.target.value.replace(/\D/g, '');
-                    if (cleanPhone.length >= 10) {
-                        localStorage.setItem("te_pixel_phone", cleanPhone);
-                        sendEvent("contact_identified", { phone: cleanPhone });
-                        phoneInput.dataset.teTracked = "true";
-                    }
-                });
-            }
+                const isEmail = type === 'email' || name.includes('email') || placeholder.includes('email');
+                const isPhone = type === 'tel' || name.includes('phone') || name.includes('mobile') || placeholder.includes('phone') || placeholder.includes('mobile') || name.includes('contact');
+
+                if (isEmail || isPhone) {
+                    input.addEventListener('input', (e) => {
+                        clearTimeout(debounceTimer);
+                        debounceTimer = setTimeout(() => {
+                            const val = e.target.value.trim();
+                            if (isEmail && val.includes('@') && val.length > 5) {
+                                localStorage.setItem("te_pixel_email", val);
+                                sendEvent("contact_identified", { email: val, field: name || 'email' });
+                            } else if (isPhone) {
+                                const clean = val.replace(/\\D/g, '');
+                                if (clean.length >= 10) {
+                                    localStorage.setItem("te_pixel_phone", clean);
+                                    sendEvent("contact_identified", { phone: clean, field: name || 'phone' });
+                                }
+                            }
+                        }, 1000);
+                    });
+                    input.dataset.teTracked = "true";
+                }
+            });
         });
 
         observer.observe(document.body, { childList: true, subtree: true });
     }
 
-    // 4. AJAX Cart Interceptor
+    // 5. AJAX Cart Sync
     const originalFetch = window.fetch;
     window.fetch = function() {
         return originalFetch.apply(this, arguments).then(response => {
             const url = typeof arguments[0] === 'string' ? arguments[0] : arguments[0].url;
-            if (url && (url.includes("/cart/add.js") || url.includes("/cart/add"))) {
+            if (url && (url.includes("/cart/add.js") || url.includes("/cart/add") || url.includes("/cart/update"))) {
                 response.clone().json().then(data => {
                     sendEvent("product_added_to_cart", { product: data });
-                }).catch(() => sendEvent("product_added_to_cart", { url }));
+                }).catch(() => {});
             }
             return response;
         });
     };
 
-    // Initialize 
+    // Bootstrap
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', setupMutationObserver);
+        document.addEventListener('DOMContentLoaded', () => {
+            setupInterceptors();
+            setupMutationObserver();
+        });
     } else {
+        setupInterceptors();
         setupMutationObserver();
     }
 })();

@@ -1,43 +1,66 @@
 const { NlpManager } = require('node-nlp');
+const { LangEn } = require('@nlpjs/lang-en');
+const { LangHi } = require('@nlpjs/lang-hi');
 const IntentRule = require('../models/IntentRule');
 const ActionExecutorService = require('./ActionExecutorService');
-const UnrecognizedPhrase = require('../models/UnrecognizedPhrase'); // Shared in Phase 5
-const IntentAnalytics = require('../models/IntentAnalytics'); // Shared in Phase 9
+const UnrecognizedPhrase = require('../models/UnrecognizedPhrase');
+const IntentAnalytics = require('../models/IntentAnalytics');
+const Conversation = require('../models/Conversation');
 
+/**
+ * NlpEngineService
+ * Enterprise-grade, zero-cost NLP processing using node-nlp.
+ * Handles training and processing of deterministic intents.
+ */
 class NlpEngineService {
   constructor() {
-    this.managers = new Map(); // Maps clientId to NlpManager
+    this.managers = new Map(); // Stores trained NlpManager instances by clientId
   }
 
   /**
-   * Initializes or refreshes the NLP manager for a specific client.
+   * Initializes and trains the NLP model for a specific client.
+   * Feeds training phrases from IntentRule collection into the NlpManager.
    */
   async trainClientModel(clientId) {
     try {
-      console.log(`[NLPEngine] Training model for client: ${clientId}`);
+      console.log(`[NLPEngine] Starting training for Client: ${clientId}`);
       
-      const manager = new NlpManager({ languages: ['en', 'hi'], forceNER: true });
-      
-      // Fetch active intent rules for this client
+      // Initialize manager with required languages
+      const manager = new NlpManager({ 
+        languages: ['en', 'hi'], 
+        forceNER: true,
+        nlu: { log: false } 
+      });
+
+      // Register language plugins as requested
+      manager.container.register('lang-en', new LangEn());
+      manager.container.register('lang-hi', new LangHi());
+
+      // Fetch active intents for this client
       const rules = await IntentRule.find({ clientId, isActive: true });
 
       if (rules.length === 0) {
-        console.warn(`[NLPEngine] No active intent rules found for client: ${clientId}`);
+        console.warn(`[NLPEngine] No active intent rules found for client ${clientId}.`);
         this.managers.set(clientId.toString(), manager);
         return;
       }
 
-      // Add training phrases to the manager
+      // Add training phrases to the model
       for (const rule of rules) {
+        if (!rule.trainingPhrases) continue;
         for (const phrase of rule.trainingPhrases) {
-          manager.addDocument(rule.languageConfig[0] || 'en', phrase, rule.intentName);
+          manager.addDocument('en', phrase, rule.intentName);
+          manager.addDocument('hi', phrase, rule.intentName);
         }
       }
 
+      // Train the model
       await manager.train();
+      
+      // Store in memory
       this.managers.set(clientId.toString(), manager);
       
-      console.log(`[NLPEngine] Model trained successfully for client: ${clientId} with ${rules.length} intents.`);
+      console.log(`[NLPEngine] Training complete for ${clientId}. Total intents: ${rules.length}`);
     } catch (error) {
       console.error(`[NLPEngine] Training error for client ${clientId}:`, error);
       throw error;
@@ -45,77 +68,142 @@ class NlpEngineService {
   }
 
   /**
-   * Processes incoming aggregated text through the NLP model.
+   * Analytics tracking.
+   */
+  async trackAnalytics(clientId, matched, fallback) {
+    try {
+      const todayDate = new Date().toISOString().split('T')[0];
+      await IntentAnalytics.findOneAndUpdate(
+        { clientId, date: todayDate },
+        { 
+          $inc: { 
+            totalMessagesProcessed: 1,
+            intentsMatched: matched ? 1 : 0,
+            fallbackCount: fallback ? 1 : 0
+          } 
+        },
+        { upsert: true, new: true }
+      );
+    } catch (err) {
+      console.error('[NLPEngine] Analytics Tracking failed:', err.message);
+    }
+  }
+
+  /**
+   * Simulation method (Module 1 helper)
+   */
+  async simulate(clientId, text) {
+    let manager = this.managers.get(clientId.toString());
+    if (!manager) {
+      await this.trainClientModel(clientId);
+      manager = this.managers.get(clientId.toString());
+    }
+    return await manager.process(text);
+  }
+
+  /**
+   * Process aggregated text and execute actions.
    */
   async processIncomingText(clientId, phoneNumber, finalString) {
     try {
       let manager = this.managers.get(clientId.toString());
-      
-      // If manager isn't in memory, try to train it instantly
+
       if (!manager) {
         await this.trainClientModel(clientId);
         manager = this.managers.get(clientId.toString());
       }
 
-      const response = await manager.process(finalString);
-      const { intent, score, language } = response;
+      const result = await manager.process(finalString);
+      const { intent, score } = result;
 
-      console.log(`[NLPEngine] Client ${clientId} | Phone ${phoneNumber} | Intent: ${intent} | Score: ${score}`);
+      console.log(`[NLPEngine] Analysis Result: Intent: ${intent} | Score: ${score.toFixed(4)}`);
 
-      // Phase 9: Atomic Analytics Tracking
-      this.trackAnalytics(clientId, score).catch(err => console.error('[Analytics] Error:', err));
+      // Lower threshold to 0.70 for live updates
+      if (score < 0.70 || intent === 'None' || !intent) {
+        console.warn(`[NLPEngine] Intent confidence too low or UNKNOWN (${score.toFixed(4)}). Logging for review.`);
+        this.trackAnalytics(clientId, false, true);
 
-      if (score < 0.80 || intent === 'None') {
-        console.log(`[NLPEngine] Confidence too low (${score}). Logging unrecognized phrase.`);
-        
-        // Phase 5/8: Log to UnrecognizedPhrase collection
-        await UnrecognizedPhrase.create({
+        UnrecognizedPhrase.create({
           clientId,
           phrase: finalString,
-          language: language || 'unknown',
           phoneNumber,
+          language: result.language || 'unknown',
           status: 'PENDING'
-        });
+        }).catch(err => console.error('[NLPEngine] Failed to log unrecognized phrase:', err));
 
-        // Optional: Emit socket event for real-time dashboard updates
-        if (global.io) {
-          global.io.to(`client_${clientId}`).emit('unrecognized_phrase_added', { phrase: finalString });
-        }
-        
-        return;
+        return result;
       }
 
-      // If confidence is high, execute actions
-      await ActionExecutorService.executeIntentActions(clientId, phoneNumber, intent);
+      this.trackAnalytics(clientId, true, false).catch(() => {});
 
+      if (intent && intent !== 'None') {
+        console.log(`[NLPEngine] Confidence threshold passed (>= 0.70). Executing pipeline for intent: ${intent}`);
+        
+        // Normalize phone for comparison (remove symbols if any)
+        const cleanPhone = phoneNumber.replace(/\D/g, '');
+
+        // MODULE 2: Update Conversation with last detected intent context
+        try {
+          // Try exact match first, then clean match
+          let conversation = await Conversation.findOne({ phone: phoneNumber, clientId });
+          if (!conversation) {
+            conversation = await Conversation.findOne({ phone: cleanPhone, clientId });
+          }
+
+          if (conversation) {
+            await Conversation.updateOne(
+              { _id: conversation._id },
+              { 
+                $set: {
+                  lastDetectedIntent: {
+                    intentName: intent,
+                    confidenceScore: score,
+                    detectedAt: new Date()
+                  }
+                }
+              }
+            );
+            console.log(`[NLPEngine] Updated conversation context for ${phoneNumber}`);
+          } else {
+            console.warn(`[NLPEngine] No conversation found for ${phoneNumber} to update intent context.`);
+          }
+
+          // Emit Socket event for real-time UI updates
+          if (global.io) {
+            console.log(`[NLPEngine] Emitting intentUpdated to room: client_${clientId}`);
+            global.io.to(`client_${clientId}`).emit('intentUpdated', {
+              phone: phoneNumber,
+              intentName: intent,
+              confidenceScore: score,
+              detectedAt: new Date()
+            });
+          } else {
+            console.warn('[NLPEngine] global.io not available for emission');
+          }
+        } catch (dbErr) {
+          console.error('[NLPEngine] Failed to update conversation context:', dbErr.message);
+        }
+
+        await ActionExecutorService.executeIntentActions(clientId, phoneNumber, intent);
+      }
+
+      return result;
     } catch (error) {
-      console.error('[NLPEngine] Process incoming text error:', error);
+      console.error(`[NLPEngine] Processing error for client ${clientId}:`, error);
     }
   }
 
   /**
-   * Lightweight analytics tracking (Phase 9)
+   * Healthcheck helper
    */
-  async trackAnalytics(clientId, score) {
-    try {
-      const todayDate = new Date().toISOString().split('T')[0];
-      const update = { $inc: { totalMessagesProcessed: 1 } };
-      
-      if (score >= 0.80) {
-        update.$inc.intentsMatched = 1;
-      } else {
-        update.$inc.fallbackCount = 1;
-      }
-
-      await IntentAnalytics.findOneAndUpdate(
-        { clientId, date: todayDate },
-        update,
-        { upsert: true, new: true }
-      );
-    } catch (err) {
-      // Non-blocking error
-    }
+  getEngineStatus() {
+    return {
+      activeClients: this.managers.size,
+      isInitialized: true,
+      timestamp: Date.now()
+    };
   }
 }
 
 module.exports = new NlpEngineService();
+

@@ -126,7 +126,7 @@ app.use(mongoSanitize({ replaceWith: '_' }));
 const whitelabelMiddleware = require('./middleware/whitelabel');
 app.use(whitelabelMiddleware);
 
-// Serve static files from the 'public' directory
+const HealthController = require('./controllers/HealthController');
 app.use('/public', express.static(path.join(__dirname, 'public')));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
@@ -254,8 +254,11 @@ app.use('/api/shopify-pixel', shopifyPixelRoutes);
 const wooPixelRoutes = require('./routes/wooPixel');
 app.use('/api/woocommerce-pixel', wooPixelRoutes);
 
-// Phase 24: Growth & Integration Layer
-app.use('/api/webhooks', require('./routes/webhooks'));
+// Phase 24: Growth & Health Check (Deep Monitoring)
+app.get('/api/health', HealthController.checkHealth);
+
+// Inbound Messaging Webhooks
+app.use('/api/webhooks', require('./routes/intentWebhooks'));
 app.use('/api/qrcodes', require('./routes/qrcodes'));
 app.use('/api/catalog', require('./routes/catalog'));
 // app.use('/api/payout', protect, require('./routes/payout')); // REMOVED: File doesn't exist
@@ -642,6 +645,7 @@ if (process.env.REDIS_URL) {
   
   pubClient.on('connect', () => {
     global.redisConnected = true;
+    global.redisClient = pubClient; // ✅ Expose for HealthController
     log.success('✅ Redis connected successfully.');
   });
 

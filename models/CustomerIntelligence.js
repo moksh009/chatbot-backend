@@ -54,10 +54,9 @@ const CustomerIntelligenceSchema = new mongoose.Schema({
   
   // Scoring
   engagementScore: { type: Number, default: 10, min: 0, max: 100 },
-  conversionProbability: { type: Number, default: 0 },
-  churnRiskScore: { type: Number, default: 0, min: 0, max: 100 },
   
   // AI Synthesis
+
   lastSynthesisAt: { type: Date },
   aiSummary: { type: String, default: '' },
   personalizationHints: [String], // AI-generated tips for agents

@@ -90,7 +90,7 @@ router.post('/:clientId/import', protect, logAction('IMPORT_LEADS'), upload.sing
         const batchTag = `Import_${new Date().toLocaleString('en-US', { month: 'short', day: '2-digit' })}_${filename.replace(/\.[^/.]+$/, "").slice(0, 10)}`;
 
         const clientDoc = await Client.findOne({ clientId });
-        const limits = await checkLimit(clientDoc?._id, 'contacts');
+        const limits = await checkLimit(clientId, 'contacts');
 
         if (!limits.allowed) {
             session.status = 'failed';
@@ -508,4 +508,58 @@ router.post('/:clientId/deploy-weights', protect, async (req, res) => {
     }
 });
 
+router.post('/:contactId/reset', protect, async (req, res) => {
+    try {
+        const { contactId } = req.params;
+        const { hardDelete } = req.body;
+        const clientId = req.user.clientId;
+
+        const lead = await AdLead.findOne({ _id: contactId, clientId });
+        if (!lead) return res.status(404).json({ message: 'Contact not found' });
+
+        const Conversation = require('../models/Conversation');
+        const Message = require('../models/Message');
+
+        if (hardDelete) {
+            // MODULE 3 Hard Delete: Wipe everything
+            await AdLead.deleteOne({ _id: contactId, clientId });
+            await Conversation.deleteOne({ phone: lead.phoneNumber, clientId });
+            await Message.deleteMany({ phone: lead.phoneNumber, clientId });
+            
+            return res.json({ success: true, action: 'deleted', message: 'Contact and history permanently purged.' });
+        } else {
+            // MODULE 3 Soft Reset: Wipe memory only
+            await Conversation.findOneAndUpdate(
+                { phone: lead.phoneNumber, clientId },
+                { 
+                    $set: { 
+                        lastMessage: '',
+                        summary: '',
+                        lastDetectedIntent: null,
+                        unreadCount: 0,
+                        botPaused: false,
+                        requiresAttention: false,
+                        processedMessageIds: []
+                    }
+                }
+            );
+
+            // Wipe specific lead metrics
+            lead.sentimentScore = 50;
+            lead.leadScore = 10;
+            lead.inboundMessageCount = 0;
+            await lead.save();
+
+            // Clear chat messages
+            await Message.deleteMany({ phone: lead.phoneNumber, clientId });
+
+            return res.json({ success: true, action: 'reset', message: 'AI memory cleared. Contact preserved.' });
+        }
+    } catch (err) {
+        console.error('[ContactReset] Error:', err);
+        res.status(500).json({ success: false, message: 'Reset protocol failed' });
+    }
+});
+
 module.exports = router;
+

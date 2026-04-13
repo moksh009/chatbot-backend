@@ -469,19 +469,45 @@ router.put('/:id/bot-status', protect, async (req, res) => {
 });
 
 // @route   PATCH /api/conversations/:id/assign
-// @desc    Assign conversation to an agent
+// @desc    Assign conversation to an agent (Supports id or phone for new chats)
 // @access  Private
 router.patch('/:id/assign', protect, async (req, res) => {
   try {
-    const { agentId, agentName } = req.body;
-    const query = { _id: req.params.id };
-    if (req.user.role !== 'SUPER_ADMIN') query.clientId = req.user.clientId;
+    const { agentId, agentName, phone } = req.body;
+    
+    let query = {};
+    const mongoose = require('mongoose');
+    
+    // Logic: Try ID first, then fallback to phone + clientId
+    if (mongoose.Types.ObjectId.isValid(req.params.id)) {
+      query._id = req.params.id;
+    } else if (phone) {
+      query.phone = phone;
+      if (req.user.role !== 'SUPER_ADMIN') query.clientId = req.user.clientId;
+    } else {
+      return res.status(400).json({ success: false, message: 'Invalid conversation reference' });
+    }
 
     const update = agentId
       ? { $set: { assignedTo: agentId, assignedAt: new Date(), assignedBy: agentName || req.user.name } }
       : { $unset: { assignedTo: 1, assignedAt: 1, assignedBy: 1 } };
 
-    const conversation = await Conversation.findOneAndUpdate(query, update, { new: true }).populate('assignedTo', 'name email');
+    let conversation = await Conversation.findOneAndUpdate(query, update, { new: true }).populate('assignedTo', 'name email');
+    
+    // If conversation doesn't exist but we have a phone, it's a "brand new" chat that hasn't been saved yet.
+    // Create it on the fly to support immediate assignment.
+    if (!conversation && phone) {
+      conversation = await Conversation.create({
+        phone,
+        clientId: query.clientId || req.user.clientId,
+        assignedTo: agentId || undefined,
+        assignedAt: agentId ? new Date() : undefined,
+        assignedBy: agentId ? (agentName || req.user.name) : undefined,
+        status: 'HUMAN_TAKEOVER' // Auto takeover if assigned
+      });
+      conversation = await Conversation.findById(conversation._id).populate('assignedTo', 'name email');
+    }
+
     if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
 
     // Save persistent notification in database
@@ -497,6 +523,7 @@ router.patch('/:id/assign', protect, async (req, res) => {
 
     const io = req.app.get('socketio');
     if (io) {
+      const activeClientId = conversation.clientId;
       // Emit task_assigned for the specific agent to receive real-time toast
       if (agentId) {
         io.to(`agent_${agentId}`).emit('task_assigned', {
@@ -505,11 +532,19 @@ router.patch('/:id/assign', protect, async (req, res) => {
           conversationId: conversation._id
         });
       }
-      io.to(`client_${conversation.clientId}`).emit('conversation_assigned', { conversationId: conversation._id, agentId, agentName });
+      
+      // ✅ Module 3.5: Broadcast real-time update to update "purple pill" everywhere
+      io.to(`client_${activeClientId}`).emit('conversation_update', conversation);
+      io.to(`client_${activeClientId}`).emit('conversation_assigned', { 
+        conversationId: conversation._id, 
+        agentId, 
+        agentName: conversation.assignedTo?.name || null 
+      });
     }
 
     res.json({ success: true, conversation });
   } catch (error) {
+    console.error('[Assignment] Error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });

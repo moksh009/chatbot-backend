@@ -6,7 +6,7 @@ const ConversationSchema = new mongoose.Schema({
   customerName: { type: String, default: '' }, // WhatsApp profile name or provided name
   status: { 
     type: String, 
-    enum: ['BOT_ACTIVE', 'HUMAN_TAKEOVER', 'HUMAN_SUPPORT', 'CLOSED', 'WAITING_FOR_INPUT', 'OPTED_OUT', 'new'], 
+    enum: ['BOT_ACTIVE', 'HUMAN_TAKEOVER', 'HUMAN_SUPPORT', 'CLOSED', 'WAITING_FOR_INPUT', 'OPTED_OUT', 'new', 'PAUSED'], 
     default: 'BOT_ACTIVE' 
   },
   assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Agent ID
@@ -101,9 +101,17 @@ const ConversationSchema = new mongoose.Schema({
   aiAuditFeedback: { type: String, default: "" },
   lastAuditedAt: { type: Date },
 
+  // Module 2: Intent Engine Live Context
+  lastDetectedIntent: {
+    intentName:      { type: String, default: null },
+    confidenceScore: { type: Number, default: 0 },
+    detectedAt:      { type: Date,   default: null }
+  },
+
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
+
 
 // Compound index for unique conversation per phone + client
 ConversationSchema.index({ phone: 1, clientId: 1 }, { unique: true });

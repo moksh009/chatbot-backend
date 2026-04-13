@@ -33,24 +33,25 @@ const PLAN_LIMITS = {
   }
 };
 
-/**
- * Validates if a client has permissions or remaining tier limits for a specific feature.
- * @param {String} clientId The objective Client ID
- * @param {String} limitType Field inside PLAN_LIMITS ('contacts', 'sequences', etc.)
- * @returns {Promise<{allowed: Boolean, reason?: String, usage?: Number, limit?: Number|Boolean}>}
- */
-async function checkLimit(clientId, limitType) {
+async function checkLimit(identifier, limitType) {
   // --- BLOCK 6: ENTERPRISE OVERRIDE & GOD MODE ---
-  // delitech_smarthomes and topedge_admin are LIFETIME ENTERPRISE — never gated, never billed
   const Client = require('../models/Client');
-  const client = await Client.findOne({ clientId });
+  const mongoose = require('mongoose');
+
+  let query = { clientId: identifier };
+  if (mongoose.Types.ObjectId.isValid(identifier)) {
+    query = { $or: [{ _id: identifier }, { clientId: identifier }] };
+  }
+
+  const client = await Client.findOne(query).lean();
+  const targetClientId = client?.clientId || identifier;
   
   const LIFETIME_CLIENTS = ['topedge_admin', 'delitech_smarthomes'];
-  if (client?.isLifetimeAdmin || LIFETIME_CLIENTS.includes(clientId)) {
+  if (client?.isLifetimeAdmin || LIFETIME_CLIENTS.includes(targetClientId)) {
     return { allowed: true, limit: Infinity, usage: 0, isOverride: true };
   }
 
-  const sub = await Subscription.findOne({ clientId });
+  const sub = await Subscription.findOne({ clientId: targetClientId });
   if (!sub) return { allowed: false, reason: "No active subscription", code: "NO_SUBSCRIPTION" };
   if (sub.status === "frozen") return { allowed: false, reason: "Subscription frozen", code: "ACCOUNT_FROZEN" };
 
@@ -85,21 +86,32 @@ async function checkLimit(clientId, limitType) {
       return { allowed: true, usage, limit };
   }
 
-  // Feature is allowed if it passes boolean and integer checks
   return { allowed: true };
 }
 
 /**
  * Safely atom-increments the target limit usage metric
- * @param {String} clientId The identifier
+ * @param {String|ObjectId} identifier The identifier
  * @param {String} usageType 'messages' | 'campaigns' | 'contacts'
  * @param {Number} by Incremental jump unit 
  */
-async function incrementUsage(clientId, usageType, by = 1) {
-  await Subscription.findOneAndUpdate(
-    { clientId },
-    { $inc: { [`usageThisPeriod.${usageType}`]: by } }
-  );
+async function incrementUsage(identifier, usageType, by = 1) {
+    const Client = require('../models/Client');
+    const mongoose = require('mongoose');
+    
+    let query = { clientId: identifier };
+    if (mongoose.Types.ObjectId.isValid(identifier)) {
+      query = { $or: [{ _id: identifier }, { clientId: identifier }] };
+    }
+  
+    const client = await Client.findOne(query).select('clientId');
+    const targetClientId = client?.clientId || identifier;
+
+    await Subscription.findOneAndUpdate(
+        { clientId: targetClientId },
+        { $inc: { [`usageThisPeriod.${usageType}`]: by } }
+    );
 }
+
 
 module.exports = { checkLimit, incrementUsage, PLAN_LIMITS };

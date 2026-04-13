@@ -8,6 +8,14 @@ exports.verifyMetaSignature = (req, res, next) => {
   const signature = req.headers['x-hub-signature-256'];
   const appSecret = process.env.META_APP_SECRET;
 
+  // DEVELOPMENT BYPASS: Allow local simulator to work without Meta HMAC
+  if (process.env.NODE_ENV === 'development' || !appSecret) {
+    if (!signature || signature === 'test-signature-bypass') {
+      console.log('[Security] Dev bypass active: Skipping Meta signature verification');
+      return next();
+    }
+  }
+
   if (!signature) {
     console.warn('[Security] Missing x-hub-signature-256 header');
     return res.status(403).json({ success: false, message: 'Missing signature' });

@@ -1,14 +1,20 @@
 const mongoose = require('mongoose');
 
+/**
+ * IntentRule Schema
+ * Stores the deterministic rules for intent classification and automated actions.
+ */
 const intentRuleSchema = new mongoose.Schema({
   clientId: {
-    type: String,
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Client',
     required: true,
     index: true
   },
   intentName: {
     type: String,
-    required: true
+    required: true,
+    trim: true
   },
   trainingPhrases: {
     type: [String],
