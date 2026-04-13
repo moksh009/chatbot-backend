@@ -67,14 +67,16 @@ const taskWorker = redisConnection ? new Worker('enterprise-tasks', async (job) 
 }, {
     connection: redisConnection,
     concurrency: 10, // Process 10 scale-tasks in parallel per worker instance
-});
+}) : null;
 
-taskWorker.on('completed', (job) => {
-    log.info(`[TaskWorker] Job ${job.id} (${job.name}) completed successfully.`);
-});
+if (taskWorker) {
+    taskWorker.on('completed', (job) => {
+        log.info(`[TaskWorker] Job ${job.id} (${job.name}) completed successfully.`);
+    });
 
-taskWorker.on('failed', (job, err) => {
-    log.error(`[TaskWorker] Job ${job.id} (${job.name}) failed with error: ${err.message}`);
-});
+    taskWorker.on('failed', (job, err) => {
+        log.error(`[TaskWorker] Job ${job.id} (${job.name}) failed with error: ${err.message}`);
+    });
+}
 
 module.exports = taskWorker;

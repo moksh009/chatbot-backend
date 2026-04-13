@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const TrainingExampleSchema = new mongoose.Schema({
-  clientId:       { type: mongoose.Schema.Types.ObjectId, ref: 'Client', required: true },
+  clientId:       { type: String, required: true },
   
   // The situation
   userMessage:    { type: String, required: true },   // what the customer said

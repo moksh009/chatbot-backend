@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const PurchaseOrderSchema = new mongoose.Schema({
-  clientId:     { type: mongoose.Schema.Types.ObjectId, ref: 'Client', required: true },
+  clientId:     { type: String, required: true },
   supplierId:   { type: mongoose.Schema.Types.ObjectId, ref: 'Supplier', required: true },
   items: [{
     productId:    { type: String, required: true },

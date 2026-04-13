@@ -14,7 +14,7 @@ const CompetitorProductSchema = new mongoose.Schema({
 }, { _id: false });
 
 const CompetitorSchema = new mongoose.Schema({
-  clientId:      { type: mongoose.Schema.Types.ObjectId, ref: 'Client', required: true },
+  clientId:      { type: String, required: true },
   name:          { type: String, required: true },     // "BrightHome Doorbells"
   website:       { type: String },
   whatsappPhone: { type: String },

@@ -11,7 +11,7 @@ const SupplierProductSchema = new mongoose.Schema({
 }, { _id: false });
 
 const SupplierSchema = new mongoose.Schema({
-  clientId:    { type: mongoose.Schema.Types.ObjectId, ref: 'Client', required: true },
+  clientId:    { type: String, required: true },
   name:        { type: String, required: true },           // "TechParts Wholesale"
   phone:       { type: String, required: true },           // WhatsApp number of supplier
   email:       { type: String },
