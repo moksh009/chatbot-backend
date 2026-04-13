@@ -168,6 +168,19 @@ async function handleCheckout(client, data) {
         {} // Boolean updates
     );
 
+    // Deep Pixel Hook: Register Backend Checkout Initiation natively
+    await AdLead.updateOne(
+        { phoneNumber: cleanPhone, clientId: client.clientId },
+        { $push: { 
+            commerceEvents: {
+                event: 'checkout_started',
+                amount: parseFloat(data.total_price) || 0,
+                currency: data.currency || 'INR',
+                timestamp: new Date()
+            }
+        }}
+    ).catch(e => log.error('Failed to log checkout_started event:', e.message));
+
     // Track in DailyStat
     await trackEcommerceEvent(client.clientId, { checkoutInitiatedCount: 1 });
 
@@ -208,6 +221,19 @@ async function handleOrder(client, data) {
         { cartStatus: "purchased", lastOrderAt: new Date() }, // String/Date Updates
         { isRtoRisk: false } // Reset RTO risk on new successful order
     );
+
+    // Deep Pixel Hook: Register Backend Order Completion natively to fix Attribution Grid
+    await AdLead.updateOne(
+        { phoneNumber: cleanPhone, clientId: client.clientId },
+        { $push: { 
+            commerceEvents: {
+                event: 'checkout_completed',
+                amount: parseFloat(data.total_price) || 0,
+                currency: data.currency || 'INR',
+                timestamp: new Date()
+            }
+        }}
+    ).catch(e => log.error('Failed to log checkout_completed event:', e.message));
 
     // Track Journey Event
     const { trackEvent } = require('../utils/journeyTracker');
