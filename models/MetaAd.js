@@ -2,8 +2,7 @@ const mongoose = require('mongoose');
 
 const metaAdSchema = new mongoose.Schema({
   clientId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Client',
+    type: String,
     required: true
   },
 

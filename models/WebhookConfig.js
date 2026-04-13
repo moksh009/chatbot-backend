@@ -2,8 +2,7 @@ const mongoose = require('mongoose');
 
 const webhookConfigSchema = new mongoose.Schema({
   clientId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Client',
+    type: String,
     required: true
   },
   name:     { type: String, required: true, trim: true },

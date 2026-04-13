@@ -11,6 +11,8 @@ const ImportSession = require('../models/ImportSession');
 const { protect } = require('../middleware/auth');
 const { logAction } = require('../middleware/audit');
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
+const TaskQueueService = require('../services/TaskQueueService');
+const path = require('path');
 
 // Multer setup for temporary CSV storage
 const upload = multer({ dest: '/tmp/csv_uploads/' });
@@ -61,170 +63,45 @@ router.post('/:clientId/import', protect, logAction('IMPORT_LEADS'), upload.sing
 
         if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
 
-        const filePath = req.file.path;
         const filename = req.file.originalname;
         const mapping = req.body.mapping ? JSON.parse(req.body.mapping) : {};
         
+        // Ensure imports directory exists
+        const importDir = path.join(__dirname, '../uploads/imports');
+        if (!fs.existsSync(importDir)) fs.mkdirSync(importDir, { recursive: true });
+
+        // Move file to a persistent location for the background worker
+        const persistentPath = path.join(importDir, `${batchId}.csv`);
+        fs.renameSync(req.file.path, persistentPath);
+
         // Create an Import Session
-        const session = await ImportSession.create({
+        await ImportSession.create({
             clientId,
             batchId,
             filename,
             status: 'processing'
         });
 
-        // First pass: Count total rows for progress tracking
-        let totalRows = 0;
-        await new Promise((resolve) => {
-            fs.createReadStream(filePath)
-                .pipe(csv())
-                .on('data', () => totalRows++)
-                .on('end', resolve);
+        // Add to Task Queue
+        await TaskQueueService.addTask('IMPORT_LEADS', {
+            clientId,
+            batchId,
+            filePath: persistentPath,
+            filename,
+            mapping,
+            user: { id: req.user._id, role: req.user.role }
         });
 
-        session.totalRows = totalRows;
-        await session.save();
-
-        // Second pass: Process data
-        const results = [];
-        const batchTag = `Import_${new Date().toLocaleString('en-US', { month: 'short', day: '2-digit' })}_${filename.replace(/\.[^/.]+$/, "").slice(0, 10)}`;
-
-        const clientDoc = await Client.findOne({ clientId });
-        const limits = await checkLimit(clientId, 'contacts');
-
-        if (!limits.allowed) {
-            session.status = 'failed';
-            session.errorLog.push({ row: 0, error: 'Contact limit reached' });
-            await session.save();
-            fs.unlinkSync(filePath);
-            return res.status(403).json({ success: false, message: 'Contact limit reached' });
-        }
-
-        let processed = 0;
-        let success = 0;
-        let updated = 0;
-        let failed = 0;
-
-        fs.createReadStream(filePath)
-            .pipe(csv())
-            .on('data', async (row) => {
-                processed++;
-                
-                // Heuristic Mapping
-                const rawPhone = row[mapping.phone] || row[findBestMatch(Object.keys(row), 'phone')];
-                const rawName = row[mapping.name] || row[findBestMatch(Object.keys(row), 'name')];
-                const rawEmail = row[mapping.email] || row[findBestMatch(Object.keys(row), 'email')];
-
-                const phoneNumber = normalizePhone(rawPhone);
-                
-                if (!phoneNumber) {
-                    failed++;
-                    session.errorLog.push({ row: processed, error: 'Invalid phone number', data: row });
-                    return;
-                }
-
-                // Handle missing name as "Guest contact (from [Filename])"
-                const name = rawName?.trim() || `Guest contact (from ${filename.split('.')[0]})`;
-
-                // Meta-Field Mapping: Capture everything else into capturedData
-                const customData = {};
-                Object.keys(row).forEach(key => {
-                    const k = key.toLowerCase();
-                    if (!['phone', 'name', 'email', 'ph', 'mob', 'mobilenumber', 'phonenumber'].some(x => k.includes(x))) {
-                        customData[key] = row[key];
-                    }
-                });
-
-                const leadData = {
-                    clientId,
-                    phoneNumber,
-                    name,
-                    email: rawEmail?.toLowerCase().trim(),
-                    source: 'CSV_Import',
-                    optStatus: 'opted_in',
-                    tags: _.uniq([...(row.tags ? row.tags.split(',') : []), 'Imported', batchTag]),
-                    capturedData: customData,
-                    meta: { lastImportId: batchId, importedAt: new Date() }
-                };
-
-                results.push(leadData);
-
-                // Batch Update via socket.io every 50 rows or at the end
-                if (processed % 50 === 0 || processed === totalRows) {
-                    if (global.io) {
-                        global.io.to(`client_${clientId}`).emit('import_progress', {
-                            batchId,
-                            processed,
-                            total: totalRows,
-                            percent: Math.round((processed / totalRows) * 100)
-                        });
-                    }
-                }
-            })
-            .on('end', async () => {
-                try {
-                    fs.unlinkSync(filePath);
-
-                    // Bulk Upsert Logic
-                    const batchSize = 100;
-                    for (let i = 0; i < results.length; i += batchSize) {
-                        const batch = results.slice(i, i + batchSize);
-                        const bulkOps = batch.map(lead => ({
-                            updateOne: {
-                                filter: { phoneNumber: lead.phoneNumber, clientId },
-                                // Deep merge using $set for base and $merge for capturedData if possible, 
-                                // but for now simple upsert with $set works as a "Cleaner"
-                                update: { $set: lead }, 
-                                upsert: true
-                            }
-                        }));
-
-                        const bulkResult = await AdLead.bulkWrite(bulkOps);
-                        success += bulkResult.upsertedCount || 0;
-                        updated += bulkResult.modifiedCount || 0;
-                        
-                        // Small throttle for DB stability on large imports
-                        if (i + batchSize < results.length) await new Promise(r => setTimeout(r, 200));
-                    }
-
-                    session.status = 'completed';
-                    session.processedRows = processed;
-                    session.successCount = success;
-                    session.duplicateCount = updated;
-                    session.errorCount = failed;
-                    await session.save();
-
-                    if (success > 0) await incrementUsage(clientId, 'contacts', success);
-
-                    if (global.io) {
-                        global.io.to(`client_${clientId}`).emit('import_completed', {
-                            batchId,
-                            success,
-                            updated,
-                            failed,
-                            batchTag
-                        });
-                    }
-
-                    // Return final result to the HTTP request as fallback
-                    if (!res.headersSent) {
-                        res.json({
-                            success: true,
-                            batchId,
-                            batchTag,
-                            summary: { total: totalRows, inserted: success, updated, failed }
-                        });
-                    }
-                } catch (err) {
-                    console.error('[IMPORT_ERROR]', err);
-                    session.status = 'failed';
-                    await session.save();
-                }
-            });
+        // Respond immediately
+        res.status(202).json({
+            success: true,
+            message: 'Import started in background',
+            batchId
+        });
 
     } catch (err) {
-        console.error('[IMPORT_CRITICAL]', err);
-        res.status(500).json({ success: false, message: 'Import logic failed' });
+        console.error('[IMPORT_TRIGGER_ERROR]', err);
+        res.status(500).json({ success: false, message: 'Failed to start import' });
     }
 });
 

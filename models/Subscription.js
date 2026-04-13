@@ -9,8 +9,7 @@ const usageSchema = new mongoose.Schema({
 
 const subscriptionSchema = new mongoose.Schema({
   clientId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Client',
+    type: String,
     required: true,
     unique: true
   },

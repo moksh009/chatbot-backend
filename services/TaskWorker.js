@@ -1,6 +1,13 @@
 const { Worker } = require('bullmq');
 const Redis = require('ioredis');
 const log = require('../utils/logger')('TaskWorker');
+const fs = require('fs');
+const csv = require('csv-parser');
+const _ = require('lodash');
+const AdLead = require('../models/AdLead');
+const ImportSession = require('../models/ImportSession');
+const { normalizePhone, findBestMatch } = require('../utils/leadCleaner');
+const { checkLimit, incrementUsage } = require('../utils/planLimits');
 
 const isInternalRenderRedis = (process.env.REDIS_URL || '').includes('red-');
 const isRunningOnRender = !!process.env.RENDER;
@@ -57,6 +64,10 @@ const taskWorker = redisConnection ? new Worker('enterprise-tasks', async (job) 
                 await syncPersonaToNodes(data.clientId, data.persona);
                 break;
 
+            case 'IMPORT_LEADS':
+                await handleImportLeads(data, job);
+                break;
+
             default:
                 log.warn(`[TaskWorker] No handler found for task type: ${job.name}`);
         }
@@ -77,6 +88,156 @@ if (taskWorker) {
     taskWorker.on('failed', (job, err) => {
         log.error(`[TaskWorker] Job ${job.id} (${job.name}) failed with error: ${err.message}`);
     });
+}
+
+async function handleImportLeads(data, job) {
+    const { clientId, batchId, filePath, filename, mapping } = data;
+    const session = await ImportSession.findOne({ batchId });
+    if (!session) return log.error(`[Import] Session not found for ${batchId}`);
+
+    try {
+        // Phase 0: Count total rows
+        let totalRows = 0;
+        await new Promise((resolve, reject) => {
+            fs.createReadStream(filePath)
+                .pipe(csv())
+                .on('data', () => totalRows++)
+                .on('end', resolve)
+                .on('error', reject);
+        });
+
+        session.totalRows = totalRows;
+        await session.save();
+
+        if (totalRows === 0) {
+            session.status = 'failed';
+            session.errorLog.push({ row: 0, error: 'File is empty' });
+            await session.save();
+            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+            return;
+        }
+
+        const limits = await checkLimit(clientId, 'contacts');
+        if (!limits.allowed) {
+            session.status = 'failed';
+            session.errorLog.push({ row: 0, error: 'Contact limit reached' });
+            await session.save();
+            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+            return;
+        }
+
+        // Phase 1: Parsing and Normalization (0% -> 50%)
+        const results = [];
+        const batchTag = `Import_${new Date().toLocaleString('en-US', { month: 'short', day: '2-digit' })}_${filename.replace(/\.[^/.]+$/, "").slice(0, 10)}`;
+        let processed = 0;
+        let failed = 0;
+
+        await new Promise((resolve, reject) => {
+            fs.createReadStream(filePath)
+                .pipe(csv())
+                .on('data', (row) => {
+                    processed++;
+                    
+                    const headers = Object.keys(row);
+                    const rawPhone = row[mapping.phone] || row[findBestMatch(headers, 'phone')];
+                    const rawName = row[mapping.name] || row[findBestMatch(headers, 'name')];
+                    const rawEmail = row[mapping.email] || row[findBestMatch(headers, 'email')];
+
+                    const phoneNumber = normalizePhone(rawPhone);
+                    if (!phoneNumber) {
+                        failed++;
+                        session.errorLog.push({ row: processed, error: 'Invalid phone number', data: row });
+                        return;
+                    }
+
+                    const name = rawName?.trim() || `Guest contact (from ${filename.split('.')[0]})`;
+                    const customData = {};
+                    headers.forEach(key => {
+                        const k = key.toLowerCase();
+                        if (!['phone', 'name', 'email', 'ph', 'mob', 'mobilenumber', 'phonenumber'].some(x => k.includes(x))) {
+                            customData[key] = row[key];
+                        }
+                    });
+
+                    results.push({
+                        clientId,
+                        phoneNumber,
+                        name,
+                        email: rawEmail?.toLowerCase().trim(),
+                        source: 'CSV_Import',
+                        optStatus: 'opted_in',
+                        tags: _.uniq([...(row.tags ? row.tags.split(',') : []), 'Imported', batchTag]),
+                        capturedData: customData,
+                        meta: { lastImportId: batchId, importedAt: new Date() }
+                    });
+
+                    if (processed % 50 === 0 || processed === totalRows) {
+                        const percent = Math.round((processed / totalRows) * 50);
+                        emitProgress(clientId, batchId, processed, totalRows, percent);
+                    }
+                })
+                .on('end', resolve)
+                .on('error', reject);
+        });
+
+        // Phase 2: Database Insertion (50% -> 100%)
+        let success = 0;
+        let updated = 0;
+        const batchSize = 100;
+
+        for (let i = 0; i < results.length; i += batchSize) {
+            const batch = results.slice(i, i + batchSize);
+            const bulkOps = batch.map(lead => ({
+                updateOne: {
+                    filter: { phoneNumber: lead.phoneNumber, clientId },
+                    update: { $set: lead }, 
+                    upsert: true
+                }
+            }));
+
+            const bulkResult = await AdLead.bulkWrite(bulkOps);
+            success += bulkResult.upsertedCount || 0;
+            updated += bulkResult.modifiedCount || 0;
+            
+            const currentProcessed = processed + Math.min(i + batchSize, results.length);
+            const percent = 50 + Math.round((Math.min(i + batchSize, results.length) / results.length) * 50);
+            
+            emitProgress(clientId, batchId, results.length, results.length, percent);
+
+            if (i + batchSize < results.length) await new Promise(r => setTimeout(r, 100)); // Small throttle
+        }
+
+        session.status = 'completed';
+        session.processedRows = processed;
+        session.successCount = success;
+        session.duplicateCount = updated;
+        session.errorCount = failed;
+        await session.save();
+
+        if (success > 0) await incrementUsage(clientId, 'contacts', success);
+
+        if (global.io) {
+            global.io.to(`client_${clientId}`).emit('import_completed', {
+                batchId, success, updated, failed, batchTag
+            });
+        }
+
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+    } catch (err) {
+        log.error(`[Import] Failed for batch ${batchId}:`, err);
+        session.status = 'failed';
+        await session.save();
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    }
+}
+
+function emitProgress(clientId, batchId, processed, total, percent) {
+    if (global.io) {
+        global.io.to(`client_${clientId}`).emit('import_progress', {
+            batchId, processed, total, percent
+        });
+    }
 }
 
 module.exports = taskWorker;
