@@ -2,15 +2,38 @@ const { Worker } = require('bullmq');
 const Redis = require('ioredis');
 const NlpEngineService = require('./NlpEngineService');
 
-const redisConnection = new Redis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
-  maxRetriesPerRequest: null,
-});
+const isInternalRenderRedis = (process.env.REDIS_URL || '').includes('red-');
+const isRunningOnRender = !!process.env.RENDER;
+
+let redisConnection = null;
+
+if (isInternalRenderRedis && !isRunningOnRender) {
+  console.warn('[NLP_WORKER] ⚠️ Render-internal Redis detected locally. Worker is DISABLED.');
+} else {
+  redisConnection = new Redis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
+    maxRetriesPerRequest: null,
+    retryStrategy: (times) => {
+      if (times > 3) {
+        console.error('[NLP_WORKER] Redis connection failed persistently. Disabling worker.');
+        return null;
+      }
+      return Math.min(times * 100, 3000);
+    }
+  });
+
+  redisConnection.on('error', (err) => {
+    if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED') {
+      console.warn('[NLP_WORKER] ⚠️ Redis unreachable. Background NLP buffering is DISABLED.');
+    } else {
+      console.error('[NLP_WORKER] Redis Error:', err.message);
+    }
+  });
+}
 
 /**
  * BullMQ Worker for the 'nlp-queue'.
- * Responds to delayed jobs after the sliding window timer expires.
  */
-const nlpWorker = new Worker('nlp-queue', async (job) => {
+const nlpWorker = redisConnection ? new Worker('nlp-queue', async (job) => {
   const { clientId, phoneNumber } = job.data;
   
   try {

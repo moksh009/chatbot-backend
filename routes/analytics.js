@@ -104,7 +104,7 @@ router.get('/import-sessions', protect, async (req, res) => {
 });
 
 // GET /api/analytics/flow-heatmap
-// @desc    Get node visit distribution for visual heatmap overlay
+// @desc    Get node visit distribution for visual heatmap overlay (Phase R4: Uses FlowAnalytics)
 // @access  Private
 router.get('/flow-heatmap', protect, async (req, res) => {
   try {
@@ -113,29 +113,30 @@ router.get('/flow-heatmap', protect, async (req, res) => {
       clientId = req.query.clientId;
     }
 
-    const { start, end } = req.query;
-    const query = { clientId };
+    const { start, end, phoneNumberId } = req.query;
+    const FlowAnalytics = require('../models/FlowAnalytics');
+
+    const matchQuery = { clientId };
+    if (phoneNumberId) matchQuery.phoneNumberId = phoneNumberId;
+    
     if (start || end) {
-      query.date = {};
-      if (start) query.date.$gte = start;
-      if (end) query.date.$lte = end;
+      matchQuery.createdAt = {};
+      if (start) matchQuery.createdAt.$gte = new Date(start);
+      if (end) matchQuery.createdAt.$lte = new Date(end);
     }
 
-    const stats = await DailyStat.find(query).lean();
-    
-    // Aggregate node visits across selected timeframe
-    const aggregatedHeatmap = {};
-    stats.forEach(stat => {
-      if (stat.flowHeatmap) {
-        // Handle Map serialization (might be object or Map depending on lean/schema)
-        const heatmap = stat.flowHeatmap instanceof Map ? Object.fromEntries(stat.flowHeatmap) : stat.flowHeatmap;
-        for (const [nodeId, count] of Object.entries(heatmap)) {
-          aggregatedHeatmap[nodeId] = (aggregatedHeatmap[nodeId] || 0) + count;
-        }
-      }
+    // Aggregate counts by nodeId
+    const heatmapData = await FlowAnalytics.aggregate([
+      { $match: matchQuery },
+      { $group: { _id: "$nodeId", count: { $sum: 1 } } }
+    ]);
+
+    const heatmap = {};
+    heatmapData.forEach(item => {
+      heatmap[item._id] = item.count;
     });
 
-    res.json({ success: true, heatmap: aggregatedHeatmap });
+    res.json({ success: true, heatmap });
   } catch (error) {
     console.error('Flow Heatmap Error:', error);
     res.status(500).json({ success: false, message: 'Server Error' });

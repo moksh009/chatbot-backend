@@ -12,6 +12,7 @@ const { createEvent } = require('../../utils/googleCalendar');
 const { decryptFlowData, encryptFlowResponse } = require('../../utils/flowEncryption');
 const { runDualBrainEngine } = require('../../utils/dualBrainEngine');
 const { normalizePhone } = require('../../utils/helpers');
+const FlowAnalytics = require('../../models/FlowAnalytics');
 
 // --- Helper Functions ---
 /**
@@ -51,7 +52,15 @@ async function executeNode({ nodeId, nodes, edges, to, phoneNumberId, io, client
         Client.findOneAndUpdate(
             { clientId: clientConfig.clientId, "flowNodes.id": node.id },
             { $inc: { "flowNodes.$.visitCount": 1 } }
-        ).catch(e => console.error(`[AppointmentFlow] Failed to inc visitCount for node ${node.id}`, e.message))
+        ).catch(e => console.error(`[AppointmentFlow] Failed to inc visitCount for node ${node.id}`, e.message)),
+        FlowAnalytics.create({
+            clientId: clientConfig.clientId,
+            flowId: node.flowId || node.data?.flowId,
+            nodeId: node.id,
+            nodeType: node.type,
+            phone,
+            timestamp: new Date()
+        }).catch(e => console.error(`[AppointmentFlow] Failed to log flow analytics`, e.message))
     ]);
 
     if (node.type === 'message') {

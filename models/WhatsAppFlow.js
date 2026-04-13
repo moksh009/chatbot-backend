@@ -20,6 +20,14 @@ const WhatsAppFlowSchema = new mongoose.Schema({
     default: 'DRAFT'
   },
   categories: [String],
+  nodes: {
+    type: [mongoose.Schema.Types.Mixed],
+    default: []
+  },
+  edges: {
+    type: [mongoose.Schema.Types.Mixed],
+    default: []
+  },
   validationErrors: [mongoose.Schema.Types.Mixed],
   lastSyncedAt: {
     type: Date,

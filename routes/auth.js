@@ -6,12 +6,35 @@ const OTP = require('../models/OTP'); // Added OTP Model
 const { protect } = require('../middleware/auth');
 const { sanitizeMiddleware } = require('../utils/sanitize');
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs'); // ✅ Phase R4: for authenticated change-password
 const { sendSystemOTPEmail } = require('../utils/emailService');
 
-const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET || 'fallback_secret_dev', {
-    expiresIn: '30d',
-  });
+// ✅ Phase R4: Simple in-memory OTP rate limiter — max 3 sends per email per hour
+// Uses Map<email, { count, windowStart }> — resets after 1 hour
+const otpRateLimiter = new Map();
+function checkOtpRateLimit(email) {
+  const now = Date.now();
+  const WINDOW = 60 * 60 * 1000; // 1 hour
+  const MAX = 3;
+  const entry = otpRateLimiter.get(email);
+  if (entry) {
+    if (now - entry.windowStart < WINDOW) {
+      if (entry.count >= MAX) return false; // blocked
+      entry.count++;
+      return true;
+    }
+  }
+  // New window
+  otpRateLimiter.set(email, { count: 1, windowStart: now });
+  return true;
+}
+
+const generateToken = (id, clientId, role) => {
+  return jwt.sign(
+    { id, clientId, role }, // ✅ Phase R4: Include clientId + role in token payload
+    process.env.JWT_SECRET || 'fallback_secret_dev',
+    { expiresIn: '30d' }
+  );
 };
 
 router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
@@ -138,8 +161,8 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
         isLifetimeAdmin: user.isLifetimeAdmin,
         business_type: client ? client.businessType || user.business_type : user.business_type,
         clientId: user.clientId,
-        token: generateToken(user._id),
-        clientName: client ? client.name : null, // Add client name
+        token: generateToken(user._id, user.clientId, user.role), // ✅ Phase R4: clientId+role in JWT
+        clientName: client ? client.name : null,
         subscriptionPlan: user.isLifetimeAdmin ? 'enterprise' : (client ? client.tier || 'v1' : 'v1'),
         plan: user.isLifetimeAdmin ? 'Enterprise AI' : (client ? client.plan || 'CX Agent (V1)' : 'CX Agent (V1)'),
         hasCompletedTour: user.hasCompletedTour,
@@ -158,24 +181,34 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
 
 router.post('/register', async (req, res) => {
   const { name, email, password, businessName, businessType, otp } = req.body;
+  const mongoose = require('mongoose');
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
   try {
-    const userExists = await User.findOne({ email });
+    const userExists = await User.findOne({ email }).session(session);
     if (userExists) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'User already exists' });
     }
 
     if (!businessName || !name || !email || !password || !otp) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'All fields including OTP are required' });
     }
 
     // -- OTP Verification --
-    const validOtp = await OTP.findOne({ email, otp, purpose: 'SIGNUP' });
+    const validOtp = await OTP.findOne({ email, otp, purpose: 'SIGNUP' }).session(session);
     if (!validOtp) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'Invalid or expired OTP.' });
     }
     // Delete OTP so it can't be reused
-    await OTP.deleteOne({ _id: validOtp._id });
+    await OTP.deleteOne({ _id: validOtp._id }).session(session);
 
     // Generate unique clientId from business name + random hex
     const crypto = require('crypto');
@@ -184,47 +217,52 @@ router.post('/register', async (req, res) => {
     const newClientId = `${safeName}_${uniqueId}`;
 
     // Valid business types for client and user models
-    const validTypes = ['ecommerce', 'salon', 'turf', 'clinic', 'choice_salon', 'choice_salon_new', 'agency', 'other'];
+    const validTypes = ['ecommerce', 'salon', 'turf', 'clinic', 'choice_salon', 'choice_salon_new', 'agency', 'travel', 'real-estate', 'healthcare', 'other'];
     const chosenType = (businessType && validTypes.includes(businessType)) ? businessType : 'other';
 
-    // 1. Create the Client (Trial mode default)
-    const newClient = await Client.create({
+    // 1. Create the Client (Trial mode default: 14 Days)
+    const newClient = await Client.create([{
       clientId: newClientId,
       businessName: businessName,
       name: businessName,
       isActive: true,
       trialActive: true,
-      trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000), // Extended to 14 days
       plan: 'CX Agent (V1)',
       businessType: chosenType, 
       flowNodes: [],
       flowEdges: []
-    });
+    }], { session });
 
     // 2. Create the User linked to this new Client
-    const user = await User.create({
+    const user = await User.create([{
       name,
       email,
       password,
       role: 'CLIENT_ADMIN',
       business_type: chosenType,
       clientId: newClientId
-    });
+    }], { session });
+
+    await session.commitTransaction();
+    session.endSession();
 
     if (user && newClient) {
       res.status(201).json({
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        business_type: user.business_type,
-        clientId: user.clientId,
-        token: generateToken(user._id),
+        _id: user[0]._id,
+        name: user[0].name,
+        email: user[0].email,
+        role: user[0].role,
+        business_type: user[0].business_type,
+        clientId: user[0].clientId,
+        token: generateToken(user[0]._id, user[0].clientId, user[0].role),
       });
     } else {
       res.status(400).json({ message: 'Failed to create user or client' });
     }
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     console.error('Registration Error:', error);
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
@@ -243,6 +281,14 @@ router.post('/send-otp', async (req, res) => {
   if (!email) return res.status(400).json({ message: 'Email required' });
 
   email = email.toLowerCase().trim();
+
+  // ✅ Phase R4: Rate limit — max 3 OTP requests per email per hour
+  if (!checkOtpRateLimit(email)) {
+    return res.status(429).json({ 
+      message: 'Too many OTP requests. Please wait 1 hour before requesting again.',
+      code: 'OTP_RATE_LIMITED'
+    });
+  }
 
   // If purpose is RESET_PASSWORD, ensure user exists
   if (purpose === 'RESET_PASSWORD') {
@@ -304,6 +350,39 @@ router.post('/change-password', async (req, res) => {
   } catch (error) {
     console.error('Change Password Error:', error);
     res.status(500).json({ message: 'Server error changing password' });
+  }
+});
+
+
+// ✅ Phase R4: Authenticated change-password for Settings page
+// POST /api/auth/update-password — requires valid JWT, takes currentPassword + newPassword
+router.post('/update-password', protect, async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ message: 'Current password and new password are required' });
+  }
+  if (newPassword.length < 8) {
+    return res.status(400).json({ message: 'New password must be at least 8 characters' });
+  }
+
+  try {
+    // Re-fetch with password field (it's excluded by default in protect middleware)
+    const user = await User.findById(req.user._id).select('+password');
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ message: 'Current password is incorrect', code: 'WRONG_PASSWORD' });
+    }
+
+    user.password = newPassword; // pre-save hook hashes it
+    await user.save();
+
+    res.json({ success: true, message: 'Password updated successfully' });
+  } catch (error) {
+    console.error('[Auth] update-password error:', error);
+    res.status(500).json({ message: 'Server error updating password' });
   }
 });
 

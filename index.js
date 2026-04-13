@@ -619,26 +619,52 @@ let ioOptions = {
 const io = socketIo(server, ioOptions);
 
 // Connect Redis Adapter if REDIS_URL exists
+global.redisConnected = false;
 if (process.env.REDIS_URL) {
-  const pubClient = new Redis(process.env.REDIS_URL, {
-    maxRetriesPerRequest: 3,
-    retryStrategy: (times) => {
-      if (times > 3) return null; // stop retrying after 3 attempts
-      return Math.min(times * 50, 2000);
-    }
-  });
+  // ✅ Phase R4 Fix: Internal Render Redis URLs (red-*) are unreachable from local machines.
+  // We detect if we're running locally vs on Render and skip to prevent the "Connection is closed" crash.
+  const isInternalRenderRedis = process.env.REDIS_URL.includes('red-');
+  const isRunningOnRender = !!process.env.RENDER;
+
+  if (isInternalRenderRedis && !isRunningOnRender) {
+    log.warn('⚠️ Render-internal Redis detected in local environment. Skipping Redis to prevent crash.');
+    log.info('Falling back to local Memory adapter for Socket.io and disabling background workers.');
+  } else {
+    log.info('Attempting Redis connection...');
+    const pubClient = new Redis(process.env.REDIS_URL, {
+      maxRetriesPerRequest: 1, 
+      connectTimeout: 5000,
+      retryStrategy: (times) => {
+        if (times > 1) return null; 
+        return 1000;
+      }
+    });
   
+  pubClient.on('connect', () => {
+    global.redisConnected = true;
+    log.success('✅ Redis connected successfully.');
+  });
+
   pubClient.on('error', (err) => {
-    log.error('Redis PubClient Error:', { message: err.message, code: err.code });
+    log.warn('⚠️ Redis Connection Error:', { message: err.message, code: err.code });
+    if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED') {
+      log.info('Server will proceed without Redis Scaling Adapter (Socket.io fallbacks to Memory).');
+    }
   });
 
   const subClient = pubClient.duplicate();
   subClient.on('error', (err) => {
-    log.error('Redis SubClient Error:', { message: err.message, code: err.code });
+    // Only log if not already logged by pubClient to avoid spam
+    if (err.code !== 'ENOTFOUND') {
+      log.warn('Redis SubClient Error:', { message: err.message });
+    }
   });
 
+  // Only attach adapter if connection is potentially healthy
+  // We attach it, but Socket.io is mostly resilient to adapter failures if they happen later
   io.adapter(createAdapter(pubClient, subClient));
-  log.info('✅ Socket.io Redis Adapter initialization attempted');
+  log.info('Socket.io Redis Adapter initialization attempted');
+  }
 }
 
 

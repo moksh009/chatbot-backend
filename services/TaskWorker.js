@@ -2,15 +2,38 @@ const { Worker } = require('bullmq');
 const Redis = require('ioredis');
 const log = require('../utils/logger')('TaskWorker');
 
-const redisConnection = new Redis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
+const isInternalRenderRedis = (process.env.REDIS_URL || '').includes('red-');
+const isRunningOnRender = !!process.env.RENDER;
+
+let redisConnection = null;
+
+if (isInternalRenderRedis && !isRunningOnRender) {
+  log.warn('[TaskWorker] ⚠️ Render-internal Redis detected locally. Worker is DISABLED.');
+} else {
+  redisConnection = new Redis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
     maxRetriesPerRequest: null,
-});
+    retryStrategy: (times) => {
+      if (times > 3) {
+        log.error('[TaskWorker] Redis connection failed persistently. Disabling worker.');
+        return null; // Stop retrying
+      }
+      return Math.min(times * 100, 3000);
+    }
+  });
+
+  redisConnection.on('error', (err) => {
+    if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED') {
+      log.warn('[TaskWorker] ⚠️ Redis unreachable. Background Enterprise Tasks are DISABLED.');
+    } else {
+      log.error('[TaskWorker] Redis Error:', err.message);
+    }
+  });
+}
 
 /**
  * TaskWorker
- * Processes asynchronous tasks for scaling.
  */
-const taskWorker = new Worker('enterprise-tasks', async (job) => {
+const taskWorker = redisConnection ? new Worker('enterprise-tasks', async (job) => {
     const { type, data } = job;
     log.info(`[TaskWorker] Picked up job ${job.id} of type: ${job.name}`);
 

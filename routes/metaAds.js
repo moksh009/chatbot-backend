@@ -7,6 +7,7 @@ const AdLead          = require("../models/AdLead");
 const Client          = require("../models/Client");
 const { verifyToken } = require("../middleware/auth");
 const { syncMetaAds, getAdAccounts } = require("../utils/metaAdsAPI");
+const { platformGenerateJSON } = require("../utils/gemini"); // ✅ Phase R4: Use platform key wrapper
 
 // ─── GET /api/meta-ads/:clientId — list all imported ads ────────────────────
 router.get("/:clientId", verifyToken, async (req, res) => {
@@ -167,10 +168,6 @@ router.post("/:clientId/analyze", verifyToken, async (req, res) => {
       cpl: a.topedgeStats?.leadsCount > 0 ? (a.insights?.spend / a.topedgeStats.leadsCount).toFixed(2) : 0,
     }));
 
-    const { GoogleGenerativeAI } = require("@google/generative-ai");
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
     const prompt = `You are a world-class Meta Ads conversion engineer for an Indian D2C brand.
 Analyze these ad metrics for ${client.name || 'this brand'} and provide 4 surgical, data-backed suggestions.
 
@@ -186,19 +183,12 @@ ${JSON.stringify(metricsBlock, null, 2)}
 Return ONLY a JSON array with this schema:
 [{ "title": string, "suggestion": string, "priority": "high"|"medium"|"low", "metric": "CTR"|"CPL"|"ROI"|"CPM", "impact": string }]`;
 
-    const result = await model.generateContent(prompt);
-    let text = result.response.text().trim();
-    
-    // Clean JSON response from potential AI markdown
-    if (text.startsWith('```')) {
-      text = text.replace(/```json|```/g, '').trim();
-    }
-
+    // ✅ Phase R4: Use platformGenerateJSON (correct model, correct key, no crash)
     let suggestions = [];
-    try { 
-      suggestions = JSON.parse(text); 
-    } catch (parseErr) {
-      console.warn("[MetaAds] AI Parse Error, falling back to basic analysis.");
+    const parsed = await platformGenerateJSON(prompt, { temperature: 0.3 });
+    if (parsed && Array.isArray(parsed)) {
+      suggestions = parsed;
+    } else {
       suggestions = [{ 
         title: "Intelligence Ready", 
         suggestion: "Your ads are being analyzed. High-level observation: Your average CPL is ₹" + (metricsBlock.reduce((s, m) => s + Number(m.cpl), 0) / metricsBlock.length).toFixed(2), 
@@ -208,9 +198,7 @@ Return ONLY a JSON array with this schema:
       }];
     }
 
-    res.json({ success: true, suggestions, analyzedAds: ads.length });
-
-    res.json({ success: true, suggestions, analyzedAds: ads.length });
+    return res.json({ success: true, suggestions, analyzedAds: ads.length }); // ✅ Phase R4: Single res.json() — removed duplicate
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

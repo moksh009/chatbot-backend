@@ -40,18 +40,34 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     const systemPrompt = await generateSystemPrompt(client, wizardData);
 
     // Build the new flow object
+    const flowId = `flow_wizard_${Date.now()}`;
     const newFlow = {
-      id:          `flow_wizard_${Date.now()}`,
+      id:          flowId,
       name:        `${wizardData.businessName || client.name} — Main Flow`,
       platform:    "whatsapp",
       isActive:    true,
       folderId:    "",
-      nodes,
-      edges,
+      nodes:       nodes.length > 20 ? [] : nodes,
+      edges:       nodes.length > 20 ? [] : edges,
+      flowModelId: null, // Populated if > 20 nodes
       createdAt:   new Date(),
       updatedAt:   new Date(),
       generatedBy: "wizard"
     };
+
+    // ✅ Phase R4: Smart Flow Storage Offloading (> 20 nodes)
+    if (nodes.length > 20) {
+      const WhatsAppFlow = require("../models/WhatsAppFlow");
+      const storedFlow = await WhatsAppFlow.create({
+        clientId,
+        flowId,
+        name: newFlow.name,
+        nodes,
+        edges,
+        status: 'PUBLISHED'
+      });
+      newFlow.flowModelId = storedFlow._id;
+    }
 
     // Update the client document:
     // 1. Mark wizard as complete
@@ -64,8 +80,8 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       wizardCompletedAt:  new Date(),
       isAIFallbackEnabled: true,
       ...(wizardData.replaceExisting !== false && { 
-        flowNodes: nodes, 
-        flowEdges: edges 
+        flowNodes: newFlow.nodes, 
+        flowEdges: newFlow.edges 
       }),
       ...(wizardData.businessName    && { 
         businessName: wizardData.businessName, 
@@ -190,29 +206,22 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     // If replaceExisting, update the active main flow's nodes instead of always pushing
     let updateQuery;
     if (wizardData.replaceExisting !== false) {
-      // Replace the active whatsapp flow's nodes
       const existingFlows = client.visualFlows || [];
       const activeFlowIdx = existingFlows.findIndex(f => f.isActive && f.platform === 'whatsapp');
       
       if (activeFlowIdx !== -1) {
-        // Update in-place
         existingFlows[activeFlowIdx] = {
           ...existingFlows[activeFlowIdx],
-          nodes,
-          edges,
+          nodes: newFlow.nodes,
+          edges: newFlow.edges,
+          flowModelId: newFlow.flowModelId,
           updatedAt: new Date(),
           generatedBy: 'wizard'
         };
-        updateQuery = {
-          $set: { ...settingsUpdate, visualFlows: existingFlows }
-        };
+        updateQuery = { $set: { ...settingsUpdate, visualFlows: existingFlows } };
       } else {
-        // No active flow found, push the new one
         newFlow.isActive = true;
-        updateQuery = {
-          $set: settingsUpdate,
-          $push: { visualFlows: newFlow }
-        };
+        updateQuery = { $set: settingsUpdate, $push: { visualFlows: newFlow } };
       }
     } else {
       // Add as new flow (keep existing active ones)

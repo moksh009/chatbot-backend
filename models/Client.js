@@ -113,7 +113,7 @@ const ClientSchema = new mongoose.Schema({
   },
   businessType: { 
     type: String, 
-    enum: ['ecommerce', 'salon', 'turf', 'clinic', 'choice_salon', 'choice_salon_new', 'agency', 'other'],
+    enum: ['ecommerce', 'salon', 'turf', 'clinic', 'choice_salon', 'choice_salon_new', 'agency', 'travel', 'real-estate', 'healthcare', 'other'],
     default: 'other'
   },
   niche: {
@@ -239,9 +239,11 @@ const ClientSchema = new mongoose.Schema({
   messageTemplates: { type: mongoose.Schema.Types.Mixed, default: [] },
   
   automationFlows: [{
-    id: { type: String },
+    id:       { type: String },
+    type:     { type: String }, // ✅ Phase R4: Added — e.g. 'abandoned_cart', 'cod_to_prepaid', 'review_collection'
+    name:     { type: String },
     isActive: { type: Boolean, default: false },
-    config: { type: mongoose.Schema.Types.Mixed, default: {} }
+    config:   { type: mongoose.Schema.Types.Mixed, default: {} }
   }],
   
   // Phase 9 Visual Node Builder Fields
@@ -482,10 +484,19 @@ const ClientSchema = new mongoose.Schema({
   // Phase 29: AI Persona & Customization
   ai: {
     persona: {
-      name: { type: String, default: "TopEdge AI Assistant" },
-      avatar: { type: String, default: "" },
-      tone: { type: String, default: "Professional & Helpful" },
-      description: { type: String, default: "You are an automated assistant dedicated to providing fast and accurate business support." }
+      name:             { type: String, default: "TopEdge AI Assistant" },
+      avatar:           { type: String, default: "" },
+      tone:             { type: String, default: "Professional & Helpful" },
+      description:      { type: String, default: "You are an automated assistant dedicated to providing fast and accurate business support." },
+      // ✅ Phase R4: Missing canonical persona fields added (personaEngine.js reads all of these)
+      role:             { type: String, default: "customer support specialist" },
+      language:         { type: String, default: "English" },
+      emojiLevel:       { type: String, enum: ["none", "minimal", "moderate", "high"], default: "moderate" },
+      formality:        { type: String, enum: ["formal", "semi-formal", "casual"], default: "semi-formal" },
+      autoTranslate:    { type: Boolean, default: false },
+      knowledgeBase:    { type: String, default: "" }, // FAQs, policies, product info injected into prompts
+      signaturePhrases: { type: [String], default: [] },  // Rotating phrases (e.g., "Happy to help!")
+      avoidTopics:      { type: [String], default: [] }   // Topics the bot must never discuss
     },
     trainingData: [{
       userMessage: { type: String },

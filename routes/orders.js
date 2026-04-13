@@ -81,6 +81,32 @@ router.post('/:clientId/bulk-action', protect, async (req, res) => {
     
     if (action_type === 'status_update') {
       await Order.updateMany({ _id: { $in: targetOrderIds }, clientId }, { $set: { status: new_status } });
+    } else if (action_type === 'cod_verify') {
+      const Client = require('../models/Client');
+      const client = await Client.findOne({ clientId });
+      if (client) {
+        const { sendTemplateMessage } = require('../utils/whatsappAPI');
+        const orders = await Order.find({ _id: { $in: targetOrderIds }, clientId });
+        
+        for (const order of orders) {
+          const isCod = order.paymentMethod?.toLowerCase() === 'cod' || order.isCOD === true;
+          if (isCod) {
+            order.status = 'verification_pending';
+            await order.save();
+            const phone = order.customerPhone || order.phone;
+            if (phone && client.whatsappToken) {
+              try {
+                await sendTemplateMessage(clientId, phone, 'cod_verification_request', [
+                  { type: 'text', text: order.customerName || 'Customer' },
+                  { type: 'text', text: order.orderId || order.orderNumber }
+                ]);
+              } catch (e) {
+                console.error('Failed to send COD verification WhatsApp', e.message);
+              }
+            }
+          }
+        }
+      }
     }
     
     // In a real scenario we'd integrate Shopify updates and WhatsApp sending here
