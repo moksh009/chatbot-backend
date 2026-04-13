@@ -19,7 +19,9 @@ const FollowUpSequenceSchema = new mongoose.Schema({
     status: { type: String, enum: ["pending", "sent", "failed", "skipped"], default: "pending" },
     sentAt: Date,
     errorLog: String,
-    condition: String
+    condition: String,
+    mediaType: { type: String, enum: ['none', 'static', 'dynamic'], default: 'none' },
+    mediaUrl: String
   }]
 }, { timestamps: true });
 

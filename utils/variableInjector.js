@@ -166,16 +166,17 @@ function injectVariables(text, context) {
     }
 
     // 3. Resolve value or fallback
-    if (value !== undefined && value !== null && String(value) !== "") {
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
       return String(value);
     }
 
-    // If no value, use fallback if provided, otherwise keep match
+    // If no value, use explicit fallback if provided (e.g. {{name | 'there'}})
     if (fallback !== undefined && fallback !== null) {
       return fallback;
     }
 
-    return match; // Keep {{unknown_var}} as-is
+    // Default fallback for sequences/outbound: return "-"
+    return "-";
   });
 }
 

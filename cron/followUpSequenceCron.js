@@ -91,6 +91,19 @@ const scheduleFollowUpSequenceCron = () => {
                             }
                         }
 
+                        // Phase 31: Advanced Image Logic (Static & Dynamic)
+                        let mediaUrl = null;
+                        if (dueStep.mediaType === 'static') {
+                            mediaUrl = dueStep.mediaUrl;
+                        } else if (dueStep.mediaType === 'dynamic') {
+                            // Fetch dynamic image from lead's cartSnapshot or latest items
+                            mediaUrl = lead.cartSnapshot?.items?.[0]?.image || lead.cartSnapshot?.items?.[0]?.url;
+                            // Fallback to a business-default image if shopify sync didn't provide one
+                            if (!mediaUrl && client.nicheData?.defaultProductImage) {
+                                mediaUrl = client.nicheData.defaultProductImage;
+                            }
+                        }
+
                         if (dueStep.templateName && !useAI) {
                             try {
                                 await WhatsApp.sendSmartTemplate(
@@ -98,7 +111,7 @@ const scheduleFollowUpSequenceCron = () => {
                                     seq.phone, 
                                     dueStep.templateName, 
                                     [lead?.name || "there", lead?.email || "-", lead?.city || "-"],
-                                    null,
+                                    mediaUrl || null,
                                     client.languageCode || 'en'
                                 );
                                 sentSuccess = true;
@@ -108,7 +121,11 @@ const scheduleFollowUpSequenceCron = () => {
                             }
                         } else {
                              try {
-                                await WhatsApp.sendText(client, seq.phone, finalContent);
+                                if (mediaUrl) {
+                                    await WhatsApp.sendImage(client, seq.phone, mediaUrl, finalContent);
+                                } else {
+                                    await WhatsApp.sendText(client, seq.phone, finalContent);
+                                }
                                 sentSuccess = true;
                              } catch (e) {
                                 sentSuccess = false;
