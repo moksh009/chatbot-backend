@@ -64,7 +64,17 @@ router.post('/:clientId/import', protect, logAction('IMPORT_LEADS'), upload.sing
         if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
 
         const filename = req.file.originalname;
-        const mapping = req.body.mapping ? JSON.parse(req.body.mapping) : {};
+        let mapping = {};
+        
+        if (req.body.mapping) {
+            try {
+                mapping = JSON.parse(req.body.mapping);
+            } catch (pErr) {
+                console.error('[IMPORT_MAPPING_PARSE_ERROR]', pErr);
+                if (req.file) fs.unlinkSync(req.file.path);
+                return res.status(400).json({ success: false, message: 'Invalid mapping data provided' });
+            }
+        }
         
         // Ensure imports directory exists
         const importDir = path.join(__dirname, '../uploads/imports');
@@ -72,7 +82,19 @@ router.post('/:clientId/import', protect, logAction('IMPORT_LEADS'), upload.sing
 
         // Move file to a persistent location for the background worker
         const persistentPath = path.join(importDir, `${batchId}.csv`);
-        fs.renameSync(req.file.path, persistentPath);
+        
+        try {
+            // Enterprise Fix: fs.renameSync can fail across filesystems (e.g. /tmp to /app)
+            fs.renameSync(req.file.path, persistentPath);
+        } catch (renameErr) {
+            if (renameErr.code === 'EXDEV') {
+                // Cross-device link error: copy and delete instead
+                fs.copyFileSync(req.file.path, persistentPath);
+                fs.unlinkSync(req.file.path);
+            } else {
+                throw renameErr;
+            }
+        }
 
         // Create an Import Session
         await ImportSession.create({
@@ -100,8 +122,12 @@ router.post('/:clientId/import', protect, logAction('IMPORT_LEADS'), upload.sing
         });
 
     } catch (err) {
-        console.error('[IMPORT_TRIGGER_ERROR]', err);
-        res.status(500).json({ success: false, message: 'Failed to start import' });
+        console.error('[IMPORT_TRIGGER_ERROR] Full Context:', err);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Failed to start import',
+            details: process.env.NODE_ENV === 'development' ? err.message : undefined
+        });
     }
 });
 
