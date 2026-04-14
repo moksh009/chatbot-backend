@@ -1478,8 +1478,7 @@ router.get('/lead-intelligence', protect, async (req, res) => {
       summary: {
          totalLeads,
          highIntentCount: highIntent,
-         rtoRiskCount: RTO,
-         conversionPropensity: totalLeads > 0 ? (highIntent / totalLeads * 100).toFixed(1) : 0
+         rtoRiskCount: RTO
       },
       distribution: intentDistribution.reduce((acc, curr) => ({ ...acc, [curr._id || 'unknown']: curr.count }), {})
     });
