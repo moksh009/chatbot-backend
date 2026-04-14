@@ -2,54 +2,132 @@ const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
 const AdLead = require('../models/AdLead');
-const Order = require('../models/Order');
+const Contact = require('../models/Contact');
+const WarrantyBatch = require('../models/WarrantyBatch');
+const WarrantyRecord = require('../models/WarrantyRecord');
 const Client = require('../models/Client');
-const warrantyService = require('../utils/warrantyService');
+const { withShopifyRetry } = require('../utils/shopifyHelper');
 
 /**
- * GET /api/warranty/unassigned-orders
- * @desc Fetch leads/orders that don't have warranties assigned yet
+ * @route   GET /api/warranty/batches
+ * @desc    Fetch all warranty batches for a client
  */
-router.get('/unassigned-orders', protect, async (req, res) => {
+router.get('/batches', protect, async (req, res) => {
     try {
         const clientId = req.user.clientId;
-        
-        // Fetch leads who have placed orders but have 0 warranty records
-        const leads = await AdLead.find({
-            clientId,
-            isOrderPlaced: true,
-            $or: [
-                { warrantyRecords: { $exists: false } },
-                { warrantyRecords: { $size: 0 } }
-            ]
-        }).limit(50).sort({ lastInteraction: -1 });
-
-        res.json({ success: true, leads });
+        const batches = await WarrantyBatch.find({ clientId }).sort({ createdAt: -1 });
+        res.json({ success: true, batches });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }
 });
 
 /**
- * POST /api/warranty/manual-register
- * @desc Manually assign a warranty record to a customer
+ * @route   POST /api/warranty/batches
+ * @desc    Create a new warranty batch
  */
-router.post('/manual-register', protect, async (req, res) => {
+router.post('/batches', protect, async (req, res) => {
     try {
-        const { phoneNumber, productName, serialNumber, orderId, duration, purchaseDate } = req.body;
+        const { batchName, shopifyProductIds, durationMonths, validFrom, validUntil } = req.body;
         const clientId = req.user.clientId;
-        const client = await Client.findOne({ clientId });
 
-        if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
-
-        const record = await warrantyService.manualRegister(client, phoneNumber, {
-            productName,
-            serialNumber,
-            orderId,
-            duration,
-            purchaseDate
+        const newBatch = await WarrantyBatch.create({
+            clientId,
+            batchName,
+            shopifyProductIds,
+            durationMonths,
+            validFrom: validFrom || new Date(),
+            validUntil,
+            status: 'active'
         });
 
+        res.status(201).json({ success: true, batch: newBatch });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+/**
+ * @route   PATCH /api/warranty/batches/:id
+ * @desc    Update or Terminate a warranty batch
+ */
+router.patch('/batches/:id', protect, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status, durationMonths, applyRetroactively, voidExisting } = req.body;
+        const clientId = req.user.clientId;
+
+        const batch = await WarrantyBatch.findOne({ _id: id, clientId });
+        if (!batch) return res.status(404).json({ success: false, message: 'Batch not found' });
+
+        // Update fields
+        if (status) batch.status = status;
+        if (durationMonths) batch.durationMonths = durationMonths;
+        
+        await batch.save();
+
+        // Task 3.3: Mass Edit/Terminate logic
+        if (durationMonths && applyRetroactively) {
+            // Recalculate expiryDate for all active records in this batch
+            // Logic: expiryDate = purchaseDate + new durationMonths
+            const records = await WarrantyRecord.find({ batchId: id, status: 'active' });
+            for (const record of records) {
+                const newExpiry = new Date(record.purchaseDate);
+                newExpiry.setMonth(newExpiry.getMonth() + durationMonths);
+                record.expiryDate = newExpiry;
+                await record.save();
+            }
+        }
+
+        if (status === 'terminated' && voidExisting) {
+            // Void all active records in this batch
+            await WarrantyRecord.updateMany(
+                { batchId: id, status: 'active' },
+                { $set: { status: 'void' } }
+            );
+        }
+
+        res.json({ success: true, batch });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+/**
+ * @route   GET /api/warranty/records
+ * @desc    Fetch all live warranty records
+ */
+router.get('/records', protect, async (req, res) => {
+    try {
+        const clientId = req.user.clientId;
+        const records = await WarrantyRecord.find({ clientId })
+            .populate('customerId', 'name phoneNumber email')
+            .populate('batchId', 'batchName')
+            .sort({ createdAt: -1 });
+        
+        res.json({ success: true, records });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+/**
+ * @route   PATCH /api/warranty/records/:id
+ * @desc    Update individual warranty record (Task 4.2)
+ */
+router.patch('/records/:id', protect, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { expiryDate, status } = req.body;
+        const clientId = req.user.clientId;
+
+        const record = await WarrantyRecord.findOne({ _id: id, clientId });
+        if (!record) return res.status(404).json({ success: false, message: 'Record not found' });
+
+        if (expiryDate) record.expiryDate = new Date(expiryDate);
+        if (status) record.status = status;
+
+        await record.save();
         res.json({ success: true, record });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
@@ -57,24 +135,16 @@ router.post('/manual-register', protect, async (req, res) => {
 });
 
 /**
- * POST /api/warranty/resend-notification
- * @desc Manually trigger a notification for an existing record
+ * Legacy Support / Redirects
+ * We keep some old endpoint names but point them to the new logic if appropriate
  */
-router.post('/resend-notification', protect, async (req, res) => {
+router.get('/unassigned-orders', protect, async (req, res) => {
+    // For now, return mock empty or actual pending orders from Order model
+    const Order = require('../models/Order');
     try {
-        const { phoneNumber, recordId } = req.body;
         const clientId = req.user.clientId;
-        const client = await Client.findOne({ clientId });
-
-        const lead = await AdLead.findOne({ clientId, phoneNumber });
-        if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
-
-        const record = lead.warrantyRecords.id(recordId);
-        if (!record) return res.status(404).json({ success: false, message: 'Warranty record not found' });
-
-        await warrantyService.sendNotifications(client, phoneNumber, record);
-
-        res.json({ success: true, message: 'Notification dispatched successfully' });
+        const orders = await Order.find({ clientId }).limit(20);
+        res.json({ success: true, leads: orders }); // Keeping "leads" key for frontend compatibility during transition
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }

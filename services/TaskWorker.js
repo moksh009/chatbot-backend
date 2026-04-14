@@ -163,6 +163,7 @@ async function handleImportLeads(data, job) {
                         clientId,
                         phoneNumber,
                         name,
+                        isNameCustom: !!rawName, // Source of Truth priority
                         email: rawEmail?.toLowerCase().trim(),
                         source: 'CSV_Import',
                         optStatus: 'opted_in',

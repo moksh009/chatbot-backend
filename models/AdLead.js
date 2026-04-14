@@ -15,6 +15,10 @@ const adLeadSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  isNameCustom: {
+    type: Boolean,
+    default: false
+  },
   email: {
     type: String,
     trim: true,

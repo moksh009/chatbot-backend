@@ -18,16 +18,23 @@ const storage = multer.diskStorage({
 
 const upload = multer({ 
   storage: storage,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB limit for videos
   fileFilter: (req, file, cb) => {
-    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'video/mp4', 'audio/mpeg', 'audio/ogg', 'application/pdf'];
-    if (allowedTypes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Invalid file type'), false);
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'video/mp4', 'audio/mpeg', 'audio/ogg', 'application/pdf', 'audio/wav', 'audio/webm'];
+    const isVideo = file.mimetype.startsWith('video/');
+    const isLarge = file.size > 5 * 1024 * 1024;
+
+    if (!allowedTypes.includes(file.mimetype)) {
+      return cb(new Error('Invalid file type'), false);
     }
+    
+    // Multer size limit is global, but we can check here if it's too large for non-video
+    // Note: file.size might not be available in fileFilter depending on the storage engine, 
+    // but with diskStorage it usually is. 
+    cb(null, true);
   }
 });
+
 
 /**
  * @route   POST /api/media/upload

@@ -28,6 +28,10 @@ const BotAnalytics = require("../models/BotAnalytics");
 const { buildPersonaSystemPrompt, applyPersonaPostProcess } = require("./personaEngine"); // Phase 29 Track 3
 const { getRelevantExamples, buildFewShotPrompt } = require("./trainingEngine"); // Phase 29 Track 4
 const { generatePaymentLink } = require("./paymentLinkGenerator"); // Phase 29 Track 7
+const MessageBufferService = require('../services/MessageBufferService');
+const { resolveAndSaveMedia } = require('./whatsappMedia');
+
+
 
 const SESSION_LOCK_TIMEOUT = 10000; // 10 seconds (Fallback for TTL)
 
@@ -257,7 +261,14 @@ async function handleWhatsAppMessage(from, message, phoneNumberId, profileName =
         return;
     }
 
+    // Resolve Media IDs if present (Phase 28 Track 2)
+    const mediaObj = parsed.image || parsed.audio || parsed.video || parsed.document;
+    if (mediaObj && mediaObj.id) {
+        parsed.mediaUrl = await resolveAndSaveMedia(mediaObj.id, client);
+    }
+
     // Parse the payload into engine format
+
     // (In masterWebhook we did some rough parsing, here we ensure consistency)
     const parsedMessage = {
       from,
@@ -275,8 +286,10 @@ async function handleWhatsAppMessage(from, message, phoneNumberId, profileName =
       document: message.document,
       channel: 'whatsapp',
       referral: message.referral,
-      profileName
+      profileName,
+      mediaUrl: parsed.mediaUrl
     };
+
 
     // run engine
     await runDualBrainEngine(parsedMessage, client);
@@ -410,6 +423,13 @@ async function runDualBrainEngine(parsedMessage, client) {
     { upsert: true, new: true }
   );
 
+  // Trigger Intent Engine Buffer (Phase 28 Track 2)
+  if (inboundText && !convo?.botPaused) {
+      MessageBufferService.ingestWebhookMessage(client.clientId, phone, inboundText)
+        .catch(err => log.error('[IntentEngine] Buffer Ingestion Error:', err.message));
+  }
+
+
   // STEP 2: Upsert lead
   const referral = parsedMessage.referral;
   const adUpdate = referral ? {
@@ -437,13 +457,17 @@ async function runDualBrainEngine(parsedMessage, client) {
     { 
       $setOnInsert: { phoneNumber: phone, clientId: client.clientId, source: referral ? 'Meta Ad' : 'Direct' },
       $set: { 
-        ...(profileName && { name: profileName }), // Sync WhatsApp name
         lastInteraction: new Date()
       },
       ...adUpdate
     },
     { upsert: true, new: true }
   );
+
+  // Source of Truth: Only sync WhatsApp profile name if lead doesn't have a custom name
+  if (profileName && !lead.isNameCustom && lead.name !== profileName) {
+      lead = await AdLead.findByIdAndUpdate(lead._id, { $set: { name: profileName } }, { new: true });
+  }
 
   if (shouldIncrementMsg) {
      const { updateLeadWithScoring } = require('./leadScoring');
@@ -2824,9 +2848,12 @@ async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = 
       messageId: parsedMessage.messageId || '',
       channel:   channel, 
       rawData:   parsedMessage,
+      mediaUrl:  parsedMessage.mediaUrl,
+      timestamp: parsedMessage.timestamp ? new Date(parsedMessage.timestamp * 1000) : new Date(), // Fix: Meta timestamp is in seconds
       sentiment,
       sentimentScore
     });
+
 
     // Update Conversation with sentiment and auto-escalation flags
     if (finalConvoId) {

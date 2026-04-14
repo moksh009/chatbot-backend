@@ -7,6 +7,9 @@ const AdLead = require('../models/AdLead');
 const Order = require('../models/Order');
 const { trackEcommerceEvent } = require('../utils/analyticsHelper');
 const { decrypt } = require('../utils/encryption');
+const Contact = require('../models/Contact');
+const WarrantyBatch = require('../models/WarrantyBatch');
+const WarrantyRecord = require('../models/WarrantyRecord');
 const { processOrderForLoyalty } = require('../utils/walletService');
 const { logActivity } = require('../utils/activityLogger');
 const log = require('../utils/logger')('ShopifyWebhook');
@@ -287,10 +290,75 @@ async function handleOrder(client, data) {
         log.warn('[CartRecovery] Failed to cancel sequences after purchase:', seqErr.message);
     }
 
-    // --- PHASE 30.5: Enterprise Warranty Auto-Assign ---
-    const { assignWarranty } = require('../utils/warrantyService');
-    assignWarranty(client, cleanPhone, data)
-        .catch(e => log.error('Warranty auto-assignment failed', e.message));
+    // --- PHASE 30.5: Enterprise Warranty Auto-Assign (OVERHAULED) ---
+    try {
+        const orderDate = new Date(data.created_at || Date.now());
+        for (const item of data.line_items) {
+            const productId = String(item.product_id);
+            
+            // Find active batch matching this product
+            const batch = await WarrantyBatch.findOne({
+                clientId: client.clientId,
+                shopifyProductIds: productId,
+                status: 'active',
+                validFrom: { $lte: orderDate },
+                $or: [
+                    { validUntil: { $exists: false } },
+                    { validUntil: null },
+                    { validUntil: { $gte: orderDate } }
+                ]
+            });
+
+            if (batch) {
+                log.info(`[Warranty] Match found in batch ${batch.batchName} for product ${item.title}`);
+                
+                // Task 2.2: Ghost Contact Logic
+                let contact = await Contact.findOne({ clientId: client.clientId, phoneNumber: cleanPhone });
+                if (!contact) {
+                    log.info(`[Warranty] Ghost Contact detected. Creating record for ${cleanPhone}`);
+                    contact = await Contact.create({
+                        clientId: client.clientId,
+                        phoneNumber: cleanPhone,
+                        name: data.customer ? `${data.customer.first_name} ${data.customer.last_name || ''}` : 'Shopify Guest',
+                        email: data.email || data.customer?.email,
+                        lastPurchaseDate: orderDate
+                    });
+
+                    // Optional: Sync with AdLead if missing
+                    if (!lead) {
+                        await AdLead.create({
+                            clientId: client.clientId,
+                            phoneNumber: cleanPhone,
+                            name: contact.name,
+                            email: contact.email,
+                            source: 'Shopify Webhook (Ghost)',
+                            lastInteraction: new Date()
+                        }).catch(e => log.warn('AdLead sync failed (likely parallel race):', e.message));
+                    }
+                }
+
+                // Create individual Warranty Record
+                const expiryDate = new Date(orderDate);
+                expiryDate.setMonth(expiryDate.getMonth() + batch.durationMonths);
+
+                await WarrantyRecord.create({
+                    clientId: client.clientId,
+                    customerId: contact._id,
+                    shopifyOrderId: data.name || `#${data.id}`,
+                    productId: productId,
+                    productName: item.title,
+                    purchaseDate: orderDate,
+                    expiryDate: expiryDate,
+                    batchId: batch._id,
+                    status: 'active'
+                });
+
+                log.success(`[Warranty] Record created for ${contact.name} (Exp: ${expiryDate.toLocaleDateString()})`);
+            }
+        }
+    } catch (warrantyErr) {
+        log.error('[Warranty] Auto-assignment failed:', warrantyErr.message);
+    }
 
     // --- SKU-to-Template Automation ---
     if (client.skuAutomations?.length > 0) {

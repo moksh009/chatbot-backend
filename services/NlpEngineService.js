@@ -139,16 +139,24 @@ class NlpEngineService {
       if (intent && intent !== 'None') {
         console.log(`[NLPEngine] Confidence threshold passed (>= 0.70). Executing pipeline for intent: ${intent}`);
         
-        // Normalize phone for comparison (remove symbols if any)
+        // Normalize phone for comparison (ensure it's just digits)
         const cleanPhone = phoneNumber.replace(/\D/g, '');
+        
+        // Variants to try: exact, clean, 91 prefix, +91 prefix
+        const phoneVariants = [
+          phoneNumber, 
+          cleanPhone, 
+          cleanPhone.startsWith('91') ? cleanPhone.slice(2) : '91' + cleanPhone,
+          cleanPhone.startsWith('+') ? cleanPhone : '+' + cleanPhone
+        ];
 
         // MODULE 2: Update Conversation with last detected intent context
         try {
-          // Try exact match first, then clean match
-          let conversation = await Conversation.findOne({ phone: phoneNumber, clientId });
-          if (!conversation) {
-            conversation = await Conversation.findOne({ phone: cleanPhone, clientId });
-          }
+          let conversation = await Conversation.findOne({ 
+            clientId, 
+            phone: { $in: phoneVariants } 
+          });
+
 
           if (conversation) {
             await Conversation.updateOne(

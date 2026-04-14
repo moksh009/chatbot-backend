@@ -411,6 +411,104 @@ router.post('/:clientId/deploy-weights', protect, async (req, res) => {
     }
 });
 
+// POST /api/leads/bulk-delete
+// Supports filtering and hard/soft deletion
+router.post('/bulk-delete', protect, async (req, res) => {
+    try {
+        const { filters, hardDelete, leadIds } = req.body;
+        const clientId = req.user.clientId;
+
+        const query = { clientId };
+
+        // 1. Apply Filters or direct selection
+        if (leadIds && Array.isArray(leadIds) && leadIds.length > 0) {
+            query._id = { $in: leadIds };
+        } else if (filters) {
+            if (filters.segmentScore) {
+                const [min, max] = filters.segmentScore.split('-').map(Number);
+                query.leadScore = { $gte: min, $lte: max || 100 };
+            }
+            if (filters.lastSeen) {
+                const now = new Date();
+                let lastSeenDate;
+                switch (filters.lastSeen) {
+                    case '24h': lastSeenDate = new Date(now - 24 * 60 * 60 * 1000); break;
+                    case '7d': lastSeenDate = new Date(now - 7 * 24 * 60 * 60 * 1000); break;
+                    case '14d': lastSeenDate = new Date(now - 14 * 24 * 60 * 60 * 1000); break;
+                    case '1m': lastSeenDate = new Date(now - 30 * 24 * 60 * 60 * 1000); break;
+                    case '6m': lastSeenDate = new Date(now - 180 * 24 * 60 * 60 * 1000); break;
+                }
+                if (lastSeenDate) query.lastInteraction = { $lte: lastSeenDate };
+            }
+            if (filters.importId) {
+                query['meta.lastImportId'] = filters.importId;
+            }
+        }
+
+        // 2. Fetch Leads to get Phone Numbers (for Message/Conversation deletion)
+        const leads = await AdLead.find(query).select('phoneNumber');
+        const phoneNumbers = leads.map(l => l.phoneNumber);
+
+        if (leads.length === 0) {
+            return res.json({ success: true, message: 'No leads found matching filters.', count: 0 });
+        }
+
+        const Conversation = require('../models/Conversation');
+        const Message = require('../models/Message');
+
+        if (hardDelete) {
+            // Enterprise Hard Delete: Purge everything related to these leads
+            await AdLead.deleteMany(query);
+            await Conversation.deleteMany({ phone: { $in: phoneNumbers }, clientId });
+            await Message.deleteMany({ phone: { $in: phoneNumbers }, clientId });
+            
+            return res.json({ 
+                success: true, 
+                message: `Bulk hard delete complete. ${leads.length} contacts and their histories purged.`,
+                count: leads.length 
+            });
+        } else {
+            // Enterprise Soft Reset: Wipe memory only
+            await Conversation.updateMany(
+                { phone: { $in: phoneNumbers }, clientId },
+                { 
+                    $set: { 
+                        lastMessage: '',
+                        summary: '',
+                        lastDetectedIntent: null,
+                        unreadCount: 0,
+                        botPaused: false,
+                        requiresAttention: false,
+                        processedMessageIds: []
+                    }
+                }
+            );
+
+            await AdLead.updateMany(
+                query,
+                {
+                    $set: {
+                        sentimentScore: 50,
+                        leadScore: 10,
+                        inboundMessageCount: 0
+                    }
+                }
+            );
+
+            await Message.deleteMany({ phone: { $in: phoneNumbers }, clientId });
+
+            return res.json({ 
+                success: true, 
+                message: `Bulk soft reset complete. Memory cleared for ${leads.length} contacts.`,
+                count: leads.length 
+            });
+        }
+    } catch (err) {
+        console.error('[BulkDelete] Error:', err);
+        res.status(500).json({ success: false, message: 'Bulk deletion failed' });
+    }
+});
+
 router.post('/:contactId/reset', protect, async (req, res) => {
     try {
         const { contactId } = req.params;
