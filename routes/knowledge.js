@@ -5,6 +5,24 @@ const { protect } = require('../middleware/auth');
 const log = require('../utils/logger')('KnowledgeRoute');
 
 /**
+ * @route   GET /api/knowledge
+ * @desc    Get the full knowledge base of a client
+ */
+router.get('/', protect, async (req, res) => {
+  try {
+    const { clientId } = req.query;
+    if (!clientId) return res.status(400).json({ message: 'ClientId required' });
+
+    const client = await Client.findOne({ clientId }).select('knowledgeBase');
+    if (!client) return res.status(404).json({ message: 'Client not found' });
+
+    res.json(client.knowledgeBase || {});
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+/**
  * @route   GET /api/knowledge/pending
  * @desc    Get all pending knowledge proposals for a client
  */
