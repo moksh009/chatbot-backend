@@ -60,22 +60,13 @@ router.get('/', protect, async (req, res) => {
       .populate('assignedTo', 'name')
       .lean();
 
-    // Enterprise Enrichment: Attach Lead Intent Data (Bulk Optimized to avoid N+1)
+    // Enterprise Enrichment: Attach Lead Intent Data
     const AdLead = require('../models/AdLead');
-    const phoneNumbers = conversations.map(c => c.phone);
-    
-    // Bulk fetch leads with optimized field selection
-    const leads = await AdLead.find({ 
-        phoneNumber: { $in: phoneNumbers }, 
-        clientId: activeClientId 
-    }).select('phoneNumber cartStatus checkoutInitiatedCount isOrderPlaced addToCartCount leadScore tags').lean();
-
-    // Create a lookup map for faster access
-    const leadMap = new Map(leads.map(l => [l.phoneNumber, l]));
-
-    const enrichedConversations = conversations.map(conv => {
-        const lead = leadMap.get(conv.phone);
+    const enrichedConversations = await Promise.all(conversations.map(async (conv) => {
+        const lead = await AdLead.findOne({ phoneNumber: conv.phone, clientId: conv.clientId });
         if (lead) {
+            // We can't use virtuals on lean objects easily, so we manually derive or just use leadScore/tags
+            // Actually, let's manually derive the status for the UI to keep it consistent with Dashboard
             let derivedIntent = 'Browsing';
             if (lead.cartStatus === 'abandoned') derivedIntent = 'Cart Abandoned';
             else if (lead.checkoutInitiatedCount > 0 && !lead.isOrderPlaced) derivedIntent = 'High Intent';
@@ -84,13 +75,13 @@ router.get('/', protect, async (req, res) => {
             
             return {
                 ...conv,
-                leadScore: lead.leadScore || 0,
+                leadScore: lead.leadScore,
                 derivedLeadState: derivedIntent,
-                leadTags: lead.tags || []
+                leadTags: lead.tags
             };
         }
         return conv;
-    });
+    }));
 
     const total = await Conversation.countDocuments(query);
 
@@ -150,9 +141,7 @@ router.get('/:id', protect, async (req, res) => {
     if (req.user.role !== 'SUPER_ADMIN') {
       query.clientId = req.user.clientId;
     }
-    const conversation = await Conversation.findOne(query)
-      .populate('assignedTo', 'name')
-      .lean();
+    const conversation = await Conversation.findOne(query).populate('assignedTo', 'name');
 
     if (!conversation) {
       return res.status(404).json({ message: 'Conversation not found' });
@@ -173,8 +162,7 @@ router.get('/:id/messages', protect, async (req, res) => {
     if (req.user.role !== 'SUPER_ADMIN') {
       query.clientId = req.user.clientId;
     }
-    // Only check ID for speed
-    const conversation = await Conversation.findOne(query).select('_id').lean();
+    const conversation = await Conversation.findOne(query);
 
     if (!conversation) {
       return res.status(404).json({ message: 'Conversation not found' });
@@ -185,12 +173,11 @@ router.get('/:id/messages', protect, async (req, res) => {
     const skip = (page - 1) * limit;
 
     const messages = await Message.find({ conversationId: conversation._id })
-      .sort({ timestamp: -1 })
+      .sort({ timestamp: -1 }) // Get newest first for pagination
       .skip(skip)
-      .limit(limit)
-      .lean();
+      .limit(limit);
 
-    res.json(messages.reverse()); 
+    res.json(messages.reverse()); // Return in chronological order for UI
   } catch (error) {
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
