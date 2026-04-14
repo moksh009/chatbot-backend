@@ -378,8 +378,10 @@ router.get('/leads', protect, async (req, res) => {
     }
 
     const leads = await AdLead.find(query)
+      .select('name phoneNumber email leadScore tags lastInteraction cartStatus chatSummary intentState createdAt')
       .sort({ _id: -1 })
-      .limit(parseInt(limit));
+      .limit(parseInt(limit))
+      .lean();
 
     const total = await AdLead.countDocuments(query);
     const new_cursor = leads.length > 0 ? leads[leads.length - 1]._id : null;
@@ -598,9 +600,12 @@ router.get('/top-leads', protect, async (req, res) => {
         $project: {
           name: 1,
           phoneNumber: 1,
+          email: 1,
           leadScore: 1,
           tags: 1,
           lastInteraction: 1,
+          cartStatus: 1,
+          intentState: 1,
           ordersCount: "$computedOrdersCount",
           totalSpent: "$computedTotalSpent"
         }
