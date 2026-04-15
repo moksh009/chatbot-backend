@@ -173,10 +173,15 @@ router.get('/', protect, async (req, res) => {
       platform: f.platform || 'whatsapp',
       folderId: f.folderId || '',
       isActive: f.status === 'PUBLISHED',
+      status: f.status || 'DRAFT',
+      version: f.version || 1,
       nodes: f.nodes || [],
       edges: f.edges || [],
+      nodeCount: (f.nodes || []).length,
+      edgeCount: (f.edges || []).length,
       createdAt: f.createdAt,
-      updatedAt: f.updatedAt
+      updatedAt: f.updatedAt,
+      lastSyncedAt: f.lastSyncedAt
     }));
 
     res.json({ 
@@ -193,6 +198,87 @@ router.get('/', protect, async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
+
+// POST /api/flow/:flowId/duplicate
+// Creates a copy of a flow with a new flowId
+router.post('/:flowId/duplicate', protect, async (req, res) => {
+  try {
+    const { flowId } = req.params;
+    const clientId = req.user.clientId;
+    const WhatsAppFlow = require('../models/WhatsAppFlow');
+
+    const original = await WhatsAppFlow.findOne({ clientId, flowId });
+    if (!original) return res.status(404).json({ success: false, message: 'Flow not found' });
+
+    const newFlowId = `flow_${Date.now()}`;
+    const clone = new WhatsAppFlow({
+      clientId,
+      flowId: newFlowId,
+      name: `${original.name} (Copy)`,
+      platform: original.platform || 'whatsapp',
+      folderId: original.folderId || '',
+      status: 'DRAFT',
+      version: 1,
+      nodes: JSON.parse(JSON.stringify(original.nodes || [])),
+      edges: JSON.parse(JSON.stringify(original.edges || [])),
+    });
+
+    await clone.save();
+    res.json({
+      success: true,
+      message: 'Flow duplicated successfully',
+      newFlowId,
+      flow: {
+        id: newFlowId,
+        name: clone.name,
+        platform: clone.platform,
+        folderId: clone.folderId,
+        status: 'DRAFT',
+        nodes: clone.nodes,
+        edges: clone.edges,
+        createdAt: clone.createdAt
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// GET /api/flow/:flowId/summary
+// Brief stats card data: entry count, dropoff rate, last published
+router.get('/:flowId/summary', protect, async (req, res) => {
+  try {
+    const { flowId } = req.params;
+    const clientId = req.user.clientId;
+
+    const WhatsAppFlow = require('../models/WhatsAppFlow');
+    const FlowHistory = require('../models/FlowHistory');
+
+    const [flow, history] = await Promise.all([
+      WhatsAppFlow.findOne({ clientId, flowId }, 'name version status lastSyncedAt nodes edges').lean(),
+      FlowHistory.countDocuments({ clientId, flowId })
+    ]);
+
+    if (!flow) return res.status(404).json({ success: false, message: 'Flow not found' });
+
+    res.json({
+      success: true,
+      summary: {
+        name:       flow.name,
+        version:    flow.version,
+        status:     flow.status,
+        nodeCount:  (flow.nodes || []).length,
+        edgeCount:  (flow.edges || []).length,
+        totalVersions: history,
+        lastPublishedAt: flow.lastSyncedAt || null,
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
 
 router.get('/:clientId/analytics', protect, async (req, res) => {
   try {

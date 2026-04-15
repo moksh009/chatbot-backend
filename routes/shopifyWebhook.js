@@ -12,6 +12,7 @@ const WarrantyBatch = require('../models/WarrantyBatch');
 const WarrantyRecord = require('../models/WarrantyRecord');
 const { processOrderForLoyalty } = require('../utils/walletService');
 const { logActivity } = require('../utils/activityLogger');
+const { recalculateLeadScore } = require('../utils/scoringHelper');
 const log = require('../utils/logger')('ShopifyWebhook');
 
 async function getProductImageForOrder(order, client) {
@@ -93,20 +94,37 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
             case 'checkouts/create':
             case 'checkouts/update':
                 await handleCheckout(client, data);
+                // Fire any flow with abandoned_cart trigger (checkout = potential abandon)
+                await fireEventFlow(client, 'abandoned_cart', data).catch(e =>
+                  log.warn(`[FlowTrigger] abandoned_cart flow fire failed: ${e.message}`)
+                );
                 break;
             case 'orders/create':
                 await handleOrder(client, data);
+                // Fire any flow with order_placed trigger
+                await fireEventFlow(client, 'order_placed', data).catch(e =>
+                  log.warn(`[FlowTrigger] order_placed flow fire failed: ${e.message}`)
+                );
                 break;
             case 'orders/cancelled':
             case 'orders/refunded':
                 await handleRefund(client, data);
+                // Fire any flow with order_status_changed trigger set to 'cancelled' or 'returned'
+                await fireEventFlow(client, 'order_status_changed', data, data.financial_status === 'refunded' ? 'returned' : 'cancelled').catch(e =>
+                  log.warn(`[FlowTrigger] order_status_changed flow fire failed: ${e.message}`)
+                );
                 break;
-            case 'orders/fulfilled':
+            case 'orders/fulfilled': {
                 const { schedulePostDeliveryUpsell } = require('../utils/upsellEngine');
                 const { scheduleReviewRequest } = require('../utils/reputationService');
                 await schedulePostDeliveryUpsell(client, data);
                 await scheduleReviewRequest(client, data);
+                // Fire any flow with order_fulfilled trigger
+                await fireEventFlow(client, 'order_fulfilled', data).catch(e =>
+                  log.warn(`[FlowTrigger] order_fulfilled flow fire failed: ${e.message}`)
+                );
                 break;
+            }
             case 'inventory_levels/update':
             case 'inventory_items/update':
                 await handleInventoryUpdate(client, data);
@@ -118,6 +136,83 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
         log.error(`Error processing webhook ${topic}:`, { error: err.message });
     }
 });
+
+/**
+ * Fire a commerce event-triggered flow for the customer on this order/checkout.
+ * Routes through the dualBrainEngine's flow executor so all node types are supported.
+ */
+async function fireEventFlow(client, eventName, data, status = null) {
+  const { findEventTriggeredFlow } = require('../utils/triggerEngine');
+  const { normalizePhone } = require('../utils/helpers');
+
+  const phoneRaw = data.phone
+    || data.customer?.phone
+    || data.billing_address?.phone
+    || data.shipping_address?.phone;
+
+  if (!phoneRaw) {
+    log.info(`[FlowTrigger] ${eventName}: No phone number on payload, skipping`);
+    return;
+  }
+
+  const phone = normalizePhone(phoneRaw);
+
+  const result = await findEventTriggeredFlow(eventName, data, client, status);
+  if (!result) {
+    log.info(`[FlowTrigger] ${eventName}: No matching published flow for ${client.clientId}`);
+    return;
+  }
+
+  const { flow, startNodeId } = result;
+  if (!startNodeId) {
+    log.warn(`[FlowTrigger] ${eventName}: Flow ${flow._id} has no start node`);
+    return;
+  }
+
+  log.info(`[FlowTrigger] Executing flow "${flow.name}" for ${phone} (event: ${eventName})`);
+
+  // Use dualBrainEngine to walk the flow from the first node after the trigger
+  const AdLead = require('../models/AdLead');
+  const Conversation = require('../models/Conversation');
+
+  const lead = await AdLead.findOne({ phone, clientId: client.clientId }).lean();
+  let convo = await Conversation.findOne({ phone, clientId: client.clientId });
+
+  if (!convo) {
+    convo = await Conversation.create({
+      phone,
+      clientId: client.clientId,
+      channel: 'whatsapp',
+      status: 'active',
+      source: `flow/${eventName}`
+    });
+  }
+
+  // Inject commerce event metadata into the conversation for variable access
+  await Conversation.findByIdAndUpdate(convo._id, {
+    lastStepId: startNodeId,
+    $set: {
+      'variables.eventName':    eventName,
+      'variables.order_id':     data.order_number || data.id || '',
+      'variables.order_total':  data.total_price || '',
+      'variables.order_status': status || eventName
+    }
+  });
+
+  // Fire the flow engine — walkFlow handles all node types including escalation
+  const { walkFlow } = require('../utils/dualBrainEngine');
+  await walkFlow({
+    client,
+    phone,
+    flow:          { nodes: flow.publishedNodes || flow.nodes, edges: flow.publishedEdges || flow.edges },
+    currentNodeId: startNodeId,
+    convo,
+    lead,
+    userMessage:   `__event:${eventName}__`
+  }).catch(e => log.error(`[FlowTrigger] walkFlow error for ${eventName}:`, e.message));
+}
+
+
 
 async function handleCheckout(client, data) {
     // Robust phone normalization
@@ -203,6 +298,9 @@ async function handleCheckout(client, data) {
     });
 
     log.info(`Lead updated from checkout: ${cleanPhone}`);
+
+    // TRRIGER WATERFALL ENGINE: Update score in real-time
+    await recalculateLeadScore(client.clientId, cleanPhone).catch(e => log.error('Scoring recompute failed:', e.message));
 }
 
 async function handleOrder(client, data) {
@@ -559,6 +657,9 @@ async function handleOrder(client, data) {
     });
 
     log.info(`Order processed from Shopify: ${newOrder.orderId}`);
+
+    // TRRIGER WATERFALL ENGINE: Update score in real-time
+    await recalculateLeadScore(client.clientId, cleanPhone).catch(e => log.error('Scoring recompute failed:', e.message));
 }
 
 async function handleRefund(client, data) {
@@ -587,6 +688,9 @@ async function handleRefund(client, data) {
                     { clientId: client.clientId, phone: cleanPhone },
                     { $inc: { totalPoints: -result.pointsDeducted } }
                 ).catch(() => {}); // Optional fail-safe
+                
+                // TRIGGER WATERFALL ENGINE: Update score in real-time
+                await recalculateLeadScore(client.clientId, cleanPhone).catch(e => log.error('Scoring recompute failed:', e.message));
             }
         } else {
             log.warn(`Point reversal not needed or no loyalty points were awarded for order ${orderId}`);

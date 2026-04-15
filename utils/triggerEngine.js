@@ -1,9 +1,18 @@
 "use strict";
 
 /**
- * TRIGGER ENGINE — Phase 20
- * Matches an incoming message to the correct flow based on trigger configuration.
- * Priority: Keyword triggers > First Message triggers > Legacy flow
+ * TRIGGER ENGINE — Enterprise Edition
+ *
+ * Matches an incoming message or commerce event to the correct published flow.
+ *
+ * Priority order for message triggers:
+ *   1. keyword / intent_match  (most specific)
+ *   2. meta_ad / story_mention (channel-specific)
+ *   3. first_message           (catch-all for new contacts)
+ *   4. legacy client.flowNodes (backward compat)
+ *
+ * Commerce event triggers (order_placed, order_fulfilled, etc.) are handled
+ * via matchEventTrigger() — called directly by webhook handlers.
  */
 
 const WhatsAppFlow = require("../models/WhatsAppFlow");
@@ -54,13 +63,24 @@ async function findMatchingFlow(parsedMessage, client, convo) {
     if (adFlow) return { flow: adFlow, triggerType: "meta_ad" };
   }
 
-  // ── PRIORITY 1.5: Check event triggers (e.g. story_mention) ────────────────
+  // ── PRIORITY 1.5: Check event triggers (story_mention, intent_match) ─────────
   if (parsedMessage.event === "story_mention") {
     const eventFlow = flows.find((flow) => {
       const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(flow.nodes || []);
       return trigger?.type === "story_mention" || trigger?.type === "STORY_MENTION";
     });
     if (eventFlow) return { flow: eventFlow, triggerType: "story_mention" };
+  }
+
+  // ── PRIORITY 1.6: Check AI intent_match triggers ────────────────────────────
+  if (parsedMessage.detectedIntentId) {
+    const intentFlow = flows.find((flow) => {
+      const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(flow.nodes || []);
+      if (!trigger || trigger.type !== "intent_match") return false;
+      // If intentId is blank on the node → matches any detected intent
+      return !trigger.intentId || trigger.intentId === parsedMessage.detectedIntentId;
+    });
+    if (intentFlow) return { flow: intentFlow, triggerType: "intent_match" };
   }
 
   // ── PRIORITY 2: Check first_message triggers ────────────────────────────────
@@ -97,73 +117,129 @@ async function findMatchingFlow(parsedMessage, client, convo) {
 }
 
 /**
- * NEW: Match an event (Orders, Cart) to a flow.
- * Used by webhooks (Shopify/WooCommerce).
+ * Match a commerce event (order_placed, order_fulfilled, abandoned_cart, etc.) to a flow.
+ * Called directly by shopifyWebhook.js and razorpay webhook handlers.
+ *
+ * @param {string} eventName  - 'order_placed' | 'order_fulfilled' | 'order_status_changed' | 'abandoned_cart' | 'payment_received'
+ * @param {object} eventData  - Raw webhook payload
+ * @param {object} client     - Mongoose client doc
+ * @param {string} [status]   - For 'order_status_changed' — the new status string
  */
-async function matchEventTrigger(eventName, eventData, client) {
-  const flows = await WhatsAppFlow.find({ 
-    clientId: client.clientId, 
-    status: 'PUBLISHED',
-    'triggerConfig.type': 'EVENT',
-    'triggerConfig.event': eventName
+async function matchEventTrigger(eventName, eventData, client, status = null) {
+  // Fetch all published flows and check their trigger nodes
+  const flows = await WhatsAppFlow.find({
+    clientId: client.clientId,
+    status: 'PUBLISHED'
   }).lean();
 
-  if (flows.length === 0) return null;
+  const matching = flows.filter(flow => {
+    const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(flow.nodes || []);
+    if (!trigger) return false;
 
-  // 1. Check SKU-specific matches first if event involves products (order, cart)
+    const tType = (trigger.type || '').toLowerCase();
+
+    if (tType !== eventName && tType !== eventName.toUpperCase()) return false;
+
+    // For order_status_changed: also check if configured status matches
+    if (eventName === 'order_status_changed' && status) {
+      const cfgStatus = trigger.orderStatus || 'any';
+      if (cfgStatus !== 'any' && cfgStatus !== status.toLowerCase()) return false;
+    }
+
+    return true;
+  });
+
+  if (matching.length === 0) return null;
+
+  // SKU-level matching for order events
   const items = eventData.line_items || eventData.items || [];
   if (items.length > 0) {
-    const skuMatches = flows.filter(f => f.triggerConfig.skuMatches?.length > 0);
-    for (const flow of skuMatches) {
-      const hasMatch = items.some(item => flow.triggerConfig.skuMatches.includes(item.sku));
-      if (hasMatch) return flow;
+    for (const flow of matching) {
+      const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(flow.nodes || []);
+      if (trigger?.skuMatches?.length > 0) {
+        const hasMatch = items.some(item => trigger.skuMatches.includes(item.sku));
+        if (hasMatch) return flow;
+      }
     }
   }
 
-  // 2. Return the first matching general event flow
-  return flows.find(f => !f.triggerConfig.skuMatches || f.triggerConfig.skuMatches.length === 0);
+  // Return first general match (no SKU filter)
+  return matching.find(f => {
+    const trigger = f.triggerConfig || f.trigger || getTriggerFromNodes(f.nodes || []);
+    return !trigger?.skuMatches || trigger.skuMatches.length === 0;
+  }) || matching[0];
 }
 
 /**
- * Extract trigger configuration from the TriggerNode inside a flow's nodes array.
+ * Convenience wrapper that finds AND returns start node ID for a commerce event flow.
+ * Returns null if no flow matches.
+ */
+async function findEventTriggeredFlow(eventName, eventData, client, status = null) {
+  const flow = await matchEventTrigger(eventName, eventData, client, status);
+  if (!flow) return null;
+  const startNodeId = findFlowStartNode(flow.nodes || [], flow.edges || []);
+  return { flow, startNodeId };
+}
+
+/**
+ * Extract a normalised trigger configuration object from a flow's trigger node.
+ * Handles both the new data.trigger shape and legacy flat data fields.
  */
 function getTriggerFromNodes(nodes) {
   if (!Array.isArray(nodes)) return null;
+
   const triggerNode = nodes.find(
-    (n) => n.type === "TriggerNode" || n.type === "trigger"
+    (n) => n.type === 'trigger' || n.type === 'TriggerNode' ||
+           n.type === 'intent_trigger' || n.type === 'IntentTriggerNode'
   );
   if (!triggerNode) return null;
 
   const d = triggerNode.data || {};
 
-  if (d.trigger) return d.trigger;
+  // ── New canonical format: data.trigger = { type, ... } ──────────────────────
+  if (d.trigger && d.trigger.type) return d.trigger;
 
-  // Legacy format
-  const legacyKeyword = d.keyword || d.keywords || "";
-  
-  const type = d.triggerType === "first_message" ? "first_message" : 
-               (d.triggerType === "story_mention" ? "story_mention" : 
-               (d.triggerType === "meta_ad" ? "meta_ad" : "keyword"));
+  // ── Legacy flat fields ───────────────────────────────────────────────────────
+  const rawType = (d.triggerType || 'keyword').toLowerCase();
 
-  if (type === "first_message") {
-    return { type: "first_message", channel: d.channel || "both" };
+  // Commerce event types (pass-through)
+  const commerceTypes = ['order_placed', 'order_fulfilled', 'order_status_changed', 'abandoned_cart', 'payment_received'];
+  if (commerceTypes.includes(rawType)) {
+    return {
+      type: rawType,
+      orderStatus: d.orderStatus || 'any',
+      cartDelayMinutes: d.cartDelayMinutes || 15,
+      skuMatches: d.skuMatches || []
+    };
   }
 
-  if (type === "story_mention") {
-    return { type: "story_mention", channel: d.channel || "instagram" };
+  if (rawType === 'first_message') {
+    return { type: 'first_message', channel: d.channel || 'both' };
   }
 
-  if (type === "meta_ad") {
-    return { type: "meta_ad", adId: d.adId || "any", channel: d.channel || "both" };
+  if (rawType === 'story_mention') {
+    return { type: 'story_mention', channel: d.channel || 'instagram' };
   }
 
-  const keywords = legacyKeyword.split(",").map((k) => k.trim()).filter(Boolean);
+  if (rawType === 'meta_ad') {
+    return { type: 'meta_ad', adId: d.adId || 'any', channel: d.channel || 'both' };
+  }
+
+  if (rawType === 'intent_match') {
+    return { type: 'intent_match', intentId: d.intentId || '', channel: d.channel || 'both' };
+  }
+
+  // Default: keyword
+  const legacyKeyword = d.keyword || d.keywords || '';
+  const keywords = Array.isArray(d.keywords)
+    ? d.keywords
+    : legacyKeyword.split(',').map(k => k.trim()).filter(Boolean);
 
   return {
-    type:      "keyword",
+    type:      'keyword',
     keywords,
-    matchMode: d.matchType || d.matchMode || "contains",
-    channel:   d.channel || "both",
+    matchMode: d.matchType || d.matchMode || 'contains',
+    channel:   d.channel || 'both',
   };
 }
 
@@ -196,4 +272,11 @@ function findFlowStartNode(flowNodes, flowEdges) {
   return startNode?.id || null;
 }
 
-module.exports = { findMatchingFlow, checkKeywordMatch, getTriggerFromNodes, findFlowStartNode, matchEventTrigger };
+module.exports = {
+  findMatchingFlow,
+  checkKeywordMatch,
+  getTriggerFromNodes,
+  findFlowStartNode,
+  matchEventTrigger,
+  findEventTriggeredFlow
+};

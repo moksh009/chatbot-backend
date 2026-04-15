@@ -4,6 +4,7 @@ const Appointment = require('../models/Appointment');
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
 const { listEvents, createEvent, updateEvent, deleteEvent } = require('../utils/googleCalendar');
+const { recalculateLeadScore } = require('../utils/scoringHelper');
 const { DateTime } = require('luxon');
 
 // Helper to check for overlapping appointments
@@ -379,6 +380,11 @@ router.post('/', protect, async (req, res) => {
 
     await appointment.save();
 
+    // TRIGGER WATERFALL ENGINE: Update score on appointment creation
+    if (phone) {
+      recalculateLeadScore(req.user.clientId, phone).catch(e => console.error('[Scoring] Sync failed:', e.message));
+    }
+
     // If converting an existing event, we might want to update its description/title in GCal to match our format
     if (req.body.existingEventId) {
       try {
@@ -493,6 +499,11 @@ router.put('/:id', protect, async (req, res) => {
     });
 
     await appointment.save();
+
+    // TRIGGER WATERFALL ENGINE: Update score on appointment update
+    if (appointment.phone) {
+      recalculateLeadScore(req.user.clientId, appointment.phone).catch(e => console.error('[Scoring] Sync failed:', e.message));
+    }
 
     // Emit socket event for real-time update
     const io = req.app.get('socketio');

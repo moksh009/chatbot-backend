@@ -68,6 +68,10 @@ const taskWorker = redisConnection ? new Worker('enterprise-tasks', async (job) 
                 await handleImportLeads(data, job);
                 break;
 
+            case 'RECOMPUTE_ALL_LEAD_SCORES':
+                await handleRecomputeScores(data, job);
+                break;
+
             default:
                 log.warn(`[TaskWorker] No handler found for task type: ${job.name}`);
         }
@@ -238,6 +242,59 @@ function emitProgress(clientId, batchId, processed, total, percent) {
         global.io.to(`client_${clientId}`).emit('import_progress', {
             batchId, processed, total, percent
         });
+    }
+}
+
+async function handleRecomputeScores(data, job) {
+    const { clientId } = data;
+    const ScoreTierConfig = require('../models/ScoreTierConfig');
+    const AdLead = require('../models/AdLead');
+    const { evaluateCustomerScore } = require('../services/ScoreEvaluationService');
+
+    try {
+        const config = await ScoreTierConfig.findOne({ clientId });
+        if (!config) return log.warn(`[Recompute] No config found for ${clientId}`);
+
+        // Fetch leads in batches to avoid memory overflow
+        const totalLeads = await AdLead.countDocuments({ clientId });
+        log.info(`[Recompute] Starting for ${clientId} (${totalLeads} leads)`);
+
+        let processed = 0;
+        const batchSize = 100;
+
+        for (let i = 0; i < totalLeads; i += batchSize) {
+            const leads = await AdLead.find({ clientId }).skip(i).limit(batchSize);
+            
+            const bulkOps = leads.map(lead => {
+                const score = evaluateCustomerScore(lead, config);
+                return {
+                    updateOne: {
+                        filter: { _id: lead._id },
+                        update: { $set: { leadScore: score } }
+                    }
+                };
+            });
+
+            if (bulkOps.length > 0) {
+                await AdLead.bulkWrite(bulkOps);
+            }
+
+            processed += leads.length;
+            const percent = Math.round((processed / totalLeads) * 100);
+            
+            if (global.io) {
+                global.io.to(`client_${clientId}`).emit('scoring_progress', { percent, processed, totalLeads });
+            }
+        }
+
+        log.info(`[Recompute] Successfully finished for ${clientId}`);
+
+        if (global.io) {
+            global.io.to(`client_${clientId}`).emit('scoring_completed', { totalLeads });
+        }
+    } catch (err) {
+        log.error(`[Recompute] Failed for ${clientId}:`, err.message);
+        throw err;
     }
 }
 

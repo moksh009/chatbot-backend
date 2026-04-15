@@ -8,6 +8,7 @@ const CampaignMessage = require('../models/CampaignMessage');
 const { handleWhatsAppMessage } = require('../utils/dualBrainEngine');
 const { processOrderForLoyalty } = require('../utils/walletService');
 const { logActivity } = require('../utils/activityLogger');
+const { recalculateLeadScore } = require('../utils/scoringHelper');
 
 /**
  * Middleware to verify Meta X-Hub-Signature-256
@@ -274,6 +275,9 @@ async function processMessages(messages, metadata, contacts) {
                     source: 'whatsapp_catalog'
                 }
             });
+
+            // TRIGGER WATERFALL ENGINE: Update score in real-time
+            await recalculateLeadScore(clientDoc.clientId, from).catch(e => log.error('Scoring recompute failed:', e.message));
           }
         } catch (orderErr) {
           log.error('Catalog order critical failure', { error: orderErr.message });
@@ -326,7 +330,15 @@ async function processMessages(messages, metadata, contacts) {
         continue;
       }
 
-      handleWhatsAppMessage(from, message, phone_number_id, profileName).catch(err => log.error("Engine processing error", { phone: from, error: err.message }));
+      handleWhatsAppMessage(from, message, phone_number_id, profileName)
+        .then(() => {
+          // TRIGGER WATERFALL ENGINE: Update score in real-time (Interactions count as metric)
+          const Client = require('../models/Client');
+          Client.findOne({ phoneNumberId: phone_number_id }, { clientId: 1 }).lean().then(c => {
+            if (c) recalculateLeadScore(c.clientId, from).catch(() => {});
+          });
+        })
+        .catch(err => log.error("Engine processing error", { phone: from, error: err.message }));
 
     } catch (err) {
       log.error(`Message processing error for ${messageId}`, { phone: from, error: err.message });

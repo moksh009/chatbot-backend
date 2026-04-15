@@ -145,6 +145,9 @@ app.use('/api/analytics', analyticsRoutes);
 const knowledgeRoutes = require('./routes/knowledge');
 app.use('/api/knowledge', knowledgeRoutes);
 
+const scoringRoutes = require('./routes/scoring');
+app.use('/api/scoring', scoringRoutes);
+
 // Phase 11 Routes
 const insightsRoutes = require('./routes/insights');
 app.use('/api/insights', insightsRoutes);

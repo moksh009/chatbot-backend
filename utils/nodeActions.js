@@ -240,6 +240,118 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
       break;
     }
     
+    case "CONVERT_COD_TO_PREPAID": {
+      try {
+        const discount     = node.data?.discountAmount || 50;
+        const paymentLink  = await createPaymentLink(client,
+          {
+            amount:      Math.round(discount),
+            orderId:     `cod2pp_${Date.now().toString().slice(-6)}`,
+            description: `Convert COD to Prepaid — Save ₹${discount}`,
+          },
+          { name: lead?.name || 'Customer', phone, email: lead?.email }
+        );
+
+        const msgBody = node.data?.body
+          ? replaceVariables(node.data.body, client, lead, convo).replace('{{payment_link}}', paymentLink.url)
+          : `💳 *Exclusive Offer for You!*\n\nSwitch to online payment and get *₹${discount} instant discount*!\n\n✅ Faster delivery\n✅ Zero RTO risk\n\nPay here: ${paymentLink.url}\n\n_Offer valid for 24 hours only_`;
+
+        await WhatsApp.sendText(client, phone, msgBody);
+
+        // Tag lead for analytics
+        try {
+          const AdLead = require('../models/AdLead');
+          await AdLead.findOneAndUpdate(
+            { phone, clientId: client.clientId },
+            { $set: { 'metadata.codConversionOffered': true, 'metadata.lastCodOfferAt': new Date() } }
+          );
+        } catch { /* non-blocking */ }
+      } catch (err) {
+        console.error('[NodeActions] CONVERT_COD_TO_PREPAID error:', err.message);
+        await WhatsApp.sendText(client, phone, '💳 We have a special payment offer for you! Our team will reach out shortly.');
+      }
+      break;
+    }
+
+    case "CART_RECOVERY_SEND_STEP": {
+      try {
+        const stepNumber = node.data?.stepNumber || 1;
+        const { generateSmartRecoveryMessage } = require('./smartCartRecovery');
+
+        // Get lead for cart data
+        const AdLead = require('../models/AdLead');
+        const leadRecord = lead || await AdLead.findOne({ phone, clientId: client.clientId });
+
+        let messageText = null;
+
+        // Attempt AI personalised message
+        if (leadRecord?.cartSnapshot) {
+          messageText = await generateSmartRecoveryMessage(client, leadRecord, stepNumber);
+        }
+
+        // Fallback message if AI fails or no cart data
+        if (!messageText) {
+          const fallbacks = {
+            1: `👋 Hey${lead?.name ? ' ' + lead.name.split(' ')[0] : ''}! You left something in your cart. Complete your order here: ${client.nicheData?.storeUrl || ''}`,
+            2: `⏰ Your cart items are going fast! Don't miss out — complete your purchase before they're gone: ${client.nicheData?.storeUrl || ''}`,
+            3: `🎁 Last chance! Use code *SAVE10* for 10% off your cart. This offer expires soon: ${client.nicheData?.storeUrl || ''}`
+          };
+          messageText = fallbacks[stepNumber] || fallbacks[1];
+        }
+
+        await WhatsApp.sendText(client, phone, messageText);
+
+        // Track recovery step
+        try {
+          const AdLead2 = require('../models/AdLead');
+          await AdLead2.findOneAndUpdate(
+            { phone, clientId: client.clientId },
+            {
+              $set: { [`metadata.cartRecoveryStep${stepNumber}SentAt`]: new Date() },
+              $inc: { 'metadata.cartRecoveryStepsSent': 1 }
+            }
+          );
+        } catch { /* non-blocking */ }
+      } catch (err) {
+        console.error('[NodeActions] CART_RECOVERY_SEND_STEP error:', err.message);
+      }
+      break;
+    }
+
+    case "SEND_REVIEW_REQUEST": {
+      try {
+        const Order = require('../models/Order');
+        const order = await Order.findOne({ customerPhone: phone, clientId: client.clientId, status: { $in: ['Delivered', 'delivered'] } }).sort({ createdAt: -1 });
+        
+        const productName = order?.lineItems?.[0]?.title || node.data?.productName || 'your recent purchase';
+        const reviewUrl   = node.data?.reviewUrl || client.nicheData?.storeUrl || '';
+
+        const msgBody = node.data?.body
+          ? replaceVariables(node.data.body, client, lead, convo)
+          : `⭐ How was *${productName}*?\n\nYour feedback means the world to us! It takes just 10 seconds and helps other customers decide.\n\n👉 Leave your review: ${reviewUrl}`;
+
+        await WhatsApp.sendText(client, phone, msgBody);
+      } catch (err) {
+        console.error('[NodeActions] SEND_REVIEW_REQUEST error:', err.message);
+      }
+      break;
+    }
+
+    case "SET_VARIABLE": {
+      try {
+        const varName  = node.data?.variableName;
+        const varValue = node.data?.variableValue;
+        if (varName && convo) {
+          await Conversation.findByIdAndUpdate(convo._id, {
+            $set: { [`variables.${varName}`]: varValue }
+          });
+        }
+      } catch (err) {
+        console.error('[NodeActions] SET_VARIABLE error:', err.message);
+      }
+      break;
+    }
+
     default:
       console.warn(`[NodeActions] Unknown action: ${action}`);
   }
