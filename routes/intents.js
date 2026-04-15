@@ -10,6 +10,7 @@ router.get('/pending-phrases', verifyDashboardToken, IntentApiController.getPend
 router.get('/stats', verifyDashboardToken, IntentApiController.getIntentStats);
 router.post('/resolve-phrase', verifyDashboardToken, IntentApiController.resolvePhrase);
 router.post('/simulate', verifyDashboardToken, IntentApiController.simulateIntent);
+router.post('/generate-training', verifyDashboardToken, IntentApiController.generateTrainingData);
 router.delete('/:intentId', verifyDashboardToken, IntentApiController.deleteIntent);
 
 module.exports = router;

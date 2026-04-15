@@ -19,6 +19,10 @@ const intentRuleSchema = new mongoose.Schema({
     type: [String],
     default: []
   },
+  antiIntentPhrases: {
+    type: [String],
+    default: []
+  },
   languageConfig: {
     type: [String],
     default: ['en', 'hi']

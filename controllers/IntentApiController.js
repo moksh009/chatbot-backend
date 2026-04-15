@@ -14,7 +14,7 @@ const IntentAnalytics = require('../models/IntentAnalytics');
  */
 exports.upsertIntent = async (req, res) => {
   try {
-    const { intentId, intentName, trainingPhrases, actions, languageConfig } = req.body;
+    const { intentId, intentName, trainingPhrases, actions, languageConfig, antiIntentPhrases } = req.body;
     
     // Support for both middleware-injected client and direct payload (as fallback)
     const clientId = req.user?.clientId || req.body.clientId;
@@ -36,7 +36,7 @@ exports.upsertIntent = async (req, res) => {
     if (intentId) {
       rule = await IntentRule.findOneAndUpdate(
         { _id: intentId, clientId },
-        { intentName, trainingPhrases, actions, languageConfig },
+        { intentName, trainingPhrases, actions, languageConfig, antiIntentPhrases },
         { new: true, upsert: true }
       );
     } else {
@@ -44,6 +44,7 @@ exports.upsertIntent = async (req, res) => {
         clientId,
         intentName,
         trainingPhrases,
+        antiIntentPhrases,
         actions,
         languageConfig
       });
@@ -250,6 +251,46 @@ exports.simulateIntent = async (req, res) => {
       success: false, 
       message: 'Critical error during intent simulation simulation.' 
     });
+  }
+};
+
+/**
+ * MODULE 1: AI-FIRST INTENT GENERATION
+ * Generates positive and negative training phrases using LLM.
+ */
+exports.generateTrainingData = async (req, res) => {
+  try {
+    const { description } = req.body;
+    if (!description) {
+      return res.status(400).json({ success: false, message: 'Intent description is required.' });
+    }
+
+    // Use Gemini for Generation
+    const { platformGenerateJSON } = require('../utils/gemini');
+    
+    const prompt = `The user wants to detect the following intent in customer messages: "${description}".
+Generate exactly 30 positive phrases (customer saying this phrase expressing the intent) and exactly 30 negative anti-phrases (customer using similar vocabulary but explicitly NOT having this intent, or stating everything is fine or asking about completely unrelated issues).
+Half of the phrases in BOTH lists must be in modern English, and half must be in Hindi/Hinglish.
+Each phrase you generate has to be different and they should have low similarity for better variety with examples to ensure good training spread.
+Return as pure JSON matching this exact structure: { "intentPhrases": ["..."], "antiIntentPhrases": ["..."] }`;
+
+    const generatedData = await platformGenerateJSON(prompt, { maxTokens: 4000, temperature: 0.9, maxRetries: 3 });
+
+    if (!generatedData || !generatedData.intentPhrases || !generatedData.antiIntentPhrases) {
+      throw new Error('Failed to parse AI generation or empty output.');
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        intentPhrases: generatedData.intentPhrases,
+        antiIntentPhrases: generatedData.antiIntentPhrases
+      }
+    });
+
+  } catch (error) {
+    console.error('[IntentGeneration Error]:', error);
+    res.status(500).json({ success: false, message: 'Failed to generate training data using AI.' });
   }
 };
 
