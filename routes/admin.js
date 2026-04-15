@@ -1044,6 +1044,27 @@ router.patch('/my-settings', protect, async (req, res) => {
 
     if (!updated) return res.status(404).json({ message: 'Client not found' });
 
+    // PHASE: Migrate and Sync visualFlows to the new WhatsAppFlow schema
+    if (visualFlows !== undefined && Array.isArray(visualFlows)) {
+      const WhatsAppFlow = require('../models/WhatsAppFlow');
+      for (const f of visualFlows) {
+        await WhatsAppFlow.findOneAndUpdate(
+          { flowId: f.id, clientId: targetClientId },
+          {
+            $set: {
+              name: f.name || 'Untitled Flow',
+              platform: f.platform || 'whatsapp',
+              folderId: f.folderId || null,
+              status: f.isActive ? 'PUBLISHED' : 'DRAFT',
+              nodes: f.nodes || [],
+              edges: f.edges || []
+            }
+          },
+          { upsert: true }
+        );
+      }
+    }
+
     log.success(`${req.user.role} updated settings for: ${targetClientId}`);
     
     // PHASE 3: Trigger AI Node Sync asynchronously
@@ -1876,12 +1897,14 @@ router.post('/flow/publish/:clientId', protect, async (req, res) => {
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ error: 'Client not found' });
 
-    const { nodes, edges, note } = req.body;
+    const { nodes, edges, note, flowId } = req.body;
     let nodesToPublish = nodes;
     let edgesToPublish = edges;
+    
+    // Fallback if not specifically given (legacy backward compat)
+    const activeFlow = client.visualFlows?.find(f => f.isActive) || client.visualFlows?.[0];
 
     if (!nodesToPublish || !edgesToPublish) {
-       const activeFlow = client.visualFlows?.find(f => f.isActive) || client.visualFlows?.[0];
        if (activeFlow) {
            nodesToPublish = activeFlow.nodes;
            edgesToPublish = activeFlow.edges;
@@ -1903,6 +1926,29 @@ router.post('/flow/publish/:clientId', protect, async (req, res) => {
     client.flowEdges = edgesToPublish;
 
     await client.save();
+    
+    // Enterprise Migration: Sync PUBLISHED status directly to WhatsAppFlow collection
+    const WhatsAppFlow = require('../models/WhatsAppFlow');
+    if (activeFlow || flowId) {
+       const targetFlowId = flowId || (activeFlow ? activeFlow.id : null);
+       if (targetFlowId) {
+           await WhatsAppFlow.updateMany({ clientId }, { $set: { status: 'DRAFT' } }); // Enforce single active flow for now
+           await WhatsAppFlow.findOneAndUpdate(
+               { clientId, flowId: targetFlowId },
+               {
+                   $set: {
+                       status: 'PUBLISHED',
+                       publishedNodes: nodesToPublish,
+                       publishedEdges: edgesToPublish,
+                       nodes: nodesToPublish, // Ensure DRAFT array is also updated
+                       edges: edgesToPublish,
+                   }
+               },
+               { upsert: true }
+           );
+       }
+    }
+
     res.json({ success: true, message: 'Flow published to live engine.', version: client.flowHistory.length });
   } catch (err) {
     res.status(500).json({ error: 'Failed to publish flow: ' + err.message });

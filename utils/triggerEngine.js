@@ -6,30 +6,28 @@
  * Priority: Keyword triggers > First Message triggers > Legacy flow
  */
 
+const WhatsAppFlow = require("../models/WhatsAppFlow");
+
 /**
  * Given an incoming message and a client's flows array,
  * returns which flow (if any) should be activated.
- *
- * @param {Object} parsedMessage - The normalized incoming message
- * @param {Object} client        - The Client document from MongoDB
- * @param {Object} convo         - The Conversation document (may be null for brand new users)
- * @returns {{ flow, triggerType, isLegacy } | null}
  */
 async function findMatchingFlow(parsedMessage, client, convo) {
   const text    = (parsedMessage.text?.body || "").trim();
   const channel = parsedMessage.channel || "whatsapp";
 
-  // Use visualFlows (multi-flow architecture) OR legacy flows array
-  const flows = client.visualFlows || client.flows || [];
+  // ── NEW ARCHITECTURE: Check WhatsAppFlow collection first ──────────────────
+  let flows = await WhatsAppFlow.find({ clientId: client.clientId, status: 'PUBLISHED' }).lean();
+
+  // Fallback to client.visualFlows for non-migrated clients
+  if (flows.length === 0 && client.visualFlows?.length > 0) {
+    flows = client.visualFlows;
+  }
 
   // ── PRIORITY 1: Check keyword triggers ─────────────────────────────────────
-  // These always win over first_message triggers
   const keywordFlow = flows.find((flow) => {
-    if (!flow.isActive) return false;
-
-    // Get trigger config — support both .trigger and .nodes-based trigger
-    const trigger = flow.trigger || getTriggerFromNodes(flow.nodes || []);
-    if (!trigger || trigger.type !== "keyword") return false;
+    const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(flow.nodes || []);
+    if (!trigger || (trigger.type !== "keyword" && trigger.type !== "KEYWORD")) return false;
 
     // Channel check
     const flowChannel = (trigger.channel || flow.channel || "both").toLowerCase();
@@ -49,10 +47,8 @@ async function findMatchingFlow(parsedMessage, client, convo) {
   if (parsedMessage.referral && parsedMessage.referral.source_id) {
     const adId = parsedMessage.referral.source_id;
     const adFlow = flows.find(flow => {
-       if (!flow.isActive) return false;
-       const trigger = flow.trigger || getTriggerFromNodes(flow.nodes || []);
-       if (!trigger || trigger.type !== "meta_ad") return false;
-       
+       const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(flow.nodes || []);
+       if (!trigger || (trigger.type !== "meta_ad" && trigger.type !== "META_AD")) return false;
        return trigger.adId === adId || trigger.adId === "any";
     });
     if (adFlow) return { flow: adFlow, triggerType: "meta_ad" };
@@ -61,15 +57,13 @@ async function findMatchingFlow(parsedMessage, client, convo) {
   // ── PRIORITY 1.5: Check event triggers (e.g. story_mention) ────────────────
   if (parsedMessage.event === "story_mention") {
     const eventFlow = flows.find((flow) => {
-      if (!flow.isActive) return false;
-      const trigger = flow.trigger || getTriggerFromNodes(flow.nodes || []);
-      return trigger?.type === "story_mention";
+      const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(flow.nodes || []);
+      return trigger?.type === "story_mention" || trigger?.type === "STORY_MENTION";
     });
     if (eventFlow) return { flow: eventFlow, triggerType: "story_mention" };
   }
 
   // ── PRIORITY 2: Check first_message triggers ────────────────────────────────
-  // Only fires for truly new conversations (no prior messages / no lastStepId)
   const isNewConversation = !convo
     || !convo.lastStepId
     || !convo.lastMessageAt
@@ -78,10 +72,8 @@ async function findMatchingFlow(parsedMessage, client, convo) {
 
   if (isNewConversation) {
     const welcomeFlow = flows.find((flow) => {
-      if (!flow.isActive) return false;
-
-      const trigger = flow.trigger || getTriggerFromNodes(flow.nodes || []);
-      if (!trigger || trigger.type !== "first_message") return false;
+      const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(flow.nodes || []);
+      if (!trigger || (trigger.type !== "first_message" && trigger.type !== "FIRST_MESSAGE")) return false;
 
       const flowChannel = (trigger.channel || flow.channel || "both").toLowerCase();
       return flowChannel === "both" || flowChannel === channel;
@@ -91,25 +83,49 @@ async function findMatchingFlow(parsedMessage, client, convo) {
       return { flow: welcomeFlow, triggerType: "first_message" };
     }
 
-    // Backward compatibility: if no visualFlows but has legacy flowNodes/flowEdges
-    const legacyNodes = client.flowNodes || [];
-    const legacyEdges = client.flowEdges || [];
-    if (legacyNodes.length > 0) {
+    // legacy fallback
+    if (client.flowNodes?.length > 0) {
       return {
-        flow: { nodes: legacyNodes, edges: legacyEdges, isLegacy: true },
+        flow: { nodes: client.flowNodes, edges: client.flowEdges, isLegacy: true },
         triggerType: "first_message",
         isLegacy: true,
       };
     }
   }
 
-  // ── No matching trigger ──────────────────────────────────────────────────────
   return null;
 }
 
 /**
+ * NEW: Match an event (Orders, Cart) to a flow.
+ * Used by webhooks (Shopify/WooCommerce).
+ */
+async function matchEventTrigger(eventName, eventData, client) {
+  const flows = await WhatsAppFlow.find({ 
+    clientId: client.clientId, 
+    status: 'PUBLISHED',
+    'triggerConfig.type': 'EVENT',
+    'triggerConfig.event': eventName
+  }).lean();
+
+  if (flows.length === 0) return null;
+
+  // 1. Check SKU-specific matches first if event involves products (order, cart)
+  const items = eventData.line_items || eventData.items || [];
+  if (items.length > 0) {
+    const skuMatches = flows.filter(f => f.triggerConfig.skuMatches?.length > 0);
+    for (const flow of skuMatches) {
+      const hasMatch = items.some(item => flow.triggerConfig.skuMatches.includes(item.sku));
+      if (hasMatch) return flow;
+    }
+  }
+
+  // 2. Return the first matching general event flow
+  return flows.find(f => !f.triggerConfig.skuMatches || f.triggerConfig.skuMatches.length === 0);
+}
+
+/**
  * Extract trigger configuration from the TriggerNode inside a flow's nodes array.
- * Supports both the flat data.trigger object and data.triggerType / data.keywords fields.
  */
 function getTriggerFromNodes(nodes) {
   if (!Array.isArray(nodes)) return null;
@@ -120,10 +136,9 @@ function getTriggerFromNodes(nodes) {
 
   const d = triggerNode.data || {};
 
-  // New format: data.trigger = { type, matchMode, keywords, channel }
   if (d.trigger) return d.trigger;
 
-  // Legacy format from TriggerNode.jsx: data.triggerType, data.keyword
+  // Legacy format
   const legacyKeyword = d.keyword || d.keywords || "";
   
   const type = d.triggerType === "first_message" ? "first_message" : 
@@ -142,11 +157,7 @@ function getTriggerFromNodes(nodes) {
     return { type: "meta_ad", adId: d.adId || "any", channel: d.channel || "both" };
   }
 
-  // Parse comma-separated keywords into array
-  const keywords = legacyKeyword
-    .split(",")
-    .map((k) => k.trim())
-    .filter(Boolean);
+  const keywords = legacyKeyword.split(",").map((k) => k.trim()).filter(Boolean);
 
   return {
     type:      "keyword",
@@ -156,15 +167,6 @@ function getTriggerFromNodes(nodes) {
   };
 }
 
-/**
- * Check if a specific keyword matches the incoming text.
- * Used both by findMatchingFlow and by flow builder live preview.
- *
- * @param {string} text      - Incoming message text
- * @param {string} keyword   - The keyword to match against
- * @param {string} matchMode - "exact" | "contains" | "contains_case_sensitive"
- * @returns {boolean}
- */
 function checkKeywordMatch(text, keyword, matchMode = "contains") {
   if (!text || !keyword) return false;
   const trimmedKeyword = keyword.trim();
@@ -172,45 +174,26 @@ function checkKeywordMatch(text, keyword, matchMode = "contains") {
 
   switch (matchMode) {
     case "exact":
-      // Case-insensitive exact match
       return text.toLowerCase() === trimmedKeyword.toLowerCase();
-
     case "contains_case_sensitive":
-      // Case-sensitive contains
       return text.includes(trimmedKeyword);
-
     case "contains":
     default:
-      // Case-insensitive contains (recommended)
       return text.toLowerCase().includes(trimmedKeyword.toLowerCase());
   }
 }
 
-/**
- * Find the start node for a flow (the first content node after the TriggerNode).
- * Returns the nodeId to executeNode with.
- */
 function findFlowStartNode(flowNodes, flowEdges) {
   if (!flowNodes || !flowNodes.length) return null;
-
-  // Find the TriggerNode
-  const triggerNode = flowNodes.find(
-    (n) => n.type === "TriggerNode" || n.type === "trigger"
-  );
+  const triggerNode = flowNodes.find((n) => n.type === "TriggerNode" || n.type === "trigger");
 
   if (triggerNode) {
-    // Get the first edge from the trigger node
-    const firstEdge = (flowEdges || []).find(
-      (e) => e.source === triggerNode.id
-    );
+    const firstEdge = (flowEdges || []).find((e) => e.source === triggerNode.id);
     if (firstEdge?.target) return firstEdge.target;
   }
 
-  // No trigger node — start from the first non-folder node
-  const startNode = flowNodes.find(
-    (n) => n.type !== "folder" && n.type !== "group" && n.type !== "sticky"
-  );
+  const startNode = flowNodes.find((n) => n.type !== "folder" && n.type !== "group" && n.type !== "sticky");
   return startNode?.id || null;
 }
 
-module.exports = { findMatchingFlow, checkKeywordMatch, getTriggerFromNodes, findFlowStartNode };
+module.exports = { findMatchingFlow, checkKeywordMatch, getTriggerFromNodes, findFlowStartNode, matchEventTrigger };

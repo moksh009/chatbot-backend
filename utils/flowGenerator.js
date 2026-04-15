@@ -60,7 +60,7 @@ Loyalty: Referral=${referralPoints} pts, Signup=${signupPoints} pts
 Business Hours: ${openTime} - ${closeTime}
 
 Generate a JSON object for 28 different UI touchpoints. Ensure the language strictly follows the Persona Tone Guidelines above. Be concise but impactful.
-REQUIRED KEYS:
+REQUIRED KEYS (Respond with concise, persona-specific text):
 "welcome_a", "welcome_b", "product_menu_text", "product_list_btn", 
 "order_status_msg", "fallback_msg", "returns_policy_short", "refund_policy_short",
 "cancellation_confirm", "cancellation_success", "installation_msg",
@@ -69,7 +69,8 @@ REQUIRED KEYS:
 "upsell_intro", "cross_sell_msg", "cart_recovery_1", "cart_recovery_2",
 "cart_recovery_3", "cod_nudge", "order_confirmed_msg", "agent_handoff_msg",
 "faq_response", "ad_welcome", "ig_welcome",
-"b2b_welcome", "b2b_capture_prompt", "warranty_welcome", "warranty_lookup_prompt"
+"b2b_welcome", "b2b_capture_prompt", "warranty_welcome", "warranty_lookup_prompt",
+"payment_request_body", "loyalty_award_reason"
 `;
 
   try {
@@ -172,8 +173,16 @@ REQUIRED KEYS:
     WARRANTY_REG_DATE: `war_reg_d_${ts}`,
     WARRANTY_REG_TAG: `war_tag_${ts}`,
     WARRANTY_REG_SUCCESS: `war_succ_${ts}`,
+    WARRANTY_REG_SUCCESS: `war_succ_${ts}`,
     WARRANTY_LOOKUP_SER: `war_look_s_${ts}`,
-    WARRANTY_LOOKUP_EXEC: `war_look_e_${ts}`
+    WARRANTY_LOOKUP_EXEC: `war_look_e_${ts}`,
+    
+    // Commerce Expansion
+    PAYMENT_LINK: `pay_link_${ts}`,
+    LOYALTY_AWARD: `loy_awd_${ts}`,
+    LOYALTY_REDEEM: `loy_red_${ts}`,
+    ORDER_CHECK: `ord_chk_${ts}`,
+    ORDER_CANCEL_EXEC: `ord_can_ex_${ts}`
   };
 
   const LAYOUT = {
@@ -377,12 +386,12 @@ REQUIRED KEYS:
 
   // --- 4. OPERATIONS (14 Nodes) ---
   nodes.push(
-    { id: IDS.ORDER_STATUS, type: "shopify_call", position: { x: LAYOUT.ORDER_X, y: LAYOUT.Y_STEP * 4.5 }, data: { label: "Sync Status", action: "ORDER_STATUS" } },
-    { id: IDS.CANCEL_START, type: "interactive", position: { x: LAYOUT.OPS_X, y: LAYOUT.Y_STEP * 4 }, data: { label: "Verify Cancellation", interactiveType: "button", text: "Are you sure you want to cancel order?", buttonsList: [{id:"yes", title:"Yes, Cancel"},{id:"no", title:"Keep It"}] } },
+    { id: IDS.ORDER_STATUS, type: "order_action", position: { x: LAYOUT.ORDER_X, y: LAYOUT.Y_STEP * 4.5 }, data: { label: "Fetch Status", actionType: "CHECK_ORDER_STATUS" } },
+    { id: IDS.CANCEL_START, type: "interactive", position: { x: LAYOUT.OPS_X, y: LAYOUT.Y_STEP * 4 }, data: { label: "Verify Cancellation", interactiveType: "button", text: content.cancellation_confirm || "Are you sure you want to cancel order?", buttonsList: [{id:"yes", title:"Yes, Cancel"},{id:"no", title:"Keep It"}] } },
     { id: IDS.CANCEL_LOGIC, type: "logic", position: { x: LAYOUT.OPS_X + 400, y: LAYOUT.Y_STEP * 4 }, data: { label: "Check Shipping", variable: "is_shipped", operator: "equals", value: "false" } },
     { id: IDS.CANCEL_REASON, type: "capture_input", position: { x: LAYOUT.OPS_X + 800, y: LAYOUT.Y_STEP * 3.5 }, data: { label: "Ask Reason", variable: "cancel_reason", text: "Please tell us why you are cancelling?" } },
     { id: IDS.CANCEL_ALREADY_SHIPPED, type: "message", position: { x: LAYOUT.OPS_X + 800, y: LAYOUT.Y_STEP * 4.5 }, data: { label: "In Transit Error", text: "Sorry! Your order is already shipped and cannot be cancelled now. 🚚" } },
-    { id: IDS.CANCEL_FINAL, type: "shopify_call", position: { x: LAYOUT.OPS_X + 1200, y: LAYOUT.Y_STEP * 3.5 }, data: { label: "Process Cancel", action: "CANCEL_ORDER" } },
+    { id: IDS.CANCEL_FINAL, type: "order_action", position: { x: LAYOUT.OPS_X + 1200, y: LAYOUT.Y_STEP * 3.5 }, data: { label: "Process Cancel", actionType: "CANCEL_ORDER" } },
     
     { id: IDS.RETURN_START, type: "interactive", position: { x: LAYOUT.OPS_X, y: LAYOUT.Y_STEP * 6 }, data: { label: "Return Hub", interactiveType: "button", text: "Need to return something?", buttonsList: [{id:"pol", title:"Policy"},{id:"form", title:"Start Return"}] } },
     { id: IDS.RETURN_POLICY, type: "message", position: { x: LAYOUT.OPS_X + 400, y: LAYOUT.Y_STEP * 6 }, data: { label: "Return T&C", text: content.returns_policy_short } },
@@ -413,7 +422,7 @@ REQUIRED KEYS:
     { id: IDS.WARRANTY_REG_SUCCESS, type: "message", position: { x: LAYOUT.OPS_X + 1600, y: LAYOUT.Y_STEP * 11 }, data: { label: "Reg Success", text: `Success! Your warranty is now active for ${warrantyDuration}. We've saved your details.` } },
     
     { id: IDS.WARRANTY_LOOKUP_SER, type: "capture_input", position: { x: LAYOUT.OPS_X + 400, y: LAYOUT.Y_STEP * 12.5 }, data: { label: "Lookup Prompt", variable: "lookup_serial", text: content.warranty_lookup_prompt || "Enter your serial number to check status." } },
-    { id: IDS.WARRANTY_LOOKUP_EXEC, type: "warranty_lookup", position: { x: LAYOUT.OPS_X + 800, y: LAYOUT.Y_STEP * 12.5 }, data: { label: "Engine Lookup", duration: warrantyDuration, policy: warrantyPolicy } }
+    { id: IDS.WARRANTY_LOOKUP_EXEC, type: "warranty_check", position: { x: LAYOUT.OPS_X + 800, y: LAYOUT.Y_STEP * 12.5 }, data: { label: "Engine Lookup", duration: warrantyDuration, policy: warrantyPolicy } }
   );
   edges.push(
     { id: `e_m_war`, source: IDS.MENU, target: IDS.WARRANTY_HUB, sourceHandle: "ops" }, // Hub choice
@@ -475,16 +484,18 @@ REQUIRED KEYS:
 
   // --- 6. LOYALTY & SEGMENTATION (7 Nodes) ---
   nodes.push(
-    { id: IDS.LOY_MENU, type: "interactive", position: { x: LAYOUT.LOYALTY_X, y: LAYOUT.Y_STEP * 4.5 }, data: { label: "Rewards Hub", interactiveType: "list", text: content.loyalty_welcome, rows:[{id:"pts", title:"Balance"},{id:"ref", title:"Refer"},{id:"vip", title:"VIP Status"}] } },
+    { id: IDS.LOY_MENU, type: "interactive", position: { x: LAYOUT.LOYALTY_X, y: LAYOUT.Y_STEP * 4.5 }, data: { label: "Rewards Hub", interactiveType: "list", text: content.loyalty_welcome, rows:[{id:"pts", title:"Balance"},{id:"red", title:"Redeem Points"},{id:"ref", title:"Referral Link"}] } },
     { id: IDS.LOY_POINTS, type: "message", position: { x: LAYOUT.LOYALTY_X + 400, y: LAYOUT.Y_STEP * 3.5 }, data: { label: "Wallet Check", text: content.loyalty_points_msg } },
-    { id: IDS.LOY_REFER, type: "message", position: { x: LAYOUT.LOYALTY_X + 400, y: LAYOUT.Y_STEP * 4.5 }, data: { label: "Referral Program", text: content.referral_msg } },
-    { id: IDS.LOY_SEG, type: "segment", position: { x: LAYOUT.LOYALTY_X + 400, y: LAYOUT.Y_STEP * 5.5 }, data: { label: "Profile Divider", segments: [{id: "vip", label: "VIP Only", type: "vip"}, {id: "new", label: "New Member", type: "new"}] } },
-    { id: IDS.LOY_VIP_PERK, type: "message", position: { x: LAYOUT.LOYALTY_X + 800, y: LAYOUT.Y_STEP * 5.5 }, data: { label: "VIP Perk", text: "You are a VIP! Exclusive 20% discount code: VIP20" } },
-    { id: IDS.LOY_NEW_NUDGE, type: "message", position: { x: LAYOUT.LOYALTY_X + 800, y: LAYOUT.Y_STEP * 6.5 }, data: { label: "Member Intro", text: "You're getting closer! Shop for ₹500 more to unlock VIP perks. 🚀" } }
+    { id: IDS.LOY_REDEEM, type: "loyalty_action", position: { x: LAYOUT.LOYALTY_X + 400, y: LAYOUT.Y_STEP * 4.5 }, data: { label: "Redeem 100", actionType: "REDEEM_POINTS", pointsRequired: 100 } },
+    { id: IDS.LOY_REFER, type: "message", position: { x: LAYOUT.LOYALTY_X + 400, y: LAYOUT.Y_STEP * 5.5 }, data: { label: "Referral Program", text: content.referral_msg } },
+    { id: IDS.LOY_SEG, type: "segment", position: { x: LAYOUT.LOYALTY_X + 400, y: LAYOUT.Y_STEP * 6.5 }, data: { label: "Profile Divider", segments: [{id: "vip", label: "VIP Only", type: "vip"}, {id: "new", label: "New Member", type: "new"}] } },
+    { id: IDS.LOY_VIP_PERK, type: "message", position: { x: LAYOUT.LOYALTY_X + 800, y: LAYOUT.Y_STEP * 6.5 }, data: { label: "VIP Perk", text: "You are a VIP! Exclusive 20% discount code: VIP20" } },
+    { id: IDS.LOY_NEW_NUDGE, type: "message", position: { x: LAYOUT.LOYALTY_X + 800, y: LAYOUT.Y_STEP * 7.5 }, data: { label: "Member Intro", text: "You're getting closer! Shop for ₹500 more to unlock VIP perks. 🚀" } }
   );
   edges.push(
     { id: `e_m_loy`, source: IDS.MENU, target: IDS.LOY_MENU, sourceHandle: "loyalty" },
     { id: `e_loy_p`, source: IDS.LOY_MENU, target: IDS.LOY_POINTS, sourceHandle: "pts" },
+    { id: `e_loy_red`, source: IDS.LOY_MENU, target: IDS.LOY_REDEEM, sourceHandle: "red" },
     { id: `e_loy_r`, source: IDS.LOY_MENU, target: IDS.LOY_REFER, sourceHandle: "ref" },
     { id: `e_loy_v`, source: IDS.LOY_MENU, target: IDS.LOY_SEG, sourceHandle: "vip" },
     { id: `e_seg_v`, source: IDS.LOY_SEG, target: IDS.LOY_VIP_PERK, sourceHandle: "vip" },
@@ -502,6 +513,7 @@ REQUIRED KEYS:
   edges.push(
     { id: `e_cart_s`, source: IDS.CART_TR, target: IDS.CART_SEQ },
     { id: `e_pay_conf`, source: IDS.CONF_TR, target: IDS.CONF_MSG },
+    { id: `e_pay_link`, source: IDS.CONF_MSG, target: IDS.PAYMENT_LINK },
     { id: `e_conf_cod`, source: IDS.CONF_MSG, target: IDS.COD_NUDGE }
   );
 

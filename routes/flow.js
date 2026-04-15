@@ -37,24 +37,115 @@ router.post('/ai-build', protect, async (req, res) => {
   }
 });
 
-// POST /api/flow/ai-save
-// Commits chosen AI nodes/edges to the client's visual flow canvas
-router.post('/ai-save', protect, async (req, res) => {
+// POST /api/flow/save
+// Saves draft nodes/edges to the WhatsAppFlow model
+router.post('/save', protect, async (req, res) => {
   try {
-    const { nodes, edges, append } = req.body;
-    const client = await Client.findOne({ clientId: req.user.clientId });
-    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+    const { flowId, nodes, edges } = req.body;
+    const clientId = req.user.clientId;
 
-    if (append) {
-      client.flowNodes = [...(client.flowNodes || []), ...nodes];
-      client.flowEdges = [...(client.flowEdges || []), ...edges];
+    const WhatsAppFlow = require('../models/WhatsAppFlow');
+    let flow = await WhatsAppFlow.findOne({ clientId, flowId });
+
+    if (!flow) {
+      flow = new WhatsAppFlow({
+        clientId,
+        flowId,
+        name: `Automated Flow ${Date.now()}`,
+        nodes,
+        edges
+      });
     } else {
-      client.flowNodes = nodes;
-      client.flowEdges = edges;
+      flow.nodes = nodes;
+      flow.edges = edges;
     }
 
-    await client.save();
-    res.json({ success: true, message: 'Flow synchronized successfully' });
+    await flow.save();
+
+    // Legacy fallback: also save to Client model for compatibility
+    await Client.updateOne({ clientId }, { flowNodes: nodes, flowEdges: edges });
+
+    res.json({ success: true, message: 'Draft saved successfully' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST /api/flow/publish
+// Syncs draft to published state and increments version
+router.post('/publish', protect, async (req, res) => {
+  try {
+    const { flowId } = req.body;
+    const clientId = req.user.clientId;
+
+    const WhatsAppFlow = require('../models/WhatsAppFlow');
+    const FlowHistory = require('../models/FlowHistory');
+    const flow = await WhatsAppFlow.findOne({ clientId, flowId });
+
+    if (!flow) return res.status(404).json({ success: false, message: 'Flow not found' });
+
+    // 1. Create a snapshot in FlowHistory
+    await FlowHistory.create({
+      clientId,
+      flowId,
+      version: flow.version,
+      nodes: flow.publishedNodes,
+      edges: flow.publishedEdges,
+      publishedBy: req.user.name || req.user.email
+    });
+
+    // 2. Sync draft to published
+    flow.publishedNodes = flow.nodes;
+    flow.publishedEdges = flow.edges;
+    flow.status = 'PUBLISHED';
+    flow.version += 1;
+    flow.lastSyncedAt = Date.now();
+
+    await flow.save();
+    res.json({ success: true, message: `Flow published successfully (v${flow.version})`, version: flow.version });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// GET /api/flow/:flowId/versions
+// Returns history of published versions
+router.get('/:flowId/versions', protect, async (req, res) => {
+  try {
+    const { flowId } = req.params;
+    const clientId = req.user.clientId;
+    const FlowHistory = require('../models/FlowHistory');
+    
+    const history = await FlowHistory.find({ clientId, flowId }).sort({ version: -1 }).limit(20);
+    res.json({ success: true, history });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST /api/flow/:flowId/rollback/:versionId
+// Reverts published state to a previous version
+router.post('/:flowId/rollback/:versionId', protect, async (req, res) => {
+  try {
+    const { flowId, versionId } = req.params;
+    const clientId = req.user.clientId;
+
+    const FlowHistory = require('../models/FlowHistory');
+    const WhatsAppFlow = require('../models/WhatsAppFlow');
+
+    const historyRecord = await FlowHistory.findById(versionId);
+    if (!historyRecord) return res.status(404).json({ success: false, message: 'History record not found' });
+
+    const flow = await WhatsAppFlow.findOne({ clientId, flowId });
+    if (!flow) return res.status(404).json({ success: false, message: 'Flow not found' });
+
+    // Rollback published state (doesn't affect current draft automatically unless desired)
+    flow.publishedNodes = historyRecord.nodes;
+    flow.publishedEdges = historyRecord.edges;
+    flow.lastSyncedAt = Date.now();
+    
+    await flow.save();
+    res.json({ success: true, message: `Rolled back to version ${historyRecord.version}` });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -74,9 +165,24 @@ router.get('/', protect, async (req, res) => {
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
+    const WhatsAppFlow = require('../models/WhatsAppFlow');
+    const dbFlows = await WhatsAppFlow.find({ clientId });
+    const formattedFlows = dbFlows.map(f => ({
+      id: f.flowId,
+      name: f.name,
+      platform: f.platform || 'whatsapp',
+      folderId: f.folderId || '',
+      isActive: f.status === 'PUBLISHED',
+      nodes: f.nodes || [],
+      edges: f.edges || [],
+      createdAt: f.createdAt,
+      updatedAt: f.updatedAt
+    }));
+
     res.json({ 
       success: true, 
-      flows: client.visualFlows || [],
+      flows: formattedFlows,
+      flowFolders: client.flowFolders || [],
       legacy: {
         nodes: client.flowNodes || [],
         edges: client.flowEdges || []

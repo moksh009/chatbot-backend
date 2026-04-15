@@ -16,10 +16,36 @@ const WhatsAppFlowSchema = new mongoose.Schema({
     required: true
   },
   status: {
-    type: String, // 'DRAFT', 'PUBLISHED', 'DEPRECATED'
+    type: String, // 'DRAFT', 'PUBLISHED', 'ARCHIVED'
     default: 'DRAFT'
   },
+  version: {
+    type: Number,
+    default: 1
+  },
+  description: String,
   categories: [String],
+  
+  platform: {
+    type: String,
+    enum: ['whatsapp', 'instagram', 'omnichannel', 'meta'],
+    default: 'whatsapp'
+  },
+  folderId: String,
+  
+  // Triggers Configuration
+  triggerConfig: {
+    type: {
+      type: String, // 'KEYWORD', 'EVENT', 'AI_INTENT'
+      default: 'KEYWORD'
+    },
+    keywords: [String],
+    event: String, // 'order.placed', 'cart.abandoned', etc.
+    intentId: String,
+    skuMatches: [String] // Specific SKUs to trigger for
+  },
+
+  // State Management
   nodes: {
     type: [mongoose.Schema.Types.Mixed],
     default: []
@@ -28,6 +54,15 @@ const WhatsAppFlowSchema = new mongoose.Schema({
     type: [mongoose.Schema.Types.Mixed],
     default: []
   },
+  publishedNodes: {
+    type: [mongoose.Schema.Types.Mixed],
+    default: []
+  },
+  publishedEdges: {
+    type: [mongoose.Schema.Types.Mixed],
+    default: []
+  },
+
   validationErrors: [mongoose.Schema.Types.Mixed],
   lastSyncedAt: {
     type: Date,
@@ -36,7 +71,16 @@ const WhatsAppFlowSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now
+  },
+  updatedAt: {
+    type: Date,
+    default: Date.now
   }
+});
+
+WhatsAppFlowSchema.pre('save', function(next) {
+  this.updatedAt = Date.now();
+  next();
 });
 
 module.exports = mongoose.model('WhatsAppFlow', WhatsAppFlowSchema);

@@ -253,6 +253,11 @@ const ClientSchema = new mongoose.Schema({
   // Phase 15 Visual Builder Multi-Flow Architecture
   flowFolders: { type: [mongoose.Schema.Types.Mixed], default: [] }, // { id: String, name: String, createdAt: Date }
   visualFlows: { type: [mongoose.Schema.Types.Mixed], default: [] }, // { id: String, name: String, folderId: String, platform: String, isActive: Boolean, nodes: [], edges: [], createdAt: Date, updatedAt: Date }
+  flowMigrationStatus: { 
+    type: String, 
+    enum: ['pending', 'completed', 'verified', 'failed'], 
+    default: 'pending' 
+  },
 
   
   // Phase 9 AI & Settings

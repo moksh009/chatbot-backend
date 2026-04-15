@@ -22,6 +22,20 @@ const flowAnalyticsSchema = new mongoose.Schema({
     type: String,
     index: true
   },
+  // Enterprise Analytics Expansion
+  duration: {
+    type: Number, // Time spent in milliseconds (if applicable)
+    default: 0
+  },
+  action: {
+    type: String, // 'entry', 'dropoff', 'click', 'conversion'
+    default: 'entry',
+    index: true
+  },
+  metadata: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
+  },
   timestamp: {
     type: Date,
     default: Date.now,
@@ -29,7 +43,8 @@ const flowAnalyticsSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
-// Compound index for heatmap aggregation
-flowAnalyticsSchema.index({ clientId: 1, flowId: 1, nodeId: 1 });
+// Compound index for heatmap and conversion funnel aggregation
+flowAnalyticsSchema.index({ clientId: 1, flowId: 1, nodeId: 1, action: 1 });
+flowAnalyticsSchema.index({ clientId: 1, action: 1, timestamp: -1 });
 
 module.exports = mongoose.model('FlowAnalytics', flowAnalyticsSchema);

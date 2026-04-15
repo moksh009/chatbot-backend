@@ -177,11 +177,12 @@ async function runFlow(client, from, flow, startNodeId, extraContext = {}) {
       commentId: extraContext.commentId
     };
 
-    // 2.5 Log Journey
-    await AdLead.pushJourneyEvent(client.clientId, phone, 'flow_started', { flowId: flow.id, flowName: flow.name });
-
     // 3. Execute
-    log.info(`Manual runFlow: Executing ${flow.name} starting at ${startNodeId}`);
+    log.info(`Manual runFlow: Executing ${flow.name || flow.id} starting at ${startNodeId}`);
+    
+    // Save active flow state
+    await Conversation.findByIdAndUpdate(convo._id, { activeFlowId: flow._id || flow.id });
+    
     return await executeNode(startNodeId, flattenFlowNodes(flow.nodes), flow.edges, client, convo, lead, from, io, channel, parsedMessage);
   } catch (err) {
     log.error(`runFlow Error:`, { error: err.message });
@@ -379,7 +380,9 @@ async function runDualBrainEngine(parsedMessage, client) {
               // 2. Transition to next node if in an active flow
               const convo = await Conversation.findOne({ phone, clientId: client.clientId });
               if (convo?.activeFlowId && convo?.lastStepId) {
-                  const flow = (client.visualFlows || []).find(f => f.id === convo.activeFlowId);
+                  const WhatsAppFlow = require("../models/WhatsAppFlow");
+                  const flow = await WhatsAppFlow.findOne({ _id: convo.activeFlowId });
+                  
                   if (flow) {
                       const flowNodes = flattenFlowNodes(flow.nodes || []);
                       const flowEdges = flow.edges || [];
@@ -1486,21 +1489,38 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   // ✅ Phase R3: Atomic node visit counter — was replacing entire flowNodes[] array on every message
   // Old: const updatedNodes = incrementNodeVisit(...); await Client.findByIdAndUpdate(client._id, { flowNodes: updatedNodes })
   // New: Targeted $inc on exactly one node — O(1) not O(N) writes
+  // Targeted visit count tracking on WhatsAppFlow collection
   try {
-    await Client.updateOne(
-      { _id: client._id, 'flowNodes.id': nodeId },
-      { $inc: { 'flowNodes.$.data.visitCount': 1 } }
-    );
-    // Also track on the specific Visual Flow if active
+    const WhatsAppFlow = require("../models/WhatsAppFlow");
     if (convo?.activeFlowId) {
-      await Client.updateOne(
-        { _id: client._id, 'visualFlows.id': convo.activeFlowId },
-        { $inc: { 'visualFlows.$[flow].nodes.$[node].data.visitCount': 1 } },
-        { arrayFilters: [{ 'flow.id': convo.activeFlowId }, { 'node.id': nodeId }] }
-      ).catch(() => {}); // Non-fatal if arrayFilters path doesn't match
+      await WhatsAppFlow.updateOne(
+        { _id: convo.activeFlowId, "nodes.id": nodeId },
+        { $inc: { "nodes.$.data.visitCount": 1 } }
+      ).catch(() => {});
     }
+    
+    // Fallback/Legacy tracking on Client model
+    await Client.updateOne(
+      { _id: client._id, "flowNodes.id": nodeId },
+      { $inc: { "flowNodes.$.data.visitCount": 1 } }
+    ).catch(() => {});
   } catch (err) {
-    log.error(`Failed to increment visit count for node ${nodeId}:`, { error: err.message });
+    log.error(`Visit tracking failed for node ${nodeId}:`, { error: err.message });
+  }
+
+  // Enterprise Analytics: Record node entry for heatmap and versioning insights
+  try {
+    const FlowAnalytics = require('../models/FlowAnalytics');
+    await FlowAnalytics.create({
+      clientId: client.clientId,
+      flowId: (convo?.activeFlowId || convo?.metadata?.activeFlowId || 'default_legacy'),
+      nodeId,
+      nodeType: node.type,
+      phone,
+      action: 'entry'
+    });
+  } catch (err) {
+    log.error(`[FlowEngine] Analytics record failure: ${err.message}`);
   }
 
 
@@ -1644,6 +1664,75 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   if (node.type === 'cod_prepaid') {
     const { handleNodeAction } = require('./nodeActions');
     await handleNodeAction('CONVERT_COD_TO_PREPAID', node, client, phone, convo, lead);
+  }
+
+  // --- ENTERPRISE & COMMERCE NODES (Phase 3) ---
+
+  // 6. Payment Link Node
+  if (node.type === 'payment_link') {
+    const { handleNodeAction } = require('./nodeActions');
+    await handleNodeAction('GENERATE_PAYMENT', node, client, phone, convo, lead);
+  }
+
+  // 7. Loyalty Action Node
+  if (node.type === 'loyalty_action') {
+    const { handleNodeAction } = require('./nodeActions');
+    const action = node.data?.actionType || 'GIVE_LOYALTY';
+    await handleNodeAction(action, node, client, phone, convo, lead);
+    
+    // Automatic branching for redemptions
+    if (action === 'REDEEM_POINTS') {
+        const walletService = require('./walletService');
+        const balance = await walletService.getBalance(client.clientId, phone);
+        const required = node.data?.pointsRequired || 100;
+        const targetHandle = balance >= required ? 'success' : 'fail';
+        const nextEdge = flowEdges.find(e => e.source === nodeId && normalizeHandleId(e.sourceHandle) === targetHandle);
+        if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+        return true;
+    }
+  }
+
+  // 8. Order Action Node
+  if (node.type === 'order_action') {
+    const { handleNodeAction } = require('./nodeActions');
+    const action = node.data?.actionType || 'CHECK_ORDER_STATUS';
+    await handleNodeAction(action, node, client, phone, convo, lead);
+  }
+
+  // 9. Warranty Check Node
+  if (node.type === 'warranty_check' || node.type === 'warranty_lookup') {
+    const { handleNodeAction } = require('./nodeActions');
+    await handleNodeAction('WARRANTY_CHECK', node, client, phone, convo, lead);
+    
+    // Automatic branching based on record state
+    const cleanPhone = require('./helpers').normalizePhone(phone);
+    const leadRecord = await AdLead.findOne({ phoneNumber: cleanPhone, clientId: client.clientId }).lean();
+    const records = leadRecord?.warrantyRecords || [];
+    const serialQuery = (convo?.metadata?.lookup_serial || '').trim().toLowerCase();
+    
+    let targetHandle = 'none';
+    if (records.length > 0) {
+        if (serialQuery) {
+            const matches = records.filter(r => (r.serialNumber || "").toLowerCase() === serialQuery);
+            if (matches.length > 0) {
+                const isExpired = new Date(matches[0].expiryDate) < new Date();
+                targetHandle = isExpired ? 'expired' : 'active';
+            }
+        } else {
+            const activeOnes = records.filter(r => new Date(r.expiryDate) > new Date());
+            targetHandle = activeOnes.length > 0 ? 'active' : 'expired';
+        }
+    }
+
+    const nextEdge = flowEdges.find(e => e.source === nodeId && normalizeHandleId(e.sourceHandle) === targetHandle);
+    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+  }
+
+  // 10. Intent Trigger Node (Execution part)
+  if (node.type === 'intent_trigger') {
+      // Usually an entry point, but if reached in flow, we just proceed.
+      const nextEdge = flowEdges.find(e => e.source === nodeId);
+      if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
 
   // 6. Schedule Node: Business Hours check
