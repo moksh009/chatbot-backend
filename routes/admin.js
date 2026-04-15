@@ -849,7 +849,9 @@ router.get('/my-settings', protect, sanitizeMiddleware, async (req, res) => {
     log.info('Fetching settings stream', { targetClientId, requester: req.user?.email });
 
     // 2. Fetch with simple retry logic (via await)
-    const client = await Client.findOne({ clientId: targetClientId }).maxTimeMS(5000); // 5s timeout
+    const client = await Client.findOne({ clientId: targetClientId })
+      .select('-flowNodes -flowEdges -visualFlows -messageTemplates -automationFlows -nicheData')
+      .maxTimeMS(5000); // 5s timeout
     
     if (!client) {
       log.warn('Client registry missing', { targetClientId });
