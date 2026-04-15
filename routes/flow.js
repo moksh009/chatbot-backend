@@ -162,14 +162,11 @@ router.get('/', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized access to flows' });
     }
 
-    const client = await Client.findOne({ clientId }).select('flowFolders name').lean();
+    const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
     const WhatsAppFlow = require('../models/WhatsAppFlow');
-    const dbFlows = await WhatsAppFlow.find({ clientId })
-      .select('flowId name platform folderId status version nodes edges createdAt updatedAt lastSyncedAt')
-      .lean();
-
+    const dbFlows = await WhatsAppFlow.find({ clientId });
     const formattedFlows = dbFlows.map(f => ({
       id: f.flowId,
       name: f.name,
@@ -178,7 +175,8 @@ router.get('/', protect, async (req, res) => {
       isActive: f.status === 'PUBLISHED',
       status: f.status || 'DRAFT',
       version: f.version || 1,
-      // Include nodes/edges count but not the full arrays for memory efficiency in the list
+      nodes: f.nodes || [],
+      edges: f.edges || [],
       nodeCount: (f.nodes || []).length,
       edgeCount: (f.edges || []).length,
       createdAt: f.createdAt,
@@ -190,53 +188,13 @@ router.get('/', protect, async (req, res) => {
       success: true, 
       flows: formattedFlows,
       flowFolders: client.flowFolders || [],
-      // Legacy data is now explicitly omitted from the list for performance
-      hasLegacyData: !!(client.flowNodes?.length > 0)
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-
-// GET /api/flow/:flowId/canvas
-// Returns full node/edge data for a specific flow
-router.get('/:flowId/canvas', protect, async (req, res) => {
-  try {
-    const { flowId } = req.params;
-    const clientId = req.query.clientId || req.user.clientId;
-
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-
-    const WhatsAppFlow = require('../models/WhatsAppFlow');
-    const flow = await WhatsAppFlow.findOne({ clientId, flowId }).lean();
-    
-    if (!flow) {
-      // Check legacy fallback in Client model if not found in WhatsAppFlow
-      const client = await Client.findOne({ clientId }).select('flowNodes flowEdges').lean();
-      if (client && (client.flowNodes?.length > 0 || client.flowEdges?.length > 0)) {
-        return res.json({
-          success: true,
-          nodes: client.flowNodes,
-          edges: client.flowEdges,
-          isLegacy: true
-        });
+      legacy: {
+        nodes: client.flowNodes || [],
+        edges: client.flowEdges || []
       }
-      return res.status(404).json({ success: false, message: 'Flow not found' });
-    }
-
-    res.json({
-      success: true,
-      nodes: flow.nodes || [],
-      edges: flow.edges || [],
-      publishedNodes: flow.publishedNodes || [],
-      publishedEdges: flow.publishedEdges || [],
-      version: flow.version,
-      status: flow.status
     });
   } catch (error) {
+    console.error('[Flow API] List error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
@@ -342,51 +300,12 @@ router.get('/:clientId/analytics', protect, async (req, res) => {
       dropOffRate: 0 // Will compute if requested
     }));
 
+    // In a real implementation we would also analyze flowEdges for traffic %
     const edges = client.flowEdges || [];
+    
     res.json({ success: true, nodes: nodeAnalytics, edges });
   } catch (error) {
     console.error('Flow Analytics error:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-router.post('/migrate-legacy', protect, async (req, res) => {
-  try {
-    const Client = require('../models/Client');
-    const WhatsAppFlow = require('../models/WhatsAppFlow');
-    const { clientId } = req.user;
-
-    const client = await Client.findOne({ clientId });
-    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
-
-    // Check if there are nodes in the legacy field
-    if (client.flowNodes && client.flowNodes.length > 0) {
-      // Create a "Default Legacy Flow" if no flows exist yet
-      const existingFlows = await WhatsAppFlow.countDocuments({ clientId });
-      if (existingFlows === 0) {
-        const newFlow = new WhatsAppFlow({
-          clientId,
-          flowId: `flow_${Date.now()}`,
-          name: 'Migrated Default Flow',
-          nodes: client.flowNodes,
-          edges: client.flowEdges || [],
-          platform: 'whatsapp',
-          status: 'PUBLISHED'
-        });
-        await newFlow.save();
-      }
-    }
-
-    // Clear the legacy fields and set migration status
-    client.flowNodes = [];
-    client.flowEdges = [];
-    client.flowMigrationStatus = 'completed';
-    // Ensure we don't accidentally wipe visualFlows if it's already used
-    await client.save();
-
-    res.json({ success: true, message: 'Migration successful' });
-  } catch (error) {
-    console.error('Migration error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
