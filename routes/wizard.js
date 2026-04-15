@@ -40,6 +40,8 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     const systemPrompt = await generateSystemPrompt(client, wizardData);
 
     // Build the new flow object
+    // Phase R4 Fix: nodes/edges always stored empty here (full data in WhatsAppFlow model)
+    // nodeCount is stored so FlowBuilder card displays correct count without loading all nodes
     const flowId = `flow_wizard_${Date.now()}`;
     const newFlow = {
       id:          flowId,
@@ -49,24 +51,28 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       folderId:    "",
       nodes:       nodes.length > 20 ? [] : nodes,
       edges:       nodes.length > 20 ? [] : edges,
-      flowModelId: null, // Populated if > 20 nodes
+      nodeCount:   nodes.length,   // Always stored for card display
+      edgeCount:   edges.length,   // Always stored for card display
+      flowModelId: null,            // Populated if > 20 nodes
       createdAt:   new Date(),
       updatedAt:   new Date(),
       generatedBy: "wizard"
     };
 
-    // ✅ Phase R4: Smart Flow Storage Offloading (> 20 nodes)
+    // ✅ Phase R4: Smart Flow Storage — always offload to WhatsAppFlow model when > 20 nodes
     if (nodes.length > 20) {
       const WhatsAppFlow = require("../models/WhatsAppFlow");
       const storedFlow = await WhatsAppFlow.create({
         clientId,
         flowId,
-        name: newFlow.name,
+        name:     newFlow.name,
+        platform: 'whatsapp',
         nodes,
         edges,
-        status: 'PUBLISHED'
+        status:   'PUBLISHED'
       });
       newFlow.flowModelId = storedFlow._id;
+      console.log(`[Wizard] Flow offloaded to WhatsAppFlow model: ${storedFlow._id} (${nodes.length} nodes)`);
     }
 
     // Update the client document:
@@ -79,9 +85,11 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       wizardCompleted:    true,
       wizardCompletedAt:  new Date(),
       isAIFallbackEnabled: true,
+      // Phase R4 Fix: use full nodes/edges arrays for dual-brain engine
+      // (not newFlow.nodes which is intentionally empty when > 20 nodes)
       ...(wizardData.replaceExisting !== false && { 
-        flowNodes: newFlow.nodes, 
-        flowEdges: newFlow.edges 
+        flowNodes: nodes, 
+        flowEdges: edges
       }),
       ...(wizardData.businessName    && { 
         businessName: wizardData.businessName, 
