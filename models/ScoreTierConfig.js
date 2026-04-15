@@ -7,10 +7,13 @@ const ConditionSchema = new mongoose.Schema({
 });
 
 const TierSchema = new mongoose.Schema({
-  score: { type: Number, required: true }, // e.g., 100, 80, 50
-  label: { type: String }, // e.g., "VIP Customer"
+  score: { type: Number, required: true }, // e.g., 100, 90, ..., 0
+  tierLabel: { type: String }, // Custom naming (e.g., "VIP", "Churn Risk")
   conditions: [ConditionSchema] // Evaluated with AND logic
 });
+
+// Legacy support for 'label'
+TierSchema.virtual('label').get(function() { return this.tierLabel; }).set(function(v) { this.tierLabel = v; });
 const ScoreTierConfigSchema = new mongoose.Schema({
   clientId: { type: String, required: true, unique: true, index: true },
   isActive: { type: Boolean, default: true },
@@ -23,41 +26,17 @@ ScoreTierConfigSchema.statics.getDefaultConfig = function(clientId) {
     clientId,
     isActive: true,
     tiers: [
-      {
-        score: 100,
-        label: "VIP / High Value",
-        conditions: [
-          { assetId: 'TOTAL_ORDERS', operator: '>=', targetValue: 3 }
-        ]
-      },
-      {
-        score: 80,
-        label: "Frequent Buyer",
-        conditions: [
-          { assetId: 'TOTAL_ORDERS', operator: '>=', targetValue: 1 }
-        ]
-      },
-      {
-        score: 60,
-        label: "Active Cart / Checkout",
-        conditions: [
-          { assetId: 'CHECKOUT_COUNT', operator: '>=', targetValue: 1 }
-        ]
-      },
-      {
-        score: 40,
-        label: "Engaged Prospect",
-        conditions: [
-          { assetId: 'INBOUND_MSG_COUNT', operator: '>=', targetValue: 5 }
-        ]
-      },
-      {
-        score: 20,
-        label: "New Lead",
-        conditions: [
-          { assetId: 'TOTAL_ORDERS', operator: '==', targetValue: 0 }
-        ]
-      }
+      { score: 100, tierLabel: "VIP / Direct Buyer", conditions: [{ assetId: 'TOTAL_ORDERS', operator: '>=', targetValue: 5 }] },
+      { score: 90, tierLabel: "Loyal Customer", conditions: [{ assetId: 'TOTAL_ORDERS', operator: '>=', targetValue: 3 }] },
+      { score: 80, tierLabel: "Repeat Buyer", conditions: [{ assetId: 'TOTAL_ORDERS', operator: '>=', targetValue: 1 }] },
+      { score: 70, tierLabel: "High Intent", conditions: [{ assetId: 'CHECKOUT_COUNT', operator: '>=', targetValue: 2 }] },
+      { score: 60, tierLabel: "Warm Lead", conditions: [{ assetId: 'ADD_TO_CART_COUNT', operator: '>=', targetValue: 1 }] },
+      { score: 50, tierLabel: "Active Shopper", conditions: [{ assetId: 'TOTAL_INTERACTIONS', operator: '>=', targetValue: 10 }] },
+      { score: 40, tierLabel: "Interested", conditions: [{ assetId: 'TOTAL_INTERACTIONS', operator: '>=', targetValue: 5 }] },
+      { score: 30, tierLabel: "Browsing", conditions: [{ assetId: 'TOTAL_INTERACTIONS', operator: '>=', targetValue: 2 }] },
+      { score: 20, tierLabel: "New Visitor", conditions: [{ assetId: 'TOTAL_INTERACTIONS', operator: '>=', targetValue: 1 }] },
+      { score: 10, tierLabel: "Cold Lead", conditions: [] },
+      { score: 0, tierLabel: "Unprocessed", conditions: [] }
     ]
   };
 };

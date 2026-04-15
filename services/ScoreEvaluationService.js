@@ -1,22 +1,57 @@
 const TRACKABLE_ASSETS = require('../constants/trackableAssets');
 
+const ASSET_MAP = {
+  // COMMERCE
+  TOTAL_ORDERS: 'ordersCount',
+  LTV: 'totalSpent',
+  ABANDONED_CARTS: 'addToCartCount',
+  CHECKOUT_COUNT: 'checkoutInitiatedCount',
+  RTO_COUNT: 'rtoCount',
+  EXCHANGE_REFUND_COUNT: 'refundCount',
+  DAYS_SINCE_LAST_PURCHASE: 'lastPurchaseDate',
+  
+  // ENGAGEMENT
+  TOTAL_INTERACTIONS: 'inboundMessageCount',
+  DAYS_SINCE_LAST_SEEN: 'lastInteraction',
+  APPOINTMENTS_COUNT: 'appointmentsBooked'
+};
+
 /**
  * Helper to extract or calculate the actual value of an asset from a customer record.
+ * Includes "Double-Test" validation to return safe defaults if data is missing.
  */
-const getAssetValue = (customerStats, assetConfig) => {
-  if (assetConfig.id === 'JUST_LANDED') {
-    return (customerStats.ordersCount === 0 && customerStats.inboundMessageCount <= 1);
+const getAssetValue = (lead, assetConfig) => {
+  const assetId = assetConfig.id;
+
+  // 1. Specialized Logic: JUST_LANDED
+  if (assetId === 'JUST_LANDED') {
+    const orders = lead.ordersCount || 0;
+    const msgs = lead.inboundMessageCount || 0;
+    return (orders === 0 && msgs <= 1);
   }
   
+  // 2. Specialized Logic: Date-based calculations (CALCULATED_DAYS)
   if (assetConfig.type === 'CALCULATED_DAYS') {
-    const dateField = customerStats[assetConfig.dbField];
-    if (!dateField) return Infinity; // Never seen/purchased
-    const diffTime = Math.abs(new Date() - new Date(dateField));
-    return Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+    const dbField = ASSET_MAP[assetId] || assetConfig.dbField;
+    const dateValue = lead[dbField];
+    
+    // VALIDATION: If date is missing, return Infinity (safely far in the past/future)
+    if (!dateValue) return Infinity; 
+    
+    const diffTime = Math.abs(new Date() - new Date(dateValue));
+    return Math.floor(diffTime / (1000 * 60 * 60 * 24)); 
   }
 
-  // Default Number extraction
-  return customerStats[assetConfig.dbField] || 0;
+  // 3. Mapping-based extraction with fallback (Double-Test)
+  const dbField = ASSET_MAP[assetId] || assetConfig.dbField;
+  const value = lead[dbField];
+
+  // VALIDATION: Ensure we return 0 for numbers or false for booleans if missing
+  if (value === undefined || value === null) {
+      return assetConfig.type === 'BOOLEAN' ? false : 0;
+  }
+
+  return value;
 };
 
 /**
@@ -35,11 +70,11 @@ const evaluateCondition = (actualValue, operator, targetValue) => {
  * Top-Down Waterfall Evaluator
  * @param {Object} customerStats - The raw AdLead document/object.
  * @param {Object} tierConfig - The ScoreTierConfig document for this client.
- * @returns {Number} The calculated integer score.
+ * @returns {Object} { score: Number, label: String }
  */
-const evaluateCustomerScore = (customerStats, tierConfig) => {
+const evaluateCustomerScore = (lead, tierConfig) => {
   if (!tierConfig || !tierConfig.tiers || tierConfig.tiers.length === 0) {
-    return 0; // Fallback if no rules configured
+    return { score: 0, label: 'Unprocessed' };
   }
 
   // Ensure tiers are sorted descending (highest score first)
@@ -54,26 +89,27 @@ const evaluateCustomerScore = (customerStats, tierConfig) => {
       const assetConfig = TRACKABLE_ASSETS.ASSETS[condition.assetId];
       if (!assetConfig) {
         passedAllConditions = false;
-        break; // Invalid asset, fail condition
+        break; 
       }
 
-      const actualValue = getAssetValue(customerStats, assetConfig);
+      const actualValue = getAssetValue(lead, assetConfig);
       const passed = evaluateCondition(actualValue, condition.operator, condition.targetValue);
 
       if (!passed) {
         passedAllConditions = false;
-        break; // Failed this condition, move to next tier
+        break; 
       }
     }
 
-    // If they survived the gauntlet for this tier, return the score immediately.
     if (passedAllConditions) {
-      return tier.score;
+      return { 
+          score: tier.score, 
+          label: tier.tierLabel || tier.label || `Tier ${tier.score}` 
+      };
     }
   }
 
-  // If they pass absolutely nothing, default to 0.
-  return 0; 
+  return { score: 0, label: 'Cold Lead' }; 
 };
 
 module.exports = { evaluateCustomerScore };

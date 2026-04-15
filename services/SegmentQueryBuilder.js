@@ -45,7 +45,10 @@ const buildMongoQueryFromFilters = (filters) => {
     if (mongoOperator === '$eq') {
       andConditions.push({ [assetConfig.dbField]: filter.targetValue });
     } else {
-      andConditions.push({ [assetConfig.dbField]: { [mongoOperator]: parseFloat(filter.targetValue) } });
+      const val = parseFloat(filter.targetValue);
+      if (!isNaN(val)) {
+        andConditions.push({ [assetConfig.dbField]: { [mongoOperator]: val } });
+      }
     }
   });
 

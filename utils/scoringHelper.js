@@ -25,19 +25,20 @@ const recalculateLeadScore = async (clientId, phoneNumber) => {
       return lead.leadScore; 
     }
 
-    // 2. Run the Engine
-    const newScore = evaluateCustomerScore(lead, tierConfig);
+    // 2. Run the Engine (returns { score, label })
+    const { score, label } = evaluateCustomerScore(lead, tierConfig);
 
-    // 3. Persist and Broadast
-    lead.leadScore = newScore;
+    // 3. Persist and Broadcast
+    lead.leadScore = score;
+    lead.scoreLabel = label;
     await lead.save();
 
-    console.log(`[RECOMPUTE_SCORE] ${phoneNumber} matched tier. New Score: ${newScore}`);
+    console.log(`[RECOMPUTE_SCORE] ${phoneNumber} matched tier: ${label}. New Score: ${score}`);
     
     // Optional: Emit socket event here if real-time CRM updates are desired
-    // global.io.to(`client_${clientId}`).emit('lead_score_updated', { phoneNumber, newScore });
+    // global.io.to(`client_${clientId}`).emit('lead_score_updated', { phoneNumber, score, label });
 
-    return newScore;
+    return score;
   } catch (err) {
     console.error(`[RECOMPUTE_SCORE] Failed for ${phoneNumber}:`, err.message);
     return null;

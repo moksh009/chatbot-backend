@@ -52,6 +52,18 @@ const adLeadSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  rtoCount: {
+    type: Number,
+    default: 0
+  },
+  refundCount: {
+    type: Number,
+    default: 0
+  },
+  lastPurchaseDate: {
+    type: Date,
+    default: null
+  },
   activityLog: [{
     action: String, // 'link_click', 'add_to_cart', 'order_placed'
     details: String,
@@ -93,6 +105,10 @@ const adLeadSchema = new mongoose.Schema({
   leadScore: {
     type: Number,
     default: 0
+  },
+  scoreLabel: {
+    type: String,
+    default: 'Cold Lead'
   },
   tags: [{
     type: String,

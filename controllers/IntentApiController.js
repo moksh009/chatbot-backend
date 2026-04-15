@@ -194,7 +194,15 @@ exports.deleteIntent = async (req, res) => {
     const { intentId } = req.params;
     const clientId = req.user?.clientId;
 
-    await IntentRule.deleteOne({ _id: intentId, clientId });
+    const mongoose = require('mongoose');
+    if (!mongoose.Types.ObjectId.isValid(intentId)) {
+      return res.status(400).json({ success: false, message: 'Invalid intent identity format.' });
+    }
+
+    const result = await IntentRule.deleteOne({ _id: intentId, clientId });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ success: false, message: 'Intent not found or already removed.' });
+    }
     
     // Retrain model since training data has changed
     await NlpEngineService.trainClientModel(clientId);
@@ -278,6 +286,16 @@ Return as pure JSON matching this exact structure: { "intentPhrases": ["..."], "
 
     if (!generatedData || !generatedData.intentPhrases || !generatedData.antiIntentPhrases) {
       throw new Error('Failed to parse AI generation or empty output.');
+    }
+
+    // Standard Number matching
+    if (mongoOperator === '$eq') {
+      andConditions.push({ [assetConfig.dbField]: filter.targetValue });
+    } else {
+      const val = parseFloat(filter.targetValue);
+      if (!isNaN(val)) {
+        andConditions.push({ [assetConfig.dbField]: { [mongoOperator]: val } });
+      }
     }
 
     res.status(200).json({
