@@ -114,11 +114,13 @@ async function updateLeadWithScoring(phoneNumber, clientId, incrementFields = {}
     // If score crossed threshold to HOT, emit real-time pulse
     if (updatedLead && updatedLead.leadScore >= 70) {
         const { logPulse } = require('./activityLogger');
-        await logPulse(clientId, 'SYSTEM', 'High Intent Detected', 
-            `Lead ${phoneNumber} just crossed score threshold: ${updatedLead.leadScore}`, 
-            'success', 
-            { leadId: updatedLead._id, score: updatedLead.leadScore }
-        );
+        await logPulse(clientId, {
+            type: 'SYSTEM',
+            title: 'High Intent Detected', 
+            message: `Lead ${phoneNumber} just crossed score threshold: ${updatedLead.leadScore}`, 
+            status: 'success', 
+            metadata: { leadId: updatedLead._id, score: updatedLead.leadScore }
+        });
     }
 
     return updatedLead;

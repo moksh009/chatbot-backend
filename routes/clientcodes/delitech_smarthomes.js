@@ -10,6 +10,7 @@ const DailyStat = require('../../models/DailyStat');
 const Order = require('../../models/Order');
 const { updateLeadWithScoring } = require('../../utils/leadScoring');
 const { sendCODToPrepaidNudge } = require('../../utils/ecommerceHelpers');
+const { logActivity: globalLogger } = require('../../utils/activityLogger');
 
 // --- 1. ASSETS & DATA (Polished) ---
 const IMAGES = {
@@ -212,17 +213,36 @@ async function saveAndEmitMessage({ phoneNumberId, to, body, type, io, clientCon
     } catch (e) { console.error('DB Error:', e); }
 }
 
-async function logActivity(leadId, action, details) {
+async function logActivity(id, data, legacyDetails) {
     try {
-        await AdLead.findByIdAndUpdate(leadId, {
-            $push: {
-                activityLog: {
-                    action,
-                    details,
-                    timestamp: new Date()
+        let type, details;
+        if (typeof data === 'string') {
+            type = data;
+            details = legacyDetails;
+        } else {
+            type = data.type || 'activity';
+            details = data.title || data.message || 'Action';
+        }
+
+        // 1. CRM Lead-specific log
+        await AdLead.findOneAndUpdate(
+            { $or: [{ _id: id }, { clientId: id }] }, // Flexible ID lookup
+            {
+                $push: {
+                    activityLog: {
+                        action: type,
+                        details,
+                        timestamp: new Date()
+                    }
                 }
             }
-        });
+        );
+
+        // 2. Global System Pulse log
+        const clientId = typeof id === 'string' && !id.match(/^[0-9a-fA-F]{24}$/) ? id : null;
+        if (clientId) {
+            await globalLogger(clientId, { type, title: details, status: 'info' });
+        }
     } catch (err) {
         console.error("Activity log error:", err);
     }
@@ -313,7 +333,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
 
         // --- DIRECT PRODUCT MATCHING ---
         if (txt.includes('5mp') || txt.includes('pro')) {
-            await logActivity(lead._id, 'viewed_product', '5mp');
+            await logActivity(clientConfig.clientId, { type: 'viewed_product', title: '5mp', message: `User showed interest in 5MP Pro` });
             const sent = await sendWhatsAppTemplate({ 
                 phoneNumberId, 
                 to: from, 
@@ -330,7 +350,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
             return res.status(200).end();
         }
         if (txt.includes('3mp') || txt.includes('plus')) {
-            await logActivity(lead._id, 'viewed_product', '3mp');
+            await logActivity(clientConfig.clientId, { type: 'viewed_product', title: '3mp', message: `User showed interest in 3MP Plus` });
             const sent = await sendWhatsAppTemplate({ 
                 phoneNumberId, 
                 to: from, 
@@ -464,15 +484,15 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
         switch (interactiveId) {
             // --- Navigation ---
             case 'menu_products': 
-                if (lead) await logActivity(lead._id, 'navigated', 'Product Menu');
+                if (lead) await logActivity(clientConfig.clientId, { type: 'navigated', title: 'Product Menu' });
                 await sendProductSelection({ phoneNumberId, to: from, io, clientConfig }); 
                 break;
             case 'menu_features': 
-                if (lead) await logActivity(lead._id, 'navigated', 'Features Menu');
+                if (lead) await logActivity(clientConfig.clientId, { type: 'navigated', title: 'Features Menu' });
                 await sendFeatureComparison({ phoneNumberId, to: from, io, clientConfig }); 
                 break;
             case 'menu_faqs': 
-                if (lead) await logActivity(lead._id, 'navigated', 'FAQ Menu');
+                if (lead) await logActivity(clientConfig.clientId, { type: 'navigated', title: 'FAQ Menu' });
                 await sendFAQMenu({ phoneNumberId, to: from, io, clientConfig }); 
                 break;
             case 'btn_back_menu': 
@@ -496,7 +516,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
             // --- Product Selections ---
             case 'sel_2mp': await sendProductCard({ phoneNumberId, to: from, io, productKey: '2mp', clientConfig }); break;
             case 'sel_3mp': 
-                await logActivity(lead._id, 'viewed_product', '3mp');
+                await logActivity(clientConfig.clientId, { type: 'viewed_product', title: '3mp' });
                 const sent3mp = await sendWhatsAppTemplate({ 
                     phoneNumberId, to: from, templateName: '3mp_final', headerImage: IMAGES.hero_3mp, 
                     buttonUrlParam: lead._id.toString(), io, clientConfig 
@@ -504,7 +524,7 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
                 if (!sent3mp) await sendProductCard({ phoneNumberId, to: from, io, productKey: '3mp', clientConfig }); 
                 break;
             case 'sel_5mp': 
-                if (lead) await logActivity(lead._id, 'viewed_product', '5mp');
+                if (lead) await logActivity(clientConfig.clientId, { type: 'viewed_product', title: '5mp' });
                 const sent5mp = await sendWhatsAppTemplate({ 
                     phoneNumberId, to: from, templateName: '5mp_final', headerImage: IMAGES.hero_5mp, 
                     buttonUrlParam: lead._id.toString(), io, clientConfig 
@@ -519,15 +539,15 @@ async function handleUserChatbotFlow({ from, phoneNumberId, messages, res, io, c
 
             // --- FAQs ---
             case 'faq_install': 
-                if (lead) await logActivity(lead._id, 'read_faq', 'Installation');
+                if (lead) await logActivity(clientConfig.clientId, { type: 'read_faq', title: 'Installation' });
                 await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'install', clientConfig }); 
                 break;
             case 'faq_battery': 
-                if (lead) await logActivity(lead._id, 'read_faq', 'Battery/Charging');
+                if (lead) await logActivity(clientConfig.clientId, { type: 'read_faq', title: 'Battery/Charging' });
                 await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'battery', clientConfig }); 
                 break;
             case 'faq_warranty': 
-                if (lead) await logActivity(lead._id, 'read_faq', 'Warranty');
+                if (lead) await logActivity(clientConfig.clientId, { type: 'read_faq', title: 'Warranty' });
                 await sendFAQAnswer({ phoneNumberId, to: from, io, key: 'warranty', clientConfig }); 
                 break;
 
