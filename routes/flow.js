@@ -394,4 +394,26 @@ router.get('/:clientId/unanswered-questions', protect, async (req, res) => {
   }
 });
 
+// DELETE /api/flow/:flowId
+// Deletes a flow from WhatsAppFlow and removes it from Client's visualFlows
+router.delete('/:flowId', protect, async (req, res) => {
+  try {
+    const { flowId } = req.params;
+    const clientId = req.user.clientId;
+
+    const WhatsAppFlow = require('../models/WhatsAppFlow');
+    await WhatsAppFlow.findOneAndDelete({ clientId, flowId });
+
+    // Also remove from client.visualFlows if it exists
+    await Client.updateOne(
+      { clientId },
+      { $pull: { visualFlows: { id: flowId } } }
+    );
+
+    res.json({ success: true, message: 'Flow deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 module.exports = router;

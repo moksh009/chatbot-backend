@@ -1393,10 +1393,21 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     matchingEdge = flowEdges.find(e => e.source === currentStepId && normalizeHandleId(e.sourceHandle) === 'fallback');
   }
 
+  // BUG 1 FIX: Unwired Button -> AI Fallback natively
+  if (!matchingEdge && incomingTrigger.buttonId) {
+    log.info(`[Button Route] Unwired button clicked: ${incomingTrigger.buttonId} (${userText}). Routing to AI Fallback natively.`);
+    // Store button text inside parsedMessage to ensure AI context receives it
+    if (!parsedMessage.text) parsedMessage.text = {};
+    if (!parsedMessage.text.body) {
+         parsedMessage.text.body = parsedMessage.interactive?.button_reply?.title || parsedMessage.interactive?.list_reply?.title || parsedMessage.button?.text || userText || incomingTrigger.buttonId;
+    }
+    return await runAIFallback(parsedMessage, client, phone, lead, channel);
+  }
+
   if (matchingEdge) {
     log.info(`Graph: edge match from ${currentStepId} → ${matchingEdge.target}`);
     await trackNodeVisit(client, matchingEdge.target);
-    return await executeNode(matchingEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
+    return await executeNode(matchingEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
 
   // D) GLOBAL RESET / GREETING / AI INTENT
@@ -1407,7 +1418,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
       // 2. AI Intent Detection Fallback (Priority 1B)
       if (!matchingTrigger && userText.length > 3) {
           const intentNodes = flowNodes.filter(n => (n.type === 'trigger' || n.type === 'TriggerNode') && n.data?.triggerType === 'intent' && n.data?.intentDescription);
-          const apiKey = process.env.GEMINI_API_KEY;
+          const apiKey = client.geminiApiKey || client.config?.geminiApiKey;
           
           if (intentNodes.length > 0 && apiKey) {
               log.info(`AI Intent: Checking ${intentNodes.length} intent triggers for "${userText}"`);
@@ -2318,7 +2329,14 @@ async function tryKeywordFallback(parsedMessage, client, convo, phone) {
 }
 
 async function runAIFallback(parsedMessage, client, phone, lead, channel = 'whatsapp') {
-  const text = parsedMessage.text?.body;
+  let text = parsedMessage.text?.body;
+  if (!text) {
+      if (parsedMessage.type === 'interactive') {
+          text = parsedMessage.interactive?.button_reply?.title || parsedMessage.interactive?.list_reply?.title;
+      } else if (parsedMessage.type === 'button') {
+          text = parsedMessage.button?.text;
+      }
+  }
   if (!text) return false;
 
   try {
@@ -2378,7 +2396,8 @@ async function runAIFallback(parsedMessage, client, phone, lead, channel = 'what
       if (orderIntentRegex.test(text)) {
         log.info(`[NativeOrder] Detecting products in message: "${text}"`);
         const products = client.nicheData?.products || [];
-        const parsed = await extractOrderDetails(text, products, client.geminiApiKey || process.env.GEMINI_API_KEY);
+        const apiKey = client.geminiApiKey || client.config?.geminiApiKey || process.env.GEMINI_API_KEY;
+        const parsed = await extractOrderDetails(text, products, apiKey);
 
         if (parsed.isOrderIntent && Array.isArray(parsed.items) && parsed.items.length > 0) {
           log.info(`[NativeOrder] Valid items parsed: ${parsed.items.length}`);
@@ -2524,7 +2543,30 @@ REPLY:
       });
     } catch (_) {}
 
-    let reply = await generateText(prompt, client.geminiApiKey || client.config?.geminiApiKey);
+    let reply;
+    try {
+      const apiKeyToUse = client.geminiApiKey || client.config?.geminiApiKey;
+      if (!apiKeyToUse) {
+        log.warn(`[AI Fallback] No Gemini API key for ${client.clientId}`);
+        throw new Error("No API Key");
+      }
+      reply = await withTimeout(
+        generateText(prompt, apiKeyToUse), 
+        8000, 
+        "Gemini AI Fallback Generation"
+      );
+    } catch (aiErr) {
+      log.error(`[AI Fallback] Error resolving AI Fallback reply for ${client.clientId}:`, { error: aiErr.message });
+      // Notify Admin 
+      if (global.NotificationService) {
+         await global.NotificationService.sendAdminAlert(client, { customerPhone: phone, topic: 'AI Gateway Timeout/Failure', triggerSource: 'runAIFallback' });
+      }
+      // Enter HUMAN_TAKEOVER
+      await Conversation.findOneAndUpdate({ phone, clientId: client.clientId }, { $set: { status: 'HUMAN_TAKEOVER', lastInteraction: new Date() } });
+      const fallMsg = "I'm having a little trouble connecting to my brain right now! Let me get a human agent to help you immediately. 👨‍💻";
+      await sendWhatsAppText(client, phone, fallMsg);
+      return true; // Halt standard flow
+    }
     
     // --- PHASE 30: LOG AI SUCCESS ---
     try {

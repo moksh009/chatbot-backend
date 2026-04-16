@@ -360,8 +360,14 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
   // ====================================================================
   // FOLDER 1 — Welcome & Entry (9 core nodes)
   // ====================================================================
+  
+  const baseKeywords = ['hi', 'hello', 'menu', 'start', 'hey', 'kem cho', 'namaste', 'help', 'bot'];
+  const productKeywords = enrichedProducts.slice(0, 3).map(p => p.title.toLowerCase());
+  const businessKeywords = [businessName.toLowerCase(), 'price', 'buy', 'order', '6499', 'discount'];
+  const allKeywords = [...new Set([...baseKeywords, ...productKeywords, ...businessKeywords])];
+
   nodes.push(
-    { id: IDS.TRIGGER,    type: 'trigger',     position: { x: 0,    y: 0      }, parentId: FOLDER_IDS.WELCOME, data: { label: 'Main Entry Trigger', triggerType: 'keyword', keywords: ['hi', 'hello', 'menu', 'start', 'hey'] } },
+    { id: IDS.TRIGGER,    type: 'trigger',     position: { x: 0,    y: 0      }, parentId: FOLDER_IDS.WELCOME, data: { label: 'Main Entry Trigger', triggerType: 'keyword', keywords: allKeywords } },
     { id: IDS.AD_TRIGGER, type: 'trigger',     position: { x: 0,    y: Y      }, parentId: FOLDER_IDS.WELCOME, data: { label: 'Meta Ad Entry',      triggerType: 'meta_ad',          keywords: ['ad_click'] } },
     { id: IDS.IG_TRIGGER, type: 'trigger',     position: { x: 0,    y: Y * 2  }, parentId: FOLDER_IDS.WELCOME, data: { label: 'Instagram Mention',  triggerType: 'ig_story_mention', keywords: ['story_mention'] } },
     { id: IDS.W_AD,       type: 'message',     position: { x: 400,  y: Y      }, parentId: FOLDER_IDS.WELCOME, data: { label: 'Ad Welcome',         text: content.ad_welcome } },
@@ -530,24 +536,68 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
         const pId     = `${IDS.DETAIL_PREFIX}${i}`;
         const guideId = `f8_guide_${p.handle}_${ts}`;
         const hasGuide = !!content[`guide_${p.handle}`];
+        const templateName = `prod_${p.handle.replace(/[^a-z0-9_]/gi, '_').toLowerCase()}`.substring(0, 50);
+
+        // Hybrid Engine: Check if template exists and is APPROVED
+        const approvedTemplate = (client.messageTemplates || []).find(t => 
+           t.name === templateName && t.status === 'APPROVED'
+        );
+
+        if (!approvedTemplate) {
+            // Queue for auto-submission via wizard wrapper
+            wizardData.customTemplates = wizardData.customTemplates || [];
+            if (!wizardData.customTemplates.find(t => t.name === templateName)) {
+                wizardData.customTemplates.push({
+                   name: templateName,
+                   category: 'MARKETING',
+                   language: 'en',
+                   components: [
+                       { type: 'HEADER', format: 'IMAGE' },
+                       { type: 'BODY', text: `*{{1}}*\n\n💰 Price: ₹{{2}}\n\nTap below to proceed. 🛍️` },
+                       { type: 'BUTTONS', buttons: [
+                           { type: 'QUICK_REPLY', text: '🛒 Buy Now' },
+                           { type: 'QUICK_REPLY', text: '⬅️ Main Menu' }
+                       ]}
+                   ]
+                });
+            }
+        }
+
         const btns = [
           { id: 'buy',  title: '🛒 Buy Now'     },
           { id: 'menu', title: '⬅️ Main Menu'  },
           ...(hasGuide ? [{ id: 'guide', title: '📋 Product Guide' }] : []),
         ];
-        nodes.push({
-          id: pId,
-          type: 'interactive',
-          position: { x: 420, y: i * Y },
-          parentId: FOLDER_IDS.CATALOG,
-          data: {
-            label: `Product: ${p.title.substring(0, 20)}`,
-            interactiveType: 'button',
-            text: `*${p.title}*\n\n💰 Price: ₹${p.price}${p.features ? `\n\n${p.features.slice(0, 150)}` : ''}`,
-            imageUrl: p.imageUrl || '',
-            buttonsList: btns,
-          },
-        });
+
+        if (approvedTemplate && !hasGuide) {  // Only deploy TemplateNode if it perfectly matches (buttons limit)
+           nodes.push({
+             id: pId,
+             type: 'template',
+             position: { x: 420, y: i * Y },
+             parentId: FOLDER_IDS.CATALOG,
+             data: {
+               label: `Product: ${p.title.substring(0, 20)}`,
+               templateName: templateName,
+               variables: [p.title, p.price],
+               imageUrl: p.imageUrl || ''
+             }
+           });
+        } else {
+           nodes.push({
+             id: pId,
+             type: 'interactive',
+             position: { x: 420, y: i * Y },
+             parentId: FOLDER_IDS.CATALOG,
+             data: {
+               label: `Product: ${p.title.substring(0, 20)}`,
+               interactiveType: 'button',
+               text: `*${p.title}*\n\n💰 Price: ₹${p.price}${p.features ? `\n\n${p.features.slice(0, 150)}` : ''}`,
+               imageUrl: p.imageUrl || '',
+               buttonsList: btns,
+             },
+           });
+        }
+
         edges.push(
           { id: `f2_cat_p${i}`, source: IDS.CATALOG, target: pId, sourceHandle: `p_${i}` },
           { id: `f2_p${i}_m`,   source: pId,          target: IDS.MENU, sourceHandle: 'menu' }
@@ -564,12 +614,12 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
   // FOLDER 3 — Order Operations
   // ====================================================================
   nodes.push(
-    { id: IDS.ORDER_STATUS,           type: 'order_action',  position: { x: 0,    y: 0      }, parentId: FOLDER_IDS.ORDERS, data: { label: 'Fetch Order Status',   action: 'CHECK_ORDER_STATUS' } },
+    { id: IDS.ORDER_STATUS,           type: 'shopify_call',  position: { x: 0,    y: 0      }, parentId: FOLDER_IDS.ORDERS, data: { label: 'Fetch Order Status',   action: 'CHECK_ORDER_STATUS' } },
     { id: IDS.CANCEL_START,           type: 'interactive',   position: { x: 0,    y: Y      }, parentId: FOLDER_IDS.ORDERS, data: { label: 'Cancel Confirm',       interactiveType: 'button', text: content.cancellation_confirm, buttonsList: [{ id: 'yes', title: '✅ Yes, Cancel' }, { id: 'no', title: '❌ Keep It' }] } },
     { id: IDS.CANCEL_LOGIC,           type: 'logic',         position: { x: 420,  y: Y      }, parentId: FOLDER_IDS.ORDERS, data: { label: 'Order Shipped?',       variable: 'is_shipped', operator: 'eq', value: 'true' } },
     { id: IDS.CANCEL_REASON,          type: 'capture_input', position: { x: 840,  y: Y / 2  }, parentId: FOLDER_IDS.ORDERS, data: { label: 'Cancellation Reason',  variable: 'cancel_reason', question: 'Why are you cancelling? Your feedback helps us improve! 🙏' } },
     { id: IDS.CANCEL_ALREADY_SHIPPED, type: 'message',       position: { x: 840,  y: Y * 2  }, parentId: FOLDER_IDS.ORDERS, data: { label: 'Already Shipped',      text: content.in_transit_error } },
-    { id: IDS.CANCEL_FINAL,           type: 'order_action',  position: { x: 1260, y: Y / 2  }, parentId: FOLDER_IDS.ORDERS, data: { label: 'Process Cancellation', action: 'CANCEL_ORDER' } },
+    { id: IDS.CANCEL_FINAL,           type: 'shopify_call',  position: { x: 1260, y: Y / 2  }, parentId: FOLDER_IDS.ORDERS, data: { label: 'Process Cancellation', action: 'CANCEL_ORDER' } },
     { id: IDS.ORDER_CHECK,            type: 'shopify_call',  position: { x: 0,    y: Y * 3  }, parentId: FOLDER_IDS.ORDERS, data: { label: 'Check Order Details',  action: 'get_order' } }
   );
   edges.push(
@@ -631,12 +681,11 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
   nodes.push(
     { id: IDS.LOY_MENU,      type: 'interactive',    position: { x: 0,   y: 0      }, parentId: FOLDER_IDS.LOYALTY, data: { label: 'Rewards Hub',    interactiveType: 'list', text: content.loyalty_welcome, buttonText: 'My Rewards', sections: [{ title: 'Options', rows: [{ id: 'pts', title: '💎 My Points' }, { id: 'red', title: '🎁 Redeem' }, { id: 'ref', title: '📢 Invite & Earn' }, { id: 'vip', title: '⭐ VIP Status' }] }] } },
     { id: IDS.LOY_POINTS,    type: 'message',        position: { x: 420, y: -Y/2   }, parentId: FOLDER_IDS.LOYALTY, data: { label: 'Points Balance',  text: content.loyalty_points_msg } },
-    { id: IDS.LOY_REDEEM,    type: 'loyalty_action', position: { x: 420, y: Y/4    }, parentId: FOLDER_IDS.LOYALTY, data: { label: 'Redeem Points',   loyaltyAction: 'REDEEM_POINTS', pointsRequired: 100 } },
-    { id: IDS.LOY_REFER,     type: 'message',        position: { x: 420, y: Y      }, parentId: FOLDER_IDS.LOYALTY, data: { label: 'Referral Offer',  text: content.referral_msg } },
-    { id: IDS.LOY_SEG,       type: 'segment',        position: { x: 420, y: Y*1.6  }, parentId: FOLDER_IDS.LOYALTY, data: { label: 'VIP Divider',     segmentRules: [{ id: 'vip', label: 'VIP Only', type: 'vip' }, { id: 'new', label: 'New Member', type: 'new' }] } },
-    { id: IDS.LOY_VIP_PERK,  type: 'message',        position: { x: 840, y: Y      }, parentId: FOLDER_IDS.LOYALTY, data: { label: 'VIP Perk Reveal', text: content.vip_perk_msg } },
-    { id: IDS.LOY_NEW_NUDGE, type: 'message',        position: { x: 840, y: Y*1.6  }, parentId: FOLDER_IDS.LOYALTY, data: { label: 'Level-Up Nudge',  text: content.new_member_nudge } },
-    { id: IDS.LOYALTY_AWARD, type: 'loyalty_action', position: { x: 420, y: Y*2.2  }, parentId: FOLDER_IDS.LOYALTY, data: { label: 'Award Points',    loyaltyAction: 'ADD_POINTS', points: signupPoints, reason: content.loyalty_award_reason } }
+    { id: IDS.LOY_REDEEM,    type: 'loyalty',        position: { x: 420, y: Y/4    }, parentId: FOLDER_IDS.LOYALTY, data: { label: 'Redeem Points',   loyaltyAction: 'REDEEM_POINTS', pointsRequired: 100 } },
+    { id: IDS.LOYALTY_T2,    type: 'logic',          position: { x: 840, y: Y      }, parentId: FOLDER_IDS.LOYALTY, data: { label: 'VIP Tier Check',  variable: 'loyalty_balance', operator: 'gte', value: '1000' } },
+    { id: IDS.VIP_PERK,      type: 'message',        position: { x: 1260,y: Y/2    }, parentId: FOLDER_IDS.LOYALTY, data: { label: 'VIP Reward',      text: content.vip_perk_msg } },
+    { id: IDS.NUDGE_MEMBER,  type: 'message',        position: { x: 1260,y: Y*1.5  }, parentId: FOLDER_IDS.LOYALTY, data: { label: 'Tier Nudge',      text: content.new_member_nudge } },
+    { id: IDS.LOYALTY_AWARD, type: 'loyalty',        position: { x: 420, y: Y*2.2  }, parentId: FOLDER_IDS.LOYALTY, data: { label: 'Award Points',    loyaltyAction: 'ADD_POINTS', points: signupPoints, reason: content.loyalty_award_reason } }
   );
   edges.push(
     { id: 'f6_loy_pts', source: IDS.LOY_MENU,   target: IDS.LOY_POINTS,    sourceHandle: 'pts' },
@@ -734,6 +783,24 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
     if (n.type === 'folder' && folderCounts[n.id]) {
       n.data.childCount = folderCounts[n.id];
     }
+  });
+
+  // ── Transform & Clean generated text ──────────────────────────────────────
+  const stripPlaceholders = (text) => {
+      if (!text) return text;
+      // Strip out terms like "[15 minutes]", "[2 days]", "[100] pts" resulting from AI lazy generation
+      return text.replace(/\[\d+\s*(minutes|mins|days|hours|hrs|pts|points)\]/gi, '')
+                 .replace(/\[X\]/gi, '');
+  };
+
+  nodes = nodes.map(n => {
+     if (n.data && typeof n.data.text === 'string') {
+         n.data.text = stripPlaceholders(n.data.text);
+     }
+     if (n.data && n.data.content && typeof n.data.content.body === 'string') {
+         n.data.content.body = stripPlaceholders(n.data.content.body);
+     }
+     return n;
   });
 
   // ── Final integrity check ─────────────────────────────────────────────────

@@ -4,10 +4,12 @@ const express = require("express");
 const router  = express.Router();
 const Client  = require("../models/Client");
 const { protect } = require("../middleware/auth");
+const WhatsAppFlow = require("../models/WhatsAppFlow");
 const { generateEcommerceFlow, generateSystemPrompt, getPrebuiltTemplates } = require("../utils/flowGenerator");
 const { withShopifyRetry } = require("../utils/shopifyHelper");
 const { scrapeWebsiteText } = require("../utils/urlScraper");
 const { generateText } = require("../utils/gemini");
+const { log } = require("../utils/logger");
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/wizard/:clientId/complete
 // Called when user clicks Launch in Step 10 of the onboarding wizard
@@ -218,6 +220,11 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       const activeFlowIdx = existingFlows.findIndex(f => f.isActive && f.platform === 'whatsapp');
       
       if (activeFlowIdx !== -1) {
+        if (existingFlows[activeFlowIdx].flowModelId) {
+            await WhatsAppFlow.findByIdAndDelete(existingFlows[activeFlowIdx].flowModelId);
+            log.info(`Deleted old stranded WhatsAppFlow record: ${existingFlows[activeFlowIdx].flowModelId}`);
+        }
+        
         existingFlows[activeFlowIdx] = {
           ...existingFlows[activeFlowIdx],
           nodes: newFlow.nodes,

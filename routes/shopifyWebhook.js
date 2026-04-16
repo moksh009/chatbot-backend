@@ -189,13 +189,16 @@ async function fireEventFlow(client, eventName, data, status = null) {
   }
 
   // Inject commerce event metadata into the conversation for variable access
+  const paymentMethod = data.gateway || (data.payment_gateway_names || [])[0] || 'unknown';
+  
   await Conversation.findByIdAndUpdate(convo._id, {
     lastStepId: startNodeId,
     $set: {
-      'variables.eventName':    eventName,
-      'variables.order_id':     data.order_number || data.id || '',
-      'variables.order_total':  data.total_price || '',
-      'variables.order_status': status || eventName
+      'variables.eventName':     eventName,
+      'variables.order_id':      data.order_number || data.id || '',
+      'variables.order_total':   data.total_price || '',
+      'variables.order_status':  status || eventName,
+      'variables.payment_method': paymentMethod
     }
   });
 

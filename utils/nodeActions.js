@@ -242,21 +242,17 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
     
     case "CONVERT_COD_TO_PREPAID": {
       try {
-        const discount     = node.data?.discountAmount || 50;
-        const paymentLink  = await createPaymentLink(client,
-          {
-            amount:      Math.round(discount),
-            orderId:     `cod2pp_${Date.now().toString().slice(-6)}`,
-            description: `Convert COD to Prepaid — Save ₹${discount}`,
-          },
-          { name: lead?.name || 'Customer', phone, email: lead?.email }
-        );
+        const Order = require('../models/Order');
+        const { sendCODToPrepaidNudge } = require('./ecommerceHelpers');
+        const lastOrder = await Order.findOne({ clientId: client.clientId, customerPhone: phone }).sort({ createdAt: -1 });
 
-        const msgBody = node.data?.body
-          ? replaceVariables(node.data.body, client, lead, convo).replace('{{payment_link}}', paymentLink.url)
-          : `💳 *Exclusive Offer for You!*\n\nSwitch to online payment and get *₹${discount} instant discount*!\n\n✅ Faster delivery\n✅ Zero RTO risk\n\nPay here: ${paymentLink.url}\n\n_Offer valid for 24 hours only_`;
-
-        await WhatsApp.sendText(client, phone, msgBody);
+        if (lastOrder) {
+          await sendCODToPrepaidNudge(lastOrder, client, phone);
+        } else {
+          // Fallback if no order record found yet
+          const discount = node.data?.discountAmount || 50;
+          await WhatsApp.sendText(client, phone, `💳 *Exclusive Offer for You!*\n\nSwitch to online payment and get *₹${discount} instant discount*! Reach out to us to convert your COD order now.`);
+        }
 
         // Tag lead for analytics
         try {
@@ -268,12 +264,12 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
         } catch { /* non-blocking */ }
       } catch (err) {
         console.error('[NodeActions] CONVERT_COD_TO_PREPAID error:', err.message);
-        await WhatsApp.sendText(client, phone, '💳 We have a special payment offer for you! Our team will reach out shortly.');
       }
       break;
     }
 
-    case "CART_RECOVERY_SEND_STEP": {
+    case "CART_RECOVERY_SEND_STEP":
+    case "sequence": {
       try {
         const stepNumber = node.data?.stepNumber || 1;
         const { generateSmartRecoveryMessage } = require('./smartCartRecovery');
@@ -313,7 +309,7 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
           );
         } catch { /* non-blocking */ }
       } catch (err) {
-        console.error('[NodeActions] CART_RECOVERY_SEND_STEP error:', err.message);
+        console.error('[NodeActions] sequence / CART_RECOVERY_SEND_STEP error:', err.message);
       }
       break;
     }
