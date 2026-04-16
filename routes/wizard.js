@@ -63,7 +63,6 @@ router.post("/:clientId/complete", protect, async (req, res) => {
 
     // ✅ Phase R4: Smart Flow Storage — always offload to WhatsAppFlow model when > 20 nodes
     if (nodes.length > 20) {
-      const WhatsAppFlow = require("../models/WhatsAppFlow");
       const storedFlow = await WhatsAppFlow.create({
         clientId,
         flowId,
@@ -246,7 +245,18 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       };
     }
 
-    const updatedClient = await Client.findByIdAndUpdate(client._id, updateQuery, { new: true });
+    // Final update with all settings + the new flow
+    const updatedClient = await Client.findByIdAndUpdate(client._id, updateQuery, { new: true, runValidators: true });
+    
+    console.log(`[Wizard] Completed successfully for ${clientId}. wizardCompleted: ${updatedClient.wizardCompleted}`);
+    
+    res.json({ 
+      success: true, 
+      message: "Onboarding complete!", 
+      flowId,
+      nodesGenerated: nodes.length,
+      edgesGenerated: edges.length
+    });
 
     // Push customTemplates separately if any
     if (customTemplatesPush.length > 0) {
