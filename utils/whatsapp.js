@@ -253,10 +253,15 @@ const WhatsApp = {
    * Smartly builds components and sends a Meta Template based on its synced structure.
    * Prevents parameter mismatch errors and handles image headers.
    */
-  async sendSmartTemplate(client, phone, templateName, variables = [], headerImage = null, languageCode = 'en') {
+  async sendSmartTemplate(client, phone, templateName, rawVariables = [], headerImage = null, languageCode = 'en') {
     const syncedTemplates = client.syncedMetaTemplates || [];
     const template = syncedTemplates.find(t => t.name === templateName);
     
+    // Robustly handle variables: convert comma-string to array if needed
+    let variables = Array.isArray(rawVariables) 
+      ? rawVariables 
+      : (typeof rawVariables === 'string' ? rawVariables.split(',').map(v => v.trim()).filter(Boolean) : []);
+
     let components = [];
 
     if (template) {
@@ -272,7 +277,6 @@ const WhatsApp = {
       // 2. Process Body (Match variable count exactly)
       const body = template.components?.find(c => c.type === 'BODY');
       if (body) {
-        // Find max variable index like {{5}}
         const paramMatches = body.text.match(/{{(\d+)}}/g) || [];
         const paramCount = paramMatches.length > 0 
           ? Math.max(...paramMatches.map(m => parseInt(m.match(/\d+/)[0]))) 
@@ -281,35 +285,27 @@ const WhatsApp = {
         const parameters = [];
         for (let i = 1; i <= paramCount; i++) {
           let val = variables[i - 1];
-          // Meta API strictly rejects empty strings or whitespace-only params
           if (val === undefined || val === null || String(val).trim() === "") {
              val = "-";
           }
-          parameters.push({ type: 'text', text: String(val) });
+          parameters.push({ type: 'text', text: String(val).substring(0, 1024) });
         }
         
         if (parameters.length > 0) {
           components.push({ type: 'body', parameters });
         }
-
-        if (variables.length < paramCount) {
-          log.warn(`[WhatsApp] Template ${templateName} mismatch: Expected ${paramCount}, got ${variables.length}. Padded with placeholders.`);
-        }
       }
     } else {
-      // Fallback: If template not synced, send variables as body params sequentially
-      log.warn(`[WhatsApp] Template ${templateName} not synced. Using sequential fallback.`);
+      // Fallback: If template not synced, send variables sequentially
+      log.warn(`[WhatsApp] Template ${templateName} not synced for ${client.clientId}. Using sequential fallback.`);
       if (variables.length > 0) {
         components.push({
           type: 'body',
-          parameters: variables.map(v => ({ type: 'text', text: String(v) }))
+          parameters: variables.map(v => ({ type: 'text', text: String(v).substring(0, 1024) }))
         });
       }
       if (headerImage) {
-        components.push({
-          type: 'header',
-          parameters: [{ type: 'image', image: { link: headerImage } }]
-        });
+        components.push({ type: 'header', parameters: [{ type: 'image', image: { link: headerImage } }] });
       }
     }
 

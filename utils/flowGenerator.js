@@ -1336,7 +1336,7 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
       data: {
         label:        "Cart Recovery 3 (Final)",
         templateName: "cart_recovery",
-        templateVars: ["{{checkout_url}}"]
+        variables: ["{{checkout_url}}"]
       },
     },
     // B. Order confirmed trigger
@@ -1359,7 +1359,7 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
       data: {
         label:        "Order Confirmed",
         templateName: "order_conf",
-        templateVars: ["{{order_id}}", "{{cart_items}}", "{{order_total}}"]
+        variables: ["{{order_id}}", "{{cart_items}}", "{{order_total}}"]
       },
     },
     // B. COD Gate — only nudge if payment_method == cod
@@ -1407,7 +1407,7 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
       data: {
         label:          "Sentiment Check",
         templateName:   "review_request",
-        templateVars:   ["{{lead.name}}"],
+        variables:   ["{{lead.name}}"],
       },
     },
     {

@@ -16,6 +16,10 @@ const axios = require('axios');
 const { encrypt } = require('../utils/encryption');
 const { sanitizeMiddleware } = require('../utils/sanitize');
 const { syncPersonaToFlows } = require('../utils/personaEngine');
+const { getPrebuiltTemplates } = require('../utils/flowGenerator');
+const WhatsApp = require('../utils/whatsapp');
+const AuditLog = require('../models/AuditLog');
+const WhatsAppFlow = require('../models/WhatsAppFlow');
 
 router.post('/shopify/force-sync', protect, async (req, res) => {
   try {
@@ -1899,60 +1903,104 @@ router.post('/flow/publish/:clientId', protect, async (req, res) => {
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ error: 'Client not found' });
 
-    const { nodes, edges, note, flowId } = req.body;
-    let nodesToPublish = nodes;
-    let edgesToPublish = edges;
+    const { nodes = [], edges = [], note, flowId } = req.body;
     
-    // Fallback if not specifically given (legacy backward compat)
-    const activeFlow = client.visualFlows?.find(f => f.isActive) || client.visualFlows?.[0];
+    // 1. Identify Templates used in the flow
+    const templateNodes = nodes.filter(n => n.type === 'template');
+    const templateNames = [...new Set(templateNodes.map(n => n.data?.templateName).filter(Boolean))];
 
-    if (!nodesToPublish || !edgesToPublish) {
-       if (activeFlow) {
-           nodesToPublish = activeFlow.nodes;
-           edgesToPublish = activeFlow.edges;
-       } else {
-           return res.status(400).json({ error: 'No flow data provided to publish.' });
-       }
+    log.info(`[Publish] ${clientId} attempting to publish flow with ${templateNames.length} unique templates.`);
+
+    // 2. Generate Template Payloads using Enterprise localization logic
+    // We rebuild wizard-style data from modular client sub-docs
+    const wizardData = {
+      businessName: client.brand?.businessName || client.businessName,
+      shopDomain: client.commerce?.shopify?.domain || client.shopDomain,
+      businessLogo: client.businessLogo,
+      currency: client.brand?.currency || "₹",
+      products: client.products || []
+    };
+    
+    const allSystemTemplates = getPrebuiltTemplates(wizardData);
+    const templatesToSync = allSystemTemplates.filter(t => templateNames.includes(t.name));
+
+    // 3. Register used templates with Meta Cloud API
+    const syncResults = [];
+    for (const tpl of templatesToSync) {
+      try {
+        log.info(`[Publish] Syncing template ${tpl.name} for ${clientId}...`);
+        const syncRes = await WhatsApp.submitMetaTemplate(client, {
+          name: tpl.name,
+          category: tpl.category,
+          language: tpl.language,
+          components: tpl.components
+        });
+        syncResults.push({ name: tpl.name, status: syncRes.status || 'SYNCED', success: syncRes.success });
+      } catch (err) {
+        log.error(`[Publish] Failed to sync ${tpl.name}:`, err.message);
+        syncResults.push({ name: tpl.name, status: 'FAILED', error: err.message });
+      }
     }
 
+    // 4. Update Client State & Versioning
     if (!client.flowHistory) client.flowHistory = [];
     client.flowHistory.push({
       version: client.flowHistory.length + 1,
       nodes: client.flowNodes,
       edges: client.flowEdges,
       savedAt: new Date(),
-      note: note || 'Auto-backup before publish'
+      note: note || 'Manual publish'
     });
 
-    client.flowNodes = nodesToPublish;
-    client.flowEdges = edgesToPublish;
-
+    client.flowNodes = nodes;
+    client.flowEdges = edges;
     await client.save();
     
-    // Enterprise Migration: Sync PUBLISHED status directly to WhatsAppFlow collection
-    const WhatsAppFlow = require('../models/WhatsAppFlow');
-    if (activeFlow || flowId) {
-       const targetFlowId = flowId || (activeFlow ? activeFlow.id : null);
-       if (targetFlowId) {
-           await WhatsAppFlow.updateMany({ clientId }, { $set: { status: 'DRAFT' } }); // Enforce single active flow for now
-           await WhatsAppFlow.findOneAndUpdate(
-               { clientId, flowId: targetFlowId },
-               {
-                   $set: {
-                       status: 'PUBLISHED',
-                       publishedNodes: nodesToPublish,
-                       publishedEdges: edgesToPublish,
-                       nodes: nodesToPublish, // Ensure DRAFT array is also updated
-                       edges: edgesToPublish,
-                   }
-               },
-               { upsert: true }
-           );
-       }
+    // 5. Sync to WhatsAppFlow Collection
+    const activeFlow = client.visualFlows?.find(f => f.isActive) || client.visualFlows?.[0];
+    const targetFlowId = flowId || (activeFlow ? activeFlow.id : null);
+    
+    if (targetFlowId) {
+       // Mark all others DRAFT, make this one PUBLISHED
+       await WhatsAppFlow.updateMany({ clientId, platform: 'whatsapp' }, { $set: { status: 'DRAFT', isActive: false } });
+       await WhatsAppFlow.findOneAndUpdate(
+           { clientId, flowId: targetFlowId },
+           {
+               $set: {
+                   status: 'PUBLISHED',
+                   isActive: true,
+                   publishedNodes: nodes,
+                   publishedEdges: edges,
+                   nodes: nodes,
+                   edges: edges,
+               }
+           },
+           { upsert: true }
+       );
     }
 
-    res.json({ success: true, message: 'Flow published to live engine.', version: client.flowHistory.length });
+    // 6. Detailed Audit Logging
+    await AuditLog.create({
+      clientId,
+      user_id: req.user.id,
+      action_type: 'PUBLISH_FLOW',
+      target_resource: targetFlowId || 'main',
+      payload: {
+        nodeCount: nodes.length,
+        edgeCount: edges.length,
+        templatesSynced: syncResults,
+        version: client.flowHistory.length
+      }
+    });
+
+    res.json({ 
+      success: true, 
+      message: 'Automation published successfully.', 
+      version: client.flowHistory.length,
+      syncResults
+    });
   } catch (err) {
+    log.error('[Publish] Critical failure:', err.message);
     res.status(500).json({ error: 'Failed to publish flow: ' + err.message });
   }
 });

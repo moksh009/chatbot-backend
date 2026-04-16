@@ -2204,19 +2204,27 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'TemplateNode': {
       const templateName = data.templateName || data.metaTemplateName;
       if (!templateName) return false;
-      const components = [];
-      if (data.headerImageUrl) components.push({ type: 'header', parameters: [{ type: 'image', image: { link: data.headerImageUrl } }] });
-      if (data.variables) {
-        const rawParams = data.variables.split(',').map(v => v.trim()).filter(Boolean);
-        if (rawParams.length) {
-          const processedParams = rawParams.map(p => ({
-            type: 'text',
-            text: p.substring(0, 1024)
-          }));
-          components.push({ type: 'body', parameters: processedParams });
-        }
+      
+      // Variables: can be an array (new) or a comma-string (legacy)
+      const rawVars = data.variables || data.templateVars;
+      let templateVars = [];
+      if (Array.isArray(rawVars)) {
+          templateVars = rawVars;
+      } else if (typeof rawVars === 'string') {
+          templateVars = rawVars.split(',').map(v => v.trim()).filter(Boolean);
       }
-      await WhatsApp.sendTemplate(client, phone, templateName, data.languageCode || 'en', components);
+      
+      const headerImage = data.headerImageUrl || null;
+      
+      // Upgrade to sendSmartTemplate for Meta-sync checks and parameter safety
+      await WhatsApp.sendSmartTemplate(
+          client, 
+          phone, 
+          templateName, 
+          templateVars, 
+          headerImage, 
+          data.languageCode || 'en'
+      );
       return true;
     }
 
