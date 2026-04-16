@@ -35,6 +35,10 @@ const warrantyBatchSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Index for high-performance lookup in webhooks
+warrantyBatchSchema.index({ clientId: 1, shopifyProductIds: 1, status: 1 });
+warrantyBatchSchema.index({ validFrom: 1, validUntil: 1 });
+
 const WarrantyBatch = mongoose.model('WarrantyBatch', warrantyBatchSchema);
 
 module.exports = WarrantyBatch;

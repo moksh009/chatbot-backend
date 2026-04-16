@@ -391,70 +391,62 @@ async function handleOrder(client, data) {
         log.warn('[CartRecovery] Failed to cancel sequences after purchase:', seqErr.message);
     }
 
-    // --- PHASE 30.5: Enterprise Warranty Auto-Assign (OVERHAULED) ---
+    // --- PHASE 30.5: Enterprise Warranty Auto-Assign (OPTIMIZED) ---
     try {
         const orderDate = new Date(data.created_at || Date.now());
-        for (const item of data.line_items) {
-            const productId = String(item.product_id);
-            
-            // Find active batch matching this product
-            const batch = await WarrantyBatch.findOne({
-                clientId: client.clientId,
-                shopifyProductIds: productId,
-                status: 'active',
-                validFrom: { $lte: orderDate },
-                $or: [
-                    { validUntil: { $exists: false } },
-                    { validUntil: null },
-                    { validUntil: { $gte: orderDate } }
-                ]
-            });
+        const productIdsInOrder = data.line_items.map(item => String(item.product_id));
 
-            if (batch) {
-                log.info(`[Warranty] Match found in batch ${batch.batchName} for product ${item.title}`);
-                
-                // Task 2.2: Ghost Contact Logic
-                let contact = await Contact.findOne({ clientId: client.clientId, phoneNumber: cleanPhone });
-                if (!contact) {
-                    log.info(`[Warranty] Ghost Contact detected. Creating record for ${cleanPhone}`);
-                    contact = await Contact.create({
-                        clientId: client.clientId,
-                        phoneNumber: cleanPhone,
+        // 1. Fetch all active batches that cover any product in this order in ONE query
+        const activeBatches = await WarrantyBatch.find({
+            clientId: client.clientId,
+            status: 'active',
+            shopifyProductIds: { $in: productIdsInOrder }, // Correct operator is $in
+            validFrom: { $lte: orderDate },
+            $or: [
+                { validUntil: { $exists: false } },
+                { validUntil: null },
+                { validUntil: { $gte: orderDate } }
+            ]
+        }).lean();
+
+        if (activeBatches.length > 0) {
+            // 2. Ensure Contact exists (Ghost Contact logic) - Use findOneAndUpdate to unify logic
+            const contact = await Contact.findOneAndUpdate(
+                { clientId: client.clientId, phoneNumber: cleanPhone },
+                { 
+                    $set: { 
                         name: data.customer ? `${data.customer.first_name} ${data.customer.last_name || ''}` : 'Shopify Guest',
                         email: data.email || data.customer?.email,
                         lastPurchaseDate: orderDate
+                    } 
+                },
+                { upsert: true, new: true }
+            );
+
+            // 3. Iterate products and assign warranties from matched batches
+            for (const item of data.line_items) {
+                const productId = String(item.product_id);
+                // Find first matching batch for this specific product
+                const batch = activeBatches.find(b => b.shopifyProductIds.includes(productId));
+
+                if (batch) {
+                    const expiryDate = new Date(orderDate);
+                    expiryDate.setMonth(expiryDate.getMonth() + batch.durationMonths);
+
+                    await WarrantyRecord.create({
+                        clientId: client.clientId,
+                        customerId: contact._id,
+                        shopifyOrderId: data.name || `#${data.id}`,
+                        productId: productId,
+                        productName: item.title,
+                        purchaseDate: orderDate,
+                        expiryDate: expiryDate,
+                        batchId: batch._id,
+                        status: 'active'
                     });
 
-                    // Optional: Sync with AdLead if missing
-                    if (!lead) {
-                        await AdLead.create({
-                            clientId: client.clientId,
-                            phoneNumber: cleanPhone,
-                            name: contact.name,
-                            email: contact.email,
-                            source: 'Shopify Webhook (Ghost)',
-                            lastInteraction: new Date()
-                        }).catch(e => log.warn('AdLead sync failed (likely parallel race):', e.message));
-                    }
+                    log.info(`[Warranty] Record created for ${contact.name} (${item.title})`);
                 }
-
-                // Create individual Warranty Record
-                const expiryDate = new Date(orderDate);
-                expiryDate.setMonth(expiryDate.getMonth() + batch.durationMonths);
-
-                await WarrantyRecord.create({
-                    clientId: client.clientId,
-                    customerId: contact._id,
-                    shopifyOrderId: data.name || `#${data.id}`,
-                    productId: productId,
-                    productName: item.title,
-                    purchaseDate: orderDate,
-                    expiryDate: expiryDate,
-                    batchId: batch._id,
-                    status: 'active'
-                });
-
-                log.success(`[Warranty] Record created for ${contact.name} (Exp: ${expiryDate.toLocaleDateString()})`);
             }
         }
     } catch (warrantyErr) {

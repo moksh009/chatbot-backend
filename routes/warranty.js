@@ -68,21 +68,28 @@ router.patch('/batches/:id', protect, async (req, res) => {
 
         // Task 3.3: Mass Edit/Terminate logic
         if (durationMonths && applyRetroactively) {
-            // Recalculate expiryDate for all active records in this batch
-            // Logic: expiryDate = purchaseDate + new durationMonths
-            const records = await WarrantyRecord.find({ batchId: id, status: 'active' });
-            for (const record of records) {
-                const newExpiry = new Date(record.purchaseDate);
-                newExpiry.setMonth(newExpiry.getMonth() + durationMonths);
-                record.expiryDate = newExpiry;
-                await record.save();
+            // Optimization: Fetch only needed fields and perform bulk update
+            const records = await WarrantyRecord.find({ batchId: id, status: 'active' }).select('purchaseDate').lean();
+            
+            if (records.length > 0) {
+                const bulkOps = records.map(record => {
+                    const newExpiry = new Date(record.purchaseDate);
+                    newExpiry.setMonth(newExpiry.getMonth() + durationMonths);
+                    return {
+                        updateOne: {
+                            filter: { _id: record._id },
+                            update: { $set: { expiryDate: newExpiry } }
+                        }
+                    };
+                });
+                await WarrantyRecord.bulkWrite(bulkOps);
             }
         }
 
         if (status === 'terminated' && voidExisting) {
-            // Void all active records in this batch
+            // Bulk void for performance
             await WarrantyRecord.updateMany(
-                { batchId: id, status: 'active' },
+                { batchId: id, status: { $in: ['active', 'expired'] } },
                 { $set: { status: 'void' } }
             );
         }

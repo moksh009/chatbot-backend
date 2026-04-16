@@ -45,9 +45,12 @@ const warrantyRecordSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Index for quick lookup in Live Records dashboard
+// Optimized indexes for enterprise scale and dashboard performance
 warrantyRecordSchema.index({ clientId: 1, shopifyOrderId: 1 });
 warrantyRecordSchema.index({ clientId: 1, status: 1 });
+warrantyRecordSchema.index({ customerId: 1 });
+warrantyRecordSchema.index({ batchId: 1 });
+warrantyRecordSchema.index({ expiryDate: 1 });
 
 const WarrantyRecord = mongoose.model('WarrantyRecord', warrantyRecordSchema);
 

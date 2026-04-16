@@ -94,7 +94,13 @@ router.post('/publish', protect, async (req, res) => {
       publishedBy: req.user.name || req.user.email
     });
 
-    // 2. Sync draft to published
+    // 2. Deactivate other flows for the same platform
+    await WhatsAppFlow.updateMany(
+      { clientId, platform: flow.platform, flowId: { $ne: flowId } },
+      { $set: { status: 'DRAFT' } }
+    );
+
+    // 3. Sync draft to published
     flow.publishedNodes = flow.nodes;
     flow.publishedEdges = flow.edges;
     flow.status = 'PUBLISHED';
