@@ -314,8 +314,8 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
   };
 
   const Y = 140; // default Y step within folders (compact local canvas)
-  const nodes = [];
-  const edges = [];
+  let nodes = [];
+  let edges = [];
 
   // ====================================================================
   // ROOT LEVEL — Folders + Persona (floating, no parentId)
@@ -874,16 +874,30 @@ Products: ${products.slice(0, 5).map(p => p.name || p.title).join(', ')}`;
 }
 
 function getPrebuiltTemplates(wizardData) {
-  const { businessName, googleReviewUrl } = wizardData;
+  const { businessName = 'Our Brand', googleReviewUrl = '', checkoutUrl = '' } = wizardData;
+  const brandSafe = businessName || 'Our Brand';
+  
   return [
     {
+      id:        'order_conf',
       name:      'order_confirmation_msg',
       category:  'UTILITY',
       language:  'en',
       status:    'not_submitted',
-      body:      `✅ Your order #{{1}} from ${businessName} is confirmed!\n\nItems: {{2}} | Total: ₹{{3}}\n\nWe'll notify you when it ships! 📦`,
+      body:      `✅ Your order #{{1}} from ${brandSafe} is confirmed!\n\nItems: {{2}} | Total: ₹{{3}}\n\nWe'll notify you when it ships! 📦`,
       variables: ['order_id', 'cart_items', 'order_total'],
-      description: 'Sent immediately after order placed',
+      description: 'Sent immediately after order is placed.',
+      required:  true,
+    },
+    {
+      id:        'cart_recovery',
+      name:      'cart_abandoned_recovery',
+      category:  'MARKETING',
+      language:  'en',
+      status:    'not_submitted',
+      body:      `Hi! 👋 You left items in your cart at ${brandSafe}. Still interested?\n\nItems are selling fast! Complete your purchase here:\n{{1}}`,
+      variables: ['checkout_url'],
+      description: 'Sent if checkout is started but not completed.',
       required:  true,
     },
     ...(googleReviewUrl ? [{
@@ -892,22 +906,33 @@ function getPrebuiltTemplates(wizardData) {
       category:  'MARKETING',
       language:  'en',
       status:    'not_submitted',
-      body:      `Hi {{1}}! How was your experience with ${businessName}? 😊\n\nLeave us a quick review — it takes just 30 seconds:\n${googleReviewUrl}`,
+      body:      `Hi {{1}}! How was your experience with ${brandSafe}? 😊\n\nLeave us a quick review — it means a lot:\n${googleReviewUrl}`,
       variables: ['customer_name'],
-      description: 'Sent 4 days after delivery',
+      description: 'Sent 3-4 days after delivery fulfilled.',
       required:  false,
     }] : []),
     {
-      id:        'admin_handoff_alert',
+      id:        'admin_handoff',
       name:      'admin_human_alert',
       category:  'UTILITY',
       language:  'en',
       status:    'not_submitted',
-      body:      `🚨 *Human Agent Requested!*\n\nCustomer: {{1}} ({{2}})\nMessage: {{3}}\n\nReply now: https://whatsapp.facebook.com/{{4}}`,
-      variables: ['customer_name', 'customer_phone', 'last_message', 'waba_id'],
-      description: 'Sent to Admin when a human is requested',
+      body:      `🚨 *Human Agent Requested!*\n\nCustomer: {{1}} ({{2}})\nContext: {{3}}\n\nReply in Dashboard.`,
+      variables: ['customer_name', 'customer_phone', 'last_message'],
+      description: 'Sent to your admin phone when a customer asks for help.',
       required:  true,
     },
+    {
+       id:        'cod_nudge',
+       name:      'cod_to_prepaid_nudge',
+       category:  'MARKETING',
+       language:  'en',
+       status:    'not_submitted',
+       body:      `Wait! 💳 Save an extra ₹50 on your ${brandSafe} order by paying online now!\n\nTap below to switch to prepaid and save:`,
+       variables: [],
+       description: 'Sent 3 mins after a COD order to convert to prepaid.',
+       required:  true,
+    }
   ];
 }
 
