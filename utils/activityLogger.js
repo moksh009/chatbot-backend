@@ -8,16 +8,30 @@ const log = require('./logger')('ActivityLogger');
  * @param {string} clientId - The ID of the client.
  * @param {object} params - { type, status, title, message, icon, url, metadata }
  */
-const logActivity = async (clientId, { type, status = 'info', title, message, icon, url, metadata }) => {
+const logActivity = async (clientId, data, legacyTitle) => {
     try {
         if (!clientId) {
-            log.warn('Attempted to log activity without clientId', { title });
+            log.warn('Attempted to log activity without clientId');
             return;
         }
 
+        // Handle legacy positional arguments: (clientId, type, title)
+        let type, status = 'info', title, message, icon, url, metadata;
+        if (typeof data === 'string') {
+            type = data;
+            title = legacyTitle || 'System Event';
+            message = legacyTitle || 'System Event';
+        } else {
+            ({ type, status = 'info', title, message, icon, url, metadata } = data);
+        }
+
+        // Ensure mandatory fields for validation
+        if (!type) type = 'GENERAL';
+        if (!title) title = message || 'Activity Log';
+
         // 1. Persist to Database
         const activity = await ActivityLog.create({
-            clientId,
+            clientId: clientId.toString(), // Ensure it's a string
             type,
             status,
             title,

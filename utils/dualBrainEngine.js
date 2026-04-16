@@ -638,7 +638,7 @@ async function runDualBrainEngine(parsedMessage, client) {
   const NegotiationEngine = require('./negotiationEngine');
   if (NegotiationEngine.isNegotiationAttempt(incomingText)) {
       log.info(`[DualBrain] 🤖 Negotiation triggered for lead ${lead.phoneNumber}`);
-      const negotiatedResponse = await NegotiationEngine.processNegotiation(client, lead, incomingText);
+      const negotiatedResponse = await NegotiationEngine.processNegotiation(client, lead, incomingText, convo, phone);
       if (negotiatedResponse) {
           await sendWhatsAppText(client, phone, negotiatedResponse);
           // Preempt further processing since we're handling the objection

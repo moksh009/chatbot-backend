@@ -6,7 +6,20 @@ const Conversation = require('../models/Conversation');
 const Client = require('../models/Client');
 
 /**
- * Evaluates whether the user's message is a negotiation/discount request
+ * Fast synchronous check for negotiation intent
+ */
+function isNegotiationAttempt(text) {
+  if (!text) return false;
+  const lowerText = text.toLowerCase();
+  const negotiationKeywords = [
+    'discount', 'coupon', 'offer', 'promo', 'cheap', 'price', 'negotiate', 'bargain', 'haggle', 
+    'reduce', 'less', 'best price', 'lower', 'cost', 'expensive', 'waive', 'free'
+  ];
+  return negotiationKeywords.some(keyword => lowerText.includes(keyword));
+}
+
+/**
+ * Evaluates whether the user's message is a negotiation/discount request using Gemini
  */
 async function detectNegotiationIntent(userText, apiKey) {
   try {
@@ -74,7 +87,7 @@ async function generateNegotiatedDiscount(client, percentage, flatCap, cartTotal
  * Handle AI Price Negotiation
  * Returns { handled: boolean, reply: string }
  */
-async function processNegotiation(client, convo, phone, userText, lead) {
+async function processNegotiation(client, lead, userText, convo, phone) {
   try {
     const limits = client.ai?.negotiationSettings || client.negotiationSettings;
     if (!limits || !limits.enabled) return { handled: false };
@@ -151,5 +164,6 @@ async function processNegotiation(client, convo, phone, userText, lead) {
 }
 
 module.exports = {
+  isNegotiationAttempt,
   processNegotiation
 };
