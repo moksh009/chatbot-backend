@@ -250,14 +250,6 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     
     console.log(`[Wizard] Completed successfully for ${clientId}. wizardCompleted: ${updatedClient.wizardCompleted}`);
     
-    res.json({ 
-      success: true, 
-      message: "Onboarding complete!", 
-      flowId,
-      nodesGenerated: nodes.length,
-      edgesGenerated: edges.length
-    });
-
     // Push customTemplates separately if any
     if (customTemplatesPush.length > 0) {
       await Client.findByIdAndUpdate(client._id, {
