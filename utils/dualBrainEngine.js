@@ -2545,7 +2545,7 @@ REPLY:
 
     let reply;
     try {
-      const apiKeyToUse = client.geminiApiKey || client.config?.geminiApiKey;
+      const apiKeyToUse = client.geminiApiKey;
       if (!apiKeyToUse) {
         log.warn(`[AI Fallback] No Gemini API key for ${client.clientId}`);
         throw new Error("No API Key");
@@ -2563,7 +2563,7 @@ REPLY:
       }
       // Enter HUMAN_TAKEOVER
       await Conversation.findOneAndUpdate({ phone, clientId: client.clientId }, { $set: { status: 'HUMAN_TAKEOVER', lastInteraction: new Date() } });
-      const fallMsg = "I'm having a little trouble connecting to my brain right now! Let me get a human agent to help you immediately. 👨‍💻";
+      const fallMsg = "I'm having trouble connecting to my AI brain right now. Let me transfer you to a human agent!";
       await sendWhatsAppText(client, phone, fallMsg);
       return true; // Halt standard flow
     }
