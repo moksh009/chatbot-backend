@@ -209,7 +209,7 @@ router.get('/:id/smart-replies', protect, async (req, res) => {
     if (!apiKey) return res.json({ suggestions: [] });
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
     const context = recentMessages
       .reverse()
@@ -369,6 +369,7 @@ router.put('/:id/takeover', protect, async (req, res) => {
     }
 
     conversation.status = 'HUMAN_TAKEOVER';
+    conversation.botPaused = true;
     conversation.assignedTo = req.user._id;
     conversation.requiresAttention = false; // Reset attention flag on manual takeover
     if (conversation.attentionReason) conversation.attentionReason = '';
@@ -397,6 +398,7 @@ router.put('/:id/release', protect, async (req, res) => {
     if (!conversation) return res.status(404).json({ message: 'Not found' });
 
     conversation.status = 'BOT_ACTIVE';
+    conversation.botPaused = false;
     await conversation.save();
 
     const AdLead = require('../models/AdLead');

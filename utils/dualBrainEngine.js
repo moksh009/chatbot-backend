@@ -1333,8 +1333,9 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 
   // A) GLOBAL KEYWORD / ROLE JUMP
   const jumpNode = flowNodes.find(n => {
-    const role = (n.data?.role || '').toLowerCase();
-    const keywords = (n.data?.keywords || '').toLowerCase().split(',').map(k => k.trim());
+    const role = String(n.data?.role || '').toLowerCase();
+    const keywordsRaw = n.data?.keywords || '';
+    const keywords = (typeof keywordsRaw === 'string' ? keywordsRaw : String(keywordsRaw)).toLowerCase().split(',').map(k => k.trim());
     return (role && userTextLower === role) || (keywords.length > 0 && keywords.includes(userTextLower));
   });
 

@@ -547,12 +547,21 @@ const handleWebhook = async (req, res) => {
         };
 
         // --- DUAL-BRAIN ENGINE (Graph -> Keyword -> AI) ---
-        // Includes: Upsert Convo, Upsert Lead, Save Inbound Message, Paused Check, Graph, Keyword, Gemini text fallback
         const handledByDualBrain = await runDualBrainEngine(parsedMessage, req.clientConfig);
 
-        // If DualBrain consumed the message fully (e.g. matched a graph edge, or text was matched by AI), we stop.
-        // It returns false ONLY if no graph matched AND there's no text (e.g. a legacy interactive button click that wasn't in the tree).
         if (handledByDualBrain) {
+            return res.status(200).end();
+        }
+
+        const userMsgType = messages?.type;
+        const userMsg = messages?.text?.body || '';
+
+        // --- STRICT FLOW ENFORCEMENT ---
+        // If the client has Flow Builder nodes, we do NOT fall back to legacy hardcoded menus.
+        // This ensures the Flow Builder is the single source of truth for the customer experience.
+        const hasFlowNodes = req.clientConfig.flowNodes && req.clientConfig.flowNodes.length > 0;
+        if (hasFlowNodes) {
+            console.log(`[EcommerceEngine] Flow nodes exist for ${clientId}. Skipping legacy fallback handlers.`);
             return res.status(200).end();
         }
 
