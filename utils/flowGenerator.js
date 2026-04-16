@@ -159,7 +159,7 @@ function buildDefaultContent(businessName, botName, products = [], ops = {}) {
     cart_recovery_1:      `👋 Hey! You left something in your cart at *${businessName}*. It's still waiting for you — shall I hold it?`,
     cart_recovery_2:      `⏰ Your *${businessName}* cart is still active! These items are selling fast — grab yours before they're gone!`,
     cart_recovery_3:      `🔥 Last chance! Your *${businessName}* cart expires soon. Use code *SAVE10* for an extra 10% off!`,
-    cod_nudge:            `💳 Switch to online payment and save ₹50 instantly! Faster delivery, safer transaction, simpler process.`,
+    cod_nudge:            `💳 Switch to online payment and save ${currency}50 instantly! Faster delivery, safer transaction, simpler process.`,
     order_confirmed_msg:  `🎉 Order confirmed! Your *${businessName}* order is being prepared with care. We'll notify you the moment it ships!`,
     agent_handoff_msg:    `I've notified our team and they'll be with you very shortly. Please stay on this chat. 🎧`,
     faq_response:         `Great question! Here's what I know. For more help, type *menu* to return to the main menu.`,
@@ -1335,7 +1335,7 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
       parentId: FOLDER_IDS.AUTOMATION,
       data: {
         label:        "Cart Recovery 3 (Final)",
-        templateName: "cart_abandoned_recovery",
+        templateName: "cart_recovery",
         templateVars: ["{{checkout_url}}"]
       },
     },
@@ -1358,7 +1358,7 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
       parentId: FOLDER_IDS.AUTOMATION,
       data: {
         label:        "Order Confirmed",
-        templateName: "order_confirmation_msg",
+        templateName: "order_conf",
         templateVars: ["{{order_id}}", "{{cart_items}}", "{{order_total}}"]
       },
     },
@@ -1381,7 +1381,7 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
       position: { x: 1260, y: Y * 1.6 },
       parentId: FOLDER_IDS.AUTOMATION,
       data: {
-        label:          "Prepay & Save ₹50",
+        label:          `Prepay & Save ${currency}50`,
         discountAmount: 50,
         action:         "CONVERT_COD_TO_PREPAID",
         text:           content.cod_nudge,
@@ -1406,7 +1406,7 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
       parentId: FOLDER_IDS.AUTOMATION,
       data: {
         label:          "Sentiment Check",
-        templateName:   "post_delivery_review",
+        templateName:   "review_request",
         templateVars:   ["{{lead.name}}"],
       },
     },
@@ -1888,7 +1888,7 @@ function getPrebuiltTemplates(wizardData) {
     // =========================================================================
     {
       id:          "order_conf",
-      name:        "order_confirmation_msg",
+      name:        "order_conf",
       category:    "UTILITY",
       language:    "en",
       status:      "not_submitted",
@@ -1909,7 +1909,7 @@ function getPrebuiltTemplates(wizardData) {
     // =========================================================================
     {
       id:          "cart_recovery",
-      name:        "cart_abandoned_recovery",
+      name:        "cart_recovery",
       category:    "MARKETING",
       language:    "en",
       status:      "not_submitted",
