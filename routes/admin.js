@@ -1946,8 +1946,8 @@ router.post('/flow/publish/:clientId', protect, async (req, res) => {
     if (!client.flowHistory) client.flowHistory = [];
     client.flowHistory.push({
       version: client.flowHistory.length + 1,
-      nodes: client.flowNodes,
-      edges: client.flowEdges,
+      nodes: nodes,
+      edges: edges,
       savedAt: new Date(),
       note: note || 'Manual publish'
     });

@@ -136,6 +136,7 @@ function buildDefaultContent(businessName, botName, products = [], ops = {}) {
     openTime        = "10:00",
     closeTime       = "19:00",
     checkoutUrl     = "",
+    currency        = "₹",
   } = ops;
 
   return {
@@ -315,7 +316,7 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
   // Merge: AI wins on non-empty fields; defaults fill gaps
   content = {
     ...buildDefaultContent(businessName, botName, enrichedProducts, {
-      referralPoints, signupPoints, warrantyDuration, openTime, closeTime, checkoutUrl,
+      referralPoints, signupPoints, warrantyDuration, openTime, closeTime, checkoutUrl, currency
     }),
     ...content,
   };
