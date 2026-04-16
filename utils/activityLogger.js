@@ -49,4 +49,4 @@ const logActivity = async (clientId, { type, status = 'info', title, message, ic
     }
 };
 
-module.exports = { logActivity };
+module.exports = { logActivity, logPulse: logActivity };

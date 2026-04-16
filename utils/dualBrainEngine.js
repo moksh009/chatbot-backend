@@ -521,8 +521,10 @@ async function runDualBrainEngine(parsedMessage, client) {
   }
 
   // STEP 2.4: Track Customer Intelligence (Phase 28 Track 2)
-  const CI = require('./customerIntelligence');
-  await CI.trackInteraction(client.clientId, phone, lead._id);
+  if (lead && lead._id) {
+    const CI = require('./customerIntelligence');
+    await CI.trackInteraction(client.clientId, phone, lead._id);
+  }
 
   // STEP 2.5: PHASE 25 - Referral Tracking & Fulfillment
   const incomingText = Object.keys(parsedMessage.text || {}).length ? parsedMessage.text.body || '' : '';
