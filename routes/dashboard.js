@@ -13,11 +13,6 @@ const dashboardController = require('../controllers/dashboardController');
 // @access  Private
 router.post('/batch-data', protect, dashboardController.getBatchData);
 
-// GET /api/dashboard/summary
-// @desc    Aggregated BFF endpoint for the main dashboard (instantly populates all stats/feeds)
-// @access  Private
-router.get('/summary', protect, dashboardController.getSummary);
-
 // Layout management
 router.get('/layout', protect, dashboardController.getLayout);
 router.post('/layout', protect, dashboardController.saveLayout);
