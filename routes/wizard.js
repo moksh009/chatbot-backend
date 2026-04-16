@@ -112,6 +112,8 @@ router.post("/:clientId/complete", protect, async (req, res) => {
         systemPrompt,
         'ai.systemPrompt': systemPrompt
       }),
+      ...(wizardData.currency && { "brand.currency": wizardData.currency }),
+      ...(wizardData.shippingTime && { "config.shippingTime": wizardData.shippingTime }),
       ...(wizardData.returnsInfo && { "ai.persona.returnsInfo": wizardData.returnsInfo }),
       ...(wizardData.faqText && { "ai.persona.faqText": wizardData.faqText }),
       ...(wizardData.razorpayKeyId    && { razorpayKeyId: wizardData.razorpayKeyId }),

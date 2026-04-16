@@ -208,6 +208,7 @@ async function generateEcommerceFlow(client, wizardData) {
     checkoutUrl         = "",
     b2bThreshold        = 10,
     b2bAdminPhone       = "",
+    currency            = "₹",
   } = wizardData;
 
   // ── Persona mapping ────────────────────────────────────────────────────────
@@ -221,7 +222,7 @@ async function generateEcommerceFlow(client, wizardData) {
 
   // ── Enrich products ────────────────────────────────────────────────────────
   const enrichedProducts = products.slice(0, 15).map((p, i) => buildProductContext(p, i));
-  const productsSummary  = enrichedProducts.map(p => `"${p.title}" ₹${p.price}: ${p.features.slice(0, 80)}`).join("\n");
+  const productsSummary  = enrichedProducts.map(p => `"${p.title}" ${currency}${p.price}: ${p.features.slice(0, 80)}`).join("\n");
   const productHandles   = enrichedProducts.slice(0, 6).map(p => p.handle);
 
   // ── STEP 1: 38-Key AI Content Generation ──────────────────────────────────
@@ -702,7 +703,7 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
             data: {
               label:           `Product: ${p.title.substring(0, 20)}`,
               interactiveType: "button",
-              text:            `*${p.title}*\n\n💰 Price: ₹${p.price}${p.features ? `\n\n${p.features.slice(0, 160)}` : ""}`,
+              text:            `*${p.title}*\n\n💰 Price: ${currency}${p.price}${p.features ? `\n\n${p.features.slice(0, 160)}` : ""}`,
               imageUrl:        p.imageUrl || "",
               shopifyProductId: p.id || "",
               buttonsList:     btns,
@@ -768,7 +769,7 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
               language: "en",
               components: [
                 { type: "HEADER", format: "IMAGE" },
-                { type: "BODY",   text: `*{{1}}*\n\n💰 Price: ₹{{2}}\n\nTap below to proceed. 🛍️` },
+                { type: "BODY",   text: `*{{1}}*\n\n💰 Price: ${currency}{{2}}\n\nTap below to proceed. 🛍️` },
                 {
                   type: "BUTTONS",
                   buttons: [
@@ -809,7 +810,7 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
             data: {
               label:           `Product: ${p.title.substring(0, 20)}`,
               interactiveType: "button",
-              text:            `*${p.title}*\n\n💰 Price: ₹${p.price}${p.features ? `\n\n${p.features.slice(0, 160)}` : ""}`,
+              text:            `*${p.title}*\n\n💰 Price: ${currency}${p.price}${p.features ? `\n\n${p.features.slice(0, 160)}` : ""}`,
               imageUrl:        p.imageUrl || "",
               shopifyProductId: p.id || "",
               buttonsList:     btns,
@@ -1329,12 +1330,13 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
     },
     {
       id:       IDS.CART_M3,
-      type:     "message",
+      type:     "template",
       position: { x: 2520, y: 0 },
       parentId: FOLDER_IDS.AUTOMATION,
       data: {
-        label: "Cart Recovery 3 (Final)",
-        text:  content.cart_recovery_3,
+        label:        "Cart Recovery 3 (Final)",
+        templateName: "cart_abandoned_recovery",
+        templateVars: ["{{checkout_url}}"]
       },
     },
     // B. Order confirmed trigger
@@ -1351,12 +1353,13 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
     },
     {
       id:       IDS.CONF_MSG,
-      type:     "message",
+      type:     "template",
       position: { x: 420, y: Y * 2 },
       parentId: FOLDER_IDS.AUTOMATION,
       data: {
-        label: "Order Confirmed",
-        text:  content.order_confirmed_msg,
+        label:        "Order Confirmed",
+        templateName: "order_confirmation_msg",
+        templateVars: ["{{order_id}}", "{{cart_items}}", "{{order_total}}"]
       },
     },
     // B. COD Gate — only nudge if payment_method == cod
@@ -1398,15 +1401,13 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
     },
     {
       id:       IDS.REV_ASK,
-      type:     "review",
+      type:     "template",
       position: { x: 420, y: Y * 4 },
       parentId: FOLDER_IDS.AUTOMATION,
       data: {
         label:          "Sentiment Check",
-        text:           content.sentiment_ask,
-        action:         "SEND_REVIEW_REQUEST",
-        rewardText:     "REVIEW15",
-        googleReviewUrl,
+        templateName:   "post_delivery_review",
+        templateVars:   ["{{lead.name}}"],
       },
     },
     {
@@ -1753,13 +1754,14 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
 
 // ─── SYSTEM PROMPT GENERATOR (used by wizard) ────────────────────────────────
 async function generateSystemPrompt(client, wizardData) {
-  const { businessName, businessDescription, botName, tone, botLanguage, products = [] } = wizardData;
+  const { businessName, businessDescription, botName, tone, botLanguage, products = [], shippingTime } = wizardData;
   const { generateText } = require("./gemini");
   const prompt = `Write a professional WhatsApp chatbot system prompt for ${businessName}.
 Description: ${businessDescription}
 Bot Name: ${botName}
 Tone: ${tone}
 Language: ${botLanguage}
+Shipping Policy: ${shippingTime || "Standard shipping"}
 Products: ${products.slice(0, 5).map(p => p.name || p.title).join(", ")}`;
   try {
     const res = await generateText(prompt, client.geminiApiKey || process.env.GEMINI_API_KEY);
@@ -1778,6 +1780,7 @@ function getPrebuiltTemplates(wizardData) {
     shopDomain      = "",
     businessLogo    = "",
     products        = [],
+    currency        = "₹",
   } = wizardData;
 
   const brandSafe = businessName || "Our Brand";
@@ -1815,7 +1818,7 @@ function getPrebuiltTemplates(wizardData) {
         },
         {
           type: "BODY",
-          text: `*{{1}}*\n\n\uD83D\uDCB0 Price: \u20B9{{2}}\n\n{{3}}`,
+          text: `*{{1}}*\n\n\uD83D\uDCB0 Price: ${currency}{{2}}\n\n{{3}}`,
         },
         {
           type: "FOOTER",
@@ -1833,7 +1836,7 @@ function getPrebuiltTemplates(wizardData) {
         },
       ],
       // Flat fields used by the wizard preview bubble renderer
-      body:      `*{{1}}*\n\n\uD83D\uDCB0 Price: \u20B9{{2}}\n\n{{3}}`,
+      body:      `*{{1}}*\n\n\uD83D\uDCB0 Price: ${currency}{{2}}\n\n{{3}}`,
       variables: ["product_name", "product_price", "product_features"],
     };
   });
@@ -1894,10 +1897,10 @@ function getPrebuiltTemplates(wizardData) {
       components: [
         {
           type: "BODY",
-          text: `\u2705 Your order #{{1}} from ${brandSafe} is confirmed!\n\nItems: {{2}} | Total: \u20B9{{3}}\n\nWe\u2019ll notify you when it ships! \uD83D\uDCE6`,
+          text: `\u2705 Your order #{{1}} from ${brandSafe} is confirmed!\n\nItems: {{2}} | Total: ${currency}{{3}}\n\nWe\u2019ll notify you when it ships! \uD83D\uDCE6`,
         },
       ],
-      body:      `\u2705 Your order #{{1}} from ${brandSafe} is confirmed!\n\nItems: {{2}} | Total: \u20B9{{3}}\n\nWe\u2019ll notify you when it ships! \uD83D\uDCE6`,
+      body:      `\u2705 Your order #{{1}} from ${brandSafe} is confirmed!\n\nItems: {{2}} | Total: ${currency}{{3}}\n\nWe\u2019ll notify you when it ships! \uD83D\uDCE6`,
       variables: ["order_id", "cart_items", "order_total"],
     },
 
@@ -1969,14 +1972,14 @@ function getPrebuiltTemplates(wizardData) {
       components: [
         {
           type: "BODY",
-          text: `Wait! \uD83D\uDCB3 Save an extra \u20B950 on your ${brandSafe} order by paying online now!\n\nTap below to switch to prepaid and save instantly:`,
+          text: `Wait! \uD83D\uDCB3 Save an extra ${currency}50 on your ${brandSafe} order by paying online now!\n\nTap below to switch to prepaid and save instantly:`,
         },
         {
           type: "BUTTONS",
-          buttons: [{ type: "QUICK_REPLY", text: "\uD83D\uDCB3 Pay Online & Save \u20B950" }],
+          buttons: [{ type: "QUICK_REPLY", text: `\uD83D\uDCB3 Pay Online & Save ${currency}50` }],
         },
       ],
-      body:      `Wait! \uD83D\uDCB3 Save an extra \u20B950 on your ${brandSafe} order by paying online now!\n\nTap below to switch to prepaid and save instantly:`,
+      body:      `Wait! \uD83D\uDCB3 Save an extra ${currency}50 on your ${brandSafe} order by paying online now!\n\nTap below to switch to prepaid and save instantly:`,
       variables: [],
     },
 
