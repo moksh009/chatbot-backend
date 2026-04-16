@@ -30,6 +30,7 @@ const { getRelevantExamples, buildFewShotPrompt } = require("./trainingEngine");
 const { generatePaymentLink } = require("./paymentLinkGenerator"); // Phase 29 Track 7
 const MessageBufferService = require('../services/MessageBufferService');
 const { resolveAndSaveMedia } = require('./whatsappMedia');
+const WhatsAppUtils = require('./whatsapp');
 
 
 
@@ -58,6 +59,7 @@ const WhatsApp = {
   sendImage: (...args) => sendWhatsAppImage(...args),
   sendInteractive: (...args) => sendWhatsAppInteractive(...args),
   sendTemplate: (...args) => sendWhatsAppTemplate(...args),
+  sendSmartTemplate: (...args) => sendWhatsAppSmartTemplate(...args),
   sendFlow: (...args) => sendWhatsAppFlow(...args),
 };
 
@@ -2748,6 +2750,28 @@ async function sendWhatsAppTemplate(client, phone, templateName, languageCode, c
     
     await saveOutboundMessage(phone, client.clientId, 'template', `[Template: ${templateName}]`, res.data.messages[0].id);
   } catch (err) { log.error('sendTemplate error:', { error: err.response?.data || err.message }); }
+}
+
+async function sendWhatsAppSmartTemplate(client, phone, templateName, variables = [], headerImage = null, languageCode = 'en') {
+  try {
+    const res = await WhatsAppUtils.sendSmartTemplate(client, phone, templateName, variables, headerImage, languageCode);
+    if (res && res.messages && res.messages[0]) {
+      await saveOutboundMessage(
+        phone, 
+        client.clientId, 
+        'template', 
+        `[SmartTemplate: ${templateName}]`, 
+        res.messages[0].id
+      );
+    }
+    return res;
+  } catch (err) {
+    log.error('sendSmartTemplate error:', { 
+        clientId: client.clientId, 
+        templateName, 
+        error: err.response?.data || err.message 
+    });
+  }
 }
 
 async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, screen) {

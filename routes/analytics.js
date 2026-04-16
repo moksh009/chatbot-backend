@@ -32,10 +32,7 @@ router.get('/notifications', protect, async (req, res) => {
       clientId = req.query.clientId;
     }
 
-    // --- PHASE 10 FIX: Shared Query for Delitech/CodeClinic ---
-    const query = (['delitech_smarthomes', 'code_clinic_v1'].includes(clientId))
-      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
-      : { clientId };
+    const query = { clientId };
 
     const [unreadConversations, pendingOrders] = await Promise.all([
       Conversation.countDocuments({
@@ -177,10 +174,7 @@ router.get('/realtime', protect, async (req, res) => {
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
-    // --- PHASE 10 FIX: Shared Query for Delitech/CodeClinic ---
-    const query = (['delitech_smarthomes', 'code_clinic_v1'].includes(clientId))
-      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
-      : { clientId };
+    const query = { clientId };
 
     // ✅ Phase R3: IST midnight fix — was using UTC midnight (new Date().setHours(0,0,0,0))
     // Dashboard 'Today' counter was resetting at 5:30 AM IST instead of IST midnight
@@ -361,7 +355,7 @@ router.get('/leads', protect, async (req, res) => {
       clientId = req.query.clientId;
     }
 
-    const query = (clientId === 'code_clinic_v1' || clientId === 'delitech_smarthomes') ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } } : { clientId };
+    const query = { clientId };
 
     const { limit = 10, search = '', next_cursor } = req.query;
 
@@ -485,9 +479,7 @@ router.get('/lead-by-phone/:phone', protect, async (req, res) => {
       rawPhone.startsWith('91') ? `+${rawPhone}` : rawPhone // Specific fallback for IN
     ];
 
-    const leadQuery = (['delitech_smarthomes', 'code_clinic_v1'].includes(clientId))
-      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] }, phoneNumber: { $in: phoneVariants } }
-      : { clientId, phoneNumber: { $in: phoneVariants } };
+    const leadQuery = { clientId, phoneNumber: { $in: phoneVariants } };
 
     const lead = await AdLead.findOne(leadQuery);
     
@@ -545,9 +537,7 @@ router.get('/top-leads', protect, async (req, res) => {
       clientId = req.query.clientId;
     }
     // --- PHASE 11 FIX: Refined Hot Leads (Score >= 60) ---
-    const query = (['delitech_smarthomes', 'code_clinic_v1'].includes(clientId))
-      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] }, leadScore: { $gte: 60 } }
-      : { clientId, leadScore: { $gte: 60 } };
+    const query = { clientId, leadScore: { $gte: 60 } };
 
     const leads = await AdLead.aggregate([
       { $match: query },
@@ -621,10 +611,7 @@ router.get('/top-products', protect, async (req, res) => {
     if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
       clientId = req.query.clientId;
     }
-    // --- PHASE 10 FIX: Shared Query for Delitech/CodeClinic ---
-    const query = (['delitech_smarthomes', 'code_clinic_v1'].includes(clientId))
-      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
-      : { clientId };
+    const query = { clientId };
 
     const topProducts = await Order.aggregate([
       { $match: query },
@@ -749,10 +736,7 @@ router.get('/receptionist-overview', protect, async (req, res) => {
     // We will fetch ALL appointments for this client that are not cancelled, and then filter/merge.
     // Ideally, we should migrate DB to use ISO dates, but for now we rely on the GCal sync.
 
-    // --- PHASE 10 FIX: Shared Query for Delitech/CodeClinic ---
-    const query = (['delitech_smarthomes', 'code_clinic_v1'].includes(clientId))
-      ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } }
-      : { clientId };
+    const query = { clientId };
 
     // Fetch DB appointments created/for this client
     const dbAppointments = await Appointment.find({
@@ -1039,7 +1023,7 @@ router.get('/', protect, async (req, res) => {
 router.get('/insights', protect, async (req, res) => {
   try {
     const clientId = req.user.clientId;
-    const query = (clientId === 'code_clinic_v1' || clientId === 'delitech_smarthomes') ? { clientId: { $in: ['code_clinic_v1', 'delitech_smarthomes'] } } : { clientId };
+    const query = { clientId };
 
     const appts = await Appointment.find(query);
     const orders = await Order.find(query);

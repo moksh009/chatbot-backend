@@ -202,179 +202,7 @@ router.get('/promote-me', async (req, res) => {
   }
 });
 
-// --- RUN DELITECH MIGRATION (URL RUNNABLE) ---
-router.get('/run-delitech-migration', async (req, res) => {
-  try {
-    const { key } = req.query;
-    if (key !== 'topedge_secure_admin_123') {
-      return res.status(401).json({ message: 'Unauthorized. Use ?key=topedge_secure_admin_123' });
-    }
-
-    const IMAGES = {
-        hero_3mp: 'https://delitechsmarthome.in/cdn/shop/files/Delitech_Main_photoswq.png?v=1760635732&width=1346',
-        hero_5mp: 'https://delitechsmarthome.in/cdn/shop/files/my1.png?v=1759746759&width=1346',
-        hero_2mp: 'https://delitechsmarthome.in/cdn/shop/files/DelitechMainphotos7i.png?v=1770617818&width=1346',
-        features: 'https://delitechsmarthome.in/cdn/shop/files/image241.png?v=1762148394&width=1346'
-    };
-
-    const DELITECH_NODES = [
-      // ─── FOLDERS (Containers) ───────────────────────────────────────────
-      { id: "f_welcome", type: "folder", position: { x: 400, y: 0 }, data: { label: "🏠 Welcome & Menu" } },
-      { id: "f_catalog", type: "folder", position: { x: 0, y: 300 }, data: { label: "🛍️ Product Catalog" } },
-      { id: "f_support", type: "folder", position: { x: 400, y: 300 }, data: { label: "🛠️ Technical Support" } },
-      { id: "f_orders",  type: "folder", position: { x: 800, y: 300 }, data: { label: "📞 Order Desk" } },
-
-      // ─── WELCOME FOLDER NODES ───────────────────────────────────────────
-      { id: "trigger_start", type: "trigger", parentId: "f_welcome", position: { x: 100, y: 50 }, 
-        data: { label: "Main Entry Trigger", keyword: "hi,hello,hey,hola,details,price,doorbell,catalogue,info" } 
-      },
-      { id: "menu_main", type: "interactive", parentId: "f_welcome", position: { x: 100, y: 200 }, data: { 
-        label: "Welcome Concierge", 
-        interactiveType: "list",
-        header: "Delitech Smart Home",
-        body: "Welcome to Delitech! 🏠\nInvest in your family's safety. Select a model below to view exclusive photos and pricing:\n\n*(Tip: Over 80% of our customers choose the 3MP Pro for absolute clarity)*",
-        listButtonTitle: "Explore Options",
-        sections: [
-          { title: "Premium Security", rows: [
-              { id: "sel_5mp", title: "Doorbell Pro (5MP)", description: "Ultimate Clarity & Smart AI" },
-              { id: "sel_3mp", title: "Doorbell Plus (3MP)", description: "2K Video & Color Night Vision" }
-            ]
-          },
-          { title: "Essential Security", rows: [
-              { id: "sel_2mp", title: "Doorbell (2MP)", description: "Standard HD & 2-Way Talk" }
-            ]
-          },
-          { title: "Support & Help", rows: [
-              { id: "menu_agent", title: "Consult an Expert", description: "Get a free security callback" },
-              { id: "menu_faqs", title: "Setup & FAQ", description: "Installation & Battery info" }
-            ]
-          }
-        ]
-      }},
-
-      // ─── CATALOG FOLDER NODES ───────────────────────────────────────────
-      { id: "card_5mp", type: "interactive", parentId: "f_catalog", position: { x: 50, y: 50 }, data: { 
-        label: "5MP Pro Card", 
-        interactiveType: "button",
-        imageUrl: IMAGES.hero_5mp,
-        body: "🛡️ *Delitech Smart Video Doorbell Pro (5MP)*\n\nThe ultimate peace-of-mind solution. Unmatched clarity and premium security.\n\n💎 *5MP Crystal-Clear Resolution*\n👀 *Ultra-Wide View*\n🌈 *Color Night Vision*\n\n💰 *Offer Price:* ₹6,999\n✅ 1 Year Warranty | 🚚 Free Shipping | 🛠️ Free Installation",
-        buttonsList: [
-          { id: "buy_5mp_node", title: "🛒 Buy Now" },
-          { id: "agent_5mp", title: "📞 Call Me" },
-          { id: "back_main", title: "View Other" }
-        ]
-      }},
-      { id: "card_3mp", type: "interactive", parentId: "f_catalog", position: { x: 450, y: 50 }, data: { 
-        label: "3MP Plus Card", 
-        interactiveType: "button",
-        imageUrl: IMAGES.hero_3mp,
-        body: "🛡️ *Delitech Smart Video Doorbell Plus (3MP)*\n\nThe perfect balance of affordability and HD security.\n\n📹 *2K Crisp Video*\n🌈 *Color Night Vision*\n🗣️ *Real-Time 2-Way Audio*\n\n💰 *Offer Price:* ₹6,499\n✅ 1 Year Warranty | 🚚 Free Shipping | 🛠️ Free Installation",
-        buttonsList: [
-          { id: "buy_3mp_node", title: "🛒 Buy Now" },
-          { id: "agent_3mp", title: "📞 Call Me" },
-          { id: "back_main_2", title: "View Other" }
-        ]
-      }},
-      { id: "card_2mp", type: "interactive", parentId: "f_catalog", position: { x: 850, y: 50 }, data: { 
-        label: "2MP Standard Card", 
-        interactiveType: "button",
-        imageUrl: IMAGES.hero_2mp,
-        body: "🛡️ *Delitech Smart Video Doorbell (2MP)*\n\nEssential home security made simple.\n\n📹 *1080p HD Video*\n🌙 *Night Vision*\n🗣️ *2-Way Audio*\n\n💰 *Offer Price:* ₹5,499\n✅ 1 Year Warranty | 🚚 Free Shipping | 🛠️ Free Installation",
-        buttonsList: [
-          { id: "buy_2mp_node", title: "🛒 Buy Now" },
-          { id: "agent_2mp", title: "📞 Call Me" },
-          { id: "back_main_3", title: "View Other" }
-        ]
-      }},
-      
-      // Node Actions for Purchasing (Variable Injector handled)
-      { id: "act_buy_5mp", type: "action", parentId: "f_catalog", position: { x: 50, y: 350 }, data: {
-          label: "Send 5MP Link",
-          actionType: "SEND_PURCHASE_LINK",
-          productType: "5mp",
-          message: "⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 {{buy_url_5mp}}\n\n_Cash on Delivery Available_"
-      }},
-      { id: "act_buy_3mp", type: "action", parentId: "f_catalog", position: { x: 450, y: 350 }, data: {
-          label: "Send 3MP Link",
-          actionType: "SEND_PURCHASE_LINK",
-          productType: "3mp",
-          message: "⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 {{buy_url_3mp}}\n\n_Cash on Delivery Available_"
-      }},
-      { id: "act_buy_2mp", type: "action", parentId: "f_catalog", position: { x: 850, y: 350 }, data: {
-          label: "Send 2MP Link",
-          actionType: "SEND_PURCHASE_LINK",
-          productType: "2mp",
-          message: "⚡ *Excellent Choice!* ⚡\n\nClick the link below to verify your address and complete your order:\n\n👉 {{buy_url_2mp}}\n\n_Cash on Delivery Available_"
-      }},
-
-      // ─── SUPPORT FOLDER NODES ───────────────────────────────────────────
-      { id: "ans_install", type: "message", parentId: "f_support", position: { x: 50, y: 50 }, data: { 
-        label: "Installation FAQ", 
-        body: "🛠️ *Is it hard to install?*\nNot at all! It's *100% Wireless DIY*. Installation takes exactly 2 minutes. You can stick it or screw it to the wall instantly." 
-      }},
-      { id: "ans_battery", type: "message", parentId: "f_support", position: { x: 450, y: 50 }, data: { 
-        label: "Battery FAQ", 
-        body: "🔋 *How long does the battery last?*\nThe IP65 weatherproof battery lasts *up to 6 months* on a single charge! Simply recharge it via the included USB cable." 
-      }},
-      { id: "ans_warranty", type: "message", parentId: "f_support", position: { x: 850, y: 50 }, data: { 
-        label: "Warranty FAQ", 
-        body: "🛡️ *What about Warranty?*\nEnjoy complete peace of mind with our *1-Year Replacement Warranty* on any manufacturing defects." 
-      }},
-      { id: "trig_waterproof", type: "trigger", parentId: "f_support", position: { x: 50, y: 200 }, data: { label: "Waterproof Trigger", keyword: "waterproof,rain,weather" } },
-      { id: "msg_waterproof", type: "message", parentId: "f_support", position: { x: 50, y: 350 }, data: { label: "Waterproof Info", body: "🌦️ *IP65 Weatherproof Guarantee*\n\nYes! Our Doorbells are built to withstand the heaviest Indian monsoons and intense summer heat." } },
-
-      // ─── ORDERS FOLDER NODES ───────────────────────────────────────────
-      { id: "track_order_msg", type: "message", parentId: "f_orders", position: { x: 100, y: 50 }, data: { label: "Track System", body: "📦 *Tracking your order...*\nPlease provide your Order ID (e.g. #1234) and I will fetch the live status for you!" } },
-      { id: "agent_handover", type: "livechat", parentId: "f_orders", position: { x: 100, y: 200 }, data: { 
-        label: "Talk to Expert", 
-        body: "✅ *Request Received!*\n\nOur security expert has been notified. They will call you shortly on this number to assist you." 
-      }}
-    ];
-
-    const DELITECH_EDGES = [
-      // Welcome Folder Edges
-      { id: "e_start_menu", source: "trigger_start", target: "menu_main" },
-      { id: "e_menu_5mp", source: "menu_main", target: "f_catalog", sourceHandle: "sel_5mp" },
-      { id: "e_menu_3mp", source: "menu_main", target: "f_catalog", sourceHandle: "sel_3mp" },
-      { id: "e_menu_2mp", source: "menu_main", target: "f_catalog", sourceHandle: "sel_2mp" },
-      { id: "e_menu_agent", source: "menu_main", target: "f_orders", sourceHandle: "menu_agent" },
-      { id: "e_menu_faqs", source: "menu_main", target: "f_support", sourceHandle: "menu_faqs" },
-      
-      // Catalog Folder Internal Edges
-      { id: "e_card_5mp_buy", source: "card_5mp", target: "act_buy_5mp", sourceHandle: "buy_5mp_node" },
-      { id: "e_card_5mp_call", source: "card_5mp", target: "f_orders", sourceHandle: "agent_5mp" },
-      { id: "e_card_5mp_back", source: "card_5mp", target: "f_welcome", sourceHandle: "back_main" },
-
-      { id: "e_card_3mp_buy", source: "card_3mp", target: "act_buy_3mp", sourceHandle: "buy_3mp_node" },
-      { id: "e_card_3mp_call", source: "card_3mp", target: "f_orders", sourceHandle: "agent_3mp" },
-      { id: "e_card_3mp_back", source: "card_3mp", target: "f_welcome", sourceHandle: "back_main_2" },
-
-      { id: "e_card_2mp_buy", source: "card_2mp", target: "act_buy_2mp", sourceHandle: "buy_2mp_node" },
-      { id: "e_card_2mp_call", source: "card_2mp", target: "f_orders", sourceHandle: "agent_2mp" },
-      { id: "e_card_2mp_back", source: "card_2mp", target: "f_welcome", sourceHandle: "back_main_3" },
-
-      // Support Folder Internal Edges
-      { id: "e_trig_wp", source: "trig_waterproof", target: "msg_waterproof" }
-    ];
-
-    await Client.findOneAndUpdate(
-      { clientId: "delitech_smarthomes" },
-      { $set: { 
-        flowNodes: DELITECH_NODES, 
-        flowEdges: DELITECH_EDGES,
-        businessType: "ecommerce",
-        niche: "ecommerce",
-        isGenericBot: true, // Dual Brain Enabled
-        plan: "CX Agent (V2)",
-        "billing.plan": "CX Agent (V2)"
-      }}
-    );
-
-    res.json({ success: true, message: "Delitech high-fidelity Dual-Brain flow migrated successfully!" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// Legacy Delitech migration routes removed.
 
 // --- RUN GENERIC FOLDERIZATION (URL RUNNABLE) ---
 router.get('/folderize-clients', async (req, res) => {
@@ -386,7 +214,7 @@ router.get('/folderize-clients', async (req, res) => {
 
     // Default to the major ones we know lack the strict new folder structure,
     // or allow targeting a specific one via ?target=client_id
-    const clientsToFix = target ? [target] : ['choice_salon', 'delitech_smarthomes'];
+    const clientsToFix = target ? [target] : [];
     const results = [];
     
     const flowTemplates = require('../data/flowTemplates');
@@ -661,38 +489,7 @@ router.put('/clients/:clientId/reset-password', protect, isSuperAdmin, async (re
   }
 });
 
-// --- REPAIR ACCESS (For Delitech/Enterprise manual recovery) ---
-router.get('/repair-delitech', async (req, res) => {
-  try {
-    const clientId = 'delitech_smarthomes';
-    const update = {
-      plan: 'CX Agent (V2)',
-      'billing.plan': 'CX Agent (V2)',
-      tier: 'v2',
-      'billing.tier': 'v2',
-      trialActive: false,
-      'billing.trialActive': false,
-      trialEndsAt: null,
-      'billing.trialEndsAt': null,
-      isPaidAccount: true,
-      'billing.isPaidAccount': true
-    };
-
-    const client = await Client.findOneAndUpdate(
-      { clientId },
-      { $set: update },
-      { new: true, runValidators: false }
-    );
-
-    if (!client) return res.status(404).json({ message: 'Client not found' });
-
-    log.success(`Repaired client access: ${clientId}`);
-    res.json({ message: 'Account access successfully repaired and set to Enterprise Plan (V2).', client });
-  } catch (err) {
-    log.error('Repair failed', { error: err.message });
-    res.status(500).json({ message: 'Repair failed', error: err.message });
-  }
-});
+// Legacy Delitech repair routes removed.
 
 // --- UPDATE CLIENT ---
 router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
@@ -1764,14 +1561,7 @@ router.post('/flow/convert-legacy/:clientId', async (req, res) => {
         if (!client) return res.status(404).json({ error: 'Client not found' });
 
         // Map clientId to legacy file
-        let fileName = '';
-        if (clientId === 'delitech_smarthomes' || clientId === 'ved') fileName = 'delitech_smarthomes.js';
-        else if (clientId === 'choice_salon_holi' || clientId === 'choice_salon') fileName = 'choice_salon_holi.js';
-        else if (clientId === 'turf') fileName = 'turf.js';
-        else {
-             // Try common patterns if not found
-             fileName = `${clientId}.js`;
-        }
+        let fileName = (clientId === 'ved') ? 'delitech_smarthomes.js' : `${clientId}.js`;
 
         const filePath = path.join(CLIENT_CODE_DIR, fileName);
         if (!fs.existsSync(filePath)) {

@@ -34,11 +34,7 @@ router.get('/', protect, async (req, res) => {
     const activeClientId = req.user.role === 'SUPER_ADMIN' && clientId ? clientId : req.user.clientId;
 
     if (req.user.role !== 'SUPER_ADMIN' || (req.user.role === 'SUPER_ADMIN' && clientId)) {
-      if (['delitech_smarthomes', 'code_clinic_v1'].includes(activeClientId)) {
-        query.clientId = { $in: ['code_clinic_v1', 'delitech_smarthomes'] };
-      } else {
-        query.clientId = activeClientId;
-      }
+      query.clientId = activeClientId;
     }
     // If SUPER_ADMIN but no clientId provided, they see everything or we could default.
     // Let's default to everything for SUPER_ADMIN if no clientId is passed.

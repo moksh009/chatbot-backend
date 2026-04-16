@@ -5,17 +5,17 @@ const DailyStat = require('../models/DailyStat');
 const { trackEcommerceEvent } = require('../utils/analyticsHelper');
 const { sendCODToPrepaidNudge } = require('../utils/ecommerceHelpers');
 
-const PRODUCTS = {
-    'prod_3mp': 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-3mp',
-    'prod_5mp': 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-5mp',
-    '3mp': 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-3mp',
-    '5mp': 'https://delitechsmarthome.in/products/delitech-smart-wireless-video-doorbell-5mp'
-};
+// Legacy PRODUCTS mapping removed to support universal SaaS config in the database.
+const PRODUCTS = {};
 
 // GET /r/:uid/:productId
 router.get('/:uid/:productId', async (req, res) => {
     const { uid, productId } = req.params;
-    const targetUrl = PRODUCTS[productId] || 'https://delitechsmarthome.in';
+    const Client = require('../models/Client');
+    // Fetch target URL from client config or default to a generic fallback
+    const lead = await AdLead.findById(uid);
+    const client = lead ? await Client.findOne({ clientId: lead.clientId }) : null;
+    const targetUrl = client?.storeUrl || 'https://google.com';
     const io = req.app.get('socketio');
 
     try {
@@ -57,7 +57,8 @@ router.get('/:uid/:productId', async (req, res) => {
 // POST /api/tracking/cart
 // Expects: { phone (optional), product (name/id), price }
 router.post('/cart', async (req, res) => {
-    const { phone, product, price, clientId = 'delitech_smarthomes' } = req.body;
+    const { phone, product, price, clientId } = req.body;
+    if (!clientId) return res.status(400).json({ error: 'clientId is required' });
     const io = req.app.get('socketio');
 
     try {
@@ -106,7 +107,8 @@ router.post('/order-webhook', async (req, res) => {
     if (phone) phone = phone.replace(/\D/g, ''); // Remove non-digits
     if (phone && phone.length === 10) phone = '91' + phone; // Assume India if missing code
 
-    const clientId = req.query.clientId || 'delitech_smarthomes';
+    const clientId = req.query.clientId;
+    if (!clientId) return res.status(400).send('clientId is required');
     const amount = parseFloat(orderData.total_price);
     const orderId = orderData.name || `#${orderData.order_number}`;
     const shopifyOrderId = String(orderData.id);
@@ -280,7 +282,7 @@ router.get('/cashfree-callback/:orderId', async (req, res) => {
                         to: order.phone,
                         type: "text",
                         text: { 
-                            body: `✅ Payment confirmed! ₹${order.totalPrice} received.\n\nYour order ${order.orderId} will be dispatched within 24 hours. Thank you for choosing Delitech! 🏠`
+                            body: `✅ Payment confirmed! ₹${order.totalPrice} received.\n\nYour order ${order.orderId} will be dispatched within 24 hours. Thank you for your purchase! 🏠`
                         }
                     },
                     { headers: { Authorization: `Bearer ${token}` } }
@@ -292,7 +294,7 @@ router.get('/cashfree-callback/:orderId', async (req, res) => {
             }
         }
 
-        const redirectUrl = client.shopDomain ? `https://${client.shopDomain}` : `https://delitechsmarthome.in`;
+        const redirectUrl = client.shopDomain ? `https://${client.shopDomain}` : client.storeUrl || 'https://google.com';
         res.redirect(redirectUrl);
     } catch (err) {
         console.error("Cashfree callback error:", err.response?.data || err.message);
@@ -335,11 +337,10 @@ router.get('/razorpay-callback/:orderId', async (req, res) => {
             }
         }
 
-        const redirectUrl = client.shopDomain ? `https://${client.shopDomain}` : `https://delitechsmarthome.in`;
-        res.redirect(redirectUrl);
+        res.redirect(client.shopDomain ? `https://${client.shopDomain}` : client.storeUrl || 'https://google.com');
     } catch (err) {
         console.error("Razorpay callback error:", err.message);
-        res.redirect('https://delitechsmarthome.in');
+        res.redirect(process.env.DASHBOARD_URL || 'https://google.com');
     }
 });
 
@@ -370,11 +371,11 @@ router.get('/stripe-callback/:orderId', async (req, res) => {
             }
         }
 
-        const redirectUrl = client.shopDomain ? `https://${client.shopDomain}` : `https://delitechsmarthome.in`;
+        const redirectUrl = client.shopDomain ? `https://${client.shopDomain}` : client.storeUrl || 'https://google.com';
         res.redirect(redirectUrl);
     } catch (err) {
         console.error("Stripe callback error:", err.message);
-        res.redirect('https://delitechsmarthome.in');
+        res.redirect(client?.storeUrl || 'https://google.com');
     }
 });
 
@@ -385,7 +386,7 @@ router.post('/phonepe-callback/:orderId', async (req, res) => {
     const Client = require('../models/Client');
     const order = await Order.findById(req.params.orderId);
     const client = await Client.findOne({ clientId: order?.clientId });
-    const redirectUrl = client?.shopDomain ? `https://${client.shopDomain}` : `https://delitechsmarthome.in`;
+    const redirectUrl = client?.shopDomain ? `https://${client.shopDomain}` : client?.storeUrl || 'https://google.com';
     res.redirect(redirectUrl);
 });
 
@@ -394,7 +395,8 @@ router.post('/phonepe-callback/:orderId', async (req, res) => {
 router.post('/fulfillment-webhook', async (req, res) => {
     try {
         const payload = req.body;
-        const clientId = req.query.clientId || 'delitech_smarthomes';
+        const clientId = req.query.clientId;
+        if (!clientId) return res.status(400).send("clientId is required");
         
         // Ensure this is a fulfillment payload
         if (!payload.order_id && !payload.id) {

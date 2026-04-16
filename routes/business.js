@@ -11,8 +11,7 @@ router.get('/providers', async (req, res) => {
         const { clientId } = req.query;
         if (!clientId) return res.status(400).json({ error: 'clientId is required' });
 
-        // Default system clientId fallback if not provided properly
-        const id = clientId === 'code_clinic_v1' || !clientId ? 'delitech_smarthomes' : clientId;
+        const id = clientId;
 
         const providers = await Provider.find({ clientId: id }).sort({ createdAt: -1 });
         res.json(providers);
@@ -80,7 +79,7 @@ router.get('/services', async (req, res) => {
         const { clientId } = req.query;
         if (!clientId) return res.status(400).json({ error: 'clientId is required' });
 
-        const id = clientId === 'code_clinic_v1' || !clientId ? 'delitech_smarthomes' : clientId;
+        const id = clientId;
 
         const services = await Service.find({ clientId: id }).sort({ createdAt: -1 });
         res.json(services);
