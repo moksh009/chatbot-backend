@@ -133,6 +133,10 @@ router.post("/:clientId/complete", protect, async (req, res) => {
         'brand.adminPhone': wizardData.adminPhone,
         'config.adminPhones': wizardData.adminPhone.split(',').map(p => p.trim())
       }),
+      // Gemini AI key — optional (only for WA bot AI fallback, NOT for dashboard/flow generation)
+      ...(wizardData.geminiApiKey && { geminiApiKey: wizardData.geminiApiKey }),
+      // Product display mode: 'template' | 'manual'
+      ...(wizardData.productMode && { 'config.productMode': wizardData.productMode }),
       ...(wizardData.metaAdsToken && {
         metaAdsConnected:   true,
         metaAdAccountId:    wizardData.metaAdAccountId,
@@ -272,6 +276,7 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       success:        true,
       flowId:         newFlow.id,
       nodesGenerated: nodes.length,
+      edgesGenerated: edges.length,
       action,
       message:        `Your bot is live! ${nodes.length} nodes generated and ${action} successfully.`
     });
@@ -429,6 +434,149 @@ router.post("/:clientId/templates", protect, async (req, res) => {
     res.json({ success: true, templates });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────────────────
+// POST /api/wizard/:clientId/submit-product-templates
+// Submit product Meta templates to WhatsApp Business API for approval.
+// Each product in wizardData.products gets its own IMAGE header template.
+// Returns { submitted: N, alreadyApproved: N, errors: [] }
+// ────────────────────────────────────────────────────────────────────────────────
+router.post("/:clientId/submit-product-templates", protect, async (req, res) => {
+  const { clientId } = req.params;
+  const { wizardData } = req.body;
+  const axios = require("axios");
+
+  try {
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ error: "Client not found" });
+
+    if (req.user.role !== "SUPER_ADMIN" && req.user.clientId !== clientId) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    const wabaId  = client.wabaId || client.whatsapp?.wabaId;
+    const token   = client.whatsappToken || client.whatsapp?.accessToken;
+    const products = (wizardData?.products || []).slice(0, 5); // Cap at 5 templates per submission
+    const shopDomain = client.shopDomain || wizardData?.shopDomain || '';
+    const storeBase  = shopDomain ? `https://${shopDomain.replace(/^https?:\/\//, '')}` : '';
+    const currency   = client.brand?.currency || wizardData?.currency || '₹';
+    const biz        = client.businessName || wizardData?.businessName || 'Our Brand';
+
+    if (!wabaId || !token) {
+      return res.status(422).json({
+        success: false,
+        error: 'WhatsApp WABA ID and Access Token are required for template submission. Connect WhatsApp first in Step 3.'
+      });
+    }
+
+    const submitted     = [];
+    const alreadyDone   = [];
+    const errors        = [];
+
+    for (const prod of products) {
+      const handle = (prod.handle || prod.name || `product_${Date.now()}`)
+        .toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+      const templateName = `prod_${handle}`.substring(0, 50);
+      const price  = prod.price || prod.variants?.[0]?.price || '0';
+      const buyUrl = storeBase ? `${storeBase}/products/${handle}` : '';
+
+      // Check if already submitted or approved
+      const existing = (client.messageTemplates || []).find(t => t.name === templateName);
+      if (existing && ['APPROVED', 'PENDING', 'IN_APPEAL'].includes(existing.status)) {
+        alreadyDone.push(templateName);
+        continue;
+      }
+
+      // Build Meta-compliant template payload
+      const templatePayload = {
+        name: templateName,
+        language: 'en',
+        category: 'MARKETING',
+        components: [
+          {
+            type: 'HEADER',
+            format: 'IMAGE',
+            // Note: actual image upload via /media is done separately.
+            // If imageUrl is provided, we log it for manual upload.
+            ...(prod.imageUrl ? { example: { header_handle: [] } } : {})
+          },
+          {
+            type: 'BODY',
+            text: `*{{1}}*\n\n💰 Price: ${currency}{{2}}\n\n{{3}}`,
+            example: { body_text: [[prod.name || prod.title || 'Product', price, prod.description?.slice(0, 100) || 'Premium quality.']] }
+          },
+          {
+            type: 'FOOTER',
+            text: biz.substring(0, 60)
+          },
+          {
+            type: 'BUTTONS',
+            buttons: [
+              ...(buyUrl ? [{ type: 'URL', text: '🛒 Buy Now', url: buyUrl }] : [{ type: 'QUICK_REPLY', text: '🛒 Buy Now' }]),
+              { type: 'QUICK_REPLY', text: '🎧 Talk to Agent' },
+              { type: 'QUICK_REPLY', text: '⬅️ Main Menu' },
+            ]
+          }
+        ]
+      };
+
+      try {
+        // Decrypt token if encrypted
+        let accessToken = token;
+        try {
+          const { decrypt } = require('../utils/encryption');
+          accessToken = decrypt(token) || token;
+        } catch (_) {}
+
+        const metaRes = await axios.post(
+          `https://graph.facebook.com/v18.0/${wabaId}/message_templates`,
+          templatePayload,
+          { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }, timeout: 10000 }
+        );
+
+        const newTemplate = {
+          id:          metaRes.data.id || `pending_${templateName}`,
+          name:        templateName,
+          status:      'PENDING',
+          category:    'MARKETING',
+          source:      'wizard_product',
+          imageUrl:    prod.imageUrl || '',
+          createdAt:   new Date()
+        };
+
+        // Upsert into client.messageTemplates
+        await Client.findByIdAndUpdate(client._id, {
+          $pull:  { messageTemplates: { name: templateName } },
+        });
+        await Client.findByIdAndUpdate(client._id, {
+          $push:  { messageTemplates: newTemplate },
+        });
+
+        submitted.push(templateName);
+        log.info(`[TemplateSubmit] ✅ ${templateName} submitted to Meta for ${clientId}`);
+      } catch (metaErr) {
+        const errMsg = metaErr.response?.data?.error?.message || metaErr.message;
+        log.error(`[TemplateSubmit] ❌ ${templateName} failed:`, errMsg);
+        errors.push({ template: templateName, error: errMsg });
+      }
+    }
+
+    res.json({
+      success:        errors.length === 0,
+      submitted:      submitted.length,
+      alreadyApproved: alreadyDone.length,
+      submittedNames: submitted,
+      errors,
+      message: submitted.length > 0
+        ? `${submitted.length} template(s) submitted to Meta for approval. Approval usually takes 24–72 hours. Until approved, the bot uses inline product cards.`
+        : (errors.length > 0 ? 'Template submission failed. See errors.' : 'No new templates to submit.')
+    });
+
+  } catch (err) {
+    log.error(`[TemplateSubmit] Error for ${clientId}:`, err.message);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

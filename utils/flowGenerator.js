@@ -86,6 +86,39 @@ function cleanNodeText(nodes) {
   });
 }
 
+// ─── UTILITY: Strict button-ID → edge sourceHandle validator ─────────────────
+// This is the LAW. Throws if ANY interactive node's button/row IDs don't have
+// a matching edge sourceHandle. Run before saving to DB.
+function verifyAllEdgesMatchButtonIds(nodes, edges) {
+  const issues = [];
+
+  nodes.forEach(node => {
+    if (node.type !== 'interactive') return;
+
+    const btns = node.data?.buttonsList || [];
+    const rows = (node.data?.sections || []).flatMap(s => s.rows || []);
+    const validIds = new Set([...btns, ...rows].map(b => String(b.id)));
+
+    // Every outgoing edge with a sourceHandle must match a declared button/row id
+    edges.filter(e => e.source === node.id && e.sourceHandle).forEach(edge => {
+      const sh = String(edge.sourceHandle);
+      if (!validIds.has(sh)) {
+        issues.push(
+          `[MISMATCH] Node "${node.id}" (${node.data?.label || '?'}) edge "${edge.id}" has sourceHandle "${sh}" but valid IDs are: [${[...validIds].join(', ')}]`
+        );
+      }
+    });
+  });
+
+  if (issues.length > 0) {
+    console.error(`[FlowGenerator] ❌ BUTTON-ID MISMATCH FOUND — ${issues.length} issue(s):\n${issues.join('\n')}`);
+    throw new Error(`Flow integrity failed: ${issues.length} button-ID/edge mismatch(es). Fix the generator before saving.`);
+  }
+
+  console.log('[FlowGenerator] ✅ verifyAllEdgesMatchButtonIds — all button IDs match their edge sourceHandles.');
+  return true;
+}
+
 // ─── UTILITY: Verify flow integrity before returning  ─────────────────────────
 function verifyFlowIntegrity(nodes, edges) {
   const nodeIds = new Set(nodes.map(n => n.id));
@@ -404,6 +437,7 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
     // ── Folder 8: Post-Purchase Hub ────────────────────────────────────────
     AI_FALLBACK:          `f8_ai_fb_${ts}`,
     FAQ_NODE:             `f8_faq_${ts}`,
+    FAQ_MSG:              `f8_faq_msg_${ts}`,    // FAQ answer message (reachable from menu 'faq' row)
     RET_POLICY_NODE:      `f8_ret_p_${ts}`,
     WARRANTY_HUB:         `f8_war_hub_${ts}`,
     WARRANTY_REG_SERIAL:  `f8_war_ser_${ts}`,
@@ -560,7 +594,11 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
   );
 
   // 1C. THE MAIN HUB — Interactive List (Golden Path core)
-  //     Button IDs MUST exactly match the sourceHandle on outgoing edges below
+  //     ══════════════════════════════════════════════════════
+  //     ⚠️  ROW IDs HERE MUST EXACTLY MATCH the sourceHandle on
+  //         each cross-folder edge below. This is enforced by
+  //         verifyAllEdgesMatchButtonIds() at build time.
+  //     ══════════════════════════════════════════════════════
   nodes.push({
     id:       IDS.MENU,
     type:     "interactive",
@@ -576,11 +614,12 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
           title: `${businessName}`,
           rows: [
             { id: "shop",     title: "🛍️ Shop Collection"   },
-            { id: "track",    title: "📦 Track Order"        },
+            { id: "track",    title: "📦 Track My Order"     },
             { id: "returns",  title: "⚙️ Returns & Refunds" },
-            { id: "loyalty",  title: "💎 Rewards"            },
+            { id: "loyalty",  title: "💎 My Rewards"         },
             { id: "support",  title: "🎧 Talk to Human"      },
             { id: "warranty", title: "🛡️ Warranty"          },
+            { id: "faq",      title: "❓ FAQ & Help"         },
           ],
         },
       ],
@@ -598,14 +637,16 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
   );
 
   // 1E. Cross-folder nav edges from MENU
-  //     sourceHandle on each edge MUST match the row id in buttonsList above
+  //     ⚠️ sourceHandle MUST equal the row id declared in 1C above — NO exceptions.
   edges.push(
-    { id: "f1_m_shop",     source: IDS.MENU, target: IDS.CATALOG,       sourceHandle: "shop"     },
-    { id: "f1_m_track",    source: IDS.MENU, target: IDS.ORDER_STATUS,  sourceHandle: "track"    },
-    { id: "f1_m_returns",  source: IDS.MENU, target: IDS.RETURN_HUB,   sourceHandle: "returns"  },
-    { id: "f1_m_loyalty",  source: IDS.MENU, target: IDS.LOY_MENU,     sourceHandle: "loyalty"  },
-    { id: "f1_m_support",  source: IDS.MENU, target: IDS.SUPPORT_CAPTURE, sourceHandle: "support" },
-    { id: "f1_m_warranty", source: IDS.MENU, target: IDS.WARRANTY_HUB, sourceHandle: "warranty" },
+    { id: "f1_m_shop",     source: IDS.MENU, target: IDS.CATALOG,      sourceHandle: "shop"     },
+    { id: "f1_m_track",    source: IDS.MENU, target: IDS.ORDER_STATUS, sourceHandle: "track"    },
+    { id: "f1_m_returns",  source: IDS.MENU, target: IDS.RETURN_HUB,  sourceHandle: "returns"  },
+    { id: "f1_m_loyalty",  source: IDS.MENU, target: IDS.LOY_MENU,    sourceHandle: "loyalty"  },
+    // ⚠️ Support goes through business-hours SCHEDULE gate — NOT directly to capture
+    { id: "f1_m_support",  source: IDS.MENU, target: IDS.SCHED_NODE,  sourceHandle: "support"  },
+    { id: "f1_m_warranty", source: IDS.MENU, target: IDS.WARRANTY_HUB,sourceHandle: "warranty" },
+    { id: "f1_m_faq",      source: IDS.MENU, target: IDS.FAQ_MSG,     sourceHandle: "faq"      },
   );
 
   // ====================================================================
@@ -749,33 +790,50 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
         },
       });
 
+      // ── productMode: 'template' | 'manual' (from wizard toggle) ──────────────
+      // 'template' → Use pre-approved Meta template IF available, otherwise
+      //              fall back to manual interactive node (NEVER block the flow)
+      // 'manual'   → Always use interactive node with image + buy button inline
+      //              (no Meta template dependency whatsoever)
+      const productMode = wizardData.productMode || 'template';
+
       enrichedProducts.forEach((p, i) => {
         const pId      = `${IDS.DETAIL_PREFIX}${i}`;
+        const buyId    = `f2_buy_${i}_${ts}`;   // "Buy Now" intent handler node
+        const talkId   = `f2_talk_${i}_${ts}`;  // "Talk to Agent" node when no buy link
         const guideId  = `f8_guide_${p.handle}_${ts}`;
         const hasGuide = !!content[`guide_${p.handle}`];
 
-        // Hybrid Template Engine — check for pre-approved Meta template
-        const templateName     = `prod_${p.handle.replace(/[^a-z0-9_]/gi, "_").toLowerCase()}`.substring(0, 50);
-        const approvedTemplate = (client.messageTemplates || []).find(
-          t => t.name === templateName && t.status === "APPROVED"
-        );
+        // Build the product buy URL (Shopify store URL + product handle)
+        const storeBase = wizardData.shopDomain
+          ? `https://${wizardData.shopDomain.replace(/^https?:\/\//, '')}`
+          : (checkoutUrl ? checkoutUrl.replace(/\/checkout$/, '') : '');
+        const buyUrl = storeBase ? `${storeBase}/products/${p.handle}` : '';
 
-        // Queue for auto-submission if no approved template
-        if (!approvedTemplate) {
+        // ── Template Engine ──────────────────────────────────────────────────
+        const templateName = `prod_${p.handle.replace(/[^a-z0-9_]/gi, '_').toLowerCase()}`.substring(0, 50);
+        const approvedTemplate = productMode === 'template'
+          ? (client.messageTemplates || []).find(t => t.name === templateName && t.status === 'APPROVED')
+          : null; // manual mode: always use interactive nodes
+
+        // Queue template for future submission (template mode only, no approved template)
+        if (productMode === 'template' && !approvedTemplate) {
           wizardData.customTemplates = wizardData.customTemplates || [];
           if (!wizardData.customTemplates.find(t => t.name === templateName)) {
             wizardData.customTemplates.push({
-              name:     templateName,
-              category: "MARKETING",
-              language: "en",
+              name:      templateName,
+              category:  'MARKETING',
+              language:  'en',
               components: [
-                { type: "HEADER", format: "IMAGE" },
-                { type: "BODY",   text: `*{{1}}*\n\n💰 Price: ${currency}{{2}}\n\nTap below to proceed. 🛍️` },
+                { type: 'HEADER', format: 'IMAGE', _imageUrl: p.imageUrl || '' },
+                { type: 'BODY', text: `*{{1}}*\n\n💰 Price: ${currency}{{2}}\n\n{{3}}` },
+                { type: 'FOOTER', text: businessName },
                 {
-                  type: "BUTTONS",
+                  type: 'BUTTONS',
                   buttons: [
-                    { type: "QUICK_REPLY", text: "🛒 Buy Now"    },
-                    { type: "QUICK_REPLY", text: "⬅️ Main Menu" },
+                    ...(buyUrl ? [{ type: 'URL', text: '🛒 Buy Now', url: buyUrl }] : [{ type: 'QUICK_REPLY', text: '🛒 Buy Now' }]),
+                    { type: 'QUICK_REPLY', text: '🎧 Talk to Agent' },
+                    { type: 'QUICK_REPLY', text: '⬅️ Main Menu' },
                   ],
                 },
               ],
@@ -783,56 +841,94 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
           }
         }
 
+        // ── Build buttons list for interactive (manual) node ─────────────────
+        // ⚠️ IDs declared here MUST match edge sourceHandles below — exactly.
         const btns = [
-          { id: "buy",  title: "🛒 Buy Now"    },
-          { id: "menu", title: "⬅️ Main Menu" },
-          ...(hasGuide ? [{ id: "guide", title: "📋 Product Guide" }] : []),
+          { id: 'buy',    title: '🛒 Buy Now'        },
+          { id: 'agent',  title: '🎧 Talk to Agent'  },
+          { id: 'menu',   title: '⬅️ Main Menu'      },
+          ...(hasGuide ? [{ id: 'guide', title: '📋 Product Guide' }] : []),
         ];
 
-        if (approvedTemplate && !hasGuide) {
+        // ── Push product node ────────────────────────────────────────────────
+        if (approvedTemplate) {
+          // ── TEMPLATE MODE (approved) — no buttons on node, buttons are in template
           nodes.push({
             id:       pId,
-            type:     "template",
+            type:     'template',
             position: { x: 420, y: i * Y },
             parentId: FOLDER_IDS.CATALOG,
             data: {
               label:        `Product: ${p.title.substring(0, 20)}`,
               templateName: templateName,
-              variables:    [p.title, p.price],
-              imageUrl:     p.imageUrl || "",
+              variables:    [p.title, p.price, p.features?.slice(0, 120) || ''],
+              imageUrl:     p.imageUrl || '',
             },
           });
+          // Template quick-reply buttons: 'buy', 'agent', 'menu'
+          // (engine handles these via tryGraphTraversal on button_reply)
+          edges.push(
+            { id: `f2_cat_p${i}`,    source: IDS.CATALOG, target: pId,    sourceHandle: `p_${i}` },
+          );
+          // For approved templates with URL buttons, buy intent is handled server-side.
+          // We still wire 'menu' and 'agent' back-path edges from pId using template QUICK_REPLY payloads
+          edges.push(
+            { id: `f2_p${i}_m`,     source: pId, target: IDS.MENU,    sourceHandle: 'menu'  },
+            { id: `f2_p${i}_agent`, source: pId, target: IDS.SCHED_NODE, sourceHandle: 'agent' },
+          );
         } else {
+          // ── MANUAL MODE — full interactive node with image + 3 inline buttons
+          // This is also the FALLBACK when template is not approved yet.
           nodes.push({
             id:       pId,
-            type:     "interactive",
+            type:     'interactive',
             position: { x: 420, y: i * Y },
             parentId: FOLDER_IDS.CATALOG,
             data: {
-              label:           `Product: ${p.title.substring(0, 20)}`,
-              interactiveType: "button",
-              text:            `*${p.title}*\n\n💰 Price: ${currency}${p.price}${p.features ? `\n\n${p.features.slice(0, 160)}` : ""}`,
-              imageUrl:        p.imageUrl || "",
-              shopifyProductId: p.id || "",
-              buttonsList:     btns,
+              label:            `Product: ${p.title.substring(0, 20)}`,
+              interactiveType:  'button',
+              text:             `*${p.title}*\n\n💰 Price: ${currency}${p.price}${p.features ? `\n\n${p.features.slice(0, 160)}` : ''}`,
+              imageUrl:         p.imageUrl || '',
+              shopifyProductId: p.id || '',
+              buttonsList:      btns,
             },
           });
-        }
 
-        edges.push(
-          { id: `f2_cat_p${i}`, source: IDS.CATALOG, target: pId,       sourceHandle: `p_${i}` },
-          { id: `f2_p${i}_m`,   source: pId,          target: IDS.MENU,  sourceHandle: "menu"   }
-        );
+          // ── "Buy Now" Intent Handler Node ─────────────────────────────────
+          // When user taps "Buy Now" → send purchase link + route back to menu
+          const buyText = buyUrl
+            ? `🛒 *Buy ${p.title}*\n\nTap the link to complete your purchase securely:\n${buyUrl}\n\n_Questions? Reply *agent* to talk to us._`
+            : `🛒 *Buy ${p.title}*\n\nOur team will send you the payment link immediately! A human agent will be with you shortly. 😊`;
 
-        if (hasGuide) {
           nodes.push({
-            id:       guideId,
-            type:     "message",
-            position: { x: 200, y: (i + 5) * Y },
-            parentId: FOLDER_IDS.POSTPURCH,
-            data: { label: `Guide: ${p.title.substring(0, 18)}`, text: content[`guide_${p.handle}`] },
+            id:       buyId,
+            type:     'message',
+            position: { x: 840, y: i * Y - Y * 0.4 },
+            parentId: FOLDER_IDS.CATALOG,
+            data: { label: `Buy: ${p.title.substring(0, 16)}`, text: buyText },
           });
-          edges.push({ id: `f2_p${i}_guide`, source: pId, target: guideId, sourceHandle: "guide" });
+
+          // ── "Talk to Agent" Node ──────────────────────────────────────────
+          // Routes to support schedule gate (same as 'support' on main menu)
+          // No separate node needed — we wire 'agent' → SCHED_NODE
+
+          edges.push(
+            { id: `f2_cat_p${i}`,    source: IDS.CATALOG, target: pId,            sourceHandle: `p_${i}` },
+            { id: `f2_p${i}_buy`,    source: pId,          target: buyId,          sourceHandle: 'buy'    }, // ← MUST match btn.id
+            { id: `f2_p${i}_m`,      source: pId,          target: IDS.MENU,       sourceHandle: 'menu'   }, // ← MUST match btn.id
+            { id: `f2_p${i}_agent`,  source: pId,          target: IDS.SCHED_NODE, sourceHandle: 'agent'  }, // ← MUST match btn.id
+          );
+
+          if (hasGuide) {
+            nodes.push({
+              id:       guideId,
+              type:     'message',
+              position: { x: 200, y: (i + 5) * Y },
+              parentId: FOLDER_IDS.POSTPURCH,
+              data: { label: `Guide: ${p.title.substring(0, 18)}`, text: content[`guide_${p.handle}`] },
+            });
+            edges.push({ id: `f2_p${i}_guide`, source: pId, target: guideId, sourceHandle: 'guide' }); // ← MUST match btn.id
+          }
         }
       });
     }
@@ -1105,12 +1201,14 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
     }
   );
 
+  // ⚠️ SCHEDULE EXIT HANDLES: 'open' and 'closed' — must match the schedule node's sourceHandles
+  // The engine routes via executeNode → schedule type → finds nextEdge by these sourceHandles
   edges.push(
-    { id: "f5_sch_open",  source: IDS.SCHED_NODE,     target: IDS.SUPPORT_CAPTURE, sourceHandle: "open"   },
-    { id: "f5_sch_clsd",  source: IDS.SCHED_NODE,     target: IDS.SUPPORT_HOURS,  sourceHandle: "closed" },
-    { id: "f5_cap_tag",   source: IDS.SUPPORT_CAPTURE, target: IDS.SUPPORT_TAG                            },
-    { id: "f5_tag_alert", source: IDS.SUPPORT_TAG,    target: IDS.SUPPORT_ALERT                           },
-    { id: "f5_alert_fin", source: IDS.SUPPORT_ALERT,  target: IDS.SUPPORT_FINAL                          },
+    { id: "f5_sch_open",  source: IDS.SCHED_NODE,      target: IDS.SUPPORT_CAPTURE, sourceHandle: "open"   },
+    { id: "f5_sch_clsd",  source: IDS.SCHED_NODE,      target: IDS.SUPPORT_HOURS,   sourceHandle: "closed" },
+    { id: "f5_cap_tag",   source: IDS.SUPPORT_CAPTURE, target: IDS.SUPPORT_TAG                             },
+    { id: "f5_tag_alert", source: IDS.SUPPORT_TAG,     target: IDS.SUPPORT_ALERT                           },
+    { id: "f5_alert_fin", source: IDS.SUPPORT_ALERT,   target: IDS.SUPPORT_FINAL                           },
   );
 
   // ====================================================================
@@ -1478,7 +1576,26 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
   });
 
   // 8B. Knowledge base nodes
+  //     IDS.FAQ_MSG  — reached directly from main menu "faq" row
+  //     IDS.FAQ_NODE — internal knowledge base node (legacy / cross-link)
   nodes.push(
+    {
+      id:       IDS.FAQ_MSG,
+      type:     "interactive",
+      position: { x: 0, y: -Y },
+      parentId: FOLDER_IDS.POSTPURCH,
+      data: {
+        label:           "FAQ & Help",
+        interactiveType: "button",
+        text:            faqText
+          ? `*Frequently Asked Questions*\n\n${faqText.slice(0, 600)}\n\nWant more help?`
+          : `*${businessName} FAQs*\n\n${content.faq_response}\n\nWant more help?`,
+        buttonsList: [
+          { id: "menu",   title: "⬅️ Main Menu"   },
+          { id: "agent",  title: "🎧 Talk to Agent" },
+        ],
+      },
+    },
     {
       id:       IDS.FAQ_NODE,
       type:     "message",
@@ -1499,6 +1616,12 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
         text:  returnsInfo || content.returns_policy_short,
       },
     }
+  );
+
+  // Wire FAQ hub back to menu and to support
+  edges.push(
+    { id: "f8_faq_menu",  source: IDS.FAQ_MSG, target: IDS.MENU,       sourceHandle: "menu"  },
+    { id: "f8_faq_agent", source: IDS.FAQ_MSG, target: IDS.SCHED_NODE, sourceHandle: "agent" },
   );
 
   // 8C. Warranty Module — Registration + Lookup
@@ -1742,12 +1865,22 @@ Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
   // Apply stripPlaceholders to all text fields across all nodes
   nodes = cleanNodeText(nodes);
 
-  // Run integrity check (logs and returns result, does not throw)
+  // Run basic integrity check (duplicate IDs, dangling edges, prohibited keys)
   verifyFlowIntegrity(nodes, edges);
+
+  // ── THE LAW: Run strict button-ID → edge sourceHandle validation ─────────
+  // This throws if any interactive node's buttons don't match their edges.
+  // A thrown error here prevents a broken flow from ever being saved to DB.
+  try {
+    verifyAllEdgesMatchButtonIds(nodes, edges);
+  } catch (validationErr) {
+    // Re-throw with context so the wizard endpoint returns a useful 500 error
+    throw validationErr;
+  }
 
   console.log(
     `[FlowGenerator] ✅ Golden Path built: ${nodes.length} nodes, ${edges.length} edges` +
-    ` across 8 folders${b2bEnabled ? " (B2B enabled)" : ""}.`
+    ` across 8 folders${b2bEnabled ? ' (B2B enabled)' : ''}.`
   );
 
   return { nodes, edges };

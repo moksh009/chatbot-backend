@@ -2187,11 +2187,38 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       }
 
       if (data.interactiveType === 'list') {
+        // ════════════════════════════════════════════════════════════════════
+        // CRITICAL FIX: Use data.sections (wizard-generated) OR buttonsList
+        // Row IDs MUST be preserved exactly — they are matched by tryGraphTraversal
+        // against edge sourceHandles. Auto-generating IDs breaks the flow.
+        // ════════════════════════════════════════════════════════════════════
+        let sections;
+        if (data.sections && data.sections.length > 0) {
+          // Wizard-generated format: sections[].rows[].id  (PRESERVE IDs exactly)
+          sections = data.sections.map(section => ({
+            title: (section.title || 'Options').substring(0, 24),
+            rows: (section.rows || []).slice(0, 10).map(row => ({
+              id: String(row.id || row.title || 'opt').substring(0, 200),   // preserve exactly
+              title: (row.title || 'Option').substring(0, 24),
+              ...(row.description ? { description: row.description.substring(0, 72) } : {})
+            }))
+          }));
+        } else {
+          // Legacy fallback: build from buttonsList — preserve btn.id exactly
+          sections = [{
+            title: 'Options',
+            rows: buttonsList.slice(0, 10).map(btn => ({
+              id: String(btn.id || btn.title || 'opt').substring(0, 200),   // preserve exactly
+              title: (btn.title || 'Option').substring(0, 24)
+            }))
+          }];
+        }
+
         let interactive = {
           type: 'list',
           action: {
-            button: 'Select',
-            sections: [{ title: 'Options', rows: buttonsList.slice(0, 10).map(btn => ({ id: (btn.id || btn.title).toLowerCase().replace(/\s+/g, '_'), title: (btn.title || 'Opt').substring(0, 24) })) }]
+            button: (data.buttonText || 'Open Menu').substring(0, 20),
+            sections
           }
         };
         if (data.imageUrl) interactive.header = { type: 'image', image: { link: data.imageUrl } };
@@ -2200,9 +2227,18 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         return true;
       }
 
+      // Button-type interactive: PRESERVE btn.id exactly (must match edge sourceHandle)
       let interactive = {
         type: 'button',
-        action: { buttons: buttonsList.slice(0, 3).map(btn => ({ type: 'reply', reply: { id: (btn.id || btn.title).toLowerCase().replace(/\s+/g, '_'), title: (btn.title || 'Opt').substring(0, 20) } })) }
+        action: {
+          buttons: buttonsList.slice(0, 3).map(btn => ({
+            type: 'reply',
+            reply: {
+              id: String(btn.id || btn.title || 'opt').substring(0, 256),  // preserve exactly
+              title: (btn.title || 'Option').substring(0, 20)
+            }
+          }))
+        }
       };
       if (data.imageUrl) interactive.header = { type: 'image', image: { link: data.imageUrl } };
       else if (data.header) interactive.header = { type: 'text', text: data.header.substring(0, 60) };
