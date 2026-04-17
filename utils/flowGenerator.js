@@ -2002,9 +2002,9 @@ function getPrebuiltTemplates(wizardData) {
         {
           type: "BUTTONS",
           buttons: [
-            { type: "QUICK_REPLY", text: "\uD83D\uDED4\uFE0F Shop" },
-            { type: "QUICK_REPLY", text: "\uD83C\uDFA7 Support" },
-            { type: "QUICK_REPLY", text: "\uD83D\uDCE6 Track Order" },
+            { type: "QUICK_REPLY", text: "Shop" },
+            { type: "QUICK_REPLY", text: "Support" },
+            { type: "QUICK_REPLY", text: "Track Order" },
           ],
         },
       ],
@@ -2110,7 +2110,7 @@ function getPrebuiltTemplates(wizardData) {
         },
         {
           type: "BUTTONS",
-          buttons: [{ type: "QUICK_REPLY", text: `\uD83D\uDCB3 Pay Online & Save ${currency}50` }],
+          buttons: [{ type: "QUICK_REPLY", text: `Pay Online and Save ${currency}50` }],
         },
       ],
       body:      `Wait! \uD83D\uDCB3 Save an extra ${currency}50 on your ${brandSafe} order by paying online now!\n\nTap below to switch to prepaid and save instantly:`,
@@ -2137,7 +2137,7 @@ function getPrebuiltTemplates(wizardData) {
               },
               {
                 type: "BUTTONS",
-                buttons: [{ type: "URL", text: "\u2B50 Leave a Review", url: googleReviewUrl }],
+                buttons: [{ type: "URL", text: "Leave a Review", url: googleReviewUrl }],
               },
             ],
             body:      `Hi {{1}}! How was your experience with ${brandSafe}? \uD83D\uDE0A\n\nLeave us a quick review \u2014 it means a lot!`,

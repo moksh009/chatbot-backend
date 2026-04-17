@@ -318,16 +318,84 @@ async function runDualBrainEngine(parsedMessage, client) {
 
   try {
     const profileName = parsedMessage.profileName || '';
+    const inboundText = parsedMessage.text?.body || parsedMessage.interactive?.button_reply?.title || parsedMessage.interactive?.list_reply?.title || '';
+    const txtLower = inboundText.toLowerCase().trim();
 
-  // --- Phase 28: Track 3 - Bidirectional Translation (Incoming) ---
-  const { detectLanguage, translateText } = require('./translationEngine');
-  const inboundText = parsedMessage.text?.body || parsedMessage.interactive?.button_reply?.title || parsedMessage.interactive?.list_reply?.title || '';
-  
-  let detectedLanguage = 'en';
-  if (inboundText) {
-      detectedLanguage = await detectLanguage(inboundText, client?.geminiApiKey || process.env.GEMINI_API_KEY);
-      parsedMessage.detectedLanguage = detectedLanguage;
-  }
+    // --- STEP 0: SESSION UPSERT (Mandatory for Keywords) ---
+    let convo = await Conversation.findOneAndUpdate(
+        { phone, clientId: client.clientId },
+        {
+          $setOnInsert: { phone, clientId: client.clientId, lastStepId: null, botPaused: false, status: 'BOT_ACTIVE' },
+          $inc: { unreadCount: 1 },
+          $set: { 
+            lastInteraction: new Date(),
+            ...(profileName && { customerName: profileName })
+          }
+        },
+        { upsert: true, new: true }
+    );
+
+    let lead = await AdLead.findOneAndUpdate(
+        { phoneNumber: phone, clientId: client.clientId },
+        { 
+          $setOnInsert: { phoneNumber: phone, clientId: client.clientId, source: parsedMessage.referral ? 'Meta Ad' : 'Direct' },
+          $set: { lastInteraction: new Date() }
+        },
+        { upsert: true, new: true }
+    );
+
+    // --- STEP 1: KEYWORD-FIRST BYPASS (Priority 1.0) ---
+    // Instant triggers for "hi", "menu", etc. bypass AI overhead.
+    if (inboundText && !convo.botPaused) {
+        const KeywordTrigger = require('../models/KeywordTrigger');
+        const triggers = await KeywordTrigger.find({ clientId: client.clientId, isActive: true });
+        
+        const matchedTrigger = triggers.find(t => {
+            if (t.type === 'exact') return txtLower === t.keyword.toLowerCase();
+            return txtLower.includes(t.keyword.toLowerCase()); // fuzzy/contains
+        });
+
+        if (matchedTrigger) {
+            log.info(`[KeywordEngine] Instant match: ${matchedTrigger.keyword}. Bypassing AI.`);
+            
+            if (matchedTrigger.actionType === 'trigger_flow') {
+                const flow = (client.visualFlows || []).find(f => f.id === matchedTrigger.targetId);
+                if (flow) {
+                    const startNode = findMatchingFlow(flattenFlowNodes(flow.nodes), inboundText) || findFlowStartNode(flattenFlowNodes(flow.nodes));
+                    if (startNode) {
+                        return await runFlow(client, phone, flow, startNode.id, { triggerSource: 'keyword' });
+                    }
+                }
+            } else if (matchedTrigger.actionType === 'send_template') {
+                const tpl = (client.messageTemplates || []).find(t => t.id === matchedTrigger.targetId);
+                if (tpl && tpl.templateName) {
+                    await sendWhatsAppTemplate({
+                        phoneNumberId: client.phoneNumberId,
+                        to: phone,
+                        io,
+                        clientConfig: client,
+                        templateName: tpl.templateName,
+                        languageCode: 'en_US'
+                    });
+                    return true;
+                }
+            }
+        }
+    }
+
+    // --- STEP 2: SELECTIVE AI INGESTION (Phase 30) ---
+    // Only call detection/translation if not handled by a keyword.
+    const { detectLanguage, translateText } = require('./translationEngine');
+    let detectedLanguage = 'en';
+    
+    if (inboundText && inboundText.length > 2) {
+        try {
+            detectedLanguage = await detectLanguage(inboundText, client?.geminiApiKey || process.env.GEMINI_API_KEY);
+            parsedMessage.detectedLanguage = detectedLanguage;
+        } catch (err) {
+            log.warn('[Language] Detection skipped (Invalid Key/Timeout)');
+        }
+    }
 
   // ── PHASE 23: Track 5 — WhatsApp Flow Responses ──────────────────────────
   if (parsedMessage.type === 'interactive' && parsedMessage.interactive?.type === 'nfm_reply') {
@@ -408,118 +476,10 @@ async function runDualBrainEngine(parsedMessage, client) {
       }
   }
 
-  // STEP 1: Upsert conversation state
-  let convo = await Conversation.findOneAndUpdate(
-    { phone, clientId: client.clientId },
-    {
-      $setOnInsert: { phone, clientId: client.clientId, lastStepId: null, botPaused: false, status: 'BOT_ACTIVE' },
-      $inc: { unreadCount: 1 },
-      $set: { 
-        lastInteraction: new Date(),
-        ...(profileName && { customerName: profileName })
-      }
-    },
-    { upsert: true, new: true }
-  );
-
-  // Trigger Intent Engine Buffer (Phase 28 Track 2)
-  if (inboundText && !convo?.botPaused) {
-      MessageBufferService.ingestWebhookMessage(client.clientId, phone, inboundText)
-        .catch(err => log.error('[IntentEngine] Buffer Ingestion Error:', err.message));
-  }
-
-
-  // STEP 2: Upsert lead
-  const referral = parsedMessage.referral;
-  const adUpdate = referral ? {
-    $set: {
-      "adAttribution.source": referral.source_type === 'ad' ? 'meta_ad' : 'organic',
-      "adAttribution.adId": referral.source_id,
-      "adAttribution.adHeadline": referral.headline,
-      "adAttribution.adBody": referral.body,
-      "adAttribution.adMediaUrl": referral.image_url || referral.video_url,
-      "adAttribution.firstMessageAt": new Date()
-    }
-  } : {};
-
-  let existingLeadForDbounce = await AdLead.findOne({ phoneNumber: phone, clientId: client.clientId });
-  let shouldIncrementMsg = false;
-  if (!existingLeadForDbounce || !existingLeadForDbounce.lastInteraction) {
-    shouldIncrementMsg = true;
-  } else {
-    const minSince = (new Date() - existingLeadForDbounce.lastInteraction) / 60000;
-    if (minSince > 10) shouldIncrementMsg = true; // 10 minute debounce session
-  }
-
-  let lead = await AdLead.findOneAndUpdate(
-    { phoneNumber: phone, clientId: client.clientId },
-    { 
-      $setOnInsert: { phoneNumber: phone, clientId: client.clientId, source: referral ? 'Meta Ad' : 'Direct' },
-      $set: { 
-        lastInteraction: new Date()
-      },
-      ...adUpdate
-    },
-    { upsert: true, new: true }
-  );
-
-  // Source of Truth: Only sync WhatsApp profile name if lead doesn't have a custom name
-  if (profileName && !lead.isNameCustom && lead.name !== profileName) {
-      lead = await AdLead.findByIdAndUpdate(lead._id, { $set: { name: profileName } }, { new: true });
-  }
-
-  if (shouldIncrementMsg) {
-     const { updateLeadWithScoring } = require('./leadScoring');
-     lead = await updateLeadWithScoring(phone, client.clientId, { inboundMessageCount: 1 }, {});
-  }
-
-  // --- PHASE 30: AUTO-KEYWORDS (Intent Brain) ---
-  if (inboundText && !convo.botPaused) {
-      const KeywordTrigger = require('../models/KeywordTrigger');
-      const triggers = await KeywordTrigger.find({ clientId: client.clientId, isActive: true });
-      
-      const txtLower = inboundText.toLowerCase().trim();
-      const matchedTrigger = triggers.find(t => {
-          if (t.type === 'exact') return txtLower === t.keyword.toLowerCase();
-          return txtLower.includes(t.keyword.toLowerCase()); // fuzzy
-      });
-
-      if (matchedTrigger) {
-          log.info(`[KeywordEngine] Match found: ${matchedTrigger.keyword} for ${phone}`);
-          
-          if (matchedTrigger.actionType === 'add_tag') {
-              await AdLead.findByIdAndUpdate(lead._id, { $addToSet: { tags: matchedTrigger.targetId } });
-              // Continue normal processing for tags
-          } else if (matchedTrigger.actionType === 'trigger_flow') {
-              const flow = (client.visualFlows || []).find(f => f.id === matchedTrigger.targetId);
-              if (flow) {
-                  const startNode = findFlowStartNode(flattenFlowNodes(flow.nodes));
-                  if (startNode) {
-                      await runFlow(client, phone, flow, startNode.id, { triggerSource: 'keyword' });
-                      return true; // Stop execution, handed to Flow
-                  }
-              }
-          } else if (matchedTrigger.actionType === 'send_template') {
-              const tpl = (client.messageTemplates || []).find(t => t.id === matchedTrigger.targetId);
-              if (tpl && tpl.templateName) {
-                  await sendWhatsAppTemplate({
-                      phoneNumberId: client.phoneNumberId,
-                      to: phone,
-                      io,
-                      clientConfig: client,
-                      templateName: tpl.templateName,
-                      languageCode: 'en_US'
-                  });
-                  return true; // Stop execution, template sent
-              }
-          }
-      }
-  }
-
   // STEP 2.4: Track Customer Intelligence (Phase 28 Track 2)
   if (lead && lead._id) {
     const CI = require('./customerIntelligence');
-    await CI.trackInteraction(client.clientId, phone, lead._id);
+    CI.trackInteraction(client.clientId, phone, lead._id).catch(() => {});
   }
 
   // STEP 2.5: PHASE 25 - Referral Tracking & Fulfillment
@@ -1545,11 +1505,17 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   }
 
 
-  const sent = await withTimeout(
-    sendNodeContent(node, client, phone, lead, convo, channel, parsedMessage),
-    8000, 
-    `Node Content (${node.type})`
-  );
+  try {
+    const sent = await withTimeout(
+      sendNodeContent(node, client, phone, lead, convo, channel, parsedMessage),
+      12000, 
+      `Node Content (${node.type})`
+    );
+  } catch (timeoutErr) {
+    log.error(`[NodeTimeout] ${nodeId} timed out. Sending Text Fallback.`);
+    // Emergency Text Fallback to keep conversation moving
+    await sendWhatsAppText(client, phone, node.data?.text || node.data?.body || "Resuming our conversation... Choose an option below.");
+  }
 
   // Phase 17: Save Last Node Visited
   await Conversation.findByIdAndUpdate(convo._id, {

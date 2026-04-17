@@ -89,13 +89,20 @@ router.post('/webhook', async (req, res) => {
       const messageId = message?.id;
 
       if (messageId) {
+        const phone = message?.from; // Extract sender phone for deduplication
         const existing = await InboundDeduplication.findOne({ messageId, clientId });
         if (existing) {
           console.log(`[Webhook Router] Ignoring duplicate event for ${messageId}`);
           return res.sendStatus(200);
         }
-        // Save ID with 2-minute TTL (handled by model)
-        await InboundDeduplication.create({ messageId, clientId });
+        // Save ID with 2-minute TTL and mandatory phone field
+        if (phone) {
+            await InboundDeduplication.create({ messageId, clientId, phone });
+        } else {
+            // If phone is missing (unlikely for messages), we log it but don't crash
+            log.warn(`[Webhook Router] Deduplication: missing phone for messageId ${messageId}`);
+            await InboundDeduplication.create({ messageId, clientId, phone: 'unknown' });
+        }
       }
     } catch (dedupErr) {
       console.error(`[Webhook Router] Deduplication check failed:`, dedupErr.message);

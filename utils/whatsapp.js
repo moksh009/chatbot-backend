@@ -474,12 +474,35 @@ const WhatsApp = {
 
       // --- PAYLOAD SCRUBBING (Phase 30 track 2) ---
       // Meta rejects keys starting with '_' which are used internally for dashboard previews
-      const scrub = (obj) => {
-          if (Array.isArray(obj)) return obj.map(scrub);
+      // It also forbids emojis, variables, and formatting in BUTTONS titles.
+      const scrubMetaRules = (text) => {
+          if (!text || typeof text !== 'string') return text;
+          return text
+            .replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F900}-\u{1F9FF}\u{1F018}-\u{1F270}\u{1F300}-\u{1F5FF}\u{1F400}-\u{1F4FF}\u{1F1E6}-\u{1F1FF}]/gu, '') // Emojis
+            .replace(/[*_~`]/g, '') // Formatting
+            .replace(/\{\{\d+\}\}/g, '') // Variables (forbidden in buttons)
+            .replace(/\s+/g, ' ') // Extra spaces/newlines
+            .trim();
+      };
+
+      const scrub = (obj, isButton = false) => {
+          if (Array.isArray(obj)) return obj.map((item, idx) => scrub(item, isButton));
           if (obj !== null && typeof obj === 'object') {
               const newObj = {};
               for (const key in obj) {
-                  if (!key.startsWith('_')) newObj[key] = scrub(obj[key]);
+                  if (key.startsWith('_')) continue;
+                  
+                  // Special handling for button titles
+                  if (key === 'text' && obj.type === 'BUTTONS') {
+                      newObj[key] = scrubMetaRules(obj[key]);
+                  } else if (key === 'buttons' && obj.type === 'BUTTONS') {
+                      newObj[key] = obj[key].map(btn => ({
+                         ...btn,
+                         text: scrubMetaRules(btn.text)
+                      }));
+                  } else {
+                      newObj[key] = scrub(obj[key], key === 'buttons' || obj.type === 'BUTTONS');
+                  }
               }
               return newObj;
           }
@@ -507,12 +530,22 @@ const WhatsApp = {
       };
       
     } catch (err) {
+      const errorData = err.response?.data?.error || {};
+      const subcode = errorData.error_subcode;
+      
+      // Error Subcode 2388024: Content already exists in this language.
+      // This is a "Soft Success" — the template is already there, we just need to acknowledge it.
+      if (subcode === 2388024) {
+          log.info(`[WhatsApp] Template ${templatePayload.name} already exists. Considering synced.`);
+          return { success: true, status: 'APPROVED', message: 'Template already exists' };
+      }
+
       // Catch & Mock: Fail gracefully for onboarding flow UX
       log.error(`[WhatsApp] submitMetaTemplate API error (Mocking success):`, err.response?.data || err.message);
       return { 
         success: true, // we mock success to prevent flow generation crash
         status: 'PENDING_MANUAL_AUTH',
-        errorBlocked: err.response?.data?.error?.message || err.message
+        errorBlocked: errorData.message || err.message
       };
     }
   }
