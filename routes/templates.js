@@ -25,9 +25,12 @@ async function getClientCredentials(clientId, userId) {
     const client = await Client.findOne({ clientId });
 
     if (!client) throw new Error('Client not found');
-    if (!client.wabaId) throw new Error('WABA ID (WhatsApp Business Account ID) is not configured for this client.');
-    if (!client.whatsappToken) throw new Error('WhatsApp Token is not configured for this client.');
-    client.whatsappToken = decrypt(client.whatsappToken);
+    const wabaId = client.wabaId || client.whatsapp?.wabaId;
+    const rawToken = client.whatsappToken || client.whatsapp?.accessToken;
+    if (!wabaId) throw new Error('WABA ID (WhatsApp Business Account ID) is not configured for this client.');
+    if (!rawToken) throw new Error('WhatsApp Token is not configured for this client.');
+    client.wabaId = wabaId;
+    client.whatsappToken = decrypt(rawToken) || rawToken;
 
     return client;
 }

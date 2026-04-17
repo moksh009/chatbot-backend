@@ -15,65 +15,104 @@ async function syncPendingTemplatesForClient(client) {
   const axios = require("axios");
   const { decrypt } = require("../utils/encryption");
 
-  const pendingTemplates = Array.isArray(client.pendingTemplates) ? client.pendingTemplates : [];
-  if (!pendingTemplates.length) {
-    return { checked: 0, approved: 0, updatedPending: pendingTemplates };
-  }
-
   const wabaId = client.wabaId || client.whatsapp?.wabaId;
   let token = client.whatsappToken || client.whatsapp?.accessToken;
   if (!wabaId || !token) {
-    return { checked: 0, approved: 0, updatedPending: pendingTemplates, error: "Missing WABA credentials" };
+    return { checked: 0, approved: 0, rejected: 0, pendingRemaining: 0, error: "Missing WABA credentials" };
   }
   try {
     token = decrypt(token) || token;
   } catch (_) {}
 
+  let remoteTemplates = [];
+  try {
+    const resp = await axios.get(`https://graph.facebook.com/v18.0/${wabaId}/message_templates`, {
+      params: { limit: 250, fields: "name,status,category,language,id" },
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: 15000
+    });
+    remoteTemplates = resp.data?.data || [];
+  } catch (err) {
+    return { checked: 0, approved: 0, rejected: 0, pendingRemaining: 0, error: err.response?.data?.error?.message || err.message };
+  }
+
+  const remoteMap = new Map(remoteTemplates.map((t) => [t.name, String(t.status || "PENDING").toUpperCase()]));
+  const pendingTemplates = Array.isArray(client.pendingTemplates) ? client.pendingTemplates : [];
+  const messageTemplates = Array.isArray(client.messageTemplates) ? client.messageTemplates : [];
   const syncedMap = new Map((client.syncedMetaTemplates || []).map((t) => [t.name, t]));
+  const pendingMap = new Map(pendingTemplates.map((t) => [t.name, t]));
   const updatedPending = [];
+  const updatedMessage = [];
   let approvedCount = 0;
+  let rejectedCount = 0;
   let checked = 0;
 
+  for (const tpl of messageTemplates) {
+    const remoteStatus = remoteMap.get(tpl.name);
+    const status = String(remoteStatus || tpl.status || "PENDING").toUpperCase();
+    checked += 1;
+    const merged = { ...tpl, status, lastCheckedAt: new Date() };
+    updatedMessage.push(merged);
+
+    const pendingMeta = pendingMap.get(tpl.name) || {};
+    if (status === "APPROVED") {
+      approvedCount += 1;
+      syncedMap.set(tpl.name, {
+        name: tpl.name,
+        status: "APPROVED",
+        productHandle: pendingMeta.productHandle || tpl.productHandle || "",
+        productId: pendingMeta.productId || tpl.productId || "",
+        metaId: pendingMeta.metaId || tpl.id || "",
+        approvedAt: new Date(),
+        submittedAt: pendingMeta.submittedAt || tpl.createdAt || null
+      });
+      continue;
+    }
+    if (status === "REJECTED") rejectedCount += 1;
+
+    // Keep not-yet-approved templates in pending state for later polling.
+    updatedPending.push({
+      ...pendingMeta,
+      name: tpl.name,
+      status,
+      productHandle: pendingMeta.productHandle || tpl.productHandle || "",
+      productId: pendingMeta.productId || tpl.productId || "",
+      metaId: pendingMeta.metaId || tpl.id || "",
+      submittedAt: pendingMeta.submittedAt || tpl.createdAt || null,
+      lastCheckedAt: new Date()
+    });
+  }
+
+  // Preserve pending templates that don't have messageTemplates entry yet.
   for (const pending of pendingTemplates) {
     if (!pending?.name) continue;
-    checked += 1;
-    try {
-      const resp = await axios.get(`https://graph.facebook.com/v18.0/${wabaId}/message_templates`, {
-        params: { name: pending.name },
-        headers: { Authorization: `Bearer ${token}` },
-        timeout: 10000
+    if (updatedPending.find((u) => u.name === pending.name)) continue;
+    const status = String(remoteMap.get(pending.name) || pending.status || "PENDING").toUpperCase();
+    if (status === "APPROVED") {
+      approvedCount += 1;
+      syncedMap.set(pending.name, {
+        name: pending.name,
+        status: "APPROVED",
+        productHandle: pending.productHandle || "",
+        productId: pending.productId || "",
+        metaId: pending.metaId || "",
+        approvedAt: new Date(),
+        submittedAt: pending.submittedAt || null
       });
-      const remoteTemplate = (resp.data?.data || []).find((item) => item.name === pending.name);
-      const status = String(remoteTemplate?.status || pending.status || "PENDING").toUpperCase();
-
-      if (status === "APPROVED") {
-        approvedCount += 1;
-        syncedMap.set(pending.name, {
-          name: pending.name,
-          status: "APPROVED",
-          productHandle: pending.productHandle || "",
-          productId: pending.productId || "",
-          metaId: pending.metaId || remoteTemplate?.id || "",
-          approvedAt: new Date(),
-          submittedAt: pending.submittedAt || null
-        });
-      } else {
-        updatedPending.push({ ...pending, status });
-      }
-    } catch (err) {
-      const reason = err.response?.data?.error?.message || err.message;
-      updatedPending.push({ ...pending, status: pending.status || "PENDING", lastError: reason, lastCheckedAt: new Date() });
+    } else {
+      updatedPending.push({ ...pending, status, lastCheckedAt: new Date() });
     }
   }
 
   await Client.findByIdAndUpdate(client._id, {
     $set: {
       pendingTemplates: updatedPending,
+      messageTemplates: updatedMessage,
       syncedMetaTemplates: Array.from(syncedMap.values())
     }
   });
 
-  return { checked, approved: approvedCount, updatedPending };
+  return { checked, approved: approvedCount, rejected: rejectedCount, pendingRemaining: updatedPending.length, updatedPending };
 }
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/wizard/:clientId/complete
@@ -598,8 +637,8 @@ router.post("/:clientId/submit-product-templates", protect, async (req, res) => 
           {
             type: 'BUTTONS',
             buttons: [
-              ...(buyUrl ? [{ type: 'URL', text: '🛒 Buy Now', url: buyUrl }] : [{ type: 'QUICK_REPLY', text: '🛒 Buy Now' }]),
-              { type: 'QUICK_REPLY', text: '⬅️ Main Menu' },
+              ...(buyUrl ? [{ type: 'URL', text: 'Buy Now', url: buyUrl }] : [{ type: 'QUICK_REPLY', text: 'Buy Now' }]),
+              { type: 'QUICK_REPLY', text: 'Main Menu' },
             ]
           }
         ]
@@ -648,8 +687,38 @@ router.post("/:clientId/submit-product-templates", protect, async (req, res) => 
         log.info(`[TemplateSubmit] ✅ ${templateName} submitted to Meta for ${clientId}`);
       } catch (metaErr) {
         const errMsg = metaErr.response?.data?.error?.message || metaErr.message;
-        log.error(`[TemplateSubmit] ❌ ${templateName} failed:`, errMsg);
-        errors.push({ template: templateName, error: errMsg });
+        const alreadyExists = /already exists|duplicate/i.test(String(errMsg));
+        if (alreadyExists) {
+          const existingTemplate = {
+            id: `existing_${templateName}`,
+            name: templateName,
+            status: 'PENDING',
+            category: 'MARKETING',
+            source: 'wizard_product',
+            imageUrl: prod.imageUrl || '',
+            createdAt: new Date()
+          };
+          await Client.findByIdAndUpdate(client._id, {
+            $pull: { messageTemplates: { name: templateName }, pendingTemplates: { name: templateName } }
+          });
+          await Client.findByIdAndUpdate(client._id, {
+            $push: {
+              messageTemplates: existingTemplate,
+              pendingTemplates: {
+                name: templateName,
+                productHandle: handle,
+                productId: String(prod.id || prod.shopifyId || ""),
+                status: "PENDING",
+                metaId: "",
+                submittedAt: new Date()
+              }
+            }
+          });
+          alreadyDone.push(templateName);
+        } else {
+          log.error(`[TemplateSubmit] ❌ ${templateName} failed:`, errMsg);
+          errors.push({ template: templateName, error: errMsg });
+        }
       }
     }
 
@@ -688,10 +757,36 @@ router.post("/:clientId/sync-template-status", protect, async (req, res) => {
       success: true,
       checked: result.checked,
       approvedNow: result.approved,
-      pendingRemaining: result.updatedPending.length
+      rejectedNow: result.rejected || 0,
+      pendingRemaining: result.pendingRemaining ?? (result.updatedPending || []).length
     });
   } catch (err) {
     log.error(`[TemplateSync] Manual sync failed for ${clientId}:`, err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Canonical status sync endpoint (new contract)
+router.post("/:clientId/template-status/sync", protect, async (req, res) => {
+  const { clientId } = req.params;
+  try {
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ success: false, error: "Client not found" });
+    if (req.user.role !== "SUPER_ADMIN" && req.user.clientId !== clientId) {
+      return res.status(403).json({ success: false, error: "Unauthorized" });
+    }
+
+    const result = await syncPendingTemplatesForClient(client);
+    return res.json({
+      success: true,
+      source: "wizard",
+      checkedTotal: result.checked || 0,
+      approvedNow: result.approved || 0,
+      rejectedNow: result.rejected || 0,
+      pendingCount: result.pendingRemaining || 0
+    });
+  } catch (err) {
+    log.error(`[TemplateSync] Canonical sync failed for ${clientId}:`, err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -784,16 +879,49 @@ router.post("/:clientId/submit-automation-templates", protect, async (req, res) 
         };
 
         await Client.findByIdAndUpdate(client._id, {
-          $pull:  { messageTemplates: { name: tpl.name } },
+          $pull:  { messageTemplates: { name: tpl.name }, pendingTemplates: { name: tpl.name } },
         });
         await Client.findByIdAndUpdate(client._id, {
-          $push:  { messageTemplates: newTemplate },
+          $push:  {
+            messageTemplates: newTemplate,
+            pendingTemplates: {
+              name: tpl.name,
+              status: "PENDING",
+              metaId: metaRes.data.id || "",
+              submittedAt: new Date()
+            }
+          },
         });
 
         submitted.push(tpl.name);
       } catch (err) {
         const msg = err.response?.data?.error?.message || err.message;
-        errors.push({ template: tpl.name, error: msg });
+        if (/already exists|duplicate/i.test(String(msg))) {
+          await Client.findByIdAndUpdate(client._id, {
+            $pull: { messageTemplates: { name: tpl.name }, pendingTemplates: { name: tpl.name } }
+          });
+          await Client.findByIdAndUpdate(client._id, {
+            $push: {
+              messageTemplates: {
+                id: `existing_${tpl.name}`,
+                name: tpl.name,
+                status: 'PENDING',
+                category: tpl.category,
+                source: 'wizard_automation',
+                createdAt: new Date()
+              },
+              pendingTemplates: {
+                name: tpl.name,
+                status: "PENDING",
+                metaId: "",
+                submittedAt: new Date()
+              }
+            }
+          });
+          submitted.push(tpl.name);
+        } else {
+          errors.push({ template: tpl.name, error: msg });
+        }
       }
     }
 

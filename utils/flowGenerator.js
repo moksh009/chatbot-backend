@@ -93,7 +93,7 @@ function verifyAllEdgesMatchButtonIds(nodes, edges) {
   const issues = [];
 
   nodes.forEach(node => {
-    if (node.type !== 'interactive') return;
+    if (node.type !== 'interactive' && node.type !== 'template') return;
 
     const btns = node.data?.buttonsList || [];
     const rows = (node.data?.sections || []).flatMap(s => s.rows || []);
@@ -483,10 +483,14 @@ welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_poli
 
   enrichedProducts.forEach((p, i) => {
     const prodId = `prod_${p.id || i}_${ts}`;
-    const hasTemplate = (client.syncedMetaTemplates || []).some((t) => t.productHandle === p.handle || t.name === `${client.clientId}_${p.handle}`);
+  const canonicalTemplateName = `prod_${p.handle}`.replace(/[^a-z0-9_]/gi, "_").toLowerCase().slice(0, 50);
+  const legacyTemplateName = `${client.clientId}_${p.handle}`.replace(/[^a-z0-9_]/gi, "_").toLowerCase().slice(0, 50);
+  const hasTemplate = (client.syncedMetaTemplates || []).some(
+    (t) => t.productHandle === p.handle || t.name === canonicalTemplateName || t.name === legacyTemplateName
+  );
     if (!hasTemplate && wizardData.productMode === "template") {
       wizardData.customTemplates = wizardData.customTemplates || [];
-      const templateName = `${client.clientId || "brand"}_${p.handle}`.replace(/[^a-z0-9_]/gi, "_").toLowerCase().slice(0, 50);
+      const templateName = canonicalTemplateName;
       if (!wizardData.customTemplates.find((t) => t.name === templateName)) {
         wizardData.customTemplates.push({
           name: templateName,
@@ -507,7 +511,7 @@ welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_poli
       position: { x: 2900, y: (i * 220) - (enrichedProducts.length * 100) },
       data: hasTemplate ? {
         label: truncate(`Product: ${p.title}`, 30),
-        templateName: `${client.clientId}_${p.handle}`,
+        templateName: canonicalTemplateName,
         imageUrl: p.imageUrl || "",
         shopifyProductId: p.id,
         shopifyProductUrl: `${storeUrl}/products/${p.handle}`,
@@ -597,7 +601,7 @@ welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_poli
   nodes.push(
     { id: IDS.loy_menu, type: "interactive", position: { x: 2400, y: 1600 }, data: { label: "Rewards Hub", interactiveType: "list", text: content.loyalty_welcome, buttonText: "My Rewards", sections: [{ title: "Loyalty", rows: [{ id: "pts", title: "💎 My Points" }, { id: "red", title: "🎁 Redeem" }, { id: "ref", title: "📢 Refer & Earn" }, { id: "menu", title: "⬅️ Main Menu" }] }], heatmapCount: 0 } },
     { id: IDS.loy_balance, type: "message", position: { x: 2900, y: 1500 }, data: { label: "Points Balance", text: content.loyalty_points_msg, heatmapCount: 0 } },
-    { id: IDS.loy_redeem, type: "loyalty", position: { x: 2900, y: 1650 }, data: { label: "Redeem Loyalty", loyaltyAction: "REDEEM_POINTS", pointsRequired: 100, heatmapCount: 0 } },
+    { id: IDS.loy_redeem, type: "loyalty_action", position: { x: 2900, y: 1650 }, data: { label: "Redeem Loyalty", actionType: "REDEEM_POINTS", pointsRequired: 100, heatmapCount: 0 } },
     { id: IDS.loy_refer, type: "message", position: { x: 2900, y: 1800 }, data: { label: "Refer", text: content.referral_msg, heatmapCount: 0 } }
   );
   edges.push(
@@ -625,12 +629,12 @@ welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_poli
 
   nodes.push(
     { id: IDS.faq_msg, type: "message", position: { x: 2400, y: 2450 }, data: { label: "General FAQ", text: faqText || content.faq_response, heatmapCount: 0 } },
-    { id: IDS.trig_order, type: "trigger", position: { x: -800, y: 0 }, data: { label: "Order Created Trigger", triggerType: "shopify_event", event: "order_created", heatmapCount: 0 } },
+    { id: IDS.trig_order, type: "trigger", position: { x: -800, y: 0 }, data: { label: "Order Placed Trigger", triggerType: "order_placed", heatmapCount: 0 } },
     { id: IDS.conf_msg, type: "message", position: { x: -400, y: 0 }, data: { label: "Order Confirmed", text: content.order_confirmed_msg, heatmapCount: 0 } },
     { id: IDS.cod_check, type: "logic", position: { x: 0, y: -200 }, data: { label: "Is COD?", variable: "payment_method", operator: "contains", value: "cod", heatmapCount: 0 } },
     { id: IDS.cod_node, type: "cod_prepaid", position: { x: 400, y: -300 }, data: { label: "COD Nudge", action: "CONVERT_COD_TO_PREPAID", discountAmount: wizardData.codDiscount || 50, text: content.cod_nudge, heatmapCount: 0 } },
-    { id: IDS.trig_cart, type: "trigger", position: { x: -800, y: 400 }, data: { label: "Abandoned Cart Trigger", triggerType: "shopify_event", event: "checkout_abandoned", heatmapCount: 0 } },
-    { id: IDS.trig_fulfill, type: "trigger", position: { x: -800, y: 1000 }, data: { label: "Order Fulfilled Trigger", triggerType: "shopify_event", event: "order_fulfilled", heatmapCount: 0 } },
+    { id: IDS.trig_cart, type: "trigger", position: { x: -800, y: 400 }, data: { label: "Abandoned Cart Trigger", triggerType: "abandoned_cart", heatmapCount: 0 } },
+    { id: IDS.trig_fulfill, type: "trigger", position: { x: -800, y: 1000 }, data: { label: "Order Fulfilled Trigger", triggerType: "order_fulfilled", heatmapCount: 0 } },
     { id: IDS.rev_request, type: "review", position: { x: -400, y: 1000 }, data: { label: "Review Request", action: "SEND_REVIEW_REQUEST", text: content.sentiment_ask, googleReviewUrl, heatmapCount: 0 } },
     { id: IDS.rev_positive, type: "message", position: { x: 100, y: 900 }, data: { label: "Positive", text: content.review_positive + (googleReviewUrl ? `\n${googleReviewUrl}` : ""), heatmapCount: 0 } },
     { id: IDS.rev_negative, type: "message", position: { x: 100, y: 1100 }, data: { label: "Negative", text: content.review_negative, heatmapCount: 0 } },
@@ -691,7 +695,7 @@ welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_poli
   });
 
   const nodesWithOutgoing = new Set(edges.map((e) => e.source));
-  const deadEndTypes = ["message", "shopify_call", "loyalty", "tag_lead", "review", "warranty_check", "cod_prepaid", "admin_alert"];
+  const deadEndTypes = ["message", "shopify_call", "loyalty_action", "tag_lead", "review", "warranty_check", "cod_prepaid", "admin_alert"];
   nodes.forEach((node) => {
     if (deadEndTypes.includes(node.type) && !nodesWithOutgoing.has(node.id) && node.id !== IDS.ai_fallback) {
       edges.push({

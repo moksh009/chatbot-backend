@@ -130,6 +130,44 @@ function incrementNodeVisit(nodes, nodeId) {
   });
 }
 
+async function getFlowGraphForConversation(client, convo) {
+  const fallbackNodes = flattenFlowNodes(client.flowNodes || []);
+  const fallbackEdges = client.flowEdges || [];
+  if (!convo?.activeFlowId) {
+    return { nodes: fallbackNodes, edges: fallbackEdges };
+  }
+
+  const activeFlowId = String(convo.activeFlowId);
+
+  // 1) Prefer WhatsAppFlow collection
+  try {
+    const WhatsAppFlow = require("../models/WhatsAppFlow");
+    let flowDoc = null;
+    if (/^[a-f\d]{24}$/i.test(activeFlowId)) {
+      flowDoc = await WhatsAppFlow.findById(activeFlowId).lean();
+    }
+    if (!flowDoc) {
+      flowDoc = await WhatsAppFlow.findOne({
+        clientId: client.clientId,
+        $or: [{ flowId: activeFlowId }, { _id: activeFlowId }]
+      }).lean();
+    }
+    if (flowDoc?.nodes?.length) {
+      return { nodes: flattenFlowNodes(flowDoc.nodes || []), edges: flowDoc.edges || [] };
+    }
+  } catch (_) {
+    // non-fatal, continue to in-memory flow lookup
+  }
+
+  // 2) Fallback to visualFlows held on client settings
+  const visualFlow = (client.visualFlows || []).find(f => String(f.id) === activeFlowId);
+  if (visualFlow?.nodes?.length) {
+    return { nodes: flattenFlowNodes(visualFlow.nodes || []), edges: visualFlow.edges || [] };
+  }
+
+  return { nodes: fallbackNodes, edges: fallbackEdges };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HANDLE ID NORMALIZER — strips ReactFlow group/folder prefixes from handle IDs
 // e.g. "group_123__button_buy" → "button_buy"
@@ -218,7 +256,6 @@ async function handleWhatsAppMessage(from, message, phoneNumberId, profileName =
 
     const parsed = await parseWhatsAppPayload(message);
     if (!parsed) {
-      processingLocks.delete(from);
       return;
     }
 
@@ -258,8 +295,6 @@ async function handleWhatsAppMessage(from, message, phoneNumberId, profileName =
             }
         } catch (err) {
             log.error('Flow processing error:', { error: err.message });
-        } finally {
-            processingLocks.delete(from);
         }
         return;
     }
@@ -509,7 +544,10 @@ async function runDualBrainEngine(parsedMessage, client) {
   }
 
   // STEP 3: Save inbound message to DB + emit to dashboard
-  await saveInboundMessage(phone, client.clientId, parsedMessage, io, channel, convo._id);
+  // Do not block first bot reply on heavy sentiment/intent enrichment.
+  saveInboundMessage(phone, client.clientId, parsedMessage, io, channel, convo._id).catch((err) => {
+    log.error('Deferred inbound save failed:', { error: err.message });
+  });
 
   // STEP 3.5: SUBSCRIPTION LIMIT CHECK (Phase 23)
   const limits = await checkLimit(client._id, 'messages');
@@ -1035,7 +1073,7 @@ async function runDualBrainEngine(parsedMessage, client) {
           waitingForVariable:  null,
           captureResumeNodeId: null,
           captureRetries:      0,
-          lastStepId:          nodeId
+          lastStepId:          convo.captureResumeNodeId || convo.lastStepId || null
         }
       });
       
@@ -1290,10 +1328,7 @@ async function runDualBrainEngine(parsedMessage, client) {
 // PRIORITY 1: GRAPH TRAVERSAL
 // ─────────────────────────────────────────────────────────────────────────────
 async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, channel = 'whatsapp') {
-  const rawNodes  = client.flowNodes || [];
-  const rawEdges  = client.flowEdges || [];
-  const flowNodes = flattenFlowNodes(rawNodes); 
-  const flowEdges = rawEdges;
+  const { nodes: flowNodes, edges: flowEdges } = await getFlowGraphForConversation(client, convo);
 
   if (!flowNodes.length) return false;
 
@@ -1346,21 +1381,37 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
   }
 
   // C) User is in the middle of a flow
-  let matchingEdge = flowEdges.find(e => {
-    if (e.source !== currentStepId) return false;
-    // Auto-forward edge: no trigger and no real button handle (or handle is a/bottom/output)
+  let matchingEdge = null;
+  const sourceEdges = flowEdges.filter(e => e.source === currentStepId);
+  const bid = normalizeHandleId(incomingTrigger.buttonId || '').toLowerCase();
+
+  // First priority: explicit button/list selections
+  if (bid) {
+    matchingEdge = sourceEdges.find((e) => {
+      const sid = normalizeHandleId(e.sourceHandle || '').toLowerCase();
+      if (sid && sid === bid) return true;
+      if (e.trigger?.type === 'button') {
+        return normalizeHandleId(e.trigger.value || '').toLowerCase() === bid;
+      }
+      return false;
+    });
+  }
+
+  // Second priority: typed text keyword/sourceHandle matches
+  if (!matchingEdge && userTextLower) {
+    matchingEdge = sourceEdges.find((e) => {
+      const sid = normalizeHandleId(e.sourceHandle || '').toLowerCase();
+      if (sid && (sid === userTextLower || userTextLower === sid)) return true;
+      if (e.trigger?.type === 'keyword') return userTextLower.includes(String(e.trigger.value || '').toLowerCase());
+      return false;
+    });
+  }
+
+  // Last priority: auto-forward edge only when there is no explicit user selection
+  if (!matchingEdge && !bid) {
     const autoHandles = ['a', 'bottom', 'output', 'default', null, undefined, ''];
-    if (!e.trigger && autoHandles.includes(normalizeHandleId(e.sourceHandle))) return true;
-    if (e.sourceHandle) {
-      const sid = normalizeHandleId(e.sourceHandle).toLowerCase();
-      const bid = normalizeHandleId(incomingTrigger.buttonId || '').toLowerCase();
-      const txt = userTextLower;
-      return sid === bid || sid === txt || txt === sid;
-    }
-    if (e.trigger?.type === 'button') return normalizeHandleId(incomingTrigger.buttonId || '').toLowerCase() === normalizeHandleId(e.trigger.value).toLowerCase();
-    if (e.trigger?.type === 'keyword') return userTextLower.includes(e.trigger.value.toLowerCase());
-    return false;
-  });
+    matchingEdge = sourceEdges.find((e) => !e.trigger && autoHandles.includes(normalizeHandleId(e.sourceHandle)));
+  }
 
   // GAP FIX: Fallback edge
   if (!matchingEdge && currentStepId) {
@@ -1509,8 +1560,9 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   }
 
 
+  let sent = true;
   try {
-    const sent = await withTimeout(
+    sent = await withTimeout(
       sendNodeContent(node, client, phone, lead, convo, channel, parsedMessage),
       12000, 
       `Node Content (${node.type})`
@@ -1666,7 +1718,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   }
 
   // 7. Loyalty Action Node
-  if (node.type === 'loyalty_action') {
+  if (node.type === 'loyalty_action' || node.type === 'loyalty') {
     const { handleNodeAction } = require('./nodeActions');
     const action = node.data?.actionType || 'GIVE_LOYALTY';
     await handleNodeAction(action, node, client, phone, convo, lead);
@@ -1926,7 +1978,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       } 
       
       // --- USP 2: REAL-TIME ORDER TRACKING ---
-      else if (action === 'ORDER_STATUS' || action === 'get_order') {
+      else if (action === 'ORDER_STATUS' || action === 'get_order' || action === 'CHECK_ORDER_STATUS') {
         resultData = await withShopifyRetry(client.clientId, async (shopify) => {
           const res = await shopify.get(`/orders.json?status=any&limit=1&phone=${phone.replace('+', '')}`);
           const order = res.data.orders?.[0];
@@ -1937,6 +1989,18 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
           await sendWhatsAppText(client, phone, msg);
           return { status, id: order.id };
         });
+      }
+
+      else if (action === 'CANCEL_ORDER') {
+        const { handleNodeAction } = require('./nodeActions');
+        await handleNodeAction('CANCEL_ORDER', node, client, phone, convo, lead);
+        resultData = { status: 'cancel_requested' };
+      }
+
+      else if (action === 'ORDER_REFUND_STATUS') {
+        const { handleNodeAction } = require('./nodeActions');
+        await handleNodeAction('ORDER_REFUND_STATUS', node, client, phone, convo, lead);
+        resultData = { status: 'refund_status_checked' };
       }
 
       // --- USP 3: DYNAMIC AI DISCOUNTS ---
@@ -2058,6 +2122,12 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 async function sendNodeContent(node, client, phone, lead = null, convo = null, channel = 'whatsapp', parsedMessage = {}) {
   const { type, data } = node;
   const options = { commentId: parsedMessage?.commentId };
+  if (node.data?.action && !['shopify_call', 'http_request', 'logic', 'delay', 'trigger'].includes(type)) {
+    const { handleNodeAction } = require("./nodeActions");
+    handleNodeAction(node.data.action, node, client, phone, convo, lead).catch((err) => {
+      log.error(`Action Error (${node.data.action}):`, { error: err.message });
+    });
+  }
 
   switch (type) {
     case 'image': {
@@ -2104,6 +2174,22 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       } else {
         await WhatsApp.sendText(client, phone, body);
       }
+      return true;
+    }
+
+    case 'review': {
+      let body = data.text || data.body || 'How was your experience with us?';
+      body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
+      const interactive = {
+        type: 'button',
+        action: {
+          buttons: [
+            { type: 'reply', reply: { id: 'positive', title: 'Great' } },
+            { type: 'reply', reply: { id: 'negative', title: 'Need Help' } }
+          ]
+        }
+      };
+      await WhatsApp.sendInteractive(client, phone, interactive, body);
       return true;
     }
 
@@ -2283,15 +2369,6 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     default:
       log.warn(`Skipping send content for node type: ${type}`);
       return true;
-  }
-
-  // After sending the message, check for special actions
-  if (node.data?.action) {
-    const { handleNodeAction } = require("./nodeActions");
-    // Execute action asynchronously
-    handleNodeAction(node.data.action, node, client, phone, convo, lead).catch(err => {
-      log.error(`Action Error (${node.data.action}):`, { error: err.message });
-    });
   }
 
   return true;
@@ -2699,7 +2776,7 @@ async function sendWhatsAppAudio(client, phone, audioUrl) {
 }
 
 
-async function sendWhatsAppInteractive(client, phone, interactive) {
+async function sendWhatsAppInteractive(client, phone, interactive, bodyText = '') {
   const token = client.premiumAccessToken || client.whatsappToken;
   const phoneNumberId = client.premiumPhoneId || client.phoneNumberId;
   if (!token || !phoneNumberId) return false;
@@ -2732,6 +2809,12 @@ async function sendWhatsAppInteractive(client, phone, interactive) {
         }
     }
 
+    if (!interactive.body?.text) {
+      interactive.body = {
+        text: String(bodyText || 'Please choose an option').substring(0, 1024)
+      };
+    }
+
     const data = {
       messaging_product: 'whatsapp', to: phone, type: 'interactive',
       interactive
@@ -2746,6 +2829,11 @@ async function sendWhatsAppInteractive(client, phone, interactive) {
     return true;
   } catch (err) {
     log.error('sendInteractive error:', { error: err.response?.data || err.message });
+    // Graceful fallback to plain text so user still gets a response.
+    try {
+      const fallbackText = interactive?.body?.text || bodyText || 'Please reply with your choice.';
+      await sendWhatsAppText(client, phone, fallbackText);
+    } catch (_) {}
     return false;
   }
 }

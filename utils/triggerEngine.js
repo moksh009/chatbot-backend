@@ -202,6 +202,24 @@ function getTriggerFromNodes(nodes) {
   // ── Legacy flat fields ───────────────────────────────────────────────────────
   const rawType = (d.triggerType || 'keyword').toLowerCase();
 
+  // Backward compatibility: old generator used triggerType=shopify_event + data.event.
+  if (rawType === 'shopify_event') {
+    const eventMap = {
+      order_created: 'order_placed',
+      checkout_abandoned: 'abandoned_cart',
+      order_fulfilled: 'order_fulfilled'
+    };
+    const mapped = eventMap[String(d.event || '').toLowerCase()];
+    if (mapped) {
+      return {
+        type: mapped,
+        orderStatus: d.orderStatus || 'any',
+        cartDelayMinutes: d.cartDelayMinutes || 15,
+        skuMatches: d.skuMatches || []
+      };
+    }
+  }
+
   // Commerce event types (pass-through)
   const commerceTypes = ['order_placed', 'order_fulfilled', 'order_status_changed', 'abandoned_cart', 'payment_received'];
   if (commerceTypes.includes(rawType)) {
