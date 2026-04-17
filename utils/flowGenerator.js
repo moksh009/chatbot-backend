@@ -218,1672 +218,502 @@ function buildDefaultContent(businessName, botName, products = [], ops = {}) {
 // ─── MAIN GENERATOR ──────────────────────────────────────────────────────────
 async function generateEcommerceFlow(client, wizardData) {
   const {
-    businessName        = "My Business",
+    businessName = "My Business",
     businessDescription = "",
-    products            = [],
-    botName             = "Assistant",
-    tone                = "friendly",
-    botLanguage         = "Hinglish",
-    cartTiming          = { msg1: 15, msg2: 2, msg3: 24 },
-    googleReviewUrl     = "",
-    adminPhone          = "",
-    faqText             = "",
-    returnsInfo         = "",
-    fallbackMessage     = "I'm still learning! Let me connect you with a human expert. 😊",
-    openTime            = "10:00",
-    closeTime           = "19:00",
-    workingDays         = [1, 2, 3, 4, 5],
-    referralPoints      = 500,
-    signupPoints        = 100,
-    activePersona       = "sidekick",
-    b2bEnabled          = false,
-    warrantyDuration    = "1 Year",
-    warrantyPolicy      = "Standard manufacturer warranty applicable from date of purchase.",
-    checkoutUrl         = "",
-    b2bThreshold        = 10,
-    b2bAdminPhone       = "",
-    currency            = "₹",
+    botName = "Assistant",
+    products = [],
+    tone = "friendly",
+    botLanguage = "Hinglish",
+    cartTiming = { msg1: 15, msg2: 2, msg3: 24 },
+    googleReviewUrl = "",
+    adminPhone = "",
+    faqText = "",
+    returnsInfo = "",
+    fallbackMessage = "I can help with that. Let me route you to the right place.",
+    openTime = "10:00",
+    closeTime = "19:00",
+    workingDays = [1, 2, 3, 4, 5, 6],
+    checkoutUrl = "",
+    referralPoints = 500,
+    signupPoints = 100,
+    activePersona = "sidekick",
+    warrantyDuration = "1 Year",
+    b2bEnabled = false,
+    currency = "₹",
   } = wizardData;
 
-  // ── Persona mapping ────────────────────────────────────────────────────────
+  const ts = Date.now();
+  const enrichedProducts = products.slice(0, 20).map((p, i) => buildProductContext(p, i));
+  const storeUrl = (wizardData.shopDomain
+    ? `https://${String(wizardData.shopDomain).replace(/^https?:\/\//, "")}`
+    : checkoutUrl.replace(/\/checkout$/, "")) || "";
+
   const personaMap = {
-    concierge:  { label: "Elite Concierge",    type: "Luxury/Formal",     tone_markers: "Use 'Sir/Ma'am', extremely polite, high-end vocabulary, boutique hotel feel." },
-    hacker:     { label: "Growth Hacker",       type: "Sales/Aggressive",  tone_markers: "FOMO-driven, enthusiastic, use emojis 🚀🔥, fast-paced, direct CTAs." },
-    sidekick:   { label: "Friendly Sidekick",   type: "Casual/Friendly",   tone_markers: "Warm, empathetic, uses 'friend/buddy', approachable, uses 😊✨." },
-    efficiency: { label: "Efficiency Expert",   type: "Direct/Minimalist", tone_markers: "No fluff, bullet points, ultra-fast, professional but dry, no filler." },
+    concierge:  { label: "Elite Concierge", type: "Luxury/Formal" },
+    hacker:     { label: "Growth Hacker", type: "Sales/Aggressive" },
+    sidekick:   { label: "Friendly Sidekick", type: "Casual/Friendly" },
+    efficiency: { label: "Efficiency Expert", type: "Direct/Minimalist" },
   };
   const selectedPersona = personaMap[activePersona] || personaMap.sidekick;
 
-  // ── Enrich products ────────────────────────────────────────────────────────
-  const enrichedProducts = products.slice(0, 15).map((p, i) => buildProductContext(p, i));
-  const productsSummary  = enrichedProducts.map(p => `"${p.title}" ${currency}${p.price}: ${p.features.slice(0, 80)}`).join("\n");
-  const productHandles   = enrichedProducts.slice(0, 6).map(p => p.handle);
-
-  // ── STEP 1: 38-Key AI Content Generation ──────────────────────────────────
-  let content = {};
-
-  const productGuideLines = productHandles.map(h => {
-    const p = enrichedProducts.find(ep => ep.handle === h);
-    return `"guide_${h}": "[2–3 step setup/usage guide for '${p?.title}'. Concise, persona-aligned, actionable. No generic filler.]"`;
-  }).join("\n");
-
-  const aiPrompt = `You are a world-class WhatsApp chatbot UX architect for an Indian e-commerce brand.
-
-BRAND: ${businessName}
-DESCRIPTION: ${businessDescription || "E-commerce brand selling quality products"}
-BOT NAME: ${botName}
-TONE: ${tone}
-PERSONA: ${selectedPersona.label} (${selectedPersona.type})
-PERSONA GUIDELINES: ${selectedPersona.tone_markers}
-LANGUAGE: ${botLanguage}
-FAQ DATA: ${faqText ? faqText.slice(0, 400) : "Standard product FAQs"}
-RETURNS INFO: ${returnsInfo || "7-day easy returns"}
-LOYALTY: Referral=${referralPoints} pts, Signup=${signupPoints} pts
-BUSINESS HOURS: ${openTime}–${closeTime}
-PRODUCTS:\n${productsSummary || "Various products available"}
-
-Generate a JSON object with EXACTLY these keys. ALL text must match the persona and language above.
-Be concise, impactful, and brand-specific. Zero generic placeholders.
-
-REQUIRED KEYS:
-"welcome_a": [Warm first greeting — persona-specific, brand name included, max 100 chars]
-"welcome_b": [Second variant — different hook — urgency/curiosity/value, max 100 chars]
-"product_menu_text": [Menu header text — inviting, persona-styled, max 80 chars]
-"order_status_msg": [Order status update — reassuring, delivery ETA]
-"fallback_msg": [AI cannot answer — empathetic, offers human help]
-"returns_policy_short": [${returnsInfo || "7-day easy returns"} — friendly restatement]
-"refund_policy_short": [Refund 5–7 days — reassuring]
-"cancellation_confirm": [Confirm cancel intent — double-check phrasing]
-"cancellation_success": [Cancel processed — apologetic but positive]
-"loyalty_welcome": [Welcome to rewards — exciting, mention ${signupPoints} pts]
-"loyalty_points_msg": [Points balance display — motivating, mention redemption value]
-"referral_msg": [Referral pitch — mention ${referralPoints} pts reward]
-"sentiment_ask": [Post-purchase experience question — warm, curious]
-"review_positive": [After positive feedback — appreciate, ask Google review]
-"review_negative": [After negative feedback — empathetic, escalate]
-"upsell_intro": [Upsell after purchase — soft, helpful]
-"cross_sell_msg": [Cross-sell related products — casual]
-"cart_recovery_1": [${cartTiming.msg1 || 15}min cart abandon — gentle curiosity hook]
-"cart_recovery_2": [${(cartTiming.msg2 || 2)}hr cart abandon — add value/urgency]
-"cart_recovery_3": [${cartTiming.msg3 || 24}hr cart abandon — last chance + discount code]
-"cod_nudge": [COD to prepaid nudge — save ₹50, simpler delivery, safe]
-"order_confirmed_msg": [Order confirmation — celebrate, set delivery expectations]
-"agent_handoff_msg": [Escalate to human — reassuring, ETA mention, warm]
-"faq_response": [General FAQ answer wrapper — helpful, directs to menu]
-"ad_welcome": [Welcome from Meta Ad click — acknowledge ad, warm entry]
-"ig_welcome": [Welcome from Instagram mention — casual, IG-specific]
-"b2b_welcome": [B2B inquiry welcome — professional, wholesale-focused]
-"b2b_capture_prompt": [Ask company + volume for B2B — professional, min ${b2bThreshold} units]
-"warranty_welcome": [Warranty hub intro — ${warrantyDuration} coverage, reassuring]
-"warranty_lookup_prompt": [Ask serial number for lookup — clear one-line instruction]
-"payment_request_body": [Request online payment — secure, benefits]
-"loyalty_award_reason": [Points awarded reason — celebratory, brand-specific]
-"installation_msg": [Generic setup help — clear, step-by-step]
-"support_hours_msg": [Business hours info — ${openTime}–${closeTime}, offline guidance]
-"vip_perk_msg": [VIP exclusive perk reveal — exciting, premium feel]
-"new_member_nudge": [Push new member toward next tier — motivating, shows progress]
-"in_transit_error": [Can't cancel — already shipped — apologetic but helpful]
-"return_photo_prompt": [Ask return damage photo — clear instructions]
-"warranty_reg_success": [Warranty registration done — ${warrantyDuration} coverage confirmed]
-${productGuideLines}
-
-Respond ONLY with valid raw JSON. No markdown code fences. No explanation.`;
-
+  const defaultContent = buildDefaultContent(businessName, botName, enrichedProducts, {
+    referralPoints, signupPoints, warrantyDuration, openTime, closeTime, checkoutUrl, currency
+  });
+  let aiContent = {};
+  const productsSummary = enrichedProducts
+    .slice(0, 8)
+    .map((p) => `"${p.title}" ${currency}${p.price}: ${p.features.slice(0, 80)}`)
+    .join("\n");
+  const aiPrompt = `Create JSON marketing copy for WhatsApp commerce bot.
+BRAND=${businessName}
+DESCRIPTION=${businessDescription}
+BOT=${botName}
+TONE=${tone}
+LANGUAGE=${botLanguage}
+PERSONA=${selectedPersona.label} (${selectedPersona.type})
+PRODUCTS:
+${productsSummary}
+Return only JSON with keys:
+welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_policy_short,refund_policy_short,cancellation_confirm,cancellation_success,loyalty_welcome,loyalty_points_msg,referral_msg,sentiment_ask,review_positive,review_negative,cart_recovery_1,cart_recovery_2,cart_recovery_3,cod_nudge,order_confirmed_msg,agent_handoff_msg,faq_response,ad_welcome,ig_welcome,warranty_welcome,warranty_lookup_prompt,support_hours_msg,return_photo_prompt,warranty_reg_success`;
   try {
     const parsed = await generateJSON(aiPrompt, client.geminiApiKey || process.env.GEMINI_API_KEY, {
-      maxTokens:   4096,
+      maxTokens: 3000,
       temperature: 0.2,
-      timeout:     45000,
-      maxRetries:  2,
+      timeout: 30000,
+      maxRetries: 1
     });
-    if (parsed && typeof parsed === "object" && Object.keys(parsed).length >= 20) {
-      content = parsed;
-      console.log(`[FlowGenerator] ✅ AI content generated: ${Object.keys(content).length} keys`);
-    } else {
-      console.warn("[FlowGenerator] ⚠️  AI returned thin content — using smart defaults.");
+    if (parsed && typeof parsed === "object") {
+      aiContent = parsed;
     }
-  } catch (err) {
-    console.warn("[FlowGenerator] ⚠️  AI generation failed:", err.message, "— using smart defaults.");
-  }
+  } catch (_) {}
+  const content = { ...defaultContent, ...aiContent };
 
-  // Merge: AI wins on non-empty fields; defaults fill gaps
-  content = {
-    ...buildDefaultContent(businessName, botName, enrichedProducts, {
-      referralPoints, signupPoints, warrantyDuration, openTime, closeTime, checkoutUrl, currency
-    }),
-    ...content,
-  };
-
-  // ── STEP 2: IDs ───────────────────────────────────────────────────────────
-  const ts = Date.now();
-
-  const FOLDER_IDS = {
-    WELCOME:    `f1_${ts}`,
-    CATALOG:    `f2_${ts}`,
-    ORDERS:     `f3_${ts}`,
-    RETURNS:    `f4_${ts}`,
-    SUPPORT:    `f5_${ts}`,
-    LOYALTY:    `f6_${ts}`,
-    AUTOMATION: `f7_${ts}`,
-    POSTPURCH:  `f8_${ts}`,
-  };
+  const nodes = [];
+  const edges = [];
 
   const IDS = {
-    // ── Folder 1: Welcome & Entry Hub ──────────────────────────────────────
-    TRIGGER:       `f1_trig_${ts}`,      // Main keyword trigger
-    AD_TRIGGER:    `f1_ad_tr_${ts}`,     // Meta ad trigger
-    IG_TRIGGER:    `f1_ig_tr_${ts}`,     // Instagram mention trigger
-    WELCOME_MSG:   `f1_welcome_${ts}`,   // Single welcome message (no A/B)
-    W_AD:          `f1_wad_${ts}`,       // Ad-specific welcome
-    W_IG:          `f1_wig_${ts}`,       // IG-specific welcome
-    MENU:          `f1_menu_${ts}`,      // THE Main Hub interactive list
-
-    // ── Folder 2: Product Catalog ──────────────────────────────────────────
-    CATALOG:        `f2_cat_${ts}`,
-    DETAIL_PREFIX:  `f2_det_${ts}_`,
-
-    // ── Folder 3: Order Operations ─────────────────────────────────────────
-    ORDER_STATUS:          `f3_stat_${ts}`,
-    ORDER_MSG:             `f3_stat_m_${ts}`,
-    CANCEL_START:          `f3_can_${ts}`,
-    CANCEL_LOGIC:          `f3_can_log_${ts}`,
-    CANCEL_REASON:         `f3_can_rea_${ts}`,
-    CANCEL_ALREADY_SHIPPED:`f3_can_shp_${ts}`,
-    CANCEL_FINAL:          `f3_can_fin_${ts}`,
-
-    // ── Folder 4: Returns & Refunds ────────────────────────────────────────
-    RETURN_HUB:     `f4_hub_${ts}`,
-    RETURN_REASON:  `f4_reason_${ts}`,
-    RETURN_PHOTO:   `f4_photo_${ts}`,
-    RETURN_SUCCESS: `f4_ok_${ts}`,
-    REFUND_STATUS:  `f4_ref_s_${ts}`,
-    REFUND_FINAL:   `f4_ref_f_${ts}`,
-
-    // ── Folder 5: Support & Escalation ────────────────────────────────────
-    SUPPORT_CAPTURE: `f5_cap_${ts}`,
-    SUPPORT_TAG:     `f5_tag_${ts}`,
-    SUPPORT_ALERT:   `f5_alert_${ts}`,
-    SUPPORT_FINAL:   `f5_final_${ts}`,
-    SUPPORT_HOURS:   `f5_hrs_${ts}`,
-    SCHED_NODE:      `f5_sch_${ts}`,
-
-    // ── Folder 6: Loyalty & Rewards ────────────────────────────────────────
-    LOY_MENU:      `f6_menu_${ts}`,
-    LOY_POINTS:    `f6_pts_${ts}`,
-    LOY_REDEEM:    `f6_red_${ts}`,
-    LOY_REFER:     `f6_ref_${ts}`,
-    LOY_TIER:      `f6_tier_${ts}`,
-    LOY_VIP_PERK:  `f6_vip_${ts}`,
-    LOY_NEW_NUDGE: `f6_nudge_${ts}`,
-    LOYALTY_AWARD: `f6_awd_${ts}`,
-
-    // ── Folder 7: Smart Automations ────────────────────────────────────────
-    CART_TR:   `f7_c_tr_${ts}`,
-    CART_D1:   `f7_c_d1_${ts}`,
-    CART_M1:   `f7_c_m1_${ts}`,
-    CART_D2:   `f7_c_d2_${ts}`,
-    CART_M2:   `f7_c_m2_${ts}`,
-    CART_D3:   `f7_c_d3_${ts}`,
-    CART_M3:   `f7_c_m3_${ts}`,
-    CONF_TR:   `f7_conf_tr_${ts}`,
-    CONF_MSG:  `f7_conf_m_${ts}`,
-    COD_CHECK: `f7_cod_chk_${ts}`,
-    COD_NUDGE: `f7_cod_${ts}`,
-    REV_TRIG:  `f7_rev_tr_${ts}`,
-    REV_ASK:   `f7_rev_ask_${ts}`,
-    REV_GOOD:  `f7_rev_g_${ts}`,
-    REV_BAD:   `f7_rev_b_${ts}`,
-
-    // ── Folder 8: Post-Purchase Hub ────────────────────────────────────────
-    AI_FALLBACK:          `f8_ai_fb_${ts}`,
-    FAQ_NODE:             `f8_faq_${ts}`,
-    FAQ_MSG:              `f8_faq_msg_${ts}`,    // FAQ answer message (reachable from menu 'faq' row)
-    RET_POLICY_NODE:      `f8_ret_p_${ts}`,
-    WARRANTY_HUB:         `f8_war_hub_${ts}`,
-    WARRANTY_REG_SERIAL:  `f8_war_ser_${ts}`,
-    WARRANTY_REG_DATE:    `f8_war_dt_${ts}`,
-    WARRANTY_REG_TAG:     `f8_war_tag_${ts}`,
-    WARRANTY_REG_SUCCESS: `f8_war_ok_${ts}`,
-    WARRANTY_LOOKUP_SER:  `f8_war_ls_${ts}`,
-    WARRANTY_LOOKUP_EXEC: `f8_war_le_${ts}`,
-    B2B_TRIGGER:          `f8_b2b_tr_${ts}`,
-    B2B_FORM:             `f8_b2b_f_${ts}`,
-    B2B_VOLUME:           `f8_b2b_v_${ts}`,
-    B2B_TAG:              `f8_b2b_tag_${ts}`,
-    B2B_ALERT:            `f8_b2b_a_${ts}`,
-    B2B_CONFIRM:          `f8_b2b_ok_${ts}`,
+    trig_main: `trig_${ts}`,
+    trig_ad: `trig_ad_${ts}`,
+    trig_ig: `trig_ig_${ts}`,
+    trig_order: `trig_ord_${ts}`,
+    trig_cart: `trig_cart_${ts}`,
+    trig_fulfill: `trig_ful_${ts}`,
+    welcome_tpl: `tpl_welcome_${ts}`,
+    ad_welcome: `msg_ad_wlc_${ts}`,
+    ig_welcome: `msg_ig_wlc_${ts}`,
+    main_menu: `menu_main_${ts}`,
+    cat_list: `cat_list_${ts}`,
+    ord_track: `ord_track_${ts}`,
+    ord_hub: `ord_hub_${ts}`,
+    can_confirm: `can_confirm_${ts}`,
+    can_logic: `can_logic_${ts}`,
+    can_reason: `can_reason_${ts}`,
+    can_action: `can_action_${ts}`,
+    can_shipped: `can_shipped_${ts}`,
+    ret_hub: `ret_hub_${ts}`,
+    ret_reason: `ret_reason_${ts}`,
+    ret_photo: `ret_photo_${ts}`,
+    ret_confirm: `ret_confirm_${ts}`,
+    ref_check: `ref_check_${ts}`,
+    ref_result: `ref_result_${ts}`,
+    war_hub: `war_hub_${ts}`,
+    war_serial: `war_serial_${ts}`,
+    war_date: `war_date_${ts}`,
+    war_tag: `war_tag_${ts}`,
+    war_success: `war_success_${ts}`,
+    war_lookup: `war_lookup_${ts}`,
+    war_engine: `war_engine_${ts}`,
+    loy_menu: `loy_menu_${ts}`,
+    loy_balance: `loy_bal_${ts}`,
+    loy_redeem: `loy_red_${ts}`,
+    loy_refer: `loy_ref_${ts}`,
+    sup_sch: `sup_sch_${ts}`,
+    sup_capture: `sup_cap_${ts}`,
+    sup_tag: `sup_tag_${ts}`,
+    sup_alert: `sup_alert_${ts}`,
+    sup_confirm: `sup_conf_${ts}`,
+    sup_closed: `sup_closed_${ts}`,
+    faq_msg: `faq_${ts}`,
+    conf_msg: `conf_msg_${ts}`,
+    cod_check: `cod_chk_${ts}`,
+    cod_node: `cod_node_${ts}`,
+    rev_request: `rev_req_${ts}`,
+    rev_positive: `rev_pos_${ts}`,
+    rev_negative: `rev_neg_${ts}`,
+    b2b_trigger: `b2b_trig_${ts}`,
+    b2b_capture: `b2b_cap_${ts}`,
+    b2b_tag: `b2b_tag_${ts}`,
+    b2b_alert: `b2b_alert_${ts}`,
+    b2b_confirm: `b2b_confirm_${ts}`,
+    ai_fallback: `ai_fb_${ts}`
   };
 
-  const Y = 140;
-  let nodes = [];
-  let edges = [];
+  const buildKeywords = () => {
+    const base = [
+      "hi", "hello", "hey", "helo", "hiii", "start", "menu", "help",
+      "bot", "hola", "test", "yo", "sup", "kem cho", "namaste", "pranam",
+      "shu che", "su che", "buy", "price", "order", "shop", "offer", "deal",
+      "discount", "catalog", "kharidna", "bhav"
+    ];
+    const business = (client.businessType === "ecommerce")
+      ? ["doorbell", "camera", "security", "smart", "home", "wireless", "video"]
+      : ["service", "enquiry", "information", "know more"];
+    const productKws = enrichedProducts.flatMap((p) => [
+      String(p.handle || "").replace(/-/g, " "),
+      String(p.title || "").toLowerCase().replace(/[^a-z0-9 ]/g, "").slice(0, 20)
+    ]);
+    return [...new Set([...base, ...business, ...productKws])].filter((k) => k && k.length > 1);
+  };
 
-  // ====================================================================
-  // ROOT LEVEL — 8 Folder nodes
-  // ====================================================================
-  const FOLDER_META = [
-    { id: FOLDER_IDS.WELCOME,    label: "Welcome & Entry Hub",    color: "indigo",  icon: "Zap",         pos: { x: 0,    y: 0   } },
-    { id: FOLDER_IDS.CATALOG,    label: "Product Catalog",        color: "emerald", icon: "ShoppingBag", pos: { x: 360,  y: 0   } },
-    { id: FOLDER_IDS.ORDERS,     label: "Order Operations",       color: "amber",   icon: "Package",     pos: { x: 720,  y: 0   } },
-    { id: FOLDER_IDS.RETURNS,    label: "Returns & Refunds",      color: "rose",    icon: "RefreshCcw",  pos: { x: 1080, y: 0   } },
-    { id: FOLDER_IDS.SUPPORT,    label: "Support & Escalation",   color: "blue",    icon: "Headset",     pos: { x: 0,    y: 340 } },
-    { id: FOLDER_IDS.LOYALTY,    label: "Loyalty & Rewards",      color: "violet",  icon: "Star",        pos: { x: 360,  y: 340 } },
-    { id: FOLDER_IDS.AUTOMATION, label: "Smart Automations",      color: "orange",  icon: "Bot",         pos: { x: 720,  y: 340 } },
-    { id: FOLDER_IDS.POSTPURCH,  label: "Post-Purchase Hub",      color: "teal",    icon: "ShieldCheck", pos: { x: 1080, y: 340 } },
-  ];
+  const truncate = (str, max = 24) => {
+    const value = String(str || "");
+    return value.length > max ? `${value.slice(0, max - 3)}...` : value;
+  };
 
-  FOLDER_META.forEach(f => {
-    nodes.push({
-      id:       f.id,
-      type:     "folder",
-      position: f.pos,
-      data:     { label: f.label, color: f.color, icon: f.icon, childCount: 0 },
-    });
-  });
-
-  // ====================================================================
-  // FOLDER 1 — Welcome & Entry Hub
-  //
-  // THE GOLDEN PATH:
-  //   [Trigger] → [Welcome Message] → [Interactive List: Main Hub]
-  //                                        ↓ shop     → Folder 2 (Catalog)
-  //                                        ↓ track    → Folder 3 (Order Status)
-  //                                        ↓ returns  → Folder 4 (Return Hub)
-  //                                        ↓ loyalty  → Folder 6 (Loyalty Menu)
-  //                                        ↓ support  → Folder 5 (Support)
-  //                                        ↓ warranty → Folder 8 (Warranty Hub)
-  //
-  //   [Meta Ad Trigger]  → [Ad Welcome]  → MENU
-  //   [IG Story Trigger] → [IG Welcome]  → MENU
-  // ====================================================================
-
-  const baseKeywords        = ["hi", "hello", "hey", "start", "menu", "kem cho", "namaste", "help", "bot", "hola"];
-  const indianContextKws    = ["kem che", "shuchu", "jai shree krishna", "namaskaar", "pranam", "kya chal raha hai", "bhai", "yaar"];
-  const ecommerceIntentKws  = ["buy", "price", "order", "shop", "purchase", "product", "offer", "deal", "discount", "catalog"];
-  const productKeywords     = enrichedProducts.slice(0, 3).map(p => p.title.toLowerCase().split(" ")[0]);
-  const brandKeywords       = [businessName.toLowerCase().split(" ")[0]];
-  const allKeywords         = [...new Set([
-    ...baseKeywords,
-    ...indianContextKws,
-    ...ecommerceIntentKws,
-    ...productKeywords,
-    ...brandKeywords,
-  ])].filter(k => k.length >= 2);
-
-  // 1A. Entry triggers
   nodes.push(
     {
-      id: IDS.TRIGGER,
+      id: IDS.trig_main,
       type: "trigger",
       position: { x: 0, y: 0 },
-      parentId: FOLDER_IDS.WELCOME,
-      data: {
-        label:       "Main Entry Trigger",
-        triggerType: "keyword",
-        keywords:    allKeywords,
-        matchMode:   "contains",
-      },
+      data: { label: "Main Entry Trigger", triggerType: "keyword", matchMode: "contains", keywords: buildKeywords(), heatmapCount: 0 }
     },
     {
-      id: IDS.AD_TRIGGER,
+      id: IDS.trig_ad,
       type: "trigger",
-      position: { x: 0, y: Y },
-      parentId: FOLDER_IDS.WELCOME,
-      data: {
-        label:       "Meta Ad Click Trigger",
-        triggerType: "meta_ad",
-        keywords:    ["ad_click"],
-      },
+      position: { x: 400, y: 0 },
+      data: { label: "Meta Ad Click Trigger", triggerType: "meta_ad", keywords: ["ad_click"], heatmapCount: 0 }
     },
     {
-      id: IDS.IG_TRIGGER,
+      id: IDS.trig_ig,
       type: "trigger",
-      position: { x: 0, y: Y * 2 },
-      parentId: FOLDER_IDS.WELCOME,
-      data: {
-        label:       "Instagram Mention Trigger",
-        triggerType: "ig_story_mention",
-        keywords:    ["story_mention"],
-      },
+      position: { x: 800, y: 0 },
+      data: { label: "Instagram Mention Trigger", triggerType: "ig_story_mention", keywords: ["story_mention"], heatmapCount: 0 }
     }
   );
 
-  // 1B. Channel-specific welcome messages
-  //     When a business logo is configured, use the pre-approved IMAGE template
-  //     (welcome_with_logo) so the brand logo appears on first contact.
-  //     Falls back gracefully to a plain text message node.
-  const welcomeHasLogo = !!(wizardData.businessLogo || wizardData.shopDomain);
-  nodes.push(
-    {
-      id:       IDS.WELCOME_MSG,
-      type:     welcomeHasLogo ? "template" : "message",
-      position: { x: 420, y: 0 },
-      parentId: FOLDER_IDS.WELCOME,
-      data: welcomeHasLogo
-        ? {
-            label:        "Welcome Message (Branded)",
-            templateName: "welcome_with_logo",
-            variables:    [businessName],
-            imageUrl:     wizardData.businessLogo || "",
-          }
-        : {
-            label: "Welcome Message",
-            text:  content.welcome_a,
-          },
-    },
-    {
-      id: IDS.W_AD,
-      type: "message",
-      position: { x: 420, y: Y },
-      parentId: FOLDER_IDS.WELCOME,
-      data: {
-        label: "Ad Welcome",
-        text:  content.ad_welcome,
-      },
-    },
-    {
-      id: IDS.W_IG,
-      type: "message",
-      position: { x: 420, y: Y * 2 },
-      parentId: FOLDER_IDS.WELCOME,
-      data: {
-        label: "Instagram Welcome",
-        text:  content.ig_welcome,
-      },
-    }
-  );
-
-  // 1C. THE MAIN HUB — Interactive List (Golden Path core)
-  //     ══════════════════════════════════════════════════════
-  //     ⚠️  ROW IDs HERE MUST EXACTLY MATCH the sourceHandle on
-  //         each cross-folder edge below. This is enforced by
-  //         verifyAllEdgesMatchButtonIds() at build time.
-  //     ══════════════════════════════════════════════════════
-  nodes.push({
-    id:       IDS.MENU,
-    type:     "interactive",
-    position: { x: 900, y: Y * 0.5 },
-    parentId: FOLDER_IDS.WELCOME,
-    data: {
-      label:           "Main Hub Menu",
-      interactiveType: "list",
-      text:            content.product_menu_text,
-      buttonText:      "Open Menu",
-      sections: [
-        {
-          title: `${businessName}`,
-          rows: [
-            { id: "shop",     title: "🛍️ Shop Collection"   },
-            { id: "track",    title: "📦 Track My Order"     },
-            { id: "returns",  title: "⚙️ Returns & Refunds" },
-            { id: "loyalty",  title: "💎 My Rewards"         },
-            { id: "support",  title: "🎧 Talk to Human"      },
-            { id: "warranty", title: "🛡️ Warranty"          },
-            { id: "faq",      title: "❓ FAQ & Help"         },
-          ],
-        },
-      ],
-    },
-  });
-
-  // 1D. Folder 1 edges — triggers → welcome → menu
-  edges.push(
-    { id: "f1_tr_wm",    source: IDS.TRIGGER,     target: IDS.WELCOME_MSG },
-    { id: "f1_wm_menu",  source: IDS.WELCOME_MSG, target: IDS.MENU        },
-    { id: "f1_ad_wad",   source: IDS.AD_TRIGGER,  target: IDS.W_AD        },
-    { id: "f1_wad_menu", source: IDS.W_AD,         target: IDS.MENU        },
-    { id: "f1_ig_wig",   source: IDS.IG_TRIGGER,  target: IDS.W_IG        },
-    { id: "f1_wig_menu", source: IDS.W_IG,         target: IDS.MENU        },
-  );
-
-  // 1E. Cross-folder nav edges from MENU
-  //     ⚠️ sourceHandle MUST equal the row id declared in 1C above — NO exceptions.
-  edges.push(
-    { id: "f1_m_shop",     source: IDS.MENU, target: IDS.CATALOG,      sourceHandle: "shop"     },
-    { id: "f1_m_track",    source: IDS.MENU, target: IDS.ORDER_STATUS, sourceHandle: "track"    },
-    { id: "f1_m_returns",  source: IDS.MENU, target: IDS.RETURN_HUB,  sourceHandle: "returns"  },
-    { id: "f1_m_loyalty",  source: IDS.MENU, target: IDS.LOY_MENU,    sourceHandle: "loyalty"  },
-    // ⚠️ Support goes through business-hours SCHEDULE gate — NOT directly to capture
-    { id: "f1_m_support",  source: IDS.MENU, target: IDS.SCHED_NODE,  sourceHandle: "support"  },
-    { id: "f1_m_warranty", source: IDS.MENU, target: IDS.WARRANTY_HUB,sourceHandle: "warranty" },
-    { id: "f1_m_faq",      source: IDS.MENU, target: IDS.FAQ_MSG,     sourceHandle: "faq"      },
-  );
-
-  // ====================================================================
-  // FOLDER 2 — Product Catalog
-  //
-  // THE GOLDEN PATH (per product):
-  //   [CATALOG list] → [Product interactive button]
-  //                         ↓ buy   → (checkout/buy intent — no dead end)
-  //                         ↓ menu  → MENU (back to hub)
-  //                         ↓ guide → Guide message in Folder 8 (if exists)
-  // ====================================================================
-
-  if (enrichedProducts.length === 0) {
-    // No products → redirect to store URL
+  const hasWelcomeTemplate = (client.syncedMetaTemplates || []).some((t) => String(t.name || "").includes("welcome"));
+  if (hasWelcomeTemplate) {
     nodes.push({
-      id: IDS.CATALOG,
-      type: "interactive",
-      position: { x: 0, y: 0 },
-      parentId: FOLDER_IDS.CATALOG,
-      data: {
-        label:           "Store Redirect",
-        interactiveType: "button",
-        text:            `Browse our full collection at ${checkoutUrl || businessName + " online store"}! 🛍️`,
-        buttonsList:     [{ id: "menu", title: "⬅️ Main Menu" }],
-      },
+      id: IDS.welcome_tpl,
+      type: "template",
+      position: { x: 1200, y: 0 },
+      data: { label: "Welcome Template", templateName: (client.syncedMetaTemplates || [])[0]?.name || "welcome_with_logo", imageUrl: client.brand?.logoUrl || "", variables: [], heatmapCount: 0 }
     });
-    edges.push({ id: "f2_red_menu", source: IDS.CATALOG, target: IDS.MENU, sourceHandle: "menu" });
   } else {
-    const categories = [...new Set(enrichedProducts.map(p => p.category))];
-
-    if (categories.length > 1) {
-      // Multi-category: Catalog → Category list → Product cards
-      nodes.push({
-        id:       IDS.CATALOG,
-        type:     "interactive",
-        position: { x: 0, y: 0 },
-        parentId: FOLDER_IDS.CATALOG,
-        data: {
-          label:           "Category Browser",
-          interactiveType: "list",
-          text:            `Explore our *${businessName}* collection:`,
-          buttonText:      "Browse Categories",
-          sections: [
-            {
-              title: "Product Categories",
-              rows:  categories.slice(0, 10).map(cat => ({
-                id:    `cat_${cat.toLowerCase().replace(/\s+/g, "_")}`,
-                title: cat,
-              })),
-            },
-          ],
-        },
-      });
-
-      categories.forEach((cat, catIdx) => {
-        const catNodeId = `f2_cl_${catIdx}_${ts}`;
-        const catProds  = enrichedProducts.filter(p => p.category === cat).slice(0, 10);
-        const catHandle = `cat_${cat.toLowerCase().replace(/\s+/g, "_")}`;
-
-        nodes.push({
-          id:       catNodeId,
-          type:     "interactive",
-          position: { x: 420, y: catIdx * Y * 1.5 },
-          parentId: FOLDER_IDS.CATALOG,
-          data: {
-            label:           `Category: ${cat}`,
-            interactiveType: "list",
-            text:            `Our best *${cat}* products:`,
-            buttonText:      "View Products",
-            sections: [
-              {
-                title: cat,
-                rows:  catProds.map((p, pi) => ({ id: `p_${catIdx}_${pi}`, title: p.title.substring(0, 24) })),
-              },
-            ],
-          },
-        });
-        edges.push({ id: `f2_c_${catIdx}`, source: IDS.CATALOG, target: catNodeId, sourceHandle: catHandle });
-
-        catProds.forEach((p, pi) => {
-          const pId     = `${IDS.DETAIL_PREFIX}${catIdx}_${pi}`;
-          const guideId = `f8_guide_${p.handle}_${ts}`;
-          const hasGuide = !!content[`guide_${p.handle}`];
-
-          const btns = [
-            { id: "buy",  title: "🛒 Buy Now"     },
-            { id: "menu", title: "⬅️ Main Menu"  },
-            ...(hasGuide ? [{ id: "guide", title: "📋 Product Guide" }] : []),
-          ];
-
-          nodes.push({
-            id:       pId,
-            type:     "interactive",
-            position: { x: 840, y: (catIdx * catProds.length + pi) * Y },
-            parentId: FOLDER_IDS.CATALOG,
-            data: {
-              label:           `Product: ${p.title.substring(0, 20)}`,
-              interactiveType: "button",
-              text:            `*${p.title}*\n\n💰 Price: ${currency}${p.price}${p.features ? `\n\n${p.features.slice(0, 160)}` : ""}`,
-              imageUrl:        p.imageUrl || "",
-              shopifyProductId: p.id || "",
-              buttonsList:     btns,
-            },
-          });
-
-          edges.push(
-            { id: `f2_cl${catIdx}_p${pi}`,     source: catNodeId, target: pId,     sourceHandle: `p_${catIdx}_${pi}` },
-            { id: `f2_p${catIdx}${pi}_menu`,   source: pId,       target: IDS.MENU, sourceHandle: "menu" }
-          );
-
-          if (hasGuide) {
-            nodes.push({
-              id:       guideId,
-              type:     "message",
-              position: { x: 200, y: (enrichedProducts.indexOf(p) + 5) * Y },
-              parentId: FOLDER_IDS.POSTPURCH,
-              data: { label: `Guide: ${p.title.substring(0, 20)}`, text: content[`guide_${p.handle}`] },
-            });
-            edges.push({ id: `f2_p${catIdx}${pi}_guide`, source: pId, target: guideId, sourceHandle: "guide" });
-          }
-        });
-      });
-    } else {
-      // Single category — flat product list
-      nodes.push({
-        id:       IDS.CATALOG,
-        type:     "interactive",
-        position: { x: 0, y: 0 },
-        parentId: FOLDER_IDS.CATALOG,
-        data: {
-          label:           "Product Catalog",
-          interactiveType: "list",
-          text:            content.product_menu_text,
-          buttonText:      "View Products",
-          sections: [
-            {
-              title: `${businessName} Products`,
-              rows:  enrichedProducts.map((p, i) => ({ id: `p_${i}`, title: p.title.substring(0, 24) })),
-            },
-          ],
-        },
-      });
-
-      // ── productMode: 'template' | 'manual' (from wizard toggle) ──────────────
-      // 'template' → Use pre-approved Meta template IF available, otherwise
-      //              fall back to manual interactive node (NEVER block the flow)
-      // 'manual'   → Always use interactive node with image + buy button inline
-      //              (no Meta template dependency whatsoever)
-      const productMode = wizardData.productMode || 'template';
-
-      enrichedProducts.forEach((p, i) => {
-        const pId      = `${IDS.DETAIL_PREFIX}${i}`;
-        const buyId    = `f2_buy_${i}_${ts}`;   // "Buy Now" intent handler node
-        const talkId   = `f2_talk_${i}_${ts}`;  // "Talk to Agent" node when no buy link
-        const guideId  = `f8_guide_${p.handle}_${ts}`;
-        const hasGuide = !!content[`guide_${p.handle}`];
-
-        // Build the product buy URL (Shopify store URL + product handle)
-        const storeBase = wizardData.shopDomain
-          ? `https://${wizardData.shopDomain.replace(/^https?:\/\//, '')}`
-          : (checkoutUrl ? checkoutUrl.replace(/\/checkout$/, '') : '');
-        const buyUrl = storeBase ? `${storeBase}/products/${p.handle}` : '';
-
-        // ── Template Engine ──────────────────────────────────────────────────
-        const templateName = `prod_${p.handle.replace(/[^a-z0-9_]/gi, '_').toLowerCase()}`.substring(0, 50);
-        const approvedTemplate = productMode === 'template'
-          ? (client.messageTemplates || []).find(t => t.name === templateName && t.status === 'APPROVED')
-          : null; // manual mode: always use interactive nodes
-
-        // Queue template for future submission (template mode only, no approved template)
-        if (productMode === 'template' && !approvedTemplate) {
-          wizardData.customTemplates = wizardData.customTemplates || [];
-          if (!wizardData.customTemplates.find(t => t.name === templateName)) {
-            wizardData.customTemplates.push({
-              name:      templateName,
-              category:  'MARKETING',
-              language:  'en',
-              components: [
-                { type: 'HEADER', format: 'IMAGE', _imageUrl: p.imageUrl || '' },
-                { type: 'BODY', text: `*{{1}}*\n\n💰 Price: ${currency}{{2}}\n\n{{3}}` },
-                { type: 'FOOTER', text: businessName },
-                {
-                  type: 'BUTTONS',
-                  buttons: [
-                    ...(buyUrl ? [{ type: 'URL', text: '🛒 Buy Now', url: buyUrl }] : [{ type: 'QUICK_REPLY', text: '🛒 Buy Now' }]),
-                    { type: 'QUICK_REPLY', text: '🎧 Talk to Agent' },
-                    { type: 'QUICK_REPLY', text: '⬅️ Main Menu' },
-                  ],
-                },
-              ],
-            });
-          }
-        }
-
-        // ── Build buttons list for interactive (manual) node ─────────────────
-        // ⚠️ IDs declared here MUST match edge sourceHandles below — exactly.
-        const btns = [
-          { id: 'buy',    title: '🛒 Buy Now'        },
-          { id: 'agent',  title: '🎧 Talk to Agent'  },
-          { id: 'menu',   title: '⬅️ Main Menu'      },
-          ...(hasGuide ? [{ id: 'guide', title: '📋 Product Guide' }] : []),
-        ];
-
-        // ── Push product node ────────────────────────────────────────────────
-        if (approvedTemplate) {
-          // ── TEMPLATE MODE (approved) — no buttons on node, buttons are in template
-          nodes.push({
-            id:       pId,
-            type:     'template',
-            position: { x: 420, y: i * Y },
-            parentId: FOLDER_IDS.CATALOG,
-            data: {
-              label:        `Product: ${p.title.substring(0, 20)}`,
-              templateName: templateName,
-              variables:    [p.title, p.price, p.features?.slice(0, 120) || ''],
-              imageUrl:     p.imageUrl || '',
-            },
-          });
-          // Template quick-reply buttons: 'buy', 'agent', 'menu'
-          // (engine handles these via tryGraphTraversal on button_reply)
-          edges.push(
-            { id: `f2_cat_p${i}`,    source: IDS.CATALOG, target: pId,    sourceHandle: `p_${i}` },
-          );
-          // For approved templates with URL buttons, buy intent is handled server-side.
-          // We still wire 'menu' and 'agent' back-path edges from pId using template QUICK_REPLY payloads
-          edges.push(
-            { id: `f2_p${i}_m`,     source: pId, target: IDS.MENU,    sourceHandle: 'menu'  },
-            { id: `f2_p${i}_agent`, source: pId, target: IDS.SCHED_NODE, sourceHandle: 'agent' },
-          );
-        } else {
-          // ── MANUAL MODE — full interactive node with image + 3 inline buttons
-          // This is also the FALLBACK when template is not approved yet.
-          nodes.push({
-            id:       pId,
-            type:     'interactive',
-            position: { x: 420, y: i * Y },
-            parentId: FOLDER_IDS.CATALOG,
-            data: {
-              label:            `Product: ${p.title.substring(0, 20)}`,
-              interactiveType:  'button',
-              text:             `*${p.title}*\n\n💰 Price: ${currency}${p.price}${p.features ? `\n\n${p.features.slice(0, 160)}` : ''}`,
-              imageUrl:         p.imageUrl || '',
-              shopifyProductId: p.id || '',
-              buttonsList:      btns,
-            },
-          });
-
-          // ── "Buy Now" Intent Handler Node ─────────────────────────────────
-          // When user taps "Buy Now" → send purchase link + route back to menu
-          const buyText = buyUrl
-            ? `🛒 *Buy ${p.title}*\n\nTap the link to complete your purchase securely:\n${buyUrl}\n\n_Questions? Reply *agent* to talk to us._`
-            : `🛒 *Buy ${p.title}*\n\nOur team will send you the payment link immediately! A human agent will be with you shortly. 😊`;
-
-          nodes.push({
-            id:       buyId,
-            type:     'message',
-            position: { x: 840, y: i * Y - Y * 0.4 },
-            parentId: FOLDER_IDS.CATALOG,
-            data: { label: `Buy: ${p.title.substring(0, 16)}`, text: buyText },
-          });
-
-          // ── "Talk to Agent" Node ──────────────────────────────────────────
-          // Routes to support schedule gate (same as 'support' on main menu)
-          // No separate node needed — we wire 'agent' → SCHED_NODE
-
-          edges.push(
-            { id: `f2_cat_p${i}`,    source: IDS.CATALOG, target: pId,            sourceHandle: `p_${i}` },
-            { id: `f2_p${i}_buy`,    source: pId,          target: buyId,          sourceHandle: 'buy'    }, // ← MUST match btn.id
-            { id: `f2_p${i}_m`,      source: pId,          target: IDS.MENU,       sourceHandle: 'menu'   }, // ← MUST match btn.id
-            { id: `f2_p${i}_agent`,  source: pId,          target: IDS.SCHED_NODE, sourceHandle: 'agent'  }, // ← MUST match btn.id
-          );
-
-          if (hasGuide) {
-            nodes.push({
-              id:       guideId,
-              type:     'message',
-              position: { x: 200, y: (i + 5) * Y },
-              parentId: FOLDER_IDS.POSTPURCH,
-              data: { label: `Guide: ${p.title.substring(0, 18)}`, text: content[`guide_${p.handle}`] },
-            });
-            edges.push({ id: `f2_p${i}_guide`, source: pId, target: guideId, sourceHandle: 'guide' }); // ← MUST match btn.id
-          }
-        }
-      });
-    }
+    nodes.push({
+      id: IDS.welcome_tpl,
+      type: "interactive",
+      position: { x: 1200, y: 0 },
+      data: {
+        label: "Welcome Message",
+        interactiveType: "button",
+        imageUrl: client.brand?.logoUrl || "",
+        text: content.welcome_a,
+        buttonsList: [{ id: "shop", title: "🛍️ View Products" }, { id: "faq", title: "❓ Setup & FAQ" }, { id: "support", title: "🎧 Talk to Us" }],
+        heatmapCount: 0
+      }
+    });
   }
 
-  // ====================================================================
-  // FOLDER 3 — Order Operations
-  //
-  // THE GOLDEN PATH:
-  //   [Shopify: CHECK_ORDER_STATUS] → (shows order info)
-  //   [Interactive: Cancel Start]
-  //     ↓ yes → [Logic: Already Shipped?]
-  //                ↓ true  → [Message: In Transit Error]
-  //                ↓ false → [Capture: Cancel Reason] → [Shopify: CANCEL_ORDER]
-  //     ↓ no  → (no edge — flow ends naturally, fallback picks it up)
-  // ====================================================================
   nodes.push(
+    { id: IDS.ad_welcome, type: "message", position: { x: 400, y: 200 }, data: { label: "Ad Welcome", text: content.ad_welcome, heatmapCount: 0 } },
+    { id: IDS.ig_welcome, type: "message", position: { x: 800, y: 200 }, data: { label: "Instagram Welcome", text: content.ig_welcome, heatmapCount: 0 } },
     {
-      id:       IDS.ORDER_STATUS,
-      type:     "shopify_call",
-      position: { x: 0, y: 0 },
-      parentId: FOLDER_IDS.ORDERS,
+      id: IDS.main_menu,
+      type: "interactive",
+      position: { x: 1800, y: 0 },
       data: {
-        label:  "Fetch Order Status",
-        action: "CHECK_ORDER_STATUS",
-      },
-    },
-    {
-      id:       IDS.CANCEL_START,
-      type:     "interactive",
-      position: { x: 0, y: Y * 1.5 },
-      parentId: FOLDER_IDS.ORDERS,
-      data: {
-        label:           "Cancel Order Hub",
-        interactiveType: "button",
-        text:            content.cancellation_confirm,
-        buttonsList: [
-          { id: "yes",  title: "✅ Yes, Cancel" },
-          { id: "no",   title: "❌ Keep My Order" },
-          { id: "menu", title: "⬅️ Main Menu"  },
-        ],
-      },
-    },
-    {
-      id:       IDS.CANCEL_LOGIC,
-      type:     "logic",
-      position: { x: 420, y: Y * 1.5 },
-      parentId: FOLDER_IDS.ORDERS,
-      data: {
-        label:    "Is Order Shipped?",
-        variable: "is_shipped",
-        operator: "eq",
-        value:    "true",
-      },
-    },
-    {
-      id:       IDS.CANCEL_REASON,
-      type:     "capture_input",
-      position: { x: 840, y: Y * 0.75 },
-      parentId: FOLDER_IDS.ORDERS,
-      data: {
-        label:    "Cancellation Reason",
-        variable: "cancel_reason",
-        question: "Why are you cancelling? Your feedback helps us improve! 🙏 (Type your reason)",
-      },
-    },
-    {
-      id:       IDS.CANCEL_ALREADY_SHIPPED,
-      type:     "message",
-      position: { x: 840, y: Y * 2.5 },
-      parentId: FOLDER_IDS.ORDERS,
-      data: {
-        label: "Already Shipped Error",
-        text:  content.in_transit_error,
-      },
-    },
-    {
-      id:       IDS.CANCEL_FINAL,
-      type:     "shopify_call",
-      position: { x: 1260, y: Y * 0.75 },
-      parentId: FOLDER_IDS.ORDERS,
-      data: {
-        label:  "Process Cancellation",
-        action: "CANCEL_ORDER",
-      },
-    }
-  );
-
-  edges.push(
-    { id: "f3_can_y",   source: IDS.CANCEL_START,          target: IDS.CANCEL_LOGIC,           sourceHandle: "yes"   },
-    { id: "f3_can_m",   source: IDS.CANCEL_START,          target: IDS.MENU,                   sourceHandle: "menu"  },
-    { id: "f3_log_t",   source: IDS.CANCEL_LOGIC,          target: IDS.CANCEL_ALREADY_SHIPPED, sourceHandle: "true"  },
-    { id: "f3_log_f",   source: IDS.CANCEL_LOGIC,          target: IDS.CANCEL_REASON,          sourceHandle: "false" },
-    { id: "f3_can_fin", source: IDS.CANCEL_REASON,         target: IDS.CANCEL_FINAL            },
-  );
-
-  // ====================================================================
-  // FOLDER 4 — Returns & Refunds
-  //
-  // THE GOLDEN PATH:
-  //   [Interactive: Return Hub]
-  //     ↓ photo   → [Capture: Return Reason] → [Capture: Photo/File] → [Message: Success]
-  //     ↓ refund  → [Shopify: ORDER_REFUND_STATUS] → [Message: Refund Policy]
-  //     ↓ policy  → [Message: Returns Policy] (in Folder 8)
-  //     ↓ menu    → MENU
-  // ====================================================================
-  nodes.push(
-    {
-      id:       IDS.RETURN_HUB,
-      type:     "interactive",
-      position: { x: 0, y: 0 },
-      parentId: FOLDER_IDS.RETURNS,
-      data: {
-        label:           "Returns & Refunds Hub",
-        interactiveType: "button",
-        text:            "What would you like help with? Select below:",
-        buttonsList: [
-          { id: "photo",  title: "📸 Start Return" },
-          { id: "refund", title: "💸 Refund Status"  },
-          { id: "menu",   title: "⬅️ Main Menu"   },
-        ],
-      },
-    },
-    {
-      id:       IDS.RETURN_REASON,
-      type:     "capture_input",
-      position: { x: 420, y: -Y * 0.5 },
-      parentId: FOLDER_IDS.RETURNS,
-      data: {
-        label:    "Return Reason",
-        variable: "return_reason",
-        question: "Please tell us the reason for your return. (e.g. damaged, wrong item, changed mind)",
-      },
-    },
-    {
-      id:       IDS.RETURN_PHOTO,
-      type:     "capture_input",
-      position: { x: 840, y: -Y * 0.5 },
-      parentId: FOLDER_IDS.RETURNS,
-      data: {
-        label:    "Damage Photo",
-        variable: "return_photo",
-        question: content.return_photo_prompt,
-      },
-    },
-    {
-      id:       IDS.RETURN_SUCCESS,
-      type:     "message",
-      position: { x: 1260, y: -Y * 0.5 },
-      parentId: FOLDER_IDS.RETURNS,
-      data: {
-        label: "Return Confirmed",
-        text:  "✅ Return request received! Our team will verify your photo and arrange pickup within 24–48 hours. You'll receive a confirmation SMS shortly.",
-      },
-    },
-    {
-      id:       IDS.REFUND_STATUS,
-      type:     "shopify_call",
-      position: { x: 420, y: Y },
-      parentId: FOLDER_IDS.RETURNS,
-      data: {
-        label:  "Fetch Refund Status",
-        action: "ORDER_REFUND_STATUS",
-      },
-    },
-    {
-      id:       IDS.REFUND_FINAL,
-      type:     "message",
-      position: { x: 840, y: Y },
-      parentId: FOLDER_IDS.RETURNS,
-      data: {
-        label: "Refund Policy",
-        text:  content.refund_policy_short,
-      },
-    }
-  );
-
-  edges.push(
-    { id: "f4_hub_photo",  source: IDS.RETURN_HUB,    target: IDS.RETURN_REASON, sourceHandle: "photo"  },
-    { id: "f4_hub_refund", source: IDS.RETURN_HUB,    target: IDS.REFUND_STATUS, sourceHandle: "refund" },
-    { id: "f4_hub_menu",   source: IDS.RETURN_HUB,    target: IDS.MENU,          sourceHandle: "menu"   },
-    { id: "f4_rea_photo",  source: IDS.RETURN_REASON, target: IDS.RETURN_PHOTO                          },
-    { id: "f4_photo_ok",   source: IDS.RETURN_PHOTO,  target: IDS.RETURN_SUCCESS                        },
-    { id: "f4_ref_fin",    source: IDS.REFUND_STATUS, target: IDS.REFUND_FINAL                          },
-  );
-
-  // ====================================================================
-  // FOLDER 5 — Support & Escalation
-  //
-  // THE GOLDEN PATH (as specified):
-  //   [Schedule: Business Hours Check]
-  //     ↓ open   → [Capture Input: "What do you need help with?"]
-  //                  → [Tag: pending-human]
-  //                     → [Admin Alert: Notify business owner]
-  //                        → [Message: "Our team will reply shortly"]
-  //     ↓ closed → [Message: Support Hours / After Hours]
-  // ====================================================================
-  nodes.push(
-    {
-      id:       IDS.SCHED_NODE,
-      type:     "schedule",
-      position: { x: 0, y: 0 },
-      parentId: FOLDER_IDS.SUPPORT,
-      data: {
-        label:         "Hours Gate",
-        openTime,
-        closeTime,
-        days:          workingDays,
-        closedMessage: `Our agents are offline right now. We're available ${openTime}–${closeTime}, Mon–Sat. Leave a message and we'll reply first thing!`,
-      },
-    },
-    {
-      id:       IDS.SUPPORT_CAPTURE,
-      type:     "capture_input",
-      position: { x: 420, y: -Y * 0.5 },
-      parentId: FOLDER_IDS.SUPPORT,
-      data: {
-        label:    "Capture Issue",
-        variable: "support_query",
-        question: "What do you need help with today? Describe your issue and our team will get back to you right away. 😊",
-      },
-    },
-    {
-      id:       IDS.SUPPORT_TAG,
-      type:     "tag_lead",
-      position: { x: 840, y: -Y * 0.5 },
-      parentId: FOLDER_IDS.SUPPORT,
-      data: {
-        label:  "Tag: Pending Human",
-        action: "add",
-        tag:    "pending-human",
-      },
-    },
-    {
-      id:       IDS.SUPPORT_ALERT,
-      type:     "admin_alert",
-      position: { x: 1260, y: -Y * 0.5 },
-      parentId: FOLDER_IDS.SUPPORT,
-      data: {
-        label:         "Notify Business Owner",
-        priority:      "high",
-        topic:         `🔔 Human Agent Requested — ${businessName}`,
-        phone:         adminPhone,
-        triggerSource: "Support Flow",
-        // ⚠️ CRITICAL — admins are often outside the 24-hr customer service window.
-        // Plain text will FAIL delivery. We use an approved HSM template to guarantee it.
-        templateName:  "admin_human_alert",
-        templateVars:  ["{{lead.name}}", "{{lead.phone}}", "{{convo.lastMessage}}"],
-      },
-    },
-    {
-      id:       IDS.SUPPORT_FINAL,
-      type:     "message",
-      position: { x: 1680, y: -Y * 0.5 },
-      parentId: FOLDER_IDS.SUPPORT,
-      data: {
-        label: "Handoff Confirmed",
-        text:  content.agent_handoff_msg,
-      },
-    },
-    {
-      id:       IDS.SUPPORT_HOURS,
-      type:     "message",
-      position: { x: 420, y: Y * 1.5 },
-      parentId: FOLDER_IDS.SUPPORT,
-      data: {
-        label: "After-Hours Message",
-        text:  content.support_hours_msg,
-      },
-    }
-  );
-
-  // ⚠️ SCHEDULE EXIT HANDLES: 'open' and 'closed' — must match the schedule node's sourceHandles
-  // The engine routes via executeNode → schedule type → finds nextEdge by these sourceHandles
-  edges.push(
-    { id: "f5_sch_open",  source: IDS.SCHED_NODE,      target: IDS.SUPPORT_CAPTURE, sourceHandle: "open"   },
-    { id: "f5_sch_clsd",  source: IDS.SCHED_NODE,      target: IDS.SUPPORT_HOURS,   sourceHandle: "closed" },
-    { id: "f5_cap_tag",   source: IDS.SUPPORT_CAPTURE, target: IDS.SUPPORT_TAG                             },
-    { id: "f5_tag_alert", source: IDS.SUPPORT_TAG,     target: IDS.SUPPORT_ALERT                           },
-    { id: "f5_alert_fin", source: IDS.SUPPORT_ALERT,   target: IDS.SUPPORT_FINAL                           },
-  );
-
-  // ====================================================================
-  // FOLDER 6 — Loyalty & Rewards
-  //
-  // THE GOLDEN PATH:
-  //   [Loyalty Hub List]
-  //     ↓ pts  → [Message: Points Balance]
-  //     ↓ red  → [Loyalty: REDEEM_POINTS]
-  //     ↓ ref  → [Message: Referral Pitch]
-  //     ↓ vip  → [Logic: VIP Tier Check]
-  //                ↓ true  → [Message: VIP Perk]
-  //                ↓ false → [Message: Tier Nudge]
-  //   [Loyalty: ADD_POINTS] — triggered by signup/order events
-  // ====================================================================
-  nodes.push(
-    {
-      id:       IDS.LOY_MENU,
-      type:     "interactive",
-      position: { x: 0, y: 0 },
-      parentId: FOLDER_IDS.LOYALTY,
-      data: {
-        label:           "Rewards Hub",
+        label: "Main Hub Menu",
         interactiveType: "list",
-        text:            content.loyalty_welcome,
-        buttonText:      "My Rewards",
-        sections: [
-          {
-            title: "Loyalty Options",
-            rows: [
-              { id: "pts",  title: "💎 My Points"        },
-              { id: "red",  title: "🎁 Redeem Points"    },
-              { id: "ref",  title: "📢 Invite & Earn"   },
-              { id: "vip",  title: "⭐ VIP Status"       },
-              { id: "menu", title: "⬅️ Main Menu"       },
-            ],
-          },
-        ],
-      },
-    },
-    {
-      id:       IDS.LOY_POINTS,
-      type:     "message",
-      position: { x: 420, y: -Y },
-      parentId: FOLDER_IDS.LOYALTY,
-      data: {
-        label: "Points Balance",
-        text:  content.loyalty_points_msg,
-      },
-    },
-    {
-      id:       IDS.LOY_REDEEM,
-      type:     "loyalty",
-      position: { x: 420, y: -Y * 0.2 },
-      parentId: FOLDER_IDS.LOYALTY,
-      data: {
-        label:          "Redeem Points",
-        loyaltyAction:  "REDEEM_POINTS",
-        pointsRequired: 100,
-      },
-    },
-    {
-      id:       IDS.LOY_REFER,
-      type:     "message",
-      position: { x: 420, y: Y * 0.7 },
-      parentId: FOLDER_IDS.LOYALTY,
-      data: {
-        label: "Referral Pitch",
-        text:  content.referral_msg,
-      },
-    },
-    {
-      id:       IDS.LOY_TIER,
-      type:     "logic",
-      position: { x: 420, y: Y * 1.6 },
-      parentId: FOLDER_IDS.LOYALTY,
-      data: {
-        label:    "VIP Tier Check",
-        variable: "loyalty_balance",
-        operator: "gte",
-        value:    "1000",
-      },
-    },
-    {
-      id:       IDS.LOY_VIP_PERK,
-      type:     "message",
-      position: { x: 840, y: Y * 1.2 },
-      parentId: FOLDER_IDS.LOYALTY,
-      data: {
-        label: "VIP Perk Reveal",
-        text:  content.vip_perk_msg,
-      },
-    },
-    {
-      id:       IDS.LOY_NEW_NUDGE,
-      type:     "message",
-      position: { x: 840, y: Y * 2.1 },
-      parentId: FOLDER_IDS.LOYALTY,
-      data: {
-        label: "Tier Progress Nudge",
-        text:  content.new_member_nudge,
-      },
-    },
-    {
-      id:       IDS.LOYALTY_AWARD,
-      type:     "loyalty",
-      position: { x: 0, y: Y * 2.8 },
-      parentId: FOLDER_IDS.LOYALTY,
-      data: {
-        label:         "Award Signup Points",
-        loyaltyAction: "ADD_POINTS",
-        points:        signupPoints,
-        reason:        content.loyalty_award_reason,
-      },
+        text: `How can ${botName} help you today? Tap an option below 👇`,
+        buttonText: "Open Menu",
+        sections: [{
+          title: businessName,
+          rows: [
+            { id: "shop", title: "🛍️ Shop Collection" },
+            { id: "track", title: "📦 Track My Order" },
+            { id: "returns", title: "🔄 Return / Cancel" },
+            { id: "warranty", title: "🛡️ Warranty" },
+            { id: "loyalty", title: "💎 My Rewards" },
+            { id: "support", title: "🎧 Talk to Human" },
+            { id: "faq", title: "❓ FAQs" }
+          ]
+        }],
+        heatmapCount: 0
+      }
     }
   );
 
   edges.push(
-    { id: "f6_pts",     source: IDS.LOY_MENU,  target: IDS.LOY_POINTS,    sourceHandle: "pts"  },
-    { id: "f6_red",     source: IDS.LOY_MENU,  target: IDS.LOY_REDEEM,    sourceHandle: "red"  },
-    { id: "f6_ref",     source: IDS.LOY_MENU,  target: IDS.LOY_REFER,     sourceHandle: "ref"  },
-    { id: "f6_vip",     source: IDS.LOY_MENU,  target: IDS.LOY_TIER,      sourceHandle: "vip"  },
-    { id: "f6_lm_menu", source: IDS.LOY_MENU,  target: IDS.MENU,          sourceHandle: "menu" },
-    { id: "f6_tier_t",  source: IDS.LOY_TIER,  target: IDS.LOY_VIP_PERK,  sourceHandle: "true" },
-    { id: "f6_tier_f",  source: IDS.LOY_TIER,  target: IDS.LOY_NEW_NUDGE, sourceHandle: "false"},
+    { id: `e_trig_wlc_${ts}`, source: IDS.trig_main, target: IDS.welcome_tpl },
+    { id: `e_wlc_menu_${ts}`, source: IDS.welcome_tpl, target: IDS.main_menu },
+    { id: `e_ad_adwlc_${ts}`, source: IDS.trig_ad, target: IDS.ad_welcome },
+    { id: `e_adwlc_menu_${ts}`, source: IDS.ad_welcome, target: IDS.main_menu },
+    { id: `e_ig_igwlc_${ts}`, source: IDS.trig_ig, target: IDS.ig_welcome },
+    { id: `e_igwlc_menu_${ts}`, source: IDS.ig_welcome, target: IDS.main_menu },
+    { id: `e_menu_shop_${ts}`, source: IDS.main_menu, target: IDS.cat_list, sourceHandle: "shop" },
+    { id: `e_menu_track_${ts}`, source: IDS.main_menu, target: IDS.ord_track, sourceHandle: "track" },
+    { id: `e_menu_ret_${ts}`, source: IDS.main_menu, target: IDS.ret_hub, sourceHandle: "returns" },
+    { id: `e_menu_war_${ts}`, source: IDS.main_menu, target: IDS.war_hub, sourceHandle: "warranty" },
+    { id: `e_menu_loy_${ts}`, source: IDS.main_menu, target: IDS.loy_menu, sourceHandle: "loyalty" },
+    { id: `e_menu_sup_${ts}`, source: IDS.main_menu, target: IDS.sup_sch, sourceHandle: "support" },
+    { id: `e_menu_faq_${ts}`, source: IDS.main_menu, target: IDS.faq_msg, sourceHandle: "faq" }
   );
+  if (!hasWelcomeTemplate) {
+    edges.push(
+      { id: `e_wlc_shop_${ts}`, source: IDS.welcome_tpl, target: IDS.cat_list, sourceHandle: "shop" },
+      { id: `e_wlc_faq_${ts}`, source: IDS.welcome_tpl, target: IDS.faq_msg, sourceHandle: "faq" },
+      { id: `e_wlc_sup_${ts}`, source: IDS.welcome_tpl, target: IDS.sup_sch, sourceHandle: "support" }
+    );
+  }
 
-  // ====================================================================
-  // FOLDER 7 — Smart Automations
-  //
-  // THREE FULLY WIRED AUTOMATION SEQUENCES:
-  //
-  // A. Abandoned Cart Recovery (3-step drip with delays)
-  //   [Trigger: checkout_abandoned]
-  //     → [Delay 15min] → [Message: Recovery 1]
-  //     → [Delay 2hr]   → [Message: Recovery 2]
-  //     → [Delay 24hr]  → [Message: Recovery 3]
-  //
-  // B. Order Confirmation + COD Nudge
-  //   [Trigger: order_created] → [Message: Confirmed]
-  //     → [Logic: Is COD?]
-  //       ↓ true  → [COD-to-Prepaid: CONVERT_COD_TO_PREPAID]
-  //       ↓ false → (flow ends cleanly — prepaid orders need nothing)
-  //
-  // C. Post-Delivery Review Collection
-  //   [Trigger: order_fulfilled] → [Review: Sentiment]
-  //     → ↓ positive → [Message: Review Link]
-  //     → ↓ negative → [Message: Escalation Apology]
-  // ====================================================================
-  nodes.push(
-    // A. Cart recovery trigger
-    {
-      id:       IDS.CART_TR,
-      type:     "trigger",
-      position: { x: 0, y: 0 },
-      parentId: FOLDER_IDS.AUTOMATION,
-      data: {
-        label:       "Abandoned Checkout",
-        triggerType: "shopify_event",
-        event:       "checkout_abandoned",
-      },
-    },
-    // A. Delay + Message step 1
-    {
-      id:       IDS.CART_D1,
-      type:     "delay",
-      position: { x: 420, y: 0 },
-      parentId: FOLDER_IDS.AUTOMATION,
-      data: {
-        label:     `Wait ${cartTiming.msg1 || 15} minutes`,
-        waitValue: cartTiming.msg1 || 15,
-        waitUnit:  "minutes",
-      },
-    },
-    {
-      id:       IDS.CART_M1,
-      type:     "message",
-      position: { x: 840, y: 0 },
-      parentId: FOLDER_IDS.AUTOMATION,
-      data: {
-        label: "Cart Recovery 1",
-        text:  content.cart_recovery_1,
-      },
-    },
-    // A. Delay + Message step 2
-    {
-      id:       IDS.CART_D2,
-      type:     "delay",
-      position: { x: 1260, y: 0 },
-      parentId: FOLDER_IDS.AUTOMATION,
-      data: {
-        label:     `Wait ${cartTiming.msg2 || 2} hours`,
-        waitValue: cartTiming.msg2 || 2,
-        waitUnit:  "hours",
-      },
-    },
-    {
-      id:       IDS.CART_M2,
-      type:     "message",
-      position: { x: 1680, y: 0 },
-      parentId: FOLDER_IDS.AUTOMATION,
-      data: {
-        label: "Cart Recovery 2",
-        text:  content.cart_recovery_2,
-      },
-    },
-    // A. Delay + Message step 3
-    {
-      id:       IDS.CART_D3,
-      type:     "delay",
-      position: { x: 2100, y: 0 },
-      parentId: FOLDER_IDS.AUTOMATION,
-      data: {
-        label:     `Wait ${cartTiming.msg3 || 24} hours`,
-        waitValue: cartTiming.msg3 || 24,
-        waitUnit:  "hours",
-      },
-    },
-    {
-      id:       IDS.CART_M3,
-      type:     "template",
-      position: { x: 2520, y: 0 },
-      parentId: FOLDER_IDS.AUTOMATION,
-      data: {
-        label:        "Cart Recovery 3 (Final)",
-        templateName: "cart_recovery",
-        variables: ["{{checkout_url}}"]
-      },
-    },
-    // B. Order confirmed trigger
-    {
-      id:       IDS.CONF_TR,
-      type:     "trigger",
-      position: { x: 0, y: Y * 2 },
-      parentId: FOLDER_IDS.AUTOMATION,
-      data: {
-        label:       "Order Created",
-        triggerType: "shopify_event",
-        event:       "order_created",
-      },
-    },
-    {
-      id:       IDS.CONF_MSG,
-      type:     "template",
-      position: { x: 420, y: Y * 2 },
-      parentId: FOLDER_IDS.AUTOMATION,
-      data: {
-        label:        "Order Confirmed",
-        templateName: "order_conf",
-        variables: ["{{order_id}}", "{{cart_items}}", "{{order_total}}"]
-      },
-    },
-    // B. COD Gate — only nudge if payment_method == cod
-    {
-      id:       IDS.COD_CHECK,
-      type:     "logic",
-      position: { x: 840, y: Y * 2 },
-      parentId: FOLDER_IDS.AUTOMATION,
-      data: {
-        label:    "COD Payment?",
-        variable: "payment_method",
-        operator: "contains",
-        value:    "cod",
-      },
-    },
-    {
-      id:       IDS.COD_NUDGE,
-      type:     "cod_prepaid",
-      position: { x: 1260, y: Y * 1.6 },
-      parentId: FOLDER_IDS.AUTOMATION,
-      data: {
-        label:          `Prepay & Save ${currency}50`,
-        discountAmount: 50,
-        action:         "CONVERT_COD_TO_PREPAID",
-        text:           content.cod_nudge,
-      },
-    },
-    // C. Post-delivery review
-    {
-      id:       IDS.REV_TRIG,
-      type:     "trigger",
-      position: { x: 0, y: Y * 4 },
-      parentId: FOLDER_IDS.AUTOMATION,
-      data: {
-        label:       "Order Fulfilled",
-        triggerType: "shopify_event",
-        event:       "order_fulfilled",
-      },
-    },
-    {
-      id:       IDS.REV_ASK,
-      type:     "template",
-      position: { x: 420, y: Y * 4 },
-      parentId: FOLDER_IDS.AUTOMATION,
-      data: {
-        label:          "Sentiment Check",
-        templateName:   "review_request",
-        variables:   ["{{lead.name}}"],
-      },
-    },
-    {
-      id:       IDS.REV_GOOD,
-      type:     "message",
-      position: { x: 840, y: Y * 3.5 },
-      parentId: FOLDER_IDS.AUTOMATION,
-      data: {
-        label: "Positive Review Redirect",
-        text:  content.review_positive + (googleReviewUrl ? `\n\n⭐ ${googleReviewUrl}` : ""),
-      },
-    },
-    {
-      id:       IDS.REV_BAD,
-      type:     "message",
-      position: { x: 840, y: Y * 4.7 },
-      parentId: FOLDER_IDS.AUTOMATION,
-      data: {
-        label: "Negative Review Escalation",
-        text:  content.review_negative,
-      },
-    }
-  );
-
-  edges.push(
-    // A. Cart recovery drip
-    { id: "f7_cart_d1",  source: IDS.CART_TR,   target: IDS.CART_D1  },
-    { id: "f7_d1_m1",    source: IDS.CART_D1,   target: IDS.CART_M1  },
-    { id: "f7_m1_d2",    source: IDS.CART_M1,   target: IDS.CART_D2  },
-    { id: "f7_d2_m2",    source: IDS.CART_D2,   target: IDS.CART_M2  },
-    { id: "f7_m2_d3",    source: IDS.CART_M2,   target: IDS.CART_D3  },
-    { id: "f7_d3_m3",    source: IDS.CART_D3,   target: IDS.CART_M3  },
-    // B. Order + COD
-    { id: "f7_conf_msg", source: IDS.CONF_TR,   target: IDS.CONF_MSG              },
-    { id: "f7_conf_chk", source: IDS.CONF_MSG,  target: IDS.COD_CHECK             },
-    { id: "f7_cod_t",    source: IDS.COD_CHECK, target: IDS.COD_NUDGE, sourceHandle: "true" },
-    // false path: no edge needed — prepaid orders end cleanly → fallback handles
-    // C. Review
-    { id: "f7_rev_s",    source: IDS.REV_TRIG,  target: IDS.REV_ASK               },
-    { id: "f7_rev_g",    source: IDS.REV_ASK,   target: IDS.REV_GOOD, sourceHandle: "positive" },
-    { id: "f7_rev_b",    source: IDS.REV_ASK,   target: IDS.REV_BAD,  sourceHandle: "negative" },
-  );
-
-  // ====================================================================
-  // FOLDER 8 — Post-Purchase Hub (Knowledge Base + Warranty + B2B)
-  //
-  // Contains:
-  //   - AI Fallback node (ROOT-LEVEL — catches all dead ends)
-  //   - FAQ & Returns Policy knowledge nodes
-  //   - Full Warranty Registration + Lookup pipeline
-  //   - B2B/Wholesale funnel (conditional on b2bEnabled)
-  //   - Product guide messages (added inline alongside catalog nodes)
-  // ====================================================================
-
-  // 8A. AI Fallback node — THE SAFETY NET
-  //     Position outside folder so it's always visible at root level
   nodes.push({
-    id:       IDS.AI_FALLBACK,
-    type:     "message",
-    position: { x: -300, y: 300 },
-    // No parentId — root-level floating node
+    id: IDS.cat_list,
+    type: "interactive",
+    position: { x: 2400, y: -600 },
     data: {
-      label:  "🤖 AI Fallback",
-      text:   fallbackMessage || content.fallback_msg,
-      action: "AI_FALLBACK",
-    },
+      label: "Product Catalog",
+      interactiveType: "list",
+      text: `Ready to explore ${businessName} products? Pick one below 👇`,
+      buttonText: "View Products",
+      sections: [{ title: `${businessName} Products`, rows: enrichedProducts.map((p, i) => ({ id: `p_${i}`, title: truncate(p.title, 24), description: `${currency}${parseInt(p.price || 0, 10).toLocaleString("en-IN")}` })) }],
+      heatmapCount: 0
+    }
   });
 
-  // 8B. Knowledge base nodes
-  //     IDS.FAQ_MSG  — reached directly from main menu "faq" row
-  //     IDS.FAQ_NODE — internal knowledge base node (legacy / cross-link)
-  nodes.push(
-    {
-      id:       IDS.FAQ_MSG,
-      type:     "interactive",
-      position: { x: 0, y: -Y },
-      parentId: FOLDER_IDS.POSTPURCH,
-      data: {
-        label:           "FAQ & Help",
-        interactiveType: "button",
-        text:            faqText
-          ? `*Frequently Asked Questions*\n\n${faqText.slice(0, 600)}\n\nWant more help?`
-          : `*${businessName} FAQs*\n\n${content.faq_response}\n\nWant more help?`,
-        buttonsList: [
-          { id: "menu",   title: "⬅️ Main Menu"   },
-          { id: "agent",  title: "🎧 Talk to Agent" },
-        ],
-      },
-    },
-    {
-      id:       IDS.FAQ_NODE,
-      type:     "message",
-      position: { x: 0, y: 0 },
-      parentId: FOLDER_IDS.POSTPURCH,
-      data: {
-        label: "General FAQs",
-        text:  faqText || content.faq_response,
-      },
-    },
-    {
-      id:       IDS.RET_POLICY_NODE,
-      type:     "message",
-      position: { x: 0, y: Y },
-      parentId: FOLDER_IDS.POSTPURCH,
-      data: {
-        label: "Returns Policy",
-        text:  returnsInfo || content.returns_policy_short,
-      },
+  enrichedProducts.forEach((p, i) => {
+    const prodId = `prod_${p.id || i}_${ts}`;
+    const hasTemplate = (client.syncedMetaTemplates || []).some((t) => t.productHandle === p.handle || t.name === `${client.clientId}_${p.handle}`);
+    if (!hasTemplate && wizardData.productMode === "template") {
+      wizardData.customTemplates = wizardData.customTemplates || [];
+      const templateName = `${client.clientId || "brand"}_${p.handle}`.replace(/[^a-z0-9_]/gi, "_").toLowerCase().slice(0, 50);
+      if (!wizardData.customTemplates.find((t) => t.name === templateName)) {
+        wizardData.customTemplates.push({
+          name: templateName,
+          category: "MARKETING",
+          language: "en",
+          components: [
+            { type: "HEADER", format: "IMAGE", _imageUrl: p.imageUrl || "" },
+            { type: "BODY", text: `Product: *{{1}}*\n\n💰 Price: ${currency}{{2}}\n\n{{3}}` },
+            { type: "BUTTONS", buttons: [{ type: "URL", text: "Order Now", url: `${storeUrl}/products/${p.handle}` }, { type: "QUICK_REPLY", text: "Talk to Agent" }] }
+          ]
+        });
+      }
     }
-  );
 
-  // Wire FAQ hub back to menu and to support
-  edges.push(
-    { id: "f8_faq_menu",  source: IDS.FAQ_MSG, target: IDS.MENU,       sourceHandle: "menu"  },
-    { id: "f8_faq_agent", source: IDS.FAQ_MSG, target: IDS.SCHED_NODE, sourceHandle: "agent" },
-  );
-
-  // 8C. Warranty Module — Registration + Lookup
-  nodes.push(
-    {
-      id:       IDS.WARRANTY_HUB,
-      type:     "interactive",
-      position: { x: 420, y: 0 },
-      parentId: FOLDER_IDS.POSTPURCH,
-      data: {
-        label:           "Warranty Hub",
+    nodes.push({
+      id: prodId,
+      type: hasTemplate ? "template" : "interactive",
+      position: { x: 2900, y: (i * 220) - (enrichedProducts.length * 100) },
+      data: hasTemplate ? {
+        label: truncate(`Product: ${p.title}`, 30),
+        templateName: `${client.clientId}_${p.handle}`,
+        imageUrl: p.imageUrl || "",
+        shopifyProductId: p.id,
+        shopifyProductUrl: `${storeUrl}/products/${p.handle}`,
+        buttonsList: [{ id: "buy", title: "Buy" }, { id: "agent", title: "Talk to Agent" }, { id: "menu", title: "Main Menu" }],
+        variables: ["customer_name", "product_price", "warranty"],
+        heatmapCount: 0
+      } : {
+        label: truncate(`Product: ${p.title}`, 30),
         interactiveType: "button",
-        text:            content.warranty_welcome,
-        buttonsList: [
-          { id: "reg",   title: "✅ Register Warranty" },
-          { id: "check", title: "🔍 Check Status"      },
-          { id: "menu",  title: "⬅️ Main Menu"        },
-        ],
-      },
-    },
-    // Registration pipeline
-    {
-      id:       IDS.WARRANTY_REG_SERIAL,
-      type:     "capture_input",
-      position: { x: 840, y: -Y * 0.75 },
-      parentId: FOLDER_IDS.POSTPURCH,
-      data: {
-        label:    "Capture Serial Number",
-        variable: "warranty_serial",
-        question: "Please enter your Product Serial Number or Order ID to begin registration.",
-      },
-    },
-    {
-      id:       IDS.WARRANTY_REG_DATE,
-      type:     "capture_input",
-      position: { x: 1260, y: -Y * 0.75 },
-      parentId: FOLDER_IDS.POSTPURCH,
-      data: {
-        label:    "Capture Purchase Date",
-        variable: "purchase_date",
-        question: "Please enter your date of purchase (DD/MM/YYYY).",
-      },
-    },
-    {
-      id:       IDS.WARRANTY_REG_TAG,
-      type:     "tag_lead",
-      position: { x: 1680, y: -Y * 0.75 },
-      parentId: FOLDER_IDS.POSTPURCH,
-      data: {
-        label:  "Tag: Warranty Enrolled",
-        action: "add",
-        tag:    "warranty-enrolled",
-      },
-    },
-    {
-      id:       IDS.WARRANTY_REG_SUCCESS,  // Single declaration — no duplicates
-      type:     "message",
-      position: { x: 2100, y: -Y * 0.75 },
-      parentId: FOLDER_IDS.POSTPURCH,
-      data: {
-        label: "Warranty Activated",
-        text:  content.warranty_reg_success,
-      },
-    },
-    // Lookup pipeline
-    {
-      id:       IDS.WARRANTY_LOOKUP_SER,
-      type:     "capture_input",
-      position: { x: 840, y: Y * 0.75 },
-      parentId: FOLDER_IDS.POSTPURCH,
-      data: {
-        label:    "Serial Number Lookup",
-        variable: "lookup_serial",
-        question: content.warranty_lookup_prompt,
-      },
-    },
-    {
-      id:       IDS.WARRANTY_LOOKUP_EXEC,
-      type:     "warranty_check",
-      position: { x: 1260, y: Y * 0.75 },
-      parentId: FOLDER_IDS.POSTPURCH,
-      data: {
-        label:    "Warranty Engine Lookup",
-        action:   "WARRANTY_CHECK",
-        duration: warrantyDuration,
-        policy:   warrantyPolicy,
-      },
+        imageUrl: p.imageUrl || "",
+        text: `*${p.title}*\n\n💰 Price: ${currency}${parseInt(p.price || 0, 10).toLocaleString("en-IN")}\n✅ 1 Year Warranty | 🚚 Free Shipping`,
+        buttonsList: [{ id: "buy", title: "🛒 Buy Now" }, { id: "agent", title: "📞 Talk to Agent" }, { id: "menu", title: "⬅️ Main Menu" }],
+        shopifyProductId: p.id,
+        shopifyProductUrl: `${storeUrl}/products/${p.handle}`,
+        heatmapCount: 0
+      }
+    });
+    edges.push({ id: `e_cat_p${i}_${ts}`, source: IDS.cat_list, target: prodId, sourceHandle: `p_${i}` });
+    if (!hasTemplate) {
+      edges.push(
+        { id: `e_p${i}_buy_${ts}`, source: prodId, target: IDS.ai_fallback, sourceHandle: "buy" },
+        { id: `e_p${i}_agent_${ts}`, source: prodId, target: IDS.sup_sch, sourceHandle: "agent" },
+        { id: `e_p${i}_menu_${ts}`, source: prodId, target: IDS.main_menu, sourceHandle: "menu" }
+      );
+    } else {
+      edges.push(
+        { id: `e_pt${i}_buy_${ts}`, source: prodId, target: IDS.ai_fallback, sourceHandle: "buy" },
+        { id: `e_pt${i}_buy2_${ts}`, source: prodId, target: IDS.ai_fallback, sourceHandle: "buy_now" },
+        { id: `e_pt${i}_agent_${ts}`, source: prodId, target: IDS.sup_sch, sourceHandle: "agent" },
+        { id: `e_pt${i}_agent2_${ts}`, source: prodId, target: IDS.sup_sch, sourceHandle: "talk_to_agent" },
+        { id: `e_pt${i}_menu_${ts}`, source: prodId, target: IDS.main_menu, sourceHandle: "menu" }
+      );
     }
-  );
+  });
 
+  nodes.push(
+    { id: IDS.ord_track, type: "shopify_call", position: { x: 2400, y: 200 }, data: { label: "Check Order Status", action: "CHECK_ORDER_STATUS", heatmapCount: 0 } },
+    { id: IDS.ord_hub, type: "interactive", position: { x: 2400, y: 380 }, data: { label: "Order Management", interactiveType: "button", text: "What would you like to do with your order?", buttonsList: [{ id: "cancel", title: "❌ Cancel Order" }, { id: "status", title: "📦 Track Status" }, { id: "menu", title: "⬅️ Main Menu" }], heatmapCount: 0 } },
+    { id: IDS.can_confirm, type: "interactive", position: { x: 2900, y: 380 }, data: { label: "Confirm Cancellation", interactiveType: "button", text: content.cancellation_confirm, buttonsList: [{ id: "yes", title: "✅ Yes, Cancel It" }, { id: "no", title: "❌ Keep My Order" }], heatmapCount: 0 } },
+    { id: IDS.can_logic, type: "logic", position: { x: 3400, y: 380 }, data: { label: "Is Order Shipped?", variable: "is_shipped", operator: "eq", value: "true", heatmapCount: 0 } },
+    { id: IDS.can_shipped, type: "message", position: { x: 3900, y: 560 }, data: { label: "Already Shipped Error", text: content.in_transit_error, heatmapCount: 0 } },
+    { id: IDS.can_reason, type: "capture_input", position: { x: 3900, y: 280 }, data: { label: "Cancellation Reason", variable: "cancel_reason", question: "Please tell us why you're cancelling.", heatmapCount: 0 } },
+    { id: IDS.can_action, type: "shopify_call", position: { x: 4400, y: 280 }, data: { label: "Process Cancellation", action: "CANCEL_ORDER", heatmapCount: 0 } },
+    { id: IDS.ret_hub, type: "interactive", position: { x: 2400, y: 700 }, data: { label: "Returns Hub", interactiveType: "button", text: "How can we help with returns?", buttonsList: [{ id: "return", title: "📸 Start Return" }, { id: "refund", title: "💸 Refund Status" }, { id: "menu", title: "⬅️ Main Menu" }], heatmapCount: 0 } },
+    { id: IDS.ret_reason, type: "capture_input", position: { x: 2900, y: 650 }, data: { label: "Return Reason", variable: "return_reason", question: "Please share return reason.", heatmapCount: 0 } },
+    { id: IDS.ret_photo, type: "capture_input", position: { x: 3400, y: 650 }, data: { label: "Return Photo", variable: "return_photo", question: content.return_photo_prompt, heatmapCount: 0 } },
+    { id: IDS.ret_confirm, type: "message", position: { x: 3900, y: 650 }, data: { label: "Return Confirmed", text: "✅ Return request received. Our team will update you in 24-48 hours.", heatmapCount: 0 } },
+    { id: IDS.ref_check, type: "shopify_call", position: { x: 2900, y: 850 }, data: { label: "Refund Status", action: "ORDER_REFUND_STATUS", heatmapCount: 0 } },
+    { id: IDS.ref_result, type: "message", position: { x: 3400, y: 850 }, data: { label: "Refund Result", text: "Refunds are processed in 5-7 business days.", heatmapCount: 0 } }
+  );
   edges.push(
-    // Warranty registration
-    { id: "f8_war_reg",   source: IDS.WARRANTY_HUB,        target: IDS.WARRANTY_REG_SERIAL,  sourceHandle: "reg"   },
-    { id: "f8_war_menu",  source: IDS.WARRANTY_HUB,        target: IDS.MENU,                 sourceHandle: "menu"  },
-    { id: "f8_war_s_d",   source: IDS.WARRANTY_REG_SERIAL, target: IDS.WARRANTY_REG_DATE                           },
-    { id: "f8_war_d_t",   source: IDS.WARRANTY_REG_DATE,   target: IDS.WARRANTY_REG_TAG                            },
-    { id: "f8_war_t_ok",  source: IDS.WARRANTY_REG_TAG,    target: IDS.WARRANTY_REG_SUCCESS                        },
-    // Warranty lookup
-    { id: "f8_war_look",  source: IDS.WARRANTY_HUB,        target: IDS.WARRANTY_LOOKUP_SER,  sourceHandle: "check" },
-    { id: "f8_war_l_ex",  source: IDS.WARRANTY_LOOKUP_SER, target: IDS.WARRANTY_LOOKUP_EXEC                        },
+    { id: `e_ord_hub_can_${ts}`, source: IDS.ord_hub, target: IDS.can_confirm, sourceHandle: "cancel" },
+    { id: `e_ord_hub_track_${ts}`, source: IDS.ord_hub, target: IDS.ord_track, sourceHandle: "status" },
+    { id: `e_ord_hub_menu_${ts}`, source: IDS.ord_hub, target: IDS.main_menu, sourceHandle: "menu" },
+    { id: `e_can_yes_${ts}`, source: IDS.can_confirm, target: IDS.can_logic, sourceHandle: "yes" },
+    { id: `e_can_no_${ts}`, source: IDS.can_confirm, target: IDS.main_menu, sourceHandle: "no" },
+    { id: `e_can_true_${ts}`, source: IDS.can_logic, target: IDS.can_shipped, sourceHandle: "true" },
+    { id: `e_can_false_${ts}`, source: IDS.can_logic, target: IDS.can_reason, sourceHandle: "false" },
+    { id: `e_can_action_${ts}`, source: IDS.can_reason, target: IDS.can_action },
+    { id: `e_ret_hub_ret_${ts}`, source: IDS.ret_hub, target: IDS.ret_reason, sourceHandle: "return" },
+    { id: `e_ret_hub_ref_${ts}`, source: IDS.ret_hub, target: IDS.ref_check, sourceHandle: "refund" },
+    { id: `e_ret_hub_menu_${ts}`, source: IDS.ret_hub, target: IDS.main_menu, sourceHandle: "menu" },
+    { id: `e_ret_reason_${ts}`, source: IDS.ret_reason, target: IDS.ret_photo },
+    { id: `e_ret_photo_${ts}`, source: IDS.ret_photo, target: IDS.ret_confirm },
+    { id: `e_ref_chk_${ts}`, source: IDS.ref_check, target: IDS.ref_result }
   );
 
-  // 8D. B2B / Wholesale Nexus (conditional)
+  nodes.push(
+    { id: IDS.war_hub, type: "interactive", position: { x: 2400, y: 1200 }, data: { label: "Warranty Hub", interactiveType: "button", text: "Warranty support options:", buttonsList: [{ id: "reg", title: "✅ Register" }, { id: "check", title: "🔍 Check Status" }, { id: "menu", title: "⬅️ Main Menu" }], heatmapCount: 0 } },
+    { id: IDS.war_serial, type: "capture_input", position: { x: 2900, y: 1100 }, data: { label: "Warranty Serial", variable: "warranty_serial", question: "Enter serial number or order id.", heatmapCount: 0 } },
+    { id: IDS.war_date, type: "capture_input", position: { x: 3400, y: 1100 }, data: { label: "Purchase Date", variable: "purchase_date", question: "Enter purchase date (DD/MM/YYYY).", heatmapCount: 0 } },
+    { id: IDS.war_tag, type: "tag_lead", position: { x: 3900, y: 1100 }, data: { label: "Warranty Tag", action: "add", tag: "warranty-enrolled", heatmapCount: 0 } },
+    { id: IDS.war_success, type: "message", position: { x: 4400, y: 1100 }, data: { label: "Warranty Success", text: content.warranty_reg_success, heatmapCount: 0 } },
+    { id: IDS.war_lookup, type: "capture_input", position: { x: 2900, y: 1300 }, data: { label: "Lookup Serial", variable: "lookup_serial", question: content.warranty_lookup_prompt, heatmapCount: 0 } },
+    { id: IDS.war_engine, type: "warranty_check", position: { x: 3400, y: 1300 }, data: { label: "Warranty Check", action: "WARRANTY_CHECK", heatmapCount: 0 } }
+  );
+  edges.push(
+    { id: `e_war_reg_${ts}`, source: IDS.war_hub, target: IDS.war_serial, sourceHandle: "reg" },
+    { id: `e_war_chk_${ts}`, source: IDS.war_hub, target: IDS.war_lookup, sourceHandle: "check" },
+    { id: `e_war_menu_${ts}`, source: IDS.war_hub, target: IDS.main_menu, sourceHandle: "menu" },
+    { id: `e_war_ser_${ts}`, source: IDS.war_serial, target: IDS.war_date },
+    { id: `e_war_date_${ts}`, source: IDS.war_date, target: IDS.war_tag },
+    { id: `e_war_tag_${ts}`, source: IDS.war_tag, target: IDS.war_success },
+    { id: `e_war_lookup_${ts}`, source: IDS.war_lookup, target: IDS.war_engine }
+  );
+
+  nodes.push(
+    { id: IDS.loy_menu, type: "interactive", position: { x: 2400, y: 1600 }, data: { label: "Rewards Hub", interactiveType: "list", text: content.loyalty_welcome, buttonText: "My Rewards", sections: [{ title: "Loyalty", rows: [{ id: "pts", title: "💎 My Points" }, { id: "red", title: "🎁 Redeem" }, { id: "ref", title: "📢 Refer & Earn" }, { id: "menu", title: "⬅️ Main Menu" }] }], heatmapCount: 0 } },
+    { id: IDS.loy_balance, type: "message", position: { x: 2900, y: 1500 }, data: { label: "Points Balance", text: content.loyalty_points_msg, heatmapCount: 0 } },
+    { id: IDS.loy_redeem, type: "loyalty", position: { x: 2900, y: 1650 }, data: { label: "Redeem Loyalty", loyaltyAction: "REDEEM_POINTS", pointsRequired: 100, heatmapCount: 0 } },
+    { id: IDS.loy_refer, type: "message", position: { x: 2900, y: 1800 }, data: { label: "Refer", text: content.referral_msg, heatmapCount: 0 } }
+  );
+  edges.push(
+    { id: `e_loy_pts_${ts}`, source: IDS.loy_menu, target: IDS.loy_balance, sourceHandle: "pts" },
+    { id: `e_loy_red_${ts}`, source: IDS.loy_menu, target: IDS.loy_redeem, sourceHandle: "red" },
+    { id: `e_loy_ref_${ts}`, source: IDS.loy_menu, target: IDS.loy_refer, sourceHandle: "ref" },
+    { id: `e_loy_menu_${ts}`, source: IDS.loy_menu, target: IDS.main_menu, sourceHandle: "menu" }
+  );
+
+  nodes.push(
+    { id: IDS.sup_sch, type: "schedule", position: { x: 2400, y: 2050 }, data: { label: "Business Hours Gate", openTime, closeTime, days: workingDays, closedMessage: `Our agents are offline right now. We're open ${openTime}-${closeTime}.`, heatmapCount: 0 } },
+    { id: IDS.sup_capture, type: "capture_input", position: { x: 2900, y: 1950 }, data: { label: "Support Query", variable: "support_query", question: "Please describe your issue and our team will help right away.", heatmapCount: 0 } },
+    { id: IDS.sup_tag, type: "tag_lead", position: { x: 3400, y: 1950 }, data: { label: "Tag Pending Human", action: "add", tag: "pending-human", heatmapCount: 0 } },
+    { id: IDS.sup_alert, type: "admin_alert", position: { x: 3900, y: 1950 }, data: { label: "Admin Alert", priority: "high", topic: `Human request - ${businessName}`, phone: adminPhone || client.adminPhone || "", heatmapCount: 0 } },
+    { id: IDS.sup_confirm, type: "message", position: { x: 4400, y: 1950 }, data: { label: "Handoff Confirmed", text: content.agent_handoff_msg, heatmapCount: 0 } },
+    { id: IDS.sup_closed, type: "message", position: { x: 2900, y: 2150 }, data: { label: "After Hours", text: content.support_hours_msg, heatmapCount: 0 } }
+  );
+  edges.push(
+    { id: `e_sup_open_${ts}`, source: IDS.sup_sch, target: IDS.sup_capture, sourceHandle: "open" },
+    { id: `e_sup_closed_${ts}`, source: IDS.sup_sch, target: IDS.sup_closed, sourceHandle: "closed" },
+    { id: `e_sup_tag_${ts}`, source: IDS.sup_capture, target: IDS.sup_tag },
+    { id: `e_sup_alert_${ts}`, source: IDS.sup_tag, target: IDS.sup_alert },
+    { id: `e_sup_conf_${ts}`, source: IDS.sup_alert, target: IDS.sup_confirm }
+  );
+
+  nodes.push(
+    { id: IDS.faq_msg, type: "message", position: { x: 2400, y: 2450 }, data: { label: "General FAQ", text: faqText || content.faq_response, heatmapCount: 0 } },
+    { id: IDS.trig_order, type: "trigger", position: { x: -800, y: 0 }, data: { label: "Order Created Trigger", triggerType: "shopify_event", event: "order_created", heatmapCount: 0 } },
+    { id: IDS.conf_msg, type: "message", position: { x: -400, y: 0 }, data: { label: "Order Confirmed", text: content.order_confirmed_msg, heatmapCount: 0 } },
+    { id: IDS.cod_check, type: "logic", position: { x: 0, y: -200 }, data: { label: "Is COD?", variable: "payment_method", operator: "contains", value: "cod", heatmapCount: 0 } },
+    { id: IDS.cod_node, type: "cod_prepaid", position: { x: 400, y: -300 }, data: { label: "COD Nudge", action: "CONVERT_COD_TO_PREPAID", discountAmount: wizardData.codDiscount || 50, text: content.cod_nudge, heatmapCount: 0 } },
+    { id: IDS.trig_cart, type: "trigger", position: { x: -800, y: 400 }, data: { label: "Abandoned Cart Trigger", triggerType: "shopify_event", event: "checkout_abandoned", heatmapCount: 0 } },
+    { id: IDS.trig_fulfill, type: "trigger", position: { x: -800, y: 1000 }, data: { label: "Order Fulfilled Trigger", triggerType: "shopify_event", event: "order_fulfilled", heatmapCount: 0 } },
+    { id: IDS.rev_request, type: "review", position: { x: -400, y: 1000 }, data: { label: "Review Request", action: "SEND_REVIEW_REQUEST", text: content.sentiment_ask, googleReviewUrl, heatmapCount: 0 } },
+    { id: IDS.rev_positive, type: "message", position: { x: 100, y: 900 }, data: { label: "Positive", text: content.review_positive + (googleReviewUrl ? `\n${googleReviewUrl}` : ""), heatmapCount: 0 } },
+    { id: IDS.rev_negative, type: "message", position: { x: 100, y: 1100 }, data: { label: "Negative", text: content.review_negative, heatmapCount: 0 } },
+    { id: IDS.ai_fallback, type: "message", position: { x: 0, y: -600 }, data: { label: "🤖 AI Smart Reply", action: "AI_FALLBACK", text: fallbackMessage || "", heatmapCount: 0 } }
+  );
+  edges.push(
+    { id: `e_faq_menu_${ts}`, source: IDS.faq_msg, target: IDS.main_menu },
+    { id: `e_track_ordhub_${ts}`, source: IDS.ord_track, target: IDS.ord_hub },
+    { id: `e_ord_trig_${ts}`, source: IDS.trig_order, target: IDS.conf_msg },
+    { id: `e_ord_conf_${ts}`, source: IDS.conf_msg, target: IDS.cod_check },
+    { id: `e_cod_true_${ts}`, source: IDS.cod_check, target: IDS.cod_node, sourceHandle: "true" },
+    { id: `e_ful_rev_${ts}`, source: IDS.trig_fulfill, target: IDS.rev_request },
+    { id: `e_rev_pos_${ts}`, source: IDS.rev_request, target: IDS.rev_positive, sourceHandle: "positive" },
+    { id: `e_rev_neg_${ts}`, source: IDS.rev_request, target: IDS.rev_negative, sourceHandle: "negative" }
+  );
+
+  if (returnsInfo) {
+    nodes.push({
+      id: `returns_policy_${ts}`,
+      type: "message",
+      position: { x: 2900, y: 2500 },
+      data: { label: "Return Policy", text: returnsInfo, heatmapCount: 0 }
+    });
+    edges.push({ id: `e_returns_policy_${ts}`, source: IDS.ret_confirm, target: `returns_policy_${ts}` });
+  }
+
   if (b2bEnabled) {
     nodes.push(
-      {
-        id:       IDS.B2B_TRIGGER,
-        type:     "trigger",
-        position: { x: 0, y: Y * 5 },
-        parentId: FOLDER_IDS.POSTPURCH,
-        data: {
-          label:       "B2B/Wholesale Intent",
-          triggerType: "keyword",
-          keywords:    ["wholesale", "bulk", "b2b", "bulk order", "distributor", "reseller", "dealer"],
-          matchMode:   "contains",
-        },
-      },
-      {
-        id:       IDS.B2B_FORM,
-        type:     "capture_input",
-        position: { x: 420, y: Y * 5 },
-        parentId: FOLDER_IDS.POSTPURCH,
-        data: {
-          label:    "Company Name",
-          variable: "b2b_company",
-          question: content.b2b_welcome,
-        },
-      },
-      {
-        id:       IDS.B2B_VOLUME,
-        type:     "capture_input",
-        position: { x: 840, y: Y * 5 },
-        parentId: FOLDER_IDS.POSTPURCH,
-        data: {
-          label:    "Volume & Category",
-          variable: "b2b_volume",
-          question: content.b2b_capture_prompt,
-        },
-      },
-      {
-        id:       IDS.B2B_TAG,
-        type:     "tag_lead",
-        position: { x: 1260, y: Y * 5 },
-        parentId: FOLDER_IDS.POSTPURCH,
-        data: {
-          label:  "Tag: B2B Prospect",
-          action: "add",
-          tag:    "b2b-prospect",
-        },
-      },
-      {
-        id:       IDS.B2B_ALERT,
-        type:     "admin_alert",
-        position: { x: 1680, y: Y * 5 },
-        parentId: FOLDER_IDS.POSTPURCH,
-        data: {
-          label:        "B2B Lead Alert",
-          priority:     "high",
-          topic:        `🤝 NEW B2B WHOLESALE LEAD — ${businessName}`,
-          phone:        b2bAdminPhone || adminPhone,
-          // Admin may be outside the 24-hr window for B2B inquiries too.
-          templateName: "admin_human_alert",
-          templateVars: ["{{lead.name}} (B2B)", "{{lead.phone}}", "{{capturedData.b2b_volume}}"],
-        },
-      },
-      {
-        id:       IDS.B2B_CONFIRM,
-        type:     "message",
-        position: { x: 2100, y: Y * 5 },
-        parentId: FOLDER_IDS.POSTPURCH,
-        data: {
-          label: "B2B Confirmation",
-          text:  `All set! 👔 Our wholesale team will reach out within 2 hours with a custom pricing quote tailored to your business needs.`,
-        },
-      }
+      { id: IDS.b2b_trigger, type: "trigger", position: { x: -600, y: 1500 }, data: { label: "B2B Trigger", triggerType: "keyword", keywords: ["wholesale", "bulk", "b2b", "dealer", "distributor"], matchMode: "contains", heatmapCount: 0 } },
+      { id: IDS.b2b_capture, type: "capture_input", position: { x: -200, y: 1500 }, data: { label: "B2B Requirement", variable: "b2b_requirement", question: "Please share company name and monthly requirement.", heatmapCount: 0 } },
+      { id: IDS.b2b_tag, type: "tag_lead", position: { x: 200, y: 1500 }, data: { label: "Tag B2B", action: "add", tag: "b2b-prospect", heatmapCount: 0 } },
+      { id: IDS.b2b_alert, type: "admin_alert", position: { x: 600, y: 1500 }, data: { label: "B2B Alert", priority: "high", topic: `B2B Lead - ${businessName}`, phone: adminPhone || client.adminPhone || "", heatmapCount: 0 } },
+      { id: IDS.b2b_confirm, type: "message", position: { x: 1000, y: 1500 }, data: { label: "B2B Confirm", text: "Our wholesale team will contact you soon with pricing.", heatmapCount: 0 } }
     );
-
     edges.push(
-      { id: "f8_b2b_tr",  source: IDS.B2B_TRIGGER, target: IDS.B2B_FORM    },
-      { id: "f8_b2b_fi",  source: IDS.B2B_FORM,    target: IDS.B2B_VOLUME  },
-      { id: "f8_b2b_it",  source: IDS.B2B_VOLUME,  target: IDS.B2B_TAG     },
-      { id: "f8_b2b_ta",  source: IDS.B2B_TAG,     target: IDS.B2B_ALERT   },
-      { id: "f8_b2b_ac",  source: IDS.B2B_ALERT,   target: IDS.B2B_CONFIRM },
+      { id: `e_b2b_1_${ts}`, source: IDS.b2b_trigger, target: IDS.b2b_capture },
+      { id: `e_b2b_2_${ts}`, source: IDS.b2b_capture, target: IDS.b2b_tag },
+      { id: `e_b2b_3_${ts}`, source: IDS.b2b_tag, target: IDS.b2b_alert },
+      { id: `e_b2b_4_${ts}`, source: IDS.b2b_alert, target: IDS.b2b_confirm }
     );
   }
 
-  // ====================================================================
-  // ⚡ THE ULTIMATE FAIL-SAFE: AI Fallback Dead-End Detection Algorithm
-  //
-  // Strategy: Find every node that has NO outgoing edges.
-  // These are "dead-end" nodes — the user gets stranded here.
-  // Wire them ALL to IDS.AI_FALLBACK so Gemini takes over seamlessly.
-  //
-  // Exclusions (nodes that legitimately have no outgoing edge):
-  //   - folder type nodes (they route internally, not linearly)
-  //   - AI_FALLBACK itself (never wire fallback → fallback)
-  //   - trigger nodes (they are sources, not sinks — their dead-end handling
-  //     is managed by the trigger engine when no keyword fires)
-  // ====================================================================
-  const nodesWithOutgoingEdge = new Set(edges.map(e => e.source));
-
-  const DEAD_END_EXCLUSION_TYPES = new Set(["folder", "trigger"]);
-
-  const deadEndNodes = nodes.filter(n =>
-    !DEAD_END_EXCLUSION_TYPES.has(n.type) &&
-    n.id !== IDS.AI_FALLBACK &&
-    !nodesWithOutgoingEdge.has(n.id)
-  );
-
-  deadEndNodes.forEach((n, idx) => {
-    edges.push({
-      id:     `fallback_${n.id}_${idx}`,
-      source: n.id,
-      target: IDS.AI_FALLBACK,
-      // Use animated dashed style to visually distinguish fallback edges on canvas
-      animated: true,
-      style:    { strokeDasharray: "5 5", stroke: "#6366f1", opacity: 0.6 },
-      label:    "AI Fallback",
-    });
+  const cartSteps = [
+    { delay: cartTiming.msg1 || 15, unit: "minutes", text: content.cart_recovery_1 },
+    { delay: cartTiming.msg2 || 2, unit: "hours", text: content.cart_recovery_2 },
+    { delay: cartTiming.msg3 || 24, unit: "hours", text: content.cart_recovery_3 }
+  ];
+  let prevId = IDS.trig_cart;
+  cartSteps.forEach((step, i) => {
+    const delayId = `cart_delay_${i}_${ts}`;
+    const msgId = `cart_msg_${i}_${ts}`;
+    nodes.push(
+      { id: delayId, type: "delay", position: { x: -800 + (i * 800), y: 600 }, data: { label: `Wait ${step.delay} ${step.unit}`, waitValue: step.delay, waitUnit: step.unit, heatmapCount: 0 } },
+      { id: msgId, type: "message", position: { x: -400 + (i * 800), y: 600 }, data: { label: `Cart Recovery ${i + 1}`, text: step.text, heatmapCount: 0 } }
+    );
+    edges.push({ id: `e_cart_d${i}_${ts}`, source: prevId, target: delayId }, { id: `e_cart_m${i}_${ts}`, source: delayId, target: msgId });
+    prevId = msgId;
   });
 
-  console.log(`[FlowGenerator] 🛡️ Dead-end detection: ${deadEndNodes.length} node(s) auto-wired to AI Fallback.`);
-
-  // ====================================================================
-  // FINALIZATION
-  // ====================================================================
-
-  // Update folder childCount metadata
-  const folderCounts = {};
-  nodes.forEach(n => {
-    if (n.parentId && n.type !== "folder") {
-      folderCounts[n.parentId] = (folderCounts[n.parentId] || 0) + 1;
-    }
-  });
-  nodes.forEach(n => {
-    if (n.type === "folder" && folderCounts[n.id]) {
-      n.data.childCount = folderCounts[n.id];
+  const nodesWithOutgoing = new Set(edges.map((e) => e.source));
+  const deadEndTypes = ["message", "shopify_call", "loyalty", "tag_lead", "review", "warranty_check", "cod_prepaid", "admin_alert"];
+  nodes.forEach((node) => {
+    if (deadEndTypes.includes(node.type) && !nodesWithOutgoing.has(node.id) && node.id !== IDS.ai_fallback) {
+      edges.push({
+        id: `e_fallback_${node.id}_${ts}`,
+        source: node.id,
+        target: IDS.ai_fallback,
+        animated: false,
+        style: { strokeDasharray: "4 4", stroke: "#6366f1", opacity: 0.4 }
+      });
     }
   });
 
-  // Apply stripPlaceholders to all text fields across all nodes
-  nodes = cleanNodeText(nodes);
-
-  // Run basic integrity check (duplicate IDs, dangling edges, prohibited keys)
-  verifyFlowIntegrity(nodes, edges);
-
-  // ── THE LAW: Run strict button-ID → edge sourceHandle validation ─────────
-  // This throws if any interactive node's buttons don't match their edges.
-  // A thrown error here prevents a broken flow from ever being saved to DB.
-  try {
-    verifyAllEdgesMatchButtonIds(nodes, edges);
-  } catch (validationErr) {
-    // Re-throw with context so the wizard endpoint returns a useful 500 error
-    throw validationErr;
+  verifyAllEdgesMatchButtonIds(nodes, edges);
+  if (!verifyFlowIntegrity(nodes, edges)) {
+    throw new Error("Flow integrity validation failed");
   }
 
-  console.log(
-    `[FlowGenerator] ✅ Golden Path built: ${nodes.length} nodes, ${edges.length} edges` +
-    ` across 8 folders${b2bEnabled ? ' (B2B enabled)' : ''}.`
-  );
-
-  return { nodes, edges };
+  const connected = new Set([...edges.map((e) => e.source), ...edges.map((e) => e.target)]);
+  const cleanNodes = nodes.filter((n) => connected.has(n.id) || n.type === "trigger" || n.id === IDS.ai_fallback);
+  const cleanEdges = edges.filter((e) => connected.has(e.source) && connected.has(e.target));
+  const finalNodes = cleanNodeText(cleanNodes);
+  return { nodes: finalNodes, edges: cleanEdges };
 }
 
 // ─── SYSTEM PROMPT GENERATOR (used by wizard) ────────────────────────────────

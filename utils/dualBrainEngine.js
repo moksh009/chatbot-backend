@@ -136,8 +136,12 @@ function incrementNodeVisit(nodes, nodeId) {
 // ─────────────────────────────────────────────────────────────────────────────
 function normalizeHandleId(handleId) {
   if (!handleId) return handleId;
-  const parts = handleId.split('__');
-  return parts[parts.length - 1];
+  const parts = String(handleId).split("__");
+  return parts[parts.length - 1]
+    .trim()
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\s+/g, "_");
 }
 
 const { normalizePhone } = require("./helpers");
@@ -3176,11 +3180,17 @@ async function saveOutboundMessage(phone, clientId, type, content, messageId, ch
 // HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 function extractTrigger(parsedMessage) {
+  const rawButtonId =
+    parsedMessage.interactive?.button_reply?.id ||
+    parsedMessage.interactive?.list_reply?.id ||
+    parsedMessage.button?.payload ||
+    parsedMessage.button?.text ||
+    null;
+  const normalizedButtonId = typeof rawButtonId === "string"
+    ? rawButtonId.trim().toLowerCase().replace(/\s+/g, "_")
+    : rawButtonId;
   return {
-    buttonId: parsedMessage.interactive?.button_reply?.id || 
-              parsedMessage.interactive?.list_reply?.id || 
-              parsedMessage.button?.payload || 
-              null,
+    buttonId: normalizedButtonId,
     text: parsedMessage.text?.body || null,
     type: parsedMessage.type
   };

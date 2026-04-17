@@ -10,6 +10,71 @@ const { withShopifyRetry } = require("../utils/shopifyHelper");
 const { scrapeWebsiteText } = require("../utils/urlScraper");
 const { generateText } = require("../utils/gemini");
 const { log } = require("../utils/logger");
+
+async function syncPendingTemplatesForClient(client) {
+  const axios = require("axios");
+  const { decrypt } = require("../utils/encryption");
+
+  const pendingTemplates = Array.isArray(client.pendingTemplates) ? client.pendingTemplates : [];
+  if (!pendingTemplates.length) {
+    return { checked: 0, approved: 0, updatedPending: pendingTemplates };
+  }
+
+  const wabaId = client.wabaId || client.whatsapp?.wabaId;
+  let token = client.whatsappToken || client.whatsapp?.accessToken;
+  if (!wabaId || !token) {
+    return { checked: 0, approved: 0, updatedPending: pendingTemplates, error: "Missing WABA credentials" };
+  }
+  try {
+    token = decrypt(token) || token;
+  } catch (_) {}
+
+  const syncedMap = new Map((client.syncedMetaTemplates || []).map((t) => [t.name, t]));
+  const updatedPending = [];
+  let approvedCount = 0;
+  let checked = 0;
+
+  for (const pending of pendingTemplates) {
+    if (!pending?.name) continue;
+    checked += 1;
+    try {
+      const resp = await axios.get(`https://graph.facebook.com/v18.0/${wabaId}/message_templates`, {
+        params: { name: pending.name },
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 10000
+      });
+      const remoteTemplate = (resp.data?.data || []).find((item) => item.name === pending.name);
+      const status = String(remoteTemplate?.status || pending.status || "PENDING").toUpperCase();
+
+      if (status === "APPROVED") {
+        approvedCount += 1;
+        syncedMap.set(pending.name, {
+          name: pending.name,
+          status: "APPROVED",
+          productHandle: pending.productHandle || "",
+          productId: pending.productId || "",
+          metaId: pending.metaId || remoteTemplate?.id || "",
+          approvedAt: new Date(),
+          submittedAt: pending.submittedAt || null
+        });
+      } else {
+        updatedPending.push({ ...pending, status });
+      }
+    } catch (err) {
+      const reason = err.response?.data?.error?.message || err.message;
+      updatedPending.push({ ...pending, status: pending.status || "PENDING", lastError: reason, lastCheckedAt: new Date() });
+    }
+  }
+
+  await Client.findByIdAndUpdate(client._id, {
+    $set: {
+      pendingTemplates: updatedPending,
+      syncedMetaTemplates: Array.from(syncedMap.values())
+    }
+  });
+
+  return { checked, approved: approvedCount, updatedPending };
+}
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/wizard/:clientId/complete
 // Called when user clicks Launch in Step 10 of the onboarding wizard
@@ -133,8 +198,8 @@ router.post("/:clientId/complete", protect, async (req, res) => {
         'brand.adminPhone': wizardData.adminPhone,
         'config.adminPhones': wizardData.adminPhone.split(',').map(p => p.trim())
       }),
-      // Gemini AI key — optional (only for WA bot AI fallback, NOT for dashboard/flow generation)
-      ...(wizardData.geminiApiKey && { geminiApiKey: wizardData.geminiApiKey }),
+      // Gemini key powers bot fallback. Also mirror into openaiApiKey for legacy engine paths.
+      ...(wizardData.geminiApiKey && { geminiApiKey: wizardData.geminiApiKey, openaiApiKey: wizardData.geminiApiKey }),
       // Product display mode: 'template' | 'manual'
       ...(wizardData.productMode && { 'config.productMode': wizardData.productMode }),
       ...(wizardData.metaAdsToken && {
@@ -428,10 +493,20 @@ router.get("/:clientId/debug-shopify", protect, async (req, res) => {
 // Get the pre-built templates to show in Step 8 of the wizard
 // ─────────────────────────────────────────────────────────────────────────────
 router.post("/:clientId/templates", protect, async (req, res) => {
+  const { clientId } = req.params;
   const { wizardData } = req.body;
   try {
+    const client = await Client.findOne({ clientId }).lean();
     const templates = getPrebuiltTemplates(wizardData || {});
-    res.json({ success: true, templates });
+    const pendingMap = new Map((client?.pendingTemplates || []).map((t) => [t.name, String(t.status || "PENDING").toUpperCase()]));
+    const syncedMap = new Map((client?.syncedMetaTemplates || []).map((t) => [t.name, String(t.status || "APPROVED").toUpperCase()]));
+    const msgMap = new Map((client?.messageTemplates || []).map((t) => [t.name, String(t.status || "").toUpperCase()]));
+
+    const hydrated = templates.map((tpl) => {
+      const status = syncedMap.get(tpl.name) || pendingMap.get(tpl.name) || msgMap.get(tpl.name) || tpl.status || "not_submitted";
+      return { ...tpl, status };
+    });
+    res.json({ success: true, templates: hydrated });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -553,11 +628,20 @@ router.post("/:clientId/submit-product-templates", protect, async (req, res) => 
           createdAt:   new Date()
         };
 
+        const pendingTemplate = {
+          name: templateName,
+          productHandle: handle,
+          productId: String(prod.id || prod.shopifyId || ""),
+          status: "PENDING",
+          metaId: metaRes.data.id || "",
+          submittedAt: new Date()
+        };
+
         await Client.findByIdAndUpdate(client._id, {
           $pull:  { messageTemplates: { name: templateName } },
         });
         await Client.findByIdAndUpdate(client._id, {
-          $push:  { messageTemplates: newTemplate },
+          $push:  { messageTemplates: newTemplate, pendingTemplates: pendingTemplate },
         });
 
         submitted.push(templateName);
@@ -585,6 +669,33 @@ router.post("/:clientId/submit-product-templates", protect, async (req, res) => 
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+// ────────────────────────────────────────────────────────────────────────────────
+// POST /api/wizard/:clientId/sync-template-status
+// Manually check pending template statuses and move APPROVED → syncedMetaTemplates
+// ────────────────────────────────────────────────────────────────────────────────
+router.post("/:clientId/sync-template-status", protect, async (req, res) => {
+  const { clientId } = req.params;
+  try {
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ success: false, error: "Client not found" });
+    if (req.user.role !== "SUPER_ADMIN" && req.user.clientId !== clientId) {
+      return res.status(403).json({ success: false, error: "Unauthorized" });
+    }
+
+    const result = await syncPendingTemplatesForClient(client);
+    return res.json({
+      success: true,
+      checked: result.checked,
+      approvedNow: result.approved,
+      pendingRemaining: result.updatedPending.length
+    });
+  } catch (err) {
+    log.error(`[TemplateSync] Manual sync failed for ${clientId}:`, err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 
 // ────────────────────────────────────────────────────────────────────────────────
 // POST /api/wizard/:clientId/submit-automation-templates
@@ -794,4 +905,5 @@ Output strictly valid JSON exactly in this format: { "systemPrompt": "...", "faq
   }
 });
 
+router.syncPendingTemplatesForClient = syncPendingTemplatesForClient;
 module.exports = router;

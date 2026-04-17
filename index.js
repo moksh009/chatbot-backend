@@ -350,6 +350,10 @@ scheduleBirthdayCron();
 // Initialize Product Sync Cron Job
 const scheduleProductSyncCron = require('./cron/productSyncCron');
 scheduleProductSyncCron();
+
+// Template approval status sync (pending -> syncedMetaTemplates)
+const scheduleTemplateStatusSyncCron = require('./cron/templateStatusSyncCron');
+scheduleTemplateStatusSyncCron();
  
 // Initialize Amazon SP-API Sync (Phase 2)
 const scheduleAmazonSync = require('./cron/amazonSync');
