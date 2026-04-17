@@ -3,6 +3,7 @@ const router = express.Router({ mergeParams: true }); // mergeParams to access :
 const loadClientConfig = require('../middleware/clientConfig');
 const { protect } = require('../middleware/auth');
 const Client = require('../models/Client');
+const InboundDeduplication = require('../models/InboundDeduplication');
 
 // Import client controllers
 const turfController = require('./clientcodes/turf');
@@ -78,6 +79,29 @@ router.get('/webhook', (req, res) => {
 router.post('/webhook', async (req, res) => {
   try {
     const { businessType, clientId, isGenericBot } = req.clientConfig;
+    
+    // --- 1. Top-Level Deduplication ---
+    // Dropping duplicates here prevents buffer-reset loops and eliminates the 20-30s delay.
+    try {
+      const entry = req.body?.entry?.[0];
+      const changes = entry?.changes?.[0];
+      const message = changes?.value?.messages?.[0];
+      const messageId = message?.id;
+
+      if (messageId) {
+        const existing = await InboundDeduplication.findOne({ messageId, clientId });
+        if (existing) {
+          console.log(`[Webhook Router] Ignoring duplicate event for ${messageId}`);
+          return res.sendStatus(200);
+        }
+        // Save ID with 2-minute TTL (handled by model)
+        await InboundDeduplication.create({ messageId, clientId });
+      }
+    } catch (dedupErr) {
+      console.error(`[Webhook Router] Deduplication check failed:`, dedupErr.message);
+      // Continue anyway to ensure delivery
+    }
+
     console.log(`[Webhook Router] INCOMING POST -> Client: ${clientId} | Type: ${businessType} | Flow: ${isGenericBot ? 'GenericEngine' : 'CustomCode'}`);
     if (businessType === 'turf') {
       await turfController.handleWebhook(req, res);

@@ -53,7 +53,7 @@ class MessageBufferService {
         }
       );
 
-      console.log(`[MessageBuffer] Aggregated message for ${phoneNumber}. Delay reset to 10s.`);
+      console.log(`[MessageBuffer] Aggregated message for ${phoneNumber}. Delay set to 3s.`);
     } catch (error) {
       console.error('[MessageBuffer] Error in ingestWebhookMessage:', error);
       throw error;

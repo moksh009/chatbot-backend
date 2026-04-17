@@ -315,9 +315,11 @@ const WhatsApp = {
       if (err.status === 404 || (err.data?.error_data?.details || "").includes("template name") || (err.message || "").includes("132001")) {
         log.warn(`[WhatsApp] Template ${templateName} failed (Missing). Falling back to TEXT for ${phone}`);
         
-        let textFallback = `[Template: ${templateName}]`;
+        let textFallback = "";
         if (variables.length > 0) {
-            textFallback += `\n\n${variables.join('\n')}`;
+            textFallback = variables.join('\n');
+        } else {
+            textFallback = "Hello! We are here to help. Pick an option below:"; // Generic fallback if no variables
         }
         
         return await this.sendText(client, phone, textFallback);
@@ -357,11 +359,20 @@ const WhatsApp = {
     const message = errorData.message || errorData;
     const friendlyMessage = translateWhatsAppError(errorData);
     
-    log.error(`[WhatsApp] ${operation} failed: ${message}`, {
-      url,
-      status,
-      error: errorData
-    });
+    // Silence 404/132001 if it's a template error - it's handled by fallback
+    const isTemplateMissing = status === 404 || 
+                            (errorData.error_data?.details || "").includes("template name") ||
+                            (message || "").includes("132001");
+
+    if (isTemplateMissing && operation === "sendTemplate") {
+       log.warn(`[WhatsApp] ${operation} failed (Expected for Fallback): ${message}`);
+    } else {
+       log.error(`[WhatsApp] ${operation} failed: ${message}`, {
+         url,
+         status,
+         error: errorData
+       });
+    }
 
     // Re-throw standardized error
     const error = new Error(`WhatsApp API Error: ${message}`);

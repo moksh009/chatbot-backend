@@ -308,22 +308,12 @@ async function runDualBrainEngine(parsedMessage, client) {
   const io       = global.io;
   const messageId = parsedMessage.messageId;
 
-  // 1. DEDUPLICATION (messageId check)
-  if (messageId && channel === 'whatsapp') {
-    try {
-      await InboundDeduplication.create({ messageId, clientId: client.clientId, phone });
-    } catch (dedupErr) {
-      log.warn(`[Deduplication] Message ${messageId} already processed for ${phone}. Skipping.`);
-      return true; // Mark as handled
-    }
-  }
-
-  // 2. SESSION LOCK
+  // 1. SESSION LOCK (Top-level deduplication now handled by router)
   try {
       await ProcessingLock.create({ phone, clientId: client.clientId });
   } catch (lockErr) {
       log.warn(`[Lock] Session locked for ${phone}. Skipping rapid entry.`);
-      return true; 
+      return true;
   }
 
   try {
