@@ -43,7 +43,7 @@ class MessageBufferService {
         { clientId, phoneNumber }, 
         { 
           jobId, 
-          delay: 10000, 
+          delay: 3000, 
           removeOnComplete: true,
           attempts: 3,
           backoff: {

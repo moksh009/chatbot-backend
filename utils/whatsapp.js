@@ -309,7 +309,21 @@ const WhatsApp = {
       }
     }
 
-    return this.sendTemplate(client, phone, templateName, languageCode, components);
+    try {
+      return await this.sendTemplate(client, phone, templateName, languageCode, components);
+    } catch (err) {
+      if (err.status === 404 || (err.data?.error_data?.details || "").includes("template name") || (err.message || "").includes("132001")) {
+        log.warn(`[WhatsApp] Template ${templateName} failed (Missing). Falling back to TEXT for ${phone}`);
+        
+        let textFallback = `[Template: ${templateName}]`;
+        if (variables.length > 0) {
+            textFallback += `\n\n${variables.join('\n')}`;
+        }
+        
+        return await this.sendText(client, phone, textFallback);
+      }
+      throw err; // Re-throw if it's a different error
+    }
   },
 
   /**

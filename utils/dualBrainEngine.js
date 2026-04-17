@@ -10,6 +10,7 @@ const emailService = require("./emailService");
 const NotificationService = require("./notificationService");
 const BillingService = require('./billingService');
 const ProcessingLock = require('../models/ProcessingLock');
+const InboundDeduplication = require('../models/InboundDeduplication');
 const log = require("./logger")('DualBrain');
 const { generateText, getGeminiModel } = require('./gemini');
 const { createMessage } = require("./createMessage");
@@ -208,13 +209,8 @@ async function handleWhatsAppMessage(from, message, phoneNumberId, profileName =
         return;
     }
 
-    // 1. Session Lock (Atomic via MongoDB)
-    try {
-      await ProcessingLock.create({ phone: from, clientId: client.clientId });
-    } catch (lockErr) {
-      log.warn(`Session locked for ${from} (Client: ${client.clientId}). Skipping rapid message.`);
-      return;
-    }
+    // NOTE: Lock and Deduplication moved into runDualBrainEngine so ALL entry points are protected.
+    // (Ecommerce, Salon, Turfs, etc. all call runDualBrainEngine directly)
 
     const parsed = await parseWhatsAppPayload(message);
     if (!parsed) {
@@ -294,20 +290,10 @@ async function handleWhatsAppMessage(from, message, phoneNumberId, profileName =
     };
 
 
-    // run engine
+    // run engine (lock and deduplication handled inside)
     await runDualBrainEngine(parsedMessage, client);
-
   } catch (err) {
     log.error(`handleWhatsAppMessage Error:`, { from, error: err.message });
-  } finally {
-    // Release MongoDB distributed lock
-    try {
-      if (typeof client !== 'undefined' && client?.clientId) {
-        await ProcessingLock.deleteOne({ phone: from, clientId: client.clientId });
-      }
-    } catch (releaseErr) {
-      log.error(`Lock release failed for ${from}`, { error: releaseErr.message });
-    }
   }
 }
 
@@ -317,13 +303,31 @@ async function handleWhatsAppMessage(from, message, phoneNumberId, profileName =
 // ─────────────────────────────────────────────────────────────────────────────
 async function runDualBrainEngine(parsedMessage, client) {
   const rawPhone = parsedMessage.from;
-  const channel = parsedMessage.channel || 'whatsapp';
-  
-  // Normalize phone for consistency
-  const phone = channel === 'whatsapp' ? normalizePhone(rawPhone) : rawPhone;
-  
-  const io    = global.io;
-  const profileName = parsedMessage.profileName || '';
+  const channel  = parsedMessage.channel || 'whatsapp';
+  const phone    = channel === 'whatsapp' ? normalizePhone(rawPhone) : rawPhone;
+  const io       = global.io;
+  const messageId = parsedMessage.messageId;
+
+  // 1. DEDUPLICATION (messageId check)
+  if (messageId && channel === 'whatsapp') {
+    try {
+      await InboundDeduplication.create({ messageId, clientId: client.clientId, phone });
+    } catch (dedupErr) {
+      log.warn(`[Deduplication] Message ${messageId} already processed for ${phone}. Skipping.`);
+      return true; // Mark as handled
+    }
+  }
+
+  // 2. SESSION LOCK
+  try {
+      await ProcessingLock.create({ phone, clientId: client.clientId });
+  } catch (lockErr) {
+      log.warn(`[Lock] Session locked for ${phone}. Skipping rapid entry.`);
+      return true; 
+  }
+
+  try {
+    const profileName = parsedMessage.profileName || '';
 
   // --- Phase 28: Track 3 - Bidirectional Translation (Incoming) ---
   const { detectLanguage, translateText } = require('./translationEngine');
@@ -1307,14 +1311,25 @@ async function runDualBrainEngine(parsedMessage, client) {
   // STEP 7: PRIORITY 3 — Gemini AI Fallback
   // Only use AI if there is text body. Otherwise, let the caller handle it.
   if (parsedMessage.text?.body) {
-    await runAIFallback(parsedMessage, client, phone, lead, channel);
+    await runAIFallback(parsedMessage, client, phone, lead, channel, convo);
     analyzeConversationIntelligence(client, phone, convo);
     return true;
   }
   
   // Return false so the engine can process legacy interactive IDs
   analyzeConversationIntelligence(client, phone, convo);
-  return false;
+    return false;
+  } catch (err) {
+      log.error(`[DualBrain] Critical Engine Error for ${phone}:`, err.message);
+      return false;
+  } finally {
+      // Release MongoDB distributed lock
+      try {
+          await ProcessingLock.deleteOne({ phone, clientId: client.clientId });
+      } catch (releaseErr) {
+          log.error(`[Lock] Release failed for ${phone}:`, releaseErr.message);
+      }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1406,7 +1421,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     if (!parsedMessage.text.body) {
          parsedMessage.text.body = parsedMessage.interactive?.button_reply?.title || parsedMessage.interactive?.list_reply?.title || parsedMessage.button?.text || userText || incomingTrigger.buttonId;
     }
-    return await runAIFallback(parsedMessage, client, phone, lead, channel);
+    return await runAIFallback(parsedMessage, client, phone, lead, channel, convo);
   }
 
   if (matchingEdge) {
@@ -2341,7 +2356,7 @@ async function tryKeywordFallback(parsedMessage, client, convo, phone) {
   return false;
 }
 
-async function runAIFallback(parsedMessage, client, phone, lead, channel = 'whatsapp') {
+async function runAIFallback(parsedMessage, client, phone, lead, channel = 'whatsapp', convo = null) {
   let text = parsedMessage.text?.body;
   if (!text) {
       if (parsedMessage.type === 'interactive') {
@@ -2766,6 +2781,10 @@ async function sendWhatsAppSmartTemplate(client, phone, templateName, variables 
     }
     return res;
   } catch (err) {
+    if ((err.message || "").includes("132001")) {
+      log.warn(`[DualBrain] Template ${templateName} failed (Missing). Fallback was triggered in WhatsApp utility.`);
+      return;
+    }
     log.error('sendSmartTemplate error:', { 
         clientId: client.clientId, 
         templateName, 
@@ -3228,13 +3247,9 @@ function isGreeting(text) {
 
 async function checkIntent(userText, intentDescription, apiKey) {
   try {
-    const { getGeminiModel } = require('./gemini');
-    const model = getGeminiModel(apiKey);
-    const result = await model.generateContent(
-      `Does this message express the intent: "${intentDescription}"?\nMessage: "${userText}"\nAnswer only YES or NO.`
-    );
-    const text = result.response.text().toUpperCase();
-    return text.includes("YES");
+    const prompt = `Does this message express the intent: "${intentDescription}"?\nMessage: "${userText}"\nAnswer only YES or NO.`;
+    const response = await generateText(prompt, apiKey, { temperature: 0.1 });
+    return (response || "").toUpperCase().includes("YES");
   } catch (err) {
     log.error(`checkIntent Error:`, { error: err.message });
     return false;
@@ -3265,33 +3280,33 @@ async function analyzeConversationIntelligence(client, phone, convo) {
       `${m.direction === 'incoming' ? 'User' : 'Bot'}: ${m.content}`
     ).join('\n');
 
-    const { getGeminiModel } = require('./gemini');
-    const model = getGeminiModel(apiKey);
+    const { generateJSON } = require('./gemini');
     
     const prompt = `
       Analyze the following chat history and provide two things in valid JSON format:
-      1. "sentiment": One of "Positive", "Neutral", "Negative".
-      2. "summary": A concise 1-sentence summary of the conversation status.
+      {
+        "sentiment": "Positive" | "Neutral" | "Negative",
+        "summary": "Concise 1-sentence summary"
+      }
 
       Chat History:
       ${historyText}
 
-      JSON Response:
+      Return ONLY the JSON object.
     `;
 
-    const result = await model.generateContent(prompt);
-    const responseText = result.response.text();
-    const jsonMatch = responseText.match(/\{.*\}/s);
-    
-    if (jsonMatch) {
-      const { sentiment, summary } = JSON.parse(jsonMatch[0]);
-      
-      await Conversation.findByIdAndUpdate(convo._id, {
-        sentiment: sentiment || 'Neutral',
-        summary: summary || convo.summary,
-        lastSummaryUpdate: new Date()
-      });
+    const result = await generateJSON(prompt, apiKey, { temperature: 0.1 });
+    if (!result) return;
 
+    const sentiment = result.sentiment || 'Neutral';
+    const summary   = result.summary || convo.summary;
+
+    await Conversation.findByIdAndUpdate(convo._id, {
+      sentiment,
+      summary,
+      lastSummaryUpdate: new Date()
+    });
+ 
       // Emit update to dashboard
       const io = global.io;
       if (io) {
@@ -3302,7 +3317,7 @@ async function analyzeConversationIntelligence(client, phone, convo) {
         });
       }
       
-      log.info(`${phone} -> ${sentiment} | ${summary}`);
+      log.info(`[Intelligence] ${phone} -> ${sentiment} | ${summary}`);
 
       // Phase 4: Autonomous Learning Hook
       // If sentiment is POSITIVE or history length indicates deep engagement, propose knowledge
@@ -3316,7 +3331,6 @@ async function analyzeConversationIntelligence(client, phone, convo) {
           // Non-blocking trigger
           extractAndProposeKnowledge(client.clientId, phone, lead._id).catch(err => log.error("[Learning-Hook] Failed:", err.message));
         }
-      }
     }
   } catch (err) {
     log.error('Intelligence Error:', { error: err.message });
