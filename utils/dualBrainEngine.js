@@ -1561,7 +1561,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     }
   });
 
-  if (!sent && node.type !== 'logic' && node.type !== 'delay' && node.type !== 'set_variable' && node.type !== 'shopify_call' && node.type !== 'http_request' && node.type !== 'link' && node.type !== 'restart') return false;
+  if (!sent && node.type !== 'logic' && node.type !== 'delay' && node.type !== 'set_variable' && node.type !== 'shopify_call' && node.type !== 'http_request' && node.type !== 'link' && node.type !== 'restart' && node.type !== 'trigger' && node.type !== 'TriggerNode') return false;
 
   // --- SPECIAL NODE LOGIC (Automated Traversal) ---
   if (node.type === 'logic') {
@@ -2611,15 +2611,23 @@ REPLY:
       );
     } catch (aiErr) {
       log.error(`[AI Fallback] Error resolving AI Fallback reply for ${client.clientId}:`, { error: aiErr.message });
-      // Notify Admin 
-      if (global.NotificationService) {
+      
+      // If AI fails but we haven't matched a flow, we shouldn't necessarily PAUSE the bot
+      // unless it's a critical system failure. We'll send a polite fallback and stay in BOT_ACTIVE.
+      const isKeyError = aiErr.message.includes('API key') || aiErr.message.includes('No API Key');
+      
+      if (!isKeyError && global.NotificationService) {
          await global.NotificationService.sendAdminAlert(client, { customerPhone: phone, topic: 'AI Gateway Timeout/Failure', triggerSource: 'runAIFallback' });
+         // Only escalate to HUMAN_TAKEOVER on actual logic/timeout errors, not missing keys
+         await Conversation.findOneAndUpdate({ phone, clientId: client.clientId }, { $set: { status: 'HUMAN_TAKEOVER', lastInteraction: new Date() } });
       }
-      // Enter HUMAN_TAKEOVER
-      await Conversation.findOneAndUpdate({ phone, clientId: client.clientId }, { $set: { status: 'HUMAN_TAKEOVER', lastInteraction: new Date() } });
-      const fallMsg = "I'm having trouble connecting to my AI brain right now. Let me transfer you to a human agent!";
+
+      const fallMsg = isKeyError 
+        ? "I'm currently undergoing some maintenance. Please try again in 5 minutes or type 'Menu' to see my options!"
+        : "I'm having trouble connecting to my AI brain right now. Let me transfer you to a human agent!";
+      
       await sendWhatsAppText(client, phone, fallMsg);
-      return true; // Halt standard flow
+      return true; // Halt standard flow but don't necessarily kill the bot status
     }
     
     // --- PHASE 30: LOG AI SUCCESS ---

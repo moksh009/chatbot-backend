@@ -50,19 +50,20 @@ exports.upsertIntent = async (req, res) => {
       });
     }
 
-    /**
+     /**
      * CRITICAL ARCHITECTURE RULE: 
-     * We must instantly retrain the client's NLP model in RAM.
-     * We AWAIT the training completion before responding to the frontend.
-     * This ensures the bot is synchronized with the dashboard the moment the user clicks "Save".
+     * We trigger retraining but we DON'T block the HTTP response on it.
+     * This keeps the UI snappy even if the model is large.
      */
-    console.log(`[IntentApi] Triggering dynamic retraining for client: ${clientId}...`);
-    await NlpEngineService.trainClientModel(clientId);
+    console.log(`[IntentApi] Scheduling dynamic retraining for client: ${clientId}...`);
+    NlpEngineService.trainClientModel(clientId).catch(err => {
+      console.error('[IntentRetrain] Background training failed:', err);
+    });
 
     // 3. Response
     res.status(200).json({ 
       success: true, 
-      message: 'Intent saved and NLP brain retrained successfully.', 
+      message: 'Intent saved. NLP brain is retraining in the background.', 
       rule 
     });
 
@@ -70,7 +71,7 @@ exports.upsertIntent = async (req, res) => {
     console.error('[IntentApi] Upsert Error:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Critical error while saving intent and retraining brain.' 
+      message: 'Critical error while saving intent.' 
     });
   }
 };
@@ -204,10 +205,12 @@ exports.deleteIntent = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Intent not found or already removed.' });
     }
     
-    // Retrain model since training data has changed
-    await NlpEngineService.trainClientModel(clientId);
+    // Retrain model in background
+    NlpEngineService.trainClientModel(clientId).catch(err => {
+      console.error('[IntentDelete] Background training failed:', err);
+    });
 
-    res.status(200).json({ success: true, message: 'Intent deleted and brain retrained' });
+    res.status(200).json({ success: true, message: 'Intent deleted. Brain retraining scheduled.' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Deletion failed' });
   }
@@ -284,18 +287,8 @@ Return as pure JSON matching this exact structure: { "intentPhrases": ["..."], "
 
     const generatedData = await platformGenerateJSON(prompt, { maxTokens: 4000, temperature: 0.9, maxRetries: 3 });
 
-    if (!generatedData || !generatedData.intentPhrases || !generatedData.antiIntentPhrases) {
-      throw new Error('Failed to parse AI generation or empty output.');
-    }
-
-    // Standard Number matching
-    if (mongoOperator === '$eq') {
-      andConditions.push({ [assetConfig.dbField]: filter.targetValue });
-    } else {
-      const val = parseFloat(filter.targetValue);
-      if (!isNaN(val)) {
-        andConditions.push({ [assetConfig.dbField]: { [mongoOperator]: val } });
-      }
+    if (!generatedData || !Array.isArray(generatedData.intentPhrases) || !Array.isArray(generatedData.antiIntentPhrases)) {
+      throw new Error('AI generated invalid or empty data structure.');
     }
 
     res.status(200).json({

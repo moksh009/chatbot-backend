@@ -1922,16 +1922,16 @@ function getPrebuiltTemplates(wizardData) {
     ? `https://${shopDomain.replace(/^https?:\/\//, "")}`
     : (checkoutUrl || "");
 
-  // ── TOP 3 PRODUCT TEMPLATES ─────────────────────────────────────────────────
+  // ── ALL PRODUCT TEMPLATES ─────────────────────────────────────────────────
   // Each product gets its own Meta-compliant template with:
   //   • HEADER: IMAGE (product photo from Shopify)
   //   • BODY:   name / price / feature excerpt
   //   • FOOTER: brand name
   //   • BUTTONS: URL "Buy Now" → direct product page + QUICK_REPLY "Main Menu"
   const { buildProductContext } = module.exports;
-  const top3Products = products.slice(0, 3).map((p, i) => buildProductContext(p, i));
+  const allProducts = products.map((p, i) => buildProductContext(p, i));
 
-  const productTemplates = top3Products.map((p) => {
+  const productTemplates = allProducts.map((p) => {
     const safeName = `prod_${p.handle.replace(/[^a-z0-9_]/gi, "_").toLowerCase()}`.substring(0, 50);
     const buyUrl   = storeBase ? `${storeBase}/products/${p.handle}` : "";
 
@@ -1952,7 +1952,7 @@ function getPrebuiltTemplates(wizardData) {
         },
         {
           type: "BODY",
-          text: `*{{1}}*\n\n\uD83D\uDCB0 Price: ${currency}{{2}}\n\n{{3}}`,
+          text: `Product: *{{1}}*\n\n\uD83D\uDCB0 Price: ${currency}{{2}}\n\n*Key Features:*\n{{3}}\n\nClick below to view more details!`,
         },
         {
           type: "FOOTER",
@@ -1970,7 +1970,7 @@ function getPrebuiltTemplates(wizardData) {
         },
       ],
       // Flat fields used by the wizard preview bubble renderer
-      body:      `*{{1}}*\n\n\uD83D\uDCB0 Price: ${currency}{{2}}\n\n{{3}}`,
+      body:      `Product: *{{1}}*\n\n\uD83D\uDCB0 Price: ${currency}{{2}}\n\n*Key Features:*\n{{3}}\n\nClick below to view more details!`,
       variables: ["product_name", "product_price", "product_features"],
     };
   });
@@ -2052,13 +2052,13 @@ function getPrebuiltTemplates(wizardData) {
       components: [
         {
           type: "BODY",
-          text: `Hi! \uD83D\uDC4B You left items in your cart at ${brandSafe}. Still interested?\n\nItems are selling fast! Complete your purchase here:\n{{1}}`,
+          text: `Hi! \uD83D\uDC4B You left items in your cart at ${brandSafe}. Still interested?\n\nItems are selling fast! Complete your purchase here:\n{{1}}\n\nSee you soon!`,
         },
         ...(storeBase
           ? [{ type: "BUTTONS", buttons: [{ type: "URL", text: "Complete Purchase", url: `${storeBase}/cart` }] }]
           : []),
       ],
-      body:      `Hi! \uD83D\uDC4B You left items in your cart at ${brandSafe}. Still interested?\n\nItems are selling fast! Complete your purchase here:\n{{1}}`,
+      body:      `Hi! \uD83D\uDC4B You left items in your cart at ${brandSafe}. Still interested?\n\nItems are selling fast! Complete your purchase here:\n{{1}}\n\nSee you soon!`,
       variables: ["checkout_url"],
     },
 

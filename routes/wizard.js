@@ -614,9 +614,9 @@ router.post("/:clientId/generate-from-url", protect, async (req, res) => {
 
     const rawData = scrapeResult.text;
 
-    // 2. Fetch Gemini API key (client-level or fallback to process.env)
+    // 2. Fetch Gemini API key (Priorities: 1. Request Body, 2. Stored Client Key, 3. Server Fallback)
     const client = await Client.findOne({ clientId: req.params.clientId });
-    const apiKey = client?.geminiApiKey || process.env.GEMINI_API_KEY;
+    const apiKey = req.body.geminiApiKey || client?.geminiApiKey || process.env.GEMINI_API_KEY;
 
     // 3. Build Prompt for Gemini
     const prompt = `As an expert AI architect, extract core business intelligence from the following website text:
