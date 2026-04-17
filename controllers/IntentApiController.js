@@ -19,59 +19,87 @@ exports.upsertIntent = async (req, res) => {
     // Support for both middleware-injected client and direct payload (as fallback)
     const clientId = req.user?.clientId || req.body.clientId;
 
-    // 1. Validation
-    if (!intentName || !trainingPhrases?.length || !actions?.length) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Validation Error: Intent name, at least one phrase, and one action are required.' 
-      });
-    }
-
     if (!clientId) {
       return res.status(400).json({ success: false, message: 'Client identity is missing' });
     }
 
+    // 1. Validation - Payload must strictly match models/IntentRule.js
+    if (!intentName || !trainingPhrases?.length || !actions?.length) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Validation Error: Intent name, training phrases, and at least one action are required.' 
+      });
+    }
+
+    // Clean phrases
+    const cleanPhrases = trainingPhrases.filter(p => p && p.trim()).map(p => p.trim());
+    const cleanAntiPhrases = (antiIntentPhrases || []).filter(p => p && p.trim()).map(p => p.trim());
+
+    if (cleanPhrases.length === 0) {
+      return res.status(400).json({ success: false, message: 'At least one non-empty training phrase is required.' });
+    }
+
     // 2. Database Persistance (Save or Update)
     let rule;
+    const ruleData = {
+      clientId,
+      intentName,
+      trainingPhrases: cleanPhrases,
+      antiIntentPhrases: cleanAntiPhrases,
+      actions,
+      languageConfig: languageConfig || ['en', 'hi'],
+      isActive: true
+    };
+
     if (intentId) {
       rule = await IntentRule.findOneAndUpdate(
         { _id: intentId, clientId },
-        { intentName, trainingPhrases, actions, languageConfig, antiIntentPhrases },
-        { new: true, upsert: true }
+        { $set: ruleData },
+        { new: true, runValidators: true }
       );
+      if (!rule) {
+        return res.status(404).json({ success: false, message: 'Intent rule not found for update.' });
+      }
     } else {
-      rule = await IntentRule.create({
-        clientId,
-        intentName,
-        trainingPhrases,
-        antiIntentPhrases,
-        actions,
-        languageConfig
-      });
+      rule = await IntentRule.create(ruleData);
     }
 
      /**
      * CRITICAL ARCHITECTURE RULE: 
      * We trigger retraining but we DON'T block the HTTP response on it.
-     * This keeps the UI snappy even if the model is large.
+     * NLP retraining is handled safely in the background.
      */
-    console.log(`[IntentApi] Scheduling dynamic retraining for client: ${clientId}...`);
-    NlpEngineService.trainClientModel(clientId).catch(err => {
-      console.error('[IntentRetrain] Background training failed:', err);
+    console.log(`[IntentApi] Scheduling background retraining for client: ${clientId}...`);
+    // Safe background execution
+    setImmediate(async () => {
+      try {
+        await NlpEngineService.trainClientModel(clientId);
+      } catch (err) {
+        console.error('[IntentRetrain] Background training failed:', err.message);
+      }
     });
 
     // 3. Response
     res.status(200).json({ 
       success: true, 
-      message: 'Intent saved. NLP brain is retraining in the background.', 
+      message: 'Intent synchronized. Brain is optimizing in the background.', 
       rule 
     });
 
   } catch (error) {
     console.error('[IntentApi] Upsert Error:', error);
+    
+    // Handle duplicate key error for intentName
+    if (error.code === 11000) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'An intent with this name already exists for your account.' 
+      });
+    }
+
     res.status(500).json({ 
       success: false, 
-      message: 'Critical error while saving intent.' 
+      message: 'Critical error while saving intent: ' + (error.message || 'Internal Server Error')
     });
   }
 };
@@ -82,6 +110,9 @@ exports.upsertIntent = async (req, res) => {
 exports.getIntents = async (req, res) => {
   try {
     const clientId = req.user?.clientId || req.query.clientId;
+    if (!clientId) {
+      return res.status(400).json({ success: false, message: 'Client identity is required.' });
+    }
     const intents = await IntentRule.find({ clientId });
     res.status(200).json({ success: true, intents });
   } catch (error) {
@@ -195,6 +226,10 @@ exports.deleteIntent = async (req, res) => {
     const { intentId } = req.params;
     const clientId = req.user?.clientId;
 
+    if (!clientId) {
+      return res.status(400).json({ success: false, message: 'Unauthorized: Client identity missing.' });
+    }
+
     const mongoose = require('mongoose');
     if (!mongoose.Types.ObjectId.isValid(intentId)) {
       return res.status(400).json({ success: false, message: 'Invalid intent identity format.' });
@@ -205,9 +240,13 @@ exports.deleteIntent = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Intent not found or already removed.' });
     }
     
-    // Retrain model in background
-    NlpEngineService.trainClientModel(clientId).catch(err => {
-      console.error('[IntentDelete] Background training failed:', err);
+    // Retrain model in background safely
+    setImmediate(async () => {
+      try {
+        await NlpEngineService.trainClientModel(clientId);
+      } catch (err) {
+        console.error('[IntentDelete] Background training failed:', err.message);
+      }
     });
 
     res.status(200).json({ success: true, message: 'Intent deleted. Brain retraining scheduled.' });
@@ -276,6 +315,15 @@ exports.generateTrainingData = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Intent description is required.' });
     }
 
+    // Check for API Key
+    if (!process.env.GEMINI_API_KEY) {
+      console.warn('[IntentApi] Platform Gemini API key is missing from environment.');
+      return res.status(403).json({ 
+        success: false, 
+        message: 'AI Generation is currently unavailable. System administrator needs to configure the Platform API key.' 
+      });
+    }
+
     // Use Gemini for Generation
     const { platformGenerateJSON } = require('../utils/gemini');
     
@@ -301,7 +349,10 @@ Return as pure JSON matching this exact structure: { "intentPhrases": ["..."], "
 
   } catch (error) {
     console.error('[IntentGeneration Error]:', error);
-    res.status(500).json({ success: false, message: 'Failed to generate training data using AI.' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to generate training data. ' + (error.message || 'LLM service error.') 
+    });
   }
 };
 

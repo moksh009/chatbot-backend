@@ -27,7 +27,12 @@ class ActionExecutorService {
 
       // 2. Iterate through each configured action
       for (const action of rule.actions) {
-        await this.handleAction(clientId, phoneNumber, action);
+        try {
+          await this.handleAction(clientId, phoneNumber, action);
+        } catch (actionError) {
+          console.error(`[ActionExecutor] Individual action failure (${action.actionType}):`, actionError.message);
+          // Continue to next action even if one fails
+        }
       }
 
       console.log(`[ActionExecutor] Action execution cycle complete for ${intentName}`);

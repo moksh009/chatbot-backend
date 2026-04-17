@@ -15,6 +15,7 @@ const Conversation = require('../models/Conversation');
 class NlpEngineService {
   constructor() {
     this.managers = new Map(); // Stores trained NlpManager instances by clientId
+    this.trainingLocks = new Set(); // Track clients currently undergoing training
   }
 
   /**
@@ -22,7 +23,16 @@ class NlpEngineService {
    * Feeds training phrases from IntentRule collection into the NlpManager.
    */
   async trainClientModel(clientId) {
+    if (!clientId) return;
+    
+    // Simple locking to prevent concurrent training for the same client
+    if (this.trainingLocks.has(clientId.toString())) {
+      console.log(`[NLPEngine] Training already in progress for ${clientId}. Skipping concurrent request.`);
+      return;
+    }
+
     try {
+      this.trainingLocks.add(clientId.toString());
       console.log(`[NLPEngine] Starting training for Client: ${clientId}`);
       
       // Initialize manager with required languages
@@ -64,6 +74,8 @@ class NlpEngineService {
     } catch (error) {
       console.error(`[NLPEngine] Training error for client ${clientId}:`, error);
       throw error;
+    } finally {
+      this.trainingLocks.delete(clientId.toString());
     }
   }
 
