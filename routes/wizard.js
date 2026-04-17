@@ -458,7 +458,7 @@ router.post("/:clientId/submit-product-templates", protect, async (req, res) => 
 
     const wabaId  = client.wabaId || client.whatsapp?.wabaId;
     const token   = client.whatsappToken || client.whatsapp?.accessToken;
-    const products = (wizardData?.products || []).slice(0, 5); // Cap at 5 templates per submission
+    const products = (wizardData?.products || []).slice(0, 25); // Increased limit to 25
     const shopDomain = client.shopDomain || wizardData?.shopDomain || '';
     const storeBase  = shopDomain ? `https://${shopDomain.replace(/^https?:\/\//, '')}` : '';
     const currency   = client.brand?.currency || wizardData?.currency || '₹';
@@ -498,14 +498,23 @@ router.post("/:clientId/submit-product-templates", protect, async (req, res) => 
           {
             type: 'HEADER',
             format: 'IMAGE',
-            // Note: actual image upload via /media is done separately.
-            // If imageUrl is provided, we log it for manual upload.
-            ...(prod.imageUrl ? { example: { header_handle: [] } } : {})
+            // Meta REQUIRES a sample image handle or a public link for approval.
+            example: { 
+              header_handle: [
+                prod.imageUrl || 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?auto=format&fit=crop&q=80&w=800'
+              ] 
+            }
           },
           {
             type: 'BODY',
-            text: `*{{1}}*\n\n💰 Price: ${currency}{{2}}\n\n{{3}}`,
-            example: { body_text: [[prod.name || prod.title || 'Product', price, prod.description?.slice(0, 100) || 'Premium quality.']] }
+            text: `Product: *{{1}}*\n\n💰 Price: ${currency}{{2}}\n\n*Key Features:*\n{{3}}\n\nClick below to view more details!`,
+            example: { 
+              body_text: [[
+                (prod.name || prod.title || 'Premium Product').substring(0, 30), 
+                price, 
+                (prod.description || 'Exclusive quality materials, perfect for daily use, highly durable and stylish.').replace(/<[^>]+>/g, '').substring(0, 100)
+              ]] 
+            }
           },
           {
             type: 'FOOTER',
@@ -515,7 +524,6 @@ router.post("/:clientId/submit-product-templates", protect, async (req, res) => 
             type: 'BUTTONS',
             buttons: [
               ...(buyUrl ? [{ type: 'URL', text: '🛒 Buy Now', url: buyUrl }] : [{ type: 'QUICK_REPLY', text: '🛒 Buy Now' }]),
-              { type: 'QUICK_REPLY', text: '🎧 Talk to Agent' },
               { type: 'QUICK_REPLY', text: '⬅️ Main Menu' },
             ]
           }
@@ -523,7 +531,6 @@ router.post("/:clientId/submit-product-templates", protect, async (req, res) => 
       };
 
       try {
-        // Decrypt token if encrypted
         let accessToken = token;
         try {
           const { decrypt } = require('../utils/encryption');
@@ -546,7 +553,6 @@ router.post("/:clientId/submit-product-templates", protect, async (req, res) => 
           createdAt:   new Date()
         };
 
-        // Upsert into client.messageTemplates
         await Client.findByIdAndUpdate(client._id, {
           $pull:  { messageTemplates: { name: templateName } },
         });
@@ -570,13 +576,144 @@ router.post("/:clientId/submit-product-templates", protect, async (req, res) => 
       submittedNames: submitted,
       errors,
       message: submitted.length > 0
-        ? `${submitted.length} template(s) submitted to Meta for approval. Approval usually takes 24–72 hours. Until approved, the bot uses inline product cards.`
-        : (errors.length > 0 ? 'Template submission failed. See errors.' : 'No new templates to submit.')
+        ? `${submitted.length} product template(s) submitted to Meta.`
+        : (errors.length > 0 ? 'Submission failed. Check details.' : 'No new product templates to submit.')
     });
 
   } catch (err) {
     log.error(`[TemplateSubmit] Error for ${clientId}:`, err.message);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────────────────
+// POST /api/wizard/:clientId/submit-automation-templates
+// Submits core bot templates (Welcome, Order Conf, Recovery, Admin Alerts)
+// ────────────────────────────────────────────────────────────────────────────────
+router.post("/:clientId/submit-automation-templates", protect, async (req, res) => {
+  const { clientId } = req.params;
+  const { wizardData } = req.body;
+  const axios = require("axios");
+
+  try {
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ error: "Client not found" });
+
+    if (req.user.role !== "SUPER_ADMIN" && req.user.clientId !== clientId) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    const wabaId  = client.wabaId || client.whatsapp?.wabaId;
+    const token   = client.whatsappToken || client.whatsapp?.accessToken;
+    
+    if (!wabaId || !token) {
+      return res.status(422).json({ success: false, error: 'WhatsApp connection missing.' });
+    }
+
+    const allTemplates = getPrebuiltTemplates(wizardData || {});
+    const automationTemplates = allTemplates.filter(t => !t.name.startsWith('prod_'));
+
+    const submitted = [];
+    const errors = [];
+
+    for (const tpl of automationTemplates) {
+      const components = tpl.components.map(c => {
+        const comp = { ...c };
+        delete comp._imageUrl;
+
+        if (c.type === 'HEADER' && c.format === 'IMAGE') {
+          comp.example = { header_handle: [tpl._imageUrl || wizardData.businessLogo || 'https://via.placeholder.com/800x400.png?text=Welcome+to+Our+Store'] };
+        }
+
+        if (c.type === 'BODY') {
+          const samples = (tpl.variables || []).map(v => {
+            if (v.includes('name')) return wizardData.businessName || 'Elite Store';
+            if (v.includes('order_id')) return '#89201';
+            if (v.includes('total')) return '1,499';
+            if (v.includes('items')) return 'Blue Denim Jacket, Cotton Tee';
+            if (v.includes('url')) return 'https://topedgeai.com/demo';
+            if (v.includes('phone')) return '+91 98765 43210';
+            if (v.includes('context')) return 'Customer asked about shipping delay.';
+            return 'Sample Value';
+          });
+          if (samples.length > 0) {
+            comp.example = { body_text: [samples] };
+          }
+        }
+        return comp;
+      });
+
+      const templatePayload = {
+        name:     tpl.name,
+        language: tpl.language || 'en',
+        category: tpl.category || 'MARKETING',
+        components
+      };
+
+      try {
+        let accessToken = token;
+        try {
+          const { decrypt } = require('../utils/encryption');
+          accessToken = decrypt(token) || token;
+        } catch (_) {}
+
+        const metaRes = await axios.post(
+          `https://graph.facebook.com/v18.0/${wabaId}/message_templates`,
+          templatePayload,
+          { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }, timeout: 10000 }
+        );
+
+        const newTemplate = {
+          id:          metaRes.data.id || `pending_${tpl.name}`,
+          name:        tpl.name,
+          status:      'PENDING',
+          category:    tpl.category,
+          source:      'wizard_automation',
+          createdAt:   new Date()
+        };
+
+        await Client.findByIdAndUpdate(client._id, {
+          $pull:  { messageTemplates: { name: tpl.name } },
+        });
+        await Client.findByIdAndUpdate(client._id, {
+          $push:  { messageTemplates: newTemplate },
+        });
+
+        submitted.push(tpl.name);
+      } catch (err) {
+        const msg = err.response?.data?.error?.message || err.message;
+        errors.push({ template: tpl.name, error: msg });
+      }
+    }
+
+    res.json({
+      success: errors.length === 0,
+      submitted_count: submitted.length,
+      submitted_names: submitted,
+      errors,
+      message: `${submitted.length} automation templates submitted. Ready for enterprise logic.`
+    });
+
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post("/:clientId/verify-gemini", protect, async (req, res) => {
+  const { apiKey } = req.body;
+  if (!apiKey) return res.status(400).json({ success: false, error: "API Key is required" });
+
+  try {
+    const { generateText } = require("../utils/gemini");
+    const result = await generateText("Reply with 'OK'", apiKey, { maxTokens: 5, timeout: 5000 });
+    
+    if (result) {
+      res.json({ success: true, message: "API Key is valid!" });
+    } else {
+      res.status(400).json({ success: false, error: "API Key check failed. Gemini returned no response." });
+    }
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
   }
 });
 

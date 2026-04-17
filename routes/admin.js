@@ -1417,7 +1417,7 @@ router.get('/seed-now', protect, async (req, res) => {
 });
 
 // --- PHASE 9: META TEMPLATE SYNC ---
-router.get('/templates/sync/:clientId', async (req, res) => {
+router.get('/templates/sync/:clientId', protect, async (req, res) => {
     try {
         let { clientId } = req.params;
         const { key } = req.query;
@@ -1425,11 +1425,9 @@ router.get('/templates/sync/:clientId', async (req, res) => {
         // Robustness: strip leading colon if user copy-pasted literally
         if (clientId.startsWith(':')) clientId = clientId.substring(1);
 
-        // Allow bypass with secure key or regular auth
+        // Allow bypass with secure key (for legacy/admin tools) or regular auth (handled by protect)
         const isSecureKey = key === 'topedge_secure_admin_123';
         if (!isSecureKey && !req.user) {
-            // If not secure key and not logged in (protect middleware would have run if we used it)
-            // But since we want browser access, we'll manually check for key first.
             return res.status(401).json({ message: "Not authorized. Provide key or login." });
         }
 
