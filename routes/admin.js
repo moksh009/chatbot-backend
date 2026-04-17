@@ -13,7 +13,7 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
-const { encrypt } = require('../utils/encryption');
+const { encrypt, decrypt } = require('../utils/encryption');
 const { sanitizeMiddleware } = require('../utils/sanitize');
 const { syncPersonaToFlows } = require('../utils/personaEngine');
 const { getPrebuiltTemplates } = require('../utils/flowGenerator');
@@ -1439,8 +1439,9 @@ router.get('/templates/sync/:clientId', protect, async (req, res) => {
         }
 
         log.info(`Syncing templates for ${clientId} via Meta API...`);
+        const token = decrypt(client.whatsappToken);
         const url = `https://graph.facebook.com/v18.0/${client.wabaId}/message_templates?limit=100`;
-        const response = await axios.get(url, { headers: { Authorization: `Bearer ${client.whatsappToken}` } });
+        const response = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
         
         const approvedTemplates = response.data.data.filter(t => t.status === 'APPROVED');
         client.syncedMetaTemplates = approvedTemplates;
@@ -1466,8 +1467,9 @@ router.get('/flows/sync/:clientId', protect, async (req, res) => {
         }
 
         log.info(`Syncing flows for ${clientId}...`);
+        const token = decrypt(client.whatsappToken);
         const url = `https://graph.facebook.com/v18.0/${client.wabaId}/flows?limit=100`;
-        const response = await axios.get(url, { headers: { Authorization: `Bearer ${client.whatsappToken}` } });
+        const response = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
         
         const flows = response.data.data || [];
         client.syncedMetaFlows = flows;

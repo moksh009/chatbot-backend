@@ -704,15 +704,23 @@ router.post("/:clientId/verify-gemini", protect, async (req, res) => {
   if (!apiKey) return res.status(400).json({ success: false, error: "API Key is required" });
 
   try {
-    const { generateText } = require("../utils/gemini");
-    const result = await generateText("Reply with 'OK'", apiKey, { maxTokens: 5, timeout: 5000 });
+    // Phase 30: Use Fast wrapper with decrypt support
+    let finalKey = apiKey;
+    try {
+        const { decrypt } = require('../utils/encryption');
+        finalKey = decrypt(apiKey) || apiKey;
+    } catch (_) {}
+
+    log.info(`[Wizard] Verifying Gemini Key: ${finalKey.substring(0, 6)}...`);
+    const result = await generateTextFast("Reply with 'OK'", finalKey, { maxTokens: 5, timeout: 3500 });
     
     if (result) {
       res.json({ success: true, message: "API Key is valid!" });
     } else {
-      res.status(400).json({ success: false, error: "API Key check failed. Gemini returned no response." });
+      res.status(400).json({ success: false, error: "API Key check failed. Gemini returned no response (Check permissions/quota)." });
     }
   } catch (err) {
+    log.error("[Wizard] Gemini Verification Error:", err.message);
     res.status(400).json({ success: false, error: err.message });
   }
 });

@@ -1,8 +1,8 @@
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const logger = require("./logger")("Gemini");
 
-const PLATFORM_MODEL = "gemini-2.5-flash";  // fastest, for dashboard
-const BOT_MODEL      = "gemini-2.5-flash";  // same model, different key
+const PLATFORM_MODEL = "gemini-1.5-flash";  // High reliability
+const BOT_MODEL      = "gemini-1.5-flash"; 
 
 // Cache clients to avoid creating new instance per request
 const clientCache = new Map();
@@ -88,7 +88,6 @@ async function generateText(prompt, apiKey, options = {}) {
 
 /**
  * generateJSON - same as generateText but strips markdown and parses JSON.
- * Returns parsed object or null.
  */
 async function generateJSON(prompt, apiKey, options = {}) {
   const result = await generateText(prompt, apiKey, { ...options, temperature: 0.1 });
@@ -101,10 +100,28 @@ async function generateJSON(prompt, apiKey, options = {}) {
       .trim();
     return JSON.parse(clean);
   } catch (err) {
-    logger.error("JSON parse failed:", err.message);
-    logger.debug("Raw response:", result?.substring(0, 200));
+    logger.error("JSON parse failed. Original:", result.slice(0, 100));
     return null;
   }
+}
+
+/**
+ * generateTextFast - Extreme performance wrapper for real-time tasks.
+ * Strict 4s timeout, 0 retries. Fails to default immediately on lag.
+ */
+async function generateTextFast(prompt, apiKey, options = {}) {
+    return generateText(prompt, apiKey, {
+        ...options,
+        timeout: 4000,
+        maxRetries: 0,
+        temperature: 0.1
+    });
+}
+
+function getGeminiModel(apiKey) {
+    const genAI = getClient(apiKey);
+    if (!genAI) return null;
+    return genAI.getGenerativeModel({ model: PLATFORM_MODEL });
 }
 
 /**

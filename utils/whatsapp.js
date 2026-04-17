@@ -154,7 +154,32 @@ const WhatsApp = {
       const res = await axios.post(url, payload, { headers: { Authorization: `Bearer ${token}` } });
       return res.data;
     } catch (err) {
-      this.handleError(err, url, "sendInteractive");
+      // --- INTERACTIVE FALLBACK (Phase 30 Resilience) ---
+      log.warn(`[WhatsApp] sendInteractive failed for ${phone}. Falling back to plain text.`);
+      
+      let fallbackText = bodyText || "";
+      if (interactive.header?.text) fallbackText = `*${interactive.header.text}*\n\n` + fallbackText;
+      
+      // Convert buttons/rows to a numbered list
+      const options = [];
+      if (interactive.action?.buttons) {
+        interactive.action.buttons.forEach(b => options.push(b.reply?.title));
+      } else if (interactive.action?.sections) {
+        interactive.action.sections.forEach(s => {
+            s.rows?.forEach(r => options.push(r.title));
+        });
+      }
+
+      if (options.length > 0) {
+        fallbackText += "\n\n" + options.map((opt, i) => `${i + 1}. ${opt}`).join('\n');
+        fallbackText += "\n\n_Reply with the option name or number._";
+      }
+
+      try {
+        return await this.sendText(client, phone, fallbackText);
+      } catch (innerErr) {
+        this.handleError(err, url, "sendInteractive");
+      }
     }
   },
 
@@ -315,11 +340,23 @@ const WhatsApp = {
       if (err.status === 404 || (err.data?.error_data?.details || "").includes("template name") || (err.message || "").includes("132001")) {
         log.warn(`[WhatsApp] Template ${templateName} failed (Missing). Falling back to TEXT for ${phone}`);
         
+        // REHES (Resilient High-Entropy Sending): attempt to extract buttons/options from the flow graph if available
         let textFallback = "";
-        if (variables.length > 0) {
-            textFallback = variables.join('\n');
-        } else {
-            textFallback = "Hello! We are here to help. Pick an option below:"; // Generic fallback if no variables
+        const syncedTemplates = client.syncedMetaTemplates || [];
+        const template = syncedTemplates.find(t => t.name === templateName);
+        
+        if (template) {
+            const body = template.components?.find(c => c.type === 'BODY');
+            if (body) {
+                textFallback = body.text;
+                variables.forEach((v, i) => {
+                    textFallback = textFallback.replace(`{{${i+1}}}`, v || '-');
+                });
+            }
+        }
+
+        if (!textFallback) {
+            textFallback = variables.length > 0 ? variables.join('\n') : "Hello! We are here to help. Pick an option below:";
         }
         
         return await this.sendText(client, phone, textFallback);
@@ -435,10 +472,31 @@ const WhatsApp = {
       
       if (!wabaId || !token) throw new Error("Missing Meta WABA ID or Token");
 
+      // --- PAYLOAD SCRUBBING (Phase 30 track 2) ---
+      // Meta rejects keys starting with '_' which are used internally for dashboard previews
+      const scrub = (obj) => {
+          if (Array.isArray(obj)) return obj.map(scrub);
+          if (obj !== null && typeof obj === 'object') {
+              const newObj = {};
+              for (const key in obj) {
+                  if (!key.startsWith('_')) newObj[key] = scrub(obj[key]);
+              }
+              return newObj;
+          }
+          return obj;
+      };
+
+      const cleanPayload = {
+          name: templatePayload.name,
+          category: templatePayload.category,
+          language: templatePayload.language,
+          components: scrub(templatePayload.components)
+      };
+
       const url = `https://graph.facebook.com/v18.0/${wabaId}/message_templates`;
       
-      log.info(`[WhatsApp] Submitting template ${templatePayload.name} to Meta...`);
-      const res = await axios.post(url, templatePayload, {
+      log.info(`[WhatsApp] Submitting template ${cleanPayload.name} to Meta...`);
+      const res = await axios.post(url, cleanPayload, {
         headers: { Authorization: `Bearer ${token}` }
       });
       
