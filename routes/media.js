@@ -20,7 +20,7 @@ const upload = multer({
   storage: storage,
   limits: { fileSize: 25 * 1024 * 1024 }, // 25MB limit for videos
   fileFilter: (req, file, cb) => {
-    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'video/mp4', 'audio/mpeg', 'audio/ogg', 'application/pdf', 'audio/wav', 'audio/webm'];
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'video/mp4', 'video/quicktime', 'audio/mpeg', 'audio/ogg', 'application/pdf', 'audio/wav', 'audio/webm'];
     const isVideo = file.mimetype.startsWith('video/');
     const isLarge = file.size > 5 * 1024 * 1024;
 
