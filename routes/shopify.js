@@ -189,5 +189,39 @@ router.post('/:clientId/reconnect-store', protect, verifyClientAccess, async (re
   }
 });
 
+// GET /api/shopify/:clientId/recent-orders
+router.get('/:clientId/recent-orders', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    console.log(`[Shopify] Fetching recent orders for ${clientId}...`);
+
+    const result = await withShopifyRetry(clientId, async (shop) => {
+      const response = await shop.get('/orders.json?limit=10&status=any');
+      const orders = response.data.orders || [];
+
+      return orders.map(order => ({
+        orderId: order.id.toString(),
+        orderNumber: order.name,
+        createdAt: order.created_at,
+        customerName: order.customer ? `${order.customer.first_name} ${order.customer.last_name || ''}`.trim() : 'Guest',
+        totalPrice: parseFloat(order.total_price),
+        financialStatus: order.financial_status,
+        fulfillmentStatus: order.fulfillment_status || 'unfulfilled',
+        itemsCount: order.line_items.reduce((acc, item) => acc + item.quantity, 0)
+      }));
+    });
+
+    res.json({ success: true, orders: result });
+  } catch (err) {
+    console.error(`[Shopify Recent Orders Error] for ${req.params.clientId}:`, err.message);
+    const isAuthError = err.response?.status === 401 || err.response?.status === 403;
+    res.status(isAuthError ? 400 : 500).json({ 
+      success: false, 
+      error: err.message, 
+      isShopifyAuthError: isAuthError 
+    });
+  }
+});
+
 module.exports = router;
 

@@ -349,7 +349,7 @@ exports.generateTrainingData = async (req, res) => {
     }
 
     // Use Gemini for Generation
-    const { platformGenerateJSON } = require('../utils/gemini');
+    const { platformGenerateText } = require('../utils/gemini');
     
     const prompt = `The user wants to detect the following intent in customer messages: "${description}".
 Generate exactly 30 positive phrases (customer saying this phrase expressing the intent) and exactly 30 negative anti-phrases (customer using similar vocabulary but explicitly NOT having this intent, or stating everything is fine or asking about completely unrelated issues).
@@ -357,12 +357,40 @@ Half of the phrases in BOTH lists must be in modern English, and half must be in
 Each phrase you generate has to be different and they should have low similarity for better variety with examples to ensure good training spread.
 Return as pure JSON matching this exact structure: { "intentPhrases": ["..."], "antiIntentPhrases": ["..."] }`;
 
-    const generatedData = await platformGenerateJSON(prompt, { maxTokens: 4000, temperature: 0.9, maxRetries: 3 });
+    // 1. Extend Timeouts: 30s as requested
+    console.log(`[IntentGeneration] Triggering AI generation for: "${description.substring(0, 50)}..."`);
+    const rawResponse = await platformGenerateText(prompt, { 
+      maxTokens: 4000, 
+      temperature: 0.9, 
+      maxRetries: 3, 
+      timeout: 30000 
+    });
 
-    if (!generatedData) {
+    if (!rawResponse) {
       return res.status(502).json({ 
         success: false, 
         error: 'The AI service is currently unresponsive. Please try again in a few moments.' 
+      });
+    }
+
+    // 2. Regex JSON Sanitization: Robustly strip markdown blocks
+    const cleanedText = rawResponse
+      .replace(/```json\n?/g, '')
+      .replace(/```\n?/g, '')
+      .trim();
+
+    // 3. Safe Parsing: Try/Catch with logging
+    let generatedData;
+    try {
+      generatedData = JSON.parse(cleanedText);
+    } catch (parseError) {
+      console.error('[IntentGeneration] JSON Parse Failed!');
+      console.error('[IntentGeneration] Cleaned Response:', cleanedText);
+      console.error('[IntentGeneration] Raw Response:', rawResponse);
+      
+      return res.status(422).json({
+        success: false,
+        error: 'The AI returned an invalid format. We have logged this for review. Please try a more specific description.'
       });
     }
 
