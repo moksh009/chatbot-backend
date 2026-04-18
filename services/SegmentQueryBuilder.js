@@ -1,62 +1,75 @@
 const TRACKABLE_ASSETS = require('../constants/trackableAssets');
 
 /**
- * Translates UI filters into a MongoDB query object.
- * @param {Array} filters - Array of { assetId, operator, targetValue }
- * @returns {Object} MongoDB query object
+ * Deterministic Translator: Conditions Array -> Mongo Query
+ * Maps the high-level Waterfall Asset conditions to native MongoDB operators.
+ * This service handles the core logic for rule-based lead segmentation.
  */
-const buildMongoQueryFromFilters = (filters) => {
-  if (!filters || filters.length === 0) return {};
+const translateConditionsToQuery = (conditions) => {
+    if (!Array.isArray(conditions) || conditions.length === 0) return {};
+    
+    const andConditions = [];
 
-  const query = {};
-  const andConditions = [];
+    conditions.forEach(cond => {
+        const asset = TRACKABLE_ASSETS.ASSETS[cond.assetId];
+        if (!asset) return;
 
-  filters.forEach(filter => {
-    const assetConfig = TRACKABLE_ASSETS.ASSETS[filter.assetId];
-    if (!assetConfig) return;
+        let mongoOperator;
+        switch (cond.operator) {
+            case '>=': mongoOperator = '$gte'; break;
+            case '<=': mongoOperator = '$lte'; break;
+            case '===': mongoOperator = '$eq'; break;
+            default: mongoOperator = '$eq';
+        }
 
-    let mongoOperator = '';
-    switch (filter.operator) {
-      case '>=': mongoOperator = '$gte'; break;
-      case '<=': mongoOperator = '$lte'; break;
-      case '===': mongoOperator = '$eq'; break;
-    }
+        // 1. Handle Special Compound Conditions (e.g., Just Landed)
+        if (asset.id === 'JUST_LANDED') {
+            const isJustLanded = cond.targetValue === true || cond.targetValue === 'true';
+            if (isJustLanded) {
+                andConditions.push({ ordersCount: 0 });
+                andConditions.push({ inboundMessageCount: { $lte: 1 } });
+            } else {
+                // If not just landed, we want people who HAVE ordered OR have interacted
+                andConditions.push({ 
+                    $or: [
+                        { ordersCount: { $gt: 0 } },
+                        { inboundMessageCount: { $gt: 1 } }
+                    ] 
+                });
+            }
+        } 
+        
+        // 2. Handle Date-based Calculations (Rolling windows)
+        else if (asset.type === 'CALCULATED_DAYS') {
+            const days = parseInt(cond.targetValue);
+            if (isNaN(days)) return;
 
-    if (assetConfig.id === 'JUST_LANDED') {
-      const isTrue = filter.targetValue === true || filter.targetValue === 'true';
-      if (isTrue) {
-         andConditions.push({ ordersCount: 0 });
-         andConditions.push({ inboundMessageCount: { $lte: 1 } });
-      }
-      return; // Skip standard mapping
-    }
+            const date = new Date();
+            date.setDate(date.getDate() - days);
+            
+            // If operator is >= (Older than X days), lastInteraction <= pastDate
+            // If operator is <= (Within X days), lastInteraction >= pastDate
+            const dateOp = cond.operator === '>=' ? '$lte' : '$gte';
+            andConditions.push({ [asset.dbField]: { [dateOp]: date } });
+        } 
+        
+        // 3. Handle Standard Numeric & Boolean Fields
+        else {
+            let val = cond.targetValue;
+            if (asset.type === 'NUMBER') val = parseFloat(cond.targetValue);
+            if (asset.type === 'BOOLEAN') val = (cond.targetValue === true || cond.targetValue === 'true');
+            
+            if (val !== undefined) {
+                // For numeric values, ensure it's actually a number
+                if (asset.type === 'NUMBER' && isNaN(val)) return;
 
-    if (assetConfig.type === 'CALCULATED_DAYS') {
-      // If we want ">= 30 days ago", the date must be LESS THAN (older than) 30 days ago.
-      const targetDate = new Date();
-      targetDate.setDate(targetDate.getDate() - parseInt(filter.targetValue));
-      
-      const dateOperator = filter.operator === '>=' ? '$lte' : '$gte';
-      andConditions.push({ [assetConfig.dbField]: { [dateOperator]: targetDate } });
-      return;
-    }
+                andConditions.push({ [asset.dbField]: { [mongoOperator]: val } });
+            }
+        }
+    });
 
-    // Standard Number matching
-    if (mongoOperator === '$eq') {
-      andConditions.push({ [assetConfig.dbField]: filter.targetValue });
-    } else {
-      const val = parseFloat(filter.targetValue);
-      if (!isNaN(val)) {
-        andConditions.push({ [assetConfig.dbField]: { [mongoOperator]: val } });
-      }
-    }
-  });
-
-  if (andConditions.length > 0) {
-    query.$and = andConditions;
-  }
-
-  return query;
+    if (andConditions.length === 0) return {};
+    return andConditions.length === 1 ? andConditions[0] : { $and: andConditions };
 };
 
-module.exports = { buildMongoQueryFromFilters };
+module.exports = { translateConditionsToQuery };

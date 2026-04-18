@@ -1,11 +1,9 @@
 const express = require('express');
-const { resolveClient } = require('../utils/queryHelpers');
 const router = express.Router();
 const Segment = require('../models/Segment');
 const AdLead = require('../models/AdLead');
-const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
-const { checkLimit, incrementUsage } = require('../utils/planLimits');
+const { translateConditionsToQuery } = require('../services/SegmentQueryBuilder');
 
 /**
  * GET /api/segments
@@ -15,56 +13,52 @@ router.get('/', protect, async (req, res) => {
         const segments = await Segment.find({ clientId: req.user.clientId }).sort({ createdAt: -1 });
         res.json(segments);
     } catch (err) {
-        res.status(500).json({ error: 'Failed to fetch segments.' });
+        res.status(500).json({ success: false, error: 'Failed to fetch segments.' });
     }
 });
 
 /**
  * POST /api/segments
+ * Deterministic creation via condition array.
  */
 router.post('/', protect, async (req, res) => {
-    const { name, description, query, prompt } = req.body;
-    
-    // Recursive date string to Date object converter
-    const parseQueryDates = (obj) => {
-        if (!obj || typeof obj !== 'object') return obj;
-        
-        for (const key in obj) {
-            if (typeof obj[key] === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(obj[key])) {
-                const date = new Date(obj[key]);
-                if (!isNaN(date.getTime())) {
-                    obj[key] = date;
-                }
-            } else if (typeof obj[key] === 'object' && obj[key] !== null) {
-                parseQueryDates(obj[key]);
-            }
-        }
-        return obj;
-    };
+    const { name, description, conditions } = req.body;
+    const clientId = req.user.clientId;
+
+    if (!name || !conditions || !Array.isArray(conditions)) {
+        return res.status(400).json({ 
+            success: false, 
+            error: 'Missing mandatory fields: name and conditions (array) are required.' 
+        });
+    }
 
     try {
-        const sanitizedQuery = parseQueryDates(query || {});
+        // 1. Translate UI conditions to Mongo Query
+        const generatedQuery = translateConditionsToQuery(conditions);
         
-        // Security: Force clientId
-        delete sanitizedQuery.clientId;
+        // 2. Perform live count for the segment
+        const count = await AdLead.countDocuments({ ...generatedQuery, clientId });
         
-        const count = await AdLead.countDocuments({ ...sanitizedQuery, clientId: req.user.clientId });
-        
+        // 3. Persist Segment
         const segment = new Segment({
-            clientId: req.user.clientId,
+            clientId,
             name,
-            description,
-            query: sanitizedQuery,
-            prompt,
+            description: description || `Built with ${conditions.length} automatic rules.`,
+            conditions,
+            query: generatedQuery,
             lastCount: count,
             lastCountAt: new Date()
         });
         
         await segment.save();
-        res.json(segment);
+        res.status(201).json(segment);
+
     } catch (err) {
-        console.error('[Segments] Create Error:', err);
-        res.status(500).json({ error: 'Failed to save segment. ' + err.message });
+        console.error('[Segments] Deterministic Create Error:', err);
+        res.status(400).json({ 
+            success: false, 
+            error: 'Schema violation or parsing error: ' + err.message 
+        });
     }
 });
 
@@ -82,7 +76,7 @@ router.get('/:id/leads', protect, async (req, res) => {
 
         res.json({ success: true, count, leads });
     } catch (err) {
-        res.status(500).json({ error: 'Failed to process segment leads.' });
+        res.status(500).json({ success: false, error: 'Failed to process segment leads.' });
     }
 });
 
@@ -94,7 +88,7 @@ router.delete('/:id', protect, async (req, res) => {
         await Segment.findOneAndDelete({ _id: req.params.id, clientId: req.user.clientId });
         res.json({ success: true });
     } catch (err) {
-        res.status(500).json({ error: 'Failed to delete segment.' });
+        res.status(500).json({ success: false, error: 'Failed to delete segment.' });
     }
 });
 

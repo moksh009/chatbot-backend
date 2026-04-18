@@ -18,7 +18,7 @@ router.get('/', protect, async (req, res) => {
 
     res.json(client.knowledgeBase || {});
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -37,7 +37,7 @@ router.get('/pending', protect, async (req, res) => {
     const pending = client.pendingKnowledge.filter(k => k.status === 'pending');
     res.json(pending);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -49,7 +49,7 @@ router.post('/action', protect, async (req, res) => {
   try {
     const { clientId, proposalId, action } = req.body;
     if (!['approved', 'rejected'].includes(action)) {
-      return res.status(400).json({ message: 'Invalid action' });
+      return res.status(400).json({ success: false, error: 'Invalid action' });
     }
 
     const client = await Client.findOne({ clientId });
@@ -78,7 +78,7 @@ router.post('/action', protect, async (req, res) => {
     await client.save();
     res.json({ message: `Proposal ${action} successfully`, client });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -95,7 +95,7 @@ router.get('/audit', protect, async (req, res) => {
     const audit = await auditClientSystem(clientId);
     res.json(audit);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

@@ -20,7 +20,11 @@ const segmentSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.Mixed,
     required: true
   },
-  // The natural language prompt used to generate this segment
+  // The deterministic conditions array from the frontend (e.g. [{ assetId: 'TOTAL_ORDERS', operator: '>=', targetValue: 2 }])
+  conditions: {
+    type: mongoose.Schema.Types.Mixed
+  },
+  // The natural language prompt used to generate this segment (Legacy)
   prompt: {
     type: String
   },

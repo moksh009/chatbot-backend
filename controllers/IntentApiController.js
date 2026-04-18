@@ -74,8 +74,24 @@ exports.upsertIntent = async (req, res) => {
     setImmediate(async () => {
       try {
         await NlpEngineService.trainClientModel(clientId);
+        
+        // WebSocket notification for real-time UI updates
+        if (global.io) {
+          global.io.to(`client_${clientId}`).emit('intent_training_complete', { 
+            success: true, 
+            message: 'Brain optimization complete.',
+            timestamp: new Date()
+          });
+          console.log(`[IntentApi] WebSocket: Notified client ${clientId} of training completion.`);
+        }
       } catch (err) {
         console.error('[IntentRetrain] Background training failed:', err.message);
+        if (global.io) {
+          global.io.to(`client_${clientId}`).emit('intent_training_complete', { 
+            success: false, 
+            error: err.message 
+          });
+        }
       }
     });
 
@@ -99,7 +115,7 @@ exports.upsertIntent = async (req, res) => {
 
     res.status(500).json({ 
       success: false, 
-      message: 'Critical error while saving intent: ' + (error.message || 'Internal Server Error')
+      error: 'Critical error while saving intent: ' + (error.message || 'Internal Server Error')
     });
   }
 };
@@ -116,7 +132,7 @@ exports.getIntents = async (req, res) => {
     const intents = await IntentRule.find({ clientId });
     res.status(200).json({ success: true, intents });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Failed to fetch intents' });
+    res.status(500).json({ success: false, error: 'Failed to fetch intents' });
   }
 };
 
@@ -170,7 +186,7 @@ exports.resolvePhrase = async (req, res) => {
 
   } catch (error) {
     console.error('[IntentApi] Resolve Error:', error);
-    res.status(500).json({ success: false, message: 'Failed to resolve unrecognized loop pattern.' });
+    res.status(500).json({ success: false, error: 'Failed to resolve unrecognized loop pattern.' });
   }
 };
 
@@ -183,7 +199,7 @@ exports.getPendingPhrases = async (req, res) => {
     const phrases = await UnrecognizedPhrase.find({ clientId, status: 'PENDING' }).sort({ createdAt: -1 });
     res.status(200).json({ success: true, phrases });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Failed to fetch pending intelligence gaps.' });
+    res.status(500).json({ success: false, error: 'Failed to fetch pending intelligence gaps.' });
   }
 };
 
@@ -214,7 +230,7 @@ exports.getIntentStats = async (req, res) => {
     });
   } catch (error) {
     console.error('[IntentApi] Stats Error:', error);
-    res.status(500).json({ success: false, message: 'Failed to aggregate intelligence metrics.' });
+    res.status(500).json({ success: false, error: 'Failed to aggregate intelligence metrics.' });
   }
 };
 
@@ -224,7 +240,9 @@ exports.getIntentStats = async (req, res) => {
 exports.deleteIntent = async (req, res) => {
   try {
     const { intentId } = req.params;
-    const clientId = req.user?.clientId;
+    
+    // Support clientId from query params (needed for Super Admins) or fallback to user's identity
+    const clientId = req.query.clientId || req.user?.clientId;
 
     if (!clientId) {
       return res.status(400).json({ success: false, message: 'Unauthorized: Client identity missing.' });
@@ -244,6 +262,12 @@ exports.deleteIntent = async (req, res) => {
     setImmediate(async () => {
       try {
         await NlpEngineService.trainClientModel(clientId);
+        if (global.io) {
+          global.io.to(`client_${clientId}`).emit('intent_training_complete', { 
+            success: true, 
+            message: 'Intent removed and brain optimized.' 
+          });
+        }
       } catch (err) {
         console.error('[IntentDelete] Background training failed:', err.message);
       }
@@ -251,7 +275,7 @@ exports.deleteIntent = async (req, res) => {
 
     res.status(200).json({ success: true, message: 'Intent deleted. Brain retraining scheduled.' });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Deletion failed' });
+    res.status(500).json({ success: false, error: 'Deletion failed' });
   }
 };
 
@@ -299,7 +323,7 @@ exports.simulateIntent = async (req, res) => {
     console.error('[IntentSimulator] Simulation Critical Error:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Critical error during intent simulation simulation.' 
+      error: 'Critical error during intent simulation simulation.' 
     });
   }
 };
@@ -335,8 +359,19 @@ Return as pure JSON matching this exact structure: { "intentPhrases": ["..."], "
 
     const generatedData = await platformGenerateJSON(prompt, { maxTokens: 4000, temperature: 0.9, maxRetries: 3 });
 
-    if (!generatedData || !Array.isArray(generatedData.intentPhrases) || !Array.isArray(generatedData.antiIntentPhrases)) {
-      throw new Error('AI generated invalid or empty data structure.');
+    if (!generatedData) {
+      return res.status(502).json({ 
+        success: false, 
+        error: 'The AI service is currently unresponsive. Please try again in a few moments.' 
+      });
+    }
+
+    if (!Array.isArray(generatedData.intentPhrases) || !Array.isArray(generatedData.antiIntentPhrases)) {
+      console.error('[IntentGeneration] Invalid JSON structure from AI:', generatedData);
+      return res.status(422).json({ 
+        success: false, 
+        error: 'The AI generated an incompatible data structure. Please refine your description.' 
+      });
     }
 
     res.status(200).json({
@@ -349,9 +384,12 @@ Return as pure JSON matching this exact structure: { "intentPhrases": ["..."], "
 
   } catch (error) {
     console.error('[IntentGeneration Error]:', error);
-    res.status(500).json({ 
+    
+    // Distinguish between validation errors and service failures
+    const statusCode = error.message?.includes('invalid') ? 422 : 502;
+    res.status(statusCode).json({ 
       success: false, 
-      message: 'Failed to generate training data. ' + (error.message || 'LLM service error.') 
+      error: 'AI Generation Failed: ' + (error.message || 'The brain service is temporarily unavailable.') 
     });
   }
 };

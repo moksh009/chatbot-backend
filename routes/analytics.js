@@ -1686,5 +1686,116 @@ router.get("/:clientId/home", protect, async (req, res) => {
   }
 });
 
+
+// ═══ GET /api/analytics/operators ═══════════════════════════════════════════
+// @desc  Aggregate per-operator performance metrics: human agents + AI Bot.
+// @access Private
+// STRICT MANDATE: No dummy data. Every field derived exclusively from the
+// Conversation collection aggregation. Frontend table maps directly to this shape.
+router.get('/operators', protect, async (req, res) => {
+  try {
+    let clientId = req.user.clientId;
+    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
+      clientId = req.query.clientId;
+    }
+
+    const User = require('../models/User');
+
+    // Two parallel aggregation pipelines — clean stages, minimal round-trips.
+    const [generalAgg, responseTimeAgg] = await Promise.all([
+
+      // Stage 1: Ticket-count buckets per operator.
+      // Conversations with null assignedTo === AI Bot workload.
+      Conversation.aggregate([
+        { $match: { clientId } },
+        {
+          $group: {
+            _id: { $ifNull: ['$assignedTo', '__AI_BOT__'] },
+            currentOpenTickets: {
+              $sum: { $cond: [{ $in: ['$status', ['HUMAN_TAKEOVER', 'HUMAN_SUPPORT']] }, 1, 0] }
+            },
+            ticketsSolved: {
+              $sum: { $cond: [{ $eq: ['$status', 'CLOSED'] }, 1, 0] }
+            },
+            pendingTickets: {
+              $sum: { $cond: [{ $eq: ['$status', 'WAITING_FOR_INPUT'] }, 1, 0] }
+            },
+            totalHandled: { $sum: 1 }
+          }
+        }
+      ]),
+
+      // Stage 2: Average first-response latency.
+      // Only for conversations with both timestamps — avoids NaN arithmetic.
+      Conversation.aggregate([
+        {
+          $match: {
+            clientId,
+            firstInboundAt:  { $exists: true, $ne: null },
+            firstResponseAt: { $exists: true, $ne: null }
+          }
+        },
+        {
+          $group: {
+            _id: { $ifNull: ['$assignedTo', '__AI_BOT__'] },
+            avgResponseTimeMs: {
+              $avg: { $subtract: ['$firstResponseAt', '$firstInboundAt'] }
+            }
+          }
+        }
+      ])
+    ]);
+
+    // O(1) lookup map: agentId -> avg response time ms
+    const responseTimeMap = {};
+    responseTimeAgg.forEach(r => {
+      responseTimeMap[String(r._id)] = Math.max(0, r.avgResponseTimeMs || 0);
+    });
+
+    // Batch-fetch User profiles for all real agent ObjectIds
+    const agentObjectIds = generalAgg
+      .map(g => g._id)
+      .filter(id => id !== '__AI_BOT__' && id != null);
+
+    const agents = agentObjectIds.length > 0
+      ? await User.find({ _id: { $in: agentObjectIds } }).select('name email').lean()
+      : [];
+
+    const agentMap = {};
+    agents.forEach(a => { agentMap[String(a._id)] = a; });
+
+    // Shape final list — every key referenced by the UI table column.
+    const operators = generalAgg.map(g => {
+      const isBot     = g._id === '__AI_BOT__';
+      const agentInfo = isBot ? null : agentMap[String(g._id)];
+      return {
+        agentId:            isBot ? 'ai-bot' : String(g._id),
+        agentName:          isBot ? 'AI Bot' : (agentInfo?.name  || 'Unknown Agent'),
+        agentEmail:         isBot ? 'system@ai-bot' : (agentInfo?.email || '-'),
+        isBot,
+        currentOpenTickets: g.currentOpenTickets,
+        pendingTickets:     g.pendingTickets,
+        ticketsSolved:      g.ticketsSolved,
+        totalHandled:       g.totalHandled,
+        // Raw milliseconds — frontend formats to human-readable string
+        avgResponseTimeMs:  responseTimeMap[String(g._id)] || 0
+      };
+    });
+
+    // AI Bot anchored first (highest volume), then agents desc by tickets solved.
+    operators.sort((a, b) => {
+      if (a.isBot && !b.isBot) return -1;
+      if (!a.isBot && b.isBot) return  1;
+      return b.ticketsSolved - a.ticketsSolved;
+    });
+
+    res.json({ success: true, operators });
+
+  } catch (err) {
+    console.error('[Analytics] /operators aggregation error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;
 
