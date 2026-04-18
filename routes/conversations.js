@@ -208,7 +208,8 @@ router.get('/:id/full-context', protect, async (req, res) => {
     }
     
     const phone = conversation.phone;
-    const phoneSuffix = phone ? phone.slice(-10) : '';
+    const cleanPhone = phone ? phone.replace(/\D/g, '') : '';
+    const phoneSuffix = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
     
     // 2. Load all secondary data concurrently
     const [messages, lead, orders, wallet, activeSequence] = await Promise.all([
@@ -236,12 +237,13 @@ router.get('/:id/full-context', protect, async (req, res) => {
            clientId: conversation.clientId || clientId,
            $or: [
              { phone: { $regex: phoneSuffix + '$' } },
-             { customerPhone: { $regex: phoneSuffix + '$' } }
+             { customerPhone: { $regex: phoneSuffix + '$' } },
+             { phone: phone }
            ]
          })
            .sort({ createdAt: -1 })
            .limit(3)
-           .select('orderId customerName amount status paymentMethod isCOD createdAt items')
+           .select('orderId orderNumber customerName amount totalPrice status paymentMethod isCOD createdAt items')
            .lean()
            .catch(() => []);
       })(),
@@ -249,7 +251,7 @@ router.get('/:id/full-context', protect, async (req, res) => {
       // Loyalty Wallet
       (async () => {
          try {
-           const Wallet = require('../models/LoyaltyWallet');
+           const Wallet = require('../models/CustomerWallet');
            return await Wallet.findOne({ clientId: conversation.clientId || clientId, phone })
              .select('balance tier pointsEarned')
              .lean();
@@ -258,13 +260,19 @@ router.get('/:id/full-context', protect, async (req, res) => {
       
       // FollowUp Active sequence
       (async () => {
+         if (!phoneSuffix) return null;
          try {
            const FollowUpSequence = require('../models/FollowUpSequence');
            return await FollowUpSequence.findOne({
-             clientId: conversation.clientId || clientId, phone, status: 'active'
+             clientId: conversation.clientId || clientId, 
+             $or: [
+               { phone: { $regex: phoneSuffix + '$' } },
+               { phone: phone }
+             ],
+             status: 'active'
            })
-             .select('name status steps')
-             .lean();
+           .select('name status steps')
+           .lean();
          } catch { return null; }
       })()
     ]);
