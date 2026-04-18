@@ -109,6 +109,52 @@ class ActionExecutorService {
         }
         break;
 
+      case 'TRIGGER_FLOW':
+        // GAP 6: Start a visual flow for the customer
+        try {
+          const Client = require('../models/Client');
+          const client = await Client.findOne({ clientId: clientId.toString() });
+          if (client) {
+            const targetFlow = (client.visualFlows || []).find(
+              f => f.id === payload.flowId || f.name === payload.flowName
+            );
+            if (targetFlow) {
+              console.log(`[ActionExecutor] TRIGGER_FLOW: Starting flow "${targetFlow.name}" for ${phoneNumber}`);
+              // Set conversation to use this flow's start node
+              await Conversation.updateOne(
+                { clientId: clientId.toString(), phone: phoneNumber },
+                { 
+                  $set: { 
+                    activeFlowId: targetFlow.id,
+                    currentNodeId: targetFlow.nodes?.[0]?.id || null,
+                    flowTriggeredBy: 'intent_action',
+                    flowTriggeredAt: new Date()
+                  } 
+                },
+                { upsert: true }
+              );
+              if (global.io) {
+                global.io.to(`client_${clientId}`).emit('flow_triggered', {
+                  phone: phoneNumber,
+                  flowId: targetFlow.id,
+                  flowName: targetFlow.name
+                });
+              }
+            } else {
+              console.warn(`[ActionExecutor] TRIGGER_FLOW: Flow "${payload.flowId || payload.flowName}" not found.`);
+            }
+          }
+        } catch (flowErr) {
+          console.error(`[ActionExecutor] TRIGGER_FLOW error:`, flowErr.message);
+        }
+        break;
+
+      case 'ENROLL_SEQUENCE':
+        // GAP 6: Placeholder — sequence enroller service not yet built
+        console.log(`[ActionExecutor] ENROLL_SEQUENCE: Enrolling ${phoneNumber} in sequence "${payload.sequenceId || payload.sequenceName}"`);
+        console.warn(`[ActionExecutor] ENROLL_SEQUENCE: Sequence engine not yet implemented. Logging for future activation.`);
+        break;
+
       default:
         console.warn(`[ActionExecutor] Unknown action type: ${actionType}`);
     }

@@ -30,7 +30,7 @@ const intentRuleSchema = new mongoose.Schema({
   actions: [{
     actionType: {
       type: String,
-      enum: ['TAG_CHAT', 'ASSIGN_AGENT', 'SEND_TEMPLATE', 'PAUSE_BOT', 'NOTIFY_TEAM'],
+      enum: ['TAG_CHAT', 'ASSIGN_AGENT', 'SEND_TEMPLATE', 'PAUSE_BOT', 'NOTIFY_TEAM', 'TRIGGER_FLOW', 'ENROLL_SEQUENCE'],
       required: true
     },
     payload: {
@@ -41,6 +41,14 @@ const intentRuleSchema = new mongoose.Schema({
   isActive: {
     type: Boolean,
     default: true
+  },
+  lastTriggeredAt: {
+    type: Date,
+    default: null
+  },
+  totalTriggerCount: {
+    type: Number,
+    default: 0
   }
 }, {
   timestamps: true
