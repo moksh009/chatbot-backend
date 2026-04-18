@@ -49,37 +49,39 @@ router.get('/', protect, async (req, res) => {
     const limit = parseInt(req.query.limit) || 100;
     const skip = (page - 1) * limit;
 
-    const conversations = await Conversation.find(query)
-      .sort({ lastMessageAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .populate('assignedTo', 'name')
-      .lean();
+    const [conversations, total] = await Promise.all([
+      Conversation.find(query)
+        .sort({ lastMessageAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .select('_id phone customerName lastMessage lastMessageAt channel status unreadCount sentiment assignedTo isBotPaused botPaused requiresAttention attentionReason lastDetectedIntent summary')
+        .populate('assignedTo', 'name')
+        .lean(),
+      Conversation.countDocuments(query)
+    ]);
 
-    // Enterprise Enrichment: Attach Lead Intent Data
+    // Enterprise Enrichment: Bulk fetch all leads in one query instead of N+1
     const AdLead = require('../models/AdLead');
-    const enrichedConversations = await Promise.all(conversations.map(async (conv) => {
-        const lead = await AdLead.findOne({ phoneNumber: conv.phone, clientId: conv.clientId });
-        if (lead) {
-            // We can't use virtuals on lean objects easily, so we manually derive or just use leadScore/tags
-            // Actually, let's manually derive the status for the UI to keep it consistent with Dashboard
-            let derivedIntent = 'Browsing';
-            if (lead.cartStatus === 'abandoned') derivedIntent = 'Cart Abandoned';
-            else if (lead.checkoutInitiatedCount > 0 && !lead.isOrderPlaced) derivedIntent = 'High Intent';
-            else if (lead.addToCartCount > 0) derivedIntent = 'Browsing with Intent';
-            else if (lead.cartStatus === 'recovered') derivedIntent = 'Recovered Cart';
-            
-            return {
-                ...conv,
-                leadScore: lead.leadScore,
-                derivedLeadState: derivedIntent,
-                leadTags: lead.tags
-            };
-        }
-        return conv;
-    }));
+    const phones = conversations.map(c => c.phone).filter(Boolean);
+    const leads = phones.length > 0
+      ? await AdLead.find({ clientId: conversations[0]?.clientId, phoneNumber: { $in: phones } })
+          .select('phoneNumber leadScore cartStatus checkoutInitiatedCount addToCartCount isOrderPlaced tags')
+          .lean()
+      : [];
+    const leadMap = new Map(leads.map(l => [l.phoneNumber, l]));
 
-    const total = await Conversation.countDocuments(query);
+    const enrichedConversations = conversations.map(conv => {
+      const lead = leadMap.get(conv.phone);
+      if (lead) {
+        let derivedIntent = 'Browsing';
+        if (lead.cartStatus === 'abandoned') derivedIntent = 'Cart Abandoned';
+        else if (lead.checkoutInitiatedCount > 0 && !lead.isOrderPlaced) derivedIntent = 'High Intent';
+        else if (lead.addToCartCount > 0) derivedIntent = 'Browsing with Intent';
+        else if (lead.cartStatus === 'recovered') derivedIntent = 'Recovered Cart';
+        return { ...conv, leadScore: lead.leadScore, derivedLeadState: derivedIntent, leadTags: lead.tags };
+      }
+      return conv;
+    });
 
     res.json({
       success: true,
@@ -171,7 +173,8 @@ router.get('/:id/messages', protect, async (req, res) => {
     const messages = await Message.find({ conversationId: conversation._id })
       .sort({ timestamp: -1 }) // Get newest first for pagination
       .skip(skip)
-      .limit(limit);
+      .limit(limit)
+      .lean();
 
     res.json(messages.reverse()); // Return in chronological order for UI
   } catch (error) {
@@ -179,52 +182,97 @@ router.get('/:id/messages', protect, async (req, res) => {
   }
 });
 
-// @route   GET /api/conversations/:id/smart-replies
-// @desc    Generate AI smart reply suggestions for the last message
-// @access  Private
-router.get('/:id/smart-replies', protect, async (req, res) => {
+// ✅ Phase 2: Live Chat Mega-Payload (Full Context)
+// Fetches conversation, 50 messages, lead intent, orders, and wallet in 1 round trip
+router.get('/:id/full-context', protect, async (req, res) => {
   try {
-    const conversation = await Conversation.findById(req.params.id);
-    if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
-
-    // Fetch last 8 messages for context
-    const recentMessages = await Message.find({ conversationId: conversation._id })
-      .sort({ timestamp: -1 })
-      .limit(8);
-
-    if (recentMessages.length === 0) {
-      return res.json({ suggestions: [] });
+    const { id } = req.params;
+    const clientId = req.user.clientId;
+    
+    // 1. Fetch main conversation
+    const conversation = await Conversation.findOne({ _id: id, clientId })
+      .select('phone customerName status botPaused unreadCount channel assignedTo sentiment summary lastDetectedIntent requiresAttention attentionReason internalNotes')
+      .lean();
+      
+    if (!conversation) {
+      // Allow super admins to view via direct ID if needed
+      const saQuery = req.user.role === 'SUPER_ADMIN' ? { _id: id } : null;
+      if (saQuery) {
+         const saConv = await Conversation.findOne(saQuery).lean();
+         if (!saConv) return res.status(404).json({ message: 'Conversation not found' });
+         // fallthrough allowing SA
+         Object.assign(conversation || {}, saConv);
+      } else {
+         return res.status(404).json({ message: 'Conversation not found' });
+      }
     }
-
-    const lastCustomerMsg = recentMessages.find(m => m.direction === 'incoming' || m.sender === 'user');
-    if (!lastCustomerMsg) return res.json({ suggestions: [] });
-
-    const { GoogleGenerativeAI } = require('@google/generative-ai');
-    const client = await Client.findOne({ clientId: conversation.clientId });
-    const apiKey = client?.geminiApiKey || process.env.GEMINI_API_KEY;
-    if (!apiKey) return res.json({ suggestions: [] });
-
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-
-    const context = recentMessages
-      .reverse()
-      .map(m => `${m.direction === 'incoming' || m.sender === 'user' ? 'Customer' : 'Agent'}: ${m.content || m.text}`)
-      .join('\n');
-
-    const prompt = `You are a customer support agent. Based on this conversation, suggest 3 short, helpful reply options (each max 12 words). Return ONLY a JSON array of strings. No markdown, no explanation.\n\nConversation:\n${context}\n\nSuggestions:`;
-
-    const result = await model.generateContent(prompt);
-    const text = result.response.text().trim();
-
-    // Parse JSON — strip markdown code blocks if present
-    const cleaned = text.replace(/```json?|```/g, '').trim();
-    const suggestions = JSON.parse(cleaned);
-
-    res.json({ suggestions: Array.isArray(suggestions) ? suggestions.slice(0, 3) : [] });
+    
+    const phone = conversation.phone;
+    const phoneSuffix = phone ? phone.slice(-10) : '';
+    
+    // 2. Load all secondary data concurrently
+    const [messages, lead, orders, wallet, activeSequence] = await Promise.all([
+      // Messages
+      Message.find({ conversationId: id })
+        .sort({ timestamp: -1 })
+        .limit(50)
+        .select('content type direction status timestamp mediaUrl metadata from to voiceTranscript originalText')
+        .lean()
+        .then(msgs => msgs.reverse()),
+        
+      // Lead Data
+      (async () => {
+         const AdLead = require('../models/AdLead');
+         return AdLead.findOne({ clientId: conversation.clientId || clientId, phoneNumber: phone })
+           .select('name email leadScore cartStatus tags intentState source sentimentScore totalSpent ordersCount lastInteraction isOrderPlaced cartSnapshot addToCartCount checkoutInitiatedCount')
+           .lean();
+      })(),
+      
+      // Orders
+      (async () => {
+         if (!phoneSuffix) return [];
+         const Order = require('../models/Order');
+         return Order.find({
+           clientId: conversation.clientId || clientId,
+           $or: [
+             { phone: { $regex: phoneSuffix + '$' } },
+             { customerPhone: { $regex: phoneSuffix + '$' } }
+           ]
+         })
+           .sort({ createdAt: -1 })
+           .limit(3)
+           .select('orderId customerName amount status paymentMethod isCOD createdAt items')
+           .lean()
+           .catch(() => []);
+      })(),
+      
+      // Loyalty Wallet
+      (async () => {
+         try {
+           const Wallet = require('../models/LoyaltyWallet');
+           return await Wallet.findOne({ clientId: conversation.clientId || clientId, phone })
+             .select('balance tier pointsEarned')
+             .lean();
+         } catch { return null; }
+      })(),
+      
+      // FollowUp Active sequence
+      (async () => {
+         try {
+           const FollowUpSequence = require('../models/FollowUpSequence');
+           return await FollowUpSequence.findOne({
+             clientId: conversation.clientId || clientId, phone, status: 'active'
+           })
+             .select('name status steps')
+             .lean();
+         } catch { return null; }
+      })()
+    ]);
+    
+    res.json({ conversation, messages, lead, orders, wallet, activeSequence });
   } catch (error) {
-    console.error('[SmartReplies] Error:', error.message);
-    res.json({ suggestions: [] }); // Always return gracefully
+    console.error('[FullContext Error]:', error);
+    res.status(500).json({ message: 'Server Error fetching full context' });
   }
 });
 
@@ -642,6 +690,7 @@ router.post('/:id/summarize', protect, async (req, res) => {
     const chatLog = messages.map(m => `${m.from}: ${m.content}`).join('\n');
 
     const { generateText } = require('../utils/gemini');
+    const client = await Client.findOne({ clientId: conversation.clientId });
 
     const prompt = `
       Analyze this WhatsApp conversation and provide:
@@ -654,7 +703,7 @@ router.post('/:id/summarize', protect, async (req, res) => {
       ${chatLog}
     `;
 
-    const aiResponse = await generateText(prompt);
+    const aiResponse = await generateText(prompt, client?.geminiApiKey || process.env.GEMINI_API_KEY);
 
     try {
       // Clean potential markdown formatting from AI
@@ -743,6 +792,7 @@ router.post('/:id/generate-outreach', protect, async (req, res) => {
       .limit(20);
 
     const chatLog = messages.map(m => `${m.from}: ${m.content}`).join('\n');
+    const client = await Client.findOne({ clientId: conversation.clientId });
     const { generateText } = require('../utils/gemini');
 
     const prompt = `
@@ -762,7 +812,7 @@ router.post('/:id/generate-outreach', protect, async (req, res) => {
       Return ONLY raw JSON: {"subject": "...", "body": "..."}
     `;
 
-    const aiResponse = await generateText(prompt);
+    const aiResponse = await generateText(prompt, client?.geminiApiKey || process.env.GEMINI_API_KEY);
     
     try {
       const jsonStr = aiResponse.replace(/```json/g, '').replace(/```/g, '').trim();

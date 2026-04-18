@@ -55,5 +55,11 @@ const OrderSchema = new mongoose.Schema({
 });
 
 OrderSchema.index({ orderId: 1, clientId: 1 }, { unique: true });
+// Performance indexes for dashboard queries
+OrderSchema.index({ clientId: 1, createdAt: -1 });
+OrderSchema.index({ clientId: 1, status: 1 });
+OrderSchema.index({ clientId: 1, isCOD: 1 });
+OrderSchema.index({ phone: 1 });
+OrderSchema.index({ clientId: 1, phone: 1 });
 
 module.exports = mongoose.model('Order', OrderSchema);

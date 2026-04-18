@@ -171,142 +171,127 @@ router.get('/realtime', protect, async (req, res) => {
       clientId = req.query.clientId;
     }
     
-    const client = await Client.findOne({ clientId });
-    if (!client) return res.status(404).json({ message: 'Client not found' });
-
     const query = { clientId };
 
     // ✅ Phase R3: IST midnight fix — was using UTC midnight (new Date().setHours(0,0,0,0))
     // Dashboard 'Today' counter was resetting at 5:30 AM IST instead of IST midnight
     const today = startOfDayIST();
 
-    // 1. Leads Count (Total & Today)
-    const totalLeads = await AdLead.countDocuments(query);
-    const newLeadsToday = await AdLead.countDocuments({
-      ...query,
-      createdAt: { $gte: today }
-    });
+    // Performance: Execute ALL independent queries in parallel instead of sequentially
+    const [
+      client,
+      totalLeads,
+      newLeadsToday,
+      ordersToday,
+      appointmentsToday,
+      linkClicksResult,
+      dailyStats,
+      cartResult,
+      checkoutResult,
+      abandonedCarts,
+      recoveredCarts,
+      cartStatsResult,
+      totalOrdersAllTime,
+      whatsappRecoveriesPurchasedResult,
+      adminFollowupsPurchased,
+      attributionResult,
+      sentimentAgg
+    ] = await Promise.all([
+      // 0. Client
+      Client.findOne({ clientId }).select('businessName name isActive').lean(),
+      // 1. Total Leads
+      AdLead.countDocuments(query),
+      // 2. New Leads Today
+      AdLead.countDocuments({ ...query, createdAt: { $gte: today } }),
+      // 3. Orders Today
+      Order.find({ ...query, createdAt: { $gte: today } }).select('amount').lean(),
+      // 4. Appointments Today
+      Appointment.find({ ...query, createdAt: { $gte: today } }).select('revenue').lean(),
+      // 5. Link Clicks
+      AdLead.aggregate([
+        { $match: query },
+        { $group: { _id: null, totalClicks: { $sum: "$linkClicks" } } }
+      ]),
+      // 6. Daily Stats
+      DailyStat.find({ ...query, date: today.toISOString().split('T')[0] }).lean(),
+      // 7. Cart Adds
+      AdLead.aggregate([
+        { $match: query },
+        { $group: { _id: null, totalCarts: { $sum: "$addToCartCount" } } }
+      ]),
+      // 8. Checkouts
+      AdLead.aggregate([
+        { $match: query },
+        { $group: { _id: null, totalCheckouts: { $sum: "$checkoutInitiatedCount" } } }
+      ]),
+      // 9. Abandoned Carts
+      AdLead.countDocuments({ ...query, cartStatus: 'abandoned' }),
+      // 10. Recovered Carts
+      AdLead.countDocuments({ ...query, cartStatus: 'recovered' }),
+      // 11. Cart Stats
+      DailyStat.aggregate([
+        { $match: query },
+        { $group: { _id: null, totalSent: { $sum: "$abandonedCartSent" }, totalClicks: { $sum: "$abandonedCartClicks" } } }
+      ]),
+      // 12. Total Orders All Time
+      Order.countDocuments(query),
+      // 13. WhatsApp Recoveries Purchased
+      AdLead.aggregate([
+        { $match: query },
+        {
+          $project: {
+            purchaseAfterRecoveryCount: {
+              $size: {
+                $filter: {
+                  input: "$activityLog",
+                  as: "log",
+                  cond: { $eq: ["$$log.action", "purchase_completed_after_recovery"] }
+                }
+              }
+            }
+          }
+        },
+        { $group: { _id: null, total: { $sum: "$purchaseAfterRecoveryCount" } } }
+      ]),
+      // 14. Admin Followups Purchased
+      AdLead.countDocuments({ ...query, adminFollowUpTriggered: true, isOrderPlaced: true }),
+      // 15. Attribution
+      AdLead.aggregate([
+        { $match: query },
+        { $unwind: { path: "$commerceEvents", preserveNullAndEmptyArrays: false } },
+        { $match: { "commerceEvents.event": "checkout_completed" } },
+        {
+          $group: {
+            _id: { $ifNull: ["$adAttribution.source", "Organic/Direct"] },
+            revenue: { $sum: "$commerceEvents.amount" },
+            count: { $sum: 1 }
+          }
+        }
+      ]),
+      // 16. Sentiment
+      Conversation.aggregate([
+        { $match: query },
+        { $group: { _id: "$sentiment", count: { $sum: 1 } } }
+      ])
+    ]);
 
-    // 2. Orders & Appointments Revenue (Today)
-    const ordersToday = await Order.find({
-      ...query,
-      createdAt: { $gte: today }
-    });
+    if (!client) return res.status(404).json({ message: 'Client not found' });
 
-    const appointmentsToday = await Appointment.find({
-      ...query,
-      createdAt: { $gte: today }
-    });
-
+    // Process results (same logic as before, just using destructured variables)
     const orderRevenue = ordersToday.reduce((sum, order) => sum + order.amount, 0);
     const appointmentRevenue = appointmentsToday.reduce((sum, appt) => sum + (appt.revenue || 0), 0);
     const revenueToday = orderRevenue + appointmentRevenue;
     const orderCountToday = ordersToday.length;
-
-    // 3. Link Clicks (Total)
-    const linkClicksResult = await AdLead.aggregate([
-      { $match: query },
-      { $group: { _id: null, totalClicks: { $sum: "$linkClicks" } } }
-    ]);
     const totalLinkClicks = linkClicksResult[0]?.totalClicks || 0;
-
-    // 4. Agent Requests (Today)
-    const todayStr = today.toISOString().split('T')[0];
-    const dailyStats = await DailyStat.find({
-      ...query,
-      date: todayStr
-    });
     const agentRequestsToday = dailyStats.reduce((sum, ds) => sum + (ds.agentRequests || 0), 0);
-
-    // 5. Add to Cart (Total from Leads)
-    // We aggregate all addToCartCount from leads
-    const cartResult = await AdLead.aggregate([
-      { $match: query },
-      { $group: { _id: null, totalCarts: { $sum: "$addToCartCount" } } }
-    ]);
     const totalAddCarts = cartResult[0]?.totalCarts || 0;
-
-    // 6. Checkout Initiated (Total from Leads)
-    const checkoutResult = await AdLead.aggregate([
-      { $match: query },
-      { $group: { _id: null, totalCheckouts: { $sum: "$checkoutInitiatedCount" } } }
-    ]);
     const totalCheckouts = checkoutResult[0]?.totalCheckouts || 0;
-
-    // 7. Abandoned vs Recovered Carts
-    const abandonedCarts = await AdLead.countDocuments({
-      ...query,
-      cartStatus: 'abandoned'
-    });
-
-    const recoveredCarts = await AdLead.countDocuments({
-      ...query,
-      cartStatus: 'recovered'
-    });
-
-    // 8. Abandoned Cart Messaging Stats (Total from DailyStats)
-    const cartStatsResult = await DailyStat.aggregate([
-      { $match: query },
-      { $group: { _id: null, totalSent: { $sum: "$abandonedCartSent" }, totalClicks: { $sum: "$abandonedCartClicks" } } }
-    ]);
     const totalAbandonedCartSent = cartStatsResult[0]?.totalSent || 0;
     const totalAbandonedCartClicks = cartStatsResult[0]?.totalClicks || 0;
-
-    // 9. Conversion Funnel Metrics
-    const totalOrdersAllTime = await Order.countDocuments(query);
-
-    const whatsappRecoveriesPurchasedResult = await AdLead.aggregate([
-      { $match: query },
-      {
-        $project: {
-          purchaseAfterRecoveryCount: {
-            $size: {
-              $filter: {
-                input: "$activityLog",
-                as: "log",
-                cond: { $eq: ["$$log.action", "purchase_completed_after_recovery"] }
-              }
-            }
-          }
-        }
-      },
-      { $group: { _id: null, total: { $sum: "$purchaseAfterRecoveryCount" } } }
-    ]);
     const whatsappRecoveriesPurchased = whatsappRecoveriesPurchasedResult[0]?.total || 0;
 
-    const adminFollowupsPurchasedResult = await AdLead.countDocuments({
-      ...query,
-      adminFollowUpTriggered: true,
-      isOrderPlaced: true
-    });
-    const adminFollowupsPurchased = adminFollowupsPurchasedResult;
-
-    // 10. Deep Attribution ROI (Phase 23)
-    const attributionResult = await AdLead.aggregate([
-      { $match: query },
-      { $unwind: { path: "$commerceEvents", preserveNullAndEmptyArrays: false } },
-      { $match: { "commerceEvents.event": "checkout_completed" } },
-      {
-        $group: {
-          _id: { $ifNull: ["$adAttribution.source", "Organic/Direct"] },
-          revenue: { $sum: "$commerceEvents.amount" },
-          count: { $sum: 1 }
-        }
-      }
-    ]);
-
-    // 10. Sentiment Analysis Summary (Phase 23 Track 6)
-    const sentimentAgg = await Conversation.aggregate([
-      { $match: query },
-      { $group: { _id: "$sentiment", count: { $sum: 1 } } }
-    ]);
     const sentimentCounts = {
-      Positive: 0,
-      Neutral: 0,
-      Negative: 0,
-      Frustrated: 0,
-      Urgent: 0,
-      Unknown: 0
+      Positive: 0, Neutral: 0, Negative: 0, Frustrated: 0, Urgent: 0, Unknown: 0
     };
     sentimentAgg.forEach(s => {
       const key = s._id || 'Unknown';
@@ -692,7 +677,9 @@ router.get('/receptionist-overview', protect, async (req, res) => {
     endDate.setDate(endDate.getDate() + daysToFetch); // Fetch for N days
 
     // Fetch client for Google Calendar IDs
-    const client = await Client.findOne({ clientId });
+    const client = await Client.findOne({ clientId })
+      .select('googleCalendarId config businessName name isActive')
+      .lean();
 
     // Collect all calendar IDs
     const calendarIds = new Set();
@@ -742,12 +729,17 @@ router.get('/receptionist-overview', protect, async (req, res) => {
     const dbAppointments = await Appointment.find({
       ...query,
       status: { $ne: 'cancelled' }
+    }).select('eventId name phone service status createdAt').lean();
+
+    // 3. Merge Events - O(1) Hash Map approach to fix N+1 Loop
+    const appointmentMap = {};
+    dbAppointments.forEach(a => {
+      if (a.eventId) appointmentMap[a.eventId] = a;
     });
 
-    // 3. Merge Events
     const mergedAppointments = googleEvents.map(event => {
-      const dbAppt = dbAppointments.find(a => a.eventId === event.id);
-      const startDateTime = event.start.dateTime || event.start.date;
+      const dbAppt = appointmentMap[event.id];
+      const startDateTime = event.start?.dateTime || event.start?.date;
 
       return {
         _id: dbAppt?._id || event.id,
@@ -811,7 +803,7 @@ router.get('/receptionist-overview', protect, async (req, res) => {
     const recentChats = await Conversation.find({
       clientId,
       updatedAt: { $gte: today }
-    }).sort({ updatedAt: -1 }).limit(10);
+    }).select('_id phone customerName updatedAt').sort({ updatedAt: -1 }).limit(10).lean();
 
     // 6. High Value Leads active today
     const activeVIPs = await AdLead.find({
@@ -823,7 +815,7 @@ router.get('/receptionist-overview', protect, async (req, res) => {
         { ordersCount: { $gt: 0 } },
         { totalSpent: { $gt: 0 } }
       ]
-    }).select('name phoneNumber leadScore tags');
+    }).select('name phoneNumber leadScore tags lastInteraction').lean();
 
     res.json({
       appointments: mergedAppointments,
@@ -1025,9 +1017,9 @@ router.get('/insights', protect, async (req, res) => {
     const clientId = req.user.clientId;
     const query = { clientId };
 
-    const appts = await Appointment.find(query);
-    const orders = await Order.find(query);
-    const leads = await AdLead.find(query);
+    const appts = await Appointment.find(query).select('createdAt phone revenue').lean();
+    const orders = await Order.find(query).select('createdAt amount').lean();
+    const leads = await AdLead.find(query).select('createdAt lastSeen ordersCount addToCartCount phoneNumber checkoutInitiatedCount cartStatus').lean();
 
     // 1. Peak Hours Heatmap (Aggregate Checkouts, Orders, and Appointments)
     const heatmap = {}; 

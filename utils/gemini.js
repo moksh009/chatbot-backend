@@ -16,6 +16,20 @@ function getClient(apiKey) {
 }
 
 /**
+ * helper to validate if a string looks like a real Google AI API key.
+ * Minimal check: must start with AIza and be at least 30 chars.
+ */
+function isKeyValid(key) {
+  if (!key || typeof key !== 'string') return false;
+  const trimmed = key.trim();
+  if (trimmed.length < 30) return false;
+  if (!trimmed.startsWith("AIza")) return false;
+  // Common placeholders to reject
+  if (trimmed.includes("ENTER_YOUR") || trimmed.includes("YOUR_API_KEY") || trimmed.includes("GEMINI_KEY")) return false;
+  return true;
+}
+
+/**
  * generateText - core resilient wrapper used by BOTH purposes.
  * @param {string} prompt
  * @param {string} apiKey - client key OR platform key
@@ -30,8 +44,19 @@ async function generateText(prompt, apiKey, options = {}) {
     maxRetries  = 2
   } = options;
   
-  if (!apiKey?.trim()) {
-    logger.warn("No API key provided");
+  // Decide which key to use: try provided key first (if it looks valid), else fallback to platform
+  let activeKey = apiKey?.trim();
+  const platformKey = process.env.GEMINI_API_KEY?.trim();
+
+  if (!isKeyValid(activeKey)) {
+    if (activeKey) {
+        logger.warn(`Provided API key "${activeKey.substring(0, 8)}..." is invalid/placeholder. Falling back to platform key.`);
+    }
+    activeKey = platformKey;
+  }
+
+  if (!isKeyValid(activeKey)) {
+    logger.error("No valid API key available (both client and platform keys are invalid or missing).");
     return null;
   }
   
@@ -41,7 +66,7 @@ async function generateText(prompt, apiKey, options = {}) {
     .replace(/system prompt/gi, "[filtered]")
     .substring(0, 10000);
   
-  const genAI = getClient(apiKey.trim());
+  const genAI = getClient(activeKey);
   if (!genAI) return null;
   
   let lastError;
@@ -75,8 +100,16 @@ async function generateText(prompt, apiKey, options = {}) {
         continue;
       }
       if (msg.includes("API_KEY_INVALID") || msg.includes("invalid")) {
-        logger.error(`Invalid API key. Check client configuration.`);
-        break; // not retryable
+        logger.error(`Invalid API key error from Google. Removing from cache.`);
+        clientCache.delete(activeKey);
+        
+        // If we were using a client key, try falling back to platform key for next attempt if different
+        if (activeKey !== platformKey && isKeyValid(platformKey)) {
+            logger.info("Falling back to platform key for next retry attempt.");
+            activeKey = platformKey;
+            continue;
+        }
+        break; // not retryable if platform key also failed or was already used
       }
       logger.error(`Attempt ${attempt} failed:`, msg);
     }

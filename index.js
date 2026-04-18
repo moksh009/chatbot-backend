@@ -24,6 +24,7 @@ if (dotenvResult.error && dotenvResult.error.code !== 'ENOENT') {
 
 
 const cors = require('cors');
+const compression = require('compression'); // Performance: GZIP compression — reduces payload sizes by 70-80%
 const helmet = require('helmet'); // ✅ Phase R3: HTTP security headers — was installed, never applied
 const mongoSanitize = require('express-mongo-sanitize'); // ✅ Phase R3: NoSQL injection protection — was installed, never applied
 const rateLimit = require('express-rate-limit'); // ✅ Phase R3: Rate limiting — was installed, never applied
@@ -111,6 +112,7 @@ app.use(cors({
   }, 
   credentials: true
 }));
+app.use(compression()); // Performance: GZIP all JSON responses (70-80% smaller payloads)
 app.use(express.json({ 
   limit: '5mb', // ✅ Phase R3: Reduced from 10mb — prevents oversized payload DoS
   verify: (req, res, buf) => {

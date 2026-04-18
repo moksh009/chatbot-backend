@@ -132,4 +132,9 @@ ConversationSchema.pre('save', function(next) {
   next();
 });
 
+// Performance indexes for dashboard queries
+ConversationSchema.index({ clientId: 1, lastMessageAt: -1 });
+ConversationSchema.index({ clientId: 1, unreadCount: 1 });
+ConversationSchema.index({ clientId: 1, phone: 1 });
+
 module.exports = mongoose.model('Conversation', ConversationSchema);

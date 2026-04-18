@@ -98,6 +98,103 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
   }
 });
 
+// ✅ Phase 2: The Global Bootstrap Endpoint
+// Collapses 5 separate network constraints into a single parallel payload
+router.get('/bootstrap', protect, async (req, res) => {
+  try {
+    const clientId = req.user.clientId;
+    if (!clientId) {
+       return res.status(400).json({ message: 'User has no clientId. Invalid state.' });
+    }
+
+    const { startOfDayIST } = require('../utils/queryHelpers');
+    const dayStart = startOfDayIST();
+    
+    // Import required models
+    const Message = require('../models/Message');
+    const AdLead = require('../models/AdLead');
+    const Order = require('../models/Order');
+    const Conversation = require('../models/Conversation');
+
+    // Run all database fetches in parallel
+    const [client, unreadCount, todayStats, recentConversations] = await Promise.all([
+      // 1. Client settings + User
+      Client.findOne({ clientId })
+        .select('clientId businessName name ai.persona adminPhone brand billing trialActive trialEndsAt shopDomain phoneNumberId shopifyConnectionStatus instagramConnected config visualFlows')
+        .lean()
+        .then(c => {
+          if (!c) return null;
+          return {
+            ...c,
+            visualFlows: (c.visualFlows || []).map(f => ({
+              id: f.id, name: f.name, platform: f.platform, isActive: f.isActive, nodeCount: f.nodeCount
+            }))
+          };
+        }),
+      
+      // 2. Unread Count across all chats
+      Conversation.countDocuments({ clientId, unreadCount: { $gt: 0 } }),
+      
+      // 3. Today's Snapshot Stats (Messages, Leads, Rev, Active Bots)
+      (async () => {
+        try {
+          const [msg, leads, active] = await Promise.all([
+            Message.countDocuments({ clientId, timestamp: { $gte: dayStart } }),
+            AdLead.countDocuments({ clientId, createdAt: { $gte: dayStart } }),
+            Conversation.countDocuments({ clientId, status: 'BOT_ACTIVE' })
+          ]);
+          
+          const revResult = await Order.aggregate([
+            { $match: { clientId, createdAt: { $gte: dayStart } } },
+            { $group: { _id: null, total: { $sum: "$amount" } } }
+          ]);
+          const rev = revResult[0]?.total || 0;
+          return { msg, leads, rev, active };
+        } catch { return { msg: 0, leads: 0, rev: 0, active: 0 }; }
+      })(),
+      
+      // 4. Quick inbox summary
+      Conversation.find({ clientId })
+        .sort({ lastMessageAt: -1 })
+        .limit(25)
+        .select('phone customerName lastMessage lastMessageAt status unreadCount botPaused channel requiresAttention')
+        .lean()
+    ]);
+
+    // Admin/Delitech role syncing logic from /me
+    let user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    if (user.email === 'admin@topedgeai.com' && (!user.isLifetimeAdmin || user.role !== 'SUPER_ADMIN')) {
+      user.role = 'SUPER_ADMIN'; user.isLifetimeAdmin = true; await user.save();
+    }
+    if (user.email === 'delitech2708@gmail.com') {
+      if (user.role === 'SUPER_ADMIN') user.role = 'CLIENT_ADMIN';
+      user.isLifetimeAdmin = true; await user.save();
+    }
+
+    res.json({
+      user: { 
+        id: user._id, 
+        name: user.name, 
+        email: user.email, 
+        role: user.role, 
+        clientId: user.clientId, 
+        isLifetimeAdmin: user.isLifetimeAdmin,
+        hasCompletedTour: user.hasCompletedTour,
+        business_type: user.business_type
+      },
+      client: client || {},
+      inbox: { unreadCount, recentConversations },
+      stats: todayStats
+    });
+
+  } catch (error) {
+    console.error('[Bootstrap Error]:', error);
+    res.status(500).json({ message: 'Server Error during bootstrap' });
+  }
+});
+
 router.patch('/me', protect, async (req, res) => {
   try {
     const { hasCompletedTour } = req.body;

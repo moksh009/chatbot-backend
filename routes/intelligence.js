@@ -15,7 +15,9 @@ router.get('/dna/:phone', protect, async (req, res) => {
     const { phone } = req.params;
     const clientId = req.user.clientId;
 
-    let dna = await CustomerIntelligence.findOne({ clientId, phone });
+    let dna = await CustomerIntelligence.findOne({ clientId, phone })
+      .select('aiSummary persona engagementScore buyingSignals ltv potential sourceTags')
+      .lean();
     if (!dna) {
       // Upsert skeletal DNA
       dna = new CustomerIntelligence({ 

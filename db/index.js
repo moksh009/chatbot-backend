@@ -7,8 +7,8 @@ async function connectDB(){
         const connectionInstance = await mongoose.connect(`${process.env.MONGODB_URI}`, {
             serverSelectionTimeoutMS: 5000, // Timeout after 5s instead of 30s
             socketTimeoutMS: 45000, // Close sockets after 45s of inactivity
-            maxPoolSize: 100, // Phase 5: Maintain up to 100 socket connections
-            minPoolSize: 10,  // Phase 5: Keep 10 active at all times
+            maxPoolSize: 10, // Optimized for Render free tier (was 100)
+            minPoolSize: 2,  // Keep 2 active at all times (was 10)
         })
         console.log(`\n MongoDB connected !! DB HOST: ${connectionInstance.connection.host}`);
 

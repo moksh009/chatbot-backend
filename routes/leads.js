@@ -355,7 +355,9 @@ router.get('/high-intent', protect, async (req, res) => {
 
         const leads = await AdLead.find(query)
             .sort({ lastInteraction: -1 })
-            .limit(parseInt(limit));
+            .limit(parseInt(limit))
+            .select('phoneNumber name email leadScore cartStatus lastInteraction tags checkoutInitiatedCount addToCartCount source')
+            .lean();
 
         const total = await AdLead.countDocuments(query);
         const new_cursor = leads.length > 0 ? leads[leads.length - 1]._id : null;

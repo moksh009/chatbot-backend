@@ -34,7 +34,7 @@ router.get('/', protect, async (req, res) => {
       query.clientId = clientId;
     }
 
-    const orders = await Order.find(query).sort({ createdAt: -1 }).limit(10);
+    const orders = await Order.find(query).sort({ createdAt: -1 }).limit(10).lean();
     res.json({ success: true, orders });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

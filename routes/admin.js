@@ -76,7 +76,9 @@ router.get('/clients', protect, isSuperAdmin, sanitizeMiddleware, async (req, re
     const clients = await Client.find(filter)
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(limit);
+      .limit(limit)
+      .select('clientId businessName name wabaId phoneNumberId whatsappToken shopifyAccessToken shopDomain storeType woocommerceUrl woocommerceKey woocommerceSecret instagramConnected adminAlertEmail adminAlertWhatsapp emailUser emailAppPassword isActive createdAt config.wabaId config.phoneNumberId config.whatsappToken config.shopifyAccessToken config.shopDomain config.storeType config.woocommerceUrl config.woocommerceKey config.woocommerceSecret')
+      .lean();
     
     const total = await Client.countDocuments(filter);
 

@@ -285,6 +285,11 @@ adLeadSchema.statics.pushJourneyEvent = async function(clientId, phoneNumber, ev
   }
 };
 
+// Performance indexes for dashboard queries
+adLeadSchema.index({ clientId: 1, createdAt: -1 });
+adLeadSchema.index({ clientId: 1, cartStatus: 1 });
+adLeadSchema.index({ clientId: 1, leadScore: -1 });
+
 const AdLead = mongoose.model('AdLead', adLeadSchema);
 
 module.exports = AdLead;
