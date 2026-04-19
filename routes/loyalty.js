@@ -10,7 +10,6 @@ const {
     adjustWalletBalance,
     generateAIRewardCode,
     getLoyaltyStatus,
-    getLoyaltyStatus,
     getReputationStats,
     sendReviewRequest
 } = require('../controllers/loyaltyController');
