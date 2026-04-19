@@ -92,4 +92,28 @@ router.delete('/:id', protect, async (req, res) => {
     }
 });
 
+/**
+ * POST /api/segments/preview
+ * Previews leads matching the given conditions without saving the segment
+ */
+router.post('/preview', protect, async (req, res) => {
+    const { conditions } = req.body;
+    const clientId = req.user.clientId;
+
+    if (!conditions || !Array.isArray(conditions)) {
+        return res.status(400).json({ success: false, error: 'Conditions array is required.' });
+    }
+
+    try {
+        const generatedQuery = translateConditionsToQuery(conditions);
+        const count = await AdLead.countDocuments({ ...generatedQuery, clientId });
+        const leads = await AdLead.find({ ...generatedQuery, clientId }).limit(10).select('name phoneNumber email lastInteraction');
+
+        res.json({ success: true, count, leads });
+    } catch (err) {
+        console.error('[Segments] Preview Error:', err);
+        res.status(400).json({ success: false, error: 'Failed to preview segment: ' + err.message });
+    }
+});
+
 module.exports = router;

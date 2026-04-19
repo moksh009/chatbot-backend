@@ -157,4 +157,83 @@ router.get('/unassigned-orders', protect, async (req, res) => {
     }
 });
 
+/**
+ * @route   GET /api/warranty/check
+ * @desc    Check warranty status by phone (For Flow Builder)
+ */
+router.get('/check', async (req, res) => {
+    try {
+        const { phone } = req.query;
+        if (!phone) return res.status(400).json({ success: false, message: 'Phone is required' });
+        
+        const contact = await Contact.findOne({ phoneNumber: phone });
+        if (!contact) return res.json({ success: true, hasWarranty: false });
+
+        const record = await WarrantyRecord.findOne({ customerId: contact._id, status: 'active' })
+            .populate('batchId', 'batchName durationMonths')
+            .sort({ expiryDate: -1 });
+
+        if (!record) return res.json({ success: true, hasWarranty: false });
+        
+        res.json({ 
+            success: true, 
+            hasWarranty: true, 
+            warranty: {
+                id: record._id,
+                status: record.status,
+                expiryDate: record.expiryDate,
+                batchName: record.batchId?.batchName
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+/**
+ * @route   POST /api/warranty/resend-notification
+ * @desc    Resend warranty certificate via WhatsApp
+ */
+router.post('/resend-notification', protect, async (req, res) => {
+    try {
+        const { recordId } = req.body;
+        const clientId = req.user.clientId;
+
+        const record = await WarrantyRecord.findOne({ _id: recordId, clientId }).populate('customerId');
+        if (!record || !record.customerId) {
+            return res.status(404).json({ success: false, message: 'Record or customer not found' });
+        }
+
+        const client = await Client.findOne({ clientId });
+        if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+        const { sendWhatsAppTemplate } = require('../utils/whatsappHelpers');
+        
+        try {
+            await sendWhatsAppTemplate({
+                phoneNumberId: client.phoneNumberId,
+                to: record.customerId.phoneNumber,
+                templateName: 'warranty_certificate',
+                languageCode: 'en',
+                components: [
+                    {
+                        type: "body",
+                        parameters: [
+                            { type: "text", text: record.customerId.name || "Customer" },
+                            { type: "text", text: new Date(record.expiryDate).toLocaleDateString() }
+                        ]
+                    }
+                ],
+                token: client.whatsappToken
+            });
+            res.json({ success: true, message: 'Notification sent' });
+        } catch (err) {
+            console.error('[Warranty] Failed to send WhatsApp notification:', err.message);
+            res.status(500).json({ success: false, message: 'Failed to send WhatsApp notification: ' + err.message });
+        }
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
 module.exports = router;

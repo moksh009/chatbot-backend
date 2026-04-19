@@ -134,12 +134,30 @@ async function updateLeadWithScoring(phoneNumber, clientId, incrementFields = {}
  * Recomputes scores for all leads for a specific client.
  */
 async function recomputeAllScores(clientId) {
-  const leads = await AdLead.find({ clientId });
+  const cursor = AdLead.find({ clientId }).select('_id').lean().cursor();
   let processed = 0;
-  for (const lead of leads) {
-      await updateLeadWithScoring(lead.phoneNumber, clientId, {}, {});
+  let batch = [];
+
+  for await (const lead of cursor) {
+      const pipeline = buildScoringPipeline({}, {}, {}, {});
+      batch.push({
+          updateOne: {
+              filter: { _id: lead._id },
+              update: pipeline
+          }
+      });
       processed++;
+
+      if (batch.length >= 50) {
+          await AdLead.bulkWrite(batch);
+          batch = [];
+      }
   }
+
+  if (batch.length > 0) {
+      await AdLead.bulkWrite(batch);
+  }
+
   return processed;
 }
 

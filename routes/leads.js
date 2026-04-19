@@ -334,6 +334,90 @@ router.post('/bulk-sequence', protect, async (req, res) => {
 });
 
 
+// POST /api/leads/:leadId/send-recovery
+router.post('/:leadId/send-recovery', protect, async (req, res) => {
+    try {
+        const { leadId } = req.params;
+        const clientId = req.user.clientId;
+
+        const lead = await AdLead.findOne({ _id: leadId, clientId });
+        if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+        const client = await Client.findOne({ clientId });
+        if (!client) return res.status(404).json({ message: 'Client not found' });
+
+        const { sendWhatsAppTemplate } = require('../utils/whatsappHelpers');
+        
+        try {
+            await sendWhatsAppTemplate({
+                phoneNumberId: client.phoneNumberId,
+                to: lead.phoneNumber,
+                templateName: 'abandoned_cart_recovery',
+                languageCode: 'en',
+                components: [],
+                token: client.whatsappToken
+            });
+
+            lead.recoveryStep = (lead.recoveryStep || 0) + 1;
+            lead.recoveryStartedAt = new Date();
+            await lead.save();
+
+            res.json({ success: true, message: 'Recovery message sent' });
+        } catch (err) {
+            console.error('[SendRecovery] Template failed:', err.message);
+            res.status(500).json({ success: false, message: 'Failed to send WhatsApp' });
+        }
+    } catch (err) {
+        console.error('[SendRecovery] Error:', err);
+        res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+});
+
+// POST /api/leads/bulk-recovery
+router.post('/bulk-recovery', protect, async (req, res) => {
+    try {
+        const clientId = req.user.clientId;
+        const client = await Client.findOne({ clientId });
+        if (!client) return res.status(404).json({ message: 'Client not found' });
+        
+        const leads = await AdLead.find({ 
+            clientId, 
+            cartStatus: 'abandoned'
+        });
+
+        if (!leads.length) return res.json({ success: true, message: 'No abandoned carts to recover' });
+
+        const { sendWhatsAppTemplate } = require('../utils/whatsappHelpers');
+        let successCount = 0;
+        let failCount = 0;
+
+        for (const lead of leads) {
+            try {
+                await sendWhatsAppTemplate({
+                    phoneNumberId: client.phoneNumberId,
+                    to: lead.phoneNumber,
+                    templateName: 'abandoned_cart_recovery',
+                    languageCode: 'en',
+                    components: [],
+                    token: client.whatsappToken
+                });
+                lead.recoveryStep = (lead.recoveryStep || 0) + 1;
+                lead.recoveryStartedAt = new Date();
+                await lead.save();
+                successCount++;
+            } catch (err) {
+                console.error(`[BulkRecovery] Failed for ${lead.phoneNumber}:`, err.message);
+                failCount++;
+            }
+        }
+
+        res.json({ success: true, summary: { total: leads.length, success: successCount, failed: failCount } });
+    } catch (err) {
+        console.error('[BulkRecovery] Error:', err);
+        res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+});
+
 // GET /api/leads/high-intent
 router.get('/high-intent', protect, async (req, res) => {
     try {
