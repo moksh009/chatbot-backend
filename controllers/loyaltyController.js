@@ -520,6 +520,38 @@ async function getLoyaltyStatus(req, res) {
     }
 }
 
+async function sendReviewRequest(req, res) {
+    const { phone, name } = req.body;
+    try {
+        const { client } = await resolveClient(req);
+        
+        if (!phone) return res.status(400).json({ message: 'Phone number required' });
+
+        // Update or create review request record
+        const reviewReq = await ReviewRequest.findOneAndUpdate(
+            { clientId: client.clientId, phone },
+            { 
+                status: 'sent',
+                sentAt: new Date(),
+                scheduledFor: new Date(),
+                customerName: name || 'Customer'
+            },
+            { upsert: true, new: true }
+        );
+
+        // Send via WhatsApp
+        const reviewUrl = client.googleReviewUrl || `https://t.me/topedge_bot?start=review_${client.clientId}`;
+        const message = `Hi ${name || 'there'}! property of ${client.businessName || 'TopEdge'}. We'd love to hear your feedback. Please rate your experience: ${reviewUrl}`;
+        
+        await WhatsApp.sendText(client, phone, message);
+
+        res.json({ success: true, message: 'Review request sent successfully' });
+    } catch (err) {
+        log.error('Send review request error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+}
+
 module.exports = {
     getLoyaltyStats,
     getCustomerWallet,
@@ -529,5 +561,6 @@ module.exports = {
     adjustWalletBalance,
     generateAIRewardCode,
     getLoyaltyStatus,
-    getReputationStats
+    getReputationStats,
+    sendReviewRequest
 };

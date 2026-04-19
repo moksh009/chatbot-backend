@@ -10,7 +10,9 @@ const {
     adjustWalletBalance,
     generateAIRewardCode,
     getLoyaltyStatus,
-    getReputationStats
+    getLoyaltyStatus,
+    getReputationStats,
+    sendReviewRequest
 } = require('../controllers/loyaltyController');
 const { protect } = require('../middleware/auth');
 
@@ -34,5 +36,6 @@ router.post('/:clientId/send-reminder', protect, sendLoyaltyReminderTemplate);
 
 // Reputation & Review Stats
 router.get('/reputation-stats', protect, getReputationStats);
+router.post('/send-review-request', protect, sendReviewRequest);
 
 module.exports = router;
