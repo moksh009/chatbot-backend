@@ -11,9 +11,18 @@ const { sendTeamInviteEmail, sendAdminConfirmationEmail } = require('../utils/em
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
 
 // @route   GET /api/team
-// @route   GET /api/team/:clientId
-// @desc    Get all team members for a client with performance metrics
-// @access  Private
+// @route   GET /api/users/team
+// @desc    Get all team members for a client (root handler)
+router.get('/', protect, async (req, res) => {
+    try {
+        const clientId = req.user.clientId;
+        const users = await User.find({ clientId }).select('-password');
+        res.json({ success: true, team: users });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
 router.get('/team', protect, async (req, res) => {
     try {
         const clientId = req.user.clientId;

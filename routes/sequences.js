@@ -13,13 +13,24 @@ const { checkLimit, incrementUsage } = require('../utils/planLimits');
 // Max active sequences per lead
 const MAX_ACTIVE_SEQUENCES = 2;
 
+// Root handler for frontend compatibility (/api/automation -> /api/automation/)
+router.get('/', protect, async (req, res) => {
+  try {
+    const clientId = req.user.clientId;
+    const sequences = await FollowUpSequence.find({ clientId }).sort({ createdAt: -1 });
+    res.json({ success: true, sequences });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // Explicit route to handle /api/automation/sequences
 router.get('/sequences', protect, async (req, res) => {
   try {
-    const clientId = req.query.clientId || req.user.clientId;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
+    // If super admin specifies clientId, use it. Otherwise use user's own clientId.
+    const clientId = (req.user.role === 'SUPER_ADMIN' && req.query.clientId) 
+      ? req.query.clientId 
+      : req.user.clientId;
 
     const { leadId } = req.query;
     const query = { clientId };

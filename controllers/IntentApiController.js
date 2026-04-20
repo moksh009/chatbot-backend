@@ -678,11 +678,26 @@ exports.generateTrainingData = async (req, res) => {
 
     const { botGenerateJSON } = require('../utils/gemini');
     
-    const prompt = `The user wants to detect the following intent in customer messages: "${description}".
-Generate exactly 30 positive phrases (customer saying this phrase expressing the intent) and exactly 30 negative anti-phrases (customer using similar vocabulary but explicitly NOT having this intent, or stating everything is fine or asking about completely unrelated issues).
-Half of the phrases in BOTH lists must be in modern English, and half must be in Hindi/Hinglish.
-Each phrase you generate has to be different and they should have low similarity for better variety with examples to ensure good training spread.
-Return as pure JSON matching this exact structure: { "intentPhrases": ["..."], "antiIntentPhrases": ["..."] }`;
+    const prompt = `You are an expert NLP training data architect for a professional customer service chatbot.
+The user wants to detect the following INTENT in customer messages: "${description}".
+
+Your task is to generate training data that will be used to train a weight-based NLP engine.
+Variety is critical. Do not repeat words or structures if possible.
+
+Generate exactly:
+1. "intentPhrases": 15 diverse phrases where a customer EXPRESSES this intent.
+2. "antiIntentPhrases": 8 phrases where a customer uses SIMILAR vocabulary but DOES NOT HAVE this intent (e.g., asking about something unrelated, or expressing the opposite).
+
+Linguistic Requirements:
+- Language: English & Hinglish/Hindi (Mix 50/50).
+- Style: WhatsApp conversational (short, informal).
+
+Return ONLY valid JSON and NOTHING ELSE. No markdown fences.
+Expected Structure:
+{
+  "intentPhrases": ["...", "..."],
+  "antiIntentPhrases": ["...", "..."]
+}`;
 
     console.log(`[IntentGeneration] Triggering AI generation (botGenerateJSON) for: "${description.substring(0, 50)}..."`);
     const generatedData = await botGenerateJSON(prompt, apiKey, { 

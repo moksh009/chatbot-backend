@@ -157,8 +157,20 @@ router.post('/:flowId/rollback/:versionId', protect, async (req, res) => {
   }
 });
 
-// GET /api/flow
-// Returns all visual flow configurations for the client
+// GET /api/flow/
+// Root handler for frontend compatibility
+router.get('/', protect, async (req, res) => {
+  try {
+    const clientId = req.user.clientId;
+    const WhatsAppFlow = require('../models/WhatsAppFlow');
+    const flows = await WhatsAppFlow.find({ clientId });
+    res.json({ success: true, flows });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// GET /api/flow/flows
 router.get('/flows', protect, async (req, res) => {
   try {
     const clientId = req.query.clientId || req.user.clientId;
