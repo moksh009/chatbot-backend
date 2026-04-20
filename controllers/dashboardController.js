@@ -462,7 +462,7 @@ exports.getQualityStats = async (req, res) => {
 
 exports.createCompetitor = async (req, res) => {
   try {
-    const { name, website, products } = req.body;
+    const { name, website, products, trackingPreferences } = req.body;
     const clientDoc = await Client.findOne({ clientId: req.user.clientId }).select('_id').lean();
     if (!clientDoc) return res.status(404).json({ success: false, message: "Client not found" });
 
@@ -471,6 +471,7 @@ exports.createCompetitor = async (req, res) => {
       name,
       website,
       products,
+      trackingPreferences: trackingPreferences || [],
       isActive: true
     });
     res.json({ success: true, competitor });
@@ -484,51 +485,139 @@ exports.generateBattlePlan = async (req, res) => {
   try {
     const { id } = req.params;
     const Competitor = require('../models/Competitor');
+    const Order = require('../models/Order');
+    const Client = require('../models/Client');
     const { generateText } = require('../utils/gemini');
+    const { scrapeWebsiteText } = require('../utils/urlScraper');
 
     const competitor = await Competitor.findById(id);
     if (!competitor) return res.status(404).json({ success: false, message: "Competitor not found" });
 
-    // Build the prompt for Gemini
-    const prompt = `
-You are a master business growth strategist. Convert this competitor data into a numbered "Steps to Win" guide in very simple, layman's language (6th-grade level). 
-A 6th-grade student should be able to read this and know exactly what to do to beat ${competitor.name}.
+    const clientDoc = await Client.findOne({ clientId: req.user.clientId }).lean();
+    if (!clientDoc) return res.status(404).json({ success: false, message: "Client not found" });
 
-Competitor Name: ${competitor.name}
-Website: ${competitor.website}
-Tracked Products: ${competitor.products?.length || 'Several'}
-
-Requirements:
-1. Provide exactly 3 clear, actionable steps.
-2. Use "Step 1", "Step 2", "Step 3" labels.
-3. Keep it simple and aggressive but professional.
-4. Output ONLY a valid JSON array of strings. No markdown.
-    `;
-
-    const aiResult = await generateText(prompt, process.env.GEMINI_API_KEY);
+    // Step 1: Gather Our Data
+    // Get unique products with pricing from recent orders
+    const ourOrders = await Order.find({ clientId: req.user.clientId }).select('items').sort({ createdAt: -1 }).limit(100).lean();
+    const productMap = {};
+    ourOrders.forEach(o => {
+      o.items?.forEach(i => {
+        if (i.name && i.price) {
+          productMap[i.name] = i.price;
+        }
+      });
+    });
     
-    let battlePlan = [];
-    try {
-      const cleanJson = aiResult.replace(/```json/g, '').replace(/```/g, '').trim();
-      battlePlan = JSON.parse(cleanJson);
-      if (!Array.isArray(battlePlan)) {
-        throw new Error("AI did not return an array");
+    const ourProductPrices = Object.entries(productMap).map(([name, price]) => `${name}: ₹${price}`).slice(0, 50).join(', ');
+    
+    let ourWebsiteContext = '';
+    if (clientDoc.website || clientDoc.shopDomain) {
+      try {
+        const urlToScrape = clientDoc.website || `https://${clientDoc.shopDomain}`;
+        ourWebsiteContext = await scrapeWebsiteText(urlToScrape);
+        // Truncate to save tokens (approx 2000 chars)
+        ourWebsiteContext = ourWebsiteContext.substring(0, 2000);
+      } catch (err) {
+        logger.warn(`Failed to scrape our own site: ${err.message}`);
       }
-    } catch (e) {
-      // Fallback
-      battlePlan = [
-        `Audit ${competitor.name}'s top pricing and undercut by 5% on key "hook" items.`,
-        "Deploy a WhatsApp campaign highlighting your superior return policy.",
-        "Target their brand keywords in your Meta Ads."
-      ];
     }
 
-    competitor.battlePlan = battlePlan;
+    // Include Knowledge Base Facts
+    const kbInfo = `
+About: ${clientDoc.knowledgeBase?.about || ''}
+Return Policy: ${clientDoc.knowledgeBase?.returnPolicy || ''}
+Shipping Policy: ${clientDoc.knowledgeBase?.shippingPolicy || ''}
+    `.trim();
+
+    const ourIdentityContext = `
+Our Brand: ${clientDoc.businessName || 'Us'}
+Our Website Knowledge: ${ourWebsiteContext}
+Our Core Policies: ${kbInfo}
+Our Catalog & Pricing: ${ourProductPrices || 'Unknown'}
+    `;
+
+    // Step 2: Gather Competitor Data
+    let compWebsiteContext = '';
+    if (competitor.website) {
+      try {
+        compWebsiteContext = await scrapeWebsiteText(competitor.website);
+        compWebsiteContext = compWebsiteContext.substring(0, 3000);
+      } catch (err) {
+        logger.warn(`Failed to scrape competitor site ${competitor.website}: ${err.message}`);
+      }
+    }
+
+    const trackingGoals = competitor.trackingPreferences?.length > 0 
+      ? competitor.trackingPreferences.join(', ') 
+      : 'Pricing, Catalog, Branding';
+
+    // Step 3: Run Dual-Comparison via Gemini
+    const prompt = `
+You are a master business growth strategist. I need you to do a deep comparative analysis between MY BRAND and MY COMPETITOR.
+
+--- MY BRAND INFO ---
+${ourIdentityContext}
+
+--- COMPETITOR INFO ---
+Competitor Name: ${competitor.name}
+Competitor Website Content (Scraped):
+${compWebsiteContext || 'Unable to scan Website.'}
+
+Their Target Tracking Goals: ${trackingGoals}
+
+Compare our products, pricing (if found), policies, and general catalog structure.
+You must return ONLY a JSON object (no markdown, no backticks) with EXACTLY the following structure:
+{
+  "battlePlan": [
+     "Describe step 1 based on comparative analysis... e.g. We sell X for $40, they are at $35. Match them.",
+     "Describe step 2...",
+     "Describe step 3..."
+  ],
+  "priceIndex": "+5%",  // Estimate compared to ours based on text, or output 'N/A' if unknown. E.g. "-10%" if they are cheaper.
+  "catalogSize": "Large", // E.g. "Broad Coverage", "Niche", "50+ items"
+  "activityScore": "High", // Aggression/Activity estimate based on SEO/text
+  "pricePosition": "lower" // Must be exactly one of: "lower", "higher", "equal"
+}
+`;
+
+    const aiResult = await generateText(prompt, process.env.GEMINI_API_KEY, { temperature: 0.2 });
+    
+    let resultObj = {};
+    try {
+      const cleanJson = aiResult.replace(/```json/gi, '').replace(/```/g, '').trim();
+      resultObj = JSON.parse(cleanJson);
+      
+      if (!resultObj.battlePlan || !Array.isArray(resultObj.battlePlan)) {
+        throw new Error("Invalid structure");
+      }
+    } catch (e) {
+      logger.error('Failed to parse AI dual-scrape response', e);
+      // Fallback
+      resultObj = {
+        battlePlan: [
+          `Audit ${competitor.name}'s top pricing and undercut by 5% on key "hook" items.`,
+          "Deploy a WhatsApp campaign highlighting your superior return policy.",
+          "Target their brand keywords in your Meta Ads."
+        ],
+        priceIndex: 'SCN',
+        catalogSize: '...',
+        activityScore: 'Medium',
+        pricePosition: 'equal' 
+      };
+    }
+
+    competitor.battlePlan = resultObj.battlePlan;
+    competitor.priceIndex = resultObj.priceIndex || 'SCN';
+    competitor.catalogSize = resultObj.catalogSize || 'Known';
+    competitor.activityScore = resultObj.activityScore || 'Active';
+    competitor.pricePosition = ['lower', 'higher', 'equal'].includes(resultObj.pricePosition?.toLowerCase()) 
+      ? resultObj.pricePosition.toLowerCase() 
+      : 'equal';
     competitor.status = 'monitored';
     competitor.lastBattlePlanGeneratedAt = new Date();
     await competitor.save();
 
-    res.json({ success: true, battlePlan: competitor.battlePlan });
+    res.json({ success: true, battlePlan: competitor.battlePlan, competitor });
   } catch (error) {
     logger.error("Generate Battle Plan Error", error);
     res.status(500).json({ success: false, message: error.message });

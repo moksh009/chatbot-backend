@@ -22,6 +22,11 @@ const CompetitorSchema = new mongoose.Schema({
   products:      [CompetitorProductSchema],
   
   isActive:      { type: Boolean, default: true },
+  trackingPreferences: { type: [String], default: [] },
+  priceIndex:    { type: String },
+  catalogSize:   { type: String },
+  activityScore: { type: String },
+  pricePosition: { type: String, enum: ['lower', 'higher', 'equal'] },
   status:        { type: String, enum: ['analyzing', 'monitored', 'error'], default: 'monitored' },
   battlePlan:    { type: [String], default: [] },
   notes:         { type: String },
