@@ -13,7 +13,7 @@ const log = require('./logger')('AutonomousLearner');
 async function extractAndProposeKnowledge(clientId, phone, leadId) {
   try {
     const client = await Client.findOne({ clientId });
-    if (!client || !client.geminiApiKey) return;
+    if (!client) return;
 
     // 1. Fetch recent messages for context (Last 20)
     const messages = await Message.find({ 

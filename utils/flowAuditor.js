@@ -25,22 +25,32 @@ async function auditClientSystem(clientId) {
     if (!client) return null;
 
     // 1. Audit Flows
+    const allNodesToCheck = [];
     if (client.flowNodes && Array.isArray(client.flowNodes)) {
-      for (const node of client.flowNodes) {
-        const { errors, warnings } = validateFlowNode(node, client);
-        if (errors.length > 0) {
-          audit.criticalFailures.push(...errors.map(e => ({ ...e, location: `Node: ${node.data?.label || node.id}` })));
-          audit.healthScore -= (errors.length * 10);
+      allNodesToCheck.push(...client.flowNodes);
+    }
+    if (client.visualFlows && Array.isArray(client.visualFlows)) {
+      client.visualFlows.forEach(vf => {
+        if (vf.nodes && Array.isArray(vf.nodes)) {
+          allNodesToCheck.push(...vf.nodes);
         }
-        if (warnings.length > 0) {
-          audit.warnings.push(...warnings.map(w => ({ ...w, location: `Node: ${node.data?.label || node.id}` })));
-        }
+      });
+    }
+
+    for (const node of allNodesToCheck) {
+      const { errors, warnings } = validateFlowNode(node, client);
+      if (errors.length > 0) {
+        audit.criticalFailures.push(...errors.map(e => ({ ...e, location: `Node: ${node.data?.label || node.id}` })));
+        audit.healthScore -= (errors.length * 10);
+      }
+      if (warnings.length > 0) {
+        audit.warnings.push(...warnings.map(w => ({ ...w, location: `Node: ${node.data?.label || node.id}` })));
       }
     }
 
     // 2. Variable Continuity Check
     const leadFields = Object.keys(AdLead.schema.paths);
-    const flowText = JSON.stringify(client.flowNodes || "");
+    const flowText = JSON.stringify(allNodesToCheck || "");
     const variableMatches = flowText.match(/\{\{([^{}]+)\}\}/g) || [];
     
     variableMatches.forEach(tag => {

@@ -83,6 +83,33 @@ router.post('/action', protect, async (req, res) => {
 });
 
 /**
+ * @route   PUT /api/knowledge/policies
+ * @desc    Save core operational policies manually
+ */
+router.put('/policies', protect, async (req, res) => {
+  try {
+    const clientId = req.user?.clientId || req.body.clientId;
+    const { about, returnPolicy, shippingPolicy } = req.body;
+
+    if (!clientId) return res.status(400).json({ success: false, message: 'ClientId required' });
+
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    if (!client.knowledgeBase) client.knowledgeBase = {};
+    if (about !== undefined) client.knowledgeBase.about = about;
+    if (returnPolicy !== undefined) client.knowledgeBase.returnPolicy = returnPolicy;
+    if (shippingPolicy !== undefined) client.knowledgeBase.shippingPolicy = shippingPolicy;
+
+    await client.save();
+    res.json({ success: true, message: 'Policies saved successfully.', knowledgeBase: client.knowledgeBase });
+  } catch (err) {
+    log.error('Policies Save Error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
  * @route   POST /api/knowledge/faq
  * @desc    Add a manual FAQ entry to the knowledge base
  * BUG 7 FIX: Enables the non-functional "Add FAQ" button in KnowledgeHub UI

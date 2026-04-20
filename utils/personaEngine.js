@@ -38,8 +38,21 @@ function buildPersonaSystemPrompt(client, baseSystemPrompt = "") {
     ? `\nTopics to NEVER discuss or comment on: ${avoidTopics.join(", ")}`
     : "";
   
-  const knowledgeSection = knowledgeBase
-    ? `\n\nBUSINESS KNOWLEDGE BASE:\n${knowledgeBase}`
+  let compiledKnowledge = knowledgeBase ? `${knowledgeBase}\n` : '';
+  if (client.knowledgeBase) {
+    if (client.knowledgeBase.about) compiledKnowledge += `Brand Facts:\n${client.knowledgeBase.about}\n\n`;
+    if (client.knowledgeBase.returnPolicy) compiledKnowledge += `Return Policy:\n${client.knowledgeBase.returnPolicy}\n\n`;
+    if (client.knowledgeBase.shippingPolicy) compiledKnowledge += `Shipping Policy:\n${client.knowledgeBase.shippingPolicy}\n\n`;
+    if (client.knowledgeBase.faqs && client.knowledgeBase.faqs.length > 0) {
+      compiledKnowledge += `Frequently Asked Questions:\n`;
+      client.knowledgeBase.faqs.forEach(faq => {
+        compiledKnowledge += `Q: ${faq.question}\nA: ${faq.answer}\n\n`;
+      });
+    }
+  }
+
+  const knowledgeSection = compiledKnowledge.trim()
+    ? `\n\nBUSINESS KNOWLEDGE BASE:\n${compiledKnowledge.trim()}`
     : "";
   
   const referenceSelf = usesWe
