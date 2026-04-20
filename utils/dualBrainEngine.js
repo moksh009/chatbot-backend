@@ -32,7 +32,7 @@ const { generatePaymentLink } = require("./paymentLinkGenerator"); // Phase 29 T
 const MessageBufferService = require('../services/MessageBufferService');
 const { resolveAndSaveMedia } = require('./whatsappMedia');
 const WhatsAppUtils = require('./whatsapp');
-
+const messageBuffer = require('./messageBuffer');
 
 
 const SESSION_LOCK_TIMEOUT = 10000; // 10 seconds (Fallback for TTL)
@@ -340,7 +340,7 @@ async function handleWhatsAppMessage(from, message, phoneNumberId, profileName =
 // MAIN ENGINE — called by ALL niche engines
 // Returns: true if message was handled
 // ─────────────────────────────────────────────────────────────────────────────
-async function runDualBrainEngine(parsedMessage, client) {
+async function _runDualBrainEngine(parsedMessage, client) {
   const rawPhone = parsedMessage.from;
   const channel  = parsedMessage.channel || 'whatsapp';
   const phone    = channel === 'whatsapp' ? normalizePhone(rawPhone) : rawPhone;
@@ -3437,7 +3437,19 @@ async function analyzeConversationIntelligence(client, phone, convo) {
 
 module.exports = { 
     handleWhatsAppMessage,
-    runDualBrainEngine,
+    _runDualBrainEngine,
+    runDualBrainEngine: async (parsedMessage, client) => {
+        if (!parsedMessage?.text?.body) {
+            return await _runDualBrainEngine(parsedMessage, client);
+        }
+        return new Promise((resolve) => {
+            messageBuffer.addMessage(parsedMessage.from, parsedMessage.text.body, async (fullText) => {
+                parsedMessage.text.body = fullText;
+                const result = await _runDualBrainEngine(parsedMessage, client);
+                resolve(result);
+            });
+        });
+    },
     runFlow,
     executeNode, 
     sendNodeContent, 

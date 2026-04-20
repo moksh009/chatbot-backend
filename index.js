@@ -172,8 +172,7 @@ app.use('/api/public/warranty', publicWarrantyRoutes);
 const biRoutes = require('./routes/bi'); // Phase 28 Track 4
 app.use('/api/bi', biRoutes);
 
-const intelligenceRoutesAPI = require('./routes/intelligence'); // Phase 28 Track 2
-app.use('/api/intelligence', intelligenceRoutesAPI);
+
 
 const ordersRoutes = require('./routes/orders');
 app.use('/api/orders', ordersRoutes);
@@ -278,6 +277,15 @@ app.use('/api/reseller', require('./routes/reseller'));
 app.use('/api/loyalty', require('./routes/loyalty'));
 app.use('/api/warranty', require('./routes/warranty'));
 
+// Bot Quality Analytics (replaces deleted /api/intelligence/footprint)
+app.use('/api/bot-quality', require('./routes/botQuality'));
+
+// ─── EXPRESS ALIASES: Frontend API compatibility ───
+// The frontend calls these paths but backend mounts under different names.
+app.use('/api/flow-builder', flowRoutes);           // Frontend: /api/flow-builder/flows → /api/flow/flows
+app.use('/api/users', teamRoutes);                   // Frontend: /api/users/team → /api/team
+app.use('/api/automation', sequencesRoutes);          // Frontend: /api/automation/sequences → /api/sequences
+
 // Phase 30: Auto-Keywords
 app.use('/api/keywords', require('./routes/keywords'));
 
@@ -364,7 +372,7 @@ scheduleAmazonSync();
 // Initialize Flow Resumption Cron Job (Phase 17) - ALREADY INITIALIZED ABOVE AT LINE 156
 
 // Initialize Intelligence Crons (Phase 28 Track 2)
-require('./cron/intelligenceCrons');
+
 
 // Initialize Auto-Healing Reset (Phase 28 Track 8)
 const { resetDailyErrorCounts } = require('./utils/autoHealer');

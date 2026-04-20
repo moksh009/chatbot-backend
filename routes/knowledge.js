@@ -200,5 +200,138 @@ router.get('/audit', protect, async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+/**
+ * ─────────────────────────────────────────────────────────────
+ * DOCUMENT-BASED KNOWLEDGE BASE (KnowledgeDocument model)
+ * Enterprise-grade CRUD for standalone knowledge documents.
+ * ─────────────────────────────────────────────────────────────
+ */
+
+/**
+ * @route   GET /api/knowledge/documents
+ * @desc    List all knowledge documents for a client
+ */
+router.get('/documents', protect, async (req, res) => {
+  try {
+    const clientId = req.user?.clientId || req.query.clientId;
+    if (!clientId) return res.status(400).json({ success: false, message: 'ClientId required' });
+
+    const KnowledgeDocument = require('../models/KnowledgeDocument');
+    const docs = await KnowledgeDocument.find({ clientId })
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    res.json({ success: true, documents: docs });
+  } catch (err) {
+    log.error('Knowledge Documents List Error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * @route   POST /api/knowledge/documents
+ * @desc    Create a new knowledge document
+ */
+router.post('/documents', protect, async (req, res) => {
+  try {
+    const clientId = req.user?.clientId || req.body.clientId;
+    const { title, content, sourceType, sourceUrl } = req.body;
+
+    if (!clientId) return res.status(400).json({ success: false, message: 'ClientId required' });
+    if (!title?.trim() || !content?.trim()) {
+      return res.status(400).json({ success: false, message: 'Title and content are required.' });
+    }
+
+    const KnowledgeDocument = require('../models/KnowledgeDocument');
+    const doc = await KnowledgeDocument.create({
+      clientId,
+      title: title.trim(),
+      content: content.trim(),
+      sourceType: sourceType || 'manual',
+      sourceUrl: sourceUrl || undefined
+    });
+
+    log.info(`Knowledge doc created for ${clientId}: "${title.substring(0, 40)}"`);
+    res.status(201).json({ success: true, document: doc });
+  } catch (err) {
+    log.error('Knowledge Document Create Error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * @route   PUT /api/knowledge/documents/:id
+ * @desc    Update a knowledge document
+ */
+router.put('/documents/:id', protect, async (req, res) => {
+  try {
+    const { title, content, isActive } = req.body;
+    const KnowledgeDocument = require('../models/KnowledgeDocument');
+
+    const doc = await KnowledgeDocument.findByIdAndUpdate(
+      req.params.id,
+      { 
+        ...(title !== undefined && { title: title.trim() }),
+        ...(content !== undefined && { content: content.trim() }),
+        ...(isActive !== undefined && { isActive })
+      },
+      { new: true }
+    );
+
+    if (!doc) return res.status(404).json({ success: false, message: 'Document not found' });
+
+    res.json({ success: true, document: doc });
+  } catch (err) {
+    log.error('Knowledge Document Update Error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * @route   DELETE /api/knowledge/documents/:id
+ * @desc    Delete a knowledge document
+ */
+router.delete('/documents/:id', protect, async (req, res) => {
+  try {
+    const KnowledgeDocument = require('../models/KnowledgeDocument');
+    const doc = await KnowledgeDocument.findByIdAndDelete(req.params.id);
+    if (!doc) return res.status(404).json({ success: false, message: 'Document not found' });
+
+    res.json({ success: true, message: 'Document deleted' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+/**
+ * @route   POST /api/knowledge/test
+ * @desc    Test knowledge extraction via Gemini using the dynamic context
+ */
+router.post('/test', protect, async (req, res) => {
+  try {
+    const clientId = req.user?.clientId || req.body.clientId;
+    const { query } = req.body;
+
+    if (!clientId) return res.status(400).json({ success: false, message: 'ClientId required' });
+    if (!query) return res.status(400).json({ success: false, message: 'Query required' });
+
+    const { buildKnowledgeContext } = require('../utils/personaEngine');
+    const { platformGenerateText } = require('../utils/gemini');
+
+    const context = await buildKnowledgeContext(clientId);
+    
+    if (!context) {
+      return res.json({ success: true, answer: "Knowledge base is empty. Please add documents or FAQs first." });
+    }
+
+    const systemPrompt = `You are a helpful business assistant. Use ONLY the following business knowledge to answer the user's question. If the answer is not in the knowledge base, say "I don't have that information in my knowledge base." Do NOT make up answers.\n${context}`;
+
+    const answer = await platformGenerateText(systemPrompt, query);
+
+    res.json({ success: true, answer, contextUsed: true });
+  } catch (err) {
+    log.error('Knowledge Test Error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 module.exports = router;

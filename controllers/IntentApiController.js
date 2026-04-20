@@ -659,17 +659,24 @@ exports.generateTrainingData = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Intent description is required.' });
     }
 
-    // Check for API Key
-    if (!process.env.GEMINI_API_KEY) {
-      console.warn('[IntentApi] Platform Gemini API key is missing from environment.');
+    const clientId = req.user?.clientId || req.query?.clientId || req.body?.clientId;
+    if (!clientId) {
+      return res.status(401).json({ success: false, message: 'Client ID required for generation.' });
+    }
+    
+    const Client = require('../models/Client');
+    const client = await Client.findOne({ clientId });
+    const apiKey = client?.ai?.geminiApiKey || process.env.GEMINI_API_KEY;
+
+    if (!apiKey) {
+      console.warn('[IntentApi] No Gemini API key found for UI generation.');
       return res.status(403).json({ 
         success: false, 
-        message: 'AI Generation is currently unavailable. System administrator needs to configure the Platform API key.' 
+        message: 'AI Generation is currently unavailable. Configure an API key.' 
       });
     }
 
-    // Use Gemini for Generation
-    const { platformGenerateText } = require('../utils/gemini');
+    const { botGenerateJSON } = require('../utils/gemini');
     
     const prompt = `The user wants to detect the following intent in customer messages: "${description}".
 Generate exactly 30 positive phrases (customer saying this phrase expressing the intent) and exactly 30 negative anti-phrases (customer using similar vocabulary but explicitly NOT having this intent, or stating everything is fine or asking about completely unrelated issues).
@@ -677,40 +684,18 @@ Half of the phrases in BOTH lists must be in modern English, and half must be in
 Each phrase you generate has to be different and they should have low similarity for better variety with examples to ensure good training spread.
 Return as pure JSON matching this exact structure: { "intentPhrases": ["..."], "antiIntentPhrases": ["..."] }`;
 
-    // 1. Extend Timeouts: 30s as requested
-    console.log(`[IntentGeneration] Triggering AI generation for: "${description.substring(0, 50)}..."`);
-    const rawResponse = await platformGenerateText(prompt, { 
+    console.log(`[IntentGeneration] Triggering AI generation (botGenerateJSON) for: "${description.substring(0, 50)}..."`);
+    const generatedData = await botGenerateJSON(prompt, apiKey, { 
       maxTokens: 4000, 
       temperature: 0.9, 
       maxRetries: 3, 
-      timeout: 30000 
+      timeout: 25000 
     });
 
-    if (!rawResponse) {
+    if (!generatedData) {
       return res.status(502).json({ 
         success: false, 
-        error: 'The AI service is currently unresponsive. Please try again in a few moments.' 
-      });
-    }
-
-    // 2. Regex JSON Sanitization: Robustly strip markdown blocks
-    const cleanedText = rawResponse
-      .replace(/```json\n?/g, '')
-      .replace(/```\n?/g, '')
-      .trim();
-
-    // 3. Safe Parsing: Try/Catch with logging
-    let generatedData;
-    try {
-      generatedData = JSON.parse(cleanedText);
-    } catch (parseError) {
-      console.error('[IntentGeneration] JSON Parse Failed!');
-      console.error('[IntentGeneration] Cleaned Response:', cleanedText);
-      console.error('[IntentGeneration] Raw Response:', rawResponse);
-      
-      return res.status(422).json({
-        success: false,
-        error: 'The AI returned an invalid format. We have logged this for review. Please try a more specific description.'
+        error: 'The AI service is currently unresponsive or timed out. Please try again in a few moments.' 
       });
     }
 
@@ -732,12 +717,10 @@ Return as pure JSON matching this exact structure: { "intentPhrases": ["..."], "
 
   } catch (error) {
     console.error('[IntentGeneration Error]:', error);
-    
-    // Distinguish between validation errors and service failures
     const statusCode = error.message?.includes('invalid') ? 422 : 502;
     res.status(statusCode).json({ 
       success: false, 
-      error: 'AI Generation Failed: ' + (error.message || 'The brain service is temporarily unavailable.') 
+      error: 'AI Generation Failed: ' + (error.message || 'The service is temporarily unavailable.') 
     });
   }
 };

@@ -7,7 +7,6 @@ const { protect } = require("../middleware/auth");
 const WhatsAppFlow = require("../models/WhatsAppFlow");
 const { generateEcommerceFlow, generateSystemPrompt, getPrebuiltTemplates } = require("../utils/flowGenerator");
 const { withShopifyRetry } = require("../utils/shopifyHelper");
-const { scrapeWebsiteText } = require("../utils/urlScraper");
 const { generateText } = require("../utils/gemini");
 const { log } = require("../utils/logger");
 
@@ -991,12 +990,21 @@ router.post("/:clientId/generate-from-url", protect, async (req, res) => {
 
   try {
     // 1. Scrape the URL
-    const scrapeResult = await scrapeWebsiteText(url);
-    if (!scrapeResult.success) {
-      return res.status(400).json({ error: scrapeResult.error });
+    const axios = require('axios');
+    let rawData = "";
+    try {
+      const resp = await axios.get(url, { timeout: 10000 });
+      // Simple HTML to text extraction
+      rawData = resp.data.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+                         .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+                         .replace(/<[^>]+>/g, ' ')
+                         .replace(/\s+/g, ' ')
+                         .trim()
+                         .substring(0, 15000); // 15k char limits
+      if (!rawData) throw new Error("No text found");
+    } catch (e) {
+      return res.status(400).json({ error: "Failed to scrape URL: " + e.message });
     }
-
-    const rawData = scrapeResult.text;
 
     // 2. Fetch Gemini API key (Priorities: 1. Request Body, 2. Stored Client Key, 3. Server Fallback)
     const client = await Client.findOne({ clientId: req.params.clientId });
