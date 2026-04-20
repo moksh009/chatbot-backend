@@ -269,7 +269,7 @@ router.get('/:id/full-context', protect, async (req, res) => {
                { phone: { $regex: phoneSuffix + '$' } },
                { phone: phone }
              ],
-             status: 'active'
+             status: { $regex: /^(active|pending)$/i }
            })
            .select('name status steps')
            .lean();

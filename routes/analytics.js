@@ -493,24 +493,29 @@ router.put('/lead/:phone', protect, async (req, res) => {
     
     const { name, email, tags } = req.body;
     
+    // Robust phone matching: strip non-digits, use last 10 for suffix match
+    const cleanPhone = req.params.phone.replace(/\D/g, '');
+    const phoneSuffix = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
+    const phoneRegex = new RegExp(`${phoneSuffix}$`);
+    
     const lead = await AdLead.findOneAndUpdate(
-      { phoneNumber: req.params.phone, clientId },
+      { phoneNumber: phoneRegex, clientId },
       { $set: { name, email, tags, lastInteraction: new Date() } },
       { new: true }
     );
     
-    if (!lead) return res.status(404).json({ message: 'Lead not found' });
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
     // Also sync to Conversation if exists
-    await Conversation.findOneAndUpdate(
-      { phone: req.params.phone, clientId },
+    await Conversation.updateMany(
+      { phone: phoneRegex, clientId },
       { $set: { customerName: name } }
     );
 
     res.json(lead);
   } catch (error) {
     console.error('Update Lead Error:', error);
-    res.status(500).json({ message: 'Server Error' });
+    res.status(500).json({ success: false, message: 'Server Error' });
   }
 });
 
