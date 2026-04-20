@@ -159,7 +159,7 @@ router.post('/:flowId/rollback/:versionId', protect, async (req, res) => {
 
 // GET /api/flow
 // Returns all visual flow configurations for the client
-router.get('/', protect, async (req, res) => {
+router.get('/flows', protect, async (req, res) => {
   try {
     const clientId = req.query.clientId || req.user.clientId;
     

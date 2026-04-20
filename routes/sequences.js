@@ -13,6 +13,26 @@ const { checkLimit, incrementUsage } = require('../utils/planLimits');
 // Max active sequences per lead
 const MAX_ACTIVE_SEQUENCES = 2;
 
+// Explicit route to handle /api/automation/sequences
+router.get('/sequences', protect, async (req, res) => {
+  try {
+    const clientId = req.query.clientId || req.user.clientId;
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const { leadId } = req.query;
+    const query = { clientId };
+    if (leadId) query.leadId = leadId;
+
+    const sequences = await FollowUpSequence.find(query).sort({ createdAt: -1 });
+    res.json({ success: true, sequences });
+  } catch (error) {
+    console.error('Sequence fetch error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 router.post('/:clientId', protect, async (req, res) => {
   try {
     const { clientId } = req.params;

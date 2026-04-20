@@ -61,7 +61,7 @@ router.get('/:clientId', protect, async (req, res) => {
     }
 });
 
-router.get('/', protect, async (req, res) => {
+router.get('/team', protect, async (req, res) => {
     try {
         const clientId = req.user.clientId;
         console.log(`[TeamAPI] Fetching team for authenticated user clientId: ${clientId}`);
