@@ -243,7 +243,7 @@ router.get('/realtime', protect, async (req, res) => {
             purchaseAfterRecoveryCount: {
               $size: {
                 $filter: {
-                  input: "$activityLog",
+                  input: { $ifNull: ["$activityLog", []] },
                   as: "log",
                   cond: { $eq: ["$$log.action", "purchase_completed_after_recovery"] }
                 }

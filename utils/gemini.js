@@ -1,8 +1,8 @@
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const logger = require("./logger")("Gemini");
 
-const PLATFORM_MODEL = "gemini-2.0-flash";  // High reliability — updated from deprecated 1.5-flash
-const BOT_MODEL      = "gemini-2.0-flash"; 
+const PLATFORM_MODEL = "gemini-1.5-flash";  // High reliability
+const BOT_MODEL      = "gemini-1.5-flash"; 
 
 // Cache clients to avoid creating new instance per request
 const clientCache = new Map();

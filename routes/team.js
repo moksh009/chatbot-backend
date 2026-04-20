@@ -14,6 +14,43 @@ const { checkLimit, incrementUsage } = require('../utils/planLimits');
 // @route   GET /api/team/:clientId
 // @desc    Get all team members for a client with performance metrics
 // @access  Private
+router.get('/team', protect, async (req, res) => {
+    try {
+        const clientId = req.user.clientId;
+        console.log(`[TeamAPI] Fetching team for authenticated user clientId: ${clientId}`);
+        
+        const users = await User.find({ clientId }).select('-password');
+        const performanceMetrics = await Conversation.aggregate([
+            { $match: { clientId, assignedTo: { $exists: true, $ne: null } } },
+            { $group: {
+                _id: "$assignedTo",
+                totalAssigned: { $sum: 1 },
+                resolvedCount: { $sum: { $cond: [{ $eq: ["$status", "CLOSED"] }, 1, 0] } },
+                avgCsat: { $avg: "$csatScore.rating" },
+                lastActive: { $max: "$lastInteraction" }
+            }}
+        ]);
+
+        const teamWithMetrics = users.map(user => {
+            const metric = performanceMetrics.find(m => m._id && m._id.toString() === user._id.toString());
+            return {
+                ...user.toObject(),
+                id: user._id.toString(),
+                metrics: {
+                    assignedChats: metric ? metric.totalAssigned : 0,
+                    resolvedChats: metric ? metric.resolvedCount : 0,
+                    avgCsat: metric && metric.avgCsat ? Number(metric.avgCsat.toFixed(1)) : 0,
+                    lastActive: metric ? metric.lastActive : null
+                }
+            };
+        });
+
+        res.json({ success: true, team: teamWithMetrics });
+    } catch (error) {
+        console.error('[TeamAPI] Root Fetch Error:', error);
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+});
 router.get('/:clientId', protect, async (req, res) => {
     try {
         const { clientId } = req.params;
@@ -61,46 +98,6 @@ router.get('/:clientId', protect, async (req, res) => {
     }
 });
 
-router.get('/team', protect, async (req, res) => {
-    try {
-        const clientId = req.user.clientId;
-        console.log(`[TeamAPI] Fetching team for authenticated user clientId: ${clientId}`);
-        
-        // REUSE LOGIC: Since we want same logic, we can either extract to helper or just call the same flow
-        // To keep it simple and avoid massive refactor, I'll just repeat the logic briefly or redirect
-        // But for efficiency, I'll just copy the core logic here
-        const users = await User.find({ clientId }).select('-password');
-        const performanceMetrics = await Conversation.aggregate([
-            { $match: { clientId, assignedTo: { $exists: true, $ne: null } } },
-            { $group: {
-                _id: "$assignedTo",
-                totalAssigned: { $sum: 1 },
-                resolvedCount: { $sum: { $cond: [{ $eq: ["$status", "CLOSED"] }, 1, 0] } },
-                avgCsat: { $avg: "$csatScore.rating" },
-                lastActive: { $max: "$lastInteraction" }
-            }}
-        ]);
-
-        const teamWithMetrics = users.map(user => {
-            const metric = performanceMetrics.find(m => m._id && m._id.toString() === user._id.toString());
-            return {
-                ...user.toObject(),
-                id: user._id.toString(),
-                metrics: {
-                    assignedChats: metric ? metric.totalAssigned : 0,
-                    resolvedChats: metric ? metric.resolvedCount : 0,
-                    avgCsat: metric && metric.avgCsat ? Number(metric.avgCsat.toFixed(1)) : 0,
-                    lastActive: metric ? metric.lastActive : null
-                }
-            };
-        });
-
-        res.json({ success: true, team: teamWithMetrics });
-    } catch (error) {
-        console.error('[TeamAPI] Root Fetch Error:', error);
-        res.status(500).json({ message: 'Server Error', error: error.message });
-    }
-});
 
 // @route   POST /api/team/invite
 // @desc    Invite a new team member (Agent)
