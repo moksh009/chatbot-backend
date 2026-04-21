@@ -374,7 +374,6 @@ async function _runDualBrainEngine(parsedMessage, client) {
         { upsert: true, new: true }
     );
 
-    const inboundText = parsedMessage.text?.body || parsedMessage.interactive?.button_reply?.title || parsedMessage.interactive?.list_reply?.title || '';
     let lead = await AdLead.findOneAndUpdate(
         { phoneNumber: phone, clientId: client.clientId },
         { 
