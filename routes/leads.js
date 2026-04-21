@@ -340,32 +340,82 @@ router.post('/:leadId/send-recovery', protect, async (req, res) => {
         const { leadId } = req.params;
         const clientId = req.user.clientId;
 
-        const lead = await AdLead.findOne({ _id: leadId, clientId });
+        const lead = await AdLead.findOne({ _id: leadId, clientId })
+            .select('phoneNumber name cartSnapshot activityLog recoveryStep recoveryStartedAt')
+            .lean();
         if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
-        const client = await Client.findOne({ clientId });
+        const client = await Client.findOne({ clientId })
+            .select('phoneNumberId whatsappToken syncedMetaTemplates nicheData businessName')
+            .lean();
         if (!client) return res.status(404).json({ message: 'Client not found' });
+
+        const cartTitles = lead.cartSnapshot?.titles?.slice(0, 2).join(', ') || 'items in your cart';
+        const cartValue = lead.cartSnapshot?.totalPrice
+            ? `₹${Number(lead.cartSnapshot.totalPrice).toLocaleString('en-IN')}`
+            : '';
+
+        // Find approved cart recovery template
+        const recoveryTemplate = (client.syncedMetaTemplates || []).find(t =>
+            (t.name.includes('cart_recovery') || t.name.includes('abandoned')) &&
+            t.status === 'APPROVED'
+        );
 
         const { sendWhatsAppTemplate } = require('../utils/whatsappHelpers');
         
         try {
-            await sendWhatsAppTemplate({
-                phoneNumberId: client.phoneNumberId,
-                to: lead.phoneNumber,
-                templateName: 'abandoned_cart_recovery',
-                languageCode: 'en',
-                components: [],
-                token: client.whatsappToken
+            if (recoveryTemplate) {
+                await sendWhatsAppTemplate({
+                    phoneNumberId: client.phoneNumberId,
+                    to: lead.phoneNumber,
+                    templateName: recoveryTemplate.name,
+                    languageCode: 'en',
+                    components: [{
+                        type: 'body',
+                        parameters: [
+                            { type: 'text', text: lead.name || 'friend' },
+                            { type: 'text', text: cartTitles },
+                            { type: 'text', text: cartValue || 'a great deal' }
+                        ]
+                    }],
+                    token: client.whatsappToken
+                });
+            } else {
+                // Fallback to plain text if no approved template
+                const { sendWhatsAppText } = require('../utils/whatsapp');
+                const storeUrl = client.nicheData?.storeUrl || '';
+                await sendWhatsAppText
+                    ? await require('../utils/whatsapp').sendText(client, lead.phoneNumber, 
+                        `Hey ${lead.name || 'there'}! 🛒 You left ${cartTitles}${cartValue ? ` worth ${cartValue}` : ''} in your cart. Complete your order${storeUrl ? ` here: ${storeUrl}` : '!'}`)
+                    : await sendWhatsAppTemplate({
+                        phoneNumberId: client.phoneNumberId,
+                        to: lead.phoneNumber,
+                        templateName: 'abandoned_cart_recovery',
+                        languageCode: 'en',
+                        components: [],
+                        token: client.whatsappToken
+                    });
+            }
+
+            // Update lead with recovery tracking + activity log
+            await AdLead.findByIdAndUpdate(lead._id, {
+                $set: {
+                    recoveryStep: (lead.recoveryStep || 0) + 1,
+                    recoveryStartedAt: new Date()
+                },
+                $push: {
+                    activityLog: {
+                        action: 'cart_recovery_sent',
+                        details: `Manual recovery sent${recoveryTemplate ? ' via template' : ' via text'}. Cart: ${cartTitles}`,
+                        timestamp: new Date()
+                    }
+                }
             });
 
-            lead.recoveryStep = (lead.recoveryStep || 0) + 1;
-            lead.recoveryStartedAt = new Date();
-            await lead.save();
-
-            res.json({ success: true, message: 'Recovery message sent' });
+            res.json({ success: true, message: 'Recovery message sent', method: recoveryTemplate ? 'template' : 'text' });
         } catch (err) {
-            console.error('[SendRecovery] Template failed:', err.message);
-            res.status(500).json({ success: false, message: 'Failed to send WhatsApp' });
+            console.error('[SendRecovery] Send failed:', err.message);
+            res.status(500).json({ success: false, message: 'Failed to send: ' + err.message });
         }
     } catch (err) {
         console.error('[SendRecovery] Error:', err);

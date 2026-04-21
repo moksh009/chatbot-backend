@@ -1,6 +1,8 @@
 const { createLoyaltyDiscount } = require('../utils/shopifyGraphQL');
 const { getWallet, redeemPoints, processOrderForLoyalty } = require('../utils/walletService');
+const { awardLoyaltyPoints, sendReminder } = require('../utils/loyaltyEngine');
 const CustomerWallet = require('../models/CustomerWallet');
+const LoyaltyTransaction = require('../models/LoyaltyTransaction');
 const Client = require('../models/Client');
 const Order = require('../models/Order');
 const ReviewRequest = require('../models/ReviewRequest');
@@ -189,6 +191,27 @@ async function getCustomerWallet(req, res) {
 }
 
 /**
+ * GET /api/loyalty/transactions
+ * Global transactions list
+ */
+async function getLoyaltyTransactions(req, res) {
+    const clientId = req.query.clientId || req.user?.clientId;
+    if (!clientId) return res.status(400).json({ message: 'Missing clientId' });
+
+    try {
+        const transactions = await LoyaltyTransaction.find({ clientId })
+            .sort({ timestamp: -1 })
+            .limit(50)
+            .lean();
+        
+        res.json({ transactions });
+    } catch (err) {
+        log.error('Transactions fetch error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+}
+
+/**
  * POST /api/loyalty/backfill
  * One-time admin job: Award points for all historical orders.
  * Idempotent — safe to run multiple times.
@@ -206,15 +229,13 @@ async function backfillOrderPoints(req, res) {
             client.loyaltyConfig = { isEnabled: true, currencyUnit: 100, pointsPerUnit: 10, pointsPerCurrency: 100, expiryDays: 90 };
         }
         if (!client.loyaltyConfig.isEnabled) {
-            // Force-enable for this backfill run so processOrderForLoyalty doesn't skip
             client.loyaltyConfig.isEnabled = true;
         }
 
-        // Fetch up to 1000 paid orders for this client
         const orders = await Order.find({ 
             clientId, 
             status: { $in: ['Paid', 'paid', 'PAID', 'fulfilled', 'Fulfilled'] } 
-        }).limit(1000).lean();
+        }).lean();
 
         if (orders.length === 0) {
             return res.json({ success: true, processed: 0, awarded: 0, skipped: 0, message: 'No paid orders found.' });
@@ -224,17 +245,33 @@ async function backfillOrderPoints(req, res) {
         let skipped = 0;
         let failed = 0;
 
-        for (const order of orders) {
-            const phone = order.phone || order.customerPhone;
-            const amount = parseFloat(order.totalPrice || order.amount || 0);
-            const orderId = order.orderId || order._id?.toString();
+        const chunkSize = 10;
+        for (let i = 0; i < orders.length; i += chunkSize) {
+            const chunk = orders.slice(i, i + chunkSize);
+            const promises = chunk.map(order => {
+                const phone = order.phone || order.customerPhone;
+                const amount = parseFloat(order.totalPrice || order.amount || 0);
+                const orderId = order.orderId || order._id?.toString();
 
-            if (!phone || !amount || !orderId) { failed++; continue; }
+                if (!phone || !amount || !orderId) return Promise.resolve(null);
+                
+                return awardLoyaltyPoints({ 
+                    clientId, 
+                    phone, 
+                    orderId, 
+                    orderAmount: amount, 
+                    isBackfill: true 
+                });
+            });
 
-            const result = await processOrderForLoyalty(clientId, phone, amount, orderId);
-            if (!result) { failed++; continue; }
-            if (result.skipped) { skipped++; continue; }
-            awarded++;
+            const results = await Promise.allSettled(promises);
+            results.forEach(res => {
+                if (res.status === "fulfilled" && res.value) {
+                    if (res.value.success) awarded++;
+                    else if (res.value.skipped) skipped++;
+                    else failed++;
+                } else failed++;
+            });
         }
 
         log.info(`Backfill complete for ${clientId}: awarded=${awarded}, skipped=${skipped}, failed=${failed}`);
@@ -287,14 +324,14 @@ async function sendLoyaltyReminderTemplate(req, res) {
 
         const daysLeft = Math.ceil((expiryDate - Date.now()) / (1000 * 60 * 60 * 24));
 
-        // Try to send via template first, fallback to direct text
+        // Try to send via smart template engine (handles vars and media automatically)
         try {
-            await WhatsApp.sendTemplate(client, phone, 'loyalty_points_reminder', [
-                { type: 'text', text: String(balance) },
-                { type: 'text', text: `₹${cashValue}` },
-                { type: 'text', text: String(Math.max(daysLeft, 1)) },
-                { type: 'text', text: tier }
-            ]);
+            await WhatsApp.sendSmartTemplate(
+                client, 
+                phone, 
+                'loyalty_points_reminder', 
+                [String(balance), `₹${cashValue}`, String(Math.max(daysLeft, 1)), tier]
+            );
         } catch (templateErr) {
             // Fallback if template not yet approved: send as text
             const msg = `🎁 *Loyalty Reminder* \n\nHi! You have *${balance} Points* worth *₹${cashValue}* in your rewards wallet. \n\n⏰ Your points expire in *${Math.max(daysLeft, 1)} days*. Don't let them go to waste!\n\nReply *REDEEM* to get your discount code now. 🛍️`;
@@ -562,5 +599,6 @@ module.exports = {
     generateAIRewardCode,
     getLoyaltyStatus,
     getReputationStats,
-    sendReviewRequest
+    sendReviewRequest,
+    getLoyaltyTransactions
 };

@@ -106,11 +106,37 @@ const scheduleFollowUpSequenceCron = () => {
 
                         if (dueStep.templateName && !useAI) {
                             try {
+                                // Phase 32: Enterprise Template Variable Mapping
+                                let templateParams = [lead?.name || "there"];
+                                
+                                if (seq.type === 'loyalty_reminder') {
+                                    templateParams = [
+                                        lead?.name || "there", 
+                                        ctx.loyalty_balance || "0", 
+                                        ctx.loyalty_cash_value || "₹0", 
+                                        ctx.loyalty_tier || "Bronze"
+                                    ];
+                                } else if (seq.type === 'review_request') {
+                                    templateParams = [
+                                        lead?.name || "there", 
+                                        dueStep.productName || lead?.cartSnapshot?.items?.[0]?.title || "your purchase"
+                                    ];
+                                } else if (seq.type === 'warranty_resend' || seq.type === 'warranty_certificate') {
+                                    templateParams = [
+                                        lead?.name || "there",
+                                        ctx.warranty_id || "-",
+                                        ctx.warranty_expiry || "-"
+                                    ];
+                                } else {
+                                    // Default/Recovery fallback
+                                    templateParams = [lead?.name || "there", lead?.email || "-", lead?.city || "-"];
+                                }
+
                                 await WhatsApp.sendSmartTemplate(
                                     client, 
                                     seq.phone, 
                                     dueStep.templateName, 
-                                    [lead?.name || "there", lead?.email || "-", lead?.city || "-"],
+                                    templateParams,
                                     mediaUrl || null,
                                     client.languageCode || 'en'
                                 );

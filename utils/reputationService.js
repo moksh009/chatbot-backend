@@ -1,6 +1,8 @@
 const ReviewRequest = require('../models/ReviewRequest');
 const log = require('./logger')('ReputationService');
 const WhatsApp = require('./whatsapp');
+const EmailService = require('./emailService');
+const AdLead = require('../models/AdLead');
 
 /**
  * Schedules a review request for a specific order.
@@ -65,27 +67,58 @@ async function processPendingReviewRequests() {
         log.info(`Processing ${pending.length} pending review requests`);
 
         const Client = require('../models/Client');
-        const { getProductImageForOrder } = require('../routes/shopifyWebhook'); // Reusing helper if possible, else fetch separately
-
         for (const req of pending) {
             try {
                 const client = await Client.findOne({ clientId: req.clientId });
                 if (!client) continue;
 
-                // Template: review_request
-                // {{1}}=Name, {{2}}=Product
-                // We'll use a smart sender that asks for sentiment 1-5
-                const customerName = "Customer"; // Could fetch from AdLead if needed
-                
-                const message = `Hi ${customerName}! 👋 \n\nHow was your experience with *${req.productName}*? \n\nReply with a number:\n5 - Perfect! ⭐\n4 - Great\n3 - Okay\n2 - Poor\n1 - Terrible 😡`;
+                // 1. Fetch Lead for Name and Email
+                const lead = await AdLead.findOne({ phoneNumber: req.phone, clientId: req.clientId }).lean();
+                const customerName = lead?.firstName || "Customer";
+                const customerEmail = lead?.email;
 
-                await WhatsApp.sendText(client, req.phone, message);
+                // 2. Determine Product Image
+                let productImage = null;
+                try {
+                    const res = await require('axios').get(
+                        `https://${client.shopDomain}/admin/api/2024-01/products/${req.productId}.json`,
+                        { headers: { "X-Shopify-Access-Token": client.shopifyAccessToken } }
+                    );
+                    productImage = res.data.product?.images?.[0]?.src || client.logoUrl || null;
+                } catch { productImage = client.logoUrl || null; }
+
+                // 3. Dispatch via WhatsApp (Smart Template)
+                // Template: review_request
+                // Parameters: {{1}}=Name, {{2}}=Product
+                try {
+                    await WhatsApp.sendSmartTemplate(
+                        client, 
+                        req.phone, 
+                        'review_request', 
+                        [customerName, req.productName], 
+                        productImage
+                    );
+                } catch (waErr) {
+                    log.warn(`Meta template review_request failed for ${req.phone}, falling back to text`);
+                    const message = `Hi ${customerName}! 👋 \n\nHow was your experience with *${req.productName}*? \n\nReply with a number:\n5 - Perfect! ⭐\n4 - Great\n3 - Okay\n2 - Poor\n1 - Terrible 😡`;
+                    await WhatsApp.sendText(client, req.phone, message);
+                }
+
+                // 4. Dispatch via Email (Multi-channel coverage)
+                if (customerEmail) {
+                    await EmailService.sendReviewRequestEmail(client, {
+                        customerEmail,
+                        customerName,
+                        productName: req.productName,
+                        reviewUrl: req.reviewUrl
+                    });
+                }
                 
                 req.status = 'sent';
                 req.sentAt = new Date();
                 await req.save();
 
-                log.info(`Review request sent to ${req.phone} for order ${req.orderId}`);
+                log.info(`Review request sent to ${req.phone} (${customerEmail || 'no email'}) for order ${req.orderId}`);
             } catch (itemErr) {
                 log.error(`Failed to send review request ${req._id}:`, itemErr.message);
             }

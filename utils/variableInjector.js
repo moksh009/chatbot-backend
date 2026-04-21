@@ -35,6 +35,13 @@ async function buildVariableContext(client, phone, convo, lead) {
     dna = await CustomerIntelligence.findOne({ clientId: client.clientId, phone }).lean();
   } catch (_) {}
 
+  // Fetch Loyalty Wallet (Enterprise Tier)
+  let wallet = null;
+  try {
+    const CustomerWallet = require('../models/CustomerWallet');
+    wallet = await CustomerWallet.findOne({ clientId: client.clientId, phone }).lean();
+  } catch (_) {}
+
   // India timezone dates
   const now_ist = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   const date_ist = new Date().toLocaleDateString("en-IN", {
@@ -114,6 +121,14 @@ async function buildVariableContext(client, phone, convo, lead) {
     discount_amount: String(
       client.automationFlows?.find(f => f.id === "cod_to_prepaid")?.config?.discountAmount || 50
     ),
+
+    // ── Loyalty & Rewards ─────────────────────────────────────────────
+    loyalty_balance: String(wallet?.balance || 0),
+    loyalty_cash_value: `₹${Math.floor((wallet?.balance || 0) / (client.loyaltyConfig?.pointsPerCurrency || 100))}`,
+    loyalty_tier: wallet?.tier || "Bronze",
+
+    // ── Reputation & Reviews ──────────────────────────────────────────
+    review_url: client.brand?.googleReviewUrl || "",
 
     // ── Ad Attribution ────────────────────────────────────────────────
     ad_id:           lead?.adAttribution?.adId || "",

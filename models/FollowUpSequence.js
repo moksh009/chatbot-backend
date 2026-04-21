@@ -6,6 +6,7 @@ const FollowUpSequenceSchema = new mongoose.Schema({
   phone: { type: String },
   email: { type: String },
   name: { type: String, default: 'Untitled Sequence' },
+  type: { type: String, enum: ["custom", "loyalty_reminder", "review_request", "abandoned_cart"], default: "custom" },
   status: { type: String, enum: ["active", "completed", "cancelled", "paused"], default: "active" },
   steps: [{
     type: { type: String, enum: ['whatsapp', 'email'], default: 'whatsapp' },

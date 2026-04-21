@@ -11,7 +11,8 @@ const {
     generateAIRewardCode,
     getLoyaltyStatus,
     getReputationStats,
-    sendReviewRequest
+    sendReviewRequest,
+    getLoyaltyTransactions
 } = require('../controllers/loyaltyController');
 const { protect } = require('../middleware/auth');
 const Client = require('../models/Client');
@@ -22,6 +23,7 @@ const { decrypt } = require('../utils/encryption');
 // Admin-authenticated routes (require JWT)
 router.get('/stats', protect, getLoyaltyStats);
 router.get('/wallet', protect, getCustomerWallet);
+router.get('/transactions', protect, getLoyaltyTransactions);
 router.post('/backfill', protect, backfillOrderPoints);
 router.post('/send-reminder', protect, sendLoyaltyReminderTemplate);
 

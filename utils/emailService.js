@@ -134,6 +134,46 @@ async function sendCODToPrepaidEmail(client, { customerEmail, customerName, orde
         html
     });
 }
+
+/**
+ * Send a Review Request email after purchase.
+ */
+async function sendReviewRequestEmail(client, { customerEmail, customerName, productName, reviewUrl }) {
+    const html = `
+        <div style="font-family: 'Inter', Arial, sans-serif; max-width: 600px; margin: auto; padding: 40px; border: 1px solid #f1f5f9; border-radius: 24px; background: #ffffff;">
+            <div style="text-align: center; margin-bottom: 32px;">
+                <span style="font-size: 48px;">⭐</span>
+                <h2 style="color: #0f172a; margin-top: 16px; font-weight: 800; letter-spacing: -0.02em;">How was your experience?</h2>
+            </div>
+            
+            <p style="color: #475569; font-size: 16px; line-height: 1.6; text-align: center;">
+                Hi ${customerName || 'there'}! 👋 <br/>
+                We'd love to hear what you think about your recent purchase of <strong>${productName || 'our product'}</strong>.
+            </p>
+            
+            <div style="text-align: center; margin: 40px 0;">
+                <a href="${reviewUrl}" style="display: inline-block; padding: 18px 36px; background: #6366f1; color: white; border-radius: 16px; text-decoration: none; font-weight: 700; font-size: 16px; box-shadow: 0 10px 15px -3px rgba(99, 102, 241, 0.3);">
+                    Leave a Review →
+                </a>
+            </div>
+            
+            <p style="color: #94a3b8; font-size: 14px; text-align: center; line-height: 1.5;">
+                Your feedback helps us improve and helps other customers make better choices. Thank you for being part of our community!
+            </p>
+            
+            <hr style="border: none; border-top: 1px solid #f1f5f9; margin-top: 40px;" />
+            <p style="color: #cbd5e1; font-size: 12px; text-align: center; margin-top: 24px;">
+                &copy; ${new Date().getFullYear()} ${client.name || 'Store'}. Sent via TopEdge AI.
+            </p>
+        </div>
+    `;
+
+    return sendEmail(client, {
+        to: customerEmail,
+        subject: `How was your experience with ${productName || 'us'}? ⭐`,
+        html
+    });
+}
 /**
  * Send a System OTP using the dedicated TopEdge AI credentials.
  */
@@ -328,6 +368,7 @@ module.exports = {
     sendAbandonedCartEmail,
     sendOrderConfirmationEmail,
     sendCODToPrepaidEmail,
+    sendReviewRequestEmail,
     sendSystemOTPEmail,
     sendTeamInviteEmail,
     sendAdminConfirmationEmail

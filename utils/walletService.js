@@ -16,10 +16,14 @@ async function processOrderForLoyalty(clientId, phone, orderAmount, orderId) {
             isEnabled: true, currencyUnit: 100, pointsPerUnit: 10, pointsPerCurrency: 100, expiryDays: 90
         };
 
+        // ENENTERPRISE HARDENING: Robust phone normalization to match AdLead records
+        const { normalizePhone } = require('./helpers');
+        const cleanPhone = normalizePhone(phone);
+
         
         // IDEMPOTENCY GUARD: Don't award points twice for the same order
         const existingWallet = await CustomerWallet.findOne({ 
-            clientId, phone, 
+            clientId, phone: cleanPhone, 
             'transactions.orderId': orderId,
             'transactions.type': 'earn'
         });
@@ -30,16 +34,21 @@ async function processOrderForLoyalty(clientId, phone, orderAmount, orderId) {
 
         // 1. Calculate points: (Amount / Unit) * PointsPerUnit
         // e.g. (1000 / 100) * 10 = 100 points
-        const pointsToAward = Math.floor((orderAmount / (config.currencyUnit || 100)) * (config.pointsPerUnit || 10));
+        const currencyUnit = Math.max(config.currencyUnit || 100, 1); // Prevent division by zero
+        const pointsPerUnit = config.pointsPerUnit || 10;
+        const pointsToAward = Math.floor((orderAmount / currencyUnit) * pointsPerUnit);
 
-        if (pointsToAward <= 0) return null;
+        if (pointsToAward <= 0) {
+            log.info(`Zero points calculated for order ${orderId} (Amount: ${orderAmount})`);
+            return null;
+        }
 
         // 2. Update or create wallet
         const wallet = await CustomerWallet.findOneAndUpdate(
-            { phone, clientId },
+            { phone: cleanPhone, clientId },
             { 
                $inc: { balance: pointsToAward, lifetimePoints: pointsToAward },
-               $setOnInsert: { phone, clientId }
+               $setOnInsert: { phone: cleanPhone, clientId }
             },
             { upsert: true, new: true }
         );
@@ -60,7 +69,7 @@ async function processOrderForLoyalty(clientId, phone, orderAmount, orderId) {
         else wallet.tier = 'Bronze';
 
         await wallet.save();
-        log.info(`Awarded ${pointsToAward} points to ${phone} for client ${clientId}`);
+        log.info(`Awarded ${pointsToAward} points to ${cleanPhone} for client ${clientId}`);
 
         return { pointsAwarded: pointsToAward, newBalance: wallet.balance, tier: wallet.tier };
     } catch (err) {

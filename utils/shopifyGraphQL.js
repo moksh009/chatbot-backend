@@ -180,6 +180,40 @@ module.exports = {
     executeGraphQL,
     createLoyaltyDiscount,
     getLocations,
-    getInventoryLevels
+    getInventoryLevels,
+    /**
+     * Phase 25: Search Customer by Phone
+     * Fetches detailed customer profile from Shopify using phone number.
+     */
+    searchCustomerByPhone: async (clientId, phone) => {
+        const query = `
+        query searchCustomer($query: String!) {
+          customers(first: 1, query: $query) {
+            nodes {
+              id
+              firstName
+              lastName
+              email
+              phone
+              defaultAddress {
+                city
+                province
+                country
+                zip
+                address1
+              }
+            }
+          }
+        }
+        `;
+        try {
+            // Shopify query syntax for phone search
+            const result = await executeGraphQL(clientId, query, { query: `phone:${phone}` });
+            return result.customers.nodes[0] || null;
+        } catch (err) {
+            log.error(`Failed to search customer for ${clientId}:`, err.message);
+            return null;
+        }
+    }
 };
 

@@ -378,8 +378,26 @@ router.get('/leads', protect, async (req, res) => {
 // GET /api/analytics/lead/:id (Detailed Lead View)
 router.get('/lead/:id', protect, async (req, res) => {
   try {
-    const lead = await AdLead.findById(req.params.id);
+    const lead = await AdLead.findById(req.params.id).lean();
     if (!lead) return res.status(404).json({ message: 'Lead not found' });
+
+    // BACKGROUND ENRICHMENT: If email or city is missing, fetch from Shopify
+    if (!lead.email || !lead.city) {
+      try {
+        const { searchCustomerByPhone } = require('../utils/shopifyGraphQL');
+        const shopifyCustomer = await searchCustomerByPhone(lead.clientId, lead.phoneNumber);
+        
+        if (shopifyCustomer) {
+          lead.email = lead.email || shopifyCustomer.email;
+          lead.city = lead.city || shopifyCustomer.defaultAddress?.city;
+          lead.name = lead.name || `${shopifyCustomer.firstName} ${shopifyCustomer.lastName || ''}`.trim();
+          await AdLead.findByIdAndUpdate(lead._id, { $set: { email: lead.email, city: lead.city, name: lead.name } });
+          console.log(`[LeadEnrichment] Synced data for ${lead.phoneNumber} from Shopify`);
+        }
+      } catch (e) {
+        console.warn(`[LeadEnrichment] Failed for ${lead.phoneNumber}: ${e.message}`);
+      }
+    }
 
     // Fetch related orders (handle stripped country code from Shopify)
     const strippedPhone = lead.phoneNumber.length > 10 && lead.phoneNumber.startsWith('91')
@@ -397,15 +415,15 @@ router.get('/lead/:id', protect, async (req, res) => {
     });
 
     // Fetch related appointments
-    const appointments = await Appointment.find({ phone: lead.phoneNumber, clientId: lead.clientId });
+    const appointments = await Appointment.find({ phone: lead.phoneNumber, clientId: lead.clientId }).lean();
 
     // Fetch conversation summary
-    const conversation = await Conversation.findOne({ phone: lead.phoneNumber, clientId: lead.clientId });
+    const conversation = await Conversation.findOne({ phone: lead.phoneNumber, clientId: lead.clientId }).lean();
 
     // Fetch recent messages
     let messages = [];
     if (conversation) {
-      messages = await Message.find({ conversationId: conversation._id }).sort({ timestamp: -1 }).limit(50);
+      messages = await Message.find({ conversationId: conversation._id }).sort({ timestamp: -1 }).limit(20).lean();
     }
 
     // --- Phase 28: Customer Intelligence DNA ---
@@ -416,9 +434,24 @@ router.get('/lead/:id', protect, async (req, res) => {
     } catch (_) {}
 
     let wallet = null;
+    let walletTransactions = [];
     try {
-      const CustomerWallet = require('../models/CustomerWallet');
-      wallet = await CustomerWallet.findOne({ clientId: lead.clientId, phone: lead.phoneNumber }).lean();
+      const LoyaltyWallet = require('../models/LoyaltyWallet');
+      const LoyaltyTransaction = require('../models/LoyaltyTransaction');
+      // Look up via ending suffix to be safe
+      const phoneDigits = Array.from(lead.phoneNumber || '').filter(c => c >= '0' && c <= '9').join('');
+      const pSuf = phoneDigits.slice(-10);
+      wallet = await LoyaltyWallet.findOne({ 
+        clientId: lead.clientId, 
+        phone: new RegExp(pSuf + '$') 
+      }).lean();
+      
+      if (wallet) {
+          walletTransactions = await LoyaltyTransaction.find({
+              clientId: lead.clientId,
+              phone: new RegExp(pSuf + '$')
+          }).sort({ timestamp: -1 }).limit(5).lean();
+      }
     } catch (_) {}
 
     // --- PHASE R2: Marketing Hub Logs ---
@@ -432,6 +465,67 @@ router.get('/lead/:id', protect, async (req, res) => {
         .lean();
     } catch (_) {}
 
+    // --- Phase 28: Customer Enrichment Engine (Super Fast) ---
+    // If name/email/city is missing, inherit from the latest valid order
+    let updatedNeeded = false;
+    const updateData = {};
+
+    if (orders && orders.length > 0) {
+      // Sort orders by date to get latest first
+      const sortedOrders = [...orders].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      const latestOrder = sortedOrders[0];
+
+      if ((!lead.name || lead.name === 'Anonymous user') && latestOrder.customerName) {
+        lead.name = latestOrder.customerName;
+        updateData.name = latestOrder.customerName;
+        updatedNeeded = true;
+      }
+      if (!lead.email && (latestOrder.customerEmail || latestOrder.email)) {
+        lead.email = latestOrder.customerEmail || latestOrder.email;
+        updateData.email = lead.email;
+        updatedNeeded = true;
+      }
+      if (!lead.city && latestOrder.city) {
+        lead.city = latestOrder.city;
+        updateData.city = latestOrder.city;
+        updatedNeeded = true;
+      }
+    }
+
+    // --- Phase 25: Shopify Deep Search Fallback (If still missing) ---
+    if (!lead.email || !lead.city) {
+      try {
+        const { searchCustomerByPhone } = require('../utils/shopifyGraphQL');
+        const shopifyCustomer = await searchCustomerByPhone(lead.clientId, lead.phoneNumber);
+        
+        if (shopifyCustomer) {
+          if (!lead.email && shopifyCustomer.email) {
+            lead.email = shopifyCustomer.email;
+            updateData.email = shopifyCustomer.email;
+            updatedNeeded = true;
+          }
+          if ((!lead.name || lead.name === 'Anonymous user') && (shopifyCustomer.firstName || shopifyCustomer.lastName)) {
+            const fullName = `${shopifyCustomer.firstName || ''} ${shopifyCustomer.lastName || ''}`.trim();
+            lead.name = fullName;
+            updateData.name = fullName;
+            updatedNeeded = true;
+          }
+          if (!lead.city && shopifyCustomer.defaultAddress?.city) {
+            lead.city = shopifyCustomer.defaultAddress.city;
+            updateData.city = shopifyCustomer.defaultAddress.city;
+            updatedNeeded = true;
+          }
+        }
+      } catch (err) {
+        console.error(`[Enrichment] Shopify search failed for ${lead.phoneNumber}:`, err.message);
+      }
+    }
+
+    // Perf: Background update to AdLead so next load is instant
+    if (updatedNeeded) {
+      AdLead.findByIdAndUpdate(lead._id, { $set: updateData }).catch(e => console.error("Enrichment Background Update Failed", e));
+    }
+
     res.json({
       lead,
       orders,
@@ -439,7 +533,7 @@ router.get('/lead/:id', protect, async (req, res) => {
       conversation,
       messages,
       intelligence: dna || null,
-      wallet: wallet || null,
+      wallet: wallet ? { ...wallet, transactions: walletTransactions } : null,
       marketingLogs
     });
   } catch (error) {

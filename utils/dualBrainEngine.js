@@ -374,11 +374,16 @@ async function _runDualBrainEngine(parsedMessage, client) {
         { upsert: true, new: true }
     );
 
+    const inboundText = parsedMessage.text?.body || parsedMessage.interactive?.button_reply?.title || parsedMessage.interactive?.list_reply?.title || '';
     let lead = await AdLead.findOneAndUpdate(
         { phoneNumber: phone, clientId: client.clientId },
         { 
           $setOnInsert: { phoneNumber: phone, clientId: client.clientId, source: parsedMessage.referral ? 'Meta Ad' : 'Direct' },
-          $set: { lastInteraction: new Date() }
+          $set: { 
+            lastInteraction: new Date(),
+            lastInboundAt: new Date(),
+            lastMessageContent: inboundText || `[${parsedMessage.type || 'Message'}]`
+          }
         },
         { upsert: true, new: true }
     );
@@ -3201,6 +3206,19 @@ async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = 
       { $set: updateFields }
     );
 
+    // Sync AdLead CRM Fields (Last Message & Activity)
+    const AdLead = require('../models/AdLead');
+    await AdLead.updateOne(
+      { phoneNumber: phone, clientId },
+      { 
+        $set: { 
+          lastInteraction: new Date(),
+          lastMessageContent: updateFields.lastMessage || content.substring(0, 500),
+          ...(updateFields.firstInboundAt && { lastInboundAt: updateFields.firstInboundAt })
+        } 
+      }
+    ).catch(() => {});
+
     // Phase 23: Track Conversation Intelligence
     if (client) {
       analyzeConversationIntelligence(client, phone, existingConvo || { _id: finalConvoId });
@@ -3246,6 +3264,19 @@ async function saveOutboundMessage(phone, clientId, type, content, messageId, ch
       { phone, clientId },
       { $set: updateFields }
     );
+
+    // Sync AdLead CRM Fields (Last Message & Activity)
+    const AdLead = require('../models/AdLead');
+    await AdLead.updateOne(
+      { phoneNumber: phone, clientId },
+      { 
+        $set: { 
+          lastInteraction: new Date(),
+          lastMessageContent: updateFields.lastMessage || content.substring(0, 500),
+          ...(updateFields.firstInboundAt && { lastInboundAt: updateFields.firstInboundAt })
+        } 
+      }
+    ).catch(() => {});
 
     const io = global.io;
     if (io) io.to(`client_${clientId}`).emit('new_message', msg);

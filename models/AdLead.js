@@ -218,8 +218,12 @@ const adLeadSchema = new mongoose.Schema({
     purchaseDate: { type: Date, default: Date.now },
     expiryDate: Date,
     status: { type: String, enum: ['active', 'expired', 'claimed'], default: 'active' },
-    registeredAt: { type: Date, default: Date.now }
+  registeredAt: { type: Date, default: Date.now }
   }],
+
+  // Phase 28: Live Activity Tracking
+  lastMessageContent: { type: String, default: '' },
+  lastInboundAt: { type: Date, default: null },
 
   createdAt: {
     type: Date,

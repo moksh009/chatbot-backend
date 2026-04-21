@@ -123,6 +123,80 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
                 await fireEventFlow(client, 'order_fulfilled', data).catch(e =>
                   log.warn(`[FlowTrigger] order_fulfilled flow fire failed: ${e.message}`)
                 );
+                
+                // --- PHASE 30.5: Enterprise Warranty Auto-Assign (OPTIMIZED) ---
+                try {
+                    const phoneRaw = data.phone || data.customer?.phone || data.billing_address?.phone;
+                    if (phoneRaw) {
+                        const { normalizePhone } = require('../utils/helpers');
+                        const cleanPhone = normalizePhone(phoneRaw);
+                        
+                        const orderDate = new Date(data.created_at || Date.now());
+                        const productIdsInOrder = data.line_items?.map(item => String(item.product_id)) || [];
+
+                        const activeBatches = await WarrantyBatch.find({
+                            clientId: client.clientId,
+                            status: 'active',
+                            shopifyProductIds: { $in: productIdsInOrder },
+                            validFrom: { $lte: orderDate },
+                            $or: [
+                                { validUntil: { $exists: false } },
+                                { validUntil: null },
+                                { validUntil: { $gte: orderDate } }
+                            ]
+                        }).lean();
+
+                        if (activeBatches.length > 0) {
+                            const contact = await Contact.findOneAndUpdate(
+                                { clientId: client.clientId, phoneNumber: cleanPhone },
+                                { 
+                                    $set: { 
+                                        name: data.customer ? `${data.customer.first_name} ${data.customer.last_name || ''}` : 'Shopify Guest',
+                                        email: data.email || data.customer?.email,
+                                        lastPurchaseDate: orderDate
+                                    } 
+                                },
+                                { upsert: true, new: true }
+                            );
+
+                            for (const item of data.line_items) {
+                                const productId = String(item.product_id);
+                                const batch = activeBatches.find(b => b.shopifyProductIds.includes(productId));
+
+                                if (batch) {
+                                    const expiryDate = new Date(orderDate);
+                                    expiryDate.setMonth(expiryDate.getMonth() + batch.durationMonths);
+
+                                    const record = await WarrantyRecord.create({
+                                        clientId: client.clientId,
+                                        customerId: contact._id,
+                                        shopifyOrderId: data.name || `#${data.id}`,
+                                        productId: productId,
+                                        productName: item.title,
+                                        purchaseDate: orderDate,
+                                        expiryDate: expiryDate,
+                                        batchId: batch._id,
+                                        status: 'active'
+                                    });
+                                    log.info(`[Warranty] Record created for ${contact.name} (${item.title})`);
+                                    
+                                    // Feature: Dispatch WhatsApp Notifications for Enterprise logic
+                                    const { sendNotifications } = require('../utils/warrantyService');
+                                    // Build a stub AdLead compatible record object for sendNotifications signature
+                                    const stubRecord = {
+                                        productName: item.title,
+                                        productImage: item.image_url || null,
+                                        expiryDate: expiryDate
+                                    };
+                                    await sendNotifications(client, cleanPhone, stubRecord).catch(e => log.warn("[Warranty] Notification err:", e.message));
+                                }
+                            }
+                        }
+                    }
+                } catch (warrantyErr) {
+                    log.error('[Warranty] Auto-assignment failed:', warrantyErr.message);
+                }
+                
                 break;
             }
             case 'inventory_levels/update':
@@ -366,11 +440,15 @@ async function handleOrder(client, data) {
 
     // --- PHASE 27: Loyalty Points Award ---
     if (client.loyaltyConfig?.isEnabled && newOrder.amount > 0) {
-        processOrderForLoyalty(client.clientId, cleanPhone, newOrder.amount, newOrder.orderId)
-            .then(res => {
-                if (res) log.info(`Awarded ${res.pointsAwarded} points to ${cleanPhone} for order ${newOrder.orderId}`);
-            })
-            .catch(e => log.error('Loyalty award failed', e.message));
+        const { awardLoyaltyPoints } = require('../utils/loyaltyEngine');
+        awardLoyaltyPoints({
+            clientId: client.clientId,
+            phone: cleanPhone,
+            orderId: newOrder.orderId,
+            orderAmount: newOrder.amount
+        }).then(res => {
+            if (res.success) log.info(`Awarded ${res.points} points to ${cleanPhone} for order ${newOrder.orderId}`);
+        }).catch(err => console.error("[Loyalty] Award failed:", err.message));
     }
 
     // ✅ Phase R3: Cancel active cart recovery sequences on purchase — GAP 6
@@ -391,67 +469,7 @@ async function handleOrder(client, data) {
         log.warn('[CartRecovery] Failed to cancel sequences after purchase:', seqErr.message);
     }
 
-    // --- PHASE 30.5: Enterprise Warranty Auto-Assign (OPTIMIZED) ---
-    try {
-        const orderDate = new Date(data.created_at || Date.now());
-        const productIdsInOrder = data.line_items.map(item => String(item.product_id));
 
-        // 1. Fetch all active batches that cover any product in this order in ONE query
-        const activeBatches = await WarrantyBatch.find({
-            clientId: client.clientId,
-            status: 'active',
-            shopifyProductIds: { $in: productIdsInOrder }, // Correct operator is $in
-            validFrom: { $lte: orderDate },
-            $or: [
-                { validUntil: { $exists: false } },
-                { validUntil: null },
-                { validUntil: { $gte: orderDate } }
-            ]
-        }).lean();
-
-        if (activeBatches.length > 0) {
-            // 2. Ensure Contact exists (Ghost Contact logic) - Use findOneAndUpdate to unify logic
-            const contact = await Contact.findOneAndUpdate(
-                { clientId: client.clientId, phoneNumber: cleanPhone },
-                { 
-                    $set: { 
-                        name: data.customer ? `${data.customer.first_name} ${data.customer.last_name || ''}` : 'Shopify Guest',
-                        email: data.email || data.customer?.email,
-                        lastPurchaseDate: orderDate
-                    } 
-                },
-                { upsert: true, new: true }
-            );
-
-            // 3. Iterate products and assign warranties from matched batches
-            for (const item of data.line_items) {
-                const productId = String(item.product_id);
-                // Find first matching batch for this specific product
-                const batch = activeBatches.find(b => b.shopifyProductIds.includes(productId));
-
-                if (batch) {
-                    const expiryDate = new Date(orderDate);
-                    expiryDate.setMonth(expiryDate.getMonth() + batch.durationMonths);
-
-                    await WarrantyRecord.create({
-                        clientId: client.clientId,
-                        customerId: contact._id,
-                        shopifyOrderId: data.name || `#${data.id}`,
-                        productId: productId,
-                        productName: item.title,
-                        purchaseDate: orderDate,
-                        expiryDate: expiryDate,
-                        batchId: batch._id,
-                        status: 'active'
-                    });
-
-                    log.info(`[Warranty] Record created for ${contact.name} (${item.title})`);
-                }
-            }
-        }
-    } catch (warrantyErr) {
-        log.error('[Warranty] Auto-assignment failed:', warrantyErr.message);
-    }
 
     // --- SKU-to-Template Automation ---
     if (client.skuAutomations?.length > 0) {

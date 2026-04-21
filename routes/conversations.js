@@ -377,6 +377,18 @@ router.post('/:id/messages', protect, async (req, res) => {
     if (conversation.attentionReason) conversation.attentionReason = '';
     await conversation.save();
 
+    // Update AdLead for CRM consistency
+    const AdLead = require('../models/AdLead');
+    await AdLead.updateOne(
+      { phoneNumber: conversation.phone, clientId: conversation.clientId },
+      { 
+        $set: { 
+          lastMessageContent: content.substring(0, 500),
+          lastInteraction: new Date()
+        } 
+      }
+    ).catch(() => {});
+
     const io = req.app.get('socketio');
     if (io) {
       io.to(`client_${conversation.clientId}`).emit('new_message', newMessage);
