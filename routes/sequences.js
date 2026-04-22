@@ -51,7 +51,7 @@ router.post('/:clientId', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
-    const { leads, name, steps } = req.body; // leads is [{ leadId, phone, email }]
+    const { leads, name, steps, type } = req.body; // leads is [{ leadId, phone, email }]
     
     if (!Array.isArray(leads) || leads.length === 0) {
       return res.status(400).json({ success: false, message: 'No leads provided' });
@@ -108,6 +108,7 @@ router.post('/:clientId', protect, async (req, res) => {
         phone,
         email,
         name: name || 'Untitled Sequence',
+        type: type || 'custom',
         steps: mappedSteps
       });
 

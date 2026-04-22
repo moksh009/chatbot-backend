@@ -224,67 +224,17 @@ async function backfillOrderPoints(req, res) {
         const client = await Client.findOne({ clientId }).select('loyaltyConfig');
         if (!client) return res.status(404).json({ message: 'Client not found.' });
 
-        // Auto-apply defaults if loyaltyConfig not configured yet — never block an admin backfill
-        if (!client.loyaltyConfig) {
-            client.loyaltyConfig = { isEnabled: true, currencyUnit: 100, pointsPerUnit: 10, pointsPerCurrency: 100, expiryDays: 90 };
-        }
-        if (!client.loyaltyConfig.isEnabled) {
-            client.loyaltyConfig.isEnabled = true;
-        }
+        // Add to Task Queue
+        const TaskQueueService = require('../services/TaskQueueService');
+        await TaskQueueService.addTask('BACKFILL_LOYALTY', { clientId });
 
-        const orders = await Order.find({ 
-            clientId, 
-            status: { $in: ['Paid', 'paid', 'PAID', 'fulfilled', 'Fulfilled'] } 
-        }).lean();
-
-        if (orders.length === 0) {
-            return res.json({ success: true, processed: 0, awarded: 0, skipped: 0, message: 'No paid orders found.' });
-        }
-
-        let awarded = 0;
-        let skipped = 0;
-        let failed = 0;
-
-        const chunkSize = 10;
-        for (let i = 0; i < orders.length; i += chunkSize) {
-            const chunk = orders.slice(i, i + chunkSize);
-            const promises = chunk.map(order => {
-                const phone = order.phone || order.customerPhone;
-                const amount = parseFloat(order.totalPrice || order.amount || 0);
-                const orderId = order.orderId || order._id?.toString();
-
-                if (!phone || !amount || !orderId) return Promise.resolve(null);
-                
-                return awardLoyaltyPoints({ 
-                    clientId, 
-                    phone, 
-                    orderId, 
-                    orderAmount: amount, 
-                    isBackfill: true 
-                });
-            });
-
-            const results = await Promise.allSettled(promises);
-            results.forEach(res => {
-                if (res.status === "fulfilled" && res.value) {
-                    if (res.value.success) awarded++;
-                    else if (res.value.skipped) skipped++;
-                    else failed++;
-                } else failed++;
-            });
-        }
-
-        log.info(`Backfill complete for ${clientId}: awarded=${awarded}, skipped=${skipped}, failed=${failed}`);
-        res.json({ 
-            success: true, 
-            total: orders.length, 
-            awarded, 
-            skipped, 
-            failed,
-            message: `Awarded points to ${awarded} orders. ${skipped} already processed. ${failed} failed.`
+        // Respond immediately
+        res.status(202).json({
+            success: true,
+            message: 'Backfill started in background'
         });
     } catch (err) {
-        log.error('Backfill error:', err.message);
+        log.error('Backfill trigger error:', err.message);
         res.status(500).json({ error: err.message });
     }
 }
@@ -558,31 +508,64 @@ async function getLoyaltyStatus(req, res) {
 }
 
 async function sendReviewRequest(req, res) {
-    const { phone, name } = req.body;
+    const { phone, orderId } = req.body;
     try {
         const { client } = await resolveClient(req);
         
         if (!phone) return res.status(400).json({ message: 'Phone number required' });
 
-        // Update or create review request record
-        const reviewReq = await ReviewRequest.findOneAndUpdate(
-            { clientId: client.clientId, phone },
-            { 
-                status: 'sent',
-                sentAt: new Date(),
-                scheduledFor: new Date(),
-                customerName: name || 'Customer'
-            },
-            { upsert: true, new: true }
-        );
+        const { normalizePhone } = require('../utils/helpers');
+        const cleanPhone = normalizePhone(phone);
+        if (!cleanPhone) return res.status(400).json({ message: 'Invalid phone number format' });
 
-        // Send via WhatsApp
-        const reviewUrl = client.googleReviewUrl || `https://t.me/topedge_bot?start=review_${client.clientId}`;
-        const message = `Hi ${name || 'there'}! property of ${client.businessName || 'TopEdge'}. We'd love to hear your feedback. Please rate your experience: ${reviewUrl}`;
-        
-        await WhatsApp.sendText(client, phone, message);
+        // Fetch Lead to get email and name
+        const AdLead = require('../models/AdLead');
+        const lead = await AdLead.findOne({ phoneNumber: cleanPhone, clientId: client.clientId }).lean();
+        const customerName = lead?.firstName || lead?.name || 'Customer';
+        const customerEmail = lead?.email;
 
-        res.json({ success: true, message: 'Review request sent successfully' });
+        // Create review request record
+        const reviewReq = await ReviewRequest.create({
+            clientId: client.clientId,
+            phone: cleanPhone,
+            orderId: orderId || 'MANUAL',
+            orderNumber: orderId ? `#${orderId}` : 'Manual Request',
+            productName: 'Your Recent Purchase',
+            reviewUrl: client.googleReviewUrl || '',
+            status: 'sent',
+            sentAt: new Date(),
+            scheduledFor: new Date()
+        });
+
+        const EmailService = require('../utils/emailService');
+        let successMessage = 'Review request sent successfully via WhatsApp';
+
+        // Try WhatsApp Template
+        try {
+            await WhatsApp.sendSmartTemplate(
+                client, 
+                cleanPhone, 
+                'review_request', 
+                [customerName, reviewReq.productName], 
+                client.logoUrl || null
+            );
+        } catch (waErr) {
+            log.warn(`Manual send failed on WhatsApp for ${cleanPhone}, attempting Email fallback. Error: ${waErr.message}`);
+            // Fallback to Email
+            if (customerEmail) {
+                await EmailService.sendReviewRequestEmail(client, {
+                    customerEmail,
+                    customerName,
+                    productName: reviewReq.productName,
+                    reviewUrl: reviewReq.reviewUrl
+                });
+                successMessage = 'Review request sent successfully via Email (WhatsApp fallback)';
+            } else {
+                throw new Error('WhatsApp failed and no email address available for fallback');
+            }
+        }
+
+        res.json({ success: true, message: successMessage });
     } catch (err) {
         log.error('Send review request error:', err.message);
         res.status(500).json({ error: err.message });

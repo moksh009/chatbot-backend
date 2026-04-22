@@ -342,7 +342,9 @@ router.get('/leads', protect, async (req, res) => {
 
     const query = { clientId };
 
-    const { limit = 10, search = '', next_cursor } = req.query;
+    const { limit = 20, search = '', page = 1 } = req.query;
+    const pageNum = parseInt(page) || 1;
+    const limitNum = parseInt(limit) || 20;
 
     if (search) {
       const searchRegex = new RegExp(search, 'i');
@@ -352,20 +354,20 @@ router.get('/leads', protect, async (req, res) => {
       ];
     }
 
-    if (next_cursor) {
-      query._id = { $lt: next_cursor };
-    }
+    const skip = (pageNum - 1) * limitNum;
 
     const leads = await AdLead.find(query)
       .sort({ _id: -1 })
-      .limit(parseInt(limit));
+      .skip(skip)
+      .limit(limitNum);
 
     const total = await AdLead.countDocuments(query);
-    const new_cursor = leads.length > 0 ? leads[leads.length - 1]._id : null;
+    const totalPages = Math.ceil(total / limitNum);
 
     res.json({
       leads,
-      next_cursor: new_cursor,
+      currentPage: pageNum,
+      totalPages,
       totalLeads: total
     });
 

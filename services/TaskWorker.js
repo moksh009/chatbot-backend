@@ -68,6 +68,10 @@ const taskWorker = redisConnection ? new Worker('enterprise-tasks', async (job) 
                 await handleImportLeads(data, job);
                 break;
 
+            case 'BACKFILL_LOYALTY':
+                await handleBackfillLoyalty(data, job);
+                break;
+
             case 'RECOMPUTE_ALL_LEAD_SCORES':
                 await handleRecomputeScores(data, job);
                 break;
@@ -283,17 +287,112 @@ async function handleRecomputeScores(data, job) {
             const percent = Math.round((processed / totalLeads) * 100);
             
             if (global.io) {
-                global.io.to(`client_${clientId}`).emit('scoring_progress', { percent, processed, totalLeads });
+                global.io.to(`client_${clientId}`).emit('scoring_recompute_progress', { percent, processed, totalLeads });
             }
         }
 
         log.info(`[Recompute] Successfully finished for ${clientId}`);
 
         if (global.io) {
-            global.io.to(`client_${clientId}`).emit('scoring_completed', { totalLeads });
+            global.io.to(`client_${clientId}`).emit('scoring_recompute_complete', { totalLeads });
         }
     } catch (err) {
         log.error(`[Recompute] Failed for ${clientId}:`, err.message);
+        throw err;
+    }
+}
+
+async function handleBackfillLoyalty(data, job) {
+    const { clientId } = data;
+    const Client = require('../models/Client');
+    const Order = require('../models/Order');
+    const { awardLoyaltyPoints } = require('../utils/loyaltyEngine');
+
+    try {
+        const client = await Client.findOne({ clientId }).select('loyaltyConfig');
+        if (!client) {
+            log.error(`[Backfill] Client not found: ${clientId}`);
+            return;
+        }
+
+        // Auto-apply defaults if loyaltyConfig not configured yet
+        if (!client.loyaltyConfig) {
+            client.loyaltyConfig = { isEnabled: true, currencyUnit: 100, pointsPerUnit: 10, pointsPerCurrency: 100, expiryDays: 90 };
+            await Client.updateOne({ clientId }, { loyaltyConfig: client.loyaltyConfig });
+        }
+        if (!client.loyaltyConfig.isEnabled) {
+            await Client.updateOne({ clientId }, { 'loyaltyConfig.isEnabled': true });
+        }
+
+        const orders = await Order.find({ 
+            clientId, 
+            status: { $in: ['Paid', 'paid', 'PAID', 'fulfilled', 'Fulfilled'] } 
+        }).lean();
+
+        if (orders.length === 0) {
+            if (global.io) {
+                global.io.to(`client_${clientId}`).emit('backfill_complete', { 
+                    success: true, total: 0, awarded: 0, skipped: 0, failed: 0 
+                });
+            }
+            return;
+        }
+
+        let awarded = 0;
+        let skipped = 0;
+        let failed = 0;
+        let processed = 0;
+
+        const chunkSize = 50;
+        for (let i = 0; i < orders.length; i += chunkSize) {
+            const chunk = orders.slice(i, i + chunkSize);
+            const promises = chunk.map(order => {
+                const phone = order.phone || order.customerPhone;
+                const amount = parseFloat(order.totalPrice || order.amount || 0);
+                const orderId = order.orderId || order._id?.toString();
+
+                if (!phone || !amount || !orderId) return Promise.resolve(null);
+                
+                return awardLoyaltyPoints({ 
+                    clientId, 
+                    phone, 
+                    orderId, 
+                    orderAmount: amount, 
+                    isBackfill: true 
+                });
+            });
+
+            const results = await Promise.allSettled(promises);
+            results.forEach(res => {
+                if (res.status === "fulfilled" && res.value) {
+                    if (res.value.success) awarded++;
+                    else if (res.value.skipped) skipped++;
+                    else failed++;
+                } else failed++;
+            });
+
+            processed += chunk.length;
+            const percent = Math.round((processed / orders.length) * 100);
+
+            if (global.io) {
+                global.io.to(`client_${clientId}`).emit('backfill_progress', { 
+                    percent, processed, total: orders.length 
+                });
+            }
+            
+            // Sleep briefly to yield event loop
+            await new Promise(r => setTimeout(r, 50));
+        }
+
+        log.info(`[Backfill] Complete for ${clientId}: awarded=${awarded}, skipped=${skipped}, failed=${failed}`);
+        
+        if (global.io) {
+            global.io.to(`client_${clientId}`).emit('backfill_complete', { 
+                success: true, total: orders.length, awarded, skipped, failed 
+            });
+        }
+    } catch (err) {
+        log.error(`[Backfill] Error for ${clientId}:`, err.message);
         throw err;
     }
 }

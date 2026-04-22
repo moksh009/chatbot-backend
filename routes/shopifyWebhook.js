@@ -124,78 +124,11 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
                   log.warn(`[FlowTrigger] order_fulfilled flow fire failed: ${e.message}`)
                 );
                 
-                // --- PHASE 30.5: Enterprise Warranty Auto-Assign (OPTIMIZED) ---
-                try {
-                    const phoneRaw = data.phone || data.customer?.phone || data.billing_address?.phone;
-                    if (phoneRaw) {
-                        const { normalizePhone } = require('../utils/helpers');
-                        const cleanPhone = normalizePhone(phoneRaw);
-                        
-                        const orderDate = new Date(data.created_at || Date.now());
-                        const productIdsInOrder = data.line_items?.map(item => String(item.product_id)) || [];
-
-                        const activeBatches = await WarrantyBatch.find({
-                            clientId: client.clientId,
-                            status: 'active',
-                            shopifyProductIds: { $in: productIdsInOrder },
-                            validFrom: { $lte: orderDate },
-                            $or: [
-                                { validUntil: { $exists: false } },
-                                { validUntil: null },
-                                { validUntil: { $gte: orderDate } }
-                            ]
-                        }).lean();
-
-                        if (activeBatches.length > 0) {
-                            const contact = await Contact.findOneAndUpdate(
-                                { clientId: client.clientId, phoneNumber: cleanPhone },
-                                { 
-                                    $set: { 
-                                        name: data.customer ? `${data.customer.first_name} ${data.customer.last_name || ''}` : 'Shopify Guest',
-                                        email: data.email || data.customer?.email,
-                                        lastPurchaseDate: orderDate
-                                    } 
-                                },
-                                { upsert: true, new: true }
-                            );
-
-                            for (const item of data.line_items) {
-                                const productId = String(item.product_id);
-                                const batch = activeBatches.find(b => b.shopifyProductIds.includes(productId));
-
-                                if (batch) {
-                                    const expiryDate = new Date(orderDate);
-                                    expiryDate.setMonth(expiryDate.getMonth() + batch.durationMonths);
-
-                                    const record = await WarrantyRecord.create({
-                                        clientId: client.clientId,
-                                        customerId: contact._id,
-                                        shopifyOrderId: data.name || `#${data.id}`,
-                                        productId: productId,
-                                        productName: item.title,
-                                        purchaseDate: orderDate,
-                                        expiryDate: expiryDate,
-                                        batchId: batch._id,
-                                        status: 'active'
-                                    });
-                                    log.info(`[Warranty] Record created for ${contact.name} (${item.title})`);
-                                    
-                                    // Feature: Dispatch WhatsApp Notifications for Enterprise logic
-                                    const { sendNotifications } = require('../utils/warrantyService');
-                                    // Build a stub AdLead compatible record object for sendNotifications signature
-                                    const stubRecord = {
-                                        productName: item.title,
-                                        productImage: item.image_url || null,
-                                        expiryDate: expiryDate
-                                    };
-                                    await sendNotifications(client, cleanPhone, stubRecord).catch(e => log.warn("[Warranty] Notification err:", e.message));
-                                }
-                            }
-                        }
-                    }
-                } catch (warrantyErr) {
-                    log.error('[Warranty] Auto-assignment failed:', warrantyErr.message);
-                }
+                // --- PHASE 30.5: Enterprise Warranty Auto-Assign (ENGINE) ---
+                const { processWarrantyAutoAssignment } = require('../utils/warrantyEngine');
+                await processWarrantyAutoAssignment(client, data).catch(e => 
+                    log.error('[Warranty] Auto-assignment failed:', e.message)
+                );
                 
                 break;
             }

@@ -281,7 +281,7 @@ router.post('/bulk-template', protect, async (req, res) => {
 // Triggers an automated multi-step sequence for multiple leads
 router.post('/bulk-sequence', protect, async (req, res) => {
     try {
-        const { leadIds, sequenceName, steps } = req.body;
+        const { leadIds, sequenceName, steps, type } = req.body;
         const clientId = req.user.clientId;
 
         if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
@@ -311,7 +311,8 @@ router.post('/bulk-sequence', protect, async (req, res) => {
                 leadId: lead._id,
                 phone: lead.phoneNumber,
                 email: lead.email,
-                name: sequenceName || 'Abandoned Cart Recovery',
+                name: sequenceName || 'Automated Sequence',
+                type: type || 'custom',
                 status: 'active',
                 steps: sequenceSteps
             });

@@ -9,86 +9,8 @@ const { createMessage } = require('../utils/createMessage');
 module.exports = function scheduleReviewCron() {
   cron.schedule("30 4 * * *", async () => {
     try {
-      const due = await ReviewRequest.find({
-        status: "scheduled",
-        scheduledFor: { $lte: new Date() }
-      }).populate("clientId");
-
-      for (const review of due) {
-        const client = review.clientId;
-        if (!client) continue;
-
-        // Check for Human Takeover
-        const conv = await Conversation.findOne({ phone: review.phone, clientId: client.clientId });
-        if (conv && conv.status === 'HUMAN_TAKEOVER') continue;
-
-        // --- PHASE 7: Reputation Shield (Sentiment Filtering) ---
-        if (conv && (conv.sentiment === 'Negative' || conv.sentiment === 'Frustrated')) {
-            console.log(`[ReviewCron] Skipping review for ${review.phone} due to negative sentiment (${conv.sentiment})`);
-            
-            // 1. Mark as skipped
-            await ReviewRequest.findByIdAndUpdate(review._id, { status: "skipped" });
-
-            // 2. Notify Admin
-            const Notification = require('../models/Notification');
-            await Notification.create({
-                clientId: client.clientId,
-                title: '🛑 Review Blocked: Negative Sentiment',
-                message: `Review request for ${review.phone} was automatically blocked. Sentiment: ${conv.sentiment}. Please contact customer to resolve.`,
-                type: 'sentiment',
-                metadata: { phone: review.phone, orderId: review.orderId }
-            });
-
-            // 3. Optional: Send "Make it Right" message
-            const makeItRightMsg = `Hi! We noticed you might have had a less-than-perfect experience recently. We're truly sorry! 🙏 Our team is looking into this. If there's something specific we can fix, please let us know right away.`;
-            await WhatsApp.sendText(client, review.phone, makeItRightMsg);
-            
-            continue;
-        }
-
-
-        // Get template or use default
-        const template = (client.messageTemplates || []).find(t => t.id === "review_request");
-        const bodyText = template?.body
-          ? template.body.replace("{{product_name}}", review.productName)
-          : `Hi! How's your *${review.productName}*? 😊\n\nYour feedback helps us improve and helps other customers!`;
-
-        const btn1 = template?.buttons?.[0]?.label || "😍 Loved it!";
-        const btn2 = template?.buttons?.[1]?.label || "😐 It's okay";
-        const btn3 = template?.buttons?.[2]?.label || "😕 Not happy";
-
-        const interactive = {
-          type: "button",
-          body: { text: bodyText },
-          action: {
-            buttons: [
-              { type: "reply", reply: { id: `rv_good_${review._id}`, title: btn1.substring(0, 20) } },
-              { type: "reply", reply: { id: `rv_ok_${review._id}`, title: btn2.substring(0, 20) } },
-              { type: "reply", reply: { id: `rv_bad_${review._id}`, title: btn3.substring(0, 20) } }
-            ]
-          }
-        };
-
-        try {
-          await WhatsApp.sendInteractive(client, review.phone, interactive);
-
-          await ReviewRequest.findByIdAndUpdate(review._id, {
-            status: "sent",
-            sentAt: new Date()
-          });
-
-          await createMessage({
-            clientId: client._id,
-            phone: review.phone,
-            direction: 'outbound',
-            type: 'interactive',
-            body: `[Interactive Review Request] ${bodyText}`
-          });
-
-        } catch (sendErr) {
-          console.error(`[ReviewCron] Error sending to ${review.phone}:`, sendErr.message);
-        }
-      }
+      const { processPendingReviewRequests } = require('../utils/reputationService');
+      await processPendingReviewRequests();
     } catch (err) {
       console.error("[ReviewCron] General error:", err);
     }

@@ -276,6 +276,7 @@ app.use('/api/reseller', require('./routes/reseller'));
 // Phase 27: Loyalty Hub & Enterprise Rewards
 app.use('/api/loyalty', require('./routes/loyalty'));
 app.use('/api/warranty', require('./routes/warranty'));
+app.use('/api/template-gate', require('./routes/templateGate'));
 
 // Bot Quality Analytics (replaces deleted /api/intelligence/footprint)
 app.use('/api/bot-quality', require('./routes/botQuality'));
