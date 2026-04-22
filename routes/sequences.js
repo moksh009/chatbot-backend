@@ -17,7 +17,7 @@ const MAX_ACTIVE_SEQUENCES = 2;
 router.get('/', protect, async (req, res) => {
   try {
     const clientId = req.user.clientId;
-    const sequences = await FollowUpSequence.find({ clientId }).sort({ createdAt: -1 });
+    const sequences = await FollowUpSequence.find({ clientId }).populate('leadId', 'name').sort({ createdAt: -1 });
     res.json({ success: true, sequences });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -36,7 +36,7 @@ router.get('/sequences', protect, async (req, res) => {
     const query = { clientId };
     if (leadId) query.leadId = leadId;
 
-    const sequences = await FollowUpSequence.find(query).sort({ createdAt: -1 });
+    const sequences = await FollowUpSequence.find(query).populate('leadId', 'name').sort({ createdAt: -1 });
     res.json({ success: true, sequences });
   } catch (error) {
     console.error('Sequence fetch error:', error);
@@ -144,7 +144,7 @@ router.get('/:clientId', protect, async (req, res) => {
     const query = { clientId };
     if (leadId) query.leadId = leadId;
 
-    const sequences = await FollowUpSequence.find(query).sort({ createdAt: -1 });
+    const sequences = await FollowUpSequence.find(query).populate('leadId', 'name').sort({ createdAt: -1 });
     res.json({ success: true, sequences });
   } catch (error) {
     console.error('Sequence fetch error:', error);

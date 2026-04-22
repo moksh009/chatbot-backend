@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const CampaignSchema = new mongoose.Schema({
   name: { type: String, required: true },
   clientId: { type: String, required: true, default: 'code_clinic_v1' },
-  templateName: { type: String, required: true },
+  templateName: { type: String, default: "" },
   status: { 
     type: String, 
     enum: ['DRAFT', 'SCHEDULED', 'SENDING', 'COMPLETED', 'FAILED'], 

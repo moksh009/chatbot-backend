@@ -123,6 +123,38 @@ router.post('/from-segment', protect, async (req, res) => {
     }
 });
 
+// @route   POST /api/campaigns/from-hot-leads
+// @desc    Create a campaign from a list of hot leads
+// @access  Private
+router.post('/from-hot-leads', protect, async (req, res) => {
+    const { name, count } = req.body;
+    try {
+        const client = await Client.findOne({ clientId: req.user.clientId });
+        if (!client) return res.status(403).json({ error: 'Client not found' });
+
+        const limits = await checkLimit(client._id, 'campaigns');
+        if (!limits.allowed) {
+            return res.status(403).json({ error: limits.reason });
+        }
+
+        await incrementUsage(client._id, 'campaigns', 1);
+
+        const campaign = await Campaign.create({
+            clientId: req.user.clientId,
+            name: name || `Hot Leads Targeting`,
+            status: 'DRAFT',
+            audienceCount: count || 0,
+            isSmartSend: true,
+            templateName: ""
+        });
+
+        res.json(campaign);
+    } catch (err) {
+        log.error(err);
+        res.status(500).json({ error: 'Failed to create hot leads campaign' });
+    }
+});
+
 // @route   GET /api/campaigns
 // @desc    List campaigns
 // @access  Private
