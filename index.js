@@ -104,14 +104,42 @@ const bulkLimiter = rateLimit({
   message: { success: false, message: 'Bulk operation rate limit exceeded. Please wait before sending another campaign.' }
 });
 
-// Middleware
+// --- PHASE 1: CORE MIDDLEWARE (CORS & Compression) ---
+// CORS must be first to handle pre-flight OPTIONS requests from any origin
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'https://chatbot-backend-lg5y.onrender.com',
+  'https://chatbot-dashboard-frontend-main.onrender.com',
+  /\.onrender\.com$/  // Allow all onrender subdomains
+];
+
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow all origins, mirroring the incoming origin
-    callback(null, true);
-  }, 
-  credentials: true
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    
+    const isAllowed = allowedOrigins.some(ao => {
+      if (ao instanceof RegExp) return ao.test(origin);
+      return ao === origin;
+    });
+
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      // In development, be permissive to avoid blocking dev work
+      if (process.env.NODE_ENV === 'development') {
+        return callback(null, true);
+      }
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range']
 }));
+
 app.use(compression()); // Performance: GZIP all JSON responses (70-80% smaller payloads)
 app.use(express.json({ 
   limit: '5mb', // ✅ Phase R3: Reduced from 10mb — prevents oversized payload DoS
@@ -281,6 +309,9 @@ app.use('/api/template-gate', require('./routes/templateGate'));
 // Bot Quality Analytics (replaces deleted /api/intelligence/footprint)
 app.use('/api/bot-quality', require('./routes/botQuality'));
 
+// Intelligence DNA route (Customer 360 — LiveChat deferred intelligence)
+app.use('/api/intelligence', require('./routes/intelligenceDna'));
+
 // ─── EXPRESS ALIASES: Frontend API compatibility ───
 // The frontend calls these paths but backend mounts under different names.
 app.use('/api/flow-builder', flowRoutes);           // Frontend: /api/flow-builder/flows → /api/flow/flows
@@ -369,6 +400,9 @@ scheduleTemplateStatusSyncCron();
 // Initialize Amazon SP-API Sync (Phase 2)
 const scheduleAmazonSync = require('./cron/amazonSync');
 scheduleAmazonSync();
+
+const scheduleStatCacheCron = require('./cron/statCacheCron');
+scheduleStatCacheCron();
 
 // Initialize Flow Resumption Cron Job (Phase 17) - ALREADY INITIALIZED ABOVE AT LINE 156
 

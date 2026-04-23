@@ -13,6 +13,8 @@ const importSessionSchema = new mongoose.Schema({
     unique: true
   },
   filename: String,
+  batchName: String,
+  newPhones: [String],
   status: {
     type: String,
     enum: ['pending', 'processing', 'completed', 'failed', 'rolled_back'],

@@ -26,7 +26,17 @@ async function recordNudge(lead, body, type = 'text') {
     });
 }
 
-// Check if bot should skip this lead (Human takeover/Opt-out)
+// Phase 9: Batch-aware skip check — avoids N+1 Conversation.findOne per lead
+// Build a Set of phones in HUMAN_TAKEOVER for the whole client, then check in O(1)
+async function buildSkipSet(clientId) {
+    const takeoverConvos = await Conversation.find(
+        { clientId, status: 'HUMAN_TAKEOVER' },
+        { phone: 1 }
+    ).lean();
+    return new Set(takeoverConvos.map(c => c.phone));
+}
+
+// Legacy wrapper kept for backward compat — replaced by skipSet.has() in batch loops
 async function shouldSkipLead(lead) {
     const conv = await Conversation.findOne({ phone: lead.phoneNumber, clientId: lead.clientId });
     if (conv && conv.status === 'HUMAN_TAKEOVER') return true;
@@ -116,6 +126,9 @@ const scheduleAbandonedCartCron = () => {
                     continue;
                 }
 
+                // Phase 9: Pre-fetch all HUMAN_TAKEOVER phones for this client — O(1) skip checks
+                const skipSet = await buildSkipSet(client.clientId);
+
                 // --- Step 0: Browse Abandonment (Customizable Delay) ---
                 const browseDelayMin = parseInt(niche.browseDelay) || 30;
                 const browseBatch = await AdLead.find({
@@ -128,7 +141,7 @@ const scheduleAbandonedCartCron = () => {
                 }).limit(20);
 
                 for (const lead of browseBatch) {
-                    if (await shouldSkipLead(lead)) continue;
+                    if (skipSet.has(lead.phoneNumber)) continue;
                     const msg = `Hi ${lead.name || 'there'}! 👋 We noticed you checking out some amazing items. Need any help? We're here! 😊`;
                     await WhatsApp.sendText(client, lead.phoneNumber, msg);
                     await recordNudge(lead, msg);
@@ -150,7 +163,7 @@ const scheduleAbandonedCartCron = () => {
                 }).limit(50);
 
                 for (const lead of batch1) {
-                    if (await shouldSkipLead(lead)) continue;
+                    if (skipSet.has(lead.phoneNumber)) continue;
                     const msg = (niche.abandonedMsg15m || niche.abandonedMsg1)?.replace(/{name}/g, lead.name || 'there') || `Hi! 👋 We noticed you left something in your cart. Check it out now!`;
                     
                     await sendRichNudge(client, lead, msg, {
@@ -177,7 +190,7 @@ const scheduleAbandonedCartCron = () => {
                 }).limit(50);
 
                 for (const lead of batch2) {
-                    if (await shouldSkipLead(lead)) continue;
+                    if (skipSet.has(lead.phoneNumber)) continue;
                     const msg = (niche.abandonedMsg2h || niche.abandonedMsg2)?.replace(/{name}/g, lead.name || 'there') || `Hey! Your items are still waiting for you. 😊`;
                     
                     await sendRichNudge(client, lead, msg, {
@@ -204,7 +217,7 @@ const scheduleAbandonedCartCron = () => {
                 }).limit(50);
 
                 for (const lead of batch3) {
-                    if (await shouldSkipLead(lead)) continue;
+                    if (skipSet.has(lead.phoneNumber)) continue;
                     
                     // Phase 3: Conditional Discount Logic
                     const cartFlow = client.automationFlows?.find(f => f.id === 'abandoned_cart');

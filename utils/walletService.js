@@ -1,5 +1,6 @@
 const CustomerWallet = require('../models/CustomerWallet');
 const Client = require('../models/Client');
+const AdLead = require('../models/AdLead');
 const log = require('./logger')('WalletService');
 
 /**
@@ -69,6 +70,14 @@ async function processOrderForLoyalty(clientId, phone, orderAmount, orderId) {
         else wallet.tier = 'Bronze';
 
         await wallet.save();
+        
+        // Layer 2: Sync to AdLead for O(1) leaderboard querying
+        await AdLead.findOneAndUpdate(
+            { phoneNumber: cleanPhone, clientId },
+            { $set: { loyaltyPoints: wallet.balance, loyaltyTier: wallet.tier } },
+            { upsert: false } // Only update if lead exists
+        );
+
         log.info(`Awarded ${pointsToAward} points to ${cleanPhone} for client ${clientId}`);
 
         return { pointsAwarded: pointsToAward, newBalance: wallet.balance, tier: wallet.tier };
@@ -107,6 +116,14 @@ async function redeemPoints(clientId, phone, pointsToRedeem, metadata = 'Redempt
     });
 
     await wallet.save();
+    
+    // Layer 2: Sync to AdLead for O(1) leaderboard querying
+    await AdLead.findOneAndUpdate(
+        { phoneNumber: phone, clientId },
+        { $set: { loyaltyPoints: wallet.balance, loyaltyTier: wallet.tier } },
+        { upsert: false } // Only update if lead exists
+    );
+
     return wallet.balance;
 }
 
@@ -154,6 +171,14 @@ async function reverseOrderPoints(clientId, orderId) {
         });
 
         await wallet.save();
+        
+        // Layer 2: Sync to AdLead for O(1) leaderboard querying
+        await AdLead.findOneAndUpdate(
+            { phoneNumber: wallet.phone, clientId },
+            { $set: { loyaltyPoints: wallet.balance, loyaltyTier: wallet.tier } },
+            { upsert: false } // Only update if lead exists
+        );
+
         log.info(`Reversed ${pointsToDeduct} points for order ${orderId} from ${wallet.phone}`);
 
         return { pointsDeducted: pointsToDeduct, newBalance: wallet.balance };

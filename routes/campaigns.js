@@ -1,6 +1,7 @@
 const express = require('express');
 const { resolveClient } = require('../utils/queryHelpers');
 const router = express.Router();
+const TaskQueueService = require('../services/TaskQueueService');
 const Campaign = require('../models/Campaign');
 const CampaignMessage = require('../models/CampaignMessage');
 const Segment = require('../models/Segment');
@@ -270,16 +271,23 @@ router.post('/start', protect, async (req, res) => {
     if (campaign.segmentId) {
         const segment = await Segment.findById(campaign.segmentId);
         if (segment) {
-            const leads = await AdLead.find({ ...segment.query, clientId: req.user.clientId });
-            leads.forEach(l => {
-                rows.push({
-                    phone: l.phoneNumber,
-                    name: l.name || 'Customer',
-                    email: l.email || '',
-                    capturedData: l.capturedData || {},
-                    ...l.toObject() // surface all fields for mapping
-                });
+            const count = await AdLead.countDocuments({ ...segment.query, clientId: req.user.clientId });
+            
+            // Dispatch to background worker for Mongoose cursor streaming
+            await TaskQueueService.addTask('BROADCAST_CAMPAIGN', {
+                campaignId: campaign._id,
+                clientId: req.user.clientId,
+                templateType,
+                templateName: req.body.templateName,
+                templateComponents: req.body.templateComponents,
+                variableMapping: req.body.variableMapping,
+                languageCode: req.body.languageCode,
+                isAbTest: req.body.isAbTest,
+                abTestConfig: req.body.abTestConfig,
+                templateTypeB: req.body.templateTypeB
             });
+            
+            return res.json({ success: true, message: `Campaign targeting ${count} contacts queued for background processing.` });
         }
     } else if (campaign.csvFile) {
         await new Promise((resolve, reject) => {
@@ -769,6 +777,59 @@ router.post('/predictive-send', protect, async (req, res) => {
 
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// @route   GET /api/campaigns/templates
+// @desc    Get synced Meta templates for the client
+// @access  Private
+router.get('/templates', protect, async (req, res) => {
+  try {
+    const clientId = req.query.clientId || req.user.clientId;
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const client = await Client.findOne({ clientId }).select('syncedMetaTemplates').lean();
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    const approvedTemplates = (client.syncedMetaTemplates || []).filter(t => t.status === 'APPROVED');
+    res.json({ success: true, templates: approvedTemplates });
+  } catch (err) {
+    console.error('[CampaignTemplates] Error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch templates' });
+  }
+});
+
+// @route   GET /api/campaigns/audience-estimate
+// @desc    Get audience size estimate based on source/segment
+// @access  Private
+router.get('/audience-estimate', protect, async (req, res) => {
+  try {
+    const { clientId, source, segmentId, importBatchId } = req.query;
+    const cid = clientId || req.user.clientId;
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== cid) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    let count = 0;
+    if (source === 'all') {
+      count = await AdLead.countDocuments({ clientId: cid });
+    } else if (source === 'segment' && segmentId) {
+      const segment = await Segment.findOne({ _id: segmentId, clientId: cid });
+      if (segment) {
+        count = await AdLead.countDocuments({ clientId: cid, ...segment.query });
+      }
+    } else if (source === 'imported_list' && importBatchId) {
+        count = await AdLead.countDocuments({ clientId: cid, importBatchId });
+    } else if (source === 'high_intent') {
+        count = await AdLead.countDocuments({ clientId: cid, leadScore: { $gt: 70 } });
+    }
+
+    res.json({ success: true, count });
+  } catch (err) {
+    console.error('[AudienceEstimate] Error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch estimate' });
   }
 });
 

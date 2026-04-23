@@ -11,6 +11,8 @@ const DailyStatSchema = new mongoose.Schema({
   totalMessagesExchanged: { type: Number, default: 0 },
   agentRequests: { type: Number, default: 0 },
   linkClicks: { type: Number, default: 0 },
+  addToCarts: { type: Number, default: 0 },
+  checkouts: { type: Number, default: 0 },
   abandonedCartSent: { type: Number, default: 0 },
   abandonedCartClicks: { type: Number, default: 0 },
   cartRecoveryMessagesSent: { type: Number, default: 0 },

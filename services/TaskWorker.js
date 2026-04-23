@@ -99,17 +99,24 @@ if (taskWorker) {
 }
 
 async function handleImportLeads(data, job) {
-    const { clientId, batchId, filePath, filename, mapping } = data;
+    const { clientId, batchId, filePath, filename, mapping, listName } = data;
     const session = await ImportSession.findOne({ batchId });
     if (!session) return log.error(`[Import] Session not found for ${batchId}`);
 
     try {
         // Phase 0: Count total rows
+        const MAX_ROWS = 100000; // Enterprise safety valve
         let totalRows = 0;
         await new Promise((resolve, reject) => {
-            fs.createReadStream(filePath)
+            const countStream = fs.createReadStream(filePath)
                 .pipe(csv())
-                .on('data', () => totalRows++)
+                .on('data', () => {
+                    totalRows++;
+                    if (totalRows > MAX_ROWS) {
+                        countStream.destroy();
+                        reject(new Error(`File exceeds maximum allowed rows (${MAX_ROWS}). Please split the file.`));
+                    }
+                })
                 .on('end', resolve)
                 .on('error', reject);
         });
@@ -136,7 +143,12 @@ async function handleImportLeads(data, job) {
 
         // Phase 1: Parsing and Normalization (0% -> 50%)
         const results = [];
-        const batchTag = `Import_${new Date().toLocaleString('en-US', { month: 'short', day: '2-digit' })}_${filename.replace(/\.[^/.]+$/, "").slice(0, 10)}`;
+        const batchName = listName || filename.replace(/\.[^/.]+$/, "");
+        const batchTag = `Import_${new Date().toLocaleString('en-US', { month: 'short', day: '2-digit' })}_${batchName.slice(0, 10)}`;
+        
+        session.batchName = batchName;
+        await session.save();
+
         let processed = 0;
         let failed = 0;
 
@@ -172,12 +184,14 @@ async function handleImportLeads(data, job) {
                         phoneNumber,
                         name,
                         isNameCustom: !!rawName, // Source of Truth priority
+                        nameSource: 'imported',
+                        importBatchId: session._id,
                         email: rawEmail?.toLowerCase().trim(),
                         source: 'CSV_Import',
                         optStatus: 'opted_in',
                         tags: _.uniq([...(row.tags ? row.tags.split(',') : []), 'Imported', batchTag]),
                         capturedData: customData,
-                        meta: { lastImportId: batchId, importedAt: new Date() }
+                        meta: { lastImportId: batchId, importedAt: new Date(), importFilename: filename, importListName: batchName }
                     });
 
                     if (processed % 50 === 0 || processed === totalRows) {
@@ -193,6 +207,7 @@ async function handleImportLeads(data, job) {
         let success = 0;
         let updated = 0;
         const batchSize = 100;
+        const newPhones = [];
 
         for (let i = 0; i < results.length; i += batchSize) {
             const batch = results.slice(i, i + batchSize);
@@ -207,6 +222,12 @@ async function handleImportLeads(data, job) {
             const bulkResult = await AdLead.bulkWrite(bulkOps);
             success += bulkResult.upsertedCount || 0;
             updated += bulkResult.modifiedCount || 0;
+
+            if (bulkResult.upsertedCount > 0) {
+                Object.keys(bulkResult.upsertedIds).forEach(idx => {
+                    newPhones.push(batch[idx].phoneNumber);
+                });
+            }
             
             const currentProcessed = processed + Math.min(i + batchSize, results.length);
             const percent = 50 + Math.round((Math.min(i + batchSize, results.length) / results.length) * 50);
@@ -221,6 +242,7 @@ async function handleImportLeads(data, job) {
         session.successCount = success;
         session.duplicateCount = updated;
         session.errorCount = failed;
+        session.newPhones = newPhones;
         await session.save();
 
         if (success > 0) await incrementUsage(clientId, 'contacts', success);

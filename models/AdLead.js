@@ -19,6 +19,17 @@ const adLeadSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  nameSource: {
+    type: String,
+    enum: ['imported', 'whatsapp', 'manual'],
+    default: 'whatsapp'
+  },
+  importBatchId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ImportBatch',
+    default: null,
+    index: true
+  },
   email: {
     type: String,
     trim: true,
@@ -43,6 +54,15 @@ const adLeadSchema = new mongoose.Schema({
   ordersCount: {
     type: Number,
     default: 0
+  },
+  // Layer 2: Loyalty Hub $unwind Killer (Pre-computed fields)
+  loyaltyPoints: {
+    type: Number,
+    default: 0
+  },
+  loyaltyTier: {
+    type: String,
+    default: 'Bronze'
   },
   totalSpent: {
     type: Number,
@@ -291,8 +311,16 @@ adLeadSchema.statics.pushJourneyEvent = async function(clientId, phoneNumber, ev
 
 // Performance indexes for dashboard queries
 adLeadSchema.index({ clientId: 1, createdAt: -1 });
-adLeadSchema.index({ clientId: 1, cartStatus: 1 });
-adLeadSchema.index({ clientId: 1, leadScore: -1 });
+adLeadSchema.index({ clientId: 1, _id: -1 });      // Default sort for paginated leads listing
+// Note: { clientId: 1, cartStatus: 1 } and { clientId: 1, leadScore: -1 } already defined in Phase R3 block above
+
+// Enterprise: Import rollback performance (deleteMany on meta.lastImportId)
+adLeadSchema.index({ clientId: 1, 'meta.lastImportId': 1 });
+
+// Performance Overhaul: Indexes for expensive aggregation pipelines
+adLeadSchema.index({ clientId: 1, 'activityLog.action': 1, 'activityLog.timestamp': -1 }); // Chart $unwind queries on activityLog
+adLeadSchema.index({ clientId: 1, isOrderPlaced: 1, recoveryStep: 1, updatedAt: -1 });     // Abandoned cart cron batch queries
+adLeadSchema.index({ clientId: 1, adminFollowUpTriggered: 1, isOrderPlaced: 1 });           // Attribution funnel query
 
 const AdLead = mongoose.model('AdLead', adLeadSchema);
 

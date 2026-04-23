@@ -75,14 +75,15 @@ exports.getBatchData = async (req, res) => {
       // 2: pending_support
       widgets.includes('pending_support') ? Conversation.find({ 
         clientId, 
-        $or: [{ status: 'HUMAN_TAKEOVER' }, { botPaused: true }]
-      }).limit(5).sort({ updatedAt: -1 }).lean() : Promise.resolve(null),
+        status: { $in: ['HUMAN_TAKEOVER', 'OPEN'] },
+        requiresAttention: true 
+      }).select('phone lastMessage snippet status').limit(20).lean() : Promise.resolve([]),
 
       // 3: competitor_intel
       widgets.includes('competitor_intel') ? Competitor.find({ 
-        clientId: clientObjectId,
-        isActive: true
-      }).limit(5).lean() : Promise.resolve(null),
+        clientId: clientDoc._id, 
+        isActive: true 
+      }).select('name url lastPriceChange lastProductAdded').limit(5).lean() : Promise.resolve([]),
 
       // 4: demand_forecast
       widgets.includes('demand_forecast') ? (async () => {
@@ -490,7 +491,7 @@ exports.generateBattlePlan = async (req, res) => {
     const { generateText } = require('../utils/gemini');
     const { scrapeWebsiteText } = require('../utils/urlScraper');
 
-    const competitor = await Competitor.findById(id);
+    const competitor = await Competitor.findById(id).lean();
     if (!competitor) return res.status(404).json({ success: false, message: "Competitor not found" });
 
     const clientDoc = await Client.findOne({ clientId: req.user.clientId }).lean();

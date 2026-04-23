@@ -170,161 +170,38 @@ router.get('/realtime', protect, async (req, res) => {
     if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
       clientId = req.query.clientId;
     }
-    
-    const query = { clientId };
 
-    // ✅ Phase R3: IST midnight fix — was using UTC midnight (new Date().setHours(0,0,0,0))
-    // Dashboard 'Today' counter was resetting at 5:30 AM IST instead of IST midnight
-    const today = startOfDayIST();
+    // Performance Overhaul: Single document lookup replaces 17 aggregation queries
+    const { getStats } = require('../utils/statCacheEngine');
+    const stats = await getStats(clientId);
 
-    // Performance: Execute ALL independent queries in parallel instead of sequentially
-    const [
-      client,
-      totalLeads,
-      newLeadsToday,
-      ordersToday,
-      appointmentsToday,
-      linkClicksResult,
-      dailyStats,
-      cartResult,
-      checkoutResult,
-      abandonedCarts,
-      recoveredCarts,
-      cartStatsResult,
-      totalOrdersAllTime,
-      whatsappRecoveriesPurchasedResult,
-      adminFollowupsPurchased,
-      attributionResult,
-      sentimentAgg
-    ] = await Promise.all([
-      // 0. Client
-      Client.findOne({ clientId }).select('businessName name isActive').lean(),
-      // 1. Total Leads
-      AdLead.countDocuments(query),
-      // 2. New Leads Today
-      AdLead.countDocuments({ ...query, createdAt: { $gte: today } }),
-      // 3. Orders Today
-      Order.find({ ...query, createdAt: { $gte: today } }).select('amount').lean(),
-      // 4. Appointments Today
-      Appointment.find({ ...query, createdAt: { $gte: today } }).select('revenue').lean(),
-      // 5. Link Clicks
-      AdLead.aggregate([
-        { $match: query },
-        { $group: { _id: null, totalClicks: { $sum: "$linkClicks" } } }
-      ]),
-      // 6. Daily Stats
-      DailyStat.find({ ...query, date: today.toISOString().split('T')[0] }).lean(),
-      // 7. Cart Adds
-      AdLead.aggregate([
-        { $match: query },
-        { $group: { _id: null, totalCarts: { $sum: "$addToCartCount" } } }
-      ]),
-      // 8. Checkouts
-      AdLead.aggregate([
-        { $match: query },
-        { $group: { _id: null, totalCheckouts: { $sum: "$checkoutInitiatedCount" } } }
-      ]),
-      // 9. Abandoned Carts
-      AdLead.countDocuments({ ...query, cartStatus: 'abandoned' }),
-      // 10. Recovered Carts
-      AdLead.countDocuments({ ...query, cartStatus: 'recovered' }),
-      // 11. Cart Stats
-      DailyStat.aggregate([
-        { $match: query },
-        { $group: { _id: null, totalSent: { $sum: "$abandonedCartSent" }, totalClicks: { $sum: "$abandonedCartClicks" } } }
-      ]),
-      // 12. Total Orders All Time
-      Order.countDocuments(query),
-      // 13. WhatsApp Recoveries Purchased
-      AdLead.aggregate([
-        { $match: query },
-        {
-          $project: {
-            purchaseAfterRecoveryCount: {
-              $size: {
-                $filter: {
-                  input: { $ifNull: ["$activityLog", []] },
-                  as: "log",
-                  cond: { $eq: ["$$log.action", "purchase_completed_after_recovery"] }
-                }
-              }
-            }
-          }
-        },
-        { $group: { _id: null, total: { $sum: "$purchaseAfterRecoveryCount" } } }
-      ]),
-      // 14. Admin Followups Purchased
-      AdLead.countDocuments({ ...query, adminFollowUpTriggered: true, isOrderPlaced: true }),
-      // 15. Attribution
-      AdLead.aggregate([
-        { $match: query },
-        { $unwind: { path: "$commerceEvents", preserveNullAndEmptyArrays: false } },
-        { $match: { "commerceEvents.event": "checkout_completed" } },
-        {
-          $group: {
-            _id: { $ifNull: ["$adAttribution.source", "Organic/Direct"] },
-            revenue: { $sum: "$commerceEvents.amount" },
-            count: { $sum: 1 }
-          }
-        }
-      ]),
-      // 16. Sentiment
-      Conversation.aggregate([
-        { $match: query },
-        { $group: { _id: "$sentiment", count: { $sum: 1 } } }
-      ])
-    ]);
+    if (!stats) {
+      return res.status(404).json({ message: 'Client not found or stats unavailable' });
+    }
 
-    if (!client) return res.status(404).json({ message: 'Client not found' });
+    // Fetch client name (lightweight — indexed unique lookup)
+    const client = await Client.findOne({ clientId }).select('businessName name').lean();
 
-    // Process results (same logic as before, just using destructured variables)
-    const orderRevenue = ordersToday.reduce((sum, order) => sum + order.amount, 0);
-    const appointmentRevenue = appointmentsToday.reduce((sum, appt) => sum + (appt.revenue || 0), 0);
-    const revenueToday = orderRevenue + appointmentRevenue;
-    const orderCountToday = ordersToday.length;
-    const totalLinkClicks = linkClicksResult[0]?.totalClicks || 0;
-    const agentRequestsToday = dailyStats.reduce((sum, ds) => sum + (ds.agentRequests || 0), 0);
-    const totalAddCarts = cartResult[0]?.totalCarts || 0;
-    const totalCheckouts = checkoutResult[0]?.totalCheckouts || 0;
-    const totalAbandonedCartSent = cartStatsResult[0]?.totalSent || 0;
-    const totalAbandonedCartClicks = cartStatsResult[0]?.totalClicks || 0;
-    const whatsappRecoveriesPurchased = whatsappRecoveriesPurchasedResult[0]?.total || 0;
-
-    const sentimentCounts = {
-      Positive: 0, Neutral: 0, Negative: 0, Frustrated: 0, Urgent: 0, Unknown: 0
-    };
-    sentimentAgg.forEach(s => {
-      const key = s._id || 'Unknown';
-      if (sentimentCounts.hasOwnProperty(key)) {
-        sentimentCounts[key] = s.count;
-      } else {
-        sentimentCounts.Unknown += s.count;
-      }
-    });
-
+    // Map StatCache to the existing /realtime response shape (backward-compatible)
     res.json({
-      businessName: client.businessName || client.name,
-      leads: { total: totalLeads, newToday: newLeadsToday },
-      orders: { count: orderCountToday, revenue: revenueToday },
-      linkClicks: totalLinkClicks,
-      agentRequests: agentRequestsToday,
-      addToCarts: totalAddCarts,
-      checkouts: totalCheckouts,
-      abandonedCarts,
-      recoveredCarts,
-      abandonedCartSent: totalAbandonedCartSent,
-      abandonedCartClicks: totalAbandonedCartClicks,
+      businessName: client?.businessName || client?.name || clientId,
+      leads: { total: stats.totalLeads, newToday: stats.leadsToday },
+      orders: { count: stats.ordersToday, revenue: stats.revenueToday },
+      linkClicks: stats.totalLinkClicks,
+      agentRequests: 0, // Maintained by DailyStat, not in StatCache hot path
+      addToCarts: stats.totalAddToCarts,
+      checkouts: stats.totalCheckouts,
+      abandonedCarts: stats.abandonedCarts,
+      recoveredCarts: stats.recoveredCarts,
+      abandonedCartSent: stats.abandonedCartSent,
+      abandonedCartClicks: stats.abandonedCartClicks,
       funnel: {
-        totalOrdersAllTime,
-        whatsappRecoveriesPurchased,
-        adminFollowupsPurchased
+        totalOrdersAllTime: stats.totalOrders,
+        whatsappRecoveriesPurchased: stats.whatsappRecoveriesPurchased,
+        adminFollowupsPurchased: stats.adminFollowupsPurchased
       },
-      attribution: attributionResult.map(a => ({
-        source: a._id,
-        revenue: a.revenue,
-        count: a.count
-      })),
-      sentiment: sentimentCounts
+      attribution: [], // Attribution now served via /analytics/attribution (separate lightweight endpoint)
+      sentiment: stats.sentimentCounts || { Positive: 0, Neutral: 0, Negative: 0, Frustrated: 0, Urgent: 0, Unknown: 0 }
     });
 
   } catch (error) {
@@ -342,9 +219,9 @@ router.get('/leads', protect, async (req, res) => {
 
     const query = { clientId };
 
-    const { limit = 20, search = '', page = 1 } = req.query;
+    const { limit = 20, search = '', page = 1, tag, segmentScore, lastSeen, sortBy } = req.query;
     const pageNum = parseInt(page) || 1;
-    const limitNum = parseInt(limit) || 20;
+    const limitNum = Math.min(parseInt(limit) || 20, 100);
 
     if (search) {
       const searchRegex = new RegExp(search, 'i');
@@ -353,22 +230,53 @@ router.get('/leads', protect, async (req, res) => {
         { phoneNumber: searchRegex }
       ];
     }
+    
+    // Server-side Filtering
+    if (tag) {
+      query.tags = tag;
+    }
+    
+    if (segmentScore) {
+      const [min, max] = segmentScore.split('-').map(Number);
+      if (!isNaN(min) && !isNaN(max)) query.leadScore = { $gte: min, $lte: max };
+    }
+    
+    if (lastSeen) {
+      const days = lastSeen === '24h' ? 1 : lastSeen === '7d' ? 7 : lastSeen === '14d' ? 14 : lastSeen === '1m' ? 30 : lastSeen === '6m' ? 180 : 0;
+      if (days > 0) {
+        const date = new Date();
+        date.setDate(date.getDate() - days);
+        query.lastInteraction = { $gte: date };
+      }
+    }
 
     const skip = (pageNum - 1) * limitNum;
+    
+    let sortObj = { _id: -1 };
+    if (sortBy === 'recent') sortObj = { lastInteraction: -1 };
+    if (sortBy === 'score') sortObj = { leadScore: -1 };
+    if (sortBy === 'ltv') sortObj = { totalSpent: -1 };
+    if (sortBy === 'name') sortObj = { name: 1 };
+    if (sortBy === 'clicks') sortObj = { linkClicks: -1 };
 
-    const leads = await AdLead.find(query)
-      .sort({ _id: -1 })
-      .skip(skip)
-      .limit(limitNum);
+    const [leads, total] = await Promise.all([
+      AdLead.find(query)
+        .sort(sortObj)
+        .skip(skip)
+        .limit(limitNum)
+        .select('name phoneNumber leadScore tags lastInteraction chatSummary cartStatus lastMessageContent lastInboundAt linkClicks email ordersCount totalSpent intentState addToCartCount meta createdAt')
+        .lean(),
+      AdLead.countDocuments(query)
+    ]);
 
-    const total = await AdLead.countDocuments(query);
     const totalPages = Math.ceil(total / limitNum);
 
     res.json({
       leads,
       currentPage: pageNum,
       totalPages,
-      totalLeads: total
+      totalLeads: total,
+      pagination: { page: pageNum, limit: limitNum, total, totalPages }
     });
 
   } catch (error) {
@@ -523,6 +431,34 @@ router.get('/lead/:id', protect, async (req, res) => {
       }
     }
 
+    // --- PHASE 29: Journey Log Aggregation ---
+    const journeyLog = [];
+    if (lead.createdAt) {
+      journeyLog.push({ eventName: 'Lead Created', timestamp: lead.createdAt });
+    }
+    if (orders && orders.length > 0) {
+      orders.forEach(o => journeyLog.push({ 
+        eventName: 'Order Placed', 
+        timestamp: o.createdAt, 
+        metadata: { amount: o.totalPrice, status: o.financialStatus, name: o.name } 
+      }));
+    }
+    if (conversation && conversation.createdAt) {
+      journeyLog.push({ eventName: 'Conversation Started', timestamp: conversation.createdAt });
+    }
+    // Sort chronological
+    journeyLog.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+
+    // --- PHASE 30: Automation Sequences ---
+    let sequences = [];
+    try {
+      const FollowUpSequence = require('../models/FollowUpSequence');
+      sequences = await FollowUpSequence.find({ clientId: lead.clientId, phone: lead.phoneNumber })
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .lean();
+    } catch (_) {}
+
     // Perf: Background update to AdLead so next load is instant
     if (updatedNeeded) {
       AdLead.findByIdAndUpdate(lead._id, { $set: updateData }).catch(e => console.error("Enrichment Background Update Failed", e));
@@ -536,7 +472,9 @@ router.get('/lead/:id', protect, async (req, res) => {
       messages,
       intelligence: dna || null,
       wallet: wallet ? { ...wallet, transactions: walletTransactions } : null,
-      marketingLogs
+      marketingLogs,
+      sequences,
+      journeyLog
     });
   } catch (error) {
     console.error('Lead Detail Error:', error);
@@ -587,16 +525,19 @@ router.put('/lead/:phone', protect, async (req, res) => {
       clientId = req.query.clientId;
     }
     
-    const { name, email, tags } = req.body;
+    const { name, email, tags, isNameCustom } = req.body;
     
     // Robust phone matching: strip non-digits, use last 10 for suffix match
     const cleanPhone = req.params.phone.replace(/\D/g, '');
     const phoneSuffix = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
     const phoneRegex = new RegExp(`${phoneSuffix}$`);
     
+    let updateFields = { name, email, tags, lastInteraction: new Date() };
+    if (isNameCustom !== undefined) updateFields.isNameCustom = isNameCustom;
+
     const lead = await AdLead.findOneAndUpdate(
       { phoneNumber: phoneRegex, clientId },
-      { $set: { name, email, tags, lastInteraction: new Date() } },
+      { $set: updateFields },
       { new: true }
     );
     
@@ -974,10 +915,7 @@ router.get('/', protect, async (req, res) => {
       appointments,
       messages,
       reminderStats,
-      orders,
-      cartEvents,
-      linkClickEvents,
-      checkoutEvents
+      orders
     ] = await Promise.all([
       // GCal
       Promise.all(Array.from(calendarIds).map(calId =>
@@ -1005,27 +943,6 @@ router.get('/', protect, async (req, res) => {
       Order.aggregate([
         { $match: { ...clientIdQuery, createdAt: { $gte: startDate, $lte: endDate } } },
         { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } }, count: { $sum: 1 }, revenue: { $sum: "$amount" } } }
-      ]),
-      // 7. Add to Cart
-      AdLead.aggregate([
-        { $match: { ...clientIdQuery, 'activityLog.action': 'add_to_cart', 'activityLog.timestamp': { $gte: startDate, $lte: endDate } } },
-        { $unwind: '$activityLog' },
-        { $match: { 'activityLog.action': 'add_to_cart', 'activityLog.timestamp': { $gte: startDate, $lte: endDate } } },
-        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$activityLog.timestamp" } }, count: { $sum: 1 } } }
-      ]),
-      // 8. Link Clicks
-      AdLead.aggregate([
-        { $match: { ...clientIdQuery, 'activityLog.action': { $in: ['link_click', 'whatsapp_restore_link_clicked'] }, 'activityLog.timestamp': { $gte: startDate, $lte: endDate } } },
-        { $unwind: '$activityLog' },
-        { $match: { 'activityLog.action': { $in: ['link_click', 'whatsapp_restore_link_clicked'] }, 'activityLog.timestamp': { $gte: startDate, $lte: endDate } } },
-        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$activityLog.timestamp" } }, count: { $sum: 1 } } }
-      ]),
-      // 9. Checkouts
-      AdLead.aggregate([
-        { $match: { ...clientIdQuery, 'activityLog.action': 'checkout_initiated', 'activityLog.timestamp': { $gte: startDate, $lte: endDate } } },
-        { $unwind: '$activityLog' },
-        { $match: { 'activityLog.action': 'checkout_initiated', 'activityLog.timestamp': { $gte: startDate, $lte: endDate } } },
-        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$activityLog.timestamp" } }, count: { $sum: 1 } } }
       ])
     ]);
 
@@ -1056,9 +973,9 @@ router.get('/', protect, async (req, res) => {
       const dayOrder = orders.find(c => c._id === date);
       const orderCount = dayOrder?.count || 0;
       const orderRevenue = dayOrder?.revenue || 0;
-      const cartCount = cartEvents.find(c => c._id === date)?.count || 0;
-      const linkClickCount = linkClickEvents.find(c => c._id === date)?.count || 0;
-      const checkoutCount = checkoutEvents.find(c => c._id === date)?.count || 0;
+      const cartCount = dayReminder?.addToCarts || 0;
+      const linkClickCount = dayReminder?.linkClicks || 0;
+      const checkoutCount = dayReminder?.checkouts || 0;
       const abandonedCartSent = dayReminder?.abandonedCartSent || 0;
       const abandonedCartClicks = dayReminder?.abandonedCartClicks || 0;
       const recoveredViaStep1 = dayReminder?.recoveredViaStep1 || 0;
@@ -1118,9 +1035,11 @@ router.get('/insights', protect, async (req, res) => {
     const clientId = req.user.clientId;
     const query = { clientId };
 
-    const appts = await Appointment.find(query).select('createdAt phone revenue').lean();
-    const orders = await Order.find(query).select('createdAt amount').lean();
-    const leads = await AdLead.find(query).select('createdAt lastSeen ordersCount addToCartCount phoneNumber checkoutInitiatedCount cartStatus').lean();
+    const [appts, orders, leads] = await Promise.all([
+      Appointment.find(query).select('createdAt phone revenue').lean(),
+      Order.find(query).select('createdAt amount').lean(),
+      AdLead.find(query).select('createdAt lastSeen ordersCount addToCartCount phoneNumber checkoutInitiatedCount cartStatus').lean()
+    ]);
 
     // 1. Peak Hours Heatmap (Aggregate Checkouts, Orders, and Appointments)
     const heatmap = {}; 
@@ -1630,34 +1549,36 @@ router.get('/agent-performance', protect, async (req, res) => {
     const clientId = req.user.clientId;
     const query = { clientId };
 
-    // 1. Fetch Conversations with metrics
+    // 1. Fetch Conversations with FRT metrics (lean + select only needed fields)
     const convos = await Conversation.find({ 
         ...query, 
         firstInboundAt: { $exists: true },
         firstResponseAt: { $exists: true }
-    });
+    }).select('firstInboundAt firstResponseAt').lean();
 
     // 2. Calculate Avg FRT
     let totalFRT = 0;
     convos.forEach(c => {
-        const diff = (c.firstResponseAt - c.firstInboundAt) / 1000; // seconds
+        const diff = (new Date(c.firstResponseAt) - new Date(c.firstInboundAt)) / 1000; // seconds
         totalFRT += diff;
     });
     const avgFRT = convos.length > 0 ? (totalFRT / convos.length) : 0;
 
-    // 3. Resolution Rate & Avg Resolution Time
-    const totalConvos = await Conversation.countDocuments(query);
-    const resolvedConvos = await Conversation.find({ ...query, resolvedAt: { $exists: true } });
+    // 3. Resolution Rate & Avg Resolution Time (parallel queries)
+    const [totalConvos, resolvedConvos, csatConvos] = await Promise.all([
+      Conversation.countDocuments(query),
+      Conversation.find({ ...query, resolvedAt: { $exists: true } }).select('resolvedAt firstInboundAt').lean(),
+      Conversation.find({ ...query, "csatScore.rating": { $exists: true } }).select('csatScore').lean()
+    ]);
     const resolutionRate = totalConvos > 0 ? (resolvedConvos.length / totalConvos * 100).toFixed(1) : "0";
     
     let totalResolutionTime = 0;
     resolvedConvos.forEach(c => {
-        totalResolutionTime += (c.resolvedAt - c.firstInboundAt) / (1000 * 60 * 60); // hours
+        totalResolutionTime += (new Date(c.resolvedAt) - new Date(c.firstInboundAt)) / (1000 * 60 * 60); // hours
     });
     const avgResolutionTime = resolvedConvos.length > 0 ? (totalResolutionTime / resolvedConvos.length).toFixed(1) : 0;
 
-    // 4. CSAT Calculation
-    const csatConvos = await Conversation.find({ ...query, "csatScore.rating": { $exists: true } });
+    // 4. CSAT Calculation (already fetched above)
     const totalScore = csatConvos.reduce((sum, c) => sum + c.csatScore.rating, 0);
     const avgCSAT = csatConvos.length > 0 ? (totalScore / csatConvos.length).toFixed(1) : "0";
 
@@ -1707,65 +1628,44 @@ router.get("/:clientId/home", protect, async (req, res) => {
     const { client, clientOid } = await resolveClient(req);
     const today = startOfDayIST();
     
-    // BUILD COMPREHENSIVE PAYLOAD (Phase R1 Block 9)
+    // BUILD COMPREHENSIVE PAYLOAD using StatCache
+    const { getStats } = require('../utils/statCacheEngine');
+    const stats = await getStats(client.clientId);
+
     const [
-      leadsTotal, 
-      leadsToday, 
-      ordersTodayRaw, 
-      convsTotal,
       escalations,
       topLeads,
-      topProductsRaw,
-      realtimeAgg
+      topProductsRaw
     ] = await Promise.all([
-      AdLead.countDocuments({ clientId: client.clientId }),
-      AdLead.countDocuments({ clientId: client.clientId, createdAt: { $gte: today } }),
-      Order.aggregate([
-        { $match: { clientId: client.clientId, createdAt: { $gte: today } } },
-        { $group: { _id: null, total: { $sum: "$totalPrice" }, count: { $sum: 1 } } }
-      ]),
-      Conversation.countDocuments({ clientId: client.clientId }),
-      Conversation.find({ clientId: client.clientId, status: 'HUMAN_TAKEOVER' }).sort({ lastMessageAt: -1 }).limit(10),
-      AdLead.find({ clientId: client.clientId, leadScore: { $gte: 60 } }).sort({ leadScore: -1 }).limit(5),
+      Conversation.find({ clientId: client.clientId, status: 'HUMAN_TAKEOVER' }).sort({ lastMessageAt: -1 }).limit(10).select('phone customerName lastMessage lastMessageAt attentionReason status').lean(),
+      AdLead.find({ clientId: client.clientId, leadScore: { $gte: 60 } }).sort({ leadScore: -1 }).limit(5).select('name phoneNumber leadScore tags lastInteraction intentState').lean(),
       Order.aggregate([
         { $match: { clientId: client.clientId } },
         { $unwind: "$items" },
         { $group: { _id: "$items.name", revenue: { $sum: { $multiply: ["$items.price", "$items.quantity"] } }, sold: { $sum: "$items.quantity" } } },
         { $sort: { revenue: -1 } },
         { $limit: 10 }
-      ]),
-      AdLead.aggregate([
-        { $match: { clientId: client.clientId } },
-        { $group: { 
-            _id: null, 
-            addToCarts: { $sum: "$addToCartCount" }, 
-            checkouts: { $sum: "$checkoutInitiatedCount" },
-            linkClicks: { $sum: "$linkClicks" },
-            abandoned: { $sum: { $cond: [{ $eq: ["$cartStatus", "abandoned"] }, 1, 0] } },
-            recovered: { $sum: { $cond: [{ $eq: ["$cartStatus", "recovered"] }, 1, 0] } }
-        } }
       ])
     ]);
     
-    const revenue = ordersTodayRaw[0]?.total || 0;
-    const ordersCount = ordersTodayRaw[0]?.count || 0;
-    const rt = realtimeAgg[0] || { addToCarts: 0, checkouts: 0, linkClicks: 0, abandoned: 0, recovered: 0 };
+    const revenue = stats.revenueToday || 0;
+    const ordersCount = stats.ordersToday || 0;
 
     return res.json({
       success: true,
       data: {
         stats_grid: {
-          leads: { total: leadsTotal, newToday: leadsToday },
+          leads: { total: stats.totalLeads, newToday: stats.leadsToday },
           orders: { 
             count: ordersCount, 
             revenue: revenue,
-            cartAdds: rt.addToCarts,
-            checkouts: rt.checkouts,
-            linkClicks: rt.linkClicks,
-            abandonedCarts: rt.abandoned,
-            recoveredCarts: rt.recovered
+            cartAdds: stats.totalAddToCarts,
+            checkouts: stats.totalCheckouts,
+            linkClicks: stats.totalLinkClicks,
+            abandonedCarts: stats.abandonedCarts,
+            recoveredCarts: stats.recoveredCarts
           },
-          conversations: { total: convsTotal }
+          conversations: { total: stats.totalConversations }
         },
         pending_escalations: escalations,
         top_leads: topLeads,

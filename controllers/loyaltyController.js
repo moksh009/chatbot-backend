@@ -41,51 +41,48 @@ async function getLoyaltyStats(req, res) {
                     totalMembers: { $sum: 1 }
                 }}
             ]),
-            // Points issued today
-            CustomerWallet.aggregate([
-                { $match: { clientId: client.clientId } },
-                { $unwind: '$transactions' },
-                { $match: {
-                    'transactions.type': 'earn',
-                    'transactions.timestamp': { $gte: today }
+            // Points issued today (via LoyaltyTransaction instead of $unwind)
+            LoyaltyTransaction.aggregate([
+                { $match: { 
+                    clientId: client.clientId, 
+                    type: 'earn', 
+                    timestamp: { $gte: today } 
                 }},
-                { $group: { _id: null, issuedToday: { $sum: '$transactions.amount' } }}
+                { $group: { _id: null, issuedToday: { $sum: '$amount' } }}
             ]),
-            // Redemption stats
-            CustomerWallet.aggregate([
-                { $match: { clientId: client.clientId } },
-                { $unwind: '$transactions' },
-                { $match: { 'transactions.type': 'redeem' } },
+            // Redemption stats (via LoyaltyTransaction instead of $unwind)
+            LoyaltyTransaction.aggregate([
+                { $match: { 
+                    clientId: client.clientId, 
+                    type: 'redeem' 
+                }},
                 { $group: {
                     _id: null,
-                    totalRedeemed: { $sum: { $abs: '$transactions.amount' } },
+                    totalRedeemed: { $sum: { $abs: '$amount' } },
                     redemptionCount: { $sum: 1 },
                     uniqueRedeemers: { $addToSet: '$phone' }
                 }}
             ]),
-            // Recent Transactions (Global)
-            CustomerWallet.aggregate([
-                { $match: { clientId: client.clientId } },
-                { $unwind: '$transactions' },
-                { $sort: { 'transactions.timestamp': -1 } },
-                { $limit: 10 },
-                { $project: {
-                    _id: 0,
-                    phone: 1,
-                    type: '$transactions.type',
-                    amount: '$transactions.amount',
-                    reason: '$transactions.reason',
-                    timestamp: '$transactions.timestamp'
-                }}
-            ]),
-            // Top 5 customers by balance
-            CustomerWallet.find({ clientId: client.clientId, balance: { $gt: 0 } })
-
-                .sort({ balance: -1 })
+            // Recent Transactions (Global) via LoyaltyTransaction
+            LoyaltyTransaction.find({ clientId: client.clientId })
+                .sort({ timestamp: -1 })
+                .limit(10)
+                .select('phone type amount reason timestamp -_id')
+                .lean(),
+            // Top 5 customers by balance - O(1) via AdLead (Layer 2)
+            AdLead.find({ clientId: client.clientId, loyaltyPoints: { $gt: 0 } })
+                .sort({ loyaltyPoints: -1 })
                 .limit(5)
-                .select('phone balance tier lifetimePoints')
+                .select('phoneNumber loyaltyPoints loyaltyTier')
                 .lean()
         ]);
+
+        // Map AdLead fields to match old frontend expectations
+        const mappedTopCustomers = topCustomers.map(c => ({
+            phone: c.phoneNumber,
+            balance: c.loyaltyPoints,
+            tier: c.loyaltyTier
+        }));
 
         const ws = walletStats[0] || { totalPoints: 0, activeMembers: 0, totalMembers: 0 };
         const rd = redemptionStats[0] || { totalRedeemed: 0, redemptionCount: 0, uniqueRedeemers: [] };
@@ -105,7 +102,7 @@ async function getLoyaltyStats(req, res) {
             redemptionCount: rd.redemptionCount,
             redemptionVelocity: parseFloat(redemptionVelocity),
             recentTransactions: recentTransactions || [],
-            topCustomers
+            topCustomers: mappedTopCustomers
         });
 
     } catch (err) {

@@ -360,6 +360,19 @@ async function _runDualBrainEngine(parsedMessage, client) {
     const inboundText = parsedMessage.text?.body || parsedMessage.interactive?.button_reply?.title || parsedMessage.interactive?.list_reply?.title || '';
     const txtLower = inboundText.toLowerCase().trim();
 
+    // --- Name Priority Guard (Enterprise) ---
+    // If the lead was imported via CSV or manually renamed, do NOT overwrite customerName with WhatsApp profile.
+    let shouldSetCustomerName = !!profileName;
+    if (profileName) {
+      const existingLeadForName = await AdLead.findOne(
+        { phoneNumber: phone, clientId: client.clientId },
+        { isNameCustom: 1, nameSource: 1, name: 1 }
+      ).lean();
+      if ((existingLeadForName?.isNameCustom || existingLeadForName?.nameSource === 'imported') && existingLeadForName?.name) {
+        shouldSetCustomerName = false; // Preserve the CSV/manual name
+      }
+    }
+
     // --- STEP 0: SESSION UPSERT (Mandatory for Keywords) ---
     let convo = await Conversation.findOneAndUpdate(
         { phone, clientId: client.clientId },
@@ -368,7 +381,7 @@ async function _runDualBrainEngine(parsedMessage, client) {
           $inc: { unreadCount: 1 },
           $set: { 
             lastInteraction: new Date(),
-            ...(profileName && { customerName: profileName })
+            ...(shouldSetCustomerName && { customerName: profileName })
           }
         },
         { upsert: true, new: true }

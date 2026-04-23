@@ -32,6 +32,10 @@ router.get('/:uid/:productId', async (req, res) => {
             
             // Increment DailyStat
             await trackEcommerceEvent(lead.clientId, { linkClicks: 1 });
+            
+            // Phase 3: Increment StatCache
+            const { incrementStat } = require('../utils/statCacheEngine');
+            await incrementStat(lead.clientId, { totalLinkClicks: 1 });
 
             // Emit socket event for real-time dashboard update
             if (io) {
@@ -80,6 +84,10 @@ router.post('/cart', async (req, res) => {
         if (lead && io) {
             // Track in DailyStat
             await trackEcommerceEvent(clientId, { addToCarts: 1 }, { [product]: 1 });
+
+            // Phase 3: Increment StatCache
+            const { incrementStat } = require('../utils/statCacheEngine');
+            await incrementStat(clientId, { totalAddToCarts: 1 });
 
             io.to(`client_${clientId}`).emit('stats_update', {
                 type: 'add_to_cart',
@@ -173,6 +181,14 @@ router.post('/order-webhook', async (req, res) => {
                 // Attribution Logic: Check if this lead recently received a campaign message
                 const { attributeRevenueToCampaign } = require('../utils/campaignStatsHelper');
                 await attributeRevenueToCampaign(order, lead);
+                
+                // Phase 3: Increment StatCache
+                const { incrementStat } = require('../utils/statCacheEngine');
+                await incrementStat(clientId, { 
+                    totalOrders: 1, 
+                    ordersToday: 1, 
+                    revenueToday: amount 
+                });
 
                 io.to(`client_${clientId}`).emit('stats_update', {
                     type: 'new_order',

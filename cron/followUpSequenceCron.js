@@ -37,14 +37,26 @@ const scheduleFollowUpSequenceCron = () => {
 
             console.log(`[SequenceCron] Found ${sequences.length} sequences with due steps.`);
 
+            if (sequences.length === 0) { cronRunning = false; return; }
+
+            // Phase 9: Batch-load all clients and leads to eliminate N+1
+            const uniqueClientIds = [...new Set(sequences.map(s => s.clientId))];
+            const uniqueLeadIds = [...new Set(sequences.map(s => s.leadId).filter(Boolean))];
+
+            const [clientDocs, leadDocs] = await Promise.all([
+                Client.find({ clientId: { $in: uniqueClientIds } }).lean(),
+                AdLead.find({ _id: { $in: uniqueLeadIds } })
+            ]);
+
+            const clientMap = new Map(clientDocs.map(c => [c.clientId, c]));
+            const leadMap = new Map(leadDocs.map(l => [String(l._id), l]));
+
             for (const seq of sequences) {
                 const dueStep = seq.steps.find(s => s.status === "pending" && s.sendAt <= now);
                 if (!dueStep) continue;
 
-                const [client, lead] = await Promise.all([
-                    Client.findOne({ clientId: seq.clientId }),
-                    AdLead.findById(seq.leadId)
-                ]);
+                const client = clientMap.get(seq.clientId);
+                const lead = leadMap.get(String(seq.leadId));
 
                 if (!client || !lead) {
                     dueStep.status = "failed";

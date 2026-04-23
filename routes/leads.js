@@ -13,6 +13,7 @@ const { logAction } = require('../middleware/audit');
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
 const TaskQueueService = require('../services/TaskQueueService');
 const path = require('path');
+const { stringify } = require('csv-stringify');
 
 // Multer setup for temporary CSV storage
 const upload = multer({ dest: '/tmp/csv_uploads/' });
@@ -111,6 +112,7 @@ router.post('/:clientId/import', protect, logAction('IMPORT_LEADS'), upload.sing
             filePath: persistentPath,
             filename,
             mapping,
+            listName: req.body.listName || filename,
             user: { id: req.user._id, role: req.user.role }
         });
 
@@ -131,9 +133,14 @@ router.post('/:clientId/import', protect, logAction('IMPORT_LEADS'), upload.sing
     }
 });
 
-// POST /api/leads/:clientId/rollback/:batchId
-router.post('/:clientId/rollback/:batchId', protect, logAction('ROLLBACK_IMPORT'), async (req, res) => {
+// DELETE /api/leads/:clientId/import/:batchId
+router.delete('/:clientId/import/:batchId', protect, logAction('DELETE_IMPORT'), async (req, res) => {
     const { clientId, batchId } = req.params;
+    const { confirmText } = req.body;
+
+    if (confirmText !== 'DELETE') {
+        return res.status(400).json({ success: false, message: 'Invalid confirmation text' });
+    }
 
     try {
         const session = await ImportSession.findOne({ clientId, batchId });
@@ -141,29 +148,34 @@ router.post('/:clientId/rollback/:batchId', protect, logAction('ROLLBACK_IMPORT'
         
         if (session.status === 'rolled_back') return res.status(400).json({ message: 'Already rolled back' });
 
-        // Logic: Delete leads where meta.lastImportId === batchId AND were NEWly created in this batch
-        // We know they were new if they have this batchId in meta.lastImportId.
-        // For updated ones, we don't rollback the data (keep it enterprise-safe).
-        const result = await AdLead.deleteMany({ 
-            clientId, 
-            'meta.lastImportId': batchId 
-        });
+        // Logic: Delete leads where phoneNumber is in session.newPhones
+        let deletedCount = 0;
+        if (session.newPhones && session.newPhones.length > 0) {
+            const result = await AdLead.deleteMany({ 
+                clientId, 
+                phoneNumber: { $in: session.newPhones }
+            });
+            deletedCount = result.deletedCount;
+        }
 
         session.status = 'rolled_back';
         await session.save();
 
         res.json({
             success: true,
-            message: `Rollback complete. ${result.deletedCount} new contacts removed.`,
-            deletedCount: result.deletedCount
+            message: `Batch permanently deleted. ${deletedCount} new contacts removed.`,
+            deletedCount: deletedCount
         });
     } catch (err) {
-        res.status(500).json({ success: false, message: 'Rollback failed' });
+        res.status(500).json({ success: false, message: 'Delete failed' });
     }
 });
 
 // GET /api/leads/:clientId/export
 router.get('/:clientId/export', protect, logAction('EXPORT_LEADS'), async (req, res) => {
+
+    // Enterprise: 30s timeout for large exports
+    req.setTimeout(30000);
 
     try {
         const { clientId } = req.params;
@@ -172,30 +184,91 @@ router.get('/:clientId/export', protect, logAction('EXPORT_LEADS'), async (req, 
         }
 
         const filter = { clientId };
-        // Basic filtering query string parsing
+
+        // Extended filter forwarding — match frontend view filters
         if (req.query.source) filter.source = req.query.source;
         if (req.query.optStatus) filter.optStatus = req.query.optStatus;
+        if (req.query.tag) filter.tags = req.query.tag;
+        if (req.query.importBatchId) filter['meta.lastImportId'] = req.query.importBatchId;
+        if (req.query.search) {
+            const searchRegex = new RegExp(req.query.search, 'i');
+            filter.$or = [
+                { name: searchRegex },
+                { phoneNumber: searchRegex },
+                { email: searchRegex }
+            ];
+        }
+        if (req.query.segmentScore) {
+            const [min, max] = req.query.segmentScore.split('-').map(Number);
+            if (!isNaN(min) && !isNaN(max)) filter.leadScore = { $gte: min, $lte: max };
+        }
+
+        // Determine sort
+        let sortObj = { lastInteraction: -1 };
+        if (req.query.sortBy === 'score') sortObj = { leadScore: -1 };
+        if (req.query.sortBy === 'oldest') sortObj = { createdAt: 1 };
+        if (req.query.sortBy === 'name') sortObj = { name: 1 };
+
+        // Selected leads override (for partial exports)
+        if (req.query.leadIds) {
+            const ids = req.query.leadIds.split(',').filter(Boolean);
+            if (ids.length > 0) filter._id = { $in: ids };
+        }
+
+        // Pagination for Custom Range
+        let skip = 0;
+        let limit = null;
+        if (req.query.pageFrom && req.query.pageTo) {
+            const pageFrom = parseInt(req.query.pageFrom);
+            const pageTo = parseInt(req.query.pageTo);
+            const pageSize = 20; // Default page size used in frontend
+            if (pageFrom > 0 && pageTo >= pageFrom) {
+                skip = (pageFrom - 1) * pageSize;
+                limit = (pageTo - pageFrom + 1) * pageSize;
+            }
+        }
+
+        // Field Selection
+        const defaultFields = ['phoneNumber', 'name', 'email', 'source', 'optStatus', 'totalSpent', 'ordersCount', 'tags', 'leadScore', 'lastInteraction', 'createdAt'];
+        let selectedFields = defaultFields;
+        if (req.query.fields) {
+            const requested = req.query.fields.split(',').map(f => f.trim()).filter(Boolean);
+            if (requested.length > 0) {
+                selectedFields = requested.map(f => {
+                    if (f === 'phone') return 'phoneNumber';
+                    return f;
+                });
+            }
+        }
+        const selectString = selectedFields.join(' ');
 
         res.setHeader('Content-Type', 'text/csv');
         res.setHeader('Content-Disposition', `attachment; filename="leads_export_${clientId}_${new Date().toISOString().slice(0,10)}.csv"`);
 
-        const cursor = AdLead.find(filter)
-             .select('phoneNumber name email source optStatus totalSpent ordersCount tags createdAt')
-             .cursor();
+        let query = AdLead.find(filter).sort(sortObj).select(selectString).lean();
+        if (skip > 0) query = query.skip(skip);
+        if (limit !== null) query = query.limit(limit);
+
+        const cursor = query.cursor();
+
+        const allColumns = [
+            { key: 'phoneNumber', header: 'Phone Number' },
+            { key: 'name', header: 'Name' },
+            { key: 'email', header: 'Email' },
+            { key: 'city', header: 'City' },
+            { key: 'source', header: 'Source' },
+            { key: 'optStatus', header: 'Opt Status' },
+            { key: 'totalSpent', header: 'Total Spent' },
+            { key: 'ordersCount', header: 'Orders Count' },
+            { key: 'tags', header: 'Tags' },
+            { key: 'leadScore', header: 'Lead Score' },
+            { key: 'lastInteraction', header: 'Last Active' },
+            { key: 'createdAt', header: 'Created Date' }
+        ];
 
         const stringifier = stringify({
              header: true,
-             columns: [
-                 { key: 'phoneNumber', header: 'Phone Number' },
-                 { key: 'name', header: 'Name' },
-                 { key: 'email', header: 'Email' },
-                 { key: 'source', header: 'Source' },
-                 { key: 'optStatus', header: 'Opt Status' },
-                 { key: 'totalSpent', header: 'Total Spent' },
-                 { key: 'ordersCount', header: 'Orders Count' },
-                 { key: 'tags', header: 'Tags' },
-                 { key: 'createdAt', header: 'Created Date' }
-             ],
+             columns: allColumns.filter(c => selectedFields.includes(c.key)),
              cast: {
                  date: (value) => value ? value.toISOString() : '',
                  object: (value) => value ? (Array.isArray(value) ? value.join(', ') : JSON.stringify(value)) : ''
@@ -206,7 +279,9 @@ router.get('/:clientId/export', protect, logAction('EXPORT_LEADS'), async (req, 
 
     } catch (err) {
         console.error('[CSV Export] Error:', err);
-        res.status(500).json({ success: false, message: 'General Server Error' });
+        if (!res.headersSent) {
+            res.status(500).json({ success: false, message: 'Export failed' });
+        }
     }
 });
 
@@ -248,7 +323,7 @@ router.post('/bulk-template', protect, async (req, res) => {
 
         const { sendWhatsAppTemplate } = require('../utils/whatsappHelpers');
         
-        const leads = await AdLead.find({ _id: { $in: leadIds }, clientId });
+        const leads = await AdLead.find({ _id: { $in: leadIds }, clientId }).lean();
         
         let successCount = 0;
         let failCount = 0;
@@ -583,7 +658,7 @@ router.post('/bulk-delete', protect, async (req, res) => {
         }
 
         // 2. Fetch Leads to get Phone Numbers (for Message/Conversation deletion)
-        const leads = await AdLead.find(query).select('phoneNumber');
+        const leads = await AdLead.find(query).select('phoneNumber').lean();
         const phoneNumbers = leads.map(l => l.phoneNumber);
 
         if (leads.length === 0) {
@@ -699,5 +774,84 @@ router.post('/:contactId/reset', protect, async (req, res) => {
     }
 });
 
-module.exports = router;
+// GET /api/leads/ai-tasks
+// Returns tasks where CustomerIntelligence or sequence jobs are running
+router.get('/ai-tasks', protect, async (req, res) => {
+    try {
+        const { clientId } = req.query;
+        if (!clientId) return res.status(400).json({ success: false, message: 'clientId is required' });
+        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+             return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
 
+        const FollowUpSequence = require('../models/FollowUpSequence');
+        
+        // Find active AI sequences or intelligence tasks
+        const activeTasks = await FollowUpSequence.find({ 
+            clientId, 
+            status: 'active' 
+        })
+        .sort({ createdAt: -1 })
+        .limit(50)
+        .select('phone name type status createdAt steps')
+        .lean();
+
+        const formattedTasks = activeTasks.map(t => ({
+            id: t._id,
+            leadId: t.leadId,
+            phone: t.phone,
+            name: t.name || 'Unknown',
+            taskType: t.type || 'follow_up',
+            status: t.status,
+            steps: t.steps || [],
+            startedAt: t.createdAt,
+            completedAt: null,
+            result: t.steps?.length ? `${t.steps.length} steps scheduled` : 'Processing'
+        }));
+
+        res.json({ success: true, tasks: formattedTasks });
+    } catch (err) {
+        console.error('[AITasks] Error:', err);
+        res.status(500).json({ success: false, message: 'Failed to fetch AI tasks' });
+    }
+});
+
+// PATCH /api/leads/:id (Update specific fields from Lead Profile)
+router.patch('/:id', protect, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const clientId = req.user.clientId;
+        if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
+           // allow override
+        }
+
+        const updates = { ...req.body };
+        // prevent restricted fields from being updated directly
+        delete updates.clientId;
+        delete updates._id;
+
+        const lead = await AdLead.findOneAndUpdate(
+            { _id: id, clientId },
+            { $set: updates },
+            { new: true, runValidators: true }
+        );
+
+        if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+        // Sync name to conversation if it changed
+        if (updates.name) {
+             const Conversation = require('../models/Conversation');
+             await Conversation.updateMany(
+                 { phone: lead.phoneNumber, clientId },
+                 { $set: { customerName: updates.name } }
+             );
+        }
+
+        res.json({ success: true, lead });
+    } catch (error) {
+        console.error('[PATCH /api/leads/:id] Error:', error);
+        res.status(500).json({ success: false, message: 'Failed to update lead' });
+    }
+});
+
+module.exports = router;

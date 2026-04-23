@@ -120,7 +120,7 @@ ConversationSchema.index({ phone: 1, clientId: 1 }, { unique: true });
 ConversationSchema.index({ clientId: 1, lastInteraction: -1 }); // Inbox sort by most recent
 ConversationSchema.index({ clientId: 1, status: 1 });            // Status filter (BOT_ACTIVE, HUMAN_TAKEOVER etc.)
 ConversationSchema.index({ clientId: 1, requiresAttention: 1 }); // Attention queue in Live Chat
-ConversationSchema.index({ clientId: 1, assignedAgent: 1 });     // Agent workload filter
+ConversationSchema.index({ clientId: 1, assignedTo: 1 });      // Agent workload filter (fixed: was 'assignedAgent')
 ConversationSchema.index({ clientId: 1, botPaused: 1 });         // Bot-paused conversations filter
 
 // Pre-save hook to cap processedMessageIds
@@ -136,5 +136,10 @@ ConversationSchema.pre('save', function(next) {
 ConversationSchema.index({ clientId: 1, lastMessageAt: -1 });
 ConversationSchema.index({ clientId: 1, unreadCount: 1 });
 ConversationSchema.index({ clientId: 1, phone: 1 });
+
+// Performance Overhaul: Indexes for analytics aggregation pipelines
+ConversationSchema.index({ clientId: 1, sentiment: 1 });              // /realtime sentiment aggregation
+ConversationSchema.index({ clientId: 1, assignedTo: 1 });             // /operators agent performance aggregation
+ConversationSchema.index({ clientId: 1, firstInboundAt: 1, firstResponseAt: 1 }); // /agent-performance FRT calculation
 
 module.exports = mongoose.model('Conversation', ConversationSchema);
