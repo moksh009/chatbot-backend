@@ -394,7 +394,8 @@ async function _runDualBrainEngine(parsedMessage, client) {
           $set: { 
             lastInteraction: new Date(),
             lastInboundAt: new Date(),
-            lastMessageContent: inboundText || `[${parsedMessage.type || 'Message'}]`
+            lastMessageContent: inboundText || `[${parsedMessage.type || 'Message'}]`,
+            ...(shouldSetCustomerName && { name: profileName, nameSource: 'whatsapp' })
           }
         },
         { upsert: true, new: true }

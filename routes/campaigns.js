@@ -124,6 +124,36 @@ router.post('/from-segment', protect, async (req, res) => {
     }
 });
 
+// @route   POST /api/campaigns/from-imported-list
+// @desc    Create a campaign targeting an imported list
+// @access  Private
+router.post('/from-imported-list', protect, async (req, res) => {
+    const { importBatchId, name } = req.body;
+    try {
+        const count = await AdLead.countDocuments({ importBatchId, clientId: req.user.clientId });
+        const client = await Client.findOne({ clientId: req.user.clientId });
+
+        const limits = await checkLimit(client._id, 'campaigns');
+        if (!limits.allowed) {
+            return res.status(403).json({ error: limits.reason });
+        }
+
+        await incrementUsage(client._id, 'campaigns', 1);
+
+        const campaign = await Campaign.create({
+            clientId: req.user.clientId,
+            name: name || `Imported List Broadcast`,
+            status: 'DRAFT',
+            audienceCount: count,
+            importBatchId: importBatchId
+        });
+
+        res.json(campaign);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to create campaign from imported list' });
+    }
+});
+
 // @route   POST /api/campaigns/from-hot-leads
 // @desc    Create a campaign from a list of hot leads
 // @access  Private
@@ -229,13 +259,16 @@ router.post('/start', protect, async (req, res) => {
     const campaign = await Campaign.findOne({ _id: campaignId, clientId: req.user.clientId });
     if (!campaign) return res.status(404).json({ message: 'Campaign not found' });
     
-    // Support both CSV and Segment-based campaigns
-    if (!campaign.csvFile && !campaign.segmentId) {
-        return res.status(400).json({ message: 'No audience (CSV or Segment) attached to campaign' });
+    // Support CSV, Segment, and Imported List campaigns
+    if (!campaign.csvFile && !campaign.segmentId && !campaign.importBatchId) {
+        return res.status(400).json({ message: 'No audience (CSV, Segment, or Imported List) attached to campaign' });
     }
 
     log.info(`Campaign START: campaignId=${campaignId} | clientId=${req.user.clientId} | templateType=${templateType}`);
-    campaign.status = 'SENDING';
+    campaign.status = req.body.scheduledDate ? 'SCHEDULED' : 'SENDING';
+    if (req.body.scheduledDate) {
+        campaign.scheduledAt = new Date(req.body.scheduledDate);
+    }
     await campaign.save();
 
     // Fetch client configuration
@@ -267,28 +300,37 @@ router.post('/start', protect, async (req, res) => {
     let failed = 0;
     const rows = [];
 
-    // --- Audience Sourcing (CSV or Segment) ---
-    if (campaign.segmentId) {
-        const segment = await Segment.findById(campaign.segmentId);
-        if (segment) {
-            const count = await AdLead.countDocuments({ ...segment.query, clientId: req.user.clientId });
-            
-            // Dispatch to background worker for Mongoose cursor streaming
-            await TaskQueueService.addTask('BROADCAST_CAMPAIGN', {
-                campaignId: campaign._id,
-                clientId: req.user.clientId,
-                templateType,
-                templateName: req.body.templateName,
-                templateComponents: req.body.templateComponents,
-                variableMapping: req.body.variableMapping,
-                languageCode: req.body.languageCode,
-                isAbTest: req.body.isAbTest,
-                abTestConfig: req.body.abTestConfig,
-                templateTypeB: req.body.templateTypeB
-            });
-            
-            return res.json({ success: true, message: `Campaign targeting ${count} contacts queued for background processing.` });
+    // --- Audience Sourcing (CSV, Segment, or Imported List) ---
+    if (campaign.segmentId || campaign.importBatchId) {
+        let count = 0;
+        if (campaign.segmentId) {
+            const segment = await Segment.findById(campaign.segmentId);
+            if (segment) count = await AdLead.countDocuments({ ...segment.query, clientId: req.user.clientId });
+        } else {
+            count = await AdLead.countDocuments({ importBatchId: campaign.importBatchId, clientId: req.user.clientId });
         }
+        
+        let delayMs = 0;
+        if (req.body.scheduledDate) {
+            delayMs = new Date(req.body.scheduledDate).getTime() - Date.now();
+            if (delayMs < 0) delayMs = 0;
+        }
+
+        // Dispatch to background worker for Mongoose cursor streaming
+        await TaskQueueService.addTask('BROADCAST_CAMPAIGN', {
+            campaignId: campaign._id,
+            clientId: req.user.clientId,
+            templateType,
+            templateName: req.body.templateName,
+            templateComponents: req.body.templateComponents,
+            variableMapping: req.body.variableMapping,
+            languageCode: req.body.languageCode,
+            isAbTest: req.body.isAbTest,
+            abTestConfig: req.body.abTestConfig,
+            templateTypeB: req.body.templateTypeB
+        }, { delay: delayMs });
+        
+        return res.json({ success: true, message: `Campaign targeting ${count} contacts queued for background processing.` });
     } else if (campaign.csvFile) {
         await new Promise((resolve, reject) => {
             fs.createReadStream(campaign.csvFile)
@@ -820,7 +862,7 @@ router.get('/audience-estimate', protect, async (req, res) => {
       if (segment) {
         count = await AdLead.countDocuments({ clientId: cid, ...segment.query });
       }
-    } else if (source === 'imported_list' && importBatchId) {
+    } else if (source === 'imported' && importBatchId) {
         count = await AdLead.countDocuments({ clientId: cid, importBatchId });
     } else if (source === 'high_intent') {
         count = await AdLead.countDocuments({ clientId: cid, leadScore: { $gt: 70 } });

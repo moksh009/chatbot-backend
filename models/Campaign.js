@@ -12,6 +12,8 @@ const CampaignSchema = new mongoose.Schema({
   scheduledAt: { type: Date },
   csvFile: { type: String }, // Path to uploaded CSV
   segmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Segment' },
+  importBatchId: { type: String }, // ID from ImportSession
+
   
   // Phase 22: Smart Send logic
   isSmartSend: { type: Boolean, default: false },

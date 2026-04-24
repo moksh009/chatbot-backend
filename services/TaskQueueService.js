@@ -28,9 +28,9 @@ class TaskQueueService {
      * @param {string} taskType - e.g., 'SHOPIFY_SYNC', 'BROADCAST', 'AI_GENERATION'
      * @param {object} data - Payload required for the task
      */
-    async addTask(taskType, data) {
+    async addTask(taskType, data, opts = {}) {
         try {
-            const job = await taskQueue.add(taskType, data);
+            const job = await taskQueue.add(taskType, data, opts);
             console.log(`[TaskQueue] Enqueued task: ${taskType} (Job ID: ${job.id})`);
             return job;
         } catch (err) {

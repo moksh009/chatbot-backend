@@ -224,9 +224,21 @@ router.get('/:id/full-context', protect, async (req, res) => {
       // Lead Data
       (async () => {
          const AdLead = require('../models/AdLead');
-         return AdLead.findOne({ clientId: conversation.clientId || clientId, phoneNumber: phone })
-           .select('name email leadScore cartStatus tags intentState source sentimentScore totalSpent ordersCount lastInteraction isOrderPlaced cartSnapshot addToCartCount checkoutInitiatedCount')
+         const l = await AdLead.findOne({ clientId: conversation.clientId || clientId, phoneNumber: phone })
+           .select('name email leadScore cartStatus tags intentState source sentimentScore totalSpent ordersCount lastInteraction isOrderPlaced cartSnapshot addToCartCount checkoutInitiatedCount importBatchId meta')
            .lean();
+         
+         if (l) {
+            if (l.importBatchId) {
+                const ImportSession = require('../models/ImportSession');
+                const batch = await ImportSession.findById(l.importBatchId).select('batchName').lean();
+                if (batch) l.importSource = batch.batchName;
+            } 
+            if (!l.importSource && l.meta?.importListName) {
+                l.importSource = l.meta.importListName;
+            }
+         }
+         return l;
       })(),
       
       // Orders

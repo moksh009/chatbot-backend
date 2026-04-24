@@ -29,8 +29,16 @@ async function processBroadcast(data) {
         const client = await Client.findOne({ clientId });
         if (!client) throw new Error('Client not found');
 
-        const segment = await Segment.findById(campaign.segmentId);
-        if (!segment) throw new Error('Segment not found');
+        let query = {};
+        if (campaign.segmentId) {
+            const segment = await Segment.findById(campaign.segmentId);
+            if (!segment) throw new Error('Segment not found');
+            query = segment.query;
+        } else if (campaign.importBatchId) {
+            query = { importBatchId: campaign.importBatchId };
+        } else {
+            throw new Error('No valid audience source attached to campaign');
+        }
 
         let total = 0;
         let sent = 0;
@@ -44,12 +52,20 @@ async function processBroadcast(data) {
         }
 
         // We use .lean().cursor() to stream leads instead of pulling 50k+ into memory
-        const cursor = AdLead.find({ ...segment.query, clientId }).lean().cursor();
+        const cursor = AdLead.find({ ...query, clientId }).lean().cursor();
+        const lastSentMap = new Map();
         
         for await (const lead of cursor) {
             total++;
             const recipientPhone = normalizePhone(lead.phoneNumber);
             if (!recipientPhone) { failed++; continue; }
+
+            const lastSentTime = lastSentMap.get(recipientPhone);
+            if (lastSentTime && Date.now() - lastSentTime < 1000) {
+                const delay = 1000 - (Date.now() - lastSentTime);
+                await new Promise(r => setTimeout(r, delay));
+            }
+            lastSentMap.set(recipientPhone, Date.now());
 
             let targetTemplateName = templateName || campaign.templateName;
             

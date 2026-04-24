@@ -16,7 +16,24 @@ const path = require('path');
 const { stringify } = require('csv-stringify');
 
 // Multer setup for temporary CSV storage
-const upload = multer({ dest: '/tmp/csv_uploads/' });
+const upload = multer({ 
+    dest: '/tmp/csv_uploads/',
+    limits: { fileSize: 15 * 1024 * 1024 } // 15MB limit
+});
+
+const uploadMiddleware = (req, res, next) => {
+    upload.single('file')(req, res, (err) => {
+        if (err instanceof multer.MulterError) {
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return res.status(413).json({ success: false, message: 'File too large. Maximum size is 10MB.' });
+            }
+            return res.status(400).json({ success: false, message: err.message });
+        } else if (err) {
+            return res.status(500).json({ success: false, message: 'Unknown upload error' });
+        }
+        next();
+    });
+};
 
 /**
  * Enterprise Cleaner: Phone Normalization
@@ -52,7 +69,7 @@ const findBestMatch = (headers, target) => {
 };
 
 // POST /api/leads/:clientId/import
-router.post('/:clientId/import', protect, logAction('IMPORT_LEADS'), upload.single('file'), async (req, res) => {
+router.post('/:clientId/import', protect, logAction('IMPORT_LEADS'), uploadMiddleware, async (req, res) => {
     const { clientId } = req.params;
     const batchId = `BATCH_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
     
@@ -171,117 +188,96 @@ router.delete('/:clientId/import/:batchId', protect, logAction('DELETE_IMPORT'),
     }
 });
 
-// GET /api/leads/:clientId/export
-router.get('/:clientId/export', protect, logAction('EXPORT_LEADS'), async (req, res) => {
+const buildCsvStream = (cursor, selectedFields) => {
+    const allColumns = [
+        { key: 'phoneNumber', header: 'Phone Number' },
+        { key: 'name', header: 'Name' },
+        { key: 'email', header: 'Email' },
+        { key: 'city', header: 'City' },
+        { key: 'source', header: 'Source' },
+        { key: 'optStatus', header: 'Opt Status' },
+        { key: 'totalSpent', header: 'Total Spent' },
+        { key: 'ordersCount', header: 'Orders Count' },
+        { key: 'tags', header: 'Tags' },
+        { key: 'leadScore', header: 'Lead Score' },
+        { key: 'lastInteraction', header: 'Last Active' },
+        { key: 'createdAt', header: 'Created Date' }
+    ];
 
-    // Enterprise: 30s timeout for large exports
-    req.setTimeout(30000);
+    const targetColumns = selectedFields 
+        ? allColumns.filter(c => selectedFields.includes(c.key))
+        : allColumns;
 
+    return cursor.pipe(stringify({
+         header: true,
+         columns: targetColumns,
+         cast: {
+             date: (value) => value ? value.toISOString() : '',
+             object: (value) => value ? (Array.isArray(value) ? value.join(', ') : JSON.stringify(value)) : ''
+         }
+    }));
+};
+
+// POST /api/leads/export
+router.post('/export', protect, logAction('EXPORT_LEADS'), async (req, res) => {
+    req.setTimeout(30000); // 30s timeout
     try {
-        const { clientId } = req.params;
+        const { clientId, mode, pages = [], filter = {}, fields } = req.body;
+        
         if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
              return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
 
-        const filter = { clientId };
+        let query = { clientId };
+        let selectedFields = fields ? fields.split(',').map(f => f.trim()) : null;
 
-        // Extended filter forwarding — match frontend view filters
-        if (req.query.source) filter.source = req.query.source;
-        if (req.query.optStatus) filter.optStatus = req.query.optStatus;
-        if (req.query.tag) filter.tags = req.query.tag;
-        if (req.query.importBatchId) filter['meta.lastImportId'] = req.query.importBatchId;
-        if (req.query.search) {
-            const searchRegex = new RegExp(req.query.search, 'i');
-            filter.$or = [
-                { name: searchRegex },
-                { phoneNumber: searchRegex },
-                { email: searchRegex }
-            ];
-        }
-        if (req.query.segmentScore) {
-            const [min, max] = req.query.segmentScore.split('-').map(Number);
-            if (!isNaN(min) && !isNaN(max)) filter.leadScore = { $gte: min, $lte: max };
-        }
-
-        // Determine sort
-        let sortObj = { lastInteraction: -1 };
-        if (req.query.sortBy === 'score') sortObj = { leadScore: -1 };
-        if (req.query.sortBy === 'oldest') sortObj = { createdAt: 1 };
-        if (req.query.sortBy === 'name') sortObj = { name: 1 };
-
-        // Selected leads override (for partial exports)
-        if (req.query.leadIds) {
-            const ids = req.query.leadIds.split(',').filter(Boolean);
-            if (ids.length > 0) filter._id = { $in: ids };
-        }
-
-        // Pagination for Custom Range
-        let skip = 0;
-        let limit = null;
-        if (req.query.pageFrom && req.query.pageTo) {
-            const pageFrom = parseInt(req.query.pageFrom);
-            const pageTo = parseInt(req.query.pageTo);
-            const pageSize = 20; // Default page size used in frontend
-            if (pageFrom > 0 && pageTo >= pageFrom) {
-                skip = (pageFrom - 1) * pageSize;
-                limit = (pageTo - pageFrom + 1) * pageSize;
+        if (mode === 'pages' && pages.length) {
+            const limit = 20; // Default page size
+            const phoneNumbers = [];
+            for (const p of pages) {
+                const batch = await AdLead.find({ clientId }).sort({ lastInteraction: -1 }).skip((p - 1) * limit).limit(limit).lean();
+                phoneNumbers.push(...batch.map(b => b.phoneNumber));
             }
+            query.phoneNumber = { $in: phoneNumbers };
+        } else if (mode === 'filter') {
+            Object.assign(query, filter);
+        } else if (mode === 'custom' && req.body.pageFrom && req.body.pageTo) {
+            const limit = 20;
+            const skip = (req.body.pageFrom - 1) * limit;
+            const limitDocs = (req.body.pageTo - req.body.pageFrom + 1) * limit;
+            const batch = await AdLead.find({ clientId }).sort({ lastInteraction: -1 }).skip(skip).limit(limitDocs).lean();
+            query.phoneNumber = { $in: batch.map(b => b.phoneNumber) };
         }
+        
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="contacts_export_${clientId}_${Date.now()}.csv"`);
+        
+        const cursor = AdLead.find(query).sort({ lastInteraction: -1 }).cursor();
+        buildCsvStream(cursor, selectedFields).pipe(res);
+    } catch (err) {
+        console.error('[/api/leads/export]', err);
+        if (!res.headersSent) res.status(500).json({ error: 'Export failed' });
+    }
+});
 
-        // Field Selection
-        const defaultFields = ['phoneNumber', 'name', 'email', 'source', 'optStatus', 'totalSpent', 'ordersCount', 'tags', 'leadScore', 'lastInteraction', 'createdAt'];
-        let selectedFields = defaultFields;
-        if (req.query.fields) {
-            const requested = req.query.fields.split(',').map(f => f.trim()).filter(Boolean);
-            if (requested.length > 0) {
-                selectedFields = requested.map(f => {
-                    if (f === 'phone') return 'phoneNumber';
-                    return f;
-                });
-            }
+// GET /api/leads/export/batch/:batchId
+router.get('/export/batch/:batchId', protect, async (req, res) => {
+    try {
+        const batch = await ImportSession.findOne({ batchId: req.params.batchId }).lean();
+        if (!batch) return res.status(404).json({ error: 'Batch not found' });
+        
+        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== batch.clientId) {
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
-        const selectString = selectedFields.join(' ');
 
         res.setHeader('Content-Type', 'text/csv');
-        res.setHeader('Content-Disposition', `attachment; filename="leads_export_${clientId}_${new Date().toISOString().slice(0,10)}.csv"`);
-
-        let query = AdLead.find(filter).sort(sortObj).select(selectString).lean();
-        if (skip > 0) query = query.skip(skip);
-        if (limit !== null) query = query.limit(limit);
-
-        const cursor = query.cursor();
-
-        const allColumns = [
-            { key: 'phoneNumber', header: 'Phone Number' },
-            { key: 'name', header: 'Name' },
-            { key: 'email', header: 'Email' },
-            { key: 'city', header: 'City' },
-            { key: 'source', header: 'Source' },
-            { key: 'optStatus', header: 'Opt Status' },
-            { key: 'totalSpent', header: 'Total Spent' },
-            { key: 'ordersCount', header: 'Orders Count' },
-            { key: 'tags', header: 'Tags' },
-            { key: 'leadScore', header: 'Lead Score' },
-            { key: 'lastInteraction', header: 'Last Active' },
-            { key: 'createdAt', header: 'Created Date' }
-        ];
-
-        const stringifier = stringify({
-             header: true,
-             columns: allColumns.filter(c => selectedFields.includes(c.key)),
-             cast: {
-                 date: (value) => value ? value.toISOString() : '',
-                 object: (value) => value ? (Array.isArray(value) ? value.join(', ') : JSON.stringify(value)) : ''
-             }
-        });
-
-        cursor.pipe(stringifier).pipe(res);
-
+        res.setHeader('Content-Disposition', `attachment; filename="${batch.batchName || 'import_batch'}.csv"`);
+        
+        const cursor = AdLead.find({ importBatchId: batch._id }).cursor();
+        buildCsvStream(cursor, null).pipe(res);
     } catch (err) {
-        console.error('[CSV Export] Error:', err);
-        if (!res.headersSent) {
-            res.status(500).json({ success: false, message: 'Export failed' });
-        }
+        console.error('[/api/leads/export/batch]', err);
+        if (!res.headersSent) res.status(500).json({ error: 'Batch export failed' });
     }
 });
 

@@ -118,21 +118,9 @@ app.use(cors({
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps or curl)
     if (!origin) return callback(null, true);
-    
-    const isAllowed = allowedOrigins.some(ao => {
-      if (ao instanceof RegExp) return ao.test(origin);
-      return ao === origin;
-    });
 
-    if (isAllowed) {
-      callback(null, true);
-    } else {
-      // In development, be permissive to avoid blocking dev work
-      if (process.env.NODE_ENV === 'development') {
-        return callback(null, true);
-      }
-      callback(new Error('Not allowed by CORS'));
-    }
+    // Always allow the origin to support widgets and pixels on client sites
+    callback(null, true);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
@@ -141,7 +129,7 @@ app.use(cors({
 }));
 
 app.use(compression()); // Performance: GZIP all JSON responses (70-80% smaller payloads)
-app.use(express.json({ 
+app.use(express.json({
   limit: '5mb', // ✅ Phase R3: Reduced from 10mb — prevents oversized payload DoS
   verify: (req, res, buf) => {
     req.rawBody = buf;
@@ -229,15 +217,15 @@ app.use('/api/client/:clientId', dynamicClientRouter);
 
 app.use('/api/business', businessRoutes);
 app.use('/api/admin', adminRoutes); // Super Admin Route Registration
-app.use('/api/templates', templatesRoutes); 
+app.use('/api/templates', templatesRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 const whatsappFlowsRoutes = require('./routes/whatsappFlows');
 app.use('/api/whatsapp-flows', whatsappFlowsRoutes);
 app.use('/api/campaigns', bulkLimiter, campaignsRoutes); // ✅ Phase R3: Bulk send protection
 const emailWebhookRoutes = require('./routes/emailWebhook');
 app.use('/api/email', emailWebhookRoutes);
-app.use('/api/payment', require('./routes/payment')); 
-app.use('/api/billing', require('./routes/billing')); 
+app.use('/api/payment', require('./routes/payment'));
+app.use('/api/billing', require('./routes/billing'));
 
 // app.use('/api/client/0001', turfClientRoutes);
 // app.use('/api/client/0002', vedClientRoutes);
@@ -271,6 +259,8 @@ const rulesRoutes = require('./routes/rules');
 app.use('/api/rules', rulesRoutes);
 const leadsRoutes = require('./routes/leads');
 app.use('/api/leads', leadsRoutes);
+const audienceRoutes = require('./routes/audience');
+app.use('/api/audience', audienceRoutes);
 const routingRoutes = require('./routes/routingRules');
 app.use('/api/routing', routingRoutes);
 
@@ -396,7 +386,7 @@ scheduleProductSyncCron();
 // Template approval status sync (pending -> syncedMetaTemplates)
 const scheduleTemplateStatusSyncCron = require('./cron/templateStatusSyncCron');
 scheduleTemplateStatusSyncCron();
- 
+
 // Initialize Amazon SP-API Sync (Phase 2)
 const scheduleAmazonSync = require('./cron/amazonSync');
 scheduleAmazonSync();
@@ -687,39 +677,39 @@ if (process.env.REDIS_URL) {
   } else {
     log.info('Attempting Redis connection...');
     const pubClient = new Redis(process.env.REDIS_URL, {
-      maxRetriesPerRequest: 1, 
+      maxRetriesPerRequest: 1,
       connectTimeout: 5000,
       retryStrategy: (times) => {
-        if (times > 1) return null; 
+        if (times > 1) return null;
         return 1000;
       }
     });
-  
-  pubClient.on('connect', () => {
-    global.redisConnected = true;
-    global.redisClient = pubClient; // ✅ Expose for HealthController
-    log.success('✅ Redis connected successfully.');
-  });
 
-  pubClient.on('error', (err) => {
-    log.warn('⚠️ Redis Connection Error:', { message: err.message, code: err.code });
-    if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED') {
-      log.info('Server will proceed without Redis Scaling Adapter (Socket.io fallbacks to Memory).');
-    }
-  });
+    pubClient.on('connect', () => {
+      global.redisConnected = true;
+      global.redisClient = pubClient; // ✅ Expose for HealthController
+      log.success('✅ Redis connected successfully.');
+    });
 
-  const subClient = pubClient.duplicate();
-  subClient.on('error', (err) => {
-    // Only log if not already logged by pubClient to avoid spam
-    if (err.code !== 'ENOTFOUND') {
-      log.warn('Redis SubClient Error:', { message: err.message });
-    }
-  });
+    pubClient.on('error', (err) => {
+      log.warn('⚠️ Redis Connection Error:', { message: err.message, code: err.code });
+      if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED') {
+        log.info('Server will proceed without Redis Scaling Adapter (Socket.io fallbacks to Memory).');
+      }
+    });
 
-  // Only attach adapter if connection is potentially healthy
-  // We attach it, but Socket.io is mostly resilient to adapter failures if they happen later
-  io.adapter(createAdapter(pubClient, subClient));
-  log.info('Socket.io Redis Adapter initialization attempted');
+    const subClient = pubClient.duplicate();
+    subClient.on('error', (err) => {
+      // Only log if not already logged by pubClient to avoid spam
+      if (err.code !== 'ENOTFOUND') {
+        log.warn('Redis SubClient Error:', { message: err.message });
+      }
+    });
+
+    // Only attach adapter if connection is potentially healthy
+    // We attach it, but Socket.io is mostly resilient to adapter failures if they happen later
+    io.adapter(createAdapter(pubClient, subClient));
+    log.info('Socket.io Redis Adapter initialization attempted');
   }
 }
 

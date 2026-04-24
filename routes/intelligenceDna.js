@@ -25,6 +25,15 @@ router.get('/dna/:phone', protect, async (req, res) => {
         const lead = await AdLead.findOne({ clientId, $or: [{ phone: cleanPhone }, { phoneNumber: cleanPhone }] }).lean();
         if (!lead) return res.status(404).json({ error: 'Lead not found' });
 
+        // Populate Import Batch Name for UI Pill
+        if (lead.importBatchId) {
+            const ImportSession = require('../models/ImportSession');
+            const session = await ImportSession.findById(lead.importBatchId).select('listName').lean();
+            if (session) {
+                lead.importBatchName = session.listName;
+            }
+        }
+
         // Find the Conversation for this phone
         const conversation = await Conversation.findOne({ clientId, phone: cleanPhone }).select('aiDna customerIntelligence metadata lastDetectedIntent').lean();
 
