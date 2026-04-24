@@ -120,7 +120,7 @@ router.get('/bootstrap', protect, async (req, res) => {
     const [client, unreadCount, todayStats, recentConversations] = await Promise.all([
       // 1. Client settings + User
       Client.findOne({ clientId })
-        .select('clientId businessName name ai.persona adminPhone brand billing trialActive trialEndsAt shopDomain phoneNumberId shopifyConnectionStatus instagramConnected config visualFlows')
+        .select('clientId businessName name ai.persona adminPhone brand billing trialActive trialEndsAt shopDomain phoneNumberId wabaId whatsappToken shopifyAccessToken shopifyConnectionStatus instagramConnected commerce social whatsapp config visualFlows')
         .lean()
         .then(c => {
           if (!c) return null;
