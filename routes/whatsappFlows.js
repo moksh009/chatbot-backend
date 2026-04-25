@@ -8,6 +8,20 @@ const log = require('../utils/logger')('WhatsAppFlows');
 const { checkLimit } = require('../utils/planLimits');
 
 /**
+ * GET /api/whatsapp-flows
+ * Returns all synced flows for the client
+ */
+router.get('/', protect, async (req, res) => {
+    try {
+        const flows = await WhatsAppFlow.find({ clientId: req.user.clientId }).sort({ lastSyncedAt: -1 });
+        res.json(flows);
+    } catch (err) {
+        log.error('Fetch Flows Error:', err.message);
+        res.status(500).json({ error: 'Failed to fetch flows.' });
+    }
+});
+
+/**
  * POST /api/whatsapp-flows/sync
  * Syncs flows from Meta Graph API for the client's WABA
  */

@@ -108,13 +108,37 @@ router.get("/:clientId/:adId/leads", verifyToken, async (req, res) => {
 // ─── GET /api/meta-ads/:clientId/connect-url — OAuth URL ────────────────────
 router.get("/:clientId/connect-url", verifyToken, async (req, res) => {
   try {
-    const redirectUri = `${process.env.API_BASE || "https://chatbot-backend-lg5y.onrender.com"}/api/oauth/meta-ads/callback`;
-    const scopes      = "ads_read,ads_management,business_management";
-    const state       = Buffer.from(JSON.stringify({ clientId: req.params.clientId })).toString("base64");
+    // Sanitize API_BASE to remove trailing slash to avoid double slashes in URL
+    const base = (process.env.API_BASE || "https://chatbot-backend-lg5y.onrender.com").replace(/\/$/, "");
+    const redirectUri = `${base}/api/oauth/meta-ads/callback`;
+    
+    // Expanded scopes for Enterprise-grade ads management
+    const scopes = [
+      "ads_read",
+      "ads_management",
+      "business_management",
+      "read_insights",
+      "pages_read_engagement"
+    ].join(",");
+
+    const state = Buffer.from(JSON.stringify({ clientId: req.params.clientId })).toString("base64");
 
     const url = `https://www.facebook.com/dialog/oauth?client_id=${process.env.META_APP_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scopes}&state=${state}&response_type=code`;
 
     res.json({ success: true, url });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── GET /api/meta-ads/:clientId/list-accounts — get all available ad accounts ────────
+router.get("/:clientId/list-accounts", verifyToken, async (req, res) => {
+  try {
+    const client = await Client.findOne({ clientId: req.params.clientId });
+    if (!client || !client.metaAdsToken) return res.status(404).json({ success: false, message: "Meta Ads not connected" });
+
+    const accounts = await getAdAccounts(client.metaAdsToken);
+    res.json({ success: true, accounts });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -199,6 +223,38 @@ Return ONLY a JSON array with this schema:
     }
 
     return res.json({ success: true, suggestions, analyzedAds: ads.length }); // ✅ Phase R4: Single res.json() — removed duplicate
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── POST /api/meta-ads/test-template — send test message ──────────────────
+router.post("/test-template", verifyToken, async (req, res) => {
+  try {
+    const { clientId, phone, templateName, language } = req.body;
+    if (!clientId || !phone || !templateName) {
+      return res.status(400).json({ success: false, message: "Missing required fields" });
+    }
+
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ success: false, message: "Client not found" });
+
+    const { sendWhatsAppTemplate } = require("../utils/whatsapp");
+    
+    // We send a generic test with placeholder data
+    const result = await sendWhatsAppTemplate(
+      client, 
+      phone, 
+      templateName, 
+      language || "en",
+      ["Test User", "ORDER-123", "Product Name"] // Sample variables
+    );
+
+    if (result.success) {
+      res.json({ success: true, message: "Test template dispatched" });
+    } else {
+      res.status(400).json({ success: false, message: result.error || "Meta API Error" });
+    }
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

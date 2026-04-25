@@ -6,6 +6,7 @@ const LoyaltyTransaction = require('../models/LoyaltyTransaction');
 const Client = require('../models/Client');
 const Order = require('../models/Order');
 const ReviewRequest = require('../models/ReviewRequest');
+const AdLead = require('../models/AdLead');
 const log = require('../utils/logger')('LoyaltyController');
 const WhatsApp = require('../utils/whatsapp');
 
@@ -18,11 +19,13 @@ const { resolveClient, startOfDayIST } = require('../utils/queryHelpers');
 
 async function getLoyaltyStats(req, res) {
     try {
-        const { client, clientOid } = await resolveClient(req);
+        const { client } = await resolveClient(req);
+        if (!client) return res.status(404).json({ success: false, message: 'Client context not found' });
 
         const today = startOfDayIST();
+        const cid = client.clientId;
 
-        // Run all aggregations in parallel for speed — using client.clientId (String slug)
+        // Run all aggregations in parallel for speed
         const [
             walletStats,
             issuedTodayResult,
@@ -30,76 +33,73 @@ async function getLoyaltyStats(req, res) {
             recentTransactions,
             topCustomers
         ] = await Promise.all([
-
             // Total points in circulation, active members
             CustomerWallet.aggregate([
-                { $match: { clientId: client.clientId } },
+                { $match: { clientId: cid } },
                 { $group: {
                     _id: null,
                     totalPoints: { $sum: '$balance' },
                     activeMembers: { $sum: { $cond: [{ $gt: ['$balance', 0] }, 1, 0] } },
                     totalMembers: { $sum: 1 }
                 }}
-            ]),
-            // Points issued today (via LoyaltyTransaction instead of $unwind)
+            ]).catch(e => { log.error("Wallet Agg Failed:", e.message); return []; }),
+
+            // Points issued today
             LoyaltyTransaction.aggregate([
-                { $match: { 
-                    clientId: client.clientId, 
-                    type: 'earn', 
-                    timestamp: { $gte: today } 
-                }},
+                { $match: { clientId: cid, type: 'earn', timestamp: { $gte: today } }},
                 { $group: { _id: null, issuedToday: { $sum: '$amount' } }}
-            ]),
-            // Redemption stats (via LoyaltyTransaction instead of $unwind)
+            ]).catch(e => { log.error("IssuedToday Agg Failed:", e.message); return []; }),
+
+            // Redemption stats
             LoyaltyTransaction.aggregate([
-                { $match: { 
-                    clientId: client.clientId, 
-                    type: 'redeem' 
-                }},
+                { $match: { clientId: cid, type: 'redeem' }},
                 { $group: {
                     _id: null,
                     totalRedeemed: { $sum: { $abs: '$amount' } },
                     redemptionCount: { $sum: 1 },
                     uniqueRedeemers: { $addToSet: '$phone' }
                 }}
-            ]),
-            // Recent Transactions (Global) via LoyaltyTransaction
-            LoyaltyTransaction.find({ clientId: client.clientId })
+            ]).catch(e => { log.error("Redemption Agg Failed:", e.message); return []; }),
+
+            // Recent Transactions
+            LoyaltyTransaction.find({ clientId: cid })
                 .sort({ timestamp: -1 })
                 .limit(10)
                 .select('phone type amount reason timestamp -_id')
-                .lean(),
-            // Top 5 customers by balance - O(1) via AdLead (Layer 2)
-            AdLead.find({ clientId: client.clientId, loyaltyPoints: { $gt: 0 } })
+                .lean()
+                .catch(() => []),
+
+            // Top 5 customers
+            AdLead.find({ clientId: cid, loyaltyPoints: { $gt: 0 } })
                 .sort({ loyaltyPoints: -1 })
                 .limit(5)
                 .select('phoneNumber loyaltyPoints loyaltyTier')
                 .lean()
+                .catch(() => [])
         ]);
-
-        // Map AdLead fields to match old frontend expectations
-        const mappedTopCustomers = topCustomers.map(c => ({
-            phone: c.phoneNumber,
-            balance: c.loyaltyPoints,
-            tier: c.loyaltyTier
-        }));
 
         const ws = walletStats[0] || { totalPoints: 0, activeMembers: 0, totalMembers: 0 };
         const rd = redemptionStats[0] || { totalRedeemed: 0, redemptionCount: 0, uniqueRedeemers: [] };
         const issuedToday = issuedTodayResult[0]?.issuedToday || 0;
 
-        // Redemption velocity = % of members who have ever redeemed
+        const mappedTopCustomers = (topCustomers || []).map(c => ({
+            phone: c.phoneNumber,
+            balance: c.loyaltyPoints,
+            tier: c.loyaltyTier
+        }));
+
         const redemptionVelocity = ws.totalMembers > 0
             ? ((rd.uniqueRedeemers.length / ws.totalMembers) * 100).toFixed(1)
             : 0;
 
         res.json({
-            totalPoints: ws.totalPoints,
-            activeMembers: ws.activeMembers,
-            totalMembers: ws.totalMembers,
+            success: true,
+            totalPoints: ws.totalPoints || 0,
+            activeMembers: ws.activeMembers || 0,
+            totalMembers: ws.totalMembers || 0,
             issuedToday,
-            totalRedeemed: rd.totalRedeemed,
-            redemptionCount: rd.redemptionCount,
+            totalRedeemed: rd.totalRedeemed || 0,
+            redemptionCount: rd.redemptionCount || 0,
             redemptionVelocity: parseFloat(redemptionVelocity),
             recentTransactions: recentTransactions || [],
             topCustomers: mappedTopCustomers
@@ -107,7 +107,7 @@ async function getLoyaltyStats(req, res) {
 
     } catch (err) {
         log.error('Stats error:', err.message);
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ success: false, message: 'Failed to aggregate loyalty stats' });
     }
 }
 

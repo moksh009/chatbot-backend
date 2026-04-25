@@ -45,7 +45,8 @@ router.get("/instagram/initiate/:clientId", protect, async (req, res) => {
 
     const authUrl = new URL("https://www.facebook.com/v18.0/dialog/oauth");
     authUrl.searchParams.set("client_id",     process.env.META_APP_ID);
-    authUrl.searchParams.set("redirect_uri",  process.env.META_APP_REDIRECT_URI || `${process.env.BACKEND_URL || "https://chatbot-backend-lg5y.onrender.com"}/api/oauth/instagram/callback`);
+    const base = (process.env.BACKEND_URL || "https://chatbot-backend-lg5y.onrender.com").replace(/\/$/, "");
+    authUrl.searchParams.set("redirect_uri",  process.env.META_APP_REDIRECT_URI || `${base}/api/oauth/instagram/callback`);
     authUrl.searchParams.set("scope",         scope);
     authUrl.searchParams.set("response_type", "code");
     authUrl.searchParams.set("state",         state);
@@ -342,6 +343,81 @@ async function refreshExpiringInstagramTokens() {
     }
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Meta Ads OAuth Callback
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/meta-ads/callback", async (req, res) => {
+  const { code, state, error, error_description } = req.query;
+  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+
+  if (error) {
+    console.error("[MetaAds OAuth] Auth denied:", error_description);
+    return res.redirect(`${frontendUrl}/meta-manager?tab=ads&meta_error=${encodeURIComponent(error_description || error)}`);
+  }
+
+  if (!code || !state) {
+    return res.redirect(`${frontendUrl}/meta-manager?tab=ads&meta_error=missing_params`);
+  }
+
+  let clientId;
+  try {
+    const decoded = JSON.parse(Buffer.from(state, "base64").toString());
+    clientId = decoded.clientId;
+  } catch (_) {
+    return res.redirect(`${frontendUrl}/meta-manager?tab=ads&meta_error=invalid_state`);
+  }
+
+  try {
+    const base = (process.env.API_BASE || "https://chatbot-backend-lg5y.onrender.com").replace(/\/$/, "");
+    const redirectUri = `${base}/api/oauth/meta-ads/callback`;
+
+    // 1. Exchange code for user access token
+    const tokenResp = await axios.get("https://graph.facebook.com/v18.0/oauth/access_token", {
+      params: {
+        client_id:     process.env.META_APP_ID,
+        client_secret: process.env.META_APP_SECRET,
+        redirect_uri:  redirectUri,
+        code
+      }
+    });
+
+    const accessToken = tokenResp.data.access_token;
+
+    // 2. Save token to client
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.redirect(`${frontendUrl}/meta-manager?tab=ads&meta_error=client_not_found`);
+
+    await Client.findByIdAndUpdate(client._id, {
+      metaAdsToken: accessToken,
+      metaAdsConnected: true
+    });
+
+    // 3. Fetch available ad accounts to see if we should auto-pick or show selector
+    const { getAdAccounts } = require("../utils/metaAdsAPI");
+    const accounts = await getAdAccounts(accessToken);
+
+    if (accounts.length === 1) {
+      // Auto-select the only account
+      await Client.findByIdAndUpdate(client._id, {
+        metaAdAccountId: accounts[0].id,
+        metaAdsAccountName: accounts[0].name
+      });
+      
+      const { syncMetaAds } = require("../utils/metaAdsAPI");
+      setImmediate(() => syncMetaAds(clientId).catch(console.error));
+      
+      return res.redirect(`${frontendUrl}/meta-manager?tab=ads&meta_ads_connected=true`);
+    }
+
+    // Redirect to selector
+    return res.redirect(`${frontendUrl}/meta-manager?tab=ads&meta_ads_select_account=true&clientId=${clientId}`);
+
+  } catch (err) {
+    console.error("[MetaAds OAuth] Callback error:", err.response?.data || err.message);
+    return res.redirect(`${frontendUrl}/meta-manager?tab=ads&meta_error=callback_failed`);
+  }
+});
 
 module.exports = router;
 module.exports.refreshExpiringInstagramTokens = refreshExpiringInstagramTokens;

@@ -14,6 +14,7 @@ const { processOrderForLoyalty } = require('../utils/walletService');
 const { logActivity } = require('../utils/activityLogger');
 const { recalculateLeadScore } = require('../utils/scoringHelper');
 const log = require('../utils/logger')('ShopifyWebhook');
+const SkuTriggerService = require('../utils/skuTriggerService');
 
 async function getProductImageForOrder(order, client) {
   // Try to get from order line items first (fastest)
@@ -105,6 +106,18 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
                 await fireEventFlow(client, 'order_placed', data).catch(e =>
                   log.warn(`[FlowTrigger] order_placed flow fire failed: ${e.message}`)
                 );
+                // Process SKU triggers for 'paid' event
+                await SkuTriggerService.processTriggers(
+                  { 
+                    orderId: data.name || data.id, 
+                    orderNumber: data.name,
+                    customerPhone: data.phone || data.customer?.phone || data.billing_address?.phone,
+                    customerName: data.customer?.first_name || 'Customer',
+                    items: data.line_items.map(i => ({ sku: i.sku, name: i.title }))
+                  }, 
+                  'paid', 
+                  client
+                ).catch(e => log.error('SKU Trigger paid failed:', e.message));
                 break;
             case 'orders/cancelled':
             case 'orders/refunded':
@@ -113,6 +126,17 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
                 await fireEventFlow(client, 'order_status_changed', data, data.financial_status === 'refunded' ? 'returned' : 'cancelled').catch(e =>
                   log.warn(`[FlowTrigger] order_status_changed flow fire failed: ${e.message}`)
                 );
+                // Process SKU triggers for 'cancelled' event
+                await SkuTriggerService.processTriggers(
+                  { 
+                    orderId: data.name || data.id, 
+                    customerPhone: data.phone || data.customer?.phone || data.billing_address?.phone,
+                    customerName: data.customer?.first_name || 'Customer',
+                    items: data.line_items.map(i => ({ sku: i.sku, name: i.title }))
+                  }, 
+                  'cancelled', 
+                  client
+                ).catch(e => log.error('SKU Trigger cancelled failed:', e.message));
                 break;
             case 'orders/fulfilled': {
                 const { schedulePostDeliveryUpsell } = require('../utils/upsellEngine');
@@ -123,6 +147,18 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
                 await fireEventFlow(client, 'order_fulfilled', data).catch(e =>
                   log.warn(`[FlowTrigger] order_fulfilled flow fire failed: ${e.message}`)
                 );
+                
+                // Process SKU triggers for 'fulfilled' event
+                await SkuTriggerService.processTriggers(
+                  { 
+                    orderId: data.name || data.id, 
+                    customerPhone: data.phone || data.customer?.phone || data.billing_address?.phone,
+                    customerName: data.customer?.first_name || 'Customer',
+                    items: data.line_items.map(i => ({ sku: i.sku, name: i.title }))
+                  }, 
+                  'fulfilled', 
+                  client
+                ).catch(e => log.error('SKU Trigger fulfilled failed:', e.message));
                 
                 // --- PHASE 30.5: Enterprise Warranty Auto-Assign (ENGINE) ---
                 const { processWarrantyAutoAssignment } = require('../utils/warrantyEngine');
@@ -404,38 +440,7 @@ async function handleOrder(client, data) {
 
 
 
-    // --- SKU-to-Template Automation ---
-    if (client.skuAutomations?.length > 0) {
-        const WhatsApp = require('../utils/whatsapp');
-        const paidItems = data.line_items; // Shopify order line items
-        
-        for (const item of paidItems) {
-            const automation = client.skuAutomations.find(a => 
-                (a.sku === item.sku || a.sku === String(item.product_id)) && 
-                a.isActive && a.triggerEvent === 'paid'
-            );
-
-            if (automation) {
-                log.info(`SKU Automation Match found for SKU: ${item.sku}. Template: ${automation.templateName}`);
-                
-                const customerName = data.customer?.first_name || 'Customer';
-                const productImage = automation.imageUrl || item.image_url || null;
-
-                // Send the template
-                WhatsApp.sendSmartTemplate(
-                    client,
-                    cleanPhone,
-                    automation.templateName,
-                    [customerName, item.title], // Default params: Name, Product
-                    productImage,
-                    automation.language || 'en'
-                ).catch(err => log.error(`SKU automation template send failed for ${item.sku}:`, err.message));
-                
-                // We break after first match per order to avoid spamming multiple guides if they bought 5 of same thing
-                // OR we could process all unique SKUs. Let's do unique SKUs.
-            }
-        }
-    }
+    // --- SKU-to-Template Automation removed (replaced by SkuTriggerService in switch/case) ---
 
     // --- COD to Prepaid Conversion ---
     const codActive = (client.automationFlows || []).find(f => f.id === 'cod_to_prepaid')?.isActive;

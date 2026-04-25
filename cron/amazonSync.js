@@ -56,24 +56,19 @@ const scheduleAmazonSync = () => {
                         createdAt: amzOrder.PurchaseDate
                     });
 
-                    // Trigger SKU Automations (Shared with Shopify logic)
+                    // Trigger SKU Automations (Unified Engine)
                     if (client.skuAutomations?.length > 0 && newOrder.customerPhone) {
-                        const WhatsApp = require('../utils/whatsapp');
-                        for (const item of items) {
-                            const automation = client.skuAutomations.find(a => 
-                                a.sku === item.SellerSKU && a.isActive && a.triggerEvent === 'paid'
-                            );
-
-                            if (automation) {
-                                WhatsApp.sendSmartTemplate(
-                                    client,
-                                    newOrder.customerPhone,
-                                    automation.templateName,
-                                    [newOrder.customerName, item.Title],
-                                    automation.imageUrl
-                                ).catch(e => log.error('Amazon SKU trigger failed:', e.message));
-                            }
-                        }
+                        const SkuTriggerService = require('../utils/skuTriggerService');
+                        await SkuTriggerService.processTriggers(
+                          {
+                            orderId: newOrder.orderId,
+                            customerPhone: newOrder.customerPhone,
+                            customerName: newOrder.customerName,
+                            items: items.map(i => ({ sku: i.SellerSKU, name: i.Title }))
+                          },
+                          'paid', // Amazon orders in sync are usually considered 'paid' or 'shipped'
+                          client
+                        ).catch(e => log.error('Amazon SKU trigger failed:', e.message));
                     }
 
                     // Integration Hook: Award Loyalty Points for Amazon Orders
