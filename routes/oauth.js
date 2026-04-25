@@ -418,6 +418,73 @@ router.get("/meta-ads/callback", async (req, res) => {
     return res.redirect(`${frontendUrl}/meta-manager?tab=ads&meta_error=callback_failed`);
   }
 });
+// ─────────────────────────────────────────────────────────────────────────────
+// Google OAuth Flow (Placeholder/Setup for Future Services)
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/google/start/:clientId", protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    
+    // Validate client exists
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ error: "Client not found" });
 
+    // Build standard OAuth URL (placeholder logic)
+    const state = Buffer.from(JSON.stringify({ clientId, timestamp: Date.now() })).toString("base64");
+    const base = (process.env.BACKEND_URL || "https://chatbot-backend-lg5y.onrender.com").replace(/\/$/, "");
+    const redirectUri = `${base}/api/oauth/google/callback`;
+
+    const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    authUrl.searchParams.set("client_id", process.env.GOOGLE_CLIENT_ID || "demo_client_id");
+    authUrl.searchParams.set("redirect_uri", redirectUri);
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("scope", "email profile");
+    authUrl.searchParams.set("state", state);
+    authUrl.searchParams.set("access_type", "offline");
+    authUrl.searchParams.set("prompt", "consent");
+
+    res.json({ authUrl: authUrl.toString() });
+  } catch (err) {
+    console.error("[Google OAuth] Start error:", err.message);
+    res.status(500).json({ error: "Failed to generate Google OAuth URL" });
+  }
+});
+
+router.get("/google/callback", async (req, res) => {
+  const { code, state, error } = req.query;
+  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+
+  if (error) {
+    console.error("[Google OAuth] Auth denied:", error);
+    return res.redirect(`${frontendUrl}/settings?tab=channels&google_error=${encodeURIComponent(error)}`);
+  }
+
+  if (!code || !state) {
+    return res.redirect(`${frontendUrl}/settings?tab=channels&google_error=missing_params`);
+  }
+
+  let clientId;
+  try {
+    const decoded = JSON.parse(Buffer.from(state, "base64").toString());
+    clientId = decoded.clientId;
+  } catch (_) {
+    return res.redirect(`${frontendUrl}/settings?tab=channels&google_error=invalid_state`);
+  }
+
+  try {
+    // Here we would exchange the code for Google tokens
+    // For now, we simulate a successful connection
+    
+    await Client.findOneAndUpdate(
+      { clientId },
+      { googleConnected: true }
+    );
+
+    return res.redirect(`${frontendUrl}/settings?tab=channels&google_connected=true`);
+  } catch (err) {
+    console.error("[Google OAuth] Callback error:", err.message);
+    return res.redirect(`${frontendUrl}/settings?tab=channels&google_error=callback_failed`);
+  }
+});
 module.exports = router;
 module.exports.refreshExpiringInstagramTokens = refreshExpiringInstagramTokens;

@@ -57,6 +57,47 @@ const isSuperAdmin = async (req, res, next) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
+// --- TEST WHATSAPP CONNECTION ---
+router.post('/test-whatsapp-send', protect, async (req, res) => {
+  try {
+    const { phone, phoneNumberId, wabaId, token } = req.body;
+    
+    if (!phone || !phoneNumberId || !wabaId || !token) {
+      return res.status(400).json({ success: false, message: 'Missing required parameters' });
+    }
+
+    const testMessage = {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: phone.replace(/[^0-9]/g, ''),
+      type: "text",
+      text: {
+        body: "👋 Hello! This is a test message from your TopEdge AI connection. Your WhatsApp API is configured correctly!"
+      }
+    };
+
+    const response = await axios.post(
+      `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`,
+      testMessage,
+      {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    res.json({ success: true, data: response.data });
+  } catch (err) {
+    log.error('Test WhatsApp Send Failed', { error: err.response?.data || err.message });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to send test message', 
+      error: err.response?.data?.error?.message || err.message 
+    });
+  }
+});
+
 
 // --- GET ALL CLIENTS ---
 router.get('/clients', protect, isSuperAdmin, sanitizeMiddleware, async (req, res) => {
@@ -1844,6 +1885,121 @@ router.get('/audit-logs', protect, authorize('SUPER_ADMIN', 'CLIENT_ADMIN'), asy
   } catch (err) {
     console.error('Error fetching audit logs', { error: err.message });
     res.status(500).json({ message: 'Server error fetching audit logs' });
+  }
+});
+
+// ── ONBOARDING: Connection Test Endpoints ─────────────────────────────────────
+// Pre-save credential validation for the onboarding wizards and settings page.
+
+// POST /admin/test-whatsapp — Validates Meta Graph API credentials
+router.post('/test-whatsapp', protect, async (req, res) => {
+  try {
+    const { phoneNumberId, whatsappToken } = req.body;
+    if (!phoneNumberId || !whatsappToken) {
+      return res.status(400).json({ success: false, message: 'Phone Number ID and Access Token are required.' });
+    }
+
+    const response = await axios.get(
+      `https://graph.facebook.com/v19.0/${phoneNumberId}`,
+      {
+        headers: { Authorization: `Bearer ${whatsappToken}` },
+        timeout: 10000
+      }
+    );
+
+    if (response.data && response.data.display_phone_number) {
+      res.json({
+        success: true,
+        phone: response.data.display_phone_number,
+        name: response.data.verified_name || null,
+        qualityRating: response.data.quality_rating || null,
+        message: `Connected to ${response.data.display_phone_number}`
+      });
+    } else {
+      res.json({ success: false, message: 'Unexpected response from Meta API. Check your Phone Number ID.' });
+    }
+  } catch (err) {
+    const metaError = err.response?.data?.error;
+    const code = metaError?.code || err.response?.status;
+    const msg = metaError?.message || err.message;
+
+    log.warn('WhatsApp test failed', { code, msg });
+    res.status(err.response?.status || 500).json({
+      success: false,
+      message: msg,
+      code,
+      subcode: metaError?.error_subcode
+    });
+  }
+});
+
+// POST /admin/test-shopify — Validates Shopify Admin API credentials
+router.post('/test-shopify', protect, async (req, res) => {
+  try {
+    const { shopDomain, shopifyAccessToken } = req.body;
+    if (!shopDomain || !shopifyAccessToken) {
+      return res.status(400).json({ success: false, message: 'Shop domain and access token are required.' });
+    }
+
+    const cleanDomain = shopDomain.replace('https://', '').replace('http://', '').split('/')[0];
+
+    const response = await axios.get(
+      `https://${cleanDomain}/admin/api/2024-01/shop.json`,
+      {
+        headers: { 'X-Shopify-Access-Token': shopifyAccessToken },
+        timeout: 10000
+      }
+    );
+
+    if (response.data?.shop) {
+      res.json({
+        success: true,
+        shopName: response.data.shop.name,
+        domain: response.data.shop.domain,
+        plan: response.data.shop.plan_display_name,
+        message: `Connected to ${response.data.shop.name}`
+      });
+    } else {
+      res.json({ success: false, message: 'Unexpected response from Shopify. Check your domain and token.' });
+    }
+  } catch (err) {
+    const status = err.response?.status;
+    let msg = err.message;
+
+    if (status === 401) msg = 'Invalid Shopify Admin API token. Make sure you\'re using an Admin API token (not Storefront) with the required scopes.';
+    else if (status === 404) msg = 'Store not found. Double-check your .myshopify.com domain.';
+    else if (status === 403) msg = 'Access denied. Your API token may lack the required scopes (read_products, read_orders).';
+
+    log.warn('Shopify test failed', { status, msg });
+    res.status(status || 500).json({ success: false, message: msg });
+  }
+});
+
+// POST /admin/test-email — Validates SMTP email credentials
+router.post('/test-email', protect, async (req, res) => {
+  try {
+    const { emailUser, emailAppPassword } = req.body;
+    if (!emailUser || !emailAppPassword) {
+      return res.status(400).json({ success: false, message: 'Email address and app password are required.' });
+    }
+
+    const nodemailer = require('nodemailer');
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user: emailUser, pass: emailAppPassword },
+      connectionTimeout: 8000,
+    });
+
+    await transporter.verify();
+    res.json({ success: true, message: `SMTP connection verified for ${emailUser}` });
+  } catch (err) {
+    log.warn('Email test failed', { error: err.message });
+
+    let msg = 'SMTP authentication failed.';
+    if (err.code === 'EAUTH') msg = 'Invalid email or app password. For Gmail, make sure you\'re using an App Password (not your regular password).';
+    else if (err.code === 'ESOCKET') msg = 'Could not connect to the email server. Check your network and try again.';
+
+    res.status(400).json({ success: false, message: msg });
   }
 });
 
