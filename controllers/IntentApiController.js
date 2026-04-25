@@ -623,20 +623,48 @@ exports.simulateIntent = async (req, res) => {
 
     // 2. Fetch associated Actions only if score passes unified threshold
     let simulatedActions = [];
+    let savedToInbox = false;
+
     if (score >= CONFIDENCE_THRESHOLD && intent && intent !== 'None') {
       const rule = await IntentRule.findOne({ clientId, intentName: intent });
       if (rule) {
         simulatedActions = rule.actions;
       }
+    } else {
+      // LOW CONFIDENCE: Save to Training Inbox so users can review it
+      try {
+        // Avoid duplicates — only save if this exact phrase isn't already pending
+        const exists = await UnrecognizedPhrase.findOne({ 
+          clientId, 
+          phrase: text.trim(), 
+          status: 'PENDING' 
+        });
+        
+        if (!exists) {
+          await UnrecognizedPhrase.create({
+            clientId,
+            phrase: text.trim(),
+            phoneNumber: '0000000000', // Fallback for strict old schemas
+            source: 'SIMULATOR',
+            status: 'PENDING'
+          });
+          savedToInbox = true;
+          console.log(`[IntentSimulator] Low-confidence phrase saved to Training Inbox: "${text}"`);
+        }
+      } catch (saveErr) {
+        console.error('[IntentSimulator] Failed to save to Training Inbox:', saveErr.message);
+        // We continue to return the simulation result, but savedToInbox remains false
+      }
     }
 
     // 3. Return payload without executing ActionExecutor or saving Conversation
     res.status(200).json({
-      success: true,
+      success: true, // Simulation itself succeeded
       originalText: text,
       detectedIntent: intent,
       confidenceScore: score,
-      simulatedActions
+      simulatedActions,
+      savedToInbox
     });
 
   } catch (error) {

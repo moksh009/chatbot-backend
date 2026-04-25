@@ -22,7 +22,12 @@ const unrecognizedPhraseSchema = new mongoose.Schema({
   },
   phoneNumber: {
     type: String,
-    required: true
+    default: ''
+  },
+  source: {
+    type: String,
+    enum: ['LIVE_CHAT', 'SIMULATOR'],
+    default: 'LIVE_CHAT'
   },
   status: {
     type: String,
