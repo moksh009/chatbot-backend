@@ -697,6 +697,8 @@ router.patch('/my-settings', protect, async (req, res) => {
       instagramConnected, instagramPageId, instagramAccessToken, instagramAppSecret,
       googleReviewUrl, adminPhone, adminEmail,
       adminAlertEmail, adminAlertWhatsapp, metaAppId,
+      // Phase SMTP: Email credentials
+      emailUser, emailAppPassword,
       // Phase 20: Razorpay
       razorpayKeyId, razorpaySecret,
       cashfreeAppId, cashfreeSecretKey, activePaymentGateway,
@@ -813,6 +815,11 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (adminAlertEmail !== undefined) updateFields.adminAlertEmail = adminAlertEmail;
     if (adminAlertWhatsapp !== undefined) updateFields.adminAlertWhatsapp = adminAlertWhatsapp;
     if (metaAppId !== undefined) updateFields.metaAppId = metaAppId;
+
+    if (emailUser !== undefined) updateFields.emailUser = emailUser;
+    if (emailAppPassword !== undefined && emailAppPassword !== '••••••••' && emailAppPassword.trim() !== '') {
+      updateFields.emailAppPassword = emailAppPassword;
+    }
 
     if (activePaymentGateway !== undefined) updateFields.activePaymentGateway = activePaymentGateway;
     if (razorpayKeyId !== undefined && razorpayKeyId.trim() !== '') updateFields.razorpayKeyId = razorpayKeyId;

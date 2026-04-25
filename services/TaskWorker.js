@@ -8,6 +8,7 @@ const AdLead = require('../models/AdLead');
 const ImportSession = require('../models/ImportSession');
 const { normalizePhone, findBestMatch } = require('../utils/leadCleaner');
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
+const { incrementStat } = require('../utils/statCacheEngine');
 
 const isInternalRenderRedis = (process.env.REDIS_URL || '').includes('red-');
 const isRunningOnRender = !!process.env.RENDER;
@@ -252,7 +253,14 @@ async function handleImportLeads(data, job) {
         session.newPhones = allNewPhones;
         await session.save();
 
-        if (success > 0) await incrementUsage(clientId, 'contacts', success);
+        if (success > 0) {
+            await incrementUsage(clientId, 'contacts', success);
+            // Enterprise Fix: Update StatCache atomically for real-time dashboard
+            await incrementStat(clientId, { 
+                totalLeads: success, 
+                leadsToday: success 
+            });
+        }
 
         if (global.io) {
             global.io.to(`client_${clientId}`).emit('import_completed', {

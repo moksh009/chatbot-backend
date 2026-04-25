@@ -8,6 +8,7 @@ const WhatsApp = require('./whatsapp');
 const { sendBirthdayWishWithImage } = require('./sendBirthdayMessage');
 const { sendAppointmentReminder } = require('./sendAppointmentReminder');
 const log = require('./logger')('BroadcastEngine');
+const { incrementStat } = require('./statCacheEngine');
 
 function normalizePhone(p) {
   if (!p) return '';
@@ -112,12 +113,26 @@ async function processBroadcast(data) {
                     if (variableMapping && Object.keys(variableMapping).length > 0) {
                         const bodyParams = [];
                         const sortedKeys = Object.keys(variableMapping).sort((a,b) => parseInt(a) - parseInt(b));
-                        
-                        sortedKeys.forEach(k => {
-                            const dataField = variableMapping[k];
-                            let val = lead[dataField] || lead.capturedData?.[dataField] || '';
-                            if (dataField === 'name') val = lead.name || 'Customer';
-                            bodyParams.push({ type: 'text', text: String(val) });
+                        sortedKeys.forEach(vIndex => {
+                            const dataField = variableMapping[vIndex];
+                            let val = '';
+
+                            if (dataField === 'customText') {
+                                val = (data?.customTextValues && data.customTextValues[vIndex]) || '';
+                            } else if (dataField === 'businessName') {
+                                val = client.businessName || client.name || 'Our Store';
+                            } else if (dataField === 'lastOrderDate') {
+                                val = lead.lastPurchaseDate ? new Date(lead.lastPurchaseDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : 'N/A';
+                            } else if (dataField === 'lastOrderValue') {
+                                val = lead.totalSpent ? `₹${lead.totalSpent.toLocaleString('en-IN')}` : '₹0';
+                            } else if (dataField === 'tags') {
+                                val = Array.isArray(lead.tags) ? lead.tags.join(', ') : '';
+                            } else {
+                                val = lead[dataField] || lead.capturedData?.[dataField] || '';
+                                if (dataField === 'name' && !val) val = 'Customer';
+                            }
+
+                            bodyParams.push({ type: 'text', text: String(val).slice(0, 1000) });
                         });
 
                         if (bodyParams.length > 0) {
@@ -193,6 +208,11 @@ async function processBroadcast(data) {
         campaign.audienceCount = total;
         campaign.status = 'COMPLETED';
         await campaign.save();
+        
+        if (sent > 0) {
+            await incrementStat(clientId, { totalConversations: sent });
+        }
+
         log.success(`[BroadcastEngine] Finished campaign: ${campaignId} | sent=${sent} failed=${failed} total=${total}`);
 
     } catch (err) {

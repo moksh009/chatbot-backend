@@ -19,6 +19,7 @@ const WhatsApp = require('../utils/whatsapp');
 const { createMessage } = require('../utils/createMessage');
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
 const log = require('../utils/logger')('Campaigns');
+const { incrementStat } = require('../utils/statCacheEngine');
 
 try {
   fs.mkdirSync('uploads', { recursive: true });
@@ -186,6 +187,56 @@ router.post('/from-hot-leads', protect, async (req, res) => {
     }
 });
 
+// @route   POST /api/campaigns/quick-send
+// @desc    Send a template message to a single contact
+// @access  Private
+router.post('/quick-send', protect, async (req, res) => {
+  const { leadId, templateName, channel } = req.body;
+  const clientId = req.user.clientId;
+
+  if (!leadId || !templateName) {
+    return res.status(400).json({ success: false, message: 'leadId and templateName are required' });
+  }
+
+  try {
+    const lead = await AdLead.findOne({ _id: leadId, clientId });
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    const { sendWhatsAppTemplate } = require('../utils/whatsappHelpers');
+
+    await sendWhatsAppTemplate({
+      phoneNumberId: client.phoneNumberId,
+      to: lead.phoneNumber,
+      templateName,
+      languageCode: 'en',
+      components: [],
+      token: client.whatsappToken
+    });
+
+    // Update Lead activity log
+    await AdLead.findByIdAndUpdate(leadId, {
+      $push: {
+        activityLog: {
+          action: 'quick_message_sent',
+          details: `Sent template: ${templateName}`,
+          timestamp: new Date()
+        }
+      }
+    });
+
+    // Enterprise Fix: Update StatCache atomically
+    await incrementStat(clientId, { totalConversations: 1 });
+
+    res.json({ success: true, message: 'Quick message sent successfully' });
+  } catch (err) {
+    log.error('[QuickSend] Error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to send quick message: ' + err.message });
+  }
+});
+
 // @route   GET /api/campaigns
 // @desc    List campaigns
 // @access  Private
@@ -327,7 +378,8 @@ router.post('/start', protect, async (req, res) => {
             languageCode: req.body.languageCode,
             isAbTest: req.body.isAbTest,
             abTestConfig: req.body.abTestConfig,
-            templateTypeB: req.body.templateTypeB
+            templateTypeB: req.body.templateTypeB,
+            customTextValues: req.body.customTextValues
         }, { delay: delayMs });
         
         return res.json({ success: true, message: `Campaign targeting ${count} contacts queued for background processing.` });
@@ -844,35 +896,37 @@ router.get('/templates', protect, async (req, res) => {
 });
 
 // @route   GET /api/campaigns/audience-estimate
-// @desc    Get audience size estimate based on source/segment
-// @access  Private
+// @desc    Get estimated reach for a segment or source
 router.get('/audience-estimate', protect, async (req, res) => {
-  try {
-    const { clientId, source, segmentId, importBatchId } = req.query;
-    const cid = clientId || req.user.clientId;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== cid) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-
+    const { source, segmentId, importBatchId } = req.query;
+    const cid = req.user.clientId;
     let count = 0;
-    if (source === 'all') {
-      count = await AdLead.countDocuments({ clientId: cid });
-    } else if (source === 'segment' && segmentId) {
-      const segment = await Segment.findOne({ _id: segmentId, clientId: cid });
-      if (segment) {
-        count = await AdLead.countDocuments({ clientId: cid, ...segment.query });
-      }
-    } else if (source === 'imported' && importBatchId) {
-        count = await AdLead.countDocuments({ clientId: cid, importBatchId });
-    } else if (source === 'high_intent') {
-        count = await AdLead.countDocuments({ clientId: cid, leadScore: { $gt: 70 } });
-    }
 
-    res.json({ success: true, count });
-  } catch (err) {
-    console.error('[AudienceEstimate] Error:', err);
-    res.status(500).json({ success: false, message: 'Failed to fetch estimate' });
-  }
+    try {
+        if (source === 'all') {
+            count = await AdLead.countDocuments({ clientId: cid });
+        } else if (source === 'segment' && segmentId) {
+            const segment = await Segment.findOne({ _id: segmentId, clientId: cid });
+            if (segment) {
+                count = await AdLead.countDocuments({ clientId: cid, ...segment.query });
+            }
+        } else if (source === 'imported' && importBatchId) {
+            count = await AdLead.countDocuments({ clientId: cid, importBatchId });
+        } else if (source === 'hot') {
+            count = await AdLead.countDocuments({ 
+                clientId: cid, 
+                $or: [
+                    { cartStatus: 'abandoned' },
+                    { addToCartCount: { $gt: 0 }, isOrderPlaced: { $ne: true } }
+                ]
+            });
+        }
+
+        res.json({ success: true, count });
+    } catch (err) {
+        console.error('[AudienceEstimate] Error:', err);
+        res.status(500).json({ success: false, message: 'Failed to fetch estimate' });
+    }
 });
 
 module.exports = router;

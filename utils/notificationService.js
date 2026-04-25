@@ -122,6 +122,12 @@ const NotificationService = {
       }));
     }
 
+    log.info(`Dispatching alert for ${client.clientId}`, { 
+      channels: channel, 
+      emailCount: adminEmails.length, 
+      whatsappCount: adminWhatsapps.length 
+    });
+
     return results;
   },
 
