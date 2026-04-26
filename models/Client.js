@@ -229,6 +229,7 @@ const ClientSchema = new mongoose.Schema({
   instagramFbPageId:     { type: String, default: "" },
   instagramPendingPages: { type: mongoose.Schema.Types.Mixed, default: null },
   instagramPendingToken: { type: String, default: "" },
+  igWebhookSubscribed: { type: Boolean, default: false },
 
   // Phase 20: AI Onboarding Wizard
   wizardCompleted:       { type: Boolean, default: false },

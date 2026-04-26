@@ -323,6 +323,10 @@ scheduleLoyaltyUrgency();
 const instagramAutomationRoutes = require('./routes/instagramAutomation');
 app.use('/api/instagram-automations', instagramAutomationRoutes);
 
+// IG Automation Module — Enterprise Comment-to-DM & Story-to-DM
+const igAutomationRoutes = require('./routes/igAutomationRoutes');
+app.use('/api/ig-automation', igAutomationRoutes);
+
 
 // Master Webhook (Root Route for WhatsApp Meta Cloud API)
 const masterWebhook = require('./routes/masterWebhook');
@@ -759,6 +763,7 @@ connectDB()
     const { bootIntentEngine } = require('./services/EngineInitializer');
     require('./services/NlpWorker'); // Starts the BullMQ NLP worker process
     require('./services/TaskWorker'); // Starts the Generic Enterprise Task Worker process (Phase 5)
+    require('./workers/igAutomationWorker'); // IG Automation: Comment-to-DM & Story-to-DM workers
 
     bootIntentEngine().catch(err => {
       log.error("[NLP_BOOT] Engine priming failed:", err.message);
