@@ -454,7 +454,7 @@ router.post('/:id/messages', protect, async (req, res) => {
 // @route   PATCH /api/conversations/:id/bot-status
 // @desc    Update bot status (active or paused)
 // @access  Private
-router.patch('/:id/bot-status', authMiddleware, async (req, res) => {
+router.patch('/:id/bot-status', protect, async (req, res) => {
   try {
     const { id } = req.params;
     const { clientId, botStatus } = req.body;
@@ -467,7 +467,7 @@ router.patch('/:id/bot-status', authMiddleware, async (req, res) => {
       { _id: id, clientId },
       { $set: { botStatus, botPaused: botStatus === 'paused', updatedAt: new Date() } },
       { new: true }
-    ).select('botStatus customerPhone customerName').lean();
+    ).select('botStatus phone customerName').lean();
 
     if (!conversation) {
       return res.status(404).json({ error: 'Conversation not found.' });

@@ -15,7 +15,7 @@ const TierSchema = new mongoose.Schema({
 // Legacy support for 'label'
 TierSchema.virtual('label').get(function() { return this.tierLabel; }).set(function(v) { this.tierLabel = v; });
 const ScoreTierConfigSchema = new mongoose.Schema({
-  clientId: { type: String, required: true, unique: true, index: true },
+  clientId: { type: String, required: true, unique: true },
   isActive: { type: Boolean, default: true },
   tiers: [TierSchema],
   updatedAt: { type: Date, default: Date.now }

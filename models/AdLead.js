@@ -3,8 +3,7 @@ const mongoose = require('mongoose');
 const adLeadSchema = new mongoose.Schema({
   clientId: {
     type: String,
-    required: true,
-    index: true
+    required: true
   },
   phoneNumber: {
     type: String,

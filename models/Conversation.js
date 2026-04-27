@@ -56,8 +56,7 @@ const ConversationSchema = new mongoose.Schema({
   // Phase 17 Enterprise Robustness
   processedMessageIds: { 
     type: [String], 
-    default: [],
-    index: true // index for deduplication search
+    default: []
   },
   consecutiveFailedMessages: { type: Number, default: 0 },
   lastNodeVisited: {

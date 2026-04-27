@@ -51,6 +51,6 @@ const StatCacheSchema = new mongoose.Schema({
 });
 
 // Single lookup by clientId — unique index already handles this
-StatCacheSchema.index({ clientId: 1 });
+
 
 module.exports = mongoose.model('StatCache', StatCacheSchema);
