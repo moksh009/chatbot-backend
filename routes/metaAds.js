@@ -116,7 +116,7 @@ router.get("/:clientId/:adId/leads", verifyToken, async (req, res) => {
 router.get("/:clientId/connect-url", verifyToken, async (req, res) => {
   try {
     // Sanitize API_BASE to remove trailing slash to avoid double slashes in URL
-    const base = (process.env.API_BASE || "https://chatbot-backend-lg5y.onrender.com").replace(/\/$/, "");
+    const base = (process.env.BACKEND_URL || process.env.API_BASE || "https://chatbot-backend-lg5y.onrender.com").replace(/\/$/, "");
     const redirectUri = `${base}/api/oauth/meta-ads/callback`;
     
     // Expanded scopes for Enterprise-grade ads management

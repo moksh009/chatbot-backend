@@ -391,7 +391,7 @@ router.get("/meta-ads/callback", async (req, res) => {
   }
 
   try {
-    const base = (process.env.API_BASE || "https://chatbot-backend-lg5y.onrender.com").replace(/\/$/, "");
+    const base = (process.env.BACKEND_URL || process.env.API_BASE || "https://chatbot-backend-lg5y.onrender.com").replace(/\/$/, "");
     const redirectUri = `${base}/api/oauth/meta-ads/callback`;
 
     // 1. Exchange code for user access token
