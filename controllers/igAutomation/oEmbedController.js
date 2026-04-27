@@ -3,111 +3,109 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
-const NodeCache = require('node-cache');
 const log = require('../../utils/logger')('IGOEmbed');
 
-// In-memory cache with 1-hour TTL for oEmbed results
-const oEmbedCache = new NodeCache({ stdTTL: 3600, checkperiod: 600 });
+// In-memory cache with manual TTL — upgrade to Redis if needed in production
+const oEmbedCache = new Map();
 
 // URL validation pattern for Instagram posts/reels/tv
-const INSTAGRAM_URL_PATTERN = /^https?:\/\/(www\.)?instagram\.com\/(p|reel|tv)\/[\w-]+\/?/i;
+const INSTAGRAM_URL_PATTERN = /^https:\/\/(www\.)?instagram\.com\/(p|reel|tv)\/[A-Za-z0-9_-]+\/?/;
 
 /**
  * POST /api/ig-automation/oembed
  * Resolves an Instagram post URL into structured media metadata using Facebook's oEmbed API.
+ * 
+ * Root causes fixed:
+ *  1. Token construction: uses FACEBOOK_APP_ID|FACEBOOK_APP_SECRET (not META_APP_ID or FACEBOOK_APP_TOKEN)
+ *  2. API version pinned to v19.0
+ *  3. URL properly encoded with encodeURIComponent()
+ *  4. Explicit fields parameter requested
+ *  5. Categorized error handling (400/401/403/429/504)
  */
 router.post('/oembed', async (req, res) => {
   try {
     const { url, clientId } = req.body;
 
     if (!url || !clientId) {
-      return res.status(400).json({ success: false, error: 'url and clientId are required' });
+      return res.status(400).json({ error: 'url and clientId are required.' });
     }
 
-    // Validate URL format
+    // Strict URL validation — only accept known Instagram post/reel/tv paths
     if (!INSTAGRAM_URL_PATTERN.test(url)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid URL format. Must be an Instagram post, reel, or IGTV URL (https://www.instagram.com/p/... or /reel/... or /tv/...)'
-      });
+      return res.status(400).json({ error: 'Invalid Instagram URL. Must be a post, reel, or TV URL.' });
     }
 
-    // Check cache first
-    const cached = oEmbedCache.get(url);
-    if (cached) {
-      log.info(`[oEmbed] Cache hit for ${url}`);
-      return res.status(200).json({ success: true, ...cached });
+    // Check in-memory cache first
+    if (oEmbedCache.has(url)) {
+      log.info('[oEmbed] Cache hit for URL:', url);
+      return res.json(oEmbedCache.get(url));
     }
 
-    // Build the Facebook oEmbed API URL
-    // Meta allows using 'app_id|app_secret' as a valid App Access Token
-    const fallbackToken = (process.env.META_APP_ID && process.env.META_APP_SECRET) 
-      ? `${process.env.META_APP_ID}|${process.env.META_APP_SECRET}` 
-      : null;
-    const appToken = process.env.FACEBOOK_APP_TOKEN || fallbackToken;
-    
-    if (!appToken) {
-      return res.status(500).json({
-        success: false,
-        error: 'Facebook App Token not configured. Contact your administrator.'
-      });
+    // Build the App Access Token — this is NOT a user or page token
+    if (!process.env.FACEBOOK_APP_ID || !process.env.FACEBOOK_APP_SECRET) {
+      log.error('[oEmbed] Missing FACEBOOK_APP_ID or FACEBOOK_APP_SECRET environment variables.');
+      return res.status(500).json({ error: 'Server configuration error. Contact support.' });
     }
 
-    const encodedUrl = encodeURIComponent(url);
-    const oEmbedUrl = `https://graph.facebook.com/v19.0/instagram_oembed?url=${encodedUrl}&access_token=${appToken}&fields=author_name,thumbnail_url,title,html`;
+    const appToken = `${process.env.FACEBOOK_APP_ID}|${process.env.FACEBOOK_APP_SECRET}`;
 
-    const response = await axios.get(oEmbedUrl, { timeout: 10000 });
+    const endpoint = `https://graph.facebook.com/v19.0/instagram_oembed?url=${encodeURIComponent(url)}&access_token=${appToken}&fields=author_name,author_url,thumbnail_url,title,html,provider_name`;
+
+    log.info('[oEmbed] Fetching from Meta for URL:', url);
+
+    const response = await axios.get(endpoint, { timeout: 10000 });
     const data = response.data;
 
-    if (!data) {
-      return res.status(422).json({
-        success: false,
-        error: 'Could not retrieve post data. The post may be from a private account.'
-      });
-    }
-
-    // Extract shortcode from URL path
-    const urlPath = new URL(url).pathname;
-    const shortcodeMatch = urlPath.match(/\/(p|reel|tv)\/([\w-]+)/);
+    // Extract the shortcode from the URL for reference (oEmbed does not return mediaId)
+    const shortcodeMatch = url.match(/\/(p|reel|tv)\/([A-Za-z0-9_-]+)/);
     const shortcode = shortcodeMatch ? shortcodeMatch[2] : null;
 
     const result = {
-      authorName: data.author_name || '',
-      thumbnailUrl: data.thumbnail_url || '',
-      caption: (data.title || '').substring(0, 120),
+      authorName: data.author_name || 'Unknown',
+      authorUrl: data.author_url || null,
+      thumbnailUrl: data.thumbnail_url || null,
+      caption: data.title || '',
       shortcode,
-      providerName: 'Instagram'
+      providerName: data.provider_name || 'Instagram'
     };
 
-    // Cache the result
+    // Cache the result for 1 hour
     oEmbedCache.set(url, result);
+    setTimeout(() => oEmbedCache.delete(url), 60 * 60 * 1000);
 
-    log.info(`[oEmbed] Fetched successfully for ${url} (author: ${result.authorName})`);
-    res.status(200).json({ success: true, ...result });
+    log.info('[oEmbed] Success for URL:', url, '| Author:', result.authorName);
+    return res.json(result);
 
-  } catch (error) {
-    const status = error.response?.status;
-    const errorData = error.response?.data;
+  } catch (err) {
+    if (err.response) {
+      const status = err.response.status;
+      const errorData = err.response.data?.error;
+      log.error('[oEmbed] Meta API error:', status, JSON.stringify(errorData));
 
-    if (status === 404) {
-      return res.status(404).json({
-        success: false,
-        error: 'Post not found. Please check the URL and try again.'
-      });
+      if (status === 400) {
+        const message = errorData?.message || '';
+        if (message.includes('private')) {
+          return res.status(422).json({ error: 'This post is from a private account and cannot be fetched.' });
+        }
+        return res.status(400).json({ error: 'Invalid Instagram URL or the post no longer exists.' });
+      }
+
+      if (status === 401 || status === 403) {
+        return res.status(500).json({ error: 'Instagram API authentication failed. Contact support.' });
+      }
+
+      if (status === 429) {
+        return res.status(429).json({ error: 'Rate limit reached. Please wait a moment and try again.' });
+      }
     }
 
-    if (status === 400 && errorData?.error?.code === 100) {
-      return res.status(422).json({
-        success: false,
-        error: 'This post is from a private account and cannot be accessed.'
-      });
+    if (err.code === 'ECONNABORTED') {
+      log.error('[oEmbed] Timeout fetching URL:', err.config?.url);
+      return res.status(504).json({ error: 'Request timed out. Please try again.' });
     }
 
-    log.error('[oEmbed] Fetch error:', error.response?.data || error.message);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch post preview. Please try again.'
-    });
+    log.error('[oEmbed] Unexpected error:', err.message);
+    return res.status(500).json({ error: 'An unexpected error occurred while fetching the post.' });
   }
 });
 

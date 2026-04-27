@@ -59,8 +59,17 @@ if (isInternalRenderRedis && !isRunningOnRender) {
   }, workerOpts);
 
   const commentReplyWorker = new Worker('ig-comment-reply', async (job) => {
-    const { sendCommentReply } = require('../controllers/igAutomation/messageDispatcher');
+    const { canSendCommentReply } = require('../utils/igRateLimiter');
     const { automationId, commentId, clientId, mediaId } = job.data;
+
+    // Pre-check rate limit at worker level — skip job early if blown
+    const canReply = await canSendCommentReply(clientId, mediaId || 'unknown');
+    if (!canReply) {
+      log.warn(`[ig-comment-reply] Job ${job.id} skipped — rate limit reached for client=${clientId} post=${mediaId}`);
+      return; // Job completes successfully (not a failure — intentional skip)
+    }
+
+    const { sendCommentReply } = require('../controllers/igAutomation/messageDispatcher');
     await sendCommentReply(automationId, commentId, clientId, mediaId);
   }, workerOpts);
 
@@ -87,7 +96,13 @@ if (isInternalRenderRedis && !isRunningOnRender) {
       log.info(`[${name}] Job ${job.id} completed`);
     });
     worker.on('failed', (job, err) => {
-      log.error(`[${name}] Job ${job.id} failed: ${err.message}`);
+      log.error(`[${name}] Job ${job.id} failed: ${err.message}`, {
+        jobData: JSON.stringify(job.data).substring(0, 500),
+        stack: err.stack
+      });
+    });
+    worker.on('stalled', (jobId) => {
+      log.warn(`[${name}] Job ${jobId} stalled — will be retried automatically`);
     });
   });
 

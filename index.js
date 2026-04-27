@@ -129,10 +129,28 @@ app.use(cors({
 }));
 
 app.use(compression()); // Performance: GZIP all JSON responses (70-80% smaller payloads)
+
+// ── CRITICAL: IG Webhook — must be mounted BEFORE global express.json() ──
+// Meta's HMAC-SHA256 signature verification requires the unparsed raw body.
+// Mounting this route before express.json() guarantees the body stream is untouched.
+const webhookController = require('./controllers/igAutomation/webhookController');
+app.use('/api/ig-automation/webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
+  // Parse the raw buffer into req.body for downstream handlers, while preserving rawBody
+  if (Buffer.isBuffer(req.body)) {
+    req.rawBody = req.body;
+    try {
+      req.body = JSON.parse(req.rawBody.toString('utf-8'));
+    } catch (e) {
+      return res.status(400).json({ error: 'Invalid JSON payload' });
+    }
+  }
+  next();
+}, webhookController);
+
 app.use(express.json({
   limit: '5mb', // ✅ Phase R3: Reduced from 10mb — prevents oversized payload DoS
   verify: (req, res, buf) => {
-    req.rawBody = buf;
+    req.rawBody = buf; // Still capture rawBody for any other routes that may need it
   }
 }));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
@@ -326,6 +344,10 @@ app.use('/api/instagram-automations', instagramAutomationRoutes);
 // IG Automation Module — Enterprise Comment-to-DM & Story-to-DM
 const igAutomationRoutes = require('./routes/igAutomationRoutes');
 app.use('/api/ig-automation', igAutomationRoutes);
+
+// Unified Inbox — merge-sort WhatsApp + Instagram conversations
+const inboxRoutes = require('./routes/inboxRoutes');
+app.use('/api/inbox', inboxRoutes);
 
 
 // Master Webhook (Root Route for WhatsApp Meta Cloud API)
@@ -765,6 +787,9 @@ connectDB()
     require('./services/TaskWorker'); // Starts the Generic Enterprise Task Worker process (Phase 5)
     require('./workers/igAutomationWorker'); // IG Automation: Comment-to-DM & Story-to-DM workers
 
+    // IG Automation: Validate environment variables (non-fatal warnings)
+    validateIGEnvironment();
+
     bootIntentEngine().catch(err => {
       log.error("[NLP_BOOT] Engine priming failed:", err.message);
     });
@@ -809,3 +834,27 @@ process.on("SIGINT", async () => {
 });
 
 module.exports = app;
+
+// IG Automation: Startup environment validation (non-fatal warnings)
+function validateIGEnvironment() {
+  const required = {
+    FACEBOOK_APP_ID: process.env.FACEBOOK_APP_ID,
+    FACEBOOK_APP_SECRET: process.env.FACEBOOK_APP_SECRET,
+    META_APP_SECRET: process.env.META_APP_SECRET
+  };
+
+  const missing = Object.entries(required)
+    .filter(([, val]) => !val)
+    .map(([key]) => key);
+
+  if (missing.length > 0) {
+    log.warn(`[Startup] IG Automation: Missing environment variables: ${missing.join(', ')}. IG features may not work correctly.`);
+  } else {
+    log.info('[Startup] IG Automation environment variables validated successfully.');
+  }
+
+  if (!process.env.IG_WEBHOOK_VERIFY_TOKEN) {
+    log.warn('[Startup] IG_WEBHOOK_VERIFY_TOKEN not set. Webhook verification handshake will fail.');
+  }
+}
+

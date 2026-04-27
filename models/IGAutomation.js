@@ -30,7 +30,10 @@ const IGAutomationSchema = new mongoose.Schema({
 
   // Story trigger — for story_to_dm only
   storyTrigger: {
-    event: { type: String, enum: ['story_mention', 'story_reply'] }
+    event: { type: String, enum: ['story_mention', 'story_reply'] },
+    replyTriggerMode: { type: String, enum: ['every_reply', 'specific_words'], default: 'every_reply' },
+    replyKeywords: [{ type: String, maxlength: 100 }],
+    replyCaseSensitive: { type: Boolean, default: false }
   },
 
   // The DM message flow

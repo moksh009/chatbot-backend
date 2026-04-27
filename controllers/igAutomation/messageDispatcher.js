@@ -184,7 +184,7 @@ async function checkFollowStatus(automationId, igsid, clientId) {
       }
     }
   } catch (err) {
-    log.error(`[FollowGate] Error checking follow status:`, err.message);
+    log.error(`[FollowGate] Error checking follow status:`, err.message, { automationId, igsid, stack: err.stack });
     throw err;
   }
 }

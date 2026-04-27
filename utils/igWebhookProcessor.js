@@ -71,10 +71,75 @@ async function enqueueOrInline(queue, jobName, data) {
 }
 
 /**
+ * Save an incoming Instagram message to IGConversation and emit Socket.io event.
+ * This is called after processing automation triggers for real-time inbox updates.
+ */
+async function saveToIGConversation(clientId, igsid, messageText, messageType = 'text', attachmentUrl = null) {
+  try {
+    const IGConversation = require('../models/IGConversation');
+    
+    const messageEntry = {
+      role: 'user',
+      content: messageText || '',
+      messageType,
+      attachmentUrl,
+      timestamp: new Date()
+    };
+
+    const conversation = await IGConversation.findOneAndUpdate(
+      { clientId, igsid },
+      {
+        $set: {
+          lastMessageText: messageText || '',
+          lastMessageAt: new Date(),
+          isRead: false,
+          channel: 'instagram'
+        },
+        $push: { messages: messageEntry },
+        $setOnInsert: {
+          clientId,
+          igsid,
+          igUsername: null,
+          igProfilePic: null,
+          createdAt: new Date()
+        }
+      },
+      { upsert: true, new: true }
+    );
+
+    // Emit Socket.io event for real-time updates
+    if (global.io) {
+      global.io.to(`client_${clientId}`).emit('igMessageNew', {
+        conversationId: conversation._id.toString(),
+        channel: 'instagram',
+        participantId: igsid,
+        participantName: conversation.igUsername || `IG User ${igsid.slice(-6)}`,
+        participantAvatar: conversation.igProfilePic || null,
+        lastMessageText: messageText || '',
+        lastMessageAt: new Date().toISOString()
+      });
+    }
+
+    return conversation;
+  } catch (err) {
+    log.error('[IGConversation] Failed to save incoming message:', err.message, { clientId, igsid });
+  }
+}
+
+/**
  * Main entry point — routes webhook payload to handlers
  */
 async function processIGWebhookPayload(body) {
-  const entries = body.entry || [];
+  // Checklist item 4: Log the entry point
+  console.log('[IG Webhook] Received payload. Entry count:', body?.entry?.length || 0);
+
+  // Checklist item 5: Handle empty or malformed payloads gracefully
+  if (!Array.isArray(body?.entry) || body.entry.length === 0) {
+    console.warn('[IG Webhook] Received empty or malformed payload:', JSON.stringify(body));
+    return;
+  }
+
+  const entries = body.entry;
 
   for (const entry of entries) {
     const pageId = entry.id;
@@ -96,8 +161,54 @@ async function processIGWebhookPayload(body) {
         await handleStoryReplyEvent(pageId, msg);
       } else if (msg.postback) {
         await handleButtonPostback(pageId, msg);
+      } else if (msg.message) {
+        // Generic incoming DM — save to IGConversation for unified inbox
+        await handleIncomingDM(pageId, msg);
       }
     }
+  }
+}
+
+/**
+ * Handle generic incoming DMs (not automation-triggered) for the unified inbox
+ */
+async function handleIncomingDM(pageId, msg) {
+  try {
+    const senderId = msg.sender?.id;
+    if (!senderId) return;
+
+    // Ignore our own messages (echo)
+    if (senderId === pageId) return;
+
+    const messageText = msg.message?.text || '';
+    const attachments = msg.message?.attachments || [];
+    let messageType = 'text';
+    let attachmentUrl = null;
+
+    if (attachments.length > 0) {
+      const firstAttachment = attachments[0];
+      if (firstAttachment.type === 'image') {
+        messageType = 'image';
+        attachmentUrl = firstAttachment.payload?.url || null;
+      } else if (firstAttachment.type === 'story_mention') {
+        messageType = 'story_reply';
+        attachmentUrl = firstAttachment.payload?.url || null;
+      } else {
+        messageType = 'unsupported';
+      }
+    }
+
+    const client = await Client.findOne({
+      $or: [
+        { instagramPageId: pageId },
+        { 'social.instagram.pageId': pageId }
+      ]
+    }).lean();
+    if (!client) return;
+
+    await saveToIGConversation(client.clientId, senderId, messageText, messageType, attachmentUrl);
+  } catch (err) {
+    log.error('[IncomingDM] Error handling incoming DM:', err.message, { payload: JSON.stringify(msg).substring(0, 500) });
   }
 }
 
@@ -206,7 +317,7 @@ async function handleCommentEvent(pageId, commentData) {
       log.info(`[Comment] Triggered automation "${auto.name}" for igsid=${commenterIgsid} comment=${commentId}`);
     }
   } catch (err) {
-    log.error('[Comment] Error handling comment event:', err.message);
+    log.error('[Comment] Error handling comment event:', err.message, { payload: JSON.stringify(commentData).substring(0, 500), stack: err.stack });
     try {
       const WebhookErrorLog = require('../models/WebhookErrorLog');
       await WebhookErrorLog.create({ payload: commentData, error: err.message, stack: err.stack });
@@ -228,7 +339,10 @@ async function handleStoryMentionEvent(pageId, mentionData) {
         { 'social.instagram.pageId': pageId }
       ]
     }).lean();
-    if (!client) return;
+    if (!client) {
+      console.warn('[IG StoryMention] No client found for pageId:', pageId);
+      return;
+    }
 
     const clientId = client.clientId;
 
@@ -239,13 +353,21 @@ async function handleStoryMentionEvent(pageId, mentionData) {
       'storyTrigger.event': 'story_mention'
     }).lean();
 
+    if (!automations.length) {
+      console.log('[IG StoryMention] No active story_mention automations for client:', clientId);
+      return;
+    }
+
     for (const auto of automations) {
       // De-duplication
       const existingSession = await IGAutomationSession.findOne({
         automationId: auto._id,
         igsid: mentionCommentId
       });
-      if (existingSession) continue;
+      if (existingSession) {
+        console.log('[IG StoryMention] Duplicate session found for mention:', mentionCommentId, 'automation:', auto._id, 'Skipping.');
+        continue;
+      }
 
       await IGAutomation.findByIdAndUpdate(auto._id, {
         $inc: { 'stats.totalTriggered': 1 }
@@ -260,7 +382,7 @@ async function handleStoryMentionEvent(pageId, mentionData) {
       log.info(`[StoryMention] Triggered automation "${auto.name}" for mention=${mentionCommentId}`);
     }
   } catch (err) {
-    log.error('[StoryMention] Error handling story mention:', err.message);
+    log.error('[StoryMention] Error handling story mention:', err.message, { payload: JSON.stringify(mentionData).substring(0, 500), stack: err.stack });
     try {
       const WebhookErrorLog = require('../models/WebhookErrorLog');
       await WebhookErrorLog.create({ payload: mentionData, error: err.message, stack: err.stack });
@@ -270,22 +392,38 @@ async function handleStoryMentionEvent(pageId, mentionData) {
 
 /**
  * Handle story reply events (messaging webhook)
+ * AUTHORITATIVE VERSION — replaces previous implementation with keyword filtering
  */
-async function handleStoryReplyEvent(pageId, msg) {
+async function handleStoryReplyEvent(pageId, messagingEvent) {
   try {
-    const senderId = msg.sender?.id;
-    if (!senderId) return;
+    const igsid = messagingEvent.sender?.id;
+    const replyText = messagingEvent.message?.text || '';
+    const storyContext = messagingEvent.message?.attachments?.[0];
 
+    if (!igsid) {
+      console.log('[IG Story Reply] Event has no sender ID. Skipping.');
+      return;
+    }
+
+    // Find the client by their Instagram Page ID
     const client = await Client.findOne({
       $or: [
         { instagramPageId: pageId },
         { 'social.instagram.pageId': pageId }
       ]
     }).lean();
-    if (!client) return;
+    if (!client) {
+      console.warn('[IG Story Reply] No client found for pageId:', pageId);
+      return;
+    }
 
     const clientId = client.clientId;
 
+    // Save to IGConversation for unified inbox
+    const attachmentUrl = storyContext?.payload?.url || null;
+    await saveToIGConversation(clientId, igsid, replyText, 'story_reply', attachmentUrl);
+
+    // Find all active Story to DM automations for this client with story_reply event
     const automations = await IGAutomation.find({
       clientId,
       type: 'story_to_dm',
@@ -293,30 +431,68 @@ async function handleStoryReplyEvent(pageId, msg) {
       'storyTrigger.event': 'story_reply'
     }).lean();
 
-    for (const auto of automations) {
+    if (!automations.length) {
+      console.log('[IG Story Reply] No active story_reply automations for client:', clientId);
+      return;
+    }
+
+    for (const automation of automations) {
+      const triggerMode = automation.storyTrigger?.replyTriggerMode || 'every_reply';
+
+      let shouldFire = false;
+
+      if (triggerMode === 'every_reply') {
+        shouldFire = true;
+      } else if (triggerMode === 'specific_words') {
+        const keywords = automation.storyTrigger?.replyKeywords || [];
+        const caseSensitive = automation.storyTrigger?.replyCaseSensitive || false;
+
+        if (keywords.length === 0) {
+          console.warn('[IG Story Reply] Automation has specific_words mode but no keywords. Skipping automation:', automation._id);
+          continue;
+        }
+
+        const textToCheck = caseSensitive ? replyText : replyText.toLowerCase();
+        shouldFire = keywords.some(keyword => {
+          const k = caseSensitive ? keyword : keyword.toLowerCase();
+          return textToCheck.includes(k);
+        });
+      }
+
+      if (!shouldFire) {
+        console.log('[IG Story Reply] Keyword match failed. Skipping automation:', automation._id);
+        continue;
+      }
+
+      // De-duplication check
       const existingSession = await IGAutomationSession.findOne({
-        automationId: auto._id,
-        igsid: senderId
-      });
-      if (existingSession) continue;
-
-      await IGAutomation.findByIdAndUpdate(auto._id, {
-        $inc: { 'stats.totalTriggered': 1 }
+        automationId: automation._id,
+        igsid
       });
 
+      if (existingSession) {
+        console.log('[IG Story Reply] Duplicate session found for igsid:', igsid, 'automation:', automation._id, 'Skipping.');
+        continue;
+      }
+
+      // Enqueue the story DM job
       await enqueueOrInline(storyDmQueue, 'story-dm', {
-        automationId: auto._id.toString(),
-        igsid: senderId,
+        automationId: automation._id.toString(),
+        igsid,
         clientId
       });
 
-      log.info(`[StoryReply] Triggered automation "${auto.name}" for sender=${senderId}`);
+      await IGAutomation.findByIdAndUpdate(automation._id, {
+        $inc: { 'stats.totalTriggered': 1 }
+      });
+
+      console.log('[IG Story Reply] Queued story DM for igsid:', igsid, 'automation:', automation._id);
     }
   } catch (err) {
-    log.error('[StoryReply] Error handling story reply:', err.message);
+    console.error('[IG Story Reply] Unhandled error in handleStoryReplyEvent:', err, { payload: JSON.stringify(messagingEvent).substring(0, 500) });
     try {
       const WebhookErrorLog = require('../models/WebhookErrorLog');
-      await WebhookErrorLog.create({ payload: msg, error: err.message, stack: err.stack });
+      await WebhookErrorLog.create({ payload: messagingEvent, error: err.message, stack: err.stack });
     } catch (e) {}
   }
 }
@@ -384,7 +560,7 @@ async function handleButtonPostback(pageId, msg) {
       await dispatcher.sendStandardLinkFollow(automationId, senderId, clientId);
     }
   } catch (err) {
-    log.error('[Postback] Error handling button postback:', err.message);
+    log.error('[Postback] Error handling button postback:', err.message, { payload: JSON.stringify(msg).substring(0, 500), stack: err.stack });
     try {
       const WebhookErrorLog = require('../models/WebhookErrorLog');
       await WebhookErrorLog.create({ payload: msg, error: err.message, stack: err.stack });
@@ -398,5 +574,7 @@ module.exports = {
   handleStoryMentionEvent,
   handleStoryReplyEvent,
   handleButtonPostback,
+  handleIncomingDM,
+  saveToIGConversation,
   registerQueues
 };

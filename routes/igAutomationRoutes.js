@@ -5,16 +5,18 @@ const router = express.Router();
 
 const crudController = require('../controllers/igAutomation/crudController');
 const oEmbedController = require('../controllers/igAutomation/oEmbedController');
-const webhookController = require('../controllers/igAutomation/webhookController');
+const mediaController = require('../controllers/igAutomation/mediaController');
 
 // Auth middleware
 const { protect } = require('../middleware/auth');
 
-// Webhook routes — NO auth (Meta calls these directly)
-router.use('/', webhookController);
+// NOTE: Webhook routes (GET/POST /webhook) are mounted BEFORE express.json()
+// in index.js for raw body isolation. They are NOT included here.
 
 // Authenticated routes
 router.use('/', protect, crudController);
 router.use('/', protect, oEmbedController);
+router.use('/', protect, mediaController);
 
 module.exports = router;
+
