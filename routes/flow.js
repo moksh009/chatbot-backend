@@ -219,8 +219,27 @@ router.get('/', protect, async (req, res) => {
   try {
     const clientId = req.user.clientId;
     const WhatsAppFlow = require('../models/WhatsAppFlow');
-    const flows = await WhatsAppFlow.find({ clientId });
-    res.json({ success: true, flows });
+    const dbFlows = await WhatsAppFlow.find({ clientId });
+    
+    // Map flowId to id to prevent 'undefined' in frontend
+    const formattedFlows = dbFlows.map(f => ({
+      id: f.flowId,
+      name: f.name,
+      platform: f.platform || 'whatsapp',
+      folderId: f.folderId || '',
+      isActive: f.status === 'PUBLISHED',
+      status: f.status || 'DRAFT',
+      version: f.version || 1,
+      nodes: f.nodes || [],
+      edges: f.edges || [],
+      nodeCount: (f.nodes || []).length,
+      edgeCount: (f.edges || []).length,
+      createdAt: f.createdAt,
+      updatedAt: f.updatedAt,
+      lastSyncedAt: f.lastSyncedAt
+    }));
+
+    res.json({ success: true, flows: formattedFlows });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
