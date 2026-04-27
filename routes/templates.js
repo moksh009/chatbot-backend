@@ -43,7 +43,7 @@ router.get('/sync', protect, async (req, res) => {
 
         const client = await getClientCredentials(clientId, req.user.id);
 
-        const url = `https://graph.facebook.com/v18.0/${client.wabaId}/message_templates?fields=name,status,category,language,components`;
+        const url = `https://graph.facebook.com/v21.0/${client.wabaId}/message_templates?fields=name,status,category,language,components`;
         
         try {
             const response = await axios.get(url, {
@@ -163,7 +163,7 @@ router.post('/create', protect, async (req, res) => {
             components
         };
 
-        const url = `https://graph.facebook.com/v18.0/${client.wabaId}/message_templates`;
+        const url = `https://graph.facebook.com/v21.0/${client.wabaId}/message_templates`;
 
         try {
             const response = await axios.post(url, payload, {
@@ -193,7 +193,7 @@ router.delete('/:name', protect, async (req, res) => {
         if (!clientId) return res.status(400).json({ success: false, message: 'clientId is required' });
 
         const client = await getClientCredentials(clientId, req.user.id);
-        const url = `https://graph.facebook.com/v18.0/${client.wabaId}/message_templates?name=${templateName}`;
+        const url = `https://graph.facebook.com/v21.0/${client.wabaId}/message_templates?name=${templateName}`;
 
         try {
             const response = await axios.delete(url, {
@@ -314,7 +314,7 @@ router.post('/push-standard', protect, async (req, res) => {
             components: standardTemplate.components
         };
 
-        const url = `https://graph.facebook.com/v18.0/${client.wabaId}/message_templates`;
+        const url = `https://graph.facebook.com/v21.0/${client.wabaId}/message_templates`;
 
         try {
             const response = await axios.post(url, payload, {
@@ -353,7 +353,7 @@ router.post('/upload-media', protect, upload.single('file'), async (req, res) =>
         
         // 1. Initialize Upload
         // Documentation: https://developers.facebook.com/docs/graph-api/resumable-upload-api/
-        const initUrl = `https://graph.facebook.com/v19.0/${appId}/uploads`;
+        const initUrl = `https://graph.facebook.com/v21.0/${appId}/uploads`;
         const initRes = await axios.post(initUrl, null, {
             params: {
                 file_name: req.file.originalname || `upload_${Date.now()}.jpg`,
@@ -369,7 +369,7 @@ router.post('/upload-media', protect, upload.single('file'), async (req, res) =>
         }
 
         // 2. Upload Data (Binary)
-        const uploadUrl = `https://graph.facebook.com/v19.0/${sessionId}`;
+        const uploadUrl = `https://graph.facebook.com/v21.0/${sessionId}`;
         const uploadRes = await axios.post(uploadUrl, req.file.buffer, {
             headers: {
                 'Authorization': `OAuth ${accessToken}`,

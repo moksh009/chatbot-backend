@@ -4,7 +4,7 @@ const axios = require('axios');
 // async function sendButtonMessage({ phoneNumberId, to }) {
 //   // Disabled: Old TopEdge AI flow. Use CODE CLINIC flow in index.js only.
 //   /*
-//   const apiVersion = process.env.API_VERSION || 'v18.0';
+//   const apiVersion = process.env.API_VERSION || 'v21.0';
 //   const token = process.env.WHATSAPP_TOKEN;
 //   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
 
@@ -71,7 +71,7 @@ const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Client = require('../models/Client');
 async function sendChatbotMessage({ phoneNumberId, to }) {
-  const apiVersion = process.env.API_VERSION || 'v18.0';
+  const apiVersion = process.env.API_VERSION || 'v21.0';
   const token = process.env.WHATSAPP_TOKEN;
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
 
@@ -155,7 +155,7 @@ async function sendChatbotMessage({ phoneNumberId, to }) {
 
 // Function to send an AI Caller info button message
 async function sendAICallerMessage({ phoneNumberId, to }) {
-  const apiVersion = process.env.API_VERSION || 'v18.0';
+  const apiVersion = process.env.API_VERSION || 'v21.0';
   const token = process.env.WHATSAPP_TOKEN;
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
 
@@ -239,7 +239,7 @@ async function sendAICallerMessage({ phoneNumberId, to }) {
 
 // Function to send a book demo list message with dates
 async function sendBookDemoMessage({ phoneNumberId, to }) {
-  const apiVersion = process.env.API_VERSION || 'v18.0';
+  const apiVersion = process.env.API_VERSION || 'v21.0';
   const token = process.env.WHATSAPP_TOKEN;
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
 

@@ -77,7 +77,7 @@ router.post('/test-whatsapp-send', protect, async (req, res) => {
     };
 
     const response = await axios.post(
-      `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`,
+      `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
       testMessage,
       {
         headers: {
@@ -1490,7 +1490,7 @@ router.get('/templates/sync/:clientId', protect, async (req, res) => {
 
         log.info(`Syncing templates for ${clientId} via Meta API...`);
         const token = decrypt(client.whatsappToken);
-        const url = `https://graph.facebook.com/v18.0/${client.wabaId}/message_templates?limit=100`;
+        const url = `https://graph.facebook.com/v21.0/${client.wabaId}/message_templates?limit=100`;
         const response = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
         
         const approvedTemplates = response.data.data.filter(t => t.status === 'APPROVED');
@@ -1518,7 +1518,7 @@ router.get('/flows/sync/:clientId', protect, async (req, res) => {
 
         log.info(`Syncing flows for ${clientId}...`);
         const token = decrypt(client.whatsappToken);
-        const url = `https://graph.facebook.com/v18.0/${client.wabaId}/flows?limit=100`;
+        const url = `https://graph.facebook.com/v21.0/${client.wabaId}/flows?limit=100`;
         const response = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
         
         const flows = response.data.data || [];
@@ -1900,7 +1900,7 @@ router.post('/test-whatsapp', protect, async (req, res) => {
     }
 
     const response = await axios.get(
-      `https://graph.facebook.com/v19.0/${phoneNumberId}`,
+      `https://graph.facebook.com/v21.0/${phoneNumberId}`,
       {
         headers: { Authorization: `Bearer ${whatsappToken}` },
         timeout: 10000

@@ -171,7 +171,7 @@ async function saveAndEmitMessage({ clientId, from, to, body, type, direction, s
 }
 
 async function sendWhatsAppText({ phoneNumberId, to, body, token, io, clientId }) {
-    const apiVersion = process.env.API_VERSION || 'v18.0';
+    const apiVersion = process.env.API_VERSION || 'v21.0';
     const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
     const data = {
         messaging_product: 'whatsapp',
@@ -243,7 +243,7 @@ async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, i
     }
 
     try {
-        await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
+        await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
         await saveAndEmitMessage({ clientId: clientConfig.clientId, from: 'bot', to, body: `[Interactive] ${sanitizedBody}`, type: 'interactive', direction: 'outgoing', status: 'sent', conversationId: (await Conversation.findOne({ phone: to, clientId: clientConfig.clientId }))?._id, io });
         return true;
     } catch (err) { 
@@ -253,7 +253,7 @@ async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, i
 }
 
 async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons, token, io, clientId, footer, imageHeader }) {
-    const apiVersion = process.env.API_VERSION || 'v18.0';
+    const apiVersion = process.env.API_VERSION || 'v21.0';
     const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
     const data = {
         messaging_product: 'whatsapp',
@@ -301,7 +301,7 @@ async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons, t
 
 async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageCode = 'en_US', headerImageUrl = null, bodyParams = [], buttonUrlParam = null, io, clientConfig }) {
     const token = clientConfig.whatsappToken;
-    const apiVersion = process.env.API_VERSION || 'v18.0';
+    const apiVersion = process.env.API_VERSION || 'v21.0';
     try {
         const templateData = { name: templateName, language: { code: languageCode }, components: [] };
         if (headerImageUrl) {
@@ -370,7 +370,7 @@ async function sendDynamicMessage({ stepId, fallbackInteractive, phoneNumberId, 
 }
 
 async function sendWhatsAppFlow({ phoneNumberId, to, header, body, token, io, clientId, flowId, screenId, footer }) {
-    const apiVersion = process.env.API_VERSION || 'v18.0';
+    const apiVersion = process.env.API_VERSION || 'v21.0';
     const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
     const data = {
         messaging_product: 'whatsapp',

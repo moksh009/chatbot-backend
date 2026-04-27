@@ -39,7 +39,7 @@ async function processVoiceNote(message, client, phone, convoId, io, phoneNumber
     const waToken = client.whatsapp?.accessToken || client.whatsappToken || process.env.WHATSAPP_TOKEN;
     try {
       const urlResp = await axios.get(
-        `https://graph.facebook.com/v18.0/${mediaId}`,
+        `https://graph.facebook.com/v21.0/${mediaId}`,
         { headers: { Authorization: `Bearer ${waToken}` } }
       );
       const mediaUrl = urlResp.data.url;

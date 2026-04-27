@@ -49,7 +49,7 @@ router.post('/oembed', async (req, res) => {
 
     const appToken = `${process.env.FACEBOOK_APP_ID}|${process.env.FACEBOOK_APP_SECRET}`;
 
-    const endpoint = `https://graph.facebook.com/v19.0/instagram_oembed?url=${encodeURIComponent(url)}&access_token=${appToken}&fields=author_name,author_url,thumbnail_url,title,html,provider_name`;
+    const endpoint = `https://graph.facebook.com/v21.0/instagram_oembed?url=${encodeURIComponent(url)}&access_token=${appToken}&fields=author_name,author_url,thumbnail_url,title,html,provider_name`;
 
     log.info('[oEmbed] Fetching from Meta for URL:', url);
 

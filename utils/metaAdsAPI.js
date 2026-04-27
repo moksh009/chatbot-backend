@@ -2,7 +2,7 @@
 
 const axios = require("axios");
 
-const API_VERSION = process.env.META_ADS_API_VERSION || "v18.0";
+const API_VERSION = process.env.META_ADS_API_VERSION || "v21.0";
 
 /**
  * Fetch all active/paused Meta campaigns for a client.

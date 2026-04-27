@@ -4,7 +4,7 @@ const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Client = require('../models/Client');
 async function sendLeaveConfirmationAndMenu({ phoneNumberId, to, date, token }) {
-  const apiVersion = process.env.API_VERSION || 'v18.0';
+  const apiVersion = process.env.API_VERSION || 'v21.0';
   const accessToken = token || process.env.WHATSAPP_TOKEN;
   const url        = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
 
@@ -72,7 +72,7 @@ async function sendLeaveConfirmationAndMenu({ phoneNumberId, to, date, token }) 
   }
 }
 async function sendPromptForTimeSlots({ phoneNumberId, to, date, token }) {
-  const apiVersion = process.env.API_VERSION || 'v18.0';
+  const apiVersion = process.env.API_VERSION || 'v21.0';
   const accessToken = token || process.env.WHATSAPP_TOKEN;
   const url        = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
 
@@ -122,7 +122,7 @@ async function sendPromptForTimeSlots({ phoneNumberId, to, date, token }) {
   }
 }
 async function sendPartialConfirmationAndMenu({ phoneNumberId, to, date, timeSlots, token }) {
-  const apiVersion = process.env.API_VERSION || 'v18.0';
+  const apiVersion = process.env.API_VERSION || 'v21.0';
   const accessToken = token || process.env.WHATSAPP_TOKEN;
   const url        = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
 

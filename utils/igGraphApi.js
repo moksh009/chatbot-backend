@@ -3,7 +3,7 @@
 const axios = require('axios');
 const log = require('./logger')('IGGraphAPI');
 
-const GRAPH_API_VERSION = 'v19.0';
+const GRAPH_API_VERSION = process.env.API_VERSION || 'v21.0';
 const GRAPH_BASE_URL = `https://graph.facebook.com/${GRAPH_API_VERSION}`;
 
 /**

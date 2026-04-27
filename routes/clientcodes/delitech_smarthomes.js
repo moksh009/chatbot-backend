@@ -61,7 +61,7 @@ const FAQS = {
 async function sendWhatsAppText({ phoneNumberId, to, body, preview_url = false, io, clientConfig }) {
     const token = clientConfig.whatsappToken;
     try {
-        await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
+        await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
             messaging_product: 'whatsapp',
             to,
             type: 'text',
@@ -75,7 +75,7 @@ async function sendWhatsAppText({ phoneNumberId, to, body, preview_url = false, 
 async function sendWhatsAppImage({ phoneNumberId, to, imageUrl, caption, io, clientConfig }) {
     const token = clientConfig.whatsappToken;
     try {
-        await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
+        await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
             messaging_product: 'whatsapp',
             to,
             type: 'image',
@@ -101,7 +101,7 @@ async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, i
     if (interactive.footer) data.interactive.footer = interactive.footer;
 
     try {
-        await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
+        await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
         await saveAndEmitMessage({
             phoneNumberId,
             to,
@@ -127,7 +127,7 @@ async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, i
 async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, headerImage, buttonUrlParam, bodyVariables = [], languageCode = 'en', io, clientConfig }) {
     const token = clientConfig.whatsappToken;
     try {
-        const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+        const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
         const components = [];
         if (headerImage) {
             components.push({

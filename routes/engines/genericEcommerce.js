@@ -164,7 +164,7 @@ async function saveAndEmitMessage({ phoneNumberId, to, body, type, io, clientCon
 async function sendWhatsAppText({ phoneNumberId, to, body, preview_url = false, io, clientConfig }) {
     const token = clientConfig.whatsappToken;
     try {
-        await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
+        await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
             messaging_product: 'whatsapp',
             to,
             type: 'text',
@@ -178,7 +178,7 @@ async function sendWhatsAppText({ phoneNumberId, to, body, preview_url = false, 
 async function sendWhatsAppImage({ phoneNumberId, to, imageUrl, caption, io, clientConfig }) {
     const token = clientConfig.whatsappToken;
     try {
-        await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
+        await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
             messaging_product: 'whatsapp',
             to,
             type: 'image',
@@ -234,7 +234,7 @@ async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, i
     }
 
     try {
-        await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
+        await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
         await saveAndEmitMessage({ phoneNumberId, to, body: `[Interactive] ${sanitizedBody}`, type: 'interactive', io, clientConfig, metadata: { interactive: data.interactive } });
         return true;
     } catch (err) {
@@ -269,7 +269,7 @@ async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageC
             });
         }
 
-        await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
+        await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
             messaging_product: 'whatsapp', to, type: 'template', template: templateData
         }, { headers: { Authorization: `Bearer ${token}` } });
 

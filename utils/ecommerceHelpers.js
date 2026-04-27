@@ -215,7 +215,7 @@ async function sendCODToPrepaidNudge(order, client, phone) {
         ];
         
         await axios.post(
-            `https://graph.facebook.com/v18.0/${phoneId}/messages`,
+            `https://graph.facebook.com/v21.0/${phoneId}/messages`,
             {
                 messaging_product: 'whatsapp',
                 to: phone,

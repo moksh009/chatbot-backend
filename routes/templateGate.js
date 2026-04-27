@@ -123,7 +123,7 @@ router.get('/status', protect, async (req, res) => {
 
     try { token = decrypt(token); } catch (e) { /* use as-is */ }
 
-    const url = `https://graph.facebook.com/v18.0/${wabaId}/message_templates?name=${encodeURIComponent(name)}`;
+    const url = `https://graph.facebook.com/v21.0/${wabaId}/message_templates?name=${encodeURIComponent(name)}`;
     const metaRes = await axios.get(url, {
       headers: { Authorization: `Bearer ${token}` }
     });
@@ -185,7 +185,7 @@ router.post('/submit', protect, async (req, res) => {
       components: customComponents || blueprint?.components || []
     };
 
-    const url = `https://graph.facebook.com/v18.0/${wabaId}/message_templates`;
+    const url = `https://graph.facebook.com/v21.0/${wabaId}/message_templates`;
     const metaRes = await axios.post(url, templatePayload, {
       headers: { Authorization: `Bearer ${token}` }
     });

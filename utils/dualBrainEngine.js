@@ -2724,7 +2724,7 @@ async function sendWhatsAppText(client, phone, body, channel = 'whatsapp') {
   try {
     const convo = await Conversation.findOne({ phone, clientId: client.clientId });
     const translated = await translateToUserLanguage(body, convo?.detectedLanguage, client);
-    const res = await axios.post(`https://graph.facebook.com/v19.0/${phoneNumberId}/messages`, {
+    const res = await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
       messaging_product: 'whatsapp', to: phone, type: 'text', text: { body: translated || body }
     }, { headers: { Authorization: `Bearer ${token}` } });
     await saveOutboundMessage(phone, client.clientId, 'text', translated || body, res.data.messages[0].id);
@@ -2738,7 +2738,7 @@ async function sendWhatsAppImage(client, phone, imageUrl, caption) {
   try {
     const convo = await Conversation.findOne({ phone, clientId: client.clientId });
     const translatedCaption = await translateToUserLanguage(caption, convo?.detectedLanguage, client);
-    const res = await axios.post(`https://graph.facebook.com/v19.0/${phoneNumberId}/messages`, {
+    const res = await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
       messaging_product: 'whatsapp', to: phone, type: 'image', image: { link: imageUrl, caption: translatedCaption || caption }
     }, { headers: { Authorization: `Bearer ${token}` } });
     await saveOutboundMessage(phone, client.clientId, 'image', translatedCaption || caption || '[Image]', res.data.messages[0].id);
@@ -2751,7 +2751,7 @@ async function sendWhatsAppAudio(client, phone, audioUrl) {
   const phoneNumberId = client.premiumPhoneId || client.phoneNumberId;
   if (!token || !phoneNumberId) return;
   try {
-    const res = await axios.post(`https://graph.facebook.com/v19.0/${phoneNumberId}/messages`, {
+    const res = await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
       messaging_product: 'whatsapp', to: phone, type: 'audio', audio: { link: audioUrl }
     }, { headers: { Authorization: `Bearer ${token}` } });
     await saveOutboundMessage(phone, client.clientId, 'audio', '[Voice Note]', res.data.messages[0].id);
@@ -2807,7 +2807,7 @@ async function sendWhatsAppInteractive(client, phone, interactive, bodyText = ''
       data.interactive.footer = { text: (interactive.footer.text || interactive.footer || '').substring(0, 60) };
     }
 
-    const res = await axios.post(`https://graph.facebook.com/v19.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
+    const res = await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
     await saveOutboundMessage(phone, client.clientId, 'interactive', interactive.body?.text || '[Interactive]', res.data.messages[0].id);
     return true;
   } catch (err) {
@@ -2833,7 +2833,7 @@ async function sendWhatsAppTemplate(client, phone, templateName, languageCode, c
       finalLang = convo?.detectedLanguage || 'en';
     }
 
-    const res = await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
+    const res = await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
       messaging_product: 'whatsapp', to: phone, type: 'template',
       template: { name: templateName, language: { code: finalLang }, components }
     }, { headers: { Authorization: `Bearer ${token}` } });
@@ -2887,7 +2887,7 @@ async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, sc
         finalCta = (await translateToUserLanguage(flowCta, lang, client)).substring(0, 20);
     }
 
-    const res = await axios.post(`https://graph.facebook.com/v19.0/${phoneNumberId}/messages`, {
+    const res = await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
       messaging_product: "whatsapp",
       recipient_type: "individual",
       to: phone,

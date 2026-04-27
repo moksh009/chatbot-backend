@@ -11,7 +11,7 @@ async function getCatalogId(client) {
   if (!phoneId || !token) throw new Error("Missing phoneNumberId or token");
 
   const resp = await axios.get(
-    `https://graph.facebook.com/v18.0/${phoneId}`,
+    `https://graph.facebook.com/v21.0/${phoneId}`,
     { params: { fields: "commerce_settings", access_token: token } }
   );
   return resp.data.commerce_settings?.catalog_id || null;
@@ -49,7 +49,7 @@ async function syncProductsToCatalog(client, products) {
   for (let i = 0; i < requests.length; i += batchSize) {
     const batch = requests.slice(i, i + batchSize);
     await axios.post(
-      "https://graph.facebook.com/v18.0/",
+      "https://graph.facebook.com/v21.0/",
       new URLSearchParams({ batch: JSON.stringify(batch), access_token: token }),
       { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
     );
@@ -79,7 +79,7 @@ async function sendCatalogMessage(client, phone, bodyText, thumbnailProductId) {
   };
 
   await axios.post(
-    `https://graph.facebook.com/v18.0/${client.phoneNumberId}/messages`,
+    `https://graph.facebook.com/v21.0/${client.phoneNumberId}/messages`,
     payload,
     { headers: { Authorization: `Bearer ${client.whatsappToken}`, "Content-Type": "application/json" } }
   );
@@ -93,7 +93,7 @@ async function sendSingleProduct(client, phone, bodyText, productRetailerId) {
   if (!catalogId) throw new Error("No catalog linked");
 
   await axios.post(
-    `https://graph.facebook.com/v18.0/${client.phoneNumberId}/messages`,
+    `https://graph.facebook.com/v21.0/${client.phoneNumberId}/messages`,
     {
       messaging_product: "whatsapp",
       to:   phone,
@@ -117,7 +117,7 @@ async function sendMultiProduct(client, phone, headerText, bodyText, sections) {
   if (!catalogId) throw new Error("No catalog linked");
 
   await axios.post(
-    `https://graph.facebook.com/v18.0/${client.phoneNumberId}/messages`,
+    `https://graph.facebook.com/v21.0/${client.phoneNumberId}/messages`,
     {
       messaging_product: "whatsapp",
       to:   phone,

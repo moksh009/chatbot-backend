@@ -49,7 +49,7 @@ const PORT = process.env.PORT || 3000;
 function resolveWhatsAppConfig() {
   const token = process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_ACCESS_TOKEN;
   const phoneId = process.env.WHATSAPP_PHONENUMBER_ID || process.env.WHATSAPP_PHONE_NUMBER_ID;
-  const apiVersion = process.env.API_VERSION || process.env.WHATSAPP_API_VERSION || 'v18.0';
+  const apiVersion = process.env.API_VERSION || process.env.WHATSAPP_API_VERSION || 'v21.0';
   return { token, phoneId, apiVersion };
 }
 (() => {

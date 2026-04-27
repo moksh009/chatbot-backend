@@ -11,8 +11,8 @@ const axios = require('axios');
  * @param {string} params.token - WhatsApp Cloud API Bearer token
  */
 async function sendWhatsAppText({ phoneNumberId, to, body, token }) {
-    const apiVersion = process.env.API_VERSION || 'v18.0';
-    const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
+    const { GRAPH_API_VERSION } = require('./metaConfig');
+    const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`;
     const data = {
         messaging_product: 'whatsapp',
         to,
@@ -45,8 +45,8 @@ async function sendWhatsAppText({ phoneNumberId, to, body, token }) {
  * @param {string} params.token
  */
 async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageCode = 'en_US', components = [], token }) {
-    const apiVersion = process.env.API_VERSION || 'v18.0';
-    const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
+    const { GRAPH_API_VERSION } = require('./metaConfig');
+    const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`;
     const data = {
         messaging_product: 'whatsapp',
         to,
@@ -80,8 +80,8 @@ async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageC
  */
 async function syncWhatsAppTemplates({ wabaId, token }) {
     if (!wabaId || !token) return { success: false, error: 'Missing WABA ID or Token' };
-    const apiVersion = process.env.API_VERSION || 'v18.0';
-    const url = `https://graph.facebook.com/${apiVersion}/${wabaId}/message_templates?limit=500`;
+    const { GRAPH_API_VERSION } = require('./metaConfig');
+    const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${wabaId}/message_templates?limit=500`;
     try {
         const response = await axios.get(url, {
             headers: { Authorization: `Bearer ${token}` }

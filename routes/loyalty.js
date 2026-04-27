@@ -69,7 +69,7 @@ router.get('/template-status', protect, async (req, res) => {
 
     try { token = decrypt(token); } catch (e) { /* use as-is */ }
 
-    const url = `https://graph.facebook.com/v18.0/${wabaId}/message_templates?name=loyalty_points_reminder`;
+    const url = `https://graph.facebook.com/v21.0/${wabaId}/message_templates?name=loyalty_points_reminder`;
     const metaRes = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
     
     const templates = metaRes.data?.data || [];

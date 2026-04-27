@@ -281,7 +281,7 @@ router.get("/:clientId/test-call", verifyToken, async (req, res) => {
     }
 
     const axios = require("axios");
-    const API_VERSION = process.env.META_ADS_API_VERSION || "v18.0";
+    const API_VERSION = process.env.META_ADS_API_VERSION || "v21.0";
 
     // 1. Test ads_read: fetch /me to validate token
     const meResp = await axios.get(`https://graph.facebook.com/${API_VERSION}/me`, {

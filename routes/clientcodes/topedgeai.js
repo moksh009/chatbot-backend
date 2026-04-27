@@ -789,7 +789,7 @@ async function handleCallBooked(phone, payload, clientConfig, io) {
 async function sendWhatsAppText({ phoneNumberId, to, body, io, clientConfig }) {
     const token = clientConfig.whatsappToken;
     try {
-        await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
+        await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
             messaging_product: 'whatsapp',
             to,
             type: 'text',
@@ -805,7 +805,7 @@ const LOGO_URL = 'https://chatbot-backend-lg5y.onrender.com/public/images/logo.p
 async function sendWhatsAppImage({ phoneNumberId, to, imageUrl, caption = '', io, clientConfig }) {
     const token = clientConfig.whatsappToken;
     try {
-        await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
+        await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
             messaging_product: 'whatsapp',
             to,
             type: 'image',
@@ -823,7 +823,7 @@ async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, i
     if (interactive.footer) data.interactive.footer = interactive.footer;
 
     try {
-        await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
+        await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
         await saveAndEmitMessage({
             phoneNumberId,
             to,
@@ -838,7 +838,7 @@ async function sendWhatsAppInteractive({ phoneNumberId, to, body, interactive, i
 
 async function sendWhatsAppFlow({ phoneNumberId, to, flowId, body, buttonText = 'Open Form', screenName, io, clientConfig }) {
     const token = clientConfig.whatsappToken;
-    const apiVersion = process.env.API_VERSION || 'v18.0';
+    const apiVersion = process.env.API_VERSION || 'v21.0';
     const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
 
     // Build flow action — use navigate if screenName provided, otherwise data_exchange to auto-open
@@ -888,7 +888,7 @@ async function sendWhatsAppFlow({ phoneNumberId, to, flowId, body, buttonText = 
 async function sendContactCard({ phoneNumberId, to, vcard, io, clientConfig }) {
     const token = clientConfig.whatsappToken;
     try {
-        await axios.post(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
+        await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
             messaging_product: 'whatsapp',
             to,
             type: 'contacts',

@@ -47,7 +47,7 @@ router.get("/instagram/initiate/:clientId", protect, async (req, res) => {
       timestamp: Date.now()
     })).toString("base64");
 
-    const authUrl = new URL("https://www.facebook.com/v18.0/dialog/oauth");
+    const authUrl = new URL("https://www.facebook.com/v21.0/dialog/oauth");
     authUrl.searchParams.set("client_id",     process.env.META_APP_ID);
     const base = (process.env.BACKEND_URL || "https://chatbot-backend-lg5y.onrender.com").replace(/\/$/, "");
     authUrl.searchParams.set("redirect_uri",  process.env.META_APP_REDIRECT_URI || `${base}/api/oauth/instagram/callback`);
@@ -93,7 +93,7 @@ router.get("/instagram/callback", async (req, res) => {
       `${process.env.BACKEND_URL || "https://chatbot-backend-lg5y.onrender.com"}/api/oauth/instagram/callback`;
 
     // ── Exchange code for short-lived user token ──────────────────────────
-    const tokenResp = await axios.get("https://graph.facebook.com/v18.0/oauth/access_token", {
+    const tokenResp = await axios.get("https://graph.facebook.com/v21.0/oauth/access_token", {
       params: {
         client_id:     process.env.META_APP_ID,
         client_secret: process.env.META_APP_SECRET,
@@ -104,7 +104,7 @@ router.get("/instagram/callback", async (req, res) => {
     const shortToken = tokenResp.data.access_token;
 
     // ── Exchange for long-lived token (60 days) ───────────────────────────
-    const longTokenResp = await axios.get("https://graph.facebook.com/v18.0/oauth/access_token", {
+    const longTokenResp = await axios.get("https://graph.facebook.com/v21.0/oauth/access_token", {
       params: {
         grant_type:        "fb_exchange_token",
         client_id:         process.env.META_APP_ID,
@@ -117,7 +117,7 @@ router.get("/instagram/callback", async (req, res) => {
     const tokenExpiry = new Date(Date.now() + (expiresIn * 1000));
 
     // ── Get Facebook Pages with Instagram Business accounts ───────────────
-    const pagesResp = await axios.get("https://graph.facebook.com/v18.0/me/accounts", {
+    const pagesResp = await axios.get("https://graph.facebook.com/v21.0/me/accounts", {
       params: {
         access_token: longToken,
         fields:       "id,name,access_token,instagram_business_account"
@@ -286,7 +286,7 @@ router.get("/instagram/status/:clientId", protect, async (req, res) => {
 
 async function getInstagramDetails(igAccountId, pageToken) {
   try {
-    const resp = await axios.get(`https://graph.facebook.com/v18.0/${igAccountId}`, {
+    const resp = await axios.get(`https://graph.facebook.com/v21.0/${igAccountId}`, {
       params: {
         fields:       "id,name,username,profile_picture_url,followers_count",
         access_token: pageToken
@@ -302,7 +302,7 @@ async function getInstagramDetails(igAccountId, pageToken) {
 async function registerInstagramWebhook(fbPageId, pageToken) {
   try {
     await axios.post(
-      `https://graph.facebook.com/v18.0/${fbPageId}/subscribed_apps`,
+      `https://graph.facebook.com/v21.0/${fbPageId}/subscribed_apps`,
       null,
       {
         params: {
@@ -333,17 +333,32 @@ async function refreshExpiringInstagramTokens() {
 
   for (const client of clients) {
     try {
-      const resp = await axios.get("https://graph.facebook.com/v18.0/oauth/access_token", {
+      // Facebook Login tokens use fb_exchange_token grant type
+      // (ig_refresh_token was for the deprecated Instagram Basic Display API)
+      const resp = await axios.get("https://graph.facebook.com/v21.0/oauth/access_token", {
         params: {
-          grant_type:   "ig_refresh_token",
-          access_token: client.instagramAccessToken
+          grant_type:        "fb_exchange_token",
+          client_id:         process.env.META_APP_ID,
+          client_secret:     process.env.META_APP_SECRET,
+          fb_exchange_token: client.instagramAccessToken
         }
       });
-      const newExpiry = new Date(Date.now() + (resp.data.expires_in * 1000));
-      await Client.findByIdAndUpdate(client._id, {
-        instagramAccessToken: resp.data.access_token,
+
+      const newToken = resp.data.access_token;
+      const newExpiry = new Date(Date.now() + (resp.data.expires_in ? resp.data.expires_in * 1000 : 60 * 24 * 60 * 60 * 1000));
+
+      const updateFields = {
+        instagramAccessToken: newToken,
         instagramTokenExpiry: newExpiry
-      });
+      };
+
+      // Also refresh Meta Ads token if connected (same user-level token)
+      if (client.metaAdsConnected) {
+        updateFields.metaAdsToken = newToken;
+        updateFields.metaAdsTokenExpiry = newExpiry;
+      }
+
+      await Client.findByIdAndUpdate(client._id, updateFields);
       console.log(`[Instagram Cron] Token refreshed for @${client.instagramUsername} (${client.clientId})`);
     } catch (err) {
       console.error(`[Instagram Cron] Token refresh failed for ${client.clientId}:`, err.response?.data || err.message);
@@ -380,7 +395,7 @@ router.get("/meta-ads/callback", async (req, res) => {
     const redirectUri = `${base}/api/oauth/meta-ads/callback`;
 
     // 1. Exchange code for user access token
-    const tokenResp = await axios.get("https://graph.facebook.com/v18.0/oauth/access_token", {
+    const tokenResp = await axios.get("https://graph.facebook.com/v21.0/oauth/access_token", {
       params: {
         client_id:     process.env.META_APP_ID,
         client_secret: process.env.META_APP_SECRET,
@@ -389,15 +404,34 @@ router.get("/meta-ads/callback", async (req, res) => {
       }
     });
 
-    const accessToken = tokenResp.data.access_token;
+    const shortToken = tokenResp.data.access_token;
 
-    // 2. Save token to client
+    // 2. Exchange for long-lived token (60 days instead of ~1 hour)
+    let accessToken = shortToken;
+    try {
+      const longTokenResp = await axios.get("https://graph.facebook.com/v21.0/oauth/access_token", {
+        params: {
+          grant_type:    "fb_exchange_token",
+          client_id:     process.env.META_APP_ID,
+          client_secret: process.env.META_APP_SECRET,
+          fb_exchange_token: shortToken
+        }
+      });
+      accessToken = longTokenResp.data.access_token;
+      console.log("[MetaAds] Long-lived token obtained successfully");
+    } catch (llErr) {
+      console.warn("[MetaAds] Long-lived token exchange failed, using short-lived:", llErr.response?.data?.error?.message || llErr.message);
+    }
+
+    // 3. Save token to client
     const client = await Client.findOne({ clientId });
     if (!client) return res.redirect(`${frontendUrl}/meta-manager?tab=ads&meta_error=client_not_found`);
 
+    const tokenExpiry = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000); // 60 days
     await Client.findByIdAndUpdate(client._id, {
       metaAdsToken: accessToken,
-      metaAdsConnected: true
+      metaAdsConnected: true,
+      metaAdsTokenExpiry: tokenExpiry
     });
 
     // 3. Fetch available ad accounts to see if we should auto-pick or show selector

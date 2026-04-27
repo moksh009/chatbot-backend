@@ -292,7 +292,7 @@ router.get('/cashfree-callback/:orderId', async (req, res) => {
                 const phoneId = client.phoneNumberId || client.config?.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
                 
                 await axios.post(
-                    `https://graph.facebook.com/v18.0/${phoneId}/messages`,
+                    `https://graph.facebook.com/v21.0/${phoneId}/messages`,
                     {
                         messaging_product: 'whatsapp',
                         to: order.phone,

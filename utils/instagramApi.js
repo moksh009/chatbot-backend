@@ -8,7 +8,7 @@ const axios = require('axios');
 async function sendInstagramDM(igUserId, messageData, accessToken) {
   if (!accessToken) throw new Error('Missing Instagram Access Token');
   
-  const url = `https://graph.facebook.com/v18.0/me/messages?access_token=${accessToken}`;
+  const url = `https://graph.facebook.com/v21.0/me/messages?access_token=${accessToken}`;
   
   // Build Message Body
   const message = {};
@@ -56,7 +56,7 @@ async function sendInstagramDM(igUserId, messageData, accessToken) {
 async function replyToInstagramComment(commentId, replyText, accessToken) {
   if (!accessToken) throw new Error('Missing Instagram Access Token');
   
-  const url = `https://graph.facebook.com/v18.0/${commentId}/replies?access_token=${accessToken}`;
+  const url = `https://graph.facebook.com/v21.0/${commentId}/replies?access_token=${accessToken}`;
   
   try {
     const res = await axios.post(url, { message: replyText });

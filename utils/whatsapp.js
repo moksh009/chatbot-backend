@@ -123,7 +123,7 @@ const WhatsApp = {
     console.log("[WA] Sending interactive:", JSON.stringify(payload, null, 2));
     
     const response = await axios.post(
-      `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`,
+      `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
       payload,
       {
         headers: {
@@ -145,7 +145,7 @@ const WhatsApp = {
     if (!body) throw new Error("[WhatsApp] Empty message body");
 
     const { token, phoneNumberId } = this.getCredentials(client);
-    const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+    const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
     try {
       const res = await axios.post(url, {
@@ -166,7 +166,7 @@ const WhatsApp = {
   async sendImage(client, phone, imageUrl, caption = "") {
     const validPhone = validatePhone(phone);
     const { token, phoneNumberId } = this.getCredentials(client);
-    const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+    const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
     try {
       const res = await axios.post(url, {
@@ -187,7 +187,7 @@ const WhatsApp = {
   async sendVideo(client, phone, videoUrl, caption = "") {
     const validPhone = validatePhone(phone);
     const { token, phoneNumberId } = this.getCredentials(client);
-    const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+    const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
     try {
       const res = await axios.post(url, {
@@ -208,7 +208,7 @@ const WhatsApp = {
   async sendDocument(client, phone, documentUrl, filename = "") {
     const validPhone = validatePhone(phone);
     const { token, phoneNumberId } = this.getCredentials(client);
-    const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+    const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
     try {
       const res = await axios.post(url, {
@@ -229,7 +229,7 @@ const WhatsApp = {
   async sendAudio(client, phone, audioUrl) {
     const validPhone = validatePhone(phone);
     const { token, phoneNumberId } = this.getCredentials(client);
-    const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+    const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
     try {
       const res = await axios.post(url, {
@@ -250,7 +250,7 @@ const WhatsApp = {
   async sendInteractive(client, phone, interactive, bodyText) {
     const validPhone = validatePhone(phone);
     const { token, phoneNumberId } = this.getCredentials(client);
-    const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+    const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
     const payload = {
       messaging_product: 'whatsapp',
@@ -350,7 +350,7 @@ const WhatsApp = {
   async sendCatalog(client, phone, bodyText, footerText, productId = null) {
     const validPhone = validatePhone(phone);
     const { token, phoneNumberId } = this.getCredentials(client);
-    const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+    const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
     const interactive = {
       type: 'catalog_message',
@@ -382,7 +382,7 @@ const WhatsApp = {
   async sendMultiProduct(client, phone, headerText, bodyText, sections) {
     const validPhone = validatePhone(phone);
     const { token, phoneNumberId } = this.getCredentials(client);
-    const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+    const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
     // sections format: [{ title: '...', product_items: [{ product_retailer_id: '...' }] }]
     const interactive = {
@@ -416,7 +416,7 @@ const WhatsApp = {
     if (!templateName) throw new Error("[WhatsApp] templateName is required");
 
     const { token, phoneNumberId } = this.getCredentials(client);
-    const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
+    const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
     try {
       const res = await axios.post(url, {
@@ -588,7 +588,7 @@ const WhatsApp = {
     const wabaId = client.wabaId || process.env.WHATSAPP_WABA_ID;
     if (!wabaId) return { status: 'UNKNOWN', reason: 'Missing WABA ID' };
 
-    const url = `https://graph.facebook.com/v18.0/${wabaId}`;
+    const url = `https://graph.facebook.com/v21.0/${wabaId}`;
     try {
       const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
       return {
@@ -607,7 +607,7 @@ const WhatsApp = {
    */
   async getPhoneNumberQuality(client) {
     const { token, phoneNumberId } = this.getCredentials(client);
-    const url = `https://graph.facebook.com/v18.0/${phoneNumberId}`;
+    const url = `https://graph.facebook.com/v21.0/${phoneNumberId}`;
     try {
       const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
       return {
@@ -677,7 +677,7 @@ const WhatsApp = {
           components: scrub(templatePayload.components)
       };
 
-      const url = `https://graph.facebook.com/v18.0/${wabaId}/message_templates`;
+      const url = `https://graph.facebook.com/v21.0/${wabaId}/message_templates`;
       
       log.info(`[WhatsApp] Submitting template ${cleanPayload.name} to Meta...`);
       const res = await axios.post(url, cleanPayload, {

@@ -39,7 +39,7 @@ router.post('/sync', protect, async (req, res) => {
             return res.status(403).json({ success: false, message: limitCheck.reason });
         }
 
-        const response = await axios.get(`https://graph.facebook.com/v18.0/${client.wabaId}/flows`, {
+        const response = await axios.get(`https://graph.facebook.com/v21.0/${client.wabaId}/flows`, {
             params: { access_token: client.whatsappToken, fields: 'id,name,status,categories,validation_errors' }
         });
 

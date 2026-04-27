@@ -92,7 +92,7 @@ async function runTest() {
                 let success = false;
                 try {
                     const res = await axios.post(
-                        `https://graph.facebook.com/v18.0/${phoneId}/messages`,
+                        `https://graph.facebook.com/v21.0/${phoneId}/messages`,
                         templateData,
                         { headers: { Authorization: `Bearer ${token}` } }
                     );

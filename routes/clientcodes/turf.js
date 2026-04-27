@@ -88,7 +88,7 @@ async function saveAndEmitMessage({ phoneNumberId, to, body, type, io, clientId,
 }
 
 async function sendWhatsAppText({ phoneNumberId, to, body, token, io, clientId }) {
-  const apiVersion = process.env.API_VERSION || 'v18.0';
+  const apiVersion = process.env.API_VERSION || 'v21.0';
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
   const data = {
     messaging_product: 'whatsapp',
@@ -110,7 +110,7 @@ async function sendWhatsAppText({ phoneNumberId, to, body, token, io, clientId }
 }
 
 async function sendWhatsAppButtons({ phoneNumberId, to, header, imageHeader, body, footer, buttons, token, io, clientId }) {
-  const apiVersion = process.env.API_VERSION || 'v18.0';
+  const apiVersion = process.env.API_VERSION || 'v21.0';
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
   const data = {
     messaging_product: 'whatsapp',
@@ -150,7 +150,7 @@ async function sendWhatsAppButtons({ phoneNumberId, to, header, imageHeader, bod
 }
 
 async function sendWhatsAppImage({ phoneNumberId, to, imageLink, caption, token, io, clientId }) {
-  const apiVersion = process.env.API_VERSION || 'v18.0';
+  const apiVersion = process.env.API_VERSION || 'v21.0';
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
   const data = {
     messaging_product: 'whatsapp',
@@ -175,7 +175,7 @@ async function sendWhatsAppImage({ phoneNumberId, to, imageLink, caption, token,
 }
 
 async function sendWhatsAppList({ phoneNumberId, to, header, imageHeader, body, footer, button, rows, token, io, clientId }) {
-  const apiVersion = process.env.API_VERSION || 'v18.0';
+  const apiVersion = process.env.API_VERSION || 'v21.0';
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
   let safeRows = rows;
   if (rows.length > 10) {
@@ -251,7 +251,7 @@ async function sendSmartButtonsOrList({ phoneNumberId, to, header, imageHeader, 
 // Fallback chain: config.flowId → WHATSAPP_FLOW_ID env → hardcoded default
 
 async function sendWhatsAppFlow({ phoneNumberId, to, flowId, token, io, clientId }) {
-  const apiVersion = process.env.API_VERSION || 'v18.0';
+  const apiVersion = process.env.API_VERSION || 'v21.0';
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
 
   const data = {

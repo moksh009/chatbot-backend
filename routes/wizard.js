@@ -25,7 +25,7 @@ async function syncPendingTemplatesForClient(client) {
 
   let remoteTemplates = [];
   try {
-    const resp = await axios.get(`https://graph.facebook.com/v18.0/${wabaId}/message_templates`, {
+    const resp = await axios.get(`https://graph.facebook.com/v21.0/${wabaId}/message_templates`, {
       params: { limit: 250, fields: "name,status,category,language,id" },
       headers: { Authorization: `Bearer ${token}` },
       timeout: 15000
@@ -651,7 +651,7 @@ router.post("/:clientId/submit-product-templates", protect, async (req, res) => 
         } catch (_) {}
 
         const metaRes = await axios.post(
-          `https://graph.facebook.com/v18.0/${wabaId}/message_templates`,
+          `https://graph.facebook.com/v21.0/${wabaId}/message_templates`,
           templatePayload,
           { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }, timeout: 10000 }
         );
@@ -863,7 +863,7 @@ router.post("/:clientId/submit-automation-templates", protect, async (req, res) 
         } catch (_) {}
 
         const metaRes = await axios.post(
-          `https://graph.facebook.com/v18.0/${wabaId}/message_templates`,
+          `https://graph.facebook.com/v21.0/${wabaId}/message_templates`,
           templatePayload,
           { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }, timeout: 10000 }
         );

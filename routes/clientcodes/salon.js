@@ -100,7 +100,7 @@ async function saveAndEmitMessage({ clientId, from, to, body, type, direction, s
 
 // Helper to send plain WhatsApp text message
 async function sendWhatsAppText({ phoneNumberId, to, body, token, io, clientId }) {
-  const apiVersion = process.env.API_VERSION || 'v18.0';
+  const apiVersion = process.env.API_VERSION || 'v21.0';
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
   const data = {
     messaging_product: 'whatsapp',
@@ -151,7 +151,7 @@ async function sendWhatsAppText({ phoneNumberId, to, body, token, io, clientId }
 
 // Helper to send WhatsApp interactive button message
 async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons, token, io, clientId }) {
-  const apiVersion = process.env.API_VERSION || 'v18.0';
+  const apiVersion = process.env.API_VERSION || 'v21.0';
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
   const data = {
     messaging_product: 'whatsapp',
@@ -212,7 +212,7 @@ async function sendWhatsAppButtons({ phoneNumberId, to, header, body, buttons, t
 
 // Helper to send WhatsApp interactive list message (for day selection)
 async function sendWhatsAppList({ phoneNumberId, to, header, body, button, rows, token, io, clientId }) {
-  const apiVersion = process.env.API_VERSION || 'v18.0';
+  const apiVersion = process.env.API_VERSION || 'v21.0';
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
   // Enforce WhatsApp max 10 rows per section
   let safeRows = rows;

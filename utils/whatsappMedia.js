@@ -32,7 +32,7 @@ async function resolveAndSaveMedia(mediaId, client, extension = 'bin') {
     log.info(`Resolving media ID: ${mediaId}`);
     
     // 1. Fetch media metadata from Meta
-    const metadataRes = await axios.get(`https://graph.facebook.com/v19.0/${mediaId}`, {
+    const metadataRes = await axios.get(`https://graph.facebook.com/v21.0/${mediaId}`, {
       headers: { Authorization: `Bearer ${token}` }
     });
 
@@ -82,7 +82,7 @@ async function uploadToWhatsApp(filePath, phoneNumberId, token) {
     formData.append('messaging_product', 'whatsapp');
     formData.append('type', 'image'); // Default to image, though WhatsApp is strict
 
-    const res = await axios.post(`https://graph.facebook.com/v19.0/${phoneNumberId}/media`, formData, {
+    const res = await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/media`, formData, {
       headers: {
         ...formData.getHeaders(),
         Authorization: `Bearer ${token}`
