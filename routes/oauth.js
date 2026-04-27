@@ -27,14 +27,18 @@ router.get("/instagram/initiate/:clientId", protect, async (req, res) => {
         return res.status(403).json({ error: limits.reason || "Instagram integration is locked on your current plan." });
     }
 
-    // Required Meta permissions for Instagram DM via Facebook Login
+    // Required Meta permissions for Instagram DM + Meta Ads via unified Facebook Login
     const scope = [
       "pages_messaging",
       "instagram_manage_messages",
       "instagram_manage_comments",
       "pages_show_list",
       "instagram_basic",
-      "pages_read_engagement"
+      "pages_read_engagement",
+      "ads_read",
+      "ads_management",
+      "business_management",
+      "read_insights"
     ].join(",");
 
     // Encode clientId in state to retrieve after callback
@@ -150,7 +154,10 @@ router.get("/instagram/callback", async (req, res) => {
         instagramFollowers:    igDetails.followers_count || 0,
         instagramFbPageId:     page.id,
         instagramPendingPages: null,
-        instagramPendingToken: ""
+        instagramPendingToken: "",
+        // Unified login: also save the user-level token for Meta Ads access
+        metaAdsToken:          longToken,
+        metaAdsConnected:      true
       });
 
       // Register webhook subscription

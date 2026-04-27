@@ -267,4 +267,53 @@ router.post("/test-template", verifyToken, async (req, res) => {
   }
 });
 
+// ─── GET /api/meta-ads/:clientId/test-call — make a real Graph API call ─────
+// Meta requires at least 1 successful test API call for ads_read / ads_management
+// before allowing Advanced Access requests. This endpoint triggers that call.
+router.get("/:clientId/test-call", verifyToken, async (req, res) => {
+  try {
+    const client = await Client.findOne({ clientId: req.params.clientId });
+    if (!client) return res.status(404).json({ success: false, message: "Client not found" });
+
+    const token = client.metaAdsToken;
+    if (!token) {
+      return res.status(400).json({ success: false, message: "Meta Ads not connected. Please connect your ad account first." });
+    }
+
+    const axios = require("axios");
+    const API_VERSION = process.env.META_ADS_API_VERSION || "v18.0";
+
+    // 1. Test ads_read: fetch /me to validate token
+    const meResp = await axios.get(`https://graph.facebook.com/${API_VERSION}/me`, {
+      params: { fields: "id,name", access_token: token }
+    });
+
+    // 2. Test ads_read deeper: fetch ad accounts list
+    let adAccounts = [];
+    try {
+      const accResp = await axios.get(`https://graph.facebook.com/${API_VERSION}/me/adaccounts`, {
+        params: { fields: "id,name,account_status,currency", access_token: token, limit: 5 }
+      });
+      adAccounts = accResp.data.data || [];
+    } catch (adErr) {
+      // Non-fatal: token may not have ads_read yet
+      console.warn("[MetaAds] ads_read test call failed:", adErr.response?.data?.error?.message || adErr.message);
+    }
+
+    res.json({
+      success: true,
+      message: "Test API call successful! Meta should now register your ads_read/ads_management usage.",
+      user: meResp.data,
+      adAccountsFound: adAccounts.length,
+      adAccounts: adAccounts.map(a => ({ id: a.id, name: a.name, currency: a.currency }))
+    });
+  } catch (err) {
+    console.error("[MetaAds] Test call failed:", err.response?.data || err.message);
+    res.status(500).json({
+      success: false,
+      message: err.response?.data?.error?.message || err.message
+    });
+  }
+});
+
 module.exports = router;

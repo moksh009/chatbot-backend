@@ -308,6 +308,7 @@ app.use('/api/training', require('./routes/training'));
 // app.use('/api/ig-automation', protect, require('./routes/igAutomation')); // REMOVED: Redundant and points to missing igAutomation.js (use /api/instagram-automations instead)
 app.use('/api/meta-ads', require('./routes/metaAds'));
 app.use('/api/whitelabel', require('./routes/whitelabel'));
+app.use('/api', require('./routes/dataDeletion')); // Meta compliance: data deletion callback + account deletion
 app.use('/api/media', mediaRoutes);
 app.use('/api/reseller', require('./routes/reseller'));
 
