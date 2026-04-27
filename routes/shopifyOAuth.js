@@ -182,10 +182,10 @@ router.get('/auth', (req, res) => {
 
     const authUrl = `https://${cleanShop}/admin/oauth/authorize` +
       `?client_id=${encodeURIComponent(clientIdEnv)}` +
-      `&scope=${encodeURIComponent(scopes)}` +
       `&redirect_uri=${encodeURIComponent(redirectUri)}` +
       `&state=${encodeURIComponent(state)}` +
-      `&grant_options[]=per-user`;
+      `&grant_options[]=per-user` +
+      `&scope=${encodeURIComponent(scopes)}`;
 
     console.log(`🔄 [ShopifyOAuth] Initiating OAuth for clientId=${clientId}, shop=${cleanShop}`);
     console.log(`🔗 [ShopifyOAuth] Redirecting to: ${authUrl.substring(0, 100)}...`);
