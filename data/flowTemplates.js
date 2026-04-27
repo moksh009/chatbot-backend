@@ -15,6 +15,7 @@ module.exports = {
         position: { x: 400, y: 150 },
         data: {
           label: "Welcome",
+          interactiveType: "button",
           header: "Welcome to {{brand_name}}! 👋",
           text: "How can we help you today? Explore our products or get support below.",
           buttonsList: [
@@ -145,6 +146,7 @@ module.exports = {
         position: { x: 400, y: 150 },
         data: {
           label: "Welcome",
+          interactiveType: "button",
           header: "Welcome to {{brand_name}}! ✨",
           text: "We are excited to serve you today! What can we help you with?",
           buttonsList: [
@@ -195,6 +197,7 @@ module.exports = {
         position: { x: 100, y: 400 },
         data: {
           label: "Confirmation",
+          interactiveType: "button",
           text: "Perfect selection! Shall we confirm this slot for you?",
           buttonsList: [
             { id: "btn_confirm", title: "✅ Confirm Booking" },
@@ -244,6 +247,7 @@ module.exports = {
       { id: "trigger_start", type: "trigger", position: { x: 400, y: 0 }, data: { label: "Booking Trigger", keyword: "book" } },
       { id: "welcome_node", type: "interactive", position: { x: 400, y: 150 }, data: {
           label: "Welcome",
+          interactiveType: "button",
           header: "Turf Booking ⚽",
           text: "Ready to play? Select an option to check availability or view our pricing.",
           buttonsList: [
@@ -258,6 +262,7 @@ module.exports = {
       // --- Booking Folder ---
       { id: "surface_node", type: "interactive", parentId: "folder_booking", position: { x: 100, y: 100 }, data: {
           label: "Select Surface",
+          interactiveType: "button",
           text: "Which turf type would you like to book?",
           buttonsList: [
             { id: "btn_turf_a", title: "🏟️ Turf A (Main)" },
@@ -309,6 +314,7 @@ module.exports = {
       { id: "trigger_start", type: "trigger", position: { x: 400, y: 0 }, data: { label: "Salon Greeting", keyword: "hi" } },
       { id: "welcome_node", type: "interactive", position: { x: 400, y: 150 }, data: {
           label: "Welcome",
+          interactiveType: "button",
           header: "Welcome to {{brand_name}} ✂️",
           text: "Look your best with our expert stylists. How can we help you today?",
           buttonsList: [

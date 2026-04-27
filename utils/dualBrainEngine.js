@@ -2163,7 +2163,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       // Variables already hydrated via deepInject in executeNode
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
       
-      else await WhatsApp.sendText(client, phone, body);
+      await WhatsApp.sendText(client, phone, body);
       return true;
     }
 
@@ -2179,7 +2179,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       let body = data.text || data.body || (type === 'livechat' ? 'Connecting you to a human...' : '');
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
       
-       else if (data.imageUrl) {
+      if (data.imageUrl) {
         await WhatsApp.sendImage(client, phone, data.imageUrl, body);
       } else {
         await WhatsApp.sendText(client, phone, body);
@@ -2209,10 +2209,6 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
 
       if (data.btnUrlLink) {
-        ]
-            }, body, options);
-            return true;
-        }
         let interactive = {
           type: 'cta_url',
           action: {
@@ -2231,13 +2227,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         : (data.buttons || '').split(',').map(b => b.trim()).filter(Boolean).map(b => ({ id: b.toLowerCase().replace(/\s+/g, '_'), title: b }));
 
       if (!buttonsList.length) {
-        
-        else await WhatsApp.sendText(client, phone, body);
-        return true;
-      }
-
-      ))
-        }, body, options);
+        await WhatsApp.sendText(client, phone, body);
         return true;
       }
 
@@ -2727,8 +2717,7 @@ REPLY:
 }
 
 async function sendWhatsAppText(client, phone, body, channel = 'whatsapp') {
-   catch (err) { log.error('IG sendReply error:', { error: err.message }); return; }
-  }
+
   const token = client.premiumAccessToken || client.whatsappToken;
   const phoneNumberId = client.premiumPhoneId || client.phoneNumberId;
   if (!token || !phoneNumberId) return;
