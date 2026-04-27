@@ -61,6 +61,7 @@ You are a WhatsApp Flow Architect. Convert business requirements into production
 6. Return RAW JSON ONLY: { "nodes": [...], "edges": [...] } — no markdown, no explanation
 7. Minimum 6 nodes, maximum 25 nodes
 8. Every interactive node needs at least 2 buttons in buttonsList with unique ids
+9. EVERY edge originating from an 'interactive' node MUST have a 'sourceHandle' that EXACTLY matches the 'id' of the corresponding button/list item in the node's data.
 
 ## NODE DATA SCHEMAS
 ${Object.entries(NODE_TYPES).map(([k,v]) => `- ${k}: ${v.desc}`).join('\n')}
@@ -85,6 +86,49 @@ function buildBusinessContext(client) {
   if (client?.emailProvider)      integrations.push('Email');
   if (integrations.length)        lines.push(`Active integrations: ${integrations.join(', ')}`);
   return lines.join('\n') || 'General business (no specific integrations configured)';
+}
+
+
+function verifyAllEdgesMatchButtonIds(nodes, edges) {
+  // Ensure that every edge originating from an interactive node has a sourceHandle that matches an actual button ID
+  const interactiveNodes = nodes.filter(n => n.type === 'interactive');
+  
+  let valid = true;
+  let errorMsgs = [];
+
+  for (const node of interactiveNodes) {
+    const validIds = new Set();
+    if (node.data?.interactiveType === 'button' && node.data.buttonsList) {
+      node.data.buttonsList.forEach(b => validIds.add(String(b.id)));
+    } else if (node.data?.interactiveType === 'list' && node.data.sections) {
+      node.data.sections.forEach(s => {
+        (s.rows || []).forEach(r => validIds.add(String(r.id)));
+      });
+    }
+
+    const outgoingEdges = edges.filter(e => e.source === node.id);
+    for (const edge of outgoingEdges) {
+      if (!edge.sourceHandle || !validIds.has(String(edge.sourceHandle))) {
+        valid = false;
+        errorMsgs.push(`Edge ${edge.id} from node ${node.id} has invalid sourceHandle "${edge.sourceHandle}". Allowed IDs: ${Array.from(validIds).join(', ')}`);
+        
+        // Auto-heal attempt: if only one valid ID exists, just map it
+        if (validIds.size === 1) {
+           edge.sourceHandle = Array.from(validIds)[0];
+           valid = true;
+           errorMsgs.pop();
+        } else {
+           // Otherwise just clear it so it doesn't break ReactFlow entirely
+           edge.sourceHandle = null;
+        }
+      }
+    }
+  }
+  
+  if (!valid) {
+    console.warn("[AI Flow Builder] Edge validation warnings:", errorMsgs);
+  }
+  return { nodes, edges, valid, errorMsgs };
 }
 
 function validateAndCleanFlow(parsed, yOffset = 0) {
@@ -144,7 +188,7 @@ function validateAndCleanFlow(parsed, yOffset = 0) {
       animated: false
     }));
 
-  return { nodes: validNodes, edges: validEdges };
+  return verifyAllEdgesMatchButtonIds(validNodes, validEdges);
 }
 
 // ─── FALLBACK FLOW ────────────────────────────────────────────────────────────

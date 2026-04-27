@@ -228,7 +228,11 @@ async function processMessages(messages, metadata, contacts) {
           );
 
           // Send acknowledgment
-          handleWhatsAppMessage(from, { ...message, type: 'text', text: { body: `✅ Thank you! We've received your order for ${orderItems.length} item(s). Our team will confirm shortly.` }, _isCatalogAck: true }, phone_number_id, profileName).catch(e => log.error('Catalog Ack failed', { error: e.message }));
+          const { processInboundMessage } = require('../utils/dualBrainEngine');
+          // Since it's a catalog order, we might just use the old save message logic or skip it if we don't want the bot to reply automatically here.
+          // For now, let's just log it since the bot doesn't need to do a text reply via processInboundMessage.
+          // Or we can manually send a message using whatsappUtils
+          require('../utils/whatsapp').sendText({whatsappToken: clientDoc?.whatsappToken || '', phoneNumberId: phone_number_id}, from, `✅ Thank you! We've received your order for ${orderItems.length} item(s). Our team will confirm shortly.`).catch(e => log.error('Catalog Ack failed', { error: e.message }));
 
           // Fire external webhook
           const clientDoc = await require('../models/Client').findOne({ phoneNumberId: phone_number_id }, { _id: 1, clientId: 1 }).lean();
@@ -330,13 +334,12 @@ async function processMessages(messages, metadata, contacts) {
         continue;
       }
 
-      handleWhatsAppMessage(from, message, phone_number_id, profileName)
+      const { processInboundMessage } = require('../utils/dualBrainEngine');
+      
+      processInboundMessage({ message, phone: from, clientId: client.clientId, phoneNumberId: phone_number_id, token: client.whatsappToken })
         .then(() => {
           // TRIGGER WATERFALL ENGINE: Update score in real-time (Interactions count as metric)
-          const Client = require('../models/Client');
-          Client.findOne({ phoneNumberId: phone_number_id }, { clientId: 1 }).lean().then(c => {
-            if (c) recalculateLeadScore(c.clientId, from).catch(() => {});
-          });
+          recalculateLeadScore(client.clientId, from).catch(() => {});
         })
         .catch(err => log.error("Engine processing error", { phone: from, error: err.message }));
 

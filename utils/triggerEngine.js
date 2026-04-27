@@ -16,6 +16,8 @@
  */
 
 const WhatsAppFlow = require("../models/WhatsAppFlow");
+const NodeCache = require('node-cache');
+const triggerCache = new NodeCache({ stdTTL: 300, checkperiod: 60 }); // 5 min TTL
 
 /**
  * Given an incoming message and a client's flows array,
@@ -25,12 +27,18 @@ async function findMatchingFlow(parsedMessage, client, convo) {
   const text    = (parsedMessage.text?.body || "").trim();
   const channel = parsedMessage.channel || "whatsapp";
 
-  // ── NEW ARCHITECTURE: Check WhatsAppFlow collection first ──────────────────
-  let flows = await WhatsAppFlow.find({ clientId: client.clientId, status: 'PUBLISHED' }).lean();
+  const cacheKey = `flows_${client.clientId}`;
+  let flows = triggerCache.get(cacheKey);
 
-  // Fallback to client.visualFlows for non-migrated clients
-  if (flows.length === 0 && client.visualFlows?.length > 0) {
-    flows = client.visualFlows;
+  if (!flows) {
+    // ── NEW ARCHITECTURE: Check WhatsAppFlow collection first ──────────────────
+    flows = await WhatsAppFlow.find({ clientId: client.clientId, status: 'PUBLISHED' }).lean();
+
+    // Fallback to client.visualFlows for non-migrated clients
+    if (flows.length === 0 && client.visualFlows?.length > 0) {
+      flows = client.visualFlows;
+    }
+    triggerCache.set(cacheKey, flows);
   }
 
   // ── PRIORITY 1: Check keyword triggers ─────────────────────────────────────
@@ -126,11 +134,16 @@ async function findMatchingFlow(parsedMessage, client, convo) {
  * @param {string} [status]   - For 'order_status_changed' — the new status string
  */
 async function matchEventTrigger(eventName, eventData, client, status = null) {
-  // Fetch all published flows and check their trigger nodes
-  const flows = await WhatsAppFlow.find({
-    clientId: client.clientId,
-    status: 'PUBLISHED'
-  }).lean();
+  const cacheKey = `flows_${client.clientId}`;
+  let flows = triggerCache.get(cacheKey);
+
+  if (!flows) {
+    flows = await WhatsAppFlow.find({
+      clientId: client.clientId,
+      status: 'PUBLISHED'
+    }).lean();
+    triggerCache.set(cacheKey, flows);
+  }
 
   const matching = flows.filter(flow => {
     const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(flow.nodes || []);
@@ -290,11 +303,16 @@ function findFlowStartNode(flowNodes, flowEdges) {
   return startNode?.id || null;
 }
 
+function clearTriggerCache(clientId) {
+  triggerCache.del(`flows_${clientId}`);
+}
+
 module.exports = {
   findMatchingFlow,
   checkKeywordMatch,
   getTriggerFromNodes,
   findFlowStartNode,
   matchEventTrigger,
-  findEventTriggeredFlow
+  findEventTriggeredFlow,
+  clearTriggerCache
 };

@@ -64,13 +64,7 @@ const WhatsApp = {
   sendFlow: (...args) => sendWhatsAppFlow(...args),
 };
 
-const Instagram = {
-  sendText: (client, phone, text, options = {}) => sendInstagramText(client, phone, text, options),
-  sendImage: (client, phone, imageUrl, caption, options = {}) => sendInstagramImage(client, phone, imageUrl, caption, options),
-  sendInteractive: (client, phone, interactive, bodyText, options = {}) => sendInstagramInteractive(client, phone, interactive, bodyText, options),
-};
 
-const { sendInstagramReply, sendInstagramMessage } = require("./omnichannel");
 const { generateVoiceReply } = require("./voiceReply");
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1351,9 +1345,13 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
   if (!flowNodes.length) return false;
 
   const currentStepId   = convo.lastStepId;
-  const incomingTrigger = extractTrigger(parsedMessage);
   const userText        = (parsedMessage.text?.body || '').trim();
   const userTextLower   = userText.toLowerCase();
+
+  const buttonId = parsedMessage.interactive?.button_reply?.id 
+                || parsedMessage.interactive?.list_reply?.id 
+                || parsedMessage.button?.payload 
+                || '';
 
   // A) GLOBAL KEYWORD / ROLE JUMP
   const jumpNode = flowNodes.find(n => {
@@ -1401,7 +1399,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
   // C) User is in the middle of a flow
   let matchingEdge = null;
   const sourceEdges = flowEdges.filter(e => e.source === currentStepId);
-  const bid = normalizeHandleId(incomingTrigger.buttonId || '').toLowerCase();
+  const bid = normalizeHandleId(buttonId).toLowerCase();
 
   // First priority: explicit button/list selections
   if (bid) {
@@ -1582,7 +1580,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   try {
     sent = await withTimeout(
       sendNodeContent(node, client, phone, lead, convo, channel, parsedMessage),
-      12000, 
+      6000, 
       `Node Content (${node.type})`
     );
   } catch (timeoutErr) {
@@ -1618,7 +1616,6 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     } else if (condition) {
       if (condition.includes('cart_total')) leftValue = lead?.cartValue || convo?.metadata?.cartValue || 0;
       else if (condition === 'has_phone') leftValue = !!phone;
-      else if (condition === "channel == 'instagram'") leftValue = channel === 'instagram';
     }
 
     const compValue = value !== undefined ? value : (condition?.match(/[\d.]+/) || [0])[0];
@@ -2152,9 +2149,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       const imageUrl = data.imageUrl || '';
       const caption = data.caption || '';
       if (!imageUrl) return true;
-      if (channel === 'instagram') {
-        await Instagram.sendImage(client, phone, imageUrl, caption, options);
-      } else {
+       else {
         await WhatsApp.sendImage(client, phone, imageUrl, caption);
       }
       return true;
@@ -2167,7 +2162,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       let body = data.text || data.body || data.label || 'Please provide the requested information:';
       // Variables already hydrated via deepInject in executeNode
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
-      if (channel === 'instagram') await Instagram.sendText(client, phone, body, options);
+      
       else await WhatsApp.sendText(client, phone, body);
       return true;
     }
@@ -2184,10 +2179,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       let body = data.text || data.body || (type === 'livechat' ? 'Connecting you to a human...' : '');
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
       
-      if (channel === 'instagram') {
-        if (data.imageUrl) await Instagram.sendImage(client, phone, data.imageUrl, body, options);
-        else await Instagram.sendText(client, phone, body, options);
-      } else if (data.imageUrl) {
+       else if (data.imageUrl) {
         await WhatsApp.sendImage(client, phone, data.imageUrl, body);
       } else {
         await WhatsApp.sendText(client, phone, body);
@@ -2217,11 +2209,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
 
       if (data.btnUrlLink) {
-        if (channel === 'instagram') {
-            await Instagram.sendInteractive(client, phone, {
-                type: 'button',
-                text: body,
-                buttons: [{ type: 'web_url', url: data.btnUrlLink, title: (data.btnUrlTitle || 'Visit').substring(0, 20) }]
+        ]
             }, body, options);
             return true;
         }
@@ -2243,19 +2231,12 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         : (data.buttons || '').split(',').map(b => b.trim()).filter(Boolean).map(b => ({ id: b.toLowerCase().replace(/\s+/g, '_'), title: b }));
 
       if (!buttonsList.length) {
-        if (channel === 'instagram') await Instagram.sendText(client, phone, body, options);
+        
         else await WhatsApp.sendText(client, phone, body);
         return true;
       }
 
-      if (channel === 'instagram') {
-        await Instagram.sendInteractive(client, phone, {
-            type: 'quick_reply',
-            text: body,
-            buttons: buttonsList.map(btn => ({
-                id: (btn.id || btn.title).toLowerCase().replace(/\s+/g, '_'),
-                title: (btn.title || 'Option').substring(0, 20)
-            }))
+      ))
         }, body, options);
         return true;
       }
@@ -2746,12 +2727,7 @@ REPLY:
 }
 
 async function sendWhatsAppText(client, phone, body, channel = 'whatsapp') {
-  if (channel === 'instagram') {
-    try {
-      const resp = await sendInstagramReply(client, phone, body);
-      await saveOutboundMessage(phone, client.clientId, 'text', body, resp.message_id || '', 'instagram');
-      return resp;
-    } catch (err) { log.error('IG sendReply error:', { error: err.message }); return; }
+   catch (err) { log.error('IG sendReply error:', { error: err.message }); return; }
   }
   const token = client.premiumAccessToken || client.whatsappToken;
   const phoneNumberId = client.premiumPhoneId || client.phoneNumberId;
@@ -2962,549 +2938,489 @@ async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, sc
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// INSTAGRAM API HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
 
-async function sendInstagramText(client, phone, text) {
-  try {
-    const res = await sendInstagramMessage(client, phone, { text });
-    await saveOutboundMessage(phone, client.clientId, 'text', text, res.message_id || '', 'instagram');
-    return true;
-  } catch (err) {
-    log.error('IG sendText error:', { error: err.message });
-    return false;
+
+module.exports.processInboundMessage = processInboundMessage;
+module.exports.executeNode = executeNode;
+module.exports.sendNodeContent = sendNodeContent;
+module.exports.executeShopifyAction = executeShopifyAction;
+
+
+  async function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
-}
 
-async function sendInstagramImage(client, phone, imageUrl, caption) {
-  try {
-    // IG supports image attachments. If there's a caption, we send it as a separate text message first
-    // because IG attachments don't natively support captions like WhatsApp in the same payload.
-    if (caption) {
-      await sendInstagramText(client, phone, caption);
+  async function executeShopifyAction(data, context) {
+    const { phone, clientId } = context;
+    const axios = require('axios');
+    const Order = require('../models/Order');
+    const Client = require('../models/Client');
+    const Conversation = require('../models/Conversation');
+    
+    const client = await Client.findOne({ clientId })
+      .select("shopifyAccessToken nicheData")
+      .lean();
+    
+    if (!client?.shopifyAccessToken) {
+      return { message: "Store not connected yet. Please contact support." };
     }
     
-    const res = await sendInstagramMessage(client, phone, {
-      attachment: {
-        type: 'image',
-        payload: { url: imageUrl }
+    const shop = client.nicheData?.shopifyDomain;
+    const token = client.shopifyAccessToken;
+    
+    switch (data.action) {
+      case "ORDER_STATUS": {
+        const digits = phone.replace(/\D/g, "").slice(-10);
+        const order = await Order.findOne({
+          clientId,
+          $or: [
+            { phone: { $regex: digits + "$" } },
+            { customerPhone: { $regex: digits + "$" } }
+          ]
+        })
+          .sort({ createdAt: -1 })
+          .lean();
+        
+        if (!order) {
+          return {
+            message: "I couldn't find any orders linked to your number.\n\nIf you placed an order recently, please share your Order ID and I'll look it up!"
+          };
+        }
+        
+        const statusEmoji = {
+          pending: "⏳",
+          confirmed: "✅",
+          processing: "🔄",
+          shipped: "🚚",
+          delivered: "🎉",
+          cancelled: "❌"
+        };
+        
+        const emoji = statusEmoji[order.status?.toLowerCase()] || "📦";
+        
+        let message = `${emoji} *Order #${order.orderId}*\n\n`;
+        message += `Status: *${order.status || "Processing"}*\n`;
+        message += `Amount: *₹${order.amount?.toLocaleString("en-IN") || 0}*\n`;
+        
+        if (order.trackingUrl) {
+          message += `\n📍 Track your order:\n${order.trackingUrl}`;
+        }
+        
+        if (order.estimatedDelivery) {
+          message += `\n\n📅 Expected delivery: ${new Date(order.estimatedDelivery).toLocaleDateString("en-IN")}`;
+        }
+        
+        return { message };
       }
-    });
-    
-    await saveOutboundMessage(phone, client.clientId, 'image', caption || '[Image]', res.message_id || '', 'instagram');
-    return true;
-  } catch (err) {
-    log.error('IG sendImage error:', { error: err.message });
-    return false;
+      
+      case "PRODUCT_CARD": {
+        try {
+          const response = await axios.get(
+            `https://${shop}/admin/api/2024-01/products.json?limit=5&status=active`,
+            { headers: { "X-Shopify-Access-Token": token } }
+          );
+          
+          const products = response.data.products || [];
+          if (products.length === 0) {
+            return { message: "Our catalog is being updated. Check back soon!" };
+          }
+          
+          const product = products[0];
+          const variant = product.variants?.[0];
+          const image = product.images?.[0]?.src;
+          const price = variant?.price || "0";
+          const url = `https://${shop}/products/${product.handle}`;
+          
+          return {
+            card: { image, title: product.title, price, url },
+            message: `🛍️ *${product.title}*\n\n${product.body_html?.replace(/<[^>]*>/g, "").slice(0, 200) || ""}\n\n💰 Price: *₹${price}*\n\n🔗 Buy now: ${url}`
+          };
+        } catch (err) {
+          return { message: "Unable to load products right now. Please visit our website!" };
+        }
+      }
+      
+      case "CANCEL_ORDER": {
+        const conversation = await Conversation.findOne({ phone: context.phone, clientId }).lean();
+        const orderId = conversation?.metadata?.order_id || conversation?.metadata?.return_order_id;
+        
+        if (!orderId) {
+          return { message: "Please share your order ID so I can proceed with the cancellation." };
+        }
+        
+        try {
+          await axios.post(
+            `https://${shop}/admin/api/2024-01/orders/${orderId}/cancel.json`,
+            {},
+            { headers: { "X-Shopify-Access-Token": token } }
+          );
+          return { message: `✅ Order #${orderId} has been successfully cancelled.\nYour refund will be processed within 5-7 business days.` };
+        } catch {
+          return { message: "This order cannot be cancelled as it has already been shipped. Please use our Returns flow." };
+        }
+      }
+    }
   }
-}
 
-async function sendInstagramInteractive(client, phone, interactive) {
-  const { type, text, buttons } = interactive;
-  
-  try {
-    let payload = { text };
+  async function sendNodeContent(node, context) {
+    const { phone, clientId, phoneNumberId, token, conversation } = context;
+    const { type, data } = node;
+    const AdLead = require('../models/AdLead');
+    const { injectNodeVariables } = require('./variableInjector');
+    const WhatsAppUtils = require('./whatsapp');
     
-    if (type === 'quick_reply') {
-      payload.quick_replies = buttons.slice(0, 13).map(btn => ({
-        content_type: 'text',
-        title: (btn.title || btn.label ||'Option').substring(0, 20),
-        payload: btn.id || btn.title?.toLowerCase().replace(/\s+/g, '_')
-      }));
-    } else if (type === 'button') {
-      // Instagram 'button' type usually uses a generic template for multiple buttons
-      payload = {
-        attachment: {
-          type: 'template',
-          payload: {
-            template_type: 'generic',
-            elements: [{
-              title: text.substring(0, 80) || 'Please Choose:',
-              buttons: buttons.slice(0, 3).map(btn => {
-                if (btn.type === 'web_url') {
-                  return { type: 'web_url', url: btn.url, title: btn.title.substring(0, 20) };
-                }
-                return { type: 'postback', title: btn.title.substring(0, 20), payload: btn.id || btn.title };
-              })
-            }]
+    // Inject variables first
+    const hydratedData = injectNodeVariables(data, context);
+    
+    switch (type) {
+      case "trigger":
+        return { sent: false };
+      
+      case "message":
+        if (hydratedData.imageUrl) {
+          await WhatsAppUtils.sendImage({whatsappToken: token, phoneNumberId}, phone, hydratedData.imageUrl, hydratedData.body);
+        } else {
+          await WhatsAppUtils.sendText({whatsappToken: token, phoneNumberId}, phone, hydratedData.body);
+        }
+        return { sent: true, autoForward: true };
+      
+      case "interactive":
+        await WhatsAppUtils.sendInteractiveMessage(phoneNumberId, phone, { data: hydratedData }, token);
+        await Conversation.findByIdAndUpdate(conversation._id, {
+          status: "BOT_ACTIVE",
+          lastStepId: node.id
+        });
+        return { sent: true, autoForward: false, waitForReply: true };
+      
+      case "capture_input":
+        await WhatsAppUtils.sendText({whatsappToken: token, phoneNumberId}, phone, hydratedData.question);
+        await Conversation.findByIdAndUpdate(conversation._id, {
+          status: "WAITING_FOR_INPUT",
+          lastStepId: node.id,
+          waitingForVariable: hydratedData.variable,
+          captureValidation: hydratedData.validation
+        });
+        return { sent: true, autoForward: false, waitForReply: true };
+      
+      case "logic":
+        const { evaluateLogic } = require('./logicHelpers'); // We will mock or implement this if needed
+        let result = false;
+        try {
+           if (typeof evaluateLogic === 'function') result = evaluateLogic(hydratedData, context);
+           else {
+               // Fallback basic evaluation
+               const val1 = context[hydratedData.variable] || context.conversation?.metadata?.[hydratedData.variable];
+               const val2 = hydratedData.value;
+               const op = hydratedData.operator;
+               if (op === 'eq') result = val1 == val2;
+               else if (op === 'neq') result = val1 != val2;
+               else if (op === 'contains' && val1) result = String(val1).includes(String(val2));
+               else if (op === 'exists') result = val1 !== undefined && val1 !== null && val1 !== '';
+               else result = false;
+           }
+        } catch(e) {}
+        return { sent: false, logicResult: result };
+      
+      case "delay":
+        const multiplier = hydratedData.waitUnit === 'hours' ? 60 * 60 * 1000 : hydratedData.waitUnit === 'days' ? 24 * 60 * 60 * 1000 : 60 * 1000;
+        const resumeAt = new Date(Date.now() + (hydratedData.waitValue || 1) * multiplier);
+        await Conversation.findByIdAndUpdate(conversation._id, {
+          status: "FLOW_PAUSED",
+          flowPausedUntil: resumeAt,
+          pausedAtNodeId: node.id
+        });
+        return { sent: false, paused: true };
+      
+      case "shopify_call":
+        const shopifyResult = await executeShopifyAction(hydratedData, context);
+        if (shopifyResult.message) {
+          await WhatsAppUtils.sendText({whatsappToken: token, phoneNumberId}, phone, shopifyResult.message);
+        }
+        if (shopifyResult.card) {
+          if (shopifyResult.card.image) {
+             await WhatsAppUtils.sendImage({whatsappToken: token, phoneNumberId}, phone, shopifyResult.card.image, "");
           }
         }
-      };
+        return { sent: true, autoForward: true, data: shopifyResult };
+      
+      case "admin_alert":
+        const alertMessage = hydratedData.body || "Connecting you to our support team. An agent will be with you shortly.";
+        await WhatsAppUtils.sendText({whatsappToken: token, phoneNumberId}, phone, alertMessage);
+        try {
+          const NotificationService = require('./notificationService');
+          await NotificationService.notifyAgent(clientId, { type: 'alert', title: hydratedData.topic, message: `Priority: ${hydratedData.priority}\nPhone: ${phone}`});
+        } catch(e) {}
+        await Conversation.findByIdAndUpdate(conversation._id, {
+          status: "HUMAN_SUPPORT",
+          lastStepId: node.id
+        });
+        return { sent: true, autoForward: false };
+      
+      case "payment_link":
+        const { generatePaymentLink } = require('./paymentLinkGenerator');
+        try {
+            const link = await generatePaymentLink(hydratedData, context);
+            await WhatsAppUtils.sendInteractiveMessage(phoneNumberId, phone, {
+              data: {
+                interactiveType: "button",
+                body: `Total: ₹${hydratedData.amount}\n\nClick below to complete your payment securely:\n${link}`,
+                buttonsList: [{ id: "btn_pay", title: "💳 Pay Now" }]
+              }
+            }, token);
+        } catch(e) {}
+        return { sent: true, autoForward: false };
+      
+      case "tag_lead":
+        await AdLead.findOneAndUpdate(
+          { clientId, phoneNumber: { $regex: phone.slice(-10) + "$" } },
+          hydratedData.action === "add"
+            ? { $addToSet: { tags: hydratedData.tag } }
+            : { $pull: { tags: hydratedData.tag } }
+        );
+        return { sent: false, autoForward: true };
+      
+      case "loyalty_action":
+        const walletService = require('./walletService');
+        try {
+            const wallet = await walletService.getWallet(clientId, phone);
+            const msg = `You have ${wallet.balance} loyalty points.`;
+            await WhatsAppUtils.sendText({whatsappToken: token, phoneNumberId}, phone, msg);
+        } catch(e) {}
+        return { sent: true, autoForward: true };
+      
+      case "ab_test":
+        const hash = phone.split("").reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+        const inBucketA = (hash % 100) < (hydratedData.splitRatio || 50);
+        return { sent: false, autoForward: false, abResult: inBucketA ? "a" : "b" };
+      
+      default:
+        console.warn(`[Engine] Unknown node type: ${type}`);
+        return { sent: false, autoForward: true };
+    }
+  }
+
+  async function executeNode({ nodeId, flowNodes, flowEdges, phone, clientId,
+                               phoneNumberId, token, conversationId, metadata = {} }) {
+    const WhatsAppUtils = require('./whatsapp');
+    const MAX_DEPTH = 30;
+    if ((metadata._depth || 0) >= MAX_DEPTH) {
+      console.error("[Engine] Max traversal depth reached");
+      return;
     }
     
-    const res = await sendInstagramMessage(client, phone, payload);
-    await saveOutboundMessage(
-      phone, 
-      client.clientId, 
-      'interactive', 
-      text || '[Interactive]', 
-      res.message_id || '', 
-      'instagram',
-      { interactive: { type, action: { buttons: buttons.map(b => ({ reply: { title: b.title || b.label, id: b.id } })) } } }
-    );
-    return true;
-  } catch (err) {
-    log.error('IG sendInteractive error:', { error: err.message });
-    return false;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// VOICE NOTE TRANSCRIPTION
-// ─────────────────────────────────────────────────────────────────────────────
-async function transcribeVoiceNote(parsedMessage, client) {
-  try {
-    const mediaId = parsedMessage.audio?.id;
-    if (!mediaId) return null;
-
-    const token = client.whatsappToken;
-    const mediaRes = await axios.get(`https://graph.facebook.com/v18.0/${mediaId}`, { headers: { Authorization: `Bearer ${token}` } });
-    const mediaUrl = mediaRes.data.url;
-
-    const audioRes = await axios.get(mediaUrl, { responseType: 'arraybuffer', headers: { Authorization: `Bearer ${token}` } });
-    const base64Audio = Buffer.from(audioRes.data).toString('base64');
-
-    const model = getGeminiModel(client.geminiKey);
-
-    const result = await model.generateContent([
-      { inlineData: { data: base64Audio, mimeType: 'audio/ogg' } },
-      'Transcribe this voice message. Return ONLY the transcription text, nothing else.'
-    ]);
-
-    return result.response.text().trim();
-  } catch (err) {
-    log.error('Voice transcription error:', { error: err.message });
-    return null;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UNIVERSAL HANDLERS
-// ─────────────────────────────────────────────────────────────────────────────
-async function handleUniversalOrderTracking(client, phone) {
-  const Order = require('../models/Order');
-  const orders = await Order.find({ phone, clientId: client.clientId }).sort({ createdAt: -1 }).limit(1);
-  if (!orders.length) {
-    return await sendWhatsAppText(client, phone, "I couldn't find any orders for your number. Please contact us directly.");
-  }
-  const order = orders[0];
-  let msg = `📦 *Order #${order.orderNumber || order._id}*\nStatus: ${order.status || 'Processing'}\n`;
-  if (order.trackingUrl) msg += `\nTrack: ${order.trackingUrl}`;
-  await sendWhatsAppText(client, phone, msg);
-}
-
-async function handleUniversalEscalate(client, phone, convo) {
-  await Conversation.findByIdAndUpdate(convo._id, {
-    botPaused: true, requiresAttention: true, status: 'HUMAN_TAKEOVER',
-    attentionReason: 'Customer requested human support'
-  });
-  const io = global.io;
-  if (io) io.to(`client_${client.clientId}`).emit('attention_required', { phone, reason: 'Human support requested', priority: 'high' });
-  await sendWhatsAppText(client, phone, "Connecting you to our team now. Someone will respond shortly! 💬");
-  if (client.adminPhone) {
-    await sendWhatsAppText(client, client.adminPhone, `👋 Agent needed: ${phone} requested human support. Chat: wa.me/91${phone}`);
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// INBOUND MESSAGE SAVER
-// ─────────────────────────────────────────────────────────────────────────────
-async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = "whatsapp", conversationId = null) {
-  const content =
-    parsedMessage.text?.body ||
-    parsedMessage.interactive?.button_reply?.title ||
-    parsedMessage.interactive?.list_reply?.title ||
-    `[${parsedMessage.type || 'unknown'}]`;
-  try {
-    // If conversationId not provided, try to find it
-    let finalConvoId = conversationId;
-    if (!finalConvoId) {
-      const c = await Conversation.findOne({ phone, clientId });
-      finalConvoId = c?._id;
+    const node = flowNodes.find(n => n.id === nodeId);
+    if (!node) {
+      console.error(`[Engine] Node ${nodeId} not found`);
+      return;
     }
-
-    // --- Phase 26: Sentiment Analysis ---
-    const client = await Client.findOne({ clientId });
-    const sentimentResult = await analyzeSentiment(content, client || {});
-    const sentiment = sentimentResult.sentiment || 'Neutral';
-    const sentimentScore = sentimentResult.score || 0;
-
-    // Message schema normalized via createMessage
-    const msg = await createMessage({
-      clientId,
-      conversationId: finalConvoId,
+    
+    const Conversation = require('../models/Conversation');
+    const conversation = conversationId
+      ? await Conversation.findById(conversationId).lean()
+      : await Conversation.findOne({ phone, clientId }).lean();
+    
+    const context = {
       phone,
-      direction: 'inbound',
-      type:      parsedMessage.type || 'text',
-      body:      parsedMessage.translatedContent || content, // Agent sees translated version in Live Chat
-      originalText: parsedMessage.originalText || content,
-      translatedContent: parsedMessage.translatedContent || '',
-      detectedLanguage: parsedMessage.detectedLanguage || 'en',
-      messageId: parsedMessage.messageId || '',
-      channel:   channel, 
-      rawData:   parsedMessage,
-      mediaUrl:  parsedMessage.mediaUrl,
-      timestamp: parsedMessage.timestamp ? new Date(parsedMessage.timestamp * 1000) : new Date(), // Fix: Meta timestamp is in seconds
-      sentiment,
-      sentimentScore
-    });
-
-
-    // Update Conversation with sentiment and auto-escalation flags
-    if (finalConvoId) {
-      const isNegative = ['Frustrated', 'Urgent', 'Negative'].includes(sentiment);
-      await Conversation.findByIdAndUpdate(finalConvoId, {
-        $set: { 
-          sentiment, 
-          sentimentScore,
-          requiresAttention: isNegative,
-          attentionReason: isNegative ? `AI Detected: ${sentimentResult.summary || content.substring(0, 50)}` : ''
+      clientId,
+      phoneNumberId,
+      token,
+      conversation,
+      metadata: { ...metadata, _depth: (metadata._depth || 0) + 1 }
+    };
+    
+    const WhatsAppFlow = require('../models/WhatsAppFlow');
+    await WhatsAppFlow.findOneAndUpdate(
+      { "nodes.id": nodeId },
+      { $inc: { "nodes.$.visitCount": 1 } }
+    );
+    
+    console.log(`[Engine] Executing node: ${node.id} (type: ${node.type})`);
+    
+    let result;
+    try {
+      result = await sendNodeContent(node, context);
+    } catch (err) {
+      console.error(`[Engine] Error in node ${nodeId}:`, err.message);
+      await WhatsAppUtils.sendText({whatsappToken: token, phoneNumberId}, phone,
+        "I'm having a technical moment. Let me connect you with our support team."
+      );
+      return;
+    }
+    
+    await Conversation.findOneAndUpdate(
+      { phone, clientId },
+      {
+        $set: {
+          activeFlowId: conversation?.activeFlowId,
+          lastStepId: nodeId,
+          lastInteraction: new Date()
         }
-      });
-
-      // Notify agents for frustrated/urgent cases
-      if (sentiment === 'Frustrated' || sentiment === 'Urgent') {
-        NotificationService.createNotification(clientId, {
-          type: 'alert',
-          title: `${sentiment} Sentiment Detected 🚨`,
-          message: `Customer ${phone} needs immediate attention. Summary: ${sentimentResult.summary || 'High priority alert.'}`,
-          customerPhone: phone,
-          priority: 'high'
-        }).catch(err => log.error("Sentiment notification failed", err.message));
-      }
-    }
-    // --- Phase 23: Track 6 CSAT Interceptor ---
-    if (parsedMessage.interactive?.button_reply?.id?.startsWith('csat_')) {
-      const { handleCSATResponse } = require('./csatService');
-      const response = await handleCSATResponse(finalConvoId, parsedMessage.interactive.button_reply.id);
-      if (response && channel === 'whatsapp') {
-        const client = await Client.findOne({ clientId });
-        const WhatsApp = require('./whatsapp');
-        await WhatsApp.sendText(client, phone, response);
-      }
-    }
-
-    // Phase 23: Track Metrics
-    const updateFields = { 
-      lastMessage: content.substring(0, 100), 
-      lastMessageAt: new Date(),
-      channel: channel 
-    };
-
-    // Phase 3: Active CRM Intelligence Bridge
-    const { updateLeadWithScoring } = require('./leadScoring');
-    const { normalizeIntent } = require('./languageEngine');
-    const inboundIntent = await normalizeIntent(content, client || {});
-    
-    await updateLeadWithScoring(
-      phone,
-      clientId,
-      { inboundMessageCount: 1 }, // Auto-increment engagement
-      { lastInteraction: new Date() }, // Stamp
-      { 
-        sentimentScore, 
-        inboundIntent 
-      } // NLP Signals pass-through
-    ).catch(err => log.error("[NLP-Bridge] Scoring update failed", err.message));
-
-    // If this is the start of a new interaction cycle, set firstInboundAt
-    const existingConvo = await Conversation.findOne({ phone, clientId });
-    if (!existingConvo?.firstInboundAt || (Date.now() - existingConvo?.lastInteraction > 24 * 60 * 60 * 1000)) {
-        updateFields.firstInboundAt = new Date();
-        updateFields.firstResponseAt = null; // Reset response timer for new cycle
-    }
-
-    await Conversation.findOneAndUpdate(
-      { phone, clientId },
-      { $set: updateFields }
-    );
-
-    // Sync AdLead CRM Fields (Last Message & Activity)
-    const AdLead = require('../models/AdLead');
-    await AdLead.updateOne(
-      { phoneNumber: phone, clientId },
-      { 
-        $set: { 
-          lastInteraction: new Date(),
-          lastMessageContent: updateFields.lastMessage || content.substring(0, 500),
-          ...(updateFields.firstInboundAt && { lastInboundAt: updateFields.firstInboundAt })
-        } 
-      }
-    ).catch(() => {});
-
-    // Phase 23: Track Conversation Intelligence
-    if (client) {
-      analyzeConversationIntelligence(client, phone, existingConvo || { _id: finalConvoId });
-    }
-
-    if (io) io.to(`client_${clientId}`).emit('new_message', msg);
-    return msg;
-  } catch (err) {
-    log.error('saveInboundMessage error:', { error: err.message });
-    return null; // never crash the engine on a save failure
-  }
-}
-
-async function saveOutboundMessage(phone, clientId, type, content, messageId, channel = "whatsapp", metadata = {}) {
-  try {
-    const convo = await Conversation.findOne({ phone, clientId });
-    
-    const msg = await createMessage({
-      clientId,
-      conversationId: convo?._id, // CRITICAL FIX
-      phone,
-      direction: 'outbound',
-      type,
-      body:      content,
-      messageId: messageId || '',
-      channel:   channel || 'whatsapp',
-      metadata:  metadata
-    });
-    // We don't usually update lastMessage on outbound in the engine (it's updated by webhook usually)
-    // but doing it here ensures the UI stays snappy if webhook is slow
-    // Phase 23: Track FRT
-    const updateFields = { 
-      lastMessage: `Bot: ${content.substring(0, 90)}`, 
-      lastMessageAt: new Date(),
-      channel: channel || 'whatsapp'
-    };
-
-    if (convo && convo.firstInboundAt && !convo.firstResponseAt) {
-        updateFields.firstResponseAt = new Date();
-    }
-
-    await Conversation.findOneAndUpdate(
-      { phone, clientId },
-      { $set: updateFields }
-    );
-
-    // Sync AdLead CRM Fields (Last Message & Activity)
-    const AdLead = require('../models/AdLead');
-    await AdLead.updateOne(
-      { phoneNumber: phone, clientId },
-      { 
-        $set: { 
-          lastInteraction: new Date(),
-          lastMessageContent: updateFields.lastMessage || content.substring(0, 500),
-          ...(updateFields.firstInboundAt && { lastInboundAt: updateFields.firstInboundAt })
-        } 
-      }
-    ).catch(() => {});
-
-    const io = global.io;
-    if (io) io.to(`client_${clientId}`).emit('new_message', msg);
-
-    // Phase 23: Track Conversation Intelligence (Sentiment/Summary)
-    const client = await Client.findOne({ clientId });
-    if (client) {
-      const convo = await Conversation.findOne({ phone, clientId });
-      if (convo) analyzeConversationIntelligence(client, phone, convo);
-    }
-
-    return msg;
-  } catch (err) {
-    log.error('saveOutboundMessage error:', { error: err.message });
-    return null;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
-function extractTrigger(parsedMessage) {
-  const rawButtonId =
-    parsedMessage.interactive?.button_reply?.id ||
-    parsedMessage.interactive?.list_reply?.id ||
-    parsedMessage.button?.payload ||
-    parsedMessage.button?.text ||
-    null;
-  const normalizedButtonId = typeof rawButtonId === "string"
-    ? rawButtonId.trim().toLowerCase().replace(/\s+/g, "_")
-    : rawButtonId;
-  return {
-    buttonId: normalizedButtonId,
-    text: parsedMessage.text?.body || null,
-    type: parsedMessage.type
-  };
-}
-
-async function trackNodeVisit(client, nodeId) {
-  try {
-    // 1. LIFETIME VISIT (stored on graph)
-    const updatedNodes = incrementNodeVisit(client.flowNodes, nodeId);
-    await Client.findByIdAndUpdate(client._id, { flowNodes: updatedNodes });
-
-    // 2. DAILY ANALYTICS (Heatmap)
-    const today = new Date().toISOString().split('T')[0];
-    await DailyStat.findOneAndUpdate(
-      { clientId: client.clientId, date: today },
-      { $inc: { [`flowHeatmap.${nodeId}`]: 1 } },
+      },
       { upsert: true }
     );
-
-    // 3. Emit real-time socket event to dashboard
-    const io = global.io;
-    if (io) io.to(`client_${client.clientId}`).emit('heatmap_update', { nodeId });
-  } catch (err) {
-    log.error('Heatmap tracking error:', { error: err.message });
-  }
-}
-
-function findTriggerNode(text, flowNodes) {
-    const txt = (text || '').toLowerCase().trim();
-    const isG = isGreeting(txt);
     
-    // Helper to check if a keyword data (string or array) matches the input text
-    const matchesKeyword = (kwData, input) => {
-        if (!kwData) return false;
-        const keywords = String(kwData).toLowerCase().split(',').map(k => k.trim()).filter(Boolean);
-        return keywords.some(k => input === k || (k !== '*' && input.includes(k)) || (k === '*' && input.length > 0));
-    };
-
-    // 1. Find exact/partial match in keywords
-    const exact = flowNodes.find(n => {
-        if (n.type !== 'trigger' && n.type !== 'TriggerNode') return false;
-        return matchesKeyword(n.data?.keyword, txt);
-    });
-    if (exact) return exact;
-
-    // 2. Find fallback by label or wildcard
-    const trigger = flowNodes.find(n => {
-        if (n.type !== 'trigger' && n.type !== 'TriggerNode') return false;
-        const lbl = (n.data?.label || '').toLowerCase().trim();
-        const kw = (n.data?.keyword || '').toLowerCase().trim();
-        
-        const isWild = kw === '*' || lbl === '*';
-        const isGreetingMatch = isG && (kw === '' || kw === 'hi' || kw === 'start' || lbl.includes('entry') || lbl.includes('trigger') || lbl === 'hi' || lbl === 'start');
-        
-        return isWild || isGreetingMatch;
-    });
-
-    return trigger || flowNodes.find(n => n.type === 'trigger' || n.type === 'TriggerNode');
-}
-
-function isGreeting(text) {
-  return /^(hi|hello|hey|namaste|start|hola|hii|hey there|menu|options)\b/i.test((text || '').trim());
-}
-
-async function checkIntent(userText, intentDescription, apiKey) {
-  try {
-    const prompt = `Does this message express the intent: "${intentDescription}"?\nMessage: "${userText}"\nAnswer only YES or NO.`;
-    const response = await generateText(prompt, apiKey, { temperature: 0.1 });
-    return (response || "").toUpperCase().includes("YES");
-  } catch (err) {
-    log.error(`checkIntent Error:`, { error: err.message });
-    return false;
-  }
-}
-
-/**
- * PHASE 23: Track 6 - Conversation Intelligence
- * Analyzes sentiment and updates conversation summary in the background.
- */
-async function analyzeConversationIntelligence(client, phone, convo) {
-  try {
-    const apiKey = client.geminiApiKey;
-    if (!apiKey) return;
-
-    // 1. Fetch last 10 messages to provide context
-    const Message = require('../models/Message');
-    const recentMessages = await Message.find({ 
-      clientId: client.clientId, 
-      $or: [{ from: phone }, { to: phone }] 
-    })
-    .sort({ timestamp: -1 })
-    .limit(10);
-
-    if (recentMessages.length < 2) return; // Not enough context yet
-
-    const historyText = recentMessages.reverse().map(m => 
-      `${m.direction === 'incoming' ? 'User' : 'Bot'}: ${m.content}`
-    ).join('\n');
-
-    const { generateJSON } = require('./gemini');
+    if (result.waitForReply || result.paused) {
+      return;
+    }
     
-    const prompt = `
-      Analyze the following chat history and provide two things in valid JSON format:
-      {
-        "sentiment": "Positive" | "Neutral" | "Negative",
-        "summary": "Concise 1-sentence summary"
+    if (result.logicResult !== undefined) {
+      const handle = result.logicResult ? "true" : "false";
+      const nextEdge = flowEdges.find(e =>
+        e.source === nodeId && e.sourceHandle === handle
+      );
+      if (nextEdge) {
+        await sleep(600);
+        await executeNode({ ...context, nodeId: nextEdge.target, flowNodes, flowEdges });
       }
+      return;
+    }
+    
+    if (result.abResult !== undefined) {
+      const nextEdge = flowEdges.find(e =>
+        e.source === nodeId && e.sourceHandle === result.abResult
+      );
+      if (nextEdge) {
+        await executeNode({ ...context, nodeId: nextEdge.target, flowNodes, flowEdges });
+      }
+      return;
+    }
+    
+    if (result.autoForward) {
+      const nextEdge = flowEdges.find(e =>
+        e.source === nodeId &&
+        (e.sourceHandle === "default" || !e.sourceHandle || e.sourceHandle === "bottom")
+      );
+      if (nextEdge) {
+        await sleep(600);
+        await executeNode({ ...context, nodeId: nextEdge.target, flowNodes, flowEdges });
+      }
+    }
+  }
 
-      Chat History:
-      ${historyText}
-
-      Return ONLY the JSON object.
-    `;
-
-    const result = await generateJSON(prompt, apiKey, { temperature: 0.1 });
-    if (!result) return;
-
-    const sentiment = result.sentiment || 'Neutral';
-    const summary   = result.summary || convo.summary;
-
-    await Conversation.findByIdAndUpdate(convo._id, {
-      sentiment,
-      summary,
-      lastSummaryUpdate: new Date()
-    });
- 
-      // Emit update to dashboard
-      const io = global.io;
-      if (io) {
-        io.to(`client_${client.clientId}`).emit('conversation_intelligence_update', {
-          phone,
-          sentiment,
-          summary
+  async function processInboundMessage({ message, phone, clientId, phoneNumberId, token }) {
+    const Conversation = require('../models/Conversation');
+    const WhatsAppFlow = require('../models/WhatsAppFlow');
+    const { findMatchingFlow, findFlowStartNode } = require('./triggerEngine');
+    
+    const messageType = message.type;
+    let userText = "";
+    let buttonReplyId = null;
+    let listReplyId = null;
+    
+    if (messageType === "text") {
+      userText = message.text?.body?.trim() || "";
+    } else if (messageType === "interactive") {
+      if (message.interactive.type === "button_reply") {
+        buttonReplyId = message.interactive.button_reply.id;
+        userText = message.interactive.button_reply.title || "";
+      } else if (message.interactive.type === "list_reply") {
+        listReplyId = message.interactive.list_reply.id;
+        userText = message.interactive.list_reply.title || "";
+      }
+    }
+    
+    const replyId = buttonReplyId || listReplyId;
+    
+    let conversation = await Conversation.findOne({ phone, clientId });
+    
+    const GLOBAL_KEYWORDS = [
+      { keywords: ["menu", "main menu", "home", "back"], action: "restart_flow" },
+      { keywords: ["stop", "unsubscribe", "opt out"], action: "opt_out" },
+      { keywords: ["agent", "human", "person"], action: "human_handoff" }
+    ];
+    
+    const lowerText = userText.toLowerCase().trim();
+    for (const gk of GLOBAL_KEYWORDS) {
+      if (gk.keywords.includes(lowerText)) {
+        if (gk.action === "restart_flow") {
+          await Conversation.findOneAndUpdate(
+            { phone, clientId },
+            { $set: { status: "BOT_ACTIVE", lastStepId: null, flowPausedUntil: null } }
+          );
+          const clientDoc = await require('../models/Client').findOne({ clientId }).lean();
+          const welcomeFlow = await findMatchingFlow({ text: { body: "hi" } }, clientDoc, conversation);
+          if (welcomeFlow && welcomeFlow.flow) {
+            const startNodeId = findFlowStartNode(welcomeFlow.flow.nodes, welcomeFlow.flow.edges);
+            if (startNodeId) {
+              await executeNode({
+                nodeId: startNodeId,
+                flowNodes: welcomeFlow.flow.nodes,
+                flowEdges: welcomeFlow.flow.edges,
+                phone, clientId, phoneNumberId, token, conversationId: conversation._id
+              });
+            }
+          }
+          return;
+        }
+        if (gk.action === "human_handoff") {
+          const WhatsAppUtils = require('./whatsapp');
+          await WhatsAppUtils.sendText({whatsappToken: token, phoneNumberId}, phone,
+            "Connecting you with our team now. Please wait a moment! 👋");
+          return;
+        }
+        if (gk.action === "opt_out") {
+          const AdLead = require('../models/AdLead');
+          await AdLead.findOneAndUpdate(
+            { clientId, phoneNumber: { $regex: phone.slice(-10) + "$" } },
+            { $set: { optStatus: "opted_out" } }
+          );
+          const WhatsAppUtils = require('./whatsapp');
+          await WhatsAppUtils.sendText({whatsappToken: token, phoneNumberId}, phone,
+            "You've been unsubscribed. To re-subscribe, send 'START' anytime.");
+          return;
+        }
+      }
+    }
+    
+    if (conversation?.status === "WAITING_FOR_INPUT" && conversation?.lastStepId) {
+      const varName = conversation.waitingForVariable;
+      if (varName) {
+        await Conversation.findByIdAndUpdate(conversation._id, {
+          $set: { [`metadata.${varName}`]: userText, status: "BOT_ACTIVE" }
         });
       }
       
-      log.info(`[Intelligence] ${phone} -> ${sentiment} | ${summary}`);
-
-      // Phase 4: Autonomous Learning Hook
-      // If sentiment is POSITIVE or history length indicates deep engagement, propose knowledge
-      if (sentiment === 'Positive' || recentMessages.length >= 8) {
-        const AdLead = require('../models/AdLead');
-        const lead = await AdLead.findOne({ phoneNumber: phone, clientId: client.clientId });
-        
-        // Only trigger for high-value or high-intent leads
-        if (lead && (lead.leadScore >= 60 || lead.linkClicks > 2)) {
-          const { extractAndProposeKnowledge } = require('./autonomousLearner');
-          // Non-blocking trigger
-          extractAndProposeKnowledge(client.clientId, phone, lead._id).catch(err => log.error("[Learning-Hook] Failed:", err.message));
+      const flow = await WhatsAppFlow.findById(conversation.activeFlowId).lean();
+      if (flow) {
+        const flowNodes = flow.nodes || [];
+        const flowEdges = flow.edges || [];
+        const nextEdge = flowEdges.find(e => e.source === conversation.lastStepId && (e.sourceHandle === 'default' || e.sourceHandle === 'bottom' || !e.sourceHandle));
+        if (nextEdge) {
+          await executeNode({
+            nodeId: nextEdge.target, flowNodes, flowEdges,
+            phone, clientId, phoneNumberId, token, conversationId: conversation._id
+          });
         }
+      }
+      return;
     }
-  } catch (err) {
-    log.error('Intelligence Error:', { error: err.message });
-  }
-}
-
-module.exports = { 
-    handleWhatsAppMessage,
-    _runDualBrainEngine,
-    runDualBrainEngine: async (parsedMessage, client) => {
-        if (!parsedMessage?.text?.body) {
-            return await _runDualBrainEngine(parsedMessage, client);
+    
+    if (replyId && conversation?.activeFlowId && conversation?.lastStepId) {
+      const flow = await WhatsAppFlow.findById(conversation.activeFlowId).lean();
+      if (flow) {
+        const matchingEdge = flow.edges.find(e =>
+          e.source === conversation.lastStepId &&
+          (e.sourceHandle === replyId || e.sourceHandle === buttonReplyId || e.sourceHandle === listReplyId)
+        );
+        
+        if (matchingEdge) {
+          await executeNode({
+            nodeId: matchingEdge.target,
+            flowNodes: flow.nodes,
+            flowEdges: flow.edges,
+            phone, clientId, phoneNumberId, token, conversationId: conversation._id
+          });
+          return;
         }
-        return new Promise((resolve) => {
-            messageBuffer.addMessage(parsedMessage.from, parsedMessage.text.body, async (fullText) => {
-                parsedMessage.text.body = fullText;
-                const result = await _runDualBrainEngine(parsedMessage, client);
-                resolve(result);
-            });
-        });
-    },
-    runFlow,
-    executeNode, 
-    sendNodeContent, 
-    sendWhatsAppText, 
-    sendWhatsAppInteractive, 
-    sendWhatsAppTemplate, 
-    sendWhatsAppImage,
-    trackNodeVisit,
-    saveInboundMessage,
-    saveOutboundMessage,
-    isGreeting,
-    replaceVariables,
-    analyzeConversationIntelligence
-};
+      }
+    }
+    
+    const matchedFlow = await findTriggerMatch({ text: lowerText, clientId, buttonId: replyId });
+    if (matchedFlow) {
+      await startFlow({ flow: matchedFlow, phone, clientId, phoneNumberId, token });
+      return;
+    }
+    
+    // AI Fallback if needed
+    // In our case, we might just ignore or call old AI logic.
+  }

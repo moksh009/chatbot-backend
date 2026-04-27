@@ -37,6 +37,57 @@ router.post('/ai-build', protect, async (req, res) => {
   }
 });
 
+// POST /api/flow/simulate
+// Processes a simulation step on the backend without hitting WhatsApp API
+router.post('/simulate', protect, async (req, res) => {
+  try {
+    const { flowId, currentNodeId, userInput, variables, nodes, edges } = req.body;
+    const clientId = req.user.clientId;
+    
+    // Fallback simple traversal logic mirroring frontend if not using full engine
+    const safeNodes = Array.isArray(nodes) ? nodes : [];
+    const safeEdges = Array.isArray(edges) ? edges : [];
+    
+    let nextNode = null;
+    let edgeUsed = null;
+    let updatedVariables = { ...variables };
+
+    if (!currentNodeId) {
+      nextNode = safeNodes.find(n => n.type === 'trigger');
+    } else {
+      const currentNode = safeNodes.find(n => n.id === currentNodeId);
+      const outgoingEdges = safeEdges.filter(e => e.source === currentNodeId);
+
+      if (currentNode?.type === 'interactive') {
+        const textLower = (userInput || '').toLowerCase();
+        const buttons = currentNode.data?.buttonsList || [];
+        const btnIndex = buttons.findIndex(b => b.title.toLowerCase() === textLower);
+        const sourceHandle = btnIndex !== -1 ? (buttons[btnIndex].id || `btn_${btnIndex}`) : textLower.replace(/\s+/g, '_');
+        edgeUsed = outgoingEdges.find(e => e.sourceHandle === sourceHandle);
+      } else if (currentNode?.type === 'capture_input' || currentNode?.type === 'CaptureNode') {
+        const varName = currentNode.data?.variable || 'captured_input';
+        updatedVariables[varName] = userInput;
+        edgeUsed = outgoingEdges[0];
+      } else {
+        edgeUsed = outgoingEdges[0];
+      }
+
+      if (edgeUsed) {
+        nextNode = safeNodes.find(n => n.id === edgeUsed.target);
+      }
+    }
+
+    res.json({
+      success: true,
+      nextNode,
+      updatedVariables,
+      timestamp: new Date()
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // POST /api/flow/save
 // Saves draft nodes/edges to the WhatsAppFlow model
 router.post('/save', protect, async (req, res) => {
@@ -108,6 +159,11 @@ router.post('/publish', protect, async (req, res) => {
     flow.lastSyncedAt = Date.now();
 
     await flow.save();
+    
+    // Clear trigger cache to load the fresh flows
+    const { clearTriggerCache } = require('../utils/triggerEngine');
+    clearTriggerCache(clientId);
+
     res.json({ success: true, message: `Flow published successfully (v${flow.version})`, version: flow.version });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
