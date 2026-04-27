@@ -176,6 +176,9 @@ router.post("/:clientId/analyze", verifyToken, async (req, res) => {
   try {
     const client = await Client.findOne({ clientId: req.params.clientId });
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
+    if (!client.metaAdsToken) {
+      return res.status(400).json({ success: false, message: "Meta Ads not connected for this client. Please connect/reconnect first." });
+    }
 
     const { adId } = req.body;
     const filter = { clientId: client._id };
