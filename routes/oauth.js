@@ -124,7 +124,15 @@ router.get("/instagram/callback", async (req, res) => {
       }
     });
     const pages = pagesResp.data.data || [];
+    console.log(`[Instagram OAuth] Total FB Pages found: ${pages.length}`);
+    
+    // Log details of each page to see why IG might be missing
+    pages.forEach(p => {
+      console.log(` - Page: ${p.name} (${p.id}) | IG Account: ${p.instagram_business_account ? 'FOUND (' + p.instagram_business_account.id + ')' : 'NOT LINKED'}`);
+    });
+
     const igPages = pages.filter(p => p.instagram_business_account?.id);
+    console.log(`[Instagram OAuth] Filtered IG-linked Pages: ${igPages.length}`);
 
     if (igPages.length === 0) {
       console.warn(`[Instagram OAuth] No Instagram Business account found for clientId: ${clientId}`);
