@@ -166,17 +166,29 @@ router.get('/:id/messages', protect, async (req, res) => {
       return res.status(404).json({ message: 'Conversation not found' });
     }
 
-    const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 50;
-    const skip = (page - 1) * limit;
+    const before = req.query.before; // ISO timestamp
+    const queryPayload = { conversationId: conversation._id };
+    
+    if (before) {
+      queryPayload.timestamp = { $lt: new Date(before) };
+    }
 
-    const messages = await Message.find({ conversationId: conversation._id })
+    const messages = await Message.find(queryPayload)
       .sort({ timestamp: -1 }) // Get newest first for pagination
-      .skip(skip)
       .limit(limit)
       .lean();
 
-    res.json(messages.reverse()); // Return in chronological order for UI
+    res.json({
+      messages: messages.reverse(), // Return in chronological order for UI
+      nextCursor: messages.length === limit ? messages[0].timestamp.toISOString() : null,
+      hasMore: messages.length === limit,
+      meta: {
+        customerPhone: conversation.phone,
+        customerName: conversation.customerName,
+        botStatus: conversation.botStatus || 'active'
+      }
+    });
   } catch (error) {
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
@@ -191,7 +203,7 @@ router.get('/:id/full-context', protect, async (req, res) => {
     
     // 1. Fetch main conversation
     const conversation = await Conversation.findOne({ _id: id, clientId })
-      .select('phone customerName status botPaused unreadCount channel assignedTo sentiment summary lastDetectedIntent requiresAttention attentionReason internalNotes')
+      .select('phone customerName status botPaused botStatus unreadCount channel assignedTo sentiment summary lastDetectedIntent requiresAttention attentionReason internalNotes')
       .lean();
       
     if (!conversation) {
@@ -219,7 +231,11 @@ router.get('/:id/full-context', protect, async (req, res) => {
         .limit(50)
         .select('content type direction status timestamp mediaUrl metadata from to voiceTranscript originalText')
         .lean()
-        .then(msgs => msgs.reverse()),
+        .then(msgs => ({
+          messages: msgs.reverse(),
+          nextCursor: msgs.length === 50 ? msgs[0].timestamp.toISOString() : null,
+          hasMore: msgs.length === 50
+        })),
         
       // Lead Data
       (async () => {
@@ -289,7 +305,16 @@ router.get('/:id/full-context', protect, async (req, res) => {
       })()
     ]);
     
-    res.json({ conversation, messages, lead, orders, wallet, activeSequence });
+    res.json({ 
+      conversation, 
+      messages: messages.messages, 
+      nextCursor: messages.nextCursor, 
+      hasMore: messages.hasMore, 
+      lead, 
+      orders, 
+      wallet, 
+      activeSequence 
+    });
   } catch (error) {
     console.error('[FullContext Error]:', error);
     res.status(500).json({ message: 'Server Error fetching full context' });
@@ -426,6 +451,44 @@ router.post('/:id/messages', protect, async (req, res) => {
   }
 });
 
+// @route   PATCH /api/conversations/:id/bot-status
+// @desc    Update bot status (active or paused)
+// @access  Private
+router.patch('/:id/bot-status', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { clientId, botStatus } = req.body;
+
+    if (!['active', 'paused'].includes(botStatus)) {
+      return res.status(400).json({ error: 'botStatus must be "active" or "paused".' });
+    }
+
+    const conversation = await Conversation.findOneAndUpdate(
+      { _id: id, clientId },
+      { $set: { botStatus, botPaused: botStatus === 'paused', updatedAt: new Date() } },
+      { new: true }
+    ).select('botStatus customerPhone customerName').lean();
+
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found.' });
+    }
+
+    // Emit to frontend so all open sessions see the change immediately
+    const io = req.app.get('socketio');
+    if (io) {
+      io.to(`client_${clientId}`).emit('botStatusChanged', {
+        conversationId: id,
+        botStatus: conversation.botStatus
+      });
+    }
+
+    res.json({ botStatus: conversation.botStatus });
+  } catch (err) {
+    console.error('[PATCH /conversations/:id/bot-status]', err);
+    res.status(500).json({ error: 'Failed to update bot status.' });
+  }
+});
+
 // @route   PUT /api/conversations/:id/takeover
 // @desc    Agent takes over conversation (pauses bot)
 // @access  Private
@@ -450,6 +513,17 @@ router.put('/:id/takeover', protect, async (req, res) => {
     conversation.requiresAttention = false; // Reset attention flag on manual takeover
     if (conversation.attentionReason) conversation.attentionReason = '';
     await conversation.save();
+
+    // Phase R4: Emit bot status change to all connected dashboard tabs
+    const io = req.app.get('socketio');
+    if (io) {
+      io.to(`client_${conversation.clientId}`).emit('conversation_update', conversation);
+      io.to(`client_${conversation.clientId}`).emit('bot_status_changed', {
+        conversationId: conversation._id,
+        status: 'HUMAN_TAKEOVER',
+        botPaused: true
+      });
+    }
 
     const AdLead = require('../models/AdLead');
     AdLead.pushJourneyEvent(conversation.clientId, conversation.phone, 'human_takeover', { agentId: req.user._id, agentName: req.user.name }).catch(() => {});
@@ -476,6 +550,17 @@ router.put('/:id/release', protect, async (req, res) => {
     conversation.status = 'BOT_ACTIVE';
     conversation.botPaused = false;
     await conversation.save();
+
+    // Phase R4: Emit bot status change to all connected dashboard tabs
+    const io = req.app.get('socketio');
+    if (io) {
+      io.to(`client_${conversation.clientId}`).emit('conversation_update', conversation);
+      io.to(`client_${conversation.clientId}`).emit('bot_status_changed', {
+        conversationId: conversation._id,
+        status: 'BOT_ACTIVE',
+        botPaused: false
+      });
+    }
 
     const AdLead = require('../models/AdLead');
     AdLead.pushJourneyEvent(conversation.clientId, conversation.phone, 'bot_release', { agentId: req.user._id, agentName: req.user.name }).catch(() => {});

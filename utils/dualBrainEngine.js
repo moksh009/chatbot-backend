@@ -2927,12 +2927,134 @@ async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, sc
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PHASE R4: MESSAGE PERSISTENCE + SOCKET EMISSION
+// These functions were called throughout the engine but never defined,
+// causing silent ReferenceErrors. This is the root cause of the Severity-1
+// bug where inbound/bot messages never appeared in Live Chat without refresh.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Save an inbound (customer) message to the Message collection and emit
+ * real-time events to all connected dashboard clients.
+ *
+ * @param {string} phone        - Customer phone number
+ * @param {string} clientId     - Tenant client ID
+ * @param {object} parsedMessage - Parsed webhook payload from handleWhatsAppMessage
+ * @param {object} io           - Socket.io server instance (global.io)
+ * @param {string} channel      - 'whatsapp' | 'instagram'
+ * @param {string} conversationId - Mongoose ObjectId of the Conversation document
+ */
+async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = 'whatsapp', conversationId) {
+  try {
+    // Extract text content from various message types
+    const body = parsedMessage.text?.body
+      || parsedMessage.interactive?.button_reply?.title
+      || parsedMessage.interactive?.list_reply?.title
+      || parsedMessage.caption
+      || (parsedMessage.type === 'image' ? '[Image]' : '')
+      || (parsedMessage.type === 'audio' || parsedMessage.type === 'voice' ? '[Voice Note]' : '')
+      || (parsedMessage.type === 'video' ? '[Video]' : '')
+      || (parsedMessage.type === 'document' ? '[Document]' : '')
+      || (parsedMessage.type === 'sticker' ? '[Sticker]' : '')
+      || '';
+
+    const savedMessage = await createMessage({
+      clientId,
+      conversationId,
+      phone,
+      from: phone,
+      to: 'BOT',
+      direction: 'inbound',
+      type: parsedMessage.type || 'text',
+      body,
+      messageId: parsedMessage.messageId || parsedMessage.id || '',
+      mediaUrl: parsedMessage.mediaUrl || null,
+      channel,
+      translatedContent: parsedMessage.translatedContent || '',
+      detectedLanguage: parsedMessage.detectedLanguage || 'en',
+      originalText: parsedMessage.originalText || '',
+      voiceTranscript: parsedMessage.voiceTranscript || ''
+    });
+
+    // Emit real-time events to dashboard
+    if (io && clientId) {
+      const updatedConvo = await Conversation.findById(conversationId)
+        .populate('assignedTo', 'name')
+        .lean();
+
+      io.to(`client_${clientId}`).emit('new_message', savedMessage);
+      if (updatedConvo) {
+        io.to(`client_${clientId}`).emit('conversation_update', updatedConvo);
+      }
+    }
+
+    return savedMessage;
+  } catch (err) {
+    log.error('[saveInboundMessage] Failed:', { phone, clientId, error: err.message });
+    throw err;
+  }
+}
+
+/**
+ * Save an outbound (bot/system) message to the Message collection and emit
+ * real-time events to all connected dashboard clients.
+ *
+ * @param {string} phone    - Customer phone number
+ * @param {string} clientId - Tenant client ID
+ * @param {string} type     - Message type: 'text' | 'image' | 'audio' | 'interactive' | 'template'
+ * @param {string} body     - Message content/caption
+ * @param {string} wamid    - WhatsApp message ID from Graph API response
+ * @param {string} channel  - 'whatsapp' | 'instagram'
+ */
+async function saveOutboundMessage(phone, clientId, type, body, wamid, channel = 'whatsapp') {
+  try {
+    // Look up conversation for the conversationId foreign key
+    const convo = await Conversation.findOne({ phone, clientId })
+      .select('_id')
+      .lean();
+
+    const savedMessage = await createMessage({
+      clientId,
+      conversationId: convo?._id || null,
+      phone,
+      from: 'BOT',
+      to: phone,
+      direction: 'outbound',
+      type: type || 'text',
+      body: body || '',
+      messageId: wamid || '',
+      channel
+    });
+
+    // Emit real-time events to dashboard
+    const io = global.io;
+    if (io && clientId) {
+      const updatedConvo = await Conversation.findOne({ phone, clientId })
+        .populate('assignedTo', 'name')
+        .lean();
+
+      io.to(`client_${clientId}`).emit('new_message', savedMessage);
+      if (updatedConvo) {
+        io.to(`client_${clientId}`).emit('conversation_update', updatedConvo);
+      }
+    }
+
+    return savedMessage;
+  } catch (err) {
+    log.error('[saveOutboundMessage] Failed:', { phone, clientId, type, error: err.message });
+    // Don't throw — outbound save failures should not crash the bot reply flow
+  }
+}
 
 
 module.exports.processInboundMessage = processInboundMessage;
 module.exports.executeNode = executeNode;
 module.exports.sendNodeContent = sendNodeContent;
 module.exports.executeShopifyAction = executeShopifyAction;
+module.exports.saveInboundMessage = saveInboundMessage;
+module.exports.saveOutboundMessage = saveOutboundMessage;
+module.exports.handleWhatsAppMessage = handleWhatsAppMessage;
+module.exports.runFlow = runFlow;
 
 
   async function sleep(ms) {
@@ -3310,7 +3432,27 @@ module.exports.executeShopifyAction = executeShopifyAction;
     
     const replyId = buttonReplyId || listReplyId;
     
-    let conversation = await Conversation.findOne({ phone, clientId });
+    let conversation = await Conversation.findOneAndUpdate(
+      { phone, clientId },
+      {
+        $setOnInsert: { phone, clientId, lastStepId: null, botPaused: false, status: 'BOT_ACTIVE' },
+        $inc: { unreadCount: 1 },
+        $set: { lastInteraction: new Date() }
+      },
+      { upsert: true, new: true }
+    );
+
+    // Save inbound message to DB + emit to dashboard (was completely missing)
+    const io = global.io;
+    saveInboundMessage(phone, clientId, {
+      text: userText ? { body: userText } : undefined,
+      type: message.type || 'text',
+      messageId: message.id || '',
+      interactive: message.interactive,
+      mediaUrl: message.image?.link || message.video?.link || message.document?.link || null
+    }, io, 'whatsapp', conversation._id).catch((err) => {
+      log.error('[processInboundMessage] Save failed:', { error: err.message });
+    });
     
     const GLOBAL_KEYWORDS = [
       { keywords: ["menu", "main menu", "home", "back"], action: "restart_flow" },

@@ -75,7 +75,8 @@ module.exports = () => {
                                 templateName: msg.content.templateName,
                                 languageCode: msg.content.languageCode || 'en_US',
                                 components: msg.content.components || [],
-                                token: token
+                                token: token,
+                                clientId: client.clientId || client._id
                             });
                             sentSuccess = res.success;
                         } else {
@@ -83,7 +84,8 @@ module.exports = () => {
                                 phoneNumberId: phoneId,
                                 to: msg.phone,
                                 body: msg.content.text || msg.content,
-                                token: token
+                                token: token,
+                                clientId: client.clientId || client._id
                             });
                             sentSuccess = res.success;
                         }

@@ -188,52 +188,81 @@ router.post('/from-hot-leads', protect, async (req, res) => {
 });
 
 // @route   POST /api/campaigns/quick-send
-// @desc    Send a template message to a single contact
+// @desc    Send a template message to multiple contacts (max 250)
 // @access  Private
 router.post('/quick-send', protect, async (req, res) => {
-  const { leadId, templateName, channel } = req.body;
+  const { leadId, leadIds, templateName, channel } = req.body;
   const clientId = req.user.clientId;
 
-  if (!leadId || !templateName) {
-    return res.status(400).json({ success: false, message: 'leadId and templateName are required' });
+  const finalLeadIds = leadIds || (leadId ? [leadId] : []);
+
+  if (finalLeadIds.length === 0 || !templateName) {
+    return res.status(400).json({ success: false, message: 'leadIds and templateName are required' });
+  }
+
+  if (finalLeadIds.length > 250) {
+    return res.status(400).json({ success: false, message: 'Maximum 250 recipients allowed for quick broadcast' });
   }
 
   try {
-    const lead = await AdLead.findOne({ _id: leadId, clientId });
-    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
-
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
+    const leads = await AdLead.find({ _id: { $in: finalLeadIds }, clientId });
+    if (leads.length === 0) return res.status(404).json({ success: false, message: 'No valid leads found' });
+
     const { sendWhatsAppTemplate } = require('../utils/whatsappHelpers');
 
-    await sendWhatsAppTemplate({
-      phoneNumberId: client.phoneNumberId,
-      to: lead.phoneNumber,
-      templateName,
-      languageCode: 'en',
-      components: [],
-      token: client.whatsappToken
-    });
+    let successCount = 0;
+    let failCount = 0;
 
-    // Update Lead activity log
-    await AdLead.findByIdAndUpdate(leadId, {
-      $push: {
-        activityLog: {
-          action: 'quick_message_sent',
-          details: `Sent template: ${templateName}`,
-          timestamp: new Date()
-        }
+    // Process with small stagger to avoid burst limits
+    for (const lead of leads) {
+      try {
+        await sendWhatsAppTemplate({
+          phoneNumberId: client.phoneNumberId,
+          to: lead.phoneNumber,
+          templateName,
+          languageCode: 'en',
+          components: [],
+          token: client.whatsappToken,
+          clientId: client.clientId
+        });
+
+        // Update Lead activity log
+        await AdLead.findByIdAndUpdate(lead._id, {
+          $push: {
+            activityLog: {
+              action: 'quick_message_sent',
+              details: `Sent template: ${templateName}`,
+              timestamp: new Date()
+            }
+          }
+        });
+        successCount++;
+      } catch (err) {
+        log.error(`[QuickSend] Failed for ${lead.phoneNumber}:`, err.message);
+        failCount++;
       }
-    });
+      
+      // Stagger
+      if (finalLeadIds.length > 1) {
+        await new Promise(r => setTimeout(r, 200)); 
+      }
+    }
 
     // Enterprise Fix: Update StatCache atomically
-    await incrementStat(clientId, { totalConversations: 1 });
+    await incrementStat(clientId, { totalConversations: successCount });
 
-    res.json({ success: true, message: 'Quick message sent successfully' });
+    res.json({ 
+      success: true, 
+      message: `Broadcast complete. Success: ${successCount}, Failed: ${failCount}`,
+      successCount,
+      failCount
+    });
   } catch (err) {
     log.error('[QuickSend] Error:', err.message);
-    res.status(500).json({ success: false, message: 'Failed to send quick message: ' + err.message });
+    res.status(500).json({ success: false, message: 'Failed to process quick broadcast: ' + err.message });
   }
 });
 

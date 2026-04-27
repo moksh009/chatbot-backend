@@ -224,7 +224,8 @@ router.post('/resend-notification', protect, async (req, res) => {
                         ]
                     }
                 ],
-                token: client.whatsappToken
+                token: client.whatsappToken,
+                clientId: client.clientId
             });
             res.json({ success: true, message: 'Notification sent' });
         } catch (err) {

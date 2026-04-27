@@ -34,6 +34,7 @@ const ConversationSchema = new mongoose.Schema({
   
   // Phase 9 fields
   botPaused:         { type: Boolean, default: false },
+  botStatus:         { type: String, enum: ['active', 'paused'], default: 'active' },
   requiresAttention: { type: Boolean, default: false },
   attentionReason:   { type: String,  default: '' },
   currentContext:    { type: String,  default: null },
@@ -113,33 +114,27 @@ const ConversationSchema = new mongoose.Schema({
 });
 
 
-// Compound index for unique conversation per phone + client
-ConversationSchema.index({ phone: 1, clientId: 1 }, { unique: true });
-
-// ✅ Phase R3: Performance indexes — were missing, causing full-collection scans on Live Chat inbox load
-ConversationSchema.index({ clientId: 1, lastInteraction: -1 }); // Inbox sort by most recent
-ConversationSchema.index({ clientId: 1, status: 1 });            // Status filter (BOT_ACTIVE, HUMAN_TAKEOVER etc.)
-ConversationSchema.index({ clientId: 1, requiresAttention: 1 }); // Attention queue in Live Chat
-ConversationSchema.index({ clientId: 1, assignedTo: 1 });      // Agent workload filter (fixed: was 'assignedAgent')
-ConversationSchema.index({ clientId: 1, botPaused: 1 });         // Bot-paused conversations filter
-
-// Pre-save hook to cap processedMessageIds
+// Pre-save hook to cap processedMessageIds to avoid document bloat
 ConversationSchema.pre('save', function(next) {
-  if (this.processedMessageIds.length > 50) {
+  if (this.processedMessageIds && this.processedMessageIds.length > 50) {
     this.processedMessageIds = this.processedMessageIds.slice(-50);
   }
   this.updatedAt = new Date();
   next();
 });
 
-// Performance indexes for dashboard queries
+// ✅ Performance Overhaul: Optimized Compound Indexes
+ConversationSchema.index({ clientId: 1, phone: 1 }, { unique: true });
+ConversationSchema.index({ clientId: 1, lastInteraction: -1 }); 
 ConversationSchema.index({ clientId: 1, lastMessageAt: -1 });
-ConversationSchema.index({ clientId: 1, unreadCount: 1 });
-ConversationSchema.index({ clientId: 1, phone: 1 });
-
-// Performance Overhaul: Indexes for analytics aggregation pipelines
-ConversationSchema.index({ clientId: 1, sentiment: 1 });              // /realtime sentiment aggregation
-ConversationSchema.index({ clientId: 1, assignedTo: 1 });             // /operators agent performance aggregation
-ConversationSchema.index({ clientId: 1, firstInboundAt: 1, firstResponseAt: 1 }); // /agent-performance FRT calculation
+ConversationSchema.index({ clientId: 1, status: 1 });
+ConversationSchema.index({ clientId: 1, botStatus: 1 });
+ConversationSchema.index({ clientId: 1, requiresAttention: 1 });
+ConversationSchema.index({ clientId: 1, assignedTo: 1 });
+ConversationSchema.index({ clientId: 1, sentiment: 1 });
+ConversationSchema.index({ clientId: 1, unreadCount: -1 });
+ConversationSchema.index({ clientId: 1, 'lastDetectedIntent.intentName': 1 });
+ConversationSchema.index({ clientId: 1, firstInboundAt: 1, firstResponseAt: 1 });
+ConversationSchema.index({ processedMessageIds: 1 }); // Deduplication index
 
 module.exports = mongoose.model('Conversation', ConversationSchema);

@@ -8,6 +8,9 @@ const inbox = require('../controllers/unifiedInbox/inboxController');
 // All inbox routes require authentication
 router.use(protect);
 
+// Dynamic inbox filters
+router.get('/filters', inbox.getFilters);
+
 // Unified conversation list (merge-sort WhatsApp + Instagram)
 router.get('/conversations', inbox.listConversations);
 

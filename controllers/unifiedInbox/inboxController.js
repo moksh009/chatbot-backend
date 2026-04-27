@@ -24,6 +24,8 @@ async function listConversations(req, res) {
 
     const channel = req.query.channel || 'all';
     const search = req.query.search || '';
+    const filter = req.query.filter || 'all';
+    const currentUserId = req.user?.id || req.user?._id;
     const limit = Math.min(parseInt(req.query.limit) || 50, 100);
     const skip = parseInt(req.query.skip) || 0;
 
@@ -40,11 +42,26 @@ async function listConversations(req, res) {
         ];
       }
 
+      if (filter === 'assigned_to_me') {
+        waQuery.assignedTo = currentUserId;
+      } else if (filter === 'open') {
+        waQuery.status = { $nin: ['CLOSED', 'OPTED_OUT'] };
+      } else if (filter === 'needs_help') {
+        waQuery.$or = [
+          { botStatus: 'paused' },
+          { lastDetectedIntent: 'support' },
+          { requiresAttention: true }
+        ];
+      } else if (filter.startsWith('agent_')) {
+        const agentId = filter.replace('agent_', '');
+        waQuery.assignedTo = agentId;
+      }
+
       const rawWA = await Conversation.find(waQuery)
         .sort({ lastMessageAt: -1 })
         .limit(limit)
         .skip(channel === 'whatsapp' ? skip : 0)
-        .select('phone customerName lastMessage lastMessageAt unreadCount status channel sentiment assignedTo')
+        .select('phone customerName lastMessage lastMessageAt unreadCount status channel sentiment assignedTo botStatus')
         .lean();
 
       whatsappConvos = rawWA.map(c => ({
@@ -57,6 +74,7 @@ async function listConversations(req, res) {
         lastMessageAt: c.lastMessageAt,
         unreadCount: c.unreadCount || 0,
         status: c.status,
+        botStatus: c.botStatus || 'active',
         sentiment: c.sentiment
       }));
     }
@@ -111,6 +129,45 @@ async function listConversations(req, res) {
   } catch (err) {
     log.error('[listConversations] Error:', err.message, { stack: err.stack });
     return res.status(500).json({ error: 'Failed to fetch conversations' });
+  }
+}
+
+/**
+ * GET /api/inbox/filters
+ * Returns available static and dynamic (per-agent) filters.
+ */
+async function getFilters(req, res) {
+  try {
+    const clientId = req.query.clientId || req.user?.clientId;
+    if (!clientId) return res.status(400).json({ error: 'clientId is required' });
+
+    const User = require('../../models/User');
+    const teamMembers = await User.find({
+      clientId,
+      role: { $in: ['agent', 'admin', 'SUPER_ADMIN'] },
+      isActive: true
+    }).select('_id name email').lean();
+
+    const filters = [
+      { id: 'all', label: 'All', type: 'static' },
+      { id: 'assigned_to_me', label: 'Assigned to me', type: 'static' },
+      { id: 'open', label: 'Open', type: 'static' },
+      { id: 'needs_help', label: 'Asking for help', type: 'static', description: 'Chats where the bot is paused or intent is support' }
+    ];
+
+    for (const member of teamMembers) {
+      filters.push({
+        id: `agent_${member._id}`,
+        label: `Assigned to ${member.name}`,
+        type: 'agent',
+        agentId: member._id.toString()
+      });
+    }
+
+    res.json({ filters });
+  } catch (err) {
+    log.error('[getFilters] Error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch filters.' });
   }
 }
 
@@ -270,6 +327,7 @@ async function sendMessage(req, res) {
 
 module.exports = {
   listConversations,
+  getFilters,
   getMessages,
   markRead,
   sendMessage

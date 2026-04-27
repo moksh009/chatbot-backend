@@ -10,14 +10,20 @@ const axios = require('axios');
  * @param {string} params.body - Text message body
  * @param {string} params.token - WhatsApp Cloud API Bearer token
  */
-async function sendWhatsAppText({ phoneNumberId, to, body, token }) {
+async function sendWhatsAppText({ phoneNumberId, to, body, token, clientId }) {
+    let finalBody = body;
+    if (clientId) {
+        const { resolveFlowVariables } = require('./variableInjector');
+        finalBody = await resolveFlowVariables(body, clientId, to);
+    }
+
     const { GRAPH_API_VERSION } = require('./metaConfig');
     const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`;
     const data = {
         messaging_product: 'whatsapp',
         to,
         type: 'text',
-        text: { body }
+        text: { body: finalBody }
     };
     try {
         const response = await axios.post(url, data, {
@@ -44,7 +50,13 @@ async function sendWhatsAppText({ phoneNumberId, to, body, token }) {
  * @param {Array} params.components
  * @param {string} params.token
  */
-async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageCode = 'en_US', components = [], token }) {
+async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageCode = 'en_US', components = [], token, clientId }) {
+    let finalComponents = components;
+    if (clientId) {
+        const { resolveFlowVariables } = require('./variableInjector');
+        finalComponents = await resolveFlowVariables(components, clientId, to);
+    }
+
     const { GRAPH_API_VERSION } = require('./metaConfig');
     const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`;
     const data = {
@@ -54,7 +66,7 @@ async function sendWhatsAppTemplate({ phoneNumberId, to, templateName, languageC
         template: {
             name: templateName,
             language: { code: languageCode },
-            components
+            components: finalComponents
         }
     };
     try {

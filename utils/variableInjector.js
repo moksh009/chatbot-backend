@@ -167,6 +167,12 @@ function injectVariables(text, context) {
   const variableRegex = /{{\s*([\w.]+)\s*(?:\|\s*['"]?([^'"]*)['"]?\s*)?}}/g;
 
   return text.replace(variableRegex, (match, key, fallback) => {
+    // Reject variable names with spaces or special chars
+    if (!/^[\w.]+$/.test(key)) {
+      console.warn(`[VariableInjector] Invalid variable name: "${key}"`);
+      return match; // Return raw placeholder
+    }
+
     // 1. Check direct context (e.g. {{customer_name}})
     let value = context[key];
 
@@ -276,9 +282,45 @@ function injectVariablesLegacy(text, contextOrLegacy) {
   return injectVariables(text, contextOrLegacy || {});
 }
 
+/**
+ * Resolves all variables for a specific client/phone pair.
+ * Fetches required models and performs injection.
+ */
+async function resolveFlowVariables(input, clientId, phone) {
+  if (!input || !clientId || !phone) return input;
+  
+  try {
+    const Client = require('../models/Client');
+    const Conversation = require('../models/Conversation');
+    const AdLead = require('../models/AdLead');
+    
+    const [client, convo, lead] = await Promise.all([
+      Client.findOne({ clientId }).lean(),
+      Conversation.findOne({ clientId, phone }).lean(),
+      AdLead.findOne({ clientId, phone }).lean()
+    ]);
+    
+    if (!client) return input;
+    
+    const context = await buildVariableContext(client, phone, convo, lead);
+    
+    if (typeof input === 'string') {
+      return injectVariables(input, context);
+    } else if (typeof input === 'object') {
+      return injectNodeVariables(input, context);
+    }
+    
+    return input;
+  } catch (err) {
+    console.error(`[VariableInjector] resolveFlowVariables error:`, err);
+    return input;
+  }
+}
+
 module.exports = {
   buildVariableContext,
   injectVariables,
   injectNodeVariables,
   injectVariablesLegacy,
+  resolveFlowVariables,
 };

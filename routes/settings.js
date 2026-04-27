@@ -89,6 +89,18 @@ router.put('/:clientId/custom-variables', protect, verifyClientAccess, async (re
     const { clientId } = req.params;
     const { customVariables } = req.body; // Array of objects
     
+    if (Array.isArray(customVariables)) {
+      for (const v of customVariables) {
+        if (v.validationRegex) {
+          try {
+            new RegExp(v.validationRegex);
+          } catch(e) {
+            return res.status(400).json({ success: false, message: `Invalid regex pattern in variable ${v.name}` });
+          }
+        }
+      }
+    }
+    
     const client = await Client.findOneAndUpdate(
       { clientId },
       { $set: { customVariables } },

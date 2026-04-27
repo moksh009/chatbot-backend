@@ -144,7 +144,9 @@ const ClientSchema = new mongoose.Schema({
     type: { type: String, enum: ['string', 'number', 'date', 'phone', 'email'], default: 'string' },
     label: String,
     description: String,
-    defaultValue: String
+    defaultValue: String,
+    validationRegex: String,
+    validationMessage: String
   }],
   
   // Phase 7 Added Fields
