@@ -17,6 +17,13 @@ router.get("/:clientId", verifyToken, async (req, res) => {
 
     const { status, campaign } = req.query;
     const filter = { clientId: client._id };
+    if (client.metaAdAccountId) {
+      filter.$or = [
+        { metaAdAccountId: client.metaAdAccountId },
+        { metaAdAccountId: { $exists: false } },
+        { metaAdAccountId: '' }
+      ];
+    }
     if (status)   filter.adStatus = status.toUpperCase();
     if (campaign) filter.metaCampaignId = campaign;
 

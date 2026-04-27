@@ -213,8 +213,10 @@ app.use('/api/orders', ordersRoutes);
 
 const businessRoutes = require('./routes/business');
 app.use('/api/business', businessRoutes);
+const shopifyOAuthRoutes = require('./routes/shopifyOAuth'); // Shopify OAuth 2.0 flow (auth + callback)
 const shopifyRoutes = require('./routes/shopify');
-app.use('/api/shopify', shopifyRoutes);
+app.use('/api/shopify', shopifyOAuthRoutes); // OAuth routes first (static /auth, /callback paths)
+app.use('/api/shopify', shopifyRoutes);       // Then param-based /:clientId/* routes
 
 const shopifyHubRoutes = require('./routes/shopifyHub');
 const wooHubRoutes = require('./routes/wooHub');

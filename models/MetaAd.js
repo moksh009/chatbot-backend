@@ -5,6 +5,7 @@ const metaAdSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  metaAdAccountId:  { type: String, default: '' },
 
   // From Meta API
   metaAdId:         { type: String, required: true },

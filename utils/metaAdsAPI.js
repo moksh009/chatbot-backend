@@ -134,6 +134,7 @@ async function syncMetaAds(clientId) {
           { clientId: client._id, metaAdId: ad.id },
           {
             $set: {
+              metaAdAccountId:  client.metaAdAccountId,
               metaCampaignId:   campaign.id,
               metaCampaignName: campaign.name,
               adName:           ad.name,

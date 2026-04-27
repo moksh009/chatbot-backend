@@ -419,26 +419,32 @@ router.get("/meta-ads/callback", async (req, res) => {
   }
 });
 // ─────────────────────────────────────────────────────────────────────────────
-// Google OAuth Flow (Placeholder/Setup for Future Services)
+// Google / Gmail OAuth Flow — Used for direct Gmail email sending
+// Uses GCAL_CLIENT_ID / GCAL_CLIENT_SECRET env vars (shared Google Cloud project)
 // ─────────────────────────────────────────────────────────────────────────────
 router.get("/google/start/:clientId", protect, async (req, res) => {
   try {
     const { clientId } = req.params;
     
-    // Validate client exists
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ error: "Client not found" });
 
-    // Build standard OAuth URL (placeholder logic)
     const state = Buffer.from(JSON.stringify({ clientId, timestamp: Date.now() })).toString("base64");
     const base = (process.env.BACKEND_URL || "https://chatbot-backend-lg5y.onrender.com").replace(/\/$/, "");
     const redirectUri = `${base}/api/oauth/google/callback`;
 
+    // Gmail send scope + profile to get email address
+    const scopes = [
+      "https://www.googleapis.com/auth/gmail.send",
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/userinfo.profile"
+    ].join(" ");
+
     const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-    authUrl.searchParams.set("client_id", process.env.GOOGLE_CLIENT_ID || "demo_client_id");
+    authUrl.searchParams.set("client_id", process.env.GCAL_CLIENT_ID);
     authUrl.searchParams.set("redirect_uri", redirectUri);
     authUrl.searchParams.set("response_type", "code");
-    authUrl.searchParams.set("scope", "email profile");
+    authUrl.searchParams.set("scope", scopes);
     authUrl.searchParams.set("state", state);
     authUrl.searchParams.set("access_type", "offline");
     authUrl.searchParams.set("prompt", "consent");
@@ -456,11 +462,11 @@ router.get("/google/callback", async (req, res) => {
 
   if (error) {
     console.error("[Google OAuth] Auth denied:", error);
-    return res.redirect(`${frontendUrl}/settings?tab=channels&google_error=${encodeURIComponent(error)}`);
+    return res.redirect(`${frontendUrl}/settings?tab=integrations&google_error=${encodeURIComponent(error)}`);
   }
 
   if (!code || !state) {
-    return res.redirect(`${frontendUrl}/settings?tab=channels&google_error=missing_params`);
+    return res.redirect(`${frontendUrl}/settings?tab=integrations&google_error=missing_params`);
   }
 
   let clientId;
@@ -468,22 +474,50 @@ router.get("/google/callback", async (req, res) => {
     const decoded = JSON.parse(Buffer.from(state, "base64").toString());
     clientId = decoded.clientId;
   } catch (_) {
-    return res.redirect(`${frontendUrl}/settings?tab=channels&google_error=invalid_state`);
+    return res.redirect(`${frontendUrl}/settings?tab=integrations&google_error=invalid_state`);
   }
 
   try {
-    // Here we would exchange the code for Google tokens
-    // For now, we simulate a successful connection
-    
+    const base = (process.env.BACKEND_URL || "https://chatbot-backend-lg5y.onrender.com").replace(/\/$/, "");
+    const redirectUri = `${base}/api/oauth/google/callback`;
+
+    // Exchange code for tokens
+    const tokenResp = await axios.post("https://oauth2.googleapis.com/token", null, {
+      params: {
+        code,
+        client_id:     process.env.GCAL_CLIENT_ID,
+        client_secret: process.env.GCAL_CLIENT_SECRET,
+        redirect_uri:  redirectUri,
+        grant_type:    "authorization_code"
+      }
+    });
+
+    const { access_token, refresh_token } = tokenResp.data;
+
+    // Fetch user email
+    const profileResp = await axios.get("https://www.googleapis.com/oauth2/v2/userinfo", {
+      headers: { Authorization: `Bearer ${access_token}` }
+    });
+    const gmailAddress = profileResp.data.email;
+
+    // Save to client
     await Client.findOneAndUpdate(
       { clientId },
-      { googleConnected: true }
+      {
+        googleConnected: true,
+        gmailAddress,
+        gmailAccessToken: access_token,
+        gmailRefreshToken: refresh_token || "",
+        emailUser: gmailAddress, // Also set the legacy emailUser field
+        emailMethod: "gmail_oauth" // Mark that we're using OAuth, not SMTP
+      }
     );
 
-    return res.redirect(`${frontendUrl}/settings?tab=channels&google_connected=true`);
+    console.log(`[Google OAuth] Gmail connected for ${clientId}: ${gmailAddress}`);
+    return res.redirect(`${frontendUrl}/settings?tab=integrations&google_connected=true`);
   } catch (err) {
-    console.error("[Google OAuth] Callback error:", err.message);
-    return res.redirect(`${frontendUrl}/settings?tab=channels&google_error=callback_failed`);
+    console.error("[Google OAuth] Callback error:", err.response?.data || err.message);
+    return res.redirect(`${frontendUrl}/settings?tab=integrations&google_error=callback_failed`);
   }
 });
 module.exports = router;
