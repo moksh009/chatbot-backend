@@ -33,6 +33,7 @@ const MessageBufferService = require('../services/MessageBufferService');
 const { resolveAndSaveMedia } = require('./whatsappMedia');
 const WhatsAppUtils = require('./whatsapp');
 const messageBuffer = require('./messageBuffer');
+const { parseWhatsAppPayload } = require("./parseWhatsAppPayload");
 
 
 const SESSION_LOCK_TIMEOUT = 10000; // 10 seconds (Fallback for TTL)
@@ -329,6 +330,39 @@ async function handleWhatsAppMessage(from, message, phoneNumberId, profileName =
   } catch (err) {
     log.error(`handleWhatsAppMessage Error:`, { from, error: err.message });
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPER FUNCTIONS
+// ─────────────────────────────────────────────────────────────────────────────
+function isGreeting(text) {
+    const greetings = ['hi', 'hello', 'hey', 'hola', 'namaste', 'greetings', 'start', 'menu'];
+    return greetings.includes(text.toLowerCase().trim());
+}
+
+async function checkIntent(userText, intentDescription, apiKey) {
+  try {
+    const prompt = `You are an intent classifier.
+User Message: "${userText}"
+Intent Description: "${intentDescription}"
+Does the user message match the intent description? Reply ONLY with "YES" or "NO".`;
+    const response = await generateText(prompt, apiKey);
+    if (response && response.toUpperCase().includes('YES')) {
+      return true;
+    }
+  } catch (err) {
+    log.warn(`AI Intent detection failed: ${err.message}`);
+  }
+  return false;
+}
+
+async function analyzeConversationIntelligence(client, phone, convo) {
+   try {
+       const CI = require('./customerIntelligence');
+       if (CI && CI.analyzeConversation) {
+           await CI.analyzeConversation(client.clientId, phone, convo._id);
+       }
+   } catch (e) {}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1383,7 +1417,6 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 
   if (jumpNode) {
     log.info(`Graph: Jumping to node ${jumpNode.id} based on keyword/role match "${userTextLower}"`);
-    await trackNodeVisit(client, jumpNode.id);
     return await executeNode(jumpNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel);
   }
 
@@ -1472,7 +1505,6 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 
   if (matchingEdge) {
     log.info(`Graph: edge match from ${currentStepId} → ${matchingEdge.target}`);
-    await trackNodeVisit(client, matchingEdge.target);
     return await executeNode(matchingEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
 
@@ -1502,7 +1534,6 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 
       if (matchingTrigger) {
           log.info(`Graph: Triggering node ${matchingTrigger.id}`);
-          await trackNodeVisit(client, matchingTrigger.id);
           return await executeNode(matchingTrigger.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
       }
       
@@ -1511,7 +1542,6 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
           const firstTrigger = flowNodes.find(n => n.type === 'trigger' || n.type === 'TriggerNode');
           if (firstTrigger) {
               log.info(`Graph: Greeting reset to node ${firstTrigger.id}`);
-              await trackNodeVisit(client, firstTrigger.id);
               return await executeNode(firstTrigger.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
           }
       }
@@ -1522,7 +1552,6 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     const startNode = flowNodes.find(n => n.type === 'trigger' || n.type === 'TriggerNode') || flowNodes.find(n => n.data?.role === 'welcome') || flowNodes[0];
     if (startNode) {
       log.info(`Graph: Starting fresh from node ${startNode.id}`);
-      await trackNodeVisit(client, startNode.id);
       return await executeNode(startNode.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
     }
   }
