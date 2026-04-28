@@ -7,8 +7,8 @@ const { protect } = require("../middleware/auth");
 const WhatsAppFlow = require("../models/WhatsAppFlow");
 const { generateEcommerceFlow, generateSystemPrompt, getPrebuiltTemplates } = require("../utils/flowGenerator");
 const { withShopifyRetry } = require("../utils/shopifyHelper");
-const { generateText } = require("../utils/gemini");
-const { log } = require("../utils/logger");
+const { generateText, generateTextFast } = require("../utils/gemini");
+const log = require("../utils/logger")("Wizard");
 
 async function syncPendingTemplatesForClient(client) {
   const axios = require("axios");
@@ -313,7 +313,24 @@ router.post("/:clientId/complete", protect, async (req, res) => {
         "authorizedSignature": wizardData.authorizedSignature 
       }),
       ...(wizardData.warrantyDuration && { "brand.warrantyDuration": wizardData.warrantyDuration }),
-      ...(wizardData.warrantyPolicy && { "brand.warrantyPolicy": wizardData.warrantyPolicy })
+      ...(wizardData.warrantyPolicy && { "brand.warrantyPolicy": wizardData.warrantyPolicy }),
+      ...(wizardData.warrantySupportPhone && { 
+        "brand.warrantySupportPhone": wizardData.warrantySupportPhone,
+        "warrantyConfig.supportPhone": wizardData.warrantySupportPhone 
+      }),
+      ...(wizardData.warrantyClaimUrl && { 
+        "brand.warrantyClaimUrl": wizardData.warrantyClaimUrl,
+        "warrantyConfig.claimUrl": wizardData.warrantyClaimUrl 
+      }),
+      ...(wizardData.warrantyEmailEnabled !== undefined && { 
+        "warrantyConfig.emailEnabled": wizardData.warrantyEmailEnabled 
+      }),
+      ...(wizardData.warrantyWhatsappEnabled !== undefined && { 
+        "warrantyConfig.whatsappEnabled": wizardData.warrantyWhatsappEnabled 
+      }),
+      ...(wizardData.autoAssignWarranty !== undefined && { 
+        "warrantyConfig.autoAssign": wizardData.autoAssignWarranty 
+      })
     };
 
     // Handle customTemplates (push them separately after main update)
