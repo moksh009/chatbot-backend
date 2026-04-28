@@ -601,7 +601,7 @@ async function runDualBrainEngine(parsedMessage, client) {
   const limits = await checkLimit(client._id, 'messages');
   if (!limits.allowed) {
       log.warn(`Limit Reached for ${client.clientId}. Halting DualBrain Engine processing.`);
-      return; 
+      return true; 
   }
   // Track this transaction 
   await incrementUsage(client._id, 'messages', 1);
@@ -756,7 +756,7 @@ async function runDualBrainEngine(parsedMessage, client) {
 
     if (ruleIntercepted) {
       log.info(`Rules Engine Intercepted message processing for ${phone}`);
-      return; 
+      return true; 
     }
   }
 
