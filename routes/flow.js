@@ -215,35 +215,41 @@ router.post('/:flowId/rollback/:versionId', protect, async (req, res) => {
 
 // GET /api/flow/
 // Root handler for frontend compatibility
+// --- GET ALL FLOWS ---
 router.get('/', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
-    const WhatsAppFlow = require('../models/WhatsAppFlow');
-    const dbFlows = await WhatsAppFlow.find({ clientId });
-    
-    // Map flowId to id to prevent 'undefined' in frontend
-    const formattedFlows = dbFlows.map(f => ({
-      id: f.flowId,
-      name: f.name,
-      platform: f.platform || 'whatsapp',
-      folderId: f.folderId || '',
-      isActive: f.status === 'PUBLISHED',
-      status: f.status || 'DRAFT',
-      version: f.version || 1,
-      nodes: f.nodes || [],
-      edges: f.edges || [],
-      nodeCount: (f.nodes || []).length,
-      edgeCount: (f.edges || []).length,
-      createdAt: f.createdAt,
-      updatedAt: f.updatedAt,
-      lastSyncedAt: f.lastSyncedAt
-    }));
+    const clientId = (req.user.role === 'SUPER_ADMIN' && req.query.clientId) ? req.query.clientId : req.user.clientId;
+    if (!clientId) return res.status(400).json({ error: 'clientId required' });
 
-    res.json({ success: true, flows: formattedFlows });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    const WhatsAppFlow = require('../models/WhatsAppFlow');
+    // Fetch from the source-of-truth collection
+    const dbFlows = await WhatsAppFlow.find({ clientId });
+
+    // Map and filter out any corrupted flows with missing IDs
+    const flows = dbFlows
+      .filter(f => f.flowId) // Strict filter for ghost flows with null IDs
+      .map(f => ({
+        id:          f.flowId,
+        name:        f.name,
+        platform:    f.platform || 'whatsapp',
+        isActive:    f.status === 'PUBLISHED',
+        folderId:    f.folderId || '',
+        nodes:       f.nodes || [],
+        edges:       f.edges || [],
+        nodeCount:   f.nodes?.length || 0,
+        edgeCount:   f.edges?.length || 0,
+        createdAt:   f.createdAt,
+        updatedAt:   f.updatedAt,
+        status:      f.status || 'DRAFT'
+      }));
+
+    res.json({ success: true, flows });
+  } catch (err) {
+    console.error('Error fetching flows:', err);
+    res.status(500).json({ error: 'Failed to fetch flows' });
   }
 });
+
 
 // GET /api/flow/flows
 router.get('/flows', protect, async (req, res) => {
@@ -492,19 +498,51 @@ router.get('/:clientId/unanswered-questions', protect, async (req, res) => {
 router.delete('/:flowId', protect, async (req, res) => {
   try {
     const { flowId } = req.params;
-    const clientId = req.user.clientId;
+    const clientId = (req.user.role === 'SUPER_ADMIN' && req.query.clientId) ? req.query.clientId : req.user.clientId;
+
+    if (!clientId) return res.status(400).json({ error: 'clientId required' });
+
+    console.log(`[FlowDelete] Deleting flow ${flowId} for client ${clientId}`);
 
     const WhatsAppFlow = require('../models/WhatsAppFlow');
-    await WhatsAppFlow.findOneAndDelete({ clientId, flowId });
+    // 1. Delete from WhatsAppFlow collection (The main source of truth)
+    // Try by flowId first, fallback to _id if flowId looks like an ObjectId
+    let deleteResult = await WhatsAppFlow.findOneAndDelete({ clientId, flowId });
+    if (!deleteResult && /^[0-9a-fA-F]{24}$/.test(flowId)) {
+      deleteResult = await WhatsAppFlow.findOneAndDelete({ clientId, _id: flowId });
+    }
 
-    // Also remove from client.visualFlows if it exists
+    // 2. Comprehensive cleanup of the Client document
+    // We pull from visualFlows by BOTH 'id' and 'flowModelId' to catch all mapping variations
     await Client.updateOne(
       { clientId },
-      { $pull: { visualFlows: { id: flowId } } }
+      { 
+        $pull: { 
+          visualFlows: { 
+            $or: [
+              { id: flowId },
+              { flowModelId: flowId }
+            ]
+          } 
+        } 
+      }
     );
 
-    res.json({ success: true, message: 'Flow deleted successfully' });
+    // 3. LEGACY CLEANUP: If this was the "Main" flow stored in flowNodes, clear it
+    // to prevent the UI from reconstructing a ghost flow from stale fields.
+    const client = await Client.findOne({ clientId }).select('flowNodes flowEdges visualFlows');
+    if (client) {
+      // If no flows remain in visualFlows, or if this flow was active, clear legacy fields
+      const remainingFlows = client.visualFlows || [];
+      if (remainingFlows.length === 0) {
+        await Client.updateOne({ clientId }, { $set: { flowNodes: [], flowEdges: [] } });
+        console.log(`[FlowDelete] Cleared legacy flowNodes for ${clientId} (zero flows remaining)`);
+      }
+    }
+
+    res.json({ success: true, message: 'Flow deleted and state synchronized successfully' });
   } catch (error) {
+    console.error('[FlowDelete] Error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });

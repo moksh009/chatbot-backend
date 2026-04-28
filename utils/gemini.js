@@ -123,7 +123,7 @@ async function generateText(prompt, apiKey, options = {}) {
  * generateJSON - same as generateText but strips markdown and parses JSON.
  */
 async function generateJSON(prompt, apiKey, options = {}) {
-  const result = await generateText(prompt, apiKey, { ...options, temperature: 0.1 });
+  const result = await generateText(prompt, apiKey, { temperature: 0.1, ...options });
   if (!result) return null;
   
   try {

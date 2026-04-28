@@ -3,6 +3,8 @@ const NlpEngineService = require('../services/NlpEngineService');
 const UnrecognizedPhrase = require('../models/UnrecognizedPhrase');
 const IntentAnalytics = require('../models/IntentAnalytics');
 const { CONFIDENCE_THRESHOLD } = require('../utils/nlpConfig');
+const ClientModel = require('../models/Client');
+const { botGenerateJSON } = require('../utils/gemini');
 
 /**
  * IntentApiController
@@ -692,19 +694,17 @@ exports.generateTrainingData = async (req, res) => {
       return res.status(401).json({ success: false, message: 'Client ID required for generation.' });
     }
     
-    const Client = require('../models/Client');
-    const client = await Client.findOne({ clientId });
+    const client = await ClientModel.findOne({ clientId });
     const apiKey = client?.ai?.geminiApiKey || process.env.GEMINI_API_KEY;
 
     if (!apiKey) {
-      console.warn('[IntentApi] No Gemini API key found for UI generation.');
       return res.status(403).json({ 
         success: false, 
-        message: 'AI Generation is currently unavailable. Configure an API key.' 
+        message: 'AI Generation unavailable. Please check your API key in Settings.' 
       });
     }
 
-    const { botGenerateJSON } = require('../utils/gemini');
+    // Moved to top for performance
     
     const prompt = `You are an expert NLP training data architect for a professional customer service chatbot.
 The user wants to detect the following INTENT in customer messages: "${description}".
@@ -727,16 +727,16 @@ Expected Structure:
   "antiIntentPhrases": ["...", "..."]
 }`;
 
-    console.log(`[IntentGeneration] Triggering AI generation (botGenerateJSON) for: "${description.substring(0, 50)}..."`);
+    console.log(`[IntentGeneration] AI generation started for: "${description.substring(0, 50)}"`);
     const generatedData = await botGenerateJSON(prompt, apiKey, { 
-      maxTokens: 4000, 
-      temperature: 0.9, 
-      maxRetries: 3, 
-      timeout: 25000 
+      maxTokens: 1500, 
+      temperature: 0.8, 
+      maxRetries: 1, 
+      timeout: 14000 
     });
 
     if (!generatedData) {
-      return res.status(502).json({ 
+      return res.status(504).json({ 
         success: false, 
         error: 'The AI service is currently unresponsive or timed out. Please try again in a few moments.' 
       });
@@ -760,7 +760,7 @@ Expected Structure:
 
   } catch (error) {
     console.error('[IntentGeneration Error]:', error);
-    const statusCode = error.message?.includes('invalid') ? 422 : 502;
+    const statusCode = error.message?.includes('invalid') ? 422 : 503;
     res.status(statusCode).json({ 
       success: false, 
       error: 'AI Generation Failed: ' + (error.message || 'The service is temporarily unavailable.') 
