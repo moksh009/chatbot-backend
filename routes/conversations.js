@@ -426,6 +426,46 @@ router.post('/:id/messages', protect, async (req, res) => {
       }
     ).catch(() => {});
 
+    // ═══ Bot Intelligence: Auto-capture agent corrections ═══
+    // When a human agent is replying (bot paused/takeover), record as a training case
+    // so it appears in Bot Intelligence → Corrections tab
+    if (conversation.botPaused || conversation.status === 'HUMAN_TAKEOVER' || conversation.status === 'HUMAN_SUPPORT') {
+      try {
+        // Find the last BOT outbound message in this conversation
+        const botLastMsg = await Message.findOne({
+          conversationId: conversation._id,
+          direction: 'outbound',
+          _id: { $ne: newMessage._id } // not the message we just created
+        }).sort({ timestamp: -1 }).lean();
+
+        // Find the last user inbound message
+        const userLastMsg = await Message.findOne({
+          conversationId: conversation._id,
+          direction: 'inbound'
+        }).sort({ timestamp: -1 }).lean();
+
+        // Only create training case if both exist and the bot message was recent (within last 10 min)
+        if (botLastMsg && userLastMsg && botLastMsg.body) {
+          const botMsgAge = Date.now() - new Date(botLastMsg.timestamp || botLastMsg.createdAt).getTime();
+          if (botMsgAge < 10 * 60 * 1000) { // 10 minutes
+            const TrainingCase = require('../models/TrainingCase');
+            await TrainingCase.create({
+              clientId: conversation.clientId,
+              conversationId: conversation._id,
+              userMessage: (userLastMsg.body || userLastMsg.content || '').substring(0, 500),
+              botResponse: (botLastMsg.body || botLastMsg.content || '').substring(0, 500),
+              agentCorrection: content.substring(0, 500),
+              phone: conversation.phone,
+              status: 'pending'
+            }).catch(tcErr => console.error('[TrainingCase] Creation failed:', tcErr.message));
+          }
+        }
+      } catch (tcErr) {
+        // Non-critical — don't block the agent reply if this fails
+        console.error('[TrainingCase] Auto-capture error:', tcErr.message);
+      }
+    }
+
     const io = req.app.get('socketio');
     if (io) {
       io.to(`client_${conversation.clientId}`).emit('new_message', newMessage);

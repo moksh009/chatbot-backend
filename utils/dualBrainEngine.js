@@ -252,6 +252,7 @@ async function handleWhatsAppMessage(from, message, phoneNumberId, profileName =
     if (!parsed) {
       return;
     }
+    log.info(`[DualBrain] Processing ${from}: "${(parsed.text?.body || parsed.interactive?.button_reply?.title || '').substring(0, 50)}" type=${parsed.type || message.type}`);
 
     // --- PHASE 23: Track 5 - Meta Flow Response (nfm_reply) ---
     if (parsed.interactive?.type === 'nfm_reply') {
@@ -342,6 +343,7 @@ async function _runDualBrainEngine(parsedMessage, client) {
   const messageId = parsedMessage.messageId;
 
   // 1. SESSION LOCK (Top-level deduplication now handled by router)
+  const _lockStartTime = Date.now();
   try {
       await ProcessingLock.create({ phone, clientId: client.clientId });
   } catch (lockErr) {
@@ -1044,7 +1046,9 @@ async function _runDualBrainEngine(parsedMessage, client) {
       if (!capturedText) return true; // Wait for actual text
 
       const varName = convo.waitingForVariable;
-      const flatNodes = flattenFlowNodes(client.flowNodes || []);
+      // BUG FIX: Use WhatsAppFlow collection (same as cron fix) instead of legacy client.flowNodes
+      const { nodes: _capNodes, edges: _capEdges } = await getFlowGraphForConversation(client, convo);
+      const flatNodes = _capNodes;
       const captureNode = flatNodes.find(n => n.id === convo.lastStepId);
       
       // Safeguard 2: Validation Logic
@@ -1104,7 +1108,7 @@ async function _runDualBrainEngine(parsedMessage, client) {
         const freshConvo = await Conversation.findById(convo._id);
         freshConvo.metadata = updatedMetadata;
         return await executeNode(
-          convo.captureResumeNodeId, flatNodes, client.flowEdges || [],
+          convo.captureResumeNodeId, flatNodes, _capEdges,
           client, freshConvo, lead, phone, io, channel, parsedMessage
         );
       }
@@ -1333,6 +1337,12 @@ async function _runDualBrainEngine(parsedMessage, client) {
       } catch (releaseErr) {
           log.error(`[Lock] Release failed for ${phone}:`, releaseErr.message);
       }
+      // TTL Safety: Warn if engine run approached the 8-second lock timeout
+      const _lockElapsed = Date.now() - _lockStartTime;
+      if (_lockElapsed > 7000) {
+        log.warn(`[Lock] ⚠️ Engine took ${_lockElapsed}ms for ${phone} — close to 8s TTL limit!`);
+      }
+      log.info(`[DualBrain] Completed for ${phone} in ${Date.now() - _lockStartTime}ms`);
   }
 }
 
@@ -1342,7 +1352,17 @@ async function _runDualBrainEngine(parsedMessage, client) {
 async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, channel = 'whatsapp') {
   const { nodes: flowNodes, edges: flowEdges } = await getFlowGraphForConversation(client, convo);
 
+  log.info(`[Graph] Traversal start. currentStep=${convo.lastStepId || 'none'}, flowNodes=${flowNodes.length}, flowEdges=${flowEdges.length}`);
   if (!flowNodes.length) return false;
+
+  // BUG 1 FIX: Construct incomingTrigger from parsedMessage — was previously
+  // undefined, causing a fatal ReferenceError on any unwired button click.
+  const incomingTrigger = {
+    buttonId: parsedMessage.interactive?.button_reply?.id
+           || parsedMessage.interactive?.list_reply?.id
+           || parsedMessage.button?.payload
+           || null
+  };
 
   const currentStepId   = convo.lastStepId;
   const userText        = (parsedMessage.text?.body || '').trim();
@@ -1442,7 +1462,12 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     if (!parsedMessage.text.body) {
          parsedMessage.text.body = parsedMessage.interactive?.button_reply?.title || parsedMessage.interactive?.list_reply?.title || parsedMessage.button?.text || userText || incomingTrigger.buttonId;
     }
-    return await runAIFallback(parsedMessage, client, phone, lead, channel, convo);
+    try {
+      return await runAIFallback(parsedMessage, client, phone, lead, channel, convo);
+    } catch (aiErr) {
+      log.error('[Graph] AI fallback failed for unwired button:', { error: aiErr.message });
+      return false;
+    }
   }
 
   if (matchingEdge) {
@@ -1524,7 +1549,8 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 // ─────────────────────────────────────────────────────────────────────────────
 async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, phone, io, channel = 'whatsapp', parsedMessage = {}) {
   const rawNode = flowNodes.find(n => n.id === nodeId);
-  if (!rawNode) { log.warn(`Node ${nodeId} not found`); return false; }
+  if (!rawNode) { log.warn(`[Exec] Node ${nodeId} not found in ${flowNodes.length} nodes`); return false; }
+  log.info(`[Exec] Node ${nodeId} type=${rawNode.type} label="${(rawNode.data?.label || '').substring(0, 30)}"`);
 
   // Phase 20: Inject variables into node data before sending
   // This resolves {{customer_name}}, {{order_id}}, etc. in all text fields
@@ -1979,30 +2005,129 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     try {
       let resultData = null;
 
-      // --- USP 1: DYNAMNIC PRODUCT CARDS ---
+      // --- USP 1: DYNAMIC PRODUCT CARDS (Shopify API with KB fallback) ---
       if (action === 'PRODUCT_CARD') {
-        const products = client.knowledgeBase?.products || [];
-        if (products.length > 0) {
-          const rand = products[Math.floor(Math.random() * products.length)];
-          const msg = `Check this out! 🛍️\n\n*${rand.name}*\n${rand.description?.substring(0, 100)}...\n\n*Price:* ₹${rand.price}\n\nLink: ${rand.url || 'Visit our store'}`;
-          await sendWhatsAppText(client, phone, msg);
-          resultData = { product: rand.name, status: 'sent' };
+        let product = null;
+        
+        // Try Shopify API first
+        try {
+          const fetchedProduct = await withShopifyRetry(client.clientId, async (shopify) => {
+            const searchQuery = query || '';
+            const endpoint = searchQuery
+              ? `/products.json?limit=5&title=${encodeURIComponent(searchQuery)}`
+              : '/products.json?limit=10&status=active';
+            const res = await shopify.get(endpoint);
+            const products = res.data.products || [];
+            if (products.length === 0) return null;
+            return products[Math.floor(Math.random() * products.length)];
+          });
+          if (fetchedProduct) product = fetchedProduct;
+        } catch (shopErr) {
+          log.warn(`[PRODUCT_CARD] Shopify API failed, falling back to KB: ${shopErr.message}`);
+        }
+
+        if (product) {
+          // Shopify product — send with image if available
+          const imgUrl = product.image?.src || product.images?.[0]?.src;
+          const price = product.variants?.[0]?.price || product.price || 'N/A';
+          const currency = product.variants?.[0]?.currency || '₹';
+          const productUrl = `https://${client.shopifyDomain || 'store'}/products/${product.handle}`;
+          const msg = `🛍️ *${product.title}*\n\n${(product.body_html || '').replace(/<[^>]*>/g, '').substring(0, 120)}...\n\n*Price:* ${currency} ${price}\n\n🔗 ${productUrl}`;
+          
+          if (imgUrl) {
+            await WhatsApp.sendImage(client, phone, imgUrl, msg);
+          } else {
+            await sendWhatsAppText(client, phone, msg);
+          }
+          resultData = { product: product.title, price, handle: product.handle, status: 'sent' };
         } else {
-          await sendWhatsAppText(client, phone, "I'd love to show you our products, but our catalog is being updated. One moment! 🛒");
+          // Fallback to local knowledge base
+          const kbProducts = client.knowledgeBase?.products || [];
+          if (kbProducts.length > 0) {
+            const rand = kbProducts[Math.floor(Math.random() * kbProducts.length)];
+            const msg = `Check this out! 🛍️\n\n*${rand.name}*\n${rand.description?.substring(0, 100)}...\n\n*Price:* ₹${rand.price}\n\nLink: ${rand.url || 'Visit our store'}`;
+            await sendWhatsAppText(client, phone, msg);
+            resultData = { product: rand.name, status: 'sent' };
+          } else {
+            await sendWhatsAppText(client, phone, "I'd love to show you our products, but our catalog is being updated. Check back soon! 🛒");
+          }
         }
       } 
       
-      // --- USP 2: REAL-TIME ORDER TRACKING ---
+      // --- USP 2: REAL-TIME ORDER TRACKING (Multi-format phone search) ---
       else if (action === 'ORDER_STATUS' || action === 'get_order' || action === 'CHECK_ORDER_STATUS') {
         resultData = await withShopifyRetry(client.clientId, async (shopify) => {
-          const res = await shopify.get(`/orders.json?status=any&limit=1&phone=${phone.replace('+', '')}`);
-          const order = res.data.orders?.[0];
-          if (!order) return { error: 'No order found for this number' };
-          
-          const status = order.fulfillment_status || 'Unfulfilled';
-          const msg = `📦 *Order #${order.order_number} Update*\n\nStatus: *${status.toUpperCase()}*\nItems: ${order.line_items.map(i => i.title).join(', ')}\nTotal: ${order.currency} ${order.total_price}\n\nTrack here: ${order.order_status_url}`;
+          // Try multiple phone formats — Shopify stores vary
+          const phoneDigits = phone.replace(/\D/g, '');
+          const phoneLast10 = phoneDigits.slice(-10);
+          const phoneFormats = [
+            phone.replace('+', ''),           // 91XXXXXXXXXX
+            phoneLast10,                       // XXXXXXXXXX
+            `+${phoneDigits}`,                 // +91XXXXXXXXXX
+            phoneDigits                        // raw digits
+          ];
+
+          let order = null;
+          for (const ph of phoneFormats) {
+            try {
+              const res = await shopify.get(`/orders.json?status=any&limit=1&phone=${encodeURIComponent(ph)}`);
+              if (res.data.orders?.length > 0) {
+                order = res.data.orders[0];
+                break;
+              }
+            } catch (_) { continue; }
+          }
+
+          if (!order) {
+            await sendWhatsAppText(client, phone,
+              "I couldn't find any orders linked to your number. " +
+              "Please share your order ID (e.g. #1042) and I'll look it up!"
+            );
+            // Save to metadata for logic node branching
+            await Conversation.findByIdAndUpdate(convo._id, {
+              'metadata.shopify_order_found': 'false'
+            });
+            // Route to not_found edge if configured
+            const noOrderEdge = flowEdges.find(e => e.source === nodeId &&
+              (normalizeHandleId(e.sourceHandle) === 'not_found' ||
+               normalizeHandleId(e.sourceHandle) === 'no_order' ||
+               normalizeHandleId(e.sourceHandle) === 'error'));
+            if (noOrderEdge) {
+              return await executeNode(noOrderEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+            }
+            return { error: 'No order found for this number' };
+          }
+
+          const statusEmoji = {
+            pending: '⏳', confirmed: '✅', processing: '🔄',
+            shipped: '🚚', delivered: '🎉', cancelled: '❌', refunded: '💰'
+          };
+          const fulfillStatus = order.fulfillment_status || order.financial_status || 'Confirmed';
+          const emoji = statusEmoji[fulfillStatus.toLowerCase()] || '📦';
+          const items = (order.line_items || []).map(i => `• ${i.title} × ${i.quantity}`).join('\n');
+          const tracking = order.fulfillments?.[0]?.tracking_url;
+
+          let msg = `${emoji} *Order #${order.order_number}*\n\n`;
+          msg += `Status: *${fulfillStatus.toUpperCase()}*\n`;
+          msg += `Items:\n${items || 'N/A'}\n`;
+          msg += `Total: *${order.currency} ${parseFloat(order.total_price).toFixed(2)}*`;
+          if (tracking) msg += `\n\n📍 Track: ${tracking}`;
+          if (order.order_status_url) msg += `\n🔗 Details: ${order.order_status_url}`;
+
           await sendWhatsAppText(client, phone, msg);
-          return { status, id: order.id };
+
+          // Save order data to metadata
+          const orderData = {
+            orderNumber: order.order_number, orderId: order.id,
+            status: fulfillStatus, totalPrice: order.total_price,
+            trackingUrl: tracking || null, currency: order.currency
+          };
+          await Conversation.findByIdAndUpdate(convo._id, {
+            'metadata.lastOrder': orderData,
+            'metadata.shopify_order_found': 'true'
+          });
+
+          return orderData;
         });
       }
 
@@ -2040,11 +2165,19 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
           });
 
           await sendWhatsAppText(client, phone, `🎁 Surprise! Use code *${code}* for 10% OFF your next order! Valid for the next 24 hours only. ⚡️`);
+          
+          // Save discount code to lead record
+          if (lead?._id) {
+            await AdLead.findByIdAndUpdate(lead._id, {
+              $set: { activeDiscountCode: code, discountIssuedAt: new Date() }
+            }).catch(() => {});
+          }
+          
           return { code, discount: '10%' };
         });
       }
 
-      // --- USP 4: COD TO PREPAID CONVERSION ---
+      // --- USP 4: COD TO PREPAID CONVERSION (Interactive buttons) ---
       else if (action === 'COD_TO_PREPAID') {
         const { createCODPaymentLink } = require("./razorpay");
         const AdOrder = require("../models/AdOrder");
@@ -2052,10 +2185,23 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         
         if (latestOrder && latestOrder.paymentMethod === 'cod') {
           const rzpLink = await createCODPaymentLink(latestOrder, client);
-          const msg = `Hey! We noticed you chose COD for Order #${latestOrder.orderNumber}. 💳\n\nIf you pre-pay now via this link, we'll fulfill your order *Priority Faster* and add a surprise gift! 🎁\n\nPay here: ${rzpLink.short_url}`;
-          await sendWhatsAppText(client, phone, msg);
+          const bodyText = `Hey! We noticed you chose COD for Order #${latestOrder.orderNumber}. 💳\n\nPre-pay now to get *Priority Shipping* + a surprise gift! 🎁`;
+          
+          // Send as interactive CTA URL button
+          const interactive = {
+            type: 'cta_url',
+            action: {
+              name: 'cta_url',
+              parameters: {
+                display_text: 'Pay Now ✨',
+                url: rzpLink.short_url
+              }
+            }
+          };
+          await WhatsApp.sendInteractive(client, phone, interactive, bodyText);
           resultData = { link: rzpLink.short_url, status: 'sent' };
         } else {
+          await sendWhatsAppText(client, phone, "All your orders are already paid. No COD orders pending! ✅");
           log.info(`[COD_TO_PREPAID] No eligible COD order found for ${phone}`);
         }
       }

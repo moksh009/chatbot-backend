@@ -547,4 +547,173 @@ router.delete('/:flowId', protect, async (req, res) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════
+// BOT INTELLIGENCE API — Dedicated Endpoints
+// ════════════════════════════════════════════════════════════════════
+
+// POST /api/flow/:clientId/intelligence/answer
+// Adds an answer to the knowledge base for a previously unanswered question
+router.post('/:clientId/intelligence/answer', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { question, answer, category = 'faq' } = req.body;
+
+    if (!question?.trim() || !answer?.trim()) {
+      return res.status(400).json({ success: false, message: 'Question and answer are required' });
+    }
+
+    await Client.findOneAndUpdate(
+      { clientId },
+      {
+        $push: {
+          'knowledgeBase.faqs': {
+            question: question.trim(),
+            answer: answer.trim(),
+            category,
+            addedAt: new Date(),
+            addedBy: req.user?._id || 'admin',
+            source: 'bot_intelligence'
+          }
+        }
+      }
+    );
+
+    res.json({ success: true, message: 'Answer added to knowledge base' });
+  } catch (err) {
+    console.error('[Intelligence] Answer save error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/flow/:clientId/intelligence/approve-correction
+// Approves an agent correction — adds it to training data and marks case as approved
+router.post('/:clientId/intelligence/approve-correction', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { trainingCaseId } = req.body;
+
+    const TrainingCase = require('../models/TrainingCase');
+    const tc = await TrainingCase.findOne({ _id: trainingCaseId, clientId });
+    if (!tc) return res.status(404).json({ success: false, message: 'Training case not found' });
+
+    // Add correction as a FAQ to knowledge base
+    await Client.findOneAndUpdate(
+      { clientId },
+      {
+        $push: {
+          'knowledgeBase.faqs': {
+            question: tc.userMessage,
+            answer: tc.agentCorrection,
+            addedAt: new Date(),
+            source: 'agent_correction',
+            addedBy: req.user?._id
+          }
+        }
+      }
+    );
+
+    // Mark training case as approved
+    tc.status = 'approved';
+    tc.approvedAt = new Date();
+    tc.approvedBy = req.user?._id;
+    await tc.save();
+
+    res.json({ success: true, message: 'Correction approved and added to knowledge base' });
+  } catch (err) {
+    console.error('[Intelligence] Approve correction error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/flow/:clientId/intelligence/reject-correction
+// Rejects a training case (agent override not useful for training)
+router.post('/:clientId/intelligence/reject-correction', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { trainingCaseId } = req.body;
+
+    const TrainingCase = require('../models/TrainingCase');
+    const tc = await TrainingCase.findOne({ _id: trainingCaseId, clientId });
+    if (!tc) return res.status(404).json({ success: false, message: 'Training case not found' });
+
+    tc.status = 'rejected';
+    tc.rejectedAt = new Date();
+    tc.rejectedBy = req.user?._id;
+    await tc.save();
+
+    res.json({ success: true, message: 'Correction rejected' });
+  } catch (err) {
+    console.error('[Intelligence] Reject correction error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/flow/:clientId/intelligence/suggestions
+// Clusters unanswered questions by keyword frequency to suggest new flows
+router.get('/:clientId/intelligence/suggestions', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const Message = require('../models/Message');
+
+    const FALLBACK_PHRASES = [
+      "I'm having trouble", "I don't understand", "I'm not sure",
+      "couldn't understand", "connect you to an agent", "please try again"
+    ];
+    const fallbackRegex = new RegExp(
+      FALLBACK_PHRASES.map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'i'
+    );
+
+    // Get fallback messages from last 30 days
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000);
+    const fallbacks = await Message.find({
+      clientId,
+      direction: 'outgoing',
+      content: { $regex: fallbackRegex },
+      timestamp: { $gte: thirtyDaysAgo }
+    }).sort({ timestamp: -1 }).limit(200).lean();
+
+    // Find the user question that preceded each fallback
+    const questions = [];
+    for (const f of fallbacks) {
+      const q = await Message.findOne({
+        clientId,
+        conversationId: f.conversationId,
+        direction: 'incoming',
+        timestamp: { $lt: f.timestamp }
+      }).sort({ timestamp: -1 }).select('content').lean();
+      if (q?.content) questions.push(q.content);
+    }
+
+    // Cluster by keyword frequency (stop-words filtered)
+    const stopWords = new Set(['what','when','where','how','does','your','this','that','have',
+      'the','and','for','are','you','can','will','with','from','about','please','help','want']);
+    const wordFreq = {};
+    questions.forEach(q => {
+      q.toLowerCase().split(/\s+/).forEach(word => {
+        if (word.length > 3 && !stopWords.has(word)) {
+          wordFreq[word] = (wordFreq[word] || 0) + 1;
+        }
+      });
+    });
+
+    const suggestions = Object.entries(wordFreq)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .filter(([, count]) => count >= 2)
+      .map(([word, count]) => ({
+        id: `sug_${word}_${Date.now()}`,
+        topic: word.charAt(0).toUpperCase() + word.slice(1),
+        description: `${count} customers asked about "${word}" but received no answer`,
+        frequency: count,
+        suggestedFlow: `Create a flow to handle "${word}" inquiries automatically`,
+        sampleQuestions: questions.filter(q => q.toLowerCase().includes(word)).slice(0, 3)
+      }));
+
+    res.json({ success: true, suggestions, totalUnanswered: questions.length });
+  } catch (err) {
+    console.error('[Intelligence] Suggestions error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;

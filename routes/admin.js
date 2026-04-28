@@ -488,6 +488,34 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
       log.success(`Pre-built flow template injected for: ${clientId} (type: ${businessType || niche})`);
     }
 
+    // ── DEFAULT WELCOME FLOW: Auto-create if no niche template matched ──────
+    // Ensures "Hi" always gets a response in WhatsAppFlow collection
+    try {
+      const WhatsAppFlow = require('../models/WhatsAppFlow');
+      const { createDefaultFlow } = require('../data/defaultFlow');
+      const defaultFlow = createDefaultFlow(savedClient);
+      
+      await WhatsAppFlow.create({
+        clientId: clientId.trim(),
+        name: 'Customer Service Bot',
+        status: 'PUBLISHED',
+        nodes: defaultFlow.nodes,
+        edges: defaultFlow.edges,
+        publishedAt: new Date()
+      });
+      
+      // Also sync to legacy fields if no template was applied
+      if (!template) {
+        await Client.findByIdAndUpdate(savedClient._id, {
+          $set: { flowNodes: defaultFlow.nodes, flowEdges: defaultFlow.edges }
+        });
+      }
+      
+      log.success(`Default welcome flow auto-created for: ${clientId}`);
+    } catch (flowErr) {
+      log.warn(`Default flow creation failed for ${clientId}:`, flowErr.message);
+    }
+
     log.success(`New client provisioned: ${clientId} | Plan: ${tier || 'Growth'}`);
     res.status(201).json({ 
       ...savedClient.toObject(), 
@@ -1818,6 +1846,12 @@ router.post('/flow/publish/:clientId', protect, async (req, res) => {
            { upsert: true }
        );
     }
+
+    // 5b. Clear trigger cache so new keywords are immediately active
+    try {
+      const { clearTriggerCache } = require('../utils/triggerEngine');
+      clearTriggerCache(clientId);
+    } catch (_) {}
 
     // 6. Detailed Audit Logging
     await AuditLog.create({

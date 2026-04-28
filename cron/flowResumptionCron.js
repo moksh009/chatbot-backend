@@ -36,8 +36,25 @@ module.exports = function scheduleFlowResumption() {
             continue;
           }
 
-          const flowNodes = client.flowNodes || [];
-          const flowEdges = client.flowEdges || [];
+          // BUG 2 FIX: Prefer WhatsAppFlow collection (new standard), fallback to legacy client fields.
+          // Previously used client.flowNodes which is empty for all WhatsAppFlow-based clients,
+          // causing paused flows to silently never resume.
+          const WhatsAppFlow = require('../models/WhatsAppFlow');
+          let flowNodes = [];
+          let flowEdges = [];
+          if (convo.activeFlowId) {
+            try {
+              const flowDoc = await WhatsAppFlow.findById(convo.activeFlowId).lean();
+              if (flowDoc?.nodes?.length) {
+                flowNodes = flowDoc.nodes;
+                flowEdges = flowDoc.edges || [];
+              }
+            } catch (_) { /* non-fatal, try legacy */ }
+          }
+          if (!flowNodes.length) {
+            flowNodes = client.flowNodes || [];
+            flowEdges = client.flowEdges || [];
+          }
           
           // Clear delay before resuming to prevent re-triggering by cron
           await Conversation.findByIdAndUpdate(convo._id, { $unset: { flowPausedUntil: 1, pausedAtNodeId: 1 } });
