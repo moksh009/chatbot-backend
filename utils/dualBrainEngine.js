@@ -335,7 +335,7 @@ async function handleWhatsAppMessage(from, message, phoneNumberId, profileName =
 // MAIN ENGINE — called by ALL niche engines
 // Returns: true if message was handled
 // ─────────────────────────────────────────────────────────────────────────────
-async function _runDualBrainEngine(parsedMessage, client) {
+async function runDualBrainEngine(parsedMessage, client) {
   const rawPhone = parsedMessage.from;
   const channel  = parsedMessage.channel || 'whatsapp';
   const phone    = channel === 'whatsapp' ? normalizePhone(rawPhone) : rawPhone;
@@ -3245,6 +3245,7 @@ module.exports.saveInboundMessage = saveInboundMessage;
 module.exports.saveOutboundMessage = saveOutboundMessage;
 module.exports.handleWhatsAppMessage = handleWhatsAppMessage;
 module.exports.runFlow = runFlow;
+module.exports.runDualBrainEngine = runDualBrainEngine;
 
 
   async function sleep(ms) {
