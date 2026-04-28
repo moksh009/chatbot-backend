@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@google-cloud/text-to-speech": "^6.4.0",
+    "@google-cloud/vertexai": "^1.12.0",
     "@google/generative-ai": "^0.24.1",
     "@nlpjs/lang-en": "^5.0.0-alpha.5",
     "@nlpjs/lang-hi": "^5.0.0-alpha.5",
