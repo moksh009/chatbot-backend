@@ -97,16 +97,20 @@ async function processPixelEvent(clientId, eventData) {
             // Consistent event naming for analytics
             const mappedEvent = eventName === 'product_added_to_cart' ? 'add_to_cart' : eventName;
 
-            await PixelEvent.create({
-                clientId,
-                leadId: lead._id,
-                eventName: mappedEvent,
-                url: url || data?.url || '',
-                metadata: { ...data, sessionId },
-                timestamp: timestamp || new Date(),
-                userAgent,
-                ip
-            });
+            try {
+                await PixelEvent.create({
+                    clientId,
+                    leadId: lead._id,
+                    eventName: mappedEvent,
+                    url: url || data?.url || '',
+                    metadata: { ...data, sessionId },
+                    timestamp: timestamp || new Date(),
+                    userAgent,
+                    ip
+                });
+            } catch (err) {
+                console.error('[DeepPixel] Failed to write PixelEvent:', err.message);
+            }
 
             if (eventName === 'checkout_started' || eventName === 'product_added_to_cart') {
                 lead.addToCartCount = (lead.addToCartCount || 0) + 1;

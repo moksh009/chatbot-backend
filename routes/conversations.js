@@ -24,7 +24,7 @@ const upload = multer({ storage: multer.memoryStorage() });
 // @access  Private
 router.get('/', protect, async (req, res) => {
   try {
-    const { days, clientId, phone } = req.query;
+    const { days, clientId, phone, isImported } = req.query;
     let query = {};
     if (phone) {
       query.phone = phone;
@@ -43,6 +43,21 @@ router.get('/', protect, async (req, res) => {
       const date = new Date();
       date.setDate(date.getDate() - parseInt(days));
       query.lastMessageAt = { $gte: date };
+    }
+
+    // Filter for imported lists only
+    if (isImported === 'true') {
+      const AdLead = require('../models/AdLead');
+      const importedLeads = await AdLead.find({ clientId: activeClientId, source: 'imported' }).select('phoneNumber').lean();
+      const importedPhones = importedLeads.map(l => l.phoneNumber);
+      if (query.phone) {
+        if (!importedPhones.includes(query.phone)) {
+           // Provide an unmatchable phone if the specific phone requested isn't imported
+           query.phone = '___UNMATCHABLE___';
+        }
+      } else {
+        query.phone = { $in: importedPhones };
+      }
     }
 
     const page = parseInt(req.query.page) || 1;
@@ -550,9 +565,19 @@ router.put('/:id/takeover', protect, async (req, res) => {
     conversation.status = 'HUMAN_TAKEOVER';
     conversation.botPaused = true;
     conversation.assignedTo = req.user._id;
+    conversation.assignedAt = new Date(); // Ensure assignedAt is set
     conversation.requiresAttention = false; // Reset attention flag on manual takeover
     if (conversation.attentionReason) conversation.attentionReason = '';
     await conversation.save();
+
+    // Task 1.2: Record assignment for historical analytics
+    const ConversationAssignment = require('../models/ConversationAssignment');
+    await ConversationAssignment.create({
+      conversationId: conversation._id,
+      clientId: conversation.clientId,
+      assignedAgentId: req.user._id,
+      assignedAt: conversation.assignedAt
+    }).catch(err => console.error('[Analytics] Failed to record takeover assignment:', err.message));
 
     // Phase R4: Emit bot status change to all connected dashboard tabs
     const io = req.app.get('socketio');
@@ -712,6 +737,17 @@ router.patch('/:id/assign', protect, async (req, res) => {
     }
 
     if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
+
+    // Task 1.2: Record assignment for historical analytics
+    if (agentId) {
+      const ConversationAssignment = require('../models/ConversationAssignment');
+      await ConversationAssignment.create({
+        conversationId: conversation._id,
+        clientId: conversation.clientId,
+        assignedAgentId: agentId,
+        assignedAt: new Date()
+      }).catch(err => console.error('[Analytics] Failed to record manual assignment:', err.message));
+    }
 
     // Save persistent notification in database
     if (agentId) {

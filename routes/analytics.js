@@ -182,14 +182,76 @@ router.get('/realtime', protect, async (req, res) => {
     // Fetch client name (lightweight — indexed unique lookup)
     const client = await Client.findOne({ clientId }).select('businessName name').lean();
 
+    // Fetch real-time carts and link clicks for today atomically
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const [realtimeCarts, realtimeClicks] = await Promise.all([
+      require('../models/PixelEvent').countDocuments({ clientId, eventName: { $in: ['product_added_to_cart', 'add_to_cart', 'checkout_started'] }, timestamp: { $gte: startOfToday } }),
+      require('../models/LinkClickEvent').countDocuments({ clientId, timestamp: { $gte: startOfToday } })
+    ]);
+
+    // Task 1.2: Human Handled & AI Handled
+    const ConversationAssignment = require('../models/ConversationAssignment');
+    const humanHandledAgg = await ConversationAssignment.aggregate([
+      { $match: { clientId, assignedAt: { $gte: startOfToday } } },
+      { $group: { _id: "$conversationId" } },
+      { $count: "count" }
+    ]);
+    const humanHandled = humanHandledAgg[0]?.count || 0;
+
+    const Message = require('../models/Message');
+    const aiHandledAgg = await Message.aggregate([
+      { $match: { clientId, timestamp: { $gte: startOfToday }, direction: 'outgoing' } },
+      { $group: { _id: "$conversationId" } },
+      {
+        $lookup: {
+          from: 'conversationassignments',
+          localField: '_id',
+          foreignField: 'conversationId',
+          pipeline: [
+            { $match: { assignedAt: { $gte: startOfToday } } }
+          ],
+          as: 'assignments'
+        }
+      },
+      { $match: { assignments: { $size: 0 } } },
+      { $count: "count" }
+    ]);
+    const aiHandled = aiHandledAgg[0]?.count || 0;
+
+    const attributionAgg = await require('../models/PixelEvent').aggregate([
+      { $match: { clientId, timestamp: { $gte: startOfToday } } },
+      {
+        $group: {
+          _id: {
+            session: { $ifNull: ["$sessionId", "$ip"] },
+            source: {
+              $switch: {
+                branches: [
+                  { case: { $regexMatch: { input: { $ifNull: ["$url", ""] }, regex: /utm_source=(meta|facebook|ig|fb|instagram)/i } }, then: "Meta Ads" },
+                  { case: { $regexMatch: { input: { $ifNull: ["$url", ""] }, regex: /utm_source=(google|gads)/i } }, then: "Google Ads" },
+                ],
+                default: "Direct/Organic"
+              }
+            }
+          }
+        }
+      },
+      { $group: { _id: "$_id.source", count: { $sum: 1 } } },
+      { $project: { source: "$_id", count: 1, _id: 0 } }
+    ]);
+
     // Map StatCache to the existing /realtime response shape (backward-compatible)
     res.json({
       businessName: client?.businessName || client?.name || clientId,
       leads: { total: stats.totalLeads, newToday: stats.leadsToday },
       orders: { count: stats.ordersToday, revenue: stats.revenueToday },
-      linkClicks: stats.totalLinkClicks,
-      agentRequests: 0, // Maintained by DailyStat, not in StatCache hot path
-      addToCarts: stats.totalAddToCarts,
+      linkClicks: realtimeClicks || stats.totalLinkClicks,
+      agentRequests: humanHandled, // Overriding the dailyStat placeholder
+      aiHandled: aiHandled,
+      humanHandled: humanHandled,
+      addToCarts: realtimeCarts || stats.totalAddToCarts,
       checkouts: stats.totalCheckouts,
       abandonedCarts: stats.abandonedCarts,
       recoveredCarts: stats.recoveredCarts,
@@ -200,7 +262,7 @@ router.get('/realtime', protect, async (req, res) => {
         whatsappRecoveriesPurchased: stats.whatsappRecoveriesPurchased,
         adminFollowupsPurchased: stats.adminFollowupsPurchased
       },
-      attribution: [], // Attribution now served via /analytics/attribution (separate lightweight endpoint)
+      attribution: attributionAgg.length > 0 ? attributionAgg : [{ source: 'Direct/Organic', count: 1 }],
       sentiment: stats.sentimentCounts || { Positive: 0, Neutral: 0, Negative: 0, Frustrated: 0, Urgent: 0, Unknown: 0 }
     });
 
@@ -259,14 +321,17 @@ router.get('/leads', protect, async (req, res) => {
     if (sortBy === 'name') sortObj = { name: 1 };
     if (sortBy === 'clicks') sortObj = { linkClicks: -1 };
 
-    const [leads, total] = await Promise.all([
+    const [leads, total, activeToday, withConversation, highEngagement] = await Promise.all([
       AdLead.find(query)
         .sort(sortObj)
         .skip(skip)
         .limit(limitNum)
         .select('name phoneNumber leadScore tags lastInteraction chatSummary cartStatus lastMessageContent lastInboundAt linkClicks email ordersCount totalSpent intentState addToCartCount meta createdAt')
         .lean(),
-      AdLead.countDocuments(query)
+      AdLead.countDocuments(query),
+      AdLead.countDocuments({ clientId, lastInboundAt: { $gte: new Date(new Date().setHours(0,0,0,0)) } }),
+      AdLead.countDocuments({ clientId, $or: [{ chatSummary: { $exists: true, $ne: "" } }, { lastMessageContent: { $exists: true, $ne: "" } }] }),
+      AdLead.countDocuments({ clientId, linkClicks: { $gt: 5 } })
     ]);
 
     const totalPages = Math.ceil(total / limitNum);
@@ -276,6 +341,11 @@ router.get('/leads', protect, async (req, res) => {
       currentPage: pageNum,
       totalPages,
       totalLeads: total,
+      summary: {
+        activeToday,
+        withConversation,
+        highEngagement
+      },
       pagination: { page: pageNum, limit: limitNum, total, totalPages }
     });
 
@@ -915,7 +985,12 @@ router.get('/', protect, async (req, res) => {
       appointments,
       messages,
       reminderStats,
-      orders
+      orders,
+      cartEvents,
+      linkClickEvents,
+      humanHandledAgg,
+      aiHandledAgg,
+      attributionAgg
     ] = await Promise.all([
       // GCal
       Promise.all(Array.from(calendarIds).map(calId =>
@@ -943,6 +1018,64 @@ router.get('/', protect, async (req, res) => {
       Order.aggregate([
         { $match: { ...clientIdQuery, createdAt: { $gte: startDate, $lte: endDate } } },
         { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } }, count: { $sum: 1 }, revenue: { $sum: "$amount" } } }
+      ]),
+      // 7. Cart Events (Atomic)
+      require('../models/PixelEvent').aggregate([
+        { $match: { ...clientIdQuery, eventName: { $in: ['product_added_to_cart', 'add_to_cart', 'checkout_started'] }, timestamp: { $gte: startDate, $lte: endDate } } },
+        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } }, count: { $sum: 1 } } }
+      ]),
+      // 8. Link Clicks (Atomic)
+      require('../models/LinkClickEvent').aggregate([
+        { $match: { ...clientIdQuery, timestamp: { $gte: startDate, $lte: endDate } } },
+        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } }, count: { $sum: 1 } } }
+      ]),
+      // 9. Human Handled (Task 1.2)
+      require('../models/ConversationAssignment').aggregate([
+        { $match: { ...clientIdQuery, assignedAt: { $gte: startDate, $lte: endDate } } },
+        { $group: { _id: { date: { $dateToString: { format: "%Y-%m-%d", date: "$assignedAt" } }, conversationId: "$conversationId" } } },
+        { $group: { _id: "$_id.date", count: { $sum: 1 } } }
+      ]),
+      // 10. AI Handled (Task 1.2)
+      Message.aggregate([
+        { $match: { ...clientIdQuery, timestamp: { $gte: startDate, $lte: endDate }, direction: 'outgoing' } },
+        { $group: { _id: { date: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } }, conversationId: "$conversationId" } } },
+        {
+          $lookup: {
+            from: 'conversationassignments',
+            let: { cId: "$_id.conversationId", d: "$_id.date" },
+            pipeline: [
+              { $match: { $expr: { $and: [
+                { $eq: ["$conversationId", "$$cId"] },
+                { $eq: [{ $dateToString: { format: "%Y-%m-%d", date: "$assignedAt" } }, "$$d"] }
+              ] } } }
+            ],
+            as: 'assignments'
+          }
+        },
+        { $match: { assignments: { $size: 0 } } },
+        { $group: { _id: "$_id.date", count: { $sum: 1 } } }
+      ]),
+      // 11. Attribution (Task 1.3)
+      require('../models/PixelEvent').aggregate([
+        { $match: { ...clientIdQuery, timestamp: { $gte: startDate, $lte: endDate } } },
+        {
+          $group: {
+            _id: {
+              session: { $ifNull: ["$sessionId", "$ip"] },
+              source: {
+                $switch: {
+                  branches: [
+                    { case: { $regexMatch: { input: { $ifNull: ["$url", ""] }, regex: /utm_source=(meta|facebook|ig|fb|instagram)/i } }, then: "Meta Ads" },
+                    { case: { $regexMatch: { input: { $ifNull: ["$url", ""] }, regex: /utm_source=(google|gads)/i } }, then: "Google Ads" },
+                  ],
+                  default: "Direct/Organic"
+                }
+              }
+            }
+          }
+        },
+        { $group: { _id: "$_id.source", count: { $sum: 1 } } },
+        { $project: { source: "$_id", count: 1, _id: 0 } }
       ])
     ]);
 
@@ -973,8 +1106,10 @@ router.get('/', protect, async (req, res) => {
       const dayOrder = orders.find(c => c._id === date);
       const orderCount = dayOrder?.count || 0;
       const orderRevenue = dayOrder?.revenue || 0;
-      const cartCount = dayReminder?.addToCarts || 0;
-      const linkClickCount = dayReminder?.linkClicks || 0;
+      const cartCount = cartEvents.find(c => c._id === date)?.count || 0;
+      const linkClickCount = linkClickEvents.find(c => c._id === date)?.count || 0;
+      const humanHandled = humanHandledAgg.find(c => c._id === date)?.count || 0;
+      const aiHandled = aiHandledAgg.find(c => c._id === date)?.count || 0;
       const checkoutCount = dayReminder?.checkouts || 0;
       const abandonedCartSent = dayReminder?.abandonedCartSent || 0;
       const abandonedCartClicks = dayReminder?.abandonedCartClicks || 0;
@@ -1007,6 +1142,9 @@ router.get('/', protect, async (req, res) => {
         orderRevenue: orderRevenue,
         addToCarts: cartCount,
         linkClicks: linkClickCount,
+        humanHandled: humanHandled,
+        aiHandled: aiHandled,
+        agentRequests: humanHandled, // For backwards compatibility if frontend uses this
         checkouts: checkoutCount,
         abandonedCartSent,
         abandonedCartClicks,
@@ -1691,94 +1829,113 @@ router.get('/operators', protect, async (req, res) => {
     if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
       clientId = req.query.clientId;
     }
+    
+    const { days } = req.query;
+    const dateLimit = new Date();
+    if (days && days !== 'all') {
+      dateLimit.setDate(dateLimit.getDate() - parseInt(days));
+    } else {
+      dateLimit.setFullYear(2000);
+    }
 
     const User = require('../models/User');
+    const ConversationAssignment = require('../models/ConversationAssignment');
 
-    // Two parallel aggregation pipelines — clean stages, minimal round-trips.
-    const [generalAgg, responseTimeAgg] = await Promise.all([
-
-      // Stage 1: Ticket-count buckets per operator.
-      // Conversations with null assignedTo === AI Bot workload.
-      Conversation.aggregate([
-        { $match: { clientId } },
-        {
-          $group: {
-            _id: { $ifNull: ['$assignedTo', '__AI_BOT__'] },
-            currentOpenTickets: {
-              $sum: { $cond: [{ $in: ['$status', ['HUMAN_TAKEOVER', 'HUMAN_SUPPORT']] }, 1, 0] }
-            },
-            ticketsSolved: {
-              $sum: { $cond: [{ $eq: ['$status', 'CLOSED'] }, 1, 0] }
-            },
-            pendingTickets: {
-              $sum: { $cond: [{ $eq: ['$status', 'WAITING_FOR_INPUT'] }, 1, 0] }
-            },
-            totalHandled: { $sum: 1 }
-          }
+    // 1. Human agents aggregation via ConversationAssignment
+    const humanAgg = await ConversationAssignment.aggregate([
+      { $match: { clientId, assignedAt: { $gte: dateLimit } } },
+      {
+        $lookup: {
+          from: 'conversations',
+          localField: 'conversationId',
+          foreignField: '_id',
+          as: 'conv'
         }
-      ]),
-
-      // Stage 2: Average first-response latency.
-      // Only for conversations with both timestamps — avoids NaN arithmetic.
-      Conversation.aggregate([
-        {
-          $match: {
-            clientId,
-            firstInboundAt:  { $exists: true, $ne: null },
-            firstResponseAt: { $exists: true, $ne: null }
-          }
-        },
-        {
-          $group: {
-            _id: { $ifNull: ['$assignedTo', '__AI_BOT__'] },
-            avgResponseTimeMs: {
-              $avg: { $subtract: ['$firstResponseAt', '$firstInboundAt'] }
+      },
+      { $unwind: "$conv" },
+      {
+        $group: {
+          _id: "$assignedAgentId",
+          currentOpenTickets: { $sum: { $cond: [{ $in: ['$conv.status', ['HUMAN_TAKEOVER', 'HUMAN_SUPPORT']] }, 1, 0] } },
+          ticketsSolved: { $sum: { $cond: [{ $eq: ['$conv.status', 'CLOSED'] }, 1, 0] } },
+          pendingTickets: { $sum: { $cond: [{ $eq: ['$conv.status', 'WAITING_FOR_INPUT'] }, 1, 0] } },
+          totalHandled: { $sum: 1 },
+          totalResponseTime: {
+            $sum: {
+              $cond: [
+                { $and: [{ $ne: ['$conv.firstResponseAt', null] }, { $ne: ['$conv.firstInboundAt', null] }] },
+                { $subtract: ['$conv.firstResponseAt', '$conv.firstInboundAt'] },
+                0
+              ]
+            }
+          },
+          countWithResponseTime: {
+            $sum: {
+              $cond: [
+                { $and: [{ $ne: ['$conv.firstResponseAt', null] }, { $ne: ['$conv.firstInboundAt', null] }] },
+                1,
+                0
+              ]
             }
           }
         }
-      ])
+      }
     ]);
 
-    // O(1) lookup map: agentId -> avg response time ms
-    const responseTimeMap = {};
-    responseTimeAgg.forEach(r => {
-      responseTimeMap[String(r._id)] = Math.max(0, r.avgResponseTimeMs || 0);
-    });
+    // 2. AI Bot aggregation (unassigned conversations active in timeline)
+    const aiAgg = await Conversation.aggregate([
+      { $match: { clientId, updatedAt: { $gte: dateLimit }, assignedTo: null } },
+      {
+        $group: {
+          _id: '__AI_BOT__',
+          currentOpenTickets: { $sum: { $cond: [{ $in: ['$status', ['HUMAN_TAKEOVER', 'HUMAN_SUPPORT']] }, 1, 0] } },
+          ticketsSolved: { $sum: { $cond: [{ $eq: ['$status', 'CLOSED'] }, 1, 0] } },
+          pendingTickets: { $sum: { $cond: [{ $eq: ['$status', 'WAITING_FOR_INPUT'] }, 1, 0] } },
+          totalHandled: { $sum: 1 },
+          avgResponseTimeMs: { $avg: { $subtract: ['$firstResponseAt', '$firstInboundAt'] } }
+        }
+      }
+    ]);
 
-    // Batch-fetch User profiles for all real agent ObjectIds
-    const agentObjectIds = generalAgg
-      .map(g => g._id)
-      .filter(id => id !== '__AI_BOT__' && id != null);
-
-    const agents = agentObjectIds.length > 0
-      ? await User.find({ _id: { $in: agentObjectIds } }).select('name email').lean()
-      : [];
-
+    const agentObjectIds = humanAgg.map(g => g._id).filter(id => id != null);
+    const agents = agentObjectIds.length > 0 ? await User.find({ _id: { $in: agentObjectIds } }).select('name email').lean() : [];
     const agentMap = {};
     agents.forEach(a => { agentMap[String(a._id)] = a; });
 
-    // Shape final list — every key referenced by the UI table column.
-    const operators = generalAgg.map(g => {
-      const isBot     = g._id === '__AI_BOT__';
-      const agentInfo = isBot ? null : agentMap[String(g._id)];
+    let operators = humanAgg.map(g => {
+      const agentInfo = agentMap[String(g._id)];
+      const avgResponseTimeMs = g.countWithResponseTime > 0 ? g.totalResponseTime / g.countWithResponseTime : 0;
       return {
-        agentId:            isBot ? 'ai-bot' : String(g._id),
-        agentName:          isBot ? 'AI Bot' : (agentInfo?.name  || 'Unknown Agent'),
-        agentEmail:         isBot ? 'system@ai-bot' : (agentInfo?.email || '-'),
-        isBot,
+        agentId: String(g._id),
+        agentName: agentInfo?.name || 'Unknown Agent',
+        agentEmail: agentInfo?.email || '-',
+        isBot: false,
         currentOpenTickets: g.currentOpenTickets,
-        pendingTickets:     g.pendingTickets,
-        ticketsSolved:      g.ticketsSolved,
-        totalHandled:       g.totalHandled,
-        // Raw milliseconds — frontend formats to human-readable string
-        avgResponseTimeMs:  responseTimeMap[String(g._id)] || 0
+        pendingTickets: g.pendingTickets,
+        ticketsSolved: g.ticketsSolved,
+        totalHandled: g.totalHandled,
+        avgResponseTimeMs: Math.max(0, avgResponseTimeMs)
       };
     });
 
-    // AI Bot anchored first (highest volume), then agents desc by tickets solved.
+    if (aiAgg.length > 0) {
+      const ai = aiAgg[0];
+      operators.push({
+        agentId: 'ai-bot',
+        agentName: 'AI Bot',
+        agentEmail: 'system@ai-bot',
+        isBot: true,
+        currentOpenTickets: ai.currentOpenTickets,
+        pendingTickets: ai.pendingTickets,
+        ticketsSolved: ai.ticketsSolved,
+        totalHandled: ai.totalHandled,
+        avgResponseTimeMs: Math.max(0, ai.avgResponseTimeMs || 0)
+      });
+    }
+
     operators.sort((a, b) => {
       if (a.isBot && !b.isBot) return -1;
-      if (!a.isBot && b.isBot) return  1;
+      if (!a.isBot && b.isBot) return 1;
       return b.ticketsSolved - a.ticketsSolved;
     });
 

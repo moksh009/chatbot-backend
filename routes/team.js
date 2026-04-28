@@ -3,7 +3,6 @@ const router = express.Router();
 const User = require('../models/User');
 const Client = require('../models/Client');
 const Conversation = require('../models/Conversation');
-const Task = require('../models/Task');
 const { protect } = require('../middleware/auth');
 const { logActivity } = require('../utils/activityLogger');
 const crypto = require('crypto');
@@ -265,103 +264,6 @@ router.get('/:clientId/performance-stats', protect, async (req, res) => {
         });
     } catch (error) {
         res.status(500).json({ message: 'Metric sync failed', error: error.message });
-    }
-});
-
-// @route   POST /api/team/:clientId/assign-task
-// @desc    Assign a task to a team member
-// @access  Private (Admin only)
-router.post('/:clientId/assign-task', protect, async (req, res) => {
-    try {
-        const { clientId } = req.params;
-        const { agentId, title, description, priority, dueDate, relatedLeadId, relatedOrderId } = req.body;
-
-        if (req.user.role !== 'CLIENT_ADMIN' && req.user.role !== 'SUPER_ADMIN') {
-            return res.status(403).json({ message: 'Only admins can assign tasks' });
-        }
-
-        const Task = require('../models/Task');
-        const newTask = await Task.create({
-            clientId,
-            agentId,
-            title,
-            description,
-            priority: priority || 'medium',
-            dueDate,
-            relatedLeadId,
-            relatedOrderId,
-            assignedBy: req.user._id
-        });
-
-        // Pulse Log: Task Assigned
-        await logActivity(clientId, {
-            type: 'TASK',
-            status: 'info',
-            title: 'New Task Assigned',
-            message: `"${title}" has been assigned.`,
-            icon: 'ClipboardList',
-            url: `/team`, // Or appropriate hub
-            metadata: {
-                taskId: newTask._id,
-                priority
-            }
-        });
-
-        res.json({ success: true, task: newTask, message: 'Task assigned successfully' });
-    } catch (error) {
-        res.status(500).json({ message: 'Server Error', error: error.message });
-    }
-});
-
-// @route   GET /api/team/:clientId/tasks
-// @desc    Get tasks for the logged in user or all tasks for admin
-// @access  Private
-router.get('/:clientId/tasks', protect, async (req, res) => {
-    try {
-        const { clientId } = req.params;
-        const Task = require('../models/Task');
-        
-        let query = { clientId };
-        
-        // Agents only see their own tasks
-        if (req.user.role === 'AGENT') {
-            query.agentId = req.user._id;
-        }
-
-        const tasks = await Task.find(query).sort({ createdAt: -1 });
-        res.json({ success: true, tasks });
-    } catch (error) {
-        res.status(500).json({ message: 'Server Error', error: error.message });
-    }
-});
-
-// @route   PATCH /api/team/:clientId/tasks/:taskId
-// @desc    Update task status
-// @access  Private
-router.patch('/:clientId/tasks/:taskId', protect, async (req, res) => {
-    try {
-        const { clientId, taskId } = req.params;
-        const { status } = req.body;
-
-        const Task = require('../models/Task');
-        const task = await Task.findOne({ _id: taskId, clientId });
-
-        if (!task) return res.status(404).json({ message: 'Task not found' });
-
-        // Authorization: Agent can only update their own task
-        if (req.user.role === 'AGENT' && task.agentId.toString() !== req.user._id.toString()) {
-            return res.status(403).json({ message: 'Unauthorized' });
-        }
-
-        task.status = status;
-        if (status === 'completed') {
-            task.completedAt = new Date();
-        }
-
-        await task.save();
-        res.json({ success: true, task });
-    } catch (error) {
-        res.status(500).json({ message: 'Server Error', error: error.message });
     }
 });
 

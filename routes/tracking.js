@@ -37,6 +37,20 @@ router.get('/:uid/:productId', async (req, res) => {
             const { incrementStat } = require('../utils/statCacheEngine');
             await incrementStat(lead.clientId, { totalLinkClicks: 1 });
 
+            // Write atomic event for dashboard aggregations
+            try {
+                const LinkClickEvent = require('../models/LinkClickEvent');
+                await LinkClickEvent.create({
+                    clientId: lead.clientId,
+                    leadId: lead._id,
+                    productId,
+                    url: targetUrl,
+                    timestamp: new Date()
+                });
+            } catch (err) {
+                console.error('[Tracking] Failed to write LinkClickEvent:', err.message);
+            }
+
             // Emit socket event for real-time dashboard update
             if (io) {
                 io.to(`client_${lead.clientId}`).emit('stats_update', {

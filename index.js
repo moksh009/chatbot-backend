@@ -427,6 +427,10 @@ scheduleStatCacheCron();
 
 // Initialize Flow Resumption Cron Job (Phase 17) - ALREADY INITIALIZED ABOVE AT LINE 156
 
+// Initialize Auto-Resume Bot Cron Job (Task 2.2)
+const scheduleAutoResumeBotCron = require('./cron/autoResumeBotCron');
+scheduleAutoResumeBotCron();
+
 // Initialize Intelligence Crons (Phase 28 Track 2)
 
 

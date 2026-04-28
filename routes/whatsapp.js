@@ -69,11 +69,22 @@ router.post('/send-template', protect, async (req, res) => {
             // Also trigger conversation list update
             const Conversation = require('../models/Conversation');
             const conv = await Conversation.findOneAndUpdate(
-                { phone: phoneNumber, clientId: { $in: [targetClientId, 'code_clinic_v1', 'delitech_smarthomes'] } },
-                { lastMessage: `[Template: ${templateName}]`, lastMessageAt: new Date() },
-                { new: true }
+                { phone: phoneNumber, clientId: targetClientId },
+                { 
+                  lastMessage: `[Template: ${templateName}]`, 
+                  lastMessageAt: new Date(),
+                  $setOnInsert: { 
+                    customerName: '', 
+                    status: 'BOT_ACTIVE', 
+                    channel: 'whatsapp' 
+                  }
+                },
+                { new: true, upsert: true }
             );
             if (conv) {
+                // Link message to conversation
+                newMessage.conversationId = conv._id;
+                await newMessage.save();
                 io.to(`client_${targetClientId}`).emit('conversation_update', conv);
             }
         }
