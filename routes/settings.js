@@ -84,6 +84,17 @@ router.put('/:clientId/knowledge-base', protect, verifyClientAccess, async (req,
   }
 });
 
+router.get('/:clientId/custom-variables', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const client = await Client.findOne({ clientId }).select('customVariables').lean();
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+    res.json({ success: true, customVariables: client.customVariables || [] });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 router.put('/:clientId/custom-variables', protect, verifyClientAccess, async (req, res) => {
   try {
     const { clientId } = req.params;

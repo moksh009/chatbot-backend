@@ -271,6 +271,8 @@ const oauthRoutes = require('./routes/oauth');
 app.use('/api/oauth', oauthRoutes);
 const wizardRoutes = require('./routes/wizard');
 app.use('/api/wizard', wizardRoutes);
+const onboardingRoutes = require('./routes/onboarding');
+app.use('/api/onboarding', onboardingRoutes);
 const teamRoutes = require('./routes/team');
 app.use('/api/team', teamRoutes);
 

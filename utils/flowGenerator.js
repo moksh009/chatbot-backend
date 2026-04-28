@@ -217,29 +217,31 @@ function buildDefaultContent(businessName, botName, products = [], ops = {}) {
 
 // ─── MAIN GENERATOR ──────────────────────────────────────────────────────────
 async function generateEcommerceFlow(client, wizardData) {
+  // Pull from wizardData first, then fall back to client.platformVars (the canonical source)
+  const pv = client?.platformVars || {};
   const {
-    businessName = "My Business",
-    businessDescription = "",
-    botName = "Assistant",
+    businessName = pv.brandName || client?.name || "My Business",
+    businessDescription = pv.businessDescription || "",
+    botName = pv.agentName || "Assistant",
     products = [],
-    tone = "friendly",
-    botLanguage = "Hinglish",
+    tone = pv.defaultTone || "friendly",
+    botLanguage = pv.defaultLanguage || "Hinglish",
     cartTiming = { msg1: 15, msg2: 2, msg3: 24 },
-    googleReviewUrl = "",
-    adminPhone = "",
+    googleReviewUrl = pv.googleReviewUrl || "",
+    adminPhone = pv.adminWhatsappNumber || "",
     faqText = "",
     returnsInfo = "",
     fallbackMessage = "I can help with that. Let me route you to the right place.",
-    openTime = "10:00",
-    closeTime = "19:00",
+    openTime = pv.openTime || "10:00",
+    closeTime = pv.closeTime || "19:00",
     workingDays = [1, 2, 3, 4, 5, 6],
-    checkoutUrl = "",
+    checkoutUrl = pv.checkoutUrl || "",
     referralPoints = 500,
     signupPoints = 100,
     activePersona = "sidekick",
-    warrantyDuration = "1 Year",
+    warrantyDuration = pv.warrantyDuration || "1 Year",
     b2bEnabled = false,
-    currency = "₹",
+    currency = pv.baseCurrency || "₹",
   } = wizardData;
 
   const ts = Date.now();

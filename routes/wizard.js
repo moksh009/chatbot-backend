@@ -207,35 +207,28 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       ...(wizardData.tone && { "ai.persona.tone": wizardData.tone }),
       ...(wizardData.botLanguage && { "ai.persona.language": wizardData.botLanguage }),
       ...(wizardData.businessDescription && { "ai.persona.description": wizardData.businessDescription }),
-      ...(wizardData.googleReviewUrl && { 
-        googleReviewUrl: wizardData.googleReviewUrl,
-        'brand.googleReviewUrl': wizardData.googleReviewUrl
-      }),
       ...(wizardData.systemPrompt               && { 
         systemPrompt,
         'ai.systemPrompt': systemPrompt
       }),
       ...(wizardData.currency && { "brand.currency": wizardData.currency }),
       ...(wizardData.shippingTime && { "config.shippingTime": wizardData.shippingTime }),
-      ...(wizardData.returnsInfo && { "knowledgeBase.returnPolicy": wizardData.returnsInfo }),
-      ...(wizardData.faqText && { "knowledgeBase.about": wizardData.faqText }),
-      ...(wizardData.razorpayKeyId    && { razorpayKeyId: wizardData.razorpayKeyId }),
-      ...(wizardData.razorpaySecret   && { razorpaySecret: wizardData.razorpaySecret }),
-      ...(wizardData.cashfreeAppId    && { cashfreeAppId: wizardData.cashfreeAppId }),
-      ...(wizardData.cashfreeSecretKey && { cashfreeSecretKey: wizardData.cashfreeSecretKey }),
-      ...(wizardData.stripePublishableKey && { stripePublishableKey: wizardData.stripePublishableKey }),
-      ...(wizardData.stripeSecretKey && { stripeSecretKey: wizardData.stripeSecretKey }),
-      ...(wizardData.payuMerchantKey && { payuMerchantKey: wizardData.payuMerchantKey }),
-      ...(wizardData.payuMerchantSalt && { payuMerchantSalt: wizardData.payuMerchantSalt }),
-      ...(wizardData.phonepeMerchantId && { phonepeMerchantId: wizardData.phonepeMerchantId }),
-      ...(wizardData.phonepeSaltKey && { phonepeSaltKey: wizardData.phonepeSaltKey }),
-      ...(wizardData.phonepeSaltIndex && { phonepeSaltIndex: wizardData.phonepeSaltIndex }),
-      ...(wizardData.activePaymentGateway && { activePaymentGateway: wizardData.activePaymentGateway }),
-      ...(wizardData.adminPhone       && { 
-        adminPhone: wizardData.adminPhone,
-        'brand.adminPhone': wizardData.adminPhone,
-        'config.adminPhones': wizardData.adminPhone.split(',').map(p => p.trim())
-      }),
+      // Platform Vars
+      'platformVars.brandName': wizardData.businessName,
+      'platformVars.agentName': wizardData.botName,
+      'platformVars.baseCurrency': wizardData.currency || '₹',
+      'platformVars.shippingTime': wizardData.shippingTime,
+      'platformVars.adminWhatsappNumber': wizardData.adminPhone,
+      'platformVars.checkoutUrl': wizardData.checkoutUrl || (client.shopDomain ? `https://${client.shopDomain}/checkout` : ''),
+      'platformVars.businessDescription': wizardData.businessDescription,
+      'platformVars.openTime': wizardData.openTime,
+      'platformVars.closeTime': wizardData.closeTime,
+      'platformVars.warrantyDuration': wizardData.warrantyDuration,
+      'platformVars.defaultLanguage': wizardData.botLanguage,
+      'platformVars.defaultTone': wizardData.tone,
+
+      ...(wizardData.faqText && { "faq": [{ question: 'About Us / General', answer: wizardData.faqText, order: 1 }] }),
+      
       // Gemini key powers bot fallback. Also mirror into openaiApiKey for legacy engine paths.
       ...(wizardData.geminiApiKey && { geminiApiKey: wizardData.geminiApiKey, openaiApiKey: wizardData.geminiApiKey }),
       // Product display mode: 'template' | 'manual'
@@ -255,9 +248,10 @@ router.post("/:clientId/complete", protect, async (req, res) => {
             type:   "abandoned_cart",
             active: true,
             config: {
-              delayMinutes1: wizardData.cartTiming.msg1 || 15,
-              delayHours2:   wizardData.cartTiming.msg2 || 2,
-              delayHours3:   wizardData.cartTiming.msg3 || 24
+              nudge1_offset_ms: (wizardData.cartTiming.msg1 || 15) * 60 * 1000,
+              nudge2_offset_ms: (wizardData.cartTiming.msg2 || 2) * 60 * 60 * 1000,
+              nudge3_offset_ms: (wizardData.cartTiming.msg3 || 24) * 60 * 60 * 1000,
+              timing_mode: 'absolute'
             }
           },
           ...((wizardData.razorpayKeyId || wizardData.cashfreeAppId) ? [{
@@ -404,6 +398,79 @@ router.post("/:clientId/complete", protect, async (req, res) => {
   } catch (err) {
     console.error(`[Wizard] Error completing wizard for ${clientId}:`, err.message);
     res.status(500).json({ error: err.message || "Wizard completion failed" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/wizard/:clientId/generate-from-url
+// Scrapes a website URL to generate an AI Core system prompt and FAQ
+// ─────────────────────────────────────────────────────────────────────────────
+router.post("/:clientId/generate-from-url", protect, async (req, res) => {
+  const { clientId } = req.params;
+  const { url, geminiApiKey } = req.body;
+
+  if (!url) return res.status(400).json({ error: "URL is required" });
+
+  try {
+    const cheerio = require('cheerio');
+    const axios = require('axios');
+
+    // 1. Scrape the website
+    let scrapedText = "";
+    try {
+      const resp = await axios.get(url, { timeout: 10000 });
+      const $ = cheerio.load(resp.data);
+      // Remove scripts, styles, and other non-content
+      $('script, style, noscript, iframe, img, svg').remove();
+      scrapedText = $('body').text().replace(/\s+/g, ' ').trim().substring(0, 10000); // Limit to 10k chars
+    } catch (scrapeErr) {
+      log.error(`[WizardScraper] Failed to scrape ${url}`, scrapeErr.message);
+      return res.status(400).json({ error: "Failed to read the provided URL. Please check the link and try again." });
+    }
+
+    // 2. Format the prompt for the AI to extract a system prompt and FAQ
+    const aiPrompt = `
+You are an expert e-commerce copywriter and AI persona designer.
+I have scraped the content of a business's website: ${url}.
+
+Website Content:
+${scrapedText}
+
+Based on this content, generate two things in valid JSON format:
+1. A concise, professional system prompt (3-5 sentences) that an AI assistant should use when talking to customers. It should mention what the business sells, the tone (friendly, professional, etc.), and key value propositions found in the text.
+2. A short "About Us / General FAQ" text (3-4 sentences max) that summarizes the core business, origin, and general info that customers might ask.
+
+Respond ONLY with a JSON object in this exact format:
+{
+  "systemPrompt": "You are the AI assistant for [Brand]. You help customers with...",
+  "faqText": "[Brand] was founded in... We specialize in..."
+}`;
+
+    // 3. Call Gemini (use provided key or fallback to environment)
+    const apiKey = geminiApiKey || process.env.GEMINI_API_KEY || process.env.GEMINI_STUDIO_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: "No AI API Key available for generation" });
+    }
+
+    const { GoogleGenerativeAI } = require('@google/generative-ai');
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash", generationConfig: { responseMimeType: "application/json" } });
+    
+    const result = await model.generateContent(aiPrompt);
+    const responseText = result.response.text();
+    const generatedData = JSON.parse(responseText);
+
+    res.json({
+      success: true,
+      data: {
+        systemPrompt: generatedData.systemPrompt || "",
+        faqText: generatedData.faqText || ""
+      }
+    });
+
+  } catch (err) {
+    log.error(`[WizardGenURL] Error for ${clientId}:`, err.message);
+    res.status(500).json({ error: "Failed to generate AI Core from URL" });
   }
 });
 

@@ -88,12 +88,18 @@ async function buildVariableContext(client, phone, convo, lead) {
     orders_count:    String(lead?.ordersCount || 0),
 
     // ── Business ──────────────────────────────────────────────────────
-    brand_name:      client.businessName || client.name || "",
+    brand_name:      client.platformVars?.brandName || client.businessName || client.name || "",
     store_url:       storeUrl,
-    business_hours:  client.nicheData?.businessHours || client.workingHours?.hours
-                       ? "Mon-Sat 9AM-7PM"
-                       : "Mon-Sat 9AM-7PM",
-    agent_name:      client.nicheData?.botName || client.config?.agentName || "AI Assistant",
+    business_hours:  client.platformVars?.openTime 
+                       ? `Mon-Sat ${client.platformVars.openTime}-${client.platformVars.closeTime}`
+                       : (client.nicheData?.businessHours || client.workingHours?.hours
+                           ? "Mon-Sat 9AM-7PM"
+                           : "Mon-Sat 9AM-7PM"),
+    agent_name:      client.platformVars?.agentName || client.nicheData?.botName || client.config?.agentName || "AI Assistant",
+    base_currency:   client.platformVars?.baseCurrency || "₹",
+    shipping_time:   client.platformVars?.shippingTime || "",
+    admin_whatsapp:  client.platformVars?.adminWhatsappNumber || client.adminPhone || "",
+    support_email:   client.platformVars?.supportEmail || "",
 
     // ── System ────────────────────────────────────────────────────────
     current_time:    time_ist,

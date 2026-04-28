@@ -96,6 +96,30 @@ const ClientSchema = new mongoose.Schema({
   billing: { type: BillingSchema, default: () => ({}) },
   social: { type: SocialSchema, default: () => ({}) },
 
+  // --- TIER 3: ONBOARDING WIZARD CENTRALIZED VARS ---
+  platformVars: {
+    brandName: { type: String, trim: true },
+    agentName: { type: String, trim: true },
+    adminWhatsappNumber: { type: String, trim: true },
+    baseCurrency: { type: String, default: '₹', trim: true },
+    shippingTime: { type: String, trim: true },
+    businessDescription: { type: String, trim: true },
+    checkoutUrl: { type: String, trim: true },
+    googleReviewUrl: { type: String, trim: true },
+    supportEmail: { type: String, trim: true },
+    openTime: { type: String, default: '10:00', trim: true },
+    closeTime: { type: String, default: '19:00', trim: true },
+    warrantyDuration: { type: String, trim: true },
+    defaultTone: { type: String, default: 'friendly', trim: true },
+    defaultLanguage: { type: String, default: 'Hinglish', trim: true },
+  },
+
+  faq: [{
+    question: { type: String, trim: true },
+    answer: { type: String, trim: true },
+    order: { type: Number, default: 0 },
+  }],
+
   // --- LEGACY FIELDS (Do Not Remove Until Phase 24 Migration Complete) ---
   clientId: { type: String, required: true, unique: true, trim: true },
   isLifetimeAdmin: { type: Boolean, default: false }, // Objective 1: God Mode Bypass
