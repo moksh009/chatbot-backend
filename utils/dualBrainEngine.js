@@ -1875,8 +1875,9 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 
   // Phase 21: Admin Alert Node
   if (node.type === 'admin_alert' || node.type === 'AdminAlertNode') {
-    const { topic, channel: alertChannel, priority } = node.data || {};
+    const { topic, alertChannel = 'both', priority, triggerSource } = node.data || {};
     const alertMsg = topic || "🚨 Human Support Requested";
+    const fullMsg = `🚨 *Admin Alert*\n\n*Classification:* ${alertMsg}\n*Customer:* ${lead?.name || 'Unknown'} (${phone})\n*Source:* ${triggerSource || 'Flow Automation'}\n*Priority:* ${(priority || 'high').toUpperCase()}\n*Time:* ${new Date().toLocaleString()}`;
     
     // 1. Mark conversation as needing attention
     await Conversation.findByIdAndUpdate(convo._id, { 
@@ -1895,6 +1896,31 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         leadName: lead?.name || 'Customer',
         timestamp: new Date()
       });
+    }
+
+    // 3. Dispatch via WhatsApp to admin phone
+    if ((alertChannel === 'whatsapp' || alertChannel === 'both') && client.adminAlertWhatsapp) {
+      try {
+        await WhatsApp.sendText(client, client.adminAlertWhatsapp, fullMsg);
+        log.info(`AdminAlert: WhatsApp sent to ${client.adminAlertWhatsapp}`);
+      } catch (err) {
+        log.error(`AdminAlert WhatsApp failed: ${err.message}`);
+      }
+    }
+
+    // 4. Dispatch via Email to admin
+    if ((alertChannel === 'email' || alertChannel === 'both') && client.adminAlertEmail && client.emailUser) {
+      try {
+        const emailService = require('./emailService');
+        await emailService.sendEmail(client, {
+          to: client.adminAlertEmail,
+          subject: `🚨 Alert: ${alertMsg} — ${lead?.name || phone}`,
+          html: fullMsg.replace(/\n/g, '<br/>').replace(/\*/g, '')
+        });
+        log.info(`AdminAlert: Email sent to ${client.adminAlertEmail}`);
+      } catch (err) {
+        log.error(`AdminAlert Email failed: ${err.message}`);
+      }
     }
 
     log.info(`AdminAlert triggered for ${phone}: ${alertMsg}`);
@@ -2237,7 +2263,25 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   }
 
   if (node.type === 'livechat') {
-    await Conversation.findByIdAndUpdate(convo._id, { status: 'HUMAN_SUPPORT' });
+    await Conversation.findByIdAndUpdate(convo._id, { 
+      status: 'HUMAN_SUPPORT', 
+      botPaused: true, 
+      isBotPaused: true,
+      requiresAttention: true,
+      attentionReason: '🙋 Human support requested via flow',
+      lastInteraction: new Date()
+    });
+    // Emit real-time socket alert so agents see the handoff instantly
+    if (io) {
+      io.to(`client_${client.clientId}`).emit('admin_alert', {
+        type: 'human_handoff',
+        topic: '🙋 Human support requested',
+        phone,
+        leadName: lead?.name || 'Customer',
+        timestamp: new Date()
+      });
+    }
+    log.info(`[FlowEngine] LiveChat handoff: bot paused for ${phone}`);
   }
 
   // Update lastStepId logic
