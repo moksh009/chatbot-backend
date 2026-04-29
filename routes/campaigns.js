@@ -461,12 +461,6 @@ router.post('/start', protect, async (req, res) => {
         campaign.scheduledAt = new Date(Date.now() + (campaign.abTestConfig.holdbackHours * 60 * 60 * 1000));
         
         await campaign.save();
-        
-        const groupASize = Math.floor(rows.length * 0.1);
-        const groupBSize = Math.floor(rows.length * 0.1);
-        
-        abTestVariantSize = groupASize; // Used in logic below
-        abTestVariantBSize = groupASize + groupBSize; 
      }
 
     await campaign.save();
