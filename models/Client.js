@@ -498,9 +498,12 @@ const ClientSchema = new mongoose.Schema({
   // Phase 2: SKU-to-Template Trigger Engine
   skuAutomations: [{
     sku: { type: String, required: true },
-    templateName: { type: String, required: true },
+    actionType: { type: String, enum: ['message', 'sequence'], default: 'message' },
+    templateName: { type: String }, 
+    sequenceId: { type: String },
     language: { type: String, default: 'en' },
     triggerEvent: { type: String, enum: ['paid', 'shipped', 'abandoned', 'stock_alert'], default: 'paid' },
+    delayMinutes: { type: Number, default: 0 },
     isActive: { type: Boolean, default: true },
     description: String,
     imageUrl: String, // Optional override image

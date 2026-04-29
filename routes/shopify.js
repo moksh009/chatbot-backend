@@ -200,14 +200,14 @@ router.get('/:clientId/recent-orders', protect, verifyClientAccess, async (req, 
       const orders = response.data.orders || [];
 
       return orders.map(order => ({
-        orderId: order.id.toString(),
-        orderNumber: order.name,
+        orderId: order.id ? order.id.toString() : 'N/A',
+        orderNumber: order.name || order.order_number || 'Unknown',
         createdAt: order.created_at,
-        customerName: order.customer ? `${order.customer.first_name} ${order.customer.last_name || ''}`.trim() : 'Guest',
-        totalPrice: parseFloat(order.total_price),
-        financialStatus: order.financial_status,
+        customerName: order.customer ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim() || 'Shopify Customer' : 'Guest',
+        totalPrice: parseFloat(order.total_price || 0),
+        financialStatus: order.financial_status || 'unknown',
         fulfillmentStatus: order.fulfillment_status || 'unfulfilled',
-        itemsCount: order.line_items.reduce((acc, item) => acc + item.quantity, 0)
+        itemsCount: (order.line_items || []).reduce((acc, item) => acc + (item.quantity || 0), 0)
       }));
     });
 
@@ -220,6 +220,40 @@ router.get('/:clientId/recent-orders', protect, verifyClientAccess, async (req, 
       error: err.message, 
       isShopifyAuthError: isAuthError 
     });
+  }
+});
+
+// GET /api/shopify/:clientId/search-sku
+router.get('/:clientId/search-sku', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { sku } = req.query;
+    if (!sku) return res.status(400).json({ success: false, message: 'Missing SKU' });
+
+    const result = await withShopifyRetry(clientId, async (shop) => {
+      // Search for product variant with matching SKU
+      const response = await shop.get(`/products.json?limit=250&fields=id,title,variants,images`);
+      const products = response.data.products || [];
+      
+      for (const p of products) {
+        const variant = p.variants.find(v => v.sku?.trim().toLowerCase() === sku.trim().toLowerCase());
+        if (variant) {
+          return {
+            exists: true,
+            productTitle: p.title,
+            price: variant.price,
+            image: p.images?.[0]?.src || null,
+            variantTitle: variant.title !== 'Default Title' ? variant.title : null
+          };
+        }
+      }
+      return { exists: false };
+    });
+
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error(`[Shopify SKU Search Error] for ${req.params.clientId}:`, err.message);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

@@ -872,6 +872,59 @@ router.post('/:id/notes', protect, async (req, res) => {
   }
 });
 
+// @route   PATCH /api/conversations/:id/notes/:noteId
+// @desc    Update an internal note
+// @access  Private
+router.patch('/:id/notes/:noteId', protect, async (req, res) => {
+  try {
+    const { content } = req.body;
+    const { id, noteId } = req.params;
+    
+    if (!content?.trim()) return res.status(400).json({ message: 'Note content is required' });
+
+    const ConversationNote = require('../models/ConversationNote');
+    const note = await ConversationNote.findOne({ _id: noteId, conversationId: id });
+    
+    if (!note) return res.status(404).json({ message: 'Note not found' });
+    
+    // Authorization: Only the author or a SUPER_ADMIN can edit
+    if (req.user.role !== 'SUPER_ADMIN' && note.authorId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: 'Not authorized to edit this note' });
+    }
+    
+    note.content = content.trim();
+    await note.save();
+    
+    res.json({ success: true, note });
+  } catch (error) {
+    res.status(500).json({ message: 'Server Error', error: error.message });
+  }
+});
+
+// @route   DELETE /api/conversations/:id/notes/:noteId
+// @desc    Delete an internal note
+// @access  Private
+router.delete('/:id/notes/:noteId', protect, async (req, res) => {
+  try {
+    const { id, noteId } = req.params;
+    
+    const ConversationNote = require('../models/ConversationNote');
+    const note = await ConversationNote.findOne({ _id: noteId, conversationId: id });
+    
+    if (!note) return res.status(404).json({ message: 'Note not found' });
+    
+    // Authorization: Only the author or a SUPER_ADMIN can delete
+    if (req.user.role !== 'SUPER_ADMIN' && note.authorId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: 'Not authorized to delete this note' });
+    }
+    
+    await ConversationNote.deleteOne({ _id: noteId });
+    res.json({ success: true, message: 'Note deleted' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server Error', error: error.message });
+  }
+});
+
 // @route   POST /api/conversations/:id/summarize
 // @desc    Summarize conversation using AI
 // @access  Private

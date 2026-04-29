@@ -65,6 +65,47 @@ const scheduleFollowUpSequenceCron = () => {
                     continue;
                 }
 
+                // --- ENTERPRISE: Opt-Out Check (3d) ---
+                if (lead?.optedOut || lead?.tags?.includes('opt_out') || lead?.tags?.includes('unsubscribed') || lead?.tags?.includes('blocked')) {
+                    seq.status = 'cancelled';
+                    seq.steps.forEach(s => {
+                        if (s.status === 'pending') {
+                            s.status = 'skipped';
+                            s.errorLog = 'Lead opted out';
+                        }
+                    });
+                    await seq.save();
+                    // Clear active sequence flag on lead
+                    if (seq.leadId) {
+                        await AdLead.findByIdAndUpdate(seq.leadId, { $set: { 'metaData.hasActiveSequence': false } }).catch(() => {});
+                    }
+                    console.log(`[SequenceCron] 🛑 Skipped sequence ${seq._id} for ${seq.phone} — lead opted out`);
+                    continue;
+                }
+
+                // --- ENTERPRISE: Cancel on Reply Check ---
+                if (seq.cancelOnReply) {
+                    const Message = require('../models/Message');
+                    const replyCount = await Message.countDocuments({
+                        clientId: seq.clientId,
+                        from: seq.phone,
+                        direction: 'incoming',
+                        createdAt: { $gte: seq.createdAt }
+                    });
+                    if (replyCount > 0) {
+                        seq.status = 'cancelled';
+                        seq.steps.forEach(s => {
+                            if (s.status === 'pending') {
+                                s.status = 'skipped';
+                                s.errorLog = 'Lead replied (Auto-cancelled)';
+                            }
+                        });
+                        await seq.save();
+                        console.log(`[SequenceCron] 🛑 Cancelled sequence ${seq._id} for ${seq.phone} — lead replied`);
+                        continue;
+                    }
+                }
+
                 if (dueStep.condition && !evaluateStepCondition(dueStep.condition, lead, null)) {
                     dueStep.status = "skipped";
                     dueStep.errorLog = "Condition not met";
@@ -219,14 +260,25 @@ const scheduleFollowUpSequenceCron = () => {
 
                 const stillPending = seq.steps.some(s => s.status === "pending");
                 if (!stillPending && seq.status !== "cancelled") {
-                   if (seq.name?.toLowerCase().includes("recovery") && lead?.ordersCount === 0) {
-                       lead.tags = [...new Set([...(lead.tags || []), "recovery_failed"])];
-                       await lead.save();
+                   // Check if all steps are done (sent, failed, or skipped)
+                   const allTerminal = seq.steps.every(s => ['sent', 'failed', 'skipped', 'cancelled'].includes(s.status));
+                   if (allTerminal) {
+                     if (seq.name?.toLowerCase().includes("recovery") && lead?.ordersCount === 0) {
+                         lead.tags = [...new Set([...(lead.tags || []), "recovery_failed"])];
+                         await lead.save();
+                     }
+                     seq.status = "completed";
+                     // Clear active sequence flag on lead
+                     if (seq.leadId) {
+                         await AdLead.findByIdAndUpdate(seq.leadId, { $set: { 'metaData.hasActiveSequence': false } }).catch(() => {});
+                     }
                    }
-                   seq.status = "completed"; 
                 }
 
                 await seq.save();
+
+                // Rate limiting: 200ms delay between sequences to avoid Meta burst limits
+                await new Promise(r => setTimeout(r, 200));
             }
         } catch (err) {
             console.error('❌ Error in follow-up sequence cron:', err);

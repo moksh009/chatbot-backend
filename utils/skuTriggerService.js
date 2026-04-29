@@ -44,7 +44,10 @@ const SkuTriggerService = {
         for (const automation of matches) {
           log.info(`Matched SKU Trigger: ${automation.sku} -> ${automation.templateName} for ${phone}`);
 
-          if (automation.delayMinutes > 0) {
+          if (automation.actionType === 'sequence' && automation.sequenceId) {
+            // Enroll in sequence
+            await this.enrollInSequence(order, automation, clientConfig);
+          } else if (automation.delayMinutes > 0) {
             // Schedule for later
             await this.scheduleMessage(order, automation, clientConfig);
           } else {
@@ -123,6 +126,50 @@ const SkuTriggerService = {
       log.info(`Scheduled SKU trigger for ${phone} at ${scheduledTime.toISOString()}`);
     } catch (err) {
       log.error(`scheduleMessage error for ${automation.sku}:`, err.message);
+    }
+  },
+
+  /**
+   * Enrolls a customer in a follow-up sequence
+   */
+  async enrollInSequence(order, automation, clientConfig) {
+    try {
+      const FollowUpSequence = require('../models/FollowUpSequence');
+      const sequenceTemplates = require('../data/sequenceTemplates');
+      
+      const seqData = sequenceTemplates.find(t => t.id === automation.sequenceId);
+      if (!seqData) {
+        log.error(`Sequence template ${automation.sequenceId} not found`);
+        return;
+      }
+
+      const phone = order.customerPhone || order.phone;
+      
+      const mappedSteps = seqData.steps.map(s => ({
+        type: s.type || 'whatsapp',
+        templateName: s.templateName,
+        content: s.content,
+        delayValue: s.delayValue,
+        delayUnit: s.delayUnit,
+        sendAt: new Date(Date.now() + (s.delayValue || 0) * 60000), // simplified
+        status: "pending"
+      }));
+
+      await FollowUpSequence.create({
+        clientId: clientConfig.clientId,
+        phone,
+        name: seqData.name,
+        steps: mappedSteps,
+        status: 'active',
+        metadata: {
+          source: 'sku_trigger',
+          sku: automation.sku
+        }
+      });
+
+      log.info(`Enrolled ${phone} in sequence ${seqData.name} via SKU trigger ${automation.sku}`);
+    } catch (err) {
+      log.error(`enrollInSequence error for ${automation.sku}:`, err.message);
     }
   }
 };

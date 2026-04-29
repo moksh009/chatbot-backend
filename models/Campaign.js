@@ -6,7 +6,7 @@ const CampaignSchema = new mongoose.Schema({
   templateName: { type: String, default: "" },
   status: { 
     type: String, 
-    enum: ['DRAFT', 'SCHEDULED', 'SENDING', 'COMPLETED', 'FAILED'], 
+    enum: ['DRAFT', 'SCHEDULED', 'QUEUED', 'SENDING', 'COMPLETED', 'FAILED'], 
     default: 'DRAFT' 
   },
   scheduledAt: { type: Date },
@@ -14,7 +14,10 @@ const CampaignSchema = new mongoose.Schema({
   segmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Segment' },
   importBatchId: { type: String }, // ID from ImportSession
 
-  
+  audience: { type: Array, default: [] }, // Array of resolved phone numbers + mappings
+  variableMapping: { type: mongoose.Schema.Types.Mixed },
+  templateComponents: { type: Array, default: [] },
+  languageCode: { type: String, default: 'en' },
   // Phase 22: Smart Send logic
   isSmartSend: { type: Boolean, default: false },
   smartSendConfig: { type: mongoose.Schema.Types.Mixed },

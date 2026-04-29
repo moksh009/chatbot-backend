@@ -1901,29 +1901,45 @@ router.get('/operators', protect, async (req, res) => {
       }
     ]);
 
-    const agentObjectIds = humanAgg.map(g => g._id).filter(id => id != null);
-    const agents = agentObjectIds.length > 0 ? await User.find({ _id: { $in: agentObjectIds } }).select('name email').lean() : [];
-    const agentMap = {};
-    agents.forEach(a => { agentMap[String(a._id)] = a; });
+    // 3. Fetch ALL users for this client to ensure everyone is displayed
+    const allUsers = await User.find({ clientId }).select('name email').lean();
 
-    let operators = humanAgg.map(g => {
-      const agentInfo = agentMap[String(g._id)];
-      const avgResponseTimeMs = g.countWithResponseTime > 0 ? g.totalResponseTime / g.countWithResponseTime : 0;
-      return {
-        agentId: String(g._id),
-        agentName: agentInfo?.name || 'Unknown Agent',
-        agentEmail: agentInfo?.email || '-',
-        isBot: false,
-        currentOpenTickets: g.currentOpenTickets,
-        pendingTickets: g.pendingTickets,
-        ticketsSolved: g.ticketsSolved,
-        totalHandled: g.totalHandled,
-        avgResponseTimeMs: Math.max(0, avgResponseTimeMs)
-      };
+    const agentMap = {};
+    humanAgg.forEach(g => {
+        agentMap[String(g._id)] = {
+            currentOpenTickets: g.currentOpenTickets,
+            pendingTickets: g.pendingTickets,
+            ticketsSolved: g.ticketsSolved,
+            totalHandled: g.totalHandled,
+            avgResponseTimeMs: g.countWithResponseTime > 0 ? g.totalResponseTime / g.countWithResponseTime : 0
+        };
     });
 
-    if (aiAgg.length > 0) {
-      const ai = aiAgg[0];
+    let operators = allUsers.map(u => {
+        const stats = agentMap[String(u._id)] || {
+            currentOpenTickets: 0,
+            pendingTickets: 0,
+            ticketsSolved: 0,
+            totalHandled: 0,
+            avgResponseTimeMs: 0
+        };
+        
+        return {
+            agentId: String(u._id),
+            agentName: u.name || 'Unknown Agent',
+            agentEmail: u.email || '-',
+            isBot: false,
+            currentOpenTickets: stats.currentOpenTickets,
+            pendingTickets: stats.pendingTickets,
+            ticketsSolved: stats.ticketsSolved,
+            totalHandled: stats.totalHandled,
+            avgResponseTimeMs: Math.max(0, stats.avgResponseTimeMs)
+        };
+    });
+
+    // 4. Add AI Bot
+    if (aiAgg.length > 0 || true) { // Always show bot
+      const ai = aiAgg[0] || { currentOpenTickets: 0, pendingTickets: 0, ticketsSolved: 0, totalHandled: 0, avgResponseTimeMs: 0 };
       operators.push({
         agentId: 'ai-bot',
         agentName: 'AI Bot',

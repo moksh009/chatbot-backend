@@ -746,6 +746,17 @@ async function runDualBrainEngine(parsedMessage, client) {
        await Conversation.findByIdAndUpdate(convo._id, { botPaused: true, isBotPaused: true });
        ruleIntercepted = true;
     }
+    
+    if (results.scoreAdjustments !== 0) {
+       await AdLead.findByIdAndUpdate(lead._id, { $inc: { leadScore: results.scoreAdjustments } });
+    }
+    
+    if (results.webhooks && results.webhooks.length > 0) {
+       const axios = require('axios');
+       for (const url of results.webhooks) {
+          axios.post(url, { lead, convo, client, event: 'automation_rule_trigger' }).catch(e => log.error(`Webhook failed: ${url}`, e));
+       }
+    }
 
     // Phase 22 Routing Handoff trigger
     if (results.handoff) {
@@ -768,7 +779,14 @@ async function runDualBrainEngine(parsedMessage, client) {
         if (routingDirective.type === 'specific') {
            assigned = routingDirective.agentId;
         } else if (routingDirective.type === 'round_robin' && routingDirective.agentIds?.length > 0) {
-           assigned = routingDirective.agentIds[Math.floor(Math.random() * routingDirective.agentIds.length)];
+           // Round Robin Implementation: Fetch all assigned agents and find oldest lastAssignedTimestamp
+           const User = require('../models/User');
+           const agents = await User.find({ _id: { $in: routingDirective.agentIds } }).sort({ lastAssignedTimestamp: 1 });
+           if (agents.length > 0) {
+              const selectedAgent = agents[0];
+              assigned = selectedAgent._id.toString();
+              await User.findByIdAndUpdate(assigned, { lastAssignedTimestamp: new Date() });
+           }
         }
         if (assigned && convo.assignedAgent !== assigned) {
            convo.assignedAgent = assigned;

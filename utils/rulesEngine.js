@@ -97,7 +97,9 @@ const executeRuleActions = async (actions, client, phone, dependencies) => {
         messages: [],
         handoff: null, // e.g. { type: 'ROUND_ROBIN' }
         tags: [],
-        enrollSequences: []
+        enrollSequences: [],
+        webhooks: [],
+        scoreAdjustments: 0
     };
 
     if (!actions || !Array.isArray(actions)) return results;
@@ -123,6 +125,12 @@ const executeRuleActions = async (actions, client, phone, dependencies) => {
                     break;
                 case 'pause_bot':
                     results.pauseBot = true;
+                    break;
+                case 'execute_webhook':
+                    results.webhooks.push(action.webhookUrl);
+                    break;
+                case 'adjust_score':
+                    results.scoreAdjustments += (action.score || 0);
                     break;
             }
         } catch (err) {

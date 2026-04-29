@@ -420,6 +420,18 @@ async function handleOrder(client, data) {
         }).catch(err => console.error("[Loyalty] Award failed:", err.message));
     }
 
+    // --- ENTERPRISE: Product Trigger Evaluation ---
+    try {
+        const { evaluateProductTriggers, executeProductTriggers } = require('./productTriggers');
+        const ptMatches = await evaluateProductTriggers(client, data);
+        if (ptMatches.length > 0) {
+            log.info(`[ProductTrigger] ${ptMatches.length} trigger(s) matched for order ${newOrder.orderId}`);
+            await executeProductTriggers(client, cleanPhone, data.customer?.first_name || 'Customer', ptMatches);
+        }
+    } catch (ptErr) {
+        log.warn(`[ProductTrigger] Evaluation failed for order ${newOrder.orderId}:`, ptErr.message);
+    }
+
     // ✅ Phase R3: Cancel active cart recovery sequences on purchase — GAP 6
     // Customer paid → stop all recovery messages so they don't get spammed post-purchase
     try {

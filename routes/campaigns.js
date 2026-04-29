@@ -25,14 +25,26 @@ try {
   fs.mkdirSync('uploads', { recursive: true });
 } catch {}
 
+const BATCH_SIZE = 10;
+const BATCH_DELAY_MS = 1000;
+
 function normalizePhone(p) {
   if (!p) return '';
-  const digits = String(p).replace(/[^\d]/g, '');
+  let digits = String(p).replace(/[^\d]/g, '');
   if (!digits) return '';
   const cc = process.env.DEFAULT_COUNTRY_CODE || '91';
+  // Handle 11-digit numbers starting with 0 (strip leading 0)
+  if (digits.length === 11 && digits.startsWith('0')) {
+    digits = digits.substring(1);
+  }
+  // Prepend country code for 10-digit local numbers
   if (digits.length === 10) return cc + digits;
+  // Reject numbers that are too short after normalization
+  if (digits.length < 10) return '';
   return digits;
 }
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // @route   POST /api/campaigns
 // @desc    Create a new campaign (upload CSV)
@@ -72,10 +84,19 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
       return res.status(400).json({ message: 'CSV too large. Maximum 5000 rows allowed.' });
     }
 
-    const validCount = rows.reduce((acc, row) => {
+    const audience = [];
+    rows.forEach(row => {
       const phone = normalizePhone(row.phone || row.number || row.mobile || row.recipient || '');
-      return phone ? acc + 1 : acc;
-    }, 0);
+      if (phone) {
+        audience.push({
+           phone,
+           name: row.name || '',
+           ...row // store full row data for variable mapping
+        });
+      }
+    });
+
+    const validCount = audience.length;
 
     const campaign = await Campaign.create({
       clientId: req.user.clientId,
@@ -83,7 +104,8 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
       templateName: req.body.templateName,
       status: 'DRAFT',
       csvFile: req.file.path,
-      audienceCount: validCount
+      audienceCount: validCount,
+      audience // Store audience directly in document
     });
     log.info(`Campaign CREATED: ${campaign.name} | clientId: ${req.user.clientId} | rows: ${validCount}`);
     res.json(campaign);
@@ -304,15 +326,16 @@ router.get('/', protect, async (req, res) => {
       // Note: Delivered should include Read and Replied for funnel logic
       const totalDelivered = stats.delivered + stats.read + stats.replied;
       const totalRead = stats.read + stats.replied;
+      const totalSent = stats.sent + totalDelivered;
       
       return {
         ...c,
-        sentCount: stats.sent,
+        sentCount: totalSent,
         deliveredCount: totalDelivered,
         readCount: totalRead,
         repliedCount: stats.replied,
         stats: {
-          sent: stats.sent,
+          sent: totalSent,
           delivered: totalDelivered,
           read: totalRead,
           replied: stats.replied
@@ -378,49 +401,35 @@ router.post('/start', protect, async (req, res) => {
     let total = 0;
     let sent = 0;
     let failed = 0;
-    const rows = [];
 
-    // --- Audience Sourcing (CSV, Segment, or Imported List) ---
-    if (campaign.segmentId || campaign.importBatchId) {
-        let count = 0;
+    // --- Unified Processing ---
+    // Save variables to the campaign so the cron can process them
+    campaign.variableMapping = req.body.variableMapping || {};
+    campaign.templateComponents = req.body.templateComponents || [];
+    campaign.languageCode = req.body.languageCode || 'en';
+    
+    // Instead of inline processing, mark it QUEUED (or SCHEDULED)
+    campaign.status = req.body.scheduledDate ? 'SCHEDULED' : 'QUEUED';
+    if (req.body.scheduledDate) {
+        campaign.scheduledAt = new Date(req.body.scheduledDate);
+    }
+    
+    // Resolve audience for Segments and Import Lists if not already set
+    if (!campaign.audience || campaign.audience.length === 0) {
         if (campaign.segmentId) {
             const segment = await Segment.findById(campaign.segmentId);
-            if (segment) count = await AdLead.countDocuments({ ...segment.query, clientId: req.user.clientId });
-        } else {
-            count = await AdLead.countDocuments({ importBatchId: campaign.importBatchId, clientId: req.user.clientId });
+            if (segment) {
+                const leads = await AdLead.find({ ...segment.query, clientId: req.user.clientId }).lean();
+                campaign.audience = leads.map(l => ({ phone: l.phoneNumber, name: l.name || '', ...l }));
+            }
+        } else if (campaign.importBatchId) {
+            const leads = await AdLead.find({ importBatchId: campaign.importBatchId, clientId: req.user.clientId }).lean();
+            campaign.audience = leads.map(l => ({ phone: l.phoneNumber, name: l.name || '', ...l }));
         }
-        
-        let delayMs = 0;
-        if (req.body.scheduledDate) {
-            delayMs = new Date(req.body.scheduledDate).getTime() - Date.now();
-            if (delayMs < 0) delayMs = 0;
-        }
-
-        // Dispatch to background worker for Mongoose cursor streaming
-        await TaskQueueService.addTask('BROADCAST_CAMPAIGN', {
-            campaignId: campaign._id,
-            clientId: req.user.clientId,
-            templateType,
-            templateName: req.body.templateName,
-            templateComponents: req.body.templateComponents,
-            variableMapping: req.body.variableMapping,
-            languageCode: req.body.languageCode,
-            isAbTest: req.body.isAbTest,
-            abTestConfig: req.body.abTestConfig,
-            templateTypeB: req.body.templateTypeB,
-            customTextValues: req.body.customTextValues
-        }, { delay: delayMs });
-        
-        return res.json({ success: true, message: `Campaign targeting ${count} contacts queued for background processing.` });
-    } else if (campaign.csvFile) {
-        await new Promise((resolve, reject) => {
-            fs.createReadStream(campaign.csvFile)
-                .pipe(csv())
-                .on('data', (data) => rows.push(data))
-                .on('end', resolve)
-                .on('error', reject);
-        });
+        campaign.audienceCount = campaign.audience.length;
     }
+    
+    const rows = campaign.audience || [];
 
     // Shuffle rows for random AB distribution
     for (let i = rows.length - 1; i > 0; i--) {
@@ -460,147 +469,9 @@ router.post('/start', protect, async (req, res) => {
         abTestVariantBSize = groupASize + groupBSize; 
      }
 
-    let currentIndex = 0;
-    for (const row of rows) {
-      currentIndex++;
-      const recipientPhone = normalizePhone(row.phone || row.number || row.mobile || row.recipient || '');
-      if (!recipientPhone) { failed++; continue; }
-      
-      let variantLabel = null;
-      let targetTemplateName = req.body.templateName || campaign.templateName;
-      let isHoldout = false;
-      
-      if (req.body.isAbTest) {
-        if (currentIndex <= abTestVariantSize) {
-          variantLabel = 'A';
-        } else if (currentIndex <= abTestVariantBSize) {
-          variantLabel = 'B';
-          targetTemplateName = req.body.templateTypeB;
-        } else {
-          isHoldout = true;
-          variantLabel = 'holdout';
-        }
-      }
-
-      if (isHoldout) {
-        // Queue for later
-        await CampaignMessage.create({
-          campaignId: campaign._id,
-          clientId: client.clientId,
-          phone: recipientPhone,
-          status: 'queued',
-          abVariantLabel: 'holdout',
-          metadata: row // Store full row for variable injection later
-        });
-        continue;
-      }
-      try {
-        if (templateType === 'birthday') {
-          const resp = await sendBirthdayWishWithImage(recipientPhone, null, null, req.user.clientId, actualTemplateName);
-          if (resp?.success) sent++; else failed++;
-        } else if (templateType === 'appointment') {
-          const appointmentDetails = {
-            summary: row.summary || `Appointment: ${row.name || 'Patient'} - Service`,
-            doctor: row.doctor || row.stylist || row.therapist || row.coach || '',
-            date: row.date || '',
-            time: row.time || ''
-          };
-          await sendAppointmentReminder(null, null, recipientPhone, appointmentDetails, req.user.clientId, actualTemplateName);
-          sent++;
-        } else if (templateType === 'whatsapp') {
-          const tName = req.body.templateName || campaign.templateName;
-          if (!tName) { failed++; continue; }
-          const components = req.body.templateComponents ? JSON.parse(JSON.stringify(req.body.templateComponents)) : [];
-          
-          if (req.body.variableMapping && Object.keys(req.body.variableMapping).length > 0) {
-              const bodyParams = [];
-              const sortedKeys = Object.keys(req.body.variableMapping).sort((a,b) => parseInt(a) - parseInt(b));
-              
-              sortedKeys.forEach(k => {
-                  const dataField = req.body.variableMapping[k];
-                  let val = row[dataField] || row.capturedData?.[dataField] || '';
-                  if (dataField === 'name') val = row.name || 'Customer';
-                  bodyParams.push({ type: 'text', text: String(val) });
-              });
-
-              if (bodyParams.length > 0) {
-                  const existingBodyIndex = components.findIndex(c => c.type === 'body');
-                  if (existingBodyIndex !== -1) {
-                      components[existingBodyIndex].parameters = bodyParams;
-                  } else {
-                      components.push({ type: 'body', parameters: bodyParams });
-                  }
-              }
-          }
-
-          // Auto-inject default header image if required and missing
-          if (components.length === 0 && (!req.body.variableMapping || Object.keys(req.body.variableMapping).length === 0)) {
-              const tplDef = (client.syncedMetaTemplates || []).find(t => t.name === tName);
-              if (tplDef) {
-                  const headerComp = tplDef.components?.find(c => c.type === 'HEADER' && c.format === 'IMAGE');
-                  if (headerComp) {
-                      const imgUrl = headerComp.example?.header_handle?.[0] || 'https://images.unsplash.com/photo-1577563908411-5077b6dc7624?q=80&w=2070&auto=format&fit=crop';
-                      components.push({ type: 'header', parameters: [{ type: 'image', image: { link: imgUrl } }] });
-                  }
-                  // Inject name variable if required
-                  const bodyComp = tplDef.components?.find(c => c.type === 'BODY');
-                  if (bodyComp?.text?.includes('{{1}}')) {
-                    components.push({ type: 'body', parameters: [{ type: 'text', text: row.name || 'Customer' }] });
-                  }
-              }
-          }
-          
-          const respData = await WhatsApp.sendTemplate(client, recipientPhone, targetTemplateName, req.body.languageCode || 'en', components);
-          const metaMsgId = respData?.messages?.[0]?.id || respData?.id;
-
-          if (metaMsgId) {
-            await CampaignMessage.create({
-              campaignId: campaign._id,
-              clientId: client.clientId,
-              phone: recipientPhone,
-              messageId: metaMsgId,
-              status: 'sent',
-              sentAt: new Date(),
-              abVariantLabel: variantLabel
-            });
-            sent++;
-            
-            const incQuery = { sentCount: 1 };
-            if (variantLabel) incQuery[`abVariants.$[variant].sentCount`] = 1;
-            
-            await Campaign.findByIdAndUpdate(campaign._id, { $inc: incQuery }, variantLabel ? { arrayFilters: [{ 'variant.label': variantLabel }] } : {});
-          } else {
-            failed++;
-            await Campaign.findByIdAndUpdate(campaign._id, { $inc: { failedCount: 1 } });
-          }
-
-          const Message = require('../models/Message');
-          await Message.create({
-            clientId: client.clientId,
-            from: client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID,
-            to: recipientPhone,
-            direction: 'outgoing',
-            type: 'template',
-            content: `[Campaign: ${campaign.name}] Template: ${tName}`,
-            messageId: metaMsgId,
-            status: 'sent',
-            campaignId: campaign._id,
-            channel: 'whatsapp'
-          });
-        }
-        await new Promise(r => setTimeout(r, 500));
-      } catch (err) {
-        failed++;
-      }
-    }
-
-    campaign.stats.sent = (campaign.stats.sent || 0) + sent;
-    campaign.audienceCount = total;
-    campaign.status = 'COMPLETED';
     await campaign.save();
 
-    log.success(`Campaign DONE: ${campaignId} | sent=${sent} failed=${failed} total=${total}`);
-    res.json({ success: true, campaignId, total, sent, failed, status: campaign.status });
+    return res.json({ success: true, message: `Campaign targeting ${rows.length} contacts queued successfully.` });
   } catch (error) {
     try {
       await Campaign.updateOne({ _id: campaignId }, { $set: { status: 'FAILED' } });
@@ -679,8 +550,8 @@ router.get('/:clientId/overview', protect, async (req, res) => {
       return acc;
     }, {});
 
-    const totalSent = statsMap['sent'] || 0;
     const totalDelivered = (statsMap['delivered'] || 0) + (statsMap['read'] || 0) + (statsMap['replied'] || 0);
+    const totalSent = (statsMap['sent'] || 0) + totalDelivered;
     const totalRead = (statsMap['read'] || 0) + (statsMap['replied'] || 0);
     const totalReplied = statsMap['replied'] || 0;
 

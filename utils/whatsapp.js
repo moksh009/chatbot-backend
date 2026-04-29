@@ -9,10 +9,13 @@ const { decrypt } = require('./encryption');
  * Validates a phone number is a valid string of digits.
  */
 function validatePhone(phone) {
-  if (typeof phone !== 'string' || !phone.trim() || !/^\d+$/.test(phone.trim())) {
-    throw new Error(`[WhatsApp] Invalid phone number: ${phone}`);
+  if (!phone) throw new Error(`[WhatsApp] Missing phone number`);
+  // Clean phone: remove everything except digits
+  const cleanPhone = String(phone).replace(/[^0-9]/g, "");
+  if (cleanPhone.length < 10) {
+    throw new Error(`[WhatsApp] Invalid phone length: ${cleanPhone}`);
   }
-  return phone.trim();
+  return cleanPhone;
 }
 
 /**
@@ -415,20 +418,38 @@ const WhatsApp = {
     const validPhone = validatePhone(phone);
     if (!templateName) throw new Error("[WhatsApp] templateName is required");
 
+    // Pre-flight validation: ensure component structure is valid
+    const validatedComponents = components.filter(c => {
+      if (!c || !c.type) {
+        log.warn(`[WhatsApp] Dropping invalid component (missing type) for template ${templateName}`);
+        return false;
+      }
+      if (c.parameters && !Array.isArray(c.parameters)) {
+        log.warn(`[WhatsApp] Dropping component with non-array parameters for template ${templateName}`);
+        return false;
+      }
+      return true;
+    });
+
     const { token, phoneNumberId } = this.getCredentials(client);
     const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
+    const payload = {
+      messaging_product: 'whatsapp',
+      to: validPhone,
+      type: 'template',
+      template: {
+        name: templateName,
+        language: { code: languageCode },
+        components: validatedComponents
+      }
+    };
+
+    // Debug logging for campaign troubleshooting
+    log.info(`[WhatsApp] sendTemplate -> ${templateName} to ${validPhone} | ${validatedComponents.length} components`);
+
     try {
-      const res = await axios.post(url, {
-        messaging_product: 'whatsapp',
-        to: validPhone,
-        type: 'template',
-        template: {
-          name: templateName,
-          language: { code: languageCode },
-          components
-        }
-      }, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await axios.post(url, payload, { headers: { Authorization: `Bearer ${token}` } });
       return res.data;
     } catch (err) {
       this.handleError(err, url, "sendTemplate");
@@ -483,7 +504,7 @@ const WhatsApp = {
       }
     } else {
       // Fallback: If template not synced, send variables sequentially
-      log.warn(`[WhatsApp] Template ${templateName} not synced for ${client.clientId}. Using sequential fallback.`);
+      log.warn(`[WhatsApp] Template ${templateName} not synced for ${client.clientId}. Using sequential fallback. Variables: [${variables.join(', ')}]`);
       if (variables.length > 0) {
         components.push({
           type: 'body',
@@ -494,6 +515,11 @@ const WhatsApp = {
         components.push({ type: 'header', parameters: [{ type: 'image', image: { link: headerImage } }] });
       }
     }
+
+    // Structured diagnostics: log exact parameter counts for troubleshooting
+    const bodyComp = components.find(c => c.type === 'body');
+    const headerComp = components.find(c => c.type === 'header');
+    log.info(`[WhatsApp] sendSmartTemplate -> ${templateName} | body_params=${bodyComp?.parameters?.length || 0} | has_header=${!!headerComp} | raw_vars=${variables.length}`);
 
     try {
       return await this.sendTemplate(client, phone, templateName, languageCode, components);
@@ -530,8 +556,8 @@ const WhatsApp = {
    * Internal helper to extract credentials with validation
    */
   getCredentials(client) {
-    let token = client.whatsappToken || process.env.WHATSAPP_TOKEN;
-    const phoneNumberId = client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
+    let token = client.whatsappToken || client.premiumAccessToken || process.env.WHATSAPP_TOKEN;
+    const phoneNumberId = client.phoneNumberId || client.premiumPhoneId || process.env.WHATSAPP_PHONENUMBER_ID;
 
     // --- DECRYPTION FIX: Always decrypt if exists (supports plain-text fallback) ---
     if (token) {

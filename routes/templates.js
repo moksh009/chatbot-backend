@@ -49,8 +49,46 @@ router.get('/sync', protect, async (req, res) => {
             const response = await axios.get(url, {
                 headers: { Authorization: `Bearer ${client.whatsappToken}` }
             });
-            const templates = response.data.data || [];
+            let templates = response.data.data || [];
             
+            // Enrich with variable metrics
+            templates = templates.map(tpl => {
+                let bodyVars = 0;
+                let headerVars = 0;
+                let headerFormat = 'NONE';
+                
+                if (tpl.components) {
+                    const bodyComp = tpl.components.find(c => c.type === 'BODY');
+                    if (bodyComp && bodyComp.text) {
+                        const paramMatches = bodyComp.text.match(/{{(\d+)}}/g) || [];
+                        if (paramMatches.length > 0) {
+                            bodyVars = Math.max(...paramMatches.map(m => parseInt(m.match(/\d+/)[0])));
+                        }
+                    }
+                    
+                    const headerComp = tpl.components.find(c => c.type === 'HEADER');
+                    if (headerComp) {
+                        headerFormat = headerComp.format || 'NONE';
+                        if (headerComp.text) {
+                            const paramMatches = headerComp.text.match(/{{(\d+)}}/g) || [];
+                            if (paramMatches.length > 0) {
+                                headerVars = Math.max(...paramMatches.map(m => parseInt(m.match(/\d+/)[0])));
+                            }
+                        }
+                    }
+                }
+                
+                return {
+                    ...tpl,
+                    variableMetrics: {
+                        bodyVariables: bodyVars,
+                        headerVariables: headerVars,
+                        totalVariables: bodyVars + headerVars,
+                        headerFormat
+                    }
+                };
+            });
+
             // PERSIST to Client model so backend can use them for param detection
             await Client.updateOne(
                 { clientId },

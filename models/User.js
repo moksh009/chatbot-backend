@@ -25,6 +25,7 @@ const UserSchema = new mongoose.Schema({
   tourCompletedAt:  { type: Date },
   tourSkippedAt:    { type: Date },
   isLifetimeAdmin: { type: Boolean, default: false }, // Objective 1: God Mode Bypass
+  lastAssignedTimestamp: { type: Date }, // For Round-Robin routing
   tasks: [{
     title:       { type: String, required: true },
     description: { type: String },
