@@ -238,6 +238,7 @@ app.use('/api/client/:clientId', dynamicClientRouter);
 app.use('/api/business', businessRoutes);
 app.use('/api/admin', adminRoutes); // Super Admin Route Registration
 app.use('/api/templates', templatesRoutes);
+app.use('/api/auto-templates', require('./routes/autoTemplates'));
 app.use('/api/whatsapp', whatsappRoutes);
 const whatsappFlowsRoutes = require('./routes/whatsappFlows');
 app.use('/api/whatsapp-flows', whatsappFlowsRoutes);
@@ -694,6 +695,7 @@ connectDB()
     require('./services/NlpWorker'); // Starts the BullMQ NLP worker process
     require('./services/TaskWorker'); // Starts the Generic Enterprise Task Worker process (Phase 5)
     require('./workers/igAutomationWorker'); // IG Automation: Comment-to-DM & Story-to-DM workers
+    require('./workers/autoTemplateWorker'); // Auto Template Generation & Staged Meta Submission
 
     // IG Automation: Validate environment variables (non-fatal warnings)
     validateIGEnvironment();

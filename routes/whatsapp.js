@@ -114,4 +114,44 @@ router.post('/send-template', protect, async (req, res) => {
   }
 });
 
+// @route   POST /api/whatsapp/verify
+// @desc    Verify WhatsApp credentials against Meta API
+// @access  Private
+router.post('/verify', protect, async (req, res) => {
+  const { phoneNumberId, wabaId, whatsappToken } = req.body;
+
+  if (!phoneNumberId || !wabaId || !whatsappToken) {
+    return res.status(400).json({ success: false, message: 'phoneNumberId, wabaId, and whatsappToken are required' });
+  }
+
+  try {
+    // Ping Meta API to verify the token and WABA ID
+    const url = `https://graph.facebook.com/v21.0/${wabaId}`;
+    const response = await axios.get(url, {
+      headers: { Authorization: `Bearer ${whatsappToken}` }
+    });
+
+    log.info(`[WhatsApp] Credentials verified successfully for WABA ${wabaId}`);
+    
+    // We don't save the token here, this is just a stateless verification
+    res.json({ success: true, message: 'Credentials verified successfully', data: { id: response.data.id, name: response.data.name } });
+
+  } catch (error) {
+    const errorData = error.response?.data || error.message;
+    const statusCode = error.response?.status || 500;
+    
+    log.error('[WhatsApp] Verification failed', { wabaId, error: errorData });
+
+    // Map 401 to 400 for the frontend to prevent logout loops
+    const finalStatus = statusCode === 401 ? 400 : statusCode;
+    const friendlyMessage = translateWhatsAppError(errorData) || 'Failed to verify Meta credentials. Please check your token.';
+
+    res.status(finalStatus).json({ 
+      success: false, 
+      message: friendlyMessage, 
+      details: errorData 
+    });
+  }
+});
+
 module.exports = router;

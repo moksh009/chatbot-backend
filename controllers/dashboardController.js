@@ -75,9 +75,9 @@ exports.getBatchData = async (req, res) => {
       // 2: pending_support
       widgets.includes('pending_support') ? Conversation.find({ 
         clientId, 
-        status: { $in: ['HUMAN_TAKEOVER', 'OPEN'] },
+        status: { $in: ['HUMAN_TAKEOVER', 'OPEN', 'BOT_ACTIVE'] },
         requiresAttention: true 
-      }).select('phone lastMessage snippet status').limit(20).lean() : Promise.resolve([]),
+      }).select('phone lastMessage snippet status lastMessageAt customerName').limit(20).lean() : Promise.resolve([]),
 
       // 3: competitor_intel
       widgets.includes('competitor_intel') ? Competitor.find({ 

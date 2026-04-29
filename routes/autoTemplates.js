@@ -1,0 +1,423 @@
+"use strict";
+
+const express = require('express');
+const router = express.Router();
+const { protect } = require('../middleware/auth');
+const Client = require('../models/Client');
+const MetaTemplate = require('../models/MetaTemplate');
+const TemplateGenerationJob = require('../models/TemplateGenerationJob');
+const SubmissionQueueItem = require('../models/SubmissionQueueItem');
+const SubmissionLog = require('../models/SubmissionLog');
+const { generationQueue, rescheduleSubmissionCheck } = require('../workers/autoTemplateQueues');
+const { withShopifyRetry } = require('../utils/shopifyHelper');
+const { decrypt } = require('../utils/encryption');
+
+// ─── Middleware: resolve clientId from query or body ───────────────────────
+function resolveClientId(req) {
+  return req.query.clientId || req.body.clientId || req.user?.clientId;
+}
+
+// ─── GET /api/auto-templates/status ───────────────────────────────────────
+router.get('/status', protect, async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
+
+    const job = await TemplateGenerationJob.findOne({ clientId }).lean();
+    if (!job) return res.json({ success: true, job: null, counts: null });
+
+    const counts = await MetaTemplate.aggregate([
+      { $match: { clientId, source: 'auto_generated' } },
+      { $group: { _id: '$submissionStatus', count: { $sum: 1 } } }
+    ]);
+
+    const statusMap = {};
+    counts.forEach(c => { statusMap[c._id] = c.count; });
+
+    res.json({ success: true, job, counts: statusMap });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── GET /api/auto-templates/drafts ───────────────────────────────────────
+router.get('/drafts', protect, async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
+
+    const templates = await MetaTemplate.find({ clientId, source: 'auto_generated' })
+      .sort({ queuePosition: 1, createdAt: 1 })
+      .lean();
+
+    res.json({ success: true, templates });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── POST /api/auto-templates/start ───────────────────────────────────────
+router.post('/start', protect, async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
+
+    // Idempotency: if already running, return current state
+    const existingJob = await TemplateGenerationJob.findOne({ clientId });
+    if (existingJob && ['generating', 'submitting', 'generation_complete'].includes(existingJob.status)) {
+      return res.json({ success: true, message: 'Generation already in progress', job: existingJob });
+    }
+
+    const client = await Client.findOne({ clientId }).lean();
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    // Check Meta connection
+    const wabaId = client.wabaId || client.whatsapp?.wabaId;
+    const token = client.whatsappToken || client.whatsapp?.accessToken;
+    if (!wabaId || !token) {
+      return res.status(400).json({ success: false, message: 'Meta WhatsApp Business Account not connected' });
+    }
+
+    // Fetch products from Shopify (if connected)
+    let products = [];
+    if (client.shopDomain && client.shopifyAccessToken) {
+      try {
+        products = await withShopifyRetry(clientId, async (shop) => {
+          const response = await shop.get('/products.json?limit=10&status=active');
+          return (response.data.products || []).map(p => ({
+            id: p.id.toString(),
+            handle: p.handle,
+            title: p.title,
+            price: p.variants?.[0]?.price || '0',
+            image: p.image?.src || null,
+            description: p.body_html ? p.body_html.replace(/<[^>]*>/g, '').slice(0, 200) : '',
+            url: `https://${client.shopDomain}/products/${p.handle}`
+          }));
+        });
+      } catch (shopifyErr) {
+        console.warn(`[AutoTemplates] Shopify fetch failed for ${clientId}:`, shopifyErr.message);
+        // Continue without products — fixed templates will still generate
+      }
+    }
+
+    // 5 fixed + up to 10 products
+    const totalTemplates = 5 + products.length;
+
+    // Create or reset job tracker
+    await TemplateGenerationJob.findOneAndUpdate(
+      { clientId },
+      {
+        $set: {
+          status: 'generating',
+          totalTemplates,
+          generatedCount: 0,
+          submittedCount: 0,
+          approvedCount: 0,
+          rejectedCount: 0,
+          failedGenerationCount: 0,
+          pausedByUser: false,
+          startedAt: new Date(),
+          completedAt: null,
+          nextBatchCheckAt: null,
+          lastBatchSubmittedAt: null,
+          updatedAt: new Date()
+        },
+        $setOnInsert: { createdAt: new Date() }
+      },
+      { upsert: true, new: true }
+    );
+
+    // Clear old drafts for this client (regeneration support)
+    await MetaTemplate.deleteMany({ clientId, source: 'auto_generated', submissionStatus: { $in: ['draft', 'generation_failed'] } });
+    await SubmissionQueueItem.deleteMany({ clientId, status: 'queued' });
+
+    // Enqueue fixed template generation jobs
+    const fixedIds = ['order_confirmed', 'shipping_update', 'order_delivered', 'cart_recovery_1', 'cart_recovery_2'];
+    for (const fixedId of fixedIds) {
+      if (generationQueue) {
+        await generationQueue.add('generate', {
+          clientId,
+          templateType: 'fixed',
+          fixedTemplateId: fixedId,
+          productId: fixedId
+        }, { attempts: 3, backoff: { type: 'exponential', delay: 3000 } });
+      }
+    }
+
+    // Enqueue product template generation jobs
+    for (const product of products) {
+      if (generationQueue) {
+        await generationQueue.add('generate', {
+          clientId,
+          templateType: 'product',
+          productId: product.id,
+          productHandle: product.handle,
+          productName: product.title,
+          productDescription: product.description,
+          productPrice: product.price,
+          productPageUrl: product.url
+        }, { attempts: 3, backoff: { type: 'exponential', delay: 3000 } });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Generation started for ${totalTemplates} templates (5 fixed + ${products.length} product)`,
+      totalTemplates
+    });
+  } catch (err) {
+    console.error('[AutoTemplates] Start error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── PATCH /api/auto-templates/dismiss ────────────────────────────────────
+router.patch('/dismiss', protect, async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
+
+    await TemplateGenerationJob.findOneAndUpdate(
+      { clientId },
+      { $set: { dismissedAt: new Date(), autoDismissed: true, updatedAt: new Date() } },
+      { upsert: true }
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── PATCH /api/auto-templates/pause-toggle ───────────────────────────────
+router.patch('/pause-toggle', protect, async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
+
+    const job = await TemplateGenerationJob.findOne({ clientId });
+    if (!job) return res.status(404).json({ success: false, message: 'No generation job found' });
+
+    const newPausedState = !job.pausedByUser;
+    job.pausedByUser = newPausedState;
+    job.status = newPausedState ? 'paused' : 'submitting';
+    job.updatedAt = new Date();
+    await job.save();
+
+    // If unpausing, trigger scheduler check immediately
+    if (!newPausedState) {
+      await rescheduleSubmissionCheck(clientId, 0.1);
+    }
+
+    res.json({ success: true, paused: newPausedState });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── GET /api/auto-templates/drafts/:id ───────────────────────────────────────
+router.get('/drafts/:id', protect, async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
+
+    const template = await MetaTemplate.findOne({ _id: req.params.id, clientId, source: 'auto_generated' }).lean();
+    if (!template) return res.status(404).json({ success: false, message: 'Draft not found' });
+
+    res.json({ success: true, template });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── PUT /api/auto-templates/drafts/:id ───────────────────────────────────────
+router.put('/drafts/:id', protect, async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
+
+    const { name, category, language, components } = req.body;
+    
+    // Validate it's still in a modifiable state
+    const existing = await MetaTemplate.findOne({ _id: req.params.id, clientId, source: 'auto_generated' });
+    if (!existing) return res.status(404).json({ success: false, message: 'Draft not found' });
+    
+    if (!['draft', 'queued', 'generation_failed'].includes(existing.submissionStatus)) {
+      return res.status(400).json({ success: false, message: `Cannot edit template in status: ${existing.submissionStatus}` });
+    }
+
+    // Parse components back into schema fields
+    const headerComp = components.find(c => c.type === 'HEADER');
+    const bodyComp = components.find(c => c.type === 'BODY');
+    const footerComp = components.find(c => c.type === 'FOOTER');
+    const buttonsComp = components.find(c => c.type === 'BUTTONS');
+
+    const updateFields = {
+      name,
+      category,
+      language,
+      headerType: headerComp?.format || 'TEXT',
+      headerValue: headerComp?.text || headerComp?.example?.header_handle?.[0] || '',
+      body: bodyComp?.text || '',
+      footerText: footerComp?.text || null,
+      buttons: buttonsComp?.buttons || [],
+      updatedAt: new Date()
+    };
+
+    // If it was generation_failed, reset to draft
+    if (existing.submissionStatus === 'generation_failed') {
+      updateFields.submissionStatus = 'draft';
+    }
+
+    const template = await MetaTemplate.findOneAndUpdate(
+      { _id: req.params.id, clientId },
+      { $set: updateFields },
+      { new: true }
+    );
+
+    res.json({ success: true, template });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── POST /api/auto-templates/regenerate ──────────────────────────────────
+router.post('/regenerate', protect, async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
+
+    // Delete unsubmitted drafts and queue items
+    await MetaTemplate.deleteMany({ clientId, source: 'auto_generated', submissionStatus: { $in: ['draft', 'generation_failed', 'queued'] } });
+    await SubmissionQueueItem.deleteMany({ clientId, status: 'queued' });
+
+    // Reset the job tracker to idle so /start can re-trigger
+    await TemplateGenerationJob.findOneAndUpdate(
+      { clientId },
+      { $set: { status: 'idle', updatedAt: new Date() } }
+    );
+
+    res.json({ success: true, message: 'Old drafts cleared. Call /start to regenerate.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── POST /api/auto-templates/trigger-next-batch ──────────────────────────
+router.post('/trigger-next-batch', protect, async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
+
+    // HARD CHECK: Never Stack on Pending — server-side enforcement
+    const pendingCount = await MetaTemplate.countDocuments({ clientId, submissionStatus: 'pending_meta_review' });
+    if (pendingCount > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot submit while ${pendingCount} template(s) are pending Meta review`,
+        pendingCount
+      });
+    }
+
+    await rescheduleSubmissionCheck(clientId, 0.1); // Trigger immediately
+    res.json({ success: true, message: 'Next batch triggered' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── POST /api/auto-templates/retry/:templateId ───────────────────────────
+router.post('/retry/:templateId', protect, async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    const { templateId } = req.params;
+    if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
+
+    const template = await MetaTemplate.findById(templateId);
+    if (!template || template.clientId !== clientId) {
+      return res.status(404).json({ success: false, message: 'Template not found' });
+    }
+
+    if (!['submission_failed', 'rejected', 'generation_failed'].includes(template.submissionStatus)) {
+      return res.status(400).json({ success: false, message: 'Template cannot be retried in its current state' });
+    }
+
+    if (template.submissionStatus === 'generation_failed') {
+      // Re-generate via queue
+      template.submissionStatus = 'draft';
+      await template.save();
+      if (generationQueue) {
+        await generationQueue.add('generate', {
+          clientId,
+          templateType: template.autoGenProductId && !['order_confirmed', 'shipping_update', 'order_delivered', 'cart_recovery_1', 'cart_recovery_2'].includes(template.autoGenProductId) ? 'product' : 'fixed',
+          fixedTemplateId: template.autoGenProductId,
+          productId: template.autoGenProductId
+        }, { attempts: 3, backoff: { type: 'exponential', delay: 3000 } });
+      }
+    } else {
+      // Re-submit: reset to queued
+      template.submissionStatus = 'queued';
+      template.rejectionReason = null;
+      template.metaRetryCount = (template.metaRetryCount || 0) + 1;
+      await template.save();
+
+      // Create a new queue item at the front
+      await SubmissionQueueItem.create({
+        clientId,
+        templateId: template._id,
+        queuePosition: 0,
+        batchNumber: 0,
+        status: 'queued'
+      });
+
+      await rescheduleSubmissionCheck(clientId, 0.5);
+    }
+
+    res.json({ success: true, message: 'Retry initiated' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── GET /api/auto-templates/submission-log ───────────────────────────────
+router.get('/submission-log', protect, async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
+
+    const total = await SubmissionLog.countDocuments({ clientId });
+    const logs = await SubmissionLog.find({ clientId })
+      .sort({ timestamp: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean();
+
+    res.json({ success: true, logs, total, page, totalPages: Math.ceil(total / limit) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── GET /api/auto-templates/commerce-check ───────────────────────────────
+router.get('/commerce-check', protect, async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
+
+    const client = await Client.findOne({ clientId }).select('shopDomain shopifyAccessToken shopifyConnectionStatus').lean();
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    const isConnected = !!(client.shopDomain && client.shopifyAccessToken);
+    res.json({
+      success: true,
+      shopifyConnected: isConnected,
+      shopifyStatus: client.shopifyConnectionStatus || 'unknown'
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+module.exports = router;

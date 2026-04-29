@@ -925,6 +925,19 @@ router.patch('/my-settings', protect, async (req, res) => {
 
     if (!updated) return res.status(404).json({ message: 'Client not found' });
 
+    // Auto Template: Emit metaConnected when wabaId is saved for the first time
+    if (wabaId && wabaId.trim()) {
+      try {
+        const { getIO } = require('../utils/socket');
+        const TemplateGenerationJob = require('../models/TemplateGenerationJob');
+        const existingJob = await TemplateGenerationJob.findOne({ clientId: targetClientId }).lean();
+        // Only emit if no generation job exists yet (first-time connection)
+        if (!existingJob) {
+          getIO().to(`client_${targetClientId}`).emit('metaConnected', { clientId: targetClientId });
+        }
+      } catch (socketErr) { /* non-fatal */ }
+    }
+
     // PHASE: Migrate and Sync visualFlows to the new WhatsAppFlow schema
     if (visualFlows !== undefined && Array.isArray(visualFlows)) {
       const WhatsAppFlow = require('../models/WhatsAppFlow');

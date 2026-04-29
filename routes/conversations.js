@@ -1723,7 +1723,7 @@ router.post('/:id/resolve', protect, async (req, res) => {
         const conversation = await Conversation.findById(req.params.id);
         if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found' });
 
-        conversation.status = 'BOT_ACTIVE';
+        conversation.status = 'CLOSED';
         conversation.requiresAttention = false;
         conversation.botStatus = 'active';
         conversation.botPaused = false;
@@ -1731,7 +1731,7 @@ router.post('/:id/resolve', protect, async (req, res) => {
         conversation.resolvedAt = new Date();
         
         conversation.internalNotes.push({
-            content: `Ticket resolved by ${req.user.name || 'Agent'}`,
+            content: `Ticket marked as RESOLVED by ${req.user.name || 'Agent'}. Bot remains active for future messages.`,
             authorName: 'System',
             createdAt: new Date()
         });
