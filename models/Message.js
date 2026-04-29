@@ -30,9 +30,7 @@ const MessageSchema = new mongoose.Schema({
   voiceProcessed: { type: Boolean, default: false },
   originalType: { type: String },
 
-  // Phase 26 Sentiment Analysis
-  sentiment: { type: String, enum: ['Positive', 'Neutral', 'Negative', 'Frustrated', 'Urgent', 'Unknown'], default: 'Unknown' },
-  sentimentScore: { type: Number, default: 0 },
+
 
   // Phase 28 Bidirectional Translation
   translatedContent: { type: String, default: '' },

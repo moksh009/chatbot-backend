@@ -25,6 +25,14 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
         status:            'HUMAN_TAKEOVER'
       });
       
+      try {
+        const AdLead = require("../models/AdLead");
+        await AdLead.findOneAndUpdate(
+          { phoneNumber: phone, clientId: client.clientId },
+          { $set: { pendingSupport: true } }
+        );
+      } catch (err) { console.error("[NodeActions] ESCALATE_HUMAN AdLead update error:", err.message); }
+      
       if (io) {
         io.to(`client_${client.clientId}`).emit("attention_required", {
           phone,

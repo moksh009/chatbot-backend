@@ -5,10 +5,11 @@ async function connectDB(){
     try {
         console.log("Attempting to connect to MongoDB...");
         const connectionInstance = await mongoose.connect(`${process.env.MONGODB_URI}`, {
-            serverSelectionTimeoutMS: 5000, // Timeout after 5s instead of 30s
-            socketTimeoutMS: 45000, // Close sockets after 45s of inactivity
-            maxPoolSize: 10, // Optimized for Render free tier (was 100)
-            minPoolSize: 2,  // Keep 2 active at all times (was 10)
+            serverSelectionTimeoutMS: 5000,
+            socketTimeoutMS: 45000,
+            maxPoolSize: 10,
+            minPoolSize: 2,
+            family: 4, // Force IPv4 to resolve SSL/TLS handshake issues on local network
         })
         console.log(`\n MongoDB connected !! DB HOST: ${connectionInstance.connection.host}`);
 

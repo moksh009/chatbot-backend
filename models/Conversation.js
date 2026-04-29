@@ -23,12 +23,7 @@ const ConversationSchema = new mongoose.Schema({
   
   tags: [{ type: String }],    // e.g., 'Lead', 'Complaint', 'VIP'
   labels: [{ type: String }],  // Phase 21: Team inbox labels e.g. 'billing', 'support'
-  internalNotes: [{
-    content:   String,
-    authorId:  mongoose.Schema.Types.ObjectId,
-    authorName:String,
-    createdAt: { type: Date, default: Date.now }
-  }],
+
   lastStepId: { type: String, default: null }, // For ReactFlow graph traversal state
   isBotPaused: { type: Boolean, default: false }, // Alias for UI compatibility
   
@@ -84,13 +79,6 @@ const ConversationSchema = new mongoose.Schema({
   // Phase 20: Active Flow Tracking
   activeFlowId: { type: String, default: null }, // Which visualFlow is currently running
 
-  // Phase 23: Track 6 - AI Intelligence
-  sentiment: { 
-    type: String, 
-    enum: ['Positive', 'Neutral', 'Negative', 'Frustrated', 'Urgent', 'Unknown'], 
-    default: 'Neutral' 
-  },
-  sentimentScore: { type: Number, default: 0 },
   lastSummaryUpdate: { type: Date },
 
   // Phase 23: Track 7 - Multi-Language
@@ -130,7 +118,7 @@ ConversationSchema.index({ clientId: 1, status: 1 });
 ConversationSchema.index({ clientId: 1, botStatus: 1 });
 ConversationSchema.index({ clientId: 1, requiresAttention: 1 });
 ConversationSchema.index({ clientId: 1, assignedTo: 1 });
-ConversationSchema.index({ clientId: 1, sentiment: 1 });
+
 ConversationSchema.index({ clientId: 1, unreadCount: -1 });
 ConversationSchema.index({ clientId: 1, 'lastDetectedIntent.intentName': 1 });
 ConversationSchema.index({ clientId: 1, firstInboundAt: 1, firstResponseAt: 1 });

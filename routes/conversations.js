@@ -69,7 +69,7 @@ router.get('/', protect, async (req, res) => {
         .sort({ lastMessageAt: -1 })
         .skip(skip)
         .limit(limit)
-        .select('_id phone customerName lastMessage lastMessageAt channel status unreadCount sentiment assignedTo isBotPaused botPaused requiresAttention attentionReason lastDetectedIntent summary')
+        .select('_id phone customerName lastMessage lastMessageAt channel status unreadCount assignedTo isBotPaused botPaused requiresAttention attentionReason lastDetectedIntent summary')
         .populate('assignedTo', 'name')
         .lean(),
       Conversation.countDocuments(query)
@@ -218,7 +218,7 @@ router.get('/:id/full-context', protect, async (req, res) => {
     
     // 1. Fetch main conversation
     const conversation = await Conversation.findOne({ _id: id, clientId })
-      .select('phone customerName status botPaused botStatus unreadCount channel assignedTo sentiment summary lastDetectedIntent requiresAttention attentionReason internalNotes')
+      .select('phone customerName status botPaused botStatus unreadCount channel assignedTo summary lastDetectedIntent requiresAttention attentionReason')
       .lean();
       
     if (!conversation) {
@@ -239,7 +239,7 @@ router.get('/:id/full-context', protect, async (req, res) => {
     const phoneSuffix = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
     
     // 2. Load all secondary data concurrently
-    const [messages, lead, orders, wallet, activeSequence] = await Promise.all([
+    const [messages, lead, orders, wallet, activeSequence, notes] = await Promise.all([
       // Messages
       Message.find({ conversationId: id })
         .sort({ timestamp: -1 })
@@ -317,8 +317,21 @@ router.get('/:id/full-context', protect, async (req, res) => {
            .select('name status steps')
            .lean();
          } catch { return null; }
+      })(),
+      
+      // Notes
+      (async () => {
+         try {
+           const ConversationNote = require('../models/ConversationNote');
+           return await ConversationNote.find({ conversationId: id }).sort({ createdAt: 1 }).lean();
+         } catch { return []; }
       })()
     ]);
+    
+    // Attach notes for UI backwards compatibility
+    if (conversation) {
+      conversation.internalNotes = notes || [];
+    }
     
     res.json({ 
       conversation, 
@@ -837,26 +850,25 @@ router.post('/:id/notes', protect, async (req, res) => {
     const query = { _id: req.params.id };
     if (req.user.role !== 'SUPER_ADMIN') query.clientId = req.user.clientId;
 
-    const note = {
+    const conversation = await Conversation.findOne(query);
+    if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
+
+    const ConversationNote = require('../models/ConversationNote');
+    const note = await ConversationNote.create({
+      conversationId: conversation._id,
+      clientId: conversation.clientId,
       content: content.trim(),
       authorId: req.user._id,
       authorName: req.user.name || req.user.email,
       createdAt: new Date()
-    };
-
-    const conversation = await Conversation.findOneAndUpdate(
-      query,
-      { $push: { internalNotes: note } },
-      { new: true }
-    );
-    if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
+    });
 
     const io = req.app.get('socketio');
     if (io) io.to(`client_${conversation.clientId}`).emit('internal_note_added', { conversationId: conversation._id, note });
 
     res.json({ success: true, note, conversation });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ message: 'Server Error', error: error.message });
   }
 });
 
@@ -1025,7 +1037,7 @@ router.post('/:id/generate-outreach', protect, async (req, res) => {
 // @desc    Send an email to a lead from LiveChat
 // @access  Private
 router.post('/:id/send-email', protect, async (req, res) => {
-  const { subject, body, toEmail } = req.body;
+  const { subject, body, toEmail, scheduleDate } = req.body;
 
   try {
     const query = { _id: req.params.id };
@@ -1038,8 +1050,38 @@ router.post('/:id/send-email', protect, async (req, res) => {
     const client = await Client.findOne({ clientId: conversation.clientId });
     
     // Check if the old SMTP is configured, OR the new Resend config
-    if (!client?.resendApiKey && (!client?.emailUser || !client?.emailAppPassword)) {
+    if (!client?.resendApiKey && !client?.emailUser) {
       return res.status(400).json({ message: 'Email not configured for this client' });
+    }
+
+    if (scheduleDate) {
+      const ScheduledMessage = require('../models/ScheduledMessage');
+      const scheduledMsg = new ScheduledMessage({
+        clientId: conversation.clientId,
+        phone: toEmail,
+        channel: 'email',
+        messageType: 'text',
+        content: { subject, body, toEmail },
+        sendAt: new Date(scheduleDate),
+        status: 'pending',
+        sourceType: 'follow_up',
+        sourceId: conversation._id
+      });
+      await scheduledMsg.save();
+      
+      const newMessage = await Message.create({
+        clientId: conversation.clientId,
+        conversationId: conversation._id,
+        from: 'agent',
+        to: toEmail,
+        content: `[Scheduled Email] ${subject}\n\nScheduled for ${new Date(scheduleDate).toLocaleString()}`,
+        status: 'sent',
+        channel: 'email',
+        messageType: 'text',
+        timestamp: new Date()
+      });
+      
+      return res.json({ success: true, message: 'Email scheduled successfully', scheduledMessage: scheduledMsg });
     }
 
     let newMessage;
@@ -1618,6 +1660,67 @@ router.get('/:clientId/:phone/context', protect, async (req, res) => {
                 sentAt: camp.sentAt
             }))
         });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+router.post('/:id/resolve', protect, async (req, res) => {
+    try {
+        const conversation = await Conversation.findById(req.params.id);
+        if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found' });
+
+        conversation.status = 'BOT_ACTIVE';
+        conversation.requiresAttention = false;
+        conversation.botStatus = 'active';
+        conversation.botPaused = false;
+        conversation.isBotPaused = false;
+        conversation.resolvedAt = new Date();
+        
+        conversation.internalNotes.push({
+            content: `Ticket resolved by ${req.user.name || 'Agent'}`,
+            authorName: 'System',
+            createdAt: new Date()
+        });
+
+        await conversation.save();
+
+        try {
+            const AdLead = require('../models/AdLead');
+            await AdLead.findOneAndUpdate(
+                { phoneNumber: conversation.phone, clientId: conversation.clientId },
+                { $set: { pendingSupport: false } }
+            );
+        } catch (err) {}
+
+        const io = req.app.get('socketio');
+        if (io) {
+            io.to(`client_${conversation.clientId}`).emit('conversationUpdated', {
+                conversationId: conversation._id,
+                status: conversation.status,
+                requiresAttention: conversation.requiresAttention,
+                botStatus: conversation.botStatus
+            });
+            io.to(`client_${conversation.clientId}`).emit('botStatusChanged', {
+                conversationId: conversation._id,
+                botStatus: conversation.botStatus
+            });
+        }
+
+        res.json({ success: true, conversation });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+router.post('/:id/clear-intent', protect, async (req, res) => {
+    try {
+        const conversation = await Conversation.findByIdAndUpdate(
+            req.params.id,
+            { $set: { "lastDetectedIntent.intentName": null, "lastDetectedIntent.confidenceScore": 0, "lastDetectedIntent.detectedAt": null } },
+            { new: true }
+        );
+        res.json({ success: true, lastDetectedIntent: conversation.lastDetectedIntent });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }

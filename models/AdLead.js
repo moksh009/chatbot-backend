@@ -59,6 +59,10 @@ const adLeadSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  pendingSupport: {
+    type: Boolean,
+    default: false
+  },
   loyaltyTier: {
     type: String,
     default: 'Bronze'
@@ -170,7 +174,7 @@ const adLeadSchema = new mongoose.Schema({
   birthdayMsgSent:{ type: Boolean,default: false },
   
   // Phase 3: Sales Velocity & CRM Alpha
-  sentimentScore:  { type: Number, default: 50 }, // 0-100 (Negative to Positive)
+
   inboundIntent:   { type: String, default: 'neutral' }, // 'inquiry', 'purchase', 'complaint', 'support'
   lastScoredAt:    { type: Date },
   

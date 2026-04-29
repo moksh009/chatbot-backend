@@ -182,19 +182,23 @@ router.get('/realtime', protect, async (req, res) => {
     // Fetch client name (lightweight — indexed unique lookup)
     const client = await Client.findOne({ clientId }).select('businessName name').lean();
 
-    // Fetch real-time carts and link clicks for today atomically
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
+    // Phase 28: Timeline Selector Integration
+    const days = parseInt(req.query.days) || 1;
+    const startDate = new Date();
+    if (days > 1) {
+      startDate.setDate(startDate.getDate() - (days - 1));
+    }
+    startDate.setHours(0, 0, 0, 0);
 
     const [realtimeCarts, realtimeClicks] = await Promise.all([
-      require('../models/PixelEvent').countDocuments({ clientId, eventName: { $in: ['product_added_to_cart', 'add_to_cart', 'checkout_started'] }, timestamp: { $gte: startOfToday } }),
-      require('../models/LinkClickEvent').countDocuments({ clientId, timestamp: { $gte: startOfToday } })
+      require('../models/PixelEvent').countDocuments({ clientId, eventName: { $in: ['product_added_to_cart', 'add_to_cart', 'checkout_started'] }, timestamp: { $gte: startDate } }),
+      require('../models/LinkClickEvent').countDocuments({ clientId, timestamp: { $gte: startDate } })
     ]);
 
     // Task 1.2: Human Handled & AI Handled
     const ConversationAssignment = require('../models/ConversationAssignment');
     const humanHandledAgg = await ConversationAssignment.aggregate([
-      { $match: { clientId, assignedAt: { $gte: startOfToday } } },
+      { $match: { clientId, assignedAt: { $gte: startDate } } },
       { $group: { _id: "$conversationId" } },
       { $count: "count" }
     ]);
@@ -202,7 +206,7 @@ router.get('/realtime', protect, async (req, res) => {
 
     const Message = require('../models/Message');
     const aiHandledAgg = await Message.aggregate([
-      { $match: { clientId, timestamp: { $gte: startOfToday }, direction: 'outgoing' } },
+      { $match: { clientId, timestamp: { $gte: startDate }, direction: 'outgoing' } },
       { $group: { _id: "$conversationId" } },
       {
         $lookup: {
@@ -210,7 +214,7 @@ router.get('/realtime', protect, async (req, res) => {
           localField: '_id',
           foreignField: 'conversationId',
           pipeline: [
-            { $match: { assignedAt: { $gte: startOfToday } } }
+            { $match: { assignedAt: { $gte: startDate } } }
           ],
           as: 'assignments'
         }
@@ -221,7 +225,7 @@ router.get('/realtime', protect, async (req, res) => {
     const aiHandled = aiHandledAgg[0]?.count || 0;
 
     const attributionAgg = await require('../models/PixelEvent').aggregate([
-      { $match: { clientId, timestamp: { $gte: startOfToday } } },
+      { $match: { clientId, timestamp: { $gte: startDate } } },
       {
         $group: {
           _id: {
@@ -326,7 +330,7 @@ router.get('/leads', protect, async (req, res) => {
         .sort(sortObj)
         .skip(skip)
         .limit(limitNum)
-        .select('name phoneNumber leadScore tags lastInteraction chatSummary cartStatus lastMessageContent lastInboundAt linkClicks email ordersCount totalSpent intentState addToCartCount meta createdAt')
+        .select('name phoneNumber leadScore tags lastInteraction chatSummary cartStatus lastMessageContent lastInboundAt linkClicks email ordersCount totalSpent intentState addToCartCount meta createdAt pendingSupport')
         .lean(),
       AdLead.countDocuments(query),
       AdLead.countDocuments({ clientId, lastInboundAt: { $gte: new Date(new Date().setHours(0,0,0,0)) } }),

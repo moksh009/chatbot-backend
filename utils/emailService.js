@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const { decrypt } = require('./encryption');
 
 /**
  * Create a nodemailer transporter from client's stored email credentials.
@@ -6,7 +7,7 @@ const nodemailer = require('nodemailer');
  */
 function createTransporter(client) {
     const emailUser = client.emailUser || process.env.EMAIL_USER;
-    const emailPass = client.emailAppPassword || process.env.EMAIL_APP_PASSWORD;
+    const emailPass = client.emailAppPassword ? decrypt(client.emailAppPassword) : process.env.EMAIL_APP_PASSWORD;
 
     if (!emailUser || !emailPass) {
         console.warn(`[EmailService] No email credentials for client: ${client.clientId}`);

@@ -12,7 +12,7 @@ const CustomerIntelligenceSchema = new mongoose.Schema({
   
   // Behavioral Profiling (DNA)
   persona: { type: String, enum: ['value_shopper', 'impulse_buyer', 'vip', 'window_shopper', 'bargain_hunter', 'negotiator', 'unknown'], default: 'unknown' },
-  sentimentTrend: { type: String, enum: ['improving', 'stable', 'declining'], default: 'stable' },
+
   preferredLanguage: { type: String, default: 'en' },
   avgMessageLength: { type: Number, default: 0 },
   emojiUsage: { type: Number, default: 0 }, // 0-1 frequency

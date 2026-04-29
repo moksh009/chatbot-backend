@@ -1009,6 +1009,12 @@ async function runDualBrainEngine(parsedMessage, client) {
       }
       // Optional: Pause bot or mark for takeover
       await Conversation.findByIdAndUpdate(convo._id, { status: 'HUMAN_TAKEOVER', requiresAttention: true });
+      try {
+        await AdLead.findOneAndUpdate(
+          { phoneNumber: phone, clientId: client.clientId },
+          { $set: { pendingSupport: true } }
+        );
+      } catch (err) {}
   }
 
   // Phase 17: Deduplication Update

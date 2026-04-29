@@ -35,16 +35,6 @@ const StatCacheSchema = new mongoose.Schema({
   whatsappRecoveriesPurchased: { type: Number, default: 0 },
   adminFollowupsPurchased:     { type: Number, default: 0 },
 
-  // === Sentiment Distribution ===
-  sentimentCounts: {
-    Positive:   { type: Number, default: 0 },
-    Neutral:    { type: Number, default: 0 },
-    Negative:   { type: Number, default: 0 },
-    Frustrated: { type: Number, default: 0 },
-    Urgent:     { type: Number, default: 0 },
-    Unknown:    { type: Number, default: 0 }
-  },
-
   // === Metadata ===
   lastRebuilt:  { type: Date, default: Date.now },
   todayResetAt: { type: Date, default: Date.now }
