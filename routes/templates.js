@@ -97,11 +97,14 @@ router.get('/sync', protect, async (req, res) => {
 
             res.json({ success: true, data: templates });
         } catch (metaErr) {
+            const status = metaErr.response?.status;
+            const isClientError = status >= 400 && status < 500;
             console.error('[Template API] Meta Sync Error:', metaErr.response?.data || metaErr.message);
-            res.status(metaErr.response?.status || 400).json({ 
+            res.status(isClientError ? 400 : 500).json({ 
                 success: false, 
                 message: 'Failed to sync templates from Meta', 
-                details: metaErr.response?.data 
+                details: metaErr.response?.data,
+                isIntegrationAuthError: status === 401 || status === 403
             });
         }
     } catch (error) {
@@ -212,8 +215,15 @@ router.post('/create', protect, async (req, res) => {
             });
             res.json({ success: true, data: response.data });
         } catch (metaErr) {
+            const status = metaErr.response?.status;
+            const isClientError = status >= 400 && status < 500;
             console.error('[Template API] Meta Create Error:', metaErr.response?.data || metaErr.message);
-            res.status(400).json({ success: false, message: 'Failed to create template on Meta', details: metaErr.response?.data });
+            res.status(isClientError ? 400 : 500).json({ 
+                success: false, 
+                message: 'Failed to create template on Meta', 
+                details: metaErr.response?.data,
+                isIntegrationAuthError: status === 401 || status === 403
+            });
         }
 
     } catch (error) {
@@ -239,7 +249,14 @@ router.delete('/:name', protect, async (req, res) => {
             });
             res.json({ success: true, message: 'Template deleted successfully' });
         } catch (metaErr) {
-            res.status(400).json({ success: false, message: 'Failed to delete template', details: metaErr.response?.data });
+            const status = metaErr.response?.status;
+            const isClientError = status >= 400 && status < 500;
+            res.status(isClientError ? 400 : 500).json({ 
+                success: false, 
+                message: 'Failed to delete template', 
+                details: metaErr.response?.data,
+                isIntegrationAuthError: status === 401 || status === 403
+            });
         }
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -364,8 +381,15 @@ router.post('/push-standard', protect, async (req, res) => {
             res.json({ success: true, data: response.data });
         } catch (metaErr) {
             const errData = metaErr.response?.data || metaErr.message;
+            const status = metaErr.response?.status;
+            const isClientError = status >= 400 && status < 500;
             console.error('[Template API] Meta Push Error:', JSON.stringify(errData, null, 2));
-            res.status(400).json({ success: false, message: 'Failed to push template to Meta', details: errData });
+            res.status(isClientError ? 400 : 500).json({ 
+                success: false, 
+                message: 'Failed to push template to Meta', 
+                details: errData,
+                isIntegrationAuthError: status === 401 || status === 403
+            });
         }
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });

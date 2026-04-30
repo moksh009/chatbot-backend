@@ -101,9 +101,12 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
     // Capture the exact error string for the frontend to show
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     
-    // RELAY: Instead of hardcoded 400, we forward the actual status and data from Shopify
-    // This allows the frontend to distinguish between Expired Tokens (401) and Configuration Errors (400)
-    res.status(err.response?.status || 500).json({ 
+    const status = err.response?.status;
+    const isClientError = status >= 400 && status < 500;
+    
+    // RELAY: Instead of forwarding 401 directly (which triggers global logout), 
+    // we use 400 to indicate an integration failure.
+    res.status(isClientError ? 400 : 500).json({ 
       success: false, 
       error: `Shopify Hub Error: ${errorString}`, 
       isShopifyAuthError: isAuthError,
@@ -147,9 +150,10 @@ router.get('/:clientId/products', protect, verifyClientAccess, async (req, res) 
   } catch (err) {
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
-    const isAuthError = err.response?.status === 401 || err.response?.status === 403;
-    console.error(`[Products Error] Client: ${clientId}:`, errorString);
-    res.status(isAuthError ? 400 : 500).json({ 
+    const status = err.response?.status;
+    const isAuthError = status === 401 || status === 403;
+    const isClientError = status >= 400 && status < 500;
+    res.status(isClientError ? 400 : 500).json({ 
       success: false, 
       products: [], 
       error: `Shopify Hub Products Error: ${errorString}`, 
@@ -195,11 +199,12 @@ router.get('/:clientId/locations', protect, verifyClientAccess, async (req, res)
     const { clientId } = req.params;
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
-    const isAuthError = err.response?.status === 401 || err.response?.status === 403;
+    const status = err.response?.status;
+    const isAuthError = status === 401 || status === 403;
+    const isClientError = status >= 400 && status < 500;
     console.error(`[Locations Error] Client: ${clientId}:`, errorString);
     
-    // RELAY: Forward the real status from Shopify to eliminate hardcoded 400 masking
-    res.status(err.response?.status || 500).json({ 
+    res.status(isClientError ? 400 : 500).json({ 
       success: false, 
       error: errorString, 
       isShopifyAuthError: isAuthError,
@@ -233,9 +238,11 @@ router.put('/:clientId/inventory/set', protect, verifyClientAccess, async (req, 
   } catch (err) {
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
-    const isAuthError = err.response?.status === 401 || err.response?.status === 403;
+    const status = err.response?.status;
+    const isAuthError = status === 401 || status === 403;
+    const isClientError = status >= 400 && status < 500;
     console.error(`[InventoryUpdate Error] Client: ${clientId}:`, errorString);
-    res.status(isAuthError ? 400 : 500).json({ 
+    res.status(isClientError ? 400 : 500).json({ 
       success: false, 
       error: errorString, 
       isShopifyAuthError: isAuthError 
@@ -259,9 +266,11 @@ router.get('/:clientId/customers', protect, verifyClientAccess, async (req, res)
     const { clientId } = req.params;
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
-    const isAuthError = err.response?.status === 401 || err.response?.status === 403;
+    const status = err.response?.status;
+    const isAuthError = status === 401 || status === 403;
+    const isClientError = status >= 400 && status < 500;
     console.error(`[Customers Error] Client: ${clientId}:`, errorString);
-    res.status(isAuthError ? 400 : 500).json({ 
+    res.status(isClientError ? 400 : 500).json({ 
       success: false, 
       error: errorString, 
       isShopifyAuthError: isAuthError 
