@@ -217,18 +217,16 @@ router.get('/:id/full-context', protect, async (req, res) => {
     const clientId = req.user.clientId;
     
     // 1. Fetch main conversation
-    const conversation = await Conversation.findOne({ _id: id, clientId })
-      .select('phone customerName status botPaused botStatus unreadCount channel assignedTo summary lastDetectedIntent requiresAttention attentionReason')
+    let conversation = await Conversation.findOne({ _id: id, clientId })
+      .select('phone customerName status botPaused botStatus unreadCount channel assignedTo summary lastDetectedIntent requiresAttention attentionReason clientId')
       .lean();
       
     if (!conversation) {
       // Allow super admins to view via direct ID if needed
-      const saQuery = req.user.role === 'SUPER_ADMIN' ? { _id: id } : null;
-      if (saQuery) {
-         const saConv = await Conversation.findOne(saQuery).lean();
+      if (req.user.role === 'SUPER_ADMIN') {
+         const saConv = await Conversation.findOne({ _id: id }).lean();
          if (!saConv) return res.status(404).json({ message: 'Conversation not found' });
-         // fallthrough allowing SA
-         Object.assign(conversation || {}, saConv);
+         conversation = saConv;
       } else {
          return res.status(404).json({ message: 'Conversation not found' });
       }
@@ -459,17 +457,17 @@ router.post('/:id/messages', protect, async (req, res) => {
     // so it appears in Bot Intelligence → Corrections tab
     if (conversation.botPaused || conversation.status === 'HUMAN_TAKEOVER' || conversation.status === 'HUMAN_SUPPORT') {
       try {
-        // Find the last BOT outbound message in this conversation
+        // Find the last BOT outgoing message in this conversation
         const botLastMsg = await Message.findOne({
           conversationId: conversation._id,
-          direction: 'outbound',
+          direction: 'outgoing',
           _id: { $ne: newMessage._id } // not the message we just created
         }).sort({ timestamp: -1 }).lean();
 
-        // Find the last user inbound message
+        // Find the last user incoming message
         const userLastMsg = await Message.findOne({
           conversationId: conversation._id,
-          direction: 'inbound'
+          direction: 'incoming'
         }).sort({ timestamp: -1 }).lean();
 
         // Only create training case if both exist and the bot message was recent (within last 10 min)

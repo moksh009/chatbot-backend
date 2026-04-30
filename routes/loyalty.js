@@ -28,7 +28,7 @@ router.post('/backfill', protect, backfillOrderPoints);
 router.post('/send-reminder', protect, sendLoyaltyReminderTemplate);
 
 // Shared routes (used by both chat engine and admin panel)
-router.get('/status', getLoyaltyStatus);
+router.get('/status', protect, getLoyaltyStatus);
 router.post('/redeem', protect, redeemLoyaltyPoints);
 
 // Admin-Only Adjustment & Rewards

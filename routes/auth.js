@@ -30,9 +30,10 @@ function checkOtpRateLimit(email) {
 }
 
 const generateToken = (id, clientId, role) => {
+  if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET environment variable is not configured');
   return jwt.sign(
     { id, clientId, role }, // ✅ Phase R4: Include clientId + role in token payload
-    process.env.JWT_SECRET || 'fallback_secret_dev',
+    process.env.JWT_SECRET,
     { expiresIn: '30d' }
   );
 };
@@ -120,16 +121,21 @@ router.get('/bootstrap', protect, async (req, res) => {
     const [client, unreadCount, todayStats, recentConversations] = await Promise.all([
       // 1. Client settings + User
       Client.findOne({ clientId })
-        .select('clientId businessName name ai.persona adminPhone brand billing trialActive trialEndsAt shopDomain phoneNumberId wabaId whatsappToken shopifyAccessToken shopifyConnectionStatus instagramConnected commerce social whatsapp config visualFlows metaAdsToken metaAdAccountId emailUser emailAppPassword metaAppId geminiApiKey openaiApiKey activePaymentGateway razorpayKeyId razorpaySecret cashfreeAppId cashfreeSecretKey faq')
+        .select('clientId businessName name ai.persona adminPhone brand billing trialActive trialEndsAt shopDomain phoneNumberId wabaId whatsappToken shopifyAccessToken shopifyConnectionStatus instagramConnected instagramPageId instagramUsername instagramProfilePic instagramAccessToken instagramTokenExpiry metaAdsConnected commerce social whatsapp config visualFlows metaAdsToken metaAdAccountId emailUser emailAppPassword metaAppId geminiApiKey openaiApiKey activePaymentGateway razorpayKeyId razorpaySecret cashfreeAppId cashfreeSecretKey faq googleConnected gmailAddress emailMethod')
         .lean()
         .then(c => {
           if (!c) return null;
-          return {
-            ...c,
-            visualFlows: (c.visualFlows || []).map(f => ({
-              id: f.id, name: f.name, platform: f.platform, isActive: f.isActive, nodeCount: f.nodeCount
-            }))
-          };
+          try {
+            return {
+              ...c,
+              visualFlows: (c.visualFlows || []).map(f => ({
+                id: f.id, name: f.name, platform: f.platform, isActive: f.isActive, nodeCount: f.nodeCount
+              }))
+            };
+          } catch (transformErr) {
+            console.error('[Bootstrap] Client transform error:', transformErr.message);
+            return c; // Return raw client data if transform fails
+          }
         }),
       
       // 2. Unread Count across all chats

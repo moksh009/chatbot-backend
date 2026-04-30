@@ -196,7 +196,6 @@ router.get('/:clientId/locations', protect, verifyClientAccess, async (req, res)
     });
     res.json({ success: true, locations });
   } catch (err) {
-    const { clientId } = req.params;
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     const status = err.response?.status;
@@ -263,7 +262,6 @@ router.get('/:clientId/customers', protect, verifyClientAccess, async (req, res)
     });
     res.json({ success: true, customers });
   } catch (err) {
-    const { clientId } = req.params;
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     const status = err.response?.status;
@@ -383,7 +381,9 @@ router.patch('/:clientId/discounts/ai-toggle', protect, verifyClientAccess, asyn
  */
 router.get('/:clientId/settings', protect, verifyClientAccess, async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
+    const client = await Client.findOne({ clientId: req.params.clientId })
+      .select('automationFlows nicheData flowNodes flowEdges syncedMetaTemplates shopifyConnectionStatus lastShopifyError')
+      .lean();
     if (!client) return res.status(404).json({ error: 'Client not found' });
     
     res.json({
@@ -393,7 +393,7 @@ router.get('/:clientId/settings', protect, verifyClientAccess, async (req, res) 
       flowNodes: client.flowNodes || [],
       flowEdges: client.flowEdges || [],
       syncedMetaTemplates: client.syncedMetaTemplates || [],
-      shopifyConnectionStatus: client.shopifyConnectionStatus || 'connected',
+      shopifyConnectionStatus: client.shopifyConnectionStatus || 'disconnected',
       lastShopifyError: client.lastShopifyError || ''
     });
   } catch (err) {

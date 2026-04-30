@@ -271,7 +271,7 @@ router.post('/:clientId/ai-generate', protect, async (req, res) => {
         
         const client = await Client.findOne({ clientId });
         const { GoogleGenerativeAI } = require("@google/generative-ai");
-        const apiKey = client.openaiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
+        const apiKey = client.geminiApiKey?.trim() || client.openaiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
         const genAI = new GoogleGenerativeAI(apiKey);
         const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         

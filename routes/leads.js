@@ -17,7 +17,7 @@ const { stringify } = require('csv-stringify');
 
 // Multer setup for temporary CSV storage
 const upload = multer({ 
-    dest: '/tmp/csv_uploads/',
+    dest: path.join(__dirname, '../uploads/csv_tmp/'),
     limits: { fileSize: 15 * 1024 * 1024 } // 15MB limit
 });
 

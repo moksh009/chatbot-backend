@@ -61,6 +61,13 @@ router.post("/", verifyToken, async (req, res) => {
 // ─── PUT /api/whitelabel/:id — update config ────────────────────────────────
 router.put("/:id", verifyToken, async (req, res) => {
   try {
+    // Ownership check: only SUPER_ADMIN or the config's reseller can update
+    const existing = await WhitelabelConfig.findById(req.params.id);
+    if (!existing) return res.status(404).json({ success: false, message: "Config not found" });
+    if (req.user.role !== 'SUPER_ADMIN' && String(existing.resellerId) !== String(req.user.id)) {
+      return res.status(403).json({ success: false, message: "Unauthorized: you don't own this config" });
+    }
+
     const config = await WhitelabelConfig.findByIdAndUpdate(
       req.params.id,
       { $set: req.body },
@@ -75,6 +82,13 @@ router.put("/:id", verifyToken, async (req, res) => {
 // ─── DELETE /api/whitelabel/:id ─────────────────────────────────────────────
 router.delete("/:id", verifyToken, async (req, res) => {
   try {
+    // Ownership check: only SUPER_ADMIN or the config's reseller can delete
+    const existing = await WhitelabelConfig.findById(req.params.id);
+    if (!existing) return res.status(404).json({ success: false, message: "Config not found" });
+    if (req.user.role !== 'SUPER_ADMIN' && String(existing.resellerId) !== String(req.user.id)) {
+      return res.status(403).json({ success: false, message: "Unauthorized: you don't own this config" });
+    }
+
     await WhitelabelConfig.findByIdAndDelete(req.params.id);
     res.json({ success: true, message: "White-label config deleted" });
   } catch (err) {

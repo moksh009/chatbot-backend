@@ -1,27 +1,8 @@
 const { google } = require('googleapis');
-const dotenv = require('dotenv');
 
-// Load environment variables from the current directory
-const envPath = require('path').resolve(__dirname, '../.env');
-console.log(`🔍 Looking for .env file at: ${envPath}`);
+// NOTE: dotenv is loaded centrally in index.js. No manual .env parsing needed here.
+// If running this file standalone for testing, uncomment: require('dotenv').config({ path: require('path').resolve(__dirname, '../.env') });
 
-// Manually load the .env file
-const fs = require('fs');
-if (fs.existsSync(envPath)) {
-  const envFile = fs.readFileSync(envPath, 'utf8');
-  const envVars = {};
-  envFile.split('\n').forEach(line => {
-    const match = line.match(/^([^=]+)=(.*)$/);
-    if (match) {
-      const key = match[1].trim();
-      const value = match[2].trim().replace(/^['"](.*)['"]$/, '$1');
-      process.env[key] = value;
-      console.log(`✅ Loaded ${key}=${value.replace(/[^\s]{0,10}.*/, '*****')}`);
-    }
-  });
-} else {
-  console.warn(`⚠️  .env file not found at: ${envPath}`);
-}
 
 const calendar = google.calendar('v3');
 

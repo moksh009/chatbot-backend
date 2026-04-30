@@ -24,10 +24,16 @@ const verifyMetaSignature = (req, res, next) => {
   const elements = signature.split('=');
   const signatureHash = elements[1];
   
+  const appSecret = process.env.META_APP_SECRET;
+  if (!appSecret) {
+    log.error("META_APP_SECRET not configured — cannot verify webhook signature");
+    return res.status(500).send('Webhook verification not configured');
+  }
+  
   // Use req.rawBody if available for accurate HMAC verification
   const payload = req.rawBody ? req.rawBody : JSON.stringify(req.body);
   const expectedHash = crypto
-    .createHmac('sha256', process.env.META_APP_SECRET || 'fallback_secret')
+    .createHmac('sha256', appSecret)
     .update(payload)
     .digest('hex');
 

@@ -3,9 +3,10 @@ const router = express.Router({ mergeParams: true });
 const OnboardingWizard = require('../models/OnboardingWizard');
 const Client = require('../models/Client');
 const log = require('../utils/logger')('OnboardingRoutes');
+const { protect } = require('../middleware/auth');
 
 // Fetch wizard state
-router.get('/:clientId', async (req, res) => {
+router.get('/:clientId', protect, async (req, res) => {
   try {
     const { clientId } = req.params;
     let wizard = await OnboardingWizard.findOne({ clientId }).lean();
@@ -22,7 +23,7 @@ router.get('/:clientId', async (req, res) => {
 });
 
 // Save step data
-router.patch('/step/:stepNumber', async (req, res) => {
+router.patch('/step/:stepNumber', protect, async (req, res) => {
   try {
     const { clientId } = req.body;
     const { stepNumber } = req.params;
@@ -91,7 +92,7 @@ router.patch('/step/:stepNumber', async (req, res) => {
 });
 
 // Reset wizard (admin)
-router.delete('/:clientId', async (req, res) => {
+router.delete('/:clientId', protect, async (req, res) => {
   try {
     const { clientId } = req.params;
     await OnboardingWizard.deleteOne({ clientId });
