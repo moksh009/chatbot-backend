@@ -13,6 +13,7 @@ const { listEvents } = require('../utils/googleCalendar');
 const { protect } = require('../middleware/auth');
 const ActivityLog = require('../models/ActivityLog');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { apiCache } = require('../middleware/apiCache');
 
 // Platform-funded analytics routes always use the platform API key
 const getGeminiClient = () => {
@@ -164,7 +165,7 @@ router.get('/bot-health', protect, async (req, res) => {
   }
 });
 
-router.get('/realtime', protect, async (req, res) => {
+router.get('/realtime', protect, apiCache(60), async (req, res) => {
   try {
     let clientId = req.user.clientId;
     if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
@@ -276,7 +277,7 @@ router.get('/realtime', protect, async (req, res) => {
   }
 });
 
-router.get('/leads', protect, async (req, res) => {
+router.get('/leads', protect, apiCache(30), async (req, res) => {
   try {
     let clientId = req.user.clientId;
     if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
@@ -388,66 +389,48 @@ router.get('/lead/:id', protect, async (req, res) => {
       ? lead.phoneNumber.substring(2)
       : lead.phoneNumber;
 
-    const orders = await Order.find({
-      clientId: lead.clientId,
-      $or: [
-        { phone: lead.phoneNumber },
-        { phone: strippedPhone },
-        { phone: `+91${strippedPhone}` },
-        { phone: `91${strippedPhone}` }
-      ]
-    });
+    const phoneDigits = Array.from(lead.phoneNumber || '').filter(c => c >= '0' && c <= '9').join('');
+    const pSuf = phoneDigits.slice(-10);
 
-    // Fetch related appointments
-    const appointments = await Appointment.find({ phone: lead.phoneNumber, clientId: lead.clientId }).lean();
+    const CustomerIntelligence = require('../models/CustomerIntelligence');
+    const LoyaltyWallet = require('../models/LoyaltyWallet');
+    const LoyaltyTransaction = require('../models/LoyaltyTransaction');
+    const CampaignMessage = require('../models/CampaignMessage');
+    const FollowUpSequence = require('../models/FollowUpSequence');
 
-    // Fetch conversation summary
-    const conversation = await Conversation.findOne({ phone: lead.phoneNumber, clientId: lead.clientId }).lean();
+    const [
+      orders,
+      appointments,
+      conversation,
+      dna,
+      wallet,
+      walletTransactions,
+      marketingLogs,
+      sequences
+    ] = await Promise.all([
+      Order.find({
+        clientId: lead.clientId,
+        $or: [
+          { phone: lead.phoneNumber },
+          { phone: strippedPhone },
+          { phone: `+91${strippedPhone}` },
+          { phone: `91${strippedPhone}` }
+        ]
+      }).lean(),
+      Appointment.find({ phone: lead.phoneNumber, clientId: lead.clientId }).lean(),
+      Conversation.findOne({ phone: lead.phoneNumber, clientId: lead.clientId }).lean(),
+      CustomerIntelligence.findOne({ clientId: lead.clientId, phone: lead.phoneNumber }).lean().catch(() => null),
+      LoyaltyWallet.findOne({ clientId: lead.clientId, phone: new RegExp(pSuf + '$') }).lean().catch(() => null),
+      LoyaltyTransaction.find({ clientId: lead.clientId, phone: new RegExp(pSuf + '$') }).sort({ timestamp: -1 }).limit(5).lean().catch(() => []),
+      CampaignMessage.find({ clientId: lead.clientId, phone: lead.phoneNumber }).populate('campaignId', 'name type').sort({ sentAt: -1 }).limit(20).lean().catch(() => []),
+      FollowUpSequence.find({ clientId: lead.clientId, phone: lead.phoneNumber }).sort({ createdAt: -1 }).limit(10).lean().catch(() => [])
+    ]);
 
     // Fetch recent messages
     let messages = [];
     if (conversation) {
       messages = await Message.find({ conversationId: conversation._id }).sort({ timestamp: -1 }).limit(20).lean();
     }
-
-    // --- Phase 28: Customer Intelligence DNA ---
-    let dna = null;
-    try {
-      const CustomerIntelligence = require('../models/CustomerIntelligence');
-      dna = await CustomerIntelligence.findOne({ clientId: lead.clientId, phone: lead.phoneNumber }).lean();
-    } catch (_) {}
-
-    let wallet = null;
-    let walletTransactions = [];
-    try {
-      const LoyaltyWallet = require('../models/LoyaltyWallet');
-      const LoyaltyTransaction = require('../models/LoyaltyTransaction');
-      // Look up via ending suffix to be safe
-      const phoneDigits = Array.from(lead.phoneNumber || '').filter(c => c >= '0' && c <= '9').join('');
-      const pSuf = phoneDigits.slice(-10);
-      wallet = await LoyaltyWallet.findOne({ 
-        clientId: lead.clientId, 
-        phone: new RegExp(pSuf + '$') 
-      }).lean();
-      
-      if (wallet) {
-          walletTransactions = await LoyaltyTransaction.find({
-              clientId: lead.clientId,
-              phone: new RegExp(pSuf + '$')
-          }).sort({ timestamp: -1 }).limit(5).lean();
-      }
-    } catch (_) {}
-
-    // --- PHASE R2: Marketing Hub Logs ---
-    let marketingLogs = [];
-    try {
-      const CampaignMessage = require('../models/CampaignMessage');
-      marketingLogs = await CampaignMessage.find({ clientId: lead.clientId, phone: lead.phoneNumber })
-        .populate('campaignId', 'name type')
-        .sort({ sentAt: -1 })
-        .limit(20)
-        .lean();
-    } catch (_) {}
 
     // --- Phase 28: Customer Enrichment Engine (Super Fast) ---
     // If name/email/city is missing, inherit from the latest valid order
@@ -522,16 +505,6 @@ router.get('/lead/:id', protect, async (req, res) => {
     }
     // Sort chronological
     journeyLog.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-
-    // --- PHASE 30: Automation Sequences ---
-    let sequences = [];
-    try {
-      const FollowUpSequence = require('../models/FollowUpSequence');
-      sequences = await FollowUpSequence.find({ clientId: lead.clientId, phone: lead.phoneNumber })
-        .sort({ createdAt: -1 })
-        .limit(10)
-        .lean();
-    } catch (_) {}
 
     // Perf: Background update to AdLead so next load is instant
     if (updatedNeeded) {
@@ -631,7 +604,7 @@ router.put('/lead/:phone', protect, async (req, res) => {
 });
 
 // GET /api/analytics/top-leads
-router.get('/top-leads', protect, async (req, res) => {
+router.get('/top-leads', protect, apiCache(60), async (req, res) => {
   try {
     let clientId = req.user.clientId;
     if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
@@ -706,7 +679,7 @@ router.get('/top-leads', protect, async (req, res) => {
 });
 
 // GET /api/analytics/top-products
-router.get('/top-products', protect, async (req, res) => {
+router.get('/top-products', protect, apiCache(60), async (req, res) => {
   try {
     let clientId = req.user.clientId;
     if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
@@ -778,7 +751,7 @@ router.get('/top-products', protect, async (req, res) => {
 });
 
 // GET /api/analytics/receptionist-overview
-router.get('/receptionist-overview', protect, async (req, res) => {
+router.get('/receptionist-overview', protect, apiCache(60), async (req, res) => {
   try {
     let clientId = req.user.clientId;
     if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {

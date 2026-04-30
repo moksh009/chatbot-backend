@@ -125,7 +125,7 @@ router.post('/invite', protect, async (req, res) => {
         }
 
         const clientId = req.user.clientId;
-        const client = await Client.findOne({ clientId });
+        const client = await Client.findOne({ clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
         if (!client) return res.status(404).json({ message: 'Client configuration not found' });
 
         // --- Phase 23: Track 8 - Billing Enforcement (Agents) ---

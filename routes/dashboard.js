@@ -3,6 +3,7 @@ const { resolveClient } = require('../utils/queryHelpers');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
 const dashboardController = require('../controllers/dashboardController');
+const { apiCache } = require('../middleware/apiCache');
 
 /**
  * Phase 29: Dashboard Utility Routes
@@ -11,7 +12,7 @@ const dashboardController = require('../controllers/dashboardController');
 // POST /api/dashboard/batch-data
 // @desc    Fetch data for multiple dashboard widgets in a single optimized request
 // @access  Private
-router.post('/batch-data', protect, dashboardController.getBatchData);
+router.post('/batch-data', protect, apiCache(60), dashboardController.getBatchData);
 
 // Layout management
 router.get('/layout', protect, dashboardController.getLayout);

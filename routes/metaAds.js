@@ -12,7 +12,7 @@ const { platformGenerateJSON } = require("../utils/gemini"); // ✅ Phase R4: Us
 // ─── GET /api/meta-ads/:clientId — list all imported ads ────────────────────
 router.get("/:clientId", verifyToken, async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
+    const client = await Client.findOne({ clientId: req.params.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
 
     const { status, campaign } = req.query;
@@ -51,7 +51,7 @@ router.get("/:clientId", verifyToken, async (req, res) => {
 // ─── POST /api/meta-ads/:clientId/sync — re-import from Meta ────────────────
 router.post("/:clientId/sync", verifyToken, async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
+    const client = await Client.findOne({ clientId: req.params.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
 
     res.json({ success: true, message: "Sync started in background" });
@@ -65,7 +65,7 @@ router.post("/:clientId/sync", verifyToken, async (req, res) => {
 // ─── PUT /api/meta-ads/:clientId/:adId/attach — attach flow to ad ───────────
 router.put("/:clientId/:adId/attach", verifyToken, async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
+    const client = await Client.findOne({ clientId: req.params.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
 
     const { attachedFlowId, attachedSequenceId, customWelcomeMessage } = req.body;
@@ -86,7 +86,7 @@ router.put("/:clientId/:adId/attach", verifyToken, async (req, res) => {
 // ─── GET /api/meta-ads/:clientId/:adId/leads — paginated leads from ad ──────
 router.get("/:clientId/:adId/leads", verifyToken, async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
+    const client = await Client.findOne({ clientId: req.params.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
 
     const page  = parseInt(req.query.page) || 1;
@@ -141,7 +141,7 @@ router.get("/:clientId/connect-url", verifyToken, async (req, res) => {
 // ─── GET /api/meta-ads/:clientId/list-accounts — get all available ad accounts ────────
 router.get("/:clientId/list-accounts", verifyToken, async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
+    const client = await Client.findOne({ clientId: req.params.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
     if (!client || !client.metaAdsToken) return res.status(404).json({ success: false, message: "Meta Ads not connected" });
 
     const accounts = await getAdAccounts(client.metaAdsToken);
@@ -174,7 +174,7 @@ router.post("/:clientId/select-account", verifyToken, async (req, res) => {
 // ─── POST /api/meta-ads/:clientId/analyze — Gemini AI analysis ──────────────
 router.post("/:clientId/analyze", verifyToken, async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
+    const client = await Client.findOne({ clientId: req.params.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
     if (!client.metaAdsToken) {
       return res.status(400).json({ success: false, message: "Meta Ads not connected for this client. Please connect/reconnect first." });
@@ -246,7 +246,7 @@ router.post("/test-template", verifyToken, async (req, res) => {
       return res.status(400).json({ success: false, message: "Missing required fields" });
     }
 
-    const client = await Client.findOne({ clientId });
+    const client = await Client.findOne({ clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
 
     const { sendWhatsAppTemplate } = require("../utils/whatsapp");
@@ -275,7 +275,7 @@ router.post("/test-template", verifyToken, async (req, res) => {
 // before allowing Advanced Access requests. This endpoint triggers that call.
 router.get("/:clientId/test-call", verifyToken, async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
+    const client = await Client.findOne({ clientId: req.params.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
 
     const token = client.metaAdsToken;

@@ -49,8 +49,27 @@ router.get('/:clientId/cod-pipeline', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
-    const orders = await Order.find({ clientId, paymentGateway: 'cod' }).sort({ createdAt: -1 }).limit(100);
-    res.json({ success: true, orders });
+    const { limit = 50, page = 1 } = req.query;
+    const pageNum = parseInt(page);
+    const limitNum = Math.min(parseInt(limit), 200);
+    const skip = (pageNum - 1) * limitNum;
+
+    const query = { clientId, paymentGateway: 'cod' };
+    const [orders, total] = await Promise.all([
+      Order.find(query).sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
+      Order.countDocuments(query)
+    ]);
+
+    res.json({ 
+      success: true, 
+      orders, 
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

@@ -56,7 +56,7 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
 
   try {
     // Check subscription plan (using new validation limits)
-    const client = await Client.findOne({ clientId: req.user.clientId });
+    const client = await Client.findOne({ clientId: req.user.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
     const isV1 = client?.plan === 'CX Agent (V1)' || client?.subscriptionPlan === 'v1';
     if (!client || isV1) {
       try { fs.unlinkSync(req.file.path); } catch {}
@@ -124,7 +124,7 @@ router.post('/from-segment', protect, async (req, res) => {
         if (!segment) return res.status(404).json({ error: 'Segment not found' });
 
         const count = await AdLead.countDocuments({ ...segment.query, clientId: req.user.clientId });
-        const client = await Client.findOne({ clientId: req.user.clientId });
+        const client = await Client.findOne({ clientId: req.user.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
 
         const limits = await checkLimit(client._id, 'campaigns');
         if (!limits.allowed) {
@@ -154,7 +154,7 @@ router.post('/from-imported-list', protect, async (req, res) => {
     const { importBatchId, name } = req.body;
     try {
         const count = await AdLead.countDocuments({ importBatchId, clientId: req.user.clientId });
-        const client = await Client.findOne({ clientId: req.user.clientId });
+        const client = await Client.findOne({ clientId: req.user.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
 
         const limits = await checkLimit(client._id, 'campaigns');
         if (!limits.allowed) {
@@ -183,7 +183,7 @@ router.post('/from-imported-list', protect, async (req, res) => {
 router.post('/from-hot-leads', protect, async (req, res) => {
     const { name, count } = req.body;
     try {
-        const client = await Client.findOne({ clientId: req.user.clientId });
+        const client = await Client.findOne({ clientId: req.user.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
         if (!client) return res.status(403).json({ error: 'Client not found' });
 
         const limits = await checkLimit(client._id, 'campaigns');
@@ -227,7 +227,7 @@ router.post('/quick-send', protect, async (req, res) => {
   }
 
   try {
-    const client = await Client.findOne({ clientId });
+    const client = await Client.findOne({ clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
     const leads = await AdLead.find({ _id: { $in: finalLeadIds }, clientId });
@@ -375,7 +375,7 @@ router.post('/start', protect, async (req, res) => {
     await campaign.save();
 
     // Fetch client configuration
-    const client = await Client.findOne({ clientId: req.user.clientId });
+    const client = await Client.findOne({ clientId: req.user.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
     if (!client) {
         return res.status(404).json({ message: 'Client configuration not found' });
     }
@@ -562,7 +562,7 @@ router.get('/:clientId/overview', protect, async (req, res) => {
     };
 
     try {
-      const client = await Client.findOne({ clientId });
+      const client = await Client.findOne({ clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
       if (client?.whatsappToken && (client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID)) {
         const [acc, qual] = await Promise.all([
           WhatsApp.getAccountStatus(client),
@@ -698,7 +698,7 @@ router.post('/predictive-send', protect, async (req, res) => {
     const campaign = await Campaign.findOne({ _id: campaignId, clientId: req.user.clientId });
     if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
 
-    const client = await Client.findOne({ clientId: req.user.clientId });
+    const client = await Client.findOne({ clientId: req.user.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
     // Build phone list from CSV or Segment
