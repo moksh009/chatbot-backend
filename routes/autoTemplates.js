@@ -58,6 +58,7 @@ router.get('/drafts', protect, async (req, res) => {
 
 // ─── POST /api/auto-templates/start ───────────────────────────────────────
 router.post('/start', protect, async (req, res) => {
+  console.log('[AutoTemplates] /start received for', resolveClientId(req));
   try {
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });

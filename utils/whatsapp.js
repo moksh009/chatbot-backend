@@ -603,6 +603,12 @@ const WhatsApp = {
     error.status = status;
     error.data = errorData;
     error.friendlyMessage = friendlyMessage;
+    
+    // Flag token expiration for auto-healing mechanisms
+    if (status === 401 || errorData.code === 190 || errorData.code === 100) {
+        error.isTokenExpired = true;
+    }
+    
     throw error;
   },
 

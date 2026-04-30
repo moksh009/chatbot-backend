@@ -1,5 +1,15 @@
 "use strict";
 
+const mongoose = require('mongoose');
+require('dotenv').config();
+
+// Connect to MongoDB
+if (mongoose.connection.readyState === 0) {
+  mongoose.connect(process.env.MONGODB_URI)
+    .then(() => console.log('[AutoTemplateWorker] Connected to MongoDB'))
+    .catch(err => console.error('[AutoTemplateWorker] MongoDB connection error:', err));
+}
+
 /**
  * Auto Template Worker — BullMQ workers for template generation, submission, and polling.
  * Requires autoTemplateQueues.js for queue instances.

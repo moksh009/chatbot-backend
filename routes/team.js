@@ -219,6 +219,43 @@ router.delete('/:id', protect, async (req, res) => {
     }
 });
 
+// @route   PATCH /api/team/:id/role
+// @desc    Update a team member's role
+// @access  Private (Admin only)
+router.patch('/:id/role', protect, async (req, res) => {
+    try {
+        const { role } = req.body;
+        
+        if (!['AGENT', 'CLIENT_ADMIN', 'SUPER_ADMIN'].includes(role)) {
+            return res.status(400).json({ message: 'Invalid role provided' });
+        }
+
+        const userToUpdate = await User.findById(req.params.id);
+        
+        if (!userToUpdate) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        // Security: Ensure the admin is modifying a user from their OWN client
+        if (req.user.role !== 'SUPER_ADMIN' && userToUpdate.clientId !== req.user.clientId) {
+            return res.status(403).json({ message: 'Unauthorized to modify this user' });
+        }
+
+        // Prevent self-demotion from admin
+        if (userToUpdate._id.toString() === req.user._id.toString() && role !== req.user.role) {
+            return res.status(400).json({ message: 'Cannot change your own role' });
+        }
+
+        userToUpdate.role = role;
+        await userToUpdate.save();
+
+        res.json({ success: true, message: 'Role updated successfully', user: userToUpdate });
+    } catch (error) {
+        console.error('[TeamAPI] Role Update Error:', error);
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+});
+
 // @route   GET /api/team/:clientId/performance-stats
 // @desc    Get detailed performance metrics for agents
 // @access  Private (Admin only)

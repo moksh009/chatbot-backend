@@ -22,6 +22,10 @@ const Notification   = require("../models/Notification");
 const OTP            = require("../models/OTP");
 const AuditLog       = require("../models/AuditLog");
 
+// Onboarding wizard state — must also be cleaned up
+let OnboardingWizard;
+try { OnboardingWizard = require("../models/OnboardingWizard"); } catch (_) {}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // META DATA DELETION CALLBACK
 // Facebook sends a POST here when a user requests data deletion via FB settings.
@@ -119,6 +123,20 @@ router.post("/account/delete", protect, async (req, res) => {
 
     console.log(`[DataDeletion] User-initiated deletion for ${user.email} (clientId: ${clientId})`);
 
+    // ── Audit Log (captured before data is destroyed) ────────────────────
+    try {
+      await AuditLog.create({
+        clientId,
+        user_id: userId,
+        action_type: 'ACCOUNT_DELETE',
+        target_resource: user.email,
+        payload: { reason: 'user_initiated', deletedAt: new Date().toISOString() }
+      });
+    } catch (_auditErr) {
+      // Non-blocking — deletion should still proceed if audit fails
+      console.warn('[DataDeletion] Audit log creation failed (non-blocking):', _auditErr.message);
+    }
+
     // Find the Client document to get the MongoDB _id for collection queries
     const client = await Client.findOne({ clientId });
     const clientMongoId = client?._id;
@@ -138,7 +156,9 @@ router.post("/account/delete", protect, async (req, res) => {
         Segment.deleteMany({ clientId: clientMongoId }),
         KnowledgeDocument.deleteMany({ clientId: clientMongoId }),
         Notification.deleteMany({ clientId: { $in: [clientId, clientMongoId] } }),
-        AuditLog.deleteMany({ clientId: { $in: [clientId, clientMongoId] } })
+        AuditLog.deleteMany({ clientId: { $in: [clientId, clientMongoId] } }),
+        // Clean up wizard state
+        ...(OnboardingWizard ? [OnboardingWizard.deleteMany({ clientId })] : [])
       );
     }
 

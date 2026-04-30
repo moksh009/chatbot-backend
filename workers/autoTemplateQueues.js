@@ -1,4 +1,5 @@
 "use strict";
+require('dotenv').config();
 
 /**
  * Auto Template Queue Definitions & Redis Connection

@@ -9,8 +9,8 @@ try {
     logger.warn("VertexAI SDK not found. Fallback to AI Studio for all calls.");
 }
 
-const PLATFORM_MODEL = "gemini-1.5-flash";  
-const BOT_MODEL      = "gemini-1.5-flash"; 
+const PLATFORM_MODEL = "gemini-pro";  
+const BOT_MODEL      = "gemini-pro"; 
 
 // Cache AI Studio clients to avoid memory leaks
 const studioClientCache = new Map();
