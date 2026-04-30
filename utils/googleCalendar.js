@@ -38,14 +38,6 @@ function initializeOAuth2Client() {
     const REFRESH_TOKEN = process.env.GCAL_REFRESH_TOKEN || '';
     const ACCESS_TOKEN = process.env.GCAL_ACCESS_TOKEN || '';
 
-    // Log environment variables (remove this in production)
-    console.log('🔍 Google OAuth2 Config:', {
-      hasClientId: !!CLIENT_ID,
-      hasClientSecret: !!CLIENT_SECRET,
-      hasRefreshToken: !!REFRESH_TOKEN,
-      redirectUri: REDIRECT_URI
-    });
-
     // Validate required environment variables
     if (!CLIENT_ID || !CLIENT_SECRET || !REFRESH_TOKEN) {
       const missing = [];
@@ -520,8 +512,6 @@ async function listEvents(timeMin, timeMax, calendarId) {
     // Initialize OAuth2 client
     const auth = initializeOAuth2Client();
 
-    console.log(`📅 Fetching events from calendar ${calendarId} from ${timeMin} to ${timeMax}`);
-
     // List events from calendar
     const res = await calendar.events.list({
       auth: auth,
@@ -533,11 +523,18 @@ async function listEvents(timeMin, timeMax, calendarId) {
     });
 
     const events = res.data.items || [];
-    console.log(`✅ Found ${events.length} events in calendar ${calendarId}`);
+    // Only log if we found events
+    if (events.length > 0) {
+      console.log(`✅ Found ${events.length} events in calendar ${calendarId}`);
+    }
 
     return events;
 
   } catch (error) {
+    if (error.message && error.message.includes('invalid_grant')) {
+       // Silently throw invalid_grant to avoid massive stack traces
+       throw new Error('invalid_grant');
+    }
     console.error('❌ Error listing calendar events:', error.message);
     throw error;
   }

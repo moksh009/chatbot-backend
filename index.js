@@ -633,7 +633,12 @@ cron.schedule('*/10 * * * *', async () => {
           const events = await listEvents(windowStart, windowEnd, calendarId);
           upcomingEvents = upcomingEvents.concat(events);
         } catch (error) {
-          log.warn(`[Cron] Admin Reminder GCal Error (${calendarId}):`, { error: error.message });
+          if (error.message.includes('invalid_grant')) {
+             // Only log a concise warning, avoid spamming stack traces for expired tokens
+             log.warn(`[Cron] GCal token expired for ${calendarId} (invalid_grant)`);
+          } else {
+             log.warn(`[Cron] Admin Reminder GCal Error (${calendarId}):`, { error: error.message });
+          }
         }
       }
 

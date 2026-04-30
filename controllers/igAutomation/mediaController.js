@@ -92,7 +92,7 @@ router.get('/media', async (req, res) => {
 
     const errCode = err.response?.data?.error?.code;
     if (errCode === 190 || err.message?.includes('token')) {
-      return res.status(401).json({
+      return res.status(400).json({
         error: 'Instagram token expired. Please reconnect in Settings.',
         connected: false
       });
