@@ -37,10 +37,10 @@ router.get('/media', async (req, res) => {
       });
     }
 
-    const igUserId = client.instagramUserId || client.social?.instagram?.userId;
+    const igUserId = client.instagramPageId || client.social?.instagram?.pageId;
     if (!igUserId) {
       return res.status(422).json({
-        error: 'Instagram User ID not found. Please reconnect your Instagram account.',
+        error: 'Instagram Page ID not found. Please reconnect your Instagram account.',
         connected: false
       });
     }
@@ -115,7 +115,7 @@ router.get('/connection-status', async (req, res) => {
     if (!client) return res.json({ connected: false });
 
     const token = client.instagramAccessToken || client.social?.instagram?.accessToken;
-    const userId = client.instagramUserId || client.social?.instagram?.userId;
+    const userId = client.instagramPageId || client.social?.instagram?.pageId;
     const username = client.instagramUsername || client.social?.instagram?.username;
 
     return res.json({
