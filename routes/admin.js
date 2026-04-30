@@ -1008,7 +1008,12 @@ router.get('/client/settings', protect, async (req, res) => {
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
     // Send the settings required by the frontend client/settings route
-    res.json({ ai: client.ai });
+    res.json({ 
+      ai: client.ai, 
+      faq: client.faq, 
+      websiteUrl: client.websiteUrl,
+      businessHours: client.config?.businessHours
+    });
   } catch (err) {
     log.error('Client settings fetch error', { error: err.message });
     res.status(500).json({ message: 'Server error', error: err.message });
@@ -1035,6 +1040,10 @@ router.put('/client/settings', protect, async (req, res) => {
        if (req.body.ai.systemPrompt) updateFields['ai.systemPrompt'] = req.body.ai.systemPrompt;
        if (req.body.ai.geminiKey) updateFields['ai.geminiKey'] = req.body.ai.geminiKey;
     }
+
+    if (req.body.faq !== undefined) updateFields.faq = req.body.faq;
+    if (req.body.websiteUrl !== undefined) updateFields.websiteUrl = req.body.websiteUrl;
+    if (req.body.businessHours !== undefined) updateFields['config.businessHours'] = req.body.businessHours;
 
     const updated = await Client.findOneAndUpdate(
       { clientId: targetClientId },

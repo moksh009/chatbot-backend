@@ -200,6 +200,9 @@ const flowRoutes = require('./routes/flow');
 app.use('/api/flow', flowRoutes);
 app.use('/api/flows', flowRoutes);
 
+const aiRoutes = require('./routes/ai');
+app.use('/api/ai', aiRoutes);
+
 const publicWarrantyRoutes = require('./routes/publicWarranty');
 app.use('/api/public/warranty', publicWarrantyRoutes);
 

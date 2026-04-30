@@ -489,4 +489,150 @@ router.post('/update-password', protect, async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// GOOGLE OAUTH — Google-Only Auth (no password needed)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * GET /api/auth/google/login — Initiate Google OAuth
+ * Query: ?mode=login|signup&businessName=X&businessType=Y (signup only)
+ */
+router.get('/google/login', (req, res) => {
+  const { mode, businessName, businessType } = req.query;
+  const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+  const REDIRECT_URI = `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/api/auth/google/callback`;
+
+  if (!GOOGLE_CLIENT_ID) {
+    return res.status(500).json({ message: 'Google OAuth not configured' });
+  }
+
+  // Encode signup data into state parameter
+  const stateData = JSON.stringify({ mode: mode || 'login', businessName, businessType });
+  const state = Buffer.from(stateData).toString('base64url');
+
+  const scopes = [
+    'openid',
+    'https://www.googleapis.com/auth/userinfo.email',
+    'https://www.googleapis.com/auth/userinfo.profile'
+  ].join(' ');
+
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth` +
+    `?client_id=${encodeURIComponent(GOOGLE_CLIENT_ID)}` +
+    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+    `&response_type=code` +
+    `&scope=${encodeURIComponent(scopes)}` +
+    `&state=${encodeURIComponent(state)}` +
+    `&access_type=offline` +
+    `&prompt=consent`;
+
+  return res.redirect(authUrl);
+});
+
+/**
+ * GET /api/auth/google/callback — Handle Google OAuth callback
+ * Exchanges code → Google user info → find or create User + Client → redirect with JWT
+ */
+router.get('/google/callback', async (req, res) => {
+  const FRONTEND_URL = process.env.FRONTEND_URL || 'https://dash.topedgeai.com';
+  try {
+    const { code, state } = req.query;
+    if (!code) {
+      return res.redirect(`${FRONTEND_URL}/login?error=google_auth_failed`);
+    }
+
+    // Decode state
+    let stateData = { mode: 'login' };
+    try {
+      stateData = JSON.parse(Buffer.from(state, 'base64url').toString());
+    } catch {}
+
+    const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+    const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+    const REDIRECT_URI = `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/api/auth/google/callback`;
+
+    // Exchange code for tokens
+    const axios = require('axios');
+    const tokenRes = await axios.post('https://oauth2.googleapis.com/token', {
+      code,
+      client_id: GOOGLE_CLIENT_ID,
+      client_secret: GOOGLE_CLIENT_SECRET,
+      redirect_uri: REDIRECT_URI,
+      grant_type: 'authorization_code'
+    });
+
+    const { id_token, access_token } = tokenRes.data;
+
+    // Get user info from Google
+    const userInfoRes = await axios.get('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${access_token}` }
+    });
+
+    const { email, name, picture, sub: googleId } = userInfoRes.data;
+
+    if (!email) {
+      return res.redirect(`${FRONTEND_URL}/login?error=no_email`);
+    }
+
+    // Check if user already exists
+    let user = await User.findOne({ email: email.toLowerCase() });
+
+    if (user) {
+      // ── Existing User: Log them in ─────────────────────────
+      // Update Google info if not set
+      if (!user.googleId) {
+        user.googleId = googleId;
+        user.profilePicture = picture;
+        user.authProvider = 'google';
+        await user.save();
+      }
+
+      const token = generateToken(user._id, user.clientId, user.role);
+      return res.redirect(`${FRONTEND_URL}/login?google_token=${token}&google_success=true`);
+
+    } else {
+      // ── New User: Auto-create Account ──────────────────────
+      const crypto = require('crypto');
+      const businessName = stateData.businessName || name + "'s Business";
+      const businessType = stateData.businessType || 'other';
+      const safeName = businessName.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const uniqueId = crypto.randomBytes(3).toString('hex');
+      const newClientId = `${safeName}_${uniqueId}`;
+
+      // Create Client
+      await Client.create({
+        clientId: newClientId,
+        businessName,
+        name: businessName,
+        isActive: true,
+        trialActive: true,
+        trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+        plan: 'CX Agent (V1)',
+        businessType,
+        flowNodes: [],
+        flowEdges: []
+      });
+
+      // Create User (no password — Google-only auth)
+      user = await User.create({
+        name,
+        email: email.toLowerCase(),
+        password: crypto.randomBytes(32).toString('hex'), // Random password — user never uses it
+        role: 'CLIENT_ADMIN',
+        business_type: businessType,
+        clientId: newClientId,
+        googleId,
+        profilePicture: picture,
+        authProvider: 'google'
+      });
+
+      const token = generateToken(user._id, user.clientId, user.role);
+      return res.redirect(`${FRONTEND_URL}/login?google_token=${token}&google_success=true&new_user=true`);
+    }
+  } catch (error) {
+    console.error('[Google OAuth] Callback error:', error.response?.data || error.message);
+    const FRONTEND_URL = process.env.FRONTEND_URL || 'https://dash.topedgeai.com';
+    return res.redirect(`${FRONTEND_URL}/login?error=google_auth_failed`);
+  }
+});
+
 module.exports = router;

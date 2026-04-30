@@ -196,6 +196,19 @@ router.post('/create', protect, async (req, res) => {
 
         const client = await getClientCredentials(clientId, req.user.id);
 
+        // --- Meta API Rate Limiting (approx 6 per hour for new WABAs) ---
+        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+        let recentSubmissions = client.templateSubmissionTimestamps || [];
+        recentSubmissions = recentSubmissions.filter(ts => new Date(ts) > oneHourAgo);
+        
+        if (recentSubmissions.length >= 6) {
+            return res.status(429).json({
+                success: false,
+                message: 'Meta API Rate Limit reached: You can only submit 6 templates per hour. Please wait before submitting more.',
+                code: 'RATE_LIMIT_EXCEEDED'
+            });
+        }
+
         // Required API parameters for Meta Template creation
         const payload = {
             name,
@@ -213,6 +226,14 @@ router.post('/create', protect, async (req, res) => {
                     'Content-Type': 'application/json'
                 }
             });
+
+            // Track submission
+            recentSubmissions.push(new Date());
+            await Client.updateOne(
+                { clientId },
+                { $set: { templateSubmissionTimestamps: recentSubmissions } }
+            );
+
             res.json({ success: true, data: response.data });
         } catch (metaErr) {
             const status = metaErr.response?.status;
