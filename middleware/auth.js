@@ -18,8 +18,9 @@ const protect = async (req, res, next) => {
       }
 
       // Objective 1: Attach God Mode status
+      // PERF: Only select the single field we need — Client docs are huge (syncedMetaTemplates, nicheData, etc.)
       const Client = require('../models/Client');
-      const client = await Client.findOne({ clientId: req.user.clientId });
+      const client = await Client.findOne({ clientId: req.user.clientId }).select('isLifetimeAdmin').lean();
       req.user.isLifetimeAdmin = req.user.role === 'SUPER_ADMIN' || (client && client.isLifetimeAdmin);
 
       next();
