@@ -128,7 +128,8 @@ router.post('/', async (req, res) => {
     }
 
     // If deploying as active, verify client has IG token
-    if (status === 'active') {
+    const isActivating = status === 'active';
+    if (isActivating) {
       const client = await Client.findOne({ clientId }).lean();
       if (!client || (!client.instagramAccessToken && !client.social?.instagram?.accessToken)) {
         return res.status(422).json({
@@ -136,11 +137,10 @@ router.post('/', async (req, res) => {
           error: 'Your Instagram account is not connected. Go to Settings → Integrations → Instagram to connect.'
         });
       }
-    }
-
-    // Validate flow has opening DM for active automations
-    if (status === 'active' && !payload.flow?.openingDm) {
-      return res.status(400).json({ success: false, error: 'Opening DM message is required for active automations' });
+      
+      if (!payload.flow?.openingDm) {
+        return res.status(400).json({ success: false, error: 'Opening DM message is required for active automations' });
+      }
     }
 
     const validationErrors = validateAutomationMessages(payload);
@@ -188,20 +188,27 @@ router.patch('/:id', async (req, res) => {
     }
     if (storyTrigger !== undefined) updateData.storyTrigger = storyTrigger;
 
+    const existingAuto = await IGAutomation.findById(req.params.id).lean();
+    if (!existingAuto) return res.status(404).json({ success: false, error: 'Automation not found' });
+
+    const currentStatus = status !== undefined ? status : existingAuto.status;
+    const isActivating = currentStatus === 'active';
+
     // Run text limits validation if flow is updated
-    if (flow !== undefined || trigger !== undefined) {
-      const tempPayload = { flow: flow || {}, trigger: trigger || {} };
+    if (flow !== undefined || trigger !== undefined || status !== undefined) {
+      const tempPayload = { 
+        flow: flow || existingAuto.flow || {}, 
+        trigger: trigger || existingAuto.trigger || {},
+        status: currentStatus
+      };
       const validationErrors = validateAutomationMessages(tempPayload);
       if (validationErrors.length > 0) {
         return res.status(422).json({ success: false, errors: validationErrors });
       }
     }
 
-    if (status === 'active') {
-      const auto = await IGAutomation.findById(req.params.id).lean();
-      if (!auto) return res.status(404).json({ success: false, error: 'Automation not found' });
-
-      const client = await Client.findOne({ clientId: auto.clientId }).lean();
+    if (isActivating) {
+      const client = await Client.findOne({ clientId: existingAuto.clientId }).lean();
       if (!client || (!client.instagramAccessToken && !client.social?.instagram?.accessToken)) {
         return res.status(422).json({
           success: false,

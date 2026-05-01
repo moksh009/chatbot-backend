@@ -10,7 +10,7 @@ const log = require('../../utils/logger')('IGWebhook');
  * GET /api/ig-automation/webhook
  * Meta webhook verification handshake — responds with hub.challenge.
  */
-router.get('/webhook', (req, res) => {
+router.get('/', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
@@ -31,7 +31,7 @@ router.get('/webhook', (req, res) => {
  * then processes the payload asynchronously.
  * Meta retries if no 200 response within 5 seconds.
  */
-router.post('/webhook', verifyMetaSignature, async (req, res) => {
+router.post('/', verifyMetaSignature, async (req, res) => {
   // Acknowledge immediately — Meta requires 200 within 5 seconds
   res.sendStatus(200);
 
