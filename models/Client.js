@@ -576,9 +576,14 @@ const ClientSchema = new mongoose.Schema({
 });
 
 function encryptSubDocs(doc) {
-  // Use a strictly safe encryption helper
+  const isEnc = (val) => {
+    if (typeof val !== 'string') return false;
+    const parts = val.split(':');
+    return parts.length === 2 && parts[0].length === 32;
+  };
+
   const enc = (val) => {
-    if (typeof val !== 'string') return val;
+    if (typeof val !== 'string' || isEnc(val)) return val;
     try {
       return encrypt(val);
     } catch (e) {
@@ -623,8 +628,15 @@ function encryptSubDocs(doc) {
 function encryptUpdateQuery(update) {
   if (!update) return;
   const setOps = update.$set || update;
+  
+  const isEnc = (val) => {
+    if (typeof val !== 'string') return false;
+    const parts = val.split(':');
+    return parts.length === 2 && parts[0].length === 32;
+  };
+
   const enc = (val) => {
-    if (typeof val !== 'string') return val;
+    if (typeof val !== 'string' || isEnc(val)) return val;
     try {
       return encrypt(val);
     } catch (e) {
