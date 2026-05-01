@@ -42,12 +42,15 @@ router.post('/oembed', async (req, res) => {
     }
 
     // Build the App Access Token — this is NOT a user or page token
-    if (!process.env.FACEBOOK_APP_ID || !process.env.FACEBOOK_APP_SECRET) {
-      log.error('[oEmbed] Missing FACEBOOK_APP_ID or FACEBOOK_APP_SECRET environment variables.');
+    const appId = process.env.FACEBOOK_APP_ID || process.env.META_APP_ID;
+    const appSecret = process.env.FACEBOOK_APP_SECRET || process.env.META_APP_SECRET;
+
+    if (!appId || !appSecret) {
+      log.error('[oEmbed] Missing App Credentials (FACEBOOK/META_APP_ID/SECRET).');
       return res.status(500).json({ error: 'Server configuration error. Contact support.' });
     }
 
-    const appToken = `${process.env.FACEBOOK_APP_ID}|${process.env.FACEBOOK_APP_SECRET}`;
+    const appToken = `${appId}|${appSecret}`;
 
     const endpoint = `https://graph.facebook.com/v21.0/instagram_oembed?url=${encodeURIComponent(url)}&access_token=${appToken}&fields=author_name,author_url,thumbnail_url,title,html,provider_name`;
 
@@ -79,23 +82,27 @@ router.post('/oembed', async (req, res) => {
   } catch (err) {
     if (err.response) {
       const status = err.response.status;
-      const errorData = err.response.data?.error;
+      const errorData = err.response.data?.error || {};
       log.error('[oEmbed] Meta API error:', status, JSON.stringify(errorData));
 
+      const metaMessage = errorData.message || '';
+
       if (status === 400) {
-        const message = errorData?.message || '';
-        if (message.includes('private')) {
+        if (metaMessage.toLowerCase().includes('private')) {
           return res.status(422).json({ error: 'This post is from a private account and cannot be fetched.' });
         }
-        return res.status(400).json({ error: 'Invalid Instagram URL or the post no longer exists.' });
+        if (metaMessage.toLowerCase().includes('permission')) {
+          return res.status(403).json({ error: 'Meta App missing permissions (instagram_manage_insights). Check Developer Portal.' });
+        }
+        return res.status(400).json({ error: `Meta Error: ${metaMessage || 'Invalid URL or post no longer exists.'}` });
       }
 
       if (status === 401 || status === 403) {
-        return res.status(500).json({ error: 'Instagram API authentication failed. Contact support.' });
+        return res.status(status).json({ error: `Instagram Auth Failed: ${metaMessage || 'Contact support.'}` });
       }
 
       if (status === 429) {
-        return res.status(429).json({ error: 'Rate limit reached. Please wait a moment and try again.' });
+        return res.status(429).json({ error: 'Rate limit reached. Please wait a moment.' });
       }
     }
 
