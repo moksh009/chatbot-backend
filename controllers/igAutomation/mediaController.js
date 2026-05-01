@@ -5,6 +5,7 @@ const router = express.Router();
 const Client = require('../../models/Client');
 const { callGraphAPI } = require('../../utils/igGraphApi');
 const log = require('../../utils/logger')('IGMedia');
+const { decrypt } = require('../../utils/encryption');
 
 /**
  * GET /api/ig-automation/media
@@ -28,7 +29,8 @@ router.get('/media', async (req, res) => {
       return res.status(404).json({ error: 'Client not found' });
     }
 
-    const accessToken = client.instagramAccessToken || client.social?.instagram?.accessToken;
+    const rawToken = client.instagramAccessToken || client.social?.instagram?.accessToken;
+    const accessToken = decrypt(rawToken);
     if (!accessToken) {
       return res.status(422).json({
         error: 'Instagram is not connected.',

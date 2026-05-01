@@ -163,7 +163,7 @@ async function checkFollowStatusv2(igsid, accessToken, opts = {}) {
  */
 async function subscribePageToWebhooks(pageId, accessToken, opts = {}) {
   return callGraphAPI('post', `/${pageId}/subscribed_apps`, {
-    subscribed_fields: 'comments,mentions,messages'
+    subscribed_fields: 'messages,messaging_postbacks,message_deliveries,message_reads,feed'
   }, accessToken, opts);
 }
 

@@ -7,6 +7,7 @@ const IGAutomationSession = require('../../models/IGAutomationSession');
 const Client = require('../../models/Client');
 const { subscribePageToWebhooks } = require('../../utils/igGraphApi');
 const { validateAutomationMessages } = require('../../utils/igTextValidation');
+const { decrypt } = require('../../utils/encryption');
 const log = require('../../utils/logger')('IGAutoCRUD');
 
 /**
@@ -300,7 +301,8 @@ async function ensureWebhookSubscription(clientId) {
     if (client.igWebhookSubscribed) return true;
 
     const pageId = client.instagramPageId || client.social?.instagram?.pageId;
-    const accessToken = client.instagramAccessToken || client.social?.instagram?.accessToken;
+    const rawToken = client.instagramAccessToken || client.social?.instagram?.accessToken;
+    const accessToken = decrypt(rawToken);
     if (!pageId || !accessToken) return false;
 
     await subscribePageToWebhooks(pageId, accessToken, { clientId });
