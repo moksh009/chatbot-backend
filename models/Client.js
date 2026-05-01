@@ -625,6 +625,62 @@ function encryptSubDocs(doc) {
   if (doc.emailAppPassword) doc.emailAppPassword = enc(doc.emailAppPassword);
 }
 
+function syncSocialFields(doc) {
+  // Sync Instagram
+  if (doc.instagramConnected !== undefined) {
+    if (!doc.social) doc.social = { instagram: {} };
+    if (!doc.social.instagram) doc.social.instagram = {};
+    doc.social.instagram.connected = doc.instagramConnected;
+  }
+  if (doc.instagramAccessToken) {
+    if (!doc.social) doc.social = { instagram: {} };
+    if (!doc.social.instagram) doc.social.instagram = {};
+    doc.social.instagram.accessToken = doc.instagramAccessToken;
+  }
+  if (doc.instagramPageId) {
+    if (!doc.social) doc.social = { instagram: {} };
+    if (!doc.social.instagram) doc.social.instagram = {};
+    doc.social.instagram.pageId = doc.instagramPageId;
+  }
+  if (doc.instagramUsername) {
+    if (!doc.social) doc.social = { instagram: {} };
+    if (!doc.social.instagram) doc.social.instagram = {};
+    doc.social.instagram.username = doc.instagramUsername;
+  }
+
+  // Reverse sync (modular to legacy)
+  if (doc.social?.instagram?.connected !== undefined) {
+    doc.instagramConnected = doc.social.instagram.connected;
+    if (doc.social.instagram.connected) doc.instagramConnected = true;
+  }
+  if (doc.social?.instagram?.accessToken) {
+    doc.instagramAccessToken = doc.social.instagram.accessToken;
+  }
+  if (doc.social?.instagram?.pageId) {
+    doc.instagramPageId = doc.social.instagram.pageId;
+  }
+  if (doc.social?.instagram?.username) {
+    doc.instagramUsername = doc.social.instagram.username;
+  }
+
+  // Sync Meta Ads
+  if (doc.metaAdsConnected !== undefined) {
+    if (!doc.social) doc.social = { metaAds: {} };
+    if (!doc.social.metaAds) doc.social.metaAds = {};
+    doc.social.metaAds.connected = doc.metaAdsConnected;
+  }
+  if (doc.metaAdsToken) {
+    if (!doc.social) doc.social = { metaAds: {} };
+    if (!doc.social.metaAds) doc.social.metaAds = {};
+    doc.social.metaAds.accessToken = doc.metaAdsToken;
+  }
+  if (doc.metaAdAccountId) {
+    if (!doc.social) doc.social = { metaAds: {} };
+    if (!doc.social.metaAds) doc.social.metaAds = {};
+    doc.social.metaAds.accountId = doc.metaAdAccountId;
+  }
+}
+
 function encryptUpdateQuery(update) {
   if (!update) return;
   const setOps = update.$set || update;
@@ -657,9 +713,23 @@ function encryptUpdateQuery(update) {
   for (const path of encPaths) {
     if (setOps[path]) setOps[path] = enc(setOps[path]);
   }
+
+  // Also sync fields in update query
+  if (setOps.instagramConnected !== undefined) setOps['social.instagram.connected'] = setOps.instagramConnected;
+  if (setOps['social.instagram.connected'] !== undefined) setOps.instagramConnected = setOps['social.instagram.connected'];
+  
+  if (setOps.instagramAccessToken) setOps['social.instagram.accessToken'] = enc(setOps.instagramAccessToken);
+  if (setOps['social.instagram.accessToken']) setOps.instagramAccessToken = enc(setOps['social.instagram.accessToken']);
+
+  if (setOps.instagramPageId) setOps['social.instagram.pageId'] = setOps.instagramPageId;
+  if (setOps['social.instagram.pageId']) setOps.instagramPageId = setOps['social.instagram.pageId'];
+
+  if (setOps.instagramUsername) setOps['social.instagram.username'] = setOps.instagramUsername;
+  if (setOps['social.instagram.username']) setOps.instagramUsername = setOps['social.instagram.username'];
 }
 
 ClientSchema.pre('save', function(next) {
+  syncSocialFields(this);
   encryptSubDocs(this);
   next();
 });

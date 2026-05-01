@@ -166,7 +166,15 @@ router.get("/instagram/callback", async (req, res) => {
         instagramPendingToken: "",
         // Unified login: also save the user-level token for Meta Ads access
         metaAdsToken:          longToken,
-        metaAdsConnected:      true
+        metaAdsConnected:      true,
+        // Sync with modular social fields
+        'social.instagram.connected': true,
+        'social.instagram.pageId':    igDetails.id,
+        'social.instagram.accessToken': page.access_token,
+        'social.instagram.username':  igDetails.username || "",
+        'social.metaAds.connected':   true,
+        'social.metaAds.accessToken': longToken,
+        'social.metaAds.tokenExpiry': tokenExpiry
       });
 
       // Register webhook subscription
@@ -224,7 +232,12 @@ router.post("/instagram/select-page/:clientId", protect, async (req, res) => {
       instagramFollowers:    igDetails.followers_count || 0,
       instagramFbPageId:     page.pageId,
       instagramPendingPages: null,
-      instagramPendingToken: ""
+      instagramPendingToken: "",
+      // Sync with modular social fields
+      'social.instagram.connected': true,
+      'social.instagram.pageId':    igDetails.id,
+      'social.instagram.accessToken': page.pageToken,
+      'social.instagram.username':  igDetails.username || ""
     });
 
     await registerInstagramWebhook(page.pageId, page.pageToken);
@@ -257,7 +270,11 @@ router.post("/instagram/disconnect/:clientId", protect, async (req, res) => {
       instagramFollowers:    0,
       instagramFbPageId:     "",
       instagramPendingPages: null,
-      instagramPendingToken: ""
+      instagramPendingToken: "",
+      // Sync with modular social fields
+      'social.instagram.connected': false,
+      'social.instagram.accessToken': "",
+      'social.instagram.pageId': ""
     });
     res.json({ success: true });
   } catch (err) {
