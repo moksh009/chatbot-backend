@@ -80,7 +80,7 @@ router.post('/:clientId/sync-products', protect, verifyClientAccess, async (req,
 
     res.json({ success: true, count: products.length });
   } catch (err) {
-    const isAuthError = err.response?.status === 401 || err.response?.status === 403;
+    const isAuthError = err.response?.status === 401 || err.response?.status === 403 || err.message?.includes('incomplete') || err.message?.includes('invalid');
     res.status(isAuthError ? 400 : 500).json({ success: false, error: err.message, isShopifyAuthError: isAuthError });
   }
 });
@@ -145,7 +145,7 @@ router.post('/:clientId/sync-orders', protect, verifyClientAccess, async (req, r
     res.json({ success: true, message: 'Sync complete', ...result });
   } catch (err) {
     console.error(`[Sync Error] for ${req.params.clientId}:`, err.message);
-    const isAuthError = err.response?.status === 401 || err.response?.status === 403;
+    const isAuthError = err.response?.status === 401 || err.response?.status === 403 || err.message?.includes('incomplete') || err.message?.includes('invalid');
     res.status(isAuthError ? 400 : 500).json({ success: false, error: err.message, isShopifyAuthError: isAuthError });
   }
 });
@@ -214,7 +214,7 @@ router.get('/:clientId/recent-orders', protect, verifyClientAccess, async (req, 
     res.json({ success: true, orders: result });
   } catch (err) {
     console.error(`[Shopify Recent Orders Error] for ${req.params.clientId}:`, err.message);
-    const isAuthError = err.response?.status === 401 || err.response?.status === 403;
+    const isAuthError = err.response?.status === 401 || err.response?.status === 403 || err.message?.includes('incomplete') || err.message?.includes('invalid');
     res.status(isAuthError ? 400 : 500).json({ 
       success: false, 
       error: err.message, 

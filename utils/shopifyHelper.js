@@ -14,6 +14,12 @@ async function getShopifyClient(clientId, forceRefresh = false) {
     const domain = client.shopDomain;
     const apiVersion = client.shopifyApiVersion || '2026-01';
 
+    // STRICT VALIDATION: Prevent OAuth requests to invalid domains which cause HTML crashes
+    if (!domain || domain.includes('your-store') || !domain.includes('.')) {
+        console.error(`❌ [ShopifyClient] Invalid or missing domain for ${clientId}: ${domain}`);
+        throw new Error('Shopify credentials incomplete or invalid domain configuration');
+    }
+
     // 1. Check if token needs refresh
     const fiveMinutes = 5 * 60 * 1000;
     const isNextToExpiry = client.shopifyTokenExpiresAt && (new Date(client.shopifyTokenExpiresAt).getTime() - Date.now()) < fiveMinutes;

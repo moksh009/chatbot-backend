@@ -109,7 +109,12 @@ router.get('/sync', protect, async (req, res) => {
         }
     } catch (error) {
         console.error('[Template API] Sync Error:', error.message);
-        res.status(500).json({ success: false, message: error.message });
+        const isMissingCredentials = error.message.includes('not configured') || error.message.includes('Unauthorized');
+        res.status(isMissingCredentials ? 400 : 500).json({ 
+            success: false, 
+            message: error.message,
+            isIntegrationAuthError: isMissingCredentials
+        });
     }
 });
 

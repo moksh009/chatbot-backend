@@ -85,7 +85,7 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
 
   } catch (err) {
     const shopifyError = err.response?.data?.errors || err.response?.data?.message || err.message;
-    const isAuthError = err.response?.status === 401 || err.response?.status === 403;
+    const isAuthError = err.response?.status === 401 || err.response?.status === 403 || err.message?.includes('incomplete') || err.message?.includes('invalid');
     const isMissingConfig = err.message === 'Shopify credentials incomplete or invalid';
 
     console.error(`[Pulse Error] Client: ${clientId}:`, shopifyError);
@@ -151,7 +151,7 @@ router.get('/:clientId/products', protect, verifyClientAccess, async (req, res) 
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     const status = err.response?.status;
-    const isAuthError = status === 401 || status === 403;
+    const isAuthError = status === 401 || status === 403 || err.message?.includes('incomplete') || err.message?.includes('invalid');
     const isClientError = status >= 400 && status < 500;
     res.status(isClientError ? 400 : 500).json({ 
       success: false, 
@@ -199,7 +199,7 @@ router.get('/:clientId/locations', protect, verifyClientAccess, async (req, res)
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     const status = err.response?.status;
-    const isAuthError = status === 401 || status === 403;
+    const isAuthError = status === 401 || status === 403 || err.message?.includes('incomplete') || err.message?.includes('invalid');
     const isClientError = status >= 400 && status < 500;
     console.error(`[Locations Error] Client: ${clientId}:`, errorString);
     
@@ -238,7 +238,7 @@ router.put('/:clientId/inventory/set', protect, verifyClientAccess, async (req, 
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     const status = err.response?.status;
-    const isAuthError = status === 401 || status === 403;
+    const isAuthError = status === 401 || status === 403 || err.message?.includes('incomplete') || err.message?.includes('invalid');
     const isClientError = status >= 400 && status < 500;
     console.error(`[InventoryUpdate Error] Client: ${clientId}:`, errorString);
     res.status(isClientError ? 400 : 500).json({ 
@@ -265,7 +265,7 @@ router.get('/:clientId/customers', protect, verifyClientAccess, async (req, res)
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     const status = err.response?.status;
-    const isAuthError = status === 401 || status === 403;
+    const isAuthError = status === 401 || status === 403 || err.message?.includes('incomplete') || err.message?.includes('invalid');
     const isClientError = status >= 400 && status < 500;
     console.error(`[Customers Error] Client: ${clientId}:`, errorString);
     res.status(isClientError ? 400 : 500).json({ 

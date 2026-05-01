@@ -91,9 +91,22 @@ router.get('/media', async (req, res) => {
     log.error('[Media] Error fetching IG media:', err.message);
 
     const errCode = err.response?.data?.error?.code;
-    if (errCode === 190 || err.message?.includes('token')) {
+    const errType = err.response?.data?.error?.type;
+    // OAuthException often indicates expired or invalid token
+    if (errCode === 190 || errCode === 100 || errType === 'OAuthException' || err.message?.includes('token') || err.message?.includes('OAuth')) {
+      // Clear token from DB so connection-status returns false
+      await Client.updateOne(
+        { clientId },
+        { 
+          $unset: { 
+            instagramAccessToken: 1, 
+            'social.instagram.accessToken': 1 
+          } 
+        }
+      );
+      
       return res.status(400).json({
-        error: 'Instagram token expired. Please reconnect in Settings.',
+        error: 'Instagram token expired or invalid. Please reconnect in Settings.',
         connected: false
       });
     }
