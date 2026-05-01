@@ -1,52 +1,20 @@
 const crypto = require('crypto');
-
 const ALGORITHM = 'aes-256-cbc';
-const KEY = crypto.createHash('sha256').update(String(process.env.ENCRYPTION_KEY || 'topedge_ai_secure_v1_2024_03_30_x!')).digest('base64').substring(0, 32);
+const KEY = Buffer.from(process.env.ENCRYPTION_KEY, 'hex'); // 32 bytes hex in env
 
-/**
- * Encrypts a string using AES-256-CBC.
- * Returns a buffer-like string: iv:content
- */
 function encrypt(text) {
-  if (!text) return "";
-  // --- ROBUSTNESS: Strictly handle non-string inputs (prevent crashes on objects/buffers) ---
-  if (typeof text !== 'string') return text; 
-  // --- ROBUSTNESS: Avoid double encryption ---
-  if (text.includes(':') && text.length > 32) return text; 
-  
   const iv = crypto.randomBytes(16);
   const cipher = crypto.createCipheriv(ALGORITHM, KEY, iv);
-  let encrypted = cipher.update(text, 'utf8', 'hex');
-  encrypted += cipher.final('hex');
-  return `${iv.toString('hex')}:${encrypted}`;
+  const encrypted = Buffer.concat([cipher.update(text, 'utf8'), cipher.final()]);
+  return iv.toString('hex') + ':' + encrypted.toString('hex');
 }
 
-/**
- * Decrypts a string. 
- * Detects if the string is already plain text (backward compatibility).
- */
-function decrypt(text) {
-  if (!text) return "";
-  // --- ROBUSTNESS: Strictly handle non-string inputs (prevent crashes on objects/buffers) ---
-  if (typeof text !== 'string') return text; 
-  if (!text.includes(':')) return text; // Backward compatibility for unencrypted tokens
-
-  try {
-    const [ivHex, encryptedHex] = text.split(':');
-    if (!ivHex || !encryptedHex) return text;
-
-    // Buffer.from should handle hex strings, but we wrap in try-catch to be 100% safe
-    const iv = Buffer.from(ivHex, 'hex');
-    const decipher = crypto.createDecipheriv(ALGORITHM, KEY, iv);
-    let decrypted = decipher.update(encryptedHex, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    return decrypted;
-  } catch (err) {
-    if (process.env.NODE_ENV !== 'production') {
-      console.warn("[Encryption] Decryption failed parsing structure. Returning raw value.", err.message);
-    }
-    return text; // Fallback to raw if decryption fails (e.g. key changed or malformed)
-  }
+function decrypt(encryptedText) {
+  const [ivHex, dataHex] = encryptedText.split(':');
+  const iv = Buffer.from(ivHex, 'hex');
+  const data = Buffer.from(dataHex, 'hex');
+  const decipher = crypto.createDecipheriv(ALGORITHM, KEY, iv);
+  return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
 }
 
 module.exports = { encrypt, decrypt };

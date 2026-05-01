@@ -4,7 +4,7 @@ const express = require('express');
 const router = express.Router();
 
 const crudController = require('../controllers/igAutomation/crudController');
-const oEmbedController = require('../controllers/igAutomation/oEmbedController');
+const postPreviewController = require('../controllers/igAutomation/postPreviewController');
 const mediaController = require('../controllers/igAutomation/mediaController');
 
 // Auth middleware
@@ -15,7 +15,7 @@ const { protect } = require('../middleware/auth');
 
 // Authenticated routes
 router.use('/', protect, crudController);
-router.use('/', protect, oEmbedController);
+router.post('/fetch-post-preview', protect, postPreviewController.fetchPostPreview);
 router.use('/', protect, mediaController);
 
 module.exports = router;

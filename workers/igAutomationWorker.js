@@ -53,9 +53,14 @@ if (isInternalRenderRedis && !isRunningOnRender) {
   // --- WORKERS ---
 
   const commentDmWorker = new Worker('ig-comment-dm', async (job) => {
-    const { sendOpeningDM } = require('../controllers/igAutomation/messageDispatcher');
-    const { automationId, commenterIgsid, clientId } = job.data;
-    await sendOpeningDM(automationId, commenterIgsid, clientId);
+    const { sendOpeningDM, handleViewContentPostback } = require('../controllers/igAutomation/messageDispatcher');
+    const { automationId, commenterIgsid, clientId, action } = job.data;
+    
+    if (action === 'VIEW_CONTENT') {
+      await handleViewContentPostback(automationId, commenterIgsid, clientId);
+    } else {
+      await sendOpeningDM(automationId, commenterIgsid, clientId);
+    }
   }, workerOpts);
 
   const commentReplyWorker = new Worker('ig-comment-reply', async (job) => {

@@ -260,6 +260,15 @@ const ClientSchema = new mongoose.Schema({
   // Phase 20: AI Onboarding Wizard
   wizardCompleted:       { type: Boolean, default: false },
   wizardCompletedAt:     { type: Date,    default: null },
+
+  // New Dedicated IG Automation Fields
+  igPageId: { type: String, default: null },
+  igUserId: { type: String, default: null },
+  igUsername: { type: String, default: null },
+  igProfilePicUrl: { type: String, default: null },
+  igAccessToken: { type: String, default: null },
+  igTokenExpiry: { type: Date, default: null },
+  igWebhookSubscribed: { type: Boolean, default: false },
   
   // messageTemplates stored as flexible Mixed array to support both 
   // legacy sub-documents and new flow-based template references
@@ -602,6 +611,7 @@ function encryptSubDocs(doc) {
   if (doc.openaiApiKey) doc.openaiApiKey = enc(doc.openaiApiKey);
   if (doc.instagramAccessToken) doc.instagramAccessToken = enc(doc.instagramAccessToken);
   if (doc.instagramAppSecret) doc.instagramAppSecret = enc(doc.instagramAppSecret);
+  if (doc.igAccessToken) doc.igAccessToken = enc(doc.igAccessToken);
   if (doc.razorpaySecret) doc.razorpaySecret = enc(doc.razorpaySecret);
   if (doc.cashfreeSecretKey) doc.cashfreeSecretKey = enc(doc.cashfreeSecretKey);
   if (doc.stripeSecretKey) doc.stripeSecretKey = enc(doc.stripeSecretKey);
@@ -628,7 +638,7 @@ function encryptUpdateQuery(update) {
     'ai.geminiKey', 'ai.openaiKey', 'social.instagram.accessToken', 'social.instagram.appSecret', 'social.metaAds.accessToken',
     'whatsappToken', 'shopifyAccessToken', 'shopifyRefreshToken', 'shopifyWebhookSecret', 'shopifyClientSecret',
     'woocommerceSecret', 'geminiApiKey', 'openaiApiKey', 'instagramAccessToken', 
-    'instagramAppSecret', 'razorpaySecret', 'cashfreeSecretKey', 'stripeSecretKey', 
+    'instagramAppSecret', 'igAccessToken', 'razorpaySecret', 'cashfreeSecretKey', 'stripeSecretKey', 
     'payuMerchantSalt', 'phonepeSaltKey', 'emailAppPassword'
   ];
 

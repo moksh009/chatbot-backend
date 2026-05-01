@@ -6,6 +6,7 @@ const IGAutomation = require('../../models/IGAutomation');
 const IGAutomationSession = require('../../models/IGAutomationSession');
 const Client = require('../../models/Client');
 const { subscribePageToWebhooks } = require('../../utils/igGraphApi');
+const { validateAutomationMessages } = require('../../utils/igTextValidation');
 const log = require('../../utils/logger')('IGAutoCRUD');
 
 /**
@@ -141,6 +142,11 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Opening DM message is required for active automations' });
     }
 
+    const validationErrors = validateAutomationMessages(payload);
+    if (validationErrors.length > 0) {
+      return res.status(422).json({ success: false, errors: validationErrors });
+    }
+
     const automation = new IGAutomation({
       ...payload,
       status: status || 'draft',
@@ -180,6 +186,15 @@ router.patch('/:id', async (req, res) => {
       updateData.targeting = safeTargeting;
     }
     if (storyTrigger !== undefined) updateData.storyTrigger = storyTrigger;
+
+    // Run text limits validation if flow is updated
+    if (flow !== undefined || trigger !== undefined) {
+      const tempPayload = { flow: flow || {}, trigger: trigger || {} };
+      const validationErrors = validateAutomationMessages(tempPayload);
+      if (validationErrors.length > 0) {
+        return res.status(422).json({ success: false, errors: validationErrors });
+      }
+    }
 
     if (status === 'active') {
       const auto = await IGAutomation.findById(req.params.id).lean();

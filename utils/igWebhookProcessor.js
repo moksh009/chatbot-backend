@@ -2,6 +2,7 @@
 
 const IGAutomation = require('../models/IGAutomation');
 const IGAutomationSession = require('../models/IGAutomationSession');
+const IGProcessedComment = require('../models/IGProcessedComment');
 const Client = require('../models/Client');
 const log = require('./logger')('IGWebhookProcessor');
 
@@ -217,112 +218,152 @@ async function handleIncomingDM(pageId, msg) {
  */
 async function handleCommentEvent(pageId, commentData) {
   try {
-    const { id: commentId, text, from, media } = commentData;
-    if (!commentId || !from || !text) return;
-
+    const { id: commentId, text: commentText, from, media } = commentData;
+    const commenterIgsid = from?.id;
     const mediaId = media?.id;
-    const commenterIgsid = from.id;
 
-    // Find the client by their Instagram Page ID
+    if (!commentId || !commenterIgsid || !mediaId) {
+      console.warn('[IG Comment] Missing required fields in webhook payload:', JSON.stringify(commentData));
+      return;
+    }
+
+    // Step 1: Deduplication check — insert first, check after
+    try {
+      const client = await Client.findOne({
+        $or: [
+          { instagramPageId: pageId },
+          { 'social.instagram.pageId': pageId },
+          { igPageId: pageId }
+        ]
+      }).lean();
+
+      if (!client) {
+        console.warn('[IG Comment] No client found for pageId:', pageId);
+        return;
+      }
+
+      await IGProcessedComment.create({
+        commentId,
+        clientId: client.clientId,
+        processedAt: new Date()
+      });
+    } catch (dupErr) {
+      if (dupErr.code === 11000) {
+        console.log('[IG Comment] Duplicate comment detected, skipping:', commentId);
+        return;
+      }
+      throw dupErr;
+    }
+
+    // Fetch client again with full data
     const client = await Client.findOne({
       $or: [
         { instagramPageId: pageId },
-        { 'social.instagram.pageId': pageId }
+        { 'social.instagram.pageId': pageId },
+        { igPageId: pageId }
       ]
     }).lean();
-    if (!client) return;
 
-    // Ignore our own comments
-    if (commenterIgsid === pageId) return;
-
-    const clientId = client.clientId;
-
-    // Find active comment_to_dm automations for this client
+    // Step 2: Find matching active automations
     const automations = await IGAutomation.find({
-      clientId,
+      clientId: client.clientId,
       type: 'comment_to_dm',
       status: 'active'
     }).lean();
 
-    if (!automations || automations.length === 0) return;
+    for (const automation of automations) {
+      const matches = await evaluateAutomationMatch(automation, mediaId, commentText, client.clientId);
+      if (!matches) continue;
 
-    for (const auto of automations) {
-      // 1. Post Match Check
-      let postMatch = false;
-      if (auto.targeting.mode === 'every_post') {
-        postMatch = true;
-      } else if (auto.targeting.mode === 'specific_post' && auto.targeting.mediaId === mediaId) {
-        postMatch = true;
-      } else if (auto.targeting.mode === 'next_post' && !auto.targeting.nextPostClaimed) {
-        postMatch = true;
-      }
-      if (!postMatch) continue;
-
-      // 2. Keyword Match Check
-      let keywordMatch = false;
-      if (auto.trigger.mode === 'every_comment') {
-        keywordMatch = true;
-      } else if (auto.trigger.mode === 'specific_words' && auto.trigger.keywords?.length > 0) {
-        const commentText = auto.trigger.caseSensitive ? text : text.toLowerCase();
-        keywordMatch = auto.trigger.keywords.some(kw => {
-          const keyword = auto.trigger.caseSensitive ? kw : kw.toLowerCase();
-          return commentText.includes(keyword);
-        });
-      }
-      if (!keywordMatch) continue;
-
-      // 3. De-duplication Guard — check for existing session within 24h
+      // Step 3: Check for existing unexpired session (24-hour dedup per user per automation)
       const existingSession = await IGAutomationSession.findOne({
-        automationId: auto._id,
+        automationId: automation._id,
         igsid: commenterIgsid
       });
       if (existingSession) {
-        log.info(`[Comment] De-dup: Session already exists for automation=${auto._id} igsid=${commenterIgsid}`);
+        console.log('[IG Comment] Session exists for igsid:', commenterIgsid, 'automation:', automation._id, '— skipping.');
         continue;
       }
 
-      // 4. If next_post mode, claim it atomically
-      if (auto.targeting.mode === 'next_post') {
+      // Step 4: Handle next_post mode — claim the mediaId
+      if (automation.targeting.mode === 'next_post' && !automation.targeting.nextPostClaimed) {
         const claimed = await IGAutomation.findOneAndUpdate(
-          { _id: auto._id, 'targeting.nextPostClaimed': false },
-          { $set: { 'targeting.nextPostClaimed': true, 'targeting.mediaId': mediaId } },
+          { _id: automation._id, 'targeting.nextPostClaimed': false },
+          {
+            $set: {
+              'targeting.nextPostClaimed': true,
+              'targeting.mediaId': mediaId
+            }
+          },
           { new: true }
         );
-        if (!claimed) continue; // Another webhook already claimed it
+        if (!claimed) {
+          console.log('[IG Comment] next_post already claimed for automation:', automation._id);
+          continue;
+        }
+        console.log('[IG Comment] next_post automation claimed mediaId:', mediaId);
       }
 
-      // 5. Increment totalTriggered atomically
-      await IGAutomation.findByIdAndUpdate(auto._id, {
-        $inc: { 'stats.totalTriggered': 1 }
-      });
-
-      // 6. Enqueue DM job
-      await enqueueOrInline(commentDmQueue, 'comment-dm', {
-        automationId: auto._id.toString(),
-        commenterIgsid,
-        commentId,
-        clientId
-      });
-
-      // 7. Enqueue comment reply job (if configured)
-      if (auto.trigger.commentReplies && auto.trigger.commentReplies.length > 0) {
+      // Step 5: Enqueue comment reply job if preset comments configured
+      const hasPresetReplies = automation.trigger?.commentReplies?.length > 0;
+      if (hasPresetReplies) {
         await enqueueOrInline(commentReplyQueue, 'comment-reply', {
-          automationId: auto._id.toString(),
+          automationId: automation._id.toString(),
           commentId,
-          clientId,
+          clientId: client.clientId,
           mediaId
         });
       }
 
-      log.info(`[Comment] Triggered automation "${auto.name}" for igsid=${commenterIgsid} comment=${commentId}`);
+      // Step 6: Enqueue DM job
+      await enqueueOrInline(commentDmQueue, 'comment-dm', {
+        automationId: automation._id.toString(),
+        commenterIgsid,
+        commentId,
+        clientId: client.clientId
+      });
+
+      // Step 7: Increment triggered counter
+      await IGAutomation.findByIdAndUpdate(automation._id, {
+        $inc: { 'stats.totalTriggered': 1 }
+      });
+
+      console.log('[IG Comment] Queued automation', automation._id, 'for commenter', commenterIgsid);
     }
   } catch (err) {
-    log.error('[Comment] Error handling comment event:', err.message, { payload: JSON.stringify(commentData).substring(0, 500), stack: err.stack });
-    try {
-      const WebhookErrorLog = require('../models/WebhookErrorLog');
-      await WebhookErrorLog.create({ payload: commentData, error: err.message, stack: err.stack });
-    } catch (e) {}
+    console.error('[IG Comment] Unhandled error in handleCommentEvent:', err);
   }
+}
+
+async function evaluateAutomationMatch(automation, incomingMediaId, commentText, clientId) {
+  const { mode, mediaId: savedMediaId, nextPostClaimed } = automation.targeting || {};
+
+  // Check targeting mode
+  if (mode === 'specific_post') {
+    if (savedMediaId !== incomingMediaId) return false;
+  } else if (mode === 'next_post') {
+    if (nextPostClaimed && savedMediaId !== incomingMediaId) return false;
+    // If not yet claimed, any mediaId matches (this is the first post after setup)
+  }
+  // mode === 'every_post': always matches
+
+  // Check keyword trigger
+  const { mode: triggerMode, keywords, triggerCaseSensitive } = automation.trigger || {};
+  // Backward compatibility check for caseSensitive
+  const caseSensitive = triggerCaseSensitive !== undefined ? triggerCaseSensitive : automation.trigger?.caseSensitive;
+
+  if (triggerMode === 'specific_words') {
+    if (!keywords || keywords.length === 0) return false;
+    const textToCheck = caseSensitive ? commentText : commentText.toLowerCase();
+    const matched = keywords.some(kw => {
+      const k = caseSensitive ? kw : kw.toLowerCase();
+      return textToCheck.includes(k);
+    });
+    if (!matched) return false;
+  }
+  // triggerMode === 'every_comment': always matches
+
+  return true;
 }
 
 /**
@@ -554,10 +595,16 @@ async function handleButtonPostback(pageId, msg) {
       });
 
       log.info(`[Postback] Follow gate check enqueued for automation=${automationId} igsid=${senderId} action=${action}`);
-    } else if (action === 'VIEW_LINK') {
+    } else if (action === 'VIEW_LINK' || payload.startsWith('VIEW_CONTENT:')) {
       // Standard link flow — send the second message with links
-      const dispatcher = require('../controllers/igAutomation/messageDispatcher');
-      await dispatcher.sendStandardLinkFollow(automationId, senderId, clientId);
+      const actualAutoId = payload.startsWith('VIEW_CONTENT:') ? parts[1] : automationId;
+      await enqueueOrInline(commentDmQueue, 'comment-dm', {
+        automationId: actualAutoId,
+        commenterIgsid: senderId,
+        clientId,
+        action: 'VIEW_CONTENT'
+      });
+      console.log('[IG Postback] Queued VIEW_CONTENT for automation:', actualAutoId, 'igsid:', senderId);
     }
   } catch (err) {
     log.error('[Postback] Error handling button postback:', err.message, { payload: JSON.stringify(msg).substring(0, 500), stack: err.stack });

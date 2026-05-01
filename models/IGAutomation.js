@@ -17,6 +17,7 @@ const IGAutomationSchema = new mongoose.Schema({
       caption: String,
       providerName: String
     },
+    mediaPreviewJson: { type: mongoose.Schema.Types.Mixed, default: null },
     nextPostClaimed: { type: Boolean, default: false }
   },
 
@@ -25,6 +26,7 @@ const IGAutomationSchema = new mongoose.Schema({
     mode: { type: String, enum: ['specific_words', 'every_comment'] },
     keywords: [{ type: String }],
     caseSensitive: { type: Boolean, default: false },
+    triggerCaseSensitive: { type: Boolean, default: false },
     commentReplies: [{ type: String, maxlength: 500 }]
   },
 
@@ -40,6 +42,8 @@ const IGAutomationSchema = new mongoose.Schema({
   flow: {
     openingDm: { type: String, maxlength: 1000 },
     openingButton: { type: String, maxlength: 20 },
+    openingButtonType: { type: String, enum: ['postback', 'web_url'], default: 'postback' },
+    openingButtonUrl: { type: String, default: null },
 
     flowType: { type: String, enum: ['standard_link', 'follow_gate'] },
 
@@ -52,6 +56,7 @@ const IGAutomationSchema = new mongoose.Schema({
 
     // Follow gate flow
     followGate: {
+      gateButtonPayloadPrefix: { type: String, default: 'FOLLOW_CHECK' },
       gateButtonLabel: { type: String, maxlength: 20 },
       successMessage: { type: String, maxlength: 1000 },
       successLinkButtons: [{ label: String, url: String }],
