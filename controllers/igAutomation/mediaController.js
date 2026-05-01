@@ -17,9 +17,8 @@ const log = require('../../utils/logger')('IGMedia');
  *  - after: pagination cursor
  */
 router.get('/media', async (req, res) => {
+  const { clientId, limit: rawLimit, after } = req.query;
   try {
-    const { clientId, limit: rawLimit, after } = req.query;
-
     if (!clientId) {
       return res.status(400).json({ error: 'clientId is required' });
     }
