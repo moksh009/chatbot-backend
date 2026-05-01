@@ -5,7 +5,7 @@ const log = require('../utils/logger')('MasterWebhook');
 const Conversation = require('../models/Conversation');
 const Campaign = require('../models/Campaign');
 const CampaignMessage = require('../models/CampaignMessage');
-const { handleWhatsAppMessage } = require('../utils/dualBrainEngine');
+const { handleWhatsAppMessage, saveInboundMessage } = require('../utils/dualBrainEngine');
 const { processOrderForLoyalty } = require('../utils/walletService');
 const { logActivity } = require('../utils/activityLogger');
 const { recalculateLeadScore } = require('../utils/scoringHelper');
@@ -234,10 +234,7 @@ async function processMessages(messages, metadata, contacts) {
           );
 
           // Send acknowledgment
-          const { processInboundMessage } = require('../utils/dualBrainEngine');
-          // Since it's a catalog order, we might just use the old save message logic or skip it if we don't want the bot to reply automatically here.
-          // For now, let's just log it since the bot doesn't need to do a text reply via processInboundMessage.
-          // Or we can manually send a message using whatsappUtils
+          // Send acknowledgment (catalog order — no need for full engine processing)
           require('../utils/whatsapp').sendText({whatsappToken: clientDoc?.whatsappToken || '', phoneNumberId: phone_number_id}, from, `✅ Thank you! We've received your order for ${orderItems.length} item(s). Our team will confirm shortly.`).catch(e => log.error('Catalog Ack failed', { error: e.message }));
 
           // Fire external webhook
@@ -340,9 +337,11 @@ async function processMessages(messages, metadata, contacts) {
         continue;
       }
 
-      const { processInboundMessage } = require('../utils/dualBrainEngine');
-      
-      processInboundMessage({ message, phone: from, clientId: client.clientId, phoneNumberId: phone_number_id, token: client.whatsappToken })
+      // 4. Route to primary engine pipeline
+      // handleWhatsAppMessage is the SINGLE entry point that parses the payload,
+      // resolves the client, and calls runDualBrainEngine internally.
+      // DO NOT use processInboundMessage (deleted legacy dual-pipeline).
+      handleWhatsAppMessage(message, from, phone_number_id, (contacts || []).find(c => c.wa_id === from)?.profile?.name || '')
         .then(() => {
           // TRIGGER WATERFALL ENGINE: Update score in real-time (Interactions count as metric)
           recalculateLeadScore(client.clientId, from).catch(() => {});

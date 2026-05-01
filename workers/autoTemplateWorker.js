@@ -41,30 +41,70 @@ const FIXED_TEMPLATES = {
     category: 'UTILITY',
     purpose: 'Confirm a new order has been received and is being processed. Include order number and total amount.',
     variables: { '1': 'Customer Name', '2': 'Order Number', '3': 'Order Total' },
+    bodyText: 'Hi {{1}}, your order {{2}} has been confirmed! We are processing it now. Your total is {{3}}.',
     buttons: [{ type: 'QUICK_REPLY', text: 'Track Order' }]
   },
   shipping_update: {
     category: 'UTILITY',
     purpose: 'Notify the customer that their order has shipped. Include order number and tracking information.',
     variables: { '1': 'Customer Name', '2': 'Order Number', '3': 'Tracking URL' },
+    bodyText: 'Hi {{1}}, good news! Your order {{2}} has shipped. Track your package here: {{3}}',
     buttons: [{ type: 'QUICK_REPLY', text: 'Track Package' }]
   },
   order_delivered: {
     category: 'UTILITY',
     purpose: 'Confirm successful delivery and ask for feedback or review.',
     variables: { '1': 'Customer Name', '2': 'Order Number' },
+    bodyText: 'Hi {{1}}, your order {{2}} has been delivered. We hope you love it!',
     buttons: [{ type: 'QUICK_REPLY', text: 'Leave a Review' }, { type: 'QUICK_REPLY', text: 'Need Help' }]
+  },
+  order_cancelled: {
+    category: 'UTILITY',
+    purpose: 'Notify customer of cancellation & refund status.',
+    variables: { '1': 'Customer Name', '2': 'Order Number' },
+    bodyText: 'Hi {{1}}, your order {{2}} has been cancelled as requested. Any applicable refunds will be processed within 5-7 business days.',
+    buttons: [{ type: 'QUICK_REPLY', text: 'Contact Support' }]
+  },
+  review_request: {
+    category: 'MARKETING',
+    purpose: 'Ask for a review post-delivery.',
+    variables: { '1': 'Customer Name', '2': 'Review Link' },
+    bodyText: 'Hi {{1}}, we hope you are loving your recent purchase! Could you take a minute to leave a review? It helps us out a lot: {{2}}',
+    buttons: [{ type: 'QUICK_REPLY', text: 'Leave Review' }]
+  },
+  cod_to_prepaid: {
+    category: 'MARKETING',
+    purpose: 'Offer a discount to convert Cash on Delivery to Prepaid.',
+    variables: { '1': 'Customer Name', '2': 'Order Number', '3': 'Discount Amount', '4': 'Payment Link' },
+    bodyText: 'Hi {{1}}, convert your COD order {{2}} to prepaid and get an instant {{3}} discount! Click here to pay securely: {{4}}',
+    buttons: [{ type: 'QUICK_REPLY', text: 'Pay Now' }]
+  },
+  warranty_registration: {
+    category: 'UTILITY',
+    purpose: 'Send warranty activation link post-purchase.',
+    variables: { '1': 'Customer Name', '2': 'Order Number', '3': 'Warranty Link' },
+    bodyText: 'Hi {{1}}, protect your new purchase! Click here to register your warranty for order {{2}} within the next 48 hours: {{3}}',
+    buttons: [{ type: 'QUICK_REPLY', text: 'Register Warranty' }]
+  },
+  loyalty_points: {
+    category: 'MARKETING',
+    purpose: 'Update customer on points earned/balance.',
+    variables: { '1': 'Customer Name', '2': 'Points Earned', '3': 'Total Points' },
+    bodyText: 'Hi {{1}}, you have earned {{2}} loyalty points on your recent order! You now have a total of {{3}} points to redeem on your next purchase.',
+    buttons: [{ type: 'QUICK_REPLY', text: 'View Rewards' }]
   },
   cart_recovery_1: {
     category: 'MARKETING',
-    purpose: 'A polite first nudge sent 30 minutes after cart abandonment. Remind the customer of what they left behind without being pushy.',
+    purpose: 'A polite first nudge sent 30 minutes after cart abandonment.',
     variables: { '1': 'Customer Name', '2': 'Product Name', '3': 'Cart Total', '4': 'Checkout URL' },
+    bodyText: 'Hi {{1}}, you left {{2}} in your cart! Your total is {{3}}. Click here to complete your order before it sells out: {{4}}',
     buttons: [{ type: 'QUICK_REPLY', text: 'Complete Order' }]
   },
   cart_recovery_2: {
     category: 'MARKETING',
-    purpose: 'A second follow-up sent 24 hours after abandonment. Create gentle desirability, mention the product is still reserved, offer to help with questions.',
+    purpose: 'A second follow-up sent 24 hours after abandonment.',
     variables: { '1': 'Customer Name', '2': 'Product Name', '3': 'Checkout URL' },
+    bodyText: 'Hi {{1}}, your {{2}} is still reserved! Complete your purchase today with a special discount: {{3}}',
     buttons: [{ type: 'QUICK_REPLY', text: 'Shop Now' }, { type: 'QUICK_REPLY', text: 'Help Me' }]
   }
 };
@@ -98,30 +138,13 @@ function emitToClient(clientId, event, data) {
   } catch (e) { /* socket may not be initialized in worker context */ }
 }
 
-// ─── AI GENERATION: Fixed Templates ────────────────────────────────────────
+// ─── GENERATION: Fixed Templates ────────────────────────────────────────
 async function generateFixedTemplate(templateId, ctx) {
   const def = FIXED_TEMPLATES[templateId];
   if (!def) throw new Error(`Unknown fixed template: ${templateId}`);
 
-  const varList = Object.entries(def.variables)
-    .map(([k, v]) => `{{${k}}} = ${v}`)
-    .join(', ');
-
-  const prompt = `You are writing WhatsApp Business message template copy for ${ctx.brandName}. Brand tone: ${ctx.tone}. Language: ${ctx.language}.
-
-Write ONLY the message body text for a ${templateId.replace(/_/g, ' ')} template. Requirements: under 1024 characters, no markdown formatting, no HTML, use {{1}} {{2}} {{3}} notation for dynamic variables, write naturally as a brand representative would communicate.
-
-Template purpose: ${def.purpose}
-
-Variable placeholders to include: ${varList}
-
-Return ONLY the body text. No explanation. No template name. No subject line.`;
-
-  const body = await platformGenerateText(prompt, { maxTokens: 512, temperature: 0.7 });
-  if (!body) throw new Error(`AI generation returned null for ${templateId}`);
-
   return {
-    body: body.trim(),
+    body: def.bodyText,
     category: def.category,
     headerType: 'TEXT',
     headerValue: ctx.brandName,
@@ -155,34 +178,36 @@ async function buildSubmissionQueue(clientId) {
   }).lean();
 
   // Separate fixed and product templates
-  const fixedOrder = ['order_confirmed', 'shipping_update', 'order_delivered', 'cart_recovery_1', 'cart_recovery_2'];
+  const AUTO_SUBMIT_FIXED = ['order_confirmed', 'shipping_update', 'order_delivered', 'order_cancelled'];
   const fixed = [];
   const products = [];
 
   for (const d of drafts) {
-    if (fixedOrder.includes(d.autoGenProductId)) {
-      fixed.push(d);
+    if (Object.keys(FIXED_TEMPLATES).includes(d.autoGenProductId)) {
+      // ONLY push core utility templates into the auto-submission queue
+      if (AUTO_SUBMIT_FIXED.includes(d.autoGenProductId)) {
+        fixed.push(d);
+      }
+      // Sequence templates remain in 'draft' and are not queued
     } else {
       products.push(d);
     }
   }
 
   // Sort fixed templates in submission order
-  fixed.sort((a, b) => fixedOrder.indexOf(a.autoGenProductId) - fixedOrder.indexOf(b.autoGenProductId));
+  fixed.sort((a, b) => AUTO_SUBMIT_FIXED.indexOf(a.autoGenProductId) - AUTO_SUBMIT_FIXED.indexOf(b.autoGenProductId));
 
   const ordered = [];
-  // Batch 1 (positions 1-3): order_confirmed, shipping_update, order_delivered
-  const batch1 = fixed.filter(f => ['order_confirmed', 'shipping_update', 'order_delivered'].includes(f.autoGenProductId));
+  // Batch 1: order_confirmed, shipping_update, order_delivered, order_cancelled
+  const batch1 = fixed;
   batch1.forEach((t, i) => ordered.push({ ...t, batchNumber: 1, queuePosition: i + 1 }));
 
-  // Batch 2 (positions 4-8): cart_1, cart_2, first 3 product templates
-  const batch2Fixed = fixed.filter(f => ['cart_recovery_1', 'cart_recovery_2'].includes(f.autoGenProductId));
-  const batch2Products = products.slice(0, 3);
-  const batch2 = [...batch2Fixed, ...batch2Products];
-  batch2.forEach((t, i) => ordered.push({ ...t, batchNumber: 2, queuePosition: ordered.length + i + 1 }));
+  // Batch 2: first 5 product templates
+  const batch2Products = products.slice(0, 5);
+  batch2Products.forEach((t, i) => ordered.push({ ...t, batchNumber: 2, queuePosition: ordered.length + i + 1 }));
 
   // Batch 3+: remaining product templates in groups of 5
-  const remaining = products.slice(3);
+  const remaining = products.slice(5);
   let batchNum = 3;
   for (let i = 0; i < remaining.length; i += 5) {
     const chunk = remaining.slice(i, i + 5);
@@ -381,149 +406,172 @@ async function pollWorkspaceTemplateStatuses(clientId) {
   }
 }
 
+
+async function handleGenerationJob(data) {
+  const { clientId, templateType, fixedTemplateId, productId, productHandle, productName, productDescription, productPrice, productPageUrl } = data;
+  try {
+    const client = await Client.findOne({ clientId }).lean();
+    const brandName = client.platformVars?.brandName || client.businessName || clientId;
+    const currency = client.platformVars?.baseCurrency || '₹';
+    const language = client.platformVars?.defaultLanguage || 'en';
+    const tone = client.platformVars?.defaultTone || 'friendly and professional';
+
+    let generatedBody, templateName, category, headerType, headerValue, footerText, buttons, variableMapping;
+
+    if (templateType === 'fixed') {
+      const result = await generateFixedTemplate(fixedTemplateId, { brandName, currency, language, tone });
+      generatedBody = result.body;
+      templateName = fixedTemplateId;
+      category = result.category;
+      headerType = result.headerType;
+      headerValue = result.headerValue;
+      footerText = 'Reply STOP to Unsubscribe';
+      buttons = result.buttons;
+      variableMapping = result.variableMapping;
+    } else {
+      const result = await generateProductTemplate({ brandName, currency, language, tone, productName, productDescription: (productDescription || '').slice(0, 200), productPrice, productPageUrl });
+      generatedBody = result.body;
+      templateName = buildProductTemplateName(productHandle);
+      category = 'MARKETING';
+      headerType = 'TEXT';
+      headerValue = productName;
+      footerText = null;
+      buttons = [{ type: 'QUICK_REPLY', text: 'Buy Now' }];
+      variableMapping = {};
+    }
+
+    templateName = await getUniqueTemplateName(clientId, templateName);
+
+    const template = await MetaTemplate.findOneAndUpdate(
+      { clientId, source: 'auto_generated', autoGenProductId: productId || fixedTemplateId },
+      {
+        $set: {
+          clientId, name: templateName, category, language,
+          headerType, headerValue, body: generatedBody,
+          footerText, buttons, variableMapping,
+          source: 'auto_generated', autoGenProductId: productId || fixedTemplateId,
+          submissionStatus: 'draft', updatedAt: new Date()
+        },
+        $setOnInsert: { createdAt: new Date() }
+      },
+      { upsert: true, new: true }
+    );
+
+    await TemplateGenerationJob.findOneAndUpdate(
+      { clientId },
+      { $inc: { generatedCount: 1 }, $set: { updatedAt: new Date() } }
+    );
+
+    const genJob = await TemplateGenerationJob.findOne({ clientId }).lean();
+    emitToClient(clientId, 'templateGenerated', {
+      templateId: template._id.toString(), templateName, generatedCount: genJob.generatedCount
+    });
+
+    if (genJob.generatedCount >= genJob.totalTemplates) {
+      await TemplateGenerationJob.findOneAndUpdate({ clientId }, { $set: { status: 'generation_complete', updatedAt: new Date() } });
+      await buildSubmissionQueue(clientId);
+      emitToClient(clientId, 'templateGenerationComplete', { clientId });
+    }
+  } catch (err) {
+    log.error(`[Template Generation] Failed for ${clientId}, type: ${templateType}:`, err.message);
+    await MetaTemplate.findOneAndUpdate(
+      { clientId, source: 'auto_generated', autoGenProductId: productId || fixedTemplateId },
+      { $set: { submissionStatus: 'generation_failed' } }
+    );
+    await TemplateGenerationJob.findOneAndUpdate({ clientId }, { $inc: { failedGenerationCount: 1 } });
+    throw err;
+  }
+}
+
+async function handleSchedulerJob(data) {
+  const { clientId } = data;
+  const genJob = await TemplateGenerationJob.findOne({ clientId }).lean();
+  if (!genJob) return;
+
+  if (genJob.pausedByUser) {
+    log.info(`[Scheduler] Paused by user for ${clientId}. Rechecking in 30 min.`);
+    await rescheduleSubmissionCheck(clientId, 30);
+    return;
+  }
+
+  // THE CORE RULE — NEVER STACK ON PENDING
+  const pendingCount = await MetaTemplate.countDocuments({ clientId, submissionStatus: 'pending_meta_review' });
+  if (pendingCount > 0) {
+    log.info(`[Scheduler] ${pendingCount} templates pending for ${clientId}. Waiting 30 min.`);
+    const nextCheck = new Date(Date.now() + 30 * 60 * 1000);
+    await TemplateGenerationJob.findOneAndUpdate({ clientId }, { $set: { nextBatchCheckAt: nextCheck, updatedAt: new Date() } });
+    emitToClient(clientId, 'submissionSchedulerStatus', { clientId, state: 'waiting_for_pending_clearance', pendingCount, nextCheckAt: nextCheck.toISOString() });
+    await rescheduleSubmissionCheck(clientId, 30);
+    return;
+  }
+
+  const nextBatchItems = await SubmissionQueueItem.find({ clientId, status: 'queued' }).sort({ queuePosition: 1 }).limit(5).lean();
+  if (nextBatchItems.length === 0) {
+    await TemplateGenerationJob.findOneAndUpdate({ clientId }, { $set: { status: 'completed', completedAt: new Date(), updatedAt: new Date() } });
+    emitToClient(clientId, 'submissionSchedulerStatus', { clientId, state: 'completed' });
+    log.info(`[Scheduler] All templates submitted for ${clientId}`);
+    return;
+  }
+
+  const templateIds = nextBatchItems.map(item => item.templateId.toString());
+  
+  if (batchSubmitterQueue) {
+    await batchSubmitterQueue.add('submit', { clientId, templateIds, batchNumber: nextBatchItems[0].batchNumber }, { attempts: 3, backoff: { type: 'exponential', delay: 30000 } });
+  } else {
+    setTimeout(() => handleBatchJob({ clientId, templateIds, batchNumber: nextBatchItems[0].batchNumber }), 0);
+  }
+  
+  log.info(`[Scheduler] Dispatched batch ${nextBatchItems[0].batchNumber} for ${clientId}. Templates: ${templateIds.length}`);
+}
+
+async function handleBatchJob(data) {
+  const { clientId, templateIds } = data;
+  const client = await Client.findOne({ clientId }).lean();
+
+  for (const templateId of templateIds) {
+    await submitSingleTemplate(client, templateId, clientId);
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+
+  await TemplateGenerationJob.findOneAndUpdate({ clientId }, {
+    $inc: { submittedCount: templateIds.length },
+    $set: { lastBatchSubmittedAt: new Date(), updatedAt: new Date() }
+  });
+
+  emitToClient(clientId, 'submissionSchedulerStatus', { clientId, state: 'batch_submitted', submittedCount: templateIds.length });
+  await rescheduleSubmissionCheck(clientId, 30);
+}
+
+async function handlePollerJob() {
+  const clientsWithPending = await MetaTemplate.distinct('clientId', { submissionStatus: 'pending_meta_review' });
+  log.info(`[Status Poller] Checking ${clientsWithPending.length} workspaces`);
+  for (const clientId of clientsWithPending) {
+    await pollWorkspaceTemplateStatuses(clientId);
+  }
+}
+
 // ─── WORKER INITIALIZATION ─────────────────────────────────────────────────
 if (redisConnection) {
   const workerOpts = { connection: redisConnection };
 
   // WORKER 1: Template Generation
   const genWorker = new Worker('template-generation', async (job) => {
-    const { clientId, templateType, fixedTemplateId, productId, productHandle, productName, productDescription, productPrice, productPageUrl } = job.data;
-    try {
-      const client = await Client.findOne({ clientId }).lean();
-      const brandName = client.platformVars?.brandName || client.businessName || clientId;
-      const currency = client.platformVars?.baseCurrency || '₹';
-      const language = client.platformVars?.defaultLanguage || 'en';
-      const tone = client.platformVars?.defaultTone || 'friendly and professional';
-
-      let generatedBody, templateName, category, headerType, headerValue, footerText, buttons, variableMapping;
-
-      if (templateType === 'fixed') {
-        const result = await generateFixedTemplate(fixedTemplateId, { brandName, currency, language, tone });
-        generatedBody = result.body;
-        templateName = fixedTemplateId;
-        category = result.category;
-        headerType = result.headerType;
-        headerValue = result.headerValue;
-        footerText = 'Reply STOP to Unsubscribe';
-        buttons = result.buttons;
-        variableMapping = result.variableMapping;
-      } else {
-        const result = await generateProductTemplate({ brandName, currency, language, tone, productName, productDescription: (productDescription || '').slice(0, 200), productPrice, productPageUrl });
-        generatedBody = result.body;
-        templateName = buildProductTemplateName(productHandle);
-        category = 'MARKETING';
-        headerType = 'TEXT';
-        headerValue = productName;
-        footerText = null;
-        buttons = [{ type: 'QUICK_REPLY', text: 'Buy Now' }];
-        variableMapping = {};
-      }
-
-      templateName = await getUniqueTemplateName(clientId, templateName);
-
-      const template = await MetaTemplate.findOneAndUpdate(
-        { clientId, source: 'auto_generated', autoGenProductId: productId || fixedTemplateId },
-        {
-          $set: {
-            clientId, name: templateName, category, language,
-            headerType, headerValue, body: generatedBody,
-            footerText, buttons, variableMapping,
-            source: 'auto_generated', autoGenProductId: productId || fixedTemplateId,
-            submissionStatus: 'draft', updatedAt: new Date()
-          },
-          $setOnInsert: { createdAt: new Date() }
-        },
-        { upsert: true, new: true }
-      );
-
-      await TemplateGenerationJob.findOneAndUpdate(
-        { clientId },
-        { $inc: { generatedCount: 1 }, $set: { updatedAt: new Date() } }
-      );
-
-      const genJob = await TemplateGenerationJob.findOne({ clientId }).lean();
-      emitToClient(clientId, 'templateGenerated', {
-        templateId: template._id.toString(), templateName, generatedCount: genJob.generatedCount
-      });
-
-      if (genJob.generatedCount >= genJob.totalTemplates) {
-        await TemplateGenerationJob.findOneAndUpdate({ clientId }, { $set: { status: 'generation_complete', updatedAt: new Date() } });
-        await buildSubmissionQueue(clientId);
-        emitToClient(clientId, 'templateGenerationComplete', { clientId });
-      }
-    } catch (err) {
-      log.error(`[Template Generation] Failed for ${clientId}, type: ${templateType}:`, err.message);
-      await MetaTemplate.findOneAndUpdate(
-        { clientId, source: 'auto_generated', autoGenProductId: productId || fixedTemplateId },
-        { $set: { submissionStatus: 'generation_failed' } }
-      );
-      await TemplateGenerationJob.findOneAndUpdate({ clientId }, { $inc: { failedGenerationCount: 1 } });
-      throw err;
-    }
+    return await handleGenerationJob(job.data);
   }, { ...workerOpts, concurrency: 3 });
 
   // WORKER 2: Submission Scheduler (The Conductor)
   const schedulerWorker = new Worker('template-submission-scheduler', async (job) => {
-    const { clientId } = job.data;
-    const genJob = await TemplateGenerationJob.findOne({ clientId }).lean();
-    if (!genJob) return;
-
-    if (genJob.pausedByUser) {
-      log.info(`[Scheduler] Paused by user for ${clientId}. Rechecking in 30 min.`);
-      await rescheduleSubmissionCheck(clientId, 30);
-      return;
-    }
-
-    // THE CORE RULE — NEVER STACK ON PENDING
-    const pendingCount = await MetaTemplate.countDocuments({ clientId, submissionStatus: 'pending_meta_review' });
-    if (pendingCount > 0) {
-      log.info(`[Scheduler] ${pendingCount} templates pending for ${clientId}. Waiting 30 min.`);
-      const nextCheck = new Date(Date.now() + 30 * 60 * 1000);
-      await TemplateGenerationJob.findOneAndUpdate({ clientId }, { $set: { nextBatchCheckAt: nextCheck, updatedAt: new Date() } });
-      emitToClient(clientId, 'submissionSchedulerStatus', { clientId, state: 'waiting_for_pending_clearance', pendingCount, nextCheckAt: nextCheck.toISOString() });
-      await rescheduleSubmissionCheck(clientId, 30);
-      return;
-    }
-
-    const nextBatchItems = await SubmissionQueueItem.find({ clientId, status: 'queued' }).sort({ queuePosition: 1 }).limit(5).lean();
-    if (nextBatchItems.length === 0) {
-      await TemplateGenerationJob.findOneAndUpdate({ clientId }, { $set: { status: 'completed', completedAt: new Date(), updatedAt: new Date() } });
-      emitToClient(clientId, 'submissionSchedulerStatus', { clientId, state: 'completed' });
-      log.info(`[Scheduler] All templates submitted for ${clientId}`);
-      return;
-    }
-
-    const templateIds = nextBatchItems.map(item => item.templateId.toString());
-    await batchSubmitterQueue.add('submit', { clientId, templateIds, batchNumber: nextBatchItems[0].batchNumber }, { attempts: 3, backoff: { type: 'exponential', delay: 30000 } });
-    log.info(`[Scheduler] Dispatched batch ${nextBatchItems[0].batchNumber} for ${clientId}. Templates: ${templateIds.length}`);
+    return await handleSchedulerJob(job.data);
   }, { ...workerOpts, concurrency: 1 });
 
   // WORKER 3: Batch Submitter
   const batchWorker = new Worker('template-batch-submitter', async (job) => {
-    const { clientId, templateIds } = job.data;
-    const client = await Client.findOne({ clientId }).lean();
-
-    for (const templateId of templateIds) {
-      await submitSingleTemplate(client, templateId, clientId);
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    }
-
-    await TemplateGenerationJob.findOneAndUpdate({ clientId }, {
-      $inc: { submittedCount: templateIds.length },
-      $set: { lastBatchSubmittedAt: new Date(), updatedAt: new Date() }
-    });
-
-    emitToClient(clientId, 'submissionSchedulerStatus', { clientId, state: 'batch_submitted', submittedCount: templateIds.length });
-    await rescheduleSubmissionCheck(clientId, 30);
+    return await handleBatchJob(job.data);
   }, { ...workerOpts, concurrency: 1 });
 
   // WORKER 4: Status Poller
   const pollerWorker = new Worker('template-status-poller', async (job) => {
-    const clientsWithPending = await MetaTemplate.distinct('clientId', { submissionStatus: 'pending_meta_review' });
-    log.info(`[Status Poller] Checking ${clientsWithPending.length} workspaces`);
-    for (const clientId of clientsWithPending) {
-      await pollWorkspaceTemplateStatuses(clientId);
-    }
+    return await handlePollerJob();
   }, { ...workerOpts, concurrency: 5 });
 
   // Event listeners for all workers
@@ -558,4 +606,4 @@ if (redisConnection) {
   log.info('[AutoTemplate] ✅ All 4 workers initialized');
 }
 
-module.exports = { buildSubmissionQueue };
+module.exports = { buildSubmissionQueue, handleGenerationJob, handleSchedulerJob, handleBatchJob, handlePollerJob };

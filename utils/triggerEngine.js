@@ -41,9 +41,13 @@ async function findMatchingFlow(parsedMessage, client, convo) {
     triggerCache.set(cacheKey, flows);
   }
 
+  // Helper: extract nodes from a flow, preferring publishedNodes over draft nodes
+  const getFlowNodes = (flow) => flow.publishedNodes?.length > 0 ? flow.publishedNodes : (flow.nodes || []);
+  const getFlowEdges = (flow) => flow.publishedEdges?.length > 0 ? flow.publishedEdges : (flow.edges || []);
+
   // ── PRIORITY 1: Check keyword triggers ─────────────────────────────────────
   const keywordFlow = flows.find((flow) => {
-    const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(flow.nodes || []);
+    const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(getFlowNodes(flow));
     if (!trigger || (trigger.type !== "keyword" && trigger.type !== "KEYWORD")) return false;
 
     // Channel check
@@ -64,7 +68,7 @@ async function findMatchingFlow(parsedMessage, client, convo) {
   if (parsedMessage.referral && parsedMessage.referral.source_id) {
     const adId = parsedMessage.referral.source_id;
     const adFlow = flows.find(flow => {
-       const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(flow.nodes || []);
+       const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(getFlowNodes(flow));
        if (!trigger || (trigger.type !== "meta_ad" && trigger.type !== "META_AD")) return false;
        return trigger.adId === adId || trigger.adId === "any";
     });
@@ -74,21 +78,27 @@ async function findMatchingFlow(parsedMessage, client, convo) {
   // ── PRIORITY 1.5: Check event triggers (story_mention, intent_match) ─────────
   if (parsedMessage.event === "story_mention") {
     const eventFlow = flows.find((flow) => {
-      const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(flow.nodes || []);
+      const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(getFlowNodes(flow));
       return trigger?.type === "story_mention" || trigger?.type === "STORY_MENTION";
     });
     if (eventFlow) return { flow: eventFlow, triggerType: "story_mention" };
   }
 
   // ── PRIORITY 1.6: Check AI intent_match triggers ────────────────────────────
+  // Wrapped in try/catch — if NLP engine times out or crashes, skip gracefully
   if (parsedMessage.detectedIntentId) {
-    const intentFlow = flows.find((flow) => {
-      const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(flow.nodes || []);
-      if (!trigger || trigger.type !== "intent_match") return false;
-      // If intentId is blank on the node → matches any detected intent
-      return !trigger.intentId || trigger.intentId === parsedMessage.detectedIntentId;
-    });
-    if (intentFlow) return { flow: intentFlow, triggerType: "intent_match" };
+    try {
+      const intentFlow = flows.find((flow) => {
+        const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(getFlowNodes(flow));
+        if (!trigger || trigger.type !== "intent_match") return false;
+        // If intentId is blank on the node → matches any detected intent
+        return !trigger.intentId || trigger.intentId === parsedMessage.detectedIntentId;
+      });
+      if (intentFlow) return { flow: intentFlow, triggerType: "intent_match" };
+    } catch (intentErr) {
+      console.warn(`[TriggerEngine] Intent match skipped (NLP error): ${intentErr.message}`);
+      // Fall through to next priority tier
+    }
   }
 
   // ── PRIORITY 2: Check first_message triggers ────────────────────────────────
@@ -100,7 +110,7 @@ async function findMatchingFlow(parsedMessage, client, convo) {
 
   if (isNewConversation) {
     const welcomeFlow = flows.find((flow) => {
-      const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(flow.nodes || []);
+      const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(getFlowNodes(flow));
       if (!trigger || (trigger.type !== "first_message" && trigger.type !== "FIRST_MESSAGE")) return false;
 
       const flowChannel = (trigger.channel || flow.channel || "both").toLowerCase();
@@ -122,6 +132,14 @@ async function findMatchingFlow(parsedMessage, client, convo) {
   }
 
   return null;
+}
+
+// Helper to get nodes from a flow preferring publishedNodes
+function _getFlowNodes(flow) {
+  return flow.publishedNodes?.length > 0 ? flow.publishedNodes : (flow.nodes || []);
+}
+function _getFlowEdges(flow) {
+  return flow.publishedEdges?.length > 0 ? flow.publishedEdges : (flow.edges || []);
 }
 
 /**
@@ -146,7 +164,7 @@ async function matchEventTrigger(eventName, eventData, client, status = null) {
   }
 
   const matching = flows.filter(flow => {
-    const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(flow.nodes || []);
+    const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(_getFlowNodes(flow));
     if (!trigger) return false;
 
     const tType = (trigger.type || '').toLowerCase();
@@ -168,7 +186,7 @@ async function matchEventTrigger(eventName, eventData, client, status = null) {
   const items = eventData.line_items || eventData.items || [];
   if (items.length > 0) {
     for (const flow of matching) {
-      const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(flow.nodes || []);
+      const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(_getFlowNodes(flow));
       if (trigger?.skuMatches?.length > 0) {
         const hasMatch = items.some(item => trigger.skuMatches.includes(item.sku));
         if (hasMatch) return flow;
@@ -178,7 +196,7 @@ async function matchEventTrigger(eventName, eventData, client, status = null) {
 
   // Return first general match (no SKU filter)
   return matching.find(f => {
-    const trigger = f.triggerConfig || f.trigger || getTriggerFromNodes(f.nodes || []);
+    const trigger = f.triggerConfig || f.trigger || getTriggerFromNodes(_getFlowNodes(f));
     return !trigger?.skuMatches || trigger.skuMatches.length === 0;
   }) || matching[0];
 }
@@ -291,15 +309,18 @@ function checkKeywordMatch(text, keyword, matchMode = "contains") {
 }
 
 function findFlowStartNode(flowNodes, flowEdges) {
-  if (!flowNodes || !flowNodes.length) return null;
-  const triggerNode = flowNodes.find((n) => n.type === "TriggerNode" || n.type === "trigger");
+  // Accept either raw arrays or use publishedNodes when available
+  const nodes = Array.isArray(flowNodes) ? flowNodes : [];
+  const edges = Array.isArray(flowEdges) ? flowEdges : [];
+  if (!nodes.length) return null;
+  const triggerNode = nodes.find((n) => n.type === "TriggerNode" || n.type === "trigger");
 
   if (triggerNode) {
-    const firstEdge = (flowEdges || []).find((e) => e.source === triggerNode.id);
+    const firstEdge = edges.find((e) => e.source === triggerNode.id);
     if (firstEdge?.target) return firstEdge.target;
   }
 
-  const startNode = flowNodes.find((n) => n.type !== "folder" && n.type !== "group" && n.type !== "sticky");
+  const startNode = nodes.find((n) => n.type !== "folder" && n.type !== "group" && n.type !== "sticky");
   return startNode?.id || null;
 }
 

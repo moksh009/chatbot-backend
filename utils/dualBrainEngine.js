@@ -134,7 +134,7 @@ async function getFlowGraphForConversation(client, convo) {
 
   const activeFlowId = String(convo.activeFlowId);
 
-  // 1) Prefer WhatsAppFlow collection
+  // 1) Prefer WhatsAppFlow collection — read PUBLISHED state only
   try {
     const WhatsAppFlow = require("../models/WhatsAppFlow");
     let flowDoc = null;
@@ -147,8 +147,20 @@ async function getFlowGraphForConversation(client, convo) {
         $or: [{ flowId: activeFlowId }, { _id: activeFlowId }]
       }).lean();
     }
-    if (flowDoc?.nodes?.length) {
-      return { nodes: flattenFlowNodes(flowDoc.nodes || []), edges: flowDoc.edges || [] };
+    if (flowDoc) {
+      // CRITICAL: Read from publishedNodes/publishedEdges (immutable snapshot)
+      // Never read from draft nodes — prevents live edits from affecting running bots
+      const pubNodes = flowDoc.publishedNodes || [];
+      const pubEdges = flowDoc.publishedEdges || [];
+      if (pubNodes.length > 0) {
+        return { nodes: flattenFlowNodes(pubNodes), edges: pubEdges };
+      }
+      // If publishedNodes is empty but nodes exists, this flow was never published properly
+      // Fall back to nodes with a warning (backwards compatibility for pre-migration flows)
+      if (flowDoc.nodes?.length) {
+        log.warn(`[FlowGraph] Flow ${activeFlowId} has no publishedNodes — using draft nodes as fallback. Please re-publish.`);
+        return { nodes: flattenFlowNodes(flowDoc.nodes), edges: flowDoc.edges || [] };
+      }
     }
   } catch (_) {
     // non-fatal, continue to in-memory flow lookup
@@ -166,15 +178,18 @@ async function getFlowGraphForConversation(client, convo) {
 // ─────────────────────────────────────────────────────────────────────────────
 // HANDLE ID NORMALIZER — strips ReactFlow group/folder prefixes from handle IDs
 // e.g. "group_123__button_buy" → "button_buy"
+//
+// CRITICAL FIX: Previous version used .replace(/[^\w\s-]/g, "") which destroyed
+// button IDs containing valid characters. Button IDs from InteractiveNode.jsx
+// (e.g. "btn_1716234567890") must survive this function INTACT.
+// The ONLY transformation allowed is: strip group prefix, trim, lowercase.
 // ─────────────────────────────────────────────────────────────────────────────
 function normalizeHandleId(handleId) {
   if (!handleId) return handleId;
-  const parts = String(handleId).split("__");
-  return parts[parts.length - 1]
-    .trim()
-    .toLowerCase()
-    .replace(/[^\w\s-]/g, "")
-    .replace(/\s+/g, "_");
+  const raw = String(handleId);
+  // Strip ReactFlow group/folder prefix (e.g. "group_123__btn_buy" → "btn_buy")
+  const parts = raw.split("__");
+  return parts[parts.length - 1].trim().toLowerCase();
 }
 
 const { normalizePhone } = require("./helpers");
@@ -376,12 +391,30 @@ async function runDualBrainEngine(parsedMessage, client) {
   const io       = global.io;
   const messageId = parsedMessage.messageId;
 
-  // 1. SESSION LOCK (Top-level deduplication now handled by router)
+  // 1. SESSION LOCK — Atomic upsert with ownership ID
+  // Uses findOneAndUpdate with $setOnInsert to atomically claim the lock.
+  // The _lockOwnerId ensures only the owning request can release it.
   const _lockStartTime = Date.now();
+  const crypto = require('crypto');
+  const _lockOwnerId = crypto.randomUUID();
   try {
-      await ProcessingLock.create({ phone, clientId: client.clientId });
+      const existingLock = await ProcessingLock.findOneAndUpdate(
+        { phone, clientId: client.clientId },
+        { $setOnInsert: { phone, clientId: client.clientId, _lockOwnerId, lockedAt: new Date() } },
+        { upsert: true, new: true, lean: true }
+      );
+      // If the returned doc has a different owner, another request holds the lock
+      if (existingLock._lockOwnerId !== _lockOwnerId) {
+        log.warn(`[Lock] Session locked for ${phone} by another request. Skipping.`);
+        return true;
+      }
   } catch (lockErr) {
-      log.warn(`[Lock] Session locked for ${phone}. Skipping rapid entry.`);
+      // E11000 duplicate key can still race in rare cases — treat as lock held
+      if (lockErr.code === 11000) {
+        log.warn(`[Lock] Session locked for ${phone} (duplicate key). Skipping.`);
+        return true;
+      }
+      log.error(`[Lock] Unexpected lock error for ${phone}:`, lockErr.message);
       return true;
   }
 
@@ -1086,6 +1119,36 @@ async function runDualBrainEngine(parsedMessage, client) {
     }
   }
 
+  // ── PRIORITY -1: GLOBAL INTERRUPT KEYWORDS ───────────────────────────────
+  // SAFETY NET: Before any flow processing, check if user is requesting abort.
+  // This prevents users from being trapped in infinite loops or multi-step flows.
+  const _globalInterruptKeywords = {
+    optOut: ['stop', 'unsubscribe', 'opt out', 'halt', 'block bot'],
+    humanHandoff: ['talk to human', 'talk to agent', 'talk to person', 'agent', 'human', 'real person', 'customer care', 'support']
+  };
+  const _isInActiveFlow = !!(convo.lastStepId || convo.status === 'WAITING_FOR_INPUT');
+  if (_isInActiveFlow && userTextLower) {
+    // Check opt-out interrupts
+    if (_globalInterruptKeywords.optOut.some(k => userTextLower === k)) {
+      log.info(`🛑 [GlobalInterrupt] Opt-out "${userTextLower}" detected mid-flow for ${phone}. Aborting flow.`);
+      await Conversation.findByIdAndUpdate(convo._id, {
+        $set: { botPaused: true, isBotPaused: true, status: 'OPTED_OUT', lastStepId: null, waitingForVariable: null, captureResumeNodeId: null }
+      });
+      await sendWhatsAppText(client, phone, "You've been unsubscribed. You will no longer receive automated messages. Reply START anytime to re-subscribe.");
+      return true;
+    }
+    // Check human handoff interrupts
+    if (_globalInterruptKeywords.humanHandoff.some(k => userTextLower.includes(k))) {
+      log.info(`🙋 [GlobalInterrupt] Human request "${userTextLower}" detected mid-flow for ${phone}. Aborting flow.`);
+      await Conversation.findByIdAndUpdate(convo._id, {
+        $set: { status: 'HUMAN_TAKEOVER', requiresAttention: true, botPaused: true, lastStepId: null, waitingForVariable: null, captureResumeNodeId: null }
+      });
+      if (io) io.to(`client_${client.clientId}`).emit('attention_required', { phone, reason: 'User requested human agent mid-flow', priority: 'high' });
+      await sendWhatsAppText(client, phone, "I'm connecting you with a member of our team right now. Please hold! 👤");
+      return true;
+    }
+  }
+
   // ── PRIORITY 0: CAPTURE MODE ─────────────────────────────────────────────
   // If bot is waiting for text input from this user, handle it NOW.
   if (convo.status === 'WAITING_FOR_INPUT' && convo.waitingForVariable) {
@@ -1389,16 +1452,16 @@ async function runDualBrainEngine(parsedMessage, client) {
       log.error(`[DualBrain] Critical Engine Error for ${phone}:`, err.message);
       return false;
   } finally {
-      // Release MongoDB distributed lock
+      // Release MongoDB distributed lock — only if WE own it
       try {
-          await ProcessingLock.deleteOne({ phone, clientId: client.clientId });
+          await ProcessingLock.deleteOne({ phone, clientId: client.clientId, _lockOwnerId });
       } catch (releaseErr) {
           log.error(`[Lock] Release failed for ${phone}:`, releaseErr.message);
       }
-      // TTL Safety: Warn if engine run approached the 8-second lock timeout
+      // TTL Safety: Warn if engine run approached the 30-second lock timeout
       const _lockElapsed = Date.now() - _lockStartTime;
-      if (_lockElapsed > 7000) {
-        log.warn(`[Lock] ⚠️ Engine took ${_lockElapsed}ms for ${phone} — close to 8s TTL limit!`);
+      if (_lockElapsed > 25000) {
+        log.warn(`[Lock] ⚠️ Engine took ${_lockElapsed}ms for ${phone} — close to 30s TTL limit!`);
       }
       log.info(`[DualBrain] Completed for ${phone} in ${Date.now() - _lockStartTime}ms`);
   }
@@ -1488,6 +1551,11 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
       }
       return false;
     });
+    // DEBUG: Log button ID mismatch for diagnostics
+    if (!matchingEdge) {
+      const availableHandles = sourceEdges.map(e => normalizeHandleId(e.sourceHandle || '')).filter(Boolean);
+      log.warn(`[Graph] Button ID mismatch: incoming="${bid}", available sourceHandles=[${availableHandles.join(', ')}], currentStep=${currentStepId}`);
+    }
   }
 
   // Second priority: typed text keyword/sourceHandle matches
@@ -1783,10 +1851,21 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
 
-  // 3. Review Node: Sentiment-based routing
+  // 3. Review Node: Send review buttons and wait for rating
   if (node.type === 'review') {
-    // This node usually waits for input, but if it's executed, we send the prompt.
-    // The branching happens in runDualBrainEngine when the user replies with a rating.
+    // Send the review prompt with rating buttons (handled by sendNodeContent case 'review')
+    await sendNodeContent(node.type, node.data, client, phone, convo, channel);
+    
+    // Set lastStepId so that when the user taps a rating button,
+    // tryGraphTraversal will match the button_reply.id ('positive' or 'negative')
+    // against outgoing edges from this node.
+    await Conversation.findByIdAndUpdate(convo._id, { 
+      lastStepId: nodeId,
+      lastNodeAt: new Date()
+    });
+    
+    log.info(`[FlowEngine] Review node ${nodeId}: Waiting for rating from ${phone}`);
+    return true; // Halt traversal — button click resumes via tryGraphTraversal
   }
 
   // 4. Abandoned Cart Node
@@ -1829,10 +1908,22 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     }
   }
 
-  // 8. Order Action Node
+  // 8. Order Action Node — with context validation for returns
   if (node.type === 'order_action') {
     const { handleNodeAction } = require('./nodeActions');
     const action = node.data?.actionType || 'CHECK_ORDER_STATUS';
+    
+    // SAFETY: INITIATE_RETURN requires order context
+    if (action === 'INITIATE_RETURN' || action === 'CANCEL_ORDER') {
+      const orderId = convo?.metadata?.order_id || convo?.metadata?.lastOrderId || convo?.metadata?.return_order_id;
+      if (!orderId) {
+        log.warn(`[FlowEngine] ${action} attempted without order context for ${phone}`);
+        await sendWhatsAppText(client, phone, "Please check your order status first so I can identify which order to process. 📋");
+        // Halt traversal — don't auto-forward without required context
+        return true;
+      }
+    }
+    
     await handleNodeAction(action, node, client, phone, convo, lead);
   }
 
@@ -1872,22 +1963,40 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
 
-  // 6. Schedule Node: Business Hours check
+  // 6. Schedule Node: Business Hours check (with timezone support)
   if (node.type === 'schedule') {
-    const { openTime = "10:00", closeTime = "19:00", days = [1, 2, 3, 4, 5] } = node.data || {};
-    const now = new Date();
-    const day = now.getDay();
+    const { openTime = "10:00", closeTime = "19:00", days = [1, 2, 3, 4, 5], timezone } = node.data || {};
     
-    // Convert current time to HH:MM format for string comparison
-    const currentHHMM = now.getHours().toString().padStart(2, '0') + ":" + now.getMinutes().toString().padStart(2, '0');
+    // Use client timezone if set, otherwise server timezone
+    const tz = timezone || client.timezone || 'Asia/Kolkata';
+    let now;
+    try {
+      // Use Intl to get timezone-aware date components (no external dependency)
+      const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        hour: '2-digit', minute: '2-digit', hour12: false, weekday: 'short'
+      });
+      const parts = formatter.formatToParts(new Date());
+      const hourPart = parts.find(p => p.type === 'hour')?.value || '00';
+      const minutePart = parts.find(p => p.type === 'minute')?.value || '00';
+      const dayPart = parts.find(p => p.type === 'weekday')?.value;
+      const dayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+      now = { hours: parseInt(hourPart), minutes: parseInt(minutePart), day: dayMap[dayPart] ?? new Date().getDay() };
+    } catch (_) {
+      // Invalid timezone — fall back to server time
+      const d = new Date();
+      now = { hours: d.getHours(), minutes: d.getMinutes(), day: d.getDay() };
+    }
     
-    const isDayOpen = days.includes(day);
+    const currentHHMM = now.hours.toString().padStart(2, '0') + ":" + now.minutes.toString().padStart(2, '0');
+    
+    const isDayOpen = days.includes(now.day);
     const isTimeOpen = currentHHMM >= openTime && currentHHMM < closeTime;
     const isOpen = isDayOpen && isTimeOpen;
     
     const targetHandle = isOpen ? 'open' : 'closed';
     
-    log.info(`[FlowEngine] Schedule check: ${currentHHMM} on Day ${day} → ${isOpen ? 'OPEN' : 'CLOSED'}`);
+    log.info(`[FlowEngine] Schedule check: ${currentHHMM} (tz=${tz}) on Day ${now.day} → ${isOpen ? 'OPEN' : 'CLOSED'}`);
     const nextEdge = flowEdges.find(e => e.source === nodeId && normalizeHandleId(e.sourceHandle) === targetHandle);
     if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
@@ -2074,6 +2183,46 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     const updatedMetadata = { ...(convo.metadata || {}), [variable]: processedValue };
     await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
     convo.metadata = updatedMetadata;
+  }
+
+  // 9. Link Node (Jump to Flow)
+  if (node.type === 'link') {
+    const { targetFolderId } = node.data || {};
+    if (targetFolderId) {
+      log.info(`[FlowEngine] Link node triggered: Jumping to flow ${targetFolderId} for ${phone}`);
+      
+      let targetFlowNodes = [];
+      let targetFlowEdges = [];
+      
+      // 1. Try WhatsAppFlow (New Standard)
+      const WhatsAppFlow = require('../models/WhatsAppFlow');
+      try {
+        const targetFlowDoc = await WhatsAppFlow.findById(targetFolderId).lean();
+        if (targetFlowDoc) {
+          targetFlowNodes = targetFlowDoc.publishedNodes?.length ? targetFlowDoc.publishedNodes : (targetFlowDoc.nodes || []);
+          targetFlowEdges = targetFlowDoc.publishedEdges?.length ? targetFlowDoc.publishedEdges : (targetFlowDoc.edges || []);
+        }
+      } catch (_) { /* Ignore cast errors if targetFolderId is not a Mongo ID */ }
+      
+      // 2. Try Legacy visualFlows Fallback
+      if (targetFlowNodes.length === 0 && client.visualFlows) {
+        const legacyFlow = client.visualFlows.find(f => f.id === targetFolderId || f._id?.toString() === targetFolderId);
+        if (legacyFlow) {
+          targetFlowNodes = legacyFlow.nodes || [];
+          targetFlowEdges = legacyFlow.edges || [];
+        }
+      }
+      
+      if (targetFlowNodes.length > 0) {
+        const startNode = targetFlowNodes.find(n => n.type === 'trigger' || n.type === 'TriggerNode') || targetFlowNodes[0];
+        if (startNode) {
+          await Conversation.findByIdAndUpdate(convo._id, { activeFlowId: targetFolderId, lastStepId: null });
+          return await executeNode(startNode.id, targetFlowNodes, targetFlowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+        }
+      } else {
+         log.warn(`[FlowEngine] Link node failed: Target flow ${targetFolderId} not found or empty`);
+      }
+    }
   }
 
   // USP Section: Shopify-Native AI Actions
@@ -2297,22 +2446,64 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     }
   }
 
-  // New: HTTP Request Node
+  // HTTP Request Node — with success/error edge routing
   if (node.type === 'http_request' || node.type === 'HttpRequestNode') {
-    const { url, method, body, variable } = node.data;
+    const { url, method, body, variable, headers: customHeaders } = node.data;
+    let httpSuccess = false;
     try {
+      const resolvedUrl = replaceVariables(url, client, lead, convo);
+      // Parse body safely — PropertiesPanel stores it as a raw JSON string
+      let resolvedBody = null;
+      if (body) {
+        try {
+          resolvedBody = JSON.parse(replaceVariables(body, client, lead, convo));
+        } catch (parseErr) {
+          log.warn(`[HttpNode] Body JSON parse failed, sending as raw string: ${parseErr.message}`);
+          resolvedBody = replaceVariables(body, client, lead, convo);
+        }
+      }
+      // Parse headers — PropertiesPanel stores as JSON string, but could be an object
+      let parsedHeaders = {};
+      if (customHeaders) {
+        if (typeof customHeaders === 'string') {
+          try { parsedHeaders = JSON.parse(customHeaders); } catch (_) {
+            log.warn('[HttpNode] Headers JSON parse failed, using empty headers');
+          }
+        } else if (typeof customHeaders === 'object') {
+          parsedHeaders = customHeaders;
+        }
+      }
       const resp = await axios({
-        url: replaceVariables(url, client, lead, convo),
+        url: resolvedUrl,
         method: method || 'GET',
-        data: body ? JSON.parse(replaceVariables(body, client, lead, convo)) : null,
-        timeout: 5000
+        data: resolvedBody,
+        headers: parsedHeaders,
+        timeout: 10000
       });
+      // Store response data in variable context
       if (variable) {
-        const updatedMetadata = { ...(convo.metadata || {}), [variable]: resp.data };
+        const updatedMetadata = { ...(convo.metadata || {}), [variable]: resp.data, [`${variable}_status`]: resp.status };
         await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
         convo.metadata = updatedMetadata;
       }
-    } catch (err) { log.error("HTTP Node Error:", { error: err.message }); }
+      httpSuccess = true;
+      log.info(`[HttpNode] ${method || 'GET'} ${resolvedUrl} → ${resp.status}`);
+    } catch (err) {
+      log.error("[HttpNode] Request failed:", { url, error: err.message, status: err.response?.status });
+      // Store error in variable context for downstream nodes
+      if (variable) {
+        const updatedMetadata = { ...(convo.metadata || {}), [`${variable}_error`]: err.message, [`${variable}_status`]: err.response?.status || 0 };
+        await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
+        convo.metadata = updatedMetadata;
+      }
+    }
+    // Route to success or error edge
+    const targetHandle = httpSuccess ? 'success' : 'error';
+    const nextEdge = flowEdges.find(e => e.source === nodeId && normalizeHandleId(e.sourceHandle) === targetHandle);
+    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+    // Fallback: default edge
+    const defaultEdge = flowEdges.find(e => e.source === nodeId && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'output'));
+    if (defaultEdge) return await executeNode(defaultEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
 
   if (node.type === 'livechat') {
@@ -2361,7 +2552,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       captureRetries: 0,
       lastStepId: nodeId
     });
-  } else if (node.type !== 'logic') {
+  } else if (node.type !== 'logic' && node.type !== 'restart') {
     const autoEdge = flowEdges.find(e => e.source === nodeId && (!e.trigger || e.trigger?.type === 'auto') && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom' || e.sourceHandle === 'output'));
     if (autoEdge) {
       setTimeout(async () => {
@@ -2537,7 +2728,10 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'template':
     case 'TemplateNode': {
       const templateName = data.templateName || data.metaTemplateName;
-      if (!templateName) return false;
+      if (!templateName) {
+        log.warn(`[Template] Node ${node?.id} has no templateName — skipping`);
+        return false;
+      }
       
       // Variables: can be an array (new) or a comma-string (legacy)
       const rawVars = data.variables || data.templateVars;
@@ -2551,23 +2745,44 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       const headerImage = data.headerImageUrl || null;
       
       // Upgrade to sendSmartTemplate for Meta-sync checks and parameter safety
-      await WhatsApp.sendSmartTemplate(
-          client, 
-          phone, 
-          templateName, 
-          templateVars, 
-          headerImage, 
-          data.languageCode || 'en'
-      );
+      // CRITICAL: Explicit catch — if Meta rejects (outside 24h window, variable mismatch),
+      // DO NOT silently pretend it worked. Log and halt traversal.
+      try {
+        await WhatsApp.sendSmartTemplate(
+            client, 
+            phone, 
+            templateName, 
+            templateVars, 
+            headerImage, 
+            data.languageCode || 'en'
+        );
+      } catch (templateErr) {
+        log.error(`[Template] META_REJECT: Template "${templateName}" failed for ${phone}: ${templateErr.message}`);
+        // Send graceful fallback text instead of silently failing
+        try {
+          await WhatsApp.sendText(client, phone, data.fallbackText || "We're updating our systems — please check back shortly! 🙏");
+        } catch (_) { /* last resort — don't crash */ }
+        return false; // HALT traversal — do not auto-forward to next node
+      }
       return true;
     }
 
     case 'email': {
-      const recipient = lead?.email || data.recipientEmail;
-      if (!recipient || !client.emailUser) return true;
-      let subject = data.subject || 'Update';
-      let body = data.body || '';
-      await emailService.sendEmail(client, { to: recipient, subject, html: body.replace(/\n/g, '<br/>') });
+      const recipient = replaceVariables(lead?.email || data.recipientEmail || '', client, lead, convo);
+      if (!recipient || !client.emailUser) {
+        log.warn(`[Email] No recipient or email config — skipping email node`);
+        return true;
+      }
+      try {
+        // Inject variables into subject and body
+        let subject = replaceVariables(data.subject || 'Update', client, lead, convo);
+        let emailBody = replaceVariables(data.body || '', client, lead, convo);
+        await emailService.sendEmail(client, { to: recipient, subject, html: emailBody.replace(/\n/g, '<br/>') });
+        log.info(`[Email] Sent to ${recipient} — subject: "${subject}"`);
+      } catch (emailErr) {
+        log.error(`[Email] SMTP failure for ${recipient}: ${emailErr.message}`);
+        // Non-fatal: flow continues even if email fails
+      }
       return true;
     }
 
@@ -3290,512 +3505,18 @@ async function saveOutboundMessage(phone, clientId, type, body, wamid, channel =
 }
 
 
-module.exports.processInboundMessage = processInboundMessage;
-module.exports.executeNode = executeNode;
-module.exports.sendNodeContent = sendNodeContent;
-module.exports.executeShopifyAction = executeShopifyAction;
-module.exports.saveInboundMessage = saveInboundMessage;
-module.exports.saveOutboundMessage = saveOutboundMessage;
-module.exports.handleWhatsAppMessage = handleWhatsAppMessage;
-module.exports.runFlow = runFlow;
-module.exports.runDualBrainEngine = runDualBrainEngine;
+// ─────────────────────────────────────────────────────────────────────────────
+// MODULE EXPORTS — Single source of truth
+// All legacy duplicate functions (previously at bottom of file) have been
+// removed. masterWebhook.js must use handleWhatsAppMessage or runDualBrainEngine.
+// ─────────────────────────────────────────────────────────────────────────────
+module.exports = {
+  handleWhatsAppMessage,
+  runDualBrainEngine,
+  runFlow,
+  executeNode,
+  sendNodeContent,
+  saveInboundMessage,
+  saveOutboundMessage,
+};
 
-
-  async function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  async function executeShopifyAction(data, context) {
-    const { phone, clientId } = context;
-    const axios = require('axios');
-    const Order = require('../models/Order');
-    const Client = require('../models/Client');
-    const Conversation = require('../models/Conversation');
-    
-    const client = await Client.findOne({ clientId })
-      .select("shopifyAccessToken nicheData")
-      .lean();
-    
-    if (!client?.shopifyAccessToken) {
-      return { message: "Store not connected yet. Please contact support." };
-    }
-    
-    const shop = client.nicheData?.shopifyDomain;
-    const token = client.shopifyAccessToken;
-    
-    switch (data.action) {
-      case "ORDER_STATUS": {
-        const digits = phone.replace(/\D/g, "").slice(-10);
-        const order = await Order.findOne({
-          clientId,
-          $or: [
-            { phone: { $regex: digits + "$" } },
-            { customerPhone: { $regex: digits + "$" } }
-          ]
-        })
-          .sort({ createdAt: -1 })
-          .lean();
-        
-        if (!order) {
-          return {
-            message: "I couldn't find any orders linked to your number.\n\nIf you placed an order recently, please share your Order ID and I'll look it up!"
-          };
-        }
-        
-        const statusEmoji = {
-          pending: "⏳",
-          confirmed: "✅",
-          processing: "🔄",
-          shipped: "🚚",
-          delivered: "🎉",
-          cancelled: "❌"
-        };
-        
-        const emoji = statusEmoji[order.status?.toLowerCase()] || "📦";
-        
-        let message = `${emoji} *Order #${order.orderId}*\n\n`;
-        message += `Status: *${order.status || "Processing"}*\n`;
-        message += `Amount: *₹${order.amount?.toLocaleString("en-IN") || 0}*\n`;
-        
-        if (order.trackingUrl) {
-          message += `\n📍 Track your order:\n${order.trackingUrl}`;
-        }
-        
-        if (order.estimatedDelivery) {
-          message += `\n\n📅 Expected delivery: ${new Date(order.estimatedDelivery).toLocaleDateString("en-IN")}`;
-        }
-        
-        return { message };
-      }
-      
-      case "PRODUCT_CARD": {
-        try {
-          const response = await axios.get(
-            `https://${shop}/admin/api/2024-01/products.json?limit=5&status=active`,
-            { headers: { "X-Shopify-Access-Token": token } }
-          );
-          
-          const products = response.data.products || [];
-          if (products.length === 0) {
-            return { message: "Our catalog is being updated. Check back soon!" };
-          }
-          
-          const product = products[0];
-          const variant = product.variants?.[0];
-          const image = product.images?.[0]?.src;
-          const price = variant?.price || "0";
-          const url = `https://${shop}/products/${product.handle}`;
-          
-          return {
-            card: { image, title: product.title, price, url },
-            message: `🛍️ *${product.title}*\n\n${product.body_html?.replace(/<[^>]*>/g, "").slice(0, 200) || ""}\n\n💰 Price: *₹${price}*\n\n🔗 Buy now: ${url}`
-          };
-        } catch (err) {
-          return { message: "Unable to load products right now. Please visit our website!" };
-        }
-      }
-      
-      case "CANCEL_ORDER": {
-        const conversation = await Conversation.findOne({ phone: context.phone, clientId }).lean();
-        const orderId = conversation?.metadata?.order_id || conversation?.metadata?.return_order_id;
-        
-        if (!orderId) {
-          return { message: "Please share your order ID so I can proceed with the cancellation." };
-        }
-        
-        try {
-          await axios.post(
-            `https://${shop}/admin/api/2024-01/orders/${orderId}/cancel.json`,
-            {},
-            { headers: { "X-Shopify-Access-Token": token } }
-          );
-          return { message: `✅ Order #${orderId} has been successfully cancelled.\nYour refund will be processed within 5-7 business days.` };
-        } catch {
-          return { message: "This order cannot be cancelled as it has already been shipped. Please use our Returns flow." };
-        }
-      }
-    }
-  }
-
-  async function sendNodeContent(node, context) {
-    const { phone, clientId, phoneNumberId, token, conversation } = context;
-    const { type, data } = node;
-    const AdLead = require('../models/AdLead');
-    const { injectNodeVariables } = require('./variableInjector');
-    const WhatsAppUtils = require('./whatsapp');
-    
-    // Inject variables first
-    const hydratedData = injectNodeVariables(data, context);
-    
-    switch (type) {
-      case "trigger":
-        return { sent: false };
-      
-      case "message":
-        if (hydratedData.imageUrl) {
-          await WhatsAppUtils.sendImage({whatsappToken: token, phoneNumberId}, phone, hydratedData.imageUrl, hydratedData.body);
-        } else {
-          await WhatsAppUtils.sendText({whatsappToken: token, phoneNumberId}, phone, hydratedData.body);
-        }
-        return { sent: true, autoForward: true };
-      
-      case "interactive":
-        await WhatsAppUtils.sendInteractiveMessage(phoneNumberId, phone, { data: hydratedData }, token);
-        await Conversation.findByIdAndUpdate(conversation._id, {
-          status: "BOT_ACTIVE",
-          lastStepId: node.id
-        });
-        return { sent: true, autoForward: false, waitForReply: true };
-      
-      case "capture_input":
-        await WhatsAppUtils.sendText({whatsappToken: token, phoneNumberId}, phone, hydratedData.question);
-        await Conversation.findByIdAndUpdate(conversation._id, {
-          status: "WAITING_FOR_INPUT",
-          lastStepId: node.id,
-          waitingForVariable: hydratedData.variable,
-          captureValidation: hydratedData.validation
-        });
-        return { sent: true, autoForward: false, waitForReply: true };
-      
-      case "logic":
-        const { evaluateLogic } = require('./logicHelpers'); // We will mock or implement this if needed
-        let result = false;
-        try {
-           if (typeof evaluateLogic === 'function') result = evaluateLogic(hydratedData, context);
-           else {
-               // Fallback basic evaluation
-               const val1 = context[hydratedData.variable] || context.conversation?.metadata?.[hydratedData.variable];
-               const val2 = hydratedData.value;
-               const op = hydratedData.operator;
-               if (op === 'eq') result = val1 == val2;
-               else if (op === 'neq') result = val1 != val2;
-               else if (op === 'contains' && val1) result = String(val1).includes(String(val2));
-               else if (op === 'exists') result = val1 !== undefined && val1 !== null && val1 !== '';
-               else result = false;
-           }
-        } catch(e) {}
-        return { sent: false, logicResult: result };
-      
-      case "delay":
-        const multiplier = hydratedData.waitUnit === 'hours' ? 60 * 60 * 1000 : hydratedData.waitUnit === 'days' ? 24 * 60 * 60 * 1000 : 60 * 1000;
-        const resumeAt = new Date(Date.now() + (hydratedData.waitValue || 1) * multiplier);
-        await Conversation.findByIdAndUpdate(conversation._id, {
-          status: "FLOW_PAUSED",
-          flowPausedUntil: resumeAt,
-          pausedAtNodeId: node.id
-        });
-        return { sent: false, paused: true };
-      
-      case "shopify_call":
-        const shopifyResult = await executeShopifyAction(hydratedData, context);
-        if (shopifyResult.message) {
-          await WhatsAppUtils.sendText({whatsappToken: token, phoneNumberId}, phone, shopifyResult.message);
-        }
-        if (shopifyResult.card) {
-          if (shopifyResult.card.image) {
-             await WhatsAppUtils.sendImage({whatsappToken: token, phoneNumberId}, phone, shopifyResult.card.image, "");
-          }
-        }
-        return { sent: true, autoForward: true, data: shopifyResult };
-      
-      case "admin_alert":
-        const alertMessage = hydratedData.body || "Connecting you to our support team. An agent will be with you shortly.";
-        await WhatsAppUtils.sendText({whatsappToken: token, phoneNumberId}, phone, alertMessage);
-        try {
-          const NotificationService = require('./notificationService');
-          await NotificationService.notifyAgent(clientId, { type: 'alert', title: hydratedData.topic, message: `Priority: ${hydratedData.priority}\nPhone: ${phone}`});
-        } catch(e) {}
-        await Conversation.findByIdAndUpdate(conversation._id, {
-          status: "HUMAN_SUPPORT",
-          lastStepId: node.id
-        });
-        return { sent: true, autoForward: false };
-      
-      case "payment_link":
-        const { generatePaymentLink } = require('./paymentLinkGenerator');
-        try {
-            const link = await generatePaymentLink(hydratedData, context);
-            await WhatsAppUtils.sendInteractiveMessage(phoneNumberId, phone, {
-              data: {
-                interactiveType: "button",
-                body: `Total: ₹${hydratedData.amount}\n\nClick below to complete your payment securely:\n${link}`,
-                buttonsList: [{ id: "btn_pay", title: "💳 Pay Now" }]
-              }
-            }, token);
-        } catch(e) {}
-        return { sent: true, autoForward: false };
-      
-      case "tag_lead":
-        await AdLead.findOneAndUpdate(
-          { clientId, phoneNumber: { $regex: phone.slice(-10) + "$" } },
-          hydratedData.action === "add"
-            ? { $addToSet: { tags: hydratedData.tag } }
-            : { $pull: { tags: hydratedData.tag } }
-        );
-        return { sent: false, autoForward: true };
-      
-      case "loyalty_action":
-        const walletService = require('./walletService');
-        try {
-            const wallet = await walletService.getWallet(clientId, phone);
-            const msg = `You have ${wallet.balance} loyalty points.`;
-            await WhatsAppUtils.sendText({whatsappToken: token, phoneNumberId}, phone, msg);
-        } catch(e) {}
-        return { sent: true, autoForward: true };
-      
-      case "ab_test":
-        const hash = phone.split("").reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
-        const inBucketA = (hash % 100) < (hydratedData.splitRatio || 50);
-        return { sent: false, autoForward: false, abResult: inBucketA ? "a" : "b" };
-      
-      default:
-        console.warn(`[Engine] Unknown node type: ${type}`);
-        return { sent: false, autoForward: true };
-    }
-  }
-
-  async function executeNode({ nodeId, flowNodes, flowEdges, phone, clientId,
-                               phoneNumberId, token, conversationId, metadata = {} }) {
-    const WhatsAppUtils = require('./whatsapp');
-    const MAX_DEPTH = 30;
-    if ((metadata._depth || 0) >= MAX_DEPTH) {
-      console.error("[Engine] Max traversal depth reached");
-      return;
-    }
-    
-    const node = flowNodes.find(n => n.id === nodeId);
-    if (!node) {
-      console.error(`[Engine] Node ${nodeId} not found`);
-      return;
-    }
-    
-    const Conversation = require('../models/Conversation');
-    const conversation = conversationId
-      ? await Conversation.findById(conversationId).lean()
-      : await Conversation.findOne({ phone, clientId }).lean();
-    
-    const context = {
-      phone,
-      clientId,
-      phoneNumberId,
-      token,
-      conversation,
-      metadata: { ...metadata, _depth: (metadata._depth || 0) + 1 }
-    };
-    
-    const WhatsAppFlow = require('../models/WhatsAppFlow');
-    await WhatsAppFlow.findOneAndUpdate(
-      { "nodes.id": nodeId },
-      { $inc: { "nodes.$.visitCount": 1 } }
-    );
-    
-    console.log(`[Engine] Executing node: ${node.id} (type: ${node.type})`);
-    
-    let result;
-    try {
-      result = await sendNodeContent(node, context);
-    } catch (err) {
-      console.error(`[Engine] Error in node ${nodeId}:`, err.message);
-      await WhatsAppUtils.sendText({whatsappToken: token, phoneNumberId}, phone,
-        "I'm having a technical moment. Let me connect you with our support team."
-      );
-      return;
-    }
-    
-    await Conversation.findOneAndUpdate(
-      { phone, clientId },
-      {
-        $set: {
-          activeFlowId: conversation?.activeFlowId,
-          lastStepId: nodeId,
-          lastInteraction: new Date()
-        }
-      },
-      { upsert: true }
-    );
-    
-    if (result.waitForReply || result.paused) {
-      return;
-    }
-    
-    if (result.logicResult !== undefined) {
-      const handle = result.logicResult ? "true" : "false";
-      const nextEdge = flowEdges.find(e =>
-        e.source === nodeId && e.sourceHandle === handle
-      );
-      if (nextEdge) {
-        await sleep(600);
-        await executeNode({ ...context, nodeId: nextEdge.target, flowNodes, flowEdges });
-      }
-      return;
-    }
-    
-    if (result.abResult !== undefined) {
-      const nextEdge = flowEdges.find(e =>
-        e.source === nodeId && e.sourceHandle === result.abResult
-      );
-      if (nextEdge) {
-        await executeNode({ ...context, nodeId: nextEdge.target, flowNodes, flowEdges });
-      }
-      return;
-    }
-    
-    if (result.autoForward) {
-      const nextEdge = flowEdges.find(e =>
-        e.source === nodeId &&
-        (e.sourceHandle === "default" || !e.sourceHandle || e.sourceHandle === "bottom")
-      );
-      if (nextEdge) {
-        await sleep(600);
-        await executeNode({ ...context, nodeId: nextEdge.target, flowNodes, flowEdges });
-      }
-    }
-  }
-
-  async function processInboundMessage({ message, phone, clientId, phoneNumberId, token }) {
-    const Conversation = require('../models/Conversation');
-    const WhatsAppFlow = require('../models/WhatsAppFlow');
-    const { findMatchingFlow, findFlowStartNode } = require('./triggerEngine');
-    
-    const messageType = message.type;
-    let userText = "";
-    let buttonReplyId = null;
-    let listReplyId = null;
-    
-    if (messageType === "text") {
-      userText = message.text?.body?.trim() || "";
-    } else if (messageType === "interactive") {
-      if (message.interactive.type === "button_reply") {
-        buttonReplyId = message.interactive.button_reply.id;
-        userText = message.interactive.button_reply.title || "";
-      } else if (message.interactive.type === "list_reply") {
-        listReplyId = message.interactive.list_reply.id;
-        userText = message.interactive.list_reply.title || "";
-      }
-    }
-    
-    const replyId = buttonReplyId || listReplyId;
-    
-    let conversation = await Conversation.findOneAndUpdate(
-      { phone, clientId },
-      {
-        $setOnInsert: { phone, clientId, lastStepId: null, botPaused: false, status: 'BOT_ACTIVE' },
-        $inc: { unreadCount: 1 },
-        $set: { lastInteraction: new Date() }
-      },
-      { upsert: true, new: true }
-    );
-
-    // Save inbound message to DB + emit to dashboard (was completely missing)
-    const io = global.io;
-    saveInboundMessage(phone, clientId, {
-      text: userText ? { body: userText } : undefined,
-      type: message.type || 'text',
-      messageId: message.id || '',
-      interactive: message.interactive,
-      mediaUrl: message.image?.link || message.video?.link || message.document?.link || null
-    }, io, 'whatsapp', conversation._id).catch((err) => {
-      log.error('[processInboundMessage] Save failed:', { error: err.message });
-    });
-    
-    const GLOBAL_KEYWORDS = [
-      { keywords: ["menu", "main menu", "home", "back"], action: "restart_flow" },
-      { keywords: ["stop", "unsubscribe", "opt out"], action: "opt_out" },
-      { keywords: ["agent", "human", "person"], action: "human_handoff" }
-    ];
-    
-    const lowerText = userText.toLowerCase().trim();
-    for (const gk of GLOBAL_KEYWORDS) {
-      if (gk.keywords.includes(lowerText)) {
-        if (gk.action === "restart_flow") {
-          await Conversation.findOneAndUpdate(
-            { phone, clientId },
-            { $set: { status: "BOT_ACTIVE", lastStepId: null, flowPausedUntil: null } }
-          );
-          const clientDoc = await require('../models/Client').findOne({ clientId }).lean();
-          const welcomeFlow = await findMatchingFlow({ text: { body: "hi" } }, clientDoc, conversation);
-          if (welcomeFlow && welcomeFlow.flow) {
-            const startNodeId = findFlowStartNode(welcomeFlow.flow.nodes, welcomeFlow.flow.edges);
-            if (startNodeId) {
-              await executeNode({
-                nodeId: startNodeId,
-                flowNodes: welcomeFlow.flow.nodes,
-                flowEdges: welcomeFlow.flow.edges,
-                phone, clientId, phoneNumberId, token, conversationId: conversation._id
-              });
-            }
-          }
-          return;
-        }
-        if (gk.action === "human_handoff") {
-          const WhatsAppUtils = require('./whatsapp');
-          await WhatsAppUtils.sendText({whatsappToken: token, phoneNumberId}, phone,
-            "Connecting you with our team now. Please wait a moment! 👋");
-          return;
-        }
-        if (gk.action === "opt_out") {
-          const AdLead = require('../models/AdLead');
-          await AdLead.findOneAndUpdate(
-            { clientId, phoneNumber: { $regex: phone.slice(-10) + "$" } },
-            { $set: { optStatus: "opted_out" } }
-          );
-          const WhatsAppUtils = require('./whatsapp');
-          await WhatsAppUtils.sendText({whatsappToken: token, phoneNumberId}, phone,
-            "You've been unsubscribed. To re-subscribe, send 'START' anytime.");
-          return;
-        }
-      }
-    }
-    
-    if (conversation?.status === "WAITING_FOR_INPUT" && conversation?.lastStepId) {
-      const varName = conversation.waitingForVariable;
-      if (varName) {
-        await Conversation.findByIdAndUpdate(conversation._id, {
-          $set: { [`metadata.${varName}`]: userText, status: "BOT_ACTIVE" }
-        });
-      }
-      
-      const flow = await WhatsAppFlow.findById(conversation.activeFlowId).lean();
-      if (flow) {
-        const flowNodes = flow.nodes || [];
-        const flowEdges = flow.edges || [];
-        const nextEdge = flowEdges.find(e => e.source === conversation.lastStepId && (e.sourceHandle === 'default' || e.sourceHandle === 'bottom' || !e.sourceHandle));
-        if (nextEdge) {
-          await executeNode({
-            nodeId: nextEdge.target, flowNodes, flowEdges,
-            phone, clientId, phoneNumberId, token, conversationId: conversation._id
-          });
-        }
-      }
-      return;
-    }
-    
-    if (replyId && conversation?.activeFlowId && conversation?.lastStepId) {
-      const flow = await WhatsAppFlow.findById(conversation.activeFlowId).lean();
-      if (flow) {
-        const matchingEdge = flow.edges.find(e =>
-          e.source === conversation.lastStepId &&
-          (e.sourceHandle === replyId || e.sourceHandle === buttonReplyId || e.sourceHandle === listReplyId)
-        );
-        
-        if (matchingEdge) {
-          await executeNode({
-            nodeId: matchingEdge.target,
-            flowNodes: flow.nodes,
-            flowEdges: flow.edges,
-            phone, clientId, phoneNumberId, token, conversationId: conversation._id
-          });
-          return;
-        }
-      }
-    }
-    
-    const matchedFlow = await findTriggerMatch({ text: lowerText, clientId, buttonId: replyId });
-    if (matchedFlow) {
-      await startFlow({ flow: matchedFlow, phone, clientId, phoneNumberId, token });
-      return;
-    }
-    
-    // AI Fallback if needed
-    // In our case, we might just ignore or call old AI logic.
-  }

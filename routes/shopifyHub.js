@@ -86,7 +86,7 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
   } catch (err) {
     const shopifyError = err.response?.data?.errors || err.response?.data?.message || err.message;
     const isAuthError = err.response?.status === 401 || err.response?.status === 403 || err.message?.includes('incomplete') || err.message?.includes('invalid');
-    const isMissingConfig = err.message === 'Shopify credentials incomplete or invalid';
+    const isMissingConfig = err.message?.includes('Shopify credentials incomplete') || err.message?.includes('invalid domain');
 
     console.error(`[Pulse Error] Client: ${clientId}:`, shopifyError);
 

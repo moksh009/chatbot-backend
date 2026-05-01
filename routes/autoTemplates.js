@@ -84,7 +84,8 @@ router.post('/start', protect, async (req, res) => {
     if (client.shopDomain && client.shopifyAccessToken) {
       try {
         products = await withShopifyRetry(clientId, async (shop) => {
-          const response = await shop.get('/products.json?limit=10&status=active');
+          // Fetching up to 250 products per Shopify API max limit
+          const response = await shop.get('/products.json?limit=250&status=active');
           return (response.data.products || []).map(p => ({
             id: p.id.toString(),
             handle: p.handle,
@@ -101,8 +102,8 @@ router.post('/start', protect, async (req, res) => {
       }
     }
 
-    // 5 fixed + up to 10 products
-    const totalTemplates = 5 + products.length;
+    // 10 fixed + products
+    const totalTemplates = 10 + products.length;
 
     // Create or reset job tracker
     await TemplateGenerationJob.findOneAndUpdate(
@@ -133,7 +134,11 @@ router.post('/start', protect, async (req, res) => {
     await SubmissionQueueItem.deleteMany({ clientId, status: 'queued' });
 
     // Enqueue fixed template generation jobs
-    const fixedIds = ['order_confirmed', 'shipping_update', 'order_delivered', 'cart_recovery_1', 'cart_recovery_2'];
+    const fixedIds = [
+      'order_confirmed', 'shipping_update', 'order_delivered', 'order_cancelled',
+      'review_request', 'cod_to_prepaid', 'warranty_registration', 'loyalty_points',
+      'cart_recovery_1', 'cart_recovery_2'
+    ];
     for (const fixedId of fixedIds) {
       if (generationQueue) {
         await generationQueue.add('generate', {
@@ -142,6 +147,12 @@ router.post('/start', protect, async (req, res) => {
           fixedTemplateId: fixedId,
           productId: fixedId
         }, { attempts: 3, backoff: { type: 'exponential', delay: 3000 } });
+      } else {
+        const { handleGenerationJob } = require('../workers/autoTemplateWorker');
+        setTimeout(() => {
+          handleGenerationJob({ clientId, templateType: 'fixed', fixedTemplateId: fixedId, productId: fixedId })
+            .catch(e => console.error('[Inline Generation] Fixed error:', e));
+        }, 0);
       }
     }
 
@@ -158,12 +169,26 @@ router.post('/start', protect, async (req, res) => {
           productPrice: product.price,
           productPageUrl: product.url
         }, { attempts: 3, backoff: { type: 'exponential', delay: 3000 } });
+      } else {
+        const { handleGenerationJob } = require('../workers/autoTemplateWorker');
+        setTimeout(() => {
+          handleGenerationJob({
+            clientId,
+            templateType: 'product',
+            productId: product.id,
+            productHandle: product.handle,
+            productName: product.title,
+            productDescription: product.description,
+            productPrice: product.price,
+            productPageUrl: product.url
+          }).catch(e => console.error('[Inline Generation] Product error:', e));
+        }, 0);
       }
     }
 
     res.json({
       success: true,
-      message: `Generation started for ${totalTemplates} templates (5 fixed + ${products.length} product)`,
+      message: `Generation started for ${totalTemplates} templates (10 fixed + ${products.length} product)`,
       totalTemplates
     });
   } catch (err) {
@@ -243,7 +268,7 @@ router.put('/drafts/:id', protect, async (req, res) => {
     const existing = await MetaTemplate.findOne({ _id: req.params.id, clientId, source: 'auto_generated' });
     if (!existing) return res.status(404).json({ success: false, message: 'Draft not found' });
     
-    if (!['draft', 'queued', 'generation_failed'].includes(existing.submissionStatus)) {
+    if (!['draft', 'queued', 'generation_failed', 'approved', 'rejected', 'pending_meta_review'].includes(existing.submissionStatus)) {
       return res.status(400).json({ success: false, message: `Cannot edit template in status: ${existing.submissionStatus}` });
     }
 
@@ -265,8 +290,8 @@ router.put('/drafts/:id', protect, async (req, res) => {
       updatedAt: new Date()
     };
 
-    // If it was generation_failed, reset to draft
-    if (existing.submissionStatus === 'generation_failed') {
+    // If it was failed, approved, rejected or pending, reset to draft so it can be re-submitted
+    if (['generation_failed', 'approved', 'rejected', 'pending_meta_review'].includes(existing.submissionStatus)) {
       updateFields.submissionStatus = 'draft';
     }
 
@@ -350,10 +375,20 @@ router.post('/retry/:templateId', protect, async (req, res) => {
       if (generationQueue) {
         await generationQueue.add('generate', {
           clientId,
-          templateType: template.autoGenProductId && !['order_confirmed', 'shipping_update', 'order_delivered', 'cart_recovery_1', 'cart_recovery_2'].includes(template.autoGenProductId) ? 'product' : 'fixed',
+          templateType: template.autoGenProductId && !['order_confirmed', 'shipping_update', 'order_delivered', 'order_cancelled', 'review_request', 'cod_to_prepaid', 'warranty_registration', 'loyalty_points', 'cart_recovery_1', 'cart_recovery_2'].includes(template.autoGenProductId) ? 'product' : 'fixed',
           fixedTemplateId: template.autoGenProductId,
           productId: template.autoGenProductId
         }, { attempts: 3, backoff: { type: 'exponential', delay: 3000 } });
+      } else {
+        const { handleGenerationJob } = require('../workers/autoTemplateWorker');
+        setTimeout(() => {
+          handleGenerationJob({
+            clientId,
+            templateType: template.autoGenProductId && !['order_confirmed', 'shipping_update', 'order_delivered', 'order_cancelled', 'review_request', 'cod_to_prepaid', 'warranty_registration', 'loyalty_points', 'cart_recovery_1', 'cart_recovery_2'].includes(template.autoGenProductId) ? 'product' : 'fixed',
+            fixedTemplateId: template.autoGenProductId,
+            productId: template.autoGenProductId
+          }).catch(e => console.error('[Inline Generation] Retry error:', e));
+        }, 0);
       }
     } else {
       // Re-submit: reset to queued

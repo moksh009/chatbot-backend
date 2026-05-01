@@ -54,7 +54,14 @@ if (isInternalRenderRedis && !isRunningOnRender) {
  * Removes any existing scheduled job first to prevent duplicates.
  */
 async function rescheduleSubmissionCheck(clientId, delayMinutes) {
-  if (!submissionSchedulerQueue) return;
+  if (!submissionSchedulerQueue) {
+    log.info(`[AutoTemplate] Using inline fallback for scheduler (${delayMinutes}m)`);
+    setTimeout(() => {
+      const { handleSchedulerJob } = require('./autoTemplateWorker');
+      handleSchedulerJob({ clientId }).catch(e => log.error('Inline scheduler error:', e));
+    }, delayMinutes * 60 * 1000);
+    return;
+  }
   const jobId = `submission-scheduler-${clientId}`;
   try {
     const existingJob = await submissionSchedulerQueue.getJob(jobId);

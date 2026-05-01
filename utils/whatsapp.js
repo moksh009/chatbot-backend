@@ -46,7 +46,12 @@ const WhatsApp = {
       const uniqueButtons = [];
       const seenIds = new Set();
       for (const btn of buttons) {
-        const id = String(btn.id || `btn_${uniqueButtons.length + 1}`);
+        // CRITICAL: Button IDs must match edge sourceHandle IDs verbatim.
+        // If btn.id is missing, the interactive node was not authored correctly.
+        if (!btn.id) {
+          console.warn(`[WA] ⚠️ Button "${btn.title}" has no ID. Generating fallback — edge routing will FAIL. Fix InteractiveNode authoring.`);
+        }
+        const id = String(btn.id || `btn_fallback_${uniqueButtons.length + 1}`);
         const title = String(btn.title || "Option").slice(0, 20); // Max 20 chars
         if (!seenIds.has(id)) {
           seenIds.add(id);
@@ -319,6 +324,10 @@ const WhatsApp = {
       return res.data;
     } catch (err) {
       // --- INTERACTIVE FALLBACK (Phase 30 Resilience) ---
+      // Log the FULL Meta error response for production debugging
+      const metaStatus = err.response?.status || 'UNKNOWN';
+      const metaBody = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      log.error(`[sendInteractive] META_ERROR: ${metaStatus} | ${metaBody} | phone=${phone}`);
       log.warn(`[WhatsApp] sendInteractive failed for ${phone}. Falling back to plain text.`);
       
       let fallbackText = bodyText || "";

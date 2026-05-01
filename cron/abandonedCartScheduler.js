@@ -59,6 +59,8 @@ async function sendRichNudge(client, lead, text, options = {}) {
         const totalValue = lead.cartSnapshot?.totalPrice ? `₹${lead.cartSnapshot.totalPrice}` : "";
         const checkoutUrl = lead.checkoutUrl || "";
 
+        let successfullySent = false;
+
         // 2. If Meta Template is configured, use Smart Template
         if (templateName) {
             log.info(`[Nudge] Sending Smart Template ${templateName} to ${phone}`);
@@ -74,30 +76,52 @@ async function sendRichNudge(client, lead, text, options = {}) {
 
             await WhatsApp.sendSmartTemplate(client, phone, templateName, variables, imageUrl);
             await recordNudge(lead, `[Template: ${templateName}]`, 'template');
-            return;
-        }
-
-        // 3. Fallback to Interactive/Image/Text
-        const activeButtons = buttons.filter(b => b && b.trim()).slice(0, 3).map((b, i) => ({
-            type: 'reply',
-            reply: { id: `cart_btn_${i}_${lead._id}`, title: b.substring(0, 20) }
-        }));
-
-        if (activeButtons.length > 0) {
-            const interactive = {
-                type: 'button',
-                header: imageUrl ? { type: 'image', image: { link: imageUrl } } : undefined,
-                body: { text: text },
-                action: { buttons: activeButtons }
-            };
-            await WhatsApp.sendInteractive(client, phone, interactive, text);
-            await recordNudge(lead, `[Interactive: ${text}]`, 'interactive');
-        } else if (imageUrl) {
-            await WhatsApp.sendImage(client, phone, imageUrl, text);
-            await recordNudge(lead, `[Image: ${text}]`, 'image');
+            successfullySent = true;
         } else {
-            await WhatsApp.sendText(client, lead.phoneNumber, text);
-            await recordNudge(lead, text, 'text');
+            // 3. Fallback to Interactive/Image/Text
+            const activeButtons = buttons.filter(b => b && b.trim()).slice(0, 3).map((b, i) => ({
+                type: 'reply',
+                reply: { id: `cart_btn_${i}_${lead._id}`, title: b.substring(0, 20) }
+            }));
+
+            if (activeButtons.length > 0) {
+                const interactive = {
+                    type: 'button',
+                    header: imageUrl ? { type: 'image', image: { link: imageUrl } } : undefined,
+                    body: { text: text },
+                    action: { buttons: activeButtons }
+                };
+                await WhatsApp.sendInteractive(client, phone, interactive, text);
+                await recordNudge(lead, `[Interactive: ${text}]`, 'interactive');
+                successfullySent = true;
+            } else if (imageUrl) {
+                await WhatsApp.sendImage(client, phone, imageUrl, text);
+                await recordNudge(lead, `[Image: ${text}]`, 'image');
+                successfullySent = true;
+            } else {
+                await WhatsApp.sendText(client, lead.phoneNumber, text);
+                await recordNudge(lead, text, 'text');
+                successfullySent = true;
+            }
+        }
+        
+        if (successfullySent) {
+            // --- PART 7: Cart Recovery Attempt Lifecycle - Trigger 2 ---
+            try {
+                const CartRecoveryAttempt = require('../models/CartRecoveryAttempt');
+                await CartRecoveryAttempt.findOneAndUpdate(
+                    {
+                        clientId: client.clientId,
+                        contactPhone: phone,
+                        status: 'pending',
+                        messaged: false
+                    },
+                    { $set: { messaged: true, updatedAt: new Date() } },
+                    { sort: { attemptTimestamp: -1 } }
+                );
+            } catch (craErr) {
+                log.warn(`[CartRecovery] Failed to mark messaged for ${phone}: ${craErr.message}`);
+            }
         }
     } catch (err) {
         const errorMsg = err.friendlyMessage || err.message;

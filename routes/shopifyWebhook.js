@@ -345,6 +345,21 @@ async function handleCheckout(client, data) {
 
     log.info(`Lead updated from checkout: ${cleanPhone}`);
 
+    // --- PART 7: Cart Recovery Attempt Lifecycle - Trigger 1 ---
+    try {
+        const CartRecoveryAttempt = require('../models/CartRecoveryAttempt');
+        await CartRecoveryAttempt.create({
+            clientId: client.clientId,
+            contactPhone: cleanPhone,
+            attemptTimestamp: new Date(),
+            messaged: false,
+            recovered: false,
+            status: 'pending'
+        });
+    } catch (craErr) {
+        log.warn(`[CartRecovery] Failed to create attempt record: ${craErr.message}`);
+    }
+
     // TRRIGER WATERFALL ENGINE: Update score in real-time
     await recalculateLeadScore(client.clientId, cleanPhone).catch(e => log.error('Scoring recompute failed:', e.message));
 }
@@ -620,6 +635,36 @@ async function handleOrder(client, data) {
     });
 
     log.info(`Order processed from Shopify: ${newOrder.orderId}`);
+
+    // --- PART 7: Cart Recovery Attempt Lifecycle - Trigger 3 ---
+    try {
+        const CartRecoveryAttempt = require('../models/CartRecoveryAttempt');
+        const attempt = await CartRecoveryAttempt.findOneAndUpdate(
+            {
+                clientId: client.clientId,
+                contactPhone: cleanPhone,
+                messaged: true,
+                recovered: false,
+                status: 'pending'
+            },
+            {
+                $set: {
+                    recovered: true,
+                    status: 'recovered',
+                    recoveredOrderId: newOrder.orderId,
+                    recoveredOrderAmount: parseFloat(data.total_price),
+                    updatedAt: new Date()
+                }
+            },
+            { sort: { attemptTimestamp: -1 }, new: true }
+        );
+
+        if (attempt) {
+            console.log(`[CartRecovery] Marked attempt ${attempt._id} as recovered for phone ${cleanPhone}, order ${newOrder.orderId}`);
+        }
+    } catch (craErr) {
+        log.warn(`[CartRecovery] Failed to update attempt record: ${craErr.message}`);
+    }
 
     // TRRIGER WATERFALL ENGINE: Update score in real-time
     await recalculateLeadScore(client.clientId, cleanPhone).catch(e => log.error('Scoring recompute failed:', e.message));

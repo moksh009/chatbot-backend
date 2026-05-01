@@ -261,6 +261,9 @@ app.use('/api/notifications', notificationsRoutes);
 const dashboardRoutes = require('./routes/dashboard');
 app.use('/api/dashboard', dashboardRoutes);
 
+const storeEconomicsRoutes = require('./routes/storeEconomics');
+app.use('/api/store-economics', storeEconomicsRoutes);
+
 const supportRoutes = require('./routes/support');
 app.use('/api/support', supportRoutes);
 app.use('/api/support-chat', supportRoutes); // Public alias for website chat widget

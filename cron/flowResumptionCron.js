@@ -13,10 +13,11 @@ module.exports = function scheduleFlowResumption() {
     const now = new Date();
     
     try {
-      // Find all conversations where flow is paused and delay has expired
+      // Find all conversations where flow is paused/delayed and delay has expired
       const pausedConvos = await Conversation.find({
-        flowPausedUntil: { $lte: now }
-      });
+        flowPausedUntil: { $lte: now },
+        status: { $in: ['FLOW_PAUSED', 'DELAYED', 'BOT_ACTIVE'] }
+      }).lean();
 
       if (pausedConvos.length === 0) return;
 
@@ -24,30 +25,38 @@ module.exports = function scheduleFlowResumption() {
 
       for (const convo of pausedConvos) {
         try {
-          const client = await Client.findOne({ clientId: convo.clientId });
+          const client = await Client.findOne({ clientId: convo.clientId }).lean();
           if (!client) continue;
 
-          const lead = await AdLead.findOne({ phoneNumber: convo.phone, clientId: convo.clientId });
+          const lead = await AdLead.findOne({ phoneNumber: convo.phone, clientId: convo.clientId }).lean();
           const nodeId = convo.pausedAtNodeId;
           
           if (!nodeId) {
             // If no stored node ID, we can't resume safely. Clear delay anyway.
-            await Conversation.findByIdAndUpdate(convo._id, { $unset: { flowPausedUntil: 1, pausedAtNodeId: 1 } });
+            await Conversation.findByIdAndUpdate(convo._id, {
+              $unset: { flowPausedUntil: 1, pausedAtNodeId: 1 },
+              $set: { status: 'BOT_ACTIVE' }
+            });
             continue;
           }
 
-          // BUG 2 FIX: Prefer WhatsAppFlow collection (new standard), fallback to legacy client fields.
-          // Previously used client.flowNodes which is empty for all WhatsAppFlow-based clients,
-          // causing paused flows to silently never resume.
+          // CRITICAL: Use publishedNodes (immutable snapshot), fallback to draft then legacy
           const WhatsAppFlow = require('../models/WhatsAppFlow');
           let flowNodes = [];
           let flowEdges = [];
           if (convo.activeFlowId) {
             try {
               const flowDoc = await WhatsAppFlow.findById(convo.activeFlowId).lean();
-              if (flowDoc?.nodes?.length) {
-                flowNodes = flowDoc.nodes;
-                flowEdges = flowDoc.edges || [];
+              if (flowDoc) {
+                // Prefer publishedNodes over draft nodes
+                if (flowDoc.publishedNodes?.length > 0) {
+                  flowNodes = flowDoc.publishedNodes;
+                  flowEdges = flowDoc.publishedEdges || [];
+                } else if (flowDoc.nodes?.length > 0) {
+                  log.warn(`[FlowResumption] Flow ${convo.activeFlowId} has no publishedNodes — using draft as fallback`);
+                  flowNodes = flowDoc.nodes;
+                  flowEdges = flowDoc.edges || [];
+                }
               }
             } catch (_) { /* non-fatal, try legacy */ }
           }
@@ -57,7 +66,10 @@ module.exports = function scheduleFlowResumption() {
           }
           
           // Clear delay before resuming to prevent re-triggering by cron
-          await Conversation.findByIdAndUpdate(convo._id, { $unset: { flowPausedUntil: 1, pausedAtNodeId: 1 } });
+          await Conversation.findByIdAndUpdate(convo._id, {
+            $unset: { flowPausedUntil: 1, pausedAtNodeId: 1 },
+            $set: { status: 'BOT_ACTIVE' }
+          });
 
           // Find the NEXT node to execute (from the Delay/Wait exit)
           const nextEdge = flowEdges.find(e => e.source === nodeId && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom' || e.sourceHandle === 'out'));
