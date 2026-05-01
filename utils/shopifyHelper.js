@@ -69,40 +69,7 @@ async function getShopifyClient(clientId, forceRefresh = false) {
             }
         }
 
-        // Step B: Try Client Credentials (Fallback for Custom Apps or if Refresh Token is dead/revoked)
-        if (!success && hasCredentials) {
-            try {
-                const rotationPayload = {
-                    client_id: client.shopifyClientId,
-                    client_secret: client.shopifyClientSecret ? '***' + decrypt(client.shopifyClientSecret).slice(-4) : 'MISSING',
-                    grant_type: 'client_credentials'
-                };
-                console.log(`[ShopifyRotation] Rotation Payload for ${clientId}:`, JSON.stringify({ ...rotationPayload, client_secret: '***' }));
 
-                const res = await axios.post(`https://${domain}/admin/oauth/access_token`, {
-                    client_id: client.shopifyClientId,
-                    client_secret: decrypt(client.shopifyClientSecret),
-                    grant_type: 'client_credentials'
-                });
-
-                if (res.data.access_token) {
-                    token = res.data.access_token;
-                    client.shopifyAccessToken = token;
-                    
-                    if (!client.commerce) client.commerce = {};
-                    if (!client.commerce.shopify) client.commerce.shopify = {};
-                    client.commerce.shopify.accessToken = token;
-                    
-                    client.shopifyTokenExpiresAt = null; // Client credentials usually issue semi-permanent tokens
-                    success = true;
-                    console.log(`✅ [ShopifyRotation] Token restored via Client Credentials for ${clientId}`);
-                }
-            } catch (err) {
-                const eData = err.response?.data;
-                lastError = typeof eData === 'string' && eData.length > 200 ? `${eData.substring(0, 100)}... [HTML truncated]` : (eData || err.message);
-                console.error(`❌ [ShopifyRotation] Client Credentials attempt failed for ${clientId}:`, JSON.stringify(lastError));
-            }
-        }
 
         if (success) {
             client.shopifyConnectionStatus = 'connected';

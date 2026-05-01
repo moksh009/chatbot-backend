@@ -83,8 +83,8 @@ async function syncClientTemplates(client) {
     return result;
   } catch (err) {
     // Handle specific Meta API errors
-    if (err.response?.status === 190) {
-      log.warn(`[${client.clientId}] WhatsApp token expired — skipping`);
+    if (err.response?.status === 190 || err.response?.status === 401) {
+      log.warn(`[${client.clientId}] WhatsApp token expired or unauthorized (401) — skipping`);
     } else if (err.response?.status === 100) {
       log.warn(`[${client.clientId}] Invalid WABA ID — skipping`);
     } else {

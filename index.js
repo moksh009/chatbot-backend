@@ -525,7 +525,11 @@ cron.schedule('0 7 * * *', async () => {
           const events = await listEvents(startOfDay, endOfDay, calendarId);
           allTodayEvents = allTodayEvents.concat(events);
         } catch (error) {
-          log.warn(`[Cron] GCal Fetch skipped for client ${clientId} (${calendarId}):`, { error: error.message });
+          if (error.message.includes('invalid_grant')) {
+             log.warn(`[Cron] GCal token expired for ${calendarId} (invalid_grant)`);
+          } else {
+             log.warn(`[Cron] GCal Fetch skipped for client ${clientId} (${calendarId}):`, { error: error.message });
+          }
         }
       }
 
