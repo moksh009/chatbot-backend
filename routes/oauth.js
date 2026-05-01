@@ -7,6 +7,7 @@ const Client  = require("../models/Client");
 
 const { protect } = require("../middleware/auth");
 const { checkLimit } = require("../utils/planLimits");
+const { decrypt } = require("../utils/encryption");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STEP 1: Initiate OAuth Flow
@@ -348,7 +349,7 @@ async function refreshExpiringInstagramTokens() {
           grant_type:        "fb_exchange_token",
           client_id:         process.env.META_APP_ID,
           client_secret:     process.env.META_APP_SECRET,
-          fb_exchange_token: client.instagramAccessToken
+          fb_exchange_token: decrypt(client.instagramAccessToken)
         }
       });
 

@@ -4,6 +4,7 @@ const AdLead = require('../models/AdLead');
 const Client = require('../models/Client');
 const { sendWhatsAppText, sendWhatsAppTemplate } = require('../utils/whatsappHelpers');
 const { sendInstagramDM } = require('../utils/instagramApi');
+const { decrypt } = require('../utils/encryption');
 
 module.exports = () => {
     // Run every 2 minutes
@@ -90,8 +91,9 @@ module.exports = () => {
                             sentSuccess = res.success;
                         }
                     } else if (msg.channel === 'instagram') {
-                        const token = client.instagramAccessToken;
-                        if (token) {
+                        const rawToken = client.instagramAccessToken;
+                        if (rawToken) {
+                            const token = decrypt(rawToken);
                             await sendInstagramDM(msg.phone, { text: msg.content.text || msg.content }, token);
                             sentSuccess = true;
                         }

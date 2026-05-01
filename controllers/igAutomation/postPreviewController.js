@@ -25,16 +25,22 @@ async function fetchPostPreview(req, res) {
       return res.json(previewCache.get(shortcode));
     }
 
-    const client = await Client.findOne({ clientId }).select('igUserId igAccessToken igUsername igProfilePicUrl').lean();
-    if (!client?.igUserId || !client?.igAccessToken) {
+    const client = await Client.findOne({ clientId })
+      .select('igUserId igAccessToken igUsername igProfilePicUrl instagramAccessToken instagramPageId')
+      .lean();
+
+    const rawToken = client?.instagramAccessToken || client?.igAccessToken;
+    const igUserId = client?.instagramPageId || client?.igUserId;
+
+    if (!igUserId || !rawToken) {
       return res.status(422).json({ error: 'No Instagram account connected for this workspace.' });
     }
 
-    const accessToken = decrypt(client.igAccessToken);
+    const accessToken = decrypt(rawToken);
 
     // Paginate through the account's media to find the shortcode match
     let mediaObject = null;
-    let nextUrl = `https://graph.facebook.com/v21.0/${client.igUserId}/media?fields=id,shortcode,caption,media_type,media_url,thumbnail_url,timestamp,permalink,username&limit=50&access_token=${accessToken}`;
+    let nextUrl = `https://graph.facebook.com/v21.0/${igUserId}/media?fields=id,shortcode,caption,media_type,media_url,thumbnail_url,timestamp,permalink,username&limit=50&access_token=${accessToken}`;
 
     let pageCount = 0;
     const MAX_PAGES = 10; // prevent infinite loop

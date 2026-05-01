@@ -10,12 +10,17 @@ const redis = require('../../utils/redisClient'); // Ensure this points to a val
 const igApiCallCounts = new Map(); // tracks calls per token per hour in memory
 
 async function getClientTokenAndId(clientId) {
-  const client = await Client.findOne({ clientId }).select('igUserId igAccessToken igPageId').lean();
-  if (!client?.igAccessToken) throw new Error(`No IG token for clientId: ${clientId}`);
+  const client = await Client.findOne({ clientId })
+    .select('igUserId igAccessToken igPageId instagramAccessToken instagramFbPageId instagramPageId')
+    .lean();
+  
+  const rawToken = client?.instagramAccessToken || client?.igAccessToken;
+  if (!rawToken) throw new Error(`No IG token for clientId: ${clientId}`);
+
   return {
-    igUserId: client.igUserId,
-    pageId: client.igPageId,
-    accessToken: decrypt(client.igAccessToken)
+    igUserId: client.igUserId || client.instagramPageId,
+    pageId: client.instagramFbPageId || client.igPageId,
+    accessToken: decrypt(rawToken)
   };
 }
 

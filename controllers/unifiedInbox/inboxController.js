@@ -4,6 +4,7 @@ const Conversation = require('../../models/Conversation');
 const IGConversation = require('../../models/IGConversation');
 const Client = require('../../models/Client');
 const { sendInstagramDMv2 } = require('../../utils/igGraphApi');
+const { decrypt } = require('../../utils/encryption');
 const log = require('../../utils/logger')('UnifiedInbox');
 
 /**
@@ -276,7 +277,8 @@ async function sendMessage(req, res) {
       const client = await Client.findOne({ clientId }).lean();
       if (!client) return res.status(404).json({ error: 'Client not found' });
 
-      const accessToken = client.instagramAccessToken || client.social?.instagram?.accessToken;
+      const rawToken = client.instagramAccessToken || client.social?.instagram?.accessToken;
+      const accessToken = decrypt(rawToken);
       if (!accessToken) return res.status(422).json({ error: 'Instagram is not connected. Please reconnect in Settings.' });
 
       // Send via Graph API

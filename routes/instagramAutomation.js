@@ -6,6 +6,7 @@ const InstagramAutomation = require('../models/InstagramAutomation');
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
 const axios = require('axios');
+const { decrypt } = require('../utils/encryption');
 
 // GET all automations for a client
 router.get('/:clientId', protect, async (req, res) => {
@@ -98,7 +99,8 @@ router.get('/:clientId/posts/fetch', protect, async (req, res) => {
     }
 
     // Fetch media from Instagram Graph API (Unified v18.0)
-    const url = `https://graph.facebook.com/v21.0/${client.instagramPageId}/media?fields=id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,comments_count,like_count&access_token=${client.instagramAccessToken}&limit=24`;
+    const accessToken = decrypt(client.instagramAccessToken);
+    const url = `https://graph.facebook.com/v21.0/${client.instagramPageId}/media?fields=id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,comments_count,like_count&access_token=${accessToken}&limit=24`;
     
     const response = await axios.get(url);
     if (response.data && response.data.data) {
