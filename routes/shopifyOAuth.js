@@ -30,12 +30,13 @@ async function sendShopifyEmail({ to, subject, html }) {
   // SYSTEM_EMAIL_USER = team@topedgeai.com, SYSTEM_EMAIL_PASS = Google App Password
   const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,   // SSL on port 465
-    family: 4,      // Force IPv4
-    connectionTimeout: 15000, // 15s to prevent Render timeout
-    greetingTimeout: 15000,
-    socketTimeout: 20000,
+    port: 587,
+    secure: false,  // false for STARTTLS
+    requireTLS: true,
+    family: 4,
+    connectionTimeout: 20000,
+    greetingTimeout: 20000,
+    socketTimeout: 30000,
     auth: {
       user: process.env.SYSTEM_EMAIL_USER,
       pass: process.env.SYSTEM_EMAIL_PASS
@@ -90,7 +91,8 @@ function extractShopDomainFromLink(link) {
         // signature is "base64payload--hmac"
         const payload = signature.split('--')[0];
         try {
-          const decoded = JSON.parse(Buffer.from(payload, 'base64').toString());
+          // Shopify uses base64url encoding for the signature payload
+          const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf-8'));
           if (decoded.permanent_domain) return decoded.permanent_domain;
         } catch (err) {}
       }

@@ -181,9 +181,11 @@ async function sendReviewRequestEmail(client, { customerEmail, customerName, pro
 async function sendSystemOTPEmail(toAddress, otpCode, purpose = 'SIGNUP') {
     const transporter = nodemailer.createTransport({
         host: 'smtp.gmail.com',
-        port: 465,
-        secure: true,
+        port: 587,
+        secure: false, // STARTTLS
+        requireTLS: true,
         family: 4,
+        connectionTimeout: 10000,
         auth: {
             user: process.env.SYSTEM_EMAIL_USER,
             pass: process.env.SYSTEM_EMAIL_PASS
