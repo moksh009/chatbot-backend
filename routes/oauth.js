@@ -8,6 +8,10 @@ const Client  = require("../models/Client");
 const { protect } = require("../middleware/auth");
 const { checkLimit } = require("../utils/planLimits");
 const { decrypt } = require("../utils/encryption");
+const {
+  subscribeFacebookPageToWebhooks,
+  subscribeInstagramUserToWebhooks
+} = require("../utils/igGraphApi");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STEP 1: Initiate OAuth Flow
@@ -156,6 +160,7 @@ router.get("/instagram/callback", async (req, res) => {
       await Client.findByIdAndUpdate(client._id, {
         instagramConnected:    true,
         instagramPageId:       igDetails.id,
+        igUserId:              igDetails.id,
         instagramUsername:     igDetails.username || "",
         instagramAccessToken:  page.access_token, // Use PAGE token for messaging
         instagramTokenExpiry:  tokenExpiry,
@@ -177,8 +182,8 @@ router.get("/instagram/callback", async (req, res) => {
         'social.metaAds.tokenExpiry': tokenExpiry
       });
 
-      // Register webhook subscription
-      await registerInstagramWebhook(page.id, page.access_token);
+      // Register webhook subscription (Facebook Page + Instagram Business Account — different hosts)
+      await registerInstagramWebhook(page.id, page.access_token, igDetails.id);
 
       console.log(`[Instagram OAuth] Connected @${igDetails.username} for client ${clientId}`);
       return res.redirect(`${frontendUrl}/settings?tab=channels&instagram_connected=true`);
@@ -225,6 +230,7 @@ router.post("/instagram/select-page/:clientId", protect, async (req, res) => {
     await Client.findByIdAndUpdate(client._id, {
       instagramConnected:    true,
       instagramPageId:       igDetails.id,
+      igUserId:              igDetails.id,
       instagramUsername:     igDetails.username || "",
       instagramAccessToken:  page.pageToken,
       instagramTokenExpiry:  tokenExpiry,
@@ -240,7 +246,7 @@ router.post("/instagram/select-page/:clientId", protect, async (req, res) => {
       'social.instagram.username':  igDetails.username || ""
     });
 
-    await registerInstagramWebhook(page.pageId, page.pageToken);
+    await registerInstagramWebhook(page.pageId, page.pageToken, page.igAccountId);
 
     res.json({
       success:  true,
@@ -325,19 +331,13 @@ async function getInstagramDetails(igAccountId, pageToken) {
   }
 }
 
-async function registerInstagramWebhook(fbPageId, pageToken) {
+async function registerInstagramWebhook(fbPageId, pageToken, igUserId) {
   try {
-    await axios.post(
-      `https://graph.facebook.com/v21.0/${fbPageId}/subscribed_apps`,
-      null,
-      {
-        params: {
-          subscribed_fields: "messages,messaging_postbacks,messaging_seen,messaging_referral",
-          access_token:      pageToken
-        }
-      }
-    );
-    console.log(`[Instagram OAuth] Webhook registered for page ${fbPageId}`);
+    await subscribeFacebookPageToWebhooks(fbPageId, pageToken, {});
+    if (igUserId) {
+      await subscribeInstagramUserToWebhooks(igUserId, pageToken, {});
+    }
+    console.log(`[Instagram OAuth] Webhooks registered fbPage=${fbPageId} igUser=${igUserId || "n/a"}`);
   } catch (err) {
     console.error("[Instagram OAuth] Webhook registration failed:", err.response?.data || err.message);
     // Non-fatal — user is still connected, webhook can be re-registered later

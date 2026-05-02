@@ -20,61 +20,92 @@ const IGAutomation = require('../../models/IGAutomation');
 const IGAutomationSession = require('../../models/IGAutomationSession');
 const Client = require('../../models/Client');
 const {
-  subscribePageToWebhooks,
-  getPageSubscriptions,
-  diffRequiredFields,
+  subscribeInstagramUserToWebhooks,
+  subscribeFacebookPageToWebhooks,
+  getInstagramUserSubscriptions,
+  getFacebookPageSubscriptions,
+  diffInstagramGraphFields,
+  diffFacebookPageFields,
+  REQUIRED_INSTAGRAM_GRAPH_WEBHOOK_FIELDS,
+  REQUIRED_FACEBOOK_PAGE_WEBHOOK_FIELDS,
   REQUIRED_IG_WEBHOOK_FIELDS
 } = require('../../utils/igGraphApi');
 const { validateAutomationMessages } = require('../../utils/igTextValidation');
 const { decrypt } = require('../../utils/encryption');
 const log = require('../../utils/logger')('IGAutoCRUD');
 
-// Resolve the client's IG page-token regardless of which storage layout is in use.
-// We support all three because the platform has migrated through them:
-//   • Legacy flat:           client.instagramAccessToken / client.instagramPageId
-//   • Tier 2.5 sub-document: client.social.instagram.{accessToken,pageId}
-//   • New IG Automation:     client.igAccessToken / client.igPageId / client.igUserId
+// Resolve Page Access Token + BOTH IDs Meta needs for webhooks:
+//   • fbPageId   → graph.facebook.com/{fbPageId}/subscribed_apps (Messenger/Page fields only)
+//   • igUserId   → graph.instagram.com/{igUserId}/subscribed_apps (comments, mentions, …)
+//
+// OAuth historically wrote igDetails.id into `instagramPageId` — that value is the
+// **Instagram Business Account ID**, NOT the Facebook Page ID. Never send IG IDs to
+// the Page subscribed_apps endpoint or Meta returns 403 / (#100) invalid fields.
 function readClientIgCreds(client) {
-  if (!client) return { rawToken: null, pageId: null };
-  return {
-    rawToken:
-      client.instagramAccessToken ||
-      client.igAccessToken ||
-      client.social?.instagram?.accessToken ||
-      null,
-    pageId:
-      client.instagramFbPageId ||
+  if (!client) return { rawToken: null, fbPageId: null, igUserId: null };
+  const rawToken =
+    client.instagramAccessToken ||
+    client.igAccessToken ||
+    client.social?.instagram?.accessToken ||
+    null;
+
+  const fbPageId =
+    client.instagramFbPageId ||
+    client.social?.instagram?.fbPageId ||
+    null;
+
+  let igUserId =
+    client.igUserId ||
+    client.instagramUserId ||
+    null;
+
+  if (!igUserId) {
+    const legacyIg =
       client.instagramPageId ||
-      client.igPageId ||
       client.social?.instagram?.pageId ||
-      null
-  };
+      null;
+    if (legacyIg && fbPageId && String(legacyIg) === String(fbPageId)) {
+      igUserId = null;
+    } else if (legacyIg) {
+      igUserId = legacyIg;
+    }
+  }
+  if (!igUserId && client.igPageId && (!fbPageId || String(client.igPageId) !== String(fbPageId))) {
+    igUserId = client.igPageId;
+  }
+
+  return { rawToken, fbPageId, igUserId };
 }
 
-// Best-effort, auto-healing webhook subscription.
+// Best-effort, auto-healing webhook subscription — **two Meta Graph hosts**.
 //
-// Behavior:
-//   1. Reads the page's current `subscribed_apps.subscribed_fields` from Meta.
-//   2. Diffs that against REQUIRED_IG_WEBHOOK_FIELDS (comments, mentions,
-//      messages, messaging_*).
-//   3. If anything is missing — or no subscription exists at all — calls
-//      `POST /{page-id}/subscribed_apps?subscribed_fields=…` to (re)register.
-//   4. Persists the latest subscribed fields snapshot on the Client doc so
-//      future calls can short-circuit cheaply.
+// 1) graph.instagram.com/{ig-user-id}/subscribed_apps → comments, mentions, …
+// 2) graph.facebook.com/{fb-page-id}/subscribed_apps → messages, messaging_*, …
 //
-// MUST NOT throw — every caller expects soft-fail so the toggle/create still
-// succeeds. The user-facing error path is the /webhook-status endpoint and
-// the IG Automation header health badge.
+// MUST NOT throw — every caller expects soft-fail.
 //
-// Returns: { ok, reason, subscribedFields, missingFields, action }
+// Returns: { ok, reason, subscribedFields, missingFields, instagram, page, action }
 async function ensureWebhookSubscription(clientId, { force = false } = {}) {
   const result = {
     ok: false,
     reason: null,
     subscribedFields: [],
-    missingFields: REQUIRED_IG_WEBHOOK_FIELDS.slice(),
+    missingFields: [],
+    instagram: { id: null, subscribedFields: [], missingFields: REQUIRED_INSTAGRAM_GRAPH_WEBHOOK_FIELDS.slice() },
+    page: { id: null, subscribedFields: [], missingFields: REQUIRED_FACEBOOK_PAGE_WEBHOOK_FIELDS.slice() },
     action: 'none'
   };
+
+  const pickAppSubscription = (subsRes) => {
+    const apps = subsRes?.data || [];
+    const myAppId = process.env.FACEBOOK_APP_ID || process.env.META_APP_ID;
+    const mine = myAppId
+      ? apps.find(a =>
+        String(a?.id || a?.app_id || a?.name || '') === String(myAppId))
+      : null;
+    return (mine?.subscribed_fields) || apps.flatMap(a => a?.subscribed_fields || []) || [];
+  };
+
   try {
     const client = await Client.findOne({ clientId });
     if (!client) {
@@ -82,11 +113,21 @@ async function ensureWebhookSubscription(clientId, { force = false } = {}) {
       return result;
     }
 
-    const { rawToken, pageId } = readClientIgCreds(client);
-    if (!pageId || !rawToken) {
+    const { rawToken, fbPageId, igUserId } = readClientIgCreds(client);
+    if (!rawToken) {
       result.reason = 'missing_credentials';
       await Client.findOneAndUpdate({ clientId }, {
         $set: { igWebhookLastCheckedAt: new Date(), igWebhookLastError: 'missing_credentials' }
+      });
+      return result;
+    }
+    if (!igUserId && !fbPageId) {
+      result.reason = 'missing_ids';
+      await Client.findOneAndUpdate({ clientId }, {
+        $set: {
+          igWebhookLastCheckedAt: new Date(),
+          igWebhookLastError: 'Missing both Instagram Business Account ID and Facebook Page ID. Reconnect Instagram in Settings → Integrations.'
+        }
       });
       return result;
     }
@@ -97,39 +138,65 @@ async function ensureWebhookSubscription(clientId, { force = false } = {}) {
       return result;
     }
 
-    // Step 1: read current subscription from Meta. If this fails (network /
-    // token expired) we still attempt the POST below — Meta will return 190
-    // and we'll surface that.
-    let currentFields = [];
-    try {
-      const subsRes = await getPageSubscriptions(pageId, accessToken, { clientId });
-      const apps = subsRes?.data || [];
-      // There can be multiple apps subscribed to the page — pick ours by App ID.
-      // If FACEBOOK_APP_ID isn't set, fall back to the union of all app fields.
-      const myAppId = process.env.FACEBOOK_APP_ID || process.env.META_APP_ID;
-      const mine = myAppId
-        ? apps.find(a => String(a?.id || a?.app_id || a?.name) === String(myAppId))
-        : null;
-      currentFields = (mine?.subscribed_fields)
-        || apps.flatMap(a => a?.subscribed_fields || []);
-    } catch (readErr) {
-      log.warn(`[Webhook] Could not read current subscription for client=${clientId}: ${readErr.message}`);
-      currentFields = [];
+    result.instagram.id = igUserId || null;
+    result.page.id = fbPageId || null;
+
+    let igFields = [];
+    let pageFields = [];
+
+    if (igUserId) {
+      try {
+        const subsRes = await getInstagramUserSubscriptions(igUserId, accessToken, { clientId });
+        igFields = pickAppSubscription(subsRes);
+      } catch (readErr) {
+        log.warn(`[Webhook] Could not read Instagram-graph subscription for client=${clientId}: ${readErr.message}`);
+      }
+    }
+    if (fbPageId) {
+      try {
+        const subsRes = await getFacebookPageSubscriptions(fbPageId, accessToken, { clientId });
+        pageFields = pickAppSubscription(subsRes);
+      } catch (readErr) {
+        log.warn(`[Webhook] Could not read Page subscription for client=${clientId}: ${readErr.message}`);
+      }
     }
 
-    const missing = diffRequiredFields(currentFields);
-    result.subscribedFields = currentFields;
-    result.missingFields = missing;
+    result.instagram.subscribedFields = igFields;
+    result.page.subscribedFields = pageFields;
 
-    // Step 2: subscribe if anything is missing OR caller forced a re-subscribe.
-    if (missing.length === 0 && !force) {
+    // If an ID is absent from the Client doc, treat that side as "all missing" only
+    // for Instagram (comments require igUserId). Page subscription is optional if
+    // the tenant truly has no linked FB Page (rare); do not block on empty fbPageId.
+    const missingIg = igUserId
+      ? diffInstagramGraphFields(igFields)
+      : REQUIRED_INSTAGRAM_GRAPH_WEBHOOK_FIELDS.slice();
+    const missingPage = fbPageId
+      ? diffFacebookPageFields(pageFields)
+      : [];
+
+    result.instagram.missingFields = missingIg;
+    result.page.missingFields = fbPageId ? missingPage : [];
+    result.missingFields = [
+      ...missingIg.map(f => `instagram:${f}`),
+      ...missingPage.map(f => `page:${f}`)
+    ];
+    result.subscribedFields = Array.from(new Set([...igFields, ...pageFields]));
+
+    const needsIg = Boolean(igUserId && (missingIg.length > 0 || force));
+    const needsPage = Boolean(fbPageId && (missingPage.length > 0 || force));
+    const fullyDone =
+      (!igUserId || missingIg.length === 0) &&
+      (!fbPageId || missingPage.length === 0) &&
+      !force;
+
+    if (fullyDone) {
       result.ok = true;
       result.reason = 'already_subscribed';
       result.action = 'noop';
       await Client.findOneAndUpdate({ clientId }, {
         $set: {
           igWebhookSubscribed: true,
-          igSubscribedFields: currentFields,
+          igSubscribedFields: result.subscribedFields,
           igWebhookLastCheckedAt: new Date(),
           igWebhookLastError: null
         }
@@ -137,46 +204,62 @@ async function ensureWebhookSubscription(clientId, { force = false } = {}) {
       return result;
     }
 
-    log.info(`[Webhook] Re-subscribing page=${pageId} client=${clientId} missing=${missing.join(',') || '(none, forced)'}`);
-    await subscribePageToWebhooks(pageId, accessToken, { clientId });
+    log.info(`[Webhook] Re-subscribe client=${clientId} ig=${igUserId || '—'} fbPage=${fbPageId || '—'} needsIg=${needsIg} needsPage=${needsPage}`);
 
-    // Step 3: confirm by reading back. Meta sometimes echoes a wider list
-    // than what we sent (it merges with any existing subscription).
-    let confirmedFields = REQUIRED_IG_WEBHOOK_FIELDS.slice();
-    try {
-      const confirmRes = await getPageSubscriptions(pageId, accessToken, { clientId });
-      const apps = confirmRes?.data || [];
-      const myAppId = process.env.FACEBOOK_APP_ID || process.env.META_APP_ID;
-      const mine = myAppId
-        ? apps.find(a => String(a?.id || a?.app_id || a?.name) === String(myAppId))
-        : null;
-      confirmedFields = (mine?.subscribed_fields)
-        || apps.flatMap(a => a?.subscribed_fields || [])
-        || REQUIRED_IG_WEBHOOK_FIELDS;
-    } catch (_confirmErr) {
-      // Non-fatal — we trust the POST succeeded.
+    if (needsIg && igUserId) {
+      await subscribeInstagramUserToWebhooks(igUserId, accessToken, { clientId });
+    }
+    if (needsPage && fbPageId) {
+      await subscribeFacebookPageToWebhooks(fbPageId, accessToken, { clientId });
     }
 
-    const stillMissing = diffRequiredFields(confirmedFields);
+    let igConfirmed = igFields;
+    let pageConfirmed = pageFields;
+    try {
+      if (igUserId) {
+        const confirmIg = await getInstagramUserSubscriptions(igUserId, accessToken, { clientId });
+        igConfirmed = pickAppSubscription(confirmIg);
+      }
+      if (fbPageId) {
+        const confirmPg = await getFacebookPageSubscriptions(fbPageId, accessToken, { clientId });
+        pageConfirmed = pickAppSubscription(confirmPg);
+      }
+    } catch (_e) { /* non-fatal */ }
+
+    const stillIg = igUserId
+      ? diffInstagramGraphFields(igConfirmed)
+      : REQUIRED_INSTAGRAM_GRAPH_WEBHOOK_FIELDS.slice();
+    const stillPage = fbPageId
+      ? diffFacebookPageFields(pageConfirmed)
+      : [];
+    const stillMissing = [
+      ...stillIg.map(f => `instagram:${f}`),
+      ...stillPage.map(f => `page:${f}`)
+    ];
+
+    result.instagram.subscribedFields = igConfirmed;
+    result.page.subscribedFields = pageConfirmed;
+    result.instagram.missingFields = stillIg;
+    result.page.missingFields = stillPage;
+    result.subscribedFields = Array.from(new Set([...igConfirmed, ...pageConfirmed]));
+    result.missingFields = stillMissing;
+
+    const ok = stillMissing.length === 0;
     await Client.findOneAndUpdate({ clientId }, {
       $set: {
-        igWebhookSubscribed: stillMissing.length === 0,
-        igSubscribedFields: confirmedFields,
+        igWebhookSubscribed: ok,
+        igSubscribedFields: result.subscribedFields,
         igWebhookLastCheckedAt: new Date(),
-        igWebhookLastError: stillMissing.length > 0
-          ? `Still missing fields after subscribe: ${stillMissing.join(',')}. Confirm the App Dashboard has these enabled under the Instagram product webhook config.`
-          : null
+        igWebhookLastError: ok ? null : `Missing after subscribe: ${stillMissing.join(', ')}. For Live-mode tenants, request Advanced Access for instagram_manage_comments / instagram_manage_messages in App Review.`
       }
     });
 
-    result.ok = stillMissing.length === 0;
-    result.subscribedFields = confirmedFields;
-    result.missingFields = stillMissing;
+    result.ok = ok;
     result.action = 'subscribed';
-    if (!result.ok) {
-      result.reason = `Subscribed, but Meta still does not show these fields: ${stillMissing.join(',')}. Enable them in the App Dashboard.`;
+    if (!ok) {
+      result.reason = `Meta still reports missing: ${stillMissing.join(', ')}.`;
     }
-    log.info(`[Webhook] page=${pageId} client=${clientId} now subscribed_fields=[${confirmedFields.join(',')}]`);
+    log.info(`[Webhook] client=${clientId} ok=${ok} merged=[${result.subscribedFields.join(',')}]`);
     return result;
   } catch (err) {
     log.warn(`[Webhook] Subscription failed for client=${clientId}: ${err.message}`);
@@ -669,29 +752,54 @@ router.get('/webhook-status', async (req, res) => {
     const client = await Client.findOne({ clientId }).lean();
     if (!client) return res.status(404).json({ success: false, error: 'Client not found' });
 
-    const { rawToken, pageId } = readClientIgCreds(client);
-    const hasCreds = !!(rawToken && pageId);
+    const { rawToken, fbPageId, igUserId } = readClientIgCreds(client);
+    const hasCreds = !!(rawToken && (igUserId || fbPageId));
 
-    let liveSubscribedFields = client.igSubscribedFields || [];
+    const pickAppSubscription = (subsRes) => {
+      const apps = subsRes?.data || [];
+      const myAppId = process.env.FACEBOOK_APP_ID || process.env.META_APP_ID;
+      const mine = myAppId
+        ? apps.find(a => String(a?.id || a?.app_id || a?.name || '') === String(myAppId))
+        : null;
+      return (mine?.subscribed_fields) || apps.flatMap(a => a?.subscribed_fields || []) || [];
+    };
+
+    let igLive = [];
+    let pageLive = [];
     let liveError = null;
+
     if (hasCreds) {
       try {
         const accessToken = decrypt(rawToken);
-        const subsRes = await getPageSubscriptions(pageId, accessToken, { clientId });
-        const apps = subsRes?.data || [];
-        const myAppId = process.env.FACEBOOK_APP_ID || process.env.META_APP_ID;
-        const mine = myAppId
-          ? apps.find(a => String(a?.id || a?.app_id || a?.name) === String(myAppId))
-          : null;
-        liveSubscribedFields = (mine?.subscribed_fields)
-          || apps.flatMap(a => a?.subscribed_fields || [])
-          || [];
+        if (!accessToken) throw new Error('token_decrypt_failed');
+        if (igUserId) {
+          try {
+            const subsIg = await getInstagramUserSubscriptions(igUserId, accessToken, { clientId });
+            igLive = pickAppSubscription(subsIg);
+          } catch (e) {
+            liveError = liveError || `Instagram Graph: ${e.message}`;
+          }
+        }
+        if (fbPageId) {
+          try {
+            const subsPg = await getFacebookPageSubscriptions(fbPageId, accessToken, { clientId });
+            pageLive = pickAppSubscription(subsPg);
+          } catch (e) {
+            liveError = liveError || `Facebook Page: ${e.message}`;
+          }
+        }
       } catch (err) {
         liveError = err.message;
       }
     }
 
-    const missing = diffRequiredFields(liveSubscribedFields);
+    const missingIg = igUserId ? diffInstagramGraphFields(igLive) : REQUIRED_INSTAGRAM_GRAPH_WEBHOOK_FIELDS.slice();
+    const missingPage = fbPageId ? diffFacebookPageFields(pageLive) : [];
+    const missing = [
+      ...missingIg.map(f => `instagram:${f}`),
+      ...missingPage.map(f => `page:${f}`)
+    ];
+    const liveSubscribedFields = Array.from(new Set([...igLive, ...pageLive]));
 
     // Lightweight recent-activity counters (last 24h) so the user can verify
     // webhooks are actually flowing — pulled from the existing session ledger.
@@ -711,10 +819,18 @@ router.get('/webhook-status', async (req, res) => {
       success: true,
       health: healthy,
       hasCredentials: hasCreds,
-      pageId: pageId || null,
-      igUserId: client.igUserId || null,
-      igUsername: client.igUsername || null,
-      requiredFields: REQUIRED_IG_WEBHOOK_FIELDS,
+      fbPageId: fbPageId || null,
+      pageId: fbPageId || null,
+      igUserId: igUserId || null,
+      igUsername: client.igUsername || client.instagramUsername || null,
+      requiredFields: {
+        instagram: REQUIRED_INSTAGRAM_GRAPH_WEBHOOK_FIELDS,
+        page: REQUIRED_FACEBOOK_PAGE_WEBHOOK_FIELDS
+      },
+      subscription: {
+        instagram: { id: igUserId || null, subscribedFields: igLive, missingFields: missingIg },
+        page: { id: fbPageId || null, subscribedFields: pageLive, missingFields: missingPage }
+      },
       subscribedFields: liveSubscribedFields,
       missingFields: missing,
       lastCheckedAt: client.igWebhookLastCheckedAt || null,
@@ -722,10 +838,10 @@ router.get('/webhook-status', async (req, res) => {
       recentEvents24h: recentEvents,
       callbackUrlHint: `${process.env.PUBLIC_API_BASE_URL || ''}/api/ig-automation/webhook`.replace(/^\//, ''),
       remediation: missing.length > 0 ? [
-        'Open Meta App Dashboard → Webhooks → Instagram (or Page) product.',
-        `Subscribe to these fields: ${missing.join(', ')}.`,
-        'Verify the Callback URL matches your deployed backend (must be HTTPS).',
-        'Then click "Re-subscribe" in the IG Automation header to retry.'
+        'Comment webhooks are registered on graph.instagram.com/{ig-user-id}/subscribed_apps; DM webhooks also use graph.facebook.com/{page-id}/subscribed_apps. The backend now calls both — not a single mixed list.',
+        'In App Review, request Advanced Access for instagram_manage_comments and instagram_manage_messages or Live users outside your app roles will not receive webhooks.',
+        'Click "Re-subscribe webhooks" in the dashboard after deploy.',
+        `Missing: ${missing.join(', ')}.`
       ] : []
     });
   } catch (error) {
