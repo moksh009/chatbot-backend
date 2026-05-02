@@ -188,6 +188,7 @@ const ClientSchema = new mongoose.Schema({
   shopifyClientId: { type: String, default: "" },
   shopifyClientSecret: { type: String, default: "" },
   shopifyApiVersion: { type: String, default: "2026-01" },
+  shopifyInstallLink: { type: String, default: null }, // Added for Custom App Distribution
   shopifyConnectionStatus: { type: String, enum: ['connected', 'error', 'disconnected'], default: 'connected' },
   lastShopifyError: { type: String, default: "" },
   generatedDiscounts: { type: [mongoose.Schema.Types.Mixed], default: [] },

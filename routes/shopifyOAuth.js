@@ -118,112 +118,106 @@ async function registerWebhooks(shopDomain, accessToken, clientId) {
 }
 
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// STEP 1: GET /api/shopify/auth — Initiate OAuth Handshake
-// ═══════════════════════════════════════════════════════════════════════════════
-router.get('/auth', (req, res) => {
+// Helper functions for secure signed cookies
+function signCookieValue(value, secret) {
+  const hmac = crypto.createHmac('sha256', secret).update(value).digest('hex');
+  return `${value}.${hmac}`;
+}
+
+function verifyAndExtractCookie(signedValue, secret) {
+  if (!signedValue || typeof signedValue !== 'string') return null;
+  const lastDotIndex = signedValue.lastIndexOf('.');
+  if (lastDotIndex === -1) return null;
+  
+  const value = signedValue.slice(0, lastDotIndex);
+  const signature = signedValue.slice(lastDotIndex + 1);
+  const expectedSignature = crypto.createHmac('sha256', secret).update(value).digest('hex');
+  
   try {
-    const { shop, clientId } = req.query;
+    if (crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) {
+      return value;
+    }
+  } catch (err) {
+    return null; // Buffer length mismatch or invalid format
+  }
+  return null;
+}
 
-    // Validate required parameters
-    if (!shop) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Missing required parameter: shop (e.g., ?shop=storename.myshopify.com)' 
-      });
+function getRawCookie(req, name) {
+  if (!req.headers.cookie) return null;
+  const match = req.headers.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+  if (match) return decodeURIComponent(match[2]);
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STEP 1: POST /api/shopify/auth — Retrieve Custom Installation Link
+// ═══════════════════════════════════════════════════════════════════════════════
+router.post('/auth', async (req, res) => {
+  try {
+    const { shopDomain, clientId } = req.body;
+
+    if (!shopDomain || !clientId) {
+      return res.status(400).json({ success: false, error: 'Missing shopDomain or clientId' });
     }
 
-    if (!clientId) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Missing required parameter: clientId' 
-      });
-    }
-
-    // Sanitize shop domain
-    let cleanShop = shop.replace(/https?:\/\//, '').replace(/\/$/, '').toLowerCase();
+    let cleanShop = shopDomain.replace(/https?:\/\//, '').replace(/\/$/, '').toLowerCase();
     if (!cleanShop.includes('.myshopify.com')) {
       cleanShop = `${cleanShop}.myshopify.com`;
     }
 
-    // Validate shop domain format (security: prevent open redirects)
-    if (!isValidShopDomain(cleanShop)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid shop domain. Must be a valid *.myshopify.com domain.'
+    const client = await Client.findOne({ clientId }).lean();
+    if (!client) {
+      return res.status(404).json({ success: false, error: 'Client not found' });
+    }
+
+    if (!client.shopifyInstallLink) {
+      return res.status(422).json({ 
+        success: false, 
+        error: 'Please contact support to generate your secure installation link.' 
       });
     }
 
-    // Generate cryptographic nonce for CSRF protection
-    const nonce = crypto.randomBytes(16).toString('hex');
+    // Set secure, signed cookie with clientId
+    const cookieSecret = process.env.SHOPIFY_CLIENT_SECRET || process.env.SHOPIFY_API_SECRET || 'fallback_cookie_secret';
+    const signedClientId = signCookieValue(clientId, cookieSecret);
     
-    // Encode clientId into the state parameter (nonce:clientId)
-    const state = `${nonce}:${clientId}`;
-    
-    // Store nonce for verification in callback
-    nonceStore.set(nonce, {
-      clientId,
-      shop: cleanShop,
-      createdAt: Date.now()
+    res.cookie('shopify_oauth_client', signedClientId, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 10 * 60 * 1000 // 10 minutes
     });
 
-    // Build Shopify authorization URL
-    const clientIdEnv = SHOPIFY_CLIENT_ID();
-    const scopes = SHOPIFY_SCOPES();
-    const redirectUri = SHOPIFY_REDIRECT_URI();
-
-    if (!clientIdEnv) {
-      console.error('❌ [ShopifyOAuth] SHOPIFY_CLIENT_ID environment variable is not set!');
-      return res.status(500).json({
-        success: false,
-        message: 'Shopify OAuth is not configured. Please contact the administrator.'
-      });
-    }
-
-    const authUrl = `https://${cleanShop}/admin/oauth/authorize` +
-      `?client_id=${encodeURIComponent(clientIdEnv)}` +
-      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-      `&state=${encodeURIComponent(state)}` +
-      `&grant_options[]=per-user` +
-      `&scope=${encodeURIComponent(scopes)}`;
-
-    console.log(`🔄 [ShopifyOAuth] Initiating OAuth for clientId=${clientId}, shop=${cleanShop}`);
-    console.log(`🔗 [ShopifyOAuth] Redirecting to: ${authUrl.substring(0, 100)}...`);
-
-    // Redirect the merchant to Shopify's consent screen
-    return res.redirect(authUrl);
+    console.log(`🔄 [ShopifyOAuth] Custom Install Link retrieved for clientId=${clientId}`);
+    return res.json({ success: true, shopifyInstallLink: client.shopifyInstallLink });
 
   } catch (error) {
-    console.error('❌ [ShopifyOAuth] Auth initiation error:', error);
-    return res.status(500).json({ 
-      success: false, 
-      message: 'Failed to initiate Shopify OAuth' 
-    });
+    console.error('❌ [ShopifyOAuth] Auth retrieval error:', error);
+    return res.status(500).json({ success: false, error: 'Internal server error during Shopify auth initiation' });
   }
 });
-
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // STEP 2: GET /api/shopify/callback — Token Exchange (HMAC-Verified)
 // ═══════════════════════════════════════════════════════════════════════════════
 router.get('/callback', async (req, res) => {
   try {
-    const { code, hmac, shop, state, timestamp } = req.query;
+    const { code, hmac, shop } = req.query; // No state required for Custom Distribution Link
     const frontendUrl = FRONTEND_URL();
 
-    // ── Validation Gate ──────────────────────────────────────────────────────
-    if (!code || !hmac || !shop || !state) {
-      console.error('❌ [ShopifyOAuth] Callback missing required parameters:', { code: !!code, hmac: !!hmac, shop: !!shop, state: !!state });
+    // ── 1. Parameter Validation ───────────────────────────────────────────────
+    if (!code || !hmac || !shop) {
+      console.error('❌ [ShopifyOAuth] Callback missing required parameters:', { code: !!code, hmac: !!hmac, shop: !!shop });
       return res.redirect(`${frontendUrl}/settings?tab=store&shopify_error=missing_params`);
     }
 
-    // ── Shop Domain Validation ───────────────────────────────────────────────
     if (!isValidShopDomain(shop)) {
       console.error('❌ [ShopifyOAuth] Invalid shop domain in callback:', shop);
       return res.redirect(`${frontendUrl}/settings?tab=store&shopify_error=invalid_shop`);
     }
 
-    // ── HMAC Signature Verification ──────────────────────────────────────────
+    // ── 2. HMAC Signature Verification ──────────────────────────────────────────
     const clientSecret = SHOPIFY_CLIENT_SECRET();
     if (!clientSecret) {
       console.error('❌ [ShopifyOAuth] SHOPIFY_CLIENT_SECRET is not configured!');
@@ -237,45 +231,28 @@ router.get('/callback', async (req, res) => {
     }
     console.log('✅ [ShopifyOAuth] HMAC verification passed');
 
-    // ── Nonce (State) Verification ───────────────────────────────────────────
-    const [nonce, clientId] = state.split(':');
-    if (!nonce || !clientId) {
-      console.error('❌ [ShopifyOAuth] Invalid state parameter format:', state);
-      return res.redirect(`${frontendUrl}/settings?tab=store&shopify_error=invalid_state`);
-    }
+    // ── 3. Session (Cookie) Verification ────────────────────────────────────────
+    const cookieSecret = process.env.SHOPIFY_CLIENT_SECRET || process.env.SHOPIFY_API_SECRET || 'fallback_cookie_secret';
+    const rawCookie = getRawCookie(req, 'shopify_oauth_client');
+    const clientIdFromCookie = verifyAndExtractCookie(rawCookie, cookieSecret);
 
-    const storedNonce = nonceStore.get(nonce);
-    if (!storedNonce) {
-      console.error('❌ [ShopifyOAuth] Nonce not found or expired. Possible CSRF attempt.');
+    if (!clientIdFromCookie) {
+      console.error('❌ [ShopifyOAuth] Invalid or missing session cookie. Installation hijacked or expired.');
       return res.redirect(`${frontendUrl}/settings?tab=store&shopify_error=nonce_expired`);
     }
 
-    // Validate nonce hasn't expired (10 min TTL)
-    if (Date.now() - storedNonce.createdAt > NONCE_TTL_MS) {
-      nonceStore.delete(nonce);
-      console.error('❌ [ShopifyOAuth] Nonce expired for clientId:', clientId);
-      return res.redirect(`${frontendUrl}/settings?tab=store&shopify_error=nonce_expired`);
-    }
-
-    // Validate clientId matches
-    if (storedNonce.clientId !== clientId) {
-      console.error('❌ [ShopifyOAuth] ClientId mismatch in nonce. Expected:', storedNonce.clientId, 'Got:', clientId);
-      return res.redirect(`${frontendUrl}/settings?tab=store&shopify_error=state_mismatch`);
-    }
-
-    // Consume the nonce (one-time use)
-    nonceStore.delete(nonce);
-
-    // ── Verify Client Exists ─────────────────────────────────────────────────
-    const client = await Client.findOne({ clientId });
+    // ── 4. Find Client strictly by Cookie ClientId ──────────────────────────────
+    const client = await Client.findOne({ clientId: clientIdFromCookie });
     if (!client) {
-      console.error('❌ [ShopifyOAuth] Client not found:', clientId);
+      console.error('❌ [ShopifyOAuth] Client not found for ID from cookie:', clientIdFromCookie);
+      res.clearCookie('shopify_oauth_client');
       return res.redirect(`${frontendUrl}/settings?tab=store&shopify_error=client_not_found`);
     }
 
-    // ── Token Exchange ───────────────────────────────────────────────────────
+    const clientId = client.clientId;
     console.log(`🔄 [ShopifyOAuth] Exchanging authorization code for access token... (shop: ${shop}, clientId: ${clientId})`);
 
+    // ── 5. Token Exchange ───────────────────────────────────────────────────────
     const tokenResponse = await axios.post(`https://${shop}/admin/oauth/access_token`, {
       client_id: SHOPIFY_CLIENT_ID(),
       client_secret: clientSecret,
@@ -286,23 +263,23 @@ router.get('/callback', async (req, res) => {
 
     if (!access_token) {
       console.error('❌ [ShopifyOAuth] No access_token in Shopify response:', tokenResponse.data);
+      res.clearCookie('shopify_oauth_client');
       return res.redirect(`${frontendUrl}/settings?tab=store&shopify_error=token_exchange_failed`);
     }
 
     console.log(`✅ [ShopifyOAuth] Access token received for ${clientId}. Scopes: ${scope}`);
+    console.log(`✅ [ShopifyOAuth] Note: Shopify Billing API skipped. Client billed via Razorpay.`);
 
-    // ── Save to Database (Encrypted) ─────────────────────────────────────────
+    // ── 6. Save to Database ──────────────────────────────────────────────────────
     const updatePayload = {
-      shopDomain: shop,
       shopifyAccessToken: access_token,
       shopifyScopes: scope || '',
       shopifyClientId: SHOPIFY_CLIENT_ID(),
       shopifyClientSecret: clientSecret,
       shopifyConnectionStatus: 'connected',
       lastShopifyError: '',
-      shopifyTokenExpiresAt: null, // Offline tokens don't expire
+      shopifyTokenExpiresAt: null,
       storeType: 'shopify',
-      // Also update modular schema
       'commerce.shopify.domain': shop,
       'commerce.shopify.accessToken': access_token,
       'commerce.shopify.clientId': SHOPIFY_CLIENT_ID(),
@@ -318,17 +295,17 @@ router.get('/callback', async (req, res) => {
 
     console.log(`✅ [ShopifyOAuth] Credentials saved for ${clientId}`);
 
-    // ── Register Webhooks ────────────────────────────────────────────────────
+    // Clear session cookie upon success
+    res.clearCookie('shopify_oauth_client');
+
+    // ── 7. Background Tasks ──────────────────────────────────────────────────────
     try {
       await registerWebhooks(shop, access_token, clientId);
     } catch (webhookErr) {
-      // Non-fatal — log but don't block the flow
       console.error(`⚠️ [ShopifyOAuth] Webhook registration failed (non-fatal):`, webhookErr.message);
     }
 
-    // ── Trigger Initial Product & Order Sync (Background) ────────────────────
     const serverUrl = process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com';
-    // Fire-and-forget sync calls
     axios.post(`${serverUrl}/api/shopify/${clientId}/sync-products`, {}, {
       headers: { 'Authorization': `Bearer INTERNAL_SYNC` }
     }).catch(e => console.log(`ℹ️ [ShopifyOAuth] Background product sync skipped:`, e.message));
@@ -337,12 +314,12 @@ router.get('/callback', async (req, res) => {
       headers: { 'Authorization': `Bearer INTERNAL_SYNC` }
     }).catch(e => console.log(`ℹ️ [ShopifyOAuth] Background order sync skipped:`, e.message));
 
-    // ── Redirect to Frontend ─────────────────────────────────────────────────
     console.log(`🎉 [ShopifyOAuth] OAuth complete for ${clientId}! Redirecting to frontend...`);
     return res.redirect(`${frontendUrl}/settings?tab=store&shopify_connected=true`);
 
   } catch (error) {
     console.error('❌ [ShopifyOAuth] Callback error:', error.response?.data || error.message);
+    res.clearCookie('shopify_oauth_client');
     const frontendUrl = FRONTEND_URL();
     return res.redirect(`${frontendUrl}/settings?tab=store&shopify_error=callback_failed`);
   }
