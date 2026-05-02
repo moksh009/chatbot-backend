@@ -129,14 +129,112 @@ router.get('/list', protect, async (req, res) => {
            return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
 
-        const client = await Client.findOne({ clientId }, 'syncedMetaTemplates templatesSyncedAt');
+        const client = await Client.findOne({ clientId }, 'syncedMetaTemplates templatesSyncedAt messageTemplates pendingTemplates');
         if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
-        res.json({ 
-          success: true, 
-          data: client.syncedMetaTemplates || [],
+        const synced = Array.isArray(client.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
+        const localTemplates = Array.isArray(client.messageTemplates) ? client.messageTemplates : [];
+        const pendingMap = new Map((Array.isArray(client.pendingTemplates) ? client.pendingTemplates : []).map(t => [t.name, String(t.status || 'PENDING').toUpperCase()]));
+
+        // Prefer local messageTemplates for rich metadata/source, but hydrate status from synced/pending.
+        const mergedMap = new Map();
+        localTemplates.forEach((tpl) => {
+          if (!tpl?.name) return;
+          const pendingStatus = pendingMap.get(tpl.name);
+          const status = pendingStatus || String(tpl.status || 'PENDING').toUpperCase();
+          mergedMap.set(tpl.name, { ...tpl, status });
+        });
+
+        synced.forEach((tpl) => {
+          if (!tpl?.name) return;
+          if (mergedMap.has(tpl.name)) {
+            const existing = mergedMap.get(tpl.name);
+            mergedMap.set(tpl.name, {
+              ...tpl,
+              ...existing,
+              status: String(tpl.status || existing.status || 'APPROVED').toUpperCase(),
+              source: existing.source || 'synced_meta'
+            });
+          } else {
+            mergedMap.set(tpl.name, {
+              ...tpl,
+              status: String(tpl.status || 'APPROVED').toUpperCase(),
+              source: tpl.source || 'synced_meta'
+            });
+          }
+        });
+
+        const merged = Array.from(mergedMap.values());
+        res.json({
+          success: true,
+          data: merged,
           syncedAt: client.templatesSyncedAt
         });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Update AI-generated product template locally before Meta publish.
+router.put('/product-template/:clientId/:templateName', protect, async (req, res) => {
+    try {
+        const { clientId, templateName } = req.params;
+        const { body, footer, imageUrl, variables = {} } = req.body || {};
+        if (!templateName) return res.status(400).json({ success: false, message: 'templateName required' });
+
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(401).json({ success: false, message: 'Unauthorized' });
+        if (user.role !== 'SUPER_ADMIN' && user.clientId !== clientId) {
+          return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
+
+        const client = await Client.findOne({ clientId });
+        if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+        const templates = Array.isArray(client.messageTemplates) ? [...client.messageTemplates] : [];
+        const idx = templates.findIndex(t => t?.name === templateName);
+        if (idx === -1) {
+          return res.status(404).json({ success: false, message: 'Template not found in local workspace' });
+        }
+
+        const tpl = { ...templates[idx] };
+        if (String(tpl.name || '').startsWith('prod_') === false && tpl.source !== 'wizard_product') {
+          return res.status(400).json({ success: false, message: 'Only AI-generated product templates can be edited here' });
+        }
+
+        const components = Array.isArray(tpl.components) ? [...tpl.components] : [];
+        const bodyIndex = components.findIndex(c => c.type === 'BODY');
+        const footerIndex = components.findIndex(c => c.type === 'FOOTER');
+        const headerIndex = components.findIndex(c => c.type === 'HEADER' && c.format === 'IMAGE');
+
+        if (body !== undefined) {
+          if (bodyIndex >= 0) components[bodyIndex] = { ...components[bodyIndex], text: body };
+          else components.push({ type: 'BODY', text: body });
+          tpl.body = body;
+        }
+        if (footer !== undefined) {
+          if (footerIndex >= 0) components[footerIndex] = { ...components[footerIndex], text: footer };
+          else components.push({ type: 'FOOTER', text: footer });
+        }
+        if (imageUrl !== undefined) {
+          if (headerIndex >= 0) components[headerIndex] = { ...components[headerIndex], _imageUrl: imageUrl };
+          else components.unshift({ type: 'HEADER', format: 'IMAGE', _imageUrl: imageUrl });
+          tpl.imageUrl = imageUrl;
+        }
+
+        const vars = Array.isArray(tpl.variables) ? [...tpl.variables] : ['product_name', 'product_price', 'product_features'];
+        if (variables.productName !== undefined) vars[0] = variables.productName;
+        if (variables.productPrice !== undefined) vars[1] = variables.productPrice;
+        if (variables.productFeatures !== undefined) vars[2] = variables.productFeatures;
+        tpl.variables = vars;
+        tpl.components = components;
+        tpl.updatedAt = new Date();
+        tpl.status = String(tpl.status || 'DRAFT').toUpperCase() === 'APPROVED' ? 'APPROVED' : 'DRAFT';
+
+        templates[idx] = tpl;
+        await Client.updateOne({ clientId }, { $set: { messageTemplates: templates } });
+
+        res.json({ success: true, template: tpl });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }

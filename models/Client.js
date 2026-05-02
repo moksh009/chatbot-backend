@@ -47,16 +47,124 @@ const CommerceSchema = new mongoose.Schema({
   woocommerce: { type: CommerceWooCommerceSchema, default: () => ({}) }
 }, { _id: false });
 
+// ───────────────────────────────────────────────────────────────────────────
+// AI persona — owned by AiSchema below. Lives at `client.ai.persona.*`
+// (personaEngine.js + flowGenerator.js + Wizard all read these exact paths).
+// ───────────────────────────────────────────────────────────────────────────
+const AiPersonaSchema = new mongoose.Schema({
+  name:             { type: String, default: "TopEdge AI Assistant" },
+  avatar:           { type: String, default: "" },
+  tone:             { type: String, default: "Professional & Helpful" },
+  description:      { type: String, default: "You are an automated assistant dedicated to providing fast and accurate business support." },
+  role:             { type: String, default: "customer support specialist" },
+  language:         { type: String, default: "English" },
+  emojiLevel:       { type: String, enum: ["none", "minimal", "moderate", "high"], default: "moderate" },
+  formality:        { type: String, enum: ["formal", "semi-formal", "casual"], default: "semi-formal" },
+  autoTranslate:    { type: Boolean, default: false },
+  knowledgeBase:    { type: String, default: "" },
+  signaturePhrases: { type: [String], default: [] },
+  avoidTopics:      { type: [String], default: [] }
+}, { _id: false });
+
 const AiSchema = new mongoose.Schema({
-  geminiKey: { type: String, default: "" }, 
-  openaiKey: { type: String, default: "" }, 
+  geminiKey: { type: String, default: "" },
+  openaiKey: { type: String, default: "" },
   systemPrompt: { type: String, default: "" },
   fallbackEnabled: { type: Boolean, default: true },
   negotiationSettings: { type: mongoose.Schema.Types.Mixed, default: {} },
   // Phase 26 Voice Settings
   voiceRepliesEnabled: { type: Boolean, default: false },
   voiceReplyLanguage: { type: String, default: "en-IN" },
-  voiceReplyMode: { type: String, enum: ["mirror", "always", "off"], default: "mirror" }
+  voiceReplyMode: { type: String, enum: ["mirror", "always", "off"], default: "mirror" },
+
+  // Phase 29 — Persona / training / supplier alerts.
+  // Previously lived in a SECOND `ai:` field at the bottom of ClientSchema,
+  // which silently overrode this whole sub-document. Merged here so the
+  // schema has exactly ONE source of truth for `client.ai.*`.
+  persona: { type: AiPersonaSchema, default: () => ({}) },
+  trainingData: [{
+    userMessage:       { type: String },
+    originalResponse:  { type: String },
+    agentCorrection:   { type: String },
+    context:           { type: String },
+    createdAt:         { type: Date, default: Date.now }
+  }],
+  supplierAlerts: {
+    enabled:          { type: Boolean, default: true },
+    autoSend:         { type: Boolean, default: false },
+    notificationSent: { type: Boolean, default: false }
+  }
+}, { _id: false });
+
+// ───────────────────────────────────────────────────────────────────────────
+// WIZARD FEATURE TOGGLES — single object the Onboarding Wizard owns.
+// flowGenerator.js consults these to conditionally insert/skip whole node
+// branches. The Settings → Features panel mutates these fields and triggers
+// a background flow regeneration.
+//
+// IMPORTANT: every toggle here MUST have a matching builder block in
+// flowGenerator.js. Adding a toggle without a builder = dead UI.
+// ───────────────────────────────────────────────────────────────────────────
+const WizardFeaturesSchema = new mongoose.Schema({
+  // Core commerce
+  enableCatalog:           { type: Boolean, default: true  }, // Show product catalog branch from main menu
+  enableOrderTracking:     { type: Boolean, default: true  }, // Shopify order status branch
+  enableReturnsRefunds:    { type: Boolean, default: true  }, // Returns + refund branch
+  enableCancelOrder:       { type: Boolean, default: true  }, // Cancellation flow under order ops
+  enableCodToPrepaid:      { type: Boolean, default: false }, // Auto-nudge after COD orders to convert to prepaid
+  codDiscountAmount:       { type: Number,  default: 50    }, // ₹ off to incentivize switch
+  enableAbandonedCart:     { type: Boolean, default: true  }, // 3-step cart recovery drip
+  cartNudgeMinutes1:       { type: Number,  default: 15    },
+  cartNudgeHours2:         { type: Number,  default: 2     },
+  cartNudgeHours3:         { type: Number,  default: 24    },
+
+  // Loyalty & growth
+  enableLoyalty:           { type: Boolean, default: false },
+  loyaltyPointsPerUnit:    { type: Number,  default: 10    }, // Points per ₹100
+  loyaltySignupBonus:      { type: Number,  default: 100   },
+  loyaltySilverThreshold:  { type: Number,  default: 500   },
+  loyaltyGoldThreshold:    { type: Number,  default: 1500  },
+  enableReferral:          { type: Boolean, default: false },
+  referralPointsBonus:     { type: Number,  default: 500   },
+  enableReviewCollection:  { type: Boolean, default: false }, // Post-delivery Google review request
+  reviewDelayDays:         { type: Number,  default: 4     },
+
+  // Service & post-purchase
+  enableWarranty:          { type: Boolean, default: false },
+  warrantyDuration:        { type: String,  default: "1 Year" },
+  warrantySupportPhone:    { type: String,  default: "" },
+  warrantySupportEmail:    { type: String,  default: "" },
+  warrantyClaimUrl:        { type: String,  default: "" },
+  enableFAQ:               { type: Boolean, default: true  },
+  enableSupportEscalation: { type: Boolean, default: true  },
+  humanEscalationTimeoutMin: { type: Number, default: 30   }, // Auto-return to bot after N minutes
+  enableBusinessHoursGate: { type: Boolean, default: true  },
+  enable247:               { type: Boolean, default: false }, // If true, skip the after-hours block
+
+  // Channels & growth
+  enableInstagramTrigger:  { type: Boolean, default: false },
+  enableMetaAdsTrigger:    { type: Boolean, default: false },
+  enableB2BWholesale:      { type: Boolean, default: false },
+
+  // AI behavior
+  enableAIFallback:        { type: Boolean, default: true  }, // Dead-end → AI smart reply
+  enableMultiLanguage:     { type: Boolean, default: false }, // Auto-translate inbound + outbound
+
+  // Notifications
+  enableAdminAlerts:       { type: Boolean, default: true  }, // WhatsApp + email blast on critical events
+  enableOrderConfirmTpl:   { type: Boolean, default: true  }
+}, { _id: false });
+
+// ───────────────────────────────────────────────────────────────────────────
+// Plain-text business policies the AI / generator can quote verbatim.
+// ───────────────────────────────────────────────────────────────────────────
+const PoliciesSchema = new mongoose.Schema({
+  returnPolicy:   { type: String, default: "" },
+  refundPolicy:   { type: String, default: "" },
+  shippingPolicy: { type: String, default: "" },
+  warrantyPolicy: { type: String, default: "" },
+  privacyUrl:     { type: String, default: "" },
+  termsUrl:       { type: String, default: "" }
 }, { _id: false });
 
 const BillingSchema = new mongoose.Schema({
@@ -92,9 +200,13 @@ const ClientSchema = new mongoose.Schema({
   brand: { type: BrandSchema, default: () => ({}) },
   whatsapp: { type: WhatsappSchema, default: () => ({}) },
   commerce: { type: CommerceSchema, default: () => ({}) },
-  ai: { type: AiSchema, default: () => ({}) },
+  ai: { type: AiSchema, default: () => ({}) }, // Persona, training, voice, keys all live here.
   billing: { type: BillingSchema, default: () => ({}) },
   social: { type: SocialSchema, default: () => ({}) },
+
+  // --- WIZARD-OWNED CONFIG (Onboarding → Settings → Generator) ---
+  wizardFeatures: { type: WizardFeaturesSchema, default: () => ({}) },
+  policies:       { type: PoliciesSchema,       default: () => ({}) },
 
   // --- TIER 3: ONBOARDING WIZARD CENTRALIZED VARS ---
   platformVars: {
@@ -534,37 +646,12 @@ const ClientSchema = new mongoose.Schema({
     hiddenWidgets: { type: [String], default: [] }
   },
 
-  // Phase 29: AI Persona & Customization
-  ai: {
-    persona: {
-      name:             { type: String, default: "TopEdge AI Assistant" },
-      avatar:           { type: String, default: "" },
-      tone:             { type: String, default: "Professional & Helpful" },
-      description:      { type: String, default: "You are an automated assistant dedicated to providing fast and accurate business support." },
-      // ✅ Phase R4: Missing canonical persona fields added (personaEngine.js reads all of these)
-      role:             { type: String, default: "customer support specialist" },
-      language:         { type: String, default: "English" },
-      emojiLevel:       { type: String, enum: ["none", "minimal", "moderate", "high"], default: "moderate" },
-      formality:        { type: String, enum: ["formal", "semi-formal", "casual"], default: "semi-formal" },
-      autoTranslate:    { type: Boolean, default: false },
-      knowledgeBase:    { type: String, default: "" }, // FAQs, policies, product info injected into prompts
-      signaturePhrases: { type: [String], default: [] },  // Rotating phrases (e.g., "Happy to help!")
-      avoidTopics:      { type: [String], default: [] }   // Topics the bot must never discuss
-    },
-    trainingData: [{
-      userMessage: { type: String },
-      originalResponse: { type: String },
-      agentCorrection: { type: String },
-      context: { type: String },
-      createdAt: { type: Date, default: Date.now }
-    }],
-    supplierAlerts: {
-      enabled: { type: Boolean, default: true },
-      autoSend: { type: Boolean, default: false },
-      notificationSent: { type: Boolean, default: false }
-    }
-  },
-  
+  // NOTE: The Phase 29 `ai:` block previously lived here but has been MERGED
+  // into AiSchema at the top of this file. Mongoose silently overrode the
+  // first `ai` definition with this duplicate, killing geminiKey / openaiKey /
+  // systemPrompt / fallbackEnabled / voice settings. See AiSchema for the
+  // canonical home of persona / trainingData / supplierAlerts.
+
   // Phase 29: B2B Supplier Channel
   isSupplier: { type: Boolean, default: false },
   b2bCatalog: [{
@@ -578,9 +665,8 @@ const ClientSchema = new mongoose.Schema({
     allowDirectWholesale: { type: Boolean, default: false },
     autoApproveSuppliers: { type: Boolean, default: false },
     commissionRate: { type: Number, default: 0 }
-  },
-
-  createdAt: { type: Date, default: Date.now }
+  }
+  // NOTE: trailing duplicate `createdAt` removed — defined once near top.
 });
 
 function encryptSubDocs(doc) {

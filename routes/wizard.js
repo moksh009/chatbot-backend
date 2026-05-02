@@ -8,6 +8,8 @@ const WhatsAppFlow = require("../models/WhatsAppFlow");
 const { generateEcommerceFlow, generateSystemPrompt, getPrebuiltTemplates } = require("../utils/flowGenerator");
 const { withShopifyRetry } = require("../utils/shopifyHelper");
 const { generateText, generateTextFast } = require("../utils/gemini");
+const { mapWizardToClient, mapFeatureToggle } = require("../utils/wizardMapper");
+const { emitToClient } = require("../utils/socket");
 const log = require("../utils/logger")("Wizard");
 
 async function syncPendingTemplatesForClient(client) {
@@ -246,203 +248,70 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       console.log(`[Wizard] Main flow offloaded to WhatsAppFlow model: ${storedFlow._id} (${mainNodes.length} nodes)`);
     }
 
-    // Update the client document:
-    // 1. Mark wizard as complete
-    // 2. SET the business/bot settings (last-one-wins from wizard)
-    // 3. PUSH the new flow into visualFlows (so they keeping growing a list)
-    // 4. SET flowNodes/flowEdges to the newest one (for legacy engine support)
-    
-    const settingsUpdate = {
-      wizardCompleted:    true,
-      wizardCompletedAt:  new Date(),
-      isAIFallbackEnabled: true,
-      // Phase R4 Fix: use full nodes/edges arrays for dual-brain engine
-      // (not newFlow.nodes which is intentionally empty when > 20 nodes)
-      ...(wizardData.replaceExisting !== false && { 
-        flowNodes: mainNodes, 
-        flowEdges: mainEdges
-      }),
-      ...(wizardData.businessName    && { 
-        businessName: wizardData.businessName, 
-        name: wizardData.businessName,
-        'brand.businessName': wizardData.businessName
-      }),
-      ...(wizardData.botName         && { 
-        "nicheData.botName": wizardData.botName,
-        "ai.persona.name": wizardData.botName
-      }),
-      ...(wizardData.tone && { "ai.persona.tone": wizardData.tone }),
-      ...(wizardData.botLanguage && { "ai.persona.language": wizardData.botLanguage }),
-      ...(wizardData.businessDescription && { "ai.persona.description": wizardData.businessDescription }),
-      ...(wizardData.systemPrompt               && { 
-        systemPrompt,
-        'ai.systemPrompt': systemPrompt
-      }),
-      ...(wizardData.currency && { "brand.currency": wizardData.currency }),
-      ...(wizardData.shippingTime && { "config.shippingTime": wizardData.shippingTime }),
-      // Platform Vars
-      'platformVars.brandName': wizardData.businessName,
-      'platformVars.agentName': wizardData.botName,
-      'platformVars.baseCurrency': wizardData.currency || '₹',
-      'platformVars.shippingTime': wizardData.shippingTime,
-      'platformVars.adminWhatsappNumber': wizardData.adminPhone,
-      'platformVars.checkoutUrl': wizardData.checkoutUrl || (client.shopDomain ? `https://${client.shopDomain}/checkout` : ''),
-      'platformVars.businessDescription': wizardData.businessDescription,
-      'platformVars.openTime': wizardData.openTime,
-      'platformVars.closeTime': wizardData.closeTime,
-      'platformVars.warrantyDuration': wizardData.warrantyDuration,
-      'platformVars.defaultLanguage': wizardData.botLanguage,
-      'platformVars.defaultTone': wizardData.tone,
+    // ─── Build the canonical wizard → DB update via the central mapper ───────
+    // All field-mapping rules live in utils/wizardMapper.js so we have ONE
+    // source of truth instead of 150 lines of brittle inline spreads.
+    const mapped = mapWizardToClient(wizardData, client, { systemPrompt });
+    const $set = mapped.$set;
 
-      ...(wizardData.faqText && { "faq": [{ question: 'About Us / General', answer: wizardData.faqText, order: 1 }] }),
-      
-      // Gemini key powers bot fallback. Also mirror into openaiApiKey for legacy engine paths.
-      ...(wizardData.geminiApiKey && { geminiApiKey: wizardData.geminiApiKey, openaiApiKey: wizardData.geminiApiKey }),
-      // Product display mode: 'template' | 'manual'
-      ...(wizardData.productMode && { 'config.productMode': wizardData.productMode }),
-      ...(wizardData.metaAdsToken && {
-        metaAdsConnected:   true,
-        metaAdAccountId:    wizardData.metaAdAccountId,
-        metaAdsToken:       wizardData.metaAdsToken,
-        'social.metaAds.accountId':   wizardData.metaAdAccountId,
-        'social.metaAds.accessToken': wizardData.metaAdsToken,
-      }),
-      ...(wizardData.metaAppId && { metaAppId: wizardData.metaAppId }),
-      ...(wizardData.cartTiming && {
-        "automationFlows": [
-          {
-            id:     "abandoned_cart",
-            type:   "abandoned_cart",
-            active: true,
-            config: {
-              nudge1_offset_ms: (wizardData.cartTiming.msg1 || 15) * 60 * 1000,
-              nudge2_offset_ms: (wizardData.cartTiming.msg2 || 2) * 60 * 60 * 1000,
-              nudge3_offset_ms: (wizardData.cartTiming.msg3 || 24) * 60 * 60 * 1000,
-              timing_mode: 'absolute'
-            }
-          },
-          ...((wizardData.razorpayKeyId || wizardData.cashfreeAppId) ? [{
-            id:     "cod_to_prepaid",
-            type:   "cod_to_prepaid",
-            active: true,
-            config: {
-              delayMinutes:    3,
-              discountAmount:  50,
-              razorpayEnabled: !!wizardData.razorpayKeyId,
-              cashfreeEnabled: !!wizardData.cashfreeAppId
-            }
-          }] : []),
-          {
-            id:     "review_collection",
-            type:   "review_collection",
-            active: !!(wizardData.googleReviewUrl),
-            config: {
-              delayDays:    4,
-              reviewUrl:    wizardData.googleReviewUrl || ""
-            }
-          }
-        ]
-      }),
-      // Enterprise Ops Sync
-      ...(wizardData.activePersona && { "ai.enterprisePersona": wizardData.activePersona }),
-      ...(wizardData.referralPoints && { 
-        "brand.referralPoints": wizardData.referralPoints,
-        "loyaltyConfig.pointsPerCurrency": wizardData.referralPoints,
-        "loyaltyConfig.pointsPerUnit": wizardData.referralPoints,
-        "loyaltyConfig.isEnabled": true
-      }),
-      ...(wizardData.signupPoints   && { 
-        "brand.signupPoints": wizardData.signupPoints,
-        "loyaltyConfig.welcomeBonus": wizardData.signupPoints
-      }),
-      ...(wizardData.is247 !== undefined && { "config.businessHours.is247": wizardData.is247 }),
-      ...(wizardData.openTime && { "config.businessHours.openTime": wizardData.openTime }),
-      ...(wizardData.closeTime && { "config.businessHours.closeTime": wizardData.closeTime }),
-      ...(wizardData.workingDays && { "config.businessHours.workingDays": wizardData.workingDays }),
-      ...(wizardData.b2bEnabled !== undefined && { 
-        "brand.b2bEnabled": wizardData.b2bEnabled,
-        "config.b2bEnabled": wizardData.b2bEnabled 
-      }),
-      ...(wizardData.b2bThreshold && { "brand.b2bThreshold": wizardData.b2bThreshold }),
-      ...(wizardData.b2bAdminPhone && { "brand.b2bAdminPhone": wizardData.b2bAdminPhone }),
-      ...(wizardData.businessLogo && { 
-        "brand.businessLogo": wizardData.businessLogo,
-        "businessLogo": wizardData.businessLogo 
-      }),
-      ...(wizardData.authorizedSignature && { 
-        "brand.authorizedSignature": wizardData.authorizedSignature,
-        "authorizedSignature": wizardData.authorizedSignature 
-      }),
-      ...(wizardData.warrantyDuration && { "brand.warrantyDuration": wizardData.warrantyDuration }),
-      ...(wizardData.warrantyPolicy && { "brand.warrantyPolicy": wizardData.warrantyPolicy }),
-      ...(wizardData.warrantySupportPhone && { 
-        "brand.warrantySupportPhone": wizardData.warrantySupportPhone,
-        "warrantyConfig.supportPhone": wizardData.warrantySupportPhone 
-      }),
-      ...(wizardData.warrantyClaimUrl && { 
-        "brand.warrantyClaimUrl": wizardData.warrantyClaimUrl,
-        "warrantyConfig.claimUrl": wizardData.warrantyClaimUrl 
-      }),
-      ...(wizardData.warrantyEmailEnabled !== undefined && { 
-        "warrantyConfig.emailEnabled": wizardData.warrantyEmailEnabled 
-      }),
-      ...(wizardData.warrantyWhatsappEnabled !== undefined && { 
-        "warrantyConfig.whatsappEnabled": wizardData.warrantyWhatsappEnabled 
-      }),
-      ...(wizardData.autoAssignWarranty !== undefined && { 
-        "warrantyConfig.autoAssign": wizardData.autoAssignWarranty 
-      })
-    };
+    // Persist legacy flow arrays for the dual-brain engine when replacing.
+    if (wizardData.replaceExisting !== false) {
+      $set.flowNodes = mainNodes;
+      $set.flowEdges = mainEdges;
+    }
 
-    // Handle customTemplates (push them separately after main update)
-    const customTemplatesPush = (wizardData.customTemplates && wizardData.customTemplates.length > 0)
-      ? wizardData.customTemplates.map(t => ({ ...t, status: 'PENDING', source: 'wizard_custom', createdAt: new Date() }))
-      : [];
-
-    // If replaceExisting, update the active main flow's nodes instead of always pushing
+    // Decide visualFlows mutation: replace existing active flow OR push new one.
     let updateQuery;
     if (wizardData.replaceExisting !== false) {
       const existingFlows = client.visualFlows || [];
       const activeFlowIdx = existingFlows.findIndex(f => f.isActive && f.platform === 'whatsapp');
-      
+
       if (activeFlowIdx !== -1) {
         if (existingFlows[activeFlowIdx].flowModelId) {
-            await WhatsAppFlow.findByIdAndDelete(existingFlows[activeFlowIdx].flowModelId);
-            log.info(`Deleted old stranded WhatsAppFlow record: ${existingFlows[activeFlowIdx].flowModelId}`);
+          await WhatsAppFlow.findByIdAndDelete(existingFlows[activeFlowIdx].flowModelId);
+          log.info(`Deleted old stranded WhatsAppFlow record: ${existingFlows[activeFlowIdx].flowModelId}`);
         }
-        
         existingFlows[activeFlowIdx] = {
           ...existingFlows[activeFlowIdx],
-          nodes: newFlow.nodes,
-          edges: newFlow.edges,
+          nodes:       newFlow.nodes,
+          edges:       newFlow.edges,
           flowModelId: newFlow.flowModelId,
-          updatedAt: new Date(),
+          updatedAt:   new Date(),
           generatedBy: 'wizard'
         };
-        updateQuery = { $set: { ...settingsUpdate, visualFlows: existingFlows } };
+        updateQuery = { $set: { ...$set, visualFlows: existingFlows } };
       } else {
         newFlow.isActive = true;
-        updateQuery = { $set: settingsUpdate, $push: { visualFlows: newFlow } };
+        updateQuery = { $set, $push: { visualFlows: newFlow } };
       }
     } else {
-      // Add as new flow (keep existing active ones)
-      updateQuery = {
-        $set: settingsUpdate,
-        $push: { visualFlows: newFlow }
-      };
+      updateQuery = { $set, $push: { visualFlows: newFlow } };
     }
 
-    // Final update with all settings + the new flow
-    const updatedClient = await Client.findByIdAndUpdate(client._id, updateQuery, { new: true, runValidators: true });
-    
-    console.log(`[Wizard] Completed successfully for ${clientId}. wizardCompleted: ${updatedClient.wizardCompleted}`);
-    
-    // Push customTemplates separately if any
-    if (customTemplatesPush.length > 0) {
-      await Client.findByIdAndUpdate(client._id, {
-        $push: { messageTemplates: { $each: customTemplatesPush } }
-      });
+    // Final update.
+    const updatedClient = await Client.findByIdAndUpdate(
+      client._id, updateQuery, { new: true, runValidators: true }
+    );
+    console.log(`[Wizard] Completed for ${clientId}. wizardCompleted=${updatedClient.wizardCompleted}`);
+
+    // Custom Meta templates are pushed separately so they don't conflict with
+    // the visualFlows $push above (Mongo allows only one $push per array per op).
+    if (mapped.$push?.messageTemplates) {
+      await Client.findByIdAndUpdate(client._id, { $push: { messageTemplates: mapped.$push.messageTemplates } });
     }
+
+    // Notify any open dashboard tabs that the flow regenerated (FlowBuilder
+    // listens for this and refetches without a hard refresh).
+    try {
+      emitToClient(clientId, 'wizard:flow-regenerated', {
+        clientId,
+        flowId: newFlow.id,
+        nodeCount: mainNodes.length,
+        edgeCount: mainEdges.length,
+        source: 'wizard_complete',
+        generatedAt: new Date()
+      });
+    } catch (_) { /* socket optional */ }
 
     // Sync persona to flows (Goal 1: Alignment)
     if (updatedClient.ai?.persona) {
@@ -1115,6 +984,162 @@ router.post("/:clientId/verify-gemini", protect, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PATCH /api/wizard/:clientId/features
+// Settings → Features panel calls this whenever a toggle flips. It updates
+// `wizardFeatures.*` (canonical) + the legacy mirror fields, then kicks off
+// a background flow regeneration so the change appears in FlowBuilder
+// without a page reload.
+// ─────────────────────────────────────────────────────────────────────────────
+router.patch("/:clientId/features", protect, async (req, res) => {
+  const { clientId } = req.params;
+  const { features = {}, profile = {}, regenerate = true } = req.body || {};
+
+  try {
+    if (req.user.role !== "SUPER_ADMIN" && req.user.clientId !== clientId) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    const $set = mapFeatureToggle(features);
+
+    // Additional profile fields that merchants need in the same UX surface.
+    if (profile.supportEmail !== undefined)          $set["platformVars.supportEmail"] = profile.supportEmail || "";
+    if (profile.warrantySupportPhone !== undefined)  $set["brand.warrantySupportPhone"] = profile.warrantySupportPhone || "";
+    if (profile.warrantyClaimUrl !== undefined)      $set["brand.warrantyClaimUrl"] = profile.warrantyClaimUrl || "";
+    if (profile.warrantyDuration !== undefined)      $set["brand.warrantyDefaultDuration"] = profile.warrantyDuration || "1 Year";
+    if (profile.warrantyPolicy !== undefined)        $set["policies.warrantyPolicy"] = profile.warrantyPolicy || "";
+    if (profile.loyaltySilverThreshold !== undefined) $set["loyaltyConfig.tierThresholds.silver"] = Number(profile.loyaltySilverThreshold) || 0;
+    if (profile.loyaltyGoldThreshold !== undefined)   $set["loyaltyConfig.tierThresholds.gold"] = Number(profile.loyaltyGoldThreshold) || 0;
+
+    if (Object.keys($set).length === 0) {
+      return res.status(400).json({ error: "No valid feature/profile fields supplied" });
+    }
+
+    const client = await Client.findOneAndUpdate(
+      { clientId },
+      { $set },
+      { new: true, runValidators: true }
+    );
+    if (!client) return res.status(404).json({ error: "Client not found" });
+
+    let regenSummary = null;
+    if (regenerate) {
+      try {
+        const wizardData = {
+          businessName:       client.platformVars?.brandName || client.businessName,
+          botName:            client.platformVars?.agentName || client.ai?.persona?.name,
+          tone:               client.platformVars?.defaultTone || client.ai?.persona?.tone,
+          botLanguage:        client.platformVars?.defaultLanguage || client.ai?.persona?.language,
+          businessDescription:client.platformVars?.businessDescription,
+          adminPhone:         client.platformVars?.adminWhatsappNumber || client.adminPhone,
+          checkoutUrl:        client.platformVars?.checkoutUrl,
+          googleReviewUrl:    client.platformVars?.googleReviewUrl,
+          openTime:           client.platformVars?.openTime,
+          closeTime:          client.platformVars?.closeTime,
+          warrantyDuration:   client.wizardFeatures?.warrantyDuration || client.platformVars?.warrantyDuration,
+          warrantySupportPhone: client.wizardFeatures?.warrantySupportPhone || client.brand?.warrantySupportPhone,
+          warrantySupportEmail: client.wizardFeatures?.warrantySupportEmail || client.platformVars?.supportEmail,
+          warrantyClaimUrl:   client.wizardFeatures?.warrantyClaimUrl || client.brand?.warrantyClaimUrl,
+          currency:           client.platformVars?.baseCurrency,
+          features:           (client.wizardFeatures && client.wizardFeatures.toObject) ? client.wizardFeatures.toObject() : client.wizardFeatures,
+          replaceExisting:    true,
+          preserveNodeIds:    true   // keeps active conversations alive on regen
+        };
+        const { nodes, edges } = await generateEcommerceFlow(client, wizardData);
+
+        // Update client with the regenerated flow (legacy + visualFlows[active]).
+        const visualFlows = client.visualFlows || [];
+        const activeIdx = visualFlows.findIndex(f => f.isActive && f.platform === 'whatsapp');
+        if (activeIdx !== -1) {
+          visualFlows[activeIdx] = {
+            ...visualFlows[activeIdx],
+            nodes:       nodes.length > 20 ? [] : nodes,
+            edges:       nodes.length > 20 ? [] : edges,
+            nodeCount:   nodes.length,
+            edgeCount:   edges.length,
+            updatedAt:   new Date(),
+            generatedBy: 'settings_features'
+          };
+        }
+        await Client.findByIdAndUpdate(client._id, {
+          $set: {
+            flowNodes: nodes,
+            flowEdges: edges,
+            visualFlows
+          }
+        });
+
+        // Live-notify dashboards.
+        try {
+          emitToClient(clientId, 'wizard:flow-regenerated', {
+            clientId,
+            source: 'feature_toggle',
+            nodeCount: nodes.length,
+            edgeCount: edges.length,
+            generatedAt: new Date()
+          });
+        } catch (_) {}
+
+        regenSummary = { nodes: nodes.length, edges: edges.length };
+      } catch (genErr) {
+        log.error(`[Features] Regen failed for ${clientId}: ${genErr.message}`);
+        regenSummary = { error: genErr.message };
+      }
+    }
+
+    res.json({
+      success: true,
+      features: client.wizardFeatures,
+      profile: {
+        supportEmail: client.platformVars?.supportEmail || "",
+        warrantySupportPhone: client.brand?.warrantySupportPhone || "",
+        warrantyClaimUrl: client.brand?.warrantyClaimUrl || "",
+        warrantyDuration: client.brand?.warrantyDefaultDuration || client.wizardFeatures?.warrantyDuration || "1 Year",
+        warrantyPolicy: client.policies?.warrantyPolicy || "",
+        loyaltySilverThreshold: client.loyaltyConfig?.tierThresholds?.silver || client.wizardFeatures?.loyaltySilverThreshold || 0,
+        loyaltyGoldThreshold: client.loyaltyConfig?.tierThresholds?.gold || client.wizardFeatures?.loyaltyGoldThreshold || 0
+      },
+      regen: regenSummary
+    });
+  } catch (err) {
+    log.error(`[Features] PATCH failed for ${clientId}: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/wizard/:clientId/features  — used by Settings to hydrate the panel
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/:clientId/features", protect, async (req, res) => {
+  const { clientId } = req.params;
+  try {
+    if (req.user.role !== "SUPER_ADMIN" && req.user.clientId !== clientId) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+    const client = await Client.findOne({ clientId }).select('wizardFeatures policies platformVars brand loyaltyConfig wizardCompleted ai.persona').lean();
+    if (!client) return res.status(404).json({ error: "Client not found" });
+    res.json({
+      success: true,
+      wizardCompleted: client.wizardCompleted,
+      features: client.wizardFeatures || {},
+      profile: {
+        supportEmail: client.platformVars?.supportEmail || "",
+        warrantySupportPhone: client.brand?.warrantySupportPhone || "",
+        warrantyClaimUrl: client.brand?.warrantyClaimUrl || "",
+        warrantyDuration: client.brand?.warrantyDefaultDuration || client.wizardFeatures?.warrantyDuration || "1 Year",
+        warrantyPolicy: client.policies?.warrantyPolicy || "",
+        loyaltySilverThreshold: client.loyaltyConfig?.tierThresholds?.silver || client.wizardFeatures?.loyaltySilverThreshold || 0,
+        loyaltyGoldThreshold: client.loyaltyConfig?.tierThresholds?.gold || client.wizardFeatures?.loyaltyGoldThreshold || 0
+      },
+      policies: client.policies || {},
+      platformVars: client.platformVars || {},
+      persona: client.ai?.persona || {}
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /api/wizard/:clientId/reset
 // Re-run the wizard (super admin only or triggered from Settings)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1131,66 +1156,9 @@ router.post("/:clientId/reset", protect, async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// POST /api/wizard/:clientId/generate-from-url
-// Scrapes the provided URL and generates a robust AI system prompt + FAQs
-// ─────────────────────────────────────────────────────────────────────────────
-router.post("/:clientId/generate-from-url", protect, async (req, res) => {
-  const { url } = req.body;
-  if (!url) return res.status(400).json({ error: "URL is required" });
-
-  try {
-    // 1. Scrape the URL
-    const axios = require('axios');
-    let rawData = "";
-    try {
-      const resp = await axios.get(url, { timeout: 10000 });
-      // Simple HTML to text extraction
-      rawData = resp.data.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-                         .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-                         .replace(/<[^>]+>/g, ' ')
-                         .replace(/\s+/g, ' ')
-                         .trim()
-                         .substring(0, 15000); // 15k char limits
-      if (!rawData) throw new Error("No text found");
-    } catch (e) {
-      return res.status(400).json({ error: "Failed to scrape URL: " + e.message });
-    }
-
-    // 2. Fetch Gemini API key (Priorities: 1. Request Body, 2. Stored Client Key, 3. Server Fallback)
-    const client = await Client.findOne({ clientId: req.params.clientId });
-    const apiKey = req.body.geminiApiKey || client?.geminiApiKey || process.env.GEMINI_API_KEY;
-
-    // 3. Build Prompt for Gemini
-    const prompt = `As an expert AI architect, extract core business intelligence from the following website text:
----
-${rawData}
----
-Generate a highly structured JSON object with two fields:
-1. "systemPrompt": A comprehensive system prompt instructing how an AI Assistant should represent this business on WhatsApp. Include their tone, policies, core offerings, and rules.
-2. "faqText": A concise string of 3-5 of the most important frequently asked questions and their answers based ONLY on the text above.
-
-Output strictly valid JSON exactly in this format: { "systemPrompt": "...", "faqText": "..." }`;
-
-    // 4. Generate with Gemini
-    const generated = await generateText(prompt, apiKey);
-    
-    // Parse the JSON output
-    let parsedData = { systemPrompt: "Failed to generate prompt.", faqText: "" };
-    try {
-      const jsonStr = generated.replace(/```json|```/g, "").trim();
-      parsedData = JSON.parse(jsonStr);
-    } catch(e) {
-      console.warn("Failed to parse Gemini output as JSON. Output:", generated);
-      parsedData.systemPrompt = generated; // Fallback to raw text
-    }
-
-    res.json({ success: true, data: parsedData });
-  } catch (err) {
-    console.error("URL Prompt Gen Error:", err);
-    res.status(500).json({ error: "Failed to generate AI brain from URL." });
-  }
-});
+// NOTE: A duplicate `POST /:clientId/generate-from-url` handler used to live
+// here. Express registers both but only the first one ever runs, so the
+// second was dead code. Removed in Batch A.
 
 router.syncPendingTemplatesForClient = syncPendingTemplatesForClient;
 module.exports = router;
