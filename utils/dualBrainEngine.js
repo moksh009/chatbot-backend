@@ -2597,7 +2597,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       // Variables already hydrated via deepInject in executeNode
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
       
-      await WhatsApp.sendText(client, phone, body);
+      await WhatsApp.sendText(client, phone, String(body).substring(0, 4096));
       return true;
     }
 
@@ -2612,11 +2612,12 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'livechat': {
       let body = data.text || data.body || (type === 'livechat' ? 'Connecting you to a human...' : '');
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
+      const safeBody = String(body).substring(0, 4096);
       
       if (data.imageUrl) {
-        await WhatsApp.sendImage(client, phone, data.imageUrl, body);
+        await WhatsApp.sendImage(client, phone, data.imageUrl, safeBody.substring(0, 1024));
       } else {
-        await WhatsApp.sendText(client, phone, body);
+        await WhatsApp.sendText(client, phone, safeBody);
       }
       return true;
     }
@@ -2633,7 +2634,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
           ]
         }
       };
-      await WhatsApp.sendInteractive(client, phone, interactive, body);
+      await WhatsApp.sendInteractive(client, phone, interactive, String(body).substring(0, 1024));
       return true;
     }
 
@@ -2652,7 +2653,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         };
         if (data.imageUrl) interactive.header = { type: 'image', image: { link: data.imageUrl } };
         else if (data.header) interactive.header = { type: 'text', text: data.header.substring(0, 60) };
-        await WhatsApp.sendInteractive(client, phone, interactive, body);
+        await WhatsApp.sendInteractive(client, phone, interactive, String(body).substring(0, 1024));
         return true;
       }
 
@@ -2661,33 +2662,31 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         : (data.buttons || '').split(',').map(b => b.trim()).filter(Boolean).map(b => ({ id: b.toLowerCase().replace(/\s+/g, '_'), title: b }));
 
       if (!buttonsList.length) {
-        await WhatsApp.sendText(client, phone, body);
+        await WhatsApp.sendText(client, phone, String(body).substring(0, 4096));
         return true;
       }
 
       if (data.interactiveType === 'list') {
-        // ════════════════════════════════════════════════════════════════════
-        // CRITICAL FIX: Use data.sections (wizard-generated) OR buttonsList
-        // Row IDs MUST be preserved exactly — they are matched by tryGraphTraversal
-        // against edge sourceHandles. Auto-generating IDs breaks the flow.
-        // ════════════════════════════════════════════════════════════════════
         let sections;
+        let totalRows = 0;
         if (data.sections && data.sections.length > 0) {
-          // Wizard-generated format: sections[].rows[].id  (PRESERVE IDs exactly)
-          sections = data.sections.map(section => ({
-            title: (section.title || 'Options').substring(0, 24),
-            rows: (section.rows || []).slice(0, 10).map(row => ({
-              id: String(row.id || row.title || 'opt').substring(0, 200),   // preserve exactly
+          sections = data.sections.map(section => {
+            const rows = (section.rows || []).slice(0, 10 - totalRows).map(row => ({
+              id: String(row.id || row.title || 'opt').substring(0, 200),
               title: (row.title || 'Option').substring(0, 24),
               ...(row.description ? { description: row.description.substring(0, 72) } : {})
-            }))
-          }));
+            }));
+            totalRows += rows.length;
+            return {
+              title: (section.title || 'Options').substring(0, 24),
+              rows
+            };
+          }).filter(s => s.rows.length > 0);
         } else {
-          // Legacy fallback: build from buttonsList — preserve btn.id exactly
           sections = [{
             title: 'Options',
             rows: buttonsList.slice(0, 10).map(btn => ({
-              id: String(btn.id || btn.title || 'opt').substring(0, 200),   // preserve exactly
+              id: String(btn.id || btn.title || 'opt').substring(0, 200),
               title: (btn.title || 'Option').substring(0, 24)
             }))
           }];
@@ -2702,18 +2701,17 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         };
         if (data.imageUrl) interactive.header = { type: 'image', image: { link: data.imageUrl } };
         else if (data.header) interactive.header = { type: 'text', text: data.header.substring(0, 60) };
-        await WhatsApp.sendInteractive(client, phone, interactive, body);
+        await WhatsApp.sendInteractive(client, phone, interactive, String(body).substring(0, 1024));
         return true;
       }
 
-      // Button-type interactive: PRESERVE btn.id exactly (must match edge sourceHandle)
       let interactive = {
         type: 'button',
         action: {
           buttons: buttonsList.slice(0, 3).map(btn => ({
             type: 'reply',
             reply: {
-              id: String(btn.id || btn.title || 'opt').substring(0, 256),  // preserve exactly
+              id: String(btn.id || btn.title || 'opt').substring(0, 256),
               title: (btn.title || 'Option').substring(0, 20)
             }
           }))
@@ -2721,7 +2719,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       };
       if (data.imageUrl) interactive.header = { type: 'image', image: { link: data.imageUrl } };
       else if (data.header) interactive.header = { type: 'text', text: data.header.substring(0, 60) };
-      await WhatsApp.sendInteractive(client, phone, interactive, body);
+      await WhatsApp.sendInteractive(client, phone, interactive, String(body).substring(0, 1024));
       return true;
     }
 
@@ -2733,7 +2731,6 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         return false;
       }
       
-      // Variables: can be an array (new) or a comma-string (legacy)
       const rawVars = data.variables || data.templateVars;
       let templateVars = [];
       if (Array.isArray(rawVars)) {
@@ -2744,9 +2741,6 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       
       const headerImage = data.headerImageUrl || null;
       
-      // Upgrade to sendSmartTemplate for Meta-sync checks and parameter safety
-      // CRITICAL: Explicit catch — if Meta rejects (outside 24h window, variable mismatch),
-      // DO NOT silently pretend it worked. Log and halt traversal.
       try {
         await WhatsApp.sendSmartTemplate(
             client, 
@@ -2758,11 +2752,10 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         );
       } catch (templateErr) {
         log.error(`[Template] META_REJECT: Template "${templateName}" failed for ${phone}: ${templateErr.message}`);
-        // Send graceful fallback text instead of silently failing
         try {
-          await WhatsApp.sendText(client, phone, data.fallbackText || "We're updating our systems — please check back shortly! 🙏");
-        } catch (_) { /* last resort — don't crash */ }
-        return false; // HALT traversal — do not auto-forward to next node
+          await WhatsApp.sendText(client, phone, String(data.fallbackText || "We're updating our systems — please check back shortly! 🙏").substring(0, 4096));
+        } catch (_) { }
+        return false;
       }
       return true;
     }
@@ -2774,30 +2767,26 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         return true;
       }
       try {
-        // Inject variables into subject and body
         let subject = replaceVariables(data.subject || 'Update', client, lead, convo);
         let emailBody = replaceVariables(data.body || '', client, lead, convo);
         await emailService.sendEmail(client, { to: recipient, subject, html: emailBody.replace(/\n/g, '<br/>') });
         log.info(`[Email] Sent to ${recipient} — subject: "${subject}"`);
       } catch (emailErr) {
         log.error(`[Email] SMTP failure for ${recipient}: ${emailErr.message}`);
-        // Non-fatal: flow continues even if email fails
       }
       return true;
     }
 
     case 'catalog': {
       const { catalogType, productId, productIds, body, header, footer } = data;
-      const bodyText = (body || data.text || "Check out our collection!").substring(0, 1024);
-      const replacedBody = bodyText;
+      const bodyText = String(body || data.text || "Check out our collection!").substring(0, 1024);
       
       if (catalogType === 'multi') {
         const ids = (productIds || '').split(',').map(id => id.trim()).filter(Boolean);
         const sections = [{ title: 'Our Picks', product_items: ids.map(id => ({ product_retailer_id: id })) }];
-        await WhatsApp.sendMultiProduct(client, phone, header || 'Catalog', replacedBody, sections);
+        await WhatsApp.sendMultiProduct(client, phone, (header || 'Catalog').substring(0, 60), bodyText, sections);
       } else {
-        // Handle 'full' and 'single'
-        await WhatsApp.sendCatalog(client, phone, replacedBody, footer || '', catalogType === 'single' ? productId : null);
+        await WhatsApp.sendCatalog(client, phone, bodyText, (footer || '').substring(0, 60), catalogType === 'single' ? productId : null);
       }
       return true;
     }
@@ -3182,10 +3171,11 @@ async function sendWhatsAppText(client, phone, body, channel = 'whatsapp') {
   try {
     const convo = await Conversation.findOne({ phone, clientId: client.clientId });
     const translated = await translateToUserLanguage(body, convo?.detectedLanguage, client);
+    const bodyContent = String(translated || body).substring(0, 4096);
     const res = await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
-      messaging_product: 'whatsapp', to: phone, type: 'text', text: { body: translated || body }
+      messaging_product: 'whatsapp', to: phone, type: 'text', text: { body: bodyContent }
     }, { headers: { Authorization: `Bearer ${token}` } });
-    await saveOutboundMessage(phone, client.clientId, 'text', translated || body, res.data.messages[0].id);
+    await saveOutboundMessage(phone, client.clientId, 'text', bodyContent, res.data.messages[0].id);
   } catch (err) { log.error('sendText error:', { error: err.response?.data?.error?.message || err.message }); }
 }
 
@@ -3197,7 +3187,7 @@ async function sendWhatsAppImage(client, phone, imageUrl, caption) {
     const convo = await Conversation.findOne({ phone, clientId: client.clientId });
     const translatedCaption = await translateToUserLanguage(caption, convo?.detectedLanguage, client);
     const res = await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
-      messaging_product: 'whatsapp', to: phone, type: 'image', image: { link: imageUrl, caption: translatedCaption || caption }
+      messaging_product: 'whatsapp', to: phone, type: 'image', image: { link: imageUrl, caption: String(translatedCaption || caption).substring(0, 1024) }
     }, { headers: { Authorization: `Bearer ${token}` } });
     await saveOutboundMessage(phone, client.clientId, 'image', translatedCaption || caption || '[Image]', res.data.messages[0].id);
   } catch (err) { log.error('sendImage error:', { error: err.response?.data?.error?.message || err.message }); }

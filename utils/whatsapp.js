@@ -160,7 +160,7 @@ const WhatsApp = {
         messaging_product: 'whatsapp',
         to: validPhone,
         type: 'text',
-        text: { body }
+        text: { body: String(body).substring(0, 4096) }
       }, { headers: { Authorization: `Bearer ${token}` } });
       return res.data;
     } catch (err) {
@@ -181,7 +181,7 @@ const WhatsApp = {
         messaging_product: 'whatsapp',
         to: validPhone,
         type: 'image',
-        image: { link: imageUrl, caption }
+        image: { link: imageUrl, caption: String(caption).substring(0, 1024) }
       }, { headers: { Authorization: `Bearer ${token}` } });
       return res.data;
     } catch (err) {
@@ -202,7 +202,7 @@ const WhatsApp = {
         messaging_product: 'whatsapp',
         to: validPhone,
         type: 'video',
-        video: { link: videoUrl, caption }
+        video: { link: videoUrl, caption: String(caption).substring(0, 1024) }
       }, { headers: { Authorization: `Bearer ${token}` } });
       return res.data;
     } catch (err) {
@@ -223,7 +223,7 @@ const WhatsApp = {
         messaging_product: 'whatsapp',
         to: validPhone,
         type: 'document',
-        document: { link: documentUrl, filename: filename || "document.pdf" }
+        document: { link: documentUrl, filename: String(filename || "document.pdf").substring(0, 240) }
       }, { headers: { Authorization: `Bearer ${token}` } });
       return res.data;
     } catch (err) {
@@ -301,6 +301,7 @@ const WhatsApp = {
       let totalRows = 0;
       const seenIds = new Set();
       for (const section of interactive.action.sections) {
+        section.title = String(section.title || "Options").substring(0, 24);
         if (section.rows) {
           if (totalRows + section.rows.length > 10) {
             section.rows = section.rows.slice(0, 10 - totalRows);
@@ -312,8 +313,8 @@ const WhatsApp = {
              if (seenIds.has(row.id)) row.id = `${row.id}_${index}`;
              seenIds.add(row.id);
 
-             if (row.title.length > 24) row.title = row.title.substring(0, 21) + '...';
-             if (row.description && row.description.length > 72) row.description = row.description.substring(0, 69) + '...';
+             if (row.title.length > 24) row.title = row.title.substring(0, 24);
+             if (row.description && row.description.length > 72) row.description = row.description.substring(0, 72);
           });
         }
       }
