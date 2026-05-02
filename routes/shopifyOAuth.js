@@ -32,7 +32,10 @@ async function sendShopifyEmail({ to, subject, html }) {
     host: 'smtp.gmail.com',
     port: 465,
     secure: true,   // SSL on port 465
-    family: 4,      // Force IPv4 — Render does not support IPv6 for SMTP
+    family: 4,      // Force IPv4
+    connectionTimeout: 15000, // 15s to prevent Render timeout
+    greetingTimeout: 15000,
+    socketTimeout: 20000,
     auth: {
       user: process.env.SYSTEM_EMAIL_USER,
       pass: process.env.SYSTEM_EMAIL_PASS
@@ -79,6 +82,19 @@ function extractShopDomainFromLink(link) {
     
     // Pattern 3: ?shop= query
     if (url.searchParams.get('shop')) return url.searchParams.get('shop');
+
+    // Pattern 4: admin.shopify.com/oauth/install_custom_app?signature=...
+    if (url.pathname.includes('/install_custom_app')) {
+      const signature = url.searchParams.get('signature');
+      if (signature) {
+        // signature is "base64payload--hmac"
+        const payload = signature.split('--')[0];
+        try {
+          const decoded = JSON.parse(Buffer.from(payload, 'base64').toString());
+          if (decoded.permanent_domain) return decoded.permanent_domain;
+        } catch (err) {}
+      }
+    }
     
     return null;
   } catch (e) {
