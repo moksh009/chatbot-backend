@@ -20,20 +20,37 @@ const axios = require('axios');
 const Client = require('../models/Client');
 const User = require('../models/User');
 const nodemailer = require('nodemailer');
+const { sendAdminConfirmationEmail } = require('../utils/emailService');
 
-// ── Shared Email Transporter ─────────────────────────────────────────────────
-const getTransporter = () => {
-  return nodemailer.createTransport({
+// ── Shared Email Sender (uses proven emailService infrastructure) ─────────────
+// We send directly with inline transporter matching emailService.js exactly,
+// which provably works for OTP/invite emails on this Render deployment.
+async function sendShopifyEmail({ to, subject, html }) {
+  const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
     port: 465,
     secure: true,
-    family: 4, // Force IPv4 — Render does not route IPv6 to Google SMTP
+    family: 4,
     auth: {
-      user: process.env.SYSTEM_EMAIL_USER || process.env.SMTP_USER,
-      pass: process.env.SYSTEM_EMAIL_PASS || process.env.SMTP_PASS
+      user: process.env.SYSTEM_EMAIL_USER,
+      pass: process.env.SYSTEM_EMAIL_PASS
     }
   });
-};
+  try {
+    const info = await transporter.sendMail({
+      from: `"TopEdge AI" <${process.env.SYSTEM_EMAIL_USER}>`,
+      to,
+      subject,
+      html
+    });
+    console.log(`✅ [ShopifyEmail] Sent to ${to} | MessageId: ${info.messageId}`);
+    return true;
+  } catch (err) {
+    console.error(`❌ [ShopifyEmail] Failed to send to ${to}:`, err.message);
+    return false;
+  }
+}
+
 const { encrypt } = require('../utils/encryption');
 
 // ─── Configuration ───────────────────────────────────────────────────────────
@@ -201,34 +218,32 @@ router.post('/request-link', async (req, res) => {
     const user = await User.findOne({ clientId }).lean();
     const userEmail = user?.email || 'Unknown User Email';
 
-    // Send Admin Notification (Non-blocking)
-    try {
-      const transporter = getTransporter();
-      const adminEmail = process.env.ADMIN_EMAIL || 'admin@topedge.ai';
-      
-      const mailOptions = {
-        from: `"TopEdge System" <${process.env.SYSTEM_EMAIL_USER || process.env.SMTP_USER}>`,
-        to: adminEmail,
-        subject: `🚨 Action Required: New Shopify Link Request for ${cleanShop}`,
-        html: `
-          <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
-            <h2 style="color: #4F46E5;">New Shopify Custom App Request</h2>
-            <p>A client has requested a secure installation link.</p>
-            <table style="width: 100%; border-collapse: collapse; margin-top: 15px;">
-              <tr><td style="padding: 8px; border: 1px solid #ddd; font-weight: bold;">Client ID</td><td style="padding: 8px; border: 1px solid #ddd;">${clientId}</td></tr>
-              <tr><td style="padding: 8px; border: 1px solid #ddd; font-weight: bold;">Store Domain</td><td style="padding: 8px; border: 1px solid #ddd;">${cleanShop}</td></tr>
-              <tr><td style="padding: 8px; border: 1px solid #ddd; font-weight: bold;">User Email</td><td style="padding: 8px; border: 1px solid #ddd;">${userEmail}</td></tr>
-            </table>
-            <p style="margin-top: 20px;"><strong>Action Required:</strong> Generate the installation link in the Shopify Partner Dashboard, and assign it to this client in the TopEdge Admin Panel.</p>
+    // Send Admin Notification
+    const adminEmail = process.env.ADMIN_EMAIL || 'admin@topedge.ai';
+    await sendShopifyEmail({
+      to: adminEmail,
+      subject: `🚨 Action Required: New Shopify Link Request for ${cleanShop}`,
+      html: `
+        <div style="font-family:'Inter',Arial,sans-serif;max-width:540px;margin:40px auto;background:#fff;border:1px solid #e2e8f0;border-radius:20px;overflow:hidden">
+          <div style="background:linear-gradient(135deg,#4F46E5,#1e1b4b);padding:32px;text-align:center">
+            <h2 style="color:#fff;margin:0;font-size:24px;font-weight:800">TopEdge AI Admin</h2>
+            <p style="color:rgba(255,255,255,0.85);margin:8px 0 0;font-size:13px">Action Required</p>
           </div>
-        `
-      };
-      
-      const info = await transporter.sendMail(mailOptions);
-      console.log(`✅ [ShopifyOAuth] Admin alert email dispatched for ${cleanShop}. MessageId: ${info.messageId}`);
-    } catch (emailErr) {
-      console.error('⚠️ [ShopifyOAuth] Failed to send admin alert email (non-fatal):', emailErr.message);
-    }
+          <div style="padding:36px">
+            <h3 style="color:#0f172a;margin-top:0">🚨 New Shopify Link Request</h3>
+            <p style="color:#475569">A client needs a Custom Distribution Link.</p>
+            <table style="width:100%;border-collapse:collapse;margin-top:15px;font-size:14px">
+              <tr style="background:#f8fafc"><td style="padding:10px 12px;border:1px solid #e2e8f0;font-weight:600;color:#374151">Client ID</td><td style="padding:10px 12px;border:1px solid #e2e8f0;color:#64748b">${clientId}</td></tr>
+              <tr><td style="padding:10px 12px;border:1px solid #e2e8f0;font-weight:600;color:#374151">Store Domain</td><td style="padding:10px 12px;border:1px solid #e2e8f0;color:#64748b">${cleanShop}</td></tr>
+              <tr style="background:#f8fafc"><td style="padding:10px 12px;border:1px solid #e2e8f0;font-weight:600;color:#374151">User Email</td><td style="padding:10px 12px;border:1px solid #e2e8f0;color:#64748b">${userEmail}</td></tr>
+            </table>
+            <div style="margin-top:24px;padding:16px;background:#fefce8;border:1px solid #fde68a;border-radius:12px">
+              <p style="margin:0;color:#92400e;font-size:13px"><strong>Action:</strong> Generate the link in Shopify Partners → assign it in the TopEdge Admin Panel.</p>
+            </div>
+          </div>
+        </div>
+      `
+    });
 
     return res.json({ success: true, message: 'Link requested successfully' });
 
@@ -243,16 +258,45 @@ router.post('/request-link', async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 router.post('/assign-link', async (req, res) => {
   try {
-    // Note: Ensure this route is protected by Admin authentication middleware in production
     const { clientId, shopifyInstallLink } = req.body;
 
     if (!clientId || !shopifyInstallLink) {
       return res.status(400).json({ success: false, error: 'Missing clientId or shopifyInstallLink' });
     }
 
+    // ── Extract shopDomain from the install link URL ────────────────────────────
+    // Shopify install links look like: https://admin.shopify.com/store/81v3fg-zd/app/grant?...
+    // or: https://81v3fg-zd.myshopify.com/admin/oauth/...
+    // We extract the shop slug and build the full myshopify.com domain.
+    let extractedShopDomain = '';
+    try {
+      const linkUrl = new URL(shopifyInstallLink);
+      // Pattern 1: admin.shopify.com/store/{slug}/...
+      const storeMatch = linkUrl.pathname.match(/\/store\/([^/]+)/);
+      if (storeMatch) {
+        extractedShopDomain = `${storeMatch[1]}.myshopify.com`;
+      }
+      // Pattern 2: {slug}.myshopify.com
+      if (!extractedShopDomain && linkUrl.hostname.includes('.myshopify.com')) {
+        extractedShopDomain = linkUrl.hostname;
+      }
+      // Pattern 3: ?shop= query param
+      if (!extractedShopDomain && linkUrl.searchParams.get('shop')) {
+        extractedShopDomain = linkUrl.searchParams.get('shop');
+      }
+    } catch (urlErr) {
+      console.warn('[ShopifyOAuth] Could not parse install link URL:', urlErr.message);
+    }
+
+    const updatePayload = { shopifyInstallLink };
+    if (extractedShopDomain) {
+      updatePayload.shopDomain = extractedShopDomain;
+      console.log(`[ShopifyOAuth] Extracted shopDomain='${extractedShopDomain}' from install link`);
+    }
+
     const client = await Client.findOneAndUpdate(
       { clientId },
-      { $set: { shopifyInstallLink } },
+      { $set: updatePayload },
       { new: true }
     );
 
@@ -265,31 +309,30 @@ router.post('/assign-link', async (req, res) => {
       return res.status(404).json({ success: false, error: 'User email not found for this client' });
     }
 
-    // Send Client Notification (Non-blocking)
-    try {
-      const transporter = getTransporter();
-      
-      const mailOptions = {
-        from: `"TopEdge Support" <${process.env.SYSTEM_EMAIL_USER || process.env.SMTP_USER}>`,
-        to: user.email,
-        subject: `✅ Your Shopify Installation Link is Ready!`,
-        html: `
-          <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
-            <h2 style="color: #10B981;">Your Shopify Link is Ready!</h2>
-            <p>Hi there,</p>
-            <p>We have successfully generated your secure Shopify Custom Installation link for <strong>${client.shopDomain}</strong>.</p>
-            <p>You can now install the app directly from your TopEdge Dashboard, or by clicking the link below:</p>
-            <a href="${shopifyInstallLink}" style="display: inline-block; padding: 12px 24px; background-color: #10B981; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; margin-top: 15px;">Install App Now</a>
-            <p style="margin-top: 20px; font-size: 12px; color: #666;">If you have any questions, please contact our support team.</p>
+    const shopDisplay = extractedShopDomain || client.shopDomain || clientId;
+
+    // ── Send Client Notification ────────────────────────────────────────────────
+    await sendShopifyEmail({
+      to: user.email,
+      subject: '✅ Your Shopify Installation Link is Ready!',
+      html: `
+        <div style="font-family:'Inter',Arial,sans-serif;max-width:540px;margin:40px auto;background:#fff;border:1px solid #e2e8f0;border-radius:20px;overflow:hidden">
+          <div style="background:linear-gradient(135deg,#10B981,#065f46);padding:32px;text-align:center">
+            <h2 style="color:#fff;margin:0;font-size:24px;font-weight:800">TopEdge AI</h2>
+            <p style="color:rgba(255,255,255,0.85);margin:8px 0 0;font-size:13px">Shopify Integration Ready</p>
           </div>
-        `
-      };
-      
-      const info = await transporter.sendMail(mailOptions);
-      console.log(`✅ [ShopifyOAuth] Client install email dispatched to ${user.email}. MessageId: ${info.messageId}`);
-    } catch (emailErr) {
-      console.error('⚠️ [ShopifyOAuth] Failed to send client install email (non-fatal):', emailErr.message);
-    }
+          <div style="padding:36px">
+            <h3 style="color:#0f172a;margin-top:0">Your Installation Link is Ready! 🎉</h3>
+            <p style="color:#475569;line-height:1.6">Hi there,<br><br>We have successfully generated your secure Shopify Custom Installation link for <strong>${shopDisplay}</strong>.</p>
+            <p style="color:#475569;line-height:1.6">Click the button below to connect your store to TopEdge AI:</p>
+            <div style="text-align:center;margin:32px 0">
+              <a href="${shopifyInstallLink}" style="display:inline-block;padding:14px 32px;background:#10B981;color:#fff;text-decoration:none;border-radius:12px;font-weight:700;font-size:16px">Install App Now →</a>
+            </div>
+            <p style="color:#94a3b8;font-size:12px">If you have any questions, reply to this email or contact our support team at support@topedgeai.com</p>
+          </div>
+        </div>
+      `
+    });
 
     return res.json({ success: true, message: 'Link assigned and user notified successfully' });
 
@@ -445,21 +488,38 @@ router.get('/callback', async (req, res) => {
     }
     console.log('✅ [ShopifyOAuth] HMAC verification passed');
 
-    // ── 3. Session (Cookie) Verification ────────────────────────────────────────
+    // ── 3. Session (Cookie) Verification + DB Fallback ───────────────────────────
     const cookieSecret = process.env.SHOPIFY_CLIENT_SECRET || process.env.SHOPIFY_API_SECRET || 'fallback_cookie_secret';
     const rawCookie = getRawCookie(req, 'shopify_oauth_client');
     const clientIdFromCookie = verifyAndExtractCookie(rawCookie, cookieSecret);
 
-    if (!clientIdFromCookie) {
-      console.error('❌ [ShopifyOAuth] Invalid or missing session cookie. Installation hijacked or expired.');
-      return res.redirect(`${frontendUrl}/settings?tab=store&shopify_error=nonce_expired`);
+    let client = null;
+
+    if (clientIdFromCookie) {
+      client = await Client.findOne({ clientId: clientIdFromCookie });
+      console.log(`✅ [ShopifyOAuth] Client resolved via cookie: ${clientIdFromCookie}`);
     }
 
-    // ── 4. Find Client strictly by Cookie ClientId ──────────────────────────────
-    const client = await Client.findOne({ clientId: clientIdFromCookie });
+    // ── 4. Fallback: If no cookie (email link click), match by shop domain ──────
     if (!client) {
-      console.error('❌ [ShopifyOAuth] Client not found for ID from cookie:', clientIdFromCookie);
-      res.clearCookie('shopify_oauth_client');
+      console.warn(`⚠️ [ShopifyOAuth] No cookie found. Attempting DB fallback for shop: ${shop}`);
+      const shopBase = shop.replace('.myshopify.com', '').toLowerCase();
+      client = await Client.findOne({
+        $or: [
+          { shopDomain: shop },
+          { shopDomain: { $regex: shopBase, $options: 'i' } },
+          { shopifyInstallLink: { $regex: shopBase, $options: 'i' } },
+          { 'commerce.shopify.domain': shop },
+          { 'commerce.shopify.domain': { $regex: shopBase, $options: 'i' } }
+        ]
+      });
+      if (client) {
+        console.log(`✅ [ShopifyOAuth] Client resolved via DB shop fallback: ${client.clientId}`);
+      }
+    }
+
+    if (!client) {
+      console.error(`❌ [ShopifyOAuth] Cannot identify client for shop '${shop}'. No cookie, no DB match.`);
       return res.redirect(`${frontendUrl}/settings?tab=store&shopify_error=client_not_found`);
     }
 
