@@ -40,7 +40,7 @@ async function callInstagramAPI(method, path, data, accessToken) {
     await new Promise(resolve => setTimeout(resolve, 5000)); // brief pause
   }
 
-  const url = `https://graph.facebook.com/v21.0${path}`;
+  const url = `https://graph.facebook.com/v19.0${path}`;
   let lastError;
 
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -97,6 +97,10 @@ async function callInstagramAPI(method, path, data, accessToken) {
 async function sendOpeningDM(automationId, igsid, clientId) {
   const automation = await IGAutomation.findById(automationId).lean();
   if (!automation) throw new Error(`Automation ${automationId} not found`);
+  if (automation.deletedAt) {
+    console.log('[Dispatcher] Skipping opening DM — automation soft-deleted:', automationId);
+    return;
+  }
 
   const { accessToken } = await getClientTokenAndId(clientId);
 
@@ -175,6 +179,10 @@ async function sendOpeningDM(automationId, igsid, clientId) {
 async function sendCommentReply(automationId, commentId, clientId) {
   const automation = await IGAutomation.findById(automationId).lean();
   if (!automation?.trigger?.commentReplies?.length) return;
+  if (automation.deletedAt) {
+    console.log('[Dispatcher] Skipping comment reply — automation soft-deleted:', automationId);
+    return;
+  }
 
   const { accessToken } = await getClientTokenAndId(clientId);
 
@@ -280,7 +288,7 @@ async function checkFollowStatus(automationId, igsid, clientId) {
   if (!isFollowing) {
     // Paginate through followers API
     const followerIds = [];
-    let nextUrl = `https://graph.facebook.com/v21.0/${igUserId}/followers?fields=id&limit=100&access_token=${accessToken}`;
+    let nextUrl = `https://graph.facebook.com/v19.0/${igUserId}/followers?fields=id&limit=100&access_token=${accessToken}`;
 
     while (nextUrl) {
       const response = await axios.get(nextUrl, { timeout: 15000 });

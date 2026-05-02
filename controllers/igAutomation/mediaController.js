@@ -1,123 +1,21 @@
 "use strict";
 
+// IG Automation — Connection-Status Controller
+// =============================================
+// The previous post-grid fetch endpoint (/api/ig-automation/media) lived here.
+// It has been removed: the wizard now pastes a URL and the server resolves it
+// via /api/ig-automation/fetch-post-preview. See postPreviewController.
+//
+// This file now only owns the lightweight connection-status pulse that the
+// IGAutomationPage header chip uses.
+
 const express = require('express');
 const router = express.Router();
 const Client = require('../../models/Client');
-const { callGraphAPI } = require('../../utils/igGraphApi');
 const log = require('../../utils/logger')('IGMedia');
-const { decrypt } = require('../../utils/encryption');
 
 /**
- * GET /api/ig-automation/media
- * Fetch the authenticated user's recent Instagram posts/reels for the Post Grid Picker.
- * Returns thumbnail, caption, type, and permalink for each media item.
- *
- * Query params:
- *  - clientId (required)
- *  - limit: number (default: 20, max: 50)
- *  - after: pagination cursor
- */
-router.get('/media', async (req, res) => {
-  const { clientId, limit: rawLimit, after } = req.query;
-  try {
-    if (!clientId) {
-      return res.status(400).json({ error: 'clientId is required' });
-    }
-
-    const client = await Client.findOne({ clientId }).lean();
-    if (!client) {
-      return res.status(404).json({ error: 'Client not found' });
-    }
-
-    const rawToken = client.instagramAccessToken || client.social?.instagram?.accessToken;
-    const accessToken = decrypt(rawToken);
-    if (!accessToken) {
-      return res.status(422).json({
-        error: 'Instagram is not connected.',
-        connected: false
-      });
-    }
-
-    const igUserId = client.instagramPageId || client.social?.instagram?.pageId;
-    if (!igUserId) {
-      return res.status(422).json({
-        error: 'Instagram Page ID not found. Please reconnect your Instagram account.',
-        connected: false
-      });
-    }
-
-    const limit = Math.min(parseInt(rawLimit) || 20, 50);
-
-    // Build Graph API params
-    const fields = 'id,caption,media_type,media_url,thumbnail_url,timestamp,permalink';
-    const params = { fields, limit };
-
-    if (after) {
-      params.after = after;
-    }
-
-    // callGraphAPI signature: (method, endpoint, data, accessToken, opts)
-    const data = await callGraphAPI(
-      'GET',
-      `/${igUserId}/media`,
-      params,
-      accessToken,
-      { clientId }
-    );
-
-    const mediaItems = (data.data || []).map(item => ({
-      id: item.id,
-      caption: (item.caption || '').substring(0, 200),
-      mediaType: item.media_type, // IMAGE, VIDEO, CAROUSEL_ALBUM
-      mediaUrl: item.media_url || null,
-      thumbnailUrl: item.thumbnail_url || item.media_url || null,
-      timestamp: item.timestamp,
-      permalink: item.permalink
-    }));
-
-    // Pagination cursors
-    const paging = data.paging || {};
-
-    return res.json({
-      success: true,
-      connected: true,
-      media: mediaItems,
-      paging: {
-        after: paging.cursors?.after || null,
-        hasMore: !!paging.next
-      }
-    });
-
-  } catch (err) {
-    log.error('[Media] Error fetching IG media:', err.message);
-
-    const errCode = err.response?.data?.error?.code;
-    const errType = err.response?.data?.error?.type;
-    // OAuthException often indicates expired or invalid token
-    if (errCode === 190 || errCode === 100 || errType === 'OAuthException' || err.message?.includes('token') || err.message?.includes('OAuth')) {
-      // Clear token from DB so connection-status returns false
-      await Client.updateOne(
-        { clientId },
-        { 
-          $unset: { 
-            instagramAccessToken: 1, 
-            'social.instagram.accessToken': 1 
-          } 
-        }
-      );
-      
-      return res.status(400).json({
-        error: 'Instagram token expired or invalid. Please reconnect in Settings.',
-        connected: false
-      });
-    }
-
-    return res.status(500).json({ error: 'Failed to fetch Instagram media' });
-  }
-});
-
-/**
- * GET /api/ig-automation/connection-status
+ * GET /api/ig-automation/connection-status?clientId=X
  * Quick check: is Instagram connected for this clientId?
  */
 router.get('/connection-status', async (req, res) => {
@@ -128,9 +26,19 @@ router.get('/connection-status', async (req, res) => {
     const client = await Client.findOne({ clientId }).lean();
     if (!client) return res.json({ connected: false });
 
-    const token = client.instagramAccessToken || client.social?.instagram?.accessToken;
-    const userId = client.instagramPageId || client.social?.instagram?.pageId;
-    const username = client.instagramUsername || client.social?.instagram?.username;
+    const token =
+      client.igAccessToken ||
+      client.instagramAccessToken ||
+      client.social?.instagram?.accessToken;
+    const userId =
+      client.igUserId ||
+      client.igPageId ||
+      client.instagramPageId ||
+      client.social?.instagram?.pageId;
+    const username =
+      client.igUsername ||
+      client.instagramUsername ||
+      client.social?.instagram?.username;
 
     return res.json({
       connected: !!(token && userId),

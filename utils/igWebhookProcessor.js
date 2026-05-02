@@ -264,11 +264,14 @@ async function handleCommentEvent(pageId, commentData) {
       ]
     }).lean();
 
-    // Step 2: Find matching active automations
+    // Step 2: Find matching active automations (deletedAt:null guard prevents
+    // soft-deleted automations from continuing to fire after delete races a
+    // webhook event already in flight from Meta).
     const automations = await IGAutomation.find({
       clientId: client.clientId,
       type: 'comment_to_dm',
-      status: 'active'
+      status: 'active',
+      deletedAt: null
     }).lean();
 
     for (const automation of automations) {
@@ -391,6 +394,7 @@ async function handleStoryMentionEvent(pageId, mentionData) {
       clientId,
       type: 'story_to_dm',
       status: 'active',
+      deletedAt: null,
       'storyTrigger.event': 'story_mention'
     }).lean();
 
@@ -469,6 +473,7 @@ async function handleStoryReplyEvent(pageId, messagingEvent) {
       clientId,
       type: 'story_to_dm',
       status: 'active',
+      deletedAt: null,
       'storyTrigger.event': 'story_reply'
     }).lean();
 

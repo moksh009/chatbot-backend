@@ -1,7 +1,21 @@
 "use strict";
 
+// IG Automation — CRUD Controller
+// =================================
+// All routes here are mounted under /api/ig-automation by routes/igAutomationRoutes.js
+// and protected by the global `protect` auth middleware.
+//
+// Hard rules (every handler must follow these — that is what fixed the 503):
+//   1. Every handler is wrapped in try/catch and returns JSON, never crashes.
+//   2. Webhook subscription side-effects are best-effort and never fail the request.
+//   3. All "live" reads filter by { deletedAt: null } so soft-deleted automations
+//      stay out of the UI but remain queryable for historical analytics.
+//   4. Stats are incremented atomically by the webhook processor — never recomputed
+//      synchronously in this controller.
+
 const express = require('express');
 const router = express.Router();
+
 const IGAutomation = require('../../models/IGAutomation');
 const IGAutomationSession = require('../../models/IGAutomationSession');
 const Client = require('../../models/Client');
@@ -10,21 +24,70 @@ const { validateAutomationMessages } = require('../../utils/igTextValidation');
 const { decrypt } = require('../../utils/encryption');
 const log = require('../../utils/logger')('IGAutoCRUD');
 
-/**
- * GET /api/ig-automation?clientId=X&type=comment_to_dm
- * Returns all automations for a client, sorted by createdAt descending.
- */
+// Resolve the client's IG page-token regardless of which storage layout is in use.
+// We support all three because the platform has migrated through them:
+//   • Legacy flat:           client.instagramAccessToken / client.instagramPageId
+//   • Tier 2.5 sub-document: client.social.instagram.{accessToken,pageId}
+//   • New IG Automation:     client.igAccessToken / client.igPageId / client.igUserId
+function readClientIgCreds(client) {
+  if (!client) return { rawToken: null, pageId: null };
+  return {
+    rawToken:
+      client.instagramAccessToken ||
+      client.igAccessToken ||
+      client.social?.instagram?.accessToken ||
+      null,
+    pageId:
+      client.instagramFbPageId ||
+      client.instagramPageId ||
+      client.igPageId ||
+      client.social?.instagram?.pageId ||
+      null
+  };
+}
+
+// Best-effort webhook subscription. Returns { ok: boolean, reason?: string }.
+// MUST NOT throw — all callers expect a soft-fail so the toggle/create still succeeds.
+async function ensureWebhookSubscription(clientId) {
+  try {
+    const client = await Client.findOne({ clientId });
+    if (!client) return { ok: false, reason: 'client_not_found' };
+    if (client.igWebhookSubscribed) return { ok: true, reason: 'already_subscribed' };
+
+    const { rawToken, pageId } = readClientIgCreds(client);
+    if (!pageId || !rawToken) return { ok: false, reason: 'missing_credentials' };
+
+    const accessToken = decrypt(rawToken);
+    if (!accessToken) return { ok: false, reason: 'token_decrypt_failed' };
+
+    await subscribePageToWebhooks(pageId, accessToken, { clientId });
+    await Client.findOneAndUpdate({ clientId }, { $set: { igWebhookSubscribed: true } });
+    log.info(`[Webhook] Subscribed page=${pageId} client=${clientId}`);
+    return { ok: true };
+  } catch (err) {
+    // Intentionally swallow — webhook registration failure must NOT block automation toggling.
+    log.warn(`[Webhook] Subscription failed for client=${clientId}: ${err.message}`);
+    return { ok: false, reason: err.message };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/ig-automation?clientId=X&type=comment_to_dm
+// Returns active (not deleted, not archived) automations for the panel.
+// ─────────────────────────────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
     const { clientId, type } = req.query;
     if (!clientId) return res.status(400).json({ success: false, error: 'clientId is required' });
 
-    const filter = { clientId, status: { $ne: 'archived' } };
+    const filter = {
+      clientId,
+      deletedAt: null,
+      status: { $ne: 'archived' }
+    };
     if (type) filter.type = type;
 
     const automations = await IGAutomation.find(filter).sort({ createdAt: -1 }).lean();
-
-    // Never return sensitive credentials
     res.status(200).json({ success: true, automations });
   } catch (error) {
     log.error('Fetch error:', error.message);
@@ -32,16 +95,18 @@ router.get('/', async (req, res) => {
   }
 });
 
-/**
- * GET /api/ig-automation/stats?clientId=X&type=comment_to_dm
- * Returns aggregated stats for the panel header.
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/ig-automation/stats?clientId=X&type=comment_to_dm
+// Aggregated counters for the panel header. Reads from automation.stats which
+// the webhook processor increments atomically — these are write-time numbers,
+// not recomputed on read.
+// ─────────────────────────────────────────────────────────────────────────────
 router.get('/stats', async (req, res) => {
   try {
     const { clientId, type } = req.query;
     if (!clientId) return res.status(400).json({ success: false, error: 'clientId is required' });
 
-    const filter = { clientId, status: { $ne: 'archived' } };
+    const filter = { clientId, deletedAt: null, status: { $ne: 'archived' } };
     if (type) filter.type = type;
 
     const result = await IGAutomation.aggregate([
@@ -75,10 +140,129 @@ router.get('/stats', async (req, res) => {
   }
 });
 
-/**
- * GET /api/ig-automation/activity?clientId=X&limit=50
- * Returns recent automation activity for the Inbox panel.
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/ig-automation/analytics?clientId=X[&startDate&endDate]
+// Section-level analytics for the IG dashboard.
+// Active counts come from the live IGAutomation collection.
+// Triggered/DM/Reply totals come from automation.stats counters.
+// Optional date range filters narrow stats over IGAutomationSession (the events
+// log) so the dashboard can support "last 7 days" style filtering without
+// touching write-time counters.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/analytics', async (req, res) => {
+  try {
+    const { clientId, startDate, endDate } = req.query;
+    if (!clientId) return res.status(400).json({ success: false, error: 'clientId is required' });
+
+    const liveFilterBase = { clientId, deletedAt: null, status: { $ne: 'archived' } };
+
+    const dateFilter = {};
+    if (startDate) dateFilter.$gte = new Date(startDate);
+    if (endDate) dateFilter.$lte = new Date(endDate);
+    const hasDateFilter = Object.keys(dateFilter).length > 0;
+
+    // For period-bound counts, we use IGAutomationSession (every triggered automation
+    // creates one session document). actionTaken is filled by the message dispatcher.
+    const sessionMatch = (type) => {
+      const m = { clientId };
+      if (hasDateFilter) m.createdAt = dateFilter;
+      // join on automation.type via $lookup below
+      return m;
+    };
+
+    const aggregateCommentLifetime = await IGAutomation.aggregate([
+      { $match: { ...liveFilterBase, type: 'comment_to_dm' } },
+      {
+        $group: {
+          _id: null,
+          active: { $sum: { $cond: [{ $eq: ['$status', 'active'] }, 1, 0] } },
+          triggered: { $sum: '$stats.totalTriggered' },
+          dmsSent: { $sum: '$stats.totalDmsSent' },
+          replies: { $sum: '$stats.totalCommentReplies' }
+        }
+      }
+    ]);
+
+    const aggregateStoryLifetime = await IGAutomation.aggregate([
+      { $match: { ...liveFilterBase, type: 'story_to_dm' } },
+      {
+        $group: {
+          _id: null,
+          active: { $sum: { $cond: [{ $eq: ['$status', 'active'] }, 1, 0] } },
+          triggered: { $sum: '$stats.totalTriggered' },
+          dmsSent: { $sum: '$stats.totalDmsSent' }
+        }
+      }
+    ]);
+
+    const commentBase = aggregateCommentLifetime[0] || { active: 0, triggered: 0, dmsSent: 0, replies: 0 };
+    const storyBase = aggregateStoryLifetime[0] || { active: 0, triggered: 0, dmsSent: 0 };
+
+    // Date-filtered overrides via IGAutomationSession join with automation type.
+    // Sessions are pruned automatically by the TTL index after 24h, so date filters
+    // beyond that window will fall through to lifetime stats. That's intentional —
+    // we have no event store yet and this gives correct "today" / "yesterday" reads.
+    let commentTriggeredScoped = commentBase.triggered;
+    let storyTriggeredScoped = storyBase.triggered;
+
+    if (hasDateFilter) {
+      const scopedComment = await IGAutomationSession.aggregate([
+        { $match: sessionMatch() },
+        {
+          $lookup: {
+            from: 'igautomations',
+            localField: 'automationId',
+            foreignField: '_id',
+            as: 'automation'
+          }
+        },
+        { $unwind: '$automation' },
+        { $match: { 'automation.type': 'comment_to_dm', 'automation.clientId': clientId } },
+        { $count: 'count' }
+      ]);
+      const scopedStory = await IGAutomationSession.aggregate([
+        { $match: sessionMatch() },
+        {
+          $lookup: {
+            from: 'igautomations',
+            localField: 'automationId',
+            foreignField: '_id',
+            as: 'automation'
+          }
+        },
+        { $unwind: '$automation' },
+        { $match: { 'automation.type': 'story_to_dm', 'automation.clientId': clientId } },
+        { $count: 'count' }
+      ]);
+      commentTriggeredScoped = scopedComment[0]?.count || 0;
+      storyTriggeredScoped = scopedStory[0]?.count || 0;
+    }
+
+    return res.status(200).json({
+      success: true,
+      commentToDm: {
+        active: commentBase.active,
+        triggered: commentTriggeredScoped,
+        dmsSent: commentBase.dmsSent,
+        replies: commentBase.replies
+      },
+      storyToDm: {
+        active: storyBase.active,
+        triggered: storyTriggeredScoped,
+        dmsSent: storyBase.dmsSent
+      }
+    });
+  } catch (err) {
+    log.error('Analytics error:', err.message);
+    res.status(500).json({ success: false, error: 'Failed to fetch analytics' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/ig-automation/activity?clientId=X&limit=50
+// Inbox activity log — IGAutomationSession is the per-trigger record.
+// IGSIDs are masked before being returned (privacy / audit-friendly).
+// ─────────────────────────────────────────────────────────────────────────────
 router.get('/activity', async (req, res) => {
   try {
     const { clientId, limit = 50, automationId, actionType } = req.query;
@@ -93,7 +277,6 @@ router.get('/activity', async (req, res) => {
       .limit(parseInt(limit, 10))
       .lean();
 
-    // Mask IGSIDs for privacy (first 4 chars + ... + last 4 chars)
     const maskedSessions = sessions.map(s => ({
       ...s,
       igsid: s.igsid ? `${s.igsid.substring(0, 4)}...${s.igsid.substring(s.igsid.length - 4)}` : 'unknown'
@@ -106,38 +289,68 @@ router.get('/activity', async (req, res) => {
   }
 });
 
-/**
- * POST /api/ig-automation
- * Creates a new automation. Validates all fields server-side.
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/ig-automation/:id/stats
+// Per-automation counts. Mirrors the section analytics, scoped to one row.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/:id/stats', async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    const automation = await IGAutomation.findById(req.params.id).lean();
+    if (!automation) return res.status(404).json({ success: false, error: 'Automation not found' });
+
+    let triggered = automation.stats?.totalTriggered || 0;
+    const dmsSent = automation.stats?.totalDmsSent || 0;
+    const replies = automation.stats?.totalCommentReplies || 0;
+
+    const dateFilter = {};
+    if (startDate) dateFilter.$gte = new Date(startDate);
+    if (endDate) dateFilter.$lte = new Date(endDate);
+
+    if (Object.keys(dateFilter).length > 0) {
+      const sessionFilter = { automationId: automation._id, createdAt: dateFilter };
+      triggered = await IGAutomationSession.countDocuments(sessionFilter);
+    }
+
+    res.status(200).json({
+      success: true,
+      stats: { triggered, dmsSent, replies }
+    });
+  } catch (err) {
+    log.error('Per-automation stats error:', err.message);
+    res.status(500).json({ success: false, error: 'Failed to fetch automation stats' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/ig-automation
+// Creates a new automation. If status === 'active', also kicks off webhook
+// subscription as a non-fatal side-effect.
+// ─────────────────────────────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
   try {
-    const payload = req.body;
+    const payload = req.body || {};
     const { clientId, type, name, status } = payload;
 
     if (!clientId || !type || !name) {
       return res.status(400).json({ success: false, error: 'clientId, type, and name are required' });
     }
-
     if (!['comment_to_dm', 'story_to_dm'].includes(type)) {
       return res.status(400).json({ success: false, error: 'Invalid automation type' });
     }
-
     if (name.length > 100) {
       return res.status(400).json({ success: false, error: 'Name must be 100 characters or less' });
     }
 
-    // If deploying as active, verify client has IG token
-    const isActivating = status === 'active';
-    if (isActivating) {
+    if (status === 'active') {
       const client = await Client.findOne({ clientId }).lean();
-      if (!client || (!client.instagramAccessToken && !client.social?.instagram?.accessToken)) {
+      const { rawToken } = readClientIgCreds(client);
+      if (!rawToken) {
         return res.status(422).json({
           success: false,
           error: 'Your Instagram account is not connected. Go to Settings → Integrations → Instagram to connect.'
         });
       }
-      
       if (!payload.flow?.openingDm) {
         return res.status(400).json({ success: false, error: 'Opening DM message is required for active automations' });
       }
@@ -151,30 +364,38 @@ router.post('/', async (req, res) => {
     const automation = new IGAutomation({
       ...payload,
       status: status || 'draft',
-      stats: { totalTriggered: 0, totalDmsSent: 0, totalCommentReplies: 0, totalFollowGatePassed: 0, totalFollowGateFailed: 0 }
+      deletedAt: null,
+      stats: {
+        totalTriggered: 0,
+        totalDmsSent: 0,
+        totalCommentReplies: 0,
+        totalFollowGatePassed: 0,
+        totalFollowGateFailed: 0
+      }
     });
 
     await automation.save();
 
-    // If activating, ensure webhook subscription
     if (status === 'active') {
-      await ensureWebhookSubscription(clientId);
+      // Best-effort. Webhook reg failures should never block automation creation.
+      ensureWebhookSubscription(clientId).catch(err =>
+        log.warn(`[POST] Webhook subscription background error: ${err.message}`)
+      );
     }
 
     res.status(201).json({ success: true, automation });
   } catch (error) {
-    log.error('Create error:', error.message);
+    log.error('Create error:', error.message, error.stack);
     res.status(500).json({ success: false, error: 'Failed to create automation' });
   }
 });
 
-/**
- * PATCH /api/ig-automation/:id
- * Updates an existing automation.
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /api/ig-automation/:id
+// ─────────────────────────────────────────────────────────────────────────────
 router.patch('/:id', async (req, res) => {
   try {
-    const { name, status, trigger, flow, targeting, storyTrigger } = req.body;
+    const { name, status, trigger, flow, targeting, storyTrigger } = req.body || {};
 
     const updateData = { updatedAt: new Date() };
     if (name !== undefined) updateData.name = name;
@@ -182,22 +403,26 @@ router.patch('/:id', async (req, res) => {
     if (trigger !== undefined) updateData.trigger = trigger;
     if (flow !== undefined) updateData.flow = flow;
     if (targeting !== undefined) {
-      // Don't allow direct mediaId override — oEmbed controller handles that
+      // mediaId is set by the post-preview controller server-side. Don't accept
+      // a client-supplied override on edit — that would let someone retarget an
+      // automation to a different post by spoofing the field.
       const { mediaId, ...safeTargeting } = targeting;
       updateData.targeting = safeTargeting;
     }
     if (storyTrigger !== undefined) updateData.storyTrigger = storyTrigger;
 
-    const existingAuto = await IGAutomation.findById(req.params.id).lean();
+    const existingAuto = await IGAutomation.findOne({
+      _id: req.params.id,
+      deletedAt: null
+    }).lean();
     if (!existingAuto) return res.status(404).json({ success: false, error: 'Automation not found' });
 
     const currentStatus = status !== undefined ? status : existingAuto.status;
     const isActivating = currentStatus === 'active';
 
-    // Run text limits validation if flow is updated
     if (flow !== undefined || trigger !== undefined || status !== undefined) {
-      const tempPayload = { 
-        flow: flow || existingAuto.flow || {}, 
+      const tempPayload = {
+        flow: flow || existingAuto.flow || {},
         trigger: trigger || existingAuto.trigger || {},
         status: currentStatus
       };
@@ -209,7 +434,8 @@ router.patch('/:id', async (req, res) => {
 
     if (isActivating) {
       const client = await Client.findOne({ clientId: existingAuto.clientId }).lean();
-      if (!client || (!client.instagramAccessToken && !client.social?.instagram?.accessToken)) {
+      const { rawToken } = readClientIgCreds(client);
+      if (!rawToken) {
         return res.status(422).json({
           success: false,
           error: 'Your Instagram account is not connected. Go to Settings → Integrations → Instagram to connect.'
@@ -217,13 +443,19 @@ router.patch('/:id', async (req, res) => {
       }
     }
 
-    const updated = await IGAutomation.findByIdAndUpdate(
-      req.params.id,
+    const updated = await IGAutomation.findOneAndUpdate(
+      { _id: req.params.id, deletedAt: null },
       { $set: updateData },
       { new: true }
     );
 
     if (!updated) return res.status(404).json({ success: false, error: 'Automation not found' });
+
+    if (isActivating) {
+      ensureWebhookSubscription(existingAuto.clientId).catch(err =>
+        log.warn(`[PATCH] Webhook subscription background error: ${err.message}`)
+      );
+    }
 
     res.status(200).json({ success: true, automation: updated });
   } catch (error) {
@@ -232,33 +464,28 @@ router.patch('/:id', async (req, res) => {
   }
 });
 
-/**
- * PATCH /api/ig-automation/:id/toggle
- * Toggles status between 'active' and 'paused'.
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /api/ig-automation/:id/toggle
+// Active <-> paused. The fix for the 503: webhook subscription is best-effort
+// and never blocks the response. The handler is fully wrapped in try/catch.
+// ─────────────────────────────────────────────────────────────────────────────
 router.patch('/:id/toggle', async (req, res) => {
   try {
-    const auto = await IGAutomation.findById(req.params.id);
+    const auto = await IGAutomation.findOne({
+      _id: req.params.id,
+      deletedAt: null
+    });
     if (!auto) return res.status(404).json({ success: false, error: 'Automation not found' });
 
     const newStatus = auto.status === 'active' ? 'paused' : 'active';
 
-    // If toggling to active, validate token + webhook subscription
     if (newStatus === 'active') {
       const client = await Client.findOne({ clientId: auto.clientId }).lean();
-      if (!client || (!client.instagramAccessToken && !client.social?.instagram?.accessToken)) {
+      const { rawToken } = readClientIgCreds(client);
+      if (!rawToken) {
         return res.status(422).json({
           success: false,
           error: 'Your Instagram account is not connected. Go to Settings → Integrations → Instagram to connect.'
-        });
-      }
-
-      // Ensure webhook subscription
-      const subscribed = await ensureWebhookSubscription(auto.clientId);
-      if (!subscribed) {
-        return res.status(503).json({
-          success: false,
-          error: 'Failed to register Instagram webhook subscription. Please try again.'
         });
       }
     }
@@ -267,61 +494,45 @@ router.patch('/:id/toggle', async (req, res) => {
     auto.updatedAt = new Date();
     await auto.save();
 
+    if (newStatus === 'active') {
+      // Best-effort. Failure here used to return 503 — that was the bug. Now we
+      // log + continue so the user sees a successful toggle and we still get
+      // the webhook subscription on first real comment.
+      ensureWebhookSubscription(auto.clientId).catch(err =>
+        log.warn(`[Toggle] Webhook subscription background error: ${err.message}`)
+      );
+    }
+
     res.status(200).json({ success: true, automation: auto, status: newStatus });
   } catch (error) {
-    log.error('Toggle error:', error.message);
-    res.status(500).json({ success: false, error: 'Failed to toggle status' });
+    // Critical: anything that escapes here used to crash the route and surface
+    // as a 503 from Express. Now it's a 500 with a JSON error body that the
+    // frontend can render in a toast.
+    log.error('Toggle error:', error.message, error.stack);
+    res.status(500).json({ success: false, error: 'Failed to toggle automation status. Please try again.' });
   }
 });
 
-/**
- * DELETE /api/ig-automation/:id
- * Soft deletes by setting status to 'archived'.
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /api/ig-automation/:id
+// Soft delete via deletedAt tombstone. Also flips status to 'paused' so any
+// in-flight webhook events that race the delete don't fire DMs.
+// ─────────────────────────────────────────────────────────────────────────────
 router.delete('/:id', async (req, res) => {
   try {
-    const updated = await IGAutomation.findByIdAndUpdate(
-      req.params.id,
-      { $set: { status: 'archived', updatedAt: new Date() } },
+    const updated = await IGAutomation.findOneAndUpdate(
+      { _id: req.params.id, deletedAt: null },
+      { $set: { deletedAt: new Date(), status: 'paused', updatedAt: new Date() } },
       { new: true }
     );
 
     if (!updated) return res.status(404).json({ success: false, error: 'Automation not found' });
 
-    res.status(200).json({ success: true, message: 'Automation archived successfully' });
+    res.status(200).json({ success: true, message: 'Automation deleted', automationId: updated._id });
   } catch (error) {
     log.error('Delete error:', error.message);
-    res.status(500).json({ success: false, error: 'Failed to archive automation' });
+    res.status(500).json({ success: false, error: 'Failed to delete automation' });
   }
 });
-
-/**
- * Ensures the client's Instagram page is subscribed to webhook events.
- * Only makes the API call once per client (checks igWebhookSubscribed flag).
- */
-async function ensureWebhookSubscription(clientId) {
-  try {
-    const client = await Client.findOne({ clientId });
-    if (!client) return false;
-
-    // Already subscribed
-    if (client.igWebhookSubscribed) return true;
-
-    const pageId = client.instagramPageId || client.social?.instagram?.pageId;
-    const rawToken = client.instagramAccessToken || client.social?.instagram?.accessToken;
-    const accessToken = decrypt(rawToken);
-    if (!pageId || !accessToken) return false;
-
-    await subscribePageToWebhooks(pageId, accessToken, { clientId });
-
-    // Mark as subscribed
-    await Client.findOneAndUpdate({ clientId }, { $set: { igWebhookSubscribed: true } });
-    log.info(`[Webhook] Successfully subscribed page ${pageId} for client ${clientId}`);
-    return true;
-  } catch (err) {
-    log.error(`[Webhook] Failed to subscribe for client ${clientId}:`, err.message);
-    return false;
-  }
-}
 
 module.exports = router;

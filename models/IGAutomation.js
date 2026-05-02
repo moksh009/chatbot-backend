@@ -5,6 +5,9 @@ const IGAutomationSchema = new mongoose.Schema({
   type: { type: String, enum: ['comment_to_dm', 'story_to_dm'], required: true },
   name: { type: String, required: true, trim: true, maxlength: 100 },
   status: { type: String, enum: ['draft', 'active', 'paused', 'archived'], default: 'draft' },
+  // Soft-delete tombstone. Live queries filter by { deletedAt: null }.
+  // We keep the row so historical analytics events still resolve.
+  deletedAt: { type: Date, default: null },
 
   // Targeting — for comment_to_dm only
   targeting: {
@@ -81,8 +84,9 @@ const IGAutomationSchema = new mongoose.Schema({
 });
 
 // Compound indexes for efficient querying
-IGAutomationSchema.index({ clientId: 1, status: 1 });
+IGAutomationSchema.index({ clientId: 1, status: 1, deletedAt: 1 });
+IGAutomationSchema.index({ clientId: 1, type: 1, deletedAt: 1 });
+IGAutomationSchema.index({ clientId: 1, type: 1, status: 1, deletedAt: 1 });
 IGAutomationSchema.index({ clientId: 1, 'targeting.mediaId': 1 });
-IGAutomationSchema.index({ clientId: 1, type: 1, status: 1 });
 
 module.exports = mongoose.model('IGAutomation', IGAutomationSchema);

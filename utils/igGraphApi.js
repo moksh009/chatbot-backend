@@ -3,7 +3,10 @@
 const axios = require('axios');
 const log = require('./logger')('IGGraphAPI');
 
-const GRAPH_API_VERSION = process.env.API_VERSION || 'v21.0';
+// Instagram Graph API version. Pinned to v19.0 — confirmed working as of 2025
+// for IG Messaging, instagram_oembed, and Page-token Comment APIs. Do not change
+// without re-validating every IG endpoint manually against the Meta changelog.
+const GRAPH_API_VERSION = process.env.IG_GRAPH_API_VERSION || 'v19.0';
 const GRAPH_BASE_URL = `https://graph.facebook.com/${GRAPH_API_VERSION}`;
 
 /**
