@@ -24,10 +24,10 @@ const nodemailer = require('nodemailer');
 // ── Shared Email Transporter ─────────────────────────────────────────────────
 const getTransporter = () => {
   return nodemailer.createTransport({
-    host: process.env.SMTP_HOST || 'smtp.gmail.com',
-    port: process.env.SMTP_PORT || 465,
+    host: 'smtp.gmail.com',
+    port: 465,
     secure: true,
-    family: 4, // Force IPv4 to prevent ENETUNREACH on Render
+    family: 4, // Force IPv4 — Render does not route IPv6 to Google SMTP
     auth: {
       user: process.env.SYSTEM_EMAIL_USER || process.env.SMTP_USER,
       pass: process.env.SYSTEM_EMAIL_PASS || process.env.SMTP_PASS
@@ -207,7 +207,7 @@ router.post('/request-link', async (req, res) => {
       const adminEmail = process.env.ADMIN_EMAIL || 'admin@topedge.ai';
       
       const mailOptions = {
-        from: `"TopEdge System" <${process.env.SMTP_USER}>`,
+        from: `"TopEdge System" <${process.env.SYSTEM_EMAIL_USER || process.env.SMTP_USER}>`,
         to: adminEmail,
         subject: `🚨 Action Required: New Shopify Link Request for ${cleanShop}`,
         html: `
@@ -224,12 +224,10 @@ router.post('/request-link', async (req, res) => {
         `
       };
       
-      transporter.sendMail(mailOptions).catch(err => {
-        console.error('⚠️ [ShopifyOAuth] Failed to send admin alert email (non-fatal):', err.message);
-      });
-      console.log(`✅ [ShopifyOAuth] Admin alert email dispatched for ${cleanShop}`);
+      const info = await transporter.sendMail(mailOptions);
+      console.log(`✅ [ShopifyOAuth] Admin alert email dispatched for ${cleanShop}. MessageId: ${info.messageId}`);
     } catch (emailErr) {
-      console.error('⚠️ [ShopifyOAuth] Transporter setup failed (non-fatal):', emailErr.message);
+      console.error('⚠️ [ShopifyOAuth] Failed to send admin alert email (non-fatal):', emailErr.message);
     }
 
     return res.json({ success: true, message: 'Link requested successfully' });
@@ -272,7 +270,7 @@ router.post('/assign-link', async (req, res) => {
       const transporter = getTransporter();
       
       const mailOptions = {
-        from: `"TopEdge Support" <${process.env.SMTP_USER}>`,
+        from: `"TopEdge Support" <${process.env.SYSTEM_EMAIL_USER || process.env.SMTP_USER}>`,
         to: user.email,
         subject: `✅ Your Shopify Installation Link is Ready!`,
         html: `
@@ -287,12 +285,10 @@ router.post('/assign-link', async (req, res) => {
         `
       };
       
-      transporter.sendMail(mailOptions).catch(err => {
-        console.error('⚠️ [ShopifyOAuth] Failed to send client install email (non-fatal):', err.message);
-      });
-      console.log(`✅ [ShopifyOAuth] Client install email dispatched to ${user.email}`);
+      const info = await transporter.sendMail(mailOptions);
+      console.log(`✅ [ShopifyOAuth] Client install email dispatched to ${user.email}. MessageId: ${info.messageId}`);
     } catch (emailErr) {
-      console.error('⚠️ [ShopifyOAuth] Transporter setup failed (non-fatal):', emailErr.message);
+      console.error('⚠️ [ShopifyOAuth] Failed to send client install email (non-fatal):', emailErr.message);
     }
 
     return res.json({ success: true, message: 'Link assigned and user notified successfully' });
@@ -337,8 +333,8 @@ router.post('/auth', async (req, res) => {
     
     res.cookie('shopify_oauth_client', signedClientId, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      secure: true, // Required when sameSite=none
+      sameSite: 'none', // Must be none to survive cross-site redirect through Shopify admin
       maxAge: 10 * 60 * 1000 // 10 minutes
     });
 
@@ -362,22 +358,36 @@ router.get('/app-load', async (req, res) => {
       return res.status(400).send("Missing shop parameter.");
     }
 
-    // Lookup client by shop to recreate the session cookie
-    // This is required if the user clicked the install link directly from their email
-    const client = await Client.findOne({ shopDomain: shop }).sort({ createdAt: -1 });
+    // Lookup client by shop to recreate the session cookie.
+    // We search flexibly because the stored shopDomain might have a different format.
+    const shopBase = shop.replace('.myshopify.com', '').toLowerCase();
+    const client = await Client.findOne({
+      $or: [
+        { shopDomain: shop },
+        { shopDomain: `https://${shop}` },
+        { shopDomain: shopBase },
+        { shopDomain: { $regex: shopBase, $options: 'i' } },
+        { 'commerce.shopify.domain': shop },
+        { 'commerce.shopify.domain': { $regex: shopBase, $options: 'i' } }
+      ]
+    }).sort({ createdAt: -1 });
+
     if (client) {
       const cookieSecret = process.env.SHOPIFY_CLIENT_SECRET || process.env.SHOPIFY_API_SECRET || 'fallback_cookie_secret';
       const signedClientId = signCookieValue(client.clientId, cookieSecret);
       
+      // sameSite must be 'none' for cross-site redirects from Shopify admin -> backend
       res.cookie('shopify_oauth_client', signedClientId, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
+        secure: true, // Required when sameSite=none
+        sameSite: 'none',
         maxAge: 10 * 60 * 1000 // 10 minutes
       });
-      console.log(`[ShopifyOAuth] Regenerated session cookie for ${client.clientId} during /app-load bounce.`);
+      console.log(`✅ [ShopifyOAuth] Regenerated session cookie for ${client.clientId} (shop: ${shop}) during /app-load.`);
     } else {
-      console.warn(`⚠️ [ShopifyOAuth] No client found for shop ${shop} during /app-load. OAuth callback may fail.`);
+      console.warn(`⚠️ [ShopifyOAuth] No client found for shop '${shop}' during /app-load. Dumping all shopDomains for debug...`);
+      const allClients = await Client.find({}, { clientId: 1, shopDomain: 1 }).lean();
+      console.warn('[ShopifyOAuth] Existing clients:', JSON.stringify(allClients));
     }
 
     // 1. Get exact App scopes
