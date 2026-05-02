@@ -164,19 +164,86 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       generatedBy: "wizard"
     };
 
+    // ✅ GAP-GEN-3: Isolate Commerce Automation Flows
+    // Identify trigger nodes for commerce events
+    const triggerTypes = ['order_placed', 'abandoned_cart', 'order_fulfilled'];
+    const automationTriggers = nodes.filter(n => 
+      n.type === 'trigger' && triggerTypes.includes(n.data?.triggerType)
+    );
+
+    let automationNodeIds = new Set();
+    let automationEdgeIds = new Set();
+    let automationFlows = [];
+
+    // Helper to find all downstream nodes using BFS
+    const extractSubgraph = (startNodeId) => {
+      const subgraphNodeIds = new Set([startNodeId]);
+      const subgraphEdgeIds = new Set();
+      const queue = [startNodeId];
+
+      while (queue.length > 0) {
+        const currentId = queue.shift();
+        // Find all outgoing edges from currentId
+        const outgoingEdges = edges.filter(e => e.source === currentId);
+        outgoingEdges.forEach(e => {
+          subgraphEdgeIds.add(e.id);
+          if (!subgraphNodeIds.has(e.target)) {
+            subgraphNodeIds.add(e.target);
+            queue.push(e.target);
+          }
+        });
+      }
+      return { nodes: subgraphNodeIds, edges: subgraphEdgeIds };
+    };
+
+    // Extract each automation flow
+    for (const trig of automationTriggers) {
+      const sub = extractSubgraph(trig.id);
+      sub.nodes.forEach(id => automationNodeIds.add(id));
+      sub.edges.forEach(id => automationEdgeIds.add(id));
+
+      const subNodes = nodes.filter(n => sub.nodes.has(n.id));
+      const subEdges = edges.filter(e => sub.edges.has(e.id));
+
+      const autoFlowId = `auto_${trig.data.triggerType}_${Date.now()}`;
+      const autoFlow = await WhatsAppFlow.create({
+        clientId,
+        flowId: autoFlowId,
+        name: `Automation: ${trig.data.triggerType}`,
+        platform: 'whatsapp',
+        nodes: subNodes,
+        edges: subEdges,
+        status: 'PUBLISHED',
+        isAutomation: true,
+        automationTrigger: trig.data.triggerType
+      });
+      automationFlows.push(autoFlow);
+      console.log(`[Wizard] Extracted automation flow: ${trig.data.triggerType} (${subNodes.length} nodes)`);
+    }
+
+    // Filter main flow to exclude automation nodes
+    const mainNodes = nodes.filter(n => !automationNodeIds.has(n.id));
+    const mainEdges = edges.filter(e => !automationEdgeIds.has(e.id));
+
+    // Update newFlow to use filtered main nodes
+    newFlow.nodes = mainNodes.length > 20 ? [] : mainNodes;
+    newFlow.edges = mainNodes.length > 20 ? [] : mainEdges;
+    newFlow.nodeCount = mainNodes.length;
+    newFlow.edgeCount = mainEdges.length;
+
     // ✅ Phase R4: Smart Flow Storage — always offload to WhatsAppFlow model when > 20 nodes
-    if (nodes.length > 20) {
+    if (mainNodes.length > 20) {
       const storedFlow = await WhatsAppFlow.create({
         clientId,
         flowId,
         name:     newFlow.name,
         platform: 'whatsapp',
-        nodes,
-        edges,
+        nodes:    mainNodes,
+        edges:    mainEdges,
         status:   'PUBLISHED'
       });
       newFlow.flowModelId = storedFlow._id;
-      console.log(`[Wizard] Flow offloaded to WhatsAppFlow model: ${storedFlow._id} (${nodes.length} nodes)`);
+      console.log(`[Wizard] Main flow offloaded to WhatsAppFlow model: ${storedFlow._id} (${mainNodes.length} nodes)`);
     }
 
     // Update the client document:
@@ -192,8 +259,8 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       // Phase R4 Fix: use full nodes/edges arrays for dual-brain engine
       // (not newFlow.nodes which is intentionally empty when > 20 nodes)
       ...(wizardData.replaceExisting !== false && { 
-        flowNodes: nodes, 
-        flowEdges: edges
+        flowNodes: mainNodes, 
+        flowEdges: mainEdges
       }),
       ...(wizardData.businessName    && { 
         businessName: wizardData.businessName, 

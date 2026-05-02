@@ -521,24 +521,23 @@ const WhatsApp = {
           parameters: variables.map(v => ({ type: 'text', text: String(v).substring(0, 1024) }))
         });
       } else {
-        // CRITICAL: If no variables provided but template is not synced, 
-        // we omit components entirely. If Meta still rejects, the main catch block 
+        // If no variables provided but template is not synced,
+        // use empty components array. If Meta still rejects, the main catch block
         // will trigger the TEXT fallback.
-        components = undefined;
+        components = [];
       }
       if (headerImage) {
-        if (!components) components = [];
         components.push({ type: 'header', parameters: [{ type: 'image', image: { link: headerImage } }] });
       }
     }
 
     // Structured diagnostics: log exact parameter counts for troubleshooting
-    const bodyComp = components.find(c => c.type === 'body');
-    const headerComp = components.find(c => c.type === 'header');
+    const bodyComp   = Array.isArray(components) ? components.find(c => c.type === 'body')   : null;
+    const headerComp = Array.isArray(components) ? components.find(c => c.type === 'header') : null;
     log.info(`[WhatsApp] sendSmartTemplate -> ${templateName} | body_params=${bodyComp?.parameters?.length || 0} | has_header=${!!headerComp} | raw_vars=${variables.length}`);
 
     try {
-      return await this.sendTemplate(client, phone, templateName, languageCode, components);
+      return await this.sendTemplate(client, phone, templateName, languageCode, components || []);
     } catch (err) {
       if (err.status === 404 || (err.data?.error_data?.details || "").includes("template name") || (err.message || "").includes("132001")) {
         log.warn(`[WhatsApp] Template ${templateName} failed (Missing). Falling back to TEXT for ${phone}`);
@@ -578,9 +577,11 @@ const WhatsApp = {
     // --- DECRYPTION FIX: Always decrypt if exists (supports plain-text fallback) ---
     if (token) {
         try {
-            token = decrypt(token);
+            const decrypted = decrypt(token);
+            if (decrypted) token = decrypted;  // Only replace if decryption succeeded
         } catch (err) {
-            log.error(`[WhatsApp] Decryption failed for client ${client.clientId}`, err.message);
+            // Token is plain-text — use as-is, this is expected for legacy clients
+            log.info(`[WhatsApp] Token is plain-text for ${client.clientId} (not encrypted)`);
         }
     }
 

@@ -356,6 +356,48 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
       break;
     }
 
+    case "LOG_REVIEW_POSITIVE": {
+      try {
+        const ReviewRequest = require('../models/ReviewRequest');
+        // Find the most recent pending review request for this user
+        const review = await ReviewRequest.findOne({ customerPhone: phone, clientId: client.clientId }).sort({ createdAt: -1 });
+        if (review) {
+          review.status = 'responded_positive';
+          review.response = 'positive';
+          await review.save();
+        }
+      } catch (err) {
+        console.error('[NodeActions] LOG_REVIEW_POSITIVE error:', err.message);
+      }
+      break;
+    }
+
+    case "LOG_REVIEW_NEGATIVE": {
+      try {
+        const ReviewRequest = require('../models/ReviewRequest');
+        const review = await ReviewRequest.findOne({ customerPhone: phone, clientId: client.clientId }).sort({ createdAt: -1 });
+        if (review) {
+          review.status = 'responded_negative';
+          review.response = 'negative';
+          await review.save();
+          
+          // Divert to Human
+          const Conversation = require('../models/Conversation');
+          await Conversation.findByIdAndUpdate(convo._id, { status: 'HUMAN_TAKEOVER', botPaused: true });
+          const NotificationService = require('./notificationService');
+          await NotificationService.createNotification(client.clientId, {
+            type: 'alert',
+            title: '⚠️ Negative Feedback Received',
+            message: `Customer ${phone} gave negative feedback on order ${review.orderNumber}. Human intervention required.`,
+            customerPhone: phone
+          });
+        }
+      } catch (err) {
+        console.error('[NodeActions] LOG_REVIEW_NEGATIVE error:', err.message);
+      }
+      break;
+    }
+
     default:
       console.warn(`[NodeActions] Unknown action: ${action}`);
   }

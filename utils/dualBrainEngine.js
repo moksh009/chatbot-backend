@@ -10,6 +10,7 @@ const emailService = require("./emailService");
 const NotificationService = require("./notificationService");
 const BillingService = require('./billingService');
 const ProcessingLock = require('../models/ProcessingLock');
+const redisClient = require('./redisClient');
 const InboundDeduplication = require('../models/InboundDeduplication');
 const log = require("./logger")('DualBrain');
 const { generateText, getGeminiModel } = require('./gemini');
@@ -63,6 +64,10 @@ const WhatsApp = {
   sendTemplate: (...args) => sendWhatsAppTemplate(...args),
   sendSmartTemplate: (...args) => sendWhatsAppSmartTemplate(...args),
   sendFlow: (...args) => sendWhatsAppFlow(...args),
+  // Catalog methods — delegated to WhatsAppUtils module
+  sendCatalog: (...args) => WhatsAppUtils.sendCatalog(...args),
+  sendMultiProduct: (...args) => WhatsAppUtils.sendMultiProduct(...args),
+  sendAudio: (...args) => WhatsAppUtils.sendAudio ? WhatsAppUtils.sendAudio(...args) : Promise.resolve(),
 };
 
 
@@ -397,19 +402,28 @@ async function runDualBrainEngine(parsedMessage, client) {
   const _lockStartTime = Date.now();
   const crypto = require('crypto');
   const _lockOwnerId = crypto.randomUUID();
+  const lockKey = `lock:session:${client.clientId}:${phone}`;
   try {
-      const existingLock = await ProcessingLock.findOneAndUpdate(
-        { phone, clientId: client.clientId },
-        { $setOnInsert: { phone, clientId: client.clientId, _lockOwnerId, lockedAt: new Date() } },
-        { upsert: true, new: true, lean: true }
-      );
-      // If the returned doc has a different owner, another request holds the lock
-      if (existingLock._lockOwnerId !== _lockOwnerId) {
-        log.warn(`[Lock] Session locked for ${phone} by another request. Skipping.`);
-        return true;
+      if (redisClient && redisClient.status === 'ready') {
+          // Redis atomic lock (30s TTL)
+          const acquired = await redisClient.set(lockKey, _lockOwnerId, 'NX', 'EX', 30);
+          if (!acquired) {
+              log.warn(`[Lock] Session locked for ${phone} by another request. Skipping.`);
+              return true;
+          }
+      } else {
+          // Fallback to MongoDB if Redis is unavailable
+          const existingLock = await ProcessingLock.findOneAndUpdate(
+            { phone, clientId: client.clientId },
+            { $setOnInsert: { phone, clientId: client.clientId, _lockOwnerId, lockedAt: new Date() } },
+            { upsert: true, new: true, lean: true }
+          );
+          if (existingLock._lockOwnerId !== _lockOwnerId) {
+            log.warn(`[Lock] Session locked for ${phone} by another request. Skipping.`);
+            return true;
+          }
       }
   } catch (lockErr) {
-      // E11000 duplicate key can still race in rare cases — treat as lock held
       if (lockErr.code === 11000) {
         log.warn(`[Lock] Session locked for ${phone} (duplicate key). Skipping.`);
         return true;
@@ -433,6 +447,31 @@ async function runDualBrainEngine(parsedMessage, client) {
       ).lean();
       if ((existingLeadForName?.isNameCustom || existingLeadForName?.nameSource === 'imported') && existingLeadForName?.name) {
         shouldSetCustomerName = false; // Preserve the CSV/manual name
+      }
+    }
+
+    // --- GAP-GEN-3: COMMERCE AUTOMATION ISOLATION ---
+    // If this is an ecommerce event, route it to the isolated automation flow
+    // so it doesn't overwrite the user's active conversation state (lastStepId).
+    const triggerTypes = ['order_placed', 'abandoned_cart', 'order_fulfilled'];
+    if (triggerTypes.includes(parsedMessage?.type)) {
+      const WhatsAppFlow = require('../models/WhatsAppFlow');
+      const automationFlow = await WhatsAppFlow.findOne({ 
+        clientId: client.clientId, 
+        isAutomation: true, 
+        automationTrigger: parsedMessage.type 
+      });
+      if (automationFlow && automationFlow.nodes && automationFlow.nodes.length > 0) {
+        log.info(`[Automation] Routing ${parsedMessage.type} to isolated automation flow for ${phone}`);
+        // Create ephemeral convo object so it doesn't touch the DB state
+        let dummyConvo = { _id: 'auto_' + Date.now(), metadata: {} };
+        let dummyLead = await AdLead.findOne({ phoneNumber: phone, clientId: client.clientId }) || { phoneNumber: phone };
+        
+        const startNode = automationFlow.nodes.find(n => n.type === 'trigger');
+        if (startNode) {
+          await executeNode(startNode.id, automationFlow.nodes, automationFlow.edges, client, dummyConvo, dummyLead, phone, io, channel, parsedMessage);
+        }
+        return true; // Stop execution here, bypassing the main flow completely
       }
     }
 
@@ -894,42 +933,8 @@ async function runDualBrainEngine(parsedMessage, client) {
     return true;
   }
 
-  // ── PHASE 5: REPUTATION HUB DIVERTER (Sentiment Routing) ───────────────────
-  if (parsedMessage.type === 'interactive' && parsedMessage.interactive?.button_reply?.id?.startsWith('rv_')) {
-    const { id } = parsedMessage.interactive.button_reply;
-    const reviewId = id.split('_').pop();
-    const ReviewRequest = require('../models/ReviewRequest');
-    const review = await ReviewRequest.findById(reviewId);
-
-    if (review) {
-      if (id.startsWith('rv_good_')) {
-        const reviewUrl = review.reviewUrl || client.brand?.googleReviewUrl || 'https://google.com';
-        await sendWhatsAppText(client, phone, `We're thrilled to hear that! 😍 Could you share this love on Google? It means the world to us.\n\n🔗 Review here: ${reviewUrl}`);
-        review.status = 'responded_positive';
-        review.response = 'positive';
-      } else if (id.startsWith('rv_bad_')) {
-        await sendWhatsAppText(client, phone, "I'm so sorry to hear that. 😔 We strive for excellence, and it seems we missed the mark. I've alerted a human manager to reach out to you personally to make this right.");
-        review.status = 'responded_negative';
-        review.response = 'negative';
-        
-        // Divert to Human
-        await Conversation.findByIdAndUpdate(convo._id, { status: 'HUMAN_TAKEOVER', botPaused: true });
-        const NotificationService = require('./notificationService');
-        await NotificationService.createNotification(client.clientId, {
-          type: 'alert',
-          title: '⚠️ Negative Feedback Received',
-          message: `Customer ${phone} gave negative feedback on order ${review.orderNumber}. Human intervention required.`,
-          customerPhone: phone
-        });
-      } else {
-        await sendWhatsAppText(client, phone, "Thank you for your honest feedback! We'll use it to improve our service. 🙏");
-        review.status = 'responded_neutral';
-        review.response = 'neutral';
-      }
-      await review.save();
-      return true;
-    }
-  }
+  // Legacy Reputation Hub early-exit removed: Review routing is now handled natively
+  // by tryGraphTraversal via the 'positive' and 'negative' sourceHandles.
 
   if (['pay'].includes(userTextLower)) {
     if (userTextLower === 'pay' && convo.metadata?.lastOrder) {
@@ -1452,9 +1457,21 @@ async function runDualBrainEngine(parsedMessage, client) {
       log.error(`[DualBrain] Critical Engine Error for ${phone}:`, err.message);
       return false;
   } finally {
-      // Release MongoDB distributed lock — only if WE own it
+      // Release distributed lock — only if WE own it
       try {
-          await ProcessingLock.deleteOne({ phone, clientId: client.clientId, _lockOwnerId });
+          if (redisClient && redisClient.status === 'ready') {
+              // Atomically verify ownership and delete
+              const script = `
+                  if redis.call("get",KEYS[1]) == ARGV[1] then
+                      return redis.call("del",KEYS[1])
+                  else
+                      return 0
+                  end
+              `;
+              await redisClient.eval(script, 1, lockKey, _lockOwnerId);
+          } else {
+              await ProcessingLock.deleteOne({ phone, clientId: client.clientId, _lockOwnerId });
+          }
       } catch (releaseErr) {
           log.error(`[Lock] Release failed for ${phone}:`, releaseErr.message);
       }
@@ -1494,13 +1511,35 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
                 || parsedMessage.button?.payload 
                 || '';
 
+  // Ecommerce webhook events should only be routed via the trigger engine, not graph traversal
+  // Graph traversal requires an actual user interaction
+  const isEcommerceEvent = !userText && !buttonId && 
+    (parsedMessage?.type === 'order_placed' || parsedMessage?.type === 'abandoned_cart' || 
+     parsedMessage?.type === 'order_fulfilled' || parsedMessage?.referral?.ctwa_clid === undefined);
+  
+  if (isEcommerceEvent && !currentStepId) {
+    log.info(`[Graph] Skipping traversal for ecommerce event with no user text for ${phone}`);
+    return false;
+  }
+
   // A) GLOBAL KEYWORD / ROLE JUMP
-  const jumpNode = flowNodes.find(n => {
-    const role = String(n.data?.role || '').toLowerCase();
-    const keywordsRaw = n.data?.keywords || '';
-    const keywords = (typeof keywordsRaw === 'string' ? keywordsRaw : String(keywordsRaw)).toLowerCase().split(',').map(k => k.trim());
-    return (role && userTextLower === role) || (keywords.length > 0 && keywords.includes(userTextLower));
-  });
+  // Guard: Only run keyword/role jump if there is actual user text to match.
+  // Empty text from ecommerce webhooks must NEVER trigger a keyword jump.
+  let jumpNode = null;
+  if (userTextLower && userTextLower.length > 0) {
+    jumpNode = flowNodes.find(n => {
+      const role = String(n.data?.role || '').toLowerCase();
+      // Support BOTH array and comma-string keyword formats
+      const keywordsRaw = n.data?.keywords;
+      let keywords;
+      if (Array.isArray(keywordsRaw)) {
+        keywords = keywordsRaw.map(k => String(k).toLowerCase().trim()).filter(Boolean);
+      } else {
+        keywords = String(keywordsRaw || '').toLowerCase().split(',').map(k => k.trim()).filter(Boolean);
+      }
+      return (role && userTextLower === role) || (keywords.length > 0 && keywords.includes(userTextLower));
+    });
+  }
 
   if (jumpNode) {
     log.info(`Graph: Jumping to node ${jumpNode.id} based on keyword/role match "${userTextLower}"`);
@@ -1602,8 +1641,18 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 
   // D) GLOBAL RESET / GREETING / AI INTENT
   if (!incomingTrigger.buttonId) {
-      // 1. Check Keywords
-      let matchingTrigger = flowNodes.find(n => (n.type === 'trigger' || n.type === 'TriggerNode') && (n.data?.keyword || '').toLowerCase().split(',').map(k => k.trim()).includes(userTextLower));
+      // 1. Check Keywords — ONLY if user actually typed something
+      let matchingTrigger = null;
+      if (userTextLower && userTextLower.length > 0) {
+        matchingTrigger = flowNodes.find(n => {
+          if (n.type !== 'trigger' && n.type !== 'TriggerNode') return false;
+          // Support BOTH new format (keywords array) and legacy format (keyword string)
+          const keywordsArray = Array.isArray(n.data?.keywords)
+            ? n.data.keywords.map(k => String(k).toLowerCase().trim()).filter(Boolean)
+            : String(n.data?.keyword || '').toLowerCase().split(',').map(k => k.trim()).filter(Boolean);
+          return keywordsArray.length > 0 && keywordsArray.includes(userTextLower);
+        });
+      }
       
       // 2. AI Intent Detection Fallback (Priority 1B)
       if (!matchingTrigger && userText.length > 3) {
@@ -1629,8 +1678,8 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
           return await executeNode(matchingTrigger.id, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
       }
       
-      // If none matched, check for basic greeting reset
-      if (isGreeting(userTextLower) || userTextLower === 'start' || userTextLower === 'menu') {
+      // If none matched, check for basic greeting reset — ONLY when text is present
+      if (userTextLower && (isGreeting(userTextLower) || userTextLower === 'start' || userTextLower === 'menu')) {
           const firstTrigger = flowNodes.find(n => n.type === 'trigger' || n.type === 'TriggerNode');
           if (firstTrigger) {
               log.info(`Graph: Greeting reset to node ${firstTrigger.id}`);
@@ -1746,7 +1795,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     }
   });
 
-  if (!sent && node.type !== 'logic' && node.type !== 'delay' && node.type !== 'set_variable' && node.type !== 'shopify_call' && node.type !== 'http_request' && node.type !== 'link' && node.type !== 'restart' && node.type !== 'trigger' && node.type !== 'TriggerNode') return false;
+  if (!sent && node.type !== 'logic' && node.type !== 'delay' && node.type !== 'set_variable' && node.type !== 'shopify_call' && node.type !== 'http_request' && node.type !== 'link' && node.type !== 'restart' && node.type !== 'trigger' && node.type !== 'TriggerNode' && node.type !== 'automation' && node.type !== 'abandoned_cart' && node.type !== 'cod_prepaid' && node.type !== 'warranty_check') return false;
 
   // --- SPECIAL NODE LOGIC (Automated Traversal) ---
   if (node.type === 'logic') {
@@ -2150,7 +2199,9 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 
   // Phase 17: Delay / Wait Node
   if (node.type === 'delay' || node.type === 'WaitNode') {
-    let { duration, unit } = node.data; // duration: 5, unit: 'minutes' or duration: '15m'
+    let { duration, unit, waitValue, waitUnit } = node.data; // Support both formats
+    duration = duration ?? waitValue ?? 1;
+    unit     = unit     ?? waitUnit  ?? 'minutes';
     let delayMs = 60000; // default 1 min
     
     if (typeof duration === 'string' && !unit) {
@@ -2571,7 +2622,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 async function sendNodeContent(node, client, phone, lead = null, convo = null, channel = 'whatsapp', parsedMessage = {}) {
   const { type, data } = node;
   const options = { commentId: parsedMessage?.commentId };
-  if (node.data?.action && !['shopify_call', 'http_request', 'logic', 'delay', 'trigger'].includes(type)) {
+  if (node.data?.action && !['shopify_call', 'http_request', 'logic', 'delay', 'trigger', 'cod_prepaid', 'loyalty_action', 'loyalty', 'warranty_check', 'warranty_lookup', 'order_action', 'segment', 'ab_test', 'abandoned_cart', 'review'].includes(type)) {
     const { handleNodeAction } = require("./nodeActions");
     handleNodeAction(node.data.action, node, client, phone, convo, lead).catch((err) => {
       log.error(`Action Error (${node.data.action}):`, { error: err.message });
@@ -2593,7 +2644,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
 
     case 'capture_input':
     case 'CaptureNode': {
-      let body = data.text || data.body || data.label || 'Please provide the requested information:';
+      let body = data.text || data.body || data.question || data.label || 'Please provide the requested information:';
       // Variables already hydrated via deepInject in executeNode
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
       
@@ -2802,6 +2853,39 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'jump': return true;
     case 'link': return true;
     case 'restart': return true;
+    case 'automation': {
+      // Automation nodes are trigger-type entry points for commerce events.
+      // When reached in-flow, they are pass-through nodes.
+      log.info(`[FlowEngine] Automation node hit in-flow for ${phone}`);
+      return true;
+    }
+    case 'abandoned_cart': {
+      // Entry point node — no direct message.
+      // Real cart recovery messages come from 'message' nodes downstream via delay chain.
+      log.info(`[FlowEngine] Abandoned cart entry: queuing recovery sequence for ${phone}`);
+      return true;
+    }
+    case 'cod_prepaid': {
+      const discountAmount = data.discountAmount || 50;
+      const bodyText = data.text || `💳 Save ₹${discountAmount} and get faster delivery by paying online now!`;
+      const interactive = {
+        type: 'button',
+        action: {
+          buttons: [
+            { type: 'reply', reply: { id: 'paid', title: '✅ Pay Online' } },
+            { type: 'reply', reply: { id: 'cod',  title: '❌ Keep COD' } }
+          ]
+        }
+      };
+      await WhatsApp.sendInteractive(client, phone, interactive, String(bodyText).substring(0, 1024));
+      return true;
+    }
+    case 'warranty_check':
+    case 'warranty_lookup': {
+      // This node is purely a logic branch — no user message sent directly.
+      // The branching in executeNode routes to active/expired/none message nodes.
+      return true;
+    }
 
     default:
       log.warn(`Skipping send content for node type: ${type}`);
@@ -3099,7 +3183,20 @@ REPLY:
       // If AI fails but we haven't matched a flow, we shouldn't necessarily PAUSE the bot
       // unless it's a critical system failure. We'll send a polite fallback and stay in BOT_ACTIVE.
       const isKeyError = aiErr.message.includes('API key') || aiErr.message.includes('No API Key');
+      const isGeminiDown = aiErr.message.includes('404') || aiErr.message.includes('timed out') 
+                         || aiErr.message.includes('timeout') || isKeyError;
       
+      // GAP-GEN-4 FIX: Clear lastStepId so the user can restart fresh on next message.
+      // Without this, the conversation stays pinned to the ai_fallback node which has
+      // no outgoing edges, creating an infinite loop on every subsequent message.
+      if (isGeminiDown) {
+        await Conversation.findOneAndUpdate(
+          { phone, clientId: client.clientId },
+          { $set: { lastStepId: null, status: 'BOT_ACTIVE' } }
+        );
+        log.info(`[AI Fallback] Cleared lastStepId for ${phone} due to Gemini failure — user can restart fresh.`);
+      }
+
       if (!isKeyError && global.NotificationService) {
          await global.NotificationService.sendAdminAlert(client, { customerPhone: phone, topic: 'AI Gateway Timeout/Failure', triggerSource: 'runAIFallback' });
          // Only escalate to HUMAN_TAKEOVER on actual logic/timeout errors, not missing keys

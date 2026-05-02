@@ -244,7 +244,10 @@ async function generateEcommerceFlow(client, wizardData) {
     currency = pv.baseCurrency || "₹",
   } = wizardData;
 
-  const ts = Date.now();
+  // GAP-GEN-1: Deterministic IDs prevent regenerating the flow from wiping out
+  // active conversations (lastStepId) and heatmap data.
+  const flowSeed = client.clientId.replace(/[^a-z0-9]/gi, '').substring(0, 12);
+  const ts = wizardData.preserveNodeIds ? Date.now() : flowSeed;
   const enrichedProducts = products.slice(0, 20).map((p, i) => buildProductContext(p, i));
   const storeUrl = (wizardData.shopDomain
     ? `https://${String(wizardData.shopDomain).replace(/^https?:\/\//, "")}`
@@ -354,17 +357,14 @@ welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_poli
     const base = [
       "hi", "hello", "hey", "helo", "hiii", "start", "menu", "help",
       "bot", "hola", "test", "yo", "sup", "kem cho", "namaste", "pranam",
-      "shu che", "su che", "buy", "price", "order", "shop", "offer", "deal",
-      "discount", "catalog", "kharidna", "bhav"
+      "shu che", "su che"
     ];
     const business = (client.businessType === "ecommerce")
-      ? ["doorbell", "camera", "security", "smart", "home", "wireless", "video"]
+      ? ["buy", "price", "order", "shop", "offer", "deal", "discount", "catalog", "kharidna", "bhav"]
       : ["service", "enquiry", "information", "know more"];
-    const productKws = enrichedProducts.flatMap((p) => [
-      String(p.handle || "").replace(/-/g, " "),
-      String(p.title || "").toLowerCase().replace(/[^a-z0-9 ]/g, "").slice(0, 20)
-    ]);
-    return [...new Set([...base, ...business, ...productKws])].filter((k) => k && k.length > 1);
+    // NOTE: Product-specific keywords removed — they caused mid-conversation hijacking.
+    // Product discovery belongs in catalog search / AI fallback, not the main trigger.
+    return [...new Set([...base, ...business])].filter((k) => k && k.length > 1);
   };
 
   const truncate = (str, max = 24) => {
@@ -393,13 +393,13 @@ welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_poli
     }
   );
 
-  const hasWelcomeTemplate = (client.syncedMetaTemplates || []).some((t) => String(t.name || "").includes("welcome"));
-  if (hasWelcomeTemplate) {
+  const welcomeTemplate = (client.syncedMetaTemplates || []).find(t => t.name === "welcome_with_logo") || (client.syncedMetaTemplates || []).find((t) => String(t.name || "").toLowerCase().includes("welcome"));
+  if (welcomeTemplate) {
     nodes.push({
       id: IDS.welcome_tpl,
       type: "template",
       position: { x: 1200, y: 0 },
-      data: { label: "Welcome Template", templateName: (client.syncedMetaTemplates || [])[0]?.name || "welcome_with_logo", imageUrl: client.brand?.logoUrl || "", variables: [], heatmapCount: 0 }
+      data: { label: "Welcome Template", templateName: welcomeTemplate.name, imageUrl: client.brand?.logoUrl || "", variables: [], heatmapCount: 0 }
     });
   } else {
     nodes.push({
@@ -555,11 +555,13 @@ welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_poli
     { id: IDS.can_confirm, type: "interactive", position: { x: 2900, y: 380 }, data: { label: "Confirm Cancellation", interactiveType: "button", text: content.cancellation_confirm, buttonsList: [{ id: "yes", title: "✅ Yes, Cancel It" }, { id: "no", title: "❌ Keep My Order" }], heatmapCount: 0 } },
     { id: IDS.can_logic, type: "logic", position: { x: 3400, y: 380 }, data: { label: "Is Order Shipped?", variable: "is_shipped", operator: "eq", value: "true", heatmapCount: 0 } },
     { id: IDS.can_shipped, type: "message", position: { x: 3900, y: 560 }, data: { label: "Already Shipped Error", text: content.in_transit_error, heatmapCount: 0 } },
-    { id: IDS.can_reason, type: "capture_input", position: { x: 3900, y: 280 }, data: { label: "Cancellation Reason", variable: "cancel_reason", question: "Please tell us why you're cancelling.", heatmapCount: 0 } },
+    { id: IDS.can_reason, type: "capture_input", position: { x: 3900, y: 280 }, data: { label: "Cancellation Reason", variable: "cancel_reason", question: "Please tell us why you're cancelling.", text: "Please tell us why you're cancelling.", heatmapCount: 0 } },
     { id: IDS.can_action, type: "shopify_call", position: { x: 4400, y: 280 }, data: { label: "Process Cancellation", action: "CANCEL_ORDER", heatmapCount: 0 } },
+    { id: IDS.can_succ, type: "message", position: { x: 4900, y: 280 }, data: { label: "Cancel Success", text: content.cancellation_success, heatmapCount: 0 } },
+    { id: IDS.can_fail, type: "message", position: { x: 4900, y: 400 }, data: { label: "Cancel Failed", text: "We couldn't cancel your order. It may have already been processed.", heatmapCount: 0 } },
     { id: IDS.ret_hub, type: "interactive", position: { x: 2400, y: 700 }, data: { label: "Returns Hub", interactiveType: "button", text: "How can we help with returns?", buttonsList: [{ id: "return", title: "📸 Start Return" }, { id: "refund", title: "💸 Refund Status" }, { id: "menu", title: "⬅️ Main Menu" }], heatmapCount: 0 } },
-    { id: IDS.ret_reason, type: "capture_input", position: { x: 2900, y: 650 }, data: { label: "Return Reason", variable: "return_reason", question: "Please share return reason.", heatmapCount: 0 } },
-    { id: IDS.ret_photo, type: "capture_input", position: { x: 3400, y: 650 }, data: { label: "Return Photo", variable: "return_photo", question: content.return_photo_prompt, heatmapCount: 0 } },
+    { id: IDS.ret_reason, type: "capture_input", position: { x: 2900, y: 650 }, data: { label: "Return Reason", variable: "return_reason", question: "Please share return reason.", text: "Please share return reason.", heatmapCount: 0 } },
+    { id: IDS.ret_photo, type: "capture_input", position: { x: 3400, y: 650 }, data: { label: "Return Photo", variable: "return_photo", question: content.return_photo_prompt, text: content.return_photo_prompt, heatmapCount: 0 } },
     { id: IDS.ret_confirm, type: "message", position: { x: 3900, y: 650 }, data: { label: "Return Confirmed", text: "✅ Return request received. Our team will update you in 24-48 hours.", heatmapCount: 0 } },
     { id: IDS.ref_check, type: "shopify_call", position: { x: 2900, y: 850 }, data: { label: "Refund Status", action: "ORDER_REFUND_STATUS", heatmapCount: 0 } },
     { id: IDS.ref_result, type: "message", position: { x: 3400, y: 850 }, data: { label: "Refund Result", text: "Refunds are processed in 5-7 business days.", heatmapCount: 0 } }
@@ -573,6 +575,8 @@ welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_poli
     { id: `e_can_true_${ts}`, source: IDS.can_logic, target: IDS.can_shipped, sourceHandle: "true" },
     { id: `e_can_false_${ts}`, source: IDS.can_logic, target: IDS.can_reason, sourceHandle: "false" },
     { id: `e_can_action_${ts}`, source: IDS.can_reason, target: IDS.can_action },
+    { id: `e_can_action_succ_${ts}`, source: IDS.can_action, target: IDS.can_succ, sourceHandle: "success" },
+    { id: `e_can_action_fail_${ts}`, source: IDS.can_action, target: IDS.can_fail, sourceHandle: "fail" },
     { id: `e_ret_hub_ret_${ts}`, source: IDS.ret_hub, target: IDS.ret_reason, sourceHandle: "return" },
     { id: `e_ret_hub_ref_${ts}`, source: IDS.ret_hub, target: IDS.ref_check, sourceHandle: "refund" },
     { id: `e_ret_hub_menu_${ts}`, source: IDS.ret_hub, target: IDS.main_menu, sourceHandle: "menu" },
@@ -583,12 +587,15 @@ welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_poli
 
   nodes.push(
     { id: IDS.war_hub, type: "interactive", position: { x: 2400, y: 1200 }, data: { label: "Warranty Hub", interactiveType: "button", text: "Warranty support options:", buttonsList: [{ id: "reg", title: "✅ Register" }, { id: "check", title: "🔍 Check Status" }, { id: "menu", title: "⬅️ Main Menu" }], heatmapCount: 0 } },
-    { id: IDS.war_serial, type: "capture_input", position: { x: 2900, y: 1100 }, data: { label: "Warranty Serial", variable: "warranty_serial", question: "Enter serial number or order id.", heatmapCount: 0 } },
-    { id: IDS.war_date, type: "capture_input", position: { x: 3400, y: 1100 }, data: { label: "Purchase Date", variable: "purchase_date", question: "Enter purchase date (DD/MM/YYYY).", heatmapCount: 0 } },
+    { id: IDS.war_serial, type: "capture_input", position: { x: 2900, y: 1100 }, data: { label: "Warranty Serial", variable: "warranty_serial", question: "Enter serial number or order id.", text: "Enter serial number or order id.", heatmapCount: 0 } },
+    { id: IDS.war_date, type: "capture_input", position: { x: 3400, y: 1100 }, data: { label: "Purchase Date", variable: "purchase_date", question: "Enter purchase date (DD/MM/YYYY).", text: "Enter purchase date (DD/MM/YYYY).", heatmapCount: 0 } },
     { id: IDS.war_tag, type: "tag_lead", position: { x: 3900, y: 1100 }, data: { label: "Warranty Tag", action: "add", tag: "warranty-enrolled", heatmapCount: 0 } },
     { id: IDS.war_success, type: "message", position: { x: 4400, y: 1100 }, data: { label: "Warranty Success", text: content.warranty_reg_success, heatmapCount: 0 } },
-    { id: IDS.war_lookup, type: "capture_input", position: { x: 2900, y: 1300 }, data: { label: "Lookup Serial", variable: "lookup_serial", question: content.warranty_lookup_prompt, heatmapCount: 0 } },
-    { id: IDS.war_engine, type: "warranty_check", position: { x: 3400, y: 1300 }, data: { label: "Warranty Check", action: "WARRANTY_CHECK", heatmapCount: 0 } }
+    { id: IDS.war_lookup, type: "capture_input", position: { x: 2900, y: 1300 }, data: { label: "Lookup Serial", variable: "lookup_serial", question: content.warranty_lookup_prompt, text: content.warranty_lookup_prompt, heatmapCount: 0 } },
+    { id: IDS.war_engine, type: "warranty_check", position: { x: 3400, y: 1300 }, data: { label: "Warranty Check", action: "WARRANTY_CHECK", heatmapCount: 0 } },
+    { id: IDS.war_active, type: "message", position: { x: 3900, y: 1200 }, data: { label: "Warranty Active", text: "Your warranty is currently active! ✅", heatmapCount: 0 } },
+    { id: IDS.war_expired, type: "message", position: { x: 3900, y: 1300 }, data: { label: "Warranty Expired", text: "It looks like your warranty has expired. ⚠️", heatmapCount: 0 } },
+    { id: IDS.war_none, type: "message", position: { x: 3900, y: 1400 }, data: { label: "No Warranty", text: "We couldn't find any warranty records for this serial number.", heatmapCount: 0 } }
   );
   edges.push(
     { id: `e_war_reg_${ts}`, source: IDS.war_hub, target: IDS.war_serial, sourceHandle: "reg" },
@@ -597,25 +604,32 @@ welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_poli
     { id: `e_war_ser_${ts}`, source: IDS.war_serial, target: IDS.war_date },
     { id: `e_war_date_${ts}`, source: IDS.war_date, target: IDS.war_tag },
     { id: `e_war_tag_${ts}`, source: IDS.war_tag, target: IDS.war_success },
-    { id: `e_war_lookup_${ts}`, source: IDS.war_lookup, target: IDS.war_engine }
+    { id: `e_war_lookup_${ts}`, source: IDS.war_lookup, target: IDS.war_engine },
+    { id: `e_war_eng_act_${ts}`, source: IDS.war_engine, target: IDS.war_active, sourceHandle: "active" },
+    { id: `e_war_eng_exp_${ts}`, source: IDS.war_engine, target: IDS.war_expired, sourceHandle: "expired" },
+    { id: `e_war_eng_non_${ts}`, source: IDS.war_engine, target: IDS.war_none, sourceHandle: "none" }
   );
 
   nodes.push(
     { id: IDS.loy_menu, type: "interactive", position: { x: 2400, y: 1600 }, data: { label: "Rewards Hub", interactiveType: "list", text: content.loyalty_welcome, buttonText: "My Rewards", sections: [{ title: "Loyalty", rows: [{ id: "pts", title: "💎 My Points" }, { id: "red", title: "🎁 Redeem" }, { id: "ref", title: "📢 Refer & Earn" }, { id: "menu", title: "⬅️ Main Menu" }] }], heatmapCount: 0 } },
     { id: IDS.loy_balance, type: "message", position: { x: 2900, y: 1500 }, data: { label: "Points Balance", text: content.loyalty_points_msg, heatmapCount: 0 } },
     { id: IDS.loy_redeem, type: "loyalty_action", position: { x: 2900, y: 1650 }, data: { label: "Redeem Loyalty", actionType: "REDEEM_POINTS", pointsRequired: 100, heatmapCount: 0 } },
+    { id: IDS.loy_redeem_succ, type: "message", position: { x: 3400, y: 1600 }, data: { label: "Redeem Success", text: "Reward unlocked! 🎉 Check your email for the coupon.", heatmapCount: 0 } },
+    { id: IDS.loy_redeem_fail, type: "message", position: { x: 3400, y: 1700 }, data: { label: "Redeem Fail", text: "Oops, not enough points! Keep shopping to earn more. 🛍️", heatmapCount: 0 } },
     { id: IDS.loy_refer, type: "message", position: { x: 2900, y: 1800 }, data: { label: "Refer", text: content.referral_msg, heatmapCount: 0 } }
   );
   edges.push(
     { id: `e_loy_pts_${ts}`, source: IDS.loy_menu, target: IDS.loy_balance, sourceHandle: "pts" },
     { id: `e_loy_red_${ts}`, source: IDS.loy_menu, target: IDS.loy_redeem, sourceHandle: "red" },
     { id: `e_loy_ref_${ts}`, source: IDS.loy_menu, target: IDS.loy_refer, sourceHandle: "ref" },
-    { id: `e_loy_menu_${ts}`, source: IDS.loy_menu, target: IDS.main_menu, sourceHandle: "menu" }
+    { id: `e_loy_menu_${ts}`, source: IDS.loy_menu, target: IDS.main_menu, sourceHandle: "menu" },
+    { id: `e_loy_red_succ_${ts}`, source: IDS.loy_redeem, target: IDS.loy_redeem_succ, sourceHandle: "success" },
+    { id: `e_loy_red_fail_${ts}`, source: IDS.loy_redeem, target: IDS.loy_redeem_fail, sourceHandle: "fail" }
   );
 
   nodes.push(
     { id: IDS.sup_sch, type: "schedule", position: { x: 2400, y: 2050 }, data: { label: "Business Hours Gate", openTime, closeTime, days: workingDays, closedMessage: `Our agents are offline right now. We're open ${openTime}-${closeTime}.`, heatmapCount: 0 } },
-    { id: IDS.sup_capture, type: "capture_input", position: { x: 2900, y: 1950 }, data: { label: "Support Query", variable: "support_query", question: "Please describe your issue and our team will help right away.", heatmapCount: 0 } },
+    { id: IDS.sup_capture, type: "capture_input", position: { x: 2900, y: 1950 }, data: { label: "Support Query", variable: "support_query", question: "Please describe your issue and our team will help right away.", text: "Please describe your issue and our team will help right away.", heatmapCount: 0 } },
     { id: IDS.sup_tag, type: "tag_lead", position: { x: 3400, y: 1950 }, data: { label: "Tag Pending Human", action: "add", tag: "pending-human", heatmapCount: 0 } },
     { id: IDS.sup_alert, type: "admin_alert", position: { x: 3900, y: 1950 }, data: { label: "Admin Alert", priority: "high", topic: `Human request - ${businessName}`, phone: adminPhone || client.adminPhone || "", heatmapCount: 0 } },
     { id: IDS.sup_confirm, type: "message", position: { x: 4400, y: 1950 }, data: { label: "Handoff Confirmed", text: content.agent_handoff_msg, heatmapCount: 0 } },
@@ -638,8 +652,8 @@ welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_poli
     { id: IDS.trig_cart, type: "trigger", position: { x: -800, y: 400 }, data: { label: "Abandoned Cart Trigger", triggerType: "abandoned_cart", heatmapCount: 0 } },
     { id: IDS.trig_fulfill, type: "trigger", position: { x: -800, y: 1000 }, data: { label: "Order Fulfilled Trigger", triggerType: "order_fulfilled", heatmapCount: 0 } },
     { id: IDS.rev_request, type: "review", position: { x: -400, y: 1000 }, data: { label: "Review Request", action: "SEND_REVIEW_REQUEST", text: content.sentiment_ask, googleReviewUrl, heatmapCount: 0 } },
-    { id: IDS.rev_positive, type: "message", position: { x: 100, y: 900 }, data: { label: "Positive", text: content.review_positive + (googleReviewUrl ? `\n${googleReviewUrl}` : ""), heatmapCount: 0 } },
-    { id: IDS.rev_negative, type: "message", position: { x: 100, y: 1100 }, data: { label: "Negative", text: content.review_negative, heatmapCount: 0 } },
+    { id: IDS.rev_positive, type: "message", position: { x: 100, y: 900 }, data: { label: "Positive", text: content.review_positive + (googleReviewUrl ? `\n${googleReviewUrl}` : ""), action: "LOG_REVIEW_POSITIVE", heatmapCount: 0 } },
+    { id: IDS.rev_negative, type: "message", position: { x: 100, y: 1100 }, data: { label: "Negative", text: content.review_negative, action: "LOG_REVIEW_NEGATIVE", heatmapCount: 0 } },
     { id: IDS.ai_fallback, type: "message", position: { x: 0, y: -600 }, data: { label: "🤖 AI Smart Reply", action: "AI_FALLBACK", text: fallbackMessage || "", heatmapCount: 0 } }
   );
   edges.push(
@@ -651,6 +665,64 @@ welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_poli
     { id: `e_ful_rev_${ts}`, source: IDS.trig_fulfill, target: IDS.rev_request },
     { id: `e_rev_pos_${ts}`, source: IDS.rev_request, target: IDS.rev_positive, sourceHandle: "positive" },
     { id: `e_rev_neg_${ts}`, source: IDS.rev_request, target: IDS.rev_negative, sourceHandle: "negative" }
+  );
+
+  // ─── STRUCT-1: COD Prepaid node — outgoing edges for paid/cod buttons ───────
+  const cod_paid_msg_id = `cod_paid_msg_${ts}`;
+  nodes.push({
+    id: cod_paid_msg_id, type: "message", position: { x: 900, y: -400 },
+    data: { label: "Paid Online Confirmed", text: "🎉 Amazing! Payment confirmed! Your order gets priority shipping. Thank you!", heatmapCount: 0 }
+  });
+  edges.push(
+    { id: `e_cod_paid_${ts}`, source: IDS.cod_node, target: cod_paid_msg_id, sourceHandle: "paid" },
+    { id: `e_cod_cod_${ts}`, source: IDS.cod_node, target: IDS.ai_fallback, sourceHandle: "cod" }
+  );
+
+  // ─── STRUCT-2: Warranty check — branch edges for active/expired/none ────────
+  const war_active_msg_id = `war_active_${ts}`;
+  const war_expired_msg_id = `war_expired_${ts}`;
+  const war_none_msg_id = `war_none_${ts}`;
+  nodes.push(
+    { id: war_active_msg_id, type: "message", position: { x: 3900, y: 1200 },
+      data: { label: "Warranty Active", text: "✅ Great news! Your product has an *active warranty*. Our team will assist you. 🛡️", heatmapCount: 0 } },
+    { id: war_expired_msg_id, type: "message", position: { x: 3900, y: 1350 },
+      data: { label: "Warranty Expired", text: "⚠️ Your warranty has *expired*. We offer affordable repair services. Contact us for a quote.", heatmapCount: 0 } },
+    { id: war_none_msg_id, type: "message", position: { x: 3900, y: 1500 },
+      data: { label: "No Warranty Found", text: "❌ No warranty record found. Please register your product or contact support with your invoice.", heatmapCount: 0 } }
+  );
+  edges.push(
+    { id: `e_war_active_${ts}`, source: IDS.war_engine, target: war_active_msg_id, sourceHandle: "active" },
+    { id: `e_war_expired_${ts}`, source: IDS.war_engine, target: war_expired_msg_id, sourceHandle: "expired" },
+    { id: `e_war_none_${ts}`, source: IDS.war_engine, target: war_none_msg_id, sourceHandle: "none" }
+  );
+
+  // ─── STRUCT-3: Loyalty redeem — success/fail branch nodes ──────────────────
+  const loy_redeem_ok_id = `loy_red_ok_${ts}`;
+  const loy_redeem_fail_id = `loy_red_fail_${ts}`;
+  nodes.push(
+    { id: loy_redeem_ok_id, type: "message", position: { x: 3400, y: 1600 },
+      data: { label: "Redeem Success", text: "🎁 Redeemed! Your discount has been applied. Use it at checkout!", heatmapCount: 0 } },
+    { id: loy_redeem_fail_id, type: "message", position: { x: 3400, y: 1750 },
+      data: { label: "Insufficient Points", text: "😔 You need more points to redeem. Keep shopping to earn! 💎", heatmapCount: 0 } }
+  );
+  edges.push(
+    { id: `e_loy_red_ok_${ts}`, source: IDS.loy_redeem, target: loy_redeem_ok_id, sourceHandle: "success" },
+    { id: `e_loy_red_fail_${ts}`, source: IDS.loy_redeem, target: loy_redeem_fail_id, sourceHandle: "fail" }
+  );
+
+  // ─── STRUCT-4: Order tracking — not_found edge ─────────────────────────────
+  const ord_notfound_id = `ord_notfound_${ts}`;
+  nodes.push({
+    id: ord_notfound_id, type: "capture_input", position: { x: 2900, y: 100 },
+    data: {
+      label: "Order ID Request", variable: "order_id_manual",
+      question: "I couldn't find an order for your number. Please share your Order ID (e.g. #1042).",
+      text: "I couldn't find an order for your number. Please share your Order ID (e.g. #1042).",
+      heatmapCount: 0
+    }
+  });
+  edges.push(
+    { id: `e_ord_notfound_${ts}`, source: IDS.ord_track, target: ord_notfound_id, sourceHandle: "not_found" }
   );
 
   if (returnsInfo) {
@@ -666,7 +738,7 @@ welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_poli
   if (b2bEnabled) {
     nodes.push(
       { id: IDS.b2b_trigger, type: "trigger", position: { x: -600, y: 1500 }, data: { label: "B2B Trigger", triggerType: "keyword", keywords: ["wholesale", "bulk", "b2b", "dealer", "distributor"], matchMode: "contains", heatmapCount: 0 } },
-      { id: IDS.b2b_capture, type: "capture_input", position: { x: -200, y: 1500 }, data: { label: "B2B Requirement", variable: "b2b_requirement", question: "Please share company name and monthly requirement.", heatmapCount: 0 } },
+      { id: IDS.b2b_capture, type: "capture_input", position: { x: -200, y: 1500 }, data: { label: "B2B Requirement", variable: "b2b_requirement", question: "Please share company name and monthly requirement.", text: "Please share company name and monthly requirement.", heatmapCount: 0 } },
       { id: IDS.b2b_tag, type: "tag_lead", position: { x: 200, y: 1500 }, data: { label: "Tag B2B", action: "add", tag: "b2b-prospect", heatmapCount: 0 } },
       { id: IDS.b2b_alert, type: "admin_alert", position: { x: 600, y: 1500 }, data: { label: "B2B Alert", priority: "high", topic: `B2B Lead - ${businessName}`, phone: adminPhone || client.adminPhone || "", heatmapCount: 0 } },
       { id: IDS.b2b_confirm, type: "message", position: { x: 1000, y: 1500 }, data: { label: "B2B Confirm", text: "Our wholesale team will contact you soon with pricing.", heatmapCount: 0 } }
@@ -689,7 +761,7 @@ welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_poli
     const delayId = `cart_delay_${i}_${ts}`;
     const msgId = `cart_msg_${i}_${ts}`;
     nodes.push(
-      { id: delayId, type: "delay", position: { x: -800 + (i * 800), y: 600 }, data: { label: `Wait ${step.delay} ${step.unit}`, waitValue: step.delay, waitUnit: step.unit, heatmapCount: 0 } },
+      { id: delayId, type: "delay", position: { x: -800 + (i * 800), y: 600 }, data: { label: `Wait ${step.delay} ${step.unit}`, duration: step.delay, unit: step.unit, waitValue: step.delay, waitUnit: step.unit, heatmapCount: 0 } },
       { id: msgId, type: "message", position: { x: -400 + (i * 800), y: 600 }, data: { label: `Cart Recovery ${i + 1}`, text: step.text, heatmapCount: 0 } }
     );
     edges.push({ id: `e_cart_d${i}_${ts}`, source: prevId, target: delayId }, { id: `e_cart_m${i}_${ts}`, source: delayId, target: msgId });
