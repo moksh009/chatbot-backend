@@ -115,7 +115,7 @@ async function processNegotiation(client, lead, userText, convo, phone) {
 
     // Invoke Gemini to generate reply and offer
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash', generationConfig: { responseMimeType: "application/json" } });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash', generationConfig: { responseMimeType: "application/json" } });
 
     const min = limits.minDiscountPercent || 5;
     const max = limits.maxDiscountPercent || 15;

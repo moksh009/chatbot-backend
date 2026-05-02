@@ -297,11 +297,13 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ message: 'User already exists' });
     }
 
-    if (!businessName || !name || !email || !password || !otp) {
+    if (!businessName || !email || !password || !otp) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: 'All fields including OTP are required' });
     }
+
+    const displayName = (name && String(name).trim()) || businessName.trim();
 
     // -- OTP Verification --
     const validOtp = await OTP.findOne({ email, otp, purpose: 'SIGNUP' }).session(session);
@@ -339,7 +341,7 @@ router.post('/register', async (req, res) => {
 
     // 2. Create the User linked to this new Client
     const user = await User.create([{
-      name,
+      name: displayName,
       email,
       password,
       role: 'CLIENT_ADMIN',
@@ -412,7 +414,11 @@ router.post('/send-otp', async (req, res) => {
     if (emailSent) {
       res.json({ success: true, message: 'OTP sent successfully' });
     } else {
-      res.status(500).json({ message: 'Failed to send OTP email' });
+      console.error('[send-otp] SMTP returned failure — check Render env: SYSTEM_EMAIL_USER, SYSTEM_EMAIL_PASS (or EMAIL_USER + EMAIL_APP_PASSWORD)');
+      res.status(503).json({
+        message: 'Email service is not configured or temporarily unavailable. Please try again later or contact support.',
+        code: 'EMAIL_UNAVAILABLE'
+      });
     }
   } catch (error) {
     console.error('Send OTP Error:', error);

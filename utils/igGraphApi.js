@@ -163,7 +163,8 @@ async function checkFollowStatusv2(igsid, accessToken, opts = {}) {
  */
 async function subscribePageToWebhooks(pageId, accessToken, opts = {}) {
   return callGraphAPI('post', `/${pageId}/subscribed_apps`, {
-    subscribed_fields: 'messages,messaging_postbacks,message_deliveries,message_reads'
+    // IG Graph subscribed_apps only allows a subset (no message_deliveries / message_reads)
+    subscribed_fields: 'messages,messaging_postbacks,messaging_seen,messaging_referral'
   }, accessToken, opts);
 }
 

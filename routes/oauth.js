@@ -332,7 +332,7 @@ async function registerInstagramWebhook(fbPageId, pageToken) {
       null,
       {
         params: {
-          subscribed_fields: "messages,messaging_postbacks,message_deliveries,message_reads",
+          subscribed_fields: "messages,messaging_postbacks,messaging_seen,messaging_referral",
           access_token:      pageToken
         }
       }

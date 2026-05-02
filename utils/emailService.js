@@ -2,6 +2,44 @@ const nodemailer = require('nodemailer');
 const { decrypt } = require('./encryption');
 
 /**
+ * Credentials used for OTP, team invites, and other system mail (Render-friendly TLS).
+ */
+function getSystemEmailCredentials() {
+    const user =
+        process.env.SYSTEM_EMAIL_USER ||
+        process.env.EMAIL_USER ||
+        process.env.SMTP_USER;
+    const pass =
+        process.env.SYSTEM_EMAIL_PASS ||
+        process.env.SMTP_PASS ||
+        process.env.EMAIL_APP_PASSWORD;
+    return { user, pass };
+}
+
+/**
+ * Shared transporter for system emails — matches shopifyOAuth.js (STARTTLS + relaxed TLS for cloud hosts).
+ */
+function createSystemEmailTransporter() {
+    const { user, pass } = getSystemEmailCredentials();
+    if (!user || !pass) {
+        console.error(
+            '[EmailService] Missing system email credentials. Set SYSTEM_EMAIL_USER + SYSTEM_EMAIL_PASS (or EMAIL_USER + EMAIL_APP_PASSWORD / SMTP_USER + SMTP_PASS).'
+        );
+        return null;
+    }
+    return nodemailer.createTransport({
+        host: process.env.SMTP_HOST || 'smtp.gmail.com',
+        port: parseInt(String(process.env.SMTP_PORT || '587'), 10) || 587,
+        secure: false,
+        requireTLS: true,
+        tls: { rejectUnauthorized: false },
+        family: 4,
+        connectionTimeout: 15000,
+        auth: { user, pass }
+    });
+}
+
+/**
  * Create a nodemailer transporter from client's stored email credentials.
  * Falls back to global env vars if client-specific ones are not set.
  */
@@ -179,18 +217,10 @@ async function sendReviewRequestEmail(client, { customerEmail, customerName, pro
  * Send a System OTP using the dedicated TopEdge AI credentials.
  */
 async function sendSystemOTPEmail(toAddress, otpCode, purpose = 'SIGNUP') {
-    const transporter = nodemailer.createTransport({
-        host: 'smtp.gmail.com',
-        port: 587,
-        secure: false, // STARTTLS
-        requireTLS: true,
-        family: 4,
-        connectionTimeout: 10000,
-        auth: {
-            user: process.env.SYSTEM_EMAIL_USER,
-            pass: process.env.SYSTEM_EMAIL_PASS
-        }
-    });
+    const transporter = createSystemEmailTransporter();
+    if (!transporter) return false;
+
+    const fromUser = getSystemEmailCredentials().user;
 
     const isReset = purpose === 'RESET_PASSWORD';
     const subject = isReset 
@@ -241,7 +271,7 @@ async function sendSystemOTPEmail(toAddress, otpCode, purpose = 'SIGNUP') {
 
     try {
         await transporter.sendMail({
-            from: `"TopEdge AI Security" <${process.env.SYSTEM_EMAIL_USER}>`,
+            from: `"TopEdge AI Security" <${fromUser}>`,
             to: toAddress,
             subject,
             html
@@ -249,7 +279,12 @@ async function sendSystemOTPEmail(toAddress, otpCode, purpose = 'SIGNUP') {
         console.log(`[EmailService] System OTP sent to ${toAddress} | Purpose: ${purpose}`);
         return true;
     } catch (err) {
-        console.error(`[EmailService] ❌ Failed to send System OTP to ${toAddress}:`, err.message);
+        console.error(
+            `[EmailService] ❌ Failed to send System OTP to ${toAddress}:`,
+            err.code || err.name,
+            err.message,
+            err.response || ''
+        );
         return false;
     }
 }
@@ -258,16 +293,9 @@ async function sendSystemOTPEmail(toAddress, otpCode, purpose = 'SIGNUP') {
  * Send a team invitation email to a new agent.
  */
 async function sendTeamInviteEmail(toAddress, { adminName, businessName, password, loginUrl }) {
-    const transporter = nodemailer.createTransport({
-        host: 'smtp.gmail.com',
-        port: 465,
-        secure: true,
-        family: 4,
-        auth: {
-            user: process.env.SYSTEM_EMAIL_USER,
-            pass: process.env.SYSTEM_EMAIL_PASS
-        }
-    });
+    const transporter = createSystemEmailTransporter();
+    if (!transporter) return false;
+    const fromUser = getSystemEmailCredentials().user;
 
     const html = `
         <div style="font-family: 'Inter', Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 40px; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 24px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05);">
@@ -308,7 +336,7 @@ async function sendTeamInviteEmail(toAddress, { adminName, businessName, passwor
 
     try {
         await transporter.sendMail({
-            from: `"TopEdge AI" <${process.env.SYSTEM_EMAIL_USER}>`,
+            from: `"TopEdge AI" <${fromUser}>`,
             to: toAddress,
             subject: `👋 You've been invited to join ${businessName} on TopEdge AI`,
             html
@@ -324,16 +352,9 @@ async function sendTeamInviteEmail(toAddress, { adminName, businessName, passwor
  * Send an admin confirmation email when a new member is invited.
  */
 async function sendAdminConfirmationEmail(adminEmail, { agentName, agentEmail, businessName }) {
-    const transporter = nodemailer.createTransport({
-        host: 'smtp.gmail.com',
-        port: 465,
-        secure: true,
-        family: 4,
-        auth: {
-            user: process.env.SYSTEM_EMAIL_USER,
-            pass: process.env.SYSTEM_EMAIL_PASS
-        }
-    });
+    const transporter = createSystemEmailTransporter();
+    if (!transporter) return false;
+    const fromUser = getSystemEmailCredentials().user;
 
     const html = `
         <div style="font-family: 'Inter', Arial, sans-serif; max-width: 500px; margin: 40px auto; padding: 32px; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px;">
@@ -354,7 +375,7 @@ async function sendAdminConfirmationEmail(adminEmail, { agentName, agentEmail, b
 
     try {
         await transporter.sendMail({
-            from: `"TopEdge AI" <${process.env.SYSTEM_EMAIL_USER}>`,
+            from: `"TopEdge AI" <${fromUser}>`,
             to: adminEmail,
             subject: `✅ Invitation Sent: ${agentName} has been invited`,
             html
