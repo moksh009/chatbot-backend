@@ -352,13 +352,31 @@ router.post('/auth', async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // NEW: GET /api/shopify/app-load — Catches Shopify redirect after Custom Install
 // ═══════════════════════════════════════════════════════════════════════════════
-router.get('/app-load', (req, res) => {
+router.get('/app-load', async (req, res) => {
   try {
     const { shop } = req.query;
     
     if (!shop) {
       console.error('❌ [ShopifyOAuth] App-load missing shop parameter');
       return res.status(400).send("Missing shop parameter.");
+    }
+
+    // Lookup client by shop to recreate the session cookie
+    // This is required if the user clicked the install link directly from their email
+    const client = await Client.findOne({ shopDomain: shop }).sort({ createdAt: -1 });
+    if (client) {
+      const cookieSecret = process.env.SHOPIFY_CLIENT_SECRET || process.env.SHOPIFY_API_SECRET || 'fallback_cookie_secret';
+      const signedClientId = signCookieValue(client.clientId, cookieSecret);
+      
+      res.cookie('shopify_oauth_client', signedClientId, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 10 * 60 * 1000 // 10 minutes
+      });
+      console.log(`[ShopifyOAuth] Regenerated session cookie for ${client.clientId} during /app-load bounce.`);
+    } else {
+      console.warn(`⚠️ [ShopifyOAuth] No client found for shop ${shop} during /app-load. OAuth callback may fail.`);
     }
 
     // 1. Get exact App scopes
