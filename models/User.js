@@ -26,6 +26,11 @@ const UserSchema = new mongoose.Schema({
   tourSkippedAt:    { type: Date },
   isLifetimeAdmin: { type: Boolean, default: false }, // Objective 1: God Mode Bypass
   lastAssignedTimestamp: { type: Date }, // For Round-Robin routing
+  // ── Google OAuth ──────────────────────────────────────────────────────────────
+  googleId: { type: String, default: '' },
+  profilePicture: { type: String, default: '' },
+  authProvider: { type: String, enum: ['email', 'google'], default: 'email' },
+  // ── Tasks ─────────────────────────────────────────────────────────────────────
   tasks: [{
     title:       { type: String, required: true },
     description: { type: String },

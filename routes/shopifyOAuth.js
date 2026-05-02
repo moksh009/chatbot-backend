@@ -26,16 +26,13 @@ const { sendAdminConfirmationEmail } = require('../utils/emailService');
 // We send directly with inline transporter matching emailService.js exactly,
 // which provably works for OTP/invite emails on this Render deployment.
 async function sendShopifyEmail({ to, subject, html }) {
-  // Port 587 (STARTTLS) - port 465 is blocked by Render's outbound firewall
-  // Port 587 is the standard submission port, universally allowed on cloud providers.
+  // Use EXACT same config as sendSystemOTPEmail in emailService.js (proven to work).
+  // SYSTEM_EMAIL_USER = team@topedgeai.com, SYSTEM_EMAIL_PASS = Google App Password
   const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
-    port: 587,
-    secure: false,   // false = STARTTLS (upgrades to TLS after connection)
-    requireTLS: true, // Always upgrade to TLS, never send plaintext
-    connectionTimeout: 10000, // 10s connection timeout
-    greetingTimeout: 10000,
-    socketTimeout: 15000,
+    port: 465,
+    secure: true,   // SSL on port 465
+    family: 4,      // Force IPv4 — Render does not support IPv6 for SMTP
     auth: {
       user: process.env.SYSTEM_EMAIL_USER,
       pass: process.env.SYSTEM_EMAIL_PASS
@@ -51,7 +48,7 @@ async function sendShopifyEmail({ to, subject, html }) {
     console.log(`✅ [ShopifyEmail] Sent to ${to} | MessageId: ${info.messageId}`);
     return true;
   } catch (err) {
-    console.error(`❌ [ShopifyEmail] Failed to send to ${to}:`, err.message);
+    console.error(`❌ [ShopifyEmail] SMTP Error for ${to} | Code: ${err.code} | ${err.message}`);
     return false;
   }
 }
