@@ -2661,12 +2661,13 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         ? data.buttonsList
         : (data.buttons || '').split(',').map(b => b.trim()).filter(Boolean).map(b => ({ id: b.toLowerCase().replace(/\s+/g, '_'), title: b }));
 
-      if (!buttonsList.length) {
+      // Fix: Don't fall back to text if we have sections (List mode)
+      if (!buttonsList.length && (!data.sections || data.sections.length === 0)) {
         await WhatsApp.sendText(client, phone, String(body).substring(0, 4096));
         return true;
       }
 
-      if (data.interactiveType === 'list') {
+      if (data.interactiveType === 'list' || (data.sections && data.sections.length > 0)) {
         let sections;
         let totalRows = 0;
         if (data.sections && data.sections.length > 0) {
