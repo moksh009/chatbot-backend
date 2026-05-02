@@ -62,6 +62,30 @@ const SHOPIFY_SCOPES = () => process.env.SHOPIFY_SCOPES || 'read_products,write_
 const SHOPIFY_REDIRECT_URI = () => process.env.SHOPIFY_REDIRECT_URI || `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/api/shopify/callback`;
 const FRONTEND_URL = () => process.env.FRONTEND_URL || 'https://dash.topedgeai.com';
 
+// ── Helper: Extract shopDomain from install link ──────────────────────────────
+function extractShopDomainFromLink(link) {
+  if (!link) return null;
+  try {
+    let normalized = link.trim();
+    if (!normalized.startsWith('http')) normalized = 'https://' + normalized;
+    const url = new URL(normalized);
+    
+    // Pattern 1: admin.shopify.com/store/{slug}
+    const storeMatch = url.pathname.match(/\/store\/([^/]+)/);
+    if (storeMatch) return `${storeMatch[1]}.myshopify.com`;
+    
+    // Pattern 2: {slug}.myshopify.com
+    if (url.hostname.includes('.myshopify.com')) return url.hostname;
+    
+    // Pattern 3: ?shop= query
+    if (url.searchParams.get('shop')) return url.searchParams.get('shop');
+    
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
 // ─── In-Memory Nonce Store (CSRF Protection) ────────────────────────────────
 // Maps: nonce → { clientId, shop, createdAt }
 // Auto-cleanup every 5 minutes to prevent memory leaks
@@ -413,36 +437,44 @@ router.get('/app-load', async (req, res) => {
       return res.status(400).send("Missing shop parameter.");
     }
 
-    // Lookup client by shop to recreate the session cookie.
-    // We search flexibly because the stored shopDomain might have a different format.
-    const shopBase = shop.replace('.myshopify.com', '').toLowerCase();
-    const client = await Client.findOne({
+    // ── Aggressive Client Lookup ─────────────────────────────────────────────
+    let client = await Client.findOne({
       $or: [
         { shopDomain: shop },
         { shopDomain: `https://${shop}` },
-        { shopDomain: shopBase },
-        { shopDomain: { $regex: shopBase, $options: 'i' } },
-        { 'commerce.shopify.domain': shop },
-        { 'commerce.shopify.domain': { $regex: shopBase, $options: 'i' } }
+        { shopDomain: shop.replace('.myshopify.com', '') },
+        { shopifyInstallLink: { $regex: shop.replace('.myshopify.com', ''), $options: 'i' } }
       ]
     }).sort({ createdAt: -1 });
+
+    if (!client) {
+      console.warn(`[ShopifyOAuth] No direct match for '${shop}'. Scanning all clients for install link matches...`);
+      const allClients = await Client.find({ shopifyInstallLink: { $exists: true, $ne: null } });
+      for (const c of allClients) {
+        const extracted = extractShopDomainFromLink(c.shopifyInstallLink);
+        if (extracted === shop) {
+          client = c;
+          // Self-heal: Save the missing shopDomain now
+          await Client.updateOne({ _id: c._id }, { $set: { shopDomain: shop } });
+          console.log(`[ShopifyOAuth] ✅ Self-healed /app-load: Saved shopDomain for ${c.clientId}`);
+          break;
+        }
+      }
+    }
 
     if (client) {
       const cookieSecret = process.env.SHOPIFY_CLIENT_SECRET || process.env.SHOPIFY_API_SECRET || 'fallback_cookie_secret';
       const signedClientId = signCookieValue(client.clientId, cookieSecret);
       
-      // sameSite must be 'none' for cross-site redirects from Shopify admin -> backend
       res.cookie('shopify_oauth_client', signedClientId, {
         httpOnly: true,
-        secure: true, // Required when sameSite=none
+        secure: true,
         sameSite: 'none',
-        maxAge: 10 * 60 * 1000 // 10 minutes
+        maxAge: 10 * 60 * 1000
       });
-      console.log(`✅ [ShopifyOAuth] Regenerated session cookie for ${client.clientId} (shop: ${shop}) during /app-load.`);
+      console.log(`✅ [ShopifyOAuth] Regenerated session cookie for ${client.clientId} (shop: ${shop})`);
     } else {
-      console.warn(`⚠️ [ShopifyOAuth] No client found for shop '${shop}' during /app-load. Dumping all shopDomains for debug...`);
-      const allClients = await Client.find({}, { clientId: 1, shopDomain: 1 }).lean();
-      console.warn('[ShopifyOAuth] Existing clients:', JSON.stringify(allClients));
+      console.error(`❌ [ShopifyOAuth] Still no client found for shop '${shop}' after aggressive scan.`);
     }
 
     // 1. Get exact App scopes
@@ -512,10 +544,12 @@ router.get('/callback', async (req, res) => {
       console.log(`✅ [ShopifyOAuth] Client resolved via cookie: ${clientIdFromCookie}`);
     }
 
-    // ── 4. Fallback: If no cookie (email link click), match by shop domain ──────
+    // ── 4. Fallback: Aggressive Match ─────────────────────────────────────────
     if (!client) {
-      console.warn(`⚠️ [ShopifyOAuth] No cookie found. Attempting DB fallback for shop: ${shop}`);
+      console.warn(`⚠️ [ShopifyOAuth] No cookie/domain found. Performing aggressive scan for shop: ${shop}`);
       const shopBase = shop.replace('.myshopify.com', '').toLowerCase();
+      
+      // Try regex search first
       client = await Client.findOne({
         $or: [
           { shopDomain: shop },
@@ -525,8 +559,21 @@ router.get('/callback', async (req, res) => {
           { 'commerce.shopify.domain': { $regex: shopBase, $options: 'i' } }
         ]
       });
+
+      // If still no match, do the full scan (backup)
+      if (!client) {
+        const allClients = await Client.find({ shopifyInstallLink: { $exists: true, $ne: null } });
+        for (const c of allClients) {
+          const extracted = extractShopDomainFromLink(c.shopifyInstallLink);
+          if (extracted === shop) {
+            client = c;
+            break;
+          }
+        }
+      }
+
       if (client) {
-        console.log(`✅ [ShopifyOAuth] Client resolved via DB shop fallback: ${client.clientId}`);
+        console.log(`✅ [ShopifyOAuth] Client resolved via aggressive scan: ${client.clientId}`);
         // Auto-fix: save shopDomain now so future lookups don't need regex
         if (!client.shopDomain || client.shopDomain !== shop) {
           await Client.findOneAndUpdate(
@@ -688,5 +735,23 @@ router.get('/install', (req, res) => {
   }
 });
 
+
+// ── Route: Sync all domains (Self-Healing) ───────────────────────────────────
+router.get('/sync-all-domains', async (req, res) => {
+  try {
+    const clients = await Client.find({ shopifyInstallLink: { $exists: true, $ne: null } });
+    let count = 0;
+    for (const client of clients) {
+      const domain = extractShopDomainFromLink(client.shopifyInstallLink);
+      if (domain && (!client.shopDomain || client.shopDomain === "")) {
+        await Client.updateOne({ _id: client._id }, { $set: { shopDomain: domain } });
+        count++;
+      }
+    }
+    res.json({ success: true, message: `Synced ${count} domains from install links.` });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 module.exports = router;

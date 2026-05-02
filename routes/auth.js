@@ -499,10 +499,11 @@ router.post('/update-password', protect, async (req, res) => {
  */
 router.get('/google/login', (req, res) => {
   const { mode, businessName, businessType } = req.query;
-  const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+  const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.GCAL_CLIENT_ID;
   const REDIRECT_URI = `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/api/auth/google/callback`;
 
   if (!GOOGLE_CLIENT_ID) {
+    console.error('[Google OAuth] Missing GOOGLE_CLIENT_ID or GCAL_CLIENT_ID in environment variables.');
     return res.status(500).json({ message: 'Google OAuth not configured' });
   }
 
@@ -546,8 +547,8 @@ router.get('/google/callback', async (req, res) => {
       stateData = JSON.parse(Buffer.from(state, 'base64url').toString());
     } catch {}
 
-    const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-    const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+    const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.GCAL_CLIENT_ID;
+    const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || process.env.GCAL_CLIENT_SECRET;
     const REDIRECT_URI = `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/api/auth/google/callback`;
 
     // Exchange code for tokens
