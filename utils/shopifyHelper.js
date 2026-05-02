@@ -76,7 +76,8 @@ async function getShopifyClient(clientId, forceRefresh = false) {
             client.lastShopifyError = '';
             await client.save();
         } else if (forceRefresh || isNextToExpiry) {
-            const errorMsg = `Self-Healing Failed for ${clientId}: ${JSON.stringify(lastError)}`;
+            const errorReason = lastError ? JSON.stringify(lastError) : (hasCredentials && !client.shopifyRefreshToken ? 'Custom App (No Refresh Token)' : 'Unknown');
+            const errorMsg = `Self-Healing Failed for ${clientId}: ${errorReason}`;
             console.error(`❌ [ShopifyRotation] ${errorMsg}`);
             await Client.updateOne({ clientId }, { 
                 $set: { 
@@ -84,7 +85,7 @@ async function getShopifyClient(clientId, forceRefresh = false) {
                     lastShopifyError: errorMsg 
                 } 
             });
-            if (forceRefresh) throw new Error(`Shopify rotation failed: ${JSON.stringify(lastError)}`);
+            if (forceRefresh) throw new Error(`Shopify rotation failed: ${errorReason}`);
         }
     }
 

@@ -519,8 +519,14 @@ const WhatsApp = {
           type: 'body',
           parameters: variables.map(v => ({ type: 'text', text: String(v).substring(0, 1024) }))
         });
+      } else {
+        // CRITICAL: If no variables provided but template is not synced, 
+        // we omit components entirely. If Meta still rejects, the main catch block 
+        // will trigger the TEXT fallback.
+        components = undefined;
       }
       if (headerImage) {
+        if (!components) components = [];
         components.push({ type: 'header', parameters: [{ type: 'image', image: { link: headerImage } }] });
       }
     }

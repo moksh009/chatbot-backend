@@ -3257,7 +3257,10 @@ async function sendWhatsAppInteractive(client, phone, interactive, bodyText = ''
     }
 
     const data = {
-      messaging_product: 'whatsapp', to: phone, type: 'interactive',
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: phone,
+      type: 'interactive',
       interactive
     };
 
@@ -3269,10 +3272,30 @@ async function sendWhatsAppInteractive(client, phone, interactive, bodyText = ''
     await saveOutboundMessage(phone, client.clientId, 'interactive', interactive.body?.text || '[Interactive]', res.data.messages[0].id);
     return true;
   } catch (err) {
-    log.error('sendInteractive error:', { error: err.response?.data || err.message });
+    const errorData = err.response?.data || err.message;
+    log.error('sendInteractive error:', { 
+        clientId: client.clientId,
+        phone,
+        error: errorData,
+        payload: JSON.stringify(data, null, 2)
+    });
     // Graceful fallback to plain text so user still gets a response.
     try {
-      const fallbackText = interactive?.body?.text || bodyText || 'Please reply with your choice.';
+      let fallbackText = interactive?.body?.text || bodyText || 'Please choose:';
+      const options = [];
+      if (interactive.action?.buttons) {
+        interactive.action.buttons.forEach(b => options.push(b.reply?.title));
+      } else if (interactive.action?.sections) {
+        interactive.action.sections.forEach(s => {
+          s.rows?.forEach(r => options.push(r.title));
+        });
+      }
+
+      if (options.length > 0) {
+        fallbackText += "\n\n" + options.map((opt, i) => `${i + 1}. ${opt}`).join('\n');
+        fallbackText += "\n\n_Reply with the name or number._";
+      }
+
       await sendWhatsAppText(client, phone, fallbackText);
     } catch (_) {}
     return false;
