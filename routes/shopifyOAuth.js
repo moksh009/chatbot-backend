@@ -29,17 +29,16 @@ async function sendShopifyEmail({ to, subject, html }) {
   // Use EXACT same config as sendSystemOTPEmail in emailService.js (proven to work).
   // SYSTEM_EMAIL_USER = team@topedgeai.com, SYSTEM_EMAIL_PASS = Google App Password
   const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 587,
-    secure: false,  // false for STARTTLS
+    host: process.env.SMTP_HOST || 'smtp.gmail.com',
+    port: parseInt(process.env.SMTP_PORT) || 587,
+    secure: false, // true for 465, false for other ports
     requireTLS: true,
-    family: 4,
-    connectionTimeout: 20000,
-    greetingTimeout: 20000,
-    socketTimeout: 30000,
+    tls: {
+      rejectUnauthorized: false // Helps bypass strict firewall certificate checks on Render
+    },
     auth: {
-      user: process.env.SYSTEM_EMAIL_USER,
-      pass: process.env.SYSTEM_EMAIL_PASS
+      user: process.env.SYSTEM_EMAIL_USER || process.env.SMTP_USER,
+      pass: process.env.SYSTEM_EMAIL_PASS || process.env.SMTP_PASS
     }
   });
   try {

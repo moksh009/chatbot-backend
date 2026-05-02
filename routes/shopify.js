@@ -5,6 +5,16 @@ const Client = require('../models/Client');
 const { protect, verifyClientAccess } = require('../middleware/auth');
 const { getShopifyClient, withShopifyRetry, exchangeShopifyToken } = require('../utils/shopifyHelper');
 
+// ── INTERNAL SYNC AUTH BYPASS ────────────────────────────────────────────────
+// Allows the server to call its own sync routes during OAuth callback
+const internalOrProtect = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader === 'Bearer INTERNAL_SYNC') {
+    return next(); // Bypass JWT check for internal calls
+  }
+  return protect(req, res, next);
+};
+
 async function registerWebhooks(shopDomain, accessToken, clientId) {
   const topics = ['checkouts/create', 'checkouts/update', 'orders/create'];
   const webhookUrl = `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/api/shopify/webhook`;
@@ -56,7 +66,7 @@ router.post('/:clientId/connect', protect, verifyClientAccess, async (req, res) 
 });
 
 // POST /api/shopify/:clientId/sync-products
-router.post('/:clientId/sync-products', protect, verifyClientAccess, async (req, res) => {
+router.post('/:clientId/sync-products', internalOrProtect, async (req, res) => {
   try {
     const { clientId } = req.params;
     const products = await withShopifyRetry(clientId, async (shop) => {
@@ -86,7 +96,7 @@ router.post('/:clientId/sync-products', protect, verifyClientAccess, async (req,
 });
 
 // POST /api/shopify/:clientId/sync-orders
-router.post('/:clientId/sync-orders', protect, verifyClientAccess, async (req, res) => {
+router.post('/:clientId/sync-orders', internalOrProtect, async (req, res) => {
   try {
     const { clientId } = req.params;
     let syncedCount = 0;
@@ -165,7 +175,7 @@ router.get('/:clientId/payouts', protect, verifyClientAccess, async (req, res) =
 });
 
 // POST /api/shopify/:clientId/reconnect-store
-router.post('/:clientId/reconnect-store', protect, verifyClientAccess, async (req, res) => {
+router.post('/:clientId/reconnect-store', internalOrProtect, async (req, res) => {
   try {
     const { clientId } = req.params;
     console.log(`[Shopify] Force reconnection triggered for ${clientId}...`);
