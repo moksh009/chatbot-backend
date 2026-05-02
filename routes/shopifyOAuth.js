@@ -26,11 +26,16 @@ const { sendAdminConfirmationEmail } = require('../utils/emailService');
 // We send directly with inline transporter matching emailService.js exactly,
 // which provably works for OTP/invite emails on this Render deployment.
 async function sendShopifyEmail({ to, subject, html }) {
+  // Port 587 (STARTTLS) - port 465 is blocked by Render's outbound firewall
+  // Port 587 is the standard submission port, universally allowed on cloud providers.
   const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
-    family: 4,
+    port: 587,
+    secure: false,   // false = STARTTLS (upgrades to TLS after connection)
+    requireTLS: true, // Always upgrade to TLS, never send plaintext
+    connectionTimeout: 10000, // 10s connection timeout
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
     auth: {
       user: process.env.SYSTEM_EMAIL_USER,
       pass: process.env.SYSTEM_EMAIL_PASS
@@ -265,27 +270,37 @@ router.post('/assign-link', async (req, res) => {
     }
 
     // ── Extract shopDomain from the install link URL ────────────────────────────
-    // Shopify install links look like: https://admin.shopify.com/store/81v3fg-zd/app/grant?...
-    // or: https://81v3fg-zd.myshopify.com/admin/oauth/...
-    // We extract the shop slug and build the full myshopify.com domain.
+    // Shopify links: https://admin.shopify.com/store/81v3fg-zd/app/grant?...
+    // Users often paste without https:// — handle that case explicitly.
     let extractedShopDomain = '';
     try {
-      const linkUrl = new URL(shopifyInstallLink);
+      // Normalize: add https:// if no protocol present
+      let normalizedLink = shopifyInstallLink.trim();
+      if (!normalizedLink.startsWith('http://') && !normalizedLink.startsWith('https://')) {
+        normalizedLink = 'https://' + normalizedLink;
+      }
+      const linkUrl = new URL(normalizedLink);
       // Pattern 1: admin.shopify.com/store/{slug}/...
       const storeMatch = linkUrl.pathname.match(/\/store\/([^/]+)/);
       if (storeMatch) {
         extractedShopDomain = `${storeMatch[1]}.myshopify.com`;
+        console.log(`[ShopifyOAuth] ✅ Extracted shopDomain='${extractedShopDomain}' via /store/{slug} pattern`);
       }
-      // Pattern 2: {slug}.myshopify.com
+      // Pattern 2: {slug}.myshopify.com hostname
       if (!extractedShopDomain && linkUrl.hostname.includes('.myshopify.com')) {
         extractedShopDomain = linkUrl.hostname;
+        console.log(`[ShopifyOAuth] ✅ Extracted shopDomain='${extractedShopDomain}' via myshopify.com hostname`);
       }
       // Pattern 3: ?shop= query param
       if (!extractedShopDomain && linkUrl.searchParams.get('shop')) {
         extractedShopDomain = linkUrl.searchParams.get('shop');
+        console.log(`[ShopifyOAuth] ✅ Extracted shopDomain='${extractedShopDomain}' via ?shop= param`);
+      }
+      if (!extractedShopDomain) {
+        console.warn(`[ShopifyOAuth] ⚠️ Could not extract shopDomain from URL: ${normalizedLink}`);
       }
     } catch (urlErr) {
-      console.warn('[ShopifyOAuth] Could not parse install link URL:', urlErr.message);
+      console.error('[ShopifyOAuth] ❌ URL parse error for install link:', urlErr.message, '| Raw link:', shopifyInstallLink);
     }
 
     const updatePayload = { shopifyInstallLink };
@@ -515,6 +530,14 @@ router.get('/callback', async (req, res) => {
       });
       if (client) {
         console.log(`✅ [ShopifyOAuth] Client resolved via DB shop fallback: ${client.clientId}`);
+        // Auto-fix: save shopDomain now so future lookups don't need regex
+        if (!client.shopDomain || client.shopDomain !== shop) {
+          await Client.findOneAndUpdate(
+            { clientId: client.clientId },
+            { $set: { shopDomain: shop } }
+          );
+          console.log(`[ShopifyOAuth] ✅ Auto-saved shopDomain='${shop}' for ${client.clientId}`);
+        }
       }
     }
 
