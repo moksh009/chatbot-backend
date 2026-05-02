@@ -189,7 +189,7 @@ const ClientSchema = new mongoose.Schema({
   shopifyClientSecret: { type: String, default: "" },
   shopifyApiVersion: { type: String, default: "2026-01" },
   shopifyInstallLink: { type: String, default: null }, // Added for Custom App Distribution
-  shopifyConnectionStatus: { type: String, enum: ['connected', 'error', 'disconnected'], default: 'connected' },
+  shopifyConnectionStatus: { type: String, enum: ['connected', 'error', 'disconnected', 'pending_link'], default: 'connected' },
   lastShopifyError: { type: String, default: "" },
   generatedDiscounts: { type: [mongoose.Schema.Types.Mixed], default: [] },
   aiUseGeneratedDiscounts: { type: Boolean, default: false }, // AI uses latest generated discount code when true
