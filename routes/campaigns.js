@@ -20,6 +20,7 @@ const { createMessage } = require('../utils/createMessage');
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
 const log = require('../utils/logger')('Campaigns');
 const { incrementStat } = require('../utils/statCacheEngine');
+const { resolveImportBatchObjectId } = require('../utils/importBatchResolver');
 
 try {
   fs.mkdirSync('uploads', { recursive: true });
@@ -153,8 +154,25 @@ router.post('/from-segment', protect, async (req, res) => {
 router.post('/from-imported-list', protect, async (req, res) => {
     const { importBatchId, name } = req.body;
     try {
-        const count = await AdLead.countDocuments({ importBatchId, clientId: req.user.clientId });
+        if (!importBatchId) {
+            return res.status(400).json({ error: 'importBatchId is required' });
+        }
+
+        // The frontend sends either ImportSession._id or ImportSession.batchId
+        // (the BATCH_* string). Normalize before querying AdLead — the schema
+        // there is ObjectId-typed and would otherwise crash with a CastError.
+        const resolvedId = await resolveImportBatchObjectId(importBatchId, req.user.clientId);
+        if (!resolvedId) {
+            return res.status(404).json({ error: 'Import batch not found for this account' });
+        }
+
+        const count = await AdLead.countDocuments({ importBatchId: resolvedId, clientId: req.user.clientId });
+        if (count === 0) {
+            return res.status(400).json({ error: 'This import batch has no targetable contacts.' });
+        }
+
         const client = await Client.findOne({ clientId: req.user.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
+        if (!client) return res.status(404).json({ error: 'Client not found' });
 
         const limits = await checkLimit(client._id, 'campaigns');
         if (!limits.allowed) {
@@ -168,11 +186,14 @@ router.post('/from-imported-list', protect, async (req, res) => {
             name: name || `Imported List Broadcast`,
             status: 'DRAFT',
             audienceCount: count,
-            importBatchId: importBatchId
+            // Persist the canonical ObjectId hex string so downstream
+            // workers (cron + broadcast engine) get a safe value.
+            importBatchId: resolvedId.toString()
         });
 
         res.json(campaign);
     } catch (err) {
+        log.error('[from-imported-list] Failed:', err.message);
         res.status(500).json({ error: 'Failed to create campaign from imported list' });
     }
 });
@@ -423,13 +444,58 @@ router.post('/start', protect, async (req, res) => {
                 campaign.audience = leads.map(l => ({ phone: l.phoneNumber, name: l.name || '', ...l }));
             }
         } else if (campaign.importBatchId) {
-            const leads = await AdLead.find({ importBatchId: campaign.importBatchId, clientId: req.user.clientId }).lean();
+            // Normalize whatever was stored (legacy BATCH_* string or canonical ObjectId hex)
+            // before querying AdLead.importBatchId (ObjectId-typed).
+            const resolvedBatchId = await resolveImportBatchObjectId(campaign.importBatchId, req.user.clientId);
+            if (!resolvedBatchId) {
+                campaign.status = 'FAILED';
+                await campaign.save();
+                return res.status(400).json({ message: 'Imported list could not be resolved. The batch may have been deleted.' });
+            }
+            const leads = await AdLead.find({ importBatchId: resolvedBatchId, clientId: req.user.clientId }).lean();
             campaign.audience = leads.map(l => ({ phone: l.phoneNumber, name: l.name || '', ...l }));
         }
         campaign.audienceCount = campaign.audience.length;
     }
-    
-    const rows = campaign.audience || [];
+
+    // Drop rows missing a phone number — they cannot receive a WhatsApp template.
+    // (Without this filter the cron will still log a noisy "Invalid phone" failure
+    // for every empty row, and audienceCount drifts away from real reach.)
+    const rawAudience = campaign.audience || [];
+    const filteredAudience = rawAudience.filter(row => {
+        const raw = row?.phone || row?.phoneNumber || row?.number || row?.mobile || '';
+        return Boolean(normalizePhone(raw));
+    });
+    const droppedNoPhone = rawAudience.length - filteredAudience.length;
+    if (droppedNoPhone > 0) {
+        log.warn(`[Campaign ${campaign._id}] Dropped ${droppedNoPhone} contact(s) with missing/invalid phone numbers.`);
+        campaign.audience = filteredAudience;
+        campaign.audienceCount = filteredAudience.length;
+    }
+
+    if (filteredAudience.length === 0) {
+        campaign.status = 'FAILED';
+        await campaign.save();
+        return res.status(400).json({ message: 'No contacts with a valid phone number were found in this audience.' });
+    }
+
+    // Validate the chosen template is actually APPROVED on Meta — otherwise every
+    // send will be rejected by the Meta API and the user just sees "FAILED".
+    const candidateTemplateName = req.body.templateName || actualTemplateName || campaign.templateName;
+    if (candidateTemplateName) {
+        const synced = client.syncedMetaTemplates || [];
+        const tpl = synced.find(t => t?.name === candidateTemplateName);
+        const status = String(tpl?.status || '').toUpperCase();
+        if (tpl && status && status !== 'APPROVED') {
+            campaign.status = 'FAILED';
+            await campaign.save();
+            return res.status(400).json({
+                message: `Template "${candidateTemplateName}" is not approved (status: ${status}). Pick an approved template.`
+            });
+        }
+    }
+
+    const rows = filteredAudience;
 
     // Shuffle rows for random AB distribution
     for (let i = rows.length - 1; i > 0; i--) {
@@ -805,7 +871,13 @@ router.get('/audience-estimate', protect, async (req, res) => {
                 count = await AdLead.countDocuments({ clientId: cid, ...segment.query });
             }
         } else if (source === 'imported' && importBatchId) {
-            count = await AdLead.countDocuments({ clientId: cid, importBatchId });
+            // Frontend may pass ImportSession.batchId (BATCH_*) OR ImportSession._id.
+            // Resolve to the actual ObjectId before querying AdLead — otherwise
+            // Mongoose throws CastError and the whole request 500s.
+            const resolvedId = await resolveImportBatchObjectId(importBatchId, cid);
+            count = resolvedId
+                ? await AdLead.countDocuments({ clientId: cid, importBatchId: resolvedId })
+                : 0;
         } else if (source === 'hot') {
             count = await AdLead.countDocuments({ 
                 clientId: cid, 
@@ -819,7 +891,9 @@ router.get('/audience-estimate', protect, async (req, res) => {
         res.json({ success: true, count });
     } catch (err) {
         console.error('[AudienceEstimate] Error:', err);
-        res.status(500).json({ success: false, message: 'Failed to fetch estimate' });
+        // Don't crash the campaign builder UI just because the count failed —
+        // return zero so the frontend can still render and the user can retry.
+        res.json({ success: true, count: 0, warning: 'estimate_failed' });
     }
 });
 

@@ -270,6 +270,13 @@ const ClientSchema = new mongoose.Schema({
   igAccessToken: { type: String, default: null },
   igTokenExpiry: { type: Date, default: null },
   igWebhookSubscribed: { type: Boolean, default: false },
+  // Snapshot of the most recent successful subscribed_fields list returned by
+  // Meta. Used by ensureWebhookSubscription() to decide whether the existing
+  // subscription covers the canonical REQUIRED_IG_WEBHOOK_FIELDS or whether
+  // a re-subscribe is needed (e.g. after we add a new field like `comments`).
+  igSubscribedFields: { type: [String], default: [] },
+  igWebhookLastCheckedAt: { type: Date, default: null },
+  igWebhookLastError: { type: String, default: null },
   
   // messageTemplates stored as flexible Mixed array to support both 
   // legacy sub-documents and new flow-based template references

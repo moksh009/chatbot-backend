@@ -19,7 +19,12 @@ const router = express.Router();
 const IGAutomation = require('../../models/IGAutomation');
 const IGAutomationSession = require('../../models/IGAutomationSession');
 const Client = require('../../models/Client');
-const { subscribePageToWebhooks } = require('../../utils/igGraphApi');
+const {
+  subscribePageToWebhooks,
+  getPageSubscriptions,
+  diffRequiredFields,
+  REQUIRED_IG_WEBHOOK_FIELDS
+} = require('../../utils/igGraphApi');
 const { validateAutomationMessages } = require('../../utils/igTextValidation');
 const { decrypt } = require('../../utils/encryption');
 const log = require('../../utils/logger')('IGAutoCRUD');
@@ -46,28 +51,140 @@ function readClientIgCreds(client) {
   };
 }
 
-// Best-effort webhook subscription. Returns { ok: boolean, reason?: string }.
-// MUST NOT throw — all callers expect a soft-fail so the toggle/create still succeeds.
-async function ensureWebhookSubscription(clientId) {
+// Best-effort, auto-healing webhook subscription.
+//
+// Behavior:
+//   1. Reads the page's current `subscribed_apps.subscribed_fields` from Meta.
+//   2. Diffs that against REQUIRED_IG_WEBHOOK_FIELDS (comments, mentions,
+//      messages, messaging_*).
+//   3. If anything is missing — or no subscription exists at all — calls
+//      `POST /{page-id}/subscribed_apps?subscribed_fields=…` to (re)register.
+//   4. Persists the latest subscribed fields snapshot on the Client doc so
+//      future calls can short-circuit cheaply.
+//
+// MUST NOT throw — every caller expects soft-fail so the toggle/create still
+// succeeds. The user-facing error path is the /webhook-status endpoint and
+// the IG Automation header health badge.
+//
+// Returns: { ok, reason, subscribedFields, missingFields, action }
+async function ensureWebhookSubscription(clientId, { force = false } = {}) {
+  const result = {
+    ok: false,
+    reason: null,
+    subscribedFields: [],
+    missingFields: REQUIRED_IG_WEBHOOK_FIELDS.slice(),
+    action: 'none'
+  };
   try {
     const client = await Client.findOne({ clientId });
-    if (!client) return { ok: false, reason: 'client_not_found' };
-    if (client.igWebhookSubscribed) return { ok: true, reason: 'already_subscribed' };
+    if (!client) {
+      result.reason = 'client_not_found';
+      return result;
+    }
 
     const { rawToken, pageId } = readClientIgCreds(client);
-    if (!pageId || !rawToken) return { ok: false, reason: 'missing_credentials' };
+    if (!pageId || !rawToken) {
+      result.reason = 'missing_credentials';
+      await Client.findOneAndUpdate({ clientId }, {
+        $set: { igWebhookLastCheckedAt: new Date(), igWebhookLastError: 'missing_credentials' }
+      });
+      return result;
+    }
 
     const accessToken = decrypt(rawToken);
-    if (!accessToken) return { ok: false, reason: 'token_decrypt_failed' };
+    if (!accessToken) {
+      result.reason = 'token_decrypt_failed';
+      return result;
+    }
 
+    // Step 1: read current subscription from Meta. If this fails (network /
+    // token expired) we still attempt the POST below — Meta will return 190
+    // and we'll surface that.
+    let currentFields = [];
+    try {
+      const subsRes = await getPageSubscriptions(pageId, accessToken, { clientId });
+      const apps = subsRes?.data || [];
+      // There can be multiple apps subscribed to the page — pick ours by App ID.
+      // If FACEBOOK_APP_ID isn't set, fall back to the union of all app fields.
+      const myAppId = process.env.FACEBOOK_APP_ID || process.env.META_APP_ID;
+      const mine = myAppId
+        ? apps.find(a => String(a?.id || a?.app_id || a?.name) === String(myAppId))
+        : null;
+      currentFields = (mine?.subscribed_fields)
+        || apps.flatMap(a => a?.subscribed_fields || []);
+    } catch (readErr) {
+      log.warn(`[Webhook] Could not read current subscription for client=${clientId}: ${readErr.message}`);
+      currentFields = [];
+    }
+
+    const missing = diffRequiredFields(currentFields);
+    result.subscribedFields = currentFields;
+    result.missingFields = missing;
+
+    // Step 2: subscribe if anything is missing OR caller forced a re-subscribe.
+    if (missing.length === 0 && !force) {
+      result.ok = true;
+      result.reason = 'already_subscribed';
+      result.action = 'noop';
+      await Client.findOneAndUpdate({ clientId }, {
+        $set: {
+          igWebhookSubscribed: true,
+          igSubscribedFields: currentFields,
+          igWebhookLastCheckedAt: new Date(),
+          igWebhookLastError: null
+        }
+      });
+      return result;
+    }
+
+    log.info(`[Webhook] Re-subscribing page=${pageId} client=${clientId} missing=${missing.join(',') || '(none, forced)'}`);
     await subscribePageToWebhooks(pageId, accessToken, { clientId });
-    await Client.findOneAndUpdate({ clientId }, { $set: { igWebhookSubscribed: true } });
-    log.info(`[Webhook] Subscribed page=${pageId} client=${clientId}`);
-    return { ok: true };
+
+    // Step 3: confirm by reading back. Meta sometimes echoes a wider list
+    // than what we sent (it merges with any existing subscription).
+    let confirmedFields = REQUIRED_IG_WEBHOOK_FIELDS.slice();
+    try {
+      const confirmRes = await getPageSubscriptions(pageId, accessToken, { clientId });
+      const apps = confirmRes?.data || [];
+      const myAppId = process.env.FACEBOOK_APP_ID || process.env.META_APP_ID;
+      const mine = myAppId
+        ? apps.find(a => String(a?.id || a?.app_id || a?.name) === String(myAppId))
+        : null;
+      confirmedFields = (mine?.subscribed_fields)
+        || apps.flatMap(a => a?.subscribed_fields || [])
+        || REQUIRED_IG_WEBHOOK_FIELDS;
+    } catch (_confirmErr) {
+      // Non-fatal — we trust the POST succeeded.
+    }
+
+    const stillMissing = diffRequiredFields(confirmedFields);
+    await Client.findOneAndUpdate({ clientId }, {
+      $set: {
+        igWebhookSubscribed: stillMissing.length === 0,
+        igSubscribedFields: confirmedFields,
+        igWebhookLastCheckedAt: new Date(),
+        igWebhookLastError: stillMissing.length > 0
+          ? `Still missing fields after subscribe: ${stillMissing.join(',')}. Confirm the App Dashboard has these enabled under the Instagram product webhook config.`
+          : null
+      }
+    });
+
+    result.ok = stillMissing.length === 0;
+    result.subscribedFields = confirmedFields;
+    result.missingFields = stillMissing;
+    result.action = 'subscribed';
+    if (!result.ok) {
+      result.reason = `Subscribed, but Meta still does not show these fields: ${stillMissing.join(',')}. Enable them in the App Dashboard.`;
+    }
+    log.info(`[Webhook] page=${pageId} client=${clientId} now subscribed_fields=[${confirmedFields.join(',')}]`);
+    return result;
   } catch (err) {
-    // Intentionally swallow — webhook registration failure must NOT block automation toggling.
     log.warn(`[Webhook] Subscription failed for client=${clientId}: ${err.message}`);
-    return { ok: false, reason: err.message };
+    await Client.findOneAndUpdate({ clientId }, {
+      $set: { igWebhookLastCheckedAt: new Date(), igWebhookLastError: err.message }
+    }).catch(() => {});
+    result.reason = err.message;
+    return result;
   }
 }
 
@@ -535,4 +652,110 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/ig-automation/webhook-status?clientId=X
+//
+// Returns a full health report so the IG Automation header can show a
+// "Webhooks: ✓ Healthy / ⚠ Missing fields / ✗ Disconnected" badge and
+// surface the exact remediation (e.g. "comments,mentions not enabled in
+// Meta App Dashboard"). Also returns recent webhook event counters so the
+// support team can prove receipt without tailing logs.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/webhook-status', async (req, res) => {
+  try {
+    const { clientId } = req.query;
+    if (!clientId) return res.status(400).json({ success: false, error: 'clientId is required' });
+
+    const client = await Client.findOne({ clientId }).lean();
+    if (!client) return res.status(404).json({ success: false, error: 'Client not found' });
+
+    const { rawToken, pageId } = readClientIgCreds(client);
+    const hasCreds = !!(rawToken && pageId);
+
+    let liveSubscribedFields = client.igSubscribedFields || [];
+    let liveError = null;
+    if (hasCreds) {
+      try {
+        const accessToken = decrypt(rawToken);
+        const subsRes = await getPageSubscriptions(pageId, accessToken, { clientId });
+        const apps = subsRes?.data || [];
+        const myAppId = process.env.FACEBOOK_APP_ID || process.env.META_APP_ID;
+        const mine = myAppId
+          ? apps.find(a => String(a?.id || a?.app_id || a?.name) === String(myAppId))
+          : null;
+        liveSubscribedFields = (mine?.subscribed_fields)
+          || apps.flatMap(a => a?.subscribed_fields || [])
+          || [];
+      } catch (err) {
+        liveError = err.message;
+      }
+    }
+
+    const missing = diffRequiredFields(liveSubscribedFields);
+
+    // Lightweight recent-activity counters (last 24h) so the user can verify
+    // webhooks are actually flowing — pulled from the existing session ledger.
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const recentEvents = await IGAutomationSession.countDocuments({
+      clientId,
+      createdAt: { $gte: since }
+    }).catch(() => 0);
+
+    let healthy = 'unknown';
+    if (!hasCreds) healthy = 'disconnected';
+    else if (liveError) healthy = 'error';
+    else if (missing.length === 0) healthy = 'healthy';
+    else healthy = 'misconfigured';
+
+    res.status(200).json({
+      success: true,
+      health: healthy,
+      hasCredentials: hasCreds,
+      pageId: pageId || null,
+      igUserId: client.igUserId || null,
+      igUsername: client.igUsername || null,
+      requiredFields: REQUIRED_IG_WEBHOOK_FIELDS,
+      subscribedFields: liveSubscribedFields,
+      missingFields: missing,
+      lastCheckedAt: client.igWebhookLastCheckedAt || null,
+      lastError: liveError || client.igWebhookLastError || null,
+      recentEvents24h: recentEvents,
+      callbackUrlHint: `${process.env.PUBLIC_API_BASE_URL || ''}/api/ig-automation/webhook`.replace(/^\//, ''),
+      remediation: missing.length > 0 ? [
+        'Open Meta App Dashboard → Webhooks → Instagram (or Page) product.',
+        `Subscribe to these fields: ${missing.join(', ')}.`,
+        'Verify the Callback URL matches your deployed backend (must be HTTPS).',
+        'Then click "Re-subscribe" in the IG Automation header to retry.'
+      ] : []
+    });
+  } catch (error) {
+    log.error('Webhook-status error:', error.message);
+    res.status(500).json({ success: false, error: 'Failed to read webhook status' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/ig-automation/webhook-resubscribe
+// Body: { clientId }
+//
+// Forces a fresh `POST /{page-id}/subscribed_apps` against Meta with the
+// canonical field list. Use this after fixing App Dashboard config or when
+// the user clicks "Re-subscribe" in the header health badge.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/webhook-resubscribe', async (req, res) => {
+  try {
+    const { clientId } = req.body || {};
+    if (!clientId) return res.status(400).json({ success: false, error: 'clientId is required' });
+
+    const result = await ensureWebhookSubscription(clientId, { force: true });
+    res.status(200).json({ success: result.ok, ...result });
+  } catch (error) {
+    log.error('Webhook-resubscribe error:', error.message);
+    res.status(500).json({ success: false, error: 'Failed to re-subscribe webhooks' });
+  }
+});
+
+// Exported for the startup auto-healer (services/igWebhookHealer.js) and any
+// future maintenance scripts. The router stays the default export.
 module.exports = router;
+module.exports.ensureWebhookSubscription = ensureWebhookSubscription;

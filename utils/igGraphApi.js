@@ -161,14 +161,71 @@ async function checkFollowStatusv2(igsid, accessToken, opts = {}) {
   return callGraphAPI('get', `/${igsid}`, { fields: 'is_user_follow_business' }, accessToken, opts);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// IG Webhook Subscription — the canonical field list
+// ─────────────────────────────────────────────────────────────────────────────
+// Per Meta's Instagram Platform → Webhooks docs (validated 2025-2026):
+//   • `comments`      — comment created on app user's media (REQUIRED for comment-to-DM)
+//   • `mentions`      — included via `comments` notifications when an IG user
+//                       @mentions the app user. Subscribing explicitly is harmless
+//                       and gives forward compatibility if Meta splits them again.
+//   • `messages`      — incoming DMs (REQUIRED for story replies + agent inbox)
+//   • `messaging_postbacks` — button taps inside DMs (Follow Gate flow)
+//   • `messaging_seen`     — read receipts inside DMs
+//   • `messaging_referral` — entry-point context (ig.me/m.me, ads click-to-message)
+//   • `message_reactions`  — DM emoji reactions (Inbox UX)
+//
+// The previous code shipped `messages,messaging_postbacks,messaging_seen,messaging_referral`
+// only — that is why ZERO `comments` webhooks were ever received. This list is
+// the canonical fix and must stay in sync between subscribe / verify / resubscribe.
+const REQUIRED_IG_WEBHOOK_FIELDS = [
+  'comments',
+  'mentions',
+  'messages',
+  'messaging_postbacks',
+  'messaging_seen',
+  'messaging_referral',
+  'message_reactions'
+];
+
 /**
- * Subscribe page to webhook events (comments, mentions, messages)
+ * Subscribe a Facebook Page to the canonical Instagram webhook field set.
+ * Idempotent on the Meta side — calling it twice with the same fields is a no-op
+ * with `success: true`.
  */
 async function subscribePageToWebhooks(pageId, accessToken, opts = {}) {
   return callGraphAPI('post', `/${pageId}/subscribed_apps`, {
-    // IG Graph subscribed_apps only allows a subset (no message_deliveries / message_reads)
-    subscribed_fields: 'messages,messaging_postbacks,messaging_seen,messaging_referral'
+    subscribed_fields: REQUIRED_IG_WEBHOOK_FIELDS.join(',')
   }, accessToken, opts);
+}
+
+/**
+ * Read the current subscribed_apps list for a Page so we can tell whether
+ * the canonical field set is fully covered. Meta returns:
+ *   { data: [ { name, category, link, subscribed_fields: [...] }, ... ] }
+ * Our app's subscription is the entry whose name matches the configured app.
+ */
+async function getPageSubscriptions(pageId, accessToken, opts = {}) {
+  return callGraphAPI('get', `/${pageId}/subscribed_apps`, {
+    fields: 'subscribed_fields,name,category'
+  }, accessToken, opts);
+}
+
+/**
+ * Tear down the page subscription. Useful when a tenant disconnects IG so we
+ * stop getting webhooks for an account we can no longer process.
+ */
+async function unsubscribePageFromWebhooks(pageId, accessToken, opts = {}) {
+  return callGraphAPI('delete', `/${pageId}/subscribed_apps`, {}, accessToken, opts);
+}
+
+/**
+ * Compare a current `subscribed_fields` array against REQUIRED_IG_WEBHOOK_FIELDS.
+ * Returns the missing fields list (empty array means everything is in place).
+ */
+function diffRequiredFields(currentFields = []) {
+  const set = new Set(currentFields);
+  return REQUIRED_IG_WEBHOOK_FIELDS.filter(f => !set.has(f));
 }
 
 function sleep(ms) {
@@ -181,6 +238,10 @@ module.exports = {
   replyToCommentv2,
   checkFollowStatusv2,
   subscribePageToWebhooks,
+  getPageSubscriptions,
+  unsubscribePageFromWebhooks,
+  diffRequiredFields,
+  REQUIRED_IG_WEBHOOK_FIELDS,
   GRAPH_API_VERSION,
   GRAPH_BASE_URL
 };

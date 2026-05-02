@@ -9,6 +9,7 @@ const { sendBirthdayWishWithImage } = require('./sendBirthdayMessage');
 const { sendAppointmentReminder } = require('./sendAppointmentReminder');
 const log = require('./logger')('BroadcastEngine');
 const { incrementStat } = require('./statCacheEngine');
+const { resolveImportBatchObjectId } = require('./importBatchResolver');
 
 function normalizePhone(p) {
   if (!p) return '';
@@ -36,7 +37,12 @@ async function processBroadcast(data) {
             if (!segment) throw new Error('Segment not found');
             query = segment.query;
         } else if (campaign.importBatchId) {
-            query = { importBatchId: campaign.importBatchId };
+            // The stored value can be a legacy BATCH_* string OR a hex ObjectId.
+            // Resolve to the canonical ObjectId before streaming AdLead — direct
+            // string queries crash with CastError mid-broadcast.
+            const resolvedBatchId = await resolveImportBatchObjectId(campaign.importBatchId, clientId);
+            if (!resolvedBatchId) throw new Error('Imported list no longer exists');
+            query = { importBatchId: resolvedBatchId };
         } else {
             throw new Error('No valid audience source attached to campaign');
         }

@@ -4,6 +4,7 @@ const CampaignMessage = require('../models/CampaignMessage');
 const Client = require('../models/Client');
 const WhatsApp = require('../utils/whatsapp');
 const log = require('../utils/logger')('CampaignCron');
+const { resolveImportBatchObjectId } = require('../utils/importBatchResolver');
 
 const BATCH_SIZE = 10;
 const STALE_TIMEOUT_HOURS = 2;
@@ -164,7 +165,18 @@ const scheduleCampaignCron = () => {
               }
             } else if (campaign.importBatchId) {
               const AdLead = require('../models/AdLead');
-              const leads = await AdLead.find({ importBatchId: campaign.importBatchId, clientId: campaign.clientId }).select('phoneNumber name').lean();
+              // Legacy campaigns may have stored the BATCH_* string directly.
+              // Always resolve before querying AdLead.importBatchId (ObjectId).
+              const resolvedBatchId = await resolveImportBatchObjectId(campaign.importBatchId, campaign.clientId);
+              if (!resolvedBatchId) {
+                log.error(`[CampaignCron] Campaign ${campaign.name} references missing import batch (${campaign.importBatchId}). Marking FAILED.`);
+                campaign.status = 'FAILED';
+                campaign.autoPaused = true;
+                campaign.autoPausedReason = 'Imported list no longer exists';
+                await campaign.save();
+                continue;
+              }
+              const leads = await AdLead.find({ importBatchId: resolvedBatchId, clientId: campaign.clientId }).select('phoneNumber name').lean();
               phones = leads.map(l => ({ phone: l.phoneNumber, name: l.name || 'Customer', ...l }));
             }
           }

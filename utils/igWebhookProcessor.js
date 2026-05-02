@@ -6,6 +6,42 @@ const IGProcessedComment = require('../models/IGProcessedComment');
 const Client = require('../models/Client');
 const log = require('./logger')('IGWebhookProcessor');
 
+// ─────────────────────────────────────────────────────────────────────────────
+// findClientByWebhookEntryId
+//
+// Critical: per Meta's Instagram Platform docs, the webhook payload's
+// `entry.id` is the **Instagram Professional Account ID**, NOT the
+// Facebook Page ID. The previous lookup matched only on `instagramPageId`
+// and `igPageId` (FB Page ID variants), so every comment / mention webhook
+// silently dropped because no client was found — a quiet second cause of
+// "nothing triggers".
+//
+// We try every storage variant we have ever shipped:
+//   • igUserId, instagramUserId       → IG account ID columns (correct match)
+//   • social.instagram.userId         → nested storage variant
+//   • igPageId, instagramPageId, ...  → legacy FB Page ID columns (kept as
+//                                        fallback in case Meta ever sends
+//                                        page-id in entry.id for older apps)
+// ─────────────────────────────────────────────────────────────────────────────
+async function findClientByWebhookEntryId(entryId) {
+  if (!entryId) return null;
+  const id = String(entryId);
+  return Client.findOne({
+    $or: [
+      // Modern: entry.id = IG Business Account ID
+      { igUserId: id },
+      { instagramUserId: id },
+      { 'social.instagram.userId': id },
+      { 'social.instagram.igUserId': id },
+      // Legacy: some older accounts stored the IG ID under page-id columns
+      { igPageId: id },
+      { instagramPageId: id },
+      { instagramFbPageId: id },
+      { 'social.instagram.pageId': id }
+    ]
+  }).lean();
+}
+
 // BullMQ queue references — set by the worker on boot
 let commentDmQueue = null;
 let commentReplyQueue = null;
@@ -199,13 +235,11 @@ async function handleIncomingDM(pageId, msg) {
       }
     }
 
-    const client = await Client.findOne({
-      $or: [
-        { instagramPageId: pageId },
-        { 'social.instagram.pageId': pageId }
-      ]
-    }).lean();
-    if (!client) return;
+    const client = await findClientByWebhookEntryId(pageId);
+    if (!client) {
+      log.warn(`[IncomingDM] No client matched entry.id=${pageId}. Make sure Client.igUserId is populated by your IG OAuth flow.`);
+      return;
+    }
 
     await saveToIGConversation(client.clientId, senderId, messageText, messageType, attachmentUrl);
   } catch (err) {
@@ -227,21 +261,16 @@ async function handleCommentEvent(pageId, commentData) {
       return;
     }
 
-    // Step 1: Deduplication check — insert first, check after
+    // Step 1: Locate the tenant. entry.id is the IG account ID — see
+    // findClientByWebhookEntryId() for the full set of columns we check.
+    const client = await findClientByWebhookEntryId(pageId);
+    if (!client) {
+      log.warn(`[IG Comment] No client matched entry.id=${pageId}. Likely Client.igUserId is not set — check your IG OAuth flow.`);
+      return;
+    }
+
+    // Step 2: Deduplication check — insert first; if 11000 we already processed.
     try {
-      const client = await Client.findOne({
-        $or: [
-          { instagramPageId: pageId },
-          { 'social.instagram.pageId': pageId },
-          { igPageId: pageId }
-        ]
-      }).lean();
-
-      if (!client) {
-        console.warn('[IG Comment] No client found for pageId:', pageId);
-        return;
-      }
-
       await IGProcessedComment.create({
         commentId,
         clientId: client.clientId,
@@ -249,22 +278,13 @@ async function handleCommentEvent(pageId, commentData) {
       });
     } catch (dupErr) {
       if (dupErr.code === 11000) {
-        console.log('[IG Comment] Duplicate comment detected, skipping:', commentId);
+        log.info(`[IG Comment] Duplicate comment skipped commentId=${commentId} client=${client.clientId}`);
         return;
       }
       throw dupErr;
     }
 
-    // Fetch client again with full data
-    const client = await Client.findOne({
-      $or: [
-        { instagramPageId: pageId },
-        { 'social.instagram.pageId': pageId },
-        { igPageId: pageId }
-      ]
-    }).lean();
-
-    // Step 2: Find matching active automations (deletedAt:null guard prevents
+    // Step 3: Find matching active automations (deletedAt:null guard prevents
     // soft-deleted automations from continuing to fire after delete races a
     // webhook event already in flight from Meta).
     const automations = await IGAutomation.find({
@@ -274,9 +294,18 @@ async function handleCommentEvent(pageId, commentData) {
       deletedAt: null
     }).lean();
 
+    if (!automations.length) {
+      log.info(`[IG Comment] No active comment_to_dm automations for client=${client.clientId}. comment=${commentId} text="${(commentText || '').slice(0, 60)}"`);
+      return;
+    }
+
+    let queuedAny = false;
     for (const automation of automations) {
       const matches = await evaluateAutomationMatch(automation, mediaId, commentText, client.clientId);
-      if (!matches) continue;
+      if (!matches) {
+        log.info(`[IG Comment] Skip automation="${automation.name}" id=${automation._id} — match=false (mediaId=${mediaId}, target=${automation.targeting?.mode}/${automation.targeting?.mediaId}, trigger=${automation.trigger?.mode})`);
+        continue;
+      }
 
       // Step 3: Check for existing unexpired session (24-hour dedup per user per automation)
       const existingSession = await IGAutomationSession.findOne({
@@ -331,10 +360,15 @@ async function handleCommentEvent(pageId, commentData) {
         $inc: { 'stats.totalTriggered': 1 }
       });
 
-      console.log('[IG Comment] Queued automation', automation._id, 'for commenter', commenterIgsid);
+      queuedAny = true;
+      log.info(`[IG Comment] ✓ Queued automation="${automation.name}" id=${automation._id} commenter=${commenterIgsid} comment=${commentId}`);
+    }
+
+    if (!queuedAny) {
+      log.info(`[IG Comment] No automation matched comment=${commentId} text="${(commentText || '').slice(0, 60)}". (${automations.length} candidates evaluated.)`);
     }
   } catch (err) {
-    console.error('[IG Comment] Unhandled error in handleCommentEvent:', err);
+    log.error('[IG Comment] Unhandled error in handleCommentEvent:', err.message, { stack: err.stack });
   }
 }
 
@@ -377,14 +411,9 @@ async function handleStoryMentionEvent(pageId, mentionData) {
     const { comment_id: mentionCommentId, media_id: storyId } = mentionData;
     if (!mentionCommentId) return;
 
-    const client = await Client.findOne({
-      $or: [
-        { instagramPageId: pageId },
-        { 'social.instagram.pageId': pageId }
-      ]
-    }).lean();
+    const client = await findClientByWebhookEntryId(pageId);
     if (!client) {
-      console.warn('[IG StoryMention] No client found for pageId:', pageId);
+      log.warn(`[IG StoryMention] No client matched entry.id=${pageId}. Likely Client.igUserId is not set.`);
       return;
     }
 
@@ -450,15 +479,9 @@ async function handleStoryReplyEvent(pageId, messagingEvent) {
       return;
     }
 
-    // Find the client by their Instagram Page ID
-    const client = await Client.findOne({
-      $or: [
-        { instagramPageId: pageId },
-        { 'social.instagram.pageId': pageId }
-      ]
-    }).lean();
+    const client = await findClientByWebhookEntryId(pageId);
     if (!client) {
-      console.warn('[IG Story Reply] No client found for pageId:', pageId);
+      log.warn(`[IG Story Reply] No client matched entry.id=${pageId}. Likely Client.igUserId is not set.`);
       return;
     }
 
@@ -559,13 +582,11 @@ async function handleButtonPostback(pageId, msg) {
     const automationId = parts[1];
     const action = parts[2];
 
-    const client = await Client.findOne({
-      $or: [
-        { instagramPageId: pageId },
-        { 'social.instagram.pageId': pageId }
-      ]
-    }).lean();
-    if (!client) return;
+    const client = await findClientByWebhookEntryId(pageId);
+    if (!client) {
+      log.warn(`[Postback] No client matched entry.id=${pageId}.`);
+      return;
+    }
 
     const clientId = client.clientId;
 

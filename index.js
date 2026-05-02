@@ -716,6 +716,13 @@ connectDB()
     // IG Automation: Validate environment variables (non-fatal warnings)
     validateIGEnvironment();
 
+    // IG Automation: One-shot startup heal that re-subscribes existing tenants
+    // to the canonical webhook field set (comments, mentions, messages, …).
+    // The previous build only subscribed to messaging_* fields, so existing
+    // Comment-to-DM automations never triggered. This heals them on deploy
+    // without requiring any user interaction. Self-throttled and non-fatal.
+    require('./services/igWebhookHealer').scheduleStartup();
+
     bootIntentEngine().catch(err => {
       log.error("[NLP_BOOT] Engine priming failed:", err.message);
     });
