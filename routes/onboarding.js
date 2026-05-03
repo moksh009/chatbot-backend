@@ -40,18 +40,37 @@ router.get('/:clientId', protect, async (req, res) => {
     }
 
     repairLegacyWizardBuckets(wizardDoc);
+
+    // One-time migration: v1 had 7 steps; v2 inserts `escalation` at index 2 — shift indices ≥2.
+    if (wizardDoc.wizardSchemaVersion == null || wizardDoc.wizardSchemaVersion < 2) {
+      if (typeof wizardDoc.currentStep === 'number' && wizardDoc.currentStep >= 2) {
+        wizardDoc.currentStep = Math.min(7, wizardDoc.currentStep + 1);
+      }
+      if (Array.isArray(wizardDoc.completedSteps)) {
+        wizardDoc.completedSteps = [...new Set(
+          wizardDoc.completedSteps
+            .filter((s) => typeof s === 'number' && s >= 0 && s <= 6)
+            .map((s) => (s >= 2 ? Math.min(7, s + 1) : s))
+        )];
+      }
+      wizardDoc.wizardSchemaVersion = 2;
+      wizardDoc.markModified('currentStep');
+      wizardDoc.markModified('completedSteps');
+      wizardDoc.markModified('wizardSchemaVersion');
+    }
+
     if (wizardDoc.isModified && wizardDoc.isModified()) {
       await wizardDoc.save();
     }
 
     let wizard = wizardDoc.toObject ? wizardDoc.toObject() : wizardDoc;
-    if (typeof wizard.currentStep === 'number' && wizard.currentStep > 6) {
-      wizard = { ...wizard, currentStep: 6 };
+    if (typeof wizard.currentStep === 'number' && wizard.currentStep > 7) {
+      wizard = { ...wizard, currentStep: 7 };
     }
     if (Array.isArray(wizard.completedSteps)) {
       wizard = {
         ...wizard,
-        completedSteps: [...new Set(wizard.completedSteps.filter((s) => s >= 0 && s <= 6))],
+        completedSteps: [...new Set(wizard.completedSteps.filter((s) => s >= 0 && s <= 7))],
       };
     }
 
@@ -74,7 +93,7 @@ router.patch('/step/:stepNumber', protect, async (req, res) => {
     }
 
     const stepNum = parseInt(stepNumber, 10);
-    if (isNaN(stepNum) || stepNum < 0 || stepNum > 6) {
+    if (isNaN(stepNum) || stepNum < 0 || stepNum > 7) {
       return res.status(400).json({ success: false, error: 'Invalid step number' });
     }
 
@@ -153,6 +172,22 @@ router.patch('/step/:stepNumber', protect, async (req, res) => {
       pvUpdate['wizardFeatures.cartNudgeMinutes1'] = Number(t.msg1 ?? 15) || 15;
       pvUpdate['wizardFeatures.cartNudgeHours2'] = Number(t.msg2 ?? 2) || 2;
       pvUpdate['wizardFeatures.cartNudgeHours3'] = Number(t.msg3 ?? 24) || 24;
+    }
+
+    if (stepId === 'escalation' && stepData) {
+      if (stepData.adminPhone) {
+        pvUpdate['platformVars.adminWhatsappNumber'] = stepData.adminPhone;
+        pvUpdate.adminPhone = stepData.adminPhone;
+        pvUpdate.adminAlertWhatsapp = stepData.adminPhone;
+      }
+      if (stepData.adminEmail && String(stepData.adminEmail).trim()) {
+        const em = String(stepData.adminEmail).trim();
+        pvUpdate.adminEmail = em;
+        pvUpdate.adminAlertEmail = em;
+      }
+      if (['whatsapp', 'email', 'both'].includes(stepData.adminAlertPreferences)) {
+        pvUpdate.adminAlertPreferences = stepData.adminAlertPreferences;
+      }
     }
 
     if (stepId === 'features' && stepData?.features && typeof stepData.features === 'object') {

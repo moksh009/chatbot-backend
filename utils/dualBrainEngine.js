@@ -2195,12 +2195,11 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
 
-  // Phase 21: Admin Alert Node
+  // Phase 21: Admin Alert Node — dual-channel (WhatsApp template + fallback text, SMTP email) via NotificationService
   if (node.type === 'admin_alert' || node.type === 'AdminAlertNode') {
-    const { topic, alertChannel = 'both', priority, triggerSource } = node.data || {};
+    const { topic, alertChannel, priority, triggerSource } = node.data || {};
     const rawTopic = topic || "Human support request";
     const alertMsg = replaceVariables(String(rawTopic), client, lead, convo);
-    const fullMsg = `🚨 *Admin alert*\n\n*What:* ${alertMsg}\n*Customer:* ${lead?.name || "Unknown"} (${phone})\n*Source:* ${triggerSource || "WhatsApp flow"}\n*Priority:* ${(priority || "high").toUpperCase()}\n*When:* ${new Date().toLocaleString()}`;
 
     const rawAdminPhone =
       (node.data?.phone && String(node.data.phone)) ||
@@ -2210,6 +2209,14 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       client.adminAlertWhatsapp ||
       "";
     const adminWaDigits = replaceVariables(String(rawAdminPhone), client, lead, convo).replace(/\D/g, "");
+
+    const meta = convo?.metadata || {};
+    const customerQuery =
+      meta.support_query ||
+      meta.supportQuery ||
+      lead?.capturedData?.support_query ||
+      (parsedMessage?.text?.body ? String(parsedMessage.text.body).trim() : "") ||
+      "";
 
     // 1. Mark conversation as needing attention (does not pause bot — handoff nodes handle pause)
     await Conversation.findByIdAndUpdate(convo._id, {
@@ -2237,33 +2244,19 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       });
     }
 
-    // 3. Dispatch via WhatsApp to admin phone (flow node phone wins, then client settings)
-    if ((alertChannel === "whatsapp" || alertChannel === "both") && adminWaDigits.length >= 10) {
-      try {
-        const { normalizePhone } = require("./helpers");
-        const to = normalizePhone(adminWaDigits);
-        await WhatsApp.sendText(client, to, fullMsg);
-        log.info(`AdminAlert: WhatsApp sent to admin (${String(to).slice(0, 6)}…)`);
-      } catch (err) {
-        log.error(`AdminAlert WhatsApp failed: ${err.message}`);
-      }
-    } else if (alertChannel === "whatsapp" || alertChannel === "both") {
-      log.warn(`[AdminAlert] No valid admin WhatsApp number — set admin phone on the node or in client settings`);
-    }
-
-    // 4. Dispatch via Email to admin
-    if ((alertChannel === 'email' || alertChannel === 'both') && client.adminAlertEmail && client.emailUser) {
-      try {
-        const emailService = require('./emailService');
-        await emailService.sendEmail(client, {
-          to: client.adminAlertEmail,
-          subject: `🚨 Alert: ${alertMsg} — ${lead?.name || phone}`,
-          html: fullMsg.replace(/\n/g, '<br/>').replace(/\*/g, '')
-        });
-        log.info(`AdminAlert: Email sent to ${client.adminAlertEmail}`);
-      } catch (err) {
-        log.error(`AdminAlert Email failed: ${err.message}`);
-      }
+    // 3–4. WhatsApp (Meta utility template + text fallback) + email — honors client.adminAlertPreferences unless node overrides
+    try {
+      const NotificationService = require("./notificationService");
+      await NotificationService.sendAdminAlert(client, {
+        customerPhone: phone,
+        topic: alertMsg,
+        triggerSource: triggerSource || "WhatsApp flow",
+        channel: alertChannel,
+        adminPhoneOverride: adminWaDigits.length >= 10 ? adminWaDigits : undefined,
+        customerQuery,
+      });
+    } catch (err) {
+      log.error(`AdminAlert dispatch failed: ${err.message}`);
     }
 
     log.info(`AdminAlert triggered for ${phone}: ${alertMsg}`);

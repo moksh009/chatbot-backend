@@ -765,7 +765,7 @@ router.patch('/my-settings', protect, async (req, res) => {
       woocommerceUrl, woocommerceKey, woocommerceSecret, storeType,
       instagramConnected, instagramPageId, instagramAccessToken, instagramAppSecret,
       googleReviewUrl, adminPhone, adminEmail,
-      adminAlertEmail, adminAlertWhatsapp, metaAppId,
+      adminAlertEmail, adminAlertWhatsapp, adminAlertPreferences, metaAppId,
       // Phase SMTP: Email credentials
       emailUser, emailAppPassword,
       // Phase 20: Razorpay
@@ -894,6 +894,9 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (adminEmail !== undefined) updateFields.adminEmail = adminEmail;
     if (adminAlertEmail !== undefined) updateFields.adminAlertEmail = adminAlertEmail;
     if (adminAlertWhatsapp !== undefined) updateFields.adminAlertWhatsapp = adminAlertWhatsapp;
+    if (adminAlertPreferences === 'whatsapp' || adminAlertPreferences === 'email' || adminAlertPreferences === 'both') {
+      updateFields.adminAlertPreferences = adminAlertPreferences;
+    }
     if (metaAppId !== undefined) updateFields.metaAppId = metaAppId;
     if (businessName !== undefined) {
       updateFields.businessName = businessName;

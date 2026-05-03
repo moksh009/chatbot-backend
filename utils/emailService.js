@@ -1,6 +1,8 @@
 const nodemailer = require('nodemailer');
 const { decrypt } = require('./encryption');
 
+const SMTP_RETRYABLE = new Set(['ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'ESOCKETTIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN']);
+
 /**
  * Credentials used for OTP, team invites, and other system mail (Render-friendly TLS).
  */
@@ -16,10 +18,17 @@ function getSystemEmailCredentials() {
     return { user, pass };
 }
 
+function _smtpConnTimeouts() {
+    const connectionTimeout = parseInt(String(process.env.SMTP_CONNECTION_TIMEOUT || '38000'), 10) || 38000;
+    const greetingTimeout = parseInt(String(process.env.SMTP_GREETING_TIMEOUT || '22000'), 10) || 22000;
+    const socketTimeout = parseInt(String(process.env.SMTP_SOCKET_TIMEOUT || '60000'), 10) || 60000;
+    return { connectionTimeout, greetingTimeout, socketTimeout };
+}
+
 /**
- * Shared transporter for system emails — matches shopifyOAuth.js (STARTTLS + relaxed TLS for cloud hosts).
+ * Single SMTP transporter for system mail (one port / mode).
  */
-function createSystemEmailTransporter() {
+function createSystemEmailTransporterFor({ port, secure, requireTLS }) {
     const { user, pass } = getSystemEmailCredentials();
     if (!user || !pass) {
         console.error(
@@ -27,15 +36,135 @@ function createSystemEmailTransporter() {
         );
         return null;
     }
+    const { connectionTimeout, greetingTimeout, socketTimeout } = _smtpConnTimeouts();
     return nodemailer.createTransport({
         host: process.env.SMTP_HOST || 'smtp.gmail.com',
-        port: parseInt(String(process.env.SMTP_PORT || '587'), 10) || 587,
-        secure: false,
-        requireTLS: true,
-        tls: { rejectUnauthorized: false },
+        port,
+        secure,
+        requireTLS: !!requireTLS,
+        tls: { rejectUnauthorized: false, minVersion: 'TLSv1.2' },
         family: 4,
-        connectionTimeout: 15000,
+        pool: false,
+        connectionTimeout,
+        greetingTimeout,
+        socketTimeout,
         auth: { user, pass }
+    });
+}
+
+function getSystemSmtpAttemptOrder() {
+    const envPort = parseInt(String(process.env.SMTP_PORT || ''), 10);
+    const a587 = { port: 587, secure: false, requireTLS: true, label: '587+STARTTLS' };
+    const a465 = { port: 465, secure: true, requireTLS: false, label: '465+SSL' };
+    if (envPort === 465) return [a465, a587];
+    if (envPort === 587) return [a587, a465];
+    return [a587, a465];
+}
+
+/**
+ * Try SMTP with port fallback (587 then 465, or env SMTP_PORT first).
+ * Fixes cloud ETIMEDOUT where one path is blocked but the other works.
+ */
+async function sendViaSystemSmtpWithFallback(mailOptions) {
+    const attempts = getSystemSmtpAttemptOrder();
+    let lastErr;
+    for (const cfg of attempts) {
+        const t = createSystemEmailTransporterFor(cfg);
+        if (!t) return false;
+        try {
+            await t.sendMail(mailOptions);
+            console.log(`[EmailService] ✅ System SMTP sent via ${cfg.label} (${cfg.port})`);
+            try {
+                t.close();
+            } catch (_) { /* noop */ }
+            return true;
+        } catch (err) {
+            lastErr = err;
+            console.warn(
+                `[EmailService] SMTP ${cfg.label} failed:`,
+                err.code || err.name,
+                err.message
+            );
+            try {
+                t.close();
+            } catch (_) { /* noop */ }
+            if (err.code === 'EAUTH') break;
+            if (!SMTP_RETRYABLE.has(err.code) && !/timeout|timed out/i.test(String(err.message || ''))) break;
+        }
+    }
+    if (lastErr) {
+        console.error('[EmailService] All system SMTP attempts failed:', lastErr.code, lastErr.message);
+    }
+    return false;
+}
+
+/**
+ * System mail via Resend HTTP API (avoids blocked SMTP from PaaS / datacenter egress).
+ * Set RESEND_API_KEY + RESEND_FROM (verified domain), e.g. "TopEdge AI <otp@mail.yourdomain.com>".
+ * Optional: RESEND_ALLOW_ONBOARDING=true uses onboarding@resend.dev (Resend testing limits apply).
+ */
+async function sendSystemEmailViaResend(mailOptions) {
+    const apiKey = process.env.RESEND_API_KEY || process.env.SYSTEM_RESEND_API_KEY;
+    if (!apiKey) return false;
+
+    let from = process.env.RESEND_FROM || process.env.RESEND_FROM_SYSTEM || process.env.RESEND_FROM_OTP;
+    if (!from && String(process.env.RESEND_ALLOW_ONBOARDING || '').toLowerCase() === 'true') {
+        from = 'TopEdge AI Security <onboarding@resend.dev>';
+    }
+    if (!from) {
+        console.warn(
+            '[EmailService] RESEND_API_KEY set but no RESEND_FROM — set RESEND_FROM (verified sender) or RESEND_ALLOW_ONBOARDING=true for testing.'
+        );
+        return false;
+    }
+
+    const to = mailOptions.to;
+    const subject = mailOptions.subject;
+    const html = mailOptions.html;
+
+    try {
+        const { Resend } = require('resend');
+        const resend = new Resend(apiKey);
+        const { data, error } = await resend.emails.send({
+            from,
+            to: Array.isArray(to) ? to : String(to),
+            subject,
+            html
+        });
+        if (error) {
+            console.error('[EmailService] Resend API error:', error);
+            return false;
+        }
+        console.log(`[EmailService] ✅ System email via Resend → ${to} id=${data?.id || 'n/a'}`);
+        return true;
+    } catch (err) {
+        console.error('[EmailService] Resend send exception:', err.message);
+        return false;
+    }
+}
+
+async function deliverSystemEmail(mailOptions) {
+    if (await sendSystemEmailViaResend(mailOptions)) return true;
+    const { user, pass } = getSystemEmailCredentials();
+    if (!user || !pass) return false;
+    // Never use Resend test addresses on SMTP (Gmail would reject / wrong auth).
+    const safeFrom =
+        mailOptions.from && String(mailOptions.from).includes(user)
+            ? mailOptions.from
+            : `"TopEdge AI" <${user}>`;
+    return sendViaSystemSmtpWithFallback({ ...mailOptions, from: safeFrom });
+}
+
+/**
+ * Shared transporter for system emails — single port from env (shopifyOAuth / legacy callers).
+ */
+function createSystemEmailTransporter() {
+    const envPort = parseInt(String(process.env.SMTP_PORT || '587'), 10) || 587;
+    const secure = envPort === 465;
+    return createSystemEmailTransporterFor({
+        port: envPort,
+        secure,
+        requireTLS: !secure
     });
 }
 
@@ -43,7 +172,7 @@ function createSystemEmailTransporter() {
  * Create a nodemailer transporter from client's stored email credentials.
  * Falls back to global env vars if client-specific ones are not set.
  */
-function createTransporter(client) {
+function createTransporterForClient(client, { port, secure, requireTLS }) {
     const emailUser = client.emailUser || process.env.EMAIL_USER;
     const emailPass = client.emailAppPassword ? decrypt(client.emailAppPassword) : process.env.EMAIL_APP_PASSWORD;
 
@@ -52,16 +181,32 @@ function createTransporter(client) {
         return null;
     }
 
+    const host = client.smtpHost || process.env.CLIENT_SMTP_HOST || 'smtp.gmail.com';
+    const { connectionTimeout, greetingTimeout, socketTimeout } = _smtpConnTimeouts();
+
     return nodemailer.createTransport({
-        host: 'smtp.gmail.com',
-        port: 465,
-        secure: true,
+        host,
+        port,
+        secure,
+        requireTLS: !!requireTLS,
+        tls: { rejectUnauthorized: false, minVersion: 'TLSv1.2' },
         family: 4,
+        pool: false,
+        connectionTimeout,
+        greetingTimeout,
+        socketTimeout,
         auth: {
             user: emailUser,
             pass: emailPass
         }
     });
+}
+
+/** Prefer 587+STARTTLS from cloud hosts; 465 SSL as alternate in sendEmail retry. */
+function createTransporter(client) {
+    const port = parseInt(String(client.smtpPort || process.env.CLIENT_SMTP_PORT || '587'), 10) || 587;
+    const secure = port === 465;
+    return createTransporterForClient(client, { port, secure, requireTLS: !secure });
 }
 
 /**
@@ -75,18 +220,44 @@ async function sendEmail(client, { to, subject, html }) {
         return false;
     }
 
-    const transporter = createTransporter(client);
-    if (!transporter) return false;
+    const fromAddr = client.emailUser || process.env.EMAIL_USER;
+    const from = `"${client.name || 'Store'}" <${fromAddr}>`;
+    const mail = { from, to, subject, html };
 
-    try {
-        const from = `"${client.name || 'Store'}" <${client.emailUser || process.env.EMAIL_USER}>`;
-        await transporter.sendMail({ from, to, subject, html });
-        console.log(`[EmailService] ✅ Email sent to ${to} | Subject: ${subject}`);
-        return true;
-    } catch (err) {
-        console.error(`[EmailService] ❌ Failed to send email to ${to}:`, err.message);
-        return false;
+    const tryOrder =
+        parseInt(String(client.smtpPort || process.env.CLIENT_SMTP_PORT || '587'), 10) === 465
+            ? [
+                  { port: 465, secure: true, requireTLS: false, label: '465+SSL' },
+                  { port: 587, secure: false, requireTLS: true, label: '587+STARTTLS' }
+              ]
+            : [
+                  { port: 587, secure: false, requireTLS: true, label: '587+STARTTLS' },
+                  { port: 465, secure: true, requireTLS: false, label: '465+SSL' }
+              ];
+
+    let lastErr;
+    for (const cfg of tryOrder) {
+        const transporter = createTransporterForClient(client, cfg);
+        if (!transporter) return false;
+        try {
+            await transporter.sendMail(mail);
+            console.log(`[EmailService] ✅ Email sent to ${to} | Subject: ${subject} (${cfg.label})`);
+            try {
+                transporter.close();
+            } catch (_) { /* noop */ }
+            return true;
+        } catch (err) {
+            lastErr = err;
+            console.warn(`[EmailService] Client SMTP ${cfg.label} failed:`, err.code, err.message);
+            try {
+                transporter.close();
+            } catch (_) { /* noop */ }
+            if (err.code === 'EAUTH') break;
+            if (!SMTP_RETRYABLE.has(err.code) && !/timeout|timed out/i.test(String(err.message || ''))) break;
+        }
     }
+    console.error(`[EmailService] ❌ Failed to send email to ${to}:`, lastErr?.message);
+    return false;
 }
 
 /**
@@ -217,10 +388,11 @@ async function sendReviewRequestEmail(client, { customerEmail, customerName, pro
  * Send a System OTP using the dedicated TopEdge AI credentials.
  */
 async function sendSystemOTPEmail(toAddress, otpCode, purpose = 'SIGNUP') {
-    const transporter = createSystemEmailTransporter();
-    if (!transporter) return false;
-
-    const fromUser = getSystemEmailCredentials().user;
+    const { user: fromUser } = getSystemEmailCredentials();
+    if (!fromUser && !process.env.RESEND_API_KEY && !process.env.SYSTEM_RESEND_API_KEY) {
+        console.error('[EmailService] Cannot send OTP: no SYSTEM_EMAIL_USER and no RESEND_API_KEY.');
+        return false;
+    }
 
     const isReset = purpose === 'RESET_PASSWORD';
     const subject = isReset 
@@ -269,33 +441,29 @@ async function sendSystemOTPEmail(toAddress, otpCode, purpose = 'SIGNUP') {
         </div>
     `;
 
-    try {
-        await transporter.sendMail({
-            from: `"TopEdge AI Security" <${fromUser}>`,
-            to: toAddress,
-            subject,
-            html
-        });
+    const fromHeader = fromUser ? `"TopEdge AI Security" <${fromUser}>` : '"TopEdge AI Security" <onboarding@resend.dev>';
+    const ok = await deliverSystemEmail({
+        from: fromHeader,
+        to: toAddress,
+        subject,
+        html
+    });
+    if (ok) {
         console.log(`[EmailService] System OTP sent to ${toAddress} | Purpose: ${purpose}`);
-        return true;
-    } catch (err) {
+    } else {
         console.error(
-            `[EmailService] ❌ Failed to send System OTP to ${toAddress}:`,
-            err.code || err.name,
-            err.message,
-            err.response || ''
+            `[EmailService] ❌ Failed to send System OTP to ${toAddress} — configure RESEND_API_KEY+RESEND_FROM or working SMTP (see logs above).`
         );
-        return false;
     }
+    return ok;
 }
 
 /**
  * Send a team invitation email to a new agent.
  */
 async function sendTeamInviteEmail(toAddress, { adminName, businessName, password, loginUrl }) {
-    const transporter = createSystemEmailTransporter();
-    if (!transporter) return false;
     const fromUser = getSystemEmailCredentials().user;
+    if (!fromUser && !process.env.RESEND_API_KEY && !process.env.SYSTEM_RESEND_API_KEY) return false;
 
     const html = `
         <div style="font-family: 'Inter', Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 40px; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 24px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05);">
@@ -334,27 +502,73 @@ async function sendTeamInviteEmail(toAddress, { adminName, businessName, passwor
         </div>
     `;
 
-    try {
-        await transporter.sendMail({
-            from: `"TopEdge AI" <${fromUser}>`,
-            to: toAddress,
-            subject: `👋 You've been invited to join ${businessName} on TopEdge AI`,
-            html
-        });
-        return true;
-    } catch (err) {
-        console.error(`[EmailService] ❌ Failed to send Team Invite to ${toAddress}:`, err.message);
-        return false;
-    }
+    const fromHeader = fromUser ? `"TopEdge AI" <${fromUser}>` : '"TopEdge AI" <onboarding@resend.dev>';
+    return deliverSystemEmail({
+        from: fromHeader,
+        to: toAddress,
+        subject: `👋 You've been invited to join ${businessName} on TopEdge AI`,
+        html
+    });
 }
 
 /**
  * Send an admin confirmation email when a new member is invited.
  */
+/**
+ * Escape text for safe inclusion in HTML email bodies.
+ */
+function escapeHtml(text) {
+    return String(text ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+/**
+ * Enterprise HTML for human-escalation / admin_alert emails (used by notificationService).
+ */
+function buildAdminEscalationEmailHtml({
+    brandName = 'Your store',
+    topic = 'Support request',
+    triggerSource = 'WhatsApp automation',
+    customerPhone = '',
+    customerQuery = '',
+    takeoverLink = '#',
+}) {
+    const q = String(customerQuery || '').trim();
+    const queryBlock = q
+        ? `<div style="margin-top:20px;padding:16px;background:#0f172a08;border-radius:12px;border:1px solid #e2e8f0;">
+            <p style="margin:0 0 8px;font-size:11px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#64748b;">Customer message</p>
+            <p style="margin:0;font-size:14px;line-height:1.55;color:#0f172a;white-space:pre-wrap;">${escapeHtml(q)}</p>
+           </div>`
+        : '';
+
+    return `
+        <div style="font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:640px;margin:0 auto;padding:40px 32px;background:#f8fafc;">
+          <div style="background:#fff;border-radius:20px;border:1px solid #e2e8f0;overflow:hidden;box-shadow:0 25px 50px -12px rgba(15,23,42,0.12);">
+            <div style="padding:28px 28px 12px;border-bottom:1px solid #f1f5f9;">
+              <span style="display:inline-block;padding:6px 12px;border-radius:999px;background:#fef2f2;color:#b91c1c;font-size:10px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;">Escalation · TopEdge AI</span>
+              <h1 style="margin:16px 0 0;font-size:22px;font-weight:800;color:#0f172a;line-height:1.25;">${escapeHtml(topic)}</h1>
+              <p style="margin:10px 0 0;font-size:14px;color:#64748b;line-height:1.5;">A shopper on <strong style="color:#334155;">${escapeHtml(brandName)}</strong> needs a human. Details below — act fast; speed wins conversions.</p>
+            </div>
+            <div style="padding:24px 28px 32px;">
+              <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                <tr><td style="padding:10px 0;color:#94a3b8;font-weight:700;text-transform:uppercase;font-size:10px;letter-spacing:0.06em;width:38%;">Source</td><td style="padding:10px 0;text-align:right;color:#0f172a;font-weight:600;">${escapeHtml(triggerSource)}</td></tr>
+                <tr><td style="padding:10px 0;color:#94a3b8;font-weight:700;text-transform:uppercase;font-size:10px;letter-spacing:0.06em;">Customer WhatsApp</td><td style="padding:10px 0;text-align:right;color:#4f46e5;font-weight:800;font-family:ui-monospace,Menlo,monospace;">${escapeHtml(customerPhone)}</td></tr>
+              </table>
+              ${queryBlock}
+              <a href="${escapeHtml(takeoverLink)}" style="display:block;margin-top:28px;text-align:center;padding:16px 20px;background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);color:#fff!important;text-decoration:none;border-radius:14px;font-weight:800;font-size:14px;letter-spacing:0.02em;">Open conversation in dashboard →</a>
+              <p style="margin:24px 0 0;font-size:11px;color:#94a3b8;line-height:1.6;text-align:center;">If the button is blocked, copy this link: <span style="word-break:break-all;color:#64748b;">${escapeHtml(takeoverLink)}</span></p>
+            </div>
+          </div>
+          <p style="text-align:center;margin-top:24px;font-size:11px;color:#94a3b8;">TopEdge AI · Enterprise WhatsApp CX</p>
+        </div>`;
+}
+
 async function sendAdminConfirmationEmail(adminEmail, { agentName, agentEmail, businessName }) {
-    const transporter = createSystemEmailTransporter();
-    if (!transporter) return false;
     const fromUser = getSystemEmailCredentials().user;
+    if (!fromUser && !process.env.RESEND_API_KEY && !process.env.SYSTEM_RESEND_API_KEY) return false;
 
     const html = `
         <div style="font-family: 'Inter', Arial, sans-serif; max-width: 500px; margin: 40px auto; padding: 32px; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px;">
@@ -373,27 +587,26 @@ async function sendAdminConfirmationEmail(adminEmail, { agentName, agentEmail, b
         </div>
     `;
 
-    try {
-        await transporter.sendMail({
-            from: `"TopEdge AI" <${fromUser}>`,
-            to: adminEmail,
-            subject: `✅ Invitation Sent: ${agentName} has been invited`,
-            html
-        });
-        return true;
-    } catch (err) {
-        console.error(`[EmailService] ❌ Failed to send Admin Confirmation:`, err.message);
-        return false;
-    }
+    const fromHeader = fromUser ? `"TopEdge AI" <${fromUser}>` : '"TopEdge AI" <onboarding@resend.dev>';
+    return deliverSystemEmail({
+        from: fromHeader,
+        to: adminEmail,
+        subject: `✅ Invitation Sent: ${agentName} has been invited`,
+        html
+    });
 }
 
 module.exports = {
     sendEmail,
+    escapeHtml,
+    buildAdminEscalationEmailHtml,
     sendAbandonedCartEmail,
     sendOrderConfirmationEmail,
     sendCODToPrepaidEmail,
     sendReviewRequestEmail,
     sendSystemOTPEmail,
     sendTeamInviteEmail,
-    sendAdminConfirmationEmail
+    sendAdminConfirmationEmail,
+    createSystemEmailTransporter,
+    deliverSystemEmail
 };

@@ -41,10 +41,19 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
         });
       }
       
-      if (client.adminPhoneNumber) {
-        await WhatsApp.sendText(client, client.adminPhoneNumber,
-          `👋 Human needed: ${phone}. Chat: https://wa.me/${phone}`
-        );
+      try {
+        const NotificationService = require("./notificationService");
+        await NotificationService.sendAdminAlert(client, {
+          customerPhone: phone,
+          topic: "Human takeover requested (ESCALATE_HUMAN)",
+          triggerSource: "Flow action",
+        });
+      } catch (e) {
+        if (client.adminPhoneNumber) {
+          await WhatsApp.sendText(client, client.adminPhoneNumber,
+            `👋 Human needed: ${phone}. Chat: https://wa.me/${phone}`
+          );
+        }
       }
       break;
     }
@@ -303,7 +312,13 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
     case "ADMIN_ALERT": {
       const NotificationService = require("./notificationService");
       const topic = node.data?.topic || "New Priority Request";
-      
+      const nodeChannel = node.data?.alertChannel;
+      const pref = client.adminAlertPreferences;
+      const channel =
+        nodeChannel === "whatsapp" || nodeChannel === "email" || nodeChannel === "both"
+          ? nodeChannel
+          : (pref === "whatsapp" || pref === "email" || pref === "both" ? pref : "both");
+
       await Conversation.findOneAndUpdate(
         { phone, clientId: client.clientId },
         { requiresAttention: true, attentionReason: topic }
@@ -312,7 +327,10 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
       await NotificationService.sendAdminAlert(client, {
         customerPhone: phone,
         topic,
-        triggerSource: node.data?.triggerSource || "Automation Flow"
+        triggerSource: node.data?.triggerSource || "Automation Flow",
+        channel,
+        adminPhoneOverride: node.data?.phone ? String(node.data.phone).replace(/\D/g, "") : undefined,
+        customerQuery: lead?.capturedData?.support_query || "",
       });
 
       if (global.io) {

@@ -321,6 +321,17 @@ const ClientSchema = new mongoose.Schema({
   
   // Phase 3: Operational Admin Alerts
   adminAlertWhatsapp: { type: String, default: "" }, // comma separated numbers
+  /** Primary business / billing contact email (also used as fallback for alert email). */
+  adminEmail: { type: String, default: "" },
+  /**
+   * Where to deliver flow-triggered admin escalations (human handoff, returns, B2B).
+   * Per-node `admin_alert` may still override with explicit alertChannel when set.
+   */
+  adminAlertPreferences: {
+    type: String,
+    enum: ["whatsapp", "email", "both"],
+    default: "both",
+  },
   testMessageSent: { type: Boolean, default: false },
   wabaDisplayName: { type: String, default: "" },
   shopifyWebhooks: { type: mongoose.Schema.Types.Mixed, default: {} },

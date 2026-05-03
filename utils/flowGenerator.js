@@ -146,7 +146,7 @@ const TONE_COPY = {
   order_hub_prompt: "What would you like to do next for *{{order_number}}*?",
   cancel_reason_prompt: "In one short line, why are you cancelling? It helps us improve.",
   cancel_failed_user:
-    "We couldn't complete the cancellation — it may already be packed or on the way. Type *menu* to reach the team.",
+    "We couldn't complete the cancellation for *{{order_number}}* at *{{brand_name}}* — it may already be packed or on the way. Type *menu* to reach the team.",
   support_capture_prompt:
     "Describe what you need — include your *order number* if you have one. A teammate will pick this up shortly.",
   support_schedule_closed_nudge:
@@ -363,35 +363,44 @@ function buildDefaultContent(ctx) {
     product_menu_text:    `Welcome to the *{{brand_name}}* Hub! How can we help you today?`,
     order_status_msg:
       `📦 *{{order_number}}*\n\nStatus: *{{order_status}}*\n\n{{line_items_list}}\n\n🔗 Track: {{tracking_url}}\n\nTap a button below for the next step.`,
-    fallback_msg:         `I'm still learning! 😊 Connecting you with a human expert who can help.`,
-    returns_policy_short: `Easy 7-day returns on all unused items. Just share a photo to start! 🔄`,
-    cancellation_confirm: `Are you sure you want to cancel? This cannot be undone.`,
-    cancellation_success: `Cancellation processed successfully. We hope to serve you again! 💙`,
+    fallback_msg:         `I'm still learning! 😊 *{{bot_name}}* at *{{brand_name}}* will connect you with a teammate who can help.`,
+    returns_policy_short: `Easy 7-day returns on all unused items at *{{brand_name}}*. Just share a photo to start! 🔄`,
+    cancellation_confirm: `Cancel *{{order_number}}* at *{{brand_name}}*? This usually cannot be undone once submitted.`,
+    cancellation_success: `✅ *{{order_number}}* is cancelled at *{{brand_name}}*. We're sorry to see you go — tap *menu* anytime.`,
     loyalty_welcome:      `🎉 Welcome to *{{brand_name}}* Rewards! You've earned *${F.loyaltySignupBonus} points*!`,
-    loyalty_points_msg:   `💎 You have points available! Redeem them for instant discounts.`,
+    loyalty_points_msg:   `💎 *{{brand_name}}* — you have rewards points on this account! Redeem them for instant discounts at checkout.`,
     referral_msg:         `Refer a friend and earn *{{referral_points}} bonus points*! 🎁`,
     sentiment_ask:        `How was your experience today? We value your feedback! 😊`,
-    review_positive:      `That's great! 🌟 Please consider sharing your review on Google.`,
-    review_negative:      `We're sorry! 😔 An agent will be with you shortly to make it right.`,
+    review_positive:      `That's great to hear about *{{brand_name}}*! 🌟 Please consider sharing your review on Google when you have a moment.`,
+    review_negative:      `We're sorry *{{brand_name}}* missed the mark. 😔 A teammate will be with you shortly to make it right.`,
     cart_recovery_1:
-      `🛒 Hi {{first_name}} — you left something beautiful in your *{{brand_name}}* cart:\n\n{{line_items_list}}\n\n💰 *Total:* {{cart_total}}\n🔗 *Checkout:* {{checkout_url}}\n\nTap the link to complete your order securely.`,
+      `Hi {{first_name}} — totally understand life gets busy. You still have this waiting at *{{brand_name}}*:\n\n{{line_items_list}}\n\n💰 *Your total:* {{cart_total}}\n\nIf anything felt unclear at checkout, just reply *help* and {{bot_name}} will sort it. When you're ready, you can finish securely here:\n🔗 {{checkout_url}}`,
     cart_recovery_2:
-      `⏰ Still thinking? Your items are reserved — {{first_product_title}} and the rest are waiting.\n\n💰 {{cart_total}}\n🔗 {{checkout_url}}`,
+      `{{first_name}}, quick heads-up from *{{brand_name}}* — popular SKUs move fast, and carts aren't held forever.\n\nYour picks (including *{{first_product_title}}*) are still in demand this week.\n\n💰 {{cart_total}}\n🔗 Secure checkout: {{checkout_url}}\n\n_No pressure — we just don't want you to miss what you already chose._`,
     cart_recovery_3:
-      `🔥 Last nudge: finish checkout now and use any active store offer. Cart total {{cart_total}}.\n🔗 {{checkout_url}}`,
-    cod_nudge:            `💳 Save {{currency}}{{discount_amount}} and get faster delivery with online payment!`,
+      `Last call from *{{brand_name}}* — your cart is still open ({{cart_total}}).\n\n✨ *Limited-time move:* complete checkout now and we prioritise dispatch on prepaid orders so you get it sooner.\n\n🔗 {{checkout_url}}\n\nTap the link before sizes/configurations sell through. If you need a human, reply *menu*.`,
+    cod_nudge:
+      `{{first_name}}, your *{{brand_name}}* order {{order_number}} is locked in as *COD*.\n\nCash-on-delivery means extra handling, verification stops, and slower handoff to the courier — *prepaid ships faster* and cuts failed-delivery risk.\n\n💳 *Switch to online pay now* → get *{{currency}}{{discount_amount}}* credited back as a thank-you and *priority packing* on us.\n\nReply *pay* or tap your payment link when ready: {{payment_link}}`,
     order_confirmed_msg:
-      `🎉 *Order confirmed, {{first_name}}!*\n\n📦 *Order:* {{order_number}}\n💰 *Total:* {{order_total}}\n💳 *Payment:* {{payment_method}}\n\n📍 *Ship to:*\n{{shipping_address}}\n\n🧾 *Items:*\n{{line_items_list}}\n\nWe'll notify you when it ships.`,
-    agent_handoff_msg:    `Thanks — I've notified the team. Someone will join you shortly. 🎧`,
-    faq_response:         `Here are some helpful answers. Type *menu* to return.`,
+      `🎉 *You're in — thank you, {{first_name}}.*\n\n📦 *Order:* {{order_number}}\n💰 *Total:* {{order_total}}\n💳 *Payment:* {{payment_method}}\n\n📍 *Ship to:*\n{{shipping_address}}\n\n🧾 *Items:*\n{{line_items_list}}\n\nWe're preparing your parcel now — tracking drops the moment it leaves our hub. Questions? Reply here anytime.`,
+    agent_handoff_msg:    `Thanks — I've notified *{{brand_name}}*'s team. Someone will join you shortly. 🎧`,
+    faq_response:         `Here are quick answers from *{{brand_name}}*. Type *menu* anytime to return to the hub.`,
     ad_welcome:           `Thanks for clicking! 👋 How can I help you explore *{{brand_name}}*?`,
     ig_welcome:           `Hey from IG! 📸 Let's find what you're looking for.`,
-    warranty_welcome:     `🛡️ Register your *{{warranty_duration}}* warranty for priority support.`,
-    warranty_lookup_prompt: `Enter your Order ID to check your warranty status.`,
-    warranty_reg_success: `✅ Warranty registered for *{{warranty_duration}}*!`,
+    warranty_welcome:
+      `🛡️ *{{brand_name}}* backs what we sell — your *{{warranty_duration}}* coverage keeps you priority-protected.\n\nRegister once (serial + purchase date) for faster service, or check status anytime.`,
+    warranty_lookup_prompt: `Send your *order ID* or *serial number* (as on the product / invoice) and we'll pull your warranty status instantly.`,
+    warranty_reg_success:
+      `✅ *You're covered.* Warranty registered for *{{warranty_duration}}* with *{{brand_name}}*.\n\nKeep this chat — if anything ever goes wrong, we'll already have your details on file.`,
+    warranty_active_msg:
+      `✅ Good news — this unit shows *active {{warranty_duration}} warranty* with *{{brand_name}}*. Our team can guide the next step (repair / replace / pickup) — reply here or tap *menu* for a human.`,
+    warranty_expired_msg:
+      `This serial is outside the standard *{{warranty_duration}}* window — that happens with well-loved products.\n\n*{{brand_name}}* can still help with paid repair, trade-up options, or loyalty perks. Tap *menu* to reach the team.`,
+    warranty_none_msg:
+      `We couldn't match that serial / order to a warranty record yet.\n\nDouble-check the digits, or register your product with *{{brand_name}}* using *Warranty → Register*. Need help? Tap *menu* for human support.`,
     support_hours_msg:    `Agents are active *{{open_hours}}*. I'm here 24/7! 📞`,
     return_photo_prompt:  `Please upload a clear photo of the item. 📸`,
-    in_transit_error:     `Already shipped! 🚚 Contact returns once it arrives.`
+    in_transit_error:     `This *{{order_number}}* order from *{{brand_name}}* has already shipped 🚚 — contact returns once it arrives, or tap *menu* for help.`
   };
 }
 
@@ -400,7 +409,14 @@ async function generateAIContent(ctx) {
   const productsSummary = products.slice(0, 8)
     .map(p => `"${p.title}" ${currency}${p.price}: ${p.features.slice(0, 80)}`).join("\n");
 
-  const prompt = `Create JSON marketing copy for WhatsApp commerce bot.
+  const prompt = `You are a top-tier D2C growth copy chief. Create JSON marketing copy for a WhatsApp commerce bot.
+Use AIDA (Attention, Interest, Desire, Action) where appropriate. For cart_recovery_1 use empathy + hook (no hard sell).
+For cart_recovery_2 add authentic scarcity / velocity (selling fast, cart not held) without fake countdown timers.
+For cart_recovery_3 add FOMO + clear CTA + optional incentive framing (no fabricated coupon codes unless brand-agnostic like "active offers").
+For cod_nudge: contrast COD friction (slower dispatch, verification) vs prepaid benefits (priority ship, cashback using {{currency}}{{discount_amount}} placeholders).
+For order_confirmed_msg: premium reassurance + anticipation of tracking.
+For warranty_* strings: confident, legal-safe, enterprise tone — no guarantees beyond stated {{warranty_duration}}.
+Keep placeholders EXACTLY as token names: {{first_name}},{{brand_name}},{{bot_name}},{{line_items_list}},{{cart_total}},{{checkout_url}},{{first_product_title}},{{order_number}},{{order_total}},{{payment_method}},{{shipping_address}},{{currency}},{{discount_amount}},{{payment_link}},{{warranty_duration}} — do not rename.
 BRAND=${businessName}
 DESCRIPTION=${businessDescription}
 BOT=${botName}
@@ -408,7 +424,7 @@ TONE=${tone}
 LANGUAGE=${botLanguage}
 PRODUCTS:
 ${productsSummary}
-Return only JSON with keys: welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_policy_short,cancellation_confirm,cancellation_success,loyalty_welcome,loyalty_points_msg,referral_msg,sentiment_ask,review_positive,review_negative,cart_recovery_1,cart_recovery_2,cart_recovery_3,cod_nudge,order_confirmed_msg,agent_handoff_msg,faq_response,ad_welcome,ig_welcome,warranty_welcome,warranty_lookup_prompt,support_hours_msg,return_photo_prompt,warranty_reg_success`;
+Return only JSON with keys: welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_policy_short,cancellation_confirm,cancellation_success,loyalty_welcome,loyalty_points_msg,referral_msg,sentiment_ask,review_positive,review_negative,cart_recovery_1,cart_recovery_2,cart_recovery_3,cod_nudge,order_confirmed_msg,agent_handoff_msg,faq_response,ad_welcome,ig_welcome,warranty_welcome,warranty_lookup_prompt,warranty_reg_success,warranty_active_msg,warranty_expired_msg,warranty_none_msg,support_hours_msg,return_photo_prompt`;
 
   try {
     const apiKey = client.ai?.geminiKey || client.geminiApiKey || process.env.GEMINI_API_KEY;
@@ -751,7 +767,9 @@ function buildOrderBranch(ctx, IDS, content) {
   );
   edges.push(
     { id: `e_${IDS.ord_track}_nf`, source: IDS.ord_track, target: IDS.ord_notfound, sourceHandle: "not_found" },
-    { id: `e_${IDS.ord_track}_ok`, source: IDS.ord_track, target: IDS.ord_status_msg, sourceHandle: "success" }
+    { id: `e_${IDS.ord_track}_ok`, source: IDS.ord_track, target: IDS.ord_status_msg, sourceHandle: "success" },
+    // After manual order id, re-run lookup (engine merges order_id_manual into metadata).
+    { id: `e_${IDS.ord_notfound}_retry`, source: IDS.ord_notfound, target: IDS.ord_track }
   );
 
   if (F.enableCancelOrder) {
@@ -861,7 +879,10 @@ function buildOrderBranch(ctx, IDS, content) {
       { id: `e_${IDS.can_logic}_f`, source: IDS.can_logic, target: IDS.can_reason, sourceHandle: "false" },
       { id: `e_${IDS.can_reason}_act`, source: IDS.can_reason, target: IDS.can_action },
       { id: `e_${IDS.can_action}_s`, source: IDS.can_action, target: IDS.can_succ, sourceHandle: "success" },
-      { id: `e_${IDS.can_action}_f`, source: IDS.can_action, target: IDS.can_fail, sourceHandle: "fail" }
+      { id: `e_${IDS.can_action}_f`, source: IDS.can_action, target: IDS.can_fail, sourceHandle: "fail" },
+      { id: `e_${IDS.can_shipped}_mm`, source: IDS.can_shipped, target: IDS.main_menu },
+      { id: `e_${IDS.can_succ}_mm`, source: IDS.can_succ, target: IDS.main_menu },
+      { id: `e_${IDS.can_fail}_mm`, source: IDS.can_fail, target: IDS.main_menu }
     );
   } else {
     edges.push({ id: `e_${IDS.ord_status_msg}_mm`, source: IDS.ord_status_msg, target: IDS.main_menu });
@@ -904,7 +925,7 @@ function buildReturnsBranch(ctx, IDS, content) {
     { id: IDS.ref_check, type: "shopify_call", position: { x: 2900, y: 850 },
       data: { label: "Refund Status", action: "ORDER_REFUND_STATUS", heatmapCount: 0 } },
     { id: IDS.ref_result, type: "message", position: { x: 3400, y: 850 },
-      data: { label: "Refund Result", text: "Refund updates usually post within *5–7 business days* depending on your bank.", heatmapCount: 0 } }
+      data: { label: "Refund Result", text: "For *{{brand_name}}* orders, refunds usually post within *5–7 business days* depending on your bank.", heatmapCount: 0 } }
   );
   edges.push(
     { id: `e_${IDS.ret_hub}_r`,     source: IDS.ret_hub,    target: IDS.ret_reason, sourceHandle: "return" },
@@ -994,13 +1015,13 @@ function buildWarrantyBranch(ctx, IDS, content) {
       data: { label: "Warranty Check", action: "WARRANTY_CHECK", heatmapCount: 0 } },
     { id: IDS.war_active,  type: "message", position: { x: 3900, y: 1200 },
       data: { label: "Warranty Active",
-        text: "✅ Your product is under an *active {{warranty_duration}} warranty* with *{{brand_name}}*. Our team will help with the next step. 🛡️", heatmapCount: 0 } },
+        text: content.warranty_active_msg, heatmapCount: 0 } },
     { id: IDS.war_expired, type: "message", position: { x: 3900, y: 1300 },
       data: { label: "Warranty Expired",
-        text: "⚠️ This serial is past the *{{warranty_duration}}* coverage window. We can still help with paid repair options at *{{brand_name}}*.", heatmapCount: 0 } },
+        text: content.warranty_expired_msg, heatmapCount: 0 } },
     { id: IDS.war_none,    type: "message", position: { x: 3900, y: 1400 },
       data: { label: "No Warranty",
-        text: "❌ No warranty record found for that serial. Register your product with *{{brand_name}}* or tap *menu* for human support.", heatmapCount: 0 } }
+        text: content.warranty_none_msg, heatmapCount: 0 } }
   );
   edges.push(
     { id: `e_${IDS.war_hub}_reg`,   source: IDS.war_hub,    target: IDS.war_serial, sourceHandle: "reg" },
@@ -1012,7 +1033,11 @@ function buildWarrantyBranch(ctx, IDS, content) {
     { id: `e_${IDS.war_lookup}_e`,  source: IDS.war_lookup, target: IDS.war_engine },
     { id: `e_${IDS.war_engine}_a`,  source: IDS.war_engine, target: IDS.war_active,  sourceHandle: "active" },
     { id: `e_${IDS.war_engine}_x`,  source: IDS.war_engine, target: IDS.war_expired, sourceHandle: "expired" },
-    { id: `e_${IDS.war_engine}_n`,  source: IDS.war_engine, target: IDS.war_none,    sourceHandle: "none" }
+    { id: `e_${IDS.war_engine}_n`,  source: IDS.war_engine, target: IDS.war_none,    sourceHandle: "none" },
+    { id: `e_${IDS.war_success}_mm`, source: IDS.war_success, target: IDS.main_menu },
+    { id: `e_${IDS.war_active}_mm`, source: IDS.war_active, target: IDS.main_menu },
+    { id: `e_${IDS.war_expired}_mm`, source: IDS.war_expired, target: IDS.main_menu },
+    { id: `e_${IDS.war_none}_mm`, source: IDS.war_none, target: IDS.main_menu }
   );
 
   return {
@@ -1045,16 +1070,19 @@ function buildLoyaltyBranch(ctx, IDS, content) {
     { id: IDS.loy_redeem, type: "loyalty_action", position: { x: 2900, y: 1650 },
       data: { label: "Redeem Loyalty", actionType: "REDEEM_POINTS", pointsRequired: 100, heatmapCount: 0 } },
     { id: IDS.loy_redeem_ok, type: "message", position: { x: 3400, y: 1600 },
-      data: { label: "Redeem Success", text: "🎁 Redeemed! Your discount has been applied at checkout.", heatmapCount: 0 } },
+      data: { label: "Redeem Success", text: "🎁 Redeemed at *{{brand_name}}*! Your discount has been applied at checkout.", heatmapCount: 0 } },
     { id: IDS.loy_redeem_fail, type: "message", position: { x: 3400, y: 1750 },
-      data: { label: "Insufficient Points", text: "😔 You need more points to redeem. Keep shopping to earn! 💎", heatmapCount: 0 } }
+      data: { label: "Insufficient Points", text: "😔 You need more points to redeem at *{{brand_name}}*. Keep shopping to earn! 💎", heatmapCount: 0 } }
   );
   edges.push(
     { id: `e_${IDS.loy_menu}_pts`, source: IDS.loy_menu, target: IDS.loy_balance, sourceHandle: "pts" },
     { id: `e_${IDS.loy_menu}_red`, source: IDS.loy_menu, target: IDS.loy_redeem,  sourceHandle: "red" },
     { id: `e_${IDS.loy_menu}_mn`,  source: IDS.loy_menu, target: IDS.main_menu,   sourceHandle: "menu" },
     { id: `e_${IDS.loy_redeem}_s`, source: IDS.loy_redeem, target: IDS.loy_redeem_ok,   sourceHandle: "success" },
-    { id: `e_${IDS.loy_redeem}_f`, source: IDS.loy_redeem, target: IDS.loy_redeem_fail, sourceHandle: "fail" }
+    { id: `e_${IDS.loy_redeem}_f`, source: IDS.loy_redeem, target: IDS.loy_redeem_fail, sourceHandle: "fail" },
+    { id: `e_${IDS.loy_balance}_mm`, source: IDS.loy_balance, target: IDS.main_menu },
+    { id: `e_${IDS.loy_redeem_ok}_mm`, source: IDS.loy_redeem_ok, target: IDS.main_menu },
+    { id: `e_${IDS.loy_redeem_fail}_mm`, source: IDS.loy_redeem_fail, target: IDS.main_menu }
   );
 
   if (F.enableReferral) {
@@ -1062,7 +1090,10 @@ function buildLoyaltyBranch(ctx, IDS, content) {
       id: IDS.loy_refer, type: "message", position: { x: 2900, y: 1800 },
       data: { label: "Refer", text: content.referral_msg, heatmapCount: 0 }
     });
-    edges.push({ id: `e_${IDS.loy_menu}_ref`, source: IDS.loy_menu, target: IDS.loy_refer, sourceHandle: "ref" });
+    edges.push(
+      { id: `e_${IDS.loy_menu}_ref`, source: IDS.loy_menu, target: IDS.loy_refer, sourceHandle: "ref" },
+      { id: `e_${IDS.loy_refer}_mm`, source: IDS.loy_refer, target: IDS.main_menu }
+    );
   }
 
   return {
@@ -1122,13 +1153,19 @@ function buildSupportBranch(ctx, IDS, content) {
     edges.push(
       { id: `e_${IDS.sup_tag}_al`, source: IDS.sup_tag, target: IDS.sup_alert },
       { id: `e_${IDS.sup_alert}_cf`, source: IDS.sup_alert, target: IDS.sup_confirm },
-      { id: `e_${IDS.sup_confirm}_lc`, source: IDS.sup_confirm, target: IDS.sup_livechat }
+      { id: `e_${IDS.sup_confirm}_lc`, source: IDS.sup_confirm, target: IDS.sup_livechat },
+      { id: `e_${IDS.sup_livechat}_mm`, source: IDS.sup_livechat, target: IDS.main_menu }
     );
   } else {
     edges.push(
       { id: `e_${IDS.sup_tag}_cf`, source: IDS.sup_tag, target: IDS.sup_confirm },
-      { id: `e_${IDS.sup_confirm}_lc`, source: IDS.sup_confirm, target: IDS.sup_livechat }
+      { id: `e_${IDS.sup_confirm}_lc`, source: IDS.sup_confirm, target: IDS.sup_livechat },
+      { id: `e_${IDS.sup_livechat}_mm`, source: IDS.sup_livechat, target: IDS.main_menu }
     );
+  }
+
+  if (F.enableBusinessHoursGate && !F.enable247) {
+    edges.push({ id: `e_${IDS.sup_closed}_mm`, source: IDS.sup_closed, target: IDS.main_menu });
   }
 
   return {
@@ -1177,7 +1214,7 @@ function buildAbandonedCart(ctx, IDS, content) {
       label: `Cart Recovery ${i + 1}`,
       text: step.text,
       heatmapCount: 0,
-      suppressAIFallbackLink: i === steps.length - 1,
+      suppressAIFallbackLink: false,
     };
     if (i === 0) {
       msgData.imageUrl = '{{first_product_image}}';
@@ -1192,6 +1229,8 @@ function buildAbandonedCart(ctx, IDS, content) {
     edges.push({ id: `e_${dId}_m${i}`,  source: dId,  target: mId });
     prev = mId;
   });
+  const lastMsgId = `cart_msg_${steps.length - 1}_${IDS.seed}`;
+  edges.push({ id: `e_${lastMsgId}_mm`, source: lastMsgId, target: IDS.main_menu });
   return { nodes, edges };
 }
 
@@ -1209,7 +1248,10 @@ function buildOrderConfirmAndCod(ctx, IDS, content) {
         imageUrl: '{{first_product_image}}',
       } }
   ];
-  const edges = [{ id: `e_${IDS.trig_order}_cm`, source: IDS.trig_order, target: IDS.conf_msg }];
+  let edges = [
+    { id: `e_${IDS.trig_order}_cm`, source: IDS.trig_order, target: IDS.conf_msg },
+    { id: `e_${IDS.conf_msg}_mm`, source: IDS.conf_msg, target: IDS.main_menu }
+  ];
 
   if (F.enableCodToPrepaid) {
     nodes.push(
@@ -1230,7 +1272,13 @@ function buildOrderConfirmAndCod(ctx, IDS, content) {
       { id: `e_${IDS.conf_msg}_cod`, source: IDS.conf_msg, target: IDS.cod_check },
       { id: `e_${IDS.cod_check}_t`,  source: IDS.cod_check, target: IDS.cod_node, sourceHandle: "true" },
       { id: `e_${IDS.cod_node}_pd`,  source: IDS.cod_node, target: IDS.cod_paid_msg, sourceHandle: "paid" },
-      { id: `e_${IDS.cod_node}_cd`,  source: IDS.cod_node, target: IDS.ai_fallback,   sourceHandle: "cod" }
+      { id: `e_${IDS.cod_node}_cd`,  source: IDS.cod_node, target: IDS.main_menu, sourceHandle: "cod" }
+    );
+    // Remove straight conf→menu when COD branch takes over (first edge wins in engine — keep menu after paid path)
+    edges = edges.filter((e) => e.id !== `e_${IDS.conf_msg}_mm`);
+    edges.push(
+      { id: `e_${IDS.cod_check}_f`, source: IDS.cod_check, target: IDS.main_menu, sourceHandle: "false" },
+      { id: `e_${IDS.cod_paid_msg}_mm`, source: IDS.cod_paid_msg, target: IDS.main_menu }
     );
   }
 
@@ -1265,7 +1313,9 @@ function buildReviewAutomation(ctx, IDS, content) {
   const edges = [
     { id: `e_${IDS.trig_fulfill}_rv`, source: IDS.trig_fulfill, target: IDS.rev_request },
     { id: `e_${IDS.rev_request}_p`,   source: IDS.rev_request,  target: IDS.rev_positive, sourceHandle: "positive" },
-    { id: `e_${IDS.rev_request}_n`,   source: IDS.rev_request,  target: IDS.rev_negative, sourceHandle: "negative" }
+    { id: `e_${IDS.rev_request}_n`,   source: IDS.rev_request,  target: IDS.rev_negative, sourceHandle: "negative" },
+    { id: `e_${IDS.rev_positive}_mm`, source: IDS.rev_positive, target: IDS.main_menu },
+    { id: `e_${IDS.rev_negative}_mm`, source: IDS.rev_negative, target: IDS.main_menu }
   ];
   return { nodes, edges };
 }
@@ -1294,17 +1344,21 @@ function buildB2BBranch(ctx, IDS) {
     { id: `e_${IDS.b2b_trigger}_c`, source: IDS.b2b_trigger, target: IDS.b2b_capture },
     { id: `e_${IDS.b2b_capture}_t`, source: IDS.b2b_capture, target: IDS.b2b_tag },
     { id: `e_${IDS.b2b_tag}_a`,     source: IDS.b2b_tag,     target: IDS.b2b_alert },
-    { id: `e_${IDS.b2b_alert}_cf`,  source: IDS.b2b_alert,   target: IDS.b2b_confirm }
+    { id: `e_${IDS.b2b_alert}_cf`,  source: IDS.b2b_alert,   target: IDS.b2b_confirm },
+    { id: `e_${IDS.b2b_confirm}_mm`, source: IDS.b2b_confirm, target: IDS.main_menu }
   ];
   return { nodes, edges };
 }
 
 function buildAIFallback(ctx, IDS) {
+  const fb =
+    (ctx.fallbackMessage && String(ctx.fallbackMessage).trim()) ||
+    "Thanks for your message — *{{bot_name}}* at *{{brand_name}}* is here to help. Tap *menu* to see options.";
   return {
     nodes: [{
       id: IDS.ai_fallback, type: "message", position: { x: 0, y: -600 },
       data: { label: "🤖 AI Smart Reply", action: "AI_FALLBACK",
-        text: ctx.fallbackMessage || "", heatmapCount: 0 }
+        text: fb, heatmapCount: 0 }
     }],
     edges: []
   };
@@ -1395,19 +1449,19 @@ async function generateEcommerceFlow(client, wizardData = {}) {
   const seenE = new Set();
   const dedupEdges = allEdges.filter(e => { if (!e.id || seenE.has(e.id)) return false; seenE.add(e.id); return true; });
 
-  // Wire dead-ends to the AI fallback
+  // Wire remaining dead-ends to main menu (keeps inbox flows resumable; AI fallback still exists for unwired taps)
   if (F.enableAIFallback) {
     const sources = new Set(dedupEdges.map(e => e.source));
-    const deadEndTypes = ["message", "shopify_call", "loyalty_action", "tag_lead", "review", "warranty_check", "cod_prepaid", "admin_alert"];
+    const deadEndTypes = ["message", "shopify_call", "loyalty_action", "tag_lead", "review", "warranty_check", "cod_prepaid", "admin_alert", "livechat"];
     dedupNodes.forEach(node => {
       if (node.data?.suppressAIFallbackLink) return;
-      if (deadEndTypes.includes(node.type) && !sources.has(node.id) && node.id !== IDS.ai_fallback) {
+      if (deadEndTypes.includes(node.type) && !sources.has(node.id) && node.id !== IDS.ai_fallback && node.id !== IDS.main_menu) {
         dedupEdges.push({
-          id: `e_dead_${node.id}`,
+          id: `e_menu_autowire_${node.id}`,
           source: node.id,
-          target: IDS.ai_fallback,
+          target: IDS.main_menu,
           animated: false,
-          style: { strokeDasharray: "4 4", stroke: "#6366f1", opacity: 0.4 }
+          style: { strokeDasharray: "4 4", stroke: "#94a3b8", opacity: 0.35 }
         });
       }
     });

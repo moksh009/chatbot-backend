@@ -1,8 +1,17 @@
 "use strict";
 
 const WhatsApp = require('./whatsapp');
-const { sendEmail } = require('./emailService');
+const { sendEmail, buildAdminEscalationEmailHtml } = require('./emailService');
 const log = require('./logger')('NotificationService');
+
+function resolveAdminAlertChannel(client, explicitChannel) {
+  if (explicitChannel === 'whatsapp' || explicitChannel === 'email' || explicitChannel === 'both') {
+    return explicitChannel;
+  }
+  const pref = client.adminAlertPreferences;
+  if (pref === 'whatsapp' || pref === 'email' || pref === 'both') return pref;
+  return 'both';
+}
 
 /**
  * NotificationService
@@ -11,20 +20,34 @@ const log = require('./logger')('NotificationService');
 const NotificationService = {
   /**
    * Dispatches an alert to the configured admin channels.
-   * 
+   *
    * @param {Object} client - The Client document
-   * @param {Object} params - { customerPhone, topic, triggerSource, channel }
-   * @returns {Promise<Object>} - Status of dispatch
+   * @param {Object} params - { customerPhone, topic, triggerSource, channel?, adminPhoneOverride?, customerQuery? }
+   * @returns {Promise<Object>} - Per-channel dispatch results
    */
-  async sendAdminAlert(client, { customerPhone, topic, triggerSource, channel = 'both' }) {
-    const adminEmails = (client.adminAlertEmail || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 5);
-    let adminWhatsapps = (client.adminAlertWhatsapp || '').split(',').map(s => s.trim()).filter(Boolean);
+  async sendAdminAlert(client, {
+    customerPhone,
+    topic,
+    triggerSource,
+    channel: channelParam,
+    adminPhoneOverride,
+    customerQuery = '',
+  }) {
+    const channel = resolveAdminAlertChannel(client, channelParam);
+
+    const rawEmails = (client.adminAlertEmail || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const fallbackBiz = (client.adminEmail || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const adminEmails = [...new Set([...rawEmails, ...fallbackBiz])].slice(0, 5);
+
+    let adminWhatsapps = (client.adminAlertWhatsapp || '').split(',').map((s) => s.trim()).filter(Boolean);
     if (client.config?.adminPhones && Array.isArray(client.config.adminPhones)) {
-        adminWhatsapps = [...new Set([...adminWhatsapps, ...client.config.adminPhones.map(String)])];
-    } else {
-        adminWhatsapps = [...new Set(adminWhatsapps)];
+      adminWhatsapps = [...new Set([...adminWhatsapps, ...client.config.adminPhones.map(String)])];
     }
-    adminWhatsapps = adminWhatsapps.slice(0, 5);
+    const primary = (adminPhoneOverride || client.adminPhone || '').trim();
+    if (primary) {
+      adminWhatsapps = [...new Set([primary, ...adminWhatsapps])];
+    }
+    adminWhatsapps = [...new Set(adminWhatsapps)].slice(0, 5);
     
     // Construct the Deep Link for Takeover
     const baseUrl = process.env.DASHBOARD_URL || 'https://whatsappchatbot-6u7a.onrender.com';
@@ -33,6 +56,20 @@ const NotificationService = {
     const results = { whatsapp: [], email: [] };
 
     // 1. Parallel WhatsApp Alerts
+    if ((channel === 'whatsapp' || channel === 'both') && adminWhatsapps.length === 0) {
+      log.warn('[sendAdminAlert] WhatsApp channel selected but no admin numbers on file');
+      try {
+        await NotificationService.createNotification(client, {
+          type: 'system',
+          title: 'Admin WhatsApp alert not delivered',
+          message:
+            'A customer triggered a human escalation, but no admin WhatsApp number is configured. Add Admin Phone or Admin WhatsApp Alert(s) under Settings → Alerts.',
+          customerPhone,
+          metadata: { topic, triggerSource },
+        });
+      } catch (_) { /* non-blocking */ }
+    }
+
     if ((channel === 'whatsapp' || channel === 'both') && adminWhatsapps.length > 0) {
       await Promise.all(adminWhatsapps.map(async (number) => {
         try {
@@ -71,61 +108,71 @@ const NotificationService = {
       }));
     }
 
-    // 2. Parallel Email Alerts
+    const brandName =
+      client.businessName || client.name || client.brand?.businessName || client.clientId || 'Your brand';
+
+    // 2. Parallel Email Alerts (merchant SMTP / Gmail on Client; sendEmail handles retries)
     if ((channel === 'email' || channel === 'both') && adminEmails.length > 0) {
-      await Promise.all(adminEmails.map(async (email) => {
+      if (!client.emailUser || !client.emailAppPassword) {
+        log.warn('Admin email alert skipped — client emailUser/emailAppPassword not configured');
+        results.email.push({
+          email: adminEmails[0],
+          status: 'skipped',
+          error: 'SMTP not configured on workspace — add Email credentials under Settings → Integrations',
+        });
         try {
-          log.info(`Sending Email Admin Alert to ${email}`);
-          
-          const html = `
-            <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 32px; border: 1px solid #e2e8f0; border-radius: 24px; background: #ffffff;">
-              <div style="margin-bottom: 24px;">
-                <span style="background: #fee2e2; color: #dc2626; padding: 6px 12px; border-radius: 8px; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em;">Direct Intervention Required</span>
-              </div>
-              
-              <h2 style="color: #0f172a; font-size: 24px; font-weight: 800; margin-bottom: 8px;">System Alert: ${topic || 'Priority Support'}</h2>
-              <p style="color: #64748b; font-size: 14px; margin-bottom: 32px;">An automation flow has triggered an admin notification for a customer interaction.</p>
-              
-              <div style="background: #f8fafc; padding: 24px; border-radius: 16px; margin-bottom: 32px; border: 1px solid #f1f5f9;">
-                <table style="width: 100%; border-collapse: collapse;">
-                  <tr>
-                    <td style="padding: 8px 0; color: #94a3b8; font-size: 11px; font-weight: 700; text-transform: uppercase;">Topic</td>
-                    <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 600; text-align: right;">${topic || 'System Signal'}</td>
-                  </tr>
-                  <tr>
-                    <td style="padding: 8px 0; color: #94a3b8; font-size: 11px; font-weight: 700; text-transform: uppercase;">Source</td>
-                    <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 600; text-align: right;">${triggerSource || 'Node Trigger'}</td>
-                  </tr>
-                  <tr>
-                    <td style="padding: 8px 0; color: #94a3b8; font-size: 11px; font-weight: 700; text-transform: uppercase;">Customer</td>
-                    <td style="padding: 8px 0; color: #6366f1; font-size: 14px; font-weight: 700; text-align: right;">${customerPhone}</td>
-                  </tr>
-                </table>
-              </div>
-              
-              <a href="${takeoverLink}" style="display: block; text-align: center; padding: 16px; background: #0f172a; color: #ffffff; text-decoration: none; border-radius: 16px; font-weight: 700; font-size: 14px;">
-                Takeover Conversation →
-              </a>
-            </div>
-          `;
-          
-          const res = await sendEmail(client, {
-            to: email,
-            subject: `🚨 Admin Alert: ${topic || 'Attention Required'} — ${customerPhone}`,
-            html
+          await NotificationService.createNotification(client, {
+            type: 'system',
+            title: 'Admin email alert could not send',
+            message:
+              'Human escalation requested email delivery but this workspace has no outbound SMTP (email user + app password). Configure email in Settings → Integrations, or switch alerts to WhatsApp only.',
+            customerPhone,
+            metadata: { topic, triggerSource },
           });
-          results.email.push({ email, status: 'success', res });
-        } catch (err) {
-          log.error(`Email Admin Alert failed for ${email}`, { error: err.message });
-          results.email.push({ email, status: 'failed', error: err.message });
-        }
-      }));
+        } catch (_) { /* non-blocking */ }
+      } else {
+        await Promise.all(adminEmails.map(async (email) => {
+          try {
+            log.info(`Sending Email Admin Alert to ${email}`);
+            const html = buildAdminEscalationEmailHtml({
+              brandName,
+              topic: topic || 'Priority support',
+              triggerSource: triggerSource || 'Automation flow',
+              customerPhone: customerPhone || '—',
+              customerQuery,
+              takeoverLink,
+            });
+            const ok = await sendEmail(client, {
+              to: email,
+              subject: `🚨 ${brandName}: human help needed — ${customerPhone || 'customer'}`,
+              html,
+            });
+            results.email.push({ email, status: ok ? 'success' : 'failed', error: ok ? undefined : 'sendEmail returned false (SMTP failure)' });
+            if (!ok) {
+              try {
+                await NotificationService.createNotification(client, {
+                  type: 'system',
+                  title: 'Admin alert email failed (SMTP)',
+                  message: `Could not deliver escalation email to ${email}. Check SMTP credentials and inbox limits.`,
+                  customerPhone,
+                  metadata: { topic, triggerSource },
+                });
+              } catch (_) { /* non-blocking */ }
+            }
+          } catch (err) {
+            log.error(`Email Admin Alert failed for ${email}`, { error: err.message });
+            results.email.push({ email, status: 'failed', error: err.message });
+          }
+        }));
+      }
+    } else if (channel === 'email' || channel === 'both') {
+      log.warn('[sendAdminAlert] Email channel selected but no adminAlertEmail / adminEmail on file');
     }
 
-    log.info(`Dispatching alert for ${client.clientId}`, { 
-      channels: channel, 
-      emailCount: adminEmails.length, 
-      whatsappCount: adminWhatsapps.length 
+    log.info(`Dispatching alert for ${client.clientId}`, {
+      channels: channel,
+      emailCount: adminEmails.length,
+      whatsappCount: adminWhatsapps.length,
     });
 
     return results;

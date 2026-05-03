@@ -19,41 +19,16 @@ const crypto = require('crypto');
 const axios = require('axios');
 const Client = require('../models/Client');
 const User = require('../models/User');
-const nodemailer = require('nodemailer');
-const { sendAdminConfirmationEmail } = require('../utils/emailService');
+const { sendAdminConfirmationEmail, deliverSystemEmail } = require('../utils/emailService');
 
-// ── Shared Email Sender (uses proven emailService infrastructure) ─────────────
-// We send directly with inline transporter matching emailService.js exactly,
-// which provably works for OTP/invite emails on this Render deployment.
+// ── Shared Email Sender — Resend (if configured) + SMTP 587/465 fallback (same as OTP).
 async function sendShopifyEmail({ to, subject, html }) {
-  // Use EXACT same config as sendSystemOTPEmail in emailService.js (proven to work).
-  // SYSTEM_EMAIL_USER = team@topedgeai.com, SYSTEM_EMAIL_PASS = Google App Password
-  const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST || 'smtp.gmail.com',
-    port: parseInt(process.env.SMTP_PORT) || 587,
-    secure: false, // true for 465, false for other ports
-    requireTLS: true,
-    tls: {
-      rejectUnauthorized: false // Helps bypass strict firewall certificate checks on Render
-    },
-    auth: {
-      user: process.env.SYSTEM_EMAIL_USER || process.env.SMTP_USER,
-      pass: process.env.SYSTEM_EMAIL_PASS || process.env.SMTP_PASS
-    }
-  });
-  try {
-    const info = await transporter.sendMail({
-      from: `"TopEdge AI" <${process.env.SYSTEM_EMAIL_USER}>`,
-      to,
-      subject,
-      html
-    });
-    console.log(`✅ [ShopifyEmail] Sent to ${to} | MessageId: ${info.messageId}`);
-    return true;
-  } catch (err) {
-    console.error(`❌ [ShopifyEmail] SMTP Error for ${to} | Code: ${err.code} | ${err.message}`);
-    return false;
-  }
+  const fromUser = process.env.SYSTEM_EMAIL_USER || process.env.SMTP_USER || '';
+  const from = fromUser ? `"TopEdge AI" <${fromUser}>` : '"TopEdge AI" <onboarding@resend.dev>';
+  const ok = await deliverSystemEmail({ from, to, subject, html });
+  if (ok) console.log(`✅ [ShopifyEmail] Sent to ${to}`);
+  else console.error(`❌ [ShopifyEmail] Failed for ${to} — check RESEND_* or SMTP_* env`);
+  return ok;
 }
 
 const { encrypt } = require('../utils/encryption');

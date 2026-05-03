@@ -10,9 +10,9 @@ const mongoose = require("mongoose");
  *   inside `stepData`. This survives browser refreshes, device switches,
  *   and server restarts — replacing the previous localStorage-only approach.
  *
- * Step IDs — MUST match STEPS array order in OnboardingWizard.jsx (7 steps):
- *   0: business | 1: connections | 2: products | 3: ai
- *   4: cart_timing | 5: features | 6: architecture
+ * Step IDs — MUST match STEPS array order in OnboardingWizard.jsx (8 steps):
+ *   0: business | 1: connections | 2: escalation | 3: products | 4: ai
+ *   5: cart_timing | 6: features | 7: architecture
  *
  * Legacy keys (whatsapp, store, operations, payment, …) remain on stepData for
  * older documents; PATCH may copy legacy → canonical buckets when needed.
@@ -21,6 +21,7 @@ const mongoose = require("mongoose");
 const STEP_IDS = [
   "business",
   "connections",
+  "escalation",
   "products",
   "ai",
   "cart_timing",
@@ -38,11 +39,19 @@ const OnboardingWizardSchema = new mongoose.Schema(
       trim: true,
     },
 
+    /** Wizard content schema — bump when inserting new steps (see onboarding route migration). */
+    wizardSchemaVersion: {
+      type: Number,
+      default: 2,
+      min: 1,
+      max: 10,
+    },
+
     currentStep: {
       type: Number,
       default: 0,
       min: 0,
-      max: 6,
+      max: 7,
     },
 
     completedSteps: {
@@ -61,6 +70,7 @@ const OnboardingWizardSchema = new mongoose.Schema(
     stepData: {
       business:     { type: mongoose.Schema.Types.Mixed, default: null },
       connections:  { type: mongoose.Schema.Types.Mixed, default: null },
+      escalation:   { type: mongoose.Schema.Types.Mixed, default: null },
       products:     { type: mongoose.Schema.Types.Mixed, default: null },
       ai:           { type: mongoose.Schema.Types.Mixed, default: null },
       cart_timing:  { type: mongoose.Schema.Types.Mixed, default: null },

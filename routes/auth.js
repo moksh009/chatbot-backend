@@ -454,9 +454,13 @@ router.post('/send-otp', async (req, res) => {
     if (emailSent) {
       res.json({ success: true, message: 'OTP sent successfully' });
     } else {
-      console.error('[send-otp] SMTP returned failure — check Render env: SYSTEM_EMAIL_USER, SYSTEM_EMAIL_PASS (or EMAIL_USER + EMAIL_APP_PASSWORD)');
+      console.error(
+        '[send-otp] Email delivery failed — prefer HTTPS: set RESEND_API_KEY + RESEND_FROM (verified domain). ' +
+          'Or fix SMTP egress: SYSTEM_EMAIL_USER + SYSTEM_EMAIL_PASS, SMTP_HOST, and try SMTP_PORT=465 on cloud hosts.'
+      );
       res.status(503).json({
-        message: 'Email service is not configured or temporarily unavailable. Please try again later or contact support.',
+        message:
+          'Email could not be sent (timeout or misconfiguration). If you are on a cloud host, add Resend or use SMTP port 465. Contact support if this persists.',
         code: 'EMAIL_UNAVAILABLE'
       });
     }
