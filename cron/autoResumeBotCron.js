@@ -34,6 +34,7 @@ const autoResumeBotCron = () => {
                     conv.status = 'BOT_ACTIVE';
                     conv.botPaused = false;
                     conv.isBotPaused = false;
+                    conv.botStatus = 'active';
                     conv.assignedTo = null;
                     conv.assignedAt = null;
                     conv.assignedBy = null;
@@ -52,14 +53,6 @@ const autoResumeBotCron = () => {
                         url: `/conversations/${conv._id}`,
                         metadata: { conversationId: conv._id, phone: conv.phone }
                     });
-
-                    // Add internal note
-                    conv.internalNotes.push({
-                        content: 'Bot automatically resumed due to 1 hour of agent inactivity.',
-                        authorName: 'System',
-                        createdAt: new Date()
-                    });
-                    await conv.save();
                 }
             }
 

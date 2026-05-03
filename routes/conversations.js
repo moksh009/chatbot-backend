@@ -538,7 +538,14 @@ router.patch('/:id/bot-status', protect, async (req, res) => {
 
     const conversation = await Conversation.findOneAndUpdate(
       { _id: id, clientId },
-      { $set: { botStatus, botPaused: botStatus === 'paused', updatedAt: new Date() } },
+      {
+        $set: {
+          botStatus,
+          botPaused: botStatus === 'paused',
+          isBotPaused: botStatus === 'paused',
+          updatedAt: new Date()
+        }
+      },
       { new: true }
     ).select('botStatus phone customerName').lean();
 
@@ -582,6 +589,8 @@ router.put('/:id/takeover', protect, async (req, res) => {
 
     conversation.status = 'HUMAN_TAKEOVER';
     conversation.botPaused = true;
+    conversation.isBotPaused = true;
+    conversation.botStatus = 'paused';
     conversation.assignedTo = req.user._id;
     conversation.assignedAt = new Date(); // Ensure assignedAt is set
     conversation.requiresAttention = false; // Reset attention flag on manual takeover
@@ -632,6 +641,8 @@ router.put('/:id/release', protect, async (req, res) => {
 
     conversation.status = 'BOT_ACTIVE';
     conversation.botPaused = false;
+    conversation.isBotPaused = false;
+    conversation.botStatus = 'active';
     await conversation.save();
 
     // Phase R4: Emit bot status change to all connected dashboard tabs
@@ -695,7 +706,13 @@ router.put('/:id/bot-status', protect, async (req, res) => {
     }
     const conversation = await Conversation.findOneAndUpdate(
       query,
-      { $set: { botPaused: paused } },
+      {
+        $set: {
+          botPaused: paused,
+          isBotPaused: paused,
+          botStatus: paused ? 'paused' : 'active'
+        }
+      },
       { new: true }
     );
 
@@ -706,6 +723,11 @@ router.put('/:id/bot-status', protect, async (req, res) => {
     const io = req.app.get('socketio');
     if (io) {
       io.to(`client_${conversation.clientId}`).emit('support_update', conversation);
+      io.to(`client_${conversation.clientId}`).emit('conversation_update', conversation);
+      io.to(`client_${conversation.clientId}`).emit('botStatusChanged', {
+        conversationId: String(conversation._id),
+        botStatus: conversation.botStatus
+      });
     }
 
     res.json(conversation);
@@ -1107,9 +1129,8 @@ router.post('/:id/send-email', protect, async (req, res) => {
 
     const client = await Client.findOne({ clientId: conversation.clientId });
     
-    // Check if the old SMTP is configured, OR the new Resend config
-    if (!client?.resendApiKey && !client?.emailUser) {
-      return res.status(400).json({ message: 'Email not configured for this client' });
+    if (!client?.emailUser) {
+      return res.status(400).json({ message: 'Email not configured: add sending address and app password in workspace email / SMTP settings.' });
     }
 
     if (scheduleDate) {
@@ -1142,34 +1163,26 @@ router.post('/:id/send-email', protect, async (req, res) => {
       return res.json({ success: true, message: 'Email scheduled successfully', scheduledMessage: scheduledMsg });
     }
 
-    let newMessage;
-    if (client.resendApiKey && client.emailIdentity) {
-      const { sendEmailMessage } = require('../utils/emailIntegration');
-      newMessage = await sendEmailMessage(client, toEmail, subject, body, `<div>${body.replace(/\n/g, '<br/>')}</div>`);
-      
-      // Update Message to attach conversationId
-      newMessage.conversationId = conversation._id;
-      await newMessage.save();
-    } else {
-      // Fallback to legacy SMTP
-      const emailService = require('../utils/emailService');
-      await emailService.sendEmail(client, {
-        to: toEmail,
-        subject,
-        html: `<div>${body.replace(/\n/g, '<br/>')}</div>`
-      });
-
-      newMessage = await Message.create({
-        clientId: conversation.clientId,
-        conversationId: conversation._id,
-        from: 'agent',
-        to: conversation.phone,
-        content: `[Email] ${subject}\n\n${body}`,
-        type: 'email',
-        direction: 'outgoing',
-        status: 'sent'
-      });
+    const emailService = require('../utils/emailService');
+    const sent = await emailService.sendEmail(client, {
+      to: toEmail,
+      subject,
+      html: `<div>${body.replace(/\n/g, '<br/>')}</div>`
+    });
+    if (!sent) {
+      return res.status(503).json({ message: 'SMTP send failed. Check workspace email credentials and SMTP host/port (465 recommended).' });
     }
+
+    const newMessage = await Message.create({
+      clientId: conversation.clientId,
+      conversationId: conversation._id,
+      from: 'agent',
+      to: conversation.phone,
+      content: `[Email] ${subject}\n\n${body}`,
+      type: 'email',
+      direction: 'outgoing',
+      status: 'sent'
+    });
 
     conversation.lastMessage = `[Email] ${subject}`;
     conversation.lastMessageAt = Date.now();
@@ -1743,7 +1756,10 @@ router.get('/:clientId/:phone/context', protect, async (req, res) => {
 
 router.post('/:id/resolve', protect, async (req, res) => {
     try {
-        const conversation = await Conversation.findById(req.params.id);
+        const query = { _id: req.params.id };
+        if (req.user.role !== 'SUPER_ADMIN') query.clientId = req.user.clientId;
+
+        const conversation = await Conversation.findOne(query);
         if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found' });
 
         conversation.status = 'BOT_ACTIVE';
@@ -1752,14 +1768,22 @@ router.post('/:id/resolve', protect, async (req, res) => {
         conversation.botPaused = false;
         conversation.isBotPaused = false;
         conversation.resolvedAt = new Date();
-        
-        conversation.internalNotes.push({
-            content: `Ticket marked as RESOLVED by ${req.user.name || 'Agent'}. Bot remains active for future messages.`,
-            authorName: 'System',
-            createdAt: new Date()
-        });
 
         await conversation.save();
+
+        try {
+            const ConversationNote = require('../models/ConversationNote');
+            await ConversationNote.create({
+                conversationId: conversation._id,
+                clientId: conversation.clientId,
+                content: `Ticket marked as RESOLVED by ${req.user.name || 'Agent'}. Bot is active for new messages.`,
+                authorId: req.user._id,
+                authorName: 'System',
+                createdAt: new Date()
+            });
+        } catch (noteErr) {
+            console.error('[POST resolve] Note create failed:', noteErr.message);
+        }
 
         try {
             const AdLead = require('../models/AdLead');
@@ -1771,6 +1795,8 @@ router.post('/:id/resolve', protect, async (req, res) => {
 
         const io = req.app.get('socketio');
         if (io) {
+            const payload = conversation.toObject ? conversation.toObject() : conversation;
+            io.to(`client_${conversation.clientId}`).emit('conversation_update', payload);
             io.to(`client_${conversation.clientId}`).emit('conversationUpdated', {
                 conversationId: conversation._id,
                 status: conversation.status,
@@ -1778,7 +1804,7 @@ router.post('/:id/resolve', protect, async (req, res) => {
                 botStatus: conversation.botStatus
             });
             io.to(`client_${conversation.clientId}`).emit('botStatusChanged', {
-                conversationId: conversation._id,
+                conversationId: String(conversation._id),
                 botStatus: conversation.botStatus
             });
         }

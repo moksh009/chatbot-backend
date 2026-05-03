@@ -166,7 +166,8 @@ router.post('/start', protect, async (req, res) => {
           productName: product.title,
           productDescription: product.description,
           productPrice: product.price,
-          productPageUrl: product.url
+          productPageUrl: product.url,
+          productImageUrl: product.image || null
         }, { attempts: 3, backoff: { type: 'exponential', delay: 3000 } });
       } else {
         const { handleGenerationJob } = require('../workers/autoTemplateWorker');
@@ -179,7 +180,8 @@ router.post('/start', protect, async (req, res) => {
             productName: product.title,
             productDescription: product.description,
             productPrice: product.price,
-            productPageUrl: product.url
+            productPageUrl: product.url,
+            productImageUrl: product.image || null
           }).catch(e => console.error('[Inline Generation] Product error:', e));
         }, 0);
       }

@@ -21,13 +21,17 @@ const Client = require('../models/Client');
 const User = require('../models/User');
 const { sendAdminConfirmationEmail, deliverSystemEmail } = require('../utils/emailService');
 
-// ── Shared Email Sender — Resend (if configured) + SMTP 587/465 fallback (same as OTP).
+// ── Shared system mail — Nodemailer SMTP (same as OTP).
 async function sendShopifyEmail({ to, subject, html }) {
   const fromUser = process.env.SYSTEM_EMAIL_USER || process.env.SMTP_USER || '';
-  const from = fromUser ? `"TopEdge AI" <${fromUser}>` : '"TopEdge AI" <onboarding@resend.dev>';
+  if (!fromUser) {
+    console.error('❌ [ShopifyEmail] Missing SYSTEM_EMAIL_USER / SMTP_USER');
+    return false;
+  }
+  const from = `"TopEdge AI" <${fromUser}>`;
   const ok = await deliverSystemEmail({ from, to, subject, html });
   if (ok) console.log(`✅ [ShopifyEmail] Sent to ${to}`);
-  else console.error(`❌ [ShopifyEmail] Failed for ${to} — check RESEND_* or SMTP_* env`);
+  else console.error(`❌ [ShopifyEmail] Failed for ${to} — check SYSTEM_EMAIL_* and SMTP_HOST / port 465`);
   return ok;
 }
 

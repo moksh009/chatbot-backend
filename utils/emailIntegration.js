@@ -1,80 +1,68 @@
-const { Resend } = require('resend');
+/**
+ * Client outbound email via Nodemailer (same stack as emailService.sendEmail).
+ * Inbound webhooks remain a separate HTTP integration (payload shape unchanged).
+ */
+const emailService = require('./emailService');
 
 /**
- * Sends an email using the client's Resend configuration.
- * Automatically saves the message in the DB and returns the Message record.
+ * Sends an email using the client's SMTP credentials (emailUser + emailAppPassword).
+ * Saves the message in the DB and returns the Message record.
  */
 async function sendEmailMessage(client, toEmail, subject, text, html = '') {
-  if (!client.resendApiKey || !client.emailIdentity) {
-    throw new Error('Email channel not configured. Missing Resend API Key or Identity.');
+  const emailUser = client.emailUser;
+  const hasPass = client.emailAppPassword || process.env.EMAIL_APP_PASSWORD;
+  if (!emailUser || !hasPass) {
+    throw new Error(
+      'Email not configured: add workspace SMTP in Settings (sending address + app password, host e.g. smtp.gmail.com, port 465).'
+    );
   }
 
-  const resend = new Resend(client.resendApiKey);
-  
-  // Format the sender correctly
-  // E.g., client.emailIdentity might be "support@company.com" or "Company Support <support@company.com>"
-  const fromName = client.name || 'Support';
-  const fromAddress = client.emailIdentity.includes('@') ? client.emailIdentity : `support@${client.emailIdentity}`;
-  let formattedFrom = client.emailIdentity;
-  if (!formattedFrom.includes('<')) {
-    formattedFrom = `${fromName} <${fromAddress}>`;
+  const htmlBody =
+    html && String(html).trim()
+      ? html
+      : `<p>${String(text || '').replace(/\n/g, '<br/>')}</p>`;
+
+  const ok = await emailService.sendEmail(client, {
+    to: toEmail,
+    subject: subject || '(no subject)',
+    html: htmlBody
+  });
+
+  if (!ok) {
+    throw new Error('SMTP send failed. Confirm app password, SMTP_HOST, and try port 465 from your host.');
   }
 
-  try {
-    const response = await resend.emails.send({
-      from: formattedFrom,
-      to: [toEmail],
-      subject: subject,
-      text: text,
-      html: html || `<p>${text.replace(/\n/g, '<br/>')}</p>`
-    });
+  const Message = require('../models/Message');
+  const fromAddress = emailUser;
+  const msgData = {
+    clientId: client.clientId,
+    from: fromAddress,
+    to: toEmail,
+    direction: 'outgoing',
+    type: 'text',
+    content: subject ? `Subject: ${subject}\n\n${text || ''}` : text || '',
+    messageId: `smtp_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+    status: 'sent',
+    channel: 'email',
+    originalType: 'email'
+  };
 
-    if (response.error) {
-       console.error('[EmailIntegration] Send failed:', response.error);
-       throw new Error(response.error.message);
-    }
-
-    const { id: externalId } = response.data;
-    
-    // Save to DB
-    const Message = require('../models/Message');
-    const msgData = {
-      clientId: client.clientId,
-      from: fromAddress,
-      to: toEmail,
-      direction: 'outgoing',
-      type: 'text',
-      content: subject ? `Subject: ${subject}\n\n${text}` : text,
-      messageId: externalId,
-      status: 'sent',
-      channel: 'email',
-      originalType: 'email'
-    };
-
-    const newMsg = await Message.create(msgData);
-    return newMsg;
-
-  } catch (error) {
-    console.error('[EmailIntegration] Error:', error.message);
-    throw error;
-  }
+  return Message.create(msgData);
 }
 
 /**
- * Webhook handler for Resend (incoming emails).
- * Requires setting up a receiving endpoint in Resend.
- * Transforms it to DualBrainEngine format.
+ * Webhook handler for inbound email providers (generic JSON body).
  */
 async function handleIncomingEmail(req, res) {
   try {
     const { from, to, subject, text, html, id } = req.body;
-    
+
     const Client = require('../models/Client');
     const client = await Client.findOne({ emailIdentity: { $regex: new RegExp(to.split('@')[1], 'i') } });
-    
+
     if (!client) {
       console.log(`[EmailIntegration] No client configured for receiving domain: ${to}`);
-      return res.status(200).send('Ignored'); 
+      return res.status(200).send('Ignored');
     }
 
     const senderEmail = (from || '').match(/[\w.-]+@[\w.-]+\.\w+/) ? (from || '').match(/[\w.-]+@[\w.-]+\.\w+/)[0] : from;
@@ -90,7 +78,6 @@ async function handleIncomingEmail(req, res) {
     };
 
     const { handleWhatsAppMessage } = require('./dualBrainEngine');
-    // Using handleWhatsAppMessage as the universal router
     await handleWhatsAppMessage(senderEmail, syntheticMessage, null, from);
 
     res.status(200).send('OK');

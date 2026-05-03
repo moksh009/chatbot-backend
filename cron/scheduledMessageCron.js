@@ -99,19 +99,12 @@ module.exports = () => {
                         }
                     } else if (msg.channel === 'email') {
                         const emailService = require('../utils/emailService');
-                        const emailIntegration = require('../utils/emailIntegration');
-                        
                         const { subject, body, toEmail } = msg.content;
-                        if (client.resendApiKey && client.emailIdentity) {
-                            await emailIntegration.sendEmailMessage(client, toEmail || msg.phone, subject, body, `<div>${body.replace(/\n/g, '<br/>')}</div>`);
-                            sentSuccess = true;
-                        } else {
-                            sentSuccess = await emailService.sendEmail(client, {
-                                to: toEmail || msg.phone,
-                                subject,
-                                html: `<div>${body.replace(/\n/g, '<br/>')}</div>`
-                            });
-                        }
+                        sentSuccess = await emailService.sendEmail(client, {
+                            to: toEmail || msg.phone,
+                            subject,
+                            html: `<div>${body.replace(/\n/g, '<br/>')}</div>`
+                        });
                     }
                 } catch (sendErr) {
                     console.error(`[ScheduledMessageCron] Error sending message to ${msg.phone}:`, sendErr.message);

@@ -886,7 +886,7 @@ async function runDualBrainEngine(parsedMessage, client) {
     }
 
     if (results.pauseBot) {
-       await Conversation.findByIdAndUpdate(convo._id, { botPaused: true, isBotPaused: true });
+       await Conversation.findByIdAndUpdate(convo._id, { botPaused: true, isBotPaused: true, botStatus: 'paused' });
        ruleIntercepted = true;
     }
     
@@ -1025,6 +1025,7 @@ async function runDualBrainEngine(parsedMessage, client) {
     await Conversation.findByIdAndUpdate(convo._id, { 
        botPaused: true, 
        isBotPaused: true, 
+       botStatus: 'paused',
        status: 'OPTED_OUT' 
     });
 
@@ -1192,6 +1193,7 @@ async function runDualBrainEngine(parsedMessage, client) {
         $set: {
           botPaused: false,
           isBotPaused: false,
+          botStatus: "active",
           status: "BOT_ACTIVE",
           requiresAttention: false,
           attentionReason: "",
@@ -1202,6 +1204,7 @@ async function runDualBrainEngine(parsedMessage, client) {
       });
       convo.botPaused = false;
       convo.isBotPaused = false;
+      convo.botStatus = "active";
       convo.status = "BOT_ACTIVE";
       convo.requiresAttention = false;
       convo.lastStepId = null;
@@ -1239,7 +1242,7 @@ async function runDualBrainEngine(parsedMessage, client) {
     if (_globalInterruptKeywords.optOut.some(k => userTextLower === k)) {
       log.info(`🛑 [GlobalInterrupt] Opt-out "${userTextLower}" detected mid-flow for ${phone}. Aborting flow.`);
       await Conversation.findByIdAndUpdate(convo._id, {
-        $set: { botPaused: true, isBotPaused: true, status: 'OPTED_OUT', lastStepId: null, waitingForVariable: null, captureResumeNodeId: null }
+        $set: { botPaused: true, isBotPaused: true, botStatus: 'paused', status: 'OPTED_OUT', lastStepId: null, waitingForVariable: null, captureResumeNodeId: null }
       });
       await sendWhatsAppText(client, phone, "You've been unsubscribed. You will no longer receive automated messages. Reply START anytime to re-subscribe.");
       return true;
@@ -1248,9 +1251,27 @@ async function runDualBrainEngine(parsedMessage, client) {
     if (_globalInterruptKeywords.humanHandoff.some(k => userTextLower.includes(k))) {
       log.info(`🙋 [GlobalInterrupt] Human request "${userTextLower}" detected mid-flow for ${phone}. Aborting flow.`);
       await Conversation.findByIdAndUpdate(convo._id, {
-        $set: { status: 'HUMAN_TAKEOVER', requiresAttention: true, botPaused: true, lastStepId: null, waitingForVariable: null, captureResumeNodeId: null }
+        $set: {
+          status: 'HUMAN_TAKEOVER',
+          requiresAttention: true,
+          botPaused: true,
+          isBotPaused: true,
+          botStatus: 'paused',
+          lastStepId: null,
+          waitingForVariable: null,
+          captureResumeNodeId: null
+        }
       });
-      if (io) io.to(`client_${client.clientId}`).emit('attention_required', { phone, reason: 'User requested human agent mid-flow', priority: 'high' });
+      if (io) {
+        io.to(`client_${client.clientId}`).emit('attention_required', { phone, reason: 'User requested human agent mid-flow', priority: 'high' });
+        Conversation.findById(convo._id).then((fresh) => {
+          if (fresh) io.to(`client_${client.clientId}`).emit('conversation_update', fresh.toObject());
+        }).catch(() => {});
+        io.to(`client_${client.clientId}`).emit('botStatusChanged', {
+          conversationId: String(convo._id),
+          botStatus: 'paused'
+        });
+      }
       await sendWhatsAppText(client, phone, "I'm connecting you with a member of our team right now. Please hold! 👤");
       return true;
     }
@@ -1298,7 +1319,17 @@ async function runDualBrainEngine(parsedMessage, client) {
           // Safeguard 1: Infinite Loop Trap -> Escalate
           log.warn(`🚨 Max retries (${maxRetries}) reached for ${phone}. Escalating to human.`);
           await Conversation.findByIdAndUpdate(convo._id, {
-            $set: { status: 'HUMAN_SUPPORT', waitingForVariable: null, captureResumeNodeId: null, captureRetries: 0 }
+            $set: {
+              status: 'HUMAN_SUPPORT',
+              botPaused: true,
+              isBotPaused: true,
+              botStatus: 'paused',
+              requiresAttention: true,
+              attentionReason: 'Validation failed — human support',
+              waitingForVariable: null,
+              captureResumeNodeId: null,
+              captureRetries: 0
+            }
           });
           await WhatsApp.sendText(client, phone, "I'm having trouble understanding. Let me connect you with a member of our team! 👤");
         } else {
@@ -2737,6 +2768,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       status: 'HUMAN_SUPPORT', 
       botPaused: true, 
       isBotPaused: true,
+      botStatus: 'paused',
       requiresAttention: true,
       attentionReason: '🙋 Human support requested via flow',
       lastInteraction: new Date()
@@ -2749,6 +2781,13 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         phone,
         leadName: lead?.name || 'Customer',
         timestamp: new Date()
+      });
+      Conversation.findById(convo._id).then((fresh) => {
+        if (fresh) io.to(`client_${client.clientId}`).emit('conversation_update', fresh.toObject());
+      }).catch(() => {});
+      io.to(`client_${client.clientId}`).emit('botStatusChanged', {
+        conversationId: String(convo._id),
+        botStatus: 'paused'
       });
     }
     log.info(`[FlowEngine] LiveChat handoff: bot paused for ${phone}`);

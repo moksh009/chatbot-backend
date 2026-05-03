@@ -358,7 +358,7 @@ function buildDefaultContent(ctx) {
   const { F } = ctx;
   return {
     ...TONE_COPY,
-    welcome_a:            `👋 Welcome to *{{brand_name}}*! I'm {{bot_name}}, your assistant. Let's get started.`,
+    welcome_a:            `Hi {{customer_name}}! 👋 Welcome to *{{brand_name}}*.\n\nI'm {{bot_name}} — your WhatsApp assistant. Pick an option below and I'll take it from here.`,
     welcome_b:            `🛍️ Hey there! Explore our products and services at *{{brand_name}}*!`,
     product_menu_text:    `Welcome to the *{{brand_name}}* Hub! How can we help you today?`,
     order_status_msg:

@@ -153,22 +153,21 @@ async function generateFixedTemplate(templateId, ctx) {
   };
 }
 
-// ─── AI GENERATION: Product Templates ──────────────────────────────────────
-async function generateProductTemplate(ctx) {
-  const prompt = `You are writing a WhatsApp marketing message for a specific product sold by ${ctx.brandName}. Brand tone: ${ctx.tone}.
+// ─── AI GENERATION: single-line tagline for variable {{3}} on product templates ──
+async function generateProductTagline(ctx) {
+  const prompt = `Write ONE short line (max 70 characters) for a WhatsApp product card. Tone: ${ctx.tone}. Brand: ${ctx.brandName}.
 
 Product: ${ctx.productName}
 Price: ${ctx.currency}${ctx.productPrice}
-Description: ${ctx.productDescription}
+Notes: ${(ctx.productDescription || '').slice(0, 160)}
 
-Write a 2-3 sentence product marketing message. Rules: under 300 characters (WhatsApp marketing is short and punchy), no generic phrases like "amazing product" or "don't miss out", write as a knowledgeable friend recommending this, mention the product name and price naturally, create desirability not urgency, compatible with WhatsApp text formatting only.
+Rules: no placeholders, no emojis overload (one max), no "click here/buy now", no ALL CAPS. Concrete benefit only.
 
-Return ONLY the message body. Nothing else.`;
+Return only that line, nothing else.`;
 
-  const body = await platformGenerateText(prompt, { maxTokens: 256, temperature: 0.7 });
-  if (!body) throw new Error(`AI generation returned null for product ${ctx.productName}`);
-
-  return { body: body.trim() };
+  const line = await platformGenerateText(prompt, { maxTokens: 96, temperature: 0.65 });
+  if (!line) throw new Error(`AI tagline returned null for product ${ctx.productName}`);
+  return { tagline: line.trim().slice(0, 72) };
 }
 
 // ─── BUILD SUBMISSION QUEUE ────────────────────────────────────────────────
@@ -263,15 +262,25 @@ async function submitSingleTemplate(client, templateId, clientId) {
   // Build Meta API components
   const components = [];
 
-  if (template.headerType === 'TEXT' && template.headerValue) {
+  const ht = (template.headerType || 'TEXT').toUpperCase();
+  if (ht === 'IMAGE' && template.headerValue) {
+    components.push({
+      type: 'HEADER',
+      format: 'IMAGE',
+      example: { header_url: [template.headerValue] }
+    });
+  } else if (ht === 'TEXT' && template.headerValue) {
     components.push({ type: 'HEADER', format: 'TEXT', text: template.headerValue });
   }
 
   const bodyComponent = { type: 'BODY', text: template.body };
-  if (template.variableMapping && template.variableMapping instanceof Map && template.variableMapping.size > 0) {
-    bodyComponent.example = {
-      body_text: [Array.from(template.variableMapping.values()).map(v => `[${v}]`)]
-    };
+  let vm = template.variableMapping;
+  if (vm && !(vm instanceof Map)) {
+    vm = new Map(Object.entries(vm));
+  }
+  if (vm instanceof Map && vm.size > 0) {
+    const ordered = Array.from(vm.entries()).sort((a, b) => Number(a[0]) - Number(b[0])).map(([, v]) => String(v));
+    bodyComponent.example = { body_text: [ordered] };
   }
   components.push(bodyComponent);
 
@@ -408,7 +417,10 @@ async function pollWorkspaceTemplateStatuses(clientId) {
 
 
 async function handleGenerationJob(data) {
-  const { clientId, templateType, fixedTemplateId, productId, productHandle, productName, productDescription, productPrice, productPageUrl } = data;
+  const {
+    clientId, templateType, fixedTemplateId, productId, productHandle, productName,
+    productDescription, productPrice, productPageUrl, productImageUrl
+  } = data;
   try {
     const client = await Client.findOne({ clientId }).lean();
     const brandName = client.platformVars?.brandName || client.businessName || clientId;
@@ -429,15 +441,32 @@ async function handleGenerationJob(data) {
       buttons = result.buttons;
       variableMapping = result.variableMapping;
     } else {
-      const result = await generateProductTemplate({ brandName, currency, language, tone, productName, productDescription: (productDescription || '').slice(0, 200), productPrice, productPageUrl });
-      generatedBody = result.body;
+      const result = await generateProductTagline({
+        brandName, currency, language, tone, productName,
+        productDescription: (productDescription || '').slice(0, 200), productPrice, productPageUrl
+      });
+      const priceStr = `${currency}${Number(productPrice || 0).toLocaleString('en-IN')}`;
+      const tag = result.tagline || `Trusted quality from ${brandName}.`;
+      generatedBody = '*{{1}}*\n💰 *{{2}}*\n\n{{3}}';
       templateName = buildProductTemplateName(productHandle);
       category = 'MARKETING';
-      headerType = 'TEXT';
-      headerValue = productName;
-      footerText = null;
-      buttons = [{ type: 'QUICK_REPLY', text: 'Buy Now' }];
-      variableMapping = {};
+      if (productImageUrl && /^https?:\/\//i.test(String(productImageUrl))) {
+        headerType = 'IMAGE';
+        headerValue = String(productImageUrl).slice(0, 2048);
+      } else {
+        headerType = 'TEXT';
+        headerValue = (productName || 'Product').slice(0, 60);
+      }
+      footerText = 'Reply STOP to unsubscribe';
+      const safeUrl = productPageUrl && /^https?:\/\//i.test(String(productPageUrl)) ? String(productPageUrl).slice(0, 2000) : '';
+      buttons = safeUrl
+        ? [{ type: 'URL', text: 'Order Now', url: safeUrl }, { type: 'QUICK_REPLY', text: 'Talk to Agent' }]
+        : [{ type: 'QUICK_REPLY', text: 'Talk to Agent' }];
+      variableMapping = new Map([
+        ['1', (productName || 'Product').slice(0, 80)],
+        ['2', priceStr],
+        ['3', tag.slice(0, 120)]
+      ]);
     }
 
     templateName = await getUniqueTemplateName(clientId, templateName);
@@ -476,10 +505,29 @@ async function handleGenerationJob(data) {
     log.error(`[Template Generation] Failed for ${clientId}, type: ${templateType}:`, err.message);
     await MetaTemplate.findOneAndUpdate(
       { clientId, source: 'auto_generated', autoGenProductId: productId || fixedTemplateId },
-      { $set: { submissionStatus: 'generation_failed' } }
+      { $set: { submissionStatus: 'generation_failed', updatedAt: new Date() } }
     );
-    await TemplateGenerationJob.findOneAndUpdate({ clientId }, { $inc: { failedGenerationCount: 1 } });
-    throw err;
+    await TemplateGenerationJob.findOneAndUpdate(
+      { clientId },
+      { $inc: { generatedCount: 1, failedGenerationCount: 1 }, $set: { updatedAt: new Date() } }
+    );
+    const genJobAfterFail = await TemplateGenerationJob.findOne({ clientId }).lean();
+    emitToClient(clientId, 'templateGenerationProgress', {
+      clientId,
+      generatedCount: genJobAfterFail?.generatedCount,
+      totalTemplates: genJobAfterFail?.totalTemplates,
+      error: err.message
+    });
+    if (genJobAfterFail && genJobAfterFail.generatedCount >= genJobAfterFail.totalTemplates) {
+      await TemplateGenerationJob.findOneAndUpdate({ clientId }, { $set: { status: 'generation_complete', updatedAt: new Date() } });
+      try {
+        await buildSubmissionQueue(clientId);
+      } catch (qErr) {
+        log.error('[AutoTemplate] buildSubmissionQueue after errors:', qErr.message);
+      }
+      emitToClient(clientId, 'templateGenerationComplete', { clientId });
+    }
+    return;
   }
 }
 
