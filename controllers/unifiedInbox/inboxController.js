@@ -52,7 +52,8 @@ async function listConversations(req, res) {
         waQuery.$or = [
           { botStatus: 'paused' },
           { lastDetectedIntent: 'support' },
-          { requiresAttention: true }
+          { requiresAttention: true },
+          { status: { $in: ['HUMAN_SUPPORT', 'HUMAN_TAKEOVER'] } }
         ];
       } else if (filter.startsWith('agent_')) {
         const agentId = filter.replace('agent_', '');
@@ -154,7 +155,7 @@ async function getFilters(req, res) {
       { id: 'all', label: 'All', type: 'static' },
       { id: 'assigned_to_me', label: 'Assigned to me', type: 'static' },
       { id: 'open', label: 'Open', type: 'static' },
-      { id: 'needs_help', label: 'Asking for help', type: 'static', description: 'Chats where the bot is paused or intent is support' }
+      { id: 'needs_help', label: 'Asking for help', type: 'static', description: 'Paused bot, support intent, needs attention, or live handoff (human queue)' }
     ];
 
     for (const member of teamMembers) {

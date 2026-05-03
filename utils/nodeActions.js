@@ -138,38 +138,113 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
     case "CANCEL_ORDER": {
       try {
         const Order = require("../models/Order");
-        const latestOrder = await Order.findOne({ customerPhone: phone, clientId: client.clientId }).sort({ createdAt: -1 });
+        const { withShopifyRetry } = require("./shopifyHelper");
+        const meta = convo?.metadata || {};
+        const lastOrder = meta.lastOrder || {};
+        let shopifyOrderId =
+          meta.shopify_order_id ||
+          lastOrder.orderId ||
+          meta.shopifyOrderId ||
+          null;
 
-        if (!latestOrder) {
-          await WhatsApp.sendText(client, phone, "I couldn't find any recent orders to cancel. 😕");
+        const latestOrder = await Order.findOne({
+          $or: [{ customerPhone: phone }, { phone }],
+          clientId: client.clientId,
+        })
+          .sort({ createdAt: -1 })
+          .lean();
+
+        if (!shopifyOrderId && latestOrder?.shopifyOrderId) {
+          shopifyOrderId = latestOrder.shopifyOrderId;
+        }
+
+        const displayNum =
+          meta.order_number ||
+          (lastOrder.orderNumber ? `#${lastOrder.orderNumber}` : "") ||
+          latestOrder?.orderId ||
+          "";
+
+        if (!shopifyOrderId && !latestOrder) {
+          await WhatsApp.sendText(
+            client,
+            phone,
+            "I do not have an order on file yet. Open *Track order* once so I can load your latest order, then try cancel again."
+          );
           break;
         }
 
-        if (latestOrder.status === 'Cancelled') {
-          await WhatsApp.sendText(client, phone, `Order ${latestOrder.orderId} is already cancelled.`);
+        if (client.shopifyAccessToken && client.shopDomain && shopifyOrderId) {
+          try {
+            await withShopifyRetry(client.clientId, async (shopify) => {
+              await shopify.post(`/orders/${shopifyOrderId}/cancel.json`, {
+                reason: "customer",
+                email: false,
+                restock: true,
+              });
+            });
+          } catch (apiErr) {
+            const msg = String(apiErr?.response?.data?.errors || apiErr.message || "");
+            console.error("[NodeActions] Shopify cancel failed:", msg);
+            if (/fulfilled|shipped|complete/i.test(msg)) {
+              await WhatsApp.sendText(
+                client,
+                phone,
+                "This order can no longer be cancelled automatically because it is already fulfilled or shipped. Our team can help with a return instead."
+              );
+              break;
+            }
+            await WhatsApp.sendText(
+              client,
+              phone,
+              "We could not cancel through the store just now. A teammate will confirm on WhatsApp shortly."
+            );
+            break;
+          }
+
+          const label = displayNum || `#${shopifyOrderId}`;
+          await WhatsApp.sendText(client, phone, `✅ *${label}* has been cancelled in the store.`);
+          if (latestOrder?._id) {
+            await Order.findByIdAndUpdate(latestOrder._id, {
+              status: "Cancelled",
+              cancelReason: "Requested via WhatsApp flow",
+            });
+          }
           break;
         }
 
-        // Only allow cancellation if not shipped
-        if (latestOrder.fulfillmentStatus === 'shipped') {
-          await WhatsApp.sendText(client, phone, `Sorry, Order ${latestOrder.orderId} has already been shipped and cannot be cancelled. 🚚`);
+        if (latestOrder) {
+          if (latestOrder.status === "Cancelled") {
+            await WhatsApp.sendText(client, phone, `Order ${latestOrder.orderId} is already cancelled.`);
+            break;
+          }
+          if (latestOrder.fulfillmentStatus === "shipped") {
+            await WhatsApp.sendText(
+              client,
+              phone,
+              `Sorry, order ${latestOrder.orderId} has already shipped and cannot be cancelled here.`
+            );
+            break;
+          }
+          await Order.findByIdAndUpdate(latestOrder._id, {
+            status: "Cancelled",
+            cancelReason: "Requested via Chat",
+          });
+          await WhatsApp.sendText(client, phone, `✅ Order *${latestOrder.orderId}* has been cancelled.`);
           break;
         }
 
-        await Order.findByIdAndUpdate(latestOrder._id, { status: 'Cancelled', cancelReason: 'Requested via Chat' });
-        
-        // Notify Shopify if needed
-        if (client.shopifyAccessToken && latestOrder.shopifyOrderId) {
-          const axios = require("axios");
-          await axios.post(`https://${client.shopDomain}/admin/api/2026-01/orders/${latestOrder.shopifyOrderId}/cancel.json`, 
-            { reason: 'customer', note: 'Cancelled via AI Flow Builder' },
-            { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
-          ).catch(e => console.error("Shopify cancel failed:", e.message));
-        }
-
-        await WhatsApp.sendText(client, phone, `✅ Order *${latestOrder.orderId}* has been successfully cancelled.`);
+        await WhatsApp.sendText(
+          client,
+          phone,
+          "I could not cancel this order automatically. Please message our team with your order number."
+        );
       } catch (err) {
         console.error("[NodeActions] CANCEL_ORDER error:", err.message);
+        await WhatsApp.sendText(
+          client,
+          phone,
+          "Something went wrong while cancelling. Please try again in a moment or ask our team for help."
+        );
       }
       break;
     }

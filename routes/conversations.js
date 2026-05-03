@@ -1236,7 +1236,9 @@ router.put('/:id/resolve', protect, async (req, res) => {
     const conversation = await Conversation.findOne(query);
     if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
 
-    conversation.status = 'CLOSED';
+    conversation.status = 'BOT_ACTIVE';
+    conversation.botPaused = false;
+    conversation.isBotPaused = false;
     conversation.resolvedAt = new Date();
     conversation.requiresAttention = false;
     await conversation.save();
@@ -1744,7 +1746,7 @@ router.post('/:id/resolve', protect, async (req, res) => {
         const conversation = await Conversation.findById(req.params.id);
         if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found' });
 
-        conversation.status = 'CLOSED';
+        conversation.status = 'BOT_ACTIVE';
         conversation.requiresAttention = false;
         conversation.botStatus = 'active';
         conversation.botPaused = false;

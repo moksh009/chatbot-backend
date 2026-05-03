@@ -35,6 +35,7 @@ const { resolveAndSaveMedia } = require('./whatsappMedia');
 const WhatsAppUtils = require('./whatsapp');
 const messageBuffer = require('./messageBuffer');
 const { parseWhatsAppPayload } = require("./parseWhatsAppPayload");
+const { normalizeHandleId, findInteractiveEdgeForButtonAcrossGraph } = require("./graphButtonRouting");
 
 
 const SESSION_LOCK_TIMEOUT = 10000; // 10 seconds (Fallback for TTL)
@@ -178,23 +179,6 @@ async function getFlowGraphForConversation(client, convo) {
   }
 
   return { nodes: fallbackNodes, edges: fallbackEdges };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HANDLE ID NORMALIZER — strips ReactFlow group/folder prefixes from handle IDs
-// e.g. "group_123__button_buy" → "button_buy"
-//
-// CRITICAL FIX: Previous version used .replace(/[^\w\s-]/g, "") which destroyed
-// button IDs containing valid characters. Button IDs from InteractiveNode.jsx
-// (e.g. "btn_1716234567890") must survive this function INTACT.
-// The ONLY transformation allowed is: strip group prefix, trim, lowercase.
-// ─────────────────────────────────────────────────────────────────────────────
-function normalizeHandleId(handleId) {
-  if (!handleId) return handleId;
-  const raw = String(handleId);
-  // Strip ReactFlow group/folder prefix (e.g. "group_123__btn_buy" → "btn_buy")
-  const parts = raw.split("__");
-  return parts[parts.length - 1].trim().toLowerCase();
 }
 
 const { normalizePhone } = require("./helpers");
@@ -1195,10 +1179,41 @@ async function runDualBrainEngine(parsedMessage, client) {
     }
   }
 
-  if (convo.botPaused || ['HUMAN_TAKEOVER', 'HUMAN_SUPPORT', 'OPTED_OUT'].includes(convo.status)) {
-    log.info(`⏸️ Bot paused for ${phone} (Status: ${convo.status}). Skipping.`);
-    analyzeConversationIntelligence(client, phone, convo);
-    return true;
+  const pausedOrHuman =
+    convo.botPaused || ["HUMAN_TAKEOVER", "HUMAN_SUPPORT", "OPTED_OUT"].includes(convo.status);
+  if (pausedOrHuman) {
+    const t = (userText || "").trim();
+    const resumeKeywords = /^(menu|hi|hello|hey|start|help|main menu)$/i;
+    const canResumeFromHandoff =
+      ["HUMAN_SUPPORT", "HUMAN_TAKEOVER"].includes(convo.status) && resumeKeywords.test(t);
+    if (canResumeFromHandoff) {
+      log.info(`[DualBrain] Resuming bot after handoff for ${phone} (keyword: "${t}")`);
+      await Conversation.findByIdAndUpdate(convo._id, {
+        $set: {
+          botPaused: false,
+          isBotPaused: false,
+          status: "BOT_ACTIVE",
+          requiresAttention: false,
+          attentionReason: "",
+          lastStepId: null,
+          waitingForVariable: null,
+          captureResumeNodeId: null,
+        },
+      });
+      convo.botPaused = false;
+      convo.isBotPaused = false;
+      convo.status = "BOT_ACTIVE";
+      convo.requiresAttention = false;
+      convo.lastStepId = null;
+    } else if (convo.status === "OPTED_OUT") {
+      log.info(`⏸️ Opted out for ${phone}. Skipping.`);
+      analyzeConversationIntelligence(client, phone, convo);
+      return true;
+    } else {
+      log.info(`⏸️ Bot paused for ${phone} (Status: ${convo.status}). Skipping.`);
+      analyzeConversationIntelligence(client, phone, convo);
+      return true;
+    }
   }
 
   // MANUAL MODE: Only respond if an EXPLICIT trigger is matched
@@ -1681,6 +1696,15 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     if (!matchingEdge) {
       const availableHandles = sourceEdges.map(e => normalizeHandleId(e.sourceHandle || '')).filter(Boolean);
       log.warn(`[Graph] Button ID mismatch: incoming="${bid}", available sourceHandles=[${availableHandles.join(', ')}], currentStep=${currentStepId}`);
+    }
+  }
+
+  // C.1) Stale interactive: user tapped a button/list on an older bubble while lastStepId moved on.
+  if (bid && !matchingEdge) {
+    const resolved = findInteractiveEdgeForButtonAcrossGraph(flowNodes, flowEdges, buttonId, currentStepId);
+    if (resolved) {
+      matchingEdge = resolved;
+      log.info(`[Graph] Resolved cross-step interactive: button "${bid}" via source ${resolved.source} → ${resolved.target} (edge ${resolved.id})`);
     }
   }
 
@@ -2174,36 +2198,57 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   // Phase 21: Admin Alert Node
   if (node.type === 'admin_alert' || node.type === 'AdminAlertNode') {
     const { topic, alertChannel = 'both', priority, triggerSource } = node.data || {};
-    const alertMsg = topic || "🚨 Human Support Requested";
-    const fullMsg = `🚨 *Admin Alert*\n\n*Classification:* ${alertMsg}\n*Customer:* ${lead?.name || 'Unknown'} (${phone})\n*Source:* ${triggerSource || 'Flow Automation'}\n*Priority:* ${(priority || 'high').toUpperCase()}\n*Time:* ${new Date().toLocaleString()}`;
-    
-    // 1. Mark conversation as needing attention
-    await Conversation.findByIdAndUpdate(convo._id, { 
-      requiresAttention: true, 
+    const rawTopic = topic || "Human support request";
+    const alertMsg = replaceVariables(String(rawTopic), client, lead, convo);
+    const fullMsg = `🚨 *Admin alert*\n\n*What:* ${alertMsg}\n*Customer:* ${lead?.name || "Unknown"} (${phone})\n*Source:* ${triggerSource || "WhatsApp flow"}\n*Priority:* ${(priority || "high").toUpperCase()}\n*When:* ${new Date().toLocaleString()}`;
+
+    const rawAdminPhone =
+      (node.data?.phone && String(node.data.phone)) ||
+      client.adminPhone ||
+      client.adminPhoneNumber ||
+      client.platformVars?.adminWhatsappNumber ||
+      client.adminAlertWhatsapp ||
+      "";
+    const adminWaDigits = replaceVariables(String(rawAdminPhone), client, lead, convo).replace(/\D/g, "");
+
+    // 1. Mark conversation as needing attention (does not pause bot — handoff nodes handle pause)
+    await Conversation.findByIdAndUpdate(convo._id, {
+      requiresAttention: true,
       attentionReason: alertMsg,
-      lastInteraction: new Date()
+      lastInteraction: new Date(),
     });
 
     // 2. Emit real-time socket event to dashboard
     if (io) {
-      io.to(`client_${client.clientId}`).emit('admin_alert', {
-        type: 'escalation',
+      io.to(`client_${client.clientId}`).emit("admin_alert", {
+        type: "escalation",
         topic: alertMsg,
-        priority: priority || 'high',
+        priority: priority || "high",
         phone,
-        leadName: lead?.name || 'Customer',
-        timestamp: new Date()
+        conversationId: String(convo._id),
+        leadName: lead?.name || "Customer",
+        timestamp: new Date(),
+      });
+      io.to(`client_${client.clientId}`).emit("attention_required", {
+        phone,
+        conversationId: String(convo._id),
+        reason: alertMsg,
+        priority: priority || "high",
       });
     }
 
-    // 3. Dispatch via WhatsApp to admin phone
-    if ((alertChannel === 'whatsapp' || alertChannel === 'both') && client.adminAlertWhatsapp) {
+    // 3. Dispatch via WhatsApp to admin phone (flow node phone wins, then client settings)
+    if ((alertChannel === "whatsapp" || alertChannel === "both") && adminWaDigits.length >= 10) {
       try {
-        await WhatsApp.sendText(client, client.adminAlertWhatsapp, fullMsg);
-        log.info(`AdminAlert: WhatsApp sent to ${client.adminAlertWhatsapp}`);
+        const { normalizePhone } = require("./helpers");
+        const to = normalizePhone(adminWaDigits);
+        await WhatsApp.sendText(client, to, fullMsg);
+        log.info(`AdminAlert: WhatsApp sent to admin (${String(to).slice(0, 6)}…)`);
       } catch (err) {
         log.error(`AdminAlert WhatsApp failed: ${err.message}`);
       }
+    } else if (alertChannel === "whatsapp" || alertChannel === "both") {
+      log.warn(`[AdminAlert] No valid admin WhatsApp number — set admin phone on the node or in client settings`);
     }
 
     // 4. Dispatch via Email to admin
@@ -2508,6 +2553,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
             ...(convo.metadata || {}),
             lastOrder: orderData,
             shopify_order_found: "true",
+            shopify_order_id: order.id,
             order_number: order.name ? String(order.name) : `#${order.order_number}`,
             order_status: fulfillStatus,
             payment_method: payGw,
@@ -2763,6 +2809,11 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 async function sendNodeContent(node, client, phone, lead = null, convo = null, channel = 'whatsapp', parsedMessage = {}) {
   const { type, data } = node;
   const options = { commentId: parsedMessage?.commentId };
+  const _sanitizeOutbound = (v, fallback = "") => {
+    const s = String(v ?? "").trim();
+    if (!s || s === "null" || s === "undefined" || s === "[object Object]") return fallback;
+    return s;
+  };
   if (node.data?.action && !['shopify_call', 'http_request', 'logic', 'delay', 'trigger', 'cod_prepaid', 'loyalty_action', 'loyalty', 'warranty_check', 'warranty_lookup', 'order_action', 'segment', 'ab_test', 'abandoned_cart', 'review'].includes(type)) {
     const { handleNodeAction } = require("./nodeActions");
     handleNodeAction(node.data.action, node, client, phone, convo, lead).catch((err) => {
@@ -2788,8 +2839,8 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       let body = data.text || data.body || data.question || data.label || 'Please provide the requested information:';
       // Variables already hydrated via deepInject in executeNode
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
-      
-      await WhatsApp.sendText(client, phone, String(body).substring(0, 4096));
+      const capOut = _sanitizeOutbound(body, "Please reply with the details we asked for above.");
+      await WhatsApp.sendText(client, phone, capOut.substring(0, 4096));
       return true;
     }
 
@@ -2841,6 +2892,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'InteractiveNode': {
       let body = data.text || data.body || 'Please Choose:';
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
+      body = _sanitizeOutbound(body, "Please choose an option below.");
 
       if (data.btnUrlLink) {
         let interactive = {
@@ -2871,11 +2923,19 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         let totalRows = 0;
         if (data.sections && data.sections.length > 0) {
           sections = data.sections.map(section => {
-            const rows = (section.rows || []).slice(0, 10 - totalRows).map(row => ({
-              id: String(row.id || row.title || 'opt').substring(0, 200),
-              title: (row.title || 'Option').substring(0, 24),
-              ...(row.description ? { description: row.description.substring(0, 72) } : {})
-            }));
+            const rows = (section.rows || []).slice(0, 10 - totalRows).map(row => {
+              const descRaw = row.description != null ? String(row.description).trim() : "";
+              const descOk =
+                descRaw &&
+                descRaw !== "null" &&
+                descRaw !== "undefined" &&
+                descRaw !== "-";
+              return {
+                id: String(row.id || row.title || "opt").substring(0, 200),
+                title: (row.title || "Option").substring(0, 24),
+                ...(descOk ? { description: descRaw.substring(0, 72) } : {}),
+              };
+            });
             totalRows += rows.length;
             return {
               title: (section.title || 'Options').substring(0, 24),

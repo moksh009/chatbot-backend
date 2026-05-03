@@ -367,33 +367,9 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       client._id, updateQuery, { new: true, runValidators: true }
     );
 
-    const seed = String(clientId).replace(/[^a-z0-9]/gi, "").substring(0, 12) || "default";
-    for (const af of automationFlows) {
-      if (!af?.trigger || !Array.isArray(af.nodes)) continue;
-      const autoFlowId = `auto_${af.trigger}_${seed}`.replace(/[^a-z0-9_]/gi, "_").substring(0, 64);
-      await WhatsAppFlow.findOneAndUpdate(
-        { clientId, flowId: autoFlowId },
-        {
-          $set: {
-            clientId,
-            flowId: autoFlowId,
-            name: af.name || `${af.trigger} automation`,
-            platform: "whatsapp",
-            isAutomation: true,
-            automationTrigger: af.trigger,
-            nodes: af.nodes,
-            edges: af.edges,
-            publishedNodes: af.nodes,
-            publishedEdges: af.edges,
-            status: "PUBLISHED",
-            generatedBy: "wizard",
-            updatedAt: new Date()
-          },
-          $setOnInsert: { createdAt: new Date() }
-        },
-        { upsert: true, new: true }
-      );
-    }
+    // Commerce triggers (cart, order_placed, fulfilled, etc.) are embedded in the main graph
+    // (`automationFlows` from generator is always empty). Legacy per-trigger docs are removed
+    // by the deleteMany filter above when replaceExisting is true.
     clearTriggerCache(clientId);
     await syncPlatformVarsToFlows(clientId);
 
@@ -1172,35 +1148,8 @@ router.patch("/:clientId/features", protect, async (req, res) => {
           preserveNodeIds:    true   // keeps active conversations alive on regen
         };
         const genOut = await generateEcommerceFlow(client, wizardData);
-        const { nodes, edges, automationFlows: autoFlows = [] } = genOut;
+        const { nodes, edges } = genOut;
 
-        const seedSf = String(clientId).replace(/[^a-z0-9]/gi, "").substring(0, 12) || "default";
-        for (const af of autoFlows) {
-          if (!af?.trigger || !Array.isArray(af.nodes)) continue;
-          const autoFlowId = `auto_${af.trigger}_${seedSf}`.replace(/[^a-z0-9_]/gi, "_").substring(0, 64);
-          await WhatsAppFlow.findOneAndUpdate(
-            { clientId, flowId: autoFlowId },
-            {
-              $set: {
-                clientId,
-                flowId: autoFlowId,
-                name: af.name || `${af.trigger} automation`,
-                platform: "whatsapp",
-                isAutomation: true,
-                automationTrigger: af.trigger,
-                nodes: af.nodes,
-                edges: af.edges,
-                publishedNodes: af.nodes,
-                publishedEdges: af.edges,
-                status: "PUBLISHED",
-                generatedBy: "settings_features",
-                updatedAt: new Date()
-              },
-              $setOnInsert: { createdAt: new Date() }
-            },
-            { upsert: true, new: true }
-          );
-        }
         clearTriggerCache(clientId);
 
         // Update client with the regenerated flow (legacy + visualFlows[active]).

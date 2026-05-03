@@ -136,6 +136,25 @@ const truncate = (str, max = 24) => {
   return v.length > max ? `${v.slice(0, max - 3)}...` : v;
 };
 
+/**
+ * Central tone blocks for default flows — merged into `buildDefaultContent`.
+ * Tune brand voice here; builders should prefer `content.*` over inline strings.
+ */
+const TONE_COPY = {
+  order_not_found_prompt:
+    "We couldn't match an order to this number yet. Send your *order number* (for example #1042) and we'll look it up.",
+  order_hub_prompt: "What would you like to do next for *{{order_number}}*?",
+  cancel_reason_prompt: "In one short line, why are you cancelling? It helps us improve.",
+  cancel_failed_user:
+    "We couldn't complete the cancellation — it may already be packed or on the way. Type *menu* to reach the team.",
+  support_capture_prompt:
+    "Describe what you need — include your *order number* if you have one. A teammate will pick this up shortly.",
+  support_schedule_closed_nudge:
+    "Live agents are offline right now. Hours: *{{open_hours}}*. Leave your message here and we'll follow up; meanwhile {{bot_name}} can help with FAQs.",
+  livechat_queue_body:
+    "You're in the queue for a live agent. When you're done, send *menu* or *hi* and {{bot_name}} will take over again.",
+};
+
 // ═════════════════════════════════════════════════════════════════════════
 // 1. CONTEXT — fold wizard payload + persisted client config into one object
 // ═════════════════════════════════════════════════════════════════════════
@@ -338,6 +357,7 @@ function buildIDs(client, wizardData) {
 function buildDefaultContent(ctx) {
   const { F } = ctx;
   return {
+    ...TONE_COPY,
     welcome_a:            `👋 Welcome to *{{brand_name}}*! I'm {{bot_name}}, your assistant. Let's get started.`,
     welcome_b:            `🛍️ Hey there! Explore our products and services at *{{brand_name}}*!`,
     product_menu_text:    `Welcome to the *{{brand_name}}* Hub! How can we help you today?`,
@@ -362,7 +382,7 @@ function buildDefaultContent(ctx) {
     cod_nudge:            `💳 Save {{currency}}{{discount_amount}} and get faster delivery with online payment!`,
     order_confirmed_msg:
       `🎉 *Order confirmed, {{first_name}}!*\n\n📦 *Order:* {{order_number}}\n💰 *Total:* {{order_total}}\n💳 *Payment:* {{payment_method}}\n\n📍 *Ship to:*\n{{shipping_address}}\n\n🧾 *Items:*\n{{line_items_list}}\n\nWe'll notify you when it ships.`,
-    agent_handoff_msg:    `I've alerted the team. They'll be right with you. 🎧`,
+    agent_handoff_msg:    `Thanks — I've notified the team. Someone will join you shortly. 🎧`,
     faq_response:         `Here are some helpful answers. Type *menu* to return.`,
     ad_welcome:           `Thanks for clicking! 👋 How can I help you explore *{{brand_name}}*?`,
     ig_welcome:           `Hey from IG! 📸 Let's find what you're looking for.`,
@@ -723,8 +743,8 @@ function buildOrderBranch(ctx, IDS, content) {
       data: {
         label: "Order ID Request",
         variable: "order_id_manual",
-        question: "We could not match an order to this WhatsApp number. Please send your *Order ID* (e.g. #1042).",
-        text: "We could not match an order to this WhatsApp number. Please send your *Order ID* (e.g. #1042).",
+        question: content.order_not_found_prompt,
+        text: content.order_not_found_prompt,
         heatmapCount: 0
       }
     }
@@ -748,7 +768,7 @@ function buildOrderBranch(ctx, IDS, content) {
         data: {
           label: "Order Management",
           interactiveType: "button",
-          text: "What would you like to do next for *{{order_number}}*?",
+          text: content.order_hub_prompt,
           buttonsList: hubButtons,
           heatmapCount: 0
         }
@@ -793,8 +813,8 @@ function buildOrderBranch(ctx, IDS, content) {
         data: {
           label: "Cancellation Reason",
           variable: "cancel_reason",
-          question: "Please tell us why you are cancelling.",
-          text: "Please tell us why you are cancelling.",
+          question: content.cancel_reason_prompt,
+          text: content.cancel_reason_prompt,
           heatmapCount: 0
         }
       },
@@ -816,7 +836,7 @@ function buildOrderBranch(ctx, IDS, content) {
         position: { x: 5600, y: 400 },
         data: {
           label: "Cancel Failed",
-          text: "We could not cancel this order — it may already be processed or shipped. Tap *menu* to speak with the team.",
+          text: content.cancel_failed_user,
           heatmapCount: 0
         }
       }
@@ -1062,7 +1082,7 @@ function buildSupportBranch(ctx, IDS, content) {
     nodes.push(
       { id: IDS.sup_sch, type: "schedule", position: { x: 2400, y: 2050 },
         data: { label: "Business Hours Gate", openTime, closeTime, days: workingDays,
-          closedMessage: "Our live agents are offline right now. Hours: *{{open_hours}}*. {{bot_name}} is still here for FAQs.", heatmapCount: 0 } },
+          closedMessage: content.support_schedule_closed_nudge, heatmapCount: 0 } },
       { id: IDS.sup_closed, type: "message", position: { x: 2900, y: 2150 },
         data: { label: "After Hours", text: content.support_hours_msg, heatmapCount: 0 } }
     );
@@ -1075,15 +1095,20 @@ function buildSupportBranch(ctx, IDS, content) {
   nodes.push(
     { id: IDS.sup_capture, type: "capture_input", position: { x: 2900, y: 1950 },
       data: { label: "Support Query", variable: "support_query",
-        question: "Please describe your issue and our team will help right away.",
-        text: "Please describe your issue and our team will help right away.", heatmapCount: 0 } },
+        question: content.support_capture_prompt,
+        text: content.support_capture_prompt, heatmapCount: 0 } },
     { id: IDS.sup_tag, type: "tag_lead", position: { x: 3400, y: 1950 },
       data: { label: "Tag Pending Human", action: "add", tag: "pending-human", heatmapCount: 0 } },
     { id: IDS.sup_confirm, type: "message", position: { x: 4400, y: 1950 },
       data: { label: "Handoff Confirmed", text: content.agent_handoff_msg,
         humanEscalationTimeoutMin: F.humanEscalationTimeoutMin, heatmapCount: 0 } },
     { id: IDS.sup_livechat, type: "livechat", position: { x: 4900, y: 1950 },
-      data: { label: "Live chat handoff", topic: "Customer requested human support — {{brand_name}}", heatmapCount: 0 } }
+      data: {
+        label: "Live chat handoff",
+        topic: "Customer requested human support — {{brand_name}}",
+        text: content.livechat_queue_body,
+        heatmapCount: 0,
+      } }
   );
   edges.push({ id: `e_${IDS.sup_capture}_tag`, source: IDS.sup_capture, target: IDS.sup_tag });
 
@@ -1337,45 +1362,22 @@ async function generateEcommerceFlow(client, wizardData = {}) {
       sourceHandle: b.sourceHandle
     }));
 
-  // Commerce automations → separate WhatsAppFlow documents (not merged into main graph).
-  const automationFlows = [];
-  if (F.enableAbandonedCart) {
-    const g = buildAbandonedCart(ctx, IDS, content);
-    automationFlows.push({
-      name: `${ctx.businessName} — Cart Recovery`,
-      trigger: "abandoned_cart",
-      nodes: g.nodes,
-      edges: g.edges
-    });
-  }
-  if (F.enableOrderConfirmTpl) {
-    const g = buildOrderConfirmAndCod(ctx, IDS, content);
-    automationFlows.push({
-      name: `${ctx.businessName} — Order Confirmation`,
-      trigger: "order_placed",
-      nodes: g.nodes,
-      edges: g.edges
-    });
-  }
-  if (F.enableReviewCollection) {
-    const g = buildReviewAutomation(ctx, IDS, content);
-    automationFlows.push({
-      name: `${ctx.businessName} — Delivery & Review`,
-      trigger: "order_fulfilled",
-      nodes: g.nodes,
-      edges: g.edges
-    });
-  }
+  // Commerce automations (cart, order confirm, reviews) are merged into this single graph
+  // so merchants publish one WhatsApp flow document. Webhooks still match triggers by node.
+  const commerceSlices = [];
+  if (F.enableAbandonedCart) commerceSlices.push(buildAbandonedCart(ctx, IDS, content));
+  if (F.enableOrderConfirmTpl) commerceSlices.push(buildOrderConfirmAndCod(ctx, IDS, content));
+  if (F.enableReviewCollection) commerceSlices.push(buildReviewAutomation(ctx, IDS, content));
 
   const b2bParallel = F.enableB2BWholesale ? buildB2BBranch(ctx, IDS) : { nodes: [], edges: [] };
 
-  // Merge main interactive flow only
   const allNodes = [
     ...fallbackOut.nodes,
     ...entryOut.nodes,
     ...menuOut.nodes,
     ...branches.flatMap(b => b.nodes),
-    ...b2bParallel.nodes
+    ...b2bParallel.nodes,
+    ...commerceSlices.flatMap((g) => g.nodes),
   ];
   const allEdges = [
     ...fallbackOut.edges,
@@ -1383,7 +1385,8 @@ async function generateEcommerceFlow(client, wizardData = {}) {
     ...menuOut.edges,
     ...menuEdges,
     ...branches.flatMap(b => b.edges),
-    ...b2bParallel.edges
+    ...b2bParallel.edges,
+    ...commerceSlices.flatMap((g) => g.edges),
   ];
 
   // De-duplicate by ID (defensive — should never fire if builders behave)
@@ -1424,7 +1427,7 @@ async function generateEcommerceFlow(client, wizardData = {}) {
   return {
     nodes: cleanNodeText(cleanNodes),
     edges: cleanEdges,
-    automationFlows
+    automationFlows: [],
   };
 }
 

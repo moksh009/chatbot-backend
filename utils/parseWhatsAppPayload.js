@@ -46,6 +46,14 @@ function parseWhatsAppPayload(body) {
       rawData: body
     };
 
+    // Reply context (e.g. user tapped a button on a specific prior message) — optional for routing.
+    if (messages.context && (messages.context.id || messages.context.from)) {
+      parsed.context = {
+        from: messages.context.from,
+        id: messages.context.id,
+      };
+    }
+
     // 4. Extract Content based on Type
     switch (messages.type) {
       case "text":
