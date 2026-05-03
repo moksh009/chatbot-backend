@@ -1,9 +1,11 @@
 const express = require('express');
+const crypto = require('crypto');
 const router = express.Router();
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
 const { tenantClientId } = require('../utils/queryHelpers');
-const { v4: uuidv4 } = require('uuid');
+
+const newRuleId = () => crypto.randomUUID();
 
 // Get all routing rules for a client
 router.get('/:clientId', protect, async (req, res) => {
@@ -38,7 +40,7 @@ router.put('/:clientId', protect, async (req, res) => {
         // Ensure each rule has an id
         const enrichedRules = rules.map(r => ({
             ...r,
-            id: r.id || uuidv4(),
+            id: r.id || newRuleId(),
             isActive: r.isActive !== undefined ? r.isActive : true,
             priority: r.priority || 99
         }));
@@ -65,7 +67,7 @@ router.post('/:clientId/rules', protect, async (req, res) => {
 
         const rule = {
             ...req.body,
-            id: uuidv4(),
+            id: newRuleId(),
             isActive: true,
             priority: req.body.priority || 99,
             createdAt: new Date()

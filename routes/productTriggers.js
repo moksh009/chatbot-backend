@@ -1,9 +1,9 @@
 const express = require('express');
+const crypto = require('crypto');
 const router = express.Router();
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
 const { tenantClientId } = require('../utils/queryHelpers');
-const { v4: uuidv4 } = require('uuid');
 const log = require('../utils/logger')('ProductTriggers');
 
 /**
@@ -57,7 +57,7 @@ router.post('/:clientId', protect, async (req, res) => {
         }
 
         const trigger = {
-            id: uuidv4(),
+            id: crypto.randomUUID(),
             name: name || `Trigger: ${matchValue}`,
             isActive: true,
             matchType,
