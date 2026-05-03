@@ -6,6 +6,8 @@ const Client  = require("../models/Client");
 const { protect } = require("../middleware/auth");
 const WhatsAppFlow = require("../models/WhatsAppFlow");
 const { generateEcommerceFlow, generateSystemPrompt, getPrebuiltTemplates } = require("../utils/flowGenerator");
+const { clearTriggerCache } = require("../utils/triggerEngine");
+const { syncPlatformVarsToFlows } = require("../utils/platformVarsSync");
 const { withShopifyRetry } = require("../utils/shopifyHelper");
 const { generateText, generateTextFast } = require("../utils/gemini");
 const { mapWizardToClient, mapFeatureToggle, pullPersonaBundleFromSet } = require("../utils/wizardMapper");
@@ -131,6 +133,94 @@ async function syncPendingTemplatesForClient(client) {
 
   return { checked, approved: approvedCount, rejected: rejectedCount, pendingRemaining: updatedPending.length, updatedPending };
 }
+
+// GET /api/wizard/:clientId/setup-checklist
+router.get("/:clientId/setup-checklist", protect, async (req, res) => {
+  const { clientId } = req.params;
+  try {
+    const tenantId = tenantClientId(req);
+    if (!tenantId || tenantId !== clientId) {
+      return res.status(403).json({ success: false, error: "Unauthorized" });
+    }
+    const client = await Client.findOne({ clientId }).lean();
+    if (!client) return res.status(404).json({ success: false, error: "Client not found" });
+
+    const checklist = [];
+    const shopifyConnected = !!(client.shopDomain && client.shopifyAccessToken);
+
+    if (shopifyConnected && client.wizardFeatures?.enableAbandonedCart) {
+      checklist.push({
+        category: "Shopify",
+        item: "Enable abandoned checkout webhook",
+        status: client.shopifyWebhooks?.checkouts_create ? "done" : "pending",
+        action: "In Shopify Admin → Settings → Notifications → Webhooks → Add: checkouts/create",
+        critical: true
+      });
+    }
+    if (shopifyConnected) {
+      checklist.push({
+        category: "Shopify",
+        item: "Add customer phone number to orders",
+        status: client.platformVars?.shopifyPhoneField ? "done" : "pending",
+        action: "Ensure checkout collects phone so order tracking by WhatsApp number works",
+        critical: true
+      });
+    }
+
+    const approvedTemplates = (client.syncedMetaTemplates || []).filter(
+      (t) => String(t.status || "").toUpperCase() === "APPROVED"
+    );
+    const pendingTemplates = (client.messageTemplates || []).filter(
+      (t) => String(t.status || "").toUpperCase() === "PENDING"
+    );
+    const welcomeApproved = approvedTemplates.some((t) => t.name === "welcome_with_logo");
+    if (!welcomeApproved) {
+      checklist.push({
+        category: "Meta Templates",
+        item: "Welcome template approval",
+        status: pendingTemplates.some((t) => t.name === "welcome_with_logo") ? "pending" : "not_submitted",
+        action: "Submit the 'welcome_with_logo' template from the Templates tab and wait for Meta approval",
+        critical: false
+      });
+    }
+
+    checklist.push({
+      category: "WhatsApp",
+      item: "Set business display name in Meta Business Manager",
+      status: client.wabaDisplayName ? "done" : "pending",
+      action: "Meta Business Manager → WhatsApp Accounts → verify display name matches your brand",
+      critical: false
+    });
+
+    if (client.wizardFeatures?.enableLoyalty) {
+      checklist.push({
+        category: "Loyalty Program",
+        item: "Configure points earning rules",
+        status: client.loyaltyConfig?.enabled ? "done" : "pending",
+        action: "Settings → Loyalty Program → set points per purchase",
+        critical: false
+      });
+    }
+
+    checklist.push({
+      category: "Testing",
+      item: "Send test message to your WhatsApp number",
+      status: client.testMessageSent ? "done" : "pending",
+      action: "Send 'hi' to your WhatsApp Business number to verify the welcome flow",
+      critical: true
+    });
+
+    res.json({
+      success: true,
+      checklist,
+      doneCount: checklist.filter((c) => c.status === "done").length
+    });
+  } catch (err) {
+    log.error("setup-checklist failed", err);
+    res.status(500).json({ success: false, error: err.message || "Failed" });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/wizard/:clientId/complete
 // Called when user clicks Launch in Step 10 of the onboarding wizard
@@ -158,7 +248,8 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     const templates = getPrebuiltTemplates(wizardData);
     
     // Generate the complete flow (passing templates so nodes can use them)
-    const { nodes, edges } = await generateEcommerceFlow(client, { ...wizardData, templates });
+    const generated = await generateEcommerceFlow(client, { ...wizardData, templates });
+    const { nodes, edges, automationFlows = [] } = generated;
 
     // Replace mode: Flow Builder lists `WhatsAppFlow` documents. Older wizard runs only
     // updated `Client.visualFlows` / deleted one `flowModelId`, so stale main + automation
@@ -275,6 +366,36 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     const updatedClient = await Client.findByIdAndUpdate(
       client._id, updateQuery, { new: true, runValidators: true }
     );
+
+    const seed = String(clientId).replace(/[^a-z0-9]/gi, "").substring(0, 12) || "default";
+    for (const af of automationFlows) {
+      if (!af?.trigger || !Array.isArray(af.nodes)) continue;
+      const autoFlowId = `auto_${af.trigger}_${seed}`.replace(/[^a-z0-9_]/gi, "_").substring(0, 64);
+      await WhatsAppFlow.findOneAndUpdate(
+        { clientId, flowId: autoFlowId },
+        {
+          $set: {
+            clientId,
+            flowId: autoFlowId,
+            name: af.name || `${af.trigger} automation`,
+            platform: "whatsapp",
+            isAutomation: true,
+            automationTrigger: af.trigger,
+            nodes: af.nodes,
+            edges: af.edges,
+            publishedNodes: af.nodes,
+            publishedEdges: af.edges,
+            status: "PUBLISHED",
+            generatedBy: "wizard",
+            updatedAt: new Date()
+          },
+          $setOnInsert: { createdAt: new Date() }
+        },
+        { upsert: true, new: true }
+      );
+    }
+    clearTriggerCache(clientId);
+    await syncPlatformVarsToFlows(clientId);
 
     const { syncPersonaAcrossSystem } = require("../utils/personaEngine");
     await syncPersonaAcrossSystem(clientId, personaPatch, {
@@ -1050,7 +1171,37 @@ router.patch("/:clientId/features", protect, async (req, res) => {
           replaceExisting:    true,
           preserveNodeIds:    true   // keeps active conversations alive on regen
         };
-        const { nodes, edges } = await generateEcommerceFlow(client, wizardData);
+        const genOut = await generateEcommerceFlow(client, wizardData);
+        const { nodes, edges, automationFlows: autoFlows = [] } = genOut;
+
+        const seedSf = String(clientId).replace(/[^a-z0-9]/gi, "").substring(0, 12) || "default";
+        for (const af of autoFlows) {
+          if (!af?.trigger || !Array.isArray(af.nodes)) continue;
+          const autoFlowId = `auto_${af.trigger}_${seedSf}`.replace(/[^a-z0-9_]/gi, "_").substring(0, 64);
+          await WhatsAppFlow.findOneAndUpdate(
+            { clientId, flowId: autoFlowId },
+            {
+              $set: {
+                clientId,
+                flowId: autoFlowId,
+                name: af.name || `${af.trigger} automation`,
+                platform: "whatsapp",
+                isAutomation: true,
+                automationTrigger: af.trigger,
+                nodes: af.nodes,
+                edges: af.edges,
+                publishedNodes: af.nodes,
+                publishedEdges: af.edges,
+                status: "PUBLISHED",
+                generatedBy: "settings_features",
+                updatedAt: new Date()
+              },
+              $setOnInsert: { createdAt: new Date() }
+            },
+            { upsert: true, new: true }
+          );
+        }
+        clearTriggerCache(clientId);
 
         // Update client with the regenerated flow (legacy + visualFlows[active]).
         const visualFlows = client.visualFlows || [];

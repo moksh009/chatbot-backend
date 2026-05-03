@@ -207,7 +207,7 @@ const { normalizePhone } = require("./helpers");
  * Walk a published flow starting at `currentNodeId` (used by Shopify commerce webhooks).
  * Reloads conversation + builds variable context so {{placeholders}} resolve correctly.
  */
-async function walkFlow({ client, phone, flow, currentNodeId, convo, lead, userMessage }) {
+async function walkFlow({ client, phone, flow, currentNodeId, convo, lead, userMessage, suppressConversationPersistence = false }) {
   const io = global.io;
   const channel = 'whatsapp';
   const normalizedPhone = normalizePhone(phone);
@@ -240,13 +240,18 @@ async function walkFlow({ client, phone, flow, currentNodeId, convo, lead, userM
     channel,
     _variableContext: ctx,
     type: 'text',
-    text: userMessage ? { body: userMessage } : { body: '' }
+    text: userMessage ? { body: userMessage } : { body: '' },
+    suppressConversationPersistence: !!suppressConversationPersistence
   };
 
-  await Conversation.findByIdAndUpdate(freshConvo._id, {
-    activeFlowId: flow._id || flow.id || flow.flowId || null,
-    lastInteraction: new Date()
-  });
+  if (!suppressConversationPersistence) {
+    await Conversation.findByIdAndUpdate(freshConvo._id, {
+      activeFlowId: flow._id || flow.id || flow.flowId || null,
+      lastInteraction: new Date()
+    });
+  } else {
+    await Conversation.findByIdAndUpdate(freshConvo._id, { lastInteraction: new Date() });
+  }
 
   return executeNode(
     currentNodeId,
@@ -510,27 +515,50 @@ async function runDualBrainEngine(parsedMessage, client) {
     }
 
     // --- GAP-GEN-3: COMMERCE AUTOMATION ISOLATION ---
-    // If this is an ecommerce event, route it to the isolated automation flow
-    // so it doesn't overwrite the user's active conversation state (lastStepId).
+    // If this is an ecommerce event, route it to the isolated WhatsAppFlow automation
+    // (suppressConversationPersistence so lastStepId / activeFlowId stay on the main journey).
     const triggerTypes = ['order_placed', 'abandoned_cart', 'order_fulfilled'];
     if (triggerTypes.includes(parsedMessage?.type)) {
       const WhatsAppFlow = require('../models/WhatsAppFlow');
-      const automationFlow = await WhatsAppFlow.findOne({ 
-        clientId: client.clientId, 
-        isAutomation: true, 
-        automationTrigger: parsedMessage.type 
-      });
-      if (automationFlow && automationFlow.nodes && automationFlow.nodes.length > 0) {
+      const Conversation = require('../models/Conversation');
+      const automationFlow = await WhatsAppFlow.findOne({
+        clientId: client.clientId,
+        isAutomation: true,
+        automationTrigger: parsedMessage.type,
+        status: 'PUBLISHED'
+      }).lean();
+      if (automationFlow && (automationFlow.nodes || []).length > 0) {
         log.info(`[Automation] Routing ${parsedMessage.type} to isolated automation flow for ${phone}`);
-        // Create ephemeral convo object so it doesn't touch the DB state
-        let dummyConvo = { _id: 'auto_' + Date.now(), metadata: {} };
-        let dummyLead = await AdLead.findOne({ phoneNumber: phone, clientId: client.clientId }) || { phoneNumber: phone };
-        
-        const startNode = automationFlow.nodes.find(n => n.type === 'trigger');
-        if (startNode) {
-          await executeNode(startNode.id, automationFlow.nodes, automationFlow.edges, client, dummyConvo, dummyLead, phone, io, channel, parsedMessage);
+        const nodes = automationFlow.publishedNodes?.length ? automationFlow.publishedNodes : automationFlow.nodes;
+        const edges = automationFlow.publishedEdges?.length ? automationFlow.publishedEdges : automationFlow.edges;
+        const trig = nodes.find((n) => n.type === 'trigger');
+        const firstEdge = (edges || []).find((e) => e.source === trig?.id);
+        const startId = firstEdge?.target;
+        if (startId) {
+          let convoAuto = await Conversation.findOne({ phone, clientId: client.clientId });
+          if (!convoAuto) {
+            convoAuto = await Conversation.create({
+              phone,
+              clientId: client.clientId,
+              channel: 'whatsapp',
+              status: 'active',
+              lastStepId: null,
+              source: `auto/${parsedMessage.type}`,
+            });
+          }
+          const leadAuto = await AdLead.findOne({ phoneNumber: phone, clientId: client.clientId }).lean();
+          await walkFlow({
+            client,
+            phone,
+            flow: { _id: automationFlow._id, flowId: automationFlow.flowId, nodes, edges },
+            currentNodeId: startId,
+            convo: convoAuto,
+            lead: leadAuto || { phoneNumber: phone },
+            userMessage: `__event:${parsedMessage.type}__`,
+            suppressConversationPersistence: true,
+          });
         }
-        return true; // Stop execution here, bypassing the main flow completely
+        return true;
       }
     }
 
@@ -2339,9 +2367,9 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   if (node.type === 'shopify_call' || node.type === 'ShopifyNode') {
     const { action, query, variable } = node.data;
     const { getShopifyClient, withShopifyRetry } = require("./shopifyHelper");
-    
+    let resultData = null;
+
     try {
-      let resultData = null;
 
       // --- USP 1: DYNAMIC PRODUCT CARDS (Shopify API with KB fallback) ---
       if (action === 'PRODUCT_CARD') {
@@ -2417,10 +2445,13 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
           }
 
           if (!order) {
-            await sendWhatsAppText(client, phone,
-              "I couldn't find any orders linked to your number. " +
-              "Please share your order ID (e.g. #1042) and I'll look it up!"
-            );
+            const silentLookup = !!node.data?.silent;
+            if (!silentLookup) {
+              await sendWhatsAppText(client, phone,
+                "I couldn't find any orders linked to your number. " +
+                "Please share your order ID (e.g. #1042) and I'll look it up!"
+              );
+            }
             // Save to metadata for logic node branching
             await Conversation.findByIdAndUpdate(convo._id, {
               'metadata.shopify_order_found': 'false'
@@ -2444,26 +2475,46 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
           const emoji = statusEmoji[fulfillStatus.toLowerCase()] || '📦';
           const items = (order.line_items || []).map(i => `• ${i.title} × ${i.quantity}`).join('\n');
           const tracking = order.fulfillments?.[0]?.tracking_url;
+          const payGw = (order.payment_gateway_names || []).join(', ') || order.processing_method || '';
 
-          let msg = `${emoji} *Order #${order.order_number}*\n\n`;
-          msg += `Status: *${fulfillStatus.toUpperCase()}*\n`;
-          msg += `Items:\n${items || 'N/A'}\n`;
-          msg += `Total: *${order.currency} ${parseFloat(order.total_price).toFixed(2)}*`;
-          if (tracking) msg += `\n\n📍 Track: ${tracking}`;
-          if (order.order_status_url) msg += `\n🔗 Details: ${order.order_status_url}`;
+          const silentLookup = !!node.data?.silent;
+          if (!silentLookup) {
+            let msg = `${emoji} *Order #${order.order_number}*\n\n`;
+            msg += `Status: *${fulfillStatus.toUpperCase()}*\n`;
+            msg += `Items:\n${items || 'N/A'}\n`;
+            msg += `Total: *${order.currency} ${parseFloat(order.total_price).toFixed(2)}*`;
+            if (tracking) msg += `\n\n📍 Track: ${tracking}`;
+            if (order.order_status_url) msg += `\n🔗 Details: ${order.order_status_url}`;
 
-          await sendWhatsAppText(client, phone, msg);
+            await sendWhatsAppText(client, phone, msg);
+          }
 
           // Save order data to metadata
           const orderData = {
             orderNumber: order.order_number, orderId: order.id,
             status: fulfillStatus, totalPrice: order.total_price,
-            trackingUrl: tracking || null, currency: order.currency
+            trackingUrl: tracking || null, currency: order.currency,
+            itemsSummary: items || '',
+            payment_method: payGw,
           };
-          await Conversation.findByIdAndUpdate(convo._id, {
-            'metadata.lastOrder': orderData,
-            'metadata.shopify_order_found': 'true'
-          });
+          const fsRaw = String(order.fulfillment_status || "").toLowerCase();
+          const hasFulfillment = Array.isArray(order.fulfillments) && order.fulfillments.length > 0;
+          const isShippedLike =
+            fsRaw === "fulfilled" ||
+            fsRaw === "partial" ||
+            fsRaw === "shipped" ||
+            (hasFulfillment && fsRaw !== "restocked");
+          const mergedMeta = {
+            ...(convo.metadata || {}),
+            lastOrder: orderData,
+            shopify_order_found: "true",
+            order_number: order.name ? String(order.name) : `#${order.order_number}`,
+            order_status: fulfillStatus,
+            payment_method: payGw,
+            is_shipped: isShippedLike ? "true" : "false",
+          };
+          await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: mergedMeta } });
+          convo.metadata = mergedMeta;
 
           return orderData;
         });
@@ -2549,6 +2600,32 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         const updatedMetadata = { ...(convo.metadata || {}), [variable]: resultData };
         await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
         convo.metadata = updatedMetadata;
+      }
+
+      // Silent / graph-driven order lookup: follow explicit `success` edge to a message node
+      if (
+        (action === "ORDER_STATUS" || action === "get_order" || action === "CHECK_ORDER_STATUS") &&
+        resultData &&
+        typeof resultData === "object" &&
+        resultData.orderId
+      ) {
+        const succEdge = flowEdges.find(
+          (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === "success"
+        );
+        if (succEdge) {
+          return await executeNode(
+            succEdge.target,
+            flowNodes,
+            flowEdges,
+            client,
+            convo,
+            lead,
+            phone,
+            io,
+            channel,
+            parsedMessage
+          );
+        }
       }
     } catch (err) {
       log.error(`Shopify Action ${action} Failed:`, { error: err.message });
@@ -2638,14 +2715,17 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     log.info(`[FlowEngine] LiveChat handoff: bot paused for ${phone}`);
   }
 
-  // Update lastStepId logic
+  // Update lastStepId logic (skipped for isolated commerce automations)
   const isWaitNode = (node.type === 'capture_input' || node.type === 'CaptureNode');
   const action = node.data?.action;
+  const _suppress = !!parsedMessage?.suppressConversationPersistence;
 
-  if (action === "AI_FALLBACK" || node.type === 'logic') {
-    await Conversation.findByIdAndUpdate(convo._id, { lastStepId: convo.lastStepId, lastInteraction: new Date() });
-  } else {
-    await Conversation.findByIdAndUpdate(convo._id, { lastStepId: nodeId, lastInteraction: new Date() });
+  if (!_suppress) {
+    if (action === "AI_FALLBACK" || node.type === 'logic') {
+      await Conversation.findByIdAndUpdate(convo._id, { lastStepId: convo.lastStepId, lastInteraction: new Date() });
+    } else {
+      await Conversation.findByIdAndUpdate(convo._id, { lastStepId: nodeId, lastInteraction: new Date() });
+    }
   }
 
   // Auto-forward or enter WAIT state
@@ -2655,13 +2735,15 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     const nextEdge = flowEdges.find(e => e.source === nodeId && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'output'));
     
     log.info(`⏳ Node ${nodeId} entering wait state for variable "${targetVar}"`);
-    await Conversation.findByIdAndUpdate(convo._id, {
-      status: 'WAITING_FOR_INPUT',
-      waitingForVariable: targetVar,
-      captureResumeNodeId: nextEdge ? nextEdge.target : null,
-      captureRetries: 0,
-      lastStepId: nodeId
-    });
+    if (!_suppress) {
+      await Conversation.findByIdAndUpdate(convo._id, {
+        status: 'WAITING_FOR_INPUT',
+        waitingForVariable: targetVar,
+        captureResumeNodeId: nextEdge ? nextEdge.target : null,
+        captureRetries: 0,
+        lastStepId: nodeId
+      });
+    }
   } else if (node.type !== 'logic' && node.type !== 'restart') {
     const autoEdge = flowEdges.find(e => e.source === nodeId && (!e.trigger || e.trigger?.type === 'auto') && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom' || e.sourceHandle === 'output'));
     if (autoEdge) {
@@ -2969,6 +3051,7 @@ async function tryKeywordFallback(parsedMessage, client, convo, phone) {
   const keywords = client.simpleSettings?.keywords || [];
 
   for (const kw of keywords) {
+    if (!kw || !kw.word) continue;
     if (!text.includes(kw.word.toLowerCase())) continue;
 
     switch (kw.action) {
@@ -3687,11 +3770,17 @@ async function saveOutboundMessage(phone, clientId, type, body, wamid, channel =
 // All legacy duplicate functions (previously at bottom of file) have been
 // removed. masterWebhook.js must use handleWhatsAppMessage or runDualBrainEngine.
 // ─────────────────────────────────────────────────────────────────────────────
+/** Commerce / webhook entry: same as walkFlow with persistence suppressed by default. */
+async function executeAutomationFlow(opts) {
+  return walkFlow({ suppressConversationPersistence: true, ...opts });
+}
+
 module.exports = {
   handleWhatsAppMessage,
   runDualBrainEngine,
   runFlow,
   walkFlow,
+  executeAutomationFlow,
   executeNode,
   sendNodeContent,
   saveInboundMessage,

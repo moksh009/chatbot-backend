@@ -258,8 +258,13 @@ function buildIDs(client, wizardData) {
     main_menu:        `main_menu_${ts}`,
     // Catalog
     cat_list:         `cat_list_${ts}`,
+    cat_addr_prompt:  `cat_addr_prompt_${ts}`,
+    cat_addr_cap:     `cat_addr_cap_${ts}`,
+    cat_addr_done:    `cat_addr_done_${ts}`,
+    cat_addr_alert:   `cat_addr_alert_${ts}`,
     // Order ops
     ord_track:        `ord_track_${ts}`,
+    ord_status_msg:   `ord_status_msg_${ts}`,
     ord_notfound:     `ord_notfound_${ts}`,
     ord_hub:          `ord_hub_${ts}`,
     can_confirm:      `can_confirm_${ts}`,
@@ -274,6 +279,8 @@ function buildIDs(client, wizardData) {
     ret_reason:       `ret_reason_${ts}`,
     ret_photo:        `ret_photo_${ts}`,
     ret_confirm:      `ret_confirm_${ts}`,
+    ret_tag:          `ret_tag_${ts}`,
+    ret_admin:        `ret_admin_${ts}`,
     ret_policy:       `ret_policy_${ts}`,
     ref_check:        `ref_check_${ts}`,
     ref_result:       `ref_result_${ts}`,
@@ -302,6 +309,7 @@ function buildIDs(client, wizardData) {
     sup_alert:        `sup_alert_${ts}`,
     sup_confirm:      `sup_confirm_${ts}`,
     sup_closed:       `sup_closed_${ts}`,
+    sup_livechat:     `sup_livechat_${ts}`,
     // FAQ
     faq_msg:          `faq_msg_${ts}`,
     // Order confirm + COD
@@ -328,39 +336,40 @@ function buildIDs(client, wizardData) {
 // 3. AI CONTENT GENERATION (best-effort — falls back to defaults silently)
 // ═════════════════════════════════════════════════════════════════════════
 function buildDefaultContent(ctx) {
-  const { businessName, botName, currency, warrantyDuration, openTime, closeTime, F } = ctx;
+  const { F } = ctx;
   return {
-    welcome_a:            `👋 Welcome to *${businessName}*! I'm ${botName}, your assistant. Let's get started.`,
-    welcome_b:            `🛍️ Hey there! Explore our products and services at *${businessName}*!`,
-    product_menu_text:    `Welcome to the *${businessName}* Hub! How can we help you today?`,
-    order_status_msg:     `📦 Tracking your order... Typical delivery takes 3–5 business days.`,
+    welcome_a:            `👋 Welcome to *{{brand_name}}*! I'm {{bot_name}}, your assistant. Let's get started.`,
+    welcome_b:            `🛍️ Hey there! Explore our products and services at *{{brand_name}}*!`,
+    product_menu_text:    `Welcome to the *{{brand_name}}* Hub! How can we help you today?`,
+    order_status_msg:
+      `📦 *{{order_number}}*\n\nStatus: *{{order_status}}*\n\n{{line_items_list}}\n\n🔗 Track: {{tracking_url}}\n\nTap a button below for the next step.`,
     fallback_msg:         `I'm still learning! 😊 Connecting you with a human expert who can help.`,
     returns_policy_short: `Easy 7-day returns on all unused items. Just share a photo to start! 🔄`,
     cancellation_confirm: `Are you sure you want to cancel? This cannot be undone.`,
     cancellation_success: `Cancellation processed successfully. We hope to serve you again! 💙`,
-    loyalty_welcome:      `🎉 Welcome to *${businessName}* Rewards! You've earned *${F.loyaltySignupBonus} points*!`,
+    loyalty_welcome:      `🎉 Welcome to *{{brand_name}}* Rewards! You've earned *${F.loyaltySignupBonus} points*!`,
     loyalty_points_msg:   `💎 You have points available! Redeem them for instant discounts.`,
-    referral_msg:         `Refer a friend and earn *${F.referralPointsBonus} bonus points*! 🎁`,
+    referral_msg:         `Refer a friend and earn *{{referral_points}} bonus points*! 🎁`,
     sentiment_ask:        `How was your experience today? We value your feedback! 😊`,
     review_positive:      `That's great! 🌟 Please consider sharing your review on Google.`,
     review_negative:      `We're sorry! 😔 An agent will be with you shortly to make it right.`,
     cart_recovery_1:
-      `🛒 Hi {{first_name}} — you left something beautiful in your *${businessName}* cart:\n\n{{line_items_list}}\n\n💰 *Total:* {{cart_total}}\n🔗 *Checkout:* {{checkout_url}}\n\nTap the link to complete your order securely.`,
+      `🛒 Hi {{first_name}} — you left something beautiful in your *{{brand_name}}* cart:\n\n{{line_items_list}}\n\n💰 *Total:* {{cart_total}}\n🔗 *Checkout:* {{checkout_url}}\n\nTap the link to complete your order securely.`,
     cart_recovery_2:
       `⏰ Still thinking? Your items are reserved — {{first_product_title}} and the rest are waiting.\n\n💰 {{cart_total}}\n🔗 {{checkout_url}}`,
     cart_recovery_3:
       `🔥 Last nudge: finish checkout now and use any active store offer. Cart total {{cart_total}}.\n🔗 {{checkout_url}}`,
-    cod_nudge:            `💳 Save ${currency}${F.codDiscountAmount} and get faster delivery with online payment!`,
+    cod_nudge:            `💳 Save {{currency}}{{discount_amount}} and get faster delivery with online payment!`,
     order_confirmed_msg:
       `🎉 *Order confirmed, {{first_name}}!*\n\n📦 *Order:* {{order_number}}\n💰 *Total:* {{order_total}}\n💳 *Payment:* {{payment_method}}\n\n📍 *Ship to:*\n{{shipping_address}}\n\n🧾 *Items:*\n{{line_items_list}}\n\nWe'll notify you when it ships.`,
     agent_handoff_msg:    `I've alerted the team. They'll be right with you. 🎧`,
     faq_response:         `Here are some helpful answers. Type *menu* to return.`,
-    ad_welcome:           `Thanks for clicking! 👋 How can I help you explore *${businessName}*?`,
+    ad_welcome:           `Thanks for clicking! 👋 How can I help you explore *{{brand_name}}*?`,
     ig_welcome:           `Hey from IG! 📸 Let's find what you're looking for.`,
-    warranty_welcome:     `🛡️ Register your *${warrantyDuration}* warranty for priority support.`,
+    warranty_welcome:     `🛡️ Register your *{{warranty_duration}}* warranty for priority support.`,
     warranty_lookup_prompt: `Enter your Order ID to check your warranty status.`,
-    warranty_reg_success: `✅ Warranty registered for *${warrantyDuration}*!`,
-    support_hours_msg:    `Agents are active *${openTime}–${closeTime}*. I'm here 24/7! 📞`,
+    warranty_reg_success: `✅ Warranty registered for *{{warranty_duration}}*!`,
+    support_hours_msg:    `Agents are active *{{open_hours}}*. I'm here 24/7! 📞`,
     return_photo_prompt:  `Please upload a clear photo of the item. 📸`,
     in_transit_error:     `Already shipped! 🚚 Contact returns once it arrives.`
   };
@@ -396,7 +405,7 @@ Return only JSON with keys: welcome_a,welcome_b,product_menu_text,order_status_m
 // ═════════════════════════════════════════════════════════════════════════
 
 function buildEntry(ctx, IDS, content, welcomeTemplate) {
-  const { F, botName, businessName, client } = ctx;
+  const { F, client } = ctx;
   const nodes = [];
   const edges = [];
 
@@ -441,43 +450,72 @@ function buildEntry(ctx, IDS, content, welcomeTemplate) {
   if (wTpl) {
     nodes.push({
       id: IDS.welcome, type: "template", position: { x: 1200, y: 0 },
-      data: { label: "Welcome Template", templateName: wTpl.name, imageUrl: client.brand?.logoUrl || "", variables: [], heatmapCount: 0 }
+      data: {
+        label: "Welcome Template",
+        templateName: wTpl.name,
+        imageUrl: client.brand?.businessLogo || client.brand?.logoUrl || client.businessLogo || "",
+        variables: ["{{brand_name}}", "{{bot_name}}"],
+        heatmapCount: 0
+      }
     });
   } else {
+    const btnShop = F.enableCatalog ? [{ id: "shop", title: "🛍️ Browse Products" }] : [];
+    const btnTrack = F.enableOrderTracking ? [{ id: "track", title: "📦 Track Order" }] : [];
+    const btnSupport = F.enableSupportEscalation ? [{ id: "support", title: "🎧 Get Support" }] : [];
+    let buttonsList = [...btnShop, ...btnTrack, ...btnSupport];
+    if (buttonsList.length === 0) {
+      buttonsList = [{ id: "menu", title: "📋 Open Menu" }];
+    } else if (!buttonsList.find((b) => b.id === "menu")) {
+      buttonsList = [...buttonsList, { id: "menu", title: "📋 Main Menu" }];
+    }
+    if (buttonsList.length > 3) {
+      buttonsList = buttonsList.slice(0, 3);
+    }
     nodes.push({
       id: IDS.welcome, type: "interactive", position: { x: 1200, y: 0 },
       data: {
         label: "Welcome Message", interactiveType: "button",
-        imageUrl: client.brand?.logoUrl || "",
+        imageUrl: client.brand?.businessLogo || client.brand?.logoUrl || client.businessLogo || "",
         text: content.welcome_a,
-        buttonsList: [
-          { id: "menu",    title: "📋 Open Menu" },
-          { id: "support", title: "🎧 Talk to Us" }
-        ],
+        buttonsList,
         heatmapCount: 0
       }
     });
+    const tgtShop = F.enableCatalog ? IDS.cat_list : IDS.main_menu;
+    const tgtTrack = F.enableOrderTracking ? IDS.ord_track : IDS.main_menu;
+    const supEntry = F.enableBusinessHoursGate && !F.enable247 ? IDS.sup_sch : IDS.sup_capture;
+    const tgtSupport = F.enableSupportEscalation ? supEntry : IDS.main_menu;
+    buttonsList.forEach((b) => {
+      let target = IDS.main_menu;
+      if (b.id === "shop") target = tgtShop;
+      else if (b.id === "track") target = tgtTrack;
+      else if (b.id === "support") target = tgtSupport;
+      else if (b.id === "menu") target = IDS.main_menu;
+      edges.push({
+        id: `e_${IDS.welcome}_${b.id}`,
+        source: IDS.welcome,
+        target,
+        sourceHandle: b.id
+      });
+    });
   }
   edges.push({ id: `e_${IDS.trig_main}_w`, source: IDS.trig_main, target: IDS.welcome });
-  edges.push({ id: `e_${IDS.welcome}_mm`, source: IDS.welcome, target: IDS.main_menu });
-  if (!wTpl) {
-    // Wire the welcome interactive's button IDs into existing destinations.
-    edges.push({ id: `e_${IDS.welcome}_mm_btn`, source: IDS.welcome, target: IDS.main_menu, sourceHandle: "menu" });
+  if (wTpl) {
+    edges.push({ id: `e_${IDS.welcome}_mm`, source: IDS.welcome, target: IDS.main_menu });
   }
 
-  return { nodes, edges, label: `Welcome → ${businessName}`, hasWelcomeTemplate: !!wTpl };
+  return { nodes, edges, label: "Welcome → {{brand_name}}", hasWelcomeTemplate: !!wTpl };
 }
 
 function buildMainMenu(ctx, IDS, menuRows) {
-  const { businessName, botName } = ctx;
   if (!menuRows.length) return { nodes: [], edges: [] };
   const node = {
     id: IDS.main_menu, type: "interactive", position: { x: 1800, y: 0 },
     data: {
       label: "Main Hub Menu", interactiveType: "list",
-      text: `How can ${botName} help you today? Tap an option below 👇`,
+      text: "How can {{bot_name}} help you today? Tap an option below 👇",
       buttonText: "Open Menu",
-      sections: [{ title: businessName, rows: menuRows }],
+      sections: [{ title: "{{brand_name}}", rows: menuRows }],
       heatmapCount: 0
     }
   };
@@ -485,17 +523,17 @@ function buildMainMenu(ctx, IDS, menuRows) {
 }
 
 function buildCatalogBranch(ctx, IDS) {
-  const { businessName, currency, products, storeUrl, client, wizardData } = ctx;
+  const { F, currency, products, storeUrl, client, wizardData } = ctx;
   const nodes = [], edges = [];
 
   nodes.push({
     id: IDS.cat_list, type: "interactive", position: { x: 2400, y: -600 },
     data: {
       label: "Product Catalog", interactiveType: "list",
-      text: `Ready to explore ${businessName} products? Pick one below 👇`,
+      text: "Ready to explore {{brand_name}} products? Pick one below 👇",
       buttonText: "View Products",
       sections: [{
-        title: `${businessName} Products`,
+        title: "{{brand_name}} — Products",
         rows: products.length
           ? products.map((p, i) => ({
               id: `p_${i}`, title: truncate(p.title, 24),
@@ -506,6 +544,71 @@ function buildCatalogBranch(ctx, IDS) {
       heatmapCount: 0
     }
   });
+
+  const supEntryProduct = F.enableSupportEscalation
+    ? (F.enableBusinessHoursGate && !F.enable247 ? IDS.sup_sch : IDS.sup_capture)
+    : IDS.ai_fallback;
+
+  if (products.length) {
+    nodes.push(
+      {
+        id: IDS.cat_addr_prompt,
+        type: "message",
+        position: { x: 3200, y: -900 },
+        data: {
+          label: "Delivery address",
+          text: "📍 Share your *full delivery address* (house, street, city, PIN) so {{brand_name}} can arrange delivery or a callback.",
+          heatmapCount: 0
+        }
+      },
+      {
+        id: IDS.cat_addr_cap,
+        type: "capture_input",
+        position: { x: 3600, y: -900 },
+        data: {
+          label: "Capture address",
+          variable: "shipping_address",
+          question: "Type your complete shipping address in one message.",
+          text: "Type your complete shipping address in one message.",
+          heatmapCount: 0
+        }
+      },
+      {
+        id: IDS.cat_addr_done,
+        type: "message",
+        position: { x: 4000, y: -900 },
+        data: {
+          label: "Address received",
+          text: "✅ Thanks — we saved your address. A teammate may confirm details on WhatsApp shortly.",
+          heatmapCount: 0
+        }
+      }
+    );
+    edges.push(
+      { id: `e_${IDS.cat_addr_prompt}_cap`, source: IDS.cat_addr_prompt, target: IDS.cat_addr_cap },
+      { id: `e_${IDS.cat_addr_cap}_done`, source: IDS.cat_addr_cap, target: IDS.cat_addr_done }
+    );
+    if (F.enableAdminAlerts) {
+      nodes.push({
+        id: IDS.cat_addr_alert,
+        type: "admin_alert",
+        position: { x: 4400, y: -900 },
+        data: {
+          label: "Buy intent alert",
+          priority: "medium",
+          topic: "Buy intent — {{brand_name}}",
+          phone: ctx.adminPhone || client.adminPhone || "",
+          heatmapCount: 0
+        }
+      });
+      edges.push(
+        { id: `e_${IDS.cat_addr_done}_al`, source: IDS.cat_addr_done, target: IDS.cat_addr_alert },
+        { id: `e_${IDS.cat_addr_alert}_mm`, source: IDS.cat_addr_alert, target: IDS.main_menu }
+      );
+    } else {
+      edges.push({ id: `e_${IDS.cat_addr_done}_mm`, source: IDS.cat_addr_done, target: IDS.main_menu });
+    }
+  }
 
   products.forEach((p, i) => {
     const prodId = `prod_${i}_${IDS.seed}`;
@@ -551,7 +654,7 @@ function buildCatalogBranch(ctx, IDS) {
       } : {
         label: truncate(`Product: ${p.title}`, 30),
         interactiveType: "button", imageUrl: p.imageUrl || "",
-        text: `*${p.title}*\n\n💰 Price: ${currency}${parseInt(p.price || 0, 10).toLocaleString("en-IN")}\n✅ ${ctx.warrantyDuration} Warranty | 🚚 Free Shipping`,
+        text: `*${p.title}*\n\n💰 Price: {{currency}}${parseInt(p.price || 0, 10).toLocaleString("en-IN")}\n✅ {{warranty_duration}} Warranty | 🚚 Free Shipping`,
         buttonsList: [
           { id: "buy",   title: "🛒 Buy Now" },
           { id: "agent", title: "📞 Talk to Agent" },
@@ -563,11 +666,21 @@ function buildCatalogBranch(ctx, IDS) {
       }
     });
 
+    const buyTarget = products.length ? IDS.cat_addr_prompt : IDS.ai_fallback;
     edges.push({ id: `e_${IDS.cat_list}_p${i}`, source: IDS.cat_list, target: prodId, sourceHandle: `p_${i}` });
-    edges.push({ id: `e_${prodId}_buy`,   source: prodId, target: IDS.ai_fallback, sourceHandle: "buy" });
-    edges.push({ id: `e_${prodId}_agent`, source: prodId, target: IDS.sup_sch || IDS.ai_fallback, sourceHandle: "agent" });
-    edges.push({ id: `e_${prodId}_menu`,  source: prodId, target: IDS.main_menu, sourceHandle: "menu" });
+    edges.push({ id: `e_${prodId}_buy`, source: prodId, target: buyTarget, sourceHandle: "buy" });
+    edges.push({ id: `e_${prodId}_agent`, source: prodId, target: supEntryProduct, sourceHandle: "agent" });
+    edges.push({ id: `e_${prodId}_menu`, source: prodId, target: IDS.main_menu, sourceHandle: "menu" });
   });
+
+  if (!products.length) {
+    edges.push({
+      id: `e_${IDS.cat_list}_nop`,
+      source: IDS.cat_list,
+      target: IDS.main_menu,
+      sourceHandle: "no_products"
+    });
+  }
 
   return {
     nodes, edges,
@@ -582,61 +695,156 @@ function buildOrderBranch(ctx, IDS, content) {
   const nodes = [], edges = [];
 
   nodes.push(
-    { id: IDS.ord_track, type: "shopify_call", position: { x: 2400, y: 200 },
-      data: { label: "Check Order Status", action: "CHECK_ORDER_STATUS", heatmapCount: 0 } },
-    { id: IDS.ord_notfound, type: "capture_input", position: { x: 2900, y: 100 },
-      data: { label: "Order ID Request", variable: "order_id_manual",
-        question: "I couldn't find an order for your number. Please share your Order ID (e.g. #1042).",
-        text: "I couldn't find an order for your number. Please share your Order ID (e.g. #1042).",
-        heatmapCount: 0 } }
+    {
+      id: IDS.ord_track,
+      type: "shopify_call",
+      position: { x: 2400, y: 200 },
+      data: {
+        label: "Check Order Status",
+        action: "CHECK_ORDER_STATUS",
+        silent: true,
+        heatmapCount: 0
+      }
+    },
+    {
+      id: IDS.ord_status_msg,
+      type: "message",
+      position: { x: 2750, y: 200 },
+      data: {
+        label: "Order status (flow)",
+        text: content.order_status_msg,
+        heatmapCount: 0
+      }
+    },
+    {
+      id: IDS.ord_notfound,
+      type: "capture_input",
+      position: { x: 2900, y: 100 },
+      data: {
+        label: "Order ID Request",
+        variable: "order_id_manual",
+        question: "We could not match an order to this WhatsApp number. Please send your *Order ID* (e.g. #1042).",
+        text: "We could not match an order to this WhatsApp number. Please send your *Order ID* (e.g. #1042).",
+        heatmapCount: 0
+      }
+    }
   );
-  edges.push({ id: `e_${IDS.ord_track}_nf`, source: IDS.ord_track, target: IDS.ord_notfound, sourceHandle: "not_found" });
+  edges.push(
+    { id: `e_${IDS.ord_track}_nf`, source: IDS.ord_track, target: IDS.ord_notfound, sourceHandle: "not_found" },
+    { id: `e_${IDS.ord_track}_ok`, source: IDS.ord_track, target: IDS.ord_status_msg, sourceHandle: "success" }
+  );
 
   if (F.enableCancelOrder) {
+    const hubButtons = [
+      { id: "cancel", title: "❌ Cancel Order" },
+      ...(F.enableReturnsRefunds ? [{ id: "returns", title: "🔄 Returns" }] : []),
+      { id: "menu", title: "⬅️ Main Menu" }
+    ];
     nodes.push(
-      { id: IDS.ord_hub, type: "interactive", position: { x: 2400, y: 380 },
-        data: { label: "Order Management", interactiveType: "button",
-          text: "What would you like to do with your order?",
-          buttonsList: [
-            { id: "cancel", title: "❌ Cancel Order" },
-            { id: "status", title: "📦 Track Status" },
-            { id: "menu",   title: "⬅️ Main Menu" }
-          ], heatmapCount: 0 } },
-      { id: IDS.can_confirm, type: "interactive", position: { x: 2900, y: 380 },
-        data: { label: "Confirm Cancellation", interactiveType: "button",
+      {
+        id: IDS.ord_hub,
+        type: "interactive",
+        position: { x: 3100, y: 380 },
+        data: {
+          label: "Order Management",
+          interactiveType: "button",
+          text: "What would you like to do next for *{{order_number}}*?",
+          buttonsList: hubButtons,
+          heatmapCount: 0
+        }
+      },
+      {
+        id: IDS.can_confirm,
+        type: "interactive",
+        position: { x: 3600, y: 380 },
+        data: {
+          label: "Confirm Cancellation",
+          interactiveType: "button",
           text: content.cancellation_confirm,
           buttonsList: [
             { id: "yes", title: "✅ Yes, Cancel It" },
-            { id: "no",  title: "❌ Keep My Order" }
-          ], heatmapCount: 0 } },
-      { id: IDS.can_logic, type: "logic", position: { x: 3400, y: 380 },
-        data: { label: "Is Order Shipped?", variable: "is_shipped", operator: "eq", value: "true", heatmapCount: 0 } },
-      { id: IDS.can_shipped, type: "message", position: { x: 3900, y: 560 },
-        data: { label: "Already Shipped Error", text: content.in_transit_error, heatmapCount: 0 } },
-      { id: IDS.can_reason, type: "capture_input", position: { x: 3900, y: 280 },
-        data: { label: "Cancellation Reason", variable: "cancel_reason",
-          question: "Please tell us why you're cancelling.",
-          text: "Please tell us why you're cancelling.", heatmapCount: 0 } },
-      { id: IDS.can_action, type: "shopify_call", position: { x: 4400, y: 280 },
-        data: { label: "Process Cancellation", action: "CANCEL_ORDER", heatmapCount: 0 } },
-      { id: IDS.can_succ, type: "message", position: { x: 4900, y: 280 },
-        data: { label: "Cancel Success", text: content.cancellation_success, heatmapCount: 0 } },
-      { id: IDS.can_fail, type: "message", position: { x: 4900, y: 400 },
-        data: { label: "Cancel Failed", text: "We couldn't cancel your order. It may have already been processed.", heatmapCount: 0 } }
+            { id: "no", title: "❌ Keep My Order" }
+          ],
+          heatmapCount: 0
+        }
+      },
+      {
+        id: IDS.can_logic,
+        type: "logic",
+        position: { x: 4100, y: 380 },
+        data: {
+          label: "Shipped? (Shopify)",
+          variable: "is_shipped",
+          operator: "eq",
+          value: "true",
+          heatmapCount: 0
+        }
+      },
+      {
+        id: IDS.can_shipped,
+        type: "message",
+        position: { x: 4600, y: 560 },
+        data: { label: "Already Shipped Error", text: content.in_transit_error, heatmapCount: 0 }
+      },
+      {
+        id: IDS.can_reason,
+        type: "capture_input",
+        position: { x: 4600, y: 280 },
+        data: {
+          label: "Cancellation Reason",
+          variable: "cancel_reason",
+          question: "Please tell us why you are cancelling.",
+          text: "Please tell us why you are cancelling.",
+          heatmapCount: 0
+        }
+      },
+      {
+        id: IDS.can_action,
+        type: "shopify_call",
+        position: { x: 5100, y: 280 },
+        data: { label: "Process Cancellation", action: "CANCEL_ORDER", heatmapCount: 0 }
+      },
+      {
+        id: IDS.can_succ,
+        type: "message",
+        position: { x: 5600, y: 280 },
+        data: { label: "Cancel Success", text: content.cancellation_success, heatmapCount: 0 }
+      },
+      {
+        id: IDS.can_fail,
+        type: "message",
+        position: { x: 5600, y: 400 },
+        data: {
+          label: "Cancel Failed",
+          text: "We could not cancel this order — it may already be processed or shipped. Tap *menu* to speak with the team.",
+          heatmapCount: 0
+        }
+      }
     );
     edges.push(
-      { id: `e_${IDS.ord_track}_hub`,  source: IDS.ord_track,   target: IDS.ord_hub },
-      { id: `e_${IDS.ord_hub}_can`,    source: IDS.ord_hub,     target: IDS.can_confirm, sourceHandle: "cancel" },
-      { id: `e_${IDS.ord_hub}_track`,  source: IDS.ord_hub,     target: IDS.ord_track,   sourceHandle: "status" },
-      { id: `e_${IDS.ord_hub}_menu`,   source: IDS.ord_hub,     target: IDS.main_menu,   sourceHandle: "menu" },
-      { id: `e_${IDS.can_confirm}_y`,  source: IDS.can_confirm, target: IDS.can_logic,   sourceHandle: "yes" },
-      { id: `e_${IDS.can_confirm}_n`,  source: IDS.can_confirm, target: IDS.main_menu,   sourceHandle: "no" },
-      { id: `e_${IDS.can_logic}_t`,    source: IDS.can_logic,   target: IDS.can_shipped, sourceHandle: "true" },
-      { id: `e_${IDS.can_logic}_f`,    source: IDS.can_logic,   target: IDS.can_reason,  sourceHandle: "false" },
-      { id: `e_${IDS.can_reason}_act`, source: IDS.can_reason,  target: IDS.can_action },
-      { id: `e_${IDS.can_action}_s`,   source: IDS.can_action,  target: IDS.can_succ,    sourceHandle: "success" },
-      { id: `e_${IDS.can_action}_f`,   source: IDS.can_action,  target: IDS.can_fail,    sourceHandle: "fail" }
+      { id: `e_${IDS.ord_status_msg}_hub`, source: IDS.ord_status_msg, target: IDS.ord_hub },
+      { id: `e_${IDS.ord_hub}_can`, source: IDS.ord_hub, target: IDS.can_confirm, sourceHandle: "cancel" },
+      { id: `e_${IDS.ord_hub}_menu`, source: IDS.ord_hub, target: IDS.main_menu, sourceHandle: "menu" }
     );
+    if (F.enableReturnsRefunds && hubButtons.some((b) => b.id === "returns")) {
+      edges.push({
+        id: `e_${IDS.ord_hub}_ret`,
+        source: IDS.ord_hub,
+        target: IDS.ret_hub,
+        sourceHandle: "returns"
+      });
+    }
+    edges.push(
+      { id: `e_${IDS.can_confirm}_y`, source: IDS.can_confirm, target: IDS.can_logic, sourceHandle: "yes" },
+      { id: `e_${IDS.can_confirm}_n`, source: IDS.can_confirm, target: IDS.main_menu, sourceHandle: "no" },
+      { id: `e_${IDS.can_logic}_t`, source: IDS.can_logic, target: IDS.can_shipped, sourceHandle: "true" },
+      { id: `e_${IDS.can_logic}_f`, source: IDS.can_logic, target: IDS.can_reason, sourceHandle: "false" },
+      { id: `e_${IDS.can_reason}_act`, source: IDS.can_reason, target: IDS.can_action },
+      { id: `e_${IDS.can_action}_s`, source: IDS.can_action, target: IDS.can_succ, sourceHandle: "success" },
+      { id: `e_${IDS.can_action}_f`, source: IDS.can_action, target: IDS.can_fail, sourceHandle: "fail" }
+    );
+  } else {
+    edges.push({ id: `e_${IDS.ord_status_msg}_mm`, source: IDS.ord_status_msg, target: IDS.main_menu });
   }
 
   return {
@@ -648,13 +856,13 @@ function buildOrderBranch(ctx, IDS, content) {
 }
 
 function buildReturnsBranch(ctx, IDS, content) {
-  const { returnsInfo } = ctx;
+  const { F, returnsInfo, adminPhone, client } = ctx;
   const nodes = [], edges = [];
 
   nodes.push(
     { id: IDS.ret_hub, type: "interactive", position: { x: 2400, y: 700 },
       data: { label: "Returns Hub", interactiveType: "button",
-        text: "How can we help with returns?",
+        text: "How can {{brand_name}} help with returns or refunds?",
         buttonsList: [
           { id: "return", title: "📸 Start Return" },
           { id: "refund", title: "💸 Refund Status" },
@@ -662,17 +870,21 @@ function buildReturnsBranch(ctx, IDS, content) {
         ], heatmapCount: 0 } },
     { id: IDS.ret_reason, type: "capture_input", position: { x: 2900, y: 650 },
       data: { label: "Return Reason", variable: "return_reason",
-        question: "Please share return reason.", text: "Please share return reason.", heatmapCount: 0 } },
+        question: "Briefly describe why you want to return this item.",
+        text: "Briefly describe why you want to return this item.", heatmapCount: 0 } },
     { id: IDS.ret_photo, type: "capture_input", position: { x: 3400, y: 650 },
       data: { label: "Return Photo", variable: "return_photo",
         question: content.return_photo_prompt, text: content.return_photo_prompt, heatmapCount: 0 } },
     { id: IDS.ret_confirm, type: "message", position: { x: 3900, y: 650 },
       data: { label: "Return Confirmed",
-        text: "✅ Return request received. Our team will update you in 24-48 hours.", heatmapCount: 0 } },
+        text: "✅ Return request logged for *{{order_number}}*. Our team will update you within 24–48 hours on WhatsApp.",
+        heatmapCount: 0 } },
+    { id: IDS.ret_tag, type: "tag_lead", position: { x: 4300, y: 650 },
+      data: { label: "Tag return", action: "add", tag: "return-open", heatmapCount: 0 } },
     { id: IDS.ref_check, type: "shopify_call", position: { x: 2900, y: 850 },
       data: { label: "Refund Status", action: "ORDER_REFUND_STATUS", heatmapCount: 0 } },
     { id: IDS.ref_result, type: "message", position: { x: 3400, y: 850 },
-      data: { label: "Refund Result", text: "Refunds are processed in 5-7 business days.", heatmapCount: 0 } }
+      data: { label: "Refund Result", text: "Refund updates usually post within *5–7 business days* depending on your bank.", heatmapCount: 0 } }
   );
   edges.push(
     { id: `e_${IDS.ret_hub}_r`,     source: IDS.ret_hub,    target: IDS.ret_reason, sourceHandle: "return" },
@@ -680,15 +892,50 @@ function buildReturnsBranch(ctx, IDS, content) {
     { id: `e_${IDS.ret_hub}_menu`,  source: IDS.ret_hub,    target: IDS.main_menu,  sourceHandle: "menu" },
     { id: `e_${IDS.ret_reason}_p`,  source: IDS.ret_reason, target: IDS.ret_photo },
     { id: `e_${IDS.ret_photo}_c`,   source: IDS.ret_photo,  target: IDS.ret_confirm },
-    { id: `e_${IDS.ref_check}_r`,   source: IDS.ref_check,  target: IDS.ref_result }
+    { id: `e_${IDS.ret_confirm}_tg`, source: IDS.ret_confirm, target: IDS.ret_tag },
+    { id: `e_${IDS.ref_check}_r`,   source: IDS.ref_check,  target: IDS.ref_result },
+    { id: `e_${IDS.ref_result}_mm`, source: IDS.ref_result, target: IDS.main_menu }
   );
 
-  if (returnsInfo) {
+  if (F.enableAdminAlerts) {
     nodes.push({
-      id: IDS.ret_policy, type: "message", position: { x: 4400, y: 650 },
+      id: IDS.ret_admin,
+      type: "admin_alert",
+      position: { x: 4700, y: 650 },
+      data: {
+        label: "Return admin alert",
+        priority: "high",
+        topic: "Return request — {{brand_name}}",
+        phone: adminPhone || client.adminPhone || "",
+        heatmapCount: 0
+      }
+    });
+    edges.push({ id: `e_${IDS.ret_tag}_ad`, source: IDS.ret_tag, target: IDS.ret_admin });
+    if (returnsInfo) {
+      nodes.push({
+        id: IDS.ret_policy,
+        type: "message",
+        position: { x: 5100, y: 650 },
+        data: { label: "Return Policy", text: returnsInfo, heatmapCount: 0 }
+      });
+      edges.push(
+        { id: `e_${IDS.ret_admin}_pol`, source: IDS.ret_admin, target: IDS.ret_policy },
+        { id: `e_${IDS.ret_policy}_mm`, source: IDS.ret_policy, target: IDS.main_menu }
+      );
+    } else {
+      edges.push({ id: `e_${IDS.ret_admin}_mm`, source: IDS.ret_admin, target: IDS.main_menu });
+    }
+  } else if (returnsInfo) {
+    nodes.push({
+      id: IDS.ret_policy, type: "message", position: { x: 4700, y: 650 },
       data: { label: "Return Policy", text: returnsInfo, heatmapCount: 0 }
     });
-    edges.push({ id: `e_${IDS.ret_confirm}_pol`, source: IDS.ret_confirm, target: IDS.ret_policy });
+    edges.push(
+      { id: `e_${IDS.ret_tag}_pol`, source: IDS.ret_tag, target: IDS.ret_policy },
+      { id: `e_${IDS.ret_policy}_mm`, source: IDS.ret_policy, target: IDS.main_menu }
+    );
+  } else {
+    edges.push({ id: `e_${IDS.ret_tag}_mm`, source: IDS.ret_tag, target: IDS.main_menu });
   }
 
   return {
@@ -727,13 +974,13 @@ function buildWarrantyBranch(ctx, IDS, content) {
       data: { label: "Warranty Check", action: "WARRANTY_CHECK", heatmapCount: 0 } },
     { id: IDS.war_active,  type: "message", position: { x: 3900, y: 1200 },
       data: { label: "Warranty Active",
-        text: "✅ Great news! Your product has an *active warranty*. Our team will assist you. 🛡️", heatmapCount: 0 } },
+        text: "✅ Your product is under an *active {{warranty_duration}} warranty* with *{{brand_name}}*. Our team will help with the next step. 🛡️", heatmapCount: 0 } },
     { id: IDS.war_expired, type: "message", position: { x: 3900, y: 1300 },
       data: { label: "Warranty Expired",
-        text: "⚠️ Your warranty has *expired*. We offer affordable repair services.", heatmapCount: 0 } },
+        text: "⚠️ This serial is past the *{{warranty_duration}}* coverage window. We can still help with paid repair options at *{{brand_name}}*.", heatmapCount: 0 } },
     { id: IDS.war_none,    type: "message", position: { x: 3900, y: 1400 },
       data: { label: "No Warranty",
-        text: "❌ No warranty record found. Please register your product or contact support.", heatmapCount: 0 } }
+        text: "❌ No warranty record found for that serial. Register your product with *{{brand_name}}* or tap *menu* for human support.", heatmapCount: 0 } }
   );
   edges.push(
     { id: `e_${IDS.war_hub}_reg`,   source: IDS.war_hub,    target: IDS.war_serial, sourceHandle: "reg" },
@@ -772,7 +1019,7 @@ function buildLoyaltyBranch(ctx, IDS, content) {
     { id: IDS.loy_menu, type: "interactive", position: { x: 2400, y: 1600 },
       data: { label: "Rewards Hub", interactiveType: "list",
         text: content.loyalty_welcome, buttonText: "My Rewards",
-        sections: [{ title: "Loyalty", rows: loyRows }], heatmapCount: 0 } },
+        sections: [{ title: "{{brand_name}} — Rewards", rows: loyRows }], heatmapCount: 0 } },
     { id: IDS.loy_balance, type: "message", position: { x: 2900, y: 1500 },
       data: { label: "Points Balance", text: content.loyalty_points_msg, heatmapCount: 0 } },
     { id: IDS.loy_redeem, type: "loyalty_action", position: { x: 2900, y: 1650 },
@@ -807,7 +1054,7 @@ function buildLoyaltyBranch(ctx, IDS, content) {
 }
 
 function buildSupportBranch(ctx, IDS, content) {
-  const { F, openTime, closeTime, workingDays, businessName, adminPhone, client } = ctx;
+  const { F, openTime, closeTime, workingDays, adminPhone, client } = ctx;
   const nodes = [], edges = [];
 
   // Optional business-hours gate
@@ -815,7 +1062,7 @@ function buildSupportBranch(ctx, IDS, content) {
     nodes.push(
       { id: IDS.sup_sch, type: "schedule", position: { x: 2400, y: 2050 },
         data: { label: "Business Hours Gate", openTime, closeTime, days: workingDays,
-          closedMessage: `Our agents are offline right now. We're open ${openTime}-${closeTime}.`, heatmapCount: 0 } },
+          closedMessage: "Our live agents are offline right now. Hours: *{{open_hours}}*. {{bot_name}} is still here for FAQs.", heatmapCount: 0 } },
       { id: IDS.sup_closed, type: "message", position: { x: 2900, y: 2150 },
         data: { label: "After Hours", text: content.support_hours_msg, heatmapCount: 0 } }
     );
@@ -834,7 +1081,9 @@ function buildSupportBranch(ctx, IDS, content) {
       data: { label: "Tag Pending Human", action: "add", tag: "pending-human", heatmapCount: 0 } },
     { id: IDS.sup_confirm, type: "message", position: { x: 4400, y: 1950 },
       data: { label: "Handoff Confirmed", text: content.agent_handoff_msg,
-        humanEscalationTimeoutMin: F.humanEscalationTimeoutMin, heatmapCount: 0 } }
+        humanEscalationTimeoutMin: F.humanEscalationTimeoutMin, heatmapCount: 0 } },
+    { id: IDS.sup_livechat, type: "livechat", position: { x: 4900, y: 1950 },
+      data: { label: "Live chat handoff", topic: "Customer requested human support — {{brand_name}}", heatmapCount: 0 } }
   );
   edges.push({ id: `e_${IDS.sup_capture}_tag`, source: IDS.sup_capture, target: IDS.sup_tag });
 
@@ -842,15 +1091,19 @@ function buildSupportBranch(ctx, IDS, content) {
     nodes.push({
       id: IDS.sup_alert, type: "admin_alert", position: { x: 3900, y: 1950 },
       data: { label: "Admin Alert", priority: "high",
-        topic: `Human request - ${businessName}`,
+        topic: "Human request — {{brand_name}}",
         phone: adminPhone || client.adminPhone || "", heatmapCount: 0 }
     });
     edges.push(
-      { id: `e_${IDS.sup_tag}_al`,   source: IDS.sup_tag,   target: IDS.sup_alert },
-      { id: `e_${IDS.sup_alert}_cf`, source: IDS.sup_alert, target: IDS.sup_confirm }
+      { id: `e_${IDS.sup_tag}_al`, source: IDS.sup_tag, target: IDS.sup_alert },
+      { id: `e_${IDS.sup_alert}_cf`, source: IDS.sup_alert, target: IDS.sup_confirm },
+      { id: `e_${IDS.sup_confirm}_lc`, source: IDS.sup_confirm, target: IDS.sup_livechat }
     );
   } else {
-    edges.push({ id: `e_${IDS.sup_tag}_cf`, source: IDS.sup_tag, target: IDS.sup_confirm });
+    edges.push(
+      { id: `e_${IDS.sup_tag}_cf`, source: IDS.sup_tag, target: IDS.sup_confirm },
+      { id: `e_${IDS.sup_confirm}_lc`, source: IDS.sup_confirm, target: IDS.sup_livechat }
+    );
   }
 
   return {
@@ -993,7 +1246,7 @@ function buildReviewAutomation(ctx, IDS, content) {
 }
 
 function buildB2BBranch(ctx, IDS) {
-  const { businessName, adminPhone, client } = ctx;
+  const { adminPhone, client } = ctx;
   const nodes = [
     { id: IDS.b2b_trigger, type: "trigger", position: { x: -600, y: 1500 },
       data: { label: "B2B Trigger", triggerType: "keyword",
@@ -1006,11 +1259,11 @@ function buildB2BBranch(ctx, IDS) {
       data: { label: "Tag B2B", action: "add", tag: "b2b-prospect", heatmapCount: 0 } },
     { id: IDS.b2b_alert, type: "admin_alert", position: { x: 600, y: 1500 },
       data: { label: "B2B Alert", priority: "high",
-        topic: `B2B Lead - ${businessName}`,
+        topic: "B2B Lead — {{brand_name}}",
         phone: adminPhone || client.adminPhone || "", heatmapCount: 0 } },
     { id: IDS.b2b_confirm, type: "message", position: { x: 1000, y: 1500 },
       data: { label: "B2B Confirm",
-        text: "Our wholesale team will contact you soon with pricing.", heatmapCount: 0 } }
+        text: "Thanks — *{{brand_name}}* wholesale will reach out on WhatsApp with pricing and MOQs.", heatmapCount: 0 } }
   ];
   const edges = [
     { id: `e_${IDS.b2b_trigger}_c`, source: IDS.b2b_trigger, target: IDS.b2b_capture },
@@ -1042,16 +1295,21 @@ async function generateEcommerceFlow(client, wizardData = {}) {
 
   // Marketing copy (best-effort)
   const defaults = buildDefaultContent(ctx);
-  const ai = await generateAIContent(ctx);
+  const ai = wizardData.useAiCopy === true ? await generateAIContent(ctx) : {};
   const content = { ...defaults, ...ai };
 
   // AI fallback first so other branches can reference IDS.ai_fallback
   const fallbackOut = buildAIFallback(ctx, IDS);
 
   // Welcome template lookup
-  const welcomeTemplate = (client.syncedMetaTemplates || [])
-    .find(t => t.name === "welcome_with_logo")
-    || (client.syncedMetaTemplates || []).find(t => String(t.name || "").toLowerCase().includes("welcome"));
+  const syncTpl = (client.syncedMetaTemplates || []).map((t) => ({
+    ...t,
+    _st: String(t.status || "").toUpperCase()
+  }));
+  const welcomeTemplate =
+    syncTpl.find((t) => t.name === "welcome_with_logo" && t._st === "APPROVED")
+    || syncTpl.find((t) => String(t.name || "").toLowerCase().includes("welcome") && t._st === "APPROVED")
+    || null;
 
   const entryOut   = buildEntry(ctx, IDS, content, welcomeTemplate);
 
@@ -1079,20 +1337,45 @@ async function generateEcommerceFlow(client, wizardData = {}) {
       sourceHandle: b.sourceHandle
     }));
 
-  // Automations (background flows triggered by Shopify events)
-  const automations = [];
-  if (F.enableAbandonedCart)    automations.push(buildAbandonedCart(ctx, IDS, content));
-  if (F.enableOrderConfirmTpl)  automations.push(buildOrderConfirmAndCod(ctx, IDS, content));
-  if (F.enableReviewCollection) automations.push(buildReviewAutomation(ctx, IDS, content));
-  if (F.enableB2BWholesale)     automations.push(buildB2BBranch(ctx, IDS));
+  // Commerce automations → separate WhatsAppFlow documents (not merged into main graph).
+  const automationFlows = [];
+  if (F.enableAbandonedCart) {
+    const g = buildAbandonedCart(ctx, IDS, content);
+    automationFlows.push({
+      name: `${ctx.businessName} — Cart Recovery`,
+      trigger: "abandoned_cart",
+      nodes: g.nodes,
+      edges: g.edges
+    });
+  }
+  if (F.enableOrderConfirmTpl) {
+    const g = buildOrderConfirmAndCod(ctx, IDS, content);
+    automationFlows.push({
+      name: `${ctx.businessName} — Order Confirmation`,
+      trigger: "order_placed",
+      nodes: g.nodes,
+      edges: g.edges
+    });
+  }
+  if (F.enableReviewCollection) {
+    const g = buildReviewAutomation(ctx, IDS, content);
+    automationFlows.push({
+      name: `${ctx.businessName} — Delivery & Review`,
+      trigger: "order_fulfilled",
+      nodes: g.nodes,
+      edges: g.edges
+    });
+  }
 
-  // Merge everything
+  const b2bParallel = F.enableB2BWholesale ? buildB2BBranch(ctx, IDS) : { nodes: [], edges: [] };
+
+  // Merge main interactive flow only
   const allNodes = [
     ...fallbackOut.nodes,
     ...entryOut.nodes,
     ...menuOut.nodes,
     ...branches.flatMap(b => b.nodes),
-    ...automations.flatMap(a => a.nodes)
+    ...b2bParallel.nodes
   ];
   const allEdges = [
     ...fallbackOut.edges,
@@ -1100,7 +1383,7 @@ async function generateEcommerceFlow(client, wizardData = {}) {
     ...menuOut.edges,
     ...menuEdges,
     ...branches.flatMap(b => b.edges),
-    ...automations.flatMap(a => a.edges)
+    ...b2bParallel.edges
   ];
 
   // De-duplicate by ID (defensive — should never fire if builders behave)
@@ -1140,7 +1423,8 @@ async function generateEcommerceFlow(client, wizardData = {}) {
 
   return {
     nodes: cleanNodeText(cleanNodes),
-    edges: cleanEdges
+    edges: cleanEdges,
+    automationFlows
   };
 }
 

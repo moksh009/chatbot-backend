@@ -428,8 +428,10 @@ const WhatsApp = {
     const validPhone = validatePhone(phone);
     if (!templateName) throw new Error("[WhatsApp] templateName is required");
 
+    const rawComponents = Array.isArray(components) ? components : [];
+
     // Pre-flight validation: ensure component structure is valid
-    const validatedComponents = components.filter(c => {
+    const validatedComponents = rawComponents.filter(c => {
       if (!c || !c.type) {
         log.warn(`[WhatsApp] Dropping invalid component (missing type) for template ${templateName}`);
         return false;

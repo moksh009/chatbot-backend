@@ -41,6 +41,9 @@ async function findMatchingFlow(parsedMessage, client, convo) {
     triggerCache.set(cacheKey, flows);
   }
 
+  // Shopify / wizard automations must never steal keyword or first_message routing.
+  flows = flows.filter((f) => !f.isAutomation);
+
   // Helper: extract nodes from a flow, preferring publishedNodes over draft nodes
   const getFlowNodes = (flow) => flow.publishedNodes?.length > 0 ? flow.publishedNodes : (flow.nodes || []);
   const getFlowEdges = (flow) => flow.publishedEdges?.length > 0 ? flow.publishedEdges : (flow.edges || []);
@@ -278,9 +281,13 @@ async function findCommerceFlowAndEntry(eventName, eventData, client, status = n
     }
   }
 
-  const skuHits = candidates.filter((c) => c.skuSpecific);
+  const pool = candidates.filter((c) => c.flow?.isAutomation === true).length
+    ? candidates.filter((c) => c.flow?.isAutomation === true)
+    : candidates;
+
+  const skuHits = pool.filter((c) => c.skuSpecific);
   if (skuHits.length) return skuHits[0];
-  const general = candidates.filter((c) => !c.skuSpecific);
+  const general = pool.filter((c) => !c.skuSpecific);
   return general[0] || null;
 }
 

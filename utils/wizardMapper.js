@@ -161,11 +161,17 @@ function buildBrandUpdate(wizardData = {}, client = {}) {
     out.businessName                 = wizardData.businessName; // legacy required field
     out.name                         = wizardData.businessName; // legacy alias
   }
+  if (wizardData.shopDomain) {
+    const host = String(wizardData.shopDomain).replace(/^https?:\/\//, "");
+    out.shopDomain = host;
+    out["platformVars.storeUrl"] = `https://${host}`;
+  }
   setIfTruthy(out, "platformVars.agentName", wizardData.botName);
   if (wizardData.botName) out["nicheData.botName"] = wizardData.botName;
 
   setIfTruthy(out, "platformVars.adminWhatsappNumber", wizardData.adminPhone);
   setIfTruthy(out, "adminPhone",                       wizardData.adminPhone);
+  setIfTruthy(out, "adminAlertWhatsapp",               wizardData.adminPhone);
   setIfTruthy(out, "platformVars.baseCurrency",        wizardData.currency || "₹");
   setIfTruthy(out, "brand.currency",                   wizardData.currency || "₹");
   setIfTruthy(out, "platformVars.businessDescription", wizardData.businessDescription);
@@ -173,6 +179,7 @@ function buildBrandUpdate(wizardData = {}, client = {}) {
   setIfTruthy(out, "platformVars.checkoutUrl",         wizardData.checkoutUrl || checkoutFallback || undefined);
   setIfTruthy(out, "platformVars.googleReviewUrl",     wizardData.googleReviewUrl);
   setIfTruthy(out, "googleReviewUrl",                  wizardData.googleReviewUrl);
+  setIfTruthy(out, "brand.googleReviewUrl",            wizardData.googleReviewUrl);
   setIfTruthy(out, "platformVars.supportEmail",        wizardData.supportEmail);
   setIfTruthy(out, "platformVars.openTime",            wizardData.openTime);
   setIfTruthy(out, "platformVars.closeTime",           wizardData.closeTime);
@@ -191,6 +198,7 @@ function buildBrandUpdate(wizardData = {}, client = {}) {
   setIfDefined(out, "brand.warrantyEmailEnabled",   wizardData.warrantyEmailEnabled);
   setIfDefined(out, "brand.warrantyWhatsappEnabled", wizardData.warrantyWhatsappEnabled);
   setIfTruthy(out, "brand.businessLogo",            wizardData.businessLogo);
+  setIfTruthy(out, "brand.logoUrl",                 wizardData.businessLogo);
   setIfTruthy(out, "businessLogo",                  wizardData.businessLogo);
   setIfTruthy(out, "brand.authorizedSignature",     wizardData.authorizedSignature);
   setIfTruthy(out, "authorizedSignature",           wizardData.authorizedSignature);
@@ -212,7 +220,10 @@ function buildAiUpdate(wizardData = {}, generatedSystemPrompt = "") {
   }
   if (wizardData.botLanguage)         out["ai.persona.language"]    = wizardData.botLanguage;
   if (wizardData.businessDescription) out["ai.persona.description"] = wizardData.businessDescription;
-  if (wizardData.activePersona)       out["ai.persona.role"]        = wizardData.activePersona;
+  if (wizardData.activePersona) {
+    out["ai.persona.role"] = wizardData.activePersona;
+    out["ai.enterprisePersona"] = wizardData.activePersona;
+  }
   if (wizardData.emojiLevel)          out["ai.persona.emojiLevel"]  = wizardData.emojiLevel;
   if (wizardData.formality)           out["ai.persona.formality"]   = wizardData.formality;
   setBool(out, "ai.persona.autoTranslate", wizardData.autoTranslate);
@@ -263,7 +274,7 @@ function buildLegacyMirrors(wizardData = {}) {
 
   if (wizardData.referralPoints !== undefined) {
     out["brand.referralPoints"]              = wizardData.referralPoints;
-    out["loyaltyConfig.pointsPerCurrency"]   = wizardData.referralPoints;
+    out["loyaltyConfig.referralBonus"]       = wizardData.referralPoints;
     out["loyaltyConfig.pointsPerUnit"]       = wizardData.referralPoints;
     out["loyaltyConfig.enabled"]             = true;
   }
@@ -412,6 +423,19 @@ function mapWizardToClient(wizardData = {}, client = {}, opts = {}) {
   }
 
   const result = { $set };
+
+  if (Array.isArray(wizardData.products) && wizardData.products.length > 0) {
+    $set["nicheData.products"] = wizardData.products.map((p) => ({
+      id: p.id || p.shopifyId || p.handle,
+      name: p.name || p.title,
+      title: p.title || p.name,
+      price: p.price,
+      imageUrl: p.imageUrl || (Array.isArray(p.images) && p.images[0]?.src) || "",
+      handle: p.handle || String(p.title || p.name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+      description: p.description || "",
+      category: p.category || "General"
+    }));
+  }
 
   // Custom Meta templates pushed by the wizard (handled separately by route)
   if (Array.isArray(wizardData.customTemplates) && wizardData.customTemplates.length > 0) {

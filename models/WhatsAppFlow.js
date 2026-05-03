@@ -68,6 +68,10 @@ const WhatsAppFlowSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   },
+  /** Wizard / commerce: isolated automation graphs (do not mix with main keyword flow). */
+  isAutomation: { type: Boolean, default: false },
+  automationTrigger: { type: String, default: '' },
+  generatedBy: { type: String, default: '' },
   createdAt: {
     type: Date,
     default: Date.now

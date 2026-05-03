@@ -1,190 +1,258 @@
 "use strict";
 
 const Order = require("../models/Order");
+const { VARIABLE_REGISTRY, resolveSourcePath } = require("./variableRegistry");
 
 /**
- * VARIABLE INJECTOR — Phase 20 (Full Replacement)
- * 
- * Usage:
- *   const ctx = await buildVariableContext(client, phone, convo, lead);
- *   const text = injectVariables("Hello {{customer_name}}!", ctx);
- *   const node = injectNodeVariables(node, ctx);
+ * VARIABLE INJECTOR — registry-backed context + legacy flat aliases for dualBrainEngine.
  */
+
+function _get(obj, path) {
+  if (!obj || !path) return null;
+  return path.split(".").reduce((o, k) => (o != null && o[k] !== undefined ? o[k] : null), obj);
+}
 
 /**
  * Build the full variable context for a conversation.
- * Called ONCE per incoming message at the top of runDualBrainEngine.
- * Returns a flat object of all variables available for injection.
+ * @param {Object} client - lean or doc
+ * @param {string} phone
+ * @param {Object} convo
+ * @param {Object} lead
  */
 async function buildVariableContext(client, phone, convo, lead) {
-  // Fetch latest order for this phone number
+  const clientLean = client?.toObject ? client.toObject() : client || {};
+  const convoLean = convo?.toObject ? convo.toObject() : convo || {};
+  const leadLean = lead?.toObject ? lead.toObject() : lead || {};
+
   let latest = null;
   try {
     latest = await Order.findOne({
       $or: [
-        { phone, clientId: client.clientId },
-        { clientId: client.clientId, customerPhone: phone }
+        { phone, clientId: clientLean.clientId },
+        { clientId: clientLean.clientId, customerPhone: phone }
       ]
     }).sort({ createdAt: -1 }).lean();
   } catch (_) {}
 
-  // Fetch Customer Intelligence DNA (Phase 28)
   let dna = null;
   try {
-    const CustomerIntelligence = require('../models/CustomerIntelligence');
-    dna = await CustomerIntelligence.findOne({ clientId: client.clientId, phone }).lean();
+    const CustomerIntelligence = require("../models/CustomerIntelligence");
+    dna = await CustomerIntelligence.findOne({ clientId: clientLean.clientId, phone }).lean();
   } catch (_) {}
 
-  // Fetch Loyalty Wallet (Enterprise Tier)
   let wallet = null;
   try {
-    const CustomerWallet = require('../models/CustomerWallet');
-    wallet = await CustomerWallet.findOne({ clientId: client.clientId, phone }).lean();
+    const CustomerWallet = require("../models/CustomerWallet");
+    wallet = await CustomerWallet.findOne({ clientId: clientLean.clientId, phone }).lean();
   } catch (_) {}
 
-  // India timezone dates
-  const now_ist = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
-  const date_ist = new Date().toLocaleDateString("en-IN", {
+  const meta = convoLean.metadata || {};
+  const lastOrder = meta.lastOrder || {};
+
+  const dateIN = new Date().toLocaleDateString("en-IN", {
     timeZone: "Asia/Kolkata",
-    dateStyle: "medium"
+    day: "numeric",
+    month: "long",
+    year: "numeric"
   });
-  const time_ist = new Date().toLocaleTimeString("en-IN", {
+  const timeIN = new Date().toLocaleTimeString("en-IN", {
     timeZone: "Asia/Kolkata",
-    timeStyle: "short"
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true
   });
 
-  // Cart info from lead snapshot
-  const cartItems = (lead?.cartSnapshot?.titles || lead?.cartSnapshot?.items?.map(i => i.title) || []).join(", ");
-  const cartTotal = lead?.cartSnapshot?.total_price || lead?.cartValue || 0;
-  const cartTotalFormatted = cartTotal ? `₹${Number(cartTotal).toLocaleString("en-IN")}` : "₹0";
+  const bhOpen = _get(clientLean, "config.businessHours.openTime") || clientLean.platformVars?.openTime;
+  const bhClose = _get(clientLean, "config.businessHours.closeTime") || clientLean.platformVars?.closeTime;
+  const openHoursStr =
+    bhOpen && bhClose ? `${bhOpen}–${bhClose}` : (clientLean.platformVars?.openTime && clientLean.platformVars?.closeTime
+      ? `${clientLean.platformVars.openTime}–${clientLean.platformVars.closeTime}`
+      : null);
 
-  // Order info
-  const orderTotal = latest?.totalPrice || latest?.amount || 0;
-  const orderTotalFormatted = orderTotal ? `₹${Number(orderTotal).toLocaleString("en-IN")}` : "";
+  const wf = clientLean.wizardFeatures?.toObject ? clientLean.wizardFeatures.toObject() : (clientLean.wizardFeatures || {});
+  const codDiscount = wf.codDiscountAmount
+    ?? clientLean.automationFlows?.find((f) => f.id === "cod_to_prepaid")?.config?.discountAmount
+    ?? 50;
 
-  // Lifetime value
-  const lifetimeValue = lead?.lifetimeValue || 0;
-  const totalSpent = lifetimeValue ? `₹${Number(lifetimeValue).toLocaleString("en-IN")}` : "₹0";
+  const pointsPerCur = clientLean.loyaltyConfig?.pointsPerCurrency || clientLean.loyaltyConfig?.currencyUnit || 100;
+  const loyaltyBal = wallet?.balance ?? 0;
+  const loyaltyCash = `₹${Math.floor(loyaltyBal / (pointsPerCur || 100))}`;
 
-  // Checkout URL
-  const storeUrl = client.nicheData?.storeUrl || client.shopDomain ? `https://${client.shopDomain}` : "";
-  const checkoutUrl = lead?.checkoutUrl || (lead?.cartSnapshot?.token
-    ? `${storeUrl}/cart/${lead.cartSnapshot.token}?utm_source=whatsapp`
-    : storeUrl);
+  const orderNumFlat = meta.order_number || lastOrder.orderNumber || "";
+  const orderIdDisplay = orderNumFlat
+    ? (String(orderNumFlat).startsWith("#") ? String(orderNumFlat) : `#${orderNumFlat}`)
+    : (latest?.orderNumber ? `#${latest.orderNumber}` : (latest?.orderId || ""));
 
-  // Discount codes
-  const discountCode = lead?.activeDiscountCode || convo?.metadata?.discount_code || "";
+  const orderTotalStr =
+    lastOrder.totalPrice
+    || meta.order_total_raw
+    || latest?.totalPrice
+    || "";
+  const orderItemsStr =
+    lastOrder.itemsSummary
+    || meta.line_items_list
+    || "";
+  const orderStatusStr =
+    lastOrder.status
+    || latest?.status
+    || latest?.fulfillmentStatus
+    || meta.order_status_detail
+    || "";
+  const trackingUrlStr = lastOrder.trackingUrl || latest?.trackingUrl || "";
 
-  // Build context — system variables
-  const systemContext = {
-    // ── Customer ──────────────────────────────────────────────────────
-    customer_name:   lead?.name || convo?.customerName || convo?.metadata?.customer_name || "there",
-    first_name:      (lead?.name || convo?.customerName || "there").split(" ")[0],
-    customer_phone:  phone || "",
-    email:           lead?.email || convo?.metadata?.email || "",
-    city:            lead?.city || convo?.metadata?.city || "",
-    lead_score:      String(lead?.leadScore || lead?.score || 0),
-    total_spent:     totalSpent,
-    orders_count:    String(lead?.ordersCount || 0),
+  const cartSnap = leadLean?.cartSnapshot;
+  const cartItemsJoin = (cartSnap?.titles || cartSnap?.items?.map((i) => i.title) || []).join(", ");
+  const cartTotalRaw = leadLean?.cartSnapshot?.total_price ?? leadLean?.cartValue ?? meta.cart_total ?? "";
+  const cartTotalFmt = cartTotalRaw !== "" && cartTotalRaw != null
+    ? `${clientLean.platformVars?.baseCurrency || "₹"}${Number(cartTotalRaw).toLocaleString("en-IN")}`
+    : (meta.cart_total || "");
 
-    // ── Business ──────────────────────────────────────────────────────
-    brand_name:      client.platformVars?.brandName || client.businessName || client.name || "",
-    store_url:       storeUrl,
-    business_hours:  client.platformVars?.openTime 
-                       ? `Mon-Sat ${client.platformVars.openTime}-${client.platformVars.closeTime}`
-                       : (client.nicheData?.businessHours || client.workingHours?.hours
-                           ? "Mon-Sat 9AM-7PM"
-                           : "Mon-Sat 9AM-7PM"),
-    agent_name:      client.platformVars?.agentName || client.nicheData?.botName || client.config?.agentName || "AI Assistant",
-    base_currency:   client.platformVars?.baseCurrency || "₹",
-    shipping_time:   client.platformVars?.shippingTime || "",
-    admin_whatsapp:  client.platformVars?.adminWhatsappNumber || client.adminPhone || "",
-    support_email:   client.platformVars?.supportEmail || "",
+  const storeUrl =
+    clientLean.nicheData?.storeUrl
+    || (clientLean.shopDomain ? `https://${String(clientLean.shopDomain).replace(/^https?:\/\//, "")}` : "");
+  const checkoutUrl =
+    leadLean?.checkoutUrl
+    || (leadLean?.cartSnapshot?.token
+      ? `${storeUrl}/cart/${leadLean.cartSnapshot.token}?utm_source=whatsapp`
+      : (clientLean.platformVars?.checkoutUrl || storeUrl));
 
-    // ── System ────────────────────────────────────────────────────────
-    current_time:    time_ist,
-    current_date:    date_ist,
-    current_datetime: now_ist,
-    sentiment:       convo?.sentiment || "Neutral",
-    sentiment_score: String(convo?.sentimentScore || 0),
+  const firstNameComputed =
+    meta.first_name
+    || (leadLean?.name || convoLean?.customerName || "Friend").split(/\s+/)[0];
 
-    // ── Cart ──────────────────────────────────────────────────────────
-    cart_total:      cartTotalFormatted,
-    cart_items:      cartItems,
-    checkout_url:    checkoutUrl,
-
-    // ── Order ─────────────────────────────────────────────────────────
-    order_id:        latest?.orderNumber ? `#${latest.orderNumber}` : (latest?.orderId || ""),
-    order_total:     orderTotalFormatted,
-    order_status:    latest?.status || latest?.fulfillmentStatus || "",
-    tracking_url:    latest?.trackingUrl || "",
-    payment_method:  latest?.paymentMethod || "",
-    payment_link:    latest?.razorpayUrl || latest?.cashfreeUrl || convo?.metadata?.payment_link || "",
-
-    // ── Promo ─────────────────────────────────────────────────────────
-    discount_code:   discountCode,
-    discount_value:  lead?.activeDiscountValue ? `${lead.activeDiscountValue}%` : "",
-    discount_amount: String(
-      client.automationFlows?.find(f => f.id === "cod_to_prepaid")?.config?.discountAmount || 50
-    ),
-
-    // ── Loyalty & Rewards ─────────────────────────────────────────────
-    loyalty_balance: String(wallet?.balance || 0),
-    loyalty_cash_value: `₹${Math.floor((wallet?.balance || 0) / (client.loyaltyConfig?.pointsPerCurrency || 100))}`,
-    loyalty_tier: wallet?.tier || "Bronze",
-
-    // ── Reputation & Reviews ──────────────────────────────────────────
-    review_url: client.brand?.googleReviewUrl || "",
-
-    // ── Ad Attribution ────────────────────────────────────────────────
-    ad_id:           lead?.adAttribution?.adId || "",
-    ad_name:         lead?.adAttribution?.adHeadline || "", // Using Headline as Name if explicit name not synced
-    ad_source:       lead?.adAttribution?.source || "",
-
-    // ── Customer Intelligence DNA (Phase 28) ──────────────────────────
-    persona:         dna?.persona || "unknown",
-    ai_summary:      dna?.aiSummary || "",
-    engagement_score: String(dna?.engagementScore || 0),
-    churn_risk:      String(dna?.churnRiskScore || 0),
+  const sources = {
+    client: clientLean,
+    convo: convoLean,
+    lead: leadLean,
+    computed: {
+      openHours: openHoursStr,
+      currentDate: dateIN,
+      currentTime: timeIN,
+      firstName: firstNameComputed,
+      loyaltyPoints: String(loyaltyBal),
+      loyaltyTier: wallet?.tier || "Bronze",
+      loyaltyCashValue: loyaltyCash,
+      warrantyDuration:
+        clientLean.platformVars?.warrantyDuration
+        || clientLean.brand?.warrantyDefaultDuration
+        || wf.warrantyDuration
+        || "1 Year",
+      orderIdDisplay,
+      orderStatus: orderStatusStr,
+      orderTotal: orderTotalStr ? String(orderTotalStr) : "",
+      orderItems: orderItemsStr,
+      trackingUrl: trackingUrlStr,
+      cartTotal: cartTotalFmt,
+      referralPoints:
+        clientLean.loyaltyConfig?.referralBonus
+        ?? wf.referralPointsBonus
+        ?? 500,
+    }
   };
 
-  // Merge: captured variables from lead.capturedData and convo.metadata OVERRIDE system variables
-  // (so if someone captures {{customer_name}} it updates the value)
+  const ctx = {};
+  for (const def of VARIABLE_REGISTRY) {
+    let v = null;
+    if (def.source && def.source.startsWith("computed.")) {
+      const key = def.source.slice("computed.".length);
+      v = sources.computed[key];
+    } else {
+      v = resolveSourcePath(def.source, sources);
+    }
+    if (v === null || v === undefined || String(v).trim() === "") {
+      v = def.fallback;
+    }
+    ctx[def.name] = v != null ? String(v) : "";
+  }
+
+  // Enrich from Order model when metadata empty
+  if (!ctx.order_id && latest) {
+    ctx.order_id = latest.orderNumber ? `#${latest.orderNumber}` : String(latest.orderId || "");
+  }
+  if (!ctx.order_total && latest?.totalPrice) {
+    ctx.order_total = String(latest.totalPrice);
+  }
+  if (!ctx.order_status && (latest?.status || latest?.fulfillmentStatus)) {
+    ctx.order_status = String(latest.status || latest.fulfillmentStatus);
+  }
+  if (!ctx.tracking_url && latest?.trackingUrl) {
+    ctx.tracking_url = String(latest.trackingUrl);
+  }
+  if (!ctx.payment_method && latest?.paymentMethod) {
+    ctx.payment_method = String(latest.paymentMethod);
+  }
+  if (!ctx.payment_link && (latest?.razorpayUrl || latest?.cashfreeUrl)) {
+    ctx.payment_link = String(latest.razorpayUrl || latest.cashfreeUrl || "");
+  }
+
+  const discountCode = leadLean?.activeDiscountCode || meta.discount_code || "";
+  const lifetimeValue = leadLean?.lifetimeValue || 0;
+
+  // Legacy flat keys (dualBrainEngine, campaigns, older templates)
+  const legacy = {
+    customer_name: ctx.customer_name || leadLean?.name || convoLean?.customerName || "there",
+    first_name: ctx.first_name,
+    email: ctx.customer_email || leadLean?.email || meta.email || "",
+    city: ctx.customer_city || leadLean?.city || meta.city || "",
+    agent_name: ctx.bot_name,
+    bot_name: ctx.bot_name,
+    brand_name: ctx.brand_name,
+    admin_whatsapp: ctx.support_phone || clientLean.adminPhone || "",
+    support_phone: ctx.support_phone,
+    business_hours: ctx.open_hours,
+    open_hours: ctx.open_hours,
+    base_currency: ctx.currency,
+    checkout_url: checkoutUrl,
+    store_url: ctx.store_url || storeUrl,
+    cart_items: cartItemsJoin || ctx.order_items,
+    lead_score: String(leadLean?.leadScore || leadLean?.score || 0),
+    total_spent: lifetimeValue ? `₹${Number(lifetimeValue).toLocaleString("en-IN")}` : "₹0",
+    orders_count: String(leadLean?.ordersCount || 0),
+    current_datetime: new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
+    sentiment: convoLean?.sentiment || "Neutral",
+    sentiment_score: String(convoLean?.sentimentScore || 0),
+    discount_code: discountCode,
+    discount_value: leadLean?.activeDiscountValue ? `${leadLean.activeDiscountValue}%` : "",
+    discount_amount: String(codDiscount),
+    loyalty_balance: ctx.loyalty_points,
+    review_url: ctx.google_review_url || clientLean.brand?.googleReviewUrl || "",
+    ad_id: leadLean?.adAttribution?.adId || "",
+    ad_name: leadLean?.adAttribution?.adHeadline || "",
+    ad_source: leadLean?.adAttribution?.source || "",
+    persona: dna?.persona || "unknown",
+    ai_summary: dna?.aiSummary || "",
+    engagement_score: String(dna?.engagementScore || 0),
+    churn_risk: String(dna?.churnRiskScore || 0),
+    order_number: ctx.order_number || orderIdDisplay,
+    line_items_list: orderItemsStr,
+    first_product_title: meta.first_product_title || "",
+    first_product_image: meta.first_product_image || "",
+    shipping_address: meta.shipping_address || "",
+  };
+
   return {
-    ...systemContext,
-    ...(lead?.capturedData || {}),
-    ...(convo?.metadata || {}),
+    ...legacy,
+    ...ctx,
+    ...(leadLean?.capturedData || {}),
+    ...(meta || {})
   };
 }
 
-/**
- * Replace all {{variable}} placeholders in a text string.
- * Supports fallback pipes: {{variable_name | 'Fallback Value'}}
- * 
- * @param {string} text    - Text containing {{variable}} placeholders
- * @param {Object} context - Flat context object from buildVariableContext()
- * @returns {string}
- */
 function injectVariables(text, context) {
   if (!text || typeof text !== "string") return text;
   if (!context || typeof context !== "object") return text;
 
-  // Robust Regex: handles {{var}}, {{var | 'fallback'}}, {{var|fallback}}, etc.
   const variableRegex = /{{\s*([\w.]+)\s*(?:\|\s*['"]?([^'"]*)['"]?\s*)?}}/g;
 
   return text.replace(variableRegex, (match, key, fallback) => {
-    // Reject variable names with spaces or special chars
     if (!/^[\w.]+$/.test(key)) {
-      console.warn(`[VariableInjector] Invalid variable name: "${key}"`);
-      return match; // Return raw placeholder
+      return match;
     }
 
-    // 1. Check direct context (e.g. {{customer_name}})
     let value = context[key];
 
-    // 2. Support nested path notation (e.g. {{lead.name}})
-    if (value === undefined && key.includes('.')) {
-      const parts = key.split('.');
+    if (value === undefined && key.includes(".")) {
+      const parts = key.split(".");
       let current = context;
       for (const part of parts) {
         current = current?.[part];
@@ -192,40 +260,24 @@ function injectVariables(text, context) {
       value = current;
     }
 
-    // 3. Resolve value or fallback
     if (value !== undefined && value !== null && String(value).trim() !== "") {
       return String(value);
     }
 
-    // If no value, use explicit fallback if provided (e.g. {{name | 'there'}})
     if (fallback !== undefined && fallback !== null) {
       return fallback;
     }
 
-    // Default fallback for sequences/outbound: return "-"
     return "-";
   });
 }
 
-/**
- * Deep-inject variables into ALL fields of a node's data object recursively.
- * Returns a NEW object with variables resolved.
- * 
- * @param {any} target     - Target object or value (usually node.data)
- * @param {Object} context - Variable context from buildVariableContext()
- * @returns {any}          - New object/value with all text fields resolved
- */
 function injectNodeVariables(target, context) {
   if (!target || !context) return target;
 
   const injectDeep = (obj) => {
-    // String: Inject variables
     if (typeof obj === "string") return injectVariables(obj, context);
-    
-    // Array: Recursively process items
-    if (Array.isArray(obj)) return obj.map(item => injectDeep(item));
-    
-    // Object: Recursively process keys
+    if (Array.isArray(obj)) return obj.map((item) => injectDeep(item));
     if (obj !== null && typeof obj === "object" && obj.constructor === Object) {
       const result = {};
       for (const [key, val] of Object.entries(obj)) {
@@ -233,12 +285,9 @@ function injectNodeVariables(target, context) {
       }
       return result;
     }
-    
-    // Primitive or other types: return as-is
     return obj;
   };
 
-  // If passed a full node, return a copy with injected data
   if (target.id && target.data) {
     return { ...target, data: injectDeep(target.data) };
   }
@@ -246,76 +295,66 @@ function injectNodeVariables(target, context) {
   return injectDeep(target);
 }
 
-/**
- * Legacy-compatible wrapper used by existing replaceVariables() call sites.
- * Accepts either the new flat context OR the old {lead, client, convo, order} shape.
- */
 function injectVariablesLegacy(text, contextOrLegacy) {
   if (!text || typeof text !== "string") return text;
 
-  // Detect if old-style object is passed: { lead, client, convo, order }
   if (
     contextOrLegacy &&
     typeof contextOrLegacy === "object" &&
     ("lead" in contextOrLegacy || "client" in contextOrLegacy || "convo" in contextOrLegacy)
   ) {
-    // Build a minimal flat context from the legacy object
     const { lead, client, convo, order } = contextOrLegacy;
     const legacyCtx = {
-      name:            lead?.name || "Customer",
-      customer_name:   lead?.name || "Customer",
-      first_name:      (lead?.name || "Customer").split(" ")[0],
-      phone:           lead?.phoneNumber || convo?.phone || "",
-      customer_phone:  lead?.phoneNumber || convo?.phone || "",
-      email:           lead?.email || "",
-      business_name:   client?.name || client?.businessName || "",
-      brand_name:      client?.businessName || "",
-      order_id:        order?.orderNumber ? `#${order.orderNumber}` : (order?.orderId || ""),
-      order_status:    order?.status || "",
-      order_total:     order?.totalPrice ? `₹${order.totalPrice}` : "",
-      tracking_link:   order?.trackingUrl || "",
-      tracking_url:    order?.trackingUrl || "",
-      payment_link:    order?.razorpayUrl || order?.cashfreeUrl || "",
-      cart_total:      lead?.cartValue || "",
-      checkout_url:    lead?.checkoutUrl || "",
-      discount_code:   lead?.activeDiscountCode || "",
-      ...(convo?.metadata || {}),
+      name: lead?.name || "Customer",
+      customer_name: lead?.name || "Customer",
+      first_name: (lead?.name || "Customer").split(" ")[0],
+      phone: lead?.phoneNumber || convo?.phone || "",
+      customer_phone: lead?.phoneNumber || convo?.phone || "",
+      email: lead?.email || "",
+      business_name: client?.name || client?.businessName || "",
+      brand_name: client?.businessName || "",
+      order_id: order?.orderNumber ? `#${order.orderNumber}` : (order?.orderId || ""),
+      order_status: order?.status || "",
+      order_total: order?.totalPrice ? `₹${order.totalPrice}` : "",
+      tracking_link: order?.trackingUrl || "",
+      tracking_url: order?.trackingUrl || "",
+      payment_link: order?.razorpayUrl || order?.cashfreeUrl || "",
+      cart_total: lead?.cartValue || "",
+      checkout_url: lead?.checkoutUrl || "",
+      discount_code: lead?.activeDiscountCode || "",
+      ...(convo?.metadata || {})
     };
     return injectVariables(text, legacyCtx);
   }
 
-  // New-style flat context
   return injectVariables(text, contextOrLegacy || {});
 }
 
-/**
- * Resolves all variables for a specific client/phone pair.
- * Fetches required models and performs injection.
- */
 async function resolveFlowVariables(input, clientId, phone) {
   if (!input || !clientId || !phone) return input;
-  
+
   try {
-    const Client = require('../models/Client');
-    const Conversation = require('../models/Conversation');
-    const AdLead = require('../models/AdLead');
-    
+    const Client = require("../models/Client");
+    const Conversation = require("../models/Conversation");
+    const AdLead = require("../models/AdLead");
+
     const [client, convo, lead] = await Promise.all([
       Client.findOne({ clientId }).lean(),
       Conversation.findOne({ clientId, phone }).lean(),
       AdLead.findOne({ clientId, phone }).lean()
     ]);
-    
+
     if (!client) return input;
-    
+
     const context = await buildVariableContext(client, phone, convo, lead);
-    
-    if (typeof input === 'string') {
+
+    if (typeof input === "string") {
       return injectVariables(input, context);
-    } else if (typeof input === 'object') {
+    }
+    if (typeof input === "object") {
       return injectNodeVariables(input, context);
     }
-    
+
     return input;
   } catch (err) {
     console.error(`[VariableInjector] resolveFlowVariables error:`, err);
@@ -329,4 +368,5 @@ module.exports = {
   injectNodeVariables,
   injectVariablesLegacy,
   resolveFlowVariables,
+  VARIABLE_REGISTRY
 };

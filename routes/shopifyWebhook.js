@@ -264,6 +264,19 @@ async function buildCommerceMetadataPatch(client, eventName, data, status = null
     first_product_image: first?.imageUrl || '',
     checkout_url: checkoutUrl,
     cart_total: totalDisp || (data.total_line_items_price ? `${currency} ${data.total_line_items_price}` : ''),
+    cart_items_count: Array.isArray(data.line_items) ? data.line_items.length : 0,
+    cart_url: data.abandoned_checkout_url || checkoutUrl || '',
+    cart_items: (data.line_items || []).map((i) => i.title).filter(Boolean).join(', '),
+    is_cod: String(payGw || '').toLowerCase().includes('cod') ? 'true' : 'false',
+    lastOrder: {
+      orderNumber: orderNum,
+      status: status || data.fulfillment_status || (eventName === 'order_placed' ? 'confirmed' : ''),
+      totalPrice: totalRaw != null && totalRaw !== '' ? String(Number(totalRaw).toFixed(2)) : String(data.total_price || ''),
+      currency: String(currency),
+      itemsSummary: lineList,
+      trackingUrl: (data.fulfillments && data.fulfillments[0] && data.fulfillments[0].tracking_url) || '',
+      orderId: String(data.id || data.order_id || ''),
+    },
   };
   if (status) meta.order_status_detail = status;
   return { meta, enriched, checkoutUrl };
@@ -323,7 +336,6 @@ async function fireEventFlow(client, eventName, data, status = null) {
 
   const prevMeta = (await Conversation.findById(convo._id).lean())?.metadata || {};
   await Conversation.findByIdAndUpdate(convo._id, {
-    lastStepId: startNodeId,
     $set: { metadata: { ...prevMeta, ...metaPatch, lastCommerceEventAt: new Date() } },
   });
 
@@ -348,8 +360,8 @@ async function fireEventFlow(client, eventName, data, status = null) {
   const convoFresh = await Conversation.findById(convo._id);
   const leadFresh = await AdLead.findOne({ phoneNumber: phone, clientId: client.clientId }).lean();
 
-  const { walkFlow } = require('../utils/dualBrainEngine');
-  await walkFlow({
+  const { executeAutomationFlow } = require('../utils/dualBrainEngine');
+  await executeAutomationFlow({
     client,
     phone,
     flow: {
@@ -363,7 +375,8 @@ async function fireEventFlow(client, eventName, data, status = null) {
     convo: convoFresh,
     lead: leadFresh || lead,
     userMessage: `__event:${eventName}__`,
-  }).catch((e) => log.error(`[FlowTrigger] walkFlow error for ${eventName}:`, e.message));
+    suppressConversationPersistence: true,
+  }).catch((e) => log.error(`[FlowTrigger] executeAutomationFlow error for ${eventName}:`, e.message));
 }
 
 

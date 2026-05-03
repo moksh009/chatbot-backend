@@ -5,6 +5,8 @@ const { encrypt } = require('../utils/encryption');
 
 const BrandSchema = new mongoose.Schema({
   businessName: { type: String, default: "" },
+  businessLogo: { type: String, default: "" },
+  currency: { type: String, default: "₹" },
   niche: { type: String, default: "other" },
   businessType: { type: String, default: "other" },
   adminPhone: { type: String, default: "" },
@@ -70,6 +72,7 @@ const AiSchema = new mongoose.Schema({
   geminiKey: { type: String, default: "" },
   openaiKey: { type: String, default: "" },
   systemPrompt: { type: String, default: "" },
+  enterprisePersona: { type: String, default: "" },
   fallbackEnabled: { type: Boolean, default: true },
   negotiationSettings: { type: mongoose.Schema.Types.Mixed, default: {} },
   // Phase 26 Voice Settings
@@ -224,6 +227,11 @@ const ClientSchema = new mongoose.Schema({
     warrantyDuration: { type: String, trim: true },
     defaultTone: { type: String, default: 'friendly', trim: true },
     defaultLanguage: { type: String, default: 'Hinglish', trim: true },
+    lastSyncedAt: { type: Date, default: null },
+    storeUrl: { type: String, trim: true, default: '' },
+    shopifyProductCount: { type: Number, default: 0 },
+    shopifyDomain: { type: String, trim: true, default: '' },
+    shopifyPhoneField: { type: Boolean, default: false },
   },
 
   faq: [{
@@ -313,6 +321,9 @@ const ClientSchema = new mongoose.Schema({
   
   // Phase 3: Operational Admin Alerts
   adminAlertWhatsapp: { type: String, default: "" }, // comma separated numbers
+  testMessageSent: { type: Boolean, default: false },
+  wabaDisplayName: { type: String, default: "" },
+  shopifyWebhooks: { type: mongoose.Schema.Types.Mixed, default: {} },
   adminAlertEmail: { type: String, default: "" }, // comma separated emails
   
   // Phase 25 Track 7: AI Price Negotiation Limits
@@ -642,6 +653,8 @@ const ClientSchema = new mongoose.Schema({
   loyaltyConfig: {
     enabled: { type: Boolean, default: false },
     pointsPerUnit: { type: Number, default: 10 }, // e.g. 10 points per ₹100
+    welcomeBonus: { type: Number, default: 100 },
+    referralBonus: { type: Number, default: 500 },
     currencyUnit: { type: Number, default: 100 },
     tierThresholds: {
       bronze: { type: Number, default: 0 },

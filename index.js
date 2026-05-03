@@ -278,6 +278,8 @@ const oauthRoutes = require('./routes/oauth');
 app.use('/api/oauth', oauthRoutes);
 const wizardRoutes = require('./routes/wizard');
 app.use('/api/wizard', wizardRoutes);
+const variablesRoutes = require('./routes/variables');
+app.use('/api/variables', variablesRoutes);
 // ─── Onboarding V2 (full-screen new-user flow) — mounted FIRST so its
 // distinct paths (/analyze, /progress, /flow/generate, /complete, /track)
 // take priority. Legacy /api/onboarding/:clientId handlers stay intact.
