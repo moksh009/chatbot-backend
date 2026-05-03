@@ -1,5 +1,6 @@
 const nodemailer = require('nodemailer');
 const dns = require('dns');
+const net = require('net');
 const { decrypt } = require('./encryption');
 
 /** Prefer A records over AAAA on hosts where IPv6 egress is broken (common on PaaS). */
@@ -11,6 +12,37 @@ if (typeof dns.setDefaultResultOrder === 'function') {
 
 function ipv4Lookup(hostname, options, callback) {
   return dns.lookup(hostname, { family: 4, all: false }, callback);
+}
+
+/**
+ * Resolve logical SMTP hostname to an IPv4 address before TCP connect.
+ * Render / some PaaS still hit AAAA or ignore nodemailer `lookup` → ENETUNREACH to Gmail IPv6.
+ * Uses resolved IP as `host` and keeps logical name as TLS SNI (`servername`).
+ */
+async function resolveSmtpIpv4Target(logicalHostname) {
+  const logical = String(logicalHostname || 'smtp.gmail.com').trim() || 'smtp.gmail.com';
+  if (net.isIP(logical) === 4) {
+    return { connectHost: logical, tlsServername: logical };
+  }
+  try {
+    const { address } = await dns.promises.lookup(logical, { family: 4 });
+    if (address && net.isIP(address) === 4) {
+      return { connectHost: address, tlsServername: logical };
+    }
+  } catch (e) {
+    // #region agent log
+    try {
+      const { agentDebug } = require('./agentDebugLog');
+      agentDebug({
+        hypothesisId: 'H2',
+        location: 'emailService.js:resolveSmtpIpv4Target',
+        message: 'ipv4_lookup_failed',
+        data: { code: e.code, logicalHostLen: logical.length }
+      });
+    } catch (_) { /* noop */ }
+    // #endregion
+  }
+  return { connectHost: logical, tlsServername: logical };
 }
 
 const SMTP_RETRYABLE = new Set([
@@ -43,7 +75,7 @@ function _smtpConnTimeouts() {
 /**
  * Single SMTP transporter for system mail (one port / mode).
  */
-function createSystemEmailTransporterFor({ port, secure, requireTLS }) {
+function createSystemEmailTransporterFor({ port, secure, requireTLS }, smtpTarget = null) {
     const { user, pass } = getSystemEmailCredentials();
     if (!user || !pass) {
         console.error(
@@ -51,13 +83,16 @@ function createSystemEmailTransporterFor({ port, secure, requireTLS }) {
         );
         return null;
     }
+    const logicalHost = process.env.SMTP_HOST || 'smtp.gmail.com';
+    const connectHost = smtpTarget?.connectHost || logicalHost;
+    const tlsServername = smtpTarget?.tlsServername || logicalHost;
     const { connectionTimeout, greetingTimeout, socketTimeout } = _smtpConnTimeouts();
     return nodemailer.createTransport({
-        host: process.env.SMTP_HOST || 'smtp.gmail.com',
+        host: connectHost,
         port,
         secure,
         requireTLS: !!requireTLS,
-        tls: { rejectUnauthorized: false, minVersion: 'TLSv1.2' },
+        tls: { rejectUnauthorized: false, minVersion: 'TLSv1.2', servername: tlsServername },
         family: 4,
         lookup: ipv4Lookup,
         pool: false,
@@ -87,13 +122,49 @@ function getSystemSmtpAttemptOrder() {
  */
 async function sendViaSystemSmtpWithFallback(mailOptions) {
     const attempts = getSystemSmtpAttemptOrder();
+    const logicalHost = process.env.SMTP_HOST || 'smtp.gmail.com';
+    const smtpTarget = await resolveSmtpIpv4Target(logicalHost);
+    const usingResolvedIp = net.isIP(smtpTarget.connectHost) === 4 && smtpTarget.connectHost !== logicalHost;
+    // #region agent log
+    try {
+        const { agentDebug } = require('./agentDebugLog');
+        agentDebug({
+            hypothesisId: 'H1',
+            location: 'emailService.js:sendViaSystemSmtpWithFallback',
+            message: 'smtp_precheck',
+            data: {
+                logicalHostLen: logicalHost.length,
+                connectIsIpv4: net.isIP(smtpTarget.connectHost) === 4,
+                usingResolvedIp,
+                attemptLabels: attempts.map((a) => a.label),
+                envSmtpPort: process.env.SMTP_PORT || null,
+                dnsOrder: typeof dns.setDefaultResultOrder === 'function' ? 'ipv4first_set' : 'no_setDefaultResultOrder'
+            }
+        });
+    } catch (_) { /* noop */ }
+    // #endregion
+    console.log('[EmailService] SMTP connect precheck', {
+        usingResolvedIp,
+        connectKind: net.isIP(smtpTarget.connectHost) === 4 ? 'ipv4' : 'hostname'
+    });
     let lastErr;
     for (const cfg of attempts) {
-        const t = createSystemEmailTransporterFor(cfg);
+        const t = createSystemEmailTransporterFor(cfg, smtpTarget);
         if (!t) return false;
         try {
             await t.sendMail(mailOptions);
             console.log(`[EmailService] ✅ System SMTP sent via ${cfg.label} (${cfg.port})`);
+            // #region agent log
+            try {
+                const { agentDebug } = require('./agentDebugLog');
+                agentDebug({
+                    hypothesisId: 'H5',
+                    location: 'emailService.js:sendViaSystemSmtpWithFallback',
+                    message: 'smtp_send_ok',
+                    data: { via: cfg.label, port: cfg.port, usingResolvedIp }
+                });
+            } catch (_) { /* noop */ }
+            // #endregion
             try {
                 t.close();
             } catch (_) { /* noop */ }
@@ -105,6 +176,24 @@ async function sendViaSystemSmtpWithFallback(mailOptions) {
                 err.code || err.name,
                 err.message
             );
+            // #region agent log
+            try {
+                const { agentDebug } = require('./agentDebugLog');
+                const msg0 = String(err.message || '');
+                agentDebug({
+                    hypothesisId: 'H3',
+                    location: 'emailService.js:sendViaSystemSmtpWithFallback',
+                    message: 'smtp_attempt_failed',
+                    data: {
+                        via: cfg.label,
+                        port: cfg.port,
+                        errCode: err.code || err.name || null,
+                        hasV6InMsg: /::|([0-9a-f]{0,4}:){2,}/i.test(msg0),
+                        usingResolvedIp
+                    }
+                });
+            } catch (_) { /* noop */ }
+            // #endregion
             try {
                 t.close();
             } catch (_) { /* noop */ }
@@ -162,18 +251,21 @@ async function deliverSystemEmail(mailOptions) {
 function createSystemEmailTransporter() {
     const envPort = parseInt(String(process.env.SMTP_PORT || '465'), 10) || 465;
     const secure = envPort === 465;
-    return createSystemEmailTransporterFor({
-        port: envPort,
-        secure,
-        requireTLS: !secure
-    });
+    return createSystemEmailTransporterFor(
+        {
+            port: envPort,
+            secure,
+            requireTLS: !secure
+        },
+        null
+    );
 }
 
 /**
  * Create a nodemailer transporter from client's stored email credentials.
  * Falls back to global env vars if client-specific ones are not set.
  */
-function createTransporterForClient(client, { port, secure, requireTLS }) {
+function createTransporterForClient(client, { port, secure, requireTLS }, smtpTarget = null) {
     const emailUser = client.emailUser || process.env.EMAIL_USER;
     const emailPass = client.emailAppPassword ? decrypt(client.emailAppPassword) : process.env.EMAIL_APP_PASSWORD;
 
@@ -182,15 +274,17 @@ function createTransporterForClient(client, { port, secure, requireTLS }) {
         return null;
     }
 
-    const host = client.smtpHost || process.env.CLIENT_SMTP_HOST || 'smtp.gmail.com';
+    const logicalHost = client.smtpHost || process.env.CLIENT_SMTP_HOST || 'smtp.gmail.com';
+    const connectHost = smtpTarget?.connectHost || logicalHost;
+    const tlsServername = smtpTarget?.tlsServername || logicalHost;
     const { connectionTimeout, greetingTimeout, socketTimeout } = _smtpConnTimeouts();
 
     return nodemailer.createTransport({
-        host,
+        host: connectHost,
         port,
         secure,
         requireTLS: !!requireTLS,
-        tls: { rejectUnauthorized: false, minVersion: 'TLSv1.2' },
+        tls: { rejectUnauthorized: false, minVersion: 'TLSv1.2', servername: tlsServername },
         family: 4,
         lookup: ipv4Lookup,
         pool: false,
@@ -226,6 +320,9 @@ async function sendEmail(client, { to, subject, html }) {
     const from = `"${client.name || 'Store'}" <${fromAddr}>`;
     const mail = { from, to, subject, html };
 
+    const logicalSmtpHost = client.smtpHost || process.env.CLIENT_SMTP_HOST || 'smtp.gmail.com';
+    const smtpTarget = await resolveSmtpIpv4Target(logicalSmtpHost);
+
     const preferStartTls = String(process.env.SMTP_TRY_STARTTLS_FIRST || '').toLowerCase() === 'true';
     const defaultPort = parseInt(String(client.smtpPort || process.env.CLIENT_SMTP_PORT || '465'), 10) || 465;
     const tryOrder =
@@ -246,7 +343,7 @@ async function sendEmail(client, { to, subject, html }) {
 
     let lastErr;
     for (const cfg of tryOrder) {
-        const transporter = createTransporterForClient(client, cfg);
+        const transporter = createTransporterForClient(client, cfg, smtpTarget);
         if (!transporter) return false;
         try {
             await transporter.sendMail(mail);
