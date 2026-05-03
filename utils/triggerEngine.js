@@ -142,6 +142,148 @@ function _getFlowEdges(flow) {
   return flow.publishedEdges?.length > 0 ? flow.publishedEdges : (flow.edges || []);
 }
 
+const COMMERCE_TRIGGER_TYPES = [
+  "order_placed",
+  "order_fulfilled",
+  "order_status_changed",
+  "abandoned_cart",
+  "payment_received",
+];
+
+/**
+ * Normalised trigger config from a single flow-canvas trigger node.
+ */
+function getTriggerConfigFromNode(node) {
+  if (!node) return null;
+  if (
+    node.type !== "trigger" &&
+    node.type !== "TriggerNode" &&
+    node.type !== "intent_trigger" &&
+    node.type !== "IntentTriggerNode"
+  ) {
+    return null;
+  }
+
+  const d = node.data || {};
+
+  if (d.trigger && d.trigger.type) return d.trigger;
+
+  const rawType = (d.triggerType || "keyword").toLowerCase();
+
+  if (rawType === "shopify_event") {
+    const eventMap = {
+      order_created: "order_placed",
+      checkout_abandoned: "abandoned_cart",
+      order_fulfilled: "order_fulfilled",
+    };
+    const mapped = eventMap[String(d.event || "").toLowerCase()];
+    if (mapped) {
+      return {
+        type: mapped,
+        orderStatus: d.orderStatus || "any",
+        cartDelayMinutes: d.cartDelayMinutes || 15,
+        skuMatches: d.skuMatches || [],
+      };
+    }
+  }
+
+  if (COMMERCE_TRIGGER_TYPES.includes(rawType)) {
+    return {
+      type: rawType,
+      orderStatus: d.orderStatus || "any",
+      cartDelayMinutes: d.cartDelayMinutes || 15,
+      skuMatches: d.skuMatches || [],
+    };
+  }
+
+  if (rawType === "first_message") {
+    return { type: "first_message", channel: d.channel || "both" };
+  }
+
+  if (rawType === "story_mention") {
+    return { type: "story_mention", channel: d.channel || "instagram" };
+  }
+
+  if (rawType === "meta_ad") {
+    return { type: "meta_ad", adId: d.adId || "any", channel: d.channel || "both" };
+  }
+
+  if (rawType === "intent_match") {
+    return { type: "intent_match", intentId: d.intentId || "", channel: d.channel || "both" };
+  }
+
+  const legacyKeyword = d.keyword || d.keywords || "";
+  const keywords = Array.isArray(d.keywords)
+    ? d.keywords
+    : legacyKeyword.split(",").map((k) => k.trim()).filter(Boolean);
+
+  return {
+    type: "keyword",
+    keywords,
+    matchMode: d.matchType || d.matchMode || "contains",
+    channel: d.channel || "both",
+  };
+}
+
+function commerceTriggerMatchesEvent(trigger, eventNameNorm, status) {
+  if (!trigger) return false;
+  const tType = (trigger.type || "").toLowerCase();
+  if (tType !== eventNameNorm) return false;
+  if (eventNameNorm === "order_status_changed" && status) {
+    const cfgStatus = trigger.orderStatus || "any";
+    if (cfgStatus !== "any" && cfgStatus !== String(status).toLowerCase()) return false;
+  }
+  return true;
+}
+
+function skuMatchesItems(trigger, items) {
+  const list = trigger?.skuMatches;
+  if (!list || list.length === 0) return true;
+  if (!Array.isArray(items) || items.length === 0) return false;
+  return items.some((item) => list.includes(item.sku));
+}
+
+/**
+ * Scan all trigger nodes in all published flows for a commerce event (multi-trigger / unified flow).
+ */
+async function findCommerceFlowAndEntry(eventName, eventData, client, status = null) {
+  const ev = String(eventName || "").toLowerCase();
+  const cacheKey = `flows_${client.clientId}`;
+  let flows = triggerCache.get(cacheKey);
+
+  if (!flows) {
+    flows = await WhatsAppFlow.find({
+      clientId: client.clientId,
+      status: "PUBLISHED",
+    }).lean();
+    triggerCache.set(cacheKey, flows);
+  }
+
+  const items = eventData.line_items || eventData.items || [];
+  const candidates = [];
+
+  for (const flow of flows) {
+    for (const n of _getFlowNodes(flow)) {
+      const cfg = getTriggerConfigFromNode(n);
+      if (!cfg) continue;
+      const tType = (cfg.type || "").toLowerCase();
+      if (!COMMERCE_TRIGGER_TYPES.includes(tType)) continue;
+      if (!commerceTriggerMatchesEvent(cfg, ev, status)) continue;
+      if (!skuMatchesItems(cfg, items)) continue;
+      candidates.push({
+        flow,
+        entryTriggerNodeId: n.id,
+        skuSpecific: !!(cfg.skuMatches && cfg.skuMatches.length),
+      });
+    }
+  }
+
+  const skuHits = candidates.filter((c) => c.skuSpecific);
+  if (skuHits.length) return skuHits[0];
+  const general = candidates.filter((c) => !c.skuSpecific);
+  return general[0] || null;
+}
+
 /**
  * Match a commerce event (order_placed, order_fulfilled, abandoned_cart, etc.) to a flow.
  * Called directly by shopifyWebhook.js and razorpay webhook handlers.
@@ -152,29 +294,33 @@ function _getFlowEdges(flow) {
  * @param {string} [status]   - For 'order_status_changed' — the new status string
  */
 async function matchEventTrigger(eventName, eventData, client, status = null) {
+  const hit = await findCommerceFlowAndEntry(eventName, eventData, client, status);
+  if (hit) return hit.flow;
+
+  const ev = String(eventName || "").toLowerCase();
   const cacheKey = `flows_${client.clientId}`;
   let flows = triggerCache.get(cacheKey);
 
   if (!flows) {
     flows = await WhatsAppFlow.find({
       clientId: client.clientId,
-      status: 'PUBLISHED'
+      status: "PUBLISHED",
     }).lean();
     triggerCache.set(cacheKey, flows);
   }
 
-  const matching = flows.filter(flow => {
-    const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(_getFlowNodes(flow));
+  const matching = flows.filter((flow) => {
+    const trigger =
+      flow.triggerConfig || flow.trigger || getTriggerFromNodes(_getFlowNodes(flow));
     if (!trigger) return false;
 
-    const tType = (trigger.type || '').toLowerCase();
+    const tType = (trigger.type || "").toLowerCase();
 
-    if (tType !== eventName && tType !== eventName.toUpperCase()) return false;
+    if (tType !== ev) return false;
 
-    // For order_status_changed: also check if configured status matches
-    if (eventName === 'order_status_changed' && status) {
-      const cfgStatus = trigger.orderStatus || 'any';
-      if (cfgStatus !== 'any' && cfgStatus !== status.toLowerCase()) return false;
+    if (ev === "order_status_changed" && status) {
+      const cfgStatus = trigger.orderStatus || "any";
+      if (cfgStatus !== "any" && cfgStatus !== String(status).toLowerCase()) return false;
     }
 
     return true;
@@ -182,23 +328,25 @@ async function matchEventTrigger(eventName, eventData, client, status = null) {
 
   if (matching.length === 0) return null;
 
-  // SKU-level matching for order events
   const items = eventData.line_items || eventData.items || [];
   if (items.length > 0) {
     for (const flow of matching) {
-      const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(_getFlowNodes(flow));
+      const trigger =
+        flow.triggerConfig || flow.trigger || getTriggerFromNodes(_getFlowNodes(flow));
       if (trigger?.skuMatches?.length > 0) {
-        const hasMatch = items.some(item => trigger.skuMatches.includes(item.sku));
+        const hasMatch = items.some((item) => trigger.skuMatches.includes(item.sku));
         if (hasMatch) return flow;
       }
     }
   }
 
-  // Return first general match (no SKU filter)
-  return matching.find(f => {
-    const trigger = f.triggerConfig || f.trigger || getTriggerFromNodes(_getFlowNodes(f));
-    return !trigger?.skuMatches || trigger.skuMatches.length === 0;
-  }) || matching[0];
+  return (
+    matching.find((f) => {
+      const trigger =
+        f.triggerConfig || f.trigger || getTriggerFromNodes(_getFlowNodes(f));
+      return !trigger?.skuMatches || trigger.skuMatches.length === 0;
+    }) || matching[0]
+  );
 }
 
 /**
@@ -206,9 +354,19 @@ async function matchEventTrigger(eventName, eventData, client, status = null) {
  * Returns null if no flow matches.
  */
 async function findEventTriggeredFlow(eventName, eventData, client, status = null) {
+  const hit = await findCommerceFlowAndEntry(eventName, eventData, client, status);
+  if (hit) {
+    const edges = _getFlowEdges(hit.flow);
+    const firstEdge = edges.find((e) => e.source === hit.entryTriggerNodeId);
+    const startNodeId = firstEdge?.target || null;
+    return { flow: hit.flow, startNodeId };
+  }
+
   const flow = await matchEventTrigger(eventName, eventData, client, status);
   if (!flow) return null;
-  const startNodeId = findFlowStartNode(flow.nodes || [], flow.edges || []);
+  const nodes = _getFlowNodes(flow);
+  const edges = _getFlowEdges(flow);
+  const startNodeId = findFlowStartNode(nodes, edges);
   return { flow, startNodeId };
 }
 
@@ -223,73 +381,7 @@ function getTriggerFromNodes(nodes) {
     (n) => n.type === 'trigger' || n.type === 'TriggerNode' ||
            n.type === 'intent_trigger' || n.type === 'IntentTriggerNode'
   );
-  if (!triggerNode) return null;
-
-  const d = triggerNode.data || {};
-
-  // ── New canonical format: data.trigger = { type, ... } ──────────────────────
-  if (d.trigger && d.trigger.type) return d.trigger;
-
-  // ── Legacy flat fields ───────────────────────────────────────────────────────
-  const rawType = (d.triggerType || 'keyword').toLowerCase();
-
-  // Backward compatibility: old generator used triggerType=shopify_event + data.event.
-  if (rawType === 'shopify_event') {
-    const eventMap = {
-      order_created: 'order_placed',
-      checkout_abandoned: 'abandoned_cart',
-      order_fulfilled: 'order_fulfilled'
-    };
-    const mapped = eventMap[String(d.event || '').toLowerCase()];
-    if (mapped) {
-      return {
-        type: mapped,
-        orderStatus: d.orderStatus || 'any',
-        cartDelayMinutes: d.cartDelayMinutes || 15,
-        skuMatches: d.skuMatches || []
-      };
-    }
-  }
-
-  // Commerce event types (pass-through)
-  const commerceTypes = ['order_placed', 'order_fulfilled', 'order_status_changed', 'abandoned_cart', 'payment_received'];
-  if (commerceTypes.includes(rawType)) {
-    return {
-      type: rawType,
-      orderStatus: d.orderStatus || 'any',
-      cartDelayMinutes: d.cartDelayMinutes || 15,
-      skuMatches: d.skuMatches || []
-    };
-  }
-
-  if (rawType === 'first_message') {
-    return { type: 'first_message', channel: d.channel || 'both' };
-  }
-
-  if (rawType === 'story_mention') {
-    return { type: 'story_mention', channel: d.channel || 'instagram' };
-  }
-
-  if (rawType === 'meta_ad') {
-    return { type: 'meta_ad', adId: d.adId || 'any', channel: d.channel || 'both' };
-  }
-
-  if (rawType === 'intent_match') {
-    return { type: 'intent_match', intentId: d.intentId || '', channel: d.channel || 'both' };
-  }
-
-  // Default: keyword
-  const legacyKeyword = d.keyword || d.keywords || '';
-  const keywords = Array.isArray(d.keywords)
-    ? d.keywords
-    : legacyKeyword.split(',').map(k => k.trim()).filter(Boolean);
-
-  return {
-    type:      'keyword',
-    keywords,
-    matchMode: d.matchType || d.matchMode || 'contains',
-    channel:   d.channel || 'both',
-  };
+  return getTriggerConfigFromNode(triggerNode);
 }
 
 function checkKeywordMatch(text, keyword, matchMode = "contains") {

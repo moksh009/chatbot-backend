@@ -11,6 +11,8 @@ const { STANDARD_TEMPLATES } = require('../constants/standardTemplates');
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
 const { getFastScore, analyzeWithGeminiAndRewrite } = require('../utils/templateScorer');
+const { getPrebuiltTemplates } = require('../utils/flowGenerator');
+const { hydrateApprovedProductTemplatesForClient } = require('../utils/templateImageHydrate');
 
 // --- Helper Functions ---
 async function getClientCredentials(clientId, userId) {
@@ -95,6 +97,15 @@ router.get('/sync', protect, async (req, res) => {
                 { $set: { syncedMetaTemplates: templates, templatesSyncedAt: new Date() } }
             );
 
+            try {
+                const fresh = await Client.findOne({ clientId }).lean();
+                if (fresh) {
+                    await hydrateApprovedProductTemplatesForClient(fresh, { force: false, maxAgeMs: 7 * 24 * 60 * 60 * 1000 });
+                }
+            } catch (hErr) {
+                console.warn('[Template API] Post-sync product image hydrate:', hErr.message);
+            }
+
             res.json({ success: true, data: templates });
         } catch (metaErr) {
             const status = metaErr.response?.status;
@@ -159,7 +170,10 @@ router.get('/list', protect, async (req, res) => {
           }
         });
 
-        const merged = Array.from(mergedMap.values());
+        const merged = Array.from(mergedMap.values()).map((tpl) => ({
+          ...tpl,
+          id: tpl.id || tpl.name || tpl._id?.toString?.(),
+        }));
         res.json({
           success: true,
           data: merged,
@@ -351,15 +365,156 @@ router.post('/create', protect, async (req, res) => {
     }
 });
 
-// 3. Delete a Template from Meta
-router.delete('/:name', protect, async (req, res) => {
+// 2b. Submit a locally stored template (messageTemplates / pending) to Meta for review
+router.post('/push-local', protect, async (req, res) => {
     try {
-        const clientId = tenantClientId(req);
-        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-        const templateName = req.params.name;
+        const { clientId, templateName } = req.body || {};
+        if (!clientId || !templateName) {
+            return res.status(400).json({ success: false, message: 'clientId and templateName are required' });
+        }
+
+        const tenantId = tenantClientId(req);
+        if (!tenantId || tenantId !== clientId) {
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
 
         const client = await getClientCredentials(clientId, req.user.id);
-        const url = `https://graph.facebook.com/v21.0/${client.wabaId}/message_templates?name=${templateName}`;
+        const templates = Array.isArray(client.messageTemplates) ? client.messageTemplates : [];
+        let local = templates.find((t) => t && t.name === templateName);
+        if (!local) {
+            return res.status(404).json({ success: false, message: 'Template not found in workspace. Sync from Meta or generate from the wizard first.' });
+        }
+
+        let rawComponents = Array.isArray(local.components) ? local.components : [];
+        if (rawComponents.length === 0) {
+            const wd = {
+                businessName: client.businessName || client.name || 'Your brand',
+                businessLogo: client.businessLogo || client.logoUrl || '',
+            };
+            const canned =
+                getPrebuiltTemplates(wd).find((t) => t.name === templateName) ||
+                getPrebuiltTemplates({}).find((t) => t.name === templateName);
+            if (canned?.components?.length) {
+                local = { ...local, ...canned, components: canned.components };
+                rawComponents = local.components;
+            }
+        }
+        if (rawComponents.length === 0) {
+            return res.status(400).json({ success: false, message: 'Template has no components to submit. Re-run the onboarding wizard or create the template in Meta Manager.' });
+        }
+
+        const components = rawComponents.map((c) => {
+            const comp = { ...c };
+            delete comp._imageUrl;
+            if (comp.type === 'HEADER' && comp.format === 'IMAGE') {
+                const url =
+                    local.imageUrl ||
+                    rawComponents.find((x) => x.type === 'HEADER' && x._imageUrl)?._imageUrl ||
+                    'https://via.placeholder.com/800x400.png?text=Header';
+                comp.example = comp.example?.header_handle?.length
+                    ? comp.example
+                    : { header_handle: [url] };
+            }
+            return comp;
+        });
+
+        const category = (local.category || 'MARKETING').toUpperCase();
+        const language = local.language || 'en';
+        const name = String(local.name).toLowerCase().replace(/[^a-z0-9_]/g, '_');
+
+        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+        let recentSubmissions = client.templateSubmissionTimestamps || [];
+        recentSubmissions = recentSubmissions.filter((ts) => new Date(ts) > oneHourAgo);
+        if (recentSubmissions.length >= 6) {
+            return res.status(429).json({
+                success: false,
+                message: 'Meta allows roughly 6 new template submissions per hour. Try again shortly.',
+                code: 'RATE_LIMIT_EXCEEDED',
+            });
+        }
+
+        const url = `https://graph.facebook.com/v21.0/${client.wabaId}/message_templates`;
+        const payload = { name, language, category, components };
+
+        try {
+            const response = await axios.post(url, payload, {
+                headers: {
+                    Authorization: `Bearer ${client.whatsappToken}`,
+                    'Content-Type': 'application/json',
+                },
+            });
+
+            recentSubmissions.push(new Date());
+            await Client.updateOne(
+                { clientId },
+                {
+                    $set: { templateSubmissionTimestamps: recentSubmissions },
+                    $pull: { messageTemplates: { name: templateName }, pendingTemplates: { name: templateName } },
+                }
+            );
+
+            const newTemplate = {
+                id: response.data.id || `pending_${name}`,
+                name,
+                status: 'PENDING',
+                category,
+                components: rawComponents,
+                source: local.source || 'push_local',
+                createdAt: new Date(),
+            };
+
+            await Client.updateOne(
+                { clientId },
+                {
+                    $push: {
+                        messageTemplates: newTemplate,
+                        pendingTemplates: {
+                            name,
+                            status: 'PENDING',
+                            metaId: response.data.id || '',
+                            submittedAt: new Date(),
+                        },
+                    },
+                }
+            );
+
+            return res.json({ success: true, data: response.data, message: 'Template submitted to Meta for approval' });
+        } catch (metaErr) {
+            const msg = metaErr.response?.data?.error?.message || metaErr.message;
+            if (/already exists|duplicate/i.test(String(msg))) {
+                return res.json({
+                    success: true,
+                    duplicate: true,
+                    message: 'This template name already exists on Meta. Sync templates to refresh status.',
+                });
+            }
+            const status = metaErr.response?.status;
+            const isClientError = status >= 400 && status < 500;
+            console.error('[Template API] push-local Meta Error:', metaErr.response?.data || metaErr.message);
+            return res.status(isClientError ? 400 : 500).json({
+                success: false,
+                message: msg || 'Failed to submit template to Meta',
+                details: metaErr.response?.data,
+                isIntegrationAuthError: status === 401 || status === 403,
+            });
+        }
+    } catch (error) {
+        console.error('[Template API] push-local:', error.message);
+        return res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// 3. Delete a Template from Meta
+router.delete('/:clientId/:templateName', protect, async (req, res) => {
+    try {
+        const { clientId, templateName } = req.params;
+        const tenantId = tenantClientId(req);
+        if (!tenantId || tenantId !== clientId) {
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
+
+        const client = await getClientCredentials(clientId, req.user.id);
+        const url = `https://graph.facebook.com/v21.0/${client.wabaId}/message_templates?name=${encodeURIComponent(templateName)}`;
 
         try {
             const response = await axios.delete(url, {

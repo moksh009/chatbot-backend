@@ -203,6 +203,65 @@ const { normalizePhone } = require("./helpers");
  * Phase 21: Universal Flow Executor
  * Starts a visual flow for a user, handling convo/lead setup and extra context (like commentId).
  */
+/**
+ * Walk a published flow starting at `currentNodeId` (used by Shopify commerce webhooks).
+ * Reloads conversation + builds variable context so {{placeholders}} resolve correctly.
+ */
+async function walkFlow({ client, phone, flow, currentNodeId, convo, lead, userMessage }) {
+  const io = global.io;
+  const channel = 'whatsapp';
+  const normalizedPhone = normalizePhone(phone);
+  const nodes = flattenFlowNodes(flow.nodes || []);
+  const edges = flow.edges || [];
+
+  const Conversation = require('../models/Conversation');
+  const AdLead = require('../models/AdLead');
+
+  const freshConvo = await Conversation.findById(convo._id);
+  if (!freshConvo) {
+    log.error('[walkFlow] Conversation not found');
+    return false;
+  }
+
+  let freshLead = lead;
+  if (freshLead?._id) {
+    freshLead = await AdLead.findById(freshLead._id).lean() || freshLead;
+  }
+  if (!freshLead || !freshLead.phoneNumber) {
+    freshLead = await AdLead.findOne({ phoneNumber: normalizedPhone, clientId: client.clientId }).lean();
+  }
+
+  const ctx = await buildVariableContext(client, normalizedPhone, freshConvo, freshLead);
+  freshConvo._variableContext = ctx;
+
+  const parsedMessage = {
+    from: normalizedPhone,
+    phone: normalizedPhone,
+    channel,
+    _variableContext: ctx,
+    type: 'text',
+    text: userMessage ? { body: userMessage } : { body: '' }
+  };
+
+  await Conversation.findByIdAndUpdate(freshConvo._id, {
+    activeFlowId: flow._id || flow.id || flow.flowId || null,
+    lastInteraction: new Date()
+  });
+
+  return executeNode(
+    currentNodeId,
+    nodes,
+    edges,
+    client,
+    freshConvo,
+    freshLead,
+    normalizedPhone,
+    io,
+    channel,
+    parsedMessage
+  );
+}
+
 async function runFlow(client, from, flow, startNodeId, extraContext = {}) {
   const channel = extraContext.channel || 'whatsapp';
   const phone = channel === 'whatsapp' ? normalizePhone(from) : from;
@@ -2663,12 +2722,19 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'livechat': {
       let body = data.text || data.body || (type === 'livechat' ? 'Connecting you to a human...' : '');
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
-      const safeBody = String(body).substring(0, 4096);
-      
-      if (data.imageUrl) {
-        await WhatsApp.sendImage(client, phone, data.imageUrl, safeBody.substring(0, 1024));
+      const safeBody = String(body || '').trim();
+      if (!safeBody || safeBody === 'null' || safeBody === 'undefined') {
+        log.warn('[sendNodeContent] Empty message body after translation — sending safe fallback');
+        await WhatsApp.sendText(client, phone, 'Thanks for your message — tap *menu* anytime to see options.');
+        return true;
+      }
+      const clipped = safeBody.substring(0, 4096);
+      const imgRaw = (data.imageUrl || '').trim();
+      const imgOk = imgRaw && /^https?:\/\//i.test(imgRaw);
+      if (imgOk) {
+        await WhatsApp.sendImage(client, phone, imgRaw, clipped.substring(0, 1024));
       } else {
-        await WhatsApp.sendText(client, phone, safeBody);
+        await WhatsApp.sendText(client, phone, clipped);
       }
       return true;
     }
@@ -3625,6 +3691,7 @@ module.exports = {
   handleWhatsAppMessage,
   runDualBrainEngine,
   runFlow,
+  walkFlow,
   executeNode,
   sendNodeContent,
   saveInboundMessage,

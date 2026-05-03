@@ -344,11 +344,15 @@ function buildDefaultContent(ctx) {
     sentiment_ask:        `How was your experience today? We value your feedback! 😊`,
     review_positive:      `That's great! 🌟 Please consider sharing your review on Google.`,
     review_negative:      `We're sorry! 😔 An agent will be with you shortly to make it right.`,
-    cart_recovery_1:      `👋 Your cart at *${businessName}* is waiting for you!`,
-    cart_recovery_2:      `⏰ Items are selling fast! Complete your order soon.`,
-    cart_recovery_3:      `🔥 Use code SAVE10 for 10% OFF if you finish your order now!`,
+    cart_recovery_1:
+      `🛒 Hi {{first_name}} — you left something beautiful in your *${businessName}* cart:\n\n{{line_items_list}}\n\n💰 *Total:* {{cart_total}}\n🔗 *Checkout:* {{checkout_url}}\n\nTap the link to complete your order securely.`,
+    cart_recovery_2:
+      `⏰ Still thinking? Your items are reserved — {{first_product_title}} and the rest are waiting.\n\n💰 {{cart_total}}\n🔗 {{checkout_url}}`,
+    cart_recovery_3:
+      `🔥 Last nudge: finish checkout now and use any active store offer. Cart total {{cart_total}}.\n🔗 {{checkout_url}}`,
     cod_nudge:            `💳 Save ${currency}${F.codDiscountAmount} and get faster delivery with online payment!`,
-    order_confirmed_msg:  `🎉 Order confirmed! We'll notify you when it ships.`,
+    order_confirmed_msg:
+      `🎉 *Order confirmed, {{first_name}}!*\n\n📦 *Order:* {{order_number}}\n💰 *Total:* {{order_total}}\n💳 *Payment:* {{payment_method}}\n\n📍 *Ship to:*\n{{shipping_address}}\n\n🧾 *Items:*\n{{line_items_list}}\n\nWe'll notify you when it ships.`,
     agent_handoff_msg:    `I've alerted the team. They'll be right with you. 🎧`,
     faq_response:         `Here are some helpful answers. Type *menu* to return.`,
     ad_welcome:           `Thanks for clicking! 👋 How can I help you explore *${businessName}*?`,
@@ -859,9 +863,12 @@ function buildSupportBranch(ctx, IDS, content) {
 
 function buildFAQBranch(ctx, IDS, content) {
   const { faqText } = ctx;
+  const faqBody = (typeof faqText === 'string' && faqText.trim())
+    ? faqText.trim()
+    : (content.faq_response || 'Here are quick answers — type *menu* anytime to go back.');
   const nodes = [{
     id: IDS.faq_msg, type: "message", position: { x: 2400, y: 2450 },
-    data: { label: "General FAQ", text: faqText || content.faq_response, heatmapCount: 0 }
+    data: { label: "General FAQ", text: faqBody, heatmapCount: 0 }
   }];
   const edges = [{ id: `e_${IDS.faq_msg}_mm`, source: IDS.faq_msg, target: IDS.main_menu }];
   return {
@@ -888,11 +895,20 @@ function buildAbandonedCart(ctx, IDS, content) {
   steps.forEach((step, i) => {
     const dId = `cart_delay_${i}_${IDS.seed}`;
     const mId = `cart_msg_${i}_${IDS.seed}`;
+    const msgData = {
+      label: `Cart Recovery ${i + 1}`,
+      text: step.text,
+      heatmapCount: 0,
+      suppressAIFallbackLink: i === steps.length - 1,
+    };
+    if (i === 0) {
+      msgData.imageUrl = '{{first_product_image}}';
+    }
     nodes.push(
       { id: dId, type: "delay", position: { x: -800 + (i * 800), y: 600 },
         data: { label: `Wait ${step.delay} ${step.unit}`, duration: step.delay, unit: step.unit, waitValue: step.delay, waitUnit: step.unit, heatmapCount: 0 } },
       { id: mId, type: "message", position: { x: -400 + (i * 800), y: 600 },
-        data: { label: `Cart Recovery ${i + 1}`, text: step.text, heatmapCount: 0 } }
+        data: msgData }
     );
     edges.push({ id: `e_${prev}_d${i}`, source: prev, target: dId });
     edges.push({ id: `e_${dId}_m${i}`,  source: dId,  target: mId });
@@ -907,7 +923,13 @@ function buildOrderConfirmAndCod(ctx, IDS, content) {
     { id: IDS.trig_order, type: "trigger", position: { x: -800, y: 0 },
       data: { label: "Order Placed Trigger", triggerType: "order_placed", heatmapCount: 0 } },
     { id: IDS.conf_msg, type: "message", position: { x: -400, y: 0 },
-      data: { label: "Order Confirmed", text: content.order_confirmed_msg, heatmapCount: 0 } }
+      data: {
+        label: "Order Confirmed",
+        text: content.order_confirmed_msg,
+        heatmapCount: 0,
+        suppressAIFallbackLink: true,
+        imageUrl: '{{first_product_image}}',
+      } }
   ];
   const edges = [{ id: `e_${IDS.trig_order}_cm`, source: IDS.trig_order, target: IDS.conf_msg }];
 
@@ -919,8 +941,12 @@ function buildOrderConfirmAndCod(ctx, IDS, content) {
         data: { label: "COD Nudge", action: "CONVERT_COD_TO_PREPAID",
           discountAmount: F.codDiscountAmount, text: content.cod_nudge, heatmapCount: 0 } },
       { id: IDS.cod_paid_msg, type: "message", position: { x: 900, y: -400 },
-        data: { label: "Paid Online Confirmed",
-          text: "🎉 Amazing! Payment confirmed! Your order gets priority shipping. Thank you!", heatmapCount: 0 } }
+        data: {
+          label: "Paid Online Confirmed",
+          text: "🎉 Amazing! Payment confirmed for {{order_number}}! Your order gets priority shipping. Thank you!",
+          heatmapCount: 0,
+          suppressAIFallbackLink: true,
+        } }
     );
     edges.push(
       { id: `e_${IDS.conf_msg}_cod`, source: IDS.conf_msg, target: IDS.cod_check },
@@ -942,11 +968,21 @@ function buildReviewAutomation(ctx, IDS, content) {
       data: { label: "Review Request", action: "SEND_REVIEW_REQUEST",
         text: content.sentiment_ask, googleReviewUrl, heatmapCount: 0 } },
     { id: IDS.rev_positive, type: "message", position: { x: 100, y: 900 },
-      data: { label: "Positive", text: content.review_positive + (googleReviewUrl ? `\n${googleReviewUrl}` : ""),
-        action: "LOG_REVIEW_POSITIVE", heatmapCount: 0 } },
+      data: {
+        label: "Positive",
+        text: content.review_positive + (googleReviewUrl ? `\n${googleReviewUrl}` : ""),
+        action: "LOG_REVIEW_POSITIVE",
+        heatmapCount: 0,
+        suppressAIFallbackLink: true,
+      } },
     { id: IDS.rev_negative, type: "message", position: { x: 100, y: 1100 },
-      data: { label: "Negative", text: content.review_negative,
-        action: "LOG_REVIEW_NEGATIVE", heatmapCount: 0 } }
+      data: {
+        label: "Negative",
+        text: content.review_negative,
+        action: "LOG_REVIEW_NEGATIVE",
+        heatmapCount: 0,
+        suppressAIFallbackLink: true,
+      } }
   ];
   const edges = [
     { id: `e_${IDS.trig_fulfill}_rv`, source: IDS.trig_fulfill, target: IDS.rev_request },
@@ -1078,6 +1114,7 @@ async function generateEcommerceFlow(client, wizardData = {}) {
     const sources = new Set(dedupEdges.map(e => e.source));
     const deadEndTypes = ["message", "shopify_call", "loyalty_action", "tag_lead", "review", "warranty_check", "cod_prepaid", "admin_alert"];
     dedupNodes.forEach(node => {
+      if (node.data?.suppressAIFallbackLink) return;
       if (deadEndTypes.includes(node.type) && !sources.has(node.id) && node.id !== IDS.ai_fallback) {
         dedupEdges.push({
           id: `e_dead_${node.id}`,
@@ -1204,14 +1241,14 @@ function getPrebuiltTemplates(wizardData = {}) {
       description: "Branded welcome — IMAGE header (your logo) + quick-reply main menu.",
       components: [
         { type: "HEADER", format: "IMAGE", _imageUrl: businessLogo || "" },
-        { type: "BODY",   text: `Welcome to *{{1}}*! 👋 How can we help you today?` },
+        { type: "BODY",   text: `👋 Welcome to *{{1}}*\n\nClear communication and visible trust signals help customers feel confident before they buy. We're here to guide you — quick answers, honest recommendations, and a smooth path to checkout.\n\nWhat would you like to do next?` },
         { type: "BUTTONS", buttons: [
-          { type: "QUICK_REPLY", text: "Shop" },
-          { type: "QUICK_REPLY", text: "Support" },
-          { type: "QUICK_REPLY", text: "Track Order" }
+          { type: "QUICK_REPLY", text: "Browse products" },
+          { type: "QUICK_REPLY", text: "Track my order" },
+          { type: "QUICK_REPLY", text: "Talk to support" }
         ]}
       ],
-      body: `Welcome to *{{1}}*! 👋 How can we help you today?`,
+      body: `👋 Welcome to *{{1}}*\n\nClear communication and visible trust signals help customers feel confident before they buy. We're here to guide you — quick answers, honest recommendations, and a smooth path to checkout.\n\nWhat would you like to do next?`,
       variables: ["business_name"]
     },
     ...productTemplates,
@@ -1221,9 +1258,9 @@ function getPrebuiltTemplates(wizardData = {}) {
       description: "Sent immediately after order is placed.",
       components: [{
         type: "BODY",
-        text: `✅ Your order #{{1}} from ${brandSafe} is confirmed!\n\nItems: {{2}} | Total: ${currency}{{3}}\n\nWe'll notify you when it ships! 📦`
+        text: `🎉 *Order confirmed* — #{{1}}\n\nHi from ${brandSafe}. Thank you for trusting us with your purchase.\n\n📦 *Items*\n{{2}}\n\n💰 *Total*  ${currency}{{3}}\n\nWe're preparing everything carefully and will message you as soon as your order moves. Questions? Just reply here.`
       }],
-      body: `✅ Your order #{{1}} from ${brandSafe} is confirmed!\n\nItems: {{2}} | Total: ${currency}{{3}}\n\nWe'll notify you when it ships! 📦`,
+      body: `🎉 *Order confirmed* — #{{1}}\n\nHi from ${brandSafe}. Thank you for trusting us with your purchase.\n\n📦 *Items*\n{{2}}\n\n💰 *Total*  ${currency}{{3}}\n\nWe're preparing everything carefully and will message you as soon as your order moves. Questions? Just reply here.`,
       variables: ["order_id", "cart_items", "order_total"]
     },
     {
@@ -1231,10 +1268,10 @@ function getPrebuiltTemplates(wizardData = {}) {
       category: "MARKETING", language: "en", status: "not_submitted", required: true,
       description: "Sent if checkout is started but not completed.",
       components: [
-        { type: "BODY", text: `Hi! 👋 You left items in your cart at ${brandSafe}. Still interested?\n\nItems are selling fast! Complete your purchase here:\n{{1}}\n\nSee you soon!` },
+        { type: "BODY", text: `Hi — you still have great picks saved at ${brandSafe}.\n\nYour cart is waiting. When you're ready, continue checkout securely here:\n{{1}}\n\nNeed sizing, delivery, or payment help? Reply here and we'll sort it out.` },
         ...(storeBase ? [{ type: "BUTTONS", buttons: [{ type: "URL", text: "Complete Purchase", url: `${storeBase}/cart` }] }] : [])
       ],
-      body: `Hi! 👋 You left items in your cart at ${brandSafe}. Still interested?\n\nItems are selling fast! Complete your purchase here:\n{{1}}\n\nSee you soon!`,
+      body: `Hi — you still have great picks saved at ${brandSafe}.\n\nYour cart is waiting. When you're ready, continue checkout securely here:\n{{1}}\n\nNeed sizing, delivery, or payment help? Reply here and we'll sort it out.`,
       variables: ["checkout_url"]
     },
     {
@@ -1251,13 +1288,51 @@ function getPrebuiltTemplates(wizardData = {}) {
     {
       id: "cod_nudge", name: "cod_to_prepaid_nudge",
       category: "MARKETING", language: "en", status: "not_submitted", required: true,
-      description: "Sent 3 minutes after a COD order to convert to prepaid.",
+      description: "COD → prepaid: incentive stack, urgency, two-tap choice (enterprise / Delitech-style).",
       components: [
-        { type: "BODY", text: `Wait! 💳 Save an extra ${currency}50 on your ${brandSafe} order by paying online now!\n\nTap below to switch to prepaid and save instantly:` },
-        { type: "BUTTONS", buttons: [{ type: "QUICK_REPLY", text: `Pay Online and Save ${currency}50` }] }
+        {
+          type: "HEADER",
+          format: "IMAGE",
+          _imageUrl: businessLogo || "",
+        },
+        {
+          type: "BODY",
+          text: `💳 *Save on your order!*
+
+Hi {{1}} 👋
+
+Your order *#{{2}}* for *{{3}}* ({{4}}) is confirmed as COD.
+
+🎁 *Pay via UPI right now and get:*
+✅ {{5}}
+✅ {{6}}
+
+⏰ *Offer expires in {{7}}!*
+
+${brandSafe} prioritises prepaid orders for dispatch — choose below when you are ready.`,
+        },
+        {
+          type: "FOOTER",
+          text: "Secured checkout · Reply STOP to opt out of promos",
+        },
+        {
+          type: "BUTTONS",
+          buttons: [
+            { type: "QUICK_REPLY", text: "💳 Pay via UPI Now" },
+            { type: "QUICK_REPLY", text: "Keep COD" },
+          ],
+        },
       ],
-      body: `Wait! 💳 Save an extra ${currency}50 on your ${brandSafe} order by paying online now!\n\nTap below to switch to prepaid and save instantly:`,
-      variables: []
+      body: `💳 *Save on your order!*\n\nHi {{1}} 👋\n\nYour order *#{{2}}* for *{{3}}* ({{4}}) is confirmed as COD.\n\n🎁 *Pay via UPI right now and get:*\n✅ {{5}}\n✅ {{6}}\n\n⏰ *Offer expires in {{7}}!*`,
+      variables: [
+        "customer_first_name",
+        "order_id",
+        "product_line",
+        "order_total_formatted",
+        "incentive_cashback",
+        "incentive_shipping",
+        "urgency_window",
+      ],
     },
     ...(googleReviewUrl ? [{
       id: "review_request", name: "post_delivery_review",

@@ -135,6 +135,52 @@ const STANDARD_TEMPLATES = [
       1: 'Customer Name',
       2: 'Order ID'
     }
+  },
+  {
+    id: 'eco_cod_prepaid_switch',
+    name: 'eco_cod_prepaid_switch',
+    category: 'MARKETING',
+    language: 'en_US',
+    components: [
+      {
+        type: 'HEADER',
+        format: 'IMAGE',
+        example: { header_handle: [ 'https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?auto=format&fit=crop&q=80&w=900' ] }
+      },
+      {
+        type: 'BODY',
+        text: "💳 *Save on your order!*\n\nHi {{1}} 👋\n\nYour order *#{{2}}* for *{{3}}* ({{4}}) is confirmed as COD.\n\n🎁 *Pay via UPI right now and get:*\n✅ {{5}}\n✅ {{6}}\n\n⏰ *Offer expires in {{7}}!*\n\nWe prioritise prepaid orders for dispatch — tap a button below.",
+        example: { body_text: [[
+          'Moksh',
+          '1030',
+          'Smart Video Doorbell Plus (3MP)',
+          '₹6,499',
+          '₹50 cashback',
+          'Priority shipping',
+          '2 hours'
+        ]] }
+      },
+      {
+        type: 'FOOTER',
+        text: "Reply STOP to opt out of marketing."
+      },
+      {
+        type: 'BUTTONS',
+        buttons: [
+          { type: 'QUICK_REPLY', text: '💳 Pay via UPI Now' },
+          { type: 'QUICK_REPLY', text: 'Keep COD' }
+        ]
+      }
+    ],
+    variableMapping: {
+      1: 'Customer first name',
+      2: 'Order number',
+      3: 'Product line',
+      4: 'Order total (formatted)',
+      5: 'Incentive 1 (e.g. cashback)',
+      6: 'Incentive 2 (e.g. shipping)',
+      7: 'Urgency window'
+    }
   }
 ];
 

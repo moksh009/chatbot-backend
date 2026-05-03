@@ -181,6 +181,95 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
 });
 
 /**
+ * Enrich Shopify line items with product images (checkout + order payloads).
+ */
+async function enrichLineItemsForCommerce(client, lineItems = []) {
+  const items = Array.isArray(lineItems) ? lineItems : [];
+  return Promise.all(items.map(async (item) => {
+    let imageUrl = item.image_url || item.imageUrl || null;
+    if (!imageUrl && item.product_id && client.shopifyAccessToken && client.shopDomain) {
+      try {
+        const res = await axios.get(
+          `https://${client.shopDomain}/admin/api/2024-01/products/${item.product_id}.json`,
+          { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
+        );
+        imageUrl = res.data.product?.images?.[0]?.src || null;
+      } catch (_) { /* omit */ }
+    }
+    const title = item.title || item.name || 'Item';
+    const qty = item.quantity || 1;
+    return {
+      title,
+      quantity: qty,
+      price: item.price || item.line_price || '',
+      imageUrl,
+      variant_title: item.variant_title || '',
+    };
+  }));
+}
+
+function formatLineItemsBullets(enriched) {
+  if (!enriched.length) return '';
+  return enriched
+    .map((i) => `• ${i.title}${i.variant_title ? ` (${i.variant_title})` : ''} × ${i.quantity}`)
+    .join('\n');
+}
+
+/**
+ * Flat fields merged into `conversation.metadata` so flow nodes can use {{first_name}}, {{line_items_list}}, etc.
+ * (Mongoose Client has no `variables` path — old writes were ignored in strict mode.)
+ */
+async function buildCommerceMetadataPatch(client, eventName, data, status = null) {
+  const cust = data.customer || {};
+  const firstName = cust.first_name
+    || (String(data.customer_name || '').trim().split(/\s+/)[0])
+    || 'there';
+  const fullName = [cust.first_name, cust.last_name].filter(Boolean).join(' ')
+    || String(data.customer_name || '').trim()
+    || '';
+  const ship = data.shipping_address || {};
+  const shipLines = [ship.name, ship.address1, ship.address2, ship.city, ship.province, ship.zip, ship.country]
+    .filter(Boolean)
+    .join(', ');
+  const currency = data.currency || data.presentment_currency || 'INR';
+  const totalRaw = data.total_price || data.total_line_items_price || '';
+  const totalDisp = totalRaw ? `${currency} ${totalRaw}` : '';
+  const payGw = (data.payment_gateway_names || []).join(', ')
+    || data.gateway
+    || data.processing_method
+    || '—';
+  const orderNum = String(data.name || data.order_number || '');
+  const enriched = await enrichLineItemsForCommerce(client, data.line_items || []);
+  const lineList = formatLineItemsBullets(enriched) || '—';
+  const first = enriched[0];
+  const storeHost = client.shopDomain ? String(client.shopDomain).replace(/^https?:\/\//, '') : '';
+  const checkoutUrl =
+    data.abandoned_checkout_url
+    || data.checkout_url
+    || (data.token && storeHost ? `https://${storeHost}/checkouts/cn/${data.token}` : '')
+    || (storeHost ? `https://${storeHost}` : '');
+
+  const meta = {
+    commerce_event: eventName,
+    first_name: firstName,
+    customer_name: fullName || firstName,
+    order_number: orderNum,
+    order_total: totalDisp,
+    order_total_raw: String(totalRaw || ''),
+    currency: String(currency),
+    payment_method: payGw,
+    shipping_address: shipLines || '—',
+    line_items_list: lineList,
+    first_product_title: first?.title || '',
+    first_product_image: first?.imageUrl || '',
+    checkout_url: checkoutUrl,
+    cart_total: totalDisp || (data.total_line_items_price ? `${currency} ${data.total_line_items_price}` : ''),
+  };
+  if (status) meta.order_status_detail = status;
+  return { meta, enriched, checkoutUrl };
+}
+
+/**
  * Fire a commerce event-triggered flow for the customer on this order/checkout.
  * Routes through the dualBrainEngine's flow executor so all node types are supported.
  */
@@ -214,11 +303,12 @@ async function fireEventFlow(client, eventName, data, status = null) {
 
   log.info(`[FlowTrigger] Executing flow "${flow.name}" for ${phone} (event: ${eventName})`);
 
-  // Use dualBrainEngine to walk the flow from the first node after the trigger
   const AdLead = require('../models/AdLead');
   const Conversation = require('../models/Conversation');
 
-  const lead = await AdLead.findOne({ phone, clientId: client.clientId }).lean();
+  const { meta: metaPatch, enriched } = await buildCommerceMetadataPatch(client, eventName, data, status);
+
+  const lead = await AdLead.findOne({ phoneNumber: phone, clientId: client.clientId }).lean();
   let convo = await Conversation.findOne({ phone, clientId: client.clientId });
 
   if (!convo) {
@@ -227,35 +317,53 @@ async function fireEventFlow(client, eventName, data, status = null) {
       clientId: client.clientId,
       channel: 'whatsapp',
       status: 'active',
-      source: `flow/${eventName}`
+      source: `flow/${eventName}`,
     });
   }
 
-  // Inject commerce event metadata into the conversation for variable access
-  const paymentMethod = data.gateway || (data.payment_gateway_names || [])[0] || 'unknown';
-  
+  const prevMeta = (await Conversation.findById(convo._id).lean())?.metadata || {};
   await Conversation.findByIdAndUpdate(convo._id, {
     lastStepId: startNodeId,
-    $set: {
-      'variables.eventName':     eventName,
-      'variables.order_id':      data.order_number || data.id || '',
-      'variables.order_total':   data.total_price || '',
-      'variables.order_status':  status || eventName,
-      'variables.payment_method': paymentMethod
-    }
+    $set: { metadata: { ...prevMeta, ...metaPatch, lastCommerceEventAt: new Date() } },
   });
 
-  // Fire the flow engine — walkFlow handles all node types including escalation
+  if (enriched?.length) {
+    await AdLead.findOneAndUpdate(
+      { phoneNumber: phone, clientId: client.clientId },
+      {
+        $set: {
+          cartSnapshot: {
+            items: enriched,
+            titles: enriched.map((e) => e.title),
+            total_price: data.total_price,
+            updatedAt: new Date(),
+          },
+          lastInteraction: new Date(),
+        },
+      },
+      { upsert: true, new: true }
+    ).catch((e) => log.warn(`[FlowTrigger] Lead cart snapshot update failed: ${e.message}`));
+  }
+
+  const convoFresh = await Conversation.findById(convo._id);
+  const leadFresh = await AdLead.findOne({ phoneNumber: phone, clientId: client.clientId }).lean();
+
   const { walkFlow } = require('../utils/dualBrainEngine');
   await walkFlow({
     client,
     phone,
-    flow:          { nodes: flow.publishedNodes || flow.nodes, edges: flow.publishedEdges || flow.edges },
+    flow: {
+      _id: flow._id,
+      id: flow.flowId || flow.id,
+      flowId: flow.flowId,
+      nodes: flow.publishedNodes || flow.nodes,
+      edges: flow.publishedEdges || flow.edges,
+    },
     currentNodeId: startNodeId,
-    convo,
-    lead,
-    userMessage:   `__event:${eventName}__`
-  }).catch(e => log.error(`[FlowTrigger] walkFlow error for ${eventName}:`, e.message));
+    convo: convoFresh,
+    lead: leadFresh || lead,
+    userMessage: `__event:${eventName}__`,
+  }).catch((e) => log.error(`[FlowTrigger] walkFlow error for ${eventName}:`, e.message));
 }
 
 

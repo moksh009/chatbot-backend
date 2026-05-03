@@ -1,9 +1,7 @@
 "use strict";
 
 const log = require('./logger')('EventProcessor');
-const { matchEventTrigger } = require('./triggerEngine');
-const { findFlowStartNode } = require('./triggerEngine');
-const WhatsAppFlow = require('../models/WhatsAppFlow');
+const { findEventTriggeredFlow } = require('./triggerEngine');
 
 /**
  * EVENT PROCESSOR
@@ -44,30 +42,32 @@ async function processShopifyEvent(client, topic, data) {
 
     if (!eventName || !eventData.phone) return;
 
-    await triggerFlowForEvent(eventName, eventData, client);
+    const eventKey = String(eventName).toLowerCase().replace(/_/g, '_');
+    const legacyMap = {
+        order_placed: 'order_placed',
+        checkout_started: 'abandoned_cart',
+        order_fulfilled: 'order_fulfilled',
+        order_cancelled: 'order_status_changed',
+    };
+    const normalized = legacyMap[eventKey] || eventKey;
+
+    await triggerFlowForEvent(normalized, eventData, client);
 }
 
-async function triggerFlowForEvent(eventName, eventData, client) {
+async function triggerFlowForEvent(eventName, eventData, client, status = null) {
     const { normalizePhone } = require('./helpers');
     const cleanPhone = normalizePhone(eventData.phone);
-    
-    // 1. Find a matching flow in WhatsAppFlow collection
-    const matchingFlow = await matchEventTrigger(eventName, eventData, client);
-    
-    if (matchingFlow) {
-        log.info(`Event ${eventName} matched flow: ${matchingFlow.name} for ${cleanPhone}`);
-        
-        // 2. Find start node
-        const startNodeId = findFlowStartNode(matchingFlow.nodes, matchingFlow.edges);
-        
-        if (startNodeId) {
-            // 3. Hand over to DualBrain to execute the flow
-            const { runFlow } = require('./dualBrainEngine');
-            await runFlow(client, cleanPhone, matchingFlow, startNodeId, {
-                triggerSource: `event_${eventName.toLowerCase()}`,
-                eventContext: eventData
-            });
-        }
+    const ev = String(eventName || '').toLowerCase();
+
+    const result = await findEventTriggeredFlow(ev, eventData, client, status);
+
+    if (result?.flow && result.startNodeId) {
+        log.info(`Event ${eventName} matched flow: ${result.flow.name} for ${cleanPhone}`);
+        const { runFlow } = require('./dualBrainEngine');
+        await runFlow(client, cleanPhone, result.flow, result.startNodeId, {
+            triggerSource: `event_${ev}`,
+            eventContext: eventData
+        });
     } else {
         log.debug(`No flow matched for event ${eventName} | Client: ${client.clientId}`);
     }

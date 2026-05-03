@@ -12,6 +12,7 @@ const { mapWizardToClient, mapFeatureToggle, pullPersonaBundleFromSet } = requir
 const { emitToClient } = require("../utils/socket");
 const log = require("../utils/logger")("Wizard");
 const { tenantClientId } = require("../utils/queryHelpers");
+const { hydrateProductTemplateRecord } = require("../utils/templateImageHydrate");
 
 async function syncPendingTemplatesForClient(client) {
   const axios = require("axios");
@@ -52,37 +53,51 @@ async function syncPendingTemplatesForClient(client) {
   for (const tpl of messageTemplates) {
     const remoteStatus = remoteMap.get(tpl.name);
     const status = String(remoteStatus || tpl.status || "PENDING").toUpperCase();
+    const prevStatus = String(tpl.status || "PENDING").toUpperCase();
     checked += 1;
-    const merged = { ...tpl, status, lastCheckedAt: new Date() };
-    updatedMessage.push(merged);
-
     const pendingMeta = pendingMap.get(tpl.name) || {};
+    const merged = {
+      ...tpl,
+      status,
+      lastCheckedAt: new Date(),
+      productHandle: tpl.productHandle || pendingMeta.productHandle || "",
+      productId: tpl.productId || pendingMeta.productId || "",
+    };
+
     if (status === "APPROVED") {
       approvedCount += 1;
+      try {
+        const hydrated = await hydrateProductTemplateRecord(client.clientId, merged, {
+          force: prevStatus !== "APPROVED",
+          maxAgeMs: 7 * 24 * 60 * 60 * 1000,
+        });
+        Object.assign(merged, hydrated);
+      } catch (hErr) {
+        log.warn(`[TemplateSync] Product image hydrate skipped for ${tpl.name}: ${hErr.message}`);
+      }
       syncedMap.set(tpl.name, {
         name: tpl.name,
         status: "APPROVED",
+        productHandle: pendingMeta.productHandle || merged.productHandle || "",
+        productId: pendingMeta.productId || merged.productId || "",
+        metaId: pendingMeta.metaId || tpl.id || "",
+        approvedAt: new Date(),
+        submittedAt: pendingMeta.submittedAt || tpl.createdAt || null,
+      });
+    } else {
+      if (status === "REJECTED") rejectedCount += 1;
+      updatedPending.push({
+        ...pendingMeta,
+        name: tpl.name,
+        status,
         productHandle: pendingMeta.productHandle || tpl.productHandle || "",
         productId: pendingMeta.productId || tpl.productId || "",
         metaId: pendingMeta.metaId || tpl.id || "",
-        approvedAt: new Date(),
-        submittedAt: pendingMeta.submittedAt || tpl.createdAt || null
+        submittedAt: pendingMeta.submittedAt || tpl.createdAt || null,
+        lastCheckedAt: new Date(),
       });
-      continue;
     }
-    if (status === "REJECTED") rejectedCount += 1;
-
-    // Keep not-yet-approved templates in pending state for later polling.
-    updatedPending.push({
-      ...pendingMeta,
-      name: tpl.name,
-      status,
-      productHandle: pendingMeta.productHandle || tpl.productHandle || "",
-      productId: pendingMeta.productId || tpl.productId || "",
-      metaId: pendingMeta.metaId || tpl.id || "",
-      submittedAt: pendingMeta.submittedAt || tpl.createdAt || null,
-      lastCheckedAt: new Date()
-    });
+    updatedMessage.push(merged);
   }
 
   // Preserve pending templates that don't have messageTemplates entry yet.
@@ -145,6 +160,25 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     // Generate the complete flow (passing templates so nodes can use them)
     const { nodes, edges } = await generateEcommerceFlow(client, { ...wizardData, templates });
 
+    // Replace mode: Flow Builder lists `WhatsAppFlow` documents. Older wizard runs only
+    // updated `Client.visualFlows` / deleted one `flowModelId`, so stale main + automation
+    // rows stayed in the collection — remove all wizard-generated flows before inserting new ones.
+    if (wizardData.replaceExisting !== false) {
+      const delResult = await WhatsAppFlow.deleteMany({
+        clientId,
+        $or: [
+          { flowId: { $regex: "^flow_wizard_" } },
+          { flowId: { $regex: "^auto_" } },
+          { generatedBy: "wizard" },
+          { isAutomation: true },
+          { name: { $regex: "^Automation:" } },
+        ],
+      });
+      log.info(
+        `[Wizard] Replace mode: removed ${delResult.deletedCount} prior WhatsAppFlow document(s) for ${clientId}`
+      );
+    }
+
     // Generate system prompt
     const systemPrompt = await generateSystemPrompt(client, wizardData);
 
@@ -168,68 +202,12 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       generatedBy: "wizard"
     };
 
-    // ✅ GAP-GEN-3: Isolate Commerce Automation Flows
-    // Identify trigger nodes for commerce events
-    const triggerTypes = ['order_placed', 'abandoned_cart', 'order_fulfilled'];
-    const automationTriggers = nodes.filter(n => 
-      n.type === 'trigger' && triggerTypes.includes(n.data?.triggerType)
-    );
+    // Commerce automations live in the same flow as the main journey (use Flow folders / layout).
+    // Runtime: triggerEngine scans all trigger nodes and starts from the matching commerce trigger.
+    const mainNodes = nodes;
+    const mainEdges = edges;
 
-    let automationNodeIds = new Set();
-    let automationEdgeIds = new Set();
-    let automationFlows = [];
-
-    // Helper to find all downstream nodes using BFS
-    const extractSubgraph = (startNodeId) => {
-      const subgraphNodeIds = new Set([startNodeId]);
-      const subgraphEdgeIds = new Set();
-      const queue = [startNodeId];
-
-      while (queue.length > 0) {
-        const currentId = queue.shift();
-        // Find all outgoing edges from currentId
-        const outgoingEdges = edges.filter(e => e.source === currentId);
-        outgoingEdges.forEach(e => {
-          subgraphEdgeIds.add(e.id);
-          if (!subgraphNodeIds.has(e.target)) {
-            subgraphNodeIds.add(e.target);
-            queue.push(e.target);
-          }
-        });
-      }
-      return { nodes: subgraphNodeIds, edges: subgraphEdgeIds };
-    };
-
-    // Extract each automation flow
-    for (const trig of automationTriggers) {
-      const sub = extractSubgraph(trig.id);
-      sub.nodes.forEach(id => automationNodeIds.add(id));
-      sub.edges.forEach(id => automationEdgeIds.add(id));
-
-      const subNodes = nodes.filter(n => sub.nodes.has(n.id));
-      const subEdges = edges.filter(e => sub.edges.has(e.id));
-
-      const autoFlowId = `auto_${trig.data.triggerType}_${Date.now()}`;
-      const autoFlow = await WhatsAppFlow.create({
-        clientId,
-        flowId: autoFlowId,
-        name: `Automation: ${trig.data.triggerType}`,
-        platform: 'whatsapp',
-        nodes: subNodes,
-        edges: subEdges,
-        status: 'PUBLISHED',
-        isAutomation: true,
-        automationTrigger: trig.data.triggerType
-      });
-      automationFlows.push(autoFlow);
-      console.log(`[Wizard] Extracted automation flow: ${trig.data.triggerType} (${subNodes.length} nodes)`);
-    }
-
-    // Filter main flow to exclude automation nodes
-    const mainNodes = nodes.filter(n => !automationNodeIds.has(n.id));
-    const mainEdges = edges.filter(e => !automationEdgeIds.has(e.id));
-
-    // Update newFlow to use filtered main nodes
+    // Update newFlow to use full graph (main + automations)
     newFlow.nodes = mainNodes.length > 20 ? [] : mainNodes;
     newFlow.edges = mainNodes.length > 20 ? [] : mainEdges;
     newFlow.nodeCount = mainNodes.length;
@@ -244,7 +222,8 @@ router.post("/:clientId/complete", protect, async (req, res) => {
         platform: 'whatsapp',
         nodes:    mainNodes,
         edges:    mainEdges,
-        status:   'PUBLISHED'
+        status:   'PUBLISHED',
+        generatedBy: 'wizard',
       });
       newFlow.flowModelId = storedFlow._id;
       console.log(`[Wizard] Main flow offloaded to WhatsAppFlow model: ${storedFlow._id} (${mainNodes.length} nodes)`);
@@ -687,6 +666,8 @@ router.post("/:clientId/submit-product-templates", protect, async (req, res) => 
           name:        templateName,
           status:      'PENDING',
           category:    'MARKETING',
+          language:    'en',
+          components:  JSON.parse(JSON.stringify(templatePayload.components || [])),
           source:      'wizard_product',
           imageUrl:    prod.imageUrl || '',
           createdAt:   new Date()
@@ -719,6 +700,8 @@ router.post("/:clientId/submit-product-templates", protect, async (req, res) => 
             name: templateName,
             status: 'PENDING',
             category: 'MARKETING',
+            language: 'en',
+            components: JSON.parse(JSON.stringify(templatePayload.components || [])),
             source: 'wizard_product',
             imageUrl: prod.imageUrl || '',
             createdAt: new Date()
@@ -861,13 +844,20 @@ router.post("/:clientId/submit-automation-templates", protect, async (req, res) 
 
         if (c.type === 'BODY') {
           const samples = (tpl.variables || []).map(v => {
-            if (v.includes('name')) return wizardData.businessName || 'Elite Store';
-            if (v.includes('order_id')) return '#89201';
-            if (v.includes('total')) return '1,499';
-            if (v.includes('items')) return 'Blue Denim Jacket, Cotton Tee';
-            if (v.includes('url')) return 'https://topedgeai.com/demo';
-            if (v.includes('phone')) return '+91 98765 43210';
-            if (v.includes('context')) return 'Customer asked about shipping delay.';
+            const key = String(v || '').toLowerCase();
+            if (key.includes('first_name') || key.includes('customer_first')) return wizardData.ownerName?.split(' ')?.[0] || 'Priya';
+            if (key.includes('name')) return wizardData.businessName || 'Elite Store';
+            if (key.includes('order_id')) return '#1030';
+            if (key.includes('product_line')) return 'Smart Wireless Video Doorbell Plus (3MP)';
+            if (key.includes('total_formatted') || key.includes('order_total')) return `${wizardData.currency || '₹'}6,499`;
+            if (key.includes('total')) return '1,499';
+            if (key.includes('items')) return 'Blue Denim Jacket, Cotton Tee';
+            if (key.includes('cashback') || key.includes('incentive_cashback')) return `${wizardData.currency || '₹'}50 cashback`;
+            if (key.includes('shipping') || key.includes('incentive_shipping')) return 'Priority shipping';
+            if (key.includes('urgency')) return '2 hours';
+            if (key.includes('url')) return 'https://topedgeai.com/demo';
+            if (key.includes('phone')) return '+91 98765 43210';
+            if (key.includes('context')) return 'Customer asked about shipping delay.';
             return 'Sample Value';
           });
           if (samples.length > 0) {
@@ -902,6 +892,9 @@ router.post("/:clientId/submit-automation-templates", protect, async (req, res) 
           name:        tpl.name,
           status:      'PENDING',
           category:    tpl.category,
+          language:    tpl.language || 'en',
+          components: JSON.parse(JSON.stringify(tpl.components || [])),
+          variables:  tpl.variables,
           source:      'wizard_automation',
           createdAt:   new Date()
         };
@@ -935,6 +928,9 @@ router.post("/:clientId/submit-automation-templates", protect, async (req, res) 
                 name: tpl.name,
                 status: 'PENDING',
                 category: tpl.category,
+                language: tpl.language || 'en',
+                components: JSON.parse(JSON.stringify(tpl.components || [])),
+                variables: tpl.variables,
                 source: 'wizard_automation',
                 createdAt: new Date()
               },
