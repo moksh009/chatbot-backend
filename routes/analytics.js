@@ -133,8 +133,23 @@ router.get('/flow-heatmap', protect, async (req, res) => {
     heatmapData.forEach(item => {
       heatmap[item._id] = item.count;
     });
+    const client = await Client.findOne({ clientId }).select('flowNodes').lean();
+    const nodeLabelMap = {};
+    (client?.flowNodes || []).forEach(node => {
+      nodeLabelMap[node.id] = node.data?.label || node.data?.text || node.data?.body || node.type || node.id;
+    });
 
-    res.json({ success: true, heatmap });
+    const nodes = heatmapData
+      .map(item => ({
+        id: item._id,
+        label: nodeLabelMap[item._id] || item._id,
+        type: 'flow-node',
+        visitCount: item.count
+      }))
+      .sort((a, b) => b.visitCount - a.visitCount)
+      .slice(0, 15);
+
+    res.json({ success: true, heatmap, nodes });
   } catch (error) {
     console.error('Flow Heatmap Error:', error);
     res.status(500).json({ success: false, message: 'Server Error' });
@@ -191,9 +206,51 @@ router.get('/realtime', protect, apiCache(60), async (req, res) => {
     }
     startDate.setHours(0, 0, 0, 0);
 
-    const [realtimeCarts, realtimeClicks] = await Promise.all([
+    const [realtimeCarts, realtimeClicks, flowPerfAgg, optStatusAgg, pixelFunnelAgg, rtoRiskAgg] = await Promise.all([
       require('../models/PixelEvent').countDocuments({ clientId, eventName: { $in: ['product_added_to_cart', 'add_to_cart', 'checkout_started'] }, timestamp: { $gte: startDate } }),
-      require('../models/LinkClickEvent').countDocuments({ clientId, timestamp: { $gte: startDate } })
+      require('../models/LinkClickEvent').countDocuments({ clientId, timestamp: { $gte: startDate } }),
+      DailyStat.aggregate([
+        {
+          $match: {
+            clientId,
+            date: {
+              $gte: startDate.toISOString().split('T')[0],
+              $lte: new Date().toISOString().split('T')[0]
+            }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            flowsSent: { $sum: { $ifNull: ['$flowsSent', 0] } },
+            flowsCompleted: { $sum: { $ifNull: ['$flowsCompleted', 0] } }
+          }
+        }
+      ]),
+      AdLead.aggregate([
+        { $match: { clientId } },
+        { $group: { _id: { $ifNull: ['$optStatus', 'unknown'] }, count: { $sum: 1 } } }
+      ]),
+      require('../models/PixelEvent').aggregate([
+        {
+          $match: {
+            clientId,
+            timestamp: { $gte: startDate },
+            eventName: { $in: ['product_added_to_cart', 'add_to_cart', 'checkout_started', 'checkout_completed'] }
+          }
+        },
+        { $group: { _id: '$eventName', count: { $sum: 1 } } }
+      ]),
+      Order.aggregate([
+        { $match: { clientId, createdAt: { $gte: startDate } } },
+        {
+          $group: {
+            _id: { $ifNull: ['$rtoRiskLevel', 'unknown'] },
+            count: { $sum: 1 },
+            gmv: { $sum: { $ifNull: ['$amount', 0] } }
+          }
+        }
+      ])
     ]);
 
     // Task 1.2: Human Handled & AI Handled
@@ -224,6 +281,28 @@ router.get('/realtime', protect, apiCache(60), async (req, res) => {
       { $count: "count" }
     ]);
     const aiHandled = aiHandledAgg[0]?.count || 0;
+    const totalHandled = aiHandled + humanHandled;
+    const aiResolutionRate = totalHandled > 0 ? (aiHandled / totalHandled) * 100 : 0;
+
+    const flowPerf = flowPerfAgg[0] || { flowsSent: 0, flowsCompleted: 0 };
+    const flowCompletionRate = flowPerf.flowsSent > 0 ? (flowPerf.flowsCompleted / flowPerf.flowsSent) * 100 : 0;
+
+    const optMap = Object.fromEntries(optStatusAgg.map(r => [String(r._id || 'unknown'), r.count || 0]));
+    const totalOptLeads = Object.values(optMap).reduce((acc, n) => acc + n, 0);
+    const optedInCount = optMap.opted_in || 0;
+    const optedOutCount = optMap.opted_out || 0;
+    const optInRate = totalOptLeads > 0 ? (optedInCount / totalOptLeads) * 100 : 0;
+
+    const funnelMap = Object.fromEntries(pixelFunnelAgg.map(r => [r._id, r.count || 0]));
+    const addToCartCount = (funnelMap.add_to_cart || 0) + (funnelMap.product_added_to_cart || 0);
+    const checkoutCompletedCount = funnelMap.checkout_completed || 0;
+    const checkoutConversionRate = addToCartCount > 0 ? (checkoutCompletedCount / addToCartCount) * 100 : 0;
+
+    const totalRiskOrders = rtoRiskAgg.reduce((acc, row) => acc + (row.count || 0), 0);
+    const highRiskRow = rtoRiskAgg.find(row => String(row._id || '').toLowerCase() === 'high');
+    const highRiskOrders = highRiskRow?.count || 0;
+    const highRiskGmv = highRiskRow?.gmv || 0;
+    const highRiskShare = totalRiskOrders > 0 ? (highRiskOrders / totalRiskOrders) * 100 : 0;
 
     const attributionAgg = await require('../models/PixelEvent').aggregate([
       { $match: { clientId, timestamp: { $gte: startDate } } },
@@ -268,7 +347,27 @@ router.get('/realtime', protect, apiCache(60), async (req, res) => {
         adminFollowupsPurchased: stats.adminFollowupsPurchased
       },
       attribution: attributionAgg.length > 0 ? attributionAgg : [{ source: 'Direct/Organic', count: 1 }],
-      sentiment: stats.sentimentCounts || { Positive: 0, Neutral: 0, Negative: 0, Frustrated: 0, Urgent: 0, Unknown: 0 }
+      sentiment: stats.sentimentCounts || { Positive: 0, Neutral: 0, Negative: 0, Frustrated: 0, Urgent: 0, Unknown: 0 },
+      enterprise: {
+        aiResolutionRate,
+        flowCompletionRate,
+        checkoutConversionRate,
+        optInRate,
+        highRiskShare,
+        highRiskGmv,
+        counts: {
+          aiHandled,
+          humanHandled,
+          flowsSent: flowPerf.flowsSent || 0,
+          flowsCompleted: flowPerf.flowsCompleted || 0,
+          addToCartCount,
+          checkoutCompletedCount,
+          optedInCount,
+          optedOutCount,
+          highRiskOrders,
+          totalRiskOrders
+        }
+      }
     });
 
   } catch (error) {
@@ -1098,6 +1197,15 @@ router.get('/', protect, async (req, res) => {
       const codConvertedRevenue = dayReminder?.codConvertedRevenue || 0;
       const codConvertedCount = dayReminder?.codConvertedCount || 0;
       const cartRevenueRecovered = dayReminder?.cartRevenueRecovered || 0;
+      const flowsSent = dayReminder?.flowsSent || 0;
+      const flowsCompleted = dayReminder?.flowsCompleted || 0;
+      const browseAbandonedCount = dayReminder?.browseAbandonedCount || 0;
+      const upsellSentCount = dayReminder?.upsellSentCount || 0;
+      const upsellConvertedCount = dayReminder?.upsellConvertedCount || 0;
+      const upsellRevenue = dayReminder?.upsellRevenue || 0;
+      const marketingMessagesSent = dayReminder?.marketingMessagesSent || 0;
+      const aiResolutionRateDay = (humanHandled + aiHandled) > 0 ? ((aiHandled / (humanHandled + aiHandled)) * 100) : 0;
+      const flowCompletionRateDay = flowsSent > 0 ? ((flowsCompleted / flowsSent) * 100) : 0;
 
       const dayAppointment = appointments.find(c => c._id === date);
       const apptRevenue = dayAppointment?.revenue || 0;
@@ -1132,7 +1240,16 @@ router.get('/', protect, async (req, res) => {
         rtoCostSaved,
         codConvertedRevenue,
         codConvertedCount,
-        cartRevenueRecovered
+        cartRevenueRecovered,
+        flowsSent,
+        flowsCompleted,
+        browseAbandonedCount,
+        upsellSentCount,
+        upsellConvertedCount,
+        upsellRevenue,
+        marketingMessagesSent,
+        aiResolutionRate: Number(aiResolutionRateDay.toFixed(2)),
+        flowCompletionRate: Number(flowCompletionRateDay.toFixed(2))
       };
     });
 
@@ -1339,7 +1456,7 @@ router.get('/funnel', protect, async (req, res) => {
 });
 
 // GET /api/analytics/flow-heatmap
-router.get('/flow-heatmap', protect, async (req, res) => {
+router.get('/flow-heatmap-legacy', protect, async (req, res) => {
   try {
     let clientId = req.user.clientId;
     if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {

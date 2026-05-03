@@ -118,7 +118,7 @@ router.get('/clients', protect, isSuperAdmin, sanitizeMiddleware, async (req, re
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .select('clientId businessName name wabaId phoneNumberId whatsappToken shopifyAccessToken shopDomain storeType woocommerceUrl woocommerceKey woocommerceSecret instagramConnected adminAlertEmail adminAlertWhatsapp emailUser emailAppPassword isActive createdAt config.wabaId config.phoneNumberId config.whatsappToken config.shopifyAccessToken config.shopDomain config.storeType config.woocommerceUrl config.woocommerceKey config.woocommerceSecret')
+      .select('clientId businessName name wabaId phoneNumberId whatsappToken shopifyAccessToken shopDomain storeType woocommerceUrl woocommerceKey woocommerceSecret instagramConnected adminAlertEmail adminAlertWhatsapp emailUser emailAppPassword emailMethod googleConnected gmailAddress isActive createdAt config.wabaId config.phoneNumberId config.whatsappToken config.shopifyAccessToken config.shopDomain config.storeType config.woocommerceUrl config.woocommerceKey config.woocommerceSecret')
       .lean();
     
     const total = await Client.countDocuments(filter);
@@ -777,7 +777,18 @@ router.patch('/my-settings', protect, async (req, res) => {
       // Phase 20: System prompt / AI
       systemPrompt, geminiApiKey,
       // Phase 29: AI Persona
-      ai
+      ai,
+      loyaltyConfig,
+      businessName,
+      businessLogo,
+      authorizedSignature,
+      warrantyEmailEnabled,
+      warrantyWhatsappEnabled,
+      warrantyDuration,
+      warrantyPolicy,
+      warrantySupportPhone,
+      warrantySupportEmail,
+      warrantyClaimUrl
     } = req.body;
     
     // If Super Admin and clientId provided, use that. Otherwise use user's own.
@@ -884,6 +895,33 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (adminAlertEmail !== undefined) updateFields.adminAlertEmail = adminAlertEmail;
     if (adminAlertWhatsapp !== undefined) updateFields.adminAlertWhatsapp = adminAlertWhatsapp;
     if (metaAppId !== undefined) updateFields.metaAppId = metaAppId;
+    if (businessName !== undefined) {
+      updateFields.businessName = businessName;
+      updateFields['brand.businessName'] = businessName;
+    }
+    if (businessLogo !== undefined) updateFields.businessLogo = businessLogo;
+    if (authorizedSignature !== undefined) updateFields.authorizedSignature = authorizedSignature;
+    if (warrantyEmailEnabled !== undefined) updateFields.warrantyEmailEnabled = !!warrantyEmailEnabled;
+    if (warrantyWhatsappEnabled !== undefined) updateFields.warrantyWhatsappEnabled = !!warrantyWhatsappEnabled;
+    if (warrantyDuration !== undefined) updateFields.warrantyDuration = String(warrantyDuration || '');
+    if (warrantyPolicy !== undefined) updateFields.warrantyPolicy = String(warrantyPolicy || '');
+    if (warrantySupportPhone !== undefined) updateFields.warrantySupportPhone = String(warrantySupportPhone || '');
+    if (warrantySupportEmail !== undefined) updateFields.warrantySupportEmail = String(warrantySupportEmail || '');
+    if (warrantyClaimUrl !== undefined) updateFields.warrantyClaimUrl = String(warrantyClaimUrl || '');
+    if (loyaltyConfig !== undefined) {
+      updateFields.loyaltyConfig = loyaltyConfig;
+      if (loyaltyConfig?.isEnabled !== undefined) {
+        updateFields['wizardFeatures.loyaltyProgram'] = !!loyaltyConfig.isEnabled;
+      }
+      const silverThreshold = Number(loyaltyConfig?.tierThresholds?.silver);
+      const goldThreshold = Number(loyaltyConfig?.tierThresholds?.gold);
+      if (Number.isFinite(silverThreshold)) {
+        updateFields['wizardFeatures.loyaltySilverThreshold'] = silverThreshold;
+      }
+      if (Number.isFinite(goldThreshold)) {
+        updateFields['wizardFeatures.loyaltyGoldThreshold'] = goldThreshold;
+      }
+    }
 
     if (emailUser !== undefined) updateFields.emailUser = emailUser;
     if (emailAppPassword !== undefined && emailAppPassword !== '••••••••' && emailAppPassword.trim() !== '') {

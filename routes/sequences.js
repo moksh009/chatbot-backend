@@ -9,6 +9,7 @@ const SEQUENCE_TEMPLATES = require('../data/sequenceTemplates');
 const Campaign = require('../models/Campaign');
 const Client = require('../models/Client');
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
+const { resolveImportBatchObjectId } = require('../utils/importBatchResolver');
 
 // Max active sequences per lead
 const MAX_ACTIVE_SEQUENCES = 2;
@@ -269,6 +270,115 @@ router.post('/:clientId/enroll-from-campaign', protect, async (req, res) => {
   } catch (error) {
     console.error('Campaign sequence enrollment error:', error);
     res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Enroll a sequence from imported CSV audience batch
+router.post('/:clientId/from-imported-list', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const { importBatchId, templateId, name } = req.body;
+    if (!importBatchId) {
+      return res.status(400).json({ success: false, message: 'importBatchId is required' });
+    }
+    if (!templateId) {
+      return res.status(400).json({ success: false, message: 'templateId is required' });
+    }
+
+    const resolvedBatchId = await resolveImportBatchObjectId(importBatchId, clientId);
+    if (!resolvedBatchId) {
+      return res.status(404).json({ success: false, message: 'Import batch not found' });
+    }
+
+    const template = SEQUENCE_TEMPLATES.find(t => t.id === templateId);
+    if (!template) {
+      return res.status(404).json({ success: false, message: 'Sequence template not found' });
+    }
+
+    const leads = await AdLead.find({
+      clientId,
+      importBatchId: resolvedBatchId,
+      phoneNumber: { $exists: true, $ne: '' }
+    }).select('_id name phoneNumber email').lean();
+
+    if (!leads.length) {
+      return res.status(400).json({ success: false, message: 'No leads found in this imported list' });
+    }
+
+    const client = await Client.findOne({ clientId }).select('_id').lean();
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+    const limitCheck = await checkLimit(client._id, 'sequences');
+    if (!limitCheck.allowed) {
+      return res.status(403).json({ success: false, message: limitCheck.reason });
+    }
+
+    const enrolledSequences = [];
+    const errors = [];
+
+    for (const lead of leads) {
+      const activeCount = await FollowUpSequence.countDocuments({
+        clientId,
+        leadId: lead._id,
+        status: 'active'
+      });
+
+      if (activeCount >= MAX_ACTIVE_SEQUENCES) {
+        errors.push({ leadId: lead._id, message: 'Active sequence limit reached' });
+        continue;
+      }
+
+      let currentSendAt = moment();
+      const mappedSteps = (template.steps || []).map(step => {
+        currentSendAt = currentSendAt.add(step.delayValue || 0, step.delayUnit || 'm');
+        return {
+          type: step.type || 'whatsapp',
+          templateId: step.templateId,
+          templateName: step.templateName,
+          subject: step.subject,
+          content: step.content,
+          delayValue: step.delayValue,
+          delayUnit: step.delayUnit,
+          condition: step.condition,
+          sendAt: currentSendAt.toDate(),
+          status: 'pending'
+        };
+      });
+
+      const sequence = new FollowUpSequence({
+        clientId,
+        leadId: lead._id,
+        phone: lead.phoneNumber,
+        email: lead.email,
+        name: name || template.name || 'Imported List Sequence',
+        type: template.category || 'custom',
+        steps: mappedSteps
+      });
+
+      await sequence.save();
+      await AdLead.findByIdAndUpdate(lead._id, { $set: { 'metaData.hasActiveSequence': true } });
+      enrolledSequences.push(sequence);
+    }
+
+    if (enrolledSequences.length > 0) {
+      await incrementUsage(client._id, 'sequences', enrolledSequences.length);
+    }
+
+    return res.json({
+      success: true,
+      count: enrolledSequences.length,
+      skipped: errors.length,
+      errors: errors.length ? errors : undefined,
+      importBatchId: resolvedBatchId.toString()
+    });
+  } catch (error) {
+    console.error('Imported list sequence enrollment error:', error);
+    return res.status(500).json({ success: false, message: error.message || 'Failed to enroll sequence from imported list' });
   }
 });
 

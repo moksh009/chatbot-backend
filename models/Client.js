@@ -272,6 +272,11 @@ const ClientSchema = new mongoose.Schema({
   openaiApiKey: { type: String }, // Legacy field (aliased to geminiApiKey in middleware)
   emailUser: { type: String },  // Gmail address for email broadcasts
   emailAppPassword: { type: String },  // Gmail App Password (not the login password)
+  emailMethod: { type: String, enum: ['smtp', 'gmail_oauth'], default: 'smtp' },
+  googleConnected: { type: Boolean, default: false },
+  gmailAddress: { type: String, default: '' },
+  gmailAccessToken: { type: String, default: '' },
+  gmailRefreshToken: { type: String, default: '' },
   config: { type: mongoose.Schema.Types.Mixed, default: {} }, // Flexible config for other settings
   nicheData: { type: mongoose.Schema.Types.Mixed, default: {} }, // Flexible config for generic niche bots
   flowData: { type: mongoose.Schema.Types.Mixed, default: {} }, // Flexible config for generic WhatsApp text flows
