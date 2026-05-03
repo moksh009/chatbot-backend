@@ -136,23 +136,37 @@ const truncate = (str, max = 24) => {
   return v.length > max ? `${v.slice(0, max - 3)}...` : v;
 };
 
+/** Main commerce graph: columns left→right, rows for parallel lanes (ReactFlow). */
+function flowPos(col, row) {
+  const DX = 400;
+  const DY = 200;
+  return { x: Math.round(40 + col * DX), y: Math.round(56 + row * DY) };
+}
+
+/** Automation triggers (cart / order / review) — isolated left stack, no overlap with hub. */
+function autoPos(col, row) {
+  const DX = 440;
+  const DY = 200;
+  return { x: Math.round(-760 + col * DX), y: Math.round(72 + row * DY) };
+}
+
 /**
  * Central tone blocks for default flows — merged into `buildDefaultContent`.
  * Tune brand voice here; builders should prefer `content.*` over inline strings.
  */
 const TONE_COPY = {
   order_not_found_prompt:
-    "We couldn't match an order to this number yet. Send your *order number* (for example #1042) and we'll look it up.",
-  order_hub_prompt: "What would you like to do next for *{{order_number}}*?",
-  cancel_reason_prompt: "In one short line, why are you cancelling? It helps us improve.",
+    "I want to get this right for you. Reply with your *order number* exactly as on your invoice (e.g. *#1042*) — I'll pull live status from *{{brand_name}}*.",
+  order_hub_prompt: "Here’s what I can do for *{{order_number}}* right now — pick one:",
+  cancel_reason_prompt: "One line is enough: what made you cancel? (It helps *{{brand_name}}* fix the experience.)",
   cancel_failed_user:
-    "We couldn't complete the cancellation for *{{order_number}}* at *{{brand_name}}* — it may already be packed or on the way. Type *menu* to reach the team.",
+    "I tried to cancel *{{order_number}}* but the warehouse/courier already has it — cancellations can’t go through at this stage. Tap *menu* and a human will sort exceptions.",
   support_capture_prompt:
-    "Describe what you need — include your *order number* if you have one. A teammate will pick this up shortly.",
+    "Tell me what’s going wrong — *order number* if you have it. A *{{brand_name}}* teammate reads this thread and will jump in.",
   support_schedule_closed_nudge:
-    "Live agents are offline right now. Hours: *{{open_hours}}*. Leave your message here and we'll follow up; meanwhile {{bot_name}} can help with FAQs.",
+    "Humans are offline until *{{open_hours}}*. Leave your note here (with order # if any); {{bot_name}} can still handle FAQs and tracking meanwhile.",
   livechat_queue_body:
-    "You're in the queue for a live agent. When you're done, send *menu* or *hi* and {{bot_name}} will take over again.",
+    "You’re queued for a live agent at *{{brand_name}}*. When you’re finished with them, send *menu* and I’ll take the wheel again.",
 };
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -358,46 +372,47 @@ function buildDefaultContent(ctx) {
   const { F } = ctx;
   return {
     ...TONE_COPY,
-    welcome_a:            `Hi {{customer_name}}! 👋 Welcome to *{{brand_name}}*.\n\nI'm {{bot_name}} — your WhatsApp assistant. Pick an option below and I'll take it from here.`,
-    welcome_b:            `🛍️ Hey there! Explore our products and services at *{{brand_name}}*!`,
-    product_menu_text:    `Welcome to the *{{brand_name}}* Hub! How can we help you today?`,
+    welcome_a:            `Hi {{first_name}} 👋 *{{brand_name}}* here — I’m *{{bot_name}}*, your WhatsApp concierge.\n\n⚡ *Attention:* everything you need is one tap away.\n\n*Interest:* browse, track, or talk to a human — no forms, no hold music.\n\nPick below and I’ll route you instantly.`,
+    welcome_b:            `🛍️ *{{brand_name}}* — curated picks, fast support, zero fluff. Tap *menu* when you’re ready to shop.`,
+    product_menu_text:    `*{{brand_name}}* hub — what should we tackle first?`,
     order_status_msg:
-      `📦 *{{order_number}}*\n\nStatus: *{{order_status}}*\n\n{{line_items_list}}\n\n🔗 Track: {{tracking_url}}\n\nTap a button below for the next step.`,
-    fallback_msg:         `I'm still learning! 😊 *{{bot_name}}* at *{{brand_name}}* will connect you with a teammate who can help.`,
-    returns_policy_short: `Easy 7-day returns on all unused items at *{{brand_name}}*. Just share a photo to start! 🔄`,
-    cancellation_confirm: `Cancel *{{order_number}}* at *{{brand_name}}*? This usually cannot be undone once submitted.`,
-    cancellation_success: `✅ *{{order_number}}* is cancelled at *{{brand_name}}*. We're sorry to see you go — tap *menu* anytime.`,
-    loyalty_welcome:      `🎉 Welcome to *{{brand_name}}* Rewards! You've earned *${F.loyaltySignupBonus} points*!`,
-    loyalty_points_msg:   `💎 *{{brand_name}}* — you have rewards points on this account! Redeem them for instant discounts at checkout.`,
-    referral_msg:         `Refer a friend and earn *{{referral_points}} bonus points*! 🎁`,
-    sentiment_ask:        `How was your experience today? We value your feedback! 😊`,
-    review_positive:      `That's great to hear about *{{brand_name}}*! 🌟 Please consider sharing your review on Google when you have a moment.`,
-    review_negative:      `We're sorry *{{brand_name}}* missed the mark. 😔 A teammate will be with you shortly to make it right.`,
+      `📦 *{{order_number}}*\n\n*Status:* {{order_status}}\n\n🧾 {{line_items_list}}\n\n🔗 Track: {{tracking_url}}\n\n*Desire → Action:* need changes, returns, or a human? Use the buttons below — I’ll stay on this thread.`,
+    fallback_msg:         `That’s outside my auto-flows for *{{brand_name}}* — I’m flagging *{{bot_name}}* so a teammate can take over. Tap *menu* anytime to reset.`,
+    returns_policy_short: `*{{brand_name}}* keeps returns painless: unused items, clear photos, fast decisions. Tap *Start Return* and we’ll guide you.`,
+    cancellation_confirm: `⚠️ *Decision point:* cancel *{{order_number}}* with *{{brand_name}}*? Once submitted, reversal may not be possible.`,
+    cancellation_success: `✅ *{{order_number}}* is cancelled. We’re sorry it didn’t work out — when you’re ready again, *{{brand_name}}* will be one tap away (*menu*).`,
+    loyalty_welcome:      `💎 *{{brand_name}}* Rewards — you’re *in*. Welcome bonus: *${F.loyaltySignupBonus} pts* locked to this WhatsApp number.\n\nEarn on every order, redeem at checkout, and skip the generic support queue.`,
+    loyalty_points_msg:
+      `💎 *Live balance* for this WhatsApp:\n\n• Points: *{{loyalty_points}}*\n• Tier: *{{loyalty_tier}}*\n• Approx. value: *{{loyalty_cash_value}}*\n\n*Action:* tap *Redeem* when you’re ready — discounts apply instantly at checkout for *{{brand_name}}*.`,
+    referral_msg:         `📣 Love *{{brand_name}}*? Refer a friend from this chat — you both win *{{referral_points}} bonus points* when they first order. Limited slots each month.`,
+    sentiment_ask:        `Quick pulse check for *{{brand_name}}* — how are we doing today? (Your reply trains us to serve you better.)`,
+    review_positive:      `🔥 Amazing — thank you. If you have 20 seconds, *{{brand_name}}* grows on honest Google reviews:\n{{review_url}}`,
+    review_negative:      `We hear you — that’s not the *{{brand_name}}* standard. A senior teammate is reading this now; give us one message with details and we’ll fix it.`,
     cart_recovery_1:
-      `Hi {{first_name}} — totally understand life gets busy. You still have this waiting at *{{brand_name}}*:\n\n{{line_items_list}}\n\n💰 *Your total:* {{cart_total}}\n\nIf anything felt unclear at checkout, just reply *help* and {{bot_name}} will sort it. When you're ready, you can finish securely here:\n🔗 {{checkout_url}}`,
+      `{{first_name}}, *Attention:* your cart at *{{brand_name}}* is still live.\n\n*Interest:* {{line_items_list}}\n\n*Desire:* Total *{{cart_total}}* — inventory moves daily.\n\n*Action (no pressure):* secure checkout in one tap 👇\n{{checkout_url}}\n\nStuck? Reply *help* — {{bot_name}} is here.`,
     cart_recovery_2:
-      `{{first_name}}, quick heads-up from *{{brand_name}}* — popular SKUs move fast, and carts aren't held forever.\n\nYour picks (including *{{first_product_title}}*) are still in demand this week.\n\n💰 {{cart_total}}\n🔗 Secure checkout: {{checkout_url}}\n\n_No pressure — we just don't want you to miss what you already chose._`,
+      `{{first_name}} — *scarcity check* from *{{brand_name}}*: your SKU mix (incl. *{{first_product_title}}*) is selling through faster than average this week.\n\n💰 *{{cart_total}}*\n🔗 {{checkout_url}}\n\nCarts aren’t reserved — if you still want it, this is the nudge.`,
     cart_recovery_3:
-      `Last call from *{{brand_name}}* — your cart is still open ({{cart_total}}).\n\n✨ *Limited-time move:* complete checkout now and we prioritise dispatch on prepaid orders so you get it sooner.\n\n🔗 {{checkout_url}}\n\nTap the link before sizes/configurations sell through. If you need a human, reply *menu*.`,
+      `*Final nudge* — *{{brand_name}}* cart: {{cart_total}}.\n\n*FOMO + speed:* prepaid orders get *priority dispatch*; COD adds verification delays.\n\n👉 {{checkout_url}}\n\nAfter this, we’ll assume you passed — tap *menu* if you want a human.`,
     cod_nudge:
-      `{{first_name}}, your *{{brand_name}}* order {{order_number}} is locked in as *COD*.\n\nCash-on-delivery means extra handling, verification stops, and slower handoff to the courier — *prepaid ships faster* and cuts failed-delivery risk.\n\n💳 *Switch to online pay now* → get *{{currency}}{{discount_amount}}* credited back as a thank-you and *priority packing* on us.\n\nReply *pay* or tap your payment link when ready: {{payment_link}}`,
+      `{{first_name}}, *{{order_number}}* is *COD* today.\n\n*Pain:* slower courier pickup + higher failed-delivery risk.\n\n*Gain:* pay online now → *{{currency}}{{discount_amount}}* cashback-style credit on your next prepaid order + *priority packing* at *{{brand_name}}*.\n\n💳 Pay in seconds: {{payment_link}}`,
     order_confirmed_msg:
-      `🎉 *You're in — thank you, {{first_name}}.*\n\n📦 *Order:* {{order_number}}\n💰 *Total:* {{order_total}}\n💳 *Payment:* {{payment_method}}\n\n📍 *Ship to:*\n{{shipping_address}}\n\n🧾 *Items:*\n{{line_items_list}}\n\nWe're preparing your parcel now — tracking drops the moment it leaves our hub. Questions? Reply here anytime.`,
-    agent_handoff_msg:    `Thanks — I've notified *{{brand_name}}*'s team. Someone will join you shortly. 🎧`,
-    faq_response:         `Here are quick answers from *{{brand_name}}*. Type *menu* anytime to return to the hub.`,
-    ad_welcome:           `Thanks for clicking! 👋 How can I help you explore *{{brand_name}}*?`,
-    ig_welcome:           `Hey from IG! 📸 Let's find what you're looking for.`,
+      `🎉 *{{first_name}}, you’re in.*\n\n📦 *{{order_number}}* · 💰 *{{order_total}}* · 💳 *{{payment_method}}*\n\n📍 *Ship to:*\n{{shipping_address}}\n\n🧾 *Items:*\n{{line_items_list}}\n\n*Anticipation:* tracking pings the second it leaves our hub. Questions? Stay in this chat.`,
+    agent_handoff_msg:    `✅ Noted — *{{brand_name}}* humans have this thread. Average reply during business hours is fast; off-hours we still read everything.`,
+    faq_response:         `Here’s the *{{brand_name}}* FAQ pack. Need something deeper? Tap *menu* → *Talk to Human*.`,
+    ad_welcome:           `You came from an ad — smart move. Tell *{{bot_name}}* what caught your eye at *{{brand_name}}* and I’ll shortlist the best match.`,
+    ig_welcome:           `IG → WhatsApp upgrade 📸 Tell me what you’re hunting at *{{brand_name}}* and I’ll pull stock + pricing.`,
     warranty_welcome:
-      `🛡️ *{{brand_name}}* backs what we sell — your *{{warranty_duration}}* coverage keeps you priority-protected.\n\nRegister once (serial + purchase date) for faster service, or check status anytime.`,
-    warranty_lookup_prompt: `Send your *order ID* or *serial number* (as on the product / invoice) and we'll pull your warranty status instantly.`,
+      `🛡️ *{{brand_name}}* warranty desk — *{{warranty_duration}}* coverage from invoice date on eligible orders.\n\n*Register* (serial + purchase date) for VIP service, or *Check status* with order ID / serial.`,
+    warranty_lookup_prompt: `Paste your *order #* (e.g. #1042) *or* serial from the product/invoice — I’ll cross-check live purchase date vs *{{warranty_duration}}*.`,
     warranty_reg_success:
-      `✅ *You're covered.* Warranty registered for *{{warranty_duration}}* with *{{brand_name}}*.\n\nKeep this chat — if anything ever goes wrong, we'll already have your details on file.`,
+      `✅ *Registered.* *{{brand_name}}* has your serial + purchase date on file for *{{warranty_duration}}*.\n\nKeep this chat — fastest path if you ever need service.`,
     warranty_active_msg:
-      `✅ Good news — this unit shows *active {{warranty_duration}} warranty* with *{{brand_name}}*. Our team can guide the next step (repair / replace / pickup) — reply here or tap *menu* for a human.`,
+      `✅ *Active coverage* — this order sits *inside* the *{{warranty_duration}}* window at *{{brand_name}}*.\n\nNext: reply with the issue (photo/video helps) or tap *menu* → human for RMA.`,
     warranty_expired_msg:
-      `This serial is outside the standard *{{warranty_duration}}* window — that happens with well-loved products.\n\n*{{brand_name}}* can still help with paid repair, trade-up options, or loyalty perks. Tap *menu* to reach the team.`,
+      `⏳ *Coverage window closed* for this purchase under *{{warranty_duration}}*.\n\n*{{brand_name}}* can still help with paid repair, upgrade pricing, or loyalty routes — tap *menu* for a specialist.`,
     warranty_none_msg:
-      `We couldn't match that serial / order to a warranty record yet.\n\nDouble-check the digits, or register your product with *{{brand_name}}* using *Warranty → Register*. Need help? Tap *menu* for human support.`,
+      `🔍 *No match yet.* Double-check the order # / serial, or register via *Warranty → Register*.\n\nIf you paid under a different phone number, tell us the *order #* only — tap *menu* for a human lookup.`,
     support_hours_msg:    `Agents are active *{{open_hours}}*. I'm here 24/7! 📞`,
     return_photo_prompt:  `Please upload a clear photo of the item. 📸`,
     in_transit_error:     `This *{{order_number}}* order from *{{brand_name}}* has already shipped 🚚 — contact returns once it arrives, or tap *menu* for help.`
@@ -447,18 +462,18 @@ function buildEntry(ctx, IDS, content, welcomeTemplate) {
 
   // Main keyword trigger
   nodes.push({
-    id: IDS.trig_main, type: "trigger", position: { x: 0, y: 0 },
+    id: IDS.trig_main, type: "trigger", position: flowPos(0, 5),
     data: { label: "Main Entry Trigger", triggerType: "keyword", matchMode: "contains",
       keywords: ["hi","hello","hey","start","menu","help","bot","hola","namaste","kem cho","shu che","buy","price","order","shop","offer","catalog"], heatmapCount: 0 }
   });
 
   if (F.enableMetaAdsTrigger) {
     nodes.push({
-      id: IDS.trig_ad, type: "trigger", position: { x: 400, y: 0 },
+      id: IDS.trig_ad, type: "trigger", position: flowPos(0, 2),
       data: { label: "Meta Ad Click Trigger", triggerType: "meta_ad", keywords: ["ad_click"], heatmapCount: 0 }
     });
     nodes.push({
-      id: IDS.ad_welcome, type: "message", position: { x: 400, y: 200 },
+      id: IDS.ad_welcome, type: "message", position: flowPos(1, 2),
       data: { label: "Ad Welcome", text: content.ad_welcome, heatmapCount: 0 }
     });
     edges.push(
@@ -468,11 +483,11 @@ function buildEntry(ctx, IDS, content, welcomeTemplate) {
   }
   if (F.enableInstagramTrigger) {
     nodes.push({
-      id: IDS.trig_ig, type: "trigger", position: { x: 800, y: 0 },
+      id: IDS.trig_ig, type: "trigger", position: flowPos(0, 0),
       data: { label: "Instagram Trigger", triggerType: "ig_story_mention", keywords: ["story_mention"], heatmapCount: 0 }
     });
     nodes.push({
-      id: IDS.ig_welcome, type: "message", position: { x: 800, y: 200 },
+      id: IDS.ig_welcome, type: "message", position: flowPos(1, 0),
       data: { label: "Instagram Welcome", text: content.ig_welcome, heatmapCount: 0 }
     });
     edges.push(
@@ -485,7 +500,7 @@ function buildEntry(ctx, IDS, content, welcomeTemplate) {
   const wTpl = welcomeTemplate;
   if (wTpl) {
     nodes.push({
-      id: IDS.welcome, type: "template", position: { x: 1200, y: 0 },
+      id: IDS.welcome, type: "template", position: flowPos(2, 5),
       data: {
         label: "Welcome Template",
         templateName: wTpl.name,
@@ -508,7 +523,7 @@ function buildEntry(ctx, IDS, content, welcomeTemplate) {
       buttonsList = buttonsList.slice(0, 3);
     }
     nodes.push({
-      id: IDS.welcome, type: "interactive", position: { x: 1200, y: 0 },
+      id: IDS.welcome, type: "interactive", position: flowPos(2, 5),
       data: {
         label: "Welcome Message", interactiveType: "button",
         imageUrl: client.brand?.businessLogo || client.brand?.logoUrl || client.businessLogo || "",
@@ -546,7 +561,7 @@ function buildEntry(ctx, IDS, content, welcomeTemplate) {
 function buildMainMenu(ctx, IDS, menuRows) {
   if (!menuRows.length) return { nodes: [], edges: [] };
   const node = {
-    id: IDS.main_menu, type: "interactive", position: { x: 1800, y: 0 },
+    id: IDS.main_menu, type: "interactive", position: flowPos(3, 5),
     data: {
       label: "Main Hub Menu", interactiveType: "list",
       text: "How can {{bot_name}} help you today? Tap an option below 👇",
@@ -563,7 +578,7 @@ function buildCatalogBranch(ctx, IDS) {
   const nodes = [], edges = [];
 
   nodes.push({
-    id: IDS.cat_list, type: "interactive", position: { x: 2400, y: -600 },
+    id: IDS.cat_list, type: "interactive", position: flowPos(5, 1),
     data: {
       label: "Product Catalog", interactiveType: "list",
       text: "Ready to explore {{brand_name}} products? Pick one below 👇",
@@ -590,7 +605,7 @@ function buildCatalogBranch(ctx, IDS) {
       {
         id: IDS.cat_addr_prompt,
         type: "message",
-        position: { x: 3200, y: -900 },
+        position: flowPos(6, 0),
         data: {
           label: "Delivery address",
           text: "📍 Share your *full delivery address* (house, street, city, PIN) so {{brand_name}} can arrange delivery or a callback.",
@@ -600,7 +615,7 @@ function buildCatalogBranch(ctx, IDS) {
       {
         id: IDS.cat_addr_cap,
         type: "capture_input",
-        position: { x: 3600, y: -900 },
+        position: flowPos(7, 0),
         data: {
           label: "Capture address",
           variable: "shipping_address",
@@ -612,7 +627,7 @@ function buildCatalogBranch(ctx, IDS) {
       {
         id: IDS.cat_addr_done,
         type: "message",
-        position: { x: 4000, y: -900 },
+        position: flowPos(8, 0),
         data: {
           label: "Address received",
           text: "✅ Thanks — we saved your address. A teammate may confirm details on WhatsApp shortly.",
@@ -628,7 +643,7 @@ function buildCatalogBranch(ctx, IDS) {
       nodes.push({
         id: IDS.cat_addr_alert,
         type: "admin_alert",
-        position: { x: 4400, y: -900 },
+        position: flowPos(9, 0),
         data: {
           label: "Buy intent alert",
           priority: "medium",
@@ -673,7 +688,7 @@ function buildCatalogBranch(ctx, IDS) {
     nodes.push({
       id: prodId,
       type: hasTemplate ? "template" : "interactive",
-      position: { x: 2900, y: (i * 220) - (products.length * 100) },
+      position: flowPos(6, 2 + i),
       data: hasTemplate ? {
         label: truncate(`Product: ${p.title}`, 30),
         templateName: canonicalTplName,
@@ -734,7 +749,7 @@ function buildOrderBranch(ctx, IDS, content) {
     {
       id: IDS.ord_track,
       type: "shopify_call",
-      position: { x: 2400, y: 200 },
+      position: flowPos(5, 4),
       data: {
         label: "Check Order Status",
         action: "CHECK_ORDER_STATUS",
@@ -745,7 +760,7 @@ function buildOrderBranch(ctx, IDS, content) {
     {
       id: IDS.ord_status_msg,
       type: "message",
-      position: { x: 2750, y: 200 },
+      position: flowPos(6, 4),
       data: {
         label: "Order status (flow)",
         text: content.order_status_msg,
@@ -755,7 +770,7 @@ function buildOrderBranch(ctx, IDS, content) {
     {
       id: IDS.ord_notfound,
       type: "capture_input",
-      position: { x: 2900, y: 100 },
+      position: flowPos(6, 3),
       data: {
         label: "Order ID Request",
         variable: "order_id_manual",
@@ -782,7 +797,7 @@ function buildOrderBranch(ctx, IDS, content) {
       {
         id: IDS.ord_hub,
         type: "interactive",
-        position: { x: 3100, y: 380 },
+        position: flowPos(7, 5),
         data: {
           label: "Order Management",
           interactiveType: "button",
@@ -794,7 +809,7 @@ function buildOrderBranch(ctx, IDS, content) {
       {
         id: IDS.can_confirm,
         type: "interactive",
-        position: { x: 3600, y: 380 },
+        position: flowPos(8, 5),
         data: {
           label: "Confirm Cancellation",
           interactiveType: "button",
@@ -809,7 +824,7 @@ function buildOrderBranch(ctx, IDS, content) {
       {
         id: IDS.can_logic,
         type: "logic",
-        position: { x: 4100, y: 380 },
+        position: flowPos(9, 5),
         data: {
           label: "Shipped? (Shopify)",
           variable: "is_shipped",
@@ -821,13 +836,13 @@ function buildOrderBranch(ctx, IDS, content) {
       {
         id: IDS.can_shipped,
         type: "message",
-        position: { x: 4600, y: 560 },
+        position: flowPos(11, 6),
         data: { label: "Already Shipped Error", text: content.in_transit_error, heatmapCount: 0 }
       },
       {
         id: IDS.can_reason,
         type: "capture_input",
-        position: { x: 4600, y: 280 },
+        position: flowPos(10, 5),
         data: {
           label: "Cancellation Reason",
           variable: "cancel_reason",
@@ -839,19 +854,19 @@ function buildOrderBranch(ctx, IDS, content) {
       {
         id: IDS.can_action,
         type: "shopify_call",
-        position: { x: 5100, y: 280 },
+        position: flowPos(11, 5),
         data: { label: "Process Cancellation", action: "CANCEL_ORDER", heatmapCount: 0 }
       },
       {
         id: IDS.can_succ,
         type: "message",
-        position: { x: 5600, y: 280 },
+        position: flowPos(12, 5),
         data: { label: "Cancel Success", text: content.cancellation_success, heatmapCount: 0 }
       },
       {
         id: IDS.can_fail,
         type: "message",
-        position: { x: 5600, y: 400 },
+        position: flowPos(12, 6),
         data: {
           label: "Cancel Failed",
           text: content.cancel_failed_user,
@@ -901,7 +916,7 @@ function buildReturnsBranch(ctx, IDS, content) {
   const nodes = [], edges = [];
 
   nodes.push(
-    { id: IDS.ret_hub, type: "interactive", position: { x: 2400, y: 700 },
+    { id: IDS.ret_hub, type: "interactive", position: flowPos(5, 8),
       data: { label: "Returns Hub", interactiveType: "button",
         text: "How can {{brand_name}} help with returns or refunds?",
         buttonsList: [
@@ -909,22 +924,22 @@ function buildReturnsBranch(ctx, IDS, content) {
           { id: "refund", title: "💸 Refund Status" },
           { id: "menu",   title: "⬅️ Main Menu" }
         ], heatmapCount: 0 } },
-    { id: IDS.ret_reason, type: "capture_input", position: { x: 2900, y: 650 },
+    { id: IDS.ret_reason, type: "capture_input", position: flowPos(6, 7),
       data: { label: "Return Reason", variable: "return_reason",
         question: "Briefly describe why you want to return this item.",
         text: "Briefly describe why you want to return this item.", heatmapCount: 0 } },
-    { id: IDS.ret_photo, type: "capture_input", position: { x: 3400, y: 650 },
+    { id: IDS.ret_photo, type: "capture_input", position: flowPos(7, 7),
       data: { label: "Return Photo", variable: "return_photo",
         question: content.return_photo_prompt, text: content.return_photo_prompt, heatmapCount: 0 } },
-    { id: IDS.ret_confirm, type: "message", position: { x: 3900, y: 650 },
+    { id: IDS.ret_confirm, type: "message", position: flowPos(8, 7),
       data: { label: "Return Confirmed",
         text: "✅ Return request logged for *{{order_number}}*. Our team will update you within 24–48 hours on WhatsApp.",
         heatmapCount: 0 } },
-    { id: IDS.ret_tag, type: "tag_lead", position: { x: 4300, y: 650 },
+    { id: IDS.ret_tag, type: "tag_lead", position: flowPos(9, 7),
       data: { label: "Tag return", action: "add", tag: "return-open", heatmapCount: 0 } },
-    { id: IDS.ref_check, type: "shopify_call", position: { x: 2900, y: 850 },
+    { id: IDS.ref_check, type: "shopify_call", position: flowPos(6, 9),
       data: { label: "Refund Status", action: "ORDER_REFUND_STATUS", heatmapCount: 0 } },
-    { id: IDS.ref_result, type: "message", position: { x: 3400, y: 850 },
+    { id: IDS.ref_result, type: "message", position: flowPos(7, 9),
       data: { label: "Refund Result", text: "For *{{brand_name}}* orders, refunds usually post within *5–7 business days* depending on your bank.", heatmapCount: 0 } }
   );
   edges.push(
@@ -942,7 +957,7 @@ function buildReturnsBranch(ctx, IDS, content) {
     nodes.push({
       id: IDS.ret_admin,
       type: "admin_alert",
-      position: { x: 4700, y: 650 },
+      position: flowPos(10, 8),
       data: {
         label: "Return admin alert",
         priority: "high",
@@ -956,7 +971,7 @@ function buildReturnsBranch(ctx, IDS, content) {
       nodes.push({
         id: IDS.ret_policy,
         type: "message",
-        position: { x: 5100, y: 650 },
+        position: flowPos(11, 8),
         data: { label: "Return Policy", text: returnsInfo, heatmapCount: 0 }
       });
       edges.push(
@@ -968,7 +983,7 @@ function buildReturnsBranch(ctx, IDS, content) {
     }
   } else if (returnsInfo) {
     nodes.push({
-      id: IDS.ret_policy, type: "message", position: { x: 4700, y: 650 },
+      id: IDS.ret_policy, type: "message", position: flowPos(11, 8),
       data: { label: "Return Policy", text: returnsInfo, heatmapCount: 0 }
     });
     edges.push(
@@ -990,7 +1005,7 @@ function buildReturnsBranch(ctx, IDS, content) {
 function buildWarrantyBranch(ctx, IDS, content) {
   const nodes = [], edges = [];
   nodes.push(
-    { id: IDS.war_hub, type: "interactive", position: { x: 2400, y: 1200 },
+    { id: IDS.war_hub, type: "interactive", position: flowPos(5, 11),
       data: { label: "Warranty Hub", interactiveType: "button",
         text: content.warranty_welcome,
         buttonsList: [
@@ -998,28 +1013,28 @@ function buildWarrantyBranch(ctx, IDS, content) {
           { id: "check", title: "🔍 Check Status" },
           { id: "menu",  title: "⬅️ Main Menu" }
         ], heatmapCount: 0 } },
-    { id: IDS.war_serial,  type: "capture_input", position: { x: 2900, y: 1100 },
+    { id: IDS.war_serial,  type: "capture_input", position: flowPos(6, 10),
       data: { label: "Warranty Serial", variable: "warranty_serial",
         question: "Enter serial number or order id.", text: "Enter serial number or order id.", heatmapCount: 0 } },
-    { id: IDS.war_date,    type: "capture_input", position: { x: 3400, y: 1100 },
+    { id: IDS.war_date,    type: "capture_input", position: flowPos(7, 10),
       data: { label: "Purchase Date", variable: "purchase_date",
         question: "Enter purchase date (DD/MM/YYYY).", text: "Enter purchase date (DD/MM/YYYY).", heatmapCount: 0 } },
-    { id: IDS.war_tag,     type: "tag_lead", position: { x: 3900, y: 1100 },
+    { id: IDS.war_tag,     type: "tag_lead", position: flowPos(8, 10),
       data: { label: "Warranty Tag", action: "add", tag: "warranty-enrolled", heatmapCount: 0 } },
-    { id: IDS.war_success, type: "message", position: { x: 4400, y: 1100 },
+    { id: IDS.war_success, type: "message", position: flowPos(9, 10),
       data: { label: "Warranty Success", text: content.warranty_reg_success, heatmapCount: 0 } },
-    { id: IDS.war_lookup,  type: "capture_input", position: { x: 2900, y: 1300 },
+    { id: IDS.war_lookup,  type: "capture_input", position: flowPos(6, 12),
       data: { label: "Lookup Serial", variable: "lookup_serial",
         question: content.warranty_lookup_prompt, text: content.warranty_lookup_prompt, heatmapCount: 0 } },
-    { id: IDS.war_engine,  type: "warranty_check", position: { x: 3400, y: 1300 },
+    { id: IDS.war_engine,  type: "warranty_check", position: flowPos(7, 12),
       data: { label: "Warranty Check", action: "WARRANTY_CHECK", heatmapCount: 0 } },
-    { id: IDS.war_active,  type: "message", position: { x: 3900, y: 1200 },
+    { id: IDS.war_active,  type: "message", position: flowPos(8, 11),
       data: { label: "Warranty Active",
         text: content.warranty_active_msg, heatmapCount: 0 } },
-    { id: IDS.war_expired, type: "message", position: { x: 3900, y: 1300 },
+    { id: IDS.war_expired, type: "message", position: flowPos(8, 12),
       data: { label: "Warranty Expired",
         text: content.warranty_expired_msg, heatmapCount: 0 } },
-    { id: IDS.war_none,    type: "message", position: { x: 3900, y: 1400 },
+    { id: IDS.war_none,    type: "message", position: flowPos(8, 13),
       data: { label: "No Warranty",
         text: content.warranty_none_msg, heatmapCount: 0 } }
   );
@@ -1061,18 +1076,18 @@ function buildLoyaltyBranch(ctx, IDS, content) {
   loyRows.push({ id: "menu", title: "⬅️ Main Menu" });
 
   nodes.push(
-    { id: IDS.loy_menu, type: "interactive", position: { x: 2400, y: 1600 },
+    { id: IDS.loy_menu, type: "interactive", position: flowPos(5, 14),
       data: { label: "Rewards Hub", interactiveType: "list",
         text: content.loyalty_welcome, buttonText: "My Rewards",
         sections: [{ title: "{{brand_name}} — Rewards", rows: loyRows }], heatmapCount: 0 } },
-    { id: IDS.loy_balance, type: "message", position: { x: 2900, y: 1500 },
+    { id: IDS.loy_balance, type: "message", position: flowPos(6, 13),
       data: { label: "Points Balance", text: content.loyalty_points_msg, heatmapCount: 0 } },
-    { id: IDS.loy_redeem, type: "loyalty_action", position: { x: 2900, y: 1650 },
+    { id: IDS.loy_redeem, type: "loyalty_action", position: flowPos(6, 14),
       data: { label: "Redeem Loyalty", actionType: "REDEEM_POINTS", pointsRequired: 100, heatmapCount: 0 } },
-    { id: IDS.loy_redeem_ok, type: "message", position: { x: 3400, y: 1600 },
-      data: { label: "Redeem Success", text: "🎁 Redeemed at *{{brand_name}}*! Your discount has been applied at checkout.", heatmapCount: 0 } },
-    { id: IDS.loy_redeem_fail, type: "message", position: { x: 3400, y: 1750 },
-      data: { label: "Insufficient Points", text: "😔 You need more points to redeem at *{{brand_name}}*. Keep shopping to earn! 💎", heatmapCount: 0 } }
+    { id: IDS.loy_redeem_ok, type: "message", position: flowPos(7, 13),
+      data: { label: "Redeem Success", text: "🎁 *{{brand_name}}* — redemption locked in. Your checkout discount is live on the next cart we see from this number.", heatmapCount: 0 } },
+    { id: IDS.loy_redeem_fail, type: "message", position: flowPos(7, 15),
+      data: { label: "Insufficient Points", text: "You’re close 💎 You have *{{loyalty_points}} pts* — keep shopping *{{brand_name}}* and this reward unlocks automatically.", heatmapCount: 0 } }
   );
   edges.push(
     { id: `e_${IDS.loy_menu}_pts`, source: IDS.loy_menu, target: IDS.loy_balance, sourceHandle: "pts" },
@@ -1087,7 +1102,7 @@ function buildLoyaltyBranch(ctx, IDS, content) {
 
   if (F.enableReferral) {
     nodes.push({
-      id: IDS.loy_refer, type: "message", position: { x: 2900, y: 1800 },
+      id: IDS.loy_refer, type: "message", position: flowPos(6, 16),
       data: { label: "Refer", text: content.referral_msg, heatmapCount: 0 }
     });
     edges.push(
@@ -1111,10 +1126,10 @@ function buildSupportBranch(ctx, IDS, content) {
   // Optional business-hours gate
   if (F.enableBusinessHoursGate && !F.enable247) {
     nodes.push(
-      { id: IDS.sup_sch, type: "schedule", position: { x: 2400, y: 2050 },
+      { id: IDS.sup_sch, type: "schedule", position: flowPos(5, 17),
         data: { label: "Business Hours Gate", openTime, closeTime, days: workingDays,
           closedMessage: content.support_schedule_closed_nudge, heatmapCount: 0 } },
-      { id: IDS.sup_closed, type: "message", position: { x: 2900, y: 2150 },
+      { id: IDS.sup_closed, type: "message", position: flowPos(6, 18),
         data: { label: "After Hours", text: content.support_hours_msg, heatmapCount: 0 } }
     );
     edges.push(
@@ -1124,16 +1139,16 @@ function buildSupportBranch(ctx, IDS, content) {
   }
 
   nodes.push(
-    { id: IDS.sup_capture, type: "capture_input", position: { x: 2900, y: 1950 },
+    { id: IDS.sup_capture, type: "capture_input", position: flowPos(6, 17),
       data: { label: "Support Query", variable: "support_query",
         question: content.support_capture_prompt,
         text: content.support_capture_prompt, heatmapCount: 0 } },
-    { id: IDS.sup_tag, type: "tag_lead", position: { x: 3400, y: 1950 },
+    { id: IDS.sup_tag, type: "tag_lead", position: flowPos(7, 17),
       data: { label: "Tag Pending Human", action: "add", tag: "pending-human", heatmapCount: 0 } },
-    { id: IDS.sup_confirm, type: "message", position: { x: 4400, y: 1950 },
+    { id: IDS.sup_confirm, type: "message", position: flowPos(9, 17),
       data: { label: "Handoff Confirmed", text: content.agent_handoff_msg,
         humanEscalationTimeoutMin: F.humanEscalationTimeoutMin, heatmapCount: 0 } },
-    { id: IDS.sup_livechat, type: "livechat", position: { x: 4900, y: 1950 },
+    { id: IDS.sup_livechat, type: "livechat", position: flowPos(10, 17),
       data: {
         label: "Live chat handoff",
         topic: "Customer requested human support — {{brand_name}}",
@@ -1145,7 +1160,7 @@ function buildSupportBranch(ctx, IDS, content) {
 
   if (F.enableAdminAlerts) {
     nodes.push({
-      id: IDS.sup_alert, type: "admin_alert", position: { x: 3900, y: 1950 },
+      id: IDS.sup_alert, type: "admin_alert", position: flowPos(8, 17),
       data: { label: "Admin Alert", priority: "high",
         topic: "Human request — {{brand_name}}",
         phone: adminPhone || client.adminPhone || "", heatmapCount: 0 }
@@ -1182,7 +1197,7 @@ function buildFAQBranch(ctx, IDS, content) {
     ? faqText.trim()
     : (content.faq_response || 'Here are quick answers — type *menu* anytime to go back.');
   const nodes = [{
-    id: IDS.faq_msg, type: "message", position: { x: 2400, y: 2450 },
+    id: IDS.faq_msg, type: "message", position: flowPos(5, 19),
     data: { label: "General FAQ", text: faqBody, heatmapCount: 0 }
   }];
   const edges = [{ id: `e_${IDS.faq_msg}_mm`, source: IDS.faq_msg, target: IDS.main_menu }];
@@ -1197,7 +1212,7 @@ function buildFAQBranch(ctx, IDS, content) {
 function buildAbandonedCart(ctx, IDS, content) {
   const { cartTiming } = ctx;
   const nodes = [{
-    id: IDS.trig_cart, type: "trigger", position: { x: -800, y: 400 },
+    id: IDS.trig_cart, type: "trigger", position: autoPos(0, 2),
     data: { label: "Abandoned Cart Trigger", triggerType: "abandoned_cart", heatmapCount: 0 }
   }];
   const edges = [];
@@ -1220,9 +1235,9 @@ function buildAbandonedCart(ctx, IDS, content) {
       msgData.imageUrl = '{{first_product_image}}';
     }
     nodes.push(
-      { id: dId, type: "delay", position: { x: -800 + (i * 800), y: 600 },
+      { id: dId, type: "delay", position: autoPos(i * 2, 4),
         data: { label: `Wait ${step.delay} ${step.unit}`, duration: step.delay, unit: step.unit, waitValue: step.delay, waitUnit: step.unit, heatmapCount: 0 } },
-      { id: mId, type: "message", position: { x: -400 + (i * 800), y: 600 },
+      { id: mId, type: "message", position: autoPos(i * 2 + 1, 4),
         data: msgData }
     );
     edges.push({ id: `e_${prev}_d${i}`, source: prev, target: dId });
@@ -1237,9 +1252,9 @@ function buildAbandonedCart(ctx, IDS, content) {
 function buildOrderConfirmAndCod(ctx, IDS, content) {
   const { F } = ctx;
   const nodes = [
-    { id: IDS.trig_order, type: "trigger", position: { x: -800, y: 0 },
+    { id: IDS.trig_order, type: "trigger", position: autoPos(0, 0),
       data: { label: "Order Placed Trigger", triggerType: "order_placed", heatmapCount: 0 } },
-    { id: IDS.conf_msg, type: "message", position: { x: -400, y: 0 },
+    { id: IDS.conf_msg, type: "message", position: autoPos(1, 0),
       data: {
         label: "Order Confirmed",
         text: content.order_confirmed_msg,
@@ -1255,12 +1270,12 @@ function buildOrderConfirmAndCod(ctx, IDS, content) {
 
   if (F.enableCodToPrepaid) {
     nodes.push(
-      { id: IDS.cod_check, type: "logic", position: { x: 0, y: -200 },
+      { id: IDS.cod_check, type: "logic", position: autoPos(2, 0),
         data: { label: "Is COD?", variable: "payment_method", operator: "contains", value: "cod", heatmapCount: 0 } },
-      { id: IDS.cod_node, type: "cod_prepaid", position: { x: 400, y: -300 },
+      { id: IDS.cod_node, type: "cod_prepaid", position: autoPos(3, 0),
         data: { label: "COD Nudge", action: "CONVERT_COD_TO_PREPAID",
           discountAmount: F.codDiscountAmount, text: content.cod_nudge, heatmapCount: 0 } },
-      { id: IDS.cod_paid_msg, type: "message", position: { x: 900, y: -400 },
+      { id: IDS.cod_paid_msg, type: "message", position: autoPos(4, 0),
         data: {
           label: "Paid Online Confirmed",
           text: "🎉 Amazing! Payment confirmed for {{order_number}}! Your order gets priority shipping. Thank you!",
@@ -1288,12 +1303,12 @@ function buildOrderConfirmAndCod(ctx, IDS, content) {
 function buildReviewAutomation(ctx, IDS, content) {
   const { googleReviewUrl } = ctx;
   const nodes = [
-    { id: IDS.trig_fulfill, type: "trigger", position: { x: -800, y: 1000 },
+    { id: IDS.trig_fulfill, type: "trigger", position: autoPos(0, 6),
       data: { label: "Order Fulfilled Trigger", triggerType: "order_fulfilled", heatmapCount: 0 } },
-    { id: IDS.rev_request, type: "review", position: { x: -400, y: 1000 },
+    { id: IDS.rev_request, type: "review", position: autoPos(1, 6),
       data: { label: "Review Request", action: "SEND_REVIEW_REQUEST",
         text: content.sentiment_ask, googleReviewUrl, heatmapCount: 0 } },
-    { id: IDS.rev_positive, type: "message", position: { x: 100, y: 900 },
+    { id: IDS.rev_positive, type: "message", position: autoPos(2, 5),
       data: {
         label: "Positive",
         text: content.review_positive + (googleReviewUrl ? `\n${googleReviewUrl}` : ""),
@@ -1301,7 +1316,7 @@ function buildReviewAutomation(ctx, IDS, content) {
         heatmapCount: 0,
         suppressAIFallbackLink: true,
       } },
-    { id: IDS.rev_negative, type: "message", position: { x: 100, y: 1100 },
+    { id: IDS.rev_negative, type: "message", position: autoPos(2, 7),
       data: {
         label: "Negative",
         text: content.review_negative,
@@ -1323,20 +1338,20 @@ function buildReviewAutomation(ctx, IDS, content) {
 function buildB2BBranch(ctx, IDS) {
   const { adminPhone, client } = ctx;
   const nodes = [
-    { id: IDS.b2b_trigger, type: "trigger", position: { x: -600, y: 1500 },
+    { id: IDS.b2b_trigger, type: "trigger", position: autoPos(0, 9),
       data: { label: "B2B Trigger", triggerType: "keyword",
         keywords: ["wholesale", "bulk", "b2b", "dealer", "distributor"], matchMode: "contains", heatmapCount: 0 } },
-    { id: IDS.b2b_capture, type: "capture_input", position: { x: -200, y: 1500 },
+    { id: IDS.b2b_capture, type: "capture_input", position: autoPos(1, 9),
       data: { label: "B2B Requirement", variable: "b2b_requirement",
         question: "Please share company name and monthly requirement.",
         text: "Please share company name and monthly requirement.", heatmapCount: 0 } },
-    { id: IDS.b2b_tag, type: "tag_lead", position: { x: 200, y: 1500 },
+    { id: IDS.b2b_tag, type: "tag_lead", position: autoPos(2, 9),
       data: { label: "Tag B2B", action: "add", tag: "b2b-prospect", heatmapCount: 0 } },
-    { id: IDS.b2b_alert, type: "admin_alert", position: { x: 600, y: 1500 },
+    { id: IDS.b2b_alert, type: "admin_alert", position: autoPos(3, 9),
       data: { label: "B2B Alert", priority: "high",
         topic: "B2B Lead — {{brand_name}}",
         phone: adminPhone || client.adminPhone || "", heatmapCount: 0 } },
-    { id: IDS.b2b_confirm, type: "message", position: { x: 1000, y: 1500 },
+    { id: IDS.b2b_confirm, type: "message", position: autoPos(4, 9),
       data: { label: "B2B Confirm",
         text: "Thanks — *{{brand_name}}* wholesale will reach out on WhatsApp with pricing and MOQs.", heatmapCount: 0 } }
   ];
@@ -1356,7 +1371,7 @@ function buildAIFallback(ctx, IDS) {
     "Thanks for your message — *{{bot_name}}* at *{{brand_name}}* is here to help. Tap *menu* to see options.";
   return {
     nodes: [{
-      id: IDS.ai_fallback, type: "message", position: { x: 0, y: -600 },
+      id: IDS.ai_fallback, type: "message", position: flowPos(1, -1),
       data: { label: "🤖 AI Smart Reply", action: "AI_FALLBACK",
         text: fb, heatmapCount: 0 }
     }],

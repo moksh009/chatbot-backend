@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "flow-regression": "node scripts/flowRegressionSmoke.js"
+    "flow-regression": "node scripts/flowRegressionSmoke.js",
+    "integration-probe": "node scripts/probeBackendModules.js"
   },
   "dependencies": {
     "@google-cloud/text-to-speech": "^6.4.0",

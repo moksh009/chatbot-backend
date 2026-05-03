@@ -737,6 +737,25 @@ connectDB()
 
     server.listen(PORT, () => {
       log.success(`Server is running on port ${PORT}`);
+      // #region agent log
+      try {
+        const { agentDebug } = require('./utils/agentDebugLog');
+        agentDebug({
+          hypothesisId: 'H2',
+          runId: 'boot',
+          location: 'index.js:server.listen',
+          message: 'server_listening',
+          data: {
+            node: process.version,
+            port: PORT,
+            hasMongoUri: !!process.env.MONGODB_URI,
+            hasSystemMailCreds: !!(process.env.SYSTEM_EMAIL_USER && process.env.SYSTEM_EMAIL_PASS),
+            hasWaDefaultToken: !!(process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_ACCESS_TOKEN),
+            hasGeminiKey: !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY)
+          }
+        });
+      } catch (_) { /* non-fatal */ }
+      // #endregion
     });
   })
   .catch((err) => {

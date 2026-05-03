@@ -9,6 +9,23 @@ const { createPaymentLink } = require("./paymentService");
 const walletService = require("./walletService");
 const { injectVariablesLegacy: replaceVariables } = require("./variableInjector");
 
+function parseWarrantyMonthsLabel(label) {
+  const s = String(label || "").toLowerCase();
+  let m = s.match(/(\d+)\s*(year|yr|yrs|years)/);
+  if (m) return Math.min(120, Math.max(1, parseInt(m[1], 10) * 12));
+  m = s.match(/(\d+)\s*(month|months|mos|mo\b)/);
+  if (m) return Math.min(120, Math.max(1, parseInt(m[1], 10)));
+  m = s.match(/(\d+)\s*(day|days)/);
+  if (m) return Math.min(120, Math.max(1, Math.ceil(parseInt(m[1], 10) / 30)));
+  return 12;
+}
+
+function addCalendarMonths(d, months) {
+  const x = new Date(d);
+  x.setMonth(x.getMonth() + months);
+  return x;
+}
+
 /**
  * Handle special side-effects for nodes that have an "action" field.
  */
@@ -80,19 +97,12 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
       try {
         const points = node.data?.pointsRequired || 100;
         const balance = await walletService.getBalance(client.clientId, phone);
-        
+
         if (balance < points) {
-          await WhatsApp.sendText(client, phone, `Sorry, you need at least ${points} points to redeem this offer. Your current balance is ${balance} points.`);
           break;
         }
 
         await walletService.deductPoints(client.clientId, phone, points, "Redeemed via Flow");
-        
-        const successMsg = node.data?.body 
-          ? replaceVariables(node.data.body, client, lead, convo)
-          : `✅ *Redeemed!* ${points} points have been deducted. Enjoy your reward!`;
-        
-        await WhatsApp.sendText(client, phone, successMsg);
       } catch (err) {
         console.error("[NodeActions] REDEEM_POINTS error:", err.message);
       }
@@ -101,23 +111,104 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
 
     case "WARRANTY_CHECK": {
       try {
+        const { normalizePhone } = require("../helpers");
         const WarrantyRecord = require("../models/WarrantyRecord");
-        const record = await WarrantyRecord.findOne({ customerPhone: phone, clientId: client.clientId }).sort({ createdAt: -1 });
+        const cleanPhone = normalizePhone(phone);
+        const meta = convo?.metadata || {};
+        const rawQuery = String(meta.lookup_serial || meta.order_id_manual || "").trim();
+        const normQuery = rawQuery.replace(/^#/i, "").replace(/\s+/g, "").toLowerCase();
 
-        let statusMsg = "";
-        if (!record) {
-          statusMsg = "I couldn't find any active warranty records for your number. 🏷️";
+        const wf =
+          client.wizardFeatures?.toObject
+            ? client.wizardFeatures.toObject()
+            : client.wizardFeatures || {};
+        const warrantyLabel =
+          wf.warrantyDuration ||
+          client.platformVars?.warrantyDuration ||
+          client.brand?.warrantyDefaultDuration ||
+          "1 Year";
+        const months = parseWarrantyMonthsLabel(warrantyLabel);
+
+        const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const phoneOr = {
+          $or: [{ customerPhone: cleanPhone }, { phone: cleanPhone }],
+        };
+
+        let branch = "none";
+        let order = null;
+
+        const orderIdMatch = normQuery
+          ? {
+              $or: [
+                { orderNumber: new RegExp(`^${escapeRegex(normQuery)}$`, "i") },
+                { orderId: new RegExp(`^${escapeRegex(normQuery)}$`, "i") },
+              ],
+            }
+          : null;
+
+        if (normQuery) {
+          order = await Order.findOne({
+            clientId: client.clientId,
+            $and: [phoneOr, orderIdMatch],
+          })
+            .sort({ createdAt: -1 })
+            .lean();
+          if (!order) {
+            order = await Order.findOne({
+              clientId: client.clientId,
+              ...orderIdMatch,
+            })
+              .sort({ createdAt: -1 })
+              .lean();
+          }
         } else {
-          const isExpired = new Date(record.expiresAt) < new Date();
-          statusMsg = `📜 *Warranty Status: ${record.productName}*\n` +
-                      `Record ID: *${record.recordId}*\n` +
-                      `Status: *${isExpired ? 'EXPIRED' : 'ACTIVE'}*\n` +
-                      `Expires: ${new Date(record.expiresAt).toLocaleDateString()}`;
+          order = await Order.findOne({
+            clientId: client.clientId,
+            ...phoneOr,
+          })
+            .sort({ createdAt: -1 })
+            .lean();
         }
 
-        await WhatsApp.sendText(client, phone, statusMsg);
+        if (order?.createdAt) {
+          const purchase = new Date(order.createdAt);
+          const warrantyEnd = addCalendarMonths(purchase, months);
+          branch = new Date() <= warrantyEnd ? "active" : "expired";
+        } else if (!order) {
+          const record = await WarrantyRecord.findOne({
+            customerPhone: cleanPhone,
+            clientId: client.clientId,
+          })
+            .sort({ createdAt: -1 })
+            .lean();
+          if (record?.expiresAt) {
+            const expired = new Date(record.expiresAt) < new Date();
+            branch = expired ? "expired" : "active";
+          } else {
+            branch = "none";
+          }
+        } else {
+          branch = "none";
+        }
+
+        await Conversation.findByIdAndUpdate(convo._id, {
+          $set: {
+            "metadata._warranty_branch": branch,
+            "metadata._warranty_checked_at": new Date(),
+            "metadata._warranty_error": false,
+          },
+        });
       } catch (err) {
         console.error("[NodeActions] WARRANTY_CHECK error:", err.message);
+        try {
+          await Conversation.findByIdAndUpdate(convo._id, {
+            $set: {
+              "metadata._warranty_branch": "none",
+              "metadata._warranty_checked_at": new Date(),
+              "metadata._warranty_error": true,
+            },
+          });
+        } catch (_) {}
       }
       break;
     }

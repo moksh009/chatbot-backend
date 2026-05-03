@@ -2085,18 +2085,38 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   if (node.type === 'loyalty_action' || node.type === 'loyalty') {
     const { handleNodeAction } = require('./nodeActions');
     const action = node.data?.actionType || 'GIVE_LOYALTY';
-    await handleNodeAction(action, node, client, phone, convo, lead);
-    
-    // Automatic branching for redemptions
+
     if (action === 'REDEEM_POINTS') {
-        const walletService = require('./walletService');
-        const balance = await walletService.getBalance(client.clientId, phone);
-        const required = node.data?.pointsRequired || 100;
-        const targetHandle = balance >= required ? 'success' : 'fail';
-        const nextEdge = flowEdges.find(e => e.source === nodeId && normalizeHandleId(e.sourceHandle) === targetHandle);
-        if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
-        return true;
+      const walletService = require('./walletService');
+      const { normalizePhone } = require('./helpers');
+      const cleanPhone = normalizePhone(phone);
+      const balance = await walletService.getBalance(client.clientId, cleanPhone);
+      const required = node.data?.pointsRequired || 100;
+      const targetHandle = balance >= required ? 'success' : 'fail';
+      if (balance >= required) {
+        await handleNodeAction(action, node, client, phone, convo, lead);
+      }
+      const nextEdge = flowEdges.find(
+        (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === targetHandle
+      );
+      if (nextEdge) {
+        return await executeNode(
+          nextEdge.target,
+          flowNodes,
+          flowEdges,
+          client,
+          convo,
+          lead,
+          phone,
+          io,
+          channel,
+          parsedMessage
+        );
+      }
+      return true;
     }
+
+    await handleNodeAction(action, node, client, phone, convo, lead);
   }
 
   // 8. Order Action Node — with context validation for returns
@@ -2118,33 +2138,54 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     await handleNodeAction(action, node, client, phone, convo, lead);
   }
 
-  // 9. Warranty Check Node
+  // 9. Warranty Check Node — branching driven by Order + warranty window (see nodeActions WARRANTY_CHECK)
   if (node.type === 'warranty_check' || node.type === 'warranty_lookup') {
     const { handleNodeAction } = require('./nodeActions');
+    const Conversation = require('../models/Conversation');
     await handleNodeAction('WARRANTY_CHECK', node, client, phone, convo, lead);
-    
-    // Automatic branching based on record state
-    const cleanPhone = require('./helpers').normalizePhone(phone);
-    const leadRecord = await AdLead.findOne({ phoneNumber: cleanPhone, clientId: client.clientId }).lean();
-    const records = leadRecord?.warrantyRecords || [];
-    const serialQuery = (convo?.metadata?.lookup_serial || '').trim().toLowerCase();
-    
+
+    const fresh = await Conversation.findById(convo._id).select('metadata').lean();
+    const meta = fresh?.metadata || convo.metadata || {};
     let targetHandle = 'none';
-    if (records.length > 0) {
+    if (meta._warranty_branch === 'active') targetHandle = 'active';
+    else if (meta._warranty_branch === 'expired') targetHandle = 'expired';
+
+    if (!meta._warranty_branch) {
+      const cleanPhone = require('./helpers').normalizePhone(phone);
+      const leadRecord = await AdLead.findOne({ phoneNumber: cleanPhone, clientId: client.clientId }).lean();
+      const records = leadRecord?.warrantyRecords || [];
+      const serialQuery = (convo?.metadata?.lookup_serial || '').trim().toLowerCase();
+      if (records.length > 0) {
         if (serialQuery) {
-            const matches = records.filter(r => (r.serialNumber || "").toLowerCase() === serialQuery);
-            if (matches.length > 0) {
-                const isExpired = new Date(matches[0].expiryDate) < new Date();
-                targetHandle = isExpired ? 'expired' : 'active';
-            }
+          const matches = records.filter((r) => (r.serialNumber || '').toLowerCase() === serialQuery);
+          if (matches.length > 0) {
+            const isExpired = new Date(matches[0].expiryDate) < new Date();
+            targetHandle = isExpired ? 'expired' : 'active';
+          }
         } else {
-            const activeOnes = records.filter(r => new Date(r.expiryDate) > new Date());
-            targetHandle = activeOnes.length > 0 ? 'active' : 'expired';
+          const activeOnes = records.filter((r) => new Date(r.expiryDate) > new Date());
+          targetHandle = activeOnes.length > 0 ? 'active' : 'expired';
         }
+      }
     }
 
-    const nextEdge = flowEdges.find(e => e.source === nodeId && normalizeHandleId(e.sourceHandle) === targetHandle);
-    if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+    const nextEdge = flowEdges.find(
+      (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === targetHandle
+    );
+    if (nextEdge) {
+      return await executeNode(
+        nextEdge.target,
+        flowNodes,
+        flowEdges,
+        client,
+        convo,
+        lead,
+        phone,
+        io,
+        channel,
+        parsedMessage
+      );
+    }
   }
 
   // 10. Intent Trigger Node (Execution part)

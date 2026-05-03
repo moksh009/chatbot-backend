@@ -1,6 +1,7 @@
 const CustomerWallet = require('../models/CustomerWallet');
 const Client = require('../models/Client');
 const AdLead = require('../models/AdLead');
+const { normalizePhone } = require('./helpers');
 const log = require('./logger')('WalletService');
 
 /**
@@ -91,14 +92,16 @@ async function processOrderForLoyalty(clientId, phone, orderAmount, orderId) {
  * Retrieves customer wallet balance and tier.
  */
 async function getWallet(clientId, phone) {
-    return await CustomerWallet.findOne({ clientId, phone }).lean();
+    const clean = normalizePhone(phone);
+    return await CustomerWallet.findOne({ clientId, phone: clean }).lean();
 }
 
 /**
  * Redeems points for a discount/reward.
  */
 async function redeemPoints(clientId, phone, pointsToRedeem, metadata = 'Redemption') {
-    const wallet = await CustomerWallet.findOne({ clientId, phone });
+    const clean = normalizePhone(phone);
+    const wallet = await CustomerWallet.findOne({ clientId, phone: clean });
     if (!wallet || wallet.balance < pointsToRedeem) {
         throw new Error('Insufficient points balance');
     }
@@ -119,7 +122,7 @@ async function redeemPoints(clientId, phone, pointsToRedeem, metadata = 'Redempt
     
     // Layer 2: Sync to AdLead for O(1) leaderboard querying
     await AdLead.findOneAndUpdate(
-        { phoneNumber: phone, clientId },
+        { phoneNumber: clean, clientId },
         { $set: { loyaltyPoints: wallet.balance, loyaltyTier: wallet.tier } },
         { upsert: false } // Only update if lead exists
     );
@@ -188,9 +191,65 @@ async function reverseOrderPoints(clientId, orderId) {
     }
 }
 
+/**
+ * Current points balance for a phone (normalized). Used by flows + dualBrainEngine branching.
+ */
+async function getBalance(clientId, phone) {
+    const clean = normalizePhone(phone);
+    const w = await CustomerWallet.findOne({ clientId, phone: clean }).lean();
+    return w?.balance ?? 0;
+}
+
+/**
+ * Manual / flow reward — adds points and syncs AdLead when present.
+ */
+async function addPoints(clientId, phone, points, reason = 'Flow reward') {
+    const clean = normalizePhone(phone);
+    const n = Math.max(0, Math.floor(Number(points) || 0));
+    if (n <= 0) return 0;
+
+    const wallet = await CustomerWallet.findOneAndUpdate(
+        { phone: clean, clientId },
+        { $inc: { balance: n, lifetimePoints: n }, $setOnInsert: { phone: clean, clientId } },
+        { upsert: true, new: true }
+    );
+
+    wallet.transactions.push({
+        type: 'earn',
+        amount: n,
+        reason: String(reason).slice(0, 200),
+        timestamp: new Date()
+    });
+
+    if (wallet.lifetimePoints > 5000) wallet.tier = 'Platinum';
+    else if (wallet.lifetimePoints > 2000) wallet.tier = 'Gold';
+    else if (wallet.lifetimePoints > 500) wallet.tier = 'Silver';
+    else wallet.tier = 'Bronze';
+
+    await wallet.save();
+
+    await AdLead.findOneAndUpdate(
+        { phoneNumber: clean, clientId },
+        { $set: { loyaltyPoints: wallet.balance, loyaltyTier: wallet.tier } },
+        { upsert: false }
+    ).catch(() => {});
+
+    return wallet.balance;
+}
+
+/**
+ * Deduct points (alias for redeemPoints — used by nodeActions REDEEM path).
+ */
+async function deductPoints(clientId, phone, points, reason = 'Redemption') {
+    return redeemPoints(clientId, normalizePhone(phone), points, reason);
+}
+
 module.exports = {
     processOrderForLoyalty,
     getWallet,
+    getBalance,
+    addPoints,
+    deductPoints,
     redeemPoints,
     reverseOrderPoints
 };

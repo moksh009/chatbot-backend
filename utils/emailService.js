@@ -122,13 +122,38 @@ async function sendViaSystemSmtpWithFallback(mailOptions) {
 
 async function deliverSystemEmail(mailOptions) {
     const { user, pass } = getSystemEmailCredentials();
-    if (!user || !pass) return false;
+    if (!user || !pass) {
+        // #region agent log
+        try {
+            const { agentDebug } = require('./agentDebugLog');
+            agentDebug({
+                hypothesisId: 'H6',
+                location: 'emailService.js:deliverSystemEmail',
+                message: 'missing_system_smtp_creds',
+                data: { hasUser: !!user, hasPass: !!pass }
+            });
+        } catch (_) { /* noop */ }
+        // #endregion
+        return false;
+    }
     // From must match authenticated SMTP user for Gmail and most providers.
     const safeFrom =
         mailOptions.from && String(mailOptions.from).includes(user)
             ? mailOptions.from
             : `"TopEdge AI" <${user}>`;
-    return sendViaSystemSmtpWithFallback({ ...mailOptions, from: safeFrom });
+    const ok = await sendViaSystemSmtpWithFallback({ ...mailOptions, from: safeFrom });
+    // #region agent log
+    try {
+        const { agentDebug } = require('./agentDebugLog');
+        agentDebug({
+            hypothesisId: 'H6',
+            location: 'emailService.js:deliverSystemEmail',
+            message: 'smtp_deliver_finished',
+            data: { ok: !!ok, toDomain: String(mailOptions.to || '').split('@')[1] || null }
+        });
+    } catch (_) { /* noop */ }
+    // #endregion
+    return ok;
 }
 
 /**

@@ -1,6 +1,7 @@
 "use strict";
 
 const Order = require("../models/Order");
+const { normalizePhone } = require("./helpers");
 const { VARIABLE_REGISTRY, resolveSourcePath } = require("./variableRegistry");
 
 /**
@@ -23,15 +24,20 @@ async function buildVariableContext(client, phone, convo, lead) {
   const clientLean = client?.toObject ? client.toObject() : client || {};
   const convoLean = convo?.toObject ? convo.toObject() : convo || {};
   const leadLean = lead?.toObject ? lead.toObject() : lead || {};
+  const normPhone = normalizePhone(phone);
 
   let latest = null;
   try {
     latest = await Order.findOne({
       $or: [
+        { phone: normPhone, clientId: clientLean.clientId },
+        { clientId: clientLean.clientId, customerPhone: normPhone },
         { phone, clientId: clientLean.clientId },
-        { clientId: clientLean.clientId, customerPhone: phone }
-      ]
-    }).sort({ createdAt: -1 }).lean();
+        { clientId: clientLean.clientId, customerPhone: phone },
+      ],
+    })
+      .sort({ createdAt: -1 })
+      .lean();
   } catch (_) {}
 
   let dna = null;
@@ -43,7 +49,13 @@ async function buildVariableContext(client, phone, convo, lead) {
   let wallet = null;
   try {
     const CustomerWallet = require("../models/CustomerWallet");
-    wallet = await CustomerWallet.findOne({ clientId: clientLean.clientId, phone }).lean();
+    wallet = await CustomerWallet.findOne({
+      clientId: clientLean.clientId,
+      phone: normPhone,
+    }).lean();
+    if (!wallet && phone !== normPhone) {
+      wallet = await CustomerWallet.findOne({ clientId: clientLean.clientId, phone }).lean();
+    }
   } catch (_) {}
 
   const meta = convoLean.metadata || {};
