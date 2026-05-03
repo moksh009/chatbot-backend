@@ -90,6 +90,10 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
         hasCompletedTour: user.hasCompletedTour,
         trialActive: client ? client.trialActive : null,
         trialEndsAt: client ? client.trialEndsAt : null,
+        // Phase 32: New-user onboarding gate fields
+        onboardingCompleted: client ? !!client.onboardingCompleted : true, // undefined => true (grandfathered)
+        onboardingStep: client ? (client.onboardingStep || 0) : 0,
+        onboardingData: client ? (client.onboardingData || {}) : {},
         clientConfig,
         clientTemplates: client?.config?.templates || null
     });
@@ -121,7 +125,7 @@ router.get('/bootstrap', protect, async (req, res) => {
     const [client, unreadCount, todayStats, recentConversations] = await Promise.all([
       // 1. Client settings + User
       Client.findOne({ clientId })
-        .select('clientId businessName name ai.persona adminPhone brand billing trialActive trialEndsAt shopDomain phoneNumberId wabaId whatsappToken shopifyAccessToken shopifyConnectionStatus shopifyInstallLink instagramConnected instagramPageId instagramUsername instagramProfilePic instagramAccessToken instagramTokenExpiry metaAdsConnected commerce social whatsapp config visualFlows metaAdsToken metaAdAccountId emailUser emailAppPassword metaAppId geminiApiKey openaiApiKey activePaymentGateway razorpayKeyId razorpaySecret cashfreeAppId cashfreeSecretKey faq googleConnected gmailAddress emailMethod')
+        .select('clientId businessName name ai.persona adminPhone brand billing trialActive trialEndsAt shopDomain phoneNumberId wabaId whatsappToken shopifyAccessToken shopifyConnectionStatus shopifyInstallLink instagramConnected instagramPageId instagramUsername instagramProfilePic instagramAccessToken instagramTokenExpiry metaAdsConnected commerce social whatsapp config visualFlows metaAdsToken metaAdAccountId emailUser emailAppPassword metaAppId geminiApiKey openaiApiKey activePaymentGateway razorpayKeyId razorpaySecret cashfreeAppId cashfreeSecretKey faq googleConnected gmailAddress emailMethod onboardingCompleted onboardingStep onboardingData wizardCompleted')
         .lean()
         .then(c => {
           if (!c) return null;
@@ -179,16 +183,31 @@ router.get('/bootstrap', protect, async (req, res) => {
       user.isLifetimeAdmin = true; await user.save();
     }
 
+    // Phase 32: Onboarding gate — SUPER_ADMIN + lifetime admins bypass.
+    // For all other users, `onboardingCompleted === undefined` on an existing
+    // (grandfathered) client means they are already onboarded — treat as true.
+    const isAdminBypass =
+      user.role === 'SUPER_ADMIN' || user.isLifetimeAdmin === true;
+    const rawOnboarding = client?.onboardingCompleted;
+    const onboardingCompleted = isAdminBypass
+      ? true
+      : rawOnboarding === undefined || rawOnboarding === null
+        ? true
+        : !!rawOnboarding;
+
     res.json({
-      user: { 
-        id: user._id, 
-        name: user.name, 
-        email: user.email, 
-        role: user.role, 
-        clientId: user.clientId, 
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        clientId: user.clientId,
         isLifetimeAdmin: user.isLifetimeAdmin,
         hasCompletedTour: user.hasCompletedTour,
-        business_type: user.business_type
+        business_type: user.business_type,
+        // Phase 32: surfaced at top-level user for quick guard checks
+        onboardingCompleted,
+        onboardingStep: client?.onboardingStep || 0
       },
       client: client || {},
       inbox: { unreadCount, recentConversations },
@@ -255,7 +274,16 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
     if (user && (await user.matchPassword(password))) {
       // Fetch Client Config
       const client = await Client.findOne({ clientId: user.clientId });
-      
+
+      const isAdminBypass =
+        user.role === 'SUPER_ADMIN' || user.isLifetimeAdmin === true;
+      const rawOnboarding = client?.onboardingCompleted;
+      const onboardingCompleted = isAdminBypass
+        ? true
+        : rawOnboarding === undefined || rawOnboarding === null
+          ? true
+          : !!rawOnboarding;
+
       res.json({
         _id: user._id,
         name: user.name,
@@ -271,6 +299,10 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
         hasCompletedTour: user.hasCompletedTour,
         trialActive: client ? client.trialActive : null,
         trialEndsAt: client ? client.trialEndsAt : null,
+        // Phase 32
+        onboardingCompleted,
+        onboardingStep: client?.onboardingStep || 0,
+        onboardingData: client?.onboardingData || {},
         clientConfig: client ? client.toObject() : {},
         clientTemplates: client && client.config && client.config.templates ? client.config.templates : null
       });
@@ -334,9 +366,13 @@ router.post('/register', async (req, res) => {
       trialActive: true,
       trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000), // Extended to 14 days
       plan: 'CX Agent (V1)',
-      businessType: chosenType, 
+      businessType: chosenType,
       flowNodes: [],
-      flowEdges: []
+      flowEdges: [],
+      // Phase 32: force new users through full-screen onboarding before dashboard
+      onboardingCompleted: false,
+      onboardingStep: 0,
+      onboardingData: { brandName: businessName }
     }], { session });
 
     // 2. Create the User linked to this new Client
@@ -361,6 +397,10 @@ router.post('/register', async (req, res) => {
         business_type: user[0].business_type,
         clientId: user[0].clientId,
         token: generateToken(user[0]._id, user[0].clientId, user[0].role),
+        // Phase 32: signal the frontend to route straight to /onboarding
+        onboardingCompleted: false,
+        onboardingStep: 0,
+        isNewUser: true
       });
     } else {
       res.status(400).json({ message: 'Failed to create user or client' });
@@ -616,7 +656,11 @@ router.get('/google/callback', async (req, res) => {
         plan: 'CX Agent (V1)',
         businessType,
         flowNodes: [],
-        flowEdges: []
+        flowEdges: [],
+        // Phase 32: force new Google users through full-screen onboarding
+        onboardingCompleted: false,
+        onboardingStep: 0,
+        onboardingData: { brandName: businessName }
       });
 
       // Create User (no password — Google-only auth)

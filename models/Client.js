@@ -379,6 +379,45 @@ const ClientSchema = new mongoose.Schema({
   wizardCompleted:       { type: Boolean, default: false },
   wizardCompletedAt:     { type: Date,    default: null },
 
+  // Phase 32: Full-screen New-User Onboarding (Instantly / Bitespeed inspired)
+  // Gates the dashboard. Set to true only when user finishes Step 7 (Enter Dashboard)
+  // in the new OnboardingLayout. Existing users must be migrated to `true` so they
+  // are not forced into the new flow.
+  onboardingCompleted:   { type: Boolean, default: false },
+  onboardingStartedAt:   { type: Date, default: null },
+  onboardingCompletedAt: { type: Date, default: null },
+  onboardingStep:        { type: Number, default: 0, min: 0, max: 6 }, // 0-indexed, 0..6 (7 screens)
+  onboardingData: {
+    // Step 0: Goals
+    goals: { type: [String], default: [] }, // e.g. ["abandoned_cart", "order_status", "support_bot"]
+    // Step 1: Business
+    brandName: { type: String, default: "" },
+    websiteUrl: { type: String, default: "" },
+    industry: { type: String, default: "" },
+    conversationVolume: { type: String, default: "" }, // "<500" | "500-2k" | "2k-10k" | "10k+"
+    // Step 2: AI analysis output (what the scrape found)
+    brandProfile: {
+      brandColor: { type: String, default: "" },
+      logoUrl: { type: String, default: "" },
+      brandTone: { type: String, default: "" },
+      productCategory: { type: String, default: "" },
+      keySellingPoints: { type: [String], default: [] },
+      detectedLanguage: { type: String, default: "" },
+      scraped: { type: Boolean, default: false }
+    },
+    // Step 3: Integrations
+    whatsappSkipped: { type: Boolean, default: false },
+    // Step 4: Persona
+    brandVoice: { type: String, default: "" }, // "friendly_warm" | "professional_direct" | ...
+    primaryGoal: { type: String, default: "" }, // "answer_questions" | "recover_carts" | ...
+    fallbackBehavior: { type: String, default: "" }, // "ask_more" | "transfer_human" | "apologize_log"
+    // Step 5: Generated flow ref
+    generatedFlowId: { type: String, default: "" },
+    generatedFlowName: { type: String, default: "" },
+    // Analytics meta
+    stepTimings: { type: mongoose.Schema.Types.Mixed, default: {} } // { "0": secondsSpent, "1": secondsSpent, ... }
+  },
+
   // New Dedicated IG Automation Fields
   igPageId: { type: String, default: null },
   igUserId: { type: String, default: null },
