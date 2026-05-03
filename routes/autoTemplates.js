@@ -11,10 +11,10 @@ const SubmissionLog = require('../models/SubmissionLog');
 const { generationQueue, rescheduleSubmissionCheck } = require('../workers/autoTemplateQueues');
 const { withShopifyRetry } = require('../utils/shopifyHelper');
 const { decrypt } = require('../utils/encryption');
+const { tenantClientId } = require('../utils/queryHelpers');
 
-// ─── Middleware: resolve clientId from query or body ───────────────────────
 function resolveClientId(req) {
-  return req.query.clientId || req.body.clientId || req.user?.clientId;
+  return tenantClientId(req);
 }
 
 // ─── GET /api/auto-templates/status ───────────────────────────────────────
@@ -58,7 +58,6 @@ router.get('/drafts', protect, async (req, res) => {
 
 // ─── POST /api/auto-templates/start ───────────────────────────────────────
 router.post('/start', protect, async (req, res) => {
-  console.log('[AutoTemplates] /start received for', resolveClientId(req));
   try {
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });

@@ -3,18 +3,32 @@ const Client   = require("../models/Client");
 const logger   = require("./logger")("QueryHelpers");
 
 /**
+ * Tenant isolation: non–super-admins MUST only ever use `req.user.clientId`.
+ * Super-admins may target another tenant via params, query, or body.
+ */
+function tenantClientId(req) {
+  if (!req.user) return null;
+  if (req.user.role === "SUPER_ADMIN") {
+    return (
+      req.params?.clientId ||
+      req.query?.clientId ||
+      req.body?.clientId ||
+      req.user.clientId ||
+      null
+    );
+  }
+  return req.user.clientId || null;
+}
+
+/**
  * Resolve a clientId (string slug OR ObjectId string) to a Client document.
  * Returns { client, clientOid } or throws an error.
- * 
- * Usage in every route:
- *   const { client, clientOid } = await resolveClient(req);
+ *
+ * Uses tenantClientId — regular users cannot escalate via query/params.
  */
 async function resolveClient(req) {
-  // clientId can come from params, query, or user JWT
-  const rawId = req.params.clientId
-             || req.query.clientId
-             || req.user?.clientId;
-  
+  const rawId = tenantClientId(req);
+
   if (!rawId) throw new Error("No clientId provided");
   
   // Try to find by slug first (most common case)
@@ -96,6 +110,7 @@ async function safeFindOne(Model, query, select = null) {
 }
 
 module.exports = {
+  tenantClientId,
   resolveClient,
   startOfDayIST,
   startOfWeekIST,

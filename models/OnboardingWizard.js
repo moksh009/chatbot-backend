@@ -10,16 +10,22 @@ const mongoose = require("mongoose");
  *   inside `stepData`. This survives browser refreshes, device switches,
  *   and server restarts — replacing the previous localStorage-only approach.
  *
- * Step IDs (must match STEPS array in OnboardingWizard.jsx):
- *   0: business    | 1: whatsapp   | 2: products   | 3: store
- *   4: operations  | 5: cart_timing | 6: payment   | 7: ai
- *   8: meta_ads    | 9: instagram  | 10: templates | 11: architecture
+ * Step IDs — MUST match STEPS array order in OnboardingWizard.jsx (7 steps):
+ *   0: business | 1: connections | 2: products | 3: ai
+ *   4: cart_timing | 5: features | 6: architecture
+ *
+ * Legacy keys (whatsapp, store, operations, payment, …) remain on stepData for
+ * older documents; PATCH may copy legacy → canonical buckets when needed.
  */
 
 const STEP_IDS = [
-  "business", "whatsapp", "products", "store",
-  "operations", "cart_timing", "payment", "ai",
-  "meta_ads", "instagram", "templates", "architecture"
+  "business",
+  "connections",
+  "products",
+  "ai",
+  "cart_timing",
+  "features",
+  "architecture",
 ];
 
 const OnboardingWizardSchema = new mongoose.Schema(
@@ -36,7 +42,7 @@ const OnboardingWizardSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: 0,
-      max: 11,
+      max: 6,
     },
 
     completedSteps: {
@@ -54,17 +60,20 @@ const OnboardingWizardSchema = new mongoose.Schema(
     // Using Mixed types to avoid schema churn as wizard fields evolve.
     stepData: {
       business:     { type: mongoose.Schema.Types.Mixed, default: null },
-      whatsapp:     { type: mongoose.Schema.Types.Mixed, default: null },
+      connections:  { type: mongoose.Schema.Types.Mixed, default: null },
       products:     { type: mongoose.Schema.Types.Mixed, default: null },
+      ai:           { type: mongoose.Schema.Types.Mixed, default: null },
+      cart_timing:  { type: mongoose.Schema.Types.Mixed, default: null },
+      features:     { type: mongoose.Schema.Types.Mixed, default: null },
+      architecture: { type: mongoose.Schema.Types.Mixed, default: null },
+      // Legacy buckets (pre–step-order fix)
+      whatsapp:     { type: mongoose.Schema.Types.Mixed, default: null },
       store:        { type: mongoose.Schema.Types.Mixed, default: null },
       operations:   { type: mongoose.Schema.Types.Mixed, default: null },
-      cart_timing:  { type: mongoose.Schema.Types.Mixed, default: null },
       payment:      { type: mongoose.Schema.Types.Mixed, default: null },
-      ai:           { type: mongoose.Schema.Types.Mixed, default: null },
       meta_ads:     { type: mongoose.Schema.Types.Mixed, default: null },
       instagram:    { type: mongoose.Schema.Types.Mixed, default: null },
       templates:    { type: mongoose.Schema.Types.Mixed, default: null },
-      architecture: { type: mongoose.Schema.Types.Mixed, default: null },
     },
 
     // Post-launch deployment stats

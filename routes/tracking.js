@@ -4,6 +4,7 @@ const AdLead = require('../models/AdLead');
 const DailyStat = require('../models/DailyStat');
 const { trackEcommerceEvent } = require('../utils/analyticsHelper');
 const { sendCODToPrepaidNudge } = require('../utils/ecommerceHelpers');
+const { verifyShopifyTrackingWebhook } = require('../middleware/verifyShopifyTrackingWebhook');
 
 // Legacy PRODUCTS mapping removed to support universal SaaS config in the database.
 const PRODUCTS = {};
@@ -75,6 +76,11 @@ router.get('/:uid/:productId', async (req, res) => {
 // POST /api/tracking/cart
 // Expects: { phone (optional), product (name/id), price }
 router.post('/cart', async (req, res) => {
+    const pixelSecret = process.env.TRACKING_PIXEL_SECRET;
+    if (pixelSecret && req.get('X-Pixel-Secret') !== pixelSecret) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const { phone, product, price, clientId } = req.body;
     if (!clientId) return res.status(400).json({ error: 'clientId is required' });
     const io = req.app.get('socketio');
@@ -118,8 +124,8 @@ router.post('/cart', async (req, res) => {
 });
 
 // POST /api/tracking/order-webhook
-// Shopify Webhook for Order Creation
-router.post('/order-webhook', async (req, res) => {
+// Shopify Webhook for Order Creation — authenticated via Shopify HMAC + shop domain (production)
+router.post('/order-webhook', verifyShopifyTrackingWebhook, async (req, res) => {
     const orderData = req.body;
     const io = req.app.get('socketio');
     const Client = require('../models/Client');
@@ -129,8 +135,7 @@ router.post('/order-webhook', async (req, res) => {
     if (phone) phone = phone.replace(/\D/g, ''); // Remove non-digits
     if (phone && phone.length === 10) phone = '91' + phone; // Assume India if missing code
 
-    const clientId = req.query.clientId;
-    if (!clientId) return res.status(400).send('clientId is required');
+    const clientId = req.webhookClient.clientId;
     const amount = parseFloat(orderData.total_price);
     const orderId = orderData.name || `#${orderData.order_number}`;
     const shopifyOrderId = String(orderData.id);
@@ -422,11 +427,10 @@ router.post('/phonepe-callback/:orderId', async (req, res) => {
 
 // POST /api/tracking/fulfillment-webhook
 // Shopify Webhook for Order Fulfillment
-router.post('/fulfillment-webhook', async (req, res) => {
+router.post('/fulfillment-webhook', verifyShopifyTrackingWebhook, async (req, res) => {
     try {
         const payload = req.body;
-        const clientId = req.query.clientId;
-        if (!clientId) return res.status(400).send("clientId is required");
+        const clientId = req.webhookClient.clientId;
         
         // Ensure this is a fulfillment payload
         if (!payload.order_id && !payload.id) {

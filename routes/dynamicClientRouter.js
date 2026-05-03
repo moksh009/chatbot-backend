@@ -4,6 +4,7 @@ const loadClientConfig = require('../middleware/clientConfig');
 const { protect } = require('../middleware/auth');
 const Client = require('../models/Client');
 const InboundDeduplication = require('../models/InboundDeduplication');
+const { tenantClientId } = require('../utils/queryHelpers');
 
 // Import client controllers
 const turfController = require('./clientcodes/turf');
@@ -19,10 +20,8 @@ router.use(loadClientConfig);
 // Integration Setup Endpoint (PUT)
 router.put('/integrations', protect, async (req, res) => {
   try {
-    const { clientId } = req.params;
-    
-    // Auth validation - ensuring the logged-in user belongs to this client or is SuperAdmin
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
        return res.status(403).json({ error: 'Unauthorized to update integrations for this client.' });
     }
 
@@ -160,18 +159,6 @@ router.get('/config', protect, async (req, res) => {
   }
 });
 
-// Get Client Configuration (Used for Dashboard initialization)
-router.get('/config', protect, async (req, res) => {
-  try {
-    const { clientId } = req.params;
-    const client = await Client.findOne({ clientId });
-    if (!client) return res.status(404).json({ error: 'Client not found' });
-    res.json(client);
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch config' });
-  }
-});
-
 router.patch('/config', protect, async (req, res) => {
   try {
     const { clientId } = req.params;
@@ -200,7 +187,7 @@ router.patch('/config', protect, async (req, res) => {
     const updated = await Client.findOneAndUpdate({ clientId }, { $set: updates }, { new: true });
     res.json({ success: true, client: updated });
   } catch (err) {
-    console.error(`[Config Patch] Error for ${clientId}:`, err);
+    console.error(`[Config Patch] Error for ${req.params.clientId}:`, err);
     res.status(500).json({ error: 'Failed to update configuration.' });
   }
 });

@@ -1,5 +1,5 @@
 const express = require('express');
-const { resolveClient } = require('../utils/queryHelpers');
+const { resolveClient, tenantClientId } = require('../utils/queryHelpers');
 const router = express.Router();
 const TaskQueueService = require('../services/TaskQueueService');
 const Campaign = require('../models/Campaign');
@@ -503,6 +503,13 @@ router.post('/start', protect, async (req, res) => {
         [rows[i], rows[j]] = [rows[j], rows[i]];
     }
 
+    if (campaign.status === 'QUEUED' && !campaign.scheduledAt) {
+      campaign.scheduledAt = new Date();
+    }
+    if (campaign.status === 'SCHEDULED' && !campaign.scheduledAt) {
+      campaign.scheduledAt = new Date();
+    }
+
      if (req.body.isAbTest) {
         campaign.isAbTest = true;
         
@@ -839,15 +846,17 @@ router.post('/predictive-send', protect, async (req, res) => {
 // @access  Private
 router.get('/templates', protect, async (req, res) => {
   try {
-    const clientId = req.query.clientId || req.user.clientId;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const clientId = tenantClientId(req);
+    if (!clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
     const client = await Client.findOne({ clientId }).select('syncedMetaTemplates').lean();
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
-    const approvedTemplates = (client.syncedMetaTemplates || []).filter(t => t.status === 'APPROVED');
+    const approvedTemplates = (client.syncedMetaTemplates || []).filter(
+      (t) => String(t?.status || '').toUpperCase() === 'APPROVED'
+    );
     res.json({ success: true, templates: approvedTemplates });
   } catch (err) {
     console.error('[CampaignTemplates] Error:', err);

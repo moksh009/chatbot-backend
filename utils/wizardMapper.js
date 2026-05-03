@@ -1,10 +1,9 @@
 "use strict";
 
+const { normalizePersonaTone } = require("./personaEngine");
+
 /**
  * WIZARD MAPPER — Onboarding Wizard payload → Mongo $set / $push contract.
- *
- * SINGLE SOURCE OF TRUTH. Anywhere in the codebase that needs to translate
- * wizard form data into a Client document update MUST go through this module.
  * Adding a wizard field?  → add ONE line here, nowhere else.
  *
  * Design rules:
@@ -178,7 +177,10 @@ function buildBrandUpdate(wizardData = {}, client = {}) {
   setIfTruthy(out, "platformVars.openTime",            wizardData.openTime);
   setIfTruthy(out, "platformVars.closeTime",           wizardData.closeTime);
   setIfTruthy(out, "platformVars.warrantyDuration",    wizardData.warrantyDuration);
-  setIfTruthy(out, "platformVars.defaultTone",         wizardData.tone);
+  if (wizardData.tone) {
+    const nt = normalizePersonaTone(wizardData.tone) || wizardData.tone;
+    setIfTruthy(out, "platformVars.defaultTone", nt);
+  }
   setIfTruthy(out, "platformVars.defaultLanguage",     wizardData.botLanguage);
 
   // Brand sub-doc (used by templates + warranty engine)
@@ -204,7 +206,10 @@ function buildAiUpdate(wizardData = {}, generatedSystemPrompt = "") {
 
   // Persona (Phase 29)
   if (wizardData.botName)             out["ai.persona.name"]        = wizardData.botName;
-  if (wizardData.tone)                out["ai.persona.tone"]        = wizardData.tone;
+  if (wizardData.tone) {
+    const nt = normalizePersonaTone(wizardData.tone) || wizardData.tone;
+    out["ai.persona.tone"] = nt;
+  }
   if (wizardData.botLanguage)         out["ai.persona.language"]    = wizardData.botLanguage;
   if (wizardData.businessDescription) out["ai.persona.description"] = wizardData.businessDescription;
   if (wizardData.activePersona)       out["ai.persona.role"]        = wizardData.activePersona;
@@ -422,6 +427,28 @@ function mapWizardToClient(wizardData = {}, client = {}, opts = {}) {
   return result;
 }
 
+function pullPersonaBundleFromSet($set) {
+  const persona = {};
+  const removeKeys = [];
+  for (const key of Object.keys($set)) {
+    if (key.startsWith("ai.persona.")) {
+      persona[key.slice("ai.persona.".length)] = $set[key];
+      removeKeys.push(key);
+    }
+  }
+  for (const k of removeKeys) delete $set[k];
+  let systemPrompt;
+  if ($set["ai.systemPrompt"] !== undefined) {
+    systemPrompt = $set["ai.systemPrompt"];
+    delete $set["ai.systemPrompt"];
+  }
+  if ($set.systemPrompt !== undefined) {
+    systemPrompt = systemPrompt ?? $set.systemPrompt;
+    delete $set.systemPrompt;
+  }
+  return { persona, systemPrompt };
+}
+
 function mapFeatureToggle(features = {}) {
   const $set = buildFeaturesUpdate({ features });
   // Mirror legacy where it matters
@@ -446,5 +473,6 @@ module.exports = {
   mapWizardToClient,
   mapFeatureToggle,
   buildFeaturesUpdate,
-  buildAutomationFlows
+  buildAutomationFlows,
+  pullPersonaBundleFromSet,
 };

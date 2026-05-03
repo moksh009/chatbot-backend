@@ -1,5 +1,5 @@
 const express = require('express');
-const { resolveClient } = require('../utils/queryHelpers');
+const { resolveClient, tenantClientId } = require('../utils/queryHelpers');
 const router = express.Router();
 const FollowUpSequence = require('../models/FollowUpSequence');
 const AdLead = require('../models/AdLead');
@@ -17,7 +17,8 @@ const MAX_ACTIVE_SEQUENCES = 2;
 // Root handler for frontend compatibility (/api/automation -> /api/automation/)
 router.get('/', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
     const sequences = await FollowUpSequence.find({ clientId }).populate('leadId', 'name').sort({ createdAt: -1 });
     res.json({ success: true, sequences });
   } catch (error) {
@@ -28,10 +29,8 @@ router.get('/', protect, async (req, res) => {
 // Explicit route to handle /api/automation/sequences
 router.get('/sequences', protect, async (req, res) => {
   try {
-    // If super admin specifies clientId, use it. Otherwise use user's own clientId.
-    const clientId = (req.user.role === 'SUPER_ADMIN' && req.query.clientId) 
-      ? req.query.clientId 
-      : req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
 
     const { leadId } = req.query;
     const query = { clientId };
@@ -47,8 +46,8 @@ router.get('/sequences', protect, async (req, res) => {
 
 router.post('/:clientId', protect, async (req, res) => {
   try {
-    const { clientId } = req.params;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
@@ -137,8 +136,8 @@ router.post('/:clientId', protect, async (req, res) => {
 
 router.get('/:clientId', protect, async (req, res) => {
   try {
-    const { clientId } = req.params;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
@@ -157,8 +156,8 @@ router.get('/:clientId', protect, async (req, res) => {
 // GET Pre-built templates
 router.get('/:clientId/templates', protect, async (req, res) => {
   try {
-    const { clientId } = req.params;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     res.json({ success: true, templates: SEQUENCE_TEMPLATES });
@@ -170,8 +169,8 @@ router.get('/:clientId/templates', protect, async (req, res) => {
 // POST enroll from campaign
 router.post('/:clientId/enroll-from-campaign', protect, async (req, res) => {
   try {
-    const { clientId } = req.params;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
@@ -276,8 +275,8 @@ router.post('/:clientId/enroll-from-campaign', protect, async (req, res) => {
 // Enroll a sequence from imported CSV audience batch
 router.post('/:clientId/from-imported-list', protect, async (req, res) => {
   try {
-    const { clientId } = req.params;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
@@ -385,8 +384,9 @@ router.post('/:clientId/from-imported-list', protect, async (req, res) => {
 // Cancel a sequence
 router.patch('/:clientId/:sequenceId/cancel', protect, async (req, res) => {
   try {
-    const { clientId, sequenceId } = req.params;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const { sequenceId } = req.params;
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
@@ -405,9 +405,10 @@ router.patch('/:clientId/:sequenceId/cancel', protect, async (req, res) => {
 // Update sequence status (e.g., pause, resume)
 router.patch('/:clientId/:sequenceId/status', protect, async (req, res) => {
   try {
-    const { clientId, sequenceId } = req.params;
+    const { sequenceId } = req.params;
     const { status } = req.body;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
@@ -429,8 +430,9 @@ router.patch('/:clientId/:sequenceId/status', protect, async (req, res) => {
 
 router.delete('/:clientId/:sequenceId', protect, async (req, res) => {
   try {
-    const { clientId, sequenceId } = req.params;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const { sequenceId } = req.params;
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 

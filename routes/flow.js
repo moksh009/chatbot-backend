@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Client = require('../models/Client');
+const { tenantClientId } = require('../utils/queryHelpers');
 const { protect } = require('../middleware/auth');
 const { fixFlowWithAI } = require('../controllers/flowFixController');
 
@@ -218,8 +219,8 @@ router.post('/:flowId/rollback/:versionId', protect, async (req, res) => {
 // --- GET ALL FLOWS ---
 router.get('/', protect, async (req, res) => {
   try {
-    const clientId = (req.user.role === 'SUPER_ADMIN' && req.query.clientId) ? req.query.clientId : req.user.clientId;
-    if (!clientId) return res.status(400).json({ error: 'clientId required' });
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
 
     const WhatsAppFlow = require('../models/WhatsAppFlow');
     // Fetch from the source-of-truth collection
@@ -254,10 +255,8 @@ router.get('/', protect, async (req, res) => {
 // GET /api/flow/flows
 router.get('/flows', protect, async (req, res) => {
   try {
-    const clientId = req.query.clientId || req.user.clientId;
-    
-    // Auth validation
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const clientId = tenantClientId(req);
+    if (!clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized access to flows' });
     }
 
@@ -381,9 +380,8 @@ router.get('/:flowId/summary', protect, async (req, res) => {
 
 router.get('/:clientId/analytics', protect, async (req, res) => {
   try {
-    const { clientId } = req.params;
-    
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
@@ -411,8 +409,8 @@ router.get('/:clientId/analytics', protect, async (req, res) => {
 
 router.get('/:clientId/unanswered-questions', protect, async (req, res) => {
   try {
-    const { clientId } = req.params;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
@@ -498,9 +496,9 @@ router.get('/:clientId/unanswered-questions', protect, async (req, res) => {
 router.delete('/:flowId', protect, async (req, res) => {
   try {
     const { flowId } = req.params;
-    const clientId = (req.user.role === 'SUPER_ADMIN' && req.query.clientId) ? req.query.clientId : req.user.clientId;
+    const clientId = tenantClientId(req);
 
-    if (!clientId) return res.status(400).json({ error: 'clientId required' });
+    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
 
     console.log(`[FlowDelete] Deleting flow ${flowId} for client ${clientId}`);
 
@@ -555,7 +553,10 @@ router.delete('/:flowId', protect, async (req, res) => {
 // Adds an answer to the knowledge base for a previously unanswered question
 router.post('/:clientId/intelligence/answer', protect, async (req, res) => {
   try {
-    const { clientId } = req.params;
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
     const { question, answer, category = 'faq' } = req.body;
 
     if (!question?.trim() || !answer?.trim()) {
@@ -589,7 +590,10 @@ router.post('/:clientId/intelligence/answer', protect, async (req, res) => {
 // Approves an agent correction — adds it to training data and marks case as approved
 router.post('/:clientId/intelligence/approve-correction', protect, async (req, res) => {
   try {
-    const { clientId } = req.params;
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
     const { trainingCaseId } = req.body;
 
     const TrainingCase = require('../models/TrainingCase');
@@ -629,7 +633,10 @@ router.post('/:clientId/intelligence/approve-correction', protect, async (req, r
 // Rejects a training case (agent override not useful for training)
 router.post('/:clientId/intelligence/reject-correction', protect, async (req, res) => {
   try {
-    const { clientId } = req.params;
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
     const { trainingCaseId } = req.body;
 
     const TrainingCase = require('../models/TrainingCase');
@@ -652,7 +659,10 @@ router.post('/:clientId/intelligence/reject-correction', protect, async (req, re
 // Clusters unanswered questions by keyword frequency to suggest new flows
 router.get('/:clientId/intelligence/suggestions', protect, async (req, res) => {
   try {
-    const { clientId } = req.params;
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
     const Message = require('../models/Message');
 
     const FALLBACK_PHRASES = [

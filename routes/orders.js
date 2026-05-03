@@ -1,5 +1,5 @@
 const express = require('express');
-const { resolveClient } = require('../utils/queryHelpers');
+const { resolveClient, tenantClientId } = require('../utils/queryHelpers');
 const router = express.Router();
 const Order = require('../models/Order');
 const { protect } = require('../middleware/auth');
@@ -17,8 +17,12 @@ router.get('/', protect, async (req, res) => {
     const phoneSuffix = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
     const phoneRegex = new RegExp(`${phoneSuffix}$`);
 
-    let clientId = req.user.clientId;
+    const scopedClientId = tenantClientId(req);
+    if (!scopedClientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
     const query = { 
+      clientId: scopedClientId,
       $or: [
         { phone: phoneRegex }, 
         { customerPhone: phoneRegex },
@@ -26,13 +30,6 @@ router.get('/', protect, async (req, res) => {
         { customerPhone: phone }
       ] 
     };
-    
-    // If super admin and query clientId provided, use it
-    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
-      query.clientId = req.query.clientId;
-    } else {
-      query.clientId = clientId;
-    }
 
     const orders = await Order.find(query).sort({ createdAt: -1 }).limit(10).lean();
     res.json({ success: true, orders });
@@ -44,8 +41,8 @@ router.get('/', protect, async (req, res) => {
 
 router.get('/:clientId/cod-pipeline', protect, async (req, res) => {
   try {
-    const { clientId } = req.params;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 

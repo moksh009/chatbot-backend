@@ -4,17 +4,57 @@ const OnboardingWizard = require('../models/OnboardingWizard');
 const Client = require('../models/Client');
 const log = require('../utils/logger')('OnboardingRoutes');
 const { protect } = require('../middleware/auth');
+const { mapFeatureToggle } = require('../utils/wizardMapper');
+const { syncPersonaAcrossSystem } = require('../utils/personaEngine');
+
+/** One-time shape repair for wizard docs saved before step-order fix. */
+function repairLegacyWizardBuckets(wizard) {
+  const sd = wizard.stepData || {};
+  let touched = false;
+  if (!sd.ai && sd.store) {
+    sd.ai = sd.store;
+    touched = true;
+  }
+  if (!sd.connections && sd.whatsapp) {
+    sd.connections = sd.whatsapp;
+    touched = true;
+  }
+  if (!sd.features && sd.operations) {
+    sd.features = sd.operations;
+    touched = true;
+  }
+  if (touched) {
+    wizard.stepData = sd;
+    wizard.markModified('stepData');
+  }
+}
 
 // Fetch wizard state
 router.get('/:clientId', protect, async (req, res) => {
   try {
     const { clientId } = req.params;
-    let wizard = await OnboardingWizard.findOne({ clientId }).lean();
+    const wizardDoc = await OnboardingWizard.findOne({ clientId });
     
-    if (!wizard) {
+    if (!wizardDoc) {
       return res.status(404).json({ success: true, wizard: null });
     }
-    
+
+    repairLegacyWizardBuckets(wizardDoc);
+    if (wizardDoc.isModified && wizardDoc.isModified()) {
+      await wizardDoc.save();
+    }
+
+    let wizard = wizardDoc.toObject ? wizardDoc.toObject() : wizardDoc;
+    if (typeof wizard.currentStep === 'number' && wizard.currentStep > 6) {
+      wizard = { ...wizard, currentStep: 6 };
+    }
+    if (Array.isArray(wizard.completedSteps)) {
+      wizard = {
+        ...wizard,
+        completedSteps: [...new Set(wizard.completedSteps.filter((s) => s >= 0 && s <= 6))],
+      };
+    }
+
     res.json({ success: true, wizard });
   } catch (error) {
     log.error(`Error fetching wizard state for ${req.params.clientId}`, error);
@@ -33,8 +73,8 @@ router.patch('/step/:stepNumber', protect, async (req, res) => {
       return res.status(400).json({ success: false, error: 'clientId is required in body' });
     }
 
-    const stepNum = parseInt(stepNumber);
-    if (isNaN(stepNum) || stepNum < 0 || stepNum > 11) {
+    const stepNum = parseInt(stepNumber, 10);
+    if (isNaN(stepNum) || stepNum < 0 || stepNum > 6) {
       return res.status(400).json({ success: false, error: 'Invalid step number' });
     }
 
@@ -46,6 +86,8 @@ router.patch('/step/:stepNumber', protect, async (req, res) => {
       wizard = new OnboardingWizard({ clientId, status: 'in_progress' });
     }
 
+    repairLegacyWizardBuckets(wizard);
+
     wizard.stepData[stepId] = stepData;
     wizard.currentStep = stepNum;
     
@@ -56,58 +98,85 @@ router.patch('/step/:stepNumber', protect, async (req, res) => {
     wizard.markModified('stepData');
     await wizard.save();
     
-    // ─── Canonical Sync: Wizard → Client Document ───────────────────────
-    // Ensures wizard data is ALWAYS written through to the canonical paths
-    // that the AI engine, bot, and dashboard pages actually read from.
+    // ─── Canonical Sync: Wizard → Client (Mongo paths the dashboard + engine read) ─
     const pvUpdate = {};
+    let personaSync = null;
+    let personaSystemPrompt = undefined;
 
-    // Step 0 — Business Setup: sync to platformVars + ai.persona
-    if (stepNum === 0 && stepData) {
-      if (stepData.businessName)        { pvUpdate['platformVars.brandName'] = stepData.businessName; pvUpdate['businessName'] = stepData.businessName; }
-      if (stepData.botName)             { pvUpdate['platformVars.agentName'] = stepData.botName; pvUpdate['ai.persona.name'] = stepData.botName; }
-      if (stepData.businessDescription) { pvUpdate['platformVars.businessDescription'] = stepData.businessDescription; pvUpdate['ai.persona.description'] = stepData.businessDescription; }
-      if (stepData.botLanguage)         { pvUpdate['platformVars.defaultLanguage'] = stepData.botLanguage; pvUpdate['ai.persona.language'] = stepData.botLanguage; }
-      if (stepData.tone)                { pvUpdate['platformVars.defaultTone'] = stepData.tone; pvUpdate['ai.persona.tone'] = stepData.tone; }
-      if (stepData.adminPhone)          { pvUpdate['platformVars.adminWhatsappNumber'] = stepData.adminPhone; pvUpdate['adminPhone'] = stepData.adminPhone; }
+    const queuePersona = (partial) => {
+      if (!partial || typeof partial !== 'object') return;
+      personaSync = { ...(personaSync || {}), ...partial };
+    };
+
+    // business
+    if (stepId === 'business' && stepData) {
+      if (stepData.businessName)        { pvUpdate.businessName = stepData.businessName; pvUpdate['platformVars.brandName'] = stepData.businessName; }
+      if (stepData.botName)             queuePersona({ name: stepData.botName });
+      if (stepData.businessDescription) queuePersona({ description: stepData.businessDescription });
+      if (stepData.botLanguage)         queuePersona({ language: stepData.botLanguage });
+      if (stepData.tone)                queuePersona({ tone: stepData.tone });
+      if (stepData.adminPhone)          { pvUpdate['platformVars.adminWhatsappNumber'] = stepData.adminPhone; pvUpdate.adminPhone = stepData.adminPhone; }
       if (stepData.currency)            pvUpdate['platformVars.baseCurrency'] = stepData.currency;
       if (stepData.shippingTime)        pvUpdate['platformVars.shippingTime'] = stepData.shippingTime;
-      if (stepData.websiteUrl)          pvUpdate['websiteUrl'] = stepData.websiteUrl;
+      if (stepData.websiteUrl)          pvUpdate.websiteUrl = stepData.websiteUrl;
+      if (stepData.activePersona)       queuePersona({ role: stepData.activePersona });
     }
 
-    // Step 7 — AI Persona: sync persona fields to canonical ai.persona path
-    if (stepNum === 7 && stepData) {
-      if (stepData.botName || stepData.activePersona) pvUpdate['ai.persona.name'] = stepData.botName || stepData.activePersona;
-      if (stepData.tone)          pvUpdate['ai.persona.tone'] = stepData.tone;
-      if (stepData.botLanguage)   pvUpdate['ai.persona.language'] = stepData.botLanguage;
-      if (stepData.systemPrompt)  pvUpdate['ai.systemPrompt'] = stepData.systemPrompt;
-      if (stepData.geminiApiKey)  pvUpdate['geminiApiKey'] = stepData.geminiApiKey;
-      if (stepData.openaiApiKey)  pvUpdate['openaiApiKey'] = stepData.openaiApiKey;
+    // intelligence (tone / language / keys / prompt live on shared flat `data`)
+    if (stepId === 'ai' && stepData) {
+      if (stepData.botName || stepData.activePersona) {
+        queuePersona({ name: stepData.botName || stepData.activePersona });
+      }
+      if (stepData.tone) queuePersona({ tone: stepData.tone });
+      if (stepData.botLanguage) queuePersona({ language: stepData.botLanguage });
+      if (stepData.systemPrompt && String(stepData.systemPrompt).trim()) {
+        personaSystemPrompt = String(stepData.systemPrompt).trim();
+      }
+      if (stepData.geminiApiKey) { pvUpdate.geminiApiKey = stepData.geminiApiKey; pvUpdate['ai.geminiKey'] = stepData.geminiApiKey; }
+      if (stepData.openaiApiKey) { pvUpdate.openaiApiKey = stepData.openaiApiKey; }
     }
 
-    // Step 4 — Operations: persist FAQ to canonical faq path
-    if (stepNum === 4 && stepData?.faqs && Array.isArray(stepData.faqs)) {
+    if (stepData?.faqs && Array.isArray(stepData.faqs)) {
       const faqDocs = stepData.faqs
         .filter(f => f.question?.trim() && f.answer?.trim())
         .map((f, i) => ({ question: f.question.trim(), answer: f.answer.trim(), order: i }));
-      pvUpdate['faq'] = faqDocs;
+      if (faqDocs.length > 0) pvUpdate.faq = faqDocs;
     }
 
-    // Step 5 — Business Hours: sync to canonical config path
     if (stepData?.is247 !== undefined)   pvUpdate['config.businessHours.is247'] = stepData.is247;
     if (stepData?.openTime)              pvUpdate['config.businessHours.openTime'] = stepData.openTime;
     if (stepData?.closeTime)             pvUpdate['config.businessHours.closeTime'] = stepData.closeTime;
-    if (stepData?.workingDays?.length)    pvUpdate['config.businessHours.workingDays'] = stepData.workingDays;
+    if (stepData?.workingDays?.length)  pvUpdate['config.businessHours.workingDays'] = stepData.workingDays;
 
-    // Step 6 — Payment: sync gateway config
-    if (stepData?.activePaymentGateway)  pvUpdate['activePaymentGateway'] = stepData.activePaymentGateway;
-    if (stepData?.razorpayKeyId)         pvUpdate['razorpayKeyId'] = stepData.razorpayKeyId;
-    if (stepData?.razorpaySecret)        pvUpdate['razorpaySecret'] = stepData.razorpaySecret;
-    if (stepData?.cashfreeAppId)         pvUpdate['cashfreeAppId'] = stepData.cashfreeAppId;
-    if (stepData?.cashfreeSecretKey)     pvUpdate['cashfreeSecretKey'] = stepData.cashfreeSecretKey;
+    if (stepId === 'cart_timing' && stepData?.cartTiming) {
+      const t = stepData.cartTiming;
+      pvUpdate['wizardFeatures.cartNudgeMinutes1'] = Number(t.msg1 ?? 15) || 15;
+      pvUpdate['wizardFeatures.cartNudgeHours2'] = Number(t.msg2 ?? 2) || 2;
+      pvUpdate['wizardFeatures.cartNudgeHours3'] = Number(t.msg3 ?? 24) || 24;
+    }
 
-    // Flush all accumulated updates in a single DB write
+    if (stepId === 'features' && stepData?.features && typeof stepData.features === 'object') {
+      Object.assign(pvUpdate, mapFeatureToggle(stepData.features));
+    }
+
+    if (stepId === 'architecture' && stepData) {
+      if (stepData.activePaymentGateway)  pvUpdate.activePaymentGateway = stepData.activePaymentGateway;
+      if (stepData.razorpayKeyId)         pvUpdate.razorpayKeyId = stepData.razorpayKeyId;
+      if (stepData.razorpaySecret)        pvUpdate.razorpaySecret = stepData.razorpaySecret;
+      if (stepData.cashfreeAppId)         pvUpdate.cashfreeAppId = stepData.cashfreeAppId;
+      if (stepData.cashfreeSecretKey)     pvUpdate.cashfreeSecretKey = stepData.cashfreeSecretKey;
+    }
+
     if (Object.keys(pvUpdate).length > 0) {
       await Client.updateOne({ clientId }, { $set: pvUpdate });
+    }
+
+    if (personaSync && Object.keys(personaSync).length > 0) {
+      await syncPersonaAcrossSystem(clientId, personaSync, {
+        systemPrompt: personaSystemPrompt,
+      });
+    } else if (personaSystemPrompt !== undefined) {
+      await syncPersonaAcrossSystem(clientId, {}, { systemPrompt: personaSystemPrompt });
     }
 
     res.json({ success: true, wizard });

@@ -6,6 +6,7 @@ const Client = require('../models/Client');
 const log = require('../utils/logger')('WhatsAppAPI');
 const WhatsApp = require('../utils/whatsapp');
 const { translateWhatsAppError } = require('../utils/whatsappErrors');
+const { tenantClientId } = require('../utils/queryHelpers');
 
 // @route   POST /api/whatsapp/send-template
 // @desc    Send an individual WhatsApp template message
@@ -19,9 +20,11 @@ router.post('/send-template', protect, async (req, res) => {
 
   let targetClientId = 'unknown';
   try {
-    // If Super Admin, use provided clientId, otherwise use user's own
-    targetClientId = (req.user.role === 'SUPER_ADMIN' && clientId) ? clientId : req.user.clientId;
-    
+    targetClientId = tenantClientId(req);
+    if (!targetClientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
     const client = await Client.findOne({ clientId: targetClientId });
     if (!client) {
       return res.status(404).json({ success: false, message: 'Client configuration not found' });

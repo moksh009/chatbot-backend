@@ -8,6 +8,7 @@ const { logActivity } = require('../utils/activityLogger');
 const crypto = require('crypto');
 const { sendTeamInviteEmail, sendAdminConfirmationEmail } = require('../utils/emailService');
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
+const { tenantClientId } = require('../utils/queryHelpers');
 
 // @route   GET /api/team
 // @route   GET /api/users/team
@@ -61,13 +62,12 @@ router.get('/team', protect, async (req, res) => {
 });
 router.get('/:clientId', protect, async (req, res) => {
     try {
-        const { clientId } = req.params;
-        console.log(`[TeamAPI] Fetching team for explicitly provided clientId: ${clientId}`);
-
-        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
-           console.warn(`[TeamAPI] Unauthorized access attempt: ${req.user.clientId} tried to access ${clientId}`);
+        const clientId = tenantClientId(req);
+        if (!clientId || clientId !== req.params.clientId) {
+           console.warn(`[TeamAPI] Unauthorized access attempt for tenant lookup`);
            return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
+        console.log(`[TeamAPI] Fetching team for explicitly provided clientId: ${clientId}`);
 
         // 1. Fetch all users for this client
         const users = await User.find({ clientId }).select('-password');
@@ -261,7 +261,10 @@ router.patch('/:id/role', protect, async (req, res) => {
 // @access  Private (Admin only)
 router.get('/:clientId/performance-stats', protect, async (req, res) => {
     try {
-        const { clientId } = req.params;
+        const clientId = tenantClientId(req);
+        if (!clientId || clientId !== req.params.clientId) {
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
         const sevenDaysAgo = new Date();
         sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 

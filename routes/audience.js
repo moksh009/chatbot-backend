@@ -2,16 +2,15 @@ const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
 const ImportSession = require('../models/ImportSession');
+const { tenantClientId } = require('../utils/queryHelpers');
 
 // @route   GET /api/audience/import-batches
 // @desc    Get all completed import batches for a client
 // @access  Private
 router.get('/import-batches', protect, async (req, res) => {
   try {
-    const { clientId } = req.query;
-    const cid = clientId || req.user.clientId;
-    
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== cid) {
+    const cid = tenantClientId(req);
+    if (!cid) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 

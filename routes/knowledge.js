@@ -3,6 +3,7 @@ const router = express.Router();
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
 const log = require('../utils/logger')('KnowledgeRoute');
+const { tenantClientId } = require('../utils/queryHelpers');
 
 /**
  * @route   GET /api/knowledge
@@ -10,8 +11,8 @@ const log = require('../utils/logger')('KnowledgeRoute');
  */
 router.get('/', protect, async (req, res) => {
   try {
-    const { clientId } = req.query;
-    if (!clientId) return res.status(400).json({ message: 'ClientId required' });
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ message: 'Unauthorized' });
 
     const client = await Client.findOne({ clientId }).select('knowledgeBase');
     if (!client) return res.status(404).json({ message: 'Client not found' });
@@ -28,8 +29,8 @@ router.get('/', protect, async (req, res) => {
  */
 router.get('/pending', protect, async (req, res) => {
   try {
-    const { clientId } = req.query;
-    if (!clientId) return res.status(400).json({ message: 'ClientId required' });
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ message: 'Unauthorized' });
 
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ message: 'Client not found' });
@@ -47,7 +48,9 @@ router.get('/pending', protect, async (req, res) => {
  */
 router.post('/action', protect, async (req, res) => {
   try {
-    const { clientId, proposalId, action } = req.body;
+    const { proposalId, action } = req.body;
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
     if (!['approved', 'rejected'].includes(action)) {
       return res.status(400).json({ success: false, error: 'Invalid action' });
     }
@@ -88,10 +91,10 @@ router.post('/action', protect, async (req, res) => {
  */
 router.put('/policies', protect, async (req, res) => {
   try {
-    const clientId = req.user?.clientId || req.body.clientId;
+    const clientId = tenantClientId(req);
     const { about, returnPolicy, shippingPolicy } = req.body;
 
-    if (!clientId) return res.status(400).json({ success: false, message: 'ClientId required' });
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
 
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
@@ -116,10 +119,10 @@ router.put('/policies', protect, async (req, res) => {
  */
 router.post('/faq', protect, async (req, res) => {
   try {
-    const clientId = req.user?.clientId || req.query.clientId;
+    const clientId = tenantClientId(req);
     const { question, answer } = req.body;
 
-    if (!clientId) return res.status(400).json({ success: false, message: 'ClientId required' });
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
     if (!question?.trim() || !answer?.trim()) {
       return res.status(400).json({ success: false, message: 'Both question and answer are required.' });
     }
@@ -153,10 +156,10 @@ router.post('/faq', protect, async (req, res) => {
  */
 router.delete('/faq/:index', protect, async (req, res) => {
   try {
-    const clientId = req.user?.clientId || req.query.clientId;
+    const clientId = tenantClientId(req);
     const faqIndex = parseInt(req.params.index);
 
-    if (!clientId) return res.status(400).json({ success: false, message: 'ClientId required' });
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
     if (isNaN(faqIndex) || faqIndex < 0) {
       return res.status(400).json({ success: false, message: 'Valid FAQ index required.' });
     }
@@ -190,8 +193,8 @@ router.delete('/faq/:index', protect, async (req, res) => {
  */
 router.get('/audit', protect, async (req, res) => {
   try {
-    const { clientId } = req.query;
-    if (!clientId) return res.status(400).json({ message: 'ClientId required' });
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ message: 'Unauthorized' });
 
     const { auditClientSystem } = require('../utils/flowAuditor');
     const audit = await auditClientSystem(clientId);
@@ -213,8 +216,8 @@ router.get('/audit', protect, async (req, res) => {
  */
 router.get('/documents', protect, async (req, res) => {
   try {
-    const clientId = req.user?.clientId || req.query.clientId;
-    if (!clientId) return res.status(400).json({ success: false, message: 'ClientId required' });
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
 
     const KnowledgeDocument = require('../models/KnowledgeDocument');
     const docs = await KnowledgeDocument.find({ clientId })
@@ -234,10 +237,10 @@ router.get('/documents', protect, async (req, res) => {
  */
 router.post('/documents', protect, async (req, res) => {
   try {
-    const clientId = req.user?.clientId || req.body.clientId;
+    const clientId = tenantClientId(req);
     const { title, content, sourceType, sourceUrl } = req.body;
 
-    if (!clientId) return res.status(400).json({ success: false, message: 'ClientId required' });
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
     if (!title?.trim() || !content?.trim()) {
       return res.status(400).json({ success: false, message: 'Title and content are required.' });
     }
@@ -265,8 +268,17 @@ router.post('/documents', protect, async (req, res) => {
  */
 router.put('/documents/:id', protect, async (req, res) => {
   try {
+    const tenantId = tenantClientId(req);
+    if (!tenantId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+
     const { title, content, isActive } = req.body;
     const KnowledgeDocument = require('../models/KnowledgeDocument');
+
+    const existing = await KnowledgeDocument.findById(req.params.id);
+    if (!existing) return res.status(404).json({ success: false, message: 'Document not found' });
+    if (existing.clientId !== tenantId) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
 
     const doc = await KnowledgeDocument.findByIdAndUpdate(
       req.params.id,
@@ -277,8 +289,6 @@ router.put('/documents/:id', protect, async (req, res) => {
       },
       { new: true }
     );
-
-    if (!doc) return res.status(404).json({ success: false, message: 'Document not found' });
 
     res.json({ success: true, document: doc });
   } catch (err) {
@@ -293,9 +303,17 @@ router.put('/documents/:id', protect, async (req, res) => {
  */
 router.delete('/documents/:id', protect, async (req, res) => {
   try {
+    const tenantId = tenantClientId(req);
+    if (!tenantId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+
     const KnowledgeDocument = require('../models/KnowledgeDocument');
+    const existing = await KnowledgeDocument.findById(req.params.id);
+    if (!existing) return res.status(404).json({ success: false, message: 'Document not found' });
+    if (existing.clientId !== tenantId) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+
     const doc = await KnowledgeDocument.findByIdAndDelete(req.params.id);
-    if (!doc) return res.status(404).json({ success: false, message: 'Document not found' });
 
     res.json({ success: true, message: 'Document deleted' });
   } catch (err) {
@@ -308,10 +326,10 @@ router.delete('/documents/:id', protect, async (req, res) => {
  */
 router.post('/test', protect, async (req, res) => {
   try {
-    const clientId = req.user?.clientId || req.body.clientId;
+    const clientId = tenantClientId(req);
     const { query } = req.body;
 
-    if (!clientId) return res.status(400).json({ success: false, message: 'ClientId required' });
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
     if (!query) return res.status(400).json({ success: false, message: 'Query required' });
 
     const { buildKnowledgeContext } = require('../utils/personaEngine');

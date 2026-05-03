@@ -90,7 +90,7 @@ const scheduleFollowUpSequenceCron = () => {
                         clientId: seq.clientId,
                         from: seq.phone,
                         direction: 'incoming',
-                        createdAt: { $gte: seq.createdAt }
+                        timestamp: { $gte: seq.createdAt }
                     });
                     if (replyCount > 0) {
                         seq.status = 'cancelled';

@@ -1,5 +1,5 @@
 const express = require('express');
-const { resolveClient } = require('../utils/queryHelpers');
+const { resolveClient, tenantClientId } = require('../utils/queryHelpers');
 const router = express.Router();
 const multer = require('multer');
 const csv = require('csv-parser');
@@ -816,9 +816,9 @@ router.get('/ai-tasks', protect, async (req, res) => {
 router.patch('/:id', protect, async (req, res) => {
     try {
         const { id } = req.params;
-        const clientId = req.user.clientId;
-        if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
-           // allow override
+        const clientId = tenantClientId(req);
+        if (!clientId) {
+          return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
 
         const updates = { ...req.body };

@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const { tenantClientId } = require('../utils/queryHelpers');
 
 const protect = async (req, res, next) => {
   let token;
@@ -66,13 +67,21 @@ const authorize = (...roles) => {
 
 const verifyClientAccess = (req, res, next) => {
   const { clientId } = req.params;
-  
+  if (!clientId) {
+    return res.status(400).json({ success: false, message: 'Missing clientId' });
+  }
+
   // Master Tester Override
   if (req.user?.email === 'delitech2708@gmail.com') {
     return next();
   }
 
-  if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+  if (req.user.role === 'SUPER_ADMIN') {
+    return next();
+  }
+
+  const tenantId = tenantClientId(req);
+  if (!tenantId || tenantId !== clientId) {
     return res.status(403).json({ success: false, message: 'Unauthorized' });
   }
   next();

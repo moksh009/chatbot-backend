@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { resolveClient, startOfDayIST } = require('../utils/queryHelpers');
+const { resolveClient, startOfDayIST, tenantClientId } = require('../utils/queryHelpers');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Appointment = require('../models/Appointment');
@@ -28,9 +28,9 @@ const getGeminiClient = () => {
 // @access  Private
 router.get('/notifications', protect, async (req, res) => {
   try {
-    let clientId = req.user.clientId;
-    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
-      clientId = req.query.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
     const query = { clientId };
@@ -67,8 +67,8 @@ router.get('/notifications', protect, async (req, res) => {
 // @access  Private
 router.get('/:clientId/activities', protect, async (req, res) => {
     try {
-        const { clientId } = req.params;
-        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+        const clientId = tenantClientId(req);
+        if (!clientId || clientId !== req.params.clientId) {
             return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
 
@@ -88,9 +88,9 @@ router.get('/:clientId/activities', protect, async (req, res) => {
 // @access  Private
 router.get('/import-sessions', protect, async (req, res) => {
     try {
-        let clientId = req.user.clientId;
-        if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
-            clientId = req.query.clientId;
+        const clientId = tenantClientId(req);
+        if (!clientId) {
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
         
         const ImportSession = require('../models/ImportSession');
@@ -106,9 +106,9 @@ router.get('/import-sessions', protect, async (req, res) => {
 // @access  Private
 router.get('/flow-heatmap', protect, async (req, res) => {
   try {
-    let clientId = req.user.clientId;
-    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
-      clientId = req.query.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
     const { start, end, phoneNumberId } = req.query;
@@ -161,7 +161,10 @@ router.get('/flow-heatmap', protect, async (req, res) => {
 // @access  Private
 router.get('/bot-health', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
     const client = await Client.findOne({ clientId });
     
     // In a real scenario, we might check WhatsApp Cloud API health or recent message success rate
@@ -182,9 +185,9 @@ router.get('/bot-health', protect, async (req, res) => {
 
 router.get('/realtime', protect, apiCache(60), async (req, res) => {
   try {
-    let clientId = req.user.clientId;
-    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
-      clientId = req.query.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
     // Performance Overhaul: Single document lookup replaces 17 aggregation queries
@@ -378,9 +381,9 @@ router.get('/realtime', protect, apiCache(60), async (req, res) => {
 
 router.get('/leads', protect, apiCache(30), async (req, res) => {
   try {
-    let clientId = req.user.clientId;
-    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
-      clientId = req.query.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
     const query = { clientId };
@@ -631,9 +634,9 @@ router.get('/lead/:id', protect, async (req, res) => {
 // GET /api/analytics/lead-by-phone/:phone
 router.get('/lead-by-phone/:phone', protect, async (req, res) => {
   try {
-    let clientId = req.user.clientId;
-    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
-      clientId = req.query.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
     // --- PHASE 11 FIX: Robust Lead Lookup ---
@@ -666,9 +669,9 @@ router.get('/lead-by-phone/:phone', protect, async (req, res) => {
 // PUT /api/analytics/lead/:phone (Update Lead CRM Details)
 router.put('/lead/:phone', protect, async (req, res) => {
   try {
-    let clientId = req.user.clientId;
-    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
-      clientId = req.query.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     
     const { name, email, tags, isNameCustom } = req.body;
@@ -705,9 +708,9 @@ router.put('/lead/:phone', protect, async (req, res) => {
 // GET /api/analytics/top-leads
 router.get('/top-leads', protect, apiCache(60), async (req, res) => {
   try {
-    let clientId = req.user.clientId;
-    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
-      clientId = req.query.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     // --- PHASE 11 FIX: Refined Hot Leads (Score >= 60) ---
     const query = { clientId, leadScore: { $gte: 60 } };
@@ -780,9 +783,9 @@ router.get('/top-leads', protect, apiCache(60), async (req, res) => {
 // GET /api/analytics/top-products
 router.get('/top-products', protect, apiCache(60), async (req, res) => {
   try {
-    let clientId = req.user.clientId;
-    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
-      clientId = req.query.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     const query = { clientId };
 
@@ -852,9 +855,9 @@ router.get('/top-products', protect, apiCache(60), async (req, res) => {
 // GET /api/analytics/receptionist-overview
 router.get('/receptionist-overview', protect, apiCache(60), async (req, res) => {
   try {
-    let clientId = req.user.clientId;
-    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
-      clientId = req.query.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     const daysToFetch = parseInt(req.query.days) || 1; // Default to 1 day (today)
 
@@ -1019,9 +1022,9 @@ router.get('/receptionist-overview', protect, apiCache(60), async (req, res) => 
 
 router.get('/', protect, async (req, res) => {
   try {
-    let clientId = req.user.clientId;
-    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
-      clientId = req.query.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
     const clientIdQuery = { clientId };
@@ -1264,7 +1267,10 @@ router.get('/', protect, async (req, res) => {
 // GET /api/analytics/insights (Advanced USP Features)
 router.get('/insights', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
     const query = { clientId };
 
     const [appts, orders, leads] = await Promise.all([
@@ -1409,9 +1415,9 @@ router.get("/:clientId/roi", protect, async (req, res) => {
 // GET /api/analytics/funnel
 router.get('/funnel', protect, async (req, res) => {
   try {
-    let clientId = req.user.clientId;
-    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
-      clientId = req.query.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     const query = { clientId };
 
@@ -1458,9 +1464,9 @@ router.get('/funnel', protect, async (req, res) => {
 // GET /api/analytics/flow-heatmap
 router.get('/flow-heatmap-legacy', protect, async (req, res) => {
   try {
-    let clientId = req.user.clientId;
-    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
-      clientId = req.query.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ message: 'Client not found' });
@@ -1487,9 +1493,9 @@ router.get('/flow-heatmap-legacy', protect, async (req, res) => {
 // GET /api/analytics/abandoned-products
 router.get('/abandoned-products', protect, async (req, res) => {
   try {
-    let clientId = req.user.clientId;
-    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
-      clientId = req.query.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     const days = parseInt(req.query.days) || 30;
     const since = new Date();
@@ -1545,8 +1551,8 @@ router.get('/abandoned-products', protect, async (req, res) => {
 // GET /api/analytics/cohort/:clientId
 router.get('/cohort/:clientId', protect, async (req, res) => {
   try {
-    const { clientId } = req.params;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     // Return dummy cohort matrix for now. In reality, requires complex MapReduce or Aggregation.
@@ -1563,8 +1569,8 @@ router.get('/cohort/:clientId', protect, async (req, res) => {
 // GET /api/analytics/revenue-attribution/:clientId
 router.get('/revenue-attribution/:clientId', protect, async (req, res) => {
   try {
-    const { clientId } = req.params;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
@@ -1598,8 +1604,8 @@ router.get('/revenue-attribution/:clientId', protect, async (req, res) => {
 // GET /api/analytics/bot-health/:clientId
 router.get('/bot-health/:clientId', protect, async (req, res) => {
   try {
-    const { clientId } = req.params;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
@@ -1649,7 +1655,10 @@ router.get('/bot-health/:clientId', protect, async (req, res) => {
  */
 router.get('/conversation-quality', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
     const query = { clientId };
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -1687,7 +1696,10 @@ router.get('/conversation-quality', protect, async (req, res) => {
  */
 router.get('/lead-intelligence', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
     const query = { clientId };
 
     const [totalLeads, highIntent, RTO] = await Promise.all([
@@ -1721,7 +1733,10 @@ router.get('/lead-intelligence', protect, async (req, res) => {
  */
 router.get('/revenue-intelligence', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
     const query = { clientId };
 
     const stats = await DailyStat.aggregate([
@@ -1757,7 +1772,10 @@ router.get('/revenue-intelligence', protect, async (req, res) => {
  */
 router.get('/usage-stats', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
     const stats = await require('../utils/billingService').getUsageReport(clientId);
     
     if (!stats) return res.status(404).json({ success: false, message: 'Client not found' });
@@ -1778,7 +1796,10 @@ router.get('/usage-stats', protect, async (req, res) => {
  */
 router.get('/agent-performance', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
     const query = { clientId };
 
     // 1. Fetch Conversations with FRT metrics (lean + select only needed fields)
@@ -1919,9 +1940,9 @@ router.get("/:clientId/home", protect, async (req, res) => {
 // Conversation collection aggregation. Frontend table maps directly to this shape.
 router.get('/operators', protect, async (req, res) => {
   try {
-    let clientId = req.user.clientId;
-    if (req.user.role === 'SUPER_ADMIN' && req.query.clientId) {
-      clientId = req.query.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     
     const { days } = req.query;

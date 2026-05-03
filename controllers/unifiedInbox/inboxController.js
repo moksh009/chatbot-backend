@@ -5,6 +5,7 @@ const IGConversation = require('../../models/IGConversation');
 const Client = require('../../models/Client');
 const { sendInstagramDMv2 } = require('../../utils/igGraphApi');
 const { decrypt } = require('../../utils/encryption');
+const { tenantClientId } = require('../../utils/queryHelpers');
 const log = require('../../utils/logger')('UnifiedInbox');
 
 /**
@@ -12,7 +13,7 @@ const log = require('../../utils/logger')('UnifiedInbox');
  * Merge-sort conversations from WhatsApp + Instagram into a single unified list.
  * 
  * Query params:
- *  - clientId (required)
+ *  - clientId (super-admin only — tenant users use JWT clientId)
  *  - channel: 'all' | 'whatsapp' | 'instagram' (default: 'all')
  *  - search: text search on name/phone/username
  *  - limit: number (default: 50)
@@ -20,8 +21,8 @@ const log = require('../../utils/logger')('UnifiedInbox');
  */
 async function listConversations(req, res) {
   try {
-    const clientId = req.query.clientId;
-    if (!clientId) return res.status(400).json({ error: 'clientId is required' });
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
 
     const channel = req.query.channel || 'all';
     const search = req.query.search || '';
@@ -139,8 +140,8 @@ async function listConversations(req, res) {
  */
 async function getFilters(req, res) {
   try {
-    const clientId = req.query.clientId || req.user?.clientId;
-    if (!clientId) return res.status(400).json({ error: 'clientId is required' });
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
 
     const User = require('../../models/User');
     const teamMembers = await User.find({
@@ -257,24 +258,32 @@ async function markRead(req, res) {
  * POST /api/inbox/conversations/:id/send
  * Send an agent message via WhatsApp or Instagram DM API.
  * 
- * Body: { channel, content, clientId }
+ * Body: { channel, content } — tenant comes from JWT (never trust body.clientId).
  */
 async function sendMessage(req, res) {
   try {
     const { id } = req.params;
-    const { channel, content, clientId } = req.body;
+    const { channel, content } = req.body;
 
-    if (!content || !clientId || !channel) {
-      return res.status(400).json({ error: 'content, clientId, and channel are required' });
+    if (!content || !channel) {
+      return res.status(400).json({ error: 'content and channel are required' });
+    }
+
+    const effectiveClientId = tenantClientId(req);
+    if (!effectiveClientId) {
+      return res.status(403).json({ error: 'Unauthorized' });
     }
 
     if (channel === 'instagram') {
       // Get the conversation to find the recipient IGSID
       const convo = await IGConversation.findById(id).lean();
       if (!convo) return res.status(404).json({ error: 'Conversation not found' });
+      if (convo.clientId !== effectiveClientId) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
 
       // Get the client's IG access token
-      const client = await Client.findOne({ clientId }).lean();
+      const client = await Client.findOne({ clientId: effectiveClientId }).lean();
       if (!client) return res.status(404).json({ error: 'Client not found' });
 
       const rawToken = client.instagramAccessToken || client.social?.instagram?.accessToken;
@@ -282,7 +291,7 @@ async function sendMessage(req, res) {
       if (!accessToken) return res.status(422).json({ error: 'Instagram is not connected. Please reconnect in Settings.' });
 
       // Send via Graph API
-      await sendInstagramDMv2(convo.igsid, { text: content }, accessToken, { clientId });
+      await sendInstagramDMv2(convo.igsid, { text: content }, accessToken, { clientId: effectiveClientId });
 
       // Save agent message to conversation
       const newMessage = {
@@ -300,7 +309,7 @@ async function sendMessage(req, res) {
 
       // Emit real-time update
       if (global.io) {
-        global.io.to(`client_${clientId}`).emit('igMessageNew', {
+        global.io.to(`client_${effectiveClientId}`).emit('igMessageNew', {
           conversationId: id,
           channel: 'instagram',
           participantId: convo.igsid,

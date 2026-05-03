@@ -4,6 +4,7 @@ const { protect } = require('../middleware/auth');
 const Conversation = require('../models/Conversation');
 const BotAnalytics = require('../models/BotAnalytics');
 const TrainingCase = require('../models/TrainingCase');
+const { tenantClientId } = require('../utils/queryHelpers');
 
 /**
  * @route   GET /api/bot-quality/footprint
@@ -12,8 +13,8 @@ const TrainingCase = require('../models/TrainingCase');
  */
 router.get('/footprint', protect, async (req, res) => {
   try {
-    const clientId = req.user?.clientId || req.query.clientId;
-    if (!clientId) return res.status(400).json({ success: false, message: 'ClientId required' });
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
 
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
@@ -74,8 +75,8 @@ router.get('/footprint', protect, async (req, res) => {
  */
 router.get('/conversations/flagged', protect, async (req, res) => {
   try {
-    const clientId = req.user?.clientId || req.query.clientId;
-    if (!clientId) return res.status(400).json({ success: false, message: 'ClientId required' });
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
 
     // Flagged conditions:
     // 1. botPaused = true (escalated to human)

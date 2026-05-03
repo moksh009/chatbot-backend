@@ -8,9 +8,10 @@ const WhatsAppFlow = require("../models/WhatsAppFlow");
 const { generateEcommerceFlow, generateSystemPrompt, getPrebuiltTemplates } = require("../utils/flowGenerator");
 const { withShopifyRetry } = require("../utils/shopifyHelper");
 const { generateText, generateTextFast } = require("../utils/gemini");
-const { mapWizardToClient, mapFeatureToggle } = require("../utils/wizardMapper");
+const { mapWizardToClient, mapFeatureToggle, pullPersonaBundleFromSet } = require("../utils/wizardMapper");
 const { emitToClient } = require("../utils/socket");
 const log = require("../utils/logger")("Wizard");
+const { tenantClientId } = require("../utils/queryHelpers");
 
 async function syncPendingTemplatesForClient(client) {
   const axios = require("axios");
@@ -131,7 +132,8 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ error: "Client not found" });
 
-    if (req.user.role !== "SUPER_ADMIN" && req.user.clientId !== clientId) {
+    const tenantId = tenantClientId(req);
+    if (!tenantId || tenantId !== clientId) {
       return res.status(403).json({ error: "Unauthorized" });
     }
 
@@ -253,6 +255,8 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     // source of truth instead of 150 lines of brittle inline spreads.
     const mapped = mapWizardToClient(wizardData, client, { systemPrompt });
     const $set = mapped.$set;
+    const { persona: personaPatch, systemPrompt: personaSystemPrompt } =
+      pullPersonaBundleFromSet($set);
 
     // Persist legacy flow arrays for the dual-brain engine when replacing.
     if (wizardData.replaceExisting !== false) {
@@ -292,6 +296,12 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     const updatedClient = await Client.findByIdAndUpdate(
       client._id, updateQuery, { new: true, runValidators: true }
     );
+
+    const { syncPersonaAcrossSystem } = require("../utils/personaEngine");
+    await syncPersonaAcrossSystem(clientId, personaPatch, {
+      systemPrompt: personaSystemPrompt,
+    });
+
     console.log(`[Wizard] Completed for ${clientId}. wizardCompleted=${updatedClient.wizardCompleted}`);
 
     // Custom Meta templates are pushed separately so they don't conflict with
@@ -312,12 +322,6 @@ router.post("/:clientId/complete", protect, async (req, res) => {
         generatedAt: new Date()
       });
     } catch (_) { /* socket optional */ }
-
-    // Sync persona to flows (Goal 1: Alignment)
-    if (updatedClient.ai?.persona) {
-      const { syncPersonaToFlows } = require("../utils/personaEngine");
-      syncPersonaToFlows(clientId, updatedClient.ai.persona);
-    }
 
     const action = wizardData.replaceExisting !== false ? 'replaced' : 'added';
     console.log(`[Wizard] ✅ Complete! Flow ${action} with ${nodes.length} nodes for ${clientId}`);
@@ -585,7 +589,8 @@ router.post("/:clientId/submit-product-templates", protect, async (req, res) => 
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ error: "Client not found" });
 
-    if (req.user.role !== "SUPER_ADMIN" && req.user.clientId !== clientId) {
+    const tenantId = tenantClientId(req);
+    if (!tenantId || tenantId !== clientId) {
       return res.status(403).json({ error: "Unauthorized" });
     }
 
@@ -767,7 +772,8 @@ router.post("/:clientId/sync-template-status", protect, async (req, res) => {
   try {
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ success: false, error: "Client not found" });
-    if (req.user.role !== "SUPER_ADMIN" && req.user.clientId !== clientId) {
+    const tenantId = tenantClientId(req);
+    if (!tenantId || tenantId !== clientId) {
       return res.status(403).json({ success: false, error: "Unauthorized" });
     }
 
@@ -791,7 +797,8 @@ router.post("/:clientId/template-status/sync", protect, async (req, res) => {
   try {
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ success: false, error: "Client not found" });
-    if (req.user.role !== "SUPER_ADMIN" && req.user.clientId !== clientId) {
+    const tenantId = tenantClientId(req);
+    if (!tenantId || tenantId !== clientId) {
       return res.status(403).json({ success: false, error: "Unauthorized" });
     }
 
@@ -824,7 +831,8 @@ router.post("/:clientId/submit-automation-templates", protect, async (req, res) 
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ error: "Client not found" });
 
-    if (req.user.role !== "SUPER_ADMIN" && req.user.clientId !== clientId) {
+    const tenantId = tenantClientId(req);
+    if (!tenantId || tenantId !== clientId) {
       return res.status(403).json({ error: "Unauthorized" });
     }
 
@@ -995,7 +1003,8 @@ router.patch("/:clientId/features", protect, async (req, res) => {
   const { features = {}, profile = {}, regenerate = true } = req.body || {};
 
   try {
-    if (req.user.role !== "SUPER_ADMIN" && req.user.clientId !== clientId) {
+    const tenantId = tenantClientId(req);
+    if (!tenantId || tenantId !== clientId) {
       return res.status(403).json({ error: "Unauthorized" });
     }
 
@@ -1112,7 +1121,8 @@ router.patch("/:clientId/features", protect, async (req, res) => {
 router.get("/:clientId/features", protect, async (req, res) => {
   const { clientId } = req.params;
   try {
-    if (req.user.role !== "SUPER_ADMIN" && req.user.clientId !== clientId) {
+    const tenantId = tenantClientId(req);
+    if (!tenantId || tenantId !== clientId) {
       return res.status(403).json({ error: "Unauthorized" });
     }
     const client = await Client.findOne({ clientId }).select('wizardFeatures policies platformVars brand loyaltyConfig wizardCompleted ai.persona').lean();
@@ -1146,7 +1156,8 @@ router.get("/:clientId/features", protect, async (req, res) => {
 router.post("/:clientId/reset", protect, async (req, res) => {
   const { clientId } = req.params;
   try {
-    if (req.user.role !== "SUPER_ADMIN" && req.user.clientId !== clientId) {
+    const tenantId = tenantClientId(req);
+    if (!tenantId || tenantId !== clientId) {
       return res.status(403).json({ error: "Unauthorized" });
     }
     await Client.findOneAndUpdate({ clientId }, { $set: { wizardCompleted: false } });

@@ -1,5 +1,5 @@
 const express = require('express');
-const { resolveClient } = require('../utils/queryHelpers');
+const { resolveClient, tenantClientId } = require('../utils/queryHelpers');
 const router = express.Router();
 const axios = require('axios');
 const { protect } = require('../middleware/auth');
@@ -38,8 +38,8 @@ async function getClientCredentials(clientId, userId) {
 // 1. Fetch All Templates from Meta
 router.get('/sync', protect, async (req, res) => {
     try {
-        const { clientId } = req.query;
-        if (!clientId) return res.status(400).json({ success: false, message: 'clientId is required' });
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
 
         const client = await getClientCredentials(clientId, req.user.id);
 
@@ -121,13 +121,8 @@ router.get('/sync', protect, async (req, res) => {
 // 1b. Fetch Templates from Local DB Cache (Lightweight)
 router.get('/list', protect, async (req, res) => {
     try {
-        const { clientId } = req.query;
-        if (!clientId) return res.status(400).json({ success: false, message: 'clientId is required' });
-
-        const user = await User.findById(req.user.id);
-        if (user.role !== 'SUPER_ADMIN' && user.clientId !== clientId) {
-           return res.status(403).json({ success: false, message: 'Unauthorized' });
-        }
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
 
         const client = await Client.findOne({ clientId }, 'syncedMetaTemplates templatesSyncedAt messageTemplates pendingTemplates');
         if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
@@ -359,10 +354,9 @@ router.post('/create', protect, async (req, res) => {
 // 3. Delete a Template from Meta
 router.delete('/:name', protect, async (req, res) => {
     try {
-        const { clientId } = req.query;
+        const clientId = tenantClientId(req);
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
         const templateName = req.params.name;
-        
-        if (!clientId) return res.status(400).json({ success: false, message: 'clientId is required' });
 
         const client = await getClientCredentials(clientId, req.user.id);
         const url = `https://graph.facebook.com/v21.0/${client.wabaId}/message_templates?name=${templateName}`;

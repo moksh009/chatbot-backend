@@ -4,6 +4,7 @@ const { protect } = require('../middleware/auth');
 const AdLead = require('../models/AdLead');
 const Conversation = require('../models/Conversation');
 const CustomerIntelligence = require('../models/CustomerIntelligence');
+const { tenantClientId } = require('../utils/queryHelpers');
 
 /**
  * GET /api/intelligence/dna/:phone
@@ -12,10 +13,10 @@ const CustomerIntelligence = require('../models/CustomerIntelligence');
 router.get('/dna/:phone', protect, async (req, res) => {
     try {
         const { phone } = req.params;
-        const clientId = req.query.clientId || req.user?.clientId;
-        
+        const clientId = tenantClientId(req);
+
         if (!clientId) {
-            return res.status(400).json({ error: 'clientId required' });
+            return res.status(403).json({ error: 'Unauthorized' });
         }
 
         // Normalize phone — strip non-digits

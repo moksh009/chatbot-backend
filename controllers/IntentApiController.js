@@ -5,6 +5,7 @@ const IntentAnalytics = require('../models/IntentAnalytics');
 const { CONFIDENCE_THRESHOLD } = require('../utils/nlpConfig');
 const ClientModel = require('../models/Client');
 const { botGenerateJSON } = require('../utils/gemini');
+const { tenantClientId } = require('../utils/queryHelpers');
 
 /**
  * IntentApiController
@@ -13,14 +14,10 @@ const { botGenerateJSON } = require('../utils/gemini');
  */
 
 /**
- * Helper: Resolve clientId from JWT (preferred) or fallback for super admins.
- * HARDENING 1: Never trust req.body.clientId for non-super-admins.
+ * Helper: Resolve tenant client id (JWT for normal users; super-admins may target via query/body/params).
  */
 function resolveClientId(req) {
-  if (req.user?.isSuperAdmin) {
-    return req.query.clientId || req.body.clientId || req.user?.clientId;
-  }
-  return req.user?.clientId;
+  return tenantClientId(req);
 }
 
 /**
@@ -689,7 +686,7 @@ exports.generateTrainingData = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Intent description is required.' });
     }
 
-    const clientId = req.user?.clientId || req.query?.clientId || req.body?.clientId;
+    const clientId = tenantClientId(req);
     if (!clientId) {
       return res.status(401).json({ success: false, message: 'Client ID required for generation.' });
     }

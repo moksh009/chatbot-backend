@@ -1,5 +1,5 @@
 const express = require('express');
-const { resolveClient } = require('../utils/queryHelpers');
+const { resolveClient, tenantClientId } = require('../utils/queryHelpers');
 const router = express.Router();
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
@@ -30,14 +30,18 @@ router.get('/', protect, async (req, res) => {
       query.phone = phone;
     }
 
-    // --- PHASE 10 FIX: Shared Query for Delitech/CodeClinic ---
-    const activeClientId = req.user.role === 'SUPER_ADMIN' && clientId ? clientId : req.user.clientId;
+    // Non–super-admins: always JWT tenant. Super-admins: optional `clientId` in query; if omitted, unscoped (all tenants).
+    const qClient = clientId && String(clientId).trim() ? String(clientId).trim() : null;
+    const activeClientId =
+      req.user.role === 'SUPER_ADMIN' ? qClient : req.user.clientId || null;
+    const scopeToTenant = req.user.role !== 'SUPER_ADMIN' || !!qClient;
 
-    if (req.user.role !== 'SUPER_ADMIN' || (req.user.role === 'SUPER_ADMIN' && clientId)) {
+    if (scopeToTenant) {
+      if (!activeClientId) {
+        return res.status(403).json({ success: false, message: 'Unauthorized' });
+      }
       query.clientId = activeClientId;
     }
-    // If SUPER_ADMIN but no clientId provided, they see everything or we could default.
-    // Let's default to everything for SUPER_ADMIN if no clientId is passed.
 
     if (days) {
       const date = new Date();
@@ -47,6 +51,9 @@ router.get('/', protect, async (req, res) => {
 
     // Filter for imported lists only
     if (isImported === 'true') {
+      if (!activeClientId) {
+        return res.status(400).json({ success: false, message: 'clientId is required when filtering imported leads' });
+      }
       const AdLead = require('../models/AdLead');
       const importedLeads = await AdLead.find({ clientId: activeClientId, source: 'imported' }).select('phoneNumber').lean();
       const importedPhones = importedLeads.map(l => l.phoneNumber);
@@ -1377,7 +1384,8 @@ router.get('/:id/export', protect, async (req, res) => {
 // ─── POST /api/conversations/smart-recovery/toggle — enable/disable AI recovery ─
 router.post('/smart-recovery/toggle', protect, async (req, res) => {
   try {
-    const clientId = req.user.role === 'SUPER_ADMIN' ? req.body.clientId : req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
     client.smartCartRecovery = !client.smartCartRecovery;
@@ -1391,7 +1399,8 @@ router.post('/smart-recovery/toggle', protect, async (req, res) => {
 // ─── GET /api/conversations/smart-recovery/preview — preview AI messages ──────
 router.get('/smart-recovery/preview', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
     const { leadId } = req.query;
     if (!leadId) return res.status(400).json({ success: false, message: 'leadId required' });
 
@@ -1399,6 +1408,9 @@ router.get('/smart-recovery/preview', protect, async (req, res) => {
     const AdLead = require('../models/AdLead');
     const lead = await AdLead.findById(leadId).lean();
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+    if (lead.clientId !== clientId) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
 
     const { generateSmartRecoveryMessage } = require('../utils/smartCartRecovery');
     const [step1, step2, step3] = await Promise.all([
@@ -1419,7 +1431,8 @@ router.post('/bulk-export', protect, async (req, res) => {
     const { ids, format = 'pdf' } = req.body;
     if (!ids || !ids.length) return res.status(400).json({ success: false, message: 'No conversations selected' });
 
-    const clientId = req.user.role === 'SUPER_ADMIN' ? req.body.clientId : req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
     
     // Create Export Job
     const job = await ExportJob.create({
@@ -1536,6 +1549,13 @@ router.get('/export-jobs/:id', protect, async (req, res) => {
   try {
     const job = await ExportJob.findById(req.params.id);
     if (!job) return res.status(404).json({ success: false, message: 'Job not found' });
+    if (req.user.role === 'SUPER_ADMIN') {
+      return res.json({ success: true, job });
+    }
+    const tenantId = tenantClientId(req);
+    if (!tenantId || job.clientId !== tenantId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
     res.json({ success: true, job });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -1550,8 +1570,11 @@ router.get('/:id/smart-replies', protect, async (req, res) => {
     if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found' });
 
     // Validate access
-    const clientId = req.user.role === 'SUPER_ADMIN' ? req.body.clientId || conversation.clientId : req.user.clientId;
-    if (conversation.clientId !== clientId && req.user.role !== 'SUPER_ADMIN') {
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    if (conversation.clientId !== clientId) {
         return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
@@ -1674,8 +1697,8 @@ router.get('/:clientId/:phone/context', protect, async (req, res) => {
         const CampaignMessage = require('../models/CampaignMessage');
         const AdLead = require('../models/AdLead');
 
-        // Optional verifyClientAccess-equivalent since we are using protect
-        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+        const tenantId = tenantClientId(req);
+        if (!tenantId || tenantId !== clientId) {
            return res.status(403).json({ success: false, message: 'Unauthorized client access' });
         }
 

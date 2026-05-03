@@ -15,7 +15,7 @@ const WhatsApp = require('../utils/whatsapp');
  * Real aggregate stats for the Loyalty Hub dashboard.
  */
 // ✅ Phase R2: Fixed clientId ObjectId mismatch in loyalty stats — 2026-04-10
-const { resolveClient, startOfDayIST } = require('../utils/queryHelpers');
+const { resolveClient, startOfDayIST, tenantClientId } = require('../utils/queryHelpers');
 
 async function getLoyaltyStats(req, res) {
     try {
@@ -170,8 +170,8 @@ async function getReputationStats(req, res) {
  * Per-customer wallet with balance, tier, and transaction history.
  */
 async function getCustomerWallet(req, res) {
-    const { clientId, phone } = req.query;
-    const resolvedClientId = clientId || req.user?.clientId;
+    const { phone } = req.query;
+    const resolvedClientId = tenantClientId(req);
     if (!resolvedClientId || !phone) return res.status(400).json({ message: 'Missing clientId or phone' });
 
     try {
@@ -192,8 +192,8 @@ async function getCustomerWallet(req, res) {
  * Global transactions list
  */
 async function getLoyaltyTransactions(req, res) {
-    const clientId = req.query.clientId || req.user?.clientId;
-    if (!clientId) return res.status(400).json({ message: 'Missing clientId' });
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ message: 'Unauthorized' });
 
     try {
         const transactions = await LoyaltyTransaction.find({ clientId })
@@ -214,8 +214,8 @@ async function getLoyaltyTransactions(req, res) {
  * Idempotent — safe to run multiple times.
  */
 async function backfillOrderPoints(req, res) {
-    const clientId = req.body.clientId || req.user?.clientId;
-    if (!clientId) return res.status(400).json({ message: 'Missing clientId' });
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ message: 'Unauthorized' });
 
     try {
         const client = await Client.findOne({ clientId }).select('loyaltyConfig');
@@ -243,7 +243,7 @@ async function backfillOrderPoints(req, res) {
  */
 async function sendLoyaltyReminderTemplate(req, res) {
     const { phone } = req.body;
-    const resolvedClientId = req.params.clientId || req.body.clientId || req.user?.clientId;
+    const resolvedClientId = tenantClientId(req);
     if (!resolvedClientId || !phone) return res.status(400).json({ message: 'Missing clientId or phone' });
 
     try {
@@ -298,8 +298,8 @@ async function sendLoyaltyReminderTemplate(req, res) {
  * Redeems points for a Shopify Discount Code and notifies customer.
  */
 async function redeemLoyaltyPoints(req, res) {
-    const { clientId, phone, amount } = req.body;
-    const resolvedClientId = clientId || req.user?.clientId;
+    const { phone, amount } = req.body;
+    const resolvedClientId = tenantClientId(req);
 
     if (!resolvedClientId || !phone || !amount) {
         return res.status(400).json({ success: false, message: 'Missing required parameters' });
@@ -377,7 +377,7 @@ async function redeemLoyaltyPoints(req, res) {
  */
 async function adjustWalletBalance(req, res) {
     const { phone, amount, reason } = req.body;
-    const resolvedClientId = req.params.clientId || req.body.clientId || req.user?.clientId;
+    const resolvedClientId = tenantClientId(req);
 
     if (!resolvedClientId || !phone || amount === undefined) {
         return res.status(400).json({ message: 'Missing required parameters' });
@@ -430,8 +430,8 @@ async function adjustWalletBalance(req, res) {
  * AI-driven or manual button to generate a specific reward for a customer.
  */
 async function generateAIRewardCode(req, res) {
-    const { clientId, phone, rewardType, customValue } = req.body;
-    const resolvedClientId = clientId || req.user?.clientId;
+    const { phone, rewardType, customValue } = req.body;
+    const resolvedClientId = tenantClientId(req);
 
     try {
         const client = await Client.findOne({ clientId: resolvedClientId });
@@ -486,8 +486,8 @@ async function generateAIRewardCode(req, res) {
  * GET /api/loyalty/status (Legacy - kept for bot compatibility)
  */
 async function getLoyaltyStatus(req, res) {
-    const { clientId, phone } = req.query;
-    const resolvedClientId = clientId || req.user?.clientId;
+    const { phone } = req.query;
+    const resolvedClientId = tenantClientId(req);
     if (!resolvedClientId || !phone) return res.status(400).json({ message: 'Missing params' });
 
     try {

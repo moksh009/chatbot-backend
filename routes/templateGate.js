@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
 const Client = require('../models/Client');
+const { tenantClientId } = require('../utils/queryHelpers');
 const axios = require('axios');
 const { decrypt } = require('../utils/encryption');
 
@@ -93,7 +94,10 @@ const TEMPLATE_BLUEPRINTS = {
 router.get('/status', protect, async (req, res) => {
   try {
     const { name } = req.query;
-    const clientId = req.query.clientId || req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
 
     if (!name) {
       return res.status(400).json({ status: 'not_created', message: 'Template name is required' });
@@ -152,8 +156,11 @@ router.get('/status', protect, async (req, res) => {
  */
 router.post('/submit', protect, async (req, res) => {
   try {
-    const { name, clientId: bodyClientId, components: customComponents } = req.body;
-    const clientId = bodyClientId || req.user.clientId;
+    const { name, components: customComponents } = req.body;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
 
     if (!name) {
       return res.status(400).json({ success: false, message: 'Template name is required' });

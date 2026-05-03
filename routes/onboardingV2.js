@@ -31,8 +31,9 @@ const { protect } = require("../middleware/auth");
 const { platformGenerateJSON } = require("../utils/gemini");
 const { generateEcommerceFlow, generateSystemPrompt } =
   require("../utils/flowGenerator");
-const { mapWizardToClient } = require("../utils/wizardMapper");
+const { mapWizardToClient, pullPersonaBundleFromSet } = require("../utils/wizardMapper");
 const { emitToClient } = require("../utils/socket");
+const { syncPersonaAcrossSystem } = require("../utils/personaEngine");
 const log = require("../utils/logger")("OnboardingV2");
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -360,11 +361,25 @@ router.post("/flow/generate", protect, async (req, res) => {
       return acc;
     }, {});
 
+    const brandName =
+      wizardData.brandName || client.businessName || client.name || "Your Brand";
+
     const generatorInput = {
-      businessName:
-        wizardData.brandName || client.businessName || client.name || "Your Brand",
+      businessName: brandName,
+      botName:
+        String(
+         wizardData.agentName ||
+          wizardData.brandName ||
+          client.ai?.persona?.name ||
+          client.platformVars?.agentName ||
+          ""
+        ).trim() || brandName,
       tone,
-      botLanguage: "English",
+      botLanguage:
+        wizardData.botLanguage ||
+        client.ai?.persona?.language ||
+        client.platformVars?.defaultLanguage ||
+        "English",
       replaceExisting: true,
       features: {
         ...(client.wizardFeatures || {}),
@@ -432,6 +447,8 @@ router.post("/flow/generate", protect, async (req, res) => {
     // Sync persona + wizard data via the canonical mapper
     const mapped = mapWizardToClient(generatorInput, client, { systemPrompt });
     const $set = mapped.$set || {};
+    const { persona: personaPatch, systemPrompt: personaSystemPrompt } =
+      pullPersonaBundleFromSet($set);
     $set.flowNodes = nodes;
     $set.flowEdges = edges;
     $set["onboardingData.generatedFlowId"] = flowId;
@@ -451,6 +468,10 @@ router.post("/flow/generate", protect, async (req, res) => {
     }
 
     await Client.findByIdAndUpdate(client._id, updateQuery, { new: true });
+
+    await syncPersonaAcrossSystem(clientId, personaPatch, {
+      systemPrompt: personaSystemPrompt,
+    });
 
     // Emit socket so any open dashboard refreshes — but during onboarding
     // the frontend suppresses toast for this event.

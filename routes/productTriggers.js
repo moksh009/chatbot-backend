@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
+const { tenantClientId } = require('../utils/queryHelpers');
 const { v4: uuidv4 } = require('uuid');
 const log = require('../utils/logger')('ProductTriggers');
 
@@ -27,8 +28,8 @@ const log = require('../utils/logger')('ProductTriggers');
 // GET all product triggers
 router.get('/:clientId', protect, async (req, res) => {
     try {
-        const { clientId } = req.params;
-        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+        const clientId = tenantClientId(req);
+        if (!clientId || clientId !== req.params.clientId) {
             return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
 
@@ -44,8 +45,8 @@ router.get('/:clientId', protect, async (req, res) => {
 // POST create a new product trigger
 router.post('/:clientId', protect, async (req, res) => {
     try {
-        const { clientId } = req.params;
-        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+        const clientId = tenantClientId(req);
+        if (!clientId || clientId !== req.params.clientId) {
             return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
 
@@ -89,8 +90,9 @@ router.post('/:clientId', protect, async (req, res) => {
 // PUT update a trigger
 router.put('/:clientId/:triggerId', protect, async (req, res) => {
     try {
-        const { clientId, triggerId } = req.params;
-        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+        const { triggerId } = req.params;
+        const clientId = tenantClientId(req);
+        if (!clientId || clientId !== req.params.clientId) {
             return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
 
@@ -125,10 +127,10 @@ router.put('/:clientId/:triggerId', protect, async (req, res) => {
 // PATCH toggle trigger active/inactive
 router.patch('/:clientId/:triggerId/toggle', protect, async (req, res) => {
     try {
-        const { clientId, triggerId } = req.params;
+        const { triggerId } = req.params;
         const { isActive } = req.body;
-
-        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+        const clientId = tenantClientId(req);
+        if (!clientId || clientId !== req.params.clientId) {
             return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
 
@@ -156,8 +158,9 @@ router.patch('/:clientId/:triggerId/toggle', protect, async (req, res) => {
 // DELETE a trigger
 router.delete('/:clientId/:triggerId', protect, async (req, res) => {
     try {
-        const { clientId, triggerId } = req.params;
-        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+        const { triggerId } = req.params;
+        const clientId = tenantClientId(req);
+        if (!clientId || clientId !== req.params.clientId) {
             return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
 

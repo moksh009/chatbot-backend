@@ -1065,44 +1065,48 @@ router.put('/client/settings', protect, async (req, res) => {
       return res.status(400).json({ message: 'No target clientId specified' });
     }
     
-    // Construct deep update paths
+    const aiBody = req.body.ai;
+    if (aiBody) {
+      const hasPersona =
+        aiBody.persona &&
+        typeof aiBody.persona === 'object' &&
+        Object.keys(aiBody.persona).length > 0;
+      const hasPrompt =
+        aiBody.systemPrompt !== undefined &&
+        aiBody.systemPrompt !== null &&
+        String(aiBody.systemPrompt).trim() !== '';
+      if (hasPersona || hasPrompt) {
+        const { syncPersonaAcrossSystem } = require('../utils/personaEngine');
+        await syncPersonaAcrossSystem(targetClientId, hasPersona ? aiBody.persona : {}, {
+          systemPrompt: hasPrompt ? aiBody.systemPrompt : undefined,
+        });
+      }
+    }
+
     const updateFields = {};
-    if (req.body.ai) {
-       // Update specific AI sub-fields while preserving the structure
-       if (req.body.ai.persona) updateFields['ai.persona'] = req.body.ai.persona;
-       if (req.body.ai.fallbackEnabled !== undefined) updateFields['ai.fallbackEnabled'] = req.body.ai.fallbackEnabled;
-       if (req.body.ai.languages) updateFields['ai.languages'] = req.body.ai.languages;
-       if (req.body.ai.translationConfig) updateFields['ai.translationConfig'] = req.body.ai.translationConfig;
-       if (req.body.ai.negotiationSettings) updateFields['ai.negotiationSettings'] = req.body.ai.negotiationSettings;
-       if (req.body.ai.orderTaking) updateFields['ai.orderTaking'] = req.body.ai.orderTaking;
-       if (req.body.ai.systemPrompt) updateFields['ai.systemPrompt'] = req.body.ai.systemPrompt;
-       if (req.body.ai.geminiKey) updateFields['ai.geminiKey'] = req.body.ai.geminiKey;
+    if (aiBody) {
+       if (aiBody.fallbackEnabled !== undefined) updateFields['ai.fallbackEnabled'] = aiBody.fallbackEnabled;
+       if (aiBody.languages) updateFields['ai.languages'] = aiBody.languages;
+       if (aiBody.translationConfig) updateFields['ai.translationConfig'] = aiBody.translationConfig;
+       if (aiBody.negotiationSettings) updateFields['ai.negotiationSettings'] = aiBody.negotiationSettings;
+       if (aiBody.orderTaking) updateFields['ai.orderTaking'] = aiBody.orderTaking;
+       if (aiBody.geminiKey) updateFields['ai.geminiKey'] = aiBody.geminiKey;
     }
 
     if (req.body.faq !== undefined) updateFields.faq = req.body.faq;
     if (req.body.websiteUrl !== undefined) updateFields.websiteUrl = req.body.websiteUrl;
     if (req.body.businessHours !== undefined) updateFields['config.businessHours'] = req.body.businessHours;
 
-    const updated = await Client.findOneAndUpdate(
-      { clientId: targetClientId },
-      { $set: updateFields },
-      { new: true }
-    );
-
-    if (!updated) return res.status(404).json({ message: 'Client not found' });
-
-    // --- PHASE 30: AUTOMATIC PERSONA ALIGNMENT ---
-    if (req.body.ai?.persona) {
-      try {
-        const { syncPersonaToFlows } = require('../utils/personaEngine');
-        // Synchronize in background to keep API response fast
-        syncPersonaToFlows(targetClientId, req.body.ai.persona).catch(e => {
-            log.error('Auto persona sync background failed', e.message);
-        });
-      } catch (err) {
-        log.warn('Persona engine utility missing or failed to load during auto-sync');
-      }
+    if (Object.keys(updateFields).length > 0) {
+      await Client.findOneAndUpdate(
+        { clientId: targetClientId },
+        { $set: updateFields },
+        { new: true }
+      );
     }
+
+    const updated = await Client.findOne({ clientId: targetClientId });
+    if (!updated) return res.status(404).json({ message: 'Client not found' });
 
     res.json({ success: true, ai: updated.ai });
   } catch (err) {

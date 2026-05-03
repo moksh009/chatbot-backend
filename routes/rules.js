@@ -2,12 +2,13 @@ const express = require('express');
 const router = express.Router();
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
+const { tenantClientId } = require('../utils/queryHelpers');
 
 // Get all rules for a client
 router.get('/:clientId', protect, async (req, res) => {
     try {
-        const { clientId } = req.params;
-        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+        const clientId = tenantClientId(req);
+        if (!clientId || clientId !== req.params.clientId) {
             return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
 
@@ -23,10 +24,9 @@ router.get('/:clientId', protect, async (req, res) => {
 // Update or completely replace automation rules
 router.put('/:clientId', protect, async (req, res) => {
     try {
-        const { clientId } = req.params;
         const { rules } = req.body;
-
-        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+        const clientId = tenantClientId(req);
+        if (!clientId || clientId !== req.params.clientId) {
             return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
 
@@ -49,10 +49,10 @@ router.put('/:clientId', protect, async (req, res) => {
 // Toggle rule active status
 router.patch('/:clientId/:ruleId/toggle', protect, async (req, res) => {
     try {
-        const { clientId, ruleId } = req.params;
+        const { ruleId } = req.params;
         const { isActive } = req.body;
-
-        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+        const clientId = tenantClientId(req);
+        if (!clientId || clientId !== req.params.clientId) {
             return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
 
@@ -84,9 +84,9 @@ router.patch('/:clientId/:ruleId/toggle', protect, async (req, res) => {
 // Delete a rule
 router.delete('/:clientId/:ruleId', protect, async (req, res) => {
     try {
-        const { clientId, ruleId } = req.params;
-
-        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+        const { ruleId } = req.params;
+        const clientId = tenantClientId(req);
+        if (!clientId || clientId !== req.params.clientId) {
             return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
 

@@ -1,7 +1,36 @@
 /**
- * Build a rich system prompt from the AI persona config.
- * This wraps the client's base system prompt.
+ * Canonical tone labels used by the dashboard AI Persona settings UI.
+ * Wizard / API may send short tokens; we normalize before persisting.
  */
+const PERSONA_UI_TONES = new Set([
+  "Professional & Helpful",
+  "Casual & Friendly",
+  "Luxury & Exclusive",
+  "Direct & Technical",
+  "Enthusiastic & Salesy",
+]);
+
+function normalizePersonaTone(input) {
+  if (input === undefined || input === null) return undefined;
+  const t = String(input).trim();
+  if (!t) return undefined;
+  if (PERSONA_UI_TONES.has(t)) return t;
+  const lower = t.toLowerCase();
+  const shortMap = {
+    friendly: "Casual & Friendly",
+    professional: "Professional & Helpful",
+    fun: "Enthusiastic & Salesy",
+    direct: "Direct & Technical",
+    luxury: "Luxury & Exclusive",
+  };
+  if (shortMap[lower]) return shortMap[lower];
+  if (lower === "friendly_warm") return "Casual & Friendly";
+  if (lower === "professional_direct") return "Professional & Helpful";
+  if (lower === "playful_fun") return "Enthusiastic & Salesy";
+  if (lower === "expert_authoritative") return "Direct & Technical";
+  return t;
+}
+
 function buildPersonaSystemPrompt(client, baseSystemPrompt = "") {
   const persona = client.ai?.persona;
   const aiPersonaEnabled = !!(persona?.name && persona?.description);
@@ -229,6 +258,78 @@ async function syncPersonaToFlows(clientId, personaData) {
     }
 }
 
+/**
+ * Single path: merge persona patch + optional system prompt, mirror platformVars,
+ * invalidate triggers, sync flow nodes, notify dashboard tabs.
+ */
+async function syncPersonaAcrossSystem(clientId, personaPatch = {}, options = {}) {
+  const Client = require("../models/Client");
+  const { clearTriggerCache } = require("./triggerEngine");
+  const { emitToClient } = require("./socket");
+
+  const { systemPrompt } = options;
+  const client = await Client.findOne({ clientId });
+  if (!client) return null;
+
+  const current =
+    client.ai?.persona?.toObject && typeof client.ai.persona.toObject === "function"
+      ? client.ai.persona.toObject()
+      : { ...(client.ai?.persona || {}) };
+
+  const patch = personaPatch && typeof personaPatch === "object" ? personaPatch : {};
+  const hasPatch = Object.keys(patch).length > 0;
+  const hasSystemPrompt =
+    systemPrompt !== undefined &&
+    systemPrompt !== null &&
+    String(systemPrompt).trim() !== "";
+
+  if (!hasPatch && !hasSystemPrompt) {
+    clearTriggerCache(clientId);
+    await syncPersonaToFlows(clientId, current);
+    try {
+      emitToClient(clientId, "persona:updated", { clientId, persona: current });
+    } catch (_) {
+      /* non-fatal */
+    }
+    return client;
+  }
+
+  const merged = hasPatch ? { ...current, ...patch } : { ...current };
+  if (merged.tone !== undefined) {
+    const n = normalizePersonaTone(merged.tone);
+    if (n !== undefined) merged.tone = n;
+  }
+
+  const $set = { "ai.persona": merged };
+  if (merged.name) {
+    $set["platformVars.agentName"] = merged.name;
+    $set["nicheData.botName"] = merged.name;
+  }
+  if (merged.tone) $set["platformVars.defaultTone"] = merged.tone;
+  if (merged.language) $set["platformVars.defaultLanguage"] = merged.language;
+  if (hasSystemPrompt) {
+    const spTrim = String(systemPrompt).trim();
+    $set["ai.systemPrompt"] = spTrim;
+    $set.systemPrompt = spTrim;
+  }
+
+  const updated = await Client.findOneAndUpdate(
+    { clientId },
+    { $set },
+    { new: true, runValidators: true }
+  );
+
+  clearTriggerCache(clientId);
+  await syncPersonaToFlows(clientId, updated.ai?.persona || {});
+  try {
+    emitToClient(clientId, "persona:updated", { clientId, persona: updated.ai?.persona });
+  } catch (_) {
+    /* non-fatal */
+  }
+
+  return updated;
+}
+
 const knowledgeCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
@@ -277,4 +378,11 @@ async function buildKnowledgeContext(clientId) {
   }
 }
 
-module.exports = { buildPersonaSystemPrompt, applyPersonaPostProcess, syncPersonaToFlows, buildKnowledgeContext };
+module.exports = {
+  buildPersonaSystemPrompt,
+  applyPersonaPostProcess,
+  syncPersonaToFlows,
+  buildKnowledgeContext,
+  normalizePersonaTone,
+  syncPersonaAcrossSystem,
+};
