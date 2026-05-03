@@ -1860,6 +1860,17 @@ router.get('/agent-performance', protect, async (req, res) => {
         }}
     ]);
 
+    const resolvedCount = resolvedConvos.length;
+    const agentsOut = (agentStats || []).map((a) => ({
+      name: a.name,
+      email: a.email,
+      role: a.role,
+      resolutions: a.resolutions || 0,
+      totalHandled: a.totalHandled || 0,
+      resolutionPct:
+        a.totalHandled > 0 ? ((a.resolutions / a.totalHandled) * 100).toFixed(0) : '0',
+    }));
+
     res.json({
         success: true,
         avgFRT: avgFRT > 60 ? `${(avgFRT/60).toFixed(1)}m` : `${avgFRT.toFixed(0)}s`,
@@ -1867,7 +1878,9 @@ router.get('/agent-performance', protect, async (req, res) => {
         avgResolutionTime: `${avgResolutionTime}h`,
         activeAgents: agentStats.length,
         avgCSAT: `${avgCSAT}/5`,
-        agents: agentStats
+        totalConversations: totalConvos,
+        resolvedConversations: resolvedCount,
+        agents: agentsOut
     });
 
   } catch (err) {

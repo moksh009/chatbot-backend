@@ -25,11 +25,16 @@ const importSessionSchema = new mongoose.Schema({
   successCount: { type: Number, default: 0 },
   errorCount: { type: Number, default: 0 },
   duplicateCount: { type: Number, default: 0 },
-  errorLog: [{
-    row: Number,
-    error: String,
-    data: mongoose.Schema.Types.Mixed
-  }],
+  errorLog: {
+    type: [{
+      row: Number,
+      error: String,
+      reason: String,
+      phone: String,
+      data: mongoose.Schema.Types.Mixed
+    }],
+    default: () => []
+  },
   createdAt: {
     type: Date,
     default: Date.now

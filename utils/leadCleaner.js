@@ -29,8 +29,16 @@ const findBestMatch = (headers, target) => {
     });
 };
 
+/** CSV wizard sends mapping as { "CSV Header": "phone" | "name" | ... } — resolve header name for a role. */
+const resolveMappedHeader = (mapping, role) => {
+    if (!mapping || typeof mapping !== 'object') return null;
+    const hit = Object.entries(mapping).find(([, v]) => String(v || '').trim() === role);
+    return hit ? hit[0] : null;
+};
+
 module.exports = {
     normalizePhone,
     findBestMatch,
+    resolveMappedHeader,
     FUZZY_KEYS
 };

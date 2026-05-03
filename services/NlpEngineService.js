@@ -286,6 +286,7 @@ class NlpEngineService {
             console.log(`[NLPEngine] Emitting intentUpdated to room: client_${clientId}`);
             global.io.to(`client_${clientId}`).emit('intentUpdated', {
               phone: phoneNumber,
+              conversationId: conversation?._id ? String(conversation._id) : undefined,
               intentName: intent,
               confidenceScore: score,
               detectedAt: new Date()

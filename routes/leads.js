@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const { resolveClient, tenantClientId } = require('../utils/queryHelpers');
 const router = express.Router();
 const multer = require('multer');
@@ -14,6 +15,8 @@ const { checkLimit, incrementUsage } = require('../utils/planLimits');
 const TaskQueueService = require('../services/TaskQueueService');
 const path = require('path');
 const { stringify } = require('csv-stringify');
+const { sendEmail } = require('../utils/emailService');
+const { mergeEmailForLead, KNOWN_EMAIL_TOKEN_KEYS } = require('../utils/emailMergeFields');
 
 // Multer setup for temporary CSV storage
 const upload = multer({ 
@@ -185,6 +188,97 @@ router.delete('/:clientId/import/:batchId', protect, logAction('DELETE_IMPORT'),
         });
     } catch (err) {
         res.status(500).json({ success: false, message: 'Delete failed' });
+    }
+});
+
+// POST /api/leads/:clientId/bulk-email — SMTP broadcast with {{merge}} fields
+router.post('/:clientId/bulk-email', protect, logAction('BULK_EMAIL'), async (req, res) => {
+    const { clientId } = req.params;
+    const { leadIds, subject, content } = req.body || {};
+
+    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+        return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    if (!Array.isArray(leadIds) || leadIds.length === 0) {
+        return res.status(400).json({ success: false, message: 'leadIds array is required' });
+    }
+    if (!subject || !String(subject).trim() || !content || !String(content).trim()) {
+        return res.status(400).json({ success: false, message: 'subject and content (HTML) are required' });
+    }
+
+    try {
+        const client = await Client.findOne({ clientId });
+        if (!client) {
+            return res.status(404).json({ success: false, message: 'Client not found' });
+        }
+        if (!client.emailUser || !client.emailAppPassword) {
+            return res.status(400).json({
+                success: false,
+                message: 'Email is not configured for this workspace. Add SMTP / app password in settings before broadcasting.'
+            });
+        }
+
+        const oids = leadIds
+            .filter((id) => mongoose.Types.ObjectId.isValid(String(id)))
+            .map((id) => new mongoose.Types.ObjectId(String(id)));
+
+        const leads = await AdLead.find({ clientId, _id: { $in: oids } }).lean();
+
+        const probeLead = {
+            name: 'Jane Doe',
+            email: 'jane@example.com',
+            phoneNumber: '+919999999999',
+            cartSnapshot: { items: [{ title: 'Sample', quantity: 1, price: '99', image: '' }] },
+            loyaltyPoints: 0,
+            loyaltyTier: 'Bronze'
+        };
+        const probe = mergeEmailForLead(subject, content, probeLead, client);
+        if (probe.unknownTokens.length) {
+            return res.status(400).json({
+                success: false,
+                message: `Unsupported merge fields: ${probe.unknownTokens.join(', ')}. Use only supported tokens.`,
+                unknownTokens: probe.unknownTokens,
+                supportedTokens: KNOWN_EMAIL_TOKEN_KEYS
+            });
+        }
+
+        const sent = [];
+        const skipped = [];
+        const failed = [];
+
+        for (const lead of leads) {
+            if (!lead.email || !String(lead.email).trim()) {
+                skipped.push({ leadId: String(lead._id), reason: 'no_email' });
+                continue;
+            }
+            const merged = mergeEmailForLead(subject, content, lead, client);
+            try {
+                const ok = await sendEmail(client, {
+                    to: lead.email.trim(),
+                    subject: merged.subject,
+                    html: merged.html
+                });
+                if (ok) {
+                    sent.push(String(lead._id));
+                } else {
+                    failed.push({ leadId: String(lead._id), reason: 'smtp_send_failed' });
+                }
+            } catch (e) {
+                failed.push({ leadId: String(lead._id), reason: e.message || 'send_error' });
+            }
+            await new Promise((r) => setTimeout(r, 350));
+        }
+
+        return res.json({
+            success: true,
+            sent: sent.length,
+            skipped,
+            failed,
+            message: `Sent ${sent.length} of ${leadIds.length} selected. ${skipped.length} skipped, ${failed.length} failed.`
+        });
+    } catch (err) {
+        console.error('[bulk-email]', err);
+        return res.status(500).json({ success: false, message: err.message || 'Bulk email failed' });
     }
 });
 

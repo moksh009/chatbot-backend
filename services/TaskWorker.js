@@ -6,7 +6,7 @@ const csv = require('csv-parser');
 const _ = require('lodash');
 const AdLead = require('../models/AdLead');
 const ImportSession = require('../models/ImportSession');
-const { normalizePhone, findBestMatch } = require('../utils/leadCleaner');
+const { normalizePhone, findBestMatch, resolveMappedHeader } = require('../utils/leadCleaner');
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
 const { incrementStat } = require('../utils/statCacheEngine');
 
@@ -103,6 +103,7 @@ async function handleImportLeads(data, job) {
     const { clientId, batchId, filePath, filename, mapping, listName } = data;
     const session = await ImportSession.findOne({ batchId });
     if (!session) return log.error(`[Import] Session not found for ${batchId}`);
+    if (!Array.isArray(session.errorLog)) session.errorLog = [];
 
     try {
         const batchName = listName || filename.replace(/\.[^/.]+$/, "");
@@ -166,17 +167,28 @@ async function handleImportLeads(data, job) {
             processed++;
             
             const headers = Object.keys(row);
-            const rawPhone = row[mapping.phone] || row[findBestMatch(headers, 'phone')];
-            const rawName = row[mapping.name] || row[findBestMatch(headers, 'name')];
-            const rawEmail = row[mapping.email] || row[findBestMatch(headers, 'email')];
-            const rawCity = mapping.city ? row[mapping.city] : null;
-            const rawTag = mapping.tag ? row[mapping.tag] : null;
+            const phoneCol = resolveMappedHeader(mapping, 'phone');
+            const nameCol = resolveMappedHeader(mapping, 'name');
+            const emailCol = resolveMappedHeader(mapping, 'email');
+            const cityCol = resolveMappedHeader(mapping, 'city');
+            const tagCol = resolveMappedHeader(mapping, 'tag');
+
+            const rawPhone = (phoneCol && row[phoneCol]) || row[findBestMatch(headers, 'phone')];
+            const rawName = (nameCol && row[nameCol]) || row[findBestMatch(headers, 'name')];
+            const rawEmail = (emailCol && row[emailCol]) || row[findBestMatch(headers, 'email')];
+            const rawCity = cityCol ? row[cityCol] : null;
+            const rawTag = tagCol ? row[tagCol] : null;
 
             const phoneNumber = normalizePhone(rawPhone);
             if (!phoneNumber) {
                 failed++;
                 if (session.errorLog.length < 100) {
-                    session.errorLog.push({ row: processed, phone: rawPhone, reason: 'Invalid phone number format' });
+                    session.errorLog.push({
+                        row: processed,
+                        phone: rawPhone,
+                        reason: 'Invalid phone number format',
+                        error: 'Invalid phone number format'
+                    });
                 }
                 continue;
             }

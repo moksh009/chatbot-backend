@@ -261,7 +261,7 @@ router.get('/:id/full-context', protect, async (req, res) => {
       (async () => {
          const AdLead = require('../models/AdLead');
          const l = await AdLead.findOne({ clientId: conversation.clientId || clientId, phoneNumber: phone })
-           .select('name email leadScore cartStatus tags intentState source sentimentScore totalSpent ordersCount lastInteraction isOrderPlaced cartSnapshot addToCartCount checkoutInitiatedCount importBatchId meta')
+           .select('name email leadScore cartStatus tags intentState source sentimentScore totalSpent lifetimeValue ordersCount lastInteraction isOrderPlaced cartSnapshot addToCartCount checkoutInitiatedCount importBatchId meta inboundIntent warrantyRecords')
            .lean();
          
          if (l) {
@@ -301,7 +301,7 @@ router.get('/:id/full-context', protect, async (req, res) => {
          try {
            const Wallet = require('../models/CustomerWallet');
            return await Wallet.findOne({ clientId: conversation.clientId || clientId, phone })
-             .select('balance tier pointsEarned')
+             .select('balance tier lifetimePoints')
              .lean();
          } catch { return null; }
       })(),

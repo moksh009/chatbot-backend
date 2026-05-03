@@ -125,7 +125,7 @@ router.get('/:clientId/products', protect, verifyClientAccess, async (req, res) 
   try {
 
     const products = await withShopifyRetry(clientId, async (shop) => {
-        const response = await shop.get('/products.json?limit=100&fields=id,title,variants,images,status,handle');
+        const response = await shop.get('/products.json?limit=250&fields=id,title,variants,images,status,handle');
         const shopifyProducts = response.data.products;
         
         const client = await Client.findOne({ clientId });
