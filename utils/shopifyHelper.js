@@ -132,6 +132,17 @@ async function withShopifyRetry(clientId, operation, retryCount = 0) {
         const isForbidden = err.response?.status === 403;
 
         if ((isAuthError || isForbidden) && retryCount < 2) {
+            const clientRecord = await Client.findOne({ clientId }).select('shopifyRefreshToken shopifyClientId');
+            const cannotAutoRotate =
+                clientRecord?.shopifyClientId && !clientRecord?.shopifyRefreshToken;
+            if (cannotAutoRotate) {
+                const reason = isAuthError ? '401 Unauthorized' : '403 Forbidden';
+                console.warn(
+                    `[SelfHealing] ${reason} for ${clientId}: skipped token rotation (custom app without OAuth refresh token). Update the Admin API access token in Commerce settings or reconnect the app.`
+                );
+                throw err;
+            }
+
             const reason = isAuthError ? '401 Unauthorized' : '403 Forbidden';
             console.warn(`[SelfHealing] ${reason} detected for ${clientId}. Attempt ${retryCount + 1}/2...`);
             

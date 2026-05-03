@@ -394,7 +394,8 @@ Respond ONLY with a JSON object in this exact format:
 
     const { GoogleGenerativeAI } = require('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash", generationConfig: { responseMimeType: "application/json" } });
+    const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+    const model = genAI.getGenerativeModel({ model: geminiModel, generationConfig: { responseMimeType: "application/json" } });
     
     const result = await model.generateContent(aiPrompt);
     const responseText = result.response.text();

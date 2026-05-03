@@ -9,9 +9,9 @@ try {
     logger.warn("VertexAI SDK not found. Fallback to AI Studio for all calls.");
 }
 
-const PLATFORM_MODEL = "gemini-2.0-flash";
-// AI Studio v1beta no longer serves bare `gemini-1.5-flash`; keep in sync with PLATFORM for fallback.
-const BOT_MODEL      = "gemini-2.0-flash"; 
+// `gemini-2.0-flash` is not available to new API projects; override via env if Google renames again.
+const PLATFORM_MODEL = process.env.GEMINI_VERTEX_MODEL || process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const BOT_MODEL = process.env.GEMINI_MODEL || process.env.GEMINI_BOT_MODEL || "gemini-2.5-flash"; 
 
 // Cache AI Studio clients to avoid memory leaks
 const studioClientCache = new Map();
