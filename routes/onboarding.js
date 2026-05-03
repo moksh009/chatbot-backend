@@ -29,6 +29,13 @@ function repairLegacyWizardBuckets(wizard) {
   }
 }
 
+/** True when a wizard field value changed vs last saved bucket (stops persona socket → dashboard full sync on every debounced PATCH). */
+function wizardStepFieldChanged(prev, next, key) {
+  const a = prev && typeof prev === 'object' ? prev[key] : undefined;
+  const b = next && typeof next === 'object' ? next[key] : undefined;
+  return String(a ?? '') !== String(b ?? '');
+}
+
 // Fetch wizard state
 router.get('/:clientId', protect, async (req, res) => {
   try {
@@ -107,6 +114,14 @@ router.patch('/step/:stepNumber', protect, async (req, res) => {
 
     repairLegacyWizardBuckets(wizard);
 
+    const prevStepBlob =
+      wizard.stepData &&
+      wizard.stepData[stepId] &&
+      typeof wizard.stepData[stepId] === 'object' &&
+      !Array.isArray(wizard.stepData[stepId])
+        ? { ...wizard.stepData[stepId].toObject?.() || wizard.stepData[stepId] }
+        : {};
+
     wizard.stepData[stepId] = stepData;
     wizard.currentStep = stepNum;
     
@@ -127,29 +142,49 @@ router.patch('/step/:stepNumber', protect, async (req, res) => {
       personaSync = { ...(personaSync || {}), ...partial };
     };
 
-    // business
+    // business — persona socket only when persona-facing fields actually change
     if (stepId === 'business' && stepData) {
       if (stepData.businessName)        { pvUpdate.businessName = stepData.businessName; pvUpdate['platformVars.brandName'] = stepData.businessName; }
-      if (stepData.botName)             queuePersona({ name: stepData.botName });
-      if (stepData.businessDescription) queuePersona({ description: stepData.businessDescription });
-      if (stepData.botLanguage)         queuePersona({ language: stepData.botLanguage });
-      if (stepData.tone)                queuePersona({ tone: stepData.tone });
+      if (stepData.botName !== undefined && wizardStepFieldChanged(prevStepBlob, stepData, 'botName')) {
+        queuePersona({ name: stepData.botName });
+      }
+      if (wizardStepFieldChanged(prevStepBlob, stepData, 'businessDescription') && stepData.businessDescription) {
+        queuePersona({ description: stepData.businessDescription });
+      }
+      if (stepData.botLanguage && wizardStepFieldChanged(prevStepBlob, stepData, 'botLanguage')) {
+        queuePersona({ language: stepData.botLanguage });
+      }
+      if (stepData.tone && wizardStepFieldChanged(prevStepBlob, stepData, 'tone')) {
+        queuePersona({ tone: stepData.tone });
+      }
       if (stepData.adminPhone)          { pvUpdate['platformVars.adminWhatsappNumber'] = stepData.adminPhone; pvUpdate.adminPhone = stepData.adminPhone; }
       if (stepData.currency)            pvUpdate['platformVars.baseCurrency'] = stepData.currency;
       if (stepData.shippingTime)        pvUpdate['platformVars.shippingTime'] = stepData.shippingTime;
       if (stepData.websiteUrl)          pvUpdate.websiteUrl = stepData.websiteUrl;
-      if (stepData.activePersona)       queuePersona({ role: stepData.activePersona });
+      if (stepData.activePersona && wizardStepFieldChanged(prevStepBlob, stepData, 'activePersona')) {
+        queuePersona({ role: stepData.activePersona });
+      }
     }
 
     // intelligence (tone / language / keys / prompt live on shared flat `data`)
     if (stepId === 'ai' && stepData) {
-      if (stepData.botName || stepData.activePersona) {
-        queuePersona({ name: stepData.botName || stepData.activePersona });
+      const nextName = stepData.botName || stepData.activePersona;
+      const prevName = prevStepBlob.botName || prevStepBlob.activePersona;
+      if (nextName !== undefined && String(nextName ?? '') !== String(prevName ?? '')) {
+        queuePersona({ name: nextName });
       }
-      if (stepData.tone) queuePersona({ tone: stepData.tone });
-      if (stepData.botLanguage) queuePersona({ language: stepData.botLanguage });
-      if (stepData.systemPrompt && String(stepData.systemPrompt).trim()) {
-        personaSystemPrompt = String(stepData.systemPrompt).trim();
+      if (stepData.tone && wizardStepFieldChanged(prevStepBlob, stepData, 'tone')) {
+        queuePersona({ tone: stepData.tone });
+      }
+      if (stepData.botLanguage && wizardStepFieldChanged(prevStepBlob, stepData, 'botLanguage')) {
+        queuePersona({ language: stepData.botLanguage });
+      }
+      if (stepData.systemPrompt !== undefined) {
+        const nextSp = String(stepData.systemPrompt || '').trim();
+        const prevSp = String(prevStepBlob.systemPrompt || '').trim();
+        if (nextSp !== prevSp && nextSp) {
+          personaSystemPrompt = nextSp;
+        }
       }
       if (stepData.geminiApiKey) { pvUpdate.geminiApiKey = stepData.geminiApiKey; pvUpdate['ai.geminiKey'] = stepData.geminiApiKey; }
       if (stepData.openaiApiKey) { pvUpdate.openaiApiKey = stepData.openaiApiKey; }
