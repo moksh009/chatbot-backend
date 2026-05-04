@@ -38,6 +38,27 @@ const generateToken = (id, clientId, role) => {
   );
 };
 
+/**
+ * Must exactly match an "Authorized redirect URI" on the same Google OAuth client as GOOGLE_CLIENT_ID / GCAL_CLIENT_ID.
+ * Calendar uses /api/oauth/google/callback — login uses /api/auth/google/callback (add both in Google Cloud Console).
+ */
+function getGoogleAuthRedirectUri() {
+  const explicit = String(process.env.GOOGLE_OAUTH_REDIRECT_URI || '').trim();
+  if (explicit) return explicit.replace(/\s+/g, '');
+  const raw =
+    process.env.GOOGLE_OAUTH_BACKEND_URL ||
+    process.env.SERVER_URL ||
+    process.env.BACKEND_URL ||
+    process.env.API_BASE ||
+    '';
+  let base = String(raw).trim().replace(/\/$/, '');
+  if (!base) base = 'https://chatbot-backend-lg5y.onrender.com';
+  if (!/^https:\/\//i.test(base)) {
+    base = `https://${base.replace(/^https?:\/\//i, '')}`;
+  }
+  return `${base}/api/auth/google/callback`;
+}
+
 router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
   try {
     let user = await User.findById(req.user.id);
@@ -455,12 +476,13 @@ router.post('/send-otp', async (req, res) => {
       res.json({ success: true, message: 'OTP sent successfully' });
     } else {
       console.error(
-        '[send-otp] SMTP delivery failed — set SYSTEM_EMAIL_USER + SYSTEM_EMAIL_PASS (Gmail: app password). ' +
-          'On cloud hosts use SMTP_HOST=smtp.gmail.com and SMTP_PORT=465 (implicit TLS). Optional: SMTP_TRY_STARTTLS_FIRST=true to prefer 587.'
+        '[send-otp] Email delivery failed — Gmail SMTP often times out from cloud hosts (ETIMEDOUT). ' +
+          'Fix: set RESEND_API_KEY and verify your domain in Resend, plus RESEND_FROM (e.g. "TopEdge AI <noreply@yourdomain.com>"). ' +
+          'Alternatively fix SMTP egress or use a transactional SMTP provider that allows your PaaS IP range.'
       );
       res.status(503).json({
         message:
-          'Email could not be sent. Configure system SMTP: SYSTEM_EMAIL_USER, SYSTEM_EMAIL_PASS, SMTP_HOST (e.g. smtp.gmail.com), and port 465. Contact support if this persists.',
+          'Email could not be sent. On Render, outbound SMTP to Gmail frequently times out; add RESEND_API_KEY (HTTPS) or use SMTP from a provider that allows datacenter egress. See server logs.',
         code: 'EMAIL_UNAVAILABLE'
       });
     }
@@ -550,11 +572,15 @@ router.post('/update-password', protect, async (req, res) => {
 router.get('/google/login', (req, res) => {
   const { mode, businessName, businessType } = req.query;
   const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.GCAL_CLIENT_ID;
-  const REDIRECT_URI = `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/api/auth/google/callback`;
+  const REDIRECT_URI = getGoogleAuthRedirectUri();
 
   if (!GOOGLE_CLIENT_ID) {
     console.error('[Google OAuth] Missing GOOGLE_CLIENT_ID or GCAL_CLIENT_ID in environment variables.');
     return res.status(500).json({ message: 'Google OAuth not configured' });
+  }
+
+  if (String(process.env.DEBUG_GOOGLE_OAUTH || '').trim() === '1') {
+    console.info('[Google OAuth] login redirect_uri=', REDIRECT_URI);
   }
 
   // Encode signup data into state parameter
@@ -599,7 +625,7 @@ router.get('/google/callback', async (req, res) => {
 
     const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.GCAL_CLIENT_ID;
     const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || process.env.GCAL_CLIENT_SECRET;
-    const REDIRECT_URI = `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/api/auth/google/callback`;
+    const REDIRECT_URI = getGoogleAuthRedirectUri();
 
     // Exchange code for tokens
     const axios = require('axios');

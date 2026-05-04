@@ -1,6 +1,7 @@
 const nodemailer = require('nodemailer');
 const dns = require('dns');
 const net = require('net');
+const axios = require('axios');
 const { decrypt } = require('./encryption');
 
 /** Prefer A records over AAAA on hosts where IPv6 egress is broken (common on PaaS). */
@@ -209,29 +210,151 @@ async function sendViaSystemSmtpWithFallback(mailOptions) {
     return false;
 }
 
+/**
+ * Send transactional mail via Resend HTTPS API (port 443).
+ * Use on PaaS (e.g. Render) when outbound SMTP to Gmail times out (ETIMEDOUT) — common datacenter egress issue.
+ * Env: RESEND_API_KEY (required), RESEND_FROM optional override, else SYSTEM_EMAIL_USER as From (domain must be verified in Resend).
+ */
+async function sendViaResend(mailOptions) {
+    const apiKey = String(process.env.RESEND_API_KEY || '').trim();
+    if (!apiKey) return false;
+
+    const toRaw = mailOptions.to;
+    const toList = Array.isArray(toRaw)
+        ? toRaw.map((t) => String(t).trim()).filter(Boolean)
+        : [String(toRaw || '').trim()].filter(Boolean);
+    if (!toList.length) {
+        console.warn('[EmailService] Resend: no recipient.');
+        return false;
+    }
+
+    let from = mailOptions.from && String(mailOptions.from).trim();
+    if (!from) {
+        from = String(process.env.RESEND_FROM || '').trim();
+    }
+    if (!from) {
+        const { user } = getSystemEmailCredentials();
+        if (user) from = `"TopEdge AI" <${user}>`;
+    }
+    if (!from) {
+        console.error(
+            '[EmailService] Resend: set RESEND_FROM (verified sender) or SYSTEM_EMAIL_USER for default From.'
+        );
+        return false;
+    }
+
+    const payload = {
+        from,
+        to: toList,
+        subject: mailOptions.subject,
+        html: mailOptions.html,
+        text: mailOptions.text
+    };
+    const rt = mailOptions.replyTo;
+    if (rt) {
+        payload.reply_to = Array.isArray(rt) ? rt : [String(rt).trim()].filter(Boolean);
+    }
+
+    try {
+        await axios.post(
+            'https://api.resend.com/emails',
+            payload,
+            {
+                headers: {
+                    Authorization: `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                timeout: 25000
+            }
+        );
+        console.log('[EmailService] ✅ System email sent via Resend (HTTPS)');
+        return true;
+    } catch (err) {
+        const status = err.response?.status;
+        const data = err.response?.data;
+        console.warn('[EmailService] Resend request failed:', status || err.code, data || err.message);
+        return false;
+    }
+}
+
+function resolveSystemFromHeader(mailOptions) {
+    const { user } = getSystemEmailCredentials();
+    if (mailOptions.from && String(mailOptions.from).trim()) {
+        return String(mailOptions.from).trim();
+    }
+    const resendFrom = String(process.env.RESEND_FROM || '').trim();
+    if (resendFrom) return resendFrom;
+    if (user) return `"TopEdge AI" <${user}>`;
+    return null;
+}
+
 async function deliverSystemEmail(mailOptions) {
     const { user, pass } = getSystemEmailCredentials();
-    if (!user || !pass) {
-        // #region agent log
+    const hasSmtpCreds = !!(user && pass);
+    const hasResend = !!String(process.env.RESEND_API_KEY || '').trim();
+
+    if (!hasSmtpCreds && !hasResend) {
         try {
             const { agentDebug } = require('./agentDebugLog');
             agentDebug({
                 hypothesisId: 'H6',
                 location: 'emailService.js:deliverSystemEmail',
-                message: 'missing_system_smtp_creds',
-                data: { hasUser: !!user, hasPass: !!pass }
+                message: 'missing_system_email_transport',
+                data: { hasSmtpCreds, hasResend }
             });
         } catch (_) { /* noop */ }
-        // #endregion
+        console.error(
+            '[EmailService] No email transport: set RESEND_API_KEY (+ verified RESEND_FROM) or SYSTEM_EMAIL_USER + SYSTEM_EMAIL_PASS for SMTP.'
+        );
         return false;
     }
-    // From must match authenticated SMTP user for Gmail and most providers.
-    const safeFrom =
-        mailOptions.from && String(mailOptions.from).includes(user)
-            ? mailOptions.from
-            : `"TopEdge AI" <${user}>`;
-    const ok = await sendViaSystemSmtpWithFallback({ ...mailOptions, from: safeFrom });
-    // #region agent log
+
+    const fromHeader = resolveSystemFromHeader(mailOptions);
+    if (!fromHeader) {
+        console.error('[EmailService] Missing From: set RESEND_FROM or SYSTEM_EMAIL_USER, or pass `from` in mail options.');
+        return false;
+    }
+
+    // Resend: `from` must be a domain you verified in Resend (often RESEND_FROM).
+    // Gmail SMTP: From should match the authenticated mailbox.
+    const smtpSafeFrom =
+        hasSmtpCreds && user && !String(fromHeader).toLowerCase().includes(String(user).toLowerCase())
+            ? `"TopEdge AI" <${user}>`
+            : fromHeader;
+
+    if (hasResend) {
+        const viaResend = await sendViaResend({ ...mailOptions, from: fromHeader });
+        if (viaResend) {
+            try {
+                const { agentDebug } = require('./agentDebugLog');
+                agentDebug({
+                    hypothesisId: 'H6',
+                    location: 'emailService.js:deliverSystemEmail',
+                    message: 'resend_deliver_ok',
+                    data: { toDomain: String(mailOptions.to || '').split('@')[1] || null }
+                });
+            } catch (_) { /* noop */ }
+            return true;
+        }
+        if (hasSmtpCreds) {
+            console.warn('[EmailService] Resend failed; falling back to SMTP.');
+        }
+    }
+
+    if (!hasSmtpCreds) {
+        try {
+            const { agentDebug } = require('./agentDebugLog');
+            agentDebug({
+                hypothesisId: 'H6',
+                location: 'emailService.js:deliverSystemEmail',
+                message: 'smtp_skipped_no_creds_after_resend_fail',
+                data: {}
+            });
+        } catch (_) { /* noop */ }
+        return false;
+    }
+
+    const ok = await sendViaSystemSmtpWithFallback({ ...mailOptions, from: smtpSafeFrom });
     try {
         const { agentDebug } = require('./agentDebugLog');
         agentDebug({
@@ -241,7 +364,6 @@ async function deliverSystemEmail(mailOptions) {
             data: { ok: !!ok, toDomain: String(mailOptions.to || '').split('@')[1] || null }
         });
     } catch (_) { /* noop */ }
-    // #endregion
     return ok;
 }
 
@@ -317,54 +439,90 @@ async function sendEmail(client, { to, subject, html }) {
     }
 
     const fromAddr = client.emailUser || process.env.EMAIL_USER;
-    const from = `"${client.name || 'Store'}" <${fromAddr}>`;
-    const mail = { from, to, subject, html };
+    const storeName = String(client.name || 'Store').replace(/"/g, "'").slice(0, 120);
+    const from = fromAddr ? `"${storeName}" <${fromAddr}>` : null;
+    const mail = from ? { from, to, subject, html } : { to, subject, html };
 
-    const logicalSmtpHost = client.smtpHost || process.env.CLIENT_SMTP_HOST || 'smtp.gmail.com';
-    const smtpTarget = await resolveSmtpIpv4Target(logicalSmtpHost);
-
-    const preferStartTls = String(process.env.SMTP_TRY_STARTTLS_FIRST || '').toLowerCase() === 'true';
-    const defaultPort = parseInt(String(client.smtpPort || process.env.CLIENT_SMTP_PORT || '465'), 10) || 465;
-    const tryOrder =
-        defaultPort === 465 && !preferStartTls
-            ? [
-                  { port: 465, secure: true, requireTLS: false, label: '465+SSL' },
-                  { port: 587, secure: false, requireTLS: true, label: '587+STARTTLS' }
-              ]
-            : defaultPort === 587 || preferStartTls
-              ? [
-                    { port: 587, secure: false, requireTLS: true, label: '587+STARTTLS' },
-                    { port: 465, secure: true, requireTLS: false, label: '465+SSL' }
-                ]
-              : [
-                    { port: 465, secure: true, requireTLS: false, label: '465+SSL' },
-                    { port: 587, secure: false, requireTLS: true, label: '587+STARTTLS' }
-                ];
+    const hasClientSmtp = !!(
+        client.emailUser &&
+        (client.emailAppPassword || process.env.EMAIL_APP_PASSWORD)
+    );
 
     let lastErr;
-    for (const cfg of tryOrder) {
-        const transporter = createTransporterForClient(client, cfg, smtpTarget);
-        if (!transporter) return false;
-        try {
-            await transporter.sendMail(mail);
-            console.log(`[EmailService] ✅ Email sent to ${to} | Subject: ${subject} (${cfg.label})`);
+    if (hasClientSmtp && fromAddr) {
+        const logicalSmtpHost = client.smtpHost || process.env.CLIENT_SMTP_HOST || 'smtp.gmail.com';
+        const smtpTarget = await resolveSmtpIpv4Target(logicalSmtpHost);
+
+        const preferStartTls = String(process.env.SMTP_TRY_STARTTLS_FIRST || '').toLowerCase() === 'true';
+        const defaultPort = parseInt(String(client.smtpPort || process.env.CLIENT_SMTP_PORT || '465'), 10) || 465;
+        const tryOrder =
+            defaultPort === 465 && !preferStartTls
+                ? [
+                      { port: 465, secure: true, requireTLS: false, label: '465+SSL' },
+                      { port: 587, secure: false, requireTLS: true, label: '587+STARTTLS' }
+                  ]
+                : defaultPort === 587 || preferStartTls
+                  ? [
+                        { port: 587, secure: false, requireTLS: true, label: '587+STARTTLS' },
+                        { port: 465, secure: true, requireTLS: false, label: '465+SSL' }
+                    ]
+                  : [
+                        { port: 465, secure: true, requireTLS: false, label: '465+SSL' },
+                        { port: 587, secure: false, requireTLS: true, label: '587+STARTTLS' }
+                    ];
+
+        for (const cfg of tryOrder) {
+            const transporter = createTransporterForClient(client, cfg, smtpTarget);
+            if (!transporter) break;
             try {
-                transporter.close();
-            } catch (_) { /* noop */ }
-            return true;
-        } catch (err) {
-            lastErr = err;
-            console.warn(`[EmailService] Client SMTP ${cfg.label} failed:`, err.code, err.message);
-            try {
-                transporter.close();
-            } catch (_) { /* noop */ }
-            if (err.code === 'EAUTH') break;
-            const msg = String(err.message || '');
-            const retryMsg = /ENETUNREACH|EHOSTUNREACH|network|unreachable|socket/i.test(msg);
-            if (!SMTP_RETRYABLE.has(err.code) && !/timeout|timed out/i.test(msg) && !retryMsg) break;
+                await transporter.sendMail(mail);
+                console.log(`[EmailService] ✅ Email sent to ${to} | Subject: ${subject} (${cfg.label})`);
+                try {
+                    transporter.close();
+                } catch (_) { /* noop */ }
+                return true;
+            } catch (err) {
+                lastErr = err;
+                console.warn(`[EmailService] Client SMTP ${cfg.label} failed:`, err.code, err.message);
+                try {
+                    transporter.close();
+                } catch (_) { /* noop */ }
+                if (err.code === 'EAUTH') break;
+                const msg = String(err.message || '');
+                const retryMsg = /ENETUNREACH|EHOSTUNREACH|network|unreachable|socket/i.test(msg);
+                if (!SMTP_RETRYABLE.has(err.code) && !/timeout|timed out/i.test(msg) && !retryMsg) break;
+            }
         }
     }
-    console.error(`[EmailService] ❌ Failed to send email to ${to}:`, lastErr?.message);
+
+    // Resend HTTPS relay when SMTP is missing, fails, or is blocked from cloud (ETIMEDOUT).
+    const resendKey = String(process.env.RESEND_API_KEY || '').trim();
+    const resendFromRaw = String(process.env.RESEND_FROM || '').trim();
+    if (resendKey && resendFromRaw) {
+        const fromLine = resendFromRaw.includes('<')
+            ? resendFromRaw
+            : `"${storeName}" <${resendFromRaw}>`;
+        const replyTo = fromAddr ? `"${storeName}" <${fromAddr}>` : undefined;
+        const okRelay = await sendViaResend({
+            from: fromLine,
+            to,
+            subject,
+            html,
+            ...(replyTo ? { replyTo } : {})
+        });
+        if (okRelay) {
+            console.log(`[EmailService] ✅ Email to ${to} via Resend relay (reply-to merchant when set)`);
+            return true;
+        }
+    }
+
+    if (lastErr) {
+        console.error(`[EmailService] ❌ Failed to send email to ${to}:`, lastErr.message);
+    } else if (!hasClientSmtp && !(resendKey && resendFromRaw)) {
+        console.error(
+            `[EmailService] ❌ No client SMTP credentials and no RESEND_API_KEY+RESEND_FROM — cannot send to ${to}`
+        );
+    }
     return false;
 }
 
@@ -497,9 +655,10 @@ async function sendReviewRequestEmail(client, { customerEmail, customerName, pro
  */
 async function sendSystemOTPEmail(toAddress, otpCode, purpose = 'SIGNUP') {
     const { user: fromUser, pass: fromPass } = getSystemEmailCredentials();
-    if (!fromUser || !fromPass) {
+    const hasResend = !!String(process.env.RESEND_API_KEY || '').trim();
+    if ((!fromUser || !fromPass) && !hasResend) {
         console.error(
-            '[EmailService] Cannot send OTP: set SYSTEM_EMAIL_USER + SYSTEM_EMAIL_PASS (Gmail app password). Optional: SMTP_HOST, SMTP_PORT=465.'
+            '[EmailService] Cannot send OTP: set RESEND_API_KEY (+ RESEND_FROM verified in Resend) or SYSTEM_EMAIL_USER + SYSTEM_EMAIL_PASS for SMTP.'
         );
         return false;
     }
@@ -551,9 +710,9 @@ async function sendSystemOTPEmail(toAddress, otpCode, purpose = 'SIGNUP') {
         </div>
     `;
 
-    const fromHeader = `"TopEdge AI Security" <${fromUser}>`;
+    const fromHeader = fromUser ? `"TopEdge AI Security" <${fromUser}>` : undefined;
     const ok = await deliverSystemEmail({
-        from: fromHeader,
+        ...(fromHeader ? { from: fromHeader } : {}),
         to: toAddress,
         subject,
         html
@@ -573,7 +732,8 @@ async function sendSystemOTPEmail(toAddress, otpCode, purpose = 'SIGNUP') {
  */
 async function sendTeamInviteEmail(toAddress, { adminName, businessName, password, loginUrl }) {
     const { user: fromUser, pass: fromPass } = getSystemEmailCredentials();
-    if (!fromUser || !fromPass) return false;
+    const hasResend = !!String(process.env.RESEND_API_KEY || '').trim();
+    if ((!fromUser || !fromPass) && !hasResend) return false;
 
     const html = `
         <div style="font-family: 'Inter', Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 40px; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 24px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05);">
@@ -612,9 +772,9 @@ async function sendTeamInviteEmail(toAddress, { adminName, businessName, passwor
         </div>
     `;
 
-    const fromHeader = `"TopEdge AI" <${fromUser}>`;
+    const fromHeader = fromUser ? `"TopEdge AI" <${fromUser}>` : undefined;
     return deliverSystemEmail({
-        from: fromHeader,
+        ...(fromHeader ? { from: fromHeader } : {}),
         to: toAddress,
         subject: `👋 You've been invited to join ${businessName} on TopEdge AI`,
         html
@@ -678,7 +838,8 @@ function buildAdminEscalationEmailHtml({
 
 async function sendAdminConfirmationEmail(adminEmail, { agentName, agentEmail, businessName }) {
     const { user: fromUser, pass: fromPass } = getSystemEmailCredentials();
-    if (!fromUser || !fromPass) return false;
+    const hasResend = !!String(process.env.RESEND_API_KEY || '').trim();
+    if ((!fromUser || !fromPass) && !hasResend) return false;
 
     const html = `
         <div style="font-family: 'Inter', Arial, sans-serif; max-width: 500px; margin: 40px auto; padding: 32px; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px;">
@@ -697,9 +858,9 @@ async function sendAdminConfirmationEmail(adminEmail, { agentName, agentEmail, b
         </div>
     `;
 
-    const fromHeader = `"TopEdge AI" <${fromUser}>`;
+    const fromHeader = fromUser ? `"TopEdge AI" <${fromUser}>` : undefined;
     return deliverSystemEmail({
-        from: fromHeader,
+        ...(fromHeader ? { from: fromHeader } : {}),
         to: adminEmail,
         subject: `✅ Invitation Sent: ${agentName} has been invited`,
         html
