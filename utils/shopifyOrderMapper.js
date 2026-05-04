@@ -20,11 +20,43 @@ function resolveCustomerDisplayName(data) {
   return '';
 }
 
+/** Human-readable payment gateways string (Shopify REST). */
+function paymentGatewaysSummary(data) {
+  const names = data.payment_gateway_names;
+  if (Array.isArray(names) && names.length) return names.filter(Boolean).join(', ');
+  if (data.gateway) return String(data.gateway);
+  return '';
+}
+
+/** Detect COD from gateways, tags, or note attributes (India / manual COD common). */
+function detectCodFromShopify(data) {
+  const pg = paymentGatewaysSummary(data).toLowerCase();
+  if (pg.includes('cash on delivery') || pg.includes('(cod)') || /\bcod\b/.test(pg)) {
+    return true;
+  }
+  const tags = String(data.tags || '').toLowerCase();
+  if (tags.includes('cod')) return true;
+  const notes = data.note_attributes || [];
+  if (Array.isArray(notes)) {
+    for (const n of notes) {
+      const v = String(n?.value || '').toLowerCase();
+      const nm = String(n?.name || '').toLowerCase();
+      if (v.includes('cod') || (nm.includes('payment') && v.includes('cod'))) return true;
+    }
+  }
+  return false;
+}
+
 function derivePlatformStatus(data) {
   const fs = String(data.financial_status || '').toLowerCase();
   if (data.cancelled_at) return 'cancelled';
   if (fs === 'refunded' || fs === 'partially_refunded' || fs === 'voided') return 'cancelled';
   if (fs === 'paid') return 'paid';
+  const cod = detectCodFromShopify(data);
+  if (cod && (fs === 'pending' || fs === 'authorized' || fs === 'partially_paid' || fs === 'unpaid' || fs === '')) {
+    return 'pending';
+  }
+  if (fs === 'authorized' || fs === 'pending' || fs === 'partially_paid' || fs === 'unpaid') return 'pending';
   return 'pending';
 }
 
@@ -63,16 +95,8 @@ function buildShopifyOrderSet(clientId, data) {
     status: derivePlatformStatus(data),
     financialStatus,
     fulfillmentStatus,
-    paymentMethod: data.gateway || 'Shopify',
-    isCOD:
-      String(data.gateway || '')
-        .toLowerCase()
-        .includes('cash on delivery') ||
-      String(data.gateway || '')
-        .toLowerCase()
-        .includes('cod') ||
-      (Array.isArray(data.payment_gateway_names) &&
-        data.payment_gateway_names.join('').toLowerCase().includes('cod')),
+    paymentMethod: paymentGatewaysSummary(data) || (data.gateway ? String(data.gateway) : 'Shopify'),
+    isCOD: detectCodFromShopify(data),
     items,
     address: data.shipping_address ? `${data.shipping_address.address1}, ${data.shipping_address.city}` : '',
     city: data.shipping_address?.city || '',
@@ -86,14 +110,18 @@ function buildShopifyOrderSet(clientId, data) {
 }
 
 function shopifyOrderFilter(clientId, data) {
-  return {
-    clientId,
-    $or: [{ shopifyOrderId: String(data.id) }, { orderId: data.name || `#${data.id}` }],
-  };
+  const sid = data?.id != null ? String(data.id) : '';
+  if (sid) {
+    return { clientId, shopifyOrderId: sid };
+  }
+  const name = data?.name || (data?.order_number != null ? `#${data.order_number}` : '');
+  return { clientId, orderId: name };
 }
 
 module.exports = {
   buildShopifyOrderSet,
   shopifyOrderFilter,
   resolveCustomerDisplayName,
+  paymentGatewaysSummary,
+  detectCodFromShopify,
 };

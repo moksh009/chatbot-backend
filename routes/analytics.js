@@ -133,10 +133,24 @@ router.get('/flow-heatmap', protect, async (req, res) => {
     heatmapData.forEach(item => {
       heatmap[item._id] = item.count;
     });
-    const client = await Client.findOne({ clientId }).select('flowNodes').lean();
+    const client = await Client.findOne({ clientId }).select('flowNodes visualFlows').lean();
     const nodeLabelMap = {};
-    (client?.flowNodes || []).forEach(node => {
-      nodeLabelMap[node.id] = node.data?.label || node.data?.text || node.data?.body || node.type || node.id;
+    const labelFromNode = (node) =>
+      node?.data?.label ||
+      node?.data?.title ||
+      node?.data?.name ||
+      node?.data?.text ||
+      node?.data?.body ||
+      node?.data?.templateName ||
+      node?.type ||
+      node?.id;
+    (client?.visualFlows || []).forEach((flow) => {
+      (flow?.nodes || []).forEach((node) => {
+        if (node?.id) nodeLabelMap[node.id] = labelFromNode(node);
+      });
+    });
+    (client?.flowNodes || []).forEach((node) => {
+      if (node?.id && !nodeLabelMap[node.id]) nodeLabelMap[node.id] = labelFromNode(node);
     });
 
     const nodes = heatmapData
@@ -1803,36 +1817,53 @@ router.get('/agent-performance', protect, async (req, res) => {
     const query = { clientId };
 
     // 1. Fetch Conversations with FRT metrics (lean + select only needed fields)
-    const convos = await Conversation.find({ 
-        ...query, 
-        firstInboundAt: { $exists: true },
-        firstResponseAt: { $exists: true }
+    const convos = await Conversation.find({
+        ...query,
+        firstInboundAt: { $exists: true, $ne: null },
+        firstResponseAt: { $exists: true, $ne: null },
     }).select('firstInboundAt firstResponseAt').lean();
 
-    // 2. Calculate Avg FRT
-    let totalFRT = 0;
-    convos.forEach(c => {
-        const diff = (new Date(c.firstResponseAt) - new Date(c.firstInboundAt)) / 1000; // seconds
-        totalFRT += diff;
-    });
-    const avgFRT = convos.length > 0 ? (totalFRT / convos.length) : 0;
+    // 2. Avg first response (seconds) — ignore bad rows (inverted timestamps, absurd gaps)
+    const MAX_FRT_SEC = 48 * 3600; // 48h cap; outliers / legacy bad data excluded
+    const frtSamples = [];
+    for (const c of convos) {
+      const t0 = new Date(c.firstInboundAt).getTime();
+      const t1 = new Date(c.firstResponseAt).getTime();
+      if (!Number.isFinite(t0) || !Number.isFinite(t1)) continue;
+      const diffSec = (t1 - t0) / 1000;
+      if (diffSec < 0 || diffSec > MAX_FRT_SEC) continue;
+      frtSamples.push(diffSec);
+    }
+    const avgFRT =
+      frtSamples.length > 0 ? frtSamples.reduce((a, b) => a + b, 0) / frtSamples.length : null;
 
     // 3. Resolution Rate & Avg Resolution Time (parallel queries)
     const [totalConvos, resolvedConvos, csatConvos] = await Promise.all([
       Conversation.countDocuments(query),
-      Conversation.find({ ...query, resolvedAt: { $exists: true } }).select('resolvedAt firstInboundAt').lean(),
+      Conversation.find({ ...query, resolvedAt: { $exists: true, $ne: null } })
+        .select('resolvedAt firstInboundAt')
+        .lean(),
       Conversation.find({ ...query, "csatScore.rating": { $exists: true } }).select('csatScore').lean()
     ]);
     const resolutionRate = totalConvos > 0 ? (resolvedConvos.length / totalConvos * 100).toFixed(1) : "0";
     
-    let totalResolutionTime = 0;
-    resolvedConvos.forEach(c => {
-        totalResolutionTime += (new Date(c.resolvedAt) - new Date(c.firstInboundAt)) / (1000 * 60 * 60); // hours
-    });
-    const avgResolutionTime = resolvedConvos.length > 0 ? (totalResolutionTime / resolvedConvos.length).toFixed(1) : 0;
+    const MAX_RES_H = 24 * 30; // 30 days max; drop corrupt rows
+    const resSamples = [];
+    for (const c of resolvedConvos) {
+      const t0 = new Date(c.firstInboundAt).getTime();
+      const t1 = new Date(c.resolvedAt).getTime();
+      if (!Number.isFinite(t0) || !Number.isFinite(t1)) continue;
+      const hrs = (t1 - t0) / (1000 * 60 * 60);
+      if (hrs < 0 || hrs > MAX_RES_H) continue;
+      resSamples.push(hrs);
+    }
+    const avgResolutionTime =
+      resSamples.length > 0
+        ? (resSamples.reduce((a, b) => a + b, 0) / resSamples.length).toFixed(1)
+        : null;
 
     // 4. CSAT Calculation (already fetched above)
-    const totalScore = csatConvos.reduce((sum, c) => sum + c.csatScore.rating, 0);
+    const totalScore = csatConvos.reduce((sum, c) => sum + (c.csatScore?.rating ?? 0), 0);
     const avgCSAT = csatConvos.length > 0 ? (totalScore / csatConvos.length).toFixed(1) : "0";
 
     // 5. Agent Leaderboard (Aggregate by assignedTo)
@@ -1871,11 +1902,19 @@ router.get('/agent-performance', protect, async (req, res) => {
         a.totalHandled > 0 ? ((a.resolutions / a.totalHandled) * 100).toFixed(0) : '0',
     }));
 
+    const avgFRTOut =
+      avgFRT == null
+        ? '—'
+        : avgFRT > 60
+          ? `${(avgFRT / 60).toFixed(1)}m`
+          : `${avgFRT.toFixed(0)}s`;
+    const avgResOut = avgResolutionTime == null ? '—' : `${avgResolutionTime}h`;
+
     res.json({
         success: true,
-        avgFRT: avgFRT > 60 ? `${(avgFRT/60).toFixed(1)}m` : `${avgFRT.toFixed(0)}s`,
+        avgFRT: avgFRTOut,
         resolutionRate: `${resolutionRate}%`,
-        avgResolutionTime: `${avgResolutionTime}h`,
+        avgResolutionTime: avgResOut,
         activeAgents: agentStats.length,
         avgCSAT: `${avgCSAT}/5`,
         totalConversations: totalConvos,

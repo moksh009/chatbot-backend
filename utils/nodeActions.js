@@ -111,8 +111,9 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
 
     case "WARRANTY_CHECK": {
       try {
-        const { normalizePhone } = require("../helpers");
+        const { normalizePhone } = require("./helpers");
         const WarrantyRecord = require("../models/WarrantyRecord");
+        const Contact = require("../models/Contact");
         const cleanPhone = normalizePhone(phone);
         const meta = convo?.metadata || {};
         const rawQuery = String(meta.lookup_serial || meta.order_id_manual || "").trim();
@@ -136,6 +137,9 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
 
         let branch = "none";
         let order = null;
+        let warrantyEnd = null;
+        let productName = "";
+        let orderRef = "";
 
         const orderIdMatch = normQuery
           ? {
@@ -172,18 +176,46 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
 
         if (order?.createdAt) {
           const purchase = new Date(order.createdAt);
-          const warrantyEnd = addCalendarMonths(purchase, months);
+          warrantyEnd = addCalendarMonths(purchase, months);
           branch = new Date() <= warrantyEnd ? "active" : "expired";
+          productName =
+            (Array.isArray(order.items) && order.items[0]?.name) ||
+            "Your purchase";
+          orderRef = String(
+            order.orderNumber || order.orderId || order.shopifyOrderId || ""
+          ).trim();
         } else if (!order) {
-          const record = await WarrantyRecord.findOne({
-            customerPhone: cleanPhone,
+          let contact = await Contact.findOne({
             clientId: client.clientId,
+            phoneNumber: cleanPhone,
           })
-            .sort({ createdAt: -1 })
+            .select("_id")
             .lean();
-          if (record?.expiresAt) {
-            const expired = new Date(record.expiresAt) < new Date();
+          if (!contact && cleanPhone.length >= 10) {
+            const suffix = cleanPhone.slice(-10);
+            contact = await Contact.findOne({
+              clientId: client.clientId,
+              phoneNumber: new RegExp(`${escapeRegex(suffix)}$`),
+            })
+              .select("_id")
+              .lean();
+          }
+
+          const record = contact
+            ? await WarrantyRecord.findOne({
+                clientId: client.clientId,
+                customerId: contact._id,
+              })
+                .sort({ createdAt: -1 })
+                .lean()
+            : null;
+
+          if (record?.expiryDate) {
+            warrantyEnd = new Date(record.expiryDate);
+            const expired = warrantyEnd < new Date();
             branch = expired ? "expired" : "active";
+            productName = record.productName || "";
+            orderRef = String(record.shopifyOrderId || "").trim();
           } else {
             branch = "none";
           }
@@ -191,11 +223,31 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
           branch = "none";
         }
 
+        const expiresDisplay = warrantyEnd
+          ? warrantyEnd.toLocaleDateString("en-GB", {
+              day: "2-digit",
+              month: "short",
+              year: "numeric",
+            })
+          : "";
+
+        const summary =
+          branch === "none"
+            ? "We could not find a warranty on file for this number. Share your order ID and we will help you."
+            : branch === "active"
+              ? `Your warranty${productName ? ` for ${productName}` : ""} is active${expiresDisplay ? ` until ${expiresDisplay}` : ""}. Ask here if you need your certificate resent on WhatsApp.`
+              : `Your warranty${productName ? ` for ${productName}` : ""} has ended${expiresDisplay ? ` (expired ${expiresDisplay})` : ""}.`;
+
         await Conversation.findByIdAndUpdate(convo._id, {
           $set: {
             "metadata._warranty_branch": branch,
             "metadata._warranty_checked_at": new Date(),
             "metadata._warranty_error": false,
+            "metadata._warranty_expires_at": warrantyEnd ? warrantyEnd.toISOString() : "",
+            "metadata._warranty_expires_display": expiresDisplay,
+            "metadata._warranty_product_name": productName,
+            "metadata._warranty_order_ref": orderRef,
+            "metadata._warranty_summary": summary,
           },
         });
       } catch (err) {
@@ -206,6 +258,12 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
               "metadata._warranty_branch": "none",
               "metadata._warranty_checked_at": new Date(),
               "metadata._warranty_error": true,
+              "metadata._warranty_expires_at": "",
+              "metadata._warranty_expires_display": "",
+              "metadata._warranty_product_name": "",
+              "metadata._warranty_order_ref": "",
+              "metadata._warranty_summary":
+                "Warranty lookup failed. Please try again or ask for a human agent.",
             },
           });
         } catch (_) {}

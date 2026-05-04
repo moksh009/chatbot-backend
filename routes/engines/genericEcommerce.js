@@ -12,7 +12,7 @@ const { runDualBrainEngine } = require('../../utils/dualBrainEngine');
 const { generateText } = require('../../utils/gemini');
 const { normalizePhone } = require('../../utils/helpers');
 const { getShopifyClient } = require('../../utils/shopifyHelper');
-const { buildShopifyOrderSet, shopifyOrderFilter } = require('../../utils/shopifyOrderMapper');
+const { buildShopifyOrderSet, shopifyOrderFilter, detectCodFromShopify } = require('../../utils/shopifyOrderMapper');
 const { syncWhatsAppTemplates } = require('../../utils/whatsappHelpers');
 const FlowAnalytics = require('../../models/FlowAnalytics');
 
@@ -794,7 +794,7 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
     try {
         const orderData = req.body;
         const phoneRaw = orderData.phone || orderData.customer?.phone || orderData.billing_address?.phone || orderData.shipping_address?.phone;
-        const { clientId, whatsappToken: token } = req.clientConfig;
+        const { clientId } = req.clientConfig;
 
         res.status(200).end();
         console.log(`[EcommerceEngine] Order Complete Webhook for ${clientId} | Order: ${orderData.name} | Phone: ${phoneRaw}`);
@@ -803,12 +803,12 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
 
         const orderNumber = orderData.name;
         const totalPrice = orderData.total_price;
-        const isCOD = orderData.gateway?.toLowerCase().includes('cash on delivery') || orderData.gateway?.toLowerCase().includes('cod');
         const items = orderData.line_items?.map(i => `${i.name} (x${i.quantity})`).join(', ') || 'Your items';
 
         const $set = buildShopifyOrderSet(clientId, orderData);
         $set.customerPhone = phone;
         const savedOrder = await Order.findOneAndUpdate(shopifyOrderFilter(clientId, orderData), { $set }, { upsert: true, new: true, setDefaultsOnInsert: true });
+        const isCOD = !!(savedOrder && savedOrder.isCOD) || detectCodFromShopify(orderData);
 
         // Mark Lead as Purchased via Unified Journey Tracker
         const { trackEvent } = require('../../utils/journeyTracker');
@@ -818,13 +818,27 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
             isCOD: isCOD
         });
 
-        // Notify User via WhatsApp
-        const helperParams = { phoneNumberId: req.clientConfig.phoneNumberId, token, io: req.app.get('socketio'), clientConfig: req.clientConfig };
+        // Notify customer — prefer Status Automations "paid" template when payment is captured
+        const io = req.app.get('socketio');
+        const fs = String(orderData.financial_status || '').toLowerCase();
+        const statusTemplates = req.clientConfig.nicheData?.orderStatusTemplates || {};
+        let orderNotifyOk = false;
+        if (savedOrder && statusTemplates.paid && fs === 'paid') {
+            const r = await sendMappedOrderStatusWhatsApp({
+                clientConfig: req.clientConfig,
+                order: savedOrder,
+                status: 'paid',
+                trackingNumber: '',
+                trackingUrl: '',
+                io,
+            });
+            orderNotifyOk = !!r.ok;
+        }
 
         const confirmationTemplate = req.clientConfig.nicheData?.order_confirmation_template;
-        if (confirmationTemplate) {
+        if (!orderNotifyOk && confirmationTemplate) {
             await sendWhatsAppTemplate({
-                ...helperParams,
+                phoneNumberId: req.clientConfig.phoneNumberId,
                 to: phone,
                 templateName: confirmationTemplate,
                 bodyParams: [
@@ -832,11 +846,19 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
                     orderNumber,
                     `₹${totalPrice}`,
                     isCOD ? 'Cash on Delivery' : 'Prepaid Online'
-                ]
+                ],
+                io,
+                clientConfig: req.clientConfig,
             });
-        } else {
+        } else if (!orderNotifyOk) {
             const msg = `🎉 *Order Confirmed!* 🎉\n\nHi ${orderData.customer?.first_name || 'there'},\nThanks for your purchase! 🛍️\n\n📦 *Order Summary:* ${items}\n💰 *Total:* ₹${totalPrice}\n💳 *Payment:* ${isCOD ? 'Cash on Delivery (COD)' : 'Prepaid Online'}\n\nWe will update you once it ships.`;
-            await sendWhatsAppText({ ...helperParams, to: phone, body: msg });
+            await sendWhatsAppText({
+                phoneNumberId: req.clientConfig.phoneNumberId,
+                to: phone,
+                body: msg,
+                io,
+                clientConfig: req.clientConfig,
+            });
         }
 
         if (isCOD && req.clientConfig.razorpayKeyId) {
@@ -892,11 +914,8 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
                 console.error("[InventoryAlert] Verification failed", invErr.message);
             }
         }
-
-        return res.status(200).end();
     } catch (e) {
         console.error('[EcommerceEngine] Order Webhook Error', e);
-        res.status(200).end();
     }
 };
 
@@ -915,7 +934,7 @@ const handleShopifyOrderFulfilledWebhook = async (req, res) => {
         const trackingUrl = payload.fulfillments?.[0]?.tracking_url || "";
         const trackingNum = payload.fulfillments?.[0]?.tracking_number || "";
 
-        await Order.findOneAndUpdate(
+        const orderDoc = await Order.findOneAndUpdate(
             { shopifyOrderId: String(payload.id), clientId },
             {
               $set: {
@@ -925,15 +944,29 @@ const handleShopifyOrderFulfilledWebhook = async (req, res) => {
                 trackingUrl,
                 trackingNumber: trackingNum,
               },
-            }
+            },
+            { new: true }
         );
 
-        const helperParams = { phoneNumberId: req.clientConfig.phoneNumberId, token: req.clientConfig.whatsappToken, io: req.app.get('socketio'), clientConfig: req.clientConfig };
+        const io = req.app.get('socketio');
+        const statusTemplates = req.clientConfig.nicheData?.orderStatusTemplates || {};
+        let shippedOk = false;
+        if (statusTemplates.shipped && orderDoc) {
+            const r = await sendMappedOrderStatusWhatsApp({
+                clientConfig: req.clientConfig,
+                order: orderDoc,
+                status: 'shipped',
+                trackingNumber: trackingNum,
+                trackingUrl,
+                io,
+            });
+            shippedOk = !!r.ok;
+        }
 
         const shippingTemplate = req.clientConfig.nicheData?.shipping_updates_template;
-        if (shippingTemplate) {
+        if (!shippedOk && shippingTemplate) {
             await sendWhatsAppTemplate({
-                ...helperParams,
+                phoneNumberId: req.clientConfig.phoneNumberId,
                 to: phone,
                 templateName: shippingTemplate,
                 bodyParams: [
@@ -941,13 +974,21 @@ const handleShopifyOrderFulfilledWebhook = async (req, res) => {
                     trackingNum || 'N/A',
                     trackingUrl || 'N/A'
                 ],
-                buttonUrlParam: trackingUrl || null
+                buttonUrlParam: trackingUrl || null,
+                io,
+                clientConfig: req.clientConfig,
             });
-        } else {
+        } else if (!shippedOk) {
             const shippingMsg = `📦 Your order #${orderNumber} has been shipped!\n\n` +
                 (trackingUrl ? `🚚 Track here: ${trackingUrl}\n\n` : "") +
                 `Expected delivery in 3-5 business days. We'll keep you posted!`;
-            await sendWhatsAppText({ ...helperParams, to: phone, body: shippingMsg });
+            await sendWhatsAppText({
+                phoneNumberId: req.clientConfig.phoneNumberId,
+                to: phone,
+                body: shippingMsg,
+                io,
+                clientConfig: req.clientConfig,
+            });
         }
 
         const reviewFlow = (req.clientConfig.automationFlows || []).find(f => f.id === "review_collection");
@@ -1000,7 +1041,8 @@ const getClientOrders = async (req, res) => {
             ];
         }
 
-        const orders = await Order.find(query).sort({ createdAt: -1 }).limit(100);
+        const raw = await Order.find(query).sort({ createdAt: -1 }).limit(200);
+        const orders = dedupeOrdersByShopifyKey(raw).slice(0, 100);
         res.json({ success: true, orders });
     } catch (error) {
         console.error('[getClientOrders] Error:', error);
@@ -1090,6 +1132,134 @@ const logRestoreEvent = async (req, res) => {
     }
 };
 
+/** Map dashboard / Shopify status to Status Automations Manager key. */
+function resolveOrderStatusTemplateKey(status) {
+    const s = String(status || '').toLowerCase();
+    if (s === 'fulfilled') return 'shipped';
+    return s;
+}
+
+/**
+ * Send WhatsApp template configured under nicheData.orderStatusTemplates for this status.
+ * Returns whether a template was attempted and whether Meta accepted it.
+ */
+async function sendMappedOrderStatusWhatsApp({ clientConfig, order, status, trackingNumber, trackingUrl, io }) {
+    const nicheData = clientConfig.nicheData || {};
+    const statusMap = nicheData.orderStatusTemplates || {};
+    const mapKey = resolveOrderStatusTemplateKey(status);
+    const templateName = statusMap[mapKey];
+    if (!templateName) {
+        return { ok: false, templateAttempted: false, reason: 'no_mapping' };
+    }
+    const rawPhone = order.customerPhone || order.phone;
+    if (!rawPhone) {
+        return { ok: false, templateAttempted: true, reason: 'no_phone' };
+    }
+    const phone = normalizePhone(rawPhone);
+    const { phoneNumberId, whatsappToken, clientId } = clientConfig;
+
+    const tplDef = (clientConfig.syncedMetaTemplates || []).find((t) => t.name === templateName);
+    let requiredParams = null;
+    if (tplDef) {
+        const bodyComp = (tplDef.components || []).find((c) => c.type === 'BODY');
+        if (bodyComp && bodyComp.text) {
+            const matches = bodyComp.text.match(/\{\{\d+\}\}/g);
+            requiredParams = matches ? new Set(matches).size : 0;
+        } else {
+            requiredParams = 0;
+        }
+    } else {
+        console.warn(`[OrderStatusWA] Template ${templateName} not in syncedMetaTemplates for ${clientId}`);
+        if (clientConfig.wabaId) {
+            syncWhatsAppTemplates({ wabaId: clientConfig.wabaId, token: whatsappToken })
+                .then((res) => {
+                    if (res.success) {
+                        Client.updateOne({ clientId }, { $set: { syncedMetaTemplates: res.templates, templatesSyncedAt: new Date() } }).catch(() => {});
+                    }
+                })
+                .catch(() => {});
+        }
+    }
+
+    let headerImageUrl = null;
+    const ecoImageStatuses = ['paid', 'shipped', 'fulfilled', 'delivered', 'processing'];
+    const stLower = String(status || '').toLowerCase();
+    if (templateName.startsWith('eco_') && ecoImageStatuses.includes(stLower)) {
+        if (order.items && order.items.length > 0) {
+            headerImageUrl = order.items[0].image || order.items[0].imageUrl;
+        }
+        if (!headerImageUrl) headerImageUrl = nicheData.bannerImage;
+    }
+
+    let bodyParams = [order.customerName || 'Customer', order.orderNumber || order.orderId];
+
+    if (stLower === 'shipped' || stLower === 'fulfilled') {
+        let finalTrackingUrl = trackingUrl || order.trackingUrl;
+        if (!finalTrackingUrl && (trackingNumber || order.trackingNumber) && nicheData?.trackingLinkPattern) {
+            finalTrackingUrl = nicheData.trackingLinkPattern.replace(
+                '{{tracking_number}}',
+                trackingNumber || order.trackingNumber || ''
+            );
+        }
+        bodyParams.push(finalTrackingUrl || 'Check your dashboard');
+    } else if (stLower === 'delivered') {
+        // Name + order# only
+    } else if (stLower === 'paid' || stLower === 'processing') {
+        bodyParams.push(`₹${order.totalPrice || '0'}`);
+        bodyParams.push(order.isCOD ? 'Cash on Delivery' : order.paymentMethod || 'Prepaid');
+    } else {
+        bodyParams.push(status.charAt(0).toUpperCase() + status.slice(1));
+        bodyParams.push(`₹${order.totalPrice || '0'}`);
+        bodyParams.push(trackingNumber || order.trackingNumber || 'N/A');
+        bodyParams.push(trackingUrl || order.trackingUrl || 'N/A');
+    }
+
+    if (requiredParams !== null) {
+        if (bodyParams.length > requiredParams) {
+            bodyParams = bodyParams.slice(0, requiredParams);
+        } else {
+            while (bodyParams.length < requiredParams) bodyParams.push('---');
+        }
+    }
+
+    const ok = await sendWhatsAppTemplate({
+        phoneNumberId,
+        to: phone,
+        templateName,
+        bodyParams,
+        headerImageUrl,
+        buttonUrlParam: trackingUrl || order.trackingUrl || null,
+        io,
+        clientConfig,
+    });
+    return { ok: !!ok, templateAttempted: true, templateName };
+}
+
+function dedupeOrdersByShopifyKey(orders) {
+    if (!Array.isArray(orders) || orders.length === 0) return orders;
+    const score = (doc) => {
+        let s = 0;
+        if (doc.shopifyOrderId) s += 8;
+        const ship = doc.shippingAddress;
+        if (ship && (ship.address1 || ship.city || ship.province || ship.province_code)) s += 4;
+        if (doc.financialStatus) s += 2;
+        if (doc.customerName && String(doc.customerName).trim().length > 5) s += 1;
+        return s;
+    };
+    const keyOf = (o) => {
+        if (o.shopifyOrderId) return `sid:${String(o.shopifyOrderId)}`;
+        const raw = String(o.orderNumber || o.orderId || '').replace(/^#/, '').trim();
+        return raw ? `n:${raw}` : `id:${String(o._id)}`;
+    };
+    const byKey = new Map();
+    for (const o of orders) {
+        const k = keyOf(o);
+        const prev = byKey.get(k);
+        if (!prev || score(o) >= score(prev)) byKey.set(k, o);
+    }
+    return Array.from(byKey.values()).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+}
+
 const updateOrderStatus = async (req, res) => {
     try {
         const { orderId } = req.params;
@@ -1140,128 +1310,40 @@ const updateOrderStatus = async (req, res) => {
             }
         }
 
-        // 2. WHATSAPP NOTIFICATION
-        const statusMap = nicheData.orderStatusTemplates || {};
-        const templateName = statusMap[status.toLowerCase()];
+        // 2. WHATSAPP (Status Automations Manager mappings + plain-text fallback)
+        let wa = { ok: false, templateAttempted: false };
+        try {
+            wa = await sendMappedOrderStatusWhatsApp({
+                clientConfig: req.clientConfig,
+                order,
+                status,
+                trackingNumber,
+                trackingUrl,
+                io,
+            });
+        } catch (waErr) {
+            console.error('[UpdateOrderStatus] WhatsApp template error:', waErr.message);
+        }
 
-        if (templateName) {
-            const rawPhone = order.customerPhone || order.phone;
-            if (rawPhone) {
-                const phone = normalizePhone(rawPhone);
-                // Find template definition in waTemplates or syncedMetaTemplates to detect parameter count
-                const tplDef = (req.clientConfig.syncedMetaTemplates || []).find(t => t.name === templateName);
-
-                let requiredParams = null; // Use null to indicate "unknown"
-                if (tplDef) {
-                    const bodyComp = (tplDef.components || []).find(c => c.type === 'BODY');
-                    if (bodyComp && bodyComp.text) {
-                        const matches = bodyComp.text.match(/\{\{\d+\}\}/g);
-                        requiredParams = matches ? new Set(matches).size : 0;
-                        console.log(`[TemplateDetection] Found ${requiredParams} params for ${templateName}`);
-                    } else {
-                        requiredParams = 0; // No body component or no matches means 0 params
-                    }
-                } else {
-                    console.warn(`[TemplateDetection] Warning: Template ${templateName} not found in client configuration for parameter detection.`);
-                    // Trigger background sync so future messages for this client have correct data
-                    if (req.clientConfig.wabaId) {
-                        syncWhatsAppTemplates({ wabaId: req.clientConfig.wabaId, token: whatsappToken })
-                            .then(res => {
-                                if (res.success) {
-                                    Client.updateOne({ clientId }, { $set: { syncedMetaTemplates: res.templates, templatesSyncedAt: new Date() } })
-                                        .then(() => console.log(`[TemplateDetection] Background sync successful for ${clientId}`))
-                                        .catch(e => console.error(`[TemplateDetection] DB update failed for ${clientId}`, e.message));
-                                }
-                            })
-                            .catch(e => console.error(`[TemplateDetection] Trigger failed for ${clientId}`, e.message));
-                    }
-                }
-
-                // 3. DYNAMIC MEDIA (PHASE 11 - ECO-DYNAMIC IMAGES)
-                let headerImageUrl = null;
-                const ecoImageStatuses = ['paid', 'shipped', 'fulfilled', 'delivered', 'processing'];
-
-                if (templateName.startsWith('eco_') && ecoImageStatuses.includes(status.toLowerCase())) {
-                    // Try to get the image from the first order item
-                    if (order.items && order.items.length > 0) {
-                        headerImageUrl = order.items[0].image || order.items[0].imageUrl;
-                        console.log(`[EcoDynamic] Using product image for ${templateName}: ${headerImageUrl}`);
-                    }
-
-                    // Fallback to nicheData banner if no product image
-                    if (!headerImageUrl) {
-                        headerImageUrl = req.clientConfig.nicheData?.bannerImage;
-                    }
-                }
-
-                // 4. PREPARE STANDARDIZED VARIABLES (PHASE 11)
-                // Standard order: 1:Name, 2:Order#, 3:Total/Tracking#, 4:Method/TrackingURL
-                let bodyParams = [
-                    order.customerName || 'Customer',
-                    order.orderNumber || order.orderId,
-                ];
-
-                if (status.toLowerCase() === 'shipped' || status.toLowerCase() === 'fulfilled') {
-                    // Variable mapping for eco_shipping_update: 1:Name, 2:Order#, 3:TrackingURL (from standardTemplates.js)
-                    let finalTrackingUrl = trackingUrl || order.trackingUrl;
-                    if (!finalTrackingUrl && (trackingNumber || order.trackingNumber) && req.clientConfig.nicheData?.trackingLinkPattern) {
-                        const pattern = req.clientConfig.nicheData.trackingLinkPattern;
-                        finalTrackingUrl = pattern.replace('{{tracking_number}}', trackingNumber || order.trackingNumber);
-                    }
-                    bodyParams.push(finalTrackingUrl || 'Check your dashboard');
-                }
-                else if (status.toLowerCase() === 'delivered') {
-                    // eco_delivered: 1:Name, 2:Order#
-                    // Already have these 2 in bodyParams.
-                }
-                else if (status.toLowerCase() === 'paid' || status.toLowerCase() === 'processing') {
-                    // eco_order_confirmed: 1:Name, 2:Order#, 3:Total, 4:PaymentMethod
-                    bodyParams.push(`₹${order.totalPrice || '0'}`);
-                    bodyParams.push(order.paymentMethod || 'Prepaid');
-                }
-                else {
-                    // Fallback for others
-                    bodyParams.push(status.charAt(0).toUpperCase() + status.slice(1));
-                    bodyParams.push(`₹${order.totalPrice || '0'}`);
-                    bodyParams.push(trackingNumber || order.trackingNumber || 'N/A');
-                    bodyParams.push(trackingUrl || order.trackingUrl || 'N/A');
-                }
-
-                // Ensure bodyParams matches Meta's required count EXACTLY if we know the count
-                if (requiredParams !== null) {
-                    if (bodyParams.length > requiredParams) {
-                        bodyParams = bodyParams.slice(0, requiredParams);
-                    } else {
-                        while (bodyParams.length < requiredParams) {
-                            bodyParams.push('---'); // Minimal padding
-                        }
-                    }
-                }
-
-                const helperParams = { phoneNumberId, token: whatsappToken, io, clientConfig: req.clientConfig };
-                await sendWhatsAppTemplate({
-                    ...helperParams,
-                    to: phone,
-                    templateName,
-                    bodyParams,
-                    headerImageUrl, // Dynamic Product Image!
-                    buttonUrlParam: trackingUrl || order.trackingUrl || null
-                });
-            }
-        } else if (status !== oldStatus) {
-            const rawPhone = order.customerPhone || order.phone;
-            if (rawPhone) {
+        const shouldTextFallback =
+            status !== oldStatus &&
+            (order.customerPhone || order.phone) &&
+            (!wa.templateAttempted || !wa.ok);
+        if (shouldTextFallback) {
+            try {
+                const rawPhone = order.customerPhone || order.phone;
                 const phone = normalizePhone(rawPhone);
                 let msg = `Hi ${order.customerName || 'there'}, your order #${order.orderNumber || order.orderId} status has been updated to *${status}*.`;
-                if (status === 'shipped' && (trackingUrl || order.trackingUrl)) {
+                if ((status === 'shipped' || status === 'fulfilled') && (trackingUrl || order.trackingUrl)) {
                     msg += `\n\nTrack here: ${trackingUrl || order.trackingUrl}`;
                 }
-                const helperParams = { phoneNumberId, token: whatsappToken, io, clientConfig: req.clientConfig };
-                await sendWhatsAppText({ ...helperParams, to: phone, body: msg });
+                await sendWhatsAppText({ phoneNumberId, to: phone, body: msg, io, clientConfig: req.clientConfig });
+            } catch (txtErr) {
+                console.error('[UpdateOrderStatus] WhatsApp text fallback error:', txtErr.message);
             }
         }
 
-        res.json({ success: true, order });
+        res.json({ success: true, order, whatsapp: { templateAttempted: wa.templateAttempted, ok: wa.ok, template: wa.templateName || null } });
     } catch (error) {
         console.error('[UpdateOrderStatus] Error:', error);
         res.status(500).json({ error: 'Failed to update order status' });
