@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
+const { ensureClientForUser } = require('../utils/ensureClientForUser');
 const log = require('../utils/logger')('KnowledgeRoute');
 const { tenantClientId } = require('../utils/queryHelpers');
 
@@ -14,6 +15,7 @@ router.get('/', protect, async (req, res) => {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ message: 'Unauthorized' });
 
+    await ensureClientForUser(req.user);
     const client = await Client.findOne({ clientId }).select('knowledgeBase');
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
@@ -32,10 +34,11 @@ router.get('/pending', protect, async (req, res) => {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ message: 'Unauthorized' });
 
+    await ensureClientForUser(req.user);
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
-    const pending = client.pendingKnowledge.filter(k => k.status === 'pending');
+    const pending = (client.pendingKnowledge || []).filter((k) => k.status === 'pending');
     res.json(pending);
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

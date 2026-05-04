@@ -15,12 +15,25 @@ const WhatsApp = require('../utils/whatsapp');
  * Real aggregate stats for the Loyalty Hub dashboard.
  */
 // ✅ Phase R2: Fixed clientId ObjectId mismatch in loyalty stats — 2026-04-10
-const { resolveClient, startOfDayIST, tenantClientId } = require('../utils/queryHelpers');
+const { resolveClient, resolveClientOrNull, startOfDayIST, tenantClientId } = require('../utils/queryHelpers');
 
 async function getLoyaltyStats(req, res) {
     try {
-        const { client } = await resolveClient(req);
-        if (!client) return res.status(404).json({ success: false, message: 'Client context not found' });
+        const { client } = await resolveClientOrNull(req);
+        if (!client) {
+            return res.json({
+                success: true,
+                totalPoints: 0,
+                activeMembers: 0,
+                totalMembers: 0,
+                issuedToday: 0,
+                totalRedeemed: 0,
+                redemptionCount: 0,
+                redemptionVelocity: 0,
+                recentTransactions: [],
+                topCustomers: []
+            });
+        }
 
         const today = startOfDayIST();
         const cid = client.clientId;
@@ -117,7 +130,15 @@ async function getLoyaltyStats(req, res) {
  */
 async function getReputationStats(req, res) {
     try {
-        const { client } = await resolveClient(req);
+        const { client } = await resolveClientOrNull(req);
+        if (!client) {
+            return res.json({
+                summary: { scheduled: 0, sent: 0, positive: 0, negative: 0, skipped: 0 },
+                totalRequests: 0,
+                sentimentRatio: 100,
+                recentReviews: []
+            });
+        }
         const clientId = client.clientId;
 
         const [counts, recentReviews] = await Promise.all([

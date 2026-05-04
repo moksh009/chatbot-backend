@@ -15,6 +15,7 @@ const fs = require('fs');
 const axios = require('axios');
 const { encrypt, decrypt } = require('../utils/encryption');
 const { sanitizeMiddleware } = require('../utils/sanitize');
+const { ensureClientForUser } = require('../utils/ensureClientForUser');
 const { syncPersonaToFlows } = require('../utils/personaEngine');
 const { getPrebuiltTemplates } = require('../utils/flowGenerator');
 const WhatsApp = require('../utils/whatsapp');
@@ -704,6 +705,8 @@ router.delete('/clients/:id', protect, isSuperAdmin, async (req, res) => {
 // Any authenticated user can update their OWN client's editable fields
 router.get('/my-settings', protect, sanitizeMiddleware, async (req, res) => {
   try {
+    await ensureClientForUser(req.user);
+
     const { clientId } = req.query;
     
     // 1. Resolve Target Client ID with Fallback
@@ -1040,6 +1043,8 @@ router.get('/flow/preset/:type', protect, async (req, res) => {
 // --- GET AND UPDATE CLIENT SPECIFIC SETTINGS (Like AI Persona) ---
 router.get('/client/settings', protect, async (req, res) => {
   try {
+    await ensureClientForUser(req.user);
+
     const targetClientId = req.user.clientId;
     if (!targetClientId) {
       return res.status(400).json({ message: 'No target clientId specified' });

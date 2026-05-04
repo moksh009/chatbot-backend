@@ -12,6 +12,7 @@ const { runDualBrainEngine } = require('../../utils/dualBrainEngine');
 const { generateText } = require('../../utils/gemini');
 const { normalizePhone } = require('../../utils/helpers');
 const { getShopifyClient } = require('../../utils/shopifyHelper');
+const { buildShopifyOrderSet, shopifyOrderFilter } = require('../../utils/shopifyOrderMapper');
 const { syncWhatsAppTemplates } = require('../../utils/whatsappHelpers');
 const FlowAnalytics = require('../../models/FlowAnalytics');
 
@@ -800,31 +801,19 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
         if (!phoneRaw) return;
         const phone = normalizePhone(phoneRaw);
 
-        const orderId = orderData.id;
         const orderNumber = orderData.name;
         const totalPrice = orderData.total_price;
         const isCOD = orderData.gateway?.toLowerCase().includes('cash on delivery') || orderData.gateway?.toLowerCase().includes('cod');
         const items = orderData.line_items?.map(i => `${i.name} (x${i.quantity})`).join(', ') || 'Your items';
 
-        // Log Order Document
-        const savedOrder = await Order.create({
-            clientId,
-            storeString: 'Shopify',
-            orderId: orderId.toString(),
-            orderNumber,
-            totalPrice,
-            customerPhone: phone,
-            customerEmail: orderData.customer?.email || orderData.email || null,
-            customerName: orderData.customer?.first_name || 'Customer',
-            name: orderData.customer?.first_name || 'Customer',
-            paymentMethod: isCOD ? 'COD' : 'Prepaid',
-            items: orderData.line_items?.map(i => ({ name: i.name, quantity: i.quantity, price: i.price })) || []
-        });
+        const $set = buildShopifyOrderSet(clientId, orderData);
+        $set.customerPhone = phone;
+        const savedOrder = await Order.findOneAndUpdate(shopifyOrderFilter(clientId, orderData), { $set }, { upsert: true, new: true, setDefaultsOnInsert: true });
 
         // Mark Lead as Purchased via Unified Journey Tracker
         const { trackEvent } = require('../../utils/journeyTracker');
-        await trackEvent(clientId, phone, 'order_placed', { 
-            orderId: orderId.toString(),
+        await trackEvent(clientId, phone, 'order_placed', {
+            orderId: savedOrder?.orderId || orderData.name || String(orderData.id),
             total: totalPrice,
             isCOD: isCOD
         });
@@ -928,7 +917,15 @@ const handleShopifyOrderFulfilledWebhook = async (req, res) => {
 
         await Order.findOneAndUpdate(
             { shopifyOrderId: String(payload.id), clientId },
-            { status: "fulfilled", fulfilledAt: new Date(), trackingUrl, trackingNumber: trackingNum }
+            {
+              $set: {
+                status: 'shipped',
+                fulfillmentStatus: payload.fulfillment_status != null ? String(payload.fulfillment_status) : 'fulfilled',
+                fulfilledAt: new Date(),
+                trackingUrl,
+                trackingNumber: trackingNum,
+              },
+            }
         );
 
         const helperParams = { phoneNumberId: req.clientConfig.phoneNumberId, token: req.clientConfig.whatsappToken, io: req.app.get('socketio'), clientConfig: req.clientConfig };

@@ -15,6 +15,7 @@ const { logActivity } = require('../utils/activityLogger');
 const { recalculateLeadScore } = require('../utils/scoringHelper');
 const log = require('../utils/logger')('ShopifyWebhook');
 const SkuTriggerService = require('../utils/skuTriggerService');
+const { buildShopifyOrderSet, shopifyOrderFilter } = require('../utils/shopifyOrderMapper');
 
 async function getProductImageForOrder(order, client) {
   // Try to get from order line items first (fastest)
@@ -526,22 +527,14 @@ async function handleOrder(client, data) {
         isCOD: (data.gateway === 'Cash on Delivery (COD)' || (data.payment_gateway_names || []).join('').toLowerCase().includes('cod'))
     });
 
-    // 3. Create internal Order record
-    const newOrder = await Order.create({
-        clientId: client.clientId,
-        orderId: data.name || `#${data.id}`,
-        customerName: data.customer ? `${data.customer.first_name} ${data.customer.last_name || ''}` : 'Shopify Customer',
-        customerPhone: cleanPhone,
-        amount: parseFloat(data.total_price),
-        status: data.financial_status === 'paid' ? 'Paid' : 'Pending',
-        items: data.line_items.map(item => ({
-            name: item.title,
-            quantity: item.quantity,
-            price: parseFloat(item.price)
-        })),
-        address: data.shipping_address ? `${data.shipping_address.address1}, ${data.shipping_address.city}` : '',
-        createdAt: data.created_at
-    });
+    // 3. Upsert internal Order record (aligned with /sync-orders)
+    const $set = buildShopifyOrderSet(client.clientId, data);
+    $set.customerPhone = cleanPhone;
+    const newOrder = await Order.findOneAndUpdate(
+        shopifyOrderFilter(client.clientId, data),
+        { $set },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
 
     // --- PHASE 27: Loyalty Points Award ---
     if (client.loyaltyConfig?.isEnabled && newOrder.amount > 0) {

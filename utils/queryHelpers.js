@@ -46,6 +46,15 @@ async function resolveClient(req) {
   return { client, clientOid };
 }
 
+/** Same as resolveClient but returns { client: null } instead of throwing when tenant is missing. */
+async function resolveClientOrNull(req) {
+  try {
+    return await resolveClient(req);
+  } catch {
+    return { client: null, clientOid: null };
+  }
+}
+
 /**
  * Get start of day in IST as UTC Date.
  * Use this instead of new Date().setHours(0,0,0,0)
@@ -112,6 +121,7 @@ async function safeFindOne(Model, query, select = null) {
 module.exports = {
   tenantClientId,
   resolveClient,
+  resolveClientOrNull,
   startOfDayIST,
   startOfWeekIST,
   startOfMonthIST,

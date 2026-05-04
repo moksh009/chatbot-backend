@@ -13,6 +13,10 @@ const OrderSchema = new mongoose.Schema({
   customerEmail: { type: String },     // New standardized field for email automation
   amount: { type: Number },            // Legacy field (not required — totalPrice is used)
   totalPrice: { type: Number },
+  /** Raw Shopify Admin REST financial_status (e.g. paid, pending, partially_refunded) */
+  financialStatus: { type: String, default: '' },
+  /** Raw Shopify fulfillment_status (e.g. fulfilled, partial, unfulfilled) */
+  fulfillmentStatus: { type: String, default: '' },
   status: { type: String, default: 'pending' },
   paymentMethod: { type: String },
   storeString: { type: String },
@@ -44,9 +48,11 @@ const OrderSchema = new mongoose.Schema({
     name: String,
     quantity: Number,
     price: Number,
-    sku: String
+    sku: String,
+    image: String,
   }],
   shippingAddress: { type: Object },
+  billingAddress: { type: Object },
   createdAt: { type: Date, default: Date.now },
   
   // Phase 25: Track 8 RTO Predictor

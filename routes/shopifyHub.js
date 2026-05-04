@@ -8,6 +8,19 @@ const { addHours } = require('date-fns');
 
 const { getShopifyClient, withShopifyRetry } = require('../utils/shopifyHelper');
 
+/** New tenants / disconnected stores: avoid 500 spam when Shopify is not configured */
+function isDisconnectedShopifyConfig(err) {
+  const m = String(err?.message || '');
+  return (
+    m.includes('Shopify credentials incomplete') ||
+    m.includes('invalid domain configuration') ||
+    m.includes('invalid domain') ||
+    m.includes('Missing credentials') ||
+    m.includes('Client not found') ||
+    m.includes('Client context lost')
+  );
+}
+
 /**
  * @route   GET /api/shopify-hub/ping
  * @desc    Health check for Shopify Hub routes
@@ -148,6 +161,15 @@ router.get('/:clientId/products', protect, verifyClientAccess, async (req, res) 
 
     res.json({ success: true, products: products || [], shopDomain });
   } catch (err) {
+    if (isDisconnectedShopifyConfig(err)) {
+      const c = await Client.findOne({ clientId });
+      return res.json({
+        success: true,
+        products: [],
+        shopDomain: c?.shopDomain || '',
+        isShopifyConnected: false,
+      });
+    }
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     const status = err.response?.status;
@@ -196,6 +218,9 @@ router.get('/:clientId/locations', protect, verifyClientAccess, async (req, res)
     });
     res.json({ success: true, locations });
   } catch (err) {
+    if (isDisconnectedShopifyConfig(err)) {
+      return res.json({ success: true, locations: [], isShopifyConnected: false });
+    }
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     const status = err.response?.status;
@@ -262,6 +287,9 @@ router.get('/:clientId/customers', protect, verifyClientAccess, async (req, res)
     });
     res.json({ success: true, customers });
   } catch (err) {
+    if (isDisconnectedShopifyConfig(err)) {
+      return res.json({ success: true, customers: [], isShopifyConnected: false });
+    }
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
     const status = err.response?.status;

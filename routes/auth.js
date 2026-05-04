@@ -8,6 +8,18 @@ const { sanitizeMiddleware } = require('../utils/sanitize');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs'); // ✅ Phase R4: for authenticated change-password
 const { sendSystemOTPEmail } = require('../utils/emailService');
+const { ensureClientForUser } = require('../utils/ensureClientForUser');
+const { getAccessForUserClient } = require('../utils/accessFlags');
+const Subscription = require('../models/Subscription');
+const { buildPlanAccessBundle } = require('../config/planCatalog');
+
+/** Grandfathered clients may omit onboardingCompleted; missing Client doc means not onboarded. */
+function computeClientOnboardingCompleted(isAdminBypass, client) {
+  if (isAdminBypass) return true;
+  if (!client) return false;
+  const raw = client.onboardingCompleted;
+  return raw === undefined || raw === null ? true : !!raw;
+}
 
 // ✅ Phase R4: Simple in-memory OTP rate limiter — max 3 sends per email per hour
 // Uses Map<email, { count, windowStart }> — resets after 1 hour
@@ -66,6 +78,8 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
         return res.status(404).json({ message: 'User not found' });
     }
 
+    await ensureClientForUser(user);
+
     // Admin Booster: Ensure admin@topedgeai.com is always Super Admin
     if (user.email === 'admin@topedgeai.com') {
       if (user.role !== 'SUPER_ADMIN' || !user.isLifetimeAdmin) {
@@ -75,7 +89,7 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
       }
     }
 
-    const client = await Client.findOne({ clientId: user.clientId });
+    let client = await Client.findOne({ clientId: user.clientId });
 
     // Delitech demotion: Land on normal dashboard but keep best plan
     if (user.email === 'delitech2708@gmail.com') {
@@ -96,6 +110,10 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
 
     // --- PHASE 10 ROBUSTNESS: Ensure fallback for missing client ---
     const clientConfig = client ? client.toObject() : {};
+    const isAdminBypassMe = user.role === 'SUPER_ADMIN' || user.isLifetimeAdmin === true;
+    const access = client
+      ? await getAccessForUserClient(user, client.toObject())
+      : { trialWindowActive: false, hasPaidAccess: false, dashboardLocked: !isAdminBypassMe };
 
     res.json({
         _id: user._id,
@@ -112,11 +130,15 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
         trialActive: client ? client.trialActive : null,
         trialEndsAt: client ? client.trialEndsAt : null,
         // Phase 32: New-user onboarding gate fields
-        onboardingCompleted: client ? !!client.onboardingCompleted : true, // undefined => true (grandfathered)
+        onboardingCompleted: computeClientOnboardingCompleted(
+          isAdminBypassMe,
+          client
+        ),
         onboardingStep: client ? (client.onboardingStep || 0) : 0,
         onboardingData: client ? (client.onboardingData || {}) : {},
         clientConfig,
-        clientTemplates: client?.config?.templates || null
+        clientTemplates: client?.config?.templates || null,
+        access
     });
   } catch (error) {
     console.error(error);
@@ -132,6 +154,10 @@ router.get('/bootstrap', protect, async (req, res) => {
     if (!clientId) {
        return res.status(400).json({ message: 'User has no clientId. Invalid state.' });
     }
+
+    let user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    await ensureClientForUser(user);
 
     const { startOfDayIST } = require('../utils/queryHelpers');
     const dayStart = startOfDayIST();
@@ -193,9 +219,6 @@ router.get('/bootstrap', protect, async (req, res) => {
     ]);
 
     // Admin/Delitech role syncing logic from /me
-    let user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ message: 'User not found' });
-
     if (user.email === 'admin@topedgeai.com' && (!user.isLifetimeAdmin || user.role !== 'SUPER_ADMIN')) {
       user.role = 'SUPER_ADMIN'; user.isLifetimeAdmin = true; await user.save();
     }
@@ -209,12 +232,16 @@ router.get('/bootstrap', protect, async (req, res) => {
     // (grandfathered) client means they are already onboarded — treat as true.
     const isAdminBypass =
       user.role === 'SUPER_ADMIN' || user.isLifetimeAdmin === true;
-    const rawOnboarding = client?.onboardingCompleted;
-    const onboardingCompleted = isAdminBypass
-      ? true
-      : rawOnboarding === undefined || rawOnboarding === null
-        ? true
-        : !!rawOnboarding;
+    const onboardingCompleted = computeClientOnboardingCompleted(isAdminBypass, client);
+
+    const access = client ? await getAccessForUserClient(user, client) : {
+      trialWindowActive: false,
+      hasPaidAccess: false,
+      dashboardLocked: !isAdminBypass
+    };
+
+    const subDoc = client ? await Subscription.findOne({ clientId: client.clientId }).lean() : null;
+    const planAccess = buildPlanAccessBundle(client, subDoc);
 
     res.json({
       user: {
@@ -232,7 +259,10 @@ router.get('/bootstrap', protect, async (req, res) => {
       },
       client: client || {},
       inbox: { unreadCount, recentConversations },
-      stats: todayStats
+      stats: todayStats,
+      access,
+      subscription: subDoc,
+      planAccess
     });
 
   } catch (error) {
@@ -320,17 +350,16 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
     }
 
     if (await user.matchPassword(password)) {
-      // Fetch Client Config
+      await ensureClientForUser(user);
       const client = await Client.findOne({ clientId: user.clientId });
 
       const isAdminBypass =
         user.role === 'SUPER_ADMIN' || user.isLifetimeAdmin === true;
-      const rawOnboarding = client?.onboardingCompleted;
-      const onboardingCompleted = isAdminBypass
-        ? true
-        : rawOnboarding === undefined || rawOnboarding === null
-          ? true
-          : !!rawOnboarding;
+      const onboardingCompleted = computeClientOnboardingCompleted(isAdminBypass, client);
+
+      const access = client
+        ? await getAccessForUserClient(user, client.toObject())
+        : { trialWindowActive: false, hasPaidAccess: false, dashboardLocked: !isAdminBypass };
 
       res.json({
         _id: user._id,
@@ -352,7 +381,8 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
         onboardingStep: client?.onboardingStep || 0,
         onboardingData: client?.onboardingData || {},
         clientConfig: client ? client.toObject() : {},
-        clientTemplates: client && client.config && client.config.templates ? client.config.templates : null
+        clientTemplates: client && client.config && client.config.templates ? client.config.templates : null,
+        access
       });
     } else {
       res.status(401).json({
@@ -424,6 +454,17 @@ router.post('/register', async (req, res) => {
       onboardingCompleted: false,
       onboardingStep: 0,
       onboardingData: { brandName: businessName }
+    }], { session });
+
+    await Subscription.create([{
+      clientId: newClientId,
+      plan: 'trial',
+      status: 'trial',
+      billingCycle: 'none',
+      amount: 0,
+      trialStartedAt: new Date(),
+      trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+      usageThisPeriod: { contacts: 0, messages: 0, campaigns: 0, aiCallsMade: 0 }
     }], { session });
 
     // 2. Create the User linked to this new Client
@@ -697,6 +738,8 @@ router.get('/google/callback', async (req, res) => {
         await user.save();
       }
 
+      await ensureClientForUser(user);
+
       const token = generateToken(user._id, user.clientId, user.role);
       return res.redirect(`${FRONTEND_URL}/login?google_token=${token}&google_success=true`);
 
@@ -725,6 +768,17 @@ router.get('/google/callback', async (req, res) => {
         onboardingCompleted: false,
         onboardingStep: 0,
         onboardingData: { brandName: businessName }
+      });
+
+      await Subscription.create({
+        clientId: newClientId,
+        plan: 'trial',
+        status: 'trial',
+        billingCycle: 'none',
+        amount: 0,
+        trialStartedAt: new Date(),
+        trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+        usageThisPeriod: { contacts: 0, messages: 0, campaigns: 0, aiCallsMade: 0 }
       });
 
       // Create User (no password — Google-only auth)

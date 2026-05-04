@@ -4,6 +4,7 @@ const axios = require('axios');
 const Client = require('../models/Client');
 const { protect, verifyClientAccess } = require('../middleware/auth');
 const { getShopifyClient, withShopifyRetry, exchangeShopifyToken } = require('../utils/shopifyHelper');
+const { buildShopifyOrderSet, shopifyOrderFilter } = require('../utils/shopifyOrderMapper');
 
 // ── INTERNAL SYNC AUTH BYPASS ────────────────────────────────────────────────
 // Allows the server to call its own sync routes during OAuth callback
@@ -107,48 +108,26 @@ router.post('/:clientId/sync-orders', internalOrProtect, async (req, res) => {
         const orders = response.data.orders || [];
         const Order = require('../models/Order');
 
+        const financialSeen = new Set();
+        const fulfillmentSeen = new Set();
+
         for (const data of orders) {
           try {
-            const phone = data.phone || data.customer?.phone || data.billing_address?.phone;
-            const cleanPhone = phone ? phone.replace(/\D/g, '').slice(-10) : '0000000000';
+            financialSeen.add(data.financial_status != null ? String(data.financial_status) : '(null)');
+            fulfillmentSeen.add(data.fulfillment_status != null ? String(data.fulfillment_status) : '(null)');
 
-            await Order.findOneAndUpdate(
-              { orderId: data.name || `#${data.id}`, clientId },
-              {
-                $set: {
-                  shopifyOrderId: data.id.toString(),
-                  orderNumber: data.name,
-                  customerName: data.customer ? `${data.customer.first_name} ${data.customer.last_name || ''}`.trim() : 'Shopify Customer',
-                  customerPhone: cleanPhone,
-                  customerEmail: data.email || data.customer?.email || null,
-                  amount: parseFloat(data.total_price),
-                  totalPrice: parseFloat(data.total_price),
-                  status: data.financial_status === 'paid' ? 'paid' : (data.financial_status === 'refunded' ? 'cancelled' : 'pending'),
-                  paymentMethod: data.gateway || 'Shopify',
-                  isCOD: (data.gateway || '').toLowerCase().includes('cash on delivery') || (data.gateway || '').toLowerCase().includes('cod'),
-                  items: (data.line_items || []).map(item => ({
-                      name: item.title,
-                      quantity: item.quantity,
-                      price: parseFloat(item.price),
-                      sku: item.sku
-                  })),
-                  address: data.shipping_address ? `${data.shipping_address.address1}, ${data.shipping_address.city}` : '',
-                  city: data.shipping_address?.city || '',
-                  state: data.shipping_address?.province || '',
-                  zip: data.shipping_address?.zip || '',
-                  shippingAddress: data.shipping_address,
-                  createdAt: data.created_at,
-                  storeString: 'Shopify'
-                }
-              },
-              { upsert: true, new: true, setDefaultsOnInsert: true }
-            );
+            const $set = buildShopifyOrderSet(clientId, data);
+            await Order.findOneAndUpdate(shopifyOrderFilter(clientId, data), { $set }, { upsert: true, new: true, setDefaultsOnInsert: true });
             syncedCount++;
           } catch (individualErr) {
             console.error(`[Sync] Failed to process order ${data.name} for ${clientId}:`, individualErr.message);
             failedCount++;
           }
         }
+
+        console.log(`[Shopify sync ${clientId}] financial_status values seen:`, [...financialSeen].sort().join(', '));
+        console.log(`[Shopify sync ${clientId}] fulfillment_status values seen:`, [...fulfillmentSeen].sort().join(', '));
+
         return { synced: syncedCount, failed: failedCount, total: orders.length };
     });
 
@@ -264,6 +243,24 @@ router.get('/:clientId/search-sku', protect, verifyClientAccess, async (req, res
   } catch (err) {
     console.error(`[Shopify SKU Search Error] for ${req.params.clientId}:`, err.message);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/shopify/:clientId/abandoned-checkouts-summary — open / incomplete checkouts (value at risk)
+router.get('/:clientId/abandoned-checkouts-summary', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const data = await withShopifyRetry(clientId, async (shop) => {
+      const response = await shop.get('/checkouts.json?limit=250');
+      const checkouts = response.data.checkouts || [];
+      const incomplete = checkouts.filter((c) => !c.completed_at);
+      const totalValue = incomplete.reduce((s, c) => s + parseFloat(c.total_price || 0), 0);
+      return { count: incomplete.length, totalValue };
+    });
+    res.json({ success: true, insufficient: false, ...data });
+  } catch (err) {
+    console.warn(`[Shopify] abandoned-checkouts-summary for ${req.params.clientId}:`, err.response?.status || err.message);
+    res.json({ success: false, insufficient: true, count: 0, totalValue: 0 });
   }
 });
 
