@@ -260,7 +260,18 @@ router.patch('/me', protect, async (req, res) => {
 });
 
 router.post('/login', sanitizeMiddleware, async (req, res) => {
-  const { email, password } = req.body;
+  const emailRaw = req.body?.email;
+  const password = req.body?.password;
+  const email = String(emailRaw || '')
+    .toLowerCase()
+    .trim();
+
+  if (!email || !password) {
+    return res.status(400).json({
+      message: 'Email and password are required.',
+      code: 'MISSING_CREDENTIALS'
+    });
+  }
 
   try {
     let user = await User.findOne({ email });
@@ -292,7 +303,23 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
       }
     }
 
-    if (user && (await user.matchPassword(password))) {
+    if (!user) {
+      return res.status(401).json({
+        message: 'Invalid email or password.',
+        code: 'INVALID_CREDENTIALS'
+      });
+    }
+
+    // Google-only accounts store a random bcrypt hash — password login will never match.
+    if (user.authProvider === 'google') {
+      return res.status(401).json({
+        message:
+          'This account uses Google sign-in. Click “Continue with Google” on the login page, or use Forgot password to add a password.',
+        code: 'USE_GOOGLE_LOGIN'
+      });
+    }
+
+    if (await user.matchPassword(password)) {
       // Fetch Client Config
       const client = await Client.findOne({ clientId: user.clientId });
 
@@ -328,7 +355,10 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
         clientTemplates: client && client.config && client.config.templates ? client.config.templates : null
       });
     } else {
-      res.status(401).json({ message: 'Invalid email or password' });
+      res.status(401).json({
+        message: 'Invalid email or password.',
+        code: 'INVALID_CREDENTIALS'
+      });
     }
   } catch (error) {
     res.status(500).json({ message: 'Server Error', error: error.message });
@@ -493,7 +523,10 @@ router.post('/send-otp', async (req, res) => {
 });
 
 router.post('/change-password', async (req, res) => {
-  const { email, otp, newPassword } = req.body;
+  const { otp, newPassword } = req.body;
+  const email = String(req.body?.email || '')
+    .toLowerCase()
+    .trim();
 
   if (!email || !otp || !newPassword) {
     return res.status(400).json({ message: 'Email, OTP, and new password are required' });
@@ -514,8 +547,9 @@ router.post('/change-password', async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Update password (pre-save hook will hash it)
+    // Update password (pre-save hook will hash it). Allow email/password login after OTP reset for Google-created accounts.
     user.password = newPassword;
+    user.authProvider = 'email';
     await user.save();
 
     // Clear OTP
