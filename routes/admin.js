@@ -576,7 +576,8 @@ router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
       stripePublishableKey, stripeSecretKey, payuMerchantKey, payuMerchantSalt,
       phonepeMerchantId, phonepeSaltKey, phonepeSaltIndex,
       shopDomain, shopifyAccessToken, shopifyWebhookSecret, googleReviewUrl,
-      trialActive, trialEndsAt
+      trialActive, trialEndsAt,
+      wizardCompleted, onboardingCompleted, onboardingStep
     } = req.body;
 
     // Recursively strip any _id fields that are not strings (prevents CastErrors/Buffer crashes)
@@ -654,6 +655,18 @@ router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
     if (trialEndsAt !== undefined) {
       updateData.trialEndsAt = new Date(trialEndsAt);
       updateData['billing.trialEndsAt'] = new Date(trialEndsAt);
+    }
+
+    if (wizardCompleted !== undefined) {
+      updateData.wizardCompleted = !!wizardCompleted;
+      if (wizardCompleted) updateData.wizardCompletedAt = new Date();
+      else updateData.wizardCompletedAt = null;
+    }
+    if (onboardingCompleted !== undefined) {
+      updateData.onboardingCompleted = !!onboardingCompleted;
+    }
+    if (onboardingStep !== undefined && onboardingStep !== null) {
+      updateData.onboardingStep = Number(onboardingStep);
     }
 
     let query = {};

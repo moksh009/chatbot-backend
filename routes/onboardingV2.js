@@ -8,7 +8,7 @@
  *   POST  /analyze              — scrape website + AI-infer brand profile
  *   PATCH /progress             — persist current step + merge data
  *   POST  /flow/generate        — generate first flow from collected wizard data
- *   PATCH /complete             — mark onboardingCompleted = true + wizardCompleted = true
+ *   PATCH /complete             — mark linear onboarding done; leave wizardCompleted false for AI wizard in Flow Builder
  *   POST  /track                — append analytics event (server-side log)
  *
  * Contract:
@@ -258,7 +258,7 @@ router.patch("/progress", protect, async (req, res) => {
   const { step, data } = req.body || {};
 
   const stepNum = Number(step);
-  if (!Number.isFinite(stepNum) || stepNum < 0 || stepNum > 6) {
+  if (!Number.isFinite(stepNum) || stepNum < 0 || stepNum > 7) {
     return res.status(400).json({ success: false, error: "Invalid step" });
   }
 
@@ -525,7 +525,8 @@ router.post("/flow/generate", protect, async (req, res) => {
 
 // ───────────────────────────────────────────────────────────────────────────
 // PATCH /api/onboarding/complete
-// Marks onboardingCompleted = true + wizardCompleted = true on the client,
+// Marks client onboarding shell complete so the user can enter the main app.
+// wizardCompleted stays false so Flow Builder shows the full AI setup wizard next.
 // and hasCompletedTour = true on the user (retires legacy tour).
 // ───────────────────────────────────────────────────────────────────────────
 router.patch("/complete", protect, async (req, res) => {
@@ -541,9 +542,9 @@ router.patch("/complete", protect, async (req, res) => {
           $set: {
             onboardingCompleted: true,
             onboardingCompletedAt: now,
-            onboardingStep: 6,
-            wizardCompleted: true,
-            wizardCompletedAt: now,
+            onboardingStep: 5,
+            wizardCompleted: false,
+            wizardCompletedAt: null,
           },
         }
       ),
