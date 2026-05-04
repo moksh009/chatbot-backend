@@ -1068,6 +1068,7 @@ router.get('/client/settings', protect, async (req, res) => {
 
 router.put('/client/settings', protect, async (req, res) => {
   try {
+    await ensureClientForUser(req.user);
     const targetClientId = req.user.clientId;
     if (!targetClientId) {
       return res.status(400).json({ message: 'No target clientId specified' });
@@ -1128,6 +1129,7 @@ router.put('/client/settings', protect, async (req, res) => {
 // @access  Private
 router.post('/persona/sync', protect, async (req, res) => {
   try {
+    await ensureClientForUser(req.user);
     const clientId = req.user.clientId;
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ message: 'Client not found' });

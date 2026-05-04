@@ -58,6 +58,7 @@ router.post('/action', protect, async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid action' });
     }
 
+    await ensureClientForUser(req.user);
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
