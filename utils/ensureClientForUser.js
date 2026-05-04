@@ -3,7 +3,6 @@
  * Safe to call on every bootstrap/login — no-op when Client already exists.
  */
 const Client = require('../models/Client');
-const { ensureTrialSubscriptionRecord } = require('./accessFlags');
 
 const VALID_BUSINESS_TYPES = [
   'ecommerce',
@@ -50,7 +49,6 @@ async function ensureClientForUser(user) {
       onboardingData: { brandName: displayName }
     });
     console.warn('[ensureClientForUser] Created missing Client for user', user.email, clientId);
-    await ensureTrialSubscriptionRecord(clientId);
     return client;
   } catch (e) {
     console.error('[ensureClientForUser] Failed to create Client:', e.message);

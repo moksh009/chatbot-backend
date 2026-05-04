@@ -1,5 +1,4 @@
 const express = require('express');
-const readline = require('readline');
 const mongoose = require('mongoose');
 const { resolveClient, tenantClientId } = require('../utils/queryHelpers');
 const router = express.Router();
@@ -18,22 +17,6 @@ const path = require('path');
 const { stringify } = require('csv-stringify');
 const { sendEmail } = require('../utils/emailService');
 const { mergeEmailForLead, KNOWN_EMAIL_TOKEN_KEYS } = require('../utils/emailMergeFields');
-const {
-  isTrialWindowActive,
-  hasPaidActiveSubscription,
-  resolveSubscriptionForClient
-} = require('../utils/accessFlags');
-
-function countFileLines(filePath) {
-  return new Promise((resolve, reject) => {
-    let lines = 0;
-    const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
-    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-    rl.on('line', () => { lines++; });
-    rl.on('close', () => resolve(lines));
-    rl.on('error', reject);
-  });
-}
 
 // Multer setup for temporary CSV storage
 const upload = multer({ 
@@ -131,31 +114,6 @@ router.post('/:clientId/import', protect, logAction('IMPORT_LEADS'), uploadMiddl
                 fs.unlinkSync(req.file.path);
             } else {
                 throw renameErr;
-            }
-        }
-
-        const client = await Client.findOne({ clientId }).select('trialEndsAt trialActive isLifetimeAdmin clientId').lean();
-        if (client) {
-            const sub = await resolveSubscriptionForClient(client);
-            const trialOnly = isTrialWindowActive(client) && !hasPaidActiveSubscription(sub);
-            if (trialOnly) {
-                const current = await AdLead.countDocuments({ clientId });
-                if (current >= 250) {
-                    try { fs.unlinkSync(persistentPath); } catch {}
-                    return res.status(403).json({
-                        success: false,
-                        message: 'Trial workspace: you can store up to 250 contacts. Upgrade on Billing to import more.'
-                    });
-                }
-                const lines = await countFileLines(persistentPath);
-                const estimated = Math.max(0, lines - 1);
-                if (current + estimated > 250) {
-                    try { fs.unlinkSync(persistentPath); } catch {}
-                    return res.status(400).json({
-                        success: false,
-                        message: `This import would exceed your trial limit of 250 contacts (${current} saved, about ${estimated} in this file). Remove rows or upgrade.`
-                    });
-                }
             }
         }
 

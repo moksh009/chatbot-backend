@@ -590,7 +590,7 @@ const ClientSchema = new mongoose.Schema({
 
   // Phase 15 Trial & Admin Flags
   trialActive:   { type: Boolean, default: true },
-  trialEndsAt:   { type: Date,    default: () => new Date(Date.now() + 14 * 24 * 60 * 60 * 1000) }, // 14-day trial
+  trialEndsAt:   { type: Date,    default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) }, // 7 days
   isPaidAccount: { type: Boolean, default: false },
   suspendedAt:   { type: Date },
 

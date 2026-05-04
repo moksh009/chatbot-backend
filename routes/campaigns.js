@@ -18,11 +18,6 @@ const DailyStat = require('../models/DailyStat');
 const WhatsApp = require('../utils/whatsapp');
 const { createMessage } = require('../utils/createMessage');
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
-const {
-  isTrialWindowActive,
-  hasPaidActiveSubscription,
-  resolveSubscriptionForClient
-} = require('../utils/accessFlags');
 const log = require('../utils/logger')('Campaigns');
 const { incrementStat } = require('../utils/statCacheEngine');
 const { resolveImportBatchObjectId } = require('../utils/importBatchResolver');
@@ -52,12 +47,6 @@ function normalizePhone(p) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-async function isTrialExplorationOnly(client) {
-  if (!client) return false;
-  const sub = await resolveSubscriptionForClient(client);
-  return isTrialWindowActive(client) && !hasPaidActiveSubscription(sub);
-}
-
 // @route   POST /api/campaigns
 // @desc    Create a new campaign (upload CSV)
 // @access  Private
@@ -67,15 +56,13 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
   }
 
   try {
-    const client = await Client.findOne({ clientId: req.user.clientId }).select(
-      '_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role trialEndsAt trialActive isLifetimeAdmin clientId'
-    ).lean();
-    if (!client) {
+    // Check subscription plan (using new validation limits)
+    const client = await Client.findOne({ clientId: req.user.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
+    const isV1 = client?.plan === 'CX Agent (V1)' || client?.subscriptionPlan === 'v1';
+    if (!client || isV1) {
       try { fs.unlinkSync(req.file.path); } catch {}
-      return res.status(404).json({ message: 'Workspace not found' });
+      return res.status(403).json({ message: 'Marketing Broadcasting is locked for CX Agent (V1). Please upgrade.' });
     }
-
-    const trialOnly = await isTrialExplorationOnly(client);
 
     const limits = await checkLimit(client._id, 'campaigns');
     if (!limits.allowed) {
@@ -93,14 +80,9 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
         .on('end', resolve)
         .on('error', reject);
     });
-    const maxCsvRows = trialOnly ? 250 : 5000;
-    if (rows.length > maxCsvRows) {
+    if (rows.length > 5000) {
       try { fs.unlinkSync(req.file.path); } catch {}
-      return res.status(400).json({
-        message: trialOnly
-          ? 'Trial workspace: CSV uploads are limited to 250 rows per campaign. Upgrade for larger audiences.'
-          : 'CSV too large. Maximum 5000 rows allowed.'
-      });
+      return res.status(400).json({ message: 'CSV too large. Maximum 5000 rows allowed.' });
     }
 
     const audience = [];
@@ -114,13 +96,6 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
         });
       }
     });
-
-    if (trialOnly && audience.length > 250) {
-      try { fs.unlinkSync(req.file.path); } catch {}
-      return res.status(400).json({
-        message: 'Trial workspace: up to 250 valid phone numbers per campaign. Remove extra rows or upgrade your plan.'
-      });
-    }
 
     const validCount = audience.length;
 
@@ -150,17 +125,7 @@ router.post('/from-segment', protect, async (req, res) => {
         if (!segment) return res.status(404).json({ error: 'Segment not found' });
 
         const count = await AdLead.countDocuments({ ...segment.query, clientId: req.user.clientId });
-        const client = await Client.findOne({ clientId: req.user.clientId }).select(
-          '_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role trialEndsAt trialActive isLifetimeAdmin clientId'
-        ).lean();
-        if (!client) return res.status(404).json({ error: 'Workspace not found' });
-
-        const trialOnly = await isTrialExplorationOnly(client);
-        if (trialOnly && count > 250) {
-          return res.status(400).json({
-            error: 'Trial workspace: segment broadcasts are limited to 250 recipients. Narrow your segment or upgrade.'
-          });
-        }
+        const client = await Client.findOne({ clientId: req.user.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
 
         const limits = await checkLimit(client._id, 'campaigns');
         if (!limits.allowed) {
@@ -206,17 +171,8 @@ router.post('/from-imported-list', protect, async (req, res) => {
             return res.status(400).json({ error: 'This import batch has no targetable contacts.' });
         }
 
-        const client = await Client.findOne({ clientId: req.user.clientId }).select(
-          '_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role trialEndsAt trialActive isLifetimeAdmin clientId'
-        ).lean();
+        const client = await Client.findOne({ clientId: req.user.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
         if (!client) return res.status(404).json({ error: 'Client not found' });
-
-        const trialOnly = await isTrialExplorationOnly(client);
-        if (trialOnly && count > 250) {
-          return res.status(400).json({
-            error: 'Trial workspace: lists larger than 250 contacts require a paid plan.'
-          });
-        }
 
         const limits = await checkLimit(client._id, 'campaigns');
         if (!limits.allowed) {
@@ -248,13 +204,8 @@ router.post('/from-imported-list', protect, async (req, res) => {
 router.post('/from-hot-leads', protect, async (req, res) => {
     const { name, count } = req.body;
     try {
-        const client = await Client.findOne({ clientId: req.user.clientId }).select(
-          '_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role trialEndsAt trialActive isLifetimeAdmin clientId'
-        ).lean();
+        const client = await Client.findOne({ clientId: req.user.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
         if (!client) return res.status(403).json({ error: 'Client not found' });
-
-        const trialOnly = await isTrialExplorationOnly(client);
-        const capped = trialOnly ? Math.min(Number(count) || 50, 250) : (Number(count) || 50);
 
         const limits = await checkLimit(client._id, 'campaigns');
         if (!limits.allowed) {
@@ -267,7 +218,7 @@ router.post('/from-hot-leads', protect, async (req, res) => {
             clientId: req.user.clientId,
             name: name || `Hot Leads Targeting`,
             status: 'DRAFT',
-            audienceCount: capped,
+            audienceCount: count || 0,
             isSmartSend: true,
             templateName: ""
         });

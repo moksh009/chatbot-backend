@@ -9,9 +9,6 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs'); // ✅ Phase R4: for authenticated change-password
 const { sendSystemOTPEmail } = require('../utils/emailService');
 const { ensureClientForUser } = require('../utils/ensureClientForUser');
-const { getAccessForUserClient } = require('../utils/accessFlags');
-const Subscription = require('../models/Subscription');
-const { buildPlanAccessBundle } = require('../config/planCatalog');
 
 /** Grandfathered clients may omit onboardingCompleted; missing Client doc means not onboarded. */
 function computeClientOnboardingCompleted(isAdminBypass, client) {
@@ -110,10 +107,6 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
 
     // --- PHASE 10 ROBUSTNESS: Ensure fallback for missing client ---
     const clientConfig = client ? client.toObject() : {};
-    const isAdminBypassMe = user.role === 'SUPER_ADMIN' || user.isLifetimeAdmin === true;
-    const access = client
-      ? await getAccessForUserClient(user, client.toObject())
-      : { trialWindowActive: false, hasPaidAccess: false, dashboardLocked: !isAdminBypassMe };
 
     res.json({
         _id: user._id,
@@ -131,14 +124,13 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
         trialEndsAt: client ? client.trialEndsAt : null,
         // Phase 32: New-user onboarding gate fields
         onboardingCompleted: computeClientOnboardingCompleted(
-          isAdminBypassMe,
+          user.role === 'SUPER_ADMIN' || user.isLifetimeAdmin === true,
           client
         ),
         onboardingStep: client ? (client.onboardingStep || 0) : 0,
         onboardingData: client ? (client.onboardingData || {}) : {},
         clientConfig,
-        clientTemplates: client?.config?.templates || null,
-        access
+        clientTemplates: client?.config?.templates || null
     });
   } catch (error) {
     console.error(error);
@@ -234,15 +226,6 @@ router.get('/bootstrap', protect, async (req, res) => {
       user.role === 'SUPER_ADMIN' || user.isLifetimeAdmin === true;
     const onboardingCompleted = computeClientOnboardingCompleted(isAdminBypass, client);
 
-    const access = client ? await getAccessForUserClient(user, client) : {
-      trialWindowActive: false,
-      hasPaidAccess: false,
-      dashboardLocked: !isAdminBypass
-    };
-
-    const subDoc = client ? await Subscription.findOne({ clientId: client.clientId }).lean() : null;
-    const planAccess = buildPlanAccessBundle(client, subDoc);
-
     res.json({
       user: {
         id: user._id,
@@ -259,10 +242,7 @@ router.get('/bootstrap', protect, async (req, res) => {
       },
       client: client || {},
       inbox: { unreadCount, recentConversations },
-      stats: todayStats,
-      access,
-      subscription: subDoc,
-      planAccess
+      stats: todayStats
     });
 
   } catch (error) {
@@ -357,10 +337,6 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
         user.role === 'SUPER_ADMIN' || user.isLifetimeAdmin === true;
       const onboardingCompleted = computeClientOnboardingCompleted(isAdminBypass, client);
 
-      const access = client
-        ? await getAccessForUserClient(user, client.toObject())
-        : { trialWindowActive: false, hasPaidAccess: false, dashboardLocked: !isAdminBypass };
-
       res.json({
         _id: user._id,
         name: user.name,
@@ -381,8 +357,7 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
         onboardingStep: client?.onboardingStep || 0,
         onboardingData: client?.onboardingData || {},
         clientConfig: client ? client.toObject() : {},
-        clientTemplates: client && client.config && client.config.templates ? client.config.templates : null,
-        access
+        clientTemplates: client && client.config && client.config.templates ? client.config.templates : null
       });
     } else {
       res.status(401).json({
@@ -454,17 +429,6 @@ router.post('/register', async (req, res) => {
       onboardingCompleted: false,
       onboardingStep: 0,
       onboardingData: { brandName: businessName }
-    }], { session });
-
-    await Subscription.create([{
-      clientId: newClientId,
-      plan: 'trial',
-      status: 'trial',
-      billingCycle: 'none',
-      amount: 0,
-      trialStartedAt: new Date(),
-      trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
-      usageThisPeriod: { contacts: 0, messages: 0, campaigns: 0, aiCallsMade: 0 }
     }], { session });
 
     // 2. Create the User linked to this new Client
@@ -768,17 +732,6 @@ router.get('/google/callback', async (req, res) => {
         onboardingCompleted: false,
         onboardingStep: 0,
         onboardingData: { brandName: businessName }
-      });
-
-      await Subscription.create({
-        clientId: newClientId,
-        plan: 'trial',
-        status: 'trial',
-        billingCycle: 'none',
-        amount: 0,
-        trialStartedAt: new Date(),
-        trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
-        usageThisPeriod: { contacts: 0, messages: 0, campaigns: 0, aiCallsMade: 0 }
       });
 
       // Create User (no password — Google-only auth)

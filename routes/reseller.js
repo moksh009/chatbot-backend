@@ -130,7 +130,7 @@ router.post("/clients", verifyToken, requireReseller, async (req, res) => {
     // Create Subscription
     await Subscription.create({
       clientId:        client._id,
-      plan:            plan || "diy_lite",
+      plan:            plan || "starter",
       status:          "active",
       currentPeriodStart: new Date(),
       currentPeriodEnd:   new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
