@@ -16,6 +16,7 @@
     "@nlpjs/lang-en": "^5.0.0-alpha.5",
     "@nlpjs/lang-hi": "^5.0.0-alpha.5",
     "@socket.io/redis-adapter": "^8.3.0",
+    "archiver": "^7.0.1",
     "axios": "^1.15.0",
     "bcryptjs": "^3.0.3",
     "bullmq": "^5.73.5",

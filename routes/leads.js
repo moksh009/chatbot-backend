@@ -148,12 +148,10 @@ router.post('/:clientId/import', protect, logAction('IMPORT_LEADS'), uploadMiddl
             batchId,
             filename,
             status: 'processing',
-            meta: {
-              importConsentType: normalizedConsentType,
-              consentAcknowledged,
-              consentDeclaredBy: req.user?._id ? String(req.user._id) : '',
-              consentDeclaredAt: new Date(),
-            },
+            importConsentType: normalizedConsentType,
+            consentAcknowledged,
+            consentDeclaredBy: req.user?._id ? String(req.user._id) : '',
+            consentDeclaredAt: new Date(),
         });
 
         // Add to Task Queue

@@ -35,6 +35,10 @@ const importSessionSchema = new mongoose.Schema({
     }],
     default: () => []
   },
+  importConsentType: { type: String, default: 'unknown' },
+  consentAcknowledged: { type: Boolean, default: false },
+  consentDeclaredBy: { type: String, default: '' },
+  consentDeclaredAt: { type: Date },
   createdAt: {
     type: Date,
     default: Date.now
