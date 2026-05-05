@@ -37,6 +37,26 @@ RESPONSE FORMAT:
 Return your response in a supportive, premium, human-like tone, optimized for quick reading in a chat interface.
 `;
 
+function formatSupportReply(raw) {
+  const fallback = 'I can help with that.\nPlease share one more detail so I can guide you correctly.';
+  const text = String(raw || '').replace(/\r/g, '').trim();
+  if (!text) return fallback;
+
+  // Keep reply short and scannable: max 4 short lines.
+  const normalized = text.replace(/\n{2,}/g, '\n');
+  const parts = normalized
+    .split(/\n|(?<=[.!?])\s+/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .slice(0, 4);
+
+  const concise = parts
+    .map((p) => (p.length > 170 ? `${p.slice(0, 167).trimEnd()}...` : p))
+    .join('\n');
+
+  return concise || fallback;
+}
+
 // Get current support chat for a client
 router.get('/', protect, async (req, res) => {
   try {
@@ -188,7 +208,7 @@ BUSINESS CONTEXT:
       const prompt = `${SUPPORT_PROMPT}\n${bizCtx}${imageHint}\n\nCONVERSATION HISTORY:\n${history}\n\nAI:`;
       
       const aiResponse = await generateText(prompt);
-      chat.messages.push({ sender: 'ai', text: String(aiResponse || '').trim() || 'I can help with that. Please share one more detail so I can guide you correctly.' });
+      chat.messages.push({ sender: 'ai', text: formatSupportReply(aiResponse) });
     }
     
     await chat.save();
