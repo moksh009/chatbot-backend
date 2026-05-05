@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const SupportChat = require('../models/SupportChat');
 const Notification = require('../models/Notification');
+const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
 const { generateText } = require('../utils/gemini');
 
@@ -87,18 +88,28 @@ router.get('/history', protect, async (req, res) => {
 // Send message to Support AI
 router.post('/message', protect, async (req, res) => {
   try {
-    const { text } = req.body;
+    const { text, imageUrl, mimeType } = req.body;
     let chat = await SupportChat.findOne({ clientId: req.user.clientId, status: { $ne: 'resolved' } }).sort({ createdAt: -1 });
     
     if (!chat) return res.status(404).json({ message: 'No active support chat' });
 
     // AI Intent Detection for human handover
     const humanIntents = ['talk to human', 'human support', 'representative', 'customer service', 'human expert', 'speak to someone', 'real person'];
-    const lowerText = text.toLowerCase();
+    const userText = String(text || '').trim();
+    const hasImage = !!String(imageUrl || '').trim();
+    if (!userText && !hasImage) {
+      return res.status(400).json({ message: 'Message text or image is required' });
+    }
+    const lowerText = userText.toLowerCase();
     const needsHuman = humanIntents.some(intent => lowerText.includes(intent));
 
     // Add user message
-    chat.messages.push({ sender: 'user', text });
+    chat.messages.push({
+      sender: 'user',
+      text: userText || '[Image shared]',
+      imageUrl: hasImage ? String(imageUrl).trim() : '',
+      mimeType: mimeType || ''
+    });
     chat.lastMessageAt = Date.now();
     chat.hasUnreadAdmin = true; 
     chat.hasUnreadUser = false; // User just sent a message, so they've seen the chat
@@ -117,11 +128,22 @@ router.post('/message', protect, async (req, res) => {
       });
     } else if (chat.status === 'active') {
       // Only generate AI response if status is active
-      const history = chat.messages.map(m => `${m.sender.toUpperCase()}: ${m.text}`).join('\n');
-      const prompt = `${SUPPORT_PROMPT}\n\nCONVERSATION HISTORY:\n${history}\n\nAI:`;
+      const history = chat.messages.map(m => `${m.sender.toUpperCase()}: ${m.text}${m.imageUrl ? ` [image: ${m.imageUrl}]` : ''}`).join('\n');
+      const client = await Client.findOne({ clientId: req.user.clientId }).select('businessName businessType platformVars wizardFeatures activeConfig');
+      const bizCtx = client ? `
+BUSINESS CONTEXT:
+- Name: ${client.businessName || 'Unknown'}
+- Type: ${client.businessType || 'general'}
+- Support Email: ${client.platformVars?.supportEmail || 'not set'}
+- WhatsApp Connected: ${client.activeConfig?.whatsappConnected ? 'yes' : 'no'}
+` : '';
+      const imageHint = hasImage
+        ? '\nThe user attached an image. If the image cannot be analyzed directly, acknowledge it and ask one precise follow-up question to proceed.'
+        : '';
+      const prompt = `${SUPPORT_PROMPT}\n${bizCtx}${imageHint}\n\nCONVERSATION HISTORY:\n${history}\n\nAI:`;
       
       const aiResponse = await generateText(prompt);
-      chat.messages.push({ sender: 'ai', text: aiResponse });
+      chat.messages.push({ sender: 'ai', text: String(aiResponse || '').trim() || 'I can help with that. Please share one more detail so I can guide you correctly.' });
     }
     
     await chat.save();
@@ -262,7 +284,6 @@ router.post('/:id/resolve', protect, async (req, res) => {
 // @route   GET /api/support-chat/config/:clientId
 // @desc    Returns public branding info for the chat widget
 // @access  Public
-const Client = require('../models/Client');
 router.get('/config/:clientId', async (req, res) => {
   try {
     const client = await Client.findOne({ clientId: req.params.clientId }).select('businessName activeConfig.whatsappNumber');

@@ -6,6 +6,8 @@ const supportChatSchema = new mongoose.Schema({
   messages: [{
     sender: { type: String, enum: ['user', 'ai', 'admin'], required: true },
     text: { type: String, required: true },
+    imageUrl: { type: String, default: '' },
+    mimeType: { type: String, default: '' },
     timestamp: { type: Date, default: Date.now }
   }],
   status: { type: String, enum: ['active', 'human_requested', 'human_takeover', 'resolved'], default: 'active' },
