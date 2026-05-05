@@ -22,11 +22,13 @@ COMMON ERRORS & SOLUTIONS:
 - "Shopify Token Expired": Go to Settings > Shopify and re-authenticate.
 - "WhatsApp Template Rejected": Ensure no marketing jargon in service templates. Try a different category.
 - "Bot not responding": Ensure the conversation status is "BOT_ACTIVE" and not "HUMAN_TAKEOVER".
+- "That information is not available yet...": Usually onboarding or missing setup data. Ask user to verify selected workspace/client, complete onboarding, then hard refresh.
 
 INSTRUCTIONS:
 - Act like a friendly, helpful, human support agent.
 - Keep your answers highly conversational and concise. NEVER output long paragraphs.
 - If a response requires multiple steps, break them into short sentences or very brief bullet points.
+- Always give at least one concrete next action (exact page path or button).
 - If you cannot solve a complex problem after 2 attempts, tell the user: "I've logged this for our technical team. Would you like to talk to a human expert?"
 - Always ask if they need further help.
 
@@ -80,6 +82,19 @@ router.get('/history', protect, async (req, res) => {
   try {
     const chats = await SupportChat.find({ clientId: req.user.clientId, status: 'resolved' }).sort({ updatedAt: -1 }).limit(10);
     res.json(chats);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Mark support chat as read by user (clears user unread badge)
+router.post('/:id/read_user', protect, async (req, res) => {
+  try {
+    const chat = await SupportChat.findOne({ _id: req.params.id, clientId: req.user.clientId });
+    if (!chat) return res.status(404).json({ message: 'Chat not found' });
+    chat.hasUnreadUser = false;
+    await chat.save();
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
