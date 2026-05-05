@@ -5,6 +5,7 @@ const Notification = require('../models/Notification');
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
 const { generateText } = require('../utils/gemini');
+const { sendEmail } = require('../utils/emailService');
 
 const SUPPORT_PROMPT = `
 You are the TopEdge AI Expert Support Assistant. Your goal is to help dashboard users (Indian Ecommerce shop owners) resolve technical issues and understand features.
@@ -45,8 +46,17 @@ router.get('/', protect, async (req, res) => {
       chat = await SupportChat.create({
         clientId: req.user.clientId,
         clientName: req.user.name || 'User',
+        requesterUserId: String(req.user._id || ''),
+        requesterEmail: req.user.email || '',
+        requesterName: req.user.name || 'User',
         messages: [{ sender: 'ai', text: 'Hello! I am your TopEdge AI Success Expert. How can I help you grow your store today?' }]
       });
+    } else {
+      // Keep requester identity fresh if user profile changed
+      chat.requesterUserId = chat.requesterUserId || String(req.user._id || '');
+      chat.requesterEmail = chat.requesterEmail || req.user.email || '';
+      chat.requesterName = chat.requesterName || req.user.name || 'User';
+      await chat.save();
     }
     res.json(chat);
   } catch (err) {
@@ -63,6 +73,9 @@ router.post('/new', protect, async (req, res) => {
     const chat = await SupportChat.create({
       clientId: req.user.clientId,
       clientName: req.user.name || 'User',
+      requesterUserId: String(req.user._id || ''),
+      requesterEmail: req.user.email || '',
+      requesterName: req.user.name || 'User',
       messages: [{ sender: 'ai', text: 'New session started. How can I assist you further?' }]
     });
     
@@ -100,13 +113,30 @@ router.post('/:id/read_user', protect, async (req, res) => {
   }
 });
 
+// Mark support chat as read by admin (clears admin unread badge)
+router.post('/:id/read_admin', protect, async (req, res) => {
+  if (req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ message: 'Unauthorized' });
+  try {
+    const chat = await SupportChat.findById(req.params.id);
+    if (!chat) return res.status(404).json({ message: 'Chat not found' });
+    chat.hasUnreadAdmin = false;
+    await chat.save();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // Send message to Support AI
 router.post('/message', protect, async (req, res) => {
   try {
-    const { text, imageUrl, mimeType } = req.body;
+    const { text, imageUrl, mimeType, requesterEmail } = req.body;
     let chat = await SupportChat.findOne({ clientId: req.user.clientId, status: { $ne: 'resolved' } }).sort({ createdAt: -1 });
     
     if (!chat) return res.status(404).json({ message: 'No active support chat' });
+    chat.requesterUserId = chat.requesterUserId || String(req.user._id || '');
+    chat.requesterEmail = chat.requesterEmail || req.user.email || String(requesterEmail || '').trim();
+    chat.requesterName = chat.requesterName || req.user.name || 'User';
 
     // AI Intent Detection for human handover
     const humanIntents = ['talk to human', 'human support', 'representative', 'customer service', 'human expert', 'speak to someone', 'real person'];
@@ -225,15 +255,83 @@ router.get('/all', protect, async (req, res) => {
 router.post('/:id/reply', protect, async (req, res) => {
   if (req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ message: 'Unauthorized' });
   try {
-    const { text } = req.body;
+    const { text, sendEmailCopy = true, emailSubject } = req.body;
     const chat = await SupportChat.findById(req.params.id);
     if (!chat) return res.status(404).json({ message: 'Chat not found' });
 
-    chat.messages.push({ sender: 'admin', text });
+    const replyMessage = {
+      sender: 'admin',
+      text,
+      delivery: {
+        channel: sendEmailCopy ? 'chat+email' : 'chat',
+        status: sendEmailCopy ? 'pending' : 'skipped',
+        deliveryAt: null,
+        messageId: '',
+        error: ''
+      }
+    };
+    chat.messages.push(replyMessage);
     chat.hasUnreadUser = true;
     chat.hasUnreadAdmin = false; // Admin just replied
     chat.status = 'human_takeover'; 
     chat.lastMessageAt = Date.now();
+
+    let emailDelivery = { attempted: false, sent: false, reason: 'disabled' };
+    if (sendEmailCopy) {
+      emailDelivery = { attempted: true, sent: false, reason: '' };
+      try {
+        if (!chat.requesterEmail) {
+          emailDelivery.reason = 'missing_requester_email';
+          const last = chat.messages[chat.messages.length - 1];
+          if (last?.delivery) {
+            last.delivery.status = 'failed';
+            last.delivery.error = 'No requester email found';
+          }
+        } else {
+          const client = await Client.findOne({ clientId: chat.clientId });
+          if (!client) {
+            emailDelivery.reason = 'client_not_found';
+            const last = chat.messages[chat.messages.length - 1];
+            if (last?.delivery) {
+              last.delivery.status = 'failed';
+              last.delivery.error = 'Client config not found for email';
+            }
+          } else {
+            const subject = String(emailSubject || `Support Reply · ${chat.clientName || chat.clientId}`);
+            const html = `
+              <div style="font-family:Inter,Arial,sans-serif;line-height:1.6;color:#0f172a">
+                <p>Hello${chat.requesterName ? ` ${chat.requesterName}` : ''},</p>
+                <p>Our support team replied to your request:</p>
+                <div style="padding:12px 14px;border:1px solid #e2e8f0;background:#f8fafc;border-radius:10px;white-space:pre-wrap">${String(text || '')}</div>
+                <p style="margin-top:14px;color:#475569">You can also continue this conversation directly inside your TopEdge AI dashboard support chat.</p>
+                <p>Best,<br/>TopEdge Support</p>
+              </div>
+            `;
+            const ok = await sendEmail(client, {
+              to: chat.requesterEmail,
+              subject,
+              html
+            });
+            const last = chat.messages[chat.messages.length - 1];
+            if (last?.delivery) {
+              last.delivery.status = ok ? 'sent' : 'failed';
+              last.delivery.deliveryAt = new Date();
+              last.delivery.messageId = ok ? `support_${Date.now()}` : '';
+              last.delivery.error = ok ? '' : 'Email provider send returned false';
+            }
+            emailDelivery.sent = !!ok;
+            emailDelivery.reason = ok ? '' : 'provider_send_failed';
+          }
+        }
+      } catch (emailErr) {
+        emailDelivery.reason = emailErr.message || 'email_exception';
+        const last = chat.messages[chat.messages.length - 1];
+        if (last?.delivery) {
+          last.delivery.status = 'failed';
+          last.delivery.error = emailDelivery.reason;
+        }
+      }
+    }
     await chat.save();
 
     const io = req.app.get('socketio');
@@ -241,7 +339,7 @@ router.post('/:id/reply', protect, async (req, res) => {
       io.to(`client_${chat.clientId}`).emit('support_update', chat);
     }
 
-    res.json(chat);
+    res.json({ ...chat.toObject(), emailDelivery });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
