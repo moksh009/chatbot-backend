@@ -2077,7 +2077,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     }
   });
 
-  if (!sent && node.type !== 'logic' && node.type !== 'delay' && node.type !== 'set_variable' && node.type !== 'shopify_call' && node.type !== 'http_request' && node.type !== 'link' && node.type !== 'restart' && node.type !== 'trigger' && node.type !== 'TriggerNode' && node.type !== 'automation' && node.type !== 'abandoned_cart' && node.type !== 'cod_prepaid' && node.type !== 'warranty_check') return false;
+  if (!sent && node.type !== 'logic' && node.type !== 'delay' && node.type !== 'set_variable' && node.type !== 'shopify_call' && node.type !== 'http_request' && node.type !== 'webhook' && node.type !== 'link' && node.type !== 'restart' && node.type !== 'trigger' && node.type !== 'TriggerNode' && node.type !== 'automation' && node.type !== 'abandoned_cart' && node.type !== 'cod_prepaid' && node.type !== 'warranty_check') return false;
 
   // --- SPECIAL NODE LOGIC (Automated Traversal) ---
   if (node.type === 'logic') {
@@ -3037,6 +3037,73 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     if (defaultEdge) return await executeNode(defaultEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
 
+  // Webhook Node — async event call with optional wait/branch
+  if (node.type === 'webhook') {
+    const data = node.data || {};
+    const targetUrl = replaceVariables(data.webhookUrl || data.url || '', client, lead, convo);
+    const method = (data.method || 'POST').toUpperCase();
+    const variable = data.variable || 'webhook_response';
+    const waitForResponse = !!data.waitForResponse;
+    let webhookSuccess = false;
+
+    if (!targetUrl) {
+      log.warn('[WebhookNode] Missing webhook URL');
+    } else {
+      try {
+        const payload = {
+          clientId: client.clientId,
+          phone,
+          leadId: lead?._id?.toString?.() || null,
+          conversationId: convo?._id?.toString?.() || null,
+          nodeId: node.id,
+          nodeType: node.type,
+          timestamp: new Date().toISOString(),
+          metadata: convo?.metadata || {}
+        };
+        const timeoutMs = waitForResponse ? 12000 : 4000;
+        const resp = await axios({
+          url: targetUrl,
+          method,
+          data: payload,
+          headers: { 'Content-Type': 'application/json' },
+          timeout: timeoutMs
+        });
+        webhookSuccess = true;
+        if (variable) {
+          const updatedMetadata = {
+            ...(convo.metadata || {}),
+            [variable]: resp.data,
+            [`${variable}_status`]: resp.status
+          };
+          await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
+          convo.metadata = updatedMetadata;
+        }
+      } catch (err) {
+        log.error('[WebhookNode] Request failed:', {
+          nodeId: node.id,
+          url: targetUrl,
+          error: err.message,
+          status: err.response?.status
+        });
+        if (variable) {
+          const updatedMetadata = {
+            ...(convo.metadata || {}),
+            [`${variable}_error`]: err.message,
+            [`${variable}_status`]: err.response?.status || 0
+          };
+          await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
+          convo.metadata = updatedMetadata;
+        }
+      }
+    }
+
+    const targetHandle = webhookSuccess ? 'success' : 'error';
+    const routedEdge = flowEdges.find(e => e.source === nodeId && normalizeHandleId(e.sourceHandle) === targetHandle);
+    if (routedEdge) return await executeNode(routedEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+    const defaultEdge = flowEdges.find(e => e.source === nodeId && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'output'));
+    if (defaultEdge) return await executeNode(defaultEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+  }
+
   if (node.type === 'livechat') {
     await Conversation.findByIdAndUpdate(convo._id, { 
       status: 'HUMAN_SUPPORT', 
@@ -3377,6 +3444,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'set_variable': return true;
     case 'shopify_call': return true;
     case 'http_request': return true;
+    case 'webhook': return true;
     case 'tag_lead': return true;
     case 'admin_alert': return true;
     case 'jump': return true;
