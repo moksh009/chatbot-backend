@@ -4,20 +4,6 @@
  */
 const Client = require('../models/Client');
 
-const VALID_BUSINESS_TYPES = [
-  'ecommerce',
-  'salon',
-  'turf',
-  'clinic',
-  'choice_salon',
-  'choice_salon_new',
-  'agency',
-  'travel',
-  'real-estate',
-  'healthcare',
-  'other'
-];
-
 async function ensureClientForUser(user) {
   if (!user || !user.clientId) return null;
 
@@ -29,8 +15,7 @@ async function ensureClientForUser(user) {
     (user.name && String(user.name).trim()) ||
     (user.email && String(user.email).split('@')[0]) ||
     'Workspace';
-  const rawType = user.business_type || 'other';
-  const businessType = VALID_BUSINESS_TYPES.includes(rawType) ? rawType : 'other';
+  const businessType = 'ecommerce';
 
   try {
     client = await Client.create({

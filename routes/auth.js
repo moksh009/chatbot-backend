@@ -114,7 +114,7 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
         email: user.email,
         role: user.role,
         isLifetimeAdmin: user.isLifetimeAdmin,
-        business_type: client ? client.businessType || user.business_type : user.business_type,
+        business_type: 'ecommerce',
         clientId: user.clientId,
         clientName: client ? client.name : null,
         subscriptionPlan: user.isLifetimeAdmin ? 'enterprise' : (client ? client.tier || 'v1' : 'v1'),
@@ -235,7 +235,7 @@ router.get('/bootstrap', protect, async (req, res) => {
         clientId: user.clientId,
         isLifetimeAdmin: user.isLifetimeAdmin,
         hasCompletedTour: user.hasCompletedTour,
-        business_type: user.business_type,
+        business_type: 'ecommerce',
         // Phase 32: surfaced at top-level user for quick guard checks
         onboardingCompleted,
         onboardingStep: client?.onboardingStep || 0
@@ -343,7 +343,7 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
         email: user.email,
         role: user.role,
         isLifetimeAdmin: user.isLifetimeAdmin,
-        business_type: client ? client.businessType || user.business_type : user.business_type,
+        business_type: 'ecommerce',
         clientId: user.clientId,
         token: generateToken(user._id, user.clientId, user.role), // ✅ Phase R4: clientId+role in JWT
         clientName: client ? client.name : null,
@@ -371,7 +371,7 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
 });
 
 router.post('/register', async (req, res) => {
-  const { name, email, password, businessName, businessType, otp } = req.body;
+  const { name, email, password, businessName, otp } = req.body;
   const mongoose = require('mongoose');
 
   const session = await mongoose.startSession();
@@ -409,9 +409,8 @@ router.post('/register', async (req, res) => {
     const uniqueId = crypto.randomBytes(3).toString('hex');
     const newClientId = `${safeName}_${uniqueId}`;
 
-    // Valid business types for client and user models
-    const validTypes = ['ecommerce', 'salon', 'turf', 'clinic', 'choice_salon', 'choice_salon_new', 'agency', 'travel', 'real-estate', 'healthcare', 'other'];
-    const chosenType = (businessType && validTypes.includes(businessType)) ? businessType : 'other';
+    // Product scope: e-commerce only
+    const chosenType = 'ecommerce';
 
     // 1. Create the Client (Trial mode default: 14 Days)
     const newClient = await Client.create([{
@@ -609,7 +608,7 @@ router.post('/update-password', protect, async (req, res) => {
  * Query: ?mode=login|signup&businessName=X&businessType=Y (signup only)
  */
 router.get('/google/login', (req, res) => {
-  const { mode, businessName, businessType } = req.query;
+  const { mode, businessName } = req.query;
   const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.GCAL_CLIENT_ID;
   const REDIRECT_URI = getGoogleAuthRedirectUri();
 
@@ -623,7 +622,7 @@ router.get('/google/login', (req, res) => {
   }
 
   // Encode signup data into state parameter
-  const stateData = JSON.stringify({ mode: mode || 'login', businessName, businessType });
+  const stateData = JSON.stringify({ mode: mode || 'login', businessName, businessType: 'ecommerce' });
   const state = Buffer.from(stateData).toString('base64url');
 
   const scopes = [
@@ -711,7 +710,7 @@ router.get('/google/callback', async (req, res) => {
       // ── New User: Auto-create Account ──────────────────────
       const crypto = require('crypto');
       const businessName = stateData.businessName || name + "'s Business";
-      const businessType = stateData.businessType || 'other';
+      const businessType = 'ecommerce';
       const safeName = businessName.toLowerCase().replace(/[^a-z0-9]/g, '');
       const uniqueId = crypto.randomBytes(3).toString('hex');
       const newClientId = `${safeName}_${uniqueId}`;

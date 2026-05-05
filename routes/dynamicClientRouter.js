@@ -108,31 +108,8 @@ router.post('/webhook', async (req, res) => {
       // Continue anyway to ensure delivery
     }
 
-    console.log(`[Webhook Router] INCOMING POST -> Client: ${clientId} | Type: ${businessType} | Flow: ${isGenericBot ? 'GenericEngine' : 'CustomCode'}`);
-    if (businessType === 'turf') {
-      await turfController.handleWebhook(req, res);
-    } else if (businessType === 'salon') {
-      // Use the new generic engine for standard salon niches
-      await genericAppointmentEngine.handleWebhook(req, res);
-    } else if (businessType === 'clinic') {
-      // Clinics always use the generic engine
-      await genericAppointmentEngine.handleWebhook(req, res);
-    } else if (businessType === 'ecommerce') {
-      await genericEcommerceEngine.handleWebhook(req, res);
-    } else if (businessType === 'choice_salon') {
-      if (req.clientConfig.isGenericBot) {
-        await genericAppointmentEngine.handleWebhook(req, res);
-      } else {
-        await choiceSalonController.handleWebhook(req, res);
-      }
-    } else if (businessType === 'choice_salon_new') {
-      await choiceSalonController.handleWebhook(req, res);
-    } else if (businessType === 'agency') {
-      await topedgeController.handleWebhook(req, res);
-    } else {
-      console.warn(`[Webhook Router] UNHANDLED BUSINESS TYPE: ${businessType} for Client: ${clientId}`);
-      res.sendStatus(200); // Acknowledge to avoid retries
-    }
+    console.log(`[Webhook Router] INCOMING POST -> Client: ${clientId} | Type: ${businessType} | Flow: EcommerceEngine`);
+    await genericEcommerceEngine.handleWebhook(req, res);
   } catch (error) {
     console.error(`[Webhook Router] FATAL ERROR for Client: ${req.clientConfig?.clientId || 'Unknown'}:`, error.message);
     res.sendStatus(500);

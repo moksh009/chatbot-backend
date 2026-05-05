@@ -8,7 +8,7 @@ const BrandSchema = new mongoose.Schema({
   businessLogo: { type: String, default: "" },
   currency: { type: String, default: "₹" },
   niche: { type: String, default: "other" },
-  businessType: { type: String, default: "other" },
+  businessType: { type: String, default: "ecommerce" },
   adminPhone: { type: String, default: "" },
   googleReviewUrl: { type: String, default: "" },
   // Enterprise Warranty
@@ -229,13 +229,10 @@ const ClientSchema = new mongoose.Schema({
     },
     spinWheel: {
       prizes: {
-        type: [{
-          label: String,
-          code: String,
-          probability: Number,
-          type: String,
-        }],
-        default: [{ label: 'Flat 10% Off', code: 'WELCOME10', probability: 100, type: 'discount' }],
+        // Keep prize entries permissive to avoid CastErrors during account creation
+        // when legacy payloads/stringified defaults are present in older environments.
+        type: [mongoose.Schema.Types.Mixed],
+        default: () => [{ label: 'Flat 10% Off', code: 'WELCOME10', probability: 100, type: 'discount' }],
       },
       primaryColor: { type: String, default: '#6D28D9' },
       secondaryColor: { type: String, default: '#F59E0B' },
@@ -307,7 +304,7 @@ const ClientSchema = new mongoose.Schema({
   businessType: { 
     type: String, 
     enum: ['ecommerce', 'salon', 'turf', 'clinic', 'choice_salon', 'choice_salon_new', 'agency', 'travel', 'real-estate', 'healthcare', 'other'],
-    default: 'other'
+    default: 'ecommerce'
   },
   niche: {
     type: String,

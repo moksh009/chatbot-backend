@@ -18,7 +18,7 @@ const UserSchema = new mongoose.Schema({
   },
   business_type: {
     type: String,
-    default: 'clinic'
+    default: 'ecommerce'
   },
   clientId: { type: String, required: true }, // Tenant ID
   hasCompletedTour: { type: Boolean, default: false }, // For frontend Onboarding
