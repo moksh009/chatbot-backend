@@ -100,7 +100,7 @@ if (taskWorker) {
 }
 
 async function handleImportLeads(data, job) {
-    const { clientId, batchId, filePath, filename, mapping, listName } = data;
+    const { clientId, batchId, filePath, filename, mapping, listName, importConsentType, consentAcknowledged } = data;
     const session = await ImportSession.findOne({ batchId });
     if (!session) return log.error(`[Import] Session not found for ${batchId}`);
     if (!Array.isArray(session.errorLog)) session.errorLog = [];
@@ -201,16 +201,28 @@ async function handleImportLeads(data, job) {
                 }
             });
 
+            const consentType = String(importConsentType || 'unknown');
+            const isDeclaredOptIn = ['whatsapp_reply', 'website_widget', 'checkout_explicit'].includes(consentType) && consentAcknowledged === true;
             const setObj = {
                 clientId,
                 phoneNumber,
                 importBatchId: session._id,
-                meta: { lastImportId: batchId, importedAt: new Date(), importFilename: filename, importListName: batchName }
+                meta: {
+                    lastImportId: batchId,
+                    importedAt: new Date(),
+                    importFilename: filename,
+                    importListName: batchName,
+                    importConsentType: consentType,
+                    optInDeclarationTimestamp: isDeclaredOptIn ? new Date() : null,
+                    optInDeclaredBy: isDeclaredOptIn ? String(data?.user?.id || '') : ''
+                }
             };
             
             const setOnInsertObj = {
                 source: 'CSV_Import',
-                optStatus: 'opted_in',
+                optStatus: isDeclaredOptIn ? 'opted_in' : 'unknown',
+                optInSource: isDeclaredOptIn ? 'csv_import_declared' : '',
+                optInMethod: 'single',
                 name: `Guest contact (from ${filename.split('.')[0]})`
             };
             

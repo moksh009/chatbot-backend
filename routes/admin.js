@@ -776,6 +776,8 @@ router.patch('/my-settings', protect, async (req, res) => {
       nicheData, flowData, automationFlows, messageTemplates, flowNodes, flowEdges, 
       skuAutomations,
       simpleSettings, clientId, isAIFallbackEnabled, flowFolders, visualFlows,
+      /** Lightweight auto-save merge: PATCH { flowDraft: { flowId, nodes, edges, syncLiveGraph? } } */
+      flowDraft,
       wabaId, phoneNumberId, whatsappToken,
       shopDomain, shopifyClientId, shopifyClientSecret, shopifyAccessToken, shopifyWebhookSecret,
       woocommerceUrl, woocommerceKey, woocommerceSecret, storeType,
@@ -829,6 +831,59 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (isAIFallbackEnabled !== undefined) updateFields.isAIFallbackEnabled = isAIFallbackEnabled;
     if (flowFolders !== undefined) updateFields.flowFolders = flowFolders;
     if (visualFlows !== undefined) updateFields.visualFlows = visualFlows;
+
+    // Partial flow graph merge (autosave) — avoids sending full visualFlows payloads
+    if (flowDraft && flowDraft.flowId) {
+      const WhatsAppFlow = require('../models/WhatsAppFlow');
+      const { flowId, nodes = [], edges = [], syncLiveGraph } = flowDraft;
+      const wfExisting = await WhatsAppFlow.findOne({ clientId: targetClientId, flowId }).lean();
+      const flowName = wfExisting?.name || 'Automation';
+
+      await WhatsAppFlow.findOneAndUpdate(
+        { clientId: targetClientId, flowId },
+        {
+          $set: {
+            clientId: targetClientId,
+            flowId,
+            name: flowName,
+            platform: wfExisting?.platform || 'whatsapp',
+            folderId: wfExisting?.folderId || '',
+            nodes,
+            edges,
+          },
+          $setOnInsert: {
+            status: 'DRAFT',
+            version: 1,
+            publishedNodes: [],
+            publishedEdges: [],
+          },
+        },
+        { upsert: true, new: true }
+      );
+
+      const prevClient = await Client.findOne({ clientId: targetClientId }).lean();
+      const vf = [...(prevClient.visualFlows || [])];
+      const ix = vf.findIndex((f) => String(f.id) === String(flowId));
+      const patchFlow = {
+        ...(ix >= 0 ? vf[ix] : {}),
+        id: flowId,
+        name: ix >= 0 ? vf[ix].name : flowName,
+        platform: ix >= 0 ? vf[ix].platform : wfExisting?.platform || 'whatsapp',
+        folderId: ix >= 0 ? vf[ix].folderId : wfExisting?.folderId || '',
+        isActive: ix >= 0 ? !!vf[ix].isActive : false,
+        nodes,
+        edges,
+        updatedAt: new Date(),
+      };
+      if (ix >= 0) vf[ix] = patchFlow;
+      else vf.push(patchFlow);
+      updateFields.visualFlows = vf;
+
+      if (syncLiveGraph) {
+        updateFields.flowNodes = nodes;
+        updateFields.flowEdges = edges;
+      }
+    }
 
     // Commercial & Meta Fields
     if (wabaId !== undefined) {

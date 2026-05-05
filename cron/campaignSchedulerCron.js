@@ -5,6 +5,13 @@ const Client = require('../models/Client');
 const WhatsApp = require('../utils/whatsapp');
 const log = require('../utils/logger')('CampaignCron');
 const { resolveImportBatchObjectId } = require('../utils/importBatchResolver');
+const {
+  filterAudienceForMarketingOptIn,
+  mongoMarketingOptInOnly,
+  mongoNotOptedOut,
+  shouldRequireMarketingOptIn,
+  canSendToContact,
+} = require('../utils/marketingConsent');
 
 /** Minimum gap between WhatsApp Cloud API sends (burst-safe). */
 const MIN_MESSAGE_GAP_MS = 50;
@@ -166,7 +173,14 @@ const scheduleCampaignCron = () => {
               const AdLead = require('../models/AdLead');
               const segment = await Segment.findById(campaign.segmentId);
               if (segment) {
-                const leads = await AdLead.find({ ...segment.query, clientId: campaign.clientId }).select('phoneNumber name').lean();
+                const optQ = shouldRequireMarketingOptIn(campaign) ? mongoMarketingOptInOnly() : mongoNotOptedOut();
+                const leads = await AdLead.find({
+                  ...segment.query,
+                  clientId: campaign.clientId,
+                  ...optQ,
+                })
+                  .select('phoneNumber name')
+                  .lean();
                 phones = leads.map(l => ({ phone: l.phoneNumber, name: l.name || 'Customer', ...l }));
               }
             } else if (campaign.importBatchId) {
@@ -182,10 +196,20 @@ const scheduleCampaignCron = () => {
                 await campaign.save();
                 continue;
               }
-              const leads = await AdLead.find({ importBatchId: resolvedBatchId, clientId: campaign.clientId }).select('phoneNumber name').lean();
+              const optQ = shouldRequireMarketingOptIn(campaign) ? mongoMarketingOptInOnly() : mongoNotOptedOut();
+              const leads = await AdLead.find({
+                importBatchId: resolvedBatchId,
+                clientId: campaign.clientId,
+                ...optQ,
+              })
+                .select('phoneNumber name')
+                .lean();
               phones = leads.map(l => ({ phone: l.phoneNumber, name: l.name || 'Customer', ...l }));
             }
           }
+
+          const optPass = await filterAudienceForMarketingOptIn(campaign.clientId, phones, campaign);
+          phones = optPass.rows;
 
           if (phones.length === 0) {
             log.warn(`[CampaignCron] No audience found for campaign ${campaign.name}. Marking COMPLETED.`);
@@ -210,6 +234,24 @@ const scheduleCampaignCron = () => {
           for (let idx = 0; idx < phones.length; idx++) {
             const row = phones[idx];
             const { phone, name } = row;
+            const eligibility = await canSendToContact(
+              campaign.clientId,
+              row,
+              campaign.templateCategory
+            );
+            if (!eligibility.canSend) {
+              failed++;
+              await CampaignMessage.create({
+                campaignId: campaign._id,
+                clientId: campaign.clientId,
+                phone,
+                status: 'failed',
+                errorMessage: `Skipped: ${eligibility.reason}`,
+                failedAt: new Date(),
+                metadata: { skipReason: eligibility.reason },
+              });
+              continue;
+            }
             const cmDoc = await CampaignMessage.create({
               campaignId: campaign._id,
               clientId: campaign.clientId,

@@ -53,17 +53,21 @@ const translateConditionsToQuery = (conditions) => {
             andConditions.push({ [asset.dbField]: { [dateOp]: date } });
         } 
         
-        // 3. Handle Standard Numeric & Boolean Fields
+        // 3. Handle Standard Numeric, Boolean & String Fields (dot paths e.g. adAttribution.source)
         else {
             let val = cond.targetValue;
             if (asset.type === 'NUMBER') val = parseFloat(cond.targetValue);
             if (asset.type === 'BOOLEAN') val = (cond.targetValue === true || cond.targetValue === 'true');
-            
-            if (val !== undefined) {
-                // For numeric values, ensure it's actually a number
+            if (asset.type === 'STRING') val = String(cond.targetValue ?? '').trim();
+
+            if (val !== undefined && val !== '') {
                 if (asset.type === 'NUMBER' && isNaN(val)) return;
 
-                andConditions.push({ [asset.dbField]: { [mongoOperator]: val } });
+                if (asset.type === 'STRING') {
+                    andConditions.push({ [asset.dbField]: val });
+                } else {
+                    andConditions.push({ [asset.dbField]: { [mongoOperator]: val } });
+                }
             }
         }
     });

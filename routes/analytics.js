@@ -434,21 +434,50 @@ router.get('/leads', protect, apiCache(30), async (req, res) => {
     }
 
     const skip = (pageNum - 1) * limitNum;
-    
-    let sortObj = { _id: -1 };
-    if (sortBy === 'recent') sortObj = { lastInteraction: -1 };
-    if (sortBy === 'score') sortObj = { leadScore: -1 };
-    if (sortBy === 'ltv') sortObj = { totalSpent: -1 };
-    if (sortBy === 'name') sortObj = { name: 1 };
-    if (sortBy === 'clicks') sortObj = { linkClicks: -1 };
 
-    const [leads, total, activeToday, withConversation, highEngagement] = await Promise.all([
-      AdLead.find(query)
+    const leadListProjection =
+      'name phoneNumber leadScore tags lastInteraction chatSummary cartStatus lastMessageContent lastInboundAt linkClicks email ordersCount totalSpent intentState addToCartCount meta createdAt pendingSupport lastPurchaseDate source adAttribution cartValue lifetimeValue checkoutInitiatedCount optInSource inboundMessageCount';
+
+    let sortObj = { lastInteraction: -1 };
+    if (sortBy === 'score') sortObj = { leadScore: -1 };
+    else if (sortBy === 'ltv') sortObj = { totalSpent: -1 };
+    else if (sortBy === 'name') sortObj = { name: 1 };
+    else if (sortBy === 'clicks') sortObj = { linkClicks: -1 };
+    else if (sortBy === 'lastPurchase') sortObj = { lastPurchaseDate: -1 };
+    else if (sortBy === 'orders') sortObj = { ordersCount: -1 };
+    else if (sortBy === 'cartValue') sortObj = { cartValue: -1 };
+
+    const fetchLeadsPage = async () => {
+      if (sortBy === 'aov') {
+        return AdLead.aggregate([
+          { $match: query },
+          {
+            $addFields: {
+              __aovSort: {
+                $cond: {
+                  if: { $gt: ['$ordersCount', 0] },
+                  then: { $divide: [{ $ifNull: ['$totalSpent', 0] }, '$ordersCount'] },
+                  else: 0
+                }
+              }
+            }
+          },
+          { $sort: { __aovSort: -1, _id: -1 } },
+          { $skip: skip },
+          { $limit: limitNum },
+          { $project: { __aovSort: 0 } }
+        ]);
+      }
+      return AdLead.find(query)
         .sort(sortObj)
         .skip(skip)
         .limit(limitNum)
-        .select('name phoneNumber leadScore tags lastInteraction chatSummary cartStatus lastMessageContent lastInboundAt linkClicks email ordersCount totalSpent intentState addToCartCount meta createdAt pendingSupport')
-        .lean(),
+        .select(leadListProjection)
+        .lean();
+    };
+
+    const [leads, total, activeToday, withConversation, highEngagement] = await Promise.all([
+      fetchLeadsPage(),
       AdLead.countDocuments(query),
       AdLead.countDocuments({ clientId, lastInboundAt: { $gte: new Date(new Date().setHours(0,0,0,0)) } }),
       AdLead.countDocuments({ clientId, $or: [{ chatSummary: { $exists: true, $ne: "" } }, { lastMessageContent: { $exists: true, $ne: "" } }] }),
@@ -2127,6 +2156,74 @@ router.get('/operators', protect, async (req, res) => {
   } catch (err) {
     console.error('[Analytics] /operators aggregation error:', err);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/analytics/optin-overview
+router.get('/optin-overview', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+
+    const days = req.query.period === '7d' ? 7 : req.query.period === '90d' ? 90 : 30;
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    const [statusAgg, sourceAgg, trendAgg, recent] = await Promise.all([
+      AdLead.aggregate([
+        { $match: { clientId } },
+        { $group: { _id: '$optStatus', count: { $sum: 1 } } },
+      ]),
+      AdLead.aggregate([
+        { $match: { clientId } },
+        { $group: { _id: '$optInSource', count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 20 },
+      ]),
+      AdLead.aggregate([
+        { $match: { clientId, optStatus: 'opted_in', optInDate: { $gte: since } } },
+        {
+          $group: {
+            _id: { $dateToString: { format: '%Y-%m-%d', date: '$optInDate' } },
+            newOptIns: { $sum: 1 },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]),
+      AdLead.find({ clientId, optStatus: { $in: ['opted_in', 'pending', 'opted_out'] } })
+        .sort({ updatedAt: -1 })
+        .limit(10)
+        .select('name optInSource optStatus updatedAt')
+        .lean(),
+    ]);
+
+    const map = {};
+    statusAgg.forEach((x) => { map[x._id || 'unknown'] = x.count; });
+    const totalLeads = Object.values(map).reduce((a, b) => a + b, 0);
+    const optedIn = map.opted_in || 0;
+    const unknown = map.unknown || 0;
+    const optedOut = map.opted_out || 0;
+    const pending = map.pending || 0;
+    const optInRate = totalLeads > 0 ? Number(((optedIn / totalLeads) * 100).toFixed(1)) : 0;
+
+    res.json({
+      success: true,
+      totalLeads,
+      optedIn,
+      unknown,
+      optedOut,
+      pending,
+      optInRate,
+      bySource: sourceAgg.map((x) => ({ source: x._id || 'unknown', count: x.count })),
+      trend: trendAgg.map((x) => ({ date: x._id, newOptIns: x.newOptIns })),
+      recentOptIns: recent.map((x) => ({
+        name: x.name || 'Customer',
+        source: x.optInSource || 'unknown',
+        status: x.optStatus || 'unknown',
+        timestamp: x.updatedAt || null,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 

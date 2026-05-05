@@ -10,6 +10,10 @@ const WhatsApp = require('../utils/whatsapp');
 const { createMessage } = require('../utils/createMessage');
 const cron = require('node-cron');
 const axios = require('axios');
+const {
+  mongoCartRecoveryFilter,
+  mongoNotOptedOut,
+} = require('../utils/marketingConsent');
 
 // Helper to check if a specific node role was handled previously
 const wasRoleHandled = (lead, role) => lead.activityLog.some(l => l.action === 'automation_nudge' && l.details === role);
@@ -157,6 +161,7 @@ const scheduleAbandonedCartCron = () => {
                 const browseDelayMin = parseInt(niche.browseDelay) || 30;
                 const browseBatch = await AdLead.find({
                     clientId: client.clientId,
+                    ...mongoCartRecoveryFilter(client),
                     isOrderPlaced: { $ne: true },
                     addToCartCount: 0,
                     linkClicks: { $gt: 0 },
@@ -180,6 +185,7 @@ const scheduleAbandonedCartCron = () => {
                 const delay1Min = parseInt(niche.abandonedDelay1) || 15;
                 const batch1 = await AdLead.find({
                     clientId: client.clientId,
+                    ...mongoCartRecoveryFilter(client),
                     isOrderPlaced: { $ne: true },
                     addToCartCount: { $gt: 0 },
                     recoveryStep: { $in: [null, 0] },
@@ -208,6 +214,7 @@ const scheduleAbandonedCartCron = () => {
                 const delay2Hr = parseInt(niche.abandonedDelay2) || 2;
                 const batch2 = await AdLead.find({
                     clientId: client.clientId,
+                    ...mongoCartRecoveryFilter(client),
                     recoveryStep: 1,
                     recoveryStartedAt: { $lte: new Date(now - delay2Hr * 60 * 60 * 1000) },
                     isOrderPlaced: { $ne: true }
@@ -235,6 +242,7 @@ const scheduleAbandonedCartCron = () => {
                 const delay3Hr = parseInt(niche.abandonedDelay3) || 24;
                 const batch3 = await AdLead.find({
                     clientId: client.clientId,
+                    ...mongoCartRecoveryFilter(client),
                     recoveryStep: 2,
                     recoveryStartedAt: { $lte: new Date(now - delay3Hr * 60 * 60 * 1000) },
                     isOrderPlaced: { $ne: true }
@@ -285,6 +293,7 @@ const scheduleAbandonedCartCron = () => {
                 // --- Step 4: Post-Purchase Cross-sell (1 hour after order) ---
                 const batch4 = await AdLead.find({
                     clientId: client.clientId,
+                    ...mongoNotOptedOut(),
                     isOrderPlaced: true,
                     recoveryStep: { $in: [1, 2, 3, null, 10] }, 
                     updatedAt: { $lte: new Date(now - 1 * 60 * 60 * 1000) }

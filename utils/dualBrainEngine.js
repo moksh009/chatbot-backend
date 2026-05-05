@@ -1016,10 +1016,128 @@ async function runDualBrainEngine(parsedMessage, client) {
     // Wallet/Redeem existing logic would go here
   }
   
-  const optOutKeywords = ['stop', 'unsubscribe', 'opt out', 'halt', 'cancel', 'block bot'];
-  const optInKeywords  = ['start', 'opt in', 'subscribe', 'resume', 'unpause'];
+  const optOutKeywords = ['stop', 'unsubscribe', 'opt out', 'optout', 'cancel', 'quit', 'end', 'remove me', 'do not contact', 'halt', 'block bot'];
+  const optInKeywords  = ['start', 'yes', 'subscribe', 'opt in', 'optin', 'resume', 'unpause'];
 
-  if (optOutKeywords.some(k => userTextLower === k)) {
+  // Double opt-in confirmation gate (must run before routing/flows).
+  if (userTextLower === 'yes' || parsedMessage?.buttonReplyId === 'confirm_optin') {
+    const pendingLead = await AdLead.findOne({
+      phoneNumber: phone,
+      clientId: client.clientId,
+      optStatus: 'pending',
+      pendingOptInExpiry: { $gt: new Date() },
+    });
+    if (pendingLead) {
+      pendingLead.optStatus = 'opted_in';
+      pendingLead.optInDate = new Date();
+      pendingLead.optInMethod = 'double';
+      pendingLead.pendingOptInCode = '';
+      pendingLead.pendingOptInExpiry = null;
+      pendingLead.whatsappMarketingEligible = true;
+      pendingLead.optInHistory = pendingLead.optInHistory || [];
+      pendingLead.optInHistory.unshift({
+        event: 'confirmed',
+        action: 'confirmed',
+        source: 'double_opt_in',
+        method: 'double',
+        timestamp: new Date(),
+      });
+      await pendingLead.save();
+      const welcome = client?.growthWidgetConfig?.welcomeMessage || `Welcome to ${client.businessName || 'our brand'} WhatsApp updates!`;
+      await sendWhatsAppText(client, phone, welcome);
+      return true;
+    }
+  }
+
+  if (userTextLower === 'no') {
+    const pendingLead = await AdLead.findOne({
+      phoneNumber: phone,
+      clientId: client.clientId,
+      optStatus: 'pending',
+      pendingOptInExpiry: { $gt: new Date() },
+    });
+    if (pendingLead) {
+      pendingLead.optStatus = 'opted_out';
+      pendingLead.optOutDate = new Date();
+      pendingLead.optOutSource = 'double_opt_in_decline';
+      pendingLead.pendingOptInCode = '';
+      pendingLead.pendingOptInExpiry = null;
+      pendingLead.whatsappMarketingEligible = false;
+      pendingLead.optInHistory = pendingLead.optInHistory || [];
+      pendingLead.optInHistory.unshift({
+        event: 'opted_out',
+        action: 'opted_out',
+        source: 'double_opt_in_decline',
+        timestamp: new Date(),
+      });
+      await pendingLead.save();
+      await sendWhatsAppText(client, phone, "Understood. You won't receive marketing updates.");
+      return true;
+    }
+  }
+
+  // Re-permission campaign button / keyword confirmation
+  const rePermissionYes = ['repermission_yes', 're_permission_yes', 'yes_sign_me_up', 'yes sign me up'];
+  const rePermissionNo = ['repermission_no', 're_permission_no', 'no_thanks', 'no thanks'];
+  const inboundButtonId = String(parsedMessage?.interactive?.button_reply?.id || '').toLowerCase().trim();
+  if (rePermissionYes.includes(inboundButtonId) || userTextLower === 'yes sign me up') {
+    await AdLead.findOneAndUpdate(
+      { phoneNumber: phone, clientId: client.clientId, optStatus: { $in: ['unknown', 'pending', 'opted_out'] } },
+      {
+        $set: {
+          optStatus: 'opted_in',
+          optInDate: new Date(),
+          optInMethod: 'single',
+          optInSource: 're_permission_campaign',
+          whatsappMarketingEligible: true,
+        },
+        $push: {
+          optInHistory: {
+            event: 'opted_in',
+            action: 'opted_in',
+            source: 're_permission_campaign',
+            method: 'single',
+            timestamp: new Date(),
+          },
+        },
+      }
+    );
+    await sendWhatsAppText(client, phone, client?.growthWidgetConfig?.welcomeMessage || "You're subscribed to WhatsApp updates. Thank you!");
+    return true;
+  }
+  if (rePermissionNo.includes(inboundButtonId) || userTextLower === 'no thanks') {
+    await AdLead.findOneAndUpdate(
+      { phoneNumber: phone, clientId: client.clientId },
+      {
+        $set: {
+          optStatus: 'opted_out',
+          optOutDate: new Date(),
+          optOutSource: 're_permission_campaign',
+          whatsappMarketingEligible: false,
+        },
+        $push: {
+          optInHistory: {
+            event: 'opted_out',
+            action: 'opted_out',
+            source: 're_permission_campaign',
+            timestamp: new Date(),
+          },
+        },
+      }
+    );
+    try {
+      const SuppressionList = require('../models/SuppressionList');
+      await SuppressionList.findOneAndUpdate(
+        { clientId: client.clientId, phone },
+        { $set: { reason: 'opted_out', source: 're_permission_campaign', addedAt: new Date() } },
+        { upsert: true }
+      );
+    } catch (_) {}
+    await sendWhatsAppText(client, phone, "Understood. We won't send marketing updates.");
+    return true;
+  }
+
+  if (optOutKeywords.some(k => userTextLower === k || userTextLower.startsWith(`${k} `))) {
     log.info(`🛑 Opt-out detected for ${phone}. Pausing bot.`);
     
     await Conversation.findByIdAndUpdate(convo._id, { 
@@ -1035,12 +1153,14 @@ async function runDualBrainEngine(parsedMessage, client) {
         $set: { 
           optStatus: 'opted_out', 
           optOutDate: new Date(), 
+          optOutSource: 'keyword_stop',
           optOutReason: 'user_keyword',
           optOutKeyword: userTextRaw 
         },
         $addToSet: { tags: 'Opted Out' },
         $push: {
           optInHistory: {
+            event: 'opted_out',
             action: 'opted_out',
             timestamp: new Date(),
             source: 'user_keyword',
@@ -1049,6 +1169,20 @@ async function runDualBrainEngine(parsedMessage, client) {
         }
       }
     );
+    try {
+      const SuppressionList = require('../models/SuppressionList');
+      await SuppressionList.findOneAndUpdate(
+        { clientId: client.clientId, phone },
+        {
+          $set: {
+            reason: 'opted_out',
+            source: 'keyword_stop',
+            addedAt: new Date(),
+          },
+        },
+        { upsert: true }
+      );
+    } catch (_) {}
 
     // Broadcast update
     if (io) io.to(`client_${client.clientId}`).emit('lead_opted_out', { phone });
@@ -1081,12 +1215,14 @@ async function runDualBrainEngine(parsedMessage, client) {
         $set: { 
           optStatus: 'opted_in', 
           optInDate: new Date(), 
-          optInSource: 'whatsapp_re_optin' 
+          optInSource: 'keyword',
+          optInMethod: 'single',
         },
         $pull: { tags: 'Opted Out' },
         $addToSet: { tags: 'Opted In' },
         $push: {
           optInHistory: {
+            event: 'opted_in',
             action: 're_opted_in',
             timestamp: new Date(),
             source: 'user_keyword'
@@ -1094,6 +1230,10 @@ async function runDualBrainEngine(parsedMessage, client) {
         }
       }
     );
+    try {
+      const SuppressionList = require('../models/SuppressionList');
+      await SuppressionList.deleteOne({ clientId: client.clientId, phone });
+    } catch (_) {}
 
     // Broadcast update
     if (io) io.to(`client_${client.clientId}`).emit('lead_opted_in', { phone });
@@ -1957,26 +2097,77 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     }
 
     const compValue = value !== undefined ? value : (condition?.match(/[\d.]+/) || [0])[0];
+    const strLeft = Array.isArray(leftValue) ? leftValue.join(',') : String(leftValue ?? '');
+    const strRight = String(compValue ?? '');
+    const toNum = (v) => {
+      const n = parseFloat(String(v ?? ''));
+      return Number.isFinite(n) ? n : NaN;
+    };
+    const exists = leftValue !== undefined && leftValue !== null && String(leftValue) !== '';
+    const op = String(operator || 'equals').toLowerCase();
     let result = false;
-    switch (operator) {
-      case 'eq':
-      case 'equals':        result = String(leftValue ?? '').toLowerCase() === String(compValue).toLowerCase(); break;
-      case 'neq':
-      case 'not_equals':    result = String(leftValue ?? '').toLowerCase() !== String(compValue).toLowerCase(); break;
-      case 'gt':
-      case 'greater_than':  result = Number(leftValue) > Number(compValue); break;
-      case 'lt':
-      case 'less_than':     result = Number(leftValue) < Number(compValue); break;
-      case 'gte':           result = Number(leftValue) >= Number(compValue); break;
-      case 'lte':           result = Number(leftValue) <= Number(compValue); break;
-      case 'contains':      result = String(leftValue ?? '').toLowerCase().includes(String(compValue).toLowerCase()); break;
-      case 'not_contains':  result = !String(leftValue ?? '').toLowerCase().includes(String(compValue).toLowerCase()); break;
-      case 'exists':        result = leftValue !== undefined && leftValue !== null && leftValue !== ''; break;
-      case 'not_exists':    result = leftValue === undefined || leftValue === null || leftValue === ''; break;
-      case 'in':            result = String(compValue).split(',').map(v => v.trim()).includes(String(leftValue ?? '')); break;
-      case 'starts_with':   result = String(leftValue ?? '').toLowerCase().startsWith(String(compValue).toLowerCase()); break;
-      case 'ends_with':     result = String(leftValue ?? '').toLowerCase().endsWith(String(compValue).toLowerCase()); break;
-      default:              result = String(leftValue ?? '').toLowerCase() === String(compValue).toLowerCase(); break;
+    try {
+      switch (op) {
+        case 'eq':
+        case 'equals':
+          result = strLeft.toLowerCase() === strRight.toLowerCase();
+          break;
+        case 'neq':
+        case 'not_equals':
+          result = strLeft.toLowerCase() !== strRight.toLowerCase();
+          break;
+        case 'gt':
+        case 'greater_than': {
+          const l = toNum(leftValue); const r = toNum(compValue);
+          result = Number.isFinite(l) && Number.isFinite(r) ? l > r : false;
+          break;
+        }
+        case 'lt':
+        case 'less_than': {
+          const l = toNum(leftValue); const r = toNum(compValue);
+          result = Number.isFinite(l) && Number.isFinite(r) ? l < r : false;
+          break;
+        }
+        case 'gte': {
+          const l = toNum(leftValue); const r = toNum(compValue);
+          result = Number.isFinite(l) && Number.isFinite(r) ? l >= r : false;
+          break;
+        }
+        case 'lte': {
+          const l = toNum(leftValue); const r = toNum(compValue);
+          result = Number.isFinite(l) && Number.isFinite(r) ? l <= r : false;
+          break;
+        }
+        case 'contains':
+          result = strLeft.toLowerCase().includes(strRight.toLowerCase());
+          break;
+        case 'not_contains':
+          result = !strLeft.toLowerCase().includes(strRight.toLowerCase());
+          break;
+        case 'starts_with':
+          result = strLeft.toLowerCase().startsWith(strRight.toLowerCase());
+          break;
+        case 'ends_with':
+          result = strLeft.toLowerCase().endsWith(strRight.toLowerCase());
+          break;
+        case 'in':
+          result = strRight.split(',').map(v => v.trim()).includes(strLeft);
+          break;
+        case 'exists':
+          result = exists;
+          break;
+        case 'not_exists':
+          result = !exists;
+          break;
+        case 'regex_match':
+          try { result = new RegExp(strRight).test(strLeft); } catch { result = false; }
+          break;
+        default:
+          result = strLeft.toLowerCase() === strRight.toLowerCase();
+          break;
+      }
+    } catch {
+      result = false;
     }
 
     log.info(`Logic: ${variable}(${leftValue}) ${operator} ${compValue} → ${result ? 'TRUE' : 'FALSE'}`);
@@ -1985,6 +2176,30 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       e.source === nodeId && (e.sourceHandle === targetHandle || normalizeHandleId(e.sourceHandle) === targetHandle)
     );
     if (nextEdge) return await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+    return true;
+  }
+
+  if (node.type === 'delay') {
+    const rawDuration = node.data?.duration ?? node.data?.waitValue ?? 1;
+    const rawUnit = String(node.data?.unit || node.data?.waitUnit || 'minutes').toLowerCase();
+    const duration = Math.max(1, Number(rawDuration) || 1);
+    const unitMs =
+      rawUnit.startsWith('sec') ? 1000 :
+      rawUnit.startsWith('hour') ? 60 * 60 * 1000 :
+      rawUnit.startsWith('day') ? 24 * 60 * 60 * 1000 :
+      60 * 1000;
+    const wakeupAt = new Date(Date.now() + duration * unitMs);
+
+    if (!parsedMessage?.suppressConversationPersistence) {
+      await Conversation.findByIdAndUpdate(convo._id, {
+        status: 'DELAYED',
+        scheduledResumeAt: wakeupAt,
+        lastStepId: nodeId,
+        lastInteraction: new Date()
+      });
+    }
+
+    log.info(`[FlowEngine] Delay node scheduled resume for ${phone} at ${wakeupAt.toISOString()}`);
     return true;
   }
 
@@ -2435,7 +2650,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 
   // 9. Link Node (Jump to Flow)
   if (node.type === 'link') {
-    const { targetFolderId } = node.data || {};
+    const { targetFolderId, passVariables } = node.data || {};
     if (targetFolderId) {
       log.info(`[FlowEngine] Link node triggered: Jumping to flow ${targetFolderId} for ${phone}`);
       
@@ -2445,12 +2660,16 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       // 1. Try WhatsAppFlow (New Standard)
       const WhatsAppFlow = require('../models/WhatsAppFlow');
       try {
-        const targetFlowDoc = await WhatsAppFlow.findById(targetFolderId).lean();
+        const targetFlowDoc = await WhatsAppFlow.findOne({
+          clientId: client.clientId,
+          flowId: targetFolderId,
+          status: 'PUBLISHED'
+        }).lean();
         if (targetFlowDoc) {
           targetFlowNodes = targetFlowDoc.publishedNodes?.length ? targetFlowDoc.publishedNodes : (targetFlowDoc.nodes || []);
           targetFlowEdges = targetFlowDoc.publishedEdges?.length ? targetFlowDoc.publishedEdges : (targetFlowDoc.edges || []);
         }
-      } catch (_) { /* Ignore cast errors if targetFolderId is not a Mongo ID */ }
+      } catch (_) { /* ignore */ }
       
       // 2. Try Legacy visualFlows Fallback
       if (targetFlowNodes.length === 0 && client.visualFlows) {
@@ -2462,9 +2681,10 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       }
       
       if (targetFlowNodes.length > 0) {
-        const startNode = targetFlowNodes.find(n => n.type === 'trigger' || n.type === 'TriggerNode') || targetFlowNodes[0];
+        const startNode = targetFlowNodes.find(n => n.type === 'trigger' || n.type === 'TriggerNode');
         if (startNode) {
-          await Conversation.findByIdAndUpdate(convo._id, { activeFlowId: targetFolderId, lastStepId: null });
+          const nextMeta = passVariables ? { ...(convo.metadata || {}) } : {};
+          await Conversation.findByIdAndUpdate(convo._id, { activeFlowId: targetFolderId, lastStepId: null, metadata: nextMeta });
           return await executeNode(startNode.id, targetFlowNodes, targetFlowEdges, client, convo, lead, phone, io, channel, parsedMessage);
         }
       } else {
@@ -2477,6 +2697,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   if (node.type === 'shopify_call' || node.type === 'ShopifyNode') {
     const { action, query, variable } = node.data;
     const { getShopifyClient, withShopifyRetry } = require("./shopifyHelper");
+    const resolvedQuery = replaceVariables(query || '', client, lead, convo);
     let resultData = null;
 
     try {
@@ -2488,7 +2709,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         // Try Shopify API first
         try {
           const fetchedProduct = await withShopifyRetry(client.clientId, async (shopify) => {
-            const searchQuery = query || '';
+            const searchQuery = resolvedQuery || '';
             const endpoint = searchQuery
               ? `/products.json?limit=5&title=${encodeURIComponent(searchQuery)}`
               : '/products.json?limit=10&status=active';
@@ -2708,7 +2929,13 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 
       // Save to variable if requested
       if (variable && resultData) {
-        const updatedMetadata = { ...(convo.metadata || {}), [variable]: resultData };
+        const updatedMetadata = {
+          ...(convo.metadata || {}),
+          [variable]: resultData,
+          [`${variable}_title`]: resultData?.title || resultData?.product || '',
+          [`${variable}_price`]: resultData?.price || '',
+          [`${variable}_url`]: resultData?.url || resultData?.link || ''
+        };
         await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
         convo.metadata = updatedMetadata;
       }
@@ -2784,6 +3011,9 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
         convo.metadata = updatedMetadata;
       }
+      const metaWithHttp = { ...(convo.metadata || {}), http_status: resp.status, http_success: String(resp.status < 400), http_error: '' };
+      await Conversation.findByIdAndUpdate(convo._id, { metadata: metaWithHttp });
+      convo.metadata = metaWithHttp;
       httpSuccess = true;
       log.info(`[HttpNode] ${method || 'GET'} ${resolvedUrl} → ${resp.status}`);
     } catch (err) {
@@ -2794,6 +3024,9 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
         convo.metadata = updatedMetadata;
       }
+      const metaWithHttp = { ...(convo.metadata || {}), http_status: err.response?.status || 0, http_success: 'false', http_error: err.message || 'request_failed' };
+      await Conversation.findByIdAndUpdate(convo._id, { metadata: metaWithHttp });
+      convo.metadata = metaWithHttp;
     }
     // Route to success or error edge
     const targetHandle = httpSuccess ? 'success' : 'error';
@@ -3095,8 +3328,13 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
 
     case 'email': {
       const recipient = replaceVariables(lead?.email || data.recipientEmail || '', client, lead, convo);
-      if (!recipient || !client.emailUser) {
+      if (!recipient || !(client.emailUser || client.emailFrom)) {
         log.warn(`[Email] No recipient or email config — skipping email node`);
+        if (convo?._id) {
+          const updatedMetadata = { ...(convo.metadata || {}), email_sent: 'false', email_error: 'missing_email_config' };
+          await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
+          convo.metadata = updatedMetadata;
+        }
         return true;
       }
       try {
@@ -3104,8 +3342,18 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         let emailBody = replaceVariables(data.body || '', client, lead, convo);
         await emailService.sendEmail(client, { to: recipient, subject, html: emailBody.replace(/\n/g, '<br/>') });
         log.info(`[Email] Sent to ${recipient} — subject: "${subject}"`);
+        if (convo?._id) {
+          const updatedMetadata = { ...(convo.metadata || {}), email_sent: 'true', email_error: '' };
+          await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
+          convo.metadata = updatedMetadata;
+        }
       } catch (emailErr) {
         log.error(`[Email] SMTP failure for ${recipient}: ${emailErr.message}`);
+        if (convo?._id) {
+          const updatedMetadata = { ...(convo.metadata || {}), email_sent: 'false', email_error: emailErr.message || 'smtp_error' };
+          await Conversation.findByIdAndUpdate(convo._id, { metadata: updatedMetadata });
+          convo.metadata = updatedMetadata;
+        }
       }
       return true;
     }

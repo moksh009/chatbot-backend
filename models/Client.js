@@ -207,6 +207,55 @@ const ClientSchema = new mongoose.Schema({
   billing: { type: BillingSchema, default: () => ({}) },
   social: { type: SocialSchema, default: () => ({}) },
 
+  // --- Growth + compliance (website embed, cart automations) ---
+  growthCompliance: {
+    cartRecoveryRequiresOptIn: { type: Boolean, default: false }, // strict: cart nudges only opted_in
+  },
+  /** Public key embedded in storefront widget script — NEVER use clientId alone in browser */
+  growthEmbedPublicKey: { type: String, trim: true, default: '', index: true, sparse: true },
+  growthEmbedEnabled: { type: Boolean, default: true },
+  growthWidgetConfig: {
+    activeWidgets: { type: [String], default: ['floating_button'] },
+    floatingButton: {
+      position: { type: String, default: 'right' },
+      color: { type: String, default: '#25D366' },
+      label: { type: String, default: 'WhatsApp' },
+      delaySeconds: { type: Number, default: 3 },
+    },
+    exitPopup: {
+      headline: { type: String, default: 'Wait! Get updates on WhatsApp' },
+      offerText: { type: String, default: 'Subscribe for offers and order updates.' },
+      cooldownDays: { type: Number, default: 3 },
+    },
+    spinWheel: {
+      prizes: {
+        type: [{
+          label: String,
+          code: String,
+          probability: Number,
+          type: String,
+        }],
+        default: [{ label: 'Flat 10% Off', code: 'WELCOME10', probability: 100, type: 'discount' }],
+      },
+      primaryColor: { type: String, default: '#6D28D9' },
+      secondaryColor: { type: String, default: '#F59E0B' },
+      triggerType: { type: String, default: 'time' }, // time | exit | button
+      triggerDelay: { type: Number, default: 8 },
+    },
+    stickyBar: {
+      text: { type: String, default: 'Get updates and offers on WhatsApp' },
+      position: { type: String, default: 'bottom' },
+    },
+    inlineForm: {
+      heading: { type: String, default: 'Join our WhatsApp community' },
+      buttonText: { type: String, default: 'Subscribe' },
+      successMessage: { type: String, default: 'You are subscribed!' },
+    },
+    consentText: { type: String, default: 'I agree to receive WhatsApp messages from this brand.' },
+    doubleOptInEnabled: { type: Boolean, default: false },
+    welcomeMessage: { type: String, default: 'Welcome to our WhatsApp updates!' },
+  },
+
   // --- WIZARD-OWNED CONFIG (Onboarding → Settings → Generator) ---
   wizardFeatures: { type: WizardFeaturesSchema, default: () => ({}) },
   policies:       { type: PoliciesSchema,       default: () => ({}) },

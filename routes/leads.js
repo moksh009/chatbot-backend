@@ -17,6 +17,11 @@ const path = require('path');
 const { stringify } = require('csv-stringify');
 const { sendEmail } = require('../utils/emailService');
 const { mergeEmailForLead, KNOWN_EMAIL_TOKEN_KEYS } = require('../utils/emailMergeFields');
+const crypto = require('crypto');
+const archiver = require('archiver');
+const Conversation = require('../models/Conversation');
+const Message = require('../models/Message');
+const SuppressionList = require('../models/SuppressionList');
 
 // Multer setup for temporary CSV storage
 const upload = multer({ 
@@ -117,12 +122,38 @@ router.post('/:clientId/import', protect, logAction('IMPORT_LEADS'), uploadMiddl
             }
         }
 
+        const importConsentType = String(req.body.importConsentType || '').trim();
+        const consentAcknowledged = req.body.consentAcknowledged === true || req.body.consentAcknowledged === 'true';
+        const optedInConsentTypes = new Set([
+          'whatsapp_reply',
+          'website_widget',
+          'checkout_explicit',
+        ]);
+        const normalizedConsentType = importConsentType || 'unknown';
+        if (!normalizedConsentType) {
+          if (req.file) fs.unlinkSync(req.file.path);
+          return res.status(400).json({ success: false, message: 'importConsentType is required' });
+        }
+        if (optedInConsentTypes.has(normalizedConsentType) && !consentAcknowledged) {
+          if (req.file) fs.unlinkSync(req.file.path);
+          return res.status(400).json({
+            success: false,
+            message: 'Legal acknowledgment is required for opted_in CSV imports',
+          });
+        }
+
         // Create an Import Session
         await ImportSession.create({
             clientId,
             batchId,
             filename,
-            status: 'processing'
+            status: 'processing',
+            meta: {
+              importConsentType: normalizedConsentType,
+              consentAcknowledged,
+              consentDeclaredBy: req.user?._id ? String(req.user._id) : '',
+              consentDeclaredAt: new Date(),
+            },
         });
 
         // Add to Task Queue
@@ -133,6 +164,8 @@ router.post('/:clientId/import', protect, logAction('IMPORT_LEADS'), uploadMiddl
             filename,
             mapping,
             listName: req.body.listName || filename,
+            importConsentType: normalizedConsentType,
+            consentAcknowledged,
             user: { id: req.user._id, role: req.user.role }
         });
 
@@ -942,6 +975,82 @@ router.patch('/:id', protect, async (req, res) => {
         console.error('[PATCH /api/leads/:id] Error:', error);
         res.status(500).json({ success: false, message: 'Failed to update lead' });
     }
+});
+
+// POST /api/leads/erasure-request
+router.post('/erasure-request', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    const phone = String(req.body.phone || '').replace(/\D/g, '');
+    if (!clientId || !phone) return res.status(400).json({ success: false, reason: 'client_or_phone_missing' });
+
+    const lead = await AdLead.findOne({ clientId, phoneNumber: phone });
+    if (!lead) return res.json({ success: false, reason: 'not_found' });
+
+    const hash = crypto.createHash('sha256').update(`${phone}:${clientId}`).digest('hex').slice(0, 16);
+    const erasedPhone = `ERASED_${hash}`;
+
+    await AdLead.findByIdAndUpdate(lead._id, {
+      $set: {
+        phoneNumber: erasedPhone,
+        name: 'ERASED',
+        email: null,
+        gdprErasureRequested: true,
+        gdprErasureDate: new Date(),
+        optStatus: 'opted_out',
+        whatsappMarketingEligible: false,
+      },
+      $push: {
+        optInHistory: {
+          event: 'opted_out',
+          action: 'opted_out',
+          source: 'erasure_request',
+          timestamp: new Date(),
+          note: 'Personal data anonymized',
+        },
+      },
+    });
+
+    await SuppressionList.findOneAndUpdate(
+      { clientId, phone },
+      { $set: { reason: 'legal', source: 'erasure_request', addedAt: new Date() } },
+      { upsert: true }
+    );
+    await Conversation.updateMany({ clientId, phone }, { $set: { phone: erasedPhone, customerName: 'ERASED' } });
+    await Message.updateMany({ clientId, $or: [{ to: phone }, { from: phone }] }, { $set: { to: erasedPhone, from: erasedPhone } });
+    return res.json({ success: true, erasedAt: new Date() });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST /api/leads/export-request
+router.post('/export-request', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    const phone = String(req.body.phone || '').replace(/\D/g, '');
+    if (!clientId || !phone) return res.status(400).json({ success: false, reason: 'client_or_phone_missing' });
+
+    const [lead, conversations, messages] = await Promise.all([
+      AdLead.findOne({ clientId, phoneNumber: phone }).lean(),
+      Conversation.find({ clientId, phone }).lean(),
+      Message.find({ clientId, $or: [{ to: phone }, { from: phone }] }).lean(),
+    ]);
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="data-export-${Date.now()}.zip"`);
+
+    const archive = archiver('zip');
+    archive.on('error', (err) => { throw err; });
+    archive.pipe(res);
+    archive.append(
+      JSON.stringify({ lead, conversations, messages, exportedAt: new Date().toISOString() }, null, 2),
+      { name: 'data.json' }
+    );
+    archive.finalize();
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
 });
 
 module.exports = router;

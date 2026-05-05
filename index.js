@@ -205,6 +205,8 @@ app.use('/api/ai', aiRoutes);
 
 const publicWarrantyRoutes = require('./routes/publicWarranty');
 app.use('/api/public/warranty', publicWarrantyRoutes);
+app.use('/api/public/growth', require('./routes/publicGrowth'));
+app.use('/api/growth', require('./routes/growth'));
 
 const biRoutes = require('./routes/bi'); // Phase 28 Track 4
 app.use('/api/bi', biRoutes);

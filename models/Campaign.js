@@ -42,7 +42,11 @@ const CampaignSchema = new mongoose.Schema({
   revenueAttributed: { type: Number, default: 0 },
   
   channel:         { type: String, enum: ["whatsapp","sms"], default: "whatsapp" },
-  templateCategory:{ type: String, default: "" },  // UTILITY | MARKETING
+  campaignType:    { type: String, enum: ["STANDARD", "RE_PERMISSION"], default: "STANDARD" },
+  templateCategory:{ type: String, default: "MARKETING" }, // UTILITY | MARKETING | AUTHENTICATION
+  /** If false (default): only opted_in contacts receive WhatsApp marketing sends — Meta-aligned */
+  skipMarketingOptInFilter: { type: Boolean, default: false },
+  marketingOptInExcludedCount: { type: Number, default: 0 },
   autoPaused:      { type: Boolean, default: false },
   autoPausedReason:{ type: String, default: "" },
 

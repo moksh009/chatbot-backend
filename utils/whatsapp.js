@@ -4,6 +4,8 @@ const axios = require('axios');
 const log = require('./logger')('WhatsApp');
 const { translateWhatsAppError } = require('./whatsappErrors');
 const { decrypt } = require('./encryption');
+const AdLead = require('../models/AdLead');
+const SuppressionList = require('../models/SuppressionList');
 
 /**
  * Validates a phone number is a valid string of digits.
@@ -22,6 +24,60 @@ function validatePhone(phone) {
  * Unified WhatsApp Cloud API helper
  */
 const WhatsApp = {
+  async markBlockedOptOut(client, phone, errorData) {
+      await SuppressionList.findOneAndUpdate(
+        { clientId: client.clientId, phone: normalized },
+        {
+          $set: {
+            reason: 'spam_report',
+            source: 'whatsapp_block',
+            addedAt: new Date(),
+          },
+        },
+        { upsert: true }
+      );
+    try {
+      const code = Number(errorData?.code || errorData?.error_subcode || 0);
+      const msg = String(errorData?.message || '').toLowerCase();
+      const blocked = code === 131026 || msg.includes('blocked');
+      if (!blocked || !client?.clientId || !phone) return;
+      const normalized = String(phone).replace(/\D/g, '');
+      await AdLead.findOneAndUpdate(
+        { clientId: client.clientId, phoneNumber: normalized },
+        {
+          $set: {
+            optStatus: 'opted_out',
+            optOutDate: new Date(),
+            optOutSource: 'whatsapp_block',
+            whatsappMarketingEligible: false,
+          },
+          $push: {
+            optInHistory: {
+              event: 'opted_out',
+              action: 'opted_out',
+              source: 'whatsapp_block',
+              timestamp: new Date(),
+              note: 'Meta indicated recipient blocked business number',
+            },
+          },
+        }
+      );
+    } catch (e) {
+      log.warn(`[WhatsApp] failed to mark blocked opt-out: ${e.message}`);
+    }
+  },
+
+  async ensureNotSuppressed(client, phone) {
+    if (!client?.clientId || !phone) return;
+    const normalized = String(phone).replace(/\D/g, '');
+    const found = await SuppressionList.exists({ clientId: client.clientId, phone: normalized });
+    if (found) {
+      const err = new Error('Suppressed contact');
+      err.friendlyMessage = 'Contact is suppressed';
+      err.code = 'SUPPRESSED_CONTACT';
+      throw err;
+    }
+  },
   async sendInteractiveMessage(phoneNumberId, to, node, token) {
     const { interactiveType, body, buttonsList, sections,
             headerText, footerText } = node.data;
@@ -151,6 +207,7 @@ const WhatsApp = {
   async sendText(client, phone, body) {
     const validPhone = validatePhone(phone);
     if (!body) throw new Error("[WhatsApp] Empty message body");
+    await this.ensureNotSuppressed(client, validPhone);
 
     const { token, phoneNumberId } = this.getCredentials(client);
     const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
@@ -164,7 +221,7 @@ const WhatsApp = {
       }, { headers: { Authorization: `Bearer ${token}` } });
       return res.data;
     } catch (err) {
-      this.handleError(err, url, "sendText");
+      this.handleError(err, url, "sendText", { client, phone: validPhone });
     }
   },
 
@@ -173,6 +230,7 @@ const WhatsApp = {
    */
   async sendImage(client, phone, imageUrl, caption = "") {
     const validPhone = validatePhone(phone);
+    await this.ensureNotSuppressed(client, validPhone);
     const { token, phoneNumberId } = this.getCredentials(client);
     const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
@@ -185,7 +243,7 @@ const WhatsApp = {
       }, { headers: { Authorization: `Bearer ${token}` } });
       return res.data;
     } catch (err) {
-      this.handleError(err, url, "sendImage");
+      this.handleError(err, url, "sendImage", { client, phone: validPhone });
     }
   },
 
@@ -194,6 +252,7 @@ const WhatsApp = {
    */
   async sendVideo(client, phone, videoUrl, caption = "") {
     const validPhone = validatePhone(phone);
+    await this.ensureNotSuppressed(client, validPhone);
     const { token, phoneNumberId } = this.getCredentials(client);
     const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
@@ -206,7 +265,7 @@ const WhatsApp = {
       }, { headers: { Authorization: `Bearer ${token}` } });
       return res.data;
     } catch (err) {
-      this.handleError(err, url, "sendVideo");
+      this.handleError(err, url, "sendVideo", { client, phone: validPhone });
     }
   },
 
@@ -215,6 +274,7 @@ const WhatsApp = {
    */
   async sendDocument(client, phone, documentUrl, filename = "") {
     const validPhone = validatePhone(phone);
+    await this.ensureNotSuppressed(client, validPhone);
     const { token, phoneNumberId } = this.getCredentials(client);
     const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
@@ -227,7 +287,7 @@ const WhatsApp = {
       }, { headers: { Authorization: `Bearer ${token}` } });
       return res.data;
     } catch (err) {
-      this.handleError(err, url, "sendDocument");
+      this.handleError(err, url, "sendDocument", { client, phone: validPhone });
     }
   },
 
@@ -236,6 +296,7 @@ const WhatsApp = {
    */
   async sendAudio(client, phone, audioUrl) {
     const validPhone = validatePhone(phone);
+    await this.ensureNotSuppressed(client, validPhone);
     const { token, phoneNumberId } = this.getCredentials(client);
     const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
@@ -248,7 +309,7 @@ const WhatsApp = {
       }, { headers: { Authorization: `Bearer ${token}` } });
       return res.data;
     } catch (err) {
-      this.handleError(err, url, "sendAudio");
+      this.handleError(err, url, "sendAudio", { client, phone: validPhone });
     }
   },
 
@@ -257,6 +318,7 @@ const WhatsApp = {
    */
   async sendInteractive(client, phone, interactive, bodyText) {
     const validPhone = validatePhone(phone);
+    await this.ensureNotSuppressed(client, validPhone);
     const { token, phoneNumberId } = this.getCredentials(client);
     const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
@@ -352,7 +414,7 @@ const WhatsApp = {
       try {
         return await this.sendText(client, phone, fallbackText);
       } catch (innerErr) {
-        this.handleError(err, url, "sendInteractive");
+        this.handleError(err, url, "sendInteractive", { client, phone: validPhone });
       }
     }
   },
@@ -362,6 +424,7 @@ const WhatsApp = {
    */
   async sendCatalog(client, phone, bodyText, footerText, productId = null) {
     const validPhone = validatePhone(phone);
+    await this.ensureNotSuppressed(client, validPhone);
     const { token, phoneNumberId } = this.getCredentials(client);
     const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
@@ -385,7 +448,7 @@ const WhatsApp = {
       }, { headers: { Authorization: `Bearer ${token}` } });
       return res.data;
     } catch (err) {
-      this.handleError(err, url, "sendCatalog");
+      this.handleError(err, url, "sendCatalog", { client, phone: validPhone });
     }
   },
 
@@ -394,6 +457,7 @@ const WhatsApp = {
    */
   async sendMultiProduct(client, phone, headerText, bodyText, sections) {
     const validPhone = validatePhone(phone);
+    await this.ensureNotSuppressed(client, validPhone);
     const { token, phoneNumberId } = this.getCredentials(client);
     const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
@@ -417,7 +481,7 @@ const WhatsApp = {
       }, { headers: { Authorization: `Bearer ${token}` } });
       return res.data;
     } catch (err) {
-      this.handleError(err, url, "sendMultiProduct");
+      this.handleError(err, url, "sendMultiProduct", { client, phone: validPhone });
     }
   },
 
@@ -427,6 +491,7 @@ const WhatsApp = {
   async sendTemplate(client, phone, templateName, languageCode = 'en', components = []) {
     const validPhone = validatePhone(phone);
     if (!templateName) throw new Error("[WhatsApp] templateName is required");
+    await this.ensureNotSuppressed(client, validPhone);
 
     const rawComponents = Array.isArray(components) ? components : [];
 
@@ -464,7 +529,7 @@ const WhatsApp = {
       const res = await axios.post(url, payload, { headers: { Authorization: `Bearer ${token}` } });
       return res.data;
     } catch (err) {
-      this.handleError(err, url, "sendTemplate");
+      this.handleError(err, url, "sendTemplate", { client, phone: validPhone });
     }
   },
 
@@ -596,7 +661,7 @@ const WhatsApp = {
   /**
    * Common error handler
    */
-  handleError(err, url, operation) {
+  handleError(err, url, operation, context = {}) {
     const status = err.response?.status;
     const errorData = err.response?.data?.error || err.message;
     const message = errorData.message || errorData;
@@ -616,6 +681,8 @@ const WhatsApp = {
          error: errorData
        });
     }
+
+    this.markBlockedOptOut(context.client, context.phone, errorData).catch(() => {});
 
     // Re-throw standardized error
     const error = new Error(`WhatsApp API Error: ${message}`);

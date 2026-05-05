@@ -10,6 +10,7 @@ const { sendAppointmentReminder } = require('./sendAppointmentReminder');
 const log = require('./logger')('BroadcastEngine');
 const { incrementStat } = require('./statCacheEngine');
 const { resolveImportBatchObjectId } = require('./importBatchResolver');
+const { shouldRequireMarketingOptIn, mongoMarketingOptInOnly, mongoNotOptedOut, canSendToContact } = require('./marketingConsent');
 
 function normalizePhone(p) {
   if (!p) return '';
@@ -45,6 +46,12 @@ async function processBroadcast(data) {
             query = { importBatchId: resolvedBatchId };
         } else {
             throw new Error('No valid audience source attached to campaign');
+        }
+
+        if ((campaign.channel || 'whatsapp').toLowerCase() === 'whatsapp') {
+            query = shouldRequireMarketingOptIn(campaign)
+                ? { ...query, ...mongoMarketingOptInOnly() }
+                : { ...query, ...mongoNotOptedOut() };
         }
 
         let total = 0;
@@ -101,6 +108,20 @@ async function processBroadcast(data) {
             }
 
             try {
+                const eligibility = await canSendToContact(clientId, lead, campaign.templateCategory);
+                if (!eligibility.canSend) {
+                    failed++;
+                    await CampaignMessage.create({
+                        campaignId: campaign._id,
+                        clientId,
+                        phone: recipientPhone,
+                        status: 'failed',
+                        errorMessage: `Skipped: ${eligibility.reason}`,
+                        failedAt: new Date(),
+                        metadata: { skipReason: eligibility.reason },
+                    });
+                    continue;
+                }
                 if (templateType === 'birthday') {
                     const resp = await sendBirthdayWishWithImage(recipientPhone, null, null, clientId, actualTemplateName);
                     if (resp?.success) sent++; else failed++;

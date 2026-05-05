@@ -21,6 +21,14 @@ const { checkLimit, incrementUsage } = require('../utils/planLimits');
 const log = require('../utils/logger')('Campaigns');
 const { incrementStat } = require('../utils/statCacheEngine');
 const { resolveImportBatchObjectId } = require('../utils/importBatchResolver');
+const {
+  filterAudienceForMarketingOptIn,
+  filterAudienceByOptStatus,
+  mongoMarketingOptInOnly,
+  mongoNotOptedOut,
+  shouldRequireMarketingOptIn,
+  canSendToContact,
+} = require('../utils/marketingConsent');
 
 try {
   fs.mkdirSync('uploads', { recursive: true });
@@ -236,6 +244,17 @@ router.post('/from-hot-leads', protect, async (req, res) => {
 router.post('/quick-send', protect, async (req, res) => {
   const { leadId, leadIds, templateName, channel } = req.body;
   const clientId = req.user.clientId;
+  if (!req.body.templateCategory) {
+    return res.status(400).json({
+      success: false,
+      message: 'templateCategory is required for compliance-safe quick send',
+    });
+  }
+  const quickCampaign = {
+    channel: channel || 'whatsapp',
+    templateCategory: String(req.body.templateCategory || 'MARKETING').toUpperCase(),
+    skipMarketingOptInFilter: req.body.skipMarketingOptInFilter === true,
+  };
 
   const finalLeadIds = leadIds || (leadId ? [leadId] : []);
 
@@ -258,9 +277,15 @@ router.post('/quick-send', protect, async (req, res) => {
 
     let successCount = 0;
     let failCount = 0;
+    let skippedOptIn = 0;
 
     // Process with small stagger to avoid burst limits
     for (const lead of leads) {
+      const eligibility = await canSendToContact(clientId, lead, quickCampaign.templateCategory);
+      if (!eligibility.canSend) {
+        skippedOptIn++;
+        continue;
+      }
       try {
         await sendWhatsAppTemplate({
           phoneNumberId: client.phoneNumberId,
@@ -299,9 +324,10 @@ router.post('/quick-send', protect, async (req, res) => {
 
     res.json({ 
       success: true, 
-      message: `Broadcast complete. Success: ${successCount}, Failed: ${failCount}`,
+      message: `Broadcast complete. Success: ${successCount}, Failed: ${failCount}${skippedOptIn ? `, Skipped (not opted_in): ${skippedOptIn}` : ''}`,
       successCount,
-      failCount
+      failCount,
+      skippedMarketingOptIn: skippedOptIn,
     });
   } catch (err) {
     log.error('[QuickSend] Error:', err.message);
@@ -434,13 +460,29 @@ router.post('/start', protect, async (req, res) => {
     if (req.body.scheduledDate) {
         campaign.scheduledAt = new Date(req.body.scheduledDate);
     }
+
+    campaign.campaignType = String(req.body.campaignType || campaign.campaignType || 'STANDARD').toUpperCase();
+    campaign.templateCategory = String(
+      req.body.templateCategory || campaign.templateCategory || 'MARKETING'
+    ).toUpperCase();
+    if (campaign.campaignType === 'RE_PERMISSION') {
+      campaign.templateCategory = 'UTILITY';
+    }
+    campaign.skipMarketingOptInFilter = req.body.skipMarketingOptInFilter === true;
+    const marketingOptQ = shouldRequireMarketingOptIn(campaign)
+      ? mongoMarketingOptInOnly()
+      : mongoNotOptedOut();
     
     // Resolve audience for Segments and Import Lists if not already set
     if (!campaign.audience || campaign.audience.length === 0) {
         if (campaign.segmentId) {
             const segment = await Segment.findById(campaign.segmentId);
             if (segment) {
-                const leads = await AdLead.find({ ...segment.query, clientId: req.user.clientId }).lean();
+                const leads = await AdLead.find({
+                  ...segment.query,
+                  clientId: req.user.clientId,
+                  ...marketingOptQ,
+                }).lean();
                 campaign.audience = leads.map(l => ({ phone: l.phoneNumber, name: l.name || '', ...l }));
             }
         } else if (campaign.importBatchId) {
@@ -452,8 +494,12 @@ router.post('/start', protect, async (req, res) => {
                 await campaign.save();
                 return res.status(400).json({ message: 'Imported list could not be resolved. The batch may have been deleted.' });
             }
-            const leads = await AdLead.find({ importBatchId: resolvedBatchId, clientId: req.user.clientId }).lean();
-            campaign.audience = leads.map(l => ({ phone: l.phoneNumber, name: l.name || '', ...l }));
+            const leads = await AdLead.find({
+                  importBatchId: resolvedBatchId,
+                  clientId: req.user.clientId,
+                  ...marketingOptQ,
+                }).lean();
+                campaign.audience = leads.map(l => ({ phone: l.phoneNumber, name: l.name || '', ...l }));
         }
         campaign.audienceCount = campaign.audience.length;
     }
@@ -479,6 +525,39 @@ router.post('/start', protect, async (req, res) => {
         return res.status(400).json({ message: 'No contacts with a valid phone number were found in this audience.' });
     }
 
+    if (campaign.campaignType === 'RE_PERMISSION') {
+      const rpFiltered = await filterAudienceByOptStatus(req.user.clientId, filteredAudience, ['unknown', 'pending']);
+      campaign.audience = rpFiltered.rows;
+      campaign.audienceCount = rpFiltered.rows.length;
+      campaign.marketingOptInExcludedCount = rpFiltered.excluded;
+      if (rpFiltered.rows.length === 0) {
+        campaign.status = 'FAILED';
+        await campaign.save();
+        return res.status(400).json({
+          message: 'No unknown/pending contacts available for re-permission campaign.',
+          excluded: rpFiltered.excluded || 0,
+        });
+      }
+    }
+
+    const optFiltered = await filterAudienceForMarketingOptIn(
+      req.user.clientId,
+      campaign.campaignType === 'RE_PERMISSION' ? campaign.audience : filteredAudience,
+      campaign
+    );
+    campaign.marketingOptInExcludedCount = optFiltered.excluded;
+    campaign.audience = optFiltered.rows;
+    campaign.audienceCount = optFiltered.rows.length;
+
+    if (optFiltered.rows.length === 0) {
+      campaign.status = 'FAILED';
+      await campaign.save();
+      return res.status(400).json({
+        message:
+          'No WhatsApp marketing–eligible contacts (opt_status must be opted_in). Collect opt-in via your website embed or chats, widen your segment, or use the advanced override only if you have provable consent.',
+      });
+    }
+
     // Validate the chosen template is actually APPROVED on Meta — otherwise every
     // send will be rejected by the Meta API and the user just sees "FAILED".
     const candidateTemplateName = req.body.templateName || actualTemplateName || campaign.templateName;
@@ -495,7 +574,7 @@ router.post('/start', protect, async (req, res) => {
         }
     }
 
-    const rows = filteredAudience;
+    const rows = optFiltered.rows;
 
     // Shuffle rows for random AB distribution
     for (let i = rows.length - 1; i > 0; i--) {
@@ -538,7 +617,16 @@ router.post('/start', protect, async (req, res) => {
 
     await campaign.save();
 
-    return res.json({ success: true, message: `Campaign targeting ${rows.length} contacts queued successfully.` });
+    const extra =
+      optFiltered.excluded > 0
+        ? ` (${optFiltered.excluded} skipped — not WhatsApp opted_in)`
+        : '';
+    return res.json({
+      success: true,
+      message: `Campaign targeting ${rows.length} contacts queued successfully.${extra}`,
+      marketingOptInExcluded: optFiltered.excluded || 0,
+      campaignType: campaign.campaignType,
+    });
   } catch (error) {
     try {
       await Campaign.updateOne({ _id: campaignId }, { $set: { status: 'FAILED' } });
@@ -561,6 +649,31 @@ router.get('/:clientId/:campaignId/analytics', protect, async (req, res) => {
     res.json({ success: true, analytics: campaign });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// @route   GET /api/campaigns/:campaignId/repermission-funnel
+// @desc    Re-permission conversion funnel
+router.get('/:campaignId/repermission-funnel', protect, async (req, res) => {
+  try {
+    const campaign = await Campaign.findOne({ _id: req.params.campaignId, clientId: req.user.clientId }).lean();
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    if (campaign.campaignType !== 'RE_PERMISSION') {
+      return res.status(400).json({ success: false, message: 'Not a re-permission campaign' });
+    }
+    const sent = await CampaignMessage.countDocuments({ campaignId: campaign._id, clientId: req.user.clientId, status: { $in: ['sent', 'delivered', 'read', 'replied'] } });
+    const delivered = await CampaignMessage.countDocuments({ campaignId: campaign._id, clientId: req.user.clientId, status: { $in: ['delivered', 'read', 'replied'] } });
+    const opened = await CampaignMessage.countDocuments({ campaignId: campaign._id, clientId: req.user.clientId, status: { $in: ['read', 'replied'] } });
+    const confirmedYes = await AdLead.countDocuments({ clientId: req.user.clientId, optInSource: 're_permission_campaign', optStatus: 'opted_in', updatedAt: { $gte: campaign.createdAt } });
+    const declinedNo = await AdLead.countDocuments({ clientId: req.user.clientId, optOutSource: 're_permission_campaign', updatedAt: { $gte: campaign.createdAt } });
+    const noResponse = Math.max(0, delivered - confirmedYes - declinedNo);
+    return res.json({
+      success: true,
+      funnel: { sent, delivered, opened, confirmedYes, declinedNo, noResponse },
+      netNewOptedIn: confirmedYes,
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
   }
 });
 
@@ -775,7 +888,7 @@ router.post('/predictive-send', protect, async (req, res) => {
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
     // Build phone list from CSV or Segment
-    const rows = [];
+    let rows = [];
     if (campaign.csvFile) {
       await new Promise((resolve, reject) => {
         fs.createReadStream(campaign.csvFile)
@@ -788,8 +901,28 @@ router.post('/predictive-send', protect, async (req, res) => {
       const Segment = require('../models/Segment');
       const segment = await Segment.findById(campaign.segmentId);
       if (segment) {
-        const leads = await AdLead.find({ ...segment.query, clientId: req.user.clientId });
+        const optQ = shouldRequireMarketingOptIn(campaign) ? mongoMarketingOptInOnly() : {};
+        const leads = await AdLead.find({
+          ...segment.query,
+          clientId: req.user.clientId,
+          ...optQ,
+        }).lean();
         leads.forEach(l => rows.push({ phone: l.phoneNumber, name: l.name || 'Customer' }));
+      }
+    }
+
+    const csvPredictiveFiltered = campaign.csvFile
+      ? await filterAudienceForMarketingOptIn(req.user.clientId, rows, campaign)
+      : null;
+    if (csvPredictiveFiltered) {
+      rows = csvPredictiveFiltered.rows;
+      if (!rows.length) {
+        return res.status(400).json({
+          success: false,
+          message:
+            'No predictive recipients after WhatsApp marketing opt-in filter. Collect opted_in contacts via your storefront embed or chat, upload a list with documented consent, or use the compliance override only when legally appropriate.',
+          marketingOptInExcluded: csvPredictiveFiltered.excluded,
+        });
       }
     }
 
@@ -834,7 +967,12 @@ router.post('/predictive-send', protect, async (req, res) => {
     await campaign.save();
 
     log.info(`[PredictiveSend] Queued ${queued} messages for campaign ${campaignId}`);
-    res.json({ success: true, queued, message: `${queued} messages queued with AI-optimized send times.` });
+    res.json({
+      success: true,
+      queued,
+      message: `${queued} messages queued with AI-optimized send times.`,
+      marketingOptInExcluded: csvPredictiveFiltered?.excluded || 0,
+    });
 
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -904,6 +1042,58 @@ router.get('/audience-estimate', protect, async (req, res) => {
         // return zero so the frontend can still render and the user can retry.
         res.json({ success: true, count: 0, warning: 'estimate_failed' });
     }
+});
+
+// @route   GET /api/campaigns/audience-preview
+// @desc    Compliance preview for selected audience + template category
+router.get('/audience-preview', protect, async (req, res) => {
+  try {
+    const cid = req.user.clientId;
+    const { segmentId, importBatchId, templateCategory = 'MARKETING' } = req.query;
+    let leads = [];
+
+    if (segmentId) {
+      const segment = await Segment.findOne({ _id: segmentId, clientId: cid }).lean();
+      if (!segment) return res.status(404).json({ success: false, message: 'Segment not found' });
+      leads = await AdLead.find({ clientId: cid, ...segment.query })
+        .select('optStatus optInSource')
+        .lean();
+    } else if (importBatchId) {
+      const resolved = await resolveImportBatchObjectId(importBatchId, cid);
+      if (!resolved) return res.status(404).json({ success: false, message: 'Import batch not found' });
+      leads = await AdLead.find({ clientId: cid, importBatchId: resolved })
+        .select('optStatus optInSource')
+        .lean();
+    } else {
+      leads = await AdLead.find({ clientId: cid }).select('optStatus optInSource').lean();
+    }
+
+    const cat = String(templateCategory || 'MARKETING').toUpperCase();
+    const counts = { total: leads.length, willSend: 0, optedOut: 0, unknownBlocked: 0 };
+    const sourceMap = new Map();
+    for (const lead of leads) {
+      const status = lead.optStatus || 'unknown';
+      if (status === 'opted_out') {
+        counts.optedOut += 1;
+      } else if (cat === 'MARKETING' && status !== 'opted_in') {
+        counts.unknownBlocked += 1;
+      } else {
+        counts.willSend += 1;
+      }
+      const src = lead.optInSource || 'unknown';
+      sourceMap.set(src, (sourceMap.get(src) || 0) + 1);
+    }
+
+    res.json({
+      success: true,
+      templateCategory: cat,
+      ...counts,
+      bySource: [...sourceMap.entries()].map(([source, count]) => ({ source, count })),
+      recommendedRepermission: counts.unknownBlocked > 0 ? counts.unknownBlocked : 0,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
 
 module.exports = router;

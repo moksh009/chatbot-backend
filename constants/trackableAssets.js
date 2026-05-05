@@ -2,10 +2,34 @@
 const TRACKABLE_ASSETS = {
   CATEGORIES: {
     COMMERCE: 'Shopify / Commerce',
-    ENGAGEMENT: 'WhatsApp / Engagement'
+    ENGAGEMENT: 'WhatsApp / Engagement',
+    ATTRIBUTION: 'Source & ads',
+    COMPLIANCE: 'WhatsApp consent'
   },
   ASSETS: {
     // COMMERCE
+    CART_VALUE: {
+      id: 'CART_VALUE',
+      label: 'Open cart value (₹)',
+      category: 'COMMERCE',
+      type: 'NUMBER',
+      dbField: 'cartValue'
+    },
+    CHECKOUTS_STARTED: {
+      id: 'CHECKOUTS_STARTED',
+      label: 'Checkouts started (count)',
+      category: 'COMMERCE',
+      type: 'NUMBER',
+      dbField: 'checkoutInitiatedCount'
+    },
+    CART_STATUS: {
+      id: 'CART_STATUS',
+      label: 'Cart / purchase state',
+      category: 'COMMERCE',
+      type: 'STRING',
+      dbField: 'cartStatus',
+      /** allowed: active, abandoned, recovered, purchased, failed */
+    },
     TOTAL_ORDERS: {
       id: 'TOTAL_ORDERS',
       label: 'Total Orders',
@@ -70,7 +94,29 @@ const TRACKABLE_ASSETS = {
       category: 'ENGAGEMENT',
       type: 'CALCULATED_DAYS',
       dbField: 'lastInteraction'
-    }
+    },
+    LEAD_SOURCE: {
+      id: 'LEAD_SOURCE',
+      label: 'Lead source (CRM)',
+      category: 'ATTRIBUTION',
+      type: 'STRING',
+      dbField: 'source'
+    },
+    AD_CHANNEL: {
+      id: 'AD_CHANNEL',
+      label: 'Ad / discovery channel',
+      category: 'ATTRIBUTION',
+      type: 'STRING',
+      dbField: 'adAttribution.source'
+    },
+    OPT_STATUS: {
+      id: 'OPT_STATUS',
+      label: 'WhatsApp marketing opt-in status',
+      category: 'COMPLIANCE',
+      type: 'STRING',
+      dbField: 'optStatus',
+      /** allowed: opted_in, opted_out, unknown */
+    },
   },
   OPERATORS: {
     NUMBER: [
@@ -84,6 +130,9 @@ const TRACKABLE_ASSETS = {
     CALCULATED_DAYS: [
       { value: '<=', label: 'Less than X days ago' },
       { value: '>=', label: 'More than X days ago' }
+    ],
+    STRING: [
+      { value: '===', label: 'Equals' }
     ]
   }
 };

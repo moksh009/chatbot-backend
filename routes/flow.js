@@ -7,6 +7,73 @@ const { fixFlowWithAI } = require('../controllers/flowFixController');
 
 router.post('/fix', protect, fixFlowWithAI);
 
+// POST /api/flow — create draft flow (canonical WhatsAppFlow + Client.visualFlows append)
+router.post('/', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+
+    const WhatsAppFlow = require('../models/WhatsAppFlow');
+    const body = req.body || {};
+    const name = String(body.name || 'Untitled automation').trim();
+    const platform = body.platform || 'whatsapp';
+    const folderId = body.folderId || '';
+    const nodes = Array.isArray(body.nodes) ? body.nodes : [];
+    const edges = Array.isArray(body.edges) ? body.edges : [];
+
+    const flowId = `flow_${Date.now()}`;
+    await WhatsAppFlow.create({
+      clientId,
+      flowId,
+      name: name || 'Untitled automation',
+      platform,
+      folderId,
+      status: 'DRAFT',
+      version: 1,
+      nodes,
+      edges,
+      publishedNodes: [],
+      publishedEdges: [],
+    });
+
+    await Client.updateOne(
+      { clientId },
+      {
+        $push: {
+          visualFlows: {
+            id: flowId,
+            name: name || 'Untitled automation',
+            platform,
+            folderId,
+            isActive: false,
+            nodes,
+            edges,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        },
+      }
+    );
+
+    res.json({
+      success: true,
+      flow: {
+        id: flowId,
+        name: name || 'Untitled automation',
+        platform,
+        folderId,
+        nodes,
+        edges,
+        isActive: false,
+        status: 'DRAFT',
+      },
+    });
+  } catch (err) {
+    console.error('[POST /flow] create error:', err);
+    res.status(500).json({ success: false, message: err.message || 'Failed to create flow' });
+  }
+});
+
 // POST /api/flow/ai-build
 // Phase 28: Generate multiple flow variants from a natural language prompt
 router.post('/ai-build', protect, async (req, res) => {

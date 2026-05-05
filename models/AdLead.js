@@ -168,6 +168,8 @@ const adLeadSchema = new mongoose.Schema({
   cartAbandonedAt:   { type: Date },
   recoveryStep:      { type: Number },
   recoveryStartedAt: { type: Date },
+  spinWheelPrize:    { type: String, default: '' },
+  spinWheelCode:     { type: String, default: '' },
   lastOrderId:    { type: String, default: '' },
   lifetimeValue:  { type: Number, default: 0 },
   birthday:       { type: Date,   default: null },
@@ -190,19 +192,33 @@ const adLeadSchema = new mongoose.Schema({
     flowNodeId: String
   }],
 
-  // Phase 21: Opt Management & Attribution
-  optStatus:        { type: String, enum: ["opted_in","opted_out","unknown"], default: "unknown" },
+  // Phase 21+: Opt Management & Attribution (compliance-grade)
+  optStatus:        { type: String, enum: ["opted_in","opted_out","unknown","pending"], default: "unknown" },
   optInDate:        { type: Date, default: null },
-  optInSource:      { type: String, default: "" },  // "whatsapp_message" | "website_widget" | "qr_code" | "form" | "manual"
+  optInSource:      { type: String, default: "" },  // website_widget | spin_wheel | keyword | csv_import | checkout | thank_you_page | qr_code | admin_manual | api
+  optInMethod:      { type: String, enum: ['single', 'double'], default: 'single' },
+  pendingOptInCode: { type: String, default: "" },
+  pendingOptInExpiry: { type: Date, default: null },
   optOutDate:       { type: Date, default: null },
-  optOutReason:     { type: String, default: "" },  // "user_keyword" | "admin_removed" | "inactive"
+  optOutSource:     { type: String, default: "" },  // whatsapp_block | keyword_stop | unsubscribe_link | admin_manual | api
+  optOutReason:     { type: String, default: "" },  // legacy compatibility field
   optOutKeyword:    { type: String, default: "" },  // the keyword they sent to opt out
   optInHistory: [{
-    action:    String,   // "opted_in" | "opted_out" | "re_opted_in"
-    timestamp: Date,
+    event:     { type: String, enum: ['opted_in', 'opted_out', 'pending', 'confirmed'] },
+    action:    String, // legacy compatibility
     source:    String,
+    method:    String,
+    timestamp: { type: Date, default: Date.now },
+    pageUrl:   String,
+    ipAddress: String,
+    userAgent: String,
+    widgetType:String,
     note:      String
   }],
+  gdprErasureRequested: { type: Boolean, default: false },
+  gdprErasureDate: { type: Date, default: null },
+  dataExportRequested: { type: Boolean, default: false },
+  whatsappMarketingEligible: { type: Boolean, default: false },
   adAttribution: {
     source:         String,  // "meta_ad" | "instagram_ad" | "organic" | "direct"
     adId:           String,
@@ -251,7 +267,11 @@ const adLeadSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now
-  }
+  },
+  updatedAt: {
+    type: Date,
+    default: Date.now
+  },
 }, {
   toJSON: { virtuals: true },
   toObject: { virtuals: true }
@@ -299,6 +319,7 @@ adLeadSchema.index({ clientId: 1, tags: 1 });              // Segment tag filter
 adLeadSchema.index({ clientId: 1, cartStatus: 1 });        // Abandoned cart recovery queries
 adLeadSchema.index({ clientId: 1, leadScore: -1 });        // Lead scoring leaderboard queries
 adLeadSchema.index({ clientId: 1, optStatus: 1 });         // Opt-in/out management queries
+adLeadSchema.index({ clientId: 1, optStatus: 1, updatedAt: -1 });
 
 // Static Helper for Phase 25 Customer Journey Map
 adLeadSchema.statics.pushJourneyEvent = async function(clientId, phoneNumber, eventName, metadata = {}) {
@@ -324,6 +345,13 @@ adLeadSchema.index({ clientId: 1, 'meta.lastImportId': 1 });
 adLeadSchema.index({ clientId: 1, 'activityLog.action': 1, 'activityLog.timestamp': -1 }); // Chart $unwind queries on activityLog
 adLeadSchema.index({ clientId: 1, isOrderPlaced: 1, recoveryStep: 1, updatedAt: -1 });     // Abandoned cart cron batch queries
 adLeadSchema.index({ clientId: 1, adminFollowUpTriggered: 1, isOrderPlaced: 1 });           // Attribution funnel query
+
+// Keep derived eligibility in sync for fast campaign filters.
+adLeadSchema.pre('save', function(next) {
+  this.whatsappMarketingEligible = this.optStatus === 'opted_in';
+  this.updatedAt = new Date();
+  next();
+});
 
 const AdLead = mongoose.model('AdLead', adLeadSchema);
 
