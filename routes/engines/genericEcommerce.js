@@ -14,6 +14,7 @@ const { normalizePhone } = require('../../utils/helpers');
 const { getShopifyClient } = require('../../utils/shopifyHelper');
 const { buildShopifyOrderSet, shopifyOrderFilter, detectCodFromShopify } = require('../../utils/shopifyOrderMapper');
 const { syncWhatsAppTemplates } = require('../../utils/whatsappHelpers');
+const commerceAutomationService = require('../../utils/commerceAutomationService');
 const FlowAnalytics = require('../../models/FlowAnalytics');
 
 // --- 1. CORE API WRAPPERS ---
@@ -1134,9 +1135,7 @@ const logRestoreEvent = async (req, res) => {
 
 /** Map dashboard / Shopify status to Status Automations Manager key. */
 function resolveOrderStatusTemplateKey(status) {
-    const s = String(status || '').toLowerCase();
-    if (s === 'fulfilled') return 'shipped';
-    return s;
+    return commerceAutomationService.normalizeEvent(status);
 }
 
 /**
@@ -1145,7 +1144,8 @@ function resolveOrderStatusTemplateKey(status) {
  */
 async function sendMappedOrderStatusWhatsApp({ clientConfig, order, status, trackingNumber, trackingUrl, io }) {
     const nicheData = clientConfig.nicheData || {};
-    const statusMap = nicheData.orderStatusTemplates || {};
+    const automations = await commerceAutomationService.ensureMigration(clientConfig, { persist: true });
+    const statusMap = commerceAutomationService.getOrderStatusTemplateMap(automations);
     const mapKey = resolveOrderStatusTemplateKey(status);
     const templateName = statusMap[mapKey];
     if (!templateName) {
@@ -1342,6 +1342,22 @@ const updateOrderStatus = async (req, res) => {
                 console.error('[UpdateOrderStatus] WhatsApp text fallback error:', txtErr.message);
             }
         }
+
+        await commerceAutomationService.runAutomationsForEvent({
+            clientConfig: req.clientConfig,
+            eventType: status,
+            order: {
+                orderId: order.orderId,
+                orderNumber: order.orderNumber,
+                customerPhone: order.customerPhone || order.phone,
+                customerName: order.customerName,
+                items: order.items || [],
+                trackingUrl: trackingUrl || order.trackingUrl,
+                trackingNumber: trackingNumber || order.trackingNumber,
+            },
+        }).catch((err) => {
+            console.error('[UpdateOrderStatus] unified automation run failed:', err.message);
+        });
 
         res.json({ success: true, order, whatsapp: { templateAttempted: wa.templateAttempted, ok: wa.ok, template: wa.templateName || null } });
     } catch (error) {

@@ -4,6 +4,7 @@ const WhatsApp = require('./whatsapp');
 const ScheduledMessage = require('../models/ScheduledMessage');
 const Client = require('../models/Client');
 const log = require('./logger')('SKUTrigger');
+const commerceAutomationService = require('./commerceAutomationService');
 
 /**
  * SKU Trigger Service
@@ -18,6 +19,10 @@ const SkuTriggerService = {
    */
   async processTriggers(order, eventType, clientConfig) {
     try {
+      if (Array.isArray(clientConfig?.commerceAutomations) && clientConfig.commerceAutomations.length > 0) {
+        await commerceAutomationService.runAutomationsForEvent({ clientConfig, eventType, order });
+        return;
+      }
       const { skuAutomations = [], clientId } = clientConfig;
       if (!skuAutomations.length) return;
 

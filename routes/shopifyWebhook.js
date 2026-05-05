@@ -14,7 +14,7 @@ const { processOrderForLoyalty } = require('../utils/walletService');
 const { logActivity } = require('../utils/activityLogger');
 const { recalculateLeadScore } = require('../utils/scoringHelper');
 const log = require('../utils/logger')('ShopifyWebhook');
-const SkuTriggerService = require('../utils/skuTriggerService');
+const commerceAutomationService = require('../utils/commerceAutomationService');
 
 async function getProductImageForOrder(order, client) {
   // Try to get from order line items first (fastest)
@@ -106,18 +106,17 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
                 await fireEventFlow(client, 'order_placed', data).catch(e =>
                   log.warn(`[FlowTrigger] order_placed flow fire failed: ${e.message}`)
                 );
-                // Process SKU triggers for 'paid' event
-                await SkuTriggerService.processTriggers(
-                  { 
-                    orderId: data.name || data.id, 
+                await commerceAutomationService.runAutomationsForEvent({
+                  clientConfig: client,
+                  eventType: 'paid',
+                  order: {
+                    orderId: data.name || data.id,
                     orderNumber: data.name,
                     customerPhone: data.phone || data.customer?.phone || data.billing_address?.phone,
                     customerName: data.customer?.first_name || 'Customer',
-                    items: data.line_items.map(i => ({ sku: i.sku, name: i.title }))
-                  }, 
-                  'paid', 
-                  client
-                ).catch(e => log.error('SKU Trigger paid failed:', e.message));
+                    items: data.line_items.map(i => ({ sku: i.sku, name: i.title })),
+                  },
+                }).catch(e => log.error('Commerce automations paid failed:', e.message));
                 break;
             case 'orders/cancelled':
             case 'orders/refunded':
@@ -126,17 +125,17 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
                 await fireEventFlow(client, 'order_status_changed', data, data.financial_status === 'refunded' ? 'returned' : 'cancelled').catch(e =>
                   log.warn(`[FlowTrigger] order_status_changed flow fire failed: ${e.message}`)
                 );
-                // Process SKU triggers for 'cancelled' event
-                await SkuTriggerService.processTriggers(
-                  { 
-                    orderId: data.name || data.id, 
+                await commerceAutomationService.runAutomationsForEvent({
+                  clientConfig: client,
+                  eventType: 'cancelled',
+                  order: {
+                    orderId: data.name || data.id,
+                    orderNumber: data.name,
                     customerPhone: data.phone || data.customer?.phone || data.billing_address?.phone,
                     customerName: data.customer?.first_name || 'Customer',
-                    items: data.line_items.map(i => ({ sku: i.sku, name: i.title }))
-                  }, 
-                  'cancelled', 
-                  client
-                ).catch(e => log.error('SKU Trigger cancelled failed:', e.message));
+                    items: data.line_items.map(i => ({ sku: i.sku, name: i.title })),
+                  },
+                }).catch(e => log.error('Commerce automations cancelled failed:', e.message));
                 break;
             case 'orders/fulfilled': {
                 const { schedulePostDeliveryUpsell } = require('../utils/upsellEngine');
@@ -148,17 +147,17 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
                   log.warn(`[FlowTrigger] order_fulfilled flow fire failed: ${e.message}`)
                 );
                 
-                // Process SKU triggers for 'fulfilled' event
-                await SkuTriggerService.processTriggers(
-                  { 
-                    orderId: data.name || data.id, 
+                await commerceAutomationService.runAutomationsForEvent({
+                  clientConfig: client,
+                  eventType: 'fulfilled',
+                  order: {
+                    orderId: data.name || data.id,
+                    orderNumber: data.name,
                     customerPhone: data.phone || data.customer?.phone || data.billing_address?.phone,
                     customerName: data.customer?.first_name || 'Customer',
-                    items: data.line_items.map(i => ({ sku: i.sku, name: i.title }))
-                  }, 
-                  'fulfilled', 
-                  client
-                ).catch(e => log.error('SKU Trigger fulfilled failed:', e.message));
+                    items: data.line_items.map(i => ({ sku: i.sku, name: i.title })),
+                  },
+                }).catch(e => log.error('Commerce automations fulfilled failed:', e.message));
                 
                 // --- PHASE 30.5: Enterprise Warranty Auto-Assign (ENGINE) ---
                 const { processWarrantyAutoAssignment } = require('../utils/warrantyEngine');
@@ -556,17 +555,7 @@ async function handleOrder(client, data) {
         }).catch(err => console.error("[Loyalty] Award failed:", err.message));
     }
 
-    // --- ENTERPRISE: Product Trigger Evaluation ---
-    try {
-        const { evaluateProductTriggers, executeProductTriggers } = require('./productTriggers');
-        const ptMatches = await evaluateProductTriggers(client, data);
-        if (ptMatches.length > 0) {
-            log.info(`[ProductTrigger] ${ptMatches.length} trigger(s) matched for order ${newOrder.orderId}`);
-            await executeProductTriggers(client, cleanPhone, data.customer?.first_name || 'Customer', ptMatches);
-        }
-    } catch (ptErr) {
-        log.warn(`[ProductTrigger] Evaluation failed for order ${newOrder.orderId}:`, ptErr.message);
-    }
+    // Legacy productTriggers evaluator removed after unified commerce automation cutover.
 
     // ✅ Phase R3: Cancel active cart recovery sequences on purchase — GAP 6
     // Customer paid → stop all recovery messages so they don't get spammed post-purchase

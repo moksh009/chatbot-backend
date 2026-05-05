@@ -13,6 +13,7 @@ const choiceSalonController = require('./clientcodes/choice_salon_holi');
 const topedgeController = require('./clientcodes/topedgeai');
 const genericAppointmentEngine = require('./engines/genericAppointment');
 const genericEcommerceEngine = require('./engines/genericEcommerce');
+const commerceAutomationService = require('../utils/commerceAutomationService');
 
 // Middleware to load client config
 router.use(loadClientConfig);
@@ -166,6 +167,108 @@ router.patch('/config', protect, async (req, res) => {
   } catch (err) {
     console.error(`[Config Patch] Error for ${req.params.clientId}:`, err);
     res.status(500).json({ error: 'Failed to update configuration.' });
+  }
+});
+
+router.get('/commerce-automations', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const isAuthorized = req.user.role === 'SUPER_ADMIN' ||
+      req.user.clientId === clientId ||
+      (req.user.linkedClients && req.user.linkedClients.includes(clientId));
+    if (!isAuthorized) return res.status(403).json({ error: 'Unauthorized' });
+
+    const automations = await commerceAutomationService.listAutomations(req.clientConfig);
+    return res.json({ success: true, automations, version: req.clientConfig.commerceAutomationVersion || 1 });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/commerce-automations', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const isAuthorized = req.user.role === 'SUPER_ADMIN' ||
+      req.user.clientId === clientId ||
+      (req.user.linkedClients && req.user.linkedClients.includes(clientId));
+    if (!isAuthorized) return res.status(403).json({ error: 'Unauthorized' });
+
+    const automation = await commerceAutomationService.upsertAutomation(clientId, req.body || {});
+    return res.json({ success: true, automation });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.put('/commerce-automations/:automationId', protect, async (req, res) => {
+  try {
+    const { clientId, automationId } = req.params;
+    const isAuthorized = req.user.role === 'SUPER_ADMIN' ||
+      req.user.clientId === clientId ||
+      (req.user.linkedClients && req.user.linkedClients.includes(clientId));
+    if (!isAuthorized) return res.status(403).json({ error: 'Unauthorized' });
+
+    const automation = await commerceAutomationService.upsertAutomation(clientId, {
+      ...(req.body || {}),
+      id: automationId,
+    });
+    return res.json({ success: true, automation });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.delete('/commerce-automations/:automationId', protect, async (req, res) => {
+  try {
+    const { clientId, automationId } = req.params;
+    const isAuthorized = req.user.role === 'SUPER_ADMIN' ||
+      req.user.clientId === clientId ||
+      (req.user.linkedClients && req.user.linkedClients.includes(clientId));
+    if (!isAuthorized) return res.status(403).json({ error: 'Unauthorized' });
+
+    const automations = await commerceAutomationService.deleteAutomation(clientId, automationId);
+    return res.json({ success: true, automations });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/commerce-automations/simulate', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const isAuthorized = req.user.role === 'SUPER_ADMIN' ||
+      req.user.clientId === clientId ||
+      (req.user.linkedClients && req.user.linkedClients.includes(clientId));
+    if (!isAuthorized) return res.status(403).json({ error: 'Unauthorized' });
+
+    const result = commerceAutomationService.simulateAutomation({
+      automation: req.body?.automation || {},
+      order: req.body?.order || {},
+    });
+    return res.json({ success: true, result });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.get('/commerce-automations/diagnostics', protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const isAuthorized = req.user.role === 'SUPER_ADMIN' ||
+      req.user.clientId === clientId ||
+      (req.user.linkedClients && req.user.linkedClients.includes(clientId));
+    if (!isAuthorized) return res.status(403).json({ error: 'Unauthorized' });
+    const automations = await commerceAutomationService.listAutomations(req.clientConfig);
+    return res.json({
+      success: true,
+      migrated: (req.clientConfig.commerceAutomationVersion || 0) > 0,
+      version: req.clientConfig.commerceAutomationVersion || 0,
+      automationCount: automations.length,
+      hasLegacySkuConfig: Array.isArray(req.clientConfig.skuAutomations) && req.clientConfig.skuAutomations.length > 0,
+      hasLegacyStatusMap: !!Object.keys(req.clientConfig.nicheData?.orderStatusTemplates || {}).length,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 

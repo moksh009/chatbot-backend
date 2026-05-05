@@ -754,6 +754,12 @@ const ClientSchema = new mongoose.Schema({
     supplierPhone: { type: String, default: "" }
   }],
 
+  // Unified Shopify automation center schema (SKU + order status in one place)
+  commerceAutomations: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  commerceAutomationVersion: { type: Number, default: 0 },
+  commerceAutomationMigratedAt: { type: Date, default: null },
+  commerceAutomationLegacySnapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+
   // Phase 29: Dashboard Personalization
   dashboardConfig: {
     layout: { type: [mongoose.Schema.Types.Mixed], default: [] }, // [{ id, x, y, w, h, i }]
