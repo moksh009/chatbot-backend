@@ -15,6 +15,13 @@ const loadClientConfig = async (req, res, next) => {
     const client = await Client.findOne({ clientId });
 
     if (!client) {
+      const isWebhookPath =
+        String(req.originalUrl || '').includes('/webhook/');
+      // Quietly acknowledge stale legacy webhook hits from deprecated client IDs.
+      // This prevents noisy logs/retries while we are fully e-commerce-only.
+      if (isWebhookPath) {
+        return res.status(200).json({ success: true, ignored: true, reason: 'unknown_client_webhook' });
+      }
       console.warn(`⚠️  ClientConfig: Client not found for ID '${clientId}'`);
       return res.status(404).json({ error: 'Client not found' });
     }
