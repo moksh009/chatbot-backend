@@ -19,8 +19,16 @@ const MetaTemplateSchema = new mongoose.Schema({
   buttons: { type: [mongoose.Schema.Types.Mixed], default: [] },
 
   // Source tracking
-  source: { type: String, enum: ['manual', 'auto_generated'], default: 'manual' },
+  source: { type: String, enum: ['manual', 'auto_generated', 'wizard_automation', 'wizard_product', 'migrated_legacy'], default: 'manual' },
   autoGenProductId: { type: String, default: null },
+  templateKey: { type: String, default: '' }, // canonical template key (ex: order_confirmed)
+  templateKind: { type: String, enum: ['prebuilt', 'product', 'custom'], default: 'custom' },
+  readinessRequired: { type: Boolean, default: false },
+  productHandle: { type: String, default: '' },
+  productName: { type: String, default: '' },
+  productPrice: { type: String, default: '' },
+  productPageUrl: { type: String, default: '' },
+  productImageUrl: { type: String, default: '' },
 
   // Meta submission tracking
   metaTemplateId: { type: String, default: null },
@@ -57,5 +65,7 @@ const MetaTemplateSchema = new mongoose.Schema({
 MetaTemplateSchema.index({ clientId: 1, submissionStatus: 1 });
 MetaTemplateSchema.index({ clientId: 1, source: 1, submissionStatus: 1 });
 MetaTemplateSchema.index({ clientId: 1, autoGenProductId: 1 });
+MetaTemplateSchema.index({ clientId: 1, templateKey: 1 });
+MetaTemplateSchema.index({ clientId: 1, templateKind: 1, readinessRequired: 1 });
 
 module.exports = mongoose.model('MetaTemplate', MetaTemplateSchema);

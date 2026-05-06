@@ -1570,13 +1570,21 @@ function getPrebuiltTemplates(wizardData = {}) {
   const productTemplates = allProducts.map((p) => {
     const safeName = `prod_${p.handle.replace(/[^a-z0-9_]/gi, "_").toLowerCase()}`.substring(0, 50);
     const buyUrl   = storeBase ? `${storeBase}/products/${p.handle}` : "";
+    const featureLine = (p.features || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 90);
+    const bodyText = `✨ *${p.title}*\n\n` +
+      `Price: *${currency}${p.price}*\n\n` +
+      `${featureLine || "Built for everyday reliability, comfort, and performance."}\n\n` +
+      `Want this in your cart? Tap below to view full details and checkout in one step.`;
     return {
       id: safeName, name: safeName, category: "MARKETING", language: "en",
-      status: "not_submitted", required: false,
+      status: "not_submitted", required: true,
       description: `Rich product card for "${p.title}" — IMAGE header + buy button.`,
       components: [
         { type: "HEADER", format: "IMAGE", _imageUrl: p.imageUrl || "" },
-        { type: "BODY",   text: `Product: *{{1}}*\n\n💰 Price: ${currency}{{2}}\n\n*Key Features:*\n{{3}}\n\nClick below to view more details!` },
+        { type: "BODY",   text: bodyText },
         { type: "FOOTER", text: brandSafe },
         { type: "BUTTONS", buttons: [
           ...(buyUrl
@@ -1585,8 +1593,8 @@ function getPrebuiltTemplates(wizardData = {}) {
           { type: "QUICK_REPLY", text: "⬅️ Main Menu" }
         ]}
       ],
-      body: `Product: *{{1}}*\n\n💰 Price: ${currency}{{2}}\n\n*Key Features:*\n{{3}}\n\nClick below to view more details!`,
-      variables: ["product_name", "product_price", "product_features"]
+      body: bodyText,
+      variables: []
     };
   });
 
@@ -1609,7 +1617,7 @@ function getPrebuiltTemplates(wizardData = {}) {
     },
     ...productTemplates,
     {
-      id: "order_conf", name: "order_conf",
+      id: "order_confirmed", name: "order_confirmed",
       category: "UTILITY", language: "en", status: "not_submitted", required: true,
       description: "Sent immediately after order is placed.",
       components: [{
@@ -1620,15 +1628,26 @@ function getPrebuiltTemplates(wizardData = {}) {
       variables: ["order_id", "cart_items", "order_total"]
     },
     {
-      id: "cart_recovery", name: "cart_recovery",
+      id: "cart_recovery_1", name: "cart_recovery_1",
       category: "MARKETING", language: "en", status: "not_submitted", required: true,
       description: "Sent if checkout is started but not completed.",
       components: [
-        { type: "BODY", text: `Hi — you still have great picks saved at ${brandSafe}.\n\nYour cart is waiting. When you're ready, continue checkout securely here:\n{{1}}\n\nNeed sizing, delivery, or payment help? Reply here and we'll sort it out.` },
+        { type: "BODY", text: `Hi — your picks from ${brandSafe} are still reserved.\n\nCheckout is just one step away.\n\nReturn now to avoid missing stock and keep your preferred delivery slot.\n\nNeed help before you buy? Reply here and we’ll guide you instantly.` },
         ...(storeBase ? [{ type: "BUTTONS", buttons: [{ type: "URL", text: "Complete Purchase", url: `${storeBase}/cart` }] }] : [])
       ],
-      body: `Hi — you still have great picks saved at ${brandSafe}.\n\nYour cart is waiting. When you're ready, continue checkout securely here:\n{{1}}\n\nNeed sizing, delivery, or payment help? Reply here and we'll sort it out.`,
-      variables: ["checkout_url"]
+      body: `Hi — your picks from ${brandSafe} are still reserved.\n\nCheckout is just one step away.\n\nReturn now to avoid missing stock and keep your preferred delivery slot.\n\nNeed help before you buy? Reply here and we’ll guide you instantly.`,
+      variables: []
+    },
+    {
+      id: "cart_recovery_2", name: "cart_recovery_2",
+      category: "MARKETING", language: "en", status: "not_submitted", required: true,
+      description: "Follow-up reminder with urgency for cart recovery.",
+      components: [
+        { type: "BODY", text: `Quick reminder from ${brandSafe}:\n\nYour cart is still open, but high-demand items may sell out soon.\n\nComplete checkout now to lock your order and delivery priority.` },
+        ...(storeBase ? [{ type: "BUTTONS", buttons: [{ type: "URL", text: "Complete Purchase", url: `${storeBase}/cart` }] }] : [])
+      ],
+      body: `Quick reminder from ${brandSafe}:\n\nYour cart is still open, but high-demand items may sell out soon.\n\nComplete checkout now to lock your order and delivery priority.`,
+      variables: []
     },
     {
       id: "admin_handoff", name: "admin_human_alert",
@@ -1642,7 +1661,7 @@ function getPrebuiltTemplates(wizardData = {}) {
       variables: ["customer_name", "customer_phone", "last_message"]
     },
     {
-      id: "cod_nudge", name: "cod_to_prepaid_nudge",
+      id: "cod_to_prepaid", name: "cod_to_prepaid",
       category: "MARKETING", language: "en", status: "not_submitted", required: true,
       description: "COD → prepaid: incentive stack, urgency, two-tap choice (enterprise / Delitech-style).",
       components: [
@@ -1691,7 +1710,7 @@ ${brandSafe} prioritises prepaid orders for dispatch — choose below when you a
       ],
     },
     ...(googleReviewUrl ? [{
-      id: "review_request", name: "post_delivery_review",
+      id: "review_request", name: "review_request",
       category: "MARKETING", language: "en", status: "not_submitted", required: false,
       description: "Sent 3-4 days after delivery fulfilled.",
       components: [

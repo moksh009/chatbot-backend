@@ -15,6 +15,8 @@ const { emitToClient } = require("../utils/socket");
 const log = require("../utils/logger")("Wizard");
 const { tenantClientId } = require("../utils/queryHelpers");
 const { hydrateProductTemplateRecord } = require("../utils/templateImageHydrate");
+const MetaTemplate = require("../models/MetaTemplate");
+const { PREBUILT_REQUIRED_TEMPLATES } = require("../constants/templateLifecycle");
 
 async function syncPendingTemplatesForClient(client) {
   const axios = require("axios");
@@ -131,7 +133,91 @@ async function syncPendingTemplatesForClient(client) {
     }
   });
 
+  // Keep canonical MetaTemplate records in sync with legacy status polling.
+  for (const tpl of updatedMessage) {
+    if (!tpl?.name) continue;
+    const lower = String(tpl.status || "PENDING").toUpperCase();
+    let canonicalStatus = "draft";
+    if (lower === "APPROVED") canonicalStatus = "approved";
+    else if (lower === "REJECTED") canonicalStatus = "rejected";
+    else if (lower === "PENDING" || lower === "IN_APPEAL") canonicalStatus = "pending_meta_review";
+    await MetaTemplate.findOneAndUpdate(
+      { clientId: client.clientId, name: tpl.name },
+      {
+        $set: {
+          submissionStatus: canonicalStatus,
+          source: String(tpl.name).startsWith("prod_") ? "wizard_product" : "wizard_automation",
+          templateKind: String(tpl.name).startsWith("prod_") ? "product" : "prebuilt",
+          templateKey: tpl.name,
+          readinessRequired: PREBUILT_REQUIRED_TEMPLATES.includes(tpl.name) || String(tpl.name).startsWith("prod_"),
+          updatedAt: new Date()
+        },
+        $setOnInsert: {
+          clientId: client.clientId,
+          name: tpl.name,
+          category: tpl.category || "MARKETING",
+          language: tpl.language || "en",
+          body: tpl.body || tpl.components?.find((c) => c.type === "BODY")?.text || "Template content pending sync",
+          createdAt: new Date()
+        }
+      },
+      { upsert: true }
+    );
+  }
+
   return { checked, approved: approvedCount, rejected: rejectedCount, pendingRemaining: updatedPending.length, updatedPending };
+}
+
+async function upsertCanonicalTemplateFromWizard({
+  clientId,
+  name,
+  category = "MARKETING",
+  language = "en",
+  components = [],
+  source = "wizard_automation",
+  status = "pending_meta_review",
+  metaTemplateId = "",
+  templateKind = "prebuilt",
+  readinessRequired = true,
+  productHandle = "",
+  productId = "",
+  imageUrl = ""
+}) {
+  const header = components.find((c) => c.type === "HEADER") || {};
+  const body = components.find((c) => c.type === "BODY") || {};
+  const footer = components.find((c) => c.type === "FOOTER") || {};
+  const buttons = components.find((c) => c.type === "BUTTONS")?.buttons || [];
+  await MetaTemplate.findOneAndUpdate(
+    { clientId, name },
+    {
+      $set: {
+        clientId,
+        name,
+        category,
+        language,
+        source,
+        templateKey: name,
+        templateKind,
+        readinessRequired,
+        body: body.text || "Template content pending",
+        headerType: header.format || "TEXT",
+        headerValue: header.text || "",
+        footerText: footer.text || null,
+        buttons,
+        submissionStatus: status,
+        metaTemplateId: metaTemplateId || null,
+        productHandle,
+        autoGenProductId: productId || null,
+        productName: "",
+        productPrice: "",
+        productPageUrl: "",
+        productImageUrl: imageUrl || "",
+        updatedAt: new Date()
+      },
+      $setOnInsert: { createdAt: new Date() }
+    },
+    { upsert: true, new: true }
+  );
 }
 
 // GET /api/wizard/:clientId/setup-checklist
@@ -722,14 +808,10 @@ router.post("/:clientId/submit-product-templates", protect, async (req, res) => 
           },
           {
             type: 'BODY',
-            text: `Product: *{{1}}*\n\n💰 Price: ${currency}{{2}}\n\n*Key Features:*\n{{3}}\n\nClick below to view more details!`,
-            example: { 
-              body_text: [[
-                (prod.name || prod.title || 'Premium Product').substring(0, 30), 
-                price, 
-                (prod.description || 'Exclusive quality materials, perfect for daily use, highly durable and stylish.').replace(/<[^>]+>/g, '').substring(0, 100)
-              ]] 
-            }
+            text: `✨ *${(prod.name || prod.title || 'Premium Product').substring(0, 48)}*\n\n` +
+              `Price: *${currency}${price}*\n\n` +
+              `${(prod.description || 'Premium build quality with dependable daily performance.').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().substring(0, 95)}\n\n` +
+              `Tap below to see full details and complete checkout in one step.`
           },
           {
             type: 'FOOTER',
@@ -785,6 +867,21 @@ router.post("/:clientId/submit-product-templates", protect, async (req, res) => 
         await Client.findByIdAndUpdate(client._id, {
           $push:  { messageTemplates: newTemplate, pendingTemplates: pendingTemplate },
         });
+        await upsertCanonicalTemplateFromWizard({
+          clientId,
+          name: templateName,
+          category: "MARKETING",
+          language: "en",
+          components: templatePayload.components,
+          source: "wizard_product",
+          status: "pending_meta_review",
+          metaTemplateId: metaRes.data.id || "",
+          templateKind: "product",
+          readinessRequired: true,
+          productHandle: handle,
+          productId: String(prod.id || prod.shopifyId || ""),
+          imageUrl: prod.imageUrl || ""
+        });
 
         submitted.push(templateName);
         log.info(`[TemplateSubmit] ✅ ${templateName} submitted to Meta for ${clientId}`);
@@ -818,6 +915,21 @@ router.post("/:clientId/submit-product-templates", protect, async (req, res) => 
                 submittedAt: new Date()
               }
             }
+          });
+          await upsertCanonicalTemplateFromWizard({
+            clientId,
+            name: templateName,
+            category: "MARKETING",
+            language: "en",
+            components: templatePayload.components,
+            source: "wizard_product",
+            status: "pending_meta_review",
+            metaTemplateId: "",
+            templateKind: "product",
+            readinessRequired: true,
+            productHandle: handle,
+            productId: String(prod.id || prod.shopifyId || ""),
+            imageUrl: prod.imageUrl || ""
           });
           alreadyDone.push(templateName);
         } else {
@@ -999,6 +1111,18 @@ router.post("/:clientId/submit-automation-templates", protect, async (req, res) 
         await Client.findByIdAndUpdate(client._id, {
           $pull:  { messageTemplates: { name: tpl.name }, pendingTemplates: { name: tpl.name } },
         });
+        await upsertCanonicalTemplateFromWizard({
+          clientId,
+          name: tpl.name,
+          category: tpl.category || "MARKETING",
+          language: tpl.language || "en",
+          components: templatePayload.components,
+          source: "wizard_automation",
+          status: "pending_meta_review",
+          metaTemplateId: metaRes.data.id || "",
+          templateKind: "prebuilt",
+          readinessRequired: PREBUILT_REQUIRED_TEMPLATES.includes(tpl.name)
+        });
         await Client.findByIdAndUpdate(client._id, {
           $push:  {
             messageTemplates: newTemplate,
@@ -1038,6 +1162,18 @@ router.post("/:clientId/submit-automation-templates", protect, async (req, res) 
                 submittedAt: new Date()
               }
             }
+          });
+          await upsertCanonicalTemplateFromWizard({
+            clientId,
+            name: tpl.name,
+            category: tpl.category || "MARKETING",
+            language: tpl.language || "en",
+            components: templatePayload.components,
+            source: "wizard_automation",
+            status: "pending_meta_review",
+            metaTemplateId: "",
+            templateKind: "prebuilt",
+            readinessRequired: PREBUILT_REQUIRED_TEMPLATES.includes(tpl.name)
           });
           submitted.push(tpl.name);
         } else {

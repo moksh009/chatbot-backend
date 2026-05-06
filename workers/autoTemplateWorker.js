@@ -34,9 +34,17 @@ const SubmissionQueueItem = require('../models/SubmissionQueueItem');
 const SubmissionLog = require('../models/SubmissionLog');
 const { platformGenerateText } = require('../utils/gemini');
 const { decrypt } = require('../utils/encryption');
+const { PREBUILT_REQUIRED_TEMPLATES } = require('../constants/templateLifecycle');
 
 // ─── FIXED TEMPLATE DEFINITIONS ───────────────────────────────────────────────
 const FIXED_TEMPLATES = {
+  welcome_with_logo: {
+    category: 'UTILITY',
+    purpose: 'Welcome first-time user and introduce support channels.',
+    variables: { '1': 'Customer Name', '2': 'Brand Name' },
+    bodyText: 'Hi {{1}}, welcome to {{2}}. We are here to help you with orders, support, and updates anytime.',
+    buttons: [{ type: 'QUICK_REPLY', text: 'Browse Products' }, { type: 'QUICK_REPLY', text: 'Talk to Support' }]
+  },
   order_confirmed: {
     category: 'UTILITY',
     purpose: 'Confirm a new order has been received and is being processed. Include order number and total amount.',
@@ -106,6 +114,13 @@ const FIXED_TEMPLATES = {
     variables: { '1': 'Customer Name', '2': 'Product Name', '3': 'Checkout URL' },
     bodyText: 'Hi {{1}}, your {{2}} is still reserved! Complete your purchase today with a special discount: {{3}}',
     buttons: [{ type: 'QUICK_REPLY', text: 'Shop Now' }, { type: 'QUICK_REPLY', text: 'Help Me' }]
+  },
+  admin_human_alert: {
+    category: 'UTILITY',
+    purpose: 'Notify admin/support for urgent takeover events.',
+    variables: { '1': 'Customer Name', '2': 'Customer Phone', '3': 'Issue Summary' },
+    bodyText: 'Admin alert: {{1}} ({{2}}) needs urgent support. Context: {{3}}',
+    buttons: [{ type: 'QUICK_REPLY', text: 'Open Inbox' }]
   }
 };
 
@@ -170,6 +185,10 @@ Return only that line, nothing else.`;
   return { tagline: line.trim().slice(0, 72) };
 }
 
+function cleanShortText(value, max = 100) {
+  return String(value || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
+}
+
 // ─── BUILD SUBMISSION QUEUE ────────────────────────────────────────────────
 async function buildSubmissionQueue(clientId) {
   const drafts = await MetaTemplate.find({
@@ -177,7 +196,7 @@ async function buildSubmissionQueue(clientId) {
   }).lean();
 
   // Separate fixed and product templates
-  const AUTO_SUBMIT_FIXED = ['order_confirmed', 'shipping_update', 'order_delivered', 'order_cancelled'];
+  const AUTO_SUBMIT_FIXED = PREBUILT_REQUIRED_TEMPLATES;
   const fixed = [];
   const products = [];
 
@@ -197,7 +216,7 @@ async function buildSubmissionQueue(clientId) {
   fixed.sort((a, b) => AUTO_SUBMIT_FIXED.indexOf(a.autoGenProductId) - AUTO_SUBMIT_FIXED.indexOf(b.autoGenProductId));
 
   const ordered = [];
-  // Batch 1: order_confirmed, shipping_update, order_delivered, order_cancelled
+  // Batch 1: required prebuilt templates in configured order
   const batch1 = fixed;
   batch1.forEach((t, i) => ordered.push({ ...t, batchNumber: 1, queuePosition: i + 1 }));
 
@@ -306,8 +325,21 @@ async function submitSingleTemplate(client, templateId, clientId) {
     components
   };
 
+  if (!client) {
+    template.submissionStatus = 'submission_failed';
+    template.rejectionReason = 'Client configuration not found during submission';
+    await template.save();
+    return;
+  }
+
   const token = decrypt(client.whatsappToken) || client.whatsappToken;
   const wabaId = client.wabaId || client.whatsapp?.wabaId;
+  if (!token || !wabaId) {
+    template.submissionStatus = 'submission_failed';
+    template.rejectionReason = 'Missing WhatsApp credentials for submission';
+    await template.save();
+    return;
+  }
 
   try {
     const response = await axios.post(
@@ -447,7 +479,9 @@ async function handleGenerationJob(data) {
       });
       const priceStr = `${currency}${Number(productPrice || 0).toLocaleString('en-IN')}`;
       const tag = result.tagline || `Trusted quality from ${brandName}.`;
-      generatedBody = '*{{1}}*\n💰 *{{2}}*\n\n{{3}}';
+      const safeName = cleanShortText(productName || 'Premium Product', 64);
+      const safeTag = cleanShortText(tag, 110);
+      generatedBody = `✨ *${safeName}*\n\nPrice: *${priceStr}*\n\n${safeTag}\n\nTap below to view details and place your order instantly.`;
       templateName = buildProductTemplateName(productHandle);
       category = 'MARKETING';
       if (productImageUrl && /^https?:\/\//i.test(String(productImageUrl))) {
@@ -462,11 +496,7 @@ async function handleGenerationJob(data) {
       buttons = safeUrl
         ? [{ type: 'URL', text: 'Order Now', url: safeUrl }, { type: 'QUICK_REPLY', text: 'Talk to Agent' }]
         : [{ type: 'QUICK_REPLY', text: 'Talk to Agent' }];
-      variableMapping = new Map([
-        ['1', (productName || 'Product').slice(0, 80)],
-        ['2', priceStr],
-        ['3', tag.slice(0, 120)]
-      ]);
+      variableMapping = new Map();
     }
 
     templateName = await getUniqueTemplateName(clientId, templateName);
@@ -479,6 +509,14 @@ async function handleGenerationJob(data) {
           headerType, headerValue, body: generatedBody,
           footerText, buttons, variableMapping,
           source: 'auto_generated', autoGenProductId: productId || fixedTemplateId,
+          templateKey: fixedTemplateId || templateName,
+          templateKind: templateType === 'product' ? 'product' : 'prebuilt',
+          readinessRequired: true,
+          productHandle: productHandle || '',
+          productName: productName || '',
+          productPrice: String(productPrice || ''),
+          productPageUrl: productPageUrl || '',
+          productImageUrl: productImageUrl || '',
           submissionStatus: 'draft', updatedAt: new Date()
         },
         $setOnInsert: { createdAt: new Date() }
@@ -575,6 +613,18 @@ async function handleSchedulerJob(data) {
 async function handleBatchJob(data) {
   const { clientId, templateIds } = data;
   const client = await Client.findOne({ clientId }).lean();
+  if (!client) {
+    for (const templateId of templateIds) {
+      await MetaTemplate.findByIdAndUpdate(templateId, {
+        $set: {
+          submissionStatus: 'submission_failed',
+          rejectionReason: 'Client not found while processing submission batch',
+          updatedAt: new Date()
+        }
+      });
+    }
+    return;
+  }
 
   for (const templateId of templateIds) {
     await submitSingleTemplate(client, templateId, clientId);

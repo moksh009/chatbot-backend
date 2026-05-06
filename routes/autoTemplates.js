@@ -12,6 +12,8 @@ const { generationQueue, rescheduleSubmissionCheck } = require('../workers/autoT
 const { withShopifyRetry } = require('../utils/shopifyHelper');
 const { decrypt } = require('../utils/encryption');
 const { tenantClientId } = require('../utils/queryHelpers');
+const { PREBUILT_REQUIRED_TEMPLATES } = require('../constants/templateLifecycle');
+const { getTemplateReadiness, migrateLegacyClientTemplatesToMeta } = require('../services/templateLifecycleService');
 
 function resolveClientId(req) {
   return tenantClientId(req);
@@ -101,8 +103,8 @@ router.post('/start', protect, async (req, res) => {
       }
     }
 
-    // 10 fixed + products
-    const totalTemplates = 10 + products.length;
+    // required prebuilt + products
+    const totalTemplates = PREBUILT_REQUIRED_TEMPLATES.length + products.length;
 
     // Create or reset job tracker
     await TemplateGenerationJob.findOneAndUpdate(
@@ -132,12 +134,8 @@ router.post('/start', protect, async (req, res) => {
     await MetaTemplate.deleteMany({ clientId, source: 'auto_generated', submissionStatus: { $in: ['draft', 'generation_failed'] } });
     await SubmissionQueueItem.deleteMany({ clientId, status: 'queued' });
 
-    // Enqueue fixed template generation jobs
-    const fixedIds = [
-      'order_confirmed', 'shipping_update', 'order_delivered', 'order_cancelled',
-      'review_request', 'cod_to_prepaid', 'warranty_registration', 'loyalty_points',
-      'cart_recovery_1', 'cart_recovery_2'
-    ];
+    // Enqueue required prebuilt template generation jobs
+    const fixedIds = PREBUILT_REQUIRED_TEMPLATES;
     for (const fixedId of fixedIds) {
       if (generationQueue) {
         await generationQueue.add('generate', {
@@ -189,7 +187,7 @@ router.post('/start', protect, async (req, res) => {
 
     res.json({
       success: true,
-      message: `Generation started for ${totalTemplates} templates (10 fixed + ${products.length} product)`,
+      message: `Generation started for ${totalTemplates} templates (${PREBUILT_REQUIRED_TEMPLATES.length} prebuilt + ${products.length} product)`,
       totalTemplates
     });
   } catch (err) {
@@ -264,6 +262,7 @@ router.put('/drafts/:id', protect, async (req, res) => {
     if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
 
     const { name, category, language, components } = req.body;
+    const safeComponents = Array.isArray(components) ? components : [];
     
     // Validate it's still in a modifiable state
     const existing = await MetaTemplate.findOne({ _id: req.params.id, clientId, source: 'auto_generated' });
@@ -274,10 +273,10 @@ router.put('/drafts/:id', protect, async (req, res) => {
     }
 
     // Parse components back into schema fields
-    const headerComp = components.find(c => c.type === 'HEADER');
-    const bodyComp = components.find(c => c.type === 'BODY');
-    const footerComp = components.find(c => c.type === 'FOOTER');
-    const buttonsComp = components.find(c => c.type === 'BUTTONS');
+    const headerComp = safeComponents.find(c => c.type === 'HEADER');
+    const bodyComp = safeComponents.find(c => c.type === 'BODY');
+    const footerComp = safeComponents.find(c => c.type === 'FOOTER');
+    const buttonsComp = safeComponents.find(c => c.type === 'BUTTONS');
 
     const updateFields = {
       name,
@@ -376,7 +375,7 @@ router.post('/retry/:templateId', protect, async (req, res) => {
       if (generationQueue) {
         await generationQueue.add('generate', {
           clientId,
-          templateType: template.autoGenProductId && !['order_confirmed', 'shipping_update', 'order_delivered', 'order_cancelled', 'review_request', 'cod_to_prepaid', 'warranty_registration', 'loyalty_points', 'cart_recovery_1', 'cart_recovery_2'].includes(template.autoGenProductId) ? 'product' : 'fixed',
+          templateType: template.autoGenProductId && !PREBUILT_REQUIRED_TEMPLATES.includes(template.autoGenProductId) ? 'product' : 'fixed',
           fixedTemplateId: template.autoGenProductId,
           productId: template.autoGenProductId
         }, { attempts: 3, backoff: { type: 'exponential', delay: 3000 } });
@@ -385,7 +384,7 @@ router.post('/retry/:templateId', protect, async (req, res) => {
         setTimeout(() => {
           handleGenerationJob({
             clientId,
-            templateType: template.autoGenProductId && !['order_confirmed', 'shipping_update', 'order_delivered', 'order_cancelled', 'review_request', 'cod_to_prepaid', 'warranty_registration', 'loyalty_points', 'cart_recovery_1', 'cart_recovery_2'].includes(template.autoGenProductId) ? 'product' : 'fixed',
+            templateType: template.autoGenProductId && !PREBUILT_REQUIRED_TEMPLATES.includes(template.autoGenProductId) ? 'product' : 'fixed',
             fixedTemplateId: template.autoGenProductId,
             productId: template.autoGenProductId
           }).catch(e => console.error('[Inline Generation] Retry error:', e));
@@ -454,6 +453,30 @@ router.get('/commerce-check', protect, async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── POST /api/auto-templates/migrate-legacy ──────────────────────────────
+router.post('/migrate-legacy', protect, async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
+    const result = await migrateLegacyClientTemplatesToMeta(clientId);
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── GET /api/auto-templates/readiness ────────────────────────────────────
+router.get('/readiness', protect, async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
+    const readiness = await getTemplateReadiness(clientId);
+    return res.json({ success: true, ...readiness });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
 });
 

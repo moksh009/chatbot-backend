@@ -13,6 +13,8 @@ const upload = multer({ storage: multer.memoryStorage() });
 const { getFastScore, analyzeWithGeminiAndRewrite } = require('../utils/templateScorer');
 const { getPrebuiltTemplates } = require('../utils/flowGenerator');
 const { hydrateApprovedProductTemplatesForClient } = require('../utils/templateImageHydrate');
+const MetaTemplate = require('../models/MetaTemplate');
+const { normalizeTemplateStatus } = require('../constants/templateLifecycle');
 
 // --- Helper Functions ---
 async function getClientCredentials(clientId, userId) {
@@ -168,6 +170,45 @@ router.get('/list', protect, async (req, res) => {
               source: tpl.source || 'synced_meta'
             });
           }
+        });
+
+        const canonical = await MetaTemplate.find({ clientId })
+          .sort({ updatedAt: -1 })
+          .lean();
+        canonical.forEach((tpl) => {
+          if (!tpl?.name) return;
+          const mappedStatus = normalizeTemplateStatus(tpl.submissionStatus);
+          const status =
+            mappedStatus === 'APPROVED' ? 'APPROVED' :
+            mappedStatus === 'REJECTED' ? 'REJECTED' :
+            mappedStatus === 'FAILED' ? 'FAILED' :
+            mappedStatus === 'QUEUED' ? 'QUEUED' :
+            mappedStatus === 'SUBMITTING' ? 'SUBMITTING' :
+            mappedStatus === 'DRAFT' ? 'DRAFT' : 'PENDING';
+          const components = [];
+          if (tpl.headerType && tpl.headerType !== 'NONE') {
+            if (String(tpl.headerType).toUpperCase() === 'IMAGE') {
+              components.push({ type: 'HEADER', format: 'IMAGE', _imageUrl: tpl.headerValue || tpl.productImageUrl || '' });
+            } else {
+              components.push({ type: 'HEADER', format: 'TEXT', text: tpl.headerValue || '' });
+            }
+          }
+          components.push({ type: 'BODY', text: tpl.body || '' });
+          if (tpl.footerText) components.push({ type: 'FOOTER', text: tpl.footerText });
+          if (Array.isArray(tpl.buttons) && tpl.buttons.length) components.push({ type: 'BUTTONS', buttons: tpl.buttons });
+          mergedMap.set(tpl.name, {
+            ...mergedMap.get(tpl.name),
+            id: tpl.metaTemplateId || tpl._id?.toString?.() || tpl.name,
+            name: tpl.name,
+            status,
+            category: tpl.category,
+            language: tpl.language || 'en',
+            components,
+            source: tpl.source || 'canonical_meta_template',
+            templateKind: tpl.templateKind || 'custom',
+            readinessRequired: !!tpl.readinessRequired,
+            submissionStatus: tpl.submissionStatus
+          });
         });
 
         const merged = Array.from(mergedMap.values()).map((tpl) => ({
