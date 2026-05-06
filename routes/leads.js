@@ -22,6 +22,7 @@ const archiver = require('archiver');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const SuppressionList = require('../models/SuppressionList');
+const logPersonalDataAccess = logAction('PERSONAL_DATA_ACCESS');
 
 // Multer setup for temporary CSV storage
 const upload = multer({ 
@@ -386,7 +387,7 @@ router.post('/export', protect, logAction('EXPORT_LEADS'), async (req, res) => {
 });
 
 // GET /api/leads/export/batch/:batchId
-router.get('/export/batch/:batchId', protect, async (req, res) => {
+router.get('/export/batch/:batchId', protect, logPersonalDataAccess, async (req, res) => {
     try {
         const batch = await ImportSession.findOne({ batchId: req.params.batchId }).lean();
         if (!batch) return res.status(404).json({ error: 'Batch not found' });
@@ -407,7 +408,7 @@ router.get('/export/batch/:batchId', protect, async (req, res) => {
 });
 
 // GET /api/leads/:clientId/tags
-router.get('/:clientId/tags', protect, async (req, res) => {
+router.get('/:clientId/tags', protect, logPersonalDataAccess, async (req, res) => {
     try {
         const { clientId } = req.params;
         if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
@@ -666,7 +667,7 @@ router.post('/bulk-recovery', protect, async (req, res) => {
 });
 
 // GET /api/leads/high-intent
-router.get('/high-intent', protect, async (req, res) => {
+router.get('/high-intent', protect, logPersonalDataAccess, async (req, res) => {
     try {
         const clientId = req.user.clientId;
         const { limit = 50, next_cursor } = req.query;

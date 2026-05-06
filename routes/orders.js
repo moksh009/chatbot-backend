@@ -3,9 +3,12 @@ const { resolveClient, tenantClientId } = require('../utils/queryHelpers');
 const router = express.Router();
 const Order = require('../models/Order');
 const { protect } = require('../middleware/auth');
+const { logAction } = require('../middleware/audit');
+
+const logPersonalDataAccess = logAction('PERSONAL_DATA_ACCESS');
 
 // GET /api/orders?phone=...
-router.get('/', protect, async (req, res) => {
+router.get('/', protect, logPersonalDataAccess, async (req, res) => {
   try {
     const { phone } = req.query;
     if (!phone) {
@@ -39,7 +42,7 @@ router.get('/', protect, async (req, res) => {
 });
 
 
-router.get('/:clientId/cod-pipeline', protect, async (req, res) => {
+router.get('/:clientId/cod-pipeline', protect, logPersonalDataAccess, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId || clientId !== req.params.clientId) {
@@ -72,7 +75,7 @@ router.get('/:clientId/cod-pipeline', protect, async (req, res) => {
   }
 });
 
-router.get('/:clientId/rto-analytics', protect, async (req, res) => {
+router.get('/:clientId/rto-analytics', protect, logPersonalDataAccess, async (req, res) => {
   try {
     const { clientId } = req.params;
     if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {

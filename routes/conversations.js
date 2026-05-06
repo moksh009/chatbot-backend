@@ -14,6 +14,9 @@ const multer = require('multer');
 const { uploadToCloud } = require('../utils/cloudinary');
 const { correctAIResponse } = require('../controllers/flowFixController');
 const Notification = require('../models/Notification');
+const { logAction } = require('../middleware/audit');
+
+const logPersonalDataAccess = logAction('PERSONAL_DATA_ACCESS');
 
 router.post('/correct-ai', protect, correctAIResponse);
 
@@ -22,7 +25,7 @@ const upload = multer({ storage: multer.memoryStorage() });
 // @route   GET /api/conversations
 // @desc    Get all conversations for the client
 // @access  Private
-router.get('/', protect, async (req, res) => {
+router.get('/', protect, logPersonalDataAccess, async (req, res) => {
   try {
     const { days, clientId, phone, isImported } = req.query;
     let query = {};
@@ -155,7 +158,7 @@ router.post('/:id/email', protect, async (req, res) => {
 // @route   GET /api/conversations/:id
 // @desc    Get single conversation details
 // @access  Private
-router.get('/:id', protect, async (req, res) => {
+router.get('/:id', protect, logPersonalDataAccess, async (req, res) => {
   try {
     const query = { _id: req.params.id };
     if (req.user.role !== 'SUPER_ADMIN') {
@@ -176,7 +179,7 @@ router.get('/:id', protect, async (req, res) => {
 // @route   GET /api/conversations/:id/messages
 // @desc    Get messages for a conversation
 // @access  Private
-router.get('/:id/messages', protect, async (req, res) => {
+router.get('/:id/messages', protect, logPersonalDataAccess, async (req, res) => {
   try {
     const query = { _id: req.params.id };
     if (req.user.role !== 'SUPER_ADMIN') {
@@ -218,7 +221,7 @@ router.get('/:id/messages', protect, async (req, res) => {
 
 // ✅ Phase 2: Live Chat Mega-Payload (Full Context)
 // Fetches conversation, 50 messages, lead intent, orders, and wallet in 1 round trip
-router.get('/:id/full-context', protect, async (req, res) => {
+router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res) => {
   try {
     const { id } = req.params;
     const clientId = req.user.clientId;
@@ -1282,7 +1285,7 @@ router.put('/:id/resolve', protect, async (req, res) => {
 
 
 // ─── GET /api/conversations/:id/export — Export conversation as PDF/JSON/TXT ──
-router.get('/:id/export', protect, async (req, res) => {
+router.get('/:id/export', protect, logPersonalDataAccess, async (req, res) => {
   try {
     const { format = 'pdf' } = req.query;
     const conversation = await Conversation.findById(req.params.id).lean();
@@ -1705,7 +1708,7 @@ router.post('/:id/ghost-complete', protect, async (req, res) => {
   }
 });
 // GAP 4: Context endpoint to fetch Active Sequences and Campaigns
-router.get('/:clientId/:phone/context', protect, async (req, res) => {
+router.get('/:clientId/:phone/context', protect, logPersonalDataAccess, async (req, res) => {
     try {
         const { clientId, phone } = req.params;
         const FollowUpSequence = require('../models/FollowUpSequence');

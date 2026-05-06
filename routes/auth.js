@@ -10,6 +10,7 @@ const bcrypt = require('bcryptjs'); // ✅ Phase R4: for authenticated change-pa
 const { sendSystemOTPEmail } = require('../utils/emailService');
 const { ensureClientForUser } = require('../utils/ensureClientForUser');
 const { LEGAL_DOCS_VERSION } = require('../config/legalDocs');
+const { validateStrongPassword } = require('../utils/passwordPolicy');
 
 /** Grandfathered clients may omit onboardingCompleted; missing Client doc means not onboarded. */
 function computeClientOnboardingCompleted(isAdminBypass, client) {
@@ -411,6 +412,12 @@ router.post('/register', async (req, res) => {
       session.endSession();
       return res.status(400).json({ message: 'All fields including OTP are required' });
     }
+    const passwordValidation = validateStrongPassword(password);
+    if (!passwordValidation.valid) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: passwordValidation.message, code: 'WEAK_PASSWORD' });
+    }
 
     const displayName = (name && String(name).trim()) || businessName.trim();
 
@@ -558,8 +565,9 @@ router.post('/change-password', async (req, res) => {
     return res.status(400).json({ message: 'Email, OTP, and new password are required' });
   }
 
-  if (newPassword.length < 8) {
-    return res.status(400).json({ message: 'Password must be at least 8 characters long' });
+  const passwordValidation = validateStrongPassword(newPassword);
+  if (!passwordValidation.valid) {
+    return res.status(400).json({ message: passwordValidation.message, code: 'WEAK_PASSWORD' });
   }
 
   try {
@@ -597,8 +605,9 @@ router.post('/update-password', protect, async (req, res) => {
   if (!currentPassword || !newPassword) {
     return res.status(400).json({ message: 'Current password and new password are required' });
   }
-  if (newPassword.length < 8) {
-    return res.status(400).json({ message: 'New password must be at least 8 characters' });
+  const passwordValidation = validateStrongPassword(newPassword);
+  if (!passwordValidation.valid) {
+    return res.status(400).json({ message: passwordValidation.message, code: 'WEAK_PASSWORD' });
   }
 
   try {

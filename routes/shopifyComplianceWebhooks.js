@@ -52,6 +52,14 @@ function verifyComplianceHmac(req, res, next) {
   next();
 }
 
+function requireJsonBody(req, res, next) {
+  const contentType = String(req.get("Content-Type") || "").toLowerCase();
+  if (!contentType.includes("application/json")) {
+    return res.status(415).send("Unsupported Media Type");
+  }
+  next();
+}
+
 async function handleCustomerRedact(payload) {
   const domain = normalizeShopDomain(payload.shop_domain);
   const client = await Client.findOne({ shopDomain: domain });
@@ -162,8 +170,8 @@ async function handleShopRedact(payload) {
   }
 }
 
-router.post("/", verifyComplianceHmac, async (req, res) => {
-  const topic = req.get("X-Shopify-Topic") || "";
+async function processComplianceTopic(req, res, forcedTopic = "") {
+  const topic = forcedTopic || req.get("X-Shopify-Topic") || "";
   const payload = req.body || {};
 
   res.status(200).send("OK");
@@ -187,6 +195,24 @@ router.post("/", verifyComplianceHmac, async (req, res) => {
   } catch (err) {
     log.error(`[Compliance] handler error (${topic}): ${err.message}`);
   }
+}
+
+// Generic endpoint (single URI subscription).
+router.post("/", requireJsonBody, verifyComplianceHmac, async (req, res) => {
+  return processComplianceTopic(req, res, "");
+});
+
+// Explicit endpoints (helps App Review checks and dashboard clarity).
+router.post("/customers/data_request", requireJsonBody, verifyComplianceHmac, async (req, res) => {
+  return processComplianceTopic(req, res, "customers/data_request");
+});
+
+router.post("/customers/redact", requireJsonBody, verifyComplianceHmac, async (req, res) => {
+  return processComplianceTopic(req, res, "customers/redact");
+});
+
+router.post("/shop/redact", requireJsonBody, verifyComplianceHmac, async (req, res) => {
+  return processComplianceTopic(req, res, "shop/redact");
 });
 
 module.exports = router;
