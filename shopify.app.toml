@@ -1,8 +1,24 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
 name = "TopEdge Ai"
+client_id = "3bcca3618398260cf607bdc3b554059b"
+application_url = "https://dash.topedgeai.com/"
+embedded = false
 
 [webhooks]
 api_version = "2026-04"
 
-[[webhooks.subscriptions]]
-compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
-uri = "https://chatbot-backend-lg5y.onrender.com/api/shopify/compliance"
+  [[webhooks.subscriptions]]
+  uri = "https://chatbot-backend-lg5y.onrender.com/api/shopify/compliance"
+  compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "write_checkouts,read_checkouts,read_customers,write_customers,write_price_rules,write_discounts,write_draft_orders,write_inventory,read_inventory,read_locations,read_orders,write_orders,read_products,write_products,read_shopify_payments_payouts,read_themes,write_themes"
+optional_scopes = [ ]
+use_legacy_install_flow = false
+
+[auth]
+redirect_urls = [
+  "https://chatbot-backend-lg5y.onrender.com/api/shopify/callback"
+]
