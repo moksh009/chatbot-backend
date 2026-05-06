@@ -595,5 +595,28 @@ router.get("/google/callback", async (req, res) => {
     return res.redirect(`${frontendUrl}/settings?tab=integrations&google_error=callback_failed`);
   }
 });
+
+router.post("/google/disconnect/:clientId", protect, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+
+    await Client.findOneAndUpdate(
+      { clientId },
+      {
+        googleConnected: false,
+        gmailAddress: "",
+        gmailAccessToken: "",
+        gmailRefreshToken: "",
+        emailUser: "",
+        emailMethod: ""
+      }
+    );
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[Google OAuth] Disconnect error:", err.message);
+    return res.status(500).json({ error: "Failed to disconnect Google account" });
+  }
+});
 module.exports = router;
 module.exports.refreshExpiringInstagramTokens = refreshExpiringInstagramTokens;
