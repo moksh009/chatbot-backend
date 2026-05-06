@@ -24,9 +24,9 @@ function normalizeShopDomain(domain) {
 
 function verifyComplianceHmac(req, res, next) {
   const hmac = req.get("X-Shopify-Hmac-Sha256");
-  const secret = process.env.SHOPIFY_CLIENT_SECRET;
+  const secret = process.env.SHOPIFY_CLIENT_SECRET || process.env.SHOPIFY_API_SECRET;
   if (!secret) {
-    log.error("[Compliance] SHOPIFY_CLIENT_SECRET is not set");
+    log.error("[Compliance] SHOPIFY_CLIENT_SECRET/SHOPIFY_API_SECRET is not set");
     return res.status(500).send("Server misconfigured");
   }
   if (!hmac) {
