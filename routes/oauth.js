@@ -500,6 +500,10 @@ router.get("/google/start/:clientId", protect, async (req, res) => {
     const base = (process.env.BACKEND_URL || "https://chatbot-backend-lg5y.onrender.com").replace(/\/$/, "");
     const redirectUri = `${base}/api/oauth/google/callback`;
 
+    if (!process.env.GCAL_CLIENT_ID) {
+      return res.status(500).json({ error: "GCAL_CLIENT_ID is not configured" });
+    }
+
     // Gmail send scope + profile to get email address
     const scopes = [
       "https://www.googleapis.com/auth/gmail.send",
@@ -545,6 +549,10 @@ router.get("/google/callback", async (req, res) => {
   }
 
   try {
+    if (!process.env.GCAL_CLIENT_ID || !process.env.GCAL_CLIENT_SECRET) {
+      return res.redirect(`${frontendUrl}/settings?tab=integrations&google_error=config_error`);
+    }
+
     const base = (process.env.BACKEND_URL || "https://chatbot-backend-lg5y.onrender.com").replace(/\/$/, "");
     const redirectUri = `${base}/api/oauth/google/callback`;
 

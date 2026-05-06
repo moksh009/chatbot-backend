@@ -50,7 +50,7 @@ const generateToken = (id, clientId, role) => {
 };
 
 /**
- * Must exactly match an "Authorized redirect URI" on the same Google OAuth client as GOOGLE_CLIENT_ID / GCAL_CLIENT_ID.
+ * Must exactly match an "Authorized redirect URI" on the same Google OAuth client as GOOGLE_CLIENT_ID.
  * Calendar uses /api/oauth/google/callback — login uses /api/auth/google/callback (add both in Google Cloud Console).
  */
 function getGoogleAuthRedirectUri() {
@@ -678,11 +678,11 @@ router.post('/update-password', protect, async (req, res) => {
  */
 router.get('/google/login', (req, res) => {
   const { mode, businessName, legalAccepted, docsVersion } = req.query;
-  const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.GCAL_CLIENT_ID;
+  const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
   const REDIRECT_URI = getGoogleAuthRedirectUri();
 
   if (!GOOGLE_CLIENT_ID) {
-    console.error('[Google OAuth] Missing GOOGLE_CLIENT_ID or GCAL_CLIENT_ID in environment variables.');
+    console.error('[Google OAuth] Missing GOOGLE_CLIENT_ID in environment variables.');
     return res.status(500).json({ message: 'Google OAuth not configured' });
   }
 
@@ -742,9 +742,12 @@ router.get('/google/callback', async (req, res) => {
       return res.redirect(`${FRONTEND_URL}/login?error=invalid_state`);
     }
 
-    const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.GCAL_CLIENT_ID;
-    const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || process.env.GCAL_CLIENT_SECRET;
+    const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+    const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
     const REDIRECT_URI = getGoogleAuthRedirectUri();
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+      return res.redirect(`${FRONTEND_URL}/login?error=google_auth_failed`);
+    }
 
     // Exchange code for tokens
     const axios = require('axios');
