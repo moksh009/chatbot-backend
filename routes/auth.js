@@ -70,6 +70,44 @@ function getGoogleAuthRedirectUri() {
   return `${base}/api/auth/google/callback`;
 }
 
+function getGoogleOAuthStateSecret() {
+  return (
+    process.env.GOOGLE_OAUTH_STATE_SECRET ||
+    process.env.JWT_SECRET ||
+    process.env.GOOGLE_CLIENT_SECRET ||
+    ''
+  );
+}
+
+function signGoogleOAuthState(payload) {
+  const secret = getGoogleOAuthStateSecret();
+  if (!secret) return '';
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = crypto.createHmac('sha256', secret).update(body).digest('hex');
+  return `${body}.${sig}`;
+}
+
+function verifyGoogleOAuthState(state) {
+  if (!state || typeof state !== 'string') return null;
+  const dot = state.lastIndexOf('.');
+  if (dot <= 0) return null;
+  const body = state.slice(0, dot);
+  const sig = state.slice(dot + 1);
+  const secret = getGoogleOAuthStateSecret();
+  if (!secret) return null;
+  const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
+  try {
+    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  } catch (_) {
+    return null;
+  }
+  try {
+    return JSON.parse(Buffer.from(body, 'base64url').toString());
+  } catch (_) {
+    return null;
+  }
+}
+
 router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
   try {
     let user = await User.findById(req.user.id);
@@ -653,14 +691,18 @@ router.get('/google/login', (req, res) => {
   }
 
   // Encode signup data into state parameter (signup requires legal acceptance)
-  const stateData = JSON.stringify({
+  const statePayload = {
     mode: mode || 'login',
     businessName,
     businessType: 'ecommerce',
     legalAccepted: String(legalAccepted || '') === '1' || String(legalAccepted || '').toLowerCase() === 'true',
-    docsVersion: docsVersion ? String(docsVersion) : ''
-  });
-  const state = Buffer.from(stateData).toString('base64url');
+    docsVersion: docsVersion ? String(docsVersion) : '',
+    iat: Date.now()
+  };
+  const state = signGoogleOAuthState(statePayload);
+  if (!state) {
+    return res.status(500).json({ message: 'Google OAuth state signing not configured' });
+  }
 
   const scopes = [
     'openid',
@@ -674,8 +716,7 @@ router.get('/google/login', (req, res) => {
     `&response_type=code` +
     `&scope=${encodeURIComponent(scopes)}` +
     `&state=${encodeURIComponent(state)}` +
-    `&access_type=offline` +
-    `&prompt=consent`;
+    `&prompt=select_account`;
 
   return res.redirect(authUrl);
 });
@@ -693,10 +734,13 @@ router.get('/google/callback', async (req, res) => {
     }
 
     // Decode state
-    let stateData = { mode: 'login' };
-    try {
-      stateData = JSON.parse(Buffer.from(state, 'base64url').toString());
-    } catch {}
+    const stateData = verifyGoogleOAuthState(state) || null;
+    if (!stateData) {
+      return res.redirect(`${FRONTEND_URL}/login?error=invalid_state`);
+    }
+    if (Date.now() - Number(stateData.iat || 0) > 15 * 60 * 1000) {
+      return res.redirect(`${FRONTEND_URL}/login?error=invalid_state`);
+    }
 
     const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.GCAL_CLIENT_ID;
     const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || process.env.GCAL_CLIENT_SECRET;
@@ -719,9 +763,9 @@ router.get('/google/callback', async (req, res) => {
       headers: { Authorization: `Bearer ${access_token}` }
     });
 
-    const { email, name, picture, sub: googleId } = userInfoRes.data;
+    const { email, name, picture, sub: googleId, email_verified: emailVerified } = userInfoRes.data;
 
-    if (!email) {
+    if (!email || emailVerified === false) {
       return res.redirect(`${FRONTEND_URL}/login?error=no_email`);
     }
 
