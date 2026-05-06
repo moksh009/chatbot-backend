@@ -1,6 +1,7 @@
 const axios = require('axios');
 const Client = require('../models/Client');
 const { encrypt, decrypt } = require('./encryption');
+const shopifyAdminApiVersion = require('./shopifyAdminApiVersion');
 const log = require('./logger')('ShopifyGraphQL');
 
 /**
@@ -12,7 +13,7 @@ async function executeGraphQL(clientId, query, variables = {}) {
     if (!client) throw new Error('Client not found');
 
     const domain = client.shopDomain;
-    const apiVersion = client.shopifyApiVersion || '2024-01';
+    const apiVersion = client.shopifyApiVersion || shopifyAdminApiVersion;
     const token = decrypt(client.shopifyAccessToken);
 
     if (!token || !domain) {

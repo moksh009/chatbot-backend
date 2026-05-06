@@ -2,7 +2,6 @@ const express = require('express');
 const dotenv = require('dotenv');
 const log = require('./utils/logger')('Server');
 const connectDB = require('./db');
-const Appointment = require('./models/Appointment');
 const DailyStat = require('./models/DailyStat');
 const Client = require('./models/Client');
 const BirthdayUser = require('./models/BirthdayUser');
@@ -30,7 +29,6 @@ const mongoSanitize = require('express-mongo-sanitize'); // ✅ Phase R3: NoSQL 
 const rateLimit = require('express-rate-limit'); // ✅ Phase R3: Rate limiting — was installed, never applied
 const authRoutes = require('./routes/auth');
 const conversationRoutes = require('./routes/conversations');
-const appointmentRoutes = require('./routes/appointments');
 const analyticsRoutes = require('./routes/analytics');
 const campaignsRoutes = require('./routes/campaigns');
 const trackingRoutes = require('./routes/tracking');
@@ -39,8 +37,6 @@ const trackingRoutes = require('./routes/tracking');
 const dynamicClientRouter = require('./routes/dynamicClientRouter');
 const templatesRoutes = require('./routes/templates');
 const whatsappRoutes = require('./routes/whatsapp');
-const wooWebhookRoutes = require('./routes/wooWebhook');
-
 const app = express();
 app.set('trust proxy', 1); // ✅ Phase R3: Trust first proxy (Render/Nginx) for accurate rate limiting
 const PORT = process.env.PORT || 3000;
@@ -175,7 +171,6 @@ app.use((req, res, next) => {
 // API Routes
 app.use('/api/auth', authLimiter, authRoutes); // ✅ Phase R3: Brute-force protection on auth
 app.use('/api/conversations', conversationRoutes);
-app.use('/api/appointments', appointmentRoutes);
 app.use('/api/analytics', analyticsRoutes);
 
 const knowledgeRoutes = require('./routes/knowledge');
@@ -224,12 +219,13 @@ app.use('/api/shopify', shopifyOAuthRoutes); // OAuth routes first (static /auth
 app.use('/api/shopify', shopifyRoutes);       // Then param-based /:clientId/* routes
 
 const shopifyHubRoutes = require('./routes/shopifyHub');
-const wooHubRoutes = require('./routes/wooHub');
 app.use('/api/shopify-hub', shopifyHubRoutes);
-app.use('/api/woo-hub', wooHubRoutes);
+const workspaceRoutes = require('./routes/workspace');
+app.use('/api/workspace', workspaceRoutes);
 const shopifyWebhookRoutes = require('./routes/shopifyWebhook');
 app.use('/api/shopify/webhook', shopifyWebhookRoutes);
-app.use('/api/woocommerce/webhook', wooWebhookRoutes);
+const shopifyComplianceRoutes = require('./routes/shopifyComplianceWebhooks');
+app.use('/api/shopify/compliance', shopifyComplianceRoutes);
 const adminRoutes = require('./routes/admin'); // Added for DFY SaaS Super Admin
 const mediaRoutes = require('./routes/media');
 
@@ -312,8 +308,6 @@ app.use('/api/webhooks', intentWebhookRoutes); // Mounts /api/webhooks/meta
 app.use('/api/razorpay', require('./routes/razorpayWebhook'));
 const shopifyPixelRoutes = require('./routes/shopifyPixel');
 app.use('/api/shopify-pixel', shopifyPixelRoutes);
-const wooPixelRoutes = require('./routes/wooPixel');
-app.use('/api/woocommerce-pixel', wooPixelRoutes);
 
 // Phase 24: Growth & Health Check (Deep Monitoring)
 app.get('/api/health', HealthController.checkHealth);
@@ -485,223 +479,6 @@ require('./cron/insightsCron')();
 require('./cron/csatCron')();
 require('./cron/leadScoringCron');
 require('./cron/igTokenRefresher');
-
-// Cron job for appointment reminders (run daily at 7 AM)
-cron.schedule('0 7 * * *', async () => {
-  const istNow = DateTime.utc().setZone('Asia/Kolkata');
-  const today = istNow.toFormat('EEEE, dd MMM');
-
-  log.info(`[Cron] Running appointment reminder check for today (${today})...`);
-
-  try {
-    const clients = await Client.find({});
-    const { listEvents } = require('./utils/googleCalendar');
-    const { sendAppointmentReminder } = require('./utils/sendAppointmentReminder');
-
-    for (const client of clients) {
-      const token = client.whatsappToken || process.env.WHATSAPP_TOKEN;
-      const phoneid = client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
-      const clientId = client.clientId;
-
-      if (!token || !phoneid) continue;
-
-      // USER REQUEST: Stop sending 7 AM reminders to Choice Salon & Choice Holi users
-      if (clientId === 'choice_salon' || clientId === 'choice_salon_holi') {
-        log.info(`[Cron] Skipping 7 AM user reminders for ${clientId} as requested by admin.`);
-        continue;
-      }
-
-      // Get events from both doctor calendars and main calendar
-      const calendarIds = [];
-      if (client.googleCalendarId) calendarIds.push(client.googleCalendarId);
-      if (client.config && client.config.calendars) {
-        calendarIds.push(...Object.values(client.config.calendars));
-      }
-
-      // Fallback for legacy Code Clinic if no specific calendars configured
-      if (clientId === 'code_clinic_v1' && calendarIds.length === 0) {
-        if (process.env.GCAL_CALENDAR_ID) calendarIds.push(process.env.GCAL_CALENDAR_ID);
-        if (process.env.GCAL_CALENDAR_ID2) calendarIds.push(process.env.GCAL_CALENDAR_ID2);
-      }
-
-      if (calendarIds.length === 0) continue;
-
-      const startOfDay = istNow.startOf('day').toISO();
-      const endOfDay = istNow.endOf('day').toISO();
-
-      let allTodayEvents = [];
-
-      for (const calendarId of calendarIds) {
-        try {
-          const events = await listEvents(startOfDay, endOfDay, calendarId);
-          allTodayEvents = allTodayEvents.concat(events);
-        } catch (error) {
-          if (error.message.includes('invalid_grant')) {
-             log.warn(`[Cron] GCal token expired for ${calendarId} (invalid_grant)`);
-          } else {
-             log.warn(`[Cron] GCal Fetch skipped for client ${clientId} (${calendarId}):`, { error: error.message });
-          }
-        }
-      }
-
-      if (allTodayEvents.length === 0) continue;
-
-      log.info(`[Cron] Found ${allTodayEvents.length} events for client ${clientId}`);
-
-      // Process each event and send reminders to users who have consented
-      for (const event of allTodayEvents) {
-        try {
-          // Extract phone number from event description
-          const phoneMatch = event.description?.match(/Phone:\s*([^\n]+)/);
-          if (!phoneMatch) {
-            // console.log(`⚠️ No phone number found in event: ${event.summary}`);
-            continue;
-          }
-
-          const phoneNumber = phoneMatch[1].trim();
-
-          // Check if user has consented to appointment reminders
-          // Note: We search by phone. In future, we might want to verify they are associated with this client.
-          const userAppointments = await Appointment.find({
-            phone: phoneNumber,
-            'consent.appointmentReminders': true
-          });
-
-          if (userAppointments.length === 0) {
-            // console.log(`❌ Skipping reminder for ${phoneNumber} - user has not consented to reminders`);
-            continue;
-          }
-
-          // Extract appointment details from event
-          const nameMatch = event.description?.match(/Name:\s*([^\n]+)/);
-          const serviceMatch = event.description?.match(/Service:\s*([^\n]+)/);
-          const doctorMatch = event.description?.match(/Doctor:\s*([^\n]+)/);
-
-          const patientName = nameMatch ? nameMatch[1].trim() : "Valued Customer";
-          const service = serviceMatch ? serviceMatch[1].trim() : "Service";
-          const doctor = doctorMatch ? doctorMatch[1].trim() : "Our Professional";
-
-          // Format appointment time
-          const eventTime = DateTime.fromISO(event.start.dateTime).setZone('Asia/Kolkata');
-          const time = eventTime.toFormat('h:mm a');
-
-          await sendAppointmentReminder(phoneid, token, phoneNumber, {
-            summary: event.summary || `Appointment: ${patientName} - ${service} with ${doctor}`,
-            start: event.start.dateTime,
-            doctor: doctor,
-            date: today,
-            time: time
-          }, clientId);
-
-          log.info(`[Cron] Appointment reminder sent to ${phoneNumber} for ${time}`);
-          try {
-            const dateStr = istNow.toISODate();
-            await DailyStat.updateOne(
-              { clientId: clientId, date: dateStr },
-              { $inc: { appointmentRemindersSent: 1 }, $setOnInsert: { clientId: clientId, date: dateStr } },
-              { upsert: true }
-            );
-          } catch { }
-
-          // Add delay to avoid rate limiting
-          await new Promise(resolve => setTimeout(resolve, 1000));
-
-        } catch (error) {
-          log.error(`[Cron] Error processing appointment reminder for event ${event.id}:`, { error: error.message });
-        }
-      }
-      log.info(`[Cron] Appointment reminders completed for client ${clientId}`);
-    }
-  } catch (err) {
-    log.error('[Cron] Error in appointment reminder cron job:', { error: err.message });
-  }
-});
-
-// Admin 1-Hour Appointment Reminder (Choice Salon Specific)
-// Runs every 10 minutes, looking for appointments exactly 1 hour (± 5 mins) from now.
-cron.schedule('*/10 * * * *', async () => {
-  log.info(`[Cron] Running Admin 1-hour appointment reminder check...`);
-  try {
-    const clients = await Client.find({ clientId: { $in: ['choice_salon', 'choice_salon_holi'] } });
-    const { listEvents } = require('./utils/googleCalendar');
-    const { sendWhatsAppText } = require('./utils/whatsappHelpers'); // Or button helper if preferred
-
-    // We want to find events starting between 55 minutes and 65 minutes from "now"
-    const istNow = DateTime.utc().setZone('Asia/Kolkata');
-    const windowStart = istNow.plus({ minutes: 55 }).toISO();
-    const windowEnd = istNow.plus({ minutes: 65 }).toISO();
-
-    for (const client of clients) {
-      const token = client.whatsappToken || process.env.WHATSAPP_TOKEN;
-      const phoneid = client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
-      const clientId = client.clientId;
-      const adminNumbers = [...(client.config?.adminPhones || []), client.config?.adminPhone, '919824474547', process.env.ADMIN_PHONE_NUMBER].filter(Boolean);
-      const uniqueAdmins = [...new Set(adminNumbers)];
-
-      if (!token || !phoneid) continue;
-
-      // Get calendars
-      const calendarIds = [];
-      if (client.googleCalendarId) calendarIds.push(client.googleCalendarId);
-      if (client.config && client.config.calendars) {
-        calendarIds.push(...Object.values(client.config.calendars));
-      }
-      if (calendarIds.length === 0) continue;
-
-      let upcomingEvents = [];
-      for (const calendarId of calendarIds) {
-        try {
-          const events = await listEvents(windowStart, windowEnd, calendarId);
-          upcomingEvents = upcomingEvents.concat(events);
-        } catch (error) {
-          if (error.message.includes('invalid_grant')) {
-             // Only log a concise warning, avoid spamming stack traces for expired tokens
-             log.warn(`[Cron] GCal token expired for ${calendarId} (invalid_grant)`);
-          } else {
-             log.warn(`[Cron] Admin Reminder GCal Error (${calendarId}):`, { error: error.message });
-          }
-        }
-      }
-
-      for (const event of upcomingEvents) {
-        try {
-          // Prevent duplicate reminders by checking a custom Extended Property (if we could write it)
-          // Since we can't easily write to GCal extended props without extra API calls, we rely on the narrow 10m window.
-          // In a production scenario with potential overlapping cron runs, a DB log is safer.
-
-          // Parse event info
-          const nameMatch = event.description?.match(/Name:\s*([^\n]+)/i);
-          const serviceMatch = event.description?.match(/Service:\s*([^\n]+)/i);
-          const phoneMatch = event.description?.match(/Phone:\s*([^\n]+)/i);
-          const stylistMatch = event.description?.match(/Stylist:\s*([^\n]+)/i);
-
-          const patientName = nameMatch ? nameMatch[1].trim() : "A client";
-          const service = serviceMatch ? serviceMatch[1].trim() : event.summary.replace(patientName, '').replace('-', '').replace('Appointment:', '').trim() || "Service";
-          const phone = phoneMatch ? phoneMatch[1].trim() : "Unknown";
-          const stylist = stylistMatch ? stylistMatch[1].trim() : "Not specified";
-
-          const eventTime = DateTime.fromISO(event.start.dateTime).setZone('Asia/Kolkata').toFormat('h:mm a');
-
-          const message = `🔔 *UPCOMING APPOINTMENT ALERT*\n\nYou have an appointment arriving in exactly *1 Hour*.\n\n👤 *Client:* ${patientName}\n📞 *Phone:* ${phone}\n💅 *Service:* ${service}\n💇‍♀️ *Stylist:* ${stylist}\n⏰ *Time:* ${eventTime}\n\n_Please ensure the station is prepared!_ ✨`;
-
-          for (const adminPhone of uniqueAdmins) {
-            await sendWhatsAppText({
-              phoneNumberId: phoneid,
-              to: adminPhone,
-              body: message,
-              token: token
-            });
-          }
-          log.info(`[Cron] Admin 1HR Reminder sent for ${patientName} at ${eventTime}`);
-        } catch (err) {
-          log.error(`[Cron] Error sending Admin Reminder:`, { error: err.message });
-        }
-      }
-    }
-  } catch (err) {
-    log.error('[Cron] Error in admin 1HR reminder cron:', { error: err.message });
-  }
-});
 
 const http = require('http');
 const socketIo = require('socket.io');

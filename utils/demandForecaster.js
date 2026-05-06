@@ -2,13 +2,13 @@ const Order     = require("../models/Order");
 const Message   = require("../models/Message");
 const logger    = require("./logger");
 const axios     = require("axios");
+const shopifyAdminApiVersion = require("./shopifyAdminApiVersion");
 
 async function forecastDemand(client) {
   // Use either the client object or check for connection flags
   const isShopify = !!(client.shopifyAccessToken || client.commerce?.shopify?.accessToken);
-  const isWoo     = !!(client.woocommerceKey || client.commerce?.woocommerce?.key);
 
-  if (!isShopify && !isWoo) return null;
+  if (!isShopify) return null;
   
   // ── GET SALES VELOCITY ────────────────────────────────
   // Orders in last 30 days, grouped by product
@@ -51,7 +51,7 @@ async function forecastDemand(client) {
       const token  = client.shopifyAccessToken || client.commerce?.shopify?.accessToken;
       
       const { data } = await axios.get(
-        `https://${domain}/admin/api/2024-01/inventory_levels.json`,
+        `https://${domain}/admin/api/${shopifyAdminApiVersion}/inventory_levels.json`,
         {
           params:  { limit: 50 },
           headers: { "X-Shopify-Access-Token": token }

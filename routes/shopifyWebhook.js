@@ -15,6 +15,7 @@ const { logActivity } = require('../utils/activityLogger');
 const { recalculateLeadScore } = require('../utils/scoringHelper');
 const log = require('../utils/logger')('ShopifyWebhook');
 const commerceAutomationService = require('../utils/commerceAutomationService');
+const shopifyAdminApiVersion = require('../utils/shopifyAdminApiVersion');
 
 async function getProductImageForOrder(order, client) {
   // Try to get from order line items first (fastest)
@@ -22,7 +23,7 @@ async function getProductImageForOrder(order, client) {
   if (lineItem?.product_id && client.shopifyAccessToken) {
     try {
       const res = await axios.get(
-        `https://${client.shopDomain}/admin/api/2024-01/products/${lineItem.product_id}.json`,
+        `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}/products/${lineItem.product_id}.json`,
         { headers: { "X-Shopify-Access-Token": client.shopifyAccessToken } }
       );
       return res.data.product?.images?.[0]?.src || null;
@@ -189,7 +190,7 @@ async function enrichLineItemsForCommerce(client, lineItems = []) {
     if (!imageUrl && item.product_id && client.shopifyAccessToken && client.shopDomain) {
       try {
         const res = await axios.get(
-          `https://${client.shopDomain}/admin/api/2024-01/products/${item.product_id}.json`,
+          `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}/products/${item.product_id}.json`,
           { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
         );
         imageUrl = res.data.product?.images?.[0]?.src || null;
@@ -393,7 +394,7 @@ async function handleCheckout(client, data) {
         if (!imageUrl && item.product_id && client.shopifyAccessToken) {
             try {
                 const res = await axios.get(
-                    `https://${client.shopDomain}/admin/api/2024-01/products/${item.product_id}.json`,
+                    `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}/products/${item.product_id}.json`,
                     { headers: { "X-Shopify-Access-Token": client.shopifyAccessToken } }
                 );
                 imageUrl = res.data.product?.images?.[0]?.src || null;
@@ -704,7 +705,7 @@ async function handleOrder(client, data) {
     const orderTaggingEnabled = (client.automationFlows || []).find(f => f.id === 'order_tagging')?.isActive;
     if (orderTaggingEnabled && lead && lead.recoveryStep > 0 && data.id && client.shopifyAccessToken) {
         try {
-            const baseUrl = `https://${client.shopDomain}/admin/api/2024-01`;
+            const baseUrl = `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}`;
             const existingOrderRes = await axios.get(`${baseUrl}/orders/${data.id}.json`, {
                 headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken }
             });
@@ -824,7 +825,7 @@ async function createDraftOrder(client, originalOrder, discountCode) {
         return null;
     }
 
-    const url = `https://${client.shopDomain}/admin/api/2024-01/draft_orders.json`;
+    const url = `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}/draft_orders.json`;
     const payload = {
         draft_order: {
             line_items: originalOrder.line_items.map(item => ({

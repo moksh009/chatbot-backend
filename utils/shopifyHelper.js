@@ -1,6 +1,7 @@
 const axios = require('axios');
 const Client = require('../models/Client');
 const { encrypt, decrypt } = require('./encryption');
+const shopifyAdminApiVersion = require('./shopifyAdminApiVersion');
 
 /**
  * Robust Shopify Client Generator with Auto-Refresh & Self-Healing
@@ -12,7 +13,7 @@ async function getShopifyClient(clientId, forceRefresh = false) {
 
     let token = decrypt(client.shopifyAccessToken);
     const domain = client.shopDomain;
-    const apiVersion = client.shopifyApiVersion || '2026-01';
+    const apiVersion = client.shopifyApiVersion || shopifyAdminApiVersion;
 
     // STRICT VALIDATION: Prevent OAuth requests to invalid domains which cause HTML crashes
     if (!domain || domain.includes('your-store') || !domain.includes('.')) {

@@ -32,10 +32,7 @@ async function auditClients() {
       if (client.shopifyClientSecret !== undefined && client.shopifyClientSecret !== client.commerce?.shopify?.clientSecret) issues.push(`shopify.clientSecret !== shopifyClientSecret`);
       if (client.shopifyWebhookSecret !== undefined && client.shopifyWebhookSecret !== client.commerce?.shopify?.webhookSecret) issues.push(`shopify.webhookSecret !== shopifyWebhookSecret`);
 
-      // Commerce - WooCommerce
-      if (client.woocommerceUrl !== undefined && client.woocommerceUrl !== client.commerce?.woocommerce?.url) issues.push(`woocommerce.url !== woocommerceUrl`);
-      if (client.woocommerceKey !== undefined && client.woocommerceKey !== client.commerce?.woocommerce?.key) issues.push(`woocommerce.key !== woocommerceKey`);
-      if (client.woocommerceSecret !== undefined && client.woocommerceSecret !== client.commerce?.woocommerce?.secret) issues.push(`woocommerce.secret !== woocommerceSecret`);
+      // Legacy Woo fields (optional in DB) — no longer used by the app; ignored for audit noise
 
       // AI
       if (client.geminiApiKey !== undefined && client.geminiApiKey !== client.ai?.geminiKey) issues.push(`ai.geminiKey !== geminiApiKey`);

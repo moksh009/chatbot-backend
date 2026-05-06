@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const axios = require('axios');
 const Client = require('../models/Client');
+const shopifyAdminApiVersion = require('../utils/shopifyAdminApiVersion');
 const log = require('../utils/logger')('ProductSyncCron');
 
 /**
@@ -23,7 +24,7 @@ const scheduleProductSyncCron = () => {
                     log.info(`Syncing products for ${client.clientId} (${client.shopDomain})...`);
                     
                     const response = await axios.get(
-                        `https://${client.shopDomain}/admin/api/2024-01/products.json?limit=250`,
+                        `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}/products.json?limit=250`,
                         { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
                     );
 

@@ -385,11 +385,11 @@ async function validateAutomationFlow(client, flowType) {
 
   switch (flowType) {
     case 'abandoned_cart': {
-      if (!client.shopDomain && client.storeType !== 'woocommerce') {
+      if (!client.shopDomain) {
         errors.push({
           code:    'NO_STORE',
-          message: 'Abandoned cart recovery requires a connected store.',
-          fix:     'Go to Settings → Store → Connect your Shopify or WooCommerce store.'
+          message: 'Abandoned cart recovery requires a connected Shopify store.',
+          fix:     'Go to Settings → Commerce → Connect Shopify.'
         });
       }
       const template1 = flow.config?.template1;
@@ -472,11 +472,9 @@ async function getSystemHealth(client) {
   // Store
   checks.push({
     name:    'Store Connection',
-    status:  client.shopDomain || client.woocommerceUrl ? 'ok' : 'warning',
-    message: client.shopDomain     ? `Shopify: ${client.shopDomain}`
-           : client.woocommerceUrl ? `WooCommerce: ${client.woocommerceUrl}`
-           : 'No store connected',
-    fix:     'Settings → Store'
+    status:  client.shopDomain ? 'ok' : 'warning',
+    message: client.shopDomain ? `Shopify: ${client.shopDomain}` : 'No Shopify store connected',
+    fix:     'Settings → Commerce'
   });
 
   // AI

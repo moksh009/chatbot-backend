@@ -164,8 +164,13 @@ Respond strictly as JSON matching this schema:
 // POST /api/onboarding/analyze
 // ───────────────────────────────────────────────────────────────────────────
 router.post("/analyze", protect, async (req, res) => {
-  const { websiteUrl, brandName, industry } = req.body || {};
+  const { websiteUrl, brandName, industry, ecommerceCategories } = req.body || {};
   const clientId = req.user.clientId;
+  const categories = Array.isArray(ecommerceCategories)
+    ? ecommerceCategories.filter((x) => typeof x === "string" && x.trim())
+    : [];
+  const industryHint =
+    categories.length > 0 ? categories.join(", ") : String(industry || "").trim();
 
   const defaultsPayload = {
     success: true,
@@ -173,7 +178,7 @@ router.post("/analyze", protect, async (req, res) => {
     brandColor: "#4F46E5",
     logoUrl: "",
     brandTone: "professional",
-    productCategory: industry || "general",
+    productCategory: industryHint || "general",
     keySellingPoints: [],
     detectedLanguage: "English",
   };
@@ -186,7 +191,8 @@ router.post("/analyze", protect, async (req, res) => {
         {
           $set: {
             "onboardingData.brandName": String(brandName).trim(),
-            "onboardingData.industry": industry || "",
+            "onboardingData.industry": industryHint || "",
+            "onboardingData.ecommerceCategories": categories,
           },
         }
       ).catch(() => {});
@@ -201,7 +207,7 @@ router.post("/analyze", protect, async (req, res) => {
     let aiResult = null;
     if (scraped) {
       aiResult = await withTimeout(
-        inferBrandProfileWithAI(scraped, industry),
+        inferBrandProfileWithAI(scraped, industryHint),
         7500,
         null
       );
@@ -211,7 +217,8 @@ router.post("/analyze", protect, async (req, res) => {
       brandColor: scraped?.themeColor || "#4F46E5",
       logoUrl: scraped?.logoUrl || "",
       brandTone: aiResult?.brandTone || "professional",
-      productCategory: aiResult?.productCategory || industry || "general",
+      productCategory:
+        aiResult?.productCategory || industryHint || "general",
       keySellingPoints: aiResult?.keySellingPoints || [],
       detectedLanguage:
         aiResult?.detectedLanguage || scraped?.language || "English",
@@ -225,7 +232,8 @@ router.post("/analyze", protect, async (req, res) => {
         $set: {
           "onboardingData.brandName": String(brandName || "").trim(),
           "onboardingData.websiteUrl": String(websiteUrl || "").trim(),
-          "onboardingData.industry": industry || "",
+          "onboardingData.industry": industryHint || "",
+          "onboardingData.ecommerceCategories": categories,
           "onboardingData.brandProfile": brandProfile,
           // Mirror to canonical paths so downstream generators see them immediately
           ...(brandName ? { "platformVars.brandName": String(brandName).trim() } : {}),
@@ -284,6 +292,7 @@ router.patch("/progress", protect, async (req, res) => {
         "brandName",
         "websiteUrl",
         "industry",
+        "ecommerceCategories",
         "conversationVolume",
         "whatsappSkipped",
         "brandVoice",
@@ -543,6 +552,8 @@ router.patch("/complete", protect, async (req, res) => {
             onboardingCompleted: true,
             onboardingCompletedAt: now,
             onboardingStep: 5,
+            onboardingSkipped: false,
+            onboardingSkippedAt: null,
             wizardCompleted: false,
             wizardCompletedAt: null,
           },
@@ -557,6 +568,30 @@ router.patch("/complete", protect, async (req, res) => {
     res.json({ success: true, onboardingCompleted: true });
   } catch (err) {
     log.error(`complete error: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// PATCH /api/onboarding/defer — Setup Later / Skip (tracks intent, stays incomplete)
+// ───────────────────────────────────────────────────────────────────────────
+router.patch("/defer", protect, async (req, res) => {
+  const clientId = req.user.clientId;
+  try {
+    const now = new Date();
+    await Client.updateOne(
+      { clientId },
+      {
+        $set: {
+          onboardingSkipped: true,
+          onboardingSkippedAt: now,
+          onboardingCompleted: false,
+        },
+      }
+    );
+    res.json({ success: true, onboardingSkipped: true, onboardingSkippedAt: now });
+  } catch (err) {
+    log.error(`defer error: ${err.message}`);
     res.status(500).json({ success: false, error: err.message });
   }
 });

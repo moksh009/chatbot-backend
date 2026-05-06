@@ -45,6 +45,11 @@ const UserSchema = new mongoose.Schema({
       entityId:   { type: String }
     }
   }],
+  /** Record of acceptance of Privacy Policy / Terms at registration (audit). */
+  legal: {
+    acceptedAt: { type: Date },
+    docsVersion: { type: String, default: '' }
+  },
   createdAt: { type: Date, default: Date.now }
 });
 

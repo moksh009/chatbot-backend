@@ -18,7 +18,7 @@ const WEBHOOK_EVENTS = {
   "lead.tag_added":       "A tag was added to a lead",
   "lead.converted":       "Lead placed their first order",
   // Order
-  "order.created":        "New Shopify/WooCommerce order from a WhatsApp lead",
+  "order.created":        "New Shopify order from a WhatsApp lead",
   "order.cod_to_prepaid": "COD order converted to prepaid payment",
   // Conversation
   "conversation.started":   "New conversation opened",

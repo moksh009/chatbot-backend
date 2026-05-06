@@ -4,7 +4,9 @@ const axios = require('axios');
 const Client = require('../models/Client');
 const { protect, verifyClientAccess } = require('../middleware/auth');
 const { getShopifyClient, withShopifyRetry, exchangeShopifyToken } = require('../utils/shopifyHelper');
+const { buildConnectionStatusPayload } = require('../utils/connectionStatus');
 const { buildShopifyOrderSet, shopifyOrderFilter } = require('../utils/shopifyOrderMapper');
+const shopifyAdminApiVersion = require('../utils/shopifyAdminApiVersion');
 
 // ── INTERNAL SYNC AUTH BYPASS ────────────────────────────────────────────────
 // Allows the server to call its own sync routes during OAuth callback
@@ -23,7 +25,7 @@ async function registerWebhooks(shopDomain, accessToken, clientId) {
   for (const topic of topics) {
     try {
       await axios.post(
-        `https://${shopDomain}/admin/api/2026-01/webhooks.json`,
+        `https://${shopDomain}/admin/api/${shopifyAdminApiVersion}/webhooks.json`,
         {
           webhook: {
             topic,
@@ -182,6 +184,23 @@ router.post('/:clientId/reconnect-store', internalOrProtect, async (req, res) =>
 router.get('/:clientId/recent-orders', protect, verifyClientAccess, async (req, res) => {
   try {
     const { clientId } = req.params;
+    const client = await Client.findOne({ clientId })
+      .select({
+        shopDomain: 1,
+        shopifyAccessToken: 1,
+        commerce: 1,
+      })
+      .lean();
+
+    const { shopify_connected: connected } = buildConnectionStatusPayload(client);
+    if (!connected) {
+      return res.status(200).json({
+        success: true,
+        connected: false,
+        orders: [],
+      });
+    }
+
     console.log(`[Shopify] Fetching recent orders for ${clientId}...`);
 
     const result = await withShopifyRetry(clientId, async (shop) => {
@@ -200,14 +219,25 @@ router.get('/:clientId/recent-orders', protect, verifyClientAccess, async (req, 
       }));
     });
 
-    res.json({ success: true, orders: result });
+    res.json({ success: true, connected: true, orders: result });
   } catch (err) {
-    console.error(`[Shopify Recent Orders Error] for ${req.params.clientId}:`, err.message);
-    const isAuthError = err.response?.status === 401 || err.response?.status === 403 || err.message?.includes('incomplete') || err.message?.includes('invalid');
-    res.status(isAuthError ? 400 : 500).json({ 
-      success: false, 
-      error: err.message, 
-      isShopifyAuthError: isAuthError 
+    console.warn(`[Shopify Recent Orders] soft-fail for ${req.params.clientId}:`, err.message);
+    const softAuthError =
+      err.response?.status === 401 ||
+      err.response?.status === 403 ||
+      /incomplete|invalid|credentials/i.test(err.message || '');
+    if (softAuthError || err.response?.status === 402) {
+      return res.status(200).json({
+        success: true,
+        connected: false,
+        orders: [],
+      });
+    }
+    res.status(500).json({
+      success: false,
+      connected: false,
+      orders: [],
+      error: err.message,
     });
   }
 });

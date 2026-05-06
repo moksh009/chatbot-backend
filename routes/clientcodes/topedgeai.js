@@ -1991,7 +1991,7 @@ const handleWebhook = async (req, res) => {
             case 'faq_integration':
                 await sendWhatsAppInteractive({
                     phoneNumberId: phoneId, to: userPhone,
-                    body: "🔗 *Seamless Integrations*\n\nTopEdge AI integrates effortlessly with your existing tools! We connect directly to *Shopify, WooCommerce, Google Calendar, Zoho, HubSpot, and custom CRMs* via API.\n\nDon't have a CRM? No problem! We provide a beautiful, custom dashboard out-of-the-box.",
+                    body: "🔗 *Seamless Integrations*\n\nTopEdge AI integrates effortlessly with your existing tools! We connect directly to *Shopify, Meta, WhatsApp, Instagram, and your stack* via API.\n\nDon't have a CRM? No problem! We provide a beautiful, custom dashboard out-of-the-box.",
                     interactive: faqInteractive,
                     io, clientConfig
                 });

@@ -2,6 +2,7 @@
 
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { getLanguageInstructions } = require("./languageEngine");
+const shopifyAdminApiVersion = require("./shopifyAdminApiVersion");
 
 /**
  * Generate an AI-personalized WhatsApp cart recovery message.
@@ -39,7 +40,7 @@ async function generateSmartRecoveryMessage(client, lead, stepNumber = 1) {
       if (client.shopDomain && client.shopifyAccessToken && cart.handles?.length) {
         const { default: axios } = require("axios");
         const productResp = await axios.get(
-          `https://${client.shopDomain}/admin/api/2024-01/products.json?handle=${cart.handles[0]}`,
+          `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}/products.json?handle=${cart.handles[0]}`,
           { headers: { "X-Shopify-Access-Token": client.shopifyAccessToken } }
         );
         const p = productResp.data?.products?.[0];

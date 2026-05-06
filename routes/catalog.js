@@ -6,6 +6,7 @@ const Client            = require("../models/Client");
 const AdLead            = require("../models/AdLead");
 const { verifyToken }   = require("../middleware/auth");
 const { getCatalogId, syncProductsToCatalog, sendCatalogMessage, sendSingleProduct, sendMultiProduct } = require("../utils/whatsappCatalog");
+const shopifyAdminApiVersion = require("../utils/shopifyAdminApiVersion");
 
 // ─── GET /api/catalog/:clientId — status + product count ────────────────────
 router.get("/:clientId", verifyToken, async (req, res) => {
@@ -67,7 +68,7 @@ router.post("/:clientId/sync", verifyToken, async (req, res) => {
     // Pull from Shopify if connected
     if (client.shopDomain && client.shopifyAccessToken) {
       const axios = require("axios");
-      let url = `https://${client.shopDomain}/admin/api/2024-01/products.json?limit=250&status=active`;
+      let url = `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}/products.json?limit=250&status=active`;
       let hasMore = true;
 
       while (hasMore && products.length < 500) {
@@ -89,23 +90,6 @@ router.post("/:clientId/sync", verifyToken, async (req, res) => {
           else hasMore = false;
         } else hasMore = false;
       }
-    }
-    // WooCommerce fallback
-    else if (client.woocommerceConnected && client.woocommerceUrl) {
-      const axios = require("axios");
-      const resp = await axios.get(`${client.woocommerceUrl}/wp-json/wc/v3/products`, {
-        params: { per_page: 100, status: "publish" },
-        auth: { username: client.woocommerceKey, password: client.woocommerceSecret }
-      });
-      products = (resp.data || []).map(p => ({
-        id:          p.id,
-        title:       p.name,
-        description: p.description,
-        price:       p.price || "0",
-        image:       p.images?.[0]?.src || "",
-        available:   p.stock_status === "instock",
-        url:         p.permalink
-      }));
     }
     // Manual/custom products from request body
     else if (req.body.products?.length) {

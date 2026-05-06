@@ -36,17 +36,9 @@ const CommerceShopifySchema = new mongoose.Schema({
   webhookSecret: { type: String, default: "" } 
 }, { _id: false });
 
-const CommerceWooCommerceSchema = new mongoose.Schema({
-  url: { type: String, default: "" },
-  key: { type: String, default: "" }, 
-  secret: { type: String, default: "" }, 
-  webhookSecret: { type: String, default: "" } 
-}, { _id: false });
-
 const CommerceSchema = new mongoose.Schema({
-  storeType: { type: String, enum: ["shopify", "woocommerce", "manual"], default: "shopify" },
-  shopify: { type: CommerceShopifySchema, default: () => ({}) },
-  woocommerce: { type: CommerceWooCommerceSchema, default: () => ({}) }
+  storeType: { type: String, enum: ["shopify", "manual"], default: "shopify" },
+  shopify: { type: CommerceShopifySchema, default: () => ({}) }
 }, { _id: false });
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -358,7 +350,7 @@ const ClientSchema = new mongoose.Schema({
   shopifyWebhookSecret: { type: String, default: "" },
   shopifyClientId: { type: String, default: "" },
   shopifyClientSecret: { type: String, default: "" },
-  shopifyApiVersion: { type: String, default: "2026-01" },
+  shopifyApiVersion: { type: String, default: "2026-04" },
   shopifyInstallLink: { type: String, default: null }, // Added for Custom App Distribution
   shopifyConnectionStatus: { type: String, enum: ['connected', 'error', 'disconnected', 'pending_link'], default: 'connected' },
   lastShopifyError: { type: String, default: "" },
@@ -419,15 +411,10 @@ const ClientSchema = new mongoose.Schema({
   // Phase 13 Store & Instagram Integration
   storeType: {
     type: String,
-    enum: ["shopify", "woocommerce", "manual"],
+    enum: ["shopify", "manual"],
     default: "shopify"
   },
-  woocommerceConnected: { type: Boolean, default: false },
-  woocommerceUrl:    { type: String, default: "" },
-  woocommerceKey:    { type: String, default: "" },
-  woocommerceSecret: { type: String, default: "" },
-  woocommerceWebhookSecret: { type: String, default: "" },
-  
+
   instagramPageId:      { type: String, default: "" },
   instagramAccessToken: { type: String, default: "" },
   instagramAppSecret:   { type: String, default: "" },
@@ -454,14 +441,19 @@ const ClientSchema = new mongoose.Schema({
   onboardingCompleted:   { type: Boolean, default: false },
   onboardingStartedAt:   { type: Date, default: null },
   onboardingCompletedAt: { type: Date, default: null },
-  onboardingStep:        { type: Number, default: 0, min: 0, max: 6 }, // 0-indexed, 0..6 (7 screens)
+  onboardingStep:        { type: Number, default: 0, min: 0, max: 6 }, // 0-indexed; completes at step 5 sentinel
+  onboardingSkipped:     { type: Boolean, default: false },
+  onboardingSkippedAt:   { type: Date, default: null },
   onboardingData: {
     // Step 0: Goals
     goals: { type: [String], default: [] }, // e.g. ["abandoned_cart", "order_status", "support_bot"]
     // Step 1: Business
     brandName: { type: String, default: "" },
     websiteUrl: { type: String, default: "" },
+    /** @deprecated Prefer ecommerceCategories for new signups — kept for legacy records */
     industry: { type: String, default: "" },
+    /** Ecommerce product categories (workspace profile / AI personalization) */
+    ecommerceCategories: { type: [String], default: [] },
     conversationVolume: { type: String, default: "" }, // "<500" | "500-2k" | "2k-10k" | "10k+"
     // Step 2: AI analysis output (what the scrape found)
     brandProfile: {
@@ -810,9 +802,6 @@ function encryptSubDocs(doc) {
   if (doc.commerce?.shopify?.refreshToken) doc.commerce.shopify.refreshToken = enc(doc.commerce.shopify.refreshToken);
   if (doc.commerce?.shopify?.clientSecret) doc.commerce.shopify.clientSecret = enc(doc.commerce.shopify.clientSecret);
   if (doc.commerce?.shopify?.webhookSecret) doc.commerce.shopify.webhookSecret = enc(doc.commerce.shopify.webhookSecret);
-  if (doc.commerce?.woocommerce?.key) doc.commerce.woocommerce.key = enc(doc.commerce.woocommerce.key);
-  if (doc.commerce?.woocommerce?.secret) doc.commerce.woocommerce.secret = enc(doc.commerce.woocommerce.secret);
-  if (doc.commerce?.woocommerce?.webhookSecret) doc.commerce.woocommerce.webhookSecret = enc(doc.commerce.woocommerce.webhookSecret);
   if (doc.ai?.geminiKey) doc.ai.geminiKey = enc(doc.ai.geminiKey);
   if (doc.ai?.openaiKey) doc.ai.openaiKey = enc(doc.ai.openaiKey);
   if (doc.social?.instagram?.accessToken) doc.social.instagram.accessToken = enc(doc.social.instagram.accessToken);
@@ -825,7 +814,6 @@ function encryptSubDocs(doc) {
   if (doc.shopifyRefreshToken) doc.shopifyRefreshToken = enc(doc.shopifyRefreshToken);
   if (doc.shopifyWebhookSecret) doc.shopifyWebhookSecret = enc(doc.shopifyWebhookSecret);
   if (doc.shopifyClientSecret) doc.shopifyClientSecret = enc(doc.shopifyClientSecret);
-  if (doc.woocommerceSecret) doc.woocommerceSecret = enc(doc.woocommerceSecret);
   if (doc.geminiApiKey) doc.geminiApiKey = enc(doc.geminiApiKey);
   if (doc.openaiApiKey) doc.openaiApiKey = enc(doc.openaiApiKey);
   if (doc.instagramAccessToken) doc.instagramAccessToken = enc(doc.instagramAccessToken);
@@ -916,10 +904,9 @@ function encryptUpdateQuery(update) {
   
   const encPaths = [
     'whatsapp.accessToken', 'commerce.shopify.accessToken', 'commerce.shopify.refreshToken', 'commerce.shopify.clientSecret', 'commerce.shopify.webhookSecret',
-    'commerce.woocommerce.key', 'commerce.woocommerce.secret', 'commerce.woocommerce.webhookSecret',
     'ai.geminiKey', 'ai.openaiKey', 'social.instagram.accessToken', 'social.instagram.appSecret', 'social.metaAds.accessToken',
     'whatsappToken', 'shopifyAccessToken', 'shopifyRefreshToken', 'shopifyWebhookSecret', 'shopifyClientSecret',
-    'woocommerceSecret', 'geminiApiKey', 'openaiApiKey', 'instagramAccessToken', 
+    'geminiApiKey', 'openaiApiKey', 'instagramAccessToken', 
     'instagramAppSecret', 'igAccessToken', 'razorpaySecret', 'cashfreeSecretKey', 'stripeSecretKey', 
     'payuMerchantSalt', 'phonepeSaltKey', 'emailAppPassword'
   ];

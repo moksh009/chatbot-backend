@@ -13,6 +13,7 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
+const shopifyAdminApiVersion = require('../utils/shopifyAdminApiVersion');
 const { encrypt, decrypt } = require('../utils/encryption');
 const { sanitizeMiddleware } = require('../utils/sanitize');
 const { ensureClientForUser } = require('../utils/ensureClientForUser');
@@ -119,7 +120,7 @@ router.get('/clients', protect, isSuperAdmin, sanitizeMiddleware, async (req, re
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .select('clientId businessName name wabaId phoneNumberId whatsappToken shopifyAccessToken shopDomain storeType woocommerceUrl woocommerceKey woocommerceSecret instagramConnected adminAlertEmail adminAlertWhatsapp emailUser emailAppPassword emailMethod googleConnected gmailAddress isActive createdAt config.wabaId config.phoneNumberId config.whatsappToken config.shopifyAccessToken config.shopDomain config.storeType config.woocommerceUrl config.woocommerceKey config.woocommerceSecret')
+      .select('clientId businessName name wabaId phoneNumberId whatsappToken shopifyAccessToken shopDomain storeType instagramConnected adminAlertEmail adminAlertWhatsapp emailUser emailAppPassword emailMethod googleConnected gmailAddress isActive createdAt config.wabaId config.phoneNumberId config.whatsappToken config.shopifyAccessToken config.shopDomain config.storeType')
       .lean();
     
     const total = await Client.countDocuments(filter);
@@ -398,12 +399,6 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
           clientId: req.body.shopifyClientId || '',
           clientSecret: req.body.shopifyClientSecret || '',
           webhookSecret: req.body.shopifyWebhookSecret || ''
-        },
-        woocommerce: {
-          url: req.body.woocommerceUrl || '',
-          key: req.body.woocommerceKey || '',
-          secret: req.body.woocommerceSecret || '',
-          webhookSecret: req.body.woocommerceWebhookSecret || ''
         }
       },
       ai: {
@@ -780,7 +775,7 @@ router.patch('/my-settings', protect, async (req, res) => {
       flowDraft,
       wabaId, phoneNumberId, whatsappToken,
       shopDomain, shopifyClientId, shopifyClientSecret, shopifyAccessToken, shopifyWebhookSecret,
-      woocommerceUrl, woocommerceKey, woocommerceSecret, storeType,
+      storeType,
       instagramConnected, instagramPageId, instagramAccessToken, instagramAppSecret,
       googleReviewUrl, adminPhone, adminEmail,
       adminAlertEmail, adminAlertWhatsapp, adminAlertPreferences, metaAppId,
@@ -920,18 +915,6 @@ router.patch('/my-settings', protect, async (req, res) => {
       updateFields['commerce.shopify.webhookSecret'] = shopifyWebhookSecret;
     }
 
-    if (woocommerceUrl !== undefined) {
-      updateFields.woocommerceUrl = woocommerceUrl;
-      updateFields['commerce.woocommerce.url'] = woocommerceUrl;
-    }
-    if (woocommerceKey !== undefined && woocommerceKey !== '••••••••' && woocommerceKey.trim() !== '') {
-      updateFields.woocommerceKey = woocommerceKey;
-      updateFields['commerce.woocommerce.key'] = woocommerceKey;
-    }
-    if (woocommerceSecret !== undefined && woocommerceSecret !== '••••••••' && woocommerceSecret.trim() !== '') {
-      updateFields.woocommerceSecret = woocommerceSecret;
-      updateFields['commerce.woocommerce.secret'] = woocommerceSecret;
-    }
     if (storeType !== undefined) {
       updateFields.storeType = storeType;
       updateFields['commerce.storeType'] = storeType;
@@ -2120,7 +2103,7 @@ router.post('/test-shopify', protect, async (req, res) => {
     const cleanDomain = shopDomain.replace('https://', '').replace('http://', '').split('/')[0];
 
     const response = await axios.get(
-      `https://${cleanDomain}/admin/api/2024-01/shop.json`,
+      `https://${cleanDomain}/admin/api/${shopifyAdminApiVersion}/shop.json`,
       {
         headers: { 'X-Shopify-Access-Token': shopifyAccessToken },
         timeout: 10000

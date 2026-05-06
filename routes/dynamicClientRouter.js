@@ -11,7 +11,6 @@ const turfController = require('./clientcodes/turf');
 const salonController = require('./clientcodes/salon');
 const choiceSalonController = require('./clientcodes/choice_salon_holi');
 const topedgeController = require('./clientcodes/topedgeai');
-const genericAppointmentEngine = require('./engines/genericAppointment');
 const genericEcommerceEngine = require('./engines/genericEcommerce');
 const commerceAutomationService = require('../utils/commerceAutomationService');
 

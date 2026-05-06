@@ -3,6 +3,7 @@ const log = require('./logger')('ReputationService');
 const WhatsApp = require('./whatsapp');
 const EmailService = require('./emailService');
 const AdLead = require('../models/AdLead');
+const shopifyAdminApiVersion = require('./shopifyAdminApiVersion');
 
 /**
  * Schedules a review request for a specific order.
@@ -81,7 +82,7 @@ async function processPendingReviewRequests() {
                 let productImage = null;
                 try {
                     const res = await require('axios').get(
-                        `https://${client.shopDomain}/admin/api/2024-01/products/${req.productId}.json`,
+                        `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}/products/${req.productId}.json`,
                         { headers: { "X-Shopify-Access-Token": client.shopifyAccessToken } }
                     );
                     productImage = res.data.product?.images?.[0]?.src || client.logoUrl || null;

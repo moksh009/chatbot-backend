@@ -9,6 +9,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs'); // ✅ Phase R4: for authenticated change-password
 const { sendSystemOTPEmail } = require('../utils/emailService');
 const { ensureClientForUser } = require('../utils/ensureClientForUser');
+const { LEGAL_DOCS_VERSION } = require('../config/legalDocs');
 
 /** Grandfathered clients may omit onboardingCompleted; missing Client doc means not onboarded. */
 function computeClientOnboardingCompleted(isAdminBypass, client) {
@@ -128,6 +129,8 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
           client
         ),
         onboardingStep: client ? (client.onboardingStep || 0) : 0,
+        onboardingSkipped: !!(client && client.onboardingSkipped),
+        onboardingSkippedAt: client?.onboardingSkippedAt ?? null,
         onboardingData: client ? (client.onboardingData || {}) : {},
         clientConfig,
         clientTemplates: client?.config?.templates || null
@@ -164,7 +167,7 @@ router.get('/bootstrap', protect, async (req, res) => {
     const [client, unreadCount, todayStats, recentConversations] = await Promise.all([
       // 1. Client settings + User
       Client.findOne({ clientId })
-        .select('clientId businessName name ai.persona adminPhone brand billing trialActive trialEndsAt shopDomain phoneNumberId wabaId whatsappToken shopifyAccessToken shopifyConnectionStatus shopifyInstallLink instagramConnected instagramPageId instagramUsername instagramProfilePic instagramAccessToken instagramTokenExpiry metaAdsConnected commerce social whatsapp config visualFlows metaAdsToken metaAdAccountId emailUser emailAppPassword metaAppId geminiApiKey openaiApiKey activePaymentGateway razorpayKeyId razorpaySecret cashfreeAppId cashfreeSecretKey faq googleConnected gmailAddress emailMethod onboardingCompleted onboardingStep onboardingData wizardCompleted')
+        .select('clientId businessName name ai.persona adminPhone brand billing trialActive trialEndsAt shopDomain phoneNumberId wabaId whatsappToken shopifyAccessToken shopifyConnectionStatus shopifyInstallLink instagramConnected instagramPageId instagramUsername instagramProfilePic instagramAccessToken instagramTokenExpiry metaAdsConnected commerce social whatsapp config visualFlows metaAdsToken metaAdAccountId emailUser emailAppPassword metaAppId geminiApiKey openaiApiKey activePaymentGateway razorpayKeyId razorpaySecret cashfreeAppId cashfreeSecretKey faq googleConnected gmailAddress emailMethod onboardingCompleted onboardingSkipped onboardingSkippedAt onboardingStep onboardingData wizardCompleted')
         .lean()
         .then(c => {
           if (!c) return null;
@@ -238,7 +241,9 @@ router.get('/bootstrap', protect, async (req, res) => {
         business_type: 'ecommerce',
         // Phase 32: surfaced at top-level user for quick guard checks
         onboardingCompleted,
-        onboardingStep: client?.onboardingStep || 0
+        onboardingStep: client?.onboardingStep || 0,
+        onboardingSkipped: !!(client && client.onboardingSkipped),
+        onboardingSkippedAt: client?.onboardingSkippedAt ?? null
       },
       client: client || {},
       inbox: { unreadCount, recentConversations },
@@ -355,6 +360,8 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
         // Phase 32
         onboardingCompleted,
         onboardingStep: client?.onboardingStep || 0,
+        onboardingSkipped: !!(client && client.onboardingSkipped),
+        onboardingSkippedAt: client?.onboardingSkippedAt ?? null,
         onboardingData: client?.onboardingData || {},
         clientConfig: client ? client.toObject() : {},
         clientTemplates: client && client.config && client.config.templates ? client.config.templates : null
@@ -371,8 +378,22 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
 });
 
 router.post('/register', async (req, res) => {
-  const { name, email, password, businessName, otp } = req.body;
+  const { name, email, password, businessName, otp, acceptLegal, docsVersion } = req.body;
   const mongoose = require('mongoose');
+
+  if (!acceptLegal) {
+    return res.status(400).json({
+      message: 'You must agree to the Privacy Policy and Terms of Service to create an account.',
+      code: 'LEGAL_ACCEPTANCE_REQUIRED'
+    });
+  }
+  const dv = docsVersion ? String(docsVersion) : '';
+  if (dv !== LEGAL_DOCS_VERSION) {
+    return res.status(400).json({
+      message: 'Legal documents were updated. Please refresh the signup page and try again.',
+      code: 'LEGAL_VERSION_MISMATCH'
+    });
+  }
 
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -437,7 +458,8 @@ router.post('/register', async (req, res) => {
       password,
       role: 'CLIENT_ADMIN',
       business_type: chosenType,
-      clientId: newClientId
+      clientId: newClientId,
+      legal: { acceptedAt: new Date(), docsVersion: LEGAL_DOCS_VERSION }
     }], { session });
 
     await session.commitTransaction();
@@ -608,7 +630,7 @@ router.post('/update-password', protect, async (req, res) => {
  * Query: ?mode=login|signup&businessName=X&businessType=Y (signup only)
  */
 router.get('/google/login', (req, res) => {
-  const { mode, businessName } = req.query;
+  const { mode, businessName, legalAccepted, docsVersion } = req.query;
   const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.GCAL_CLIENT_ID;
   const REDIRECT_URI = getGoogleAuthRedirectUri();
 
@@ -621,8 +643,14 @@ router.get('/google/login', (req, res) => {
     console.info('[Google OAuth] login redirect_uri=', REDIRECT_URI);
   }
 
-  // Encode signup data into state parameter
-  const stateData = JSON.stringify({ mode: mode || 'login', businessName, businessType: 'ecommerce' });
+  // Encode signup data into state parameter (signup requires legal acceptance)
+  const stateData = JSON.stringify({
+    mode: mode || 'login',
+    businessName,
+    businessType: 'ecommerce',
+    legalAccepted: String(legalAccepted || '') === '1' || String(legalAccepted || '').toLowerCase() === 'true',
+    docsVersion: docsVersion ? String(docsVersion) : ''
+  });
   const state = Buffer.from(stateData).toString('base64url');
 
   const scopes = [
@@ -708,6 +736,13 @@ router.get('/google/callback', async (req, res) => {
 
     } else {
       // ── New User: Auto-create Account ──────────────────────
+      // Any new OAuth user must have affirmed current legal docs (signup checkbox or login browsewrap URL params).
+      if (
+        !stateData.legalAccepted ||
+        String(stateData.docsVersion || '') !== LEGAL_DOCS_VERSION
+      ) {
+        return res.redirect(`${FRONTEND_URL}/signup?error=legal_required`);
+      }
       const crypto = require('crypto');
       const businessName = stateData.businessName || name + "'s Business";
       const businessType = 'ecommerce';
@@ -743,7 +778,8 @@ router.get('/google/callback', async (req, res) => {
         clientId: newClientId,
         googleId,
         profilePicture: picture,
-        authProvider: 'google'
+        authProvider: 'google',
+        legal: { acceptedAt: new Date(), docsVersion: LEGAL_DOCS_VERSION }
       });
 
       const token = generateToken(user._id, user.clientId, user.role);

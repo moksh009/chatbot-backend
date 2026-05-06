@@ -36,6 +36,7 @@ async function sendShopifyEmail({ to, subject, html }) {
 }
 
 const { encrypt } = require('../utils/encryption');
+const shopifyAdminApiVersion = require('../utils/shopifyAdminApiVersion');
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 const SHOPIFY_CLIENT_ID = () => process.env.SHOPIFY_CLIENT_ID;
@@ -150,7 +151,7 @@ async function registerWebhooks(shopDomain, accessToken, clientId) {
   for (const topic of topics) {
     try {
       await axios.post(
-        `https://${shopDomain}/admin/api/2026-01/webhooks.json`,
+        `https://${shopDomain}/admin/api/${shopifyAdminApiVersion}/webhooks.json`,
         {
           webhook: {
             topic,
@@ -375,7 +376,9 @@ router.post('/assign-link', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// STEP 1: POST /api/shopify/auth — Retrieve Custom Installation Link
+// STEP 1: POST /api/shopify/auth — Public / multi-store OAuth (no custom install link)
+// Returns a direct Admin OAuth URL with one-time `state` (and sets cookie as fallback).
+// Works for Shopify App Store + Partner "public" apps: any merchant store can install.
 // ═══════════════════════════════════════════════════════════════════════════════
 router.post('/auth', async (req, res) => {
   try {
@@ -390,34 +393,53 @@ router.post('/auth', async (req, res) => {
       cleanShop = `${cleanShop}.myshopify.com`;
     }
 
-    const client = await Client.findOne({ clientId }).lean();
+    if (!isValidShopDomain(cleanShop)) {
+      return res.status(400).json({ success: false, error: 'Invalid shop domain. Use your-store.myshopify.com' });
+    }
+
+    const client = await Client.findOne({ clientId });
     if (!client) {
       return res.status(404).json({ success: false, error: 'Client not found' });
     }
 
-    if (!client.shopifyInstallLink) {
-      return res.status(422).json({ 
-        success: false, 
-        error: 'Please contact support to generate your secure installation link.' 
-      });
+    const appClientId = SHOPIFY_CLIENT_ID();
+    const appSecret = SHOPIFY_CLIENT_SECRET();
+    if (!appClientId || !appSecret) {
+      return res.status(500).json({ success: false, error: 'Shopify app credentials are not configured on the server.' });
     }
 
-    // Set secure, signed cookie with clientId
-    const cookieSecret = process.env.SHOPIFY_CLIENT_SECRET || process.env.SHOPIFY_API_SECRET || 'fallback_cookie_secret';
+    const nonce = crypto.randomBytes(24).toString('hex');
+    nonceStore.set(nonce, { clientId, shop: cleanShop, createdAt: Date.now() });
+
+    const cookieSecret = appSecret || process.env.SHOPIFY_API_SECRET || 'fallback_cookie_secret';
     const signedClientId = signCookieValue(clientId, cookieSecret);
-    
+
     res.cookie('shopify_oauth_client', signedClientId, {
       httpOnly: true,
-      secure: true, // Required when sameSite=none
-      sameSite: 'none', // Must be none to survive cross-site redirect through Shopify admin
-      maxAge: 10 * 60 * 1000 // 10 minutes
+      secure: true,
+      sameSite: 'none',
+      maxAge: 10 * 60 * 1000
     });
 
-    console.log(`🔄 [ShopifyOAuth] Custom Install Link retrieved for clientId=${clientId}`);
-    return res.json({ success: true, shopifyInstallLink: client.shopifyInstallLink });
+    const scopes = SHOPIFY_SCOPES();
+    const redirectUri = SHOPIFY_REDIRECT_URI();
+    const authUrl =
+      `https://${cleanShop}/admin/oauth/authorize` +
+      `?client_id=${encodeURIComponent(appClientId)}` +
+      `&scope=${encodeURIComponent(scopes)}` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&state=${encodeURIComponent(nonce)}`;
+
+    console.log(`🔄 [ShopifyOAuth] OAuth URL built for clientId=${clientId} shop=${cleanShop}`);
+
+    return res.json({
+      success: true,
+      authUrl,
+      shopifyInstallLink: client.shopifyInstallLink || null
+    });
 
   } catch (error) {
-    console.error('❌ [ShopifyOAuth] Auth retrieval error:', error);
+    console.error('❌ [ShopifyOAuth] Auth initiation error:', error);
     return res.status(500).json({ success: false, error: 'Internal server error during Shopify auth initiation' });
   }
 });
@@ -500,7 +522,7 @@ router.get('/app-load', async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 router.get('/callback', async (req, res) => {
   try {
-    const { code, hmac, shop } = req.query; // No state required for Custom Distribution Link
+    const { code, hmac, shop, state } = req.query;
     const frontendUrl = FRONTEND_URL();
 
     // ── 1. Parameter Validation ───────────────────────────────────────────────
@@ -528,14 +550,47 @@ router.get('/callback', async (req, res) => {
     }
     console.log('✅ [ShopifyOAuth] HMAC verification passed');
 
+    // ── 2b. Resolve workspace from OAuth `state` (preferred for public apps) ───
+    let client = null;
+    if (state && typeof state === 'string') {
+      if (state.endsWith(':SHOPIFY_INSTALL')) {
+        const noncePart = state.slice(0, -(':SHOPIFY_INSTALL'.length));
+        const pending = nonceStore.get(noncePart);
+        if (pending) nonceStore.delete(noncePart);
+        if (pending?.clientId === 'SHOPIFY_INSTALL') {
+          client = await Client.findOne({
+            $or: [{ shopDomain: shop }, { 'commerce.shopify.domain': shop }]
+          });
+          if (!client) {
+            console.warn('[ShopifyOAuth] App Store install: no workspace linked to shop yet');
+            return res.redirect(`${frontendUrl}/settings?tab=store&shopify_error=install_requires_account`);
+          }
+          console.log(`✅ [ShopifyOAuth] Client resolved via App Store flow: ${client.clientId}`);
+        }
+      } else {
+        const pending = nonceStore.get(state);
+        if (pending) {
+          nonceStore.delete(state);
+          client = await Client.findOne({ clientId: pending.clientId });
+          if (client && pending.shop && shop === pending.shop) {
+            await Client.updateOne(
+              { clientId: pending.clientId },
+              { $set: { shopDomain: shop, 'commerce.shopify.domain': shop, storeType: 'shopify', 'commerce.storeType': 'shopify' } }
+            );
+          }
+          if (client) {
+            console.log(`✅ [ShopifyOAuth] Client resolved via OAuth state: ${pending.clientId}`);
+          }
+        }
+      }
+    }
+
     // ── 3. Session (Cookie) Verification + DB Fallback ───────────────────────────
     const cookieSecret = process.env.SHOPIFY_CLIENT_SECRET || process.env.SHOPIFY_API_SECRET || 'fallback_cookie_secret';
     const rawCookie = getRawCookie(req, 'shopify_oauth_client');
     const clientIdFromCookie = verifyAndExtractCookie(rawCookie, cookieSecret);
 
-    let client = null;
-
-    if (clientIdFromCookie) {
+    if (!client && clientIdFromCookie) {
       client = await Client.findOne({ clientId: clientIdFromCookie });
       console.log(`✅ [ShopifyOAuth] Client resolved via cookie: ${clientIdFromCookie}`);
     }
