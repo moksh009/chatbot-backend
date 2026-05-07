@@ -9,6 +9,8 @@ const { handleWhatsAppMessage, saveInboundMessage } = require('../utils/dualBrai
 const { processOrderForLoyalty } = require('../utils/walletService');
 const { logActivity } = require('../utils/activityLogger');
 const { recalculateLeadScore } = require('../utils/scoringHelper');
+const { buildEventEnvelope } = require('../utils/eventEnvelope');
+const { emitToClient } = require('../utils/socket');
 
 /**
  * Middleware to verify Meta X-Hub-Signature-256
@@ -183,6 +185,26 @@ async function processMessages(messages, metadata, contacts) {
       }
 
       log.info(`Incoming from ${from}: ${message.type}`, { messageId });
+      const clientDocForEnvelope = await require('../models/Client').findOne(
+        { phoneNumberId: phone_number_id },
+        { clientId: 1 }
+      ).lean();
+      if (clientDocForEnvelope?.clientId) {
+        const envelope = buildEventEnvelope({
+          channel: 'whatsapp',
+          eventType: 'inbound_message',
+          clientId: clientDocForEnvelope.clientId,
+          userId: from,
+          message: {
+            id: messageId,
+            type: message.type,
+            from
+          },
+          payload: { message, contacts, metadata },
+          meta: { source: 'master_webhook' }
+        });
+        emitToClient(clientDocForEnvelope.clientId, 'orchestration:event', envelope);
+      }
 
       // 2. Extract Meta Referral (Ad Attribution)
       if (message.referral) {

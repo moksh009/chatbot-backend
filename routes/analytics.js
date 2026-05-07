@@ -170,6 +170,162 @@ router.get('/flow-heatmap', protect, async (req, res) => {
   }
 });
 
+// GET /api/analytics/flow-observability
+// @desc    Enterprise node-level observability (conversion, failures, latency, branch drop-offs)
+// @access  Private
+router.get('/flow-observability', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const { flowId, minutes = 60 } = req.query;
+    const FlowAnalytics = require('../models/FlowAnalytics');
+    const windowMinutes = Math.max(5, Math.min(Number(minutes) || 60, 24 * 60));
+    const windowStart = new Date(Date.now() - windowMinutes * 60 * 1000);
+
+    const matchQuery = {
+      clientId,
+      timestamp: { $gte: windowStart }
+    };
+    if (flowId) matchQuery.flowId = String(flowId);
+
+    const [nodeAgg, edgeAgg, recentFailures] = await Promise.all([
+      FlowAnalytics.aggregate([
+        { $match: matchQuery },
+        {
+          $group: {
+            _id: '$nodeId',
+            nodeType: { $first: '$nodeType' },
+            entries: { $sum: { $cond: [{ $eq: ['$action', 'entry'] }, 1, 0] } },
+            failures: { $sum: { $cond: [{ $eq: ['$action', 'failure'] }, 1, 0] } },
+            timeouts: { $sum: { $cond: [{ $eq: ['$action', 'timeout'] }, 1, 0] } },
+            dropoffs: { $sum: { $cond: [{ $eq: ['$action', 'dropoff'] }, 1, 0] } },
+            conversions: { $sum: { $cond: [{ $eq: ['$action', 'conversion'] }, 1, 0] } },
+            avgLatencyMs: {
+              $avg: {
+                $cond: [
+                  { $gt: ['$duration', 0] },
+                  '$duration',
+                  '$$REMOVE'
+                ]
+              }
+            }
+          }
+        }
+      ]),
+      FlowAnalytics.aggregate([
+        {
+          $match: {
+            ...matchQuery,
+            action: 'edge_transition'
+          }
+        },
+        {
+          $group: {
+            _id: {
+              fromNodeId: '$nodeId',
+              toNodeId: '$metadata.toNodeId',
+              sourceHandle: '$metadata.sourceHandle'
+            },
+            count: { $sum: 1 }
+          }
+        }
+      ]),
+      FlowAnalytics.find({
+        ...matchQuery,
+        action: { $in: ['failure', 'timeout', 'dropoff'] }
+      })
+        .sort({ timestamp: -1 })
+        .limit(50)
+        .select('flowId nodeId nodeType action phone metadata timestamp')
+        .lean()
+    ]);
+
+    const nodeMap = {};
+    nodeAgg.forEach((row) => {
+      nodeMap[row._id] = {
+        nodeId: row._id,
+        nodeType: row.nodeType || 'unknown',
+        entries: row.entries || 0,
+        failures: row.failures || 0,
+        timeouts: row.timeouts || 0,
+        dropoffs: row.dropoffs || 0,
+        conversions: row.conversions || 0,
+        avgLatencyMs: Math.round(row.avgLatencyMs || 0),
+        edgeOutCount: 0
+      };
+    });
+
+    const edgeTransitions = edgeAgg.map((row) => ({
+      fromNodeId: row._id.fromNodeId,
+      toNodeId: row._id.toNodeId,
+      sourceHandle: row._id.sourceHandle || null,
+      count: row.count || 0
+    }));
+
+    edgeTransitions.forEach((edge) => {
+      if (!nodeMap[edge.fromNodeId]) {
+        nodeMap[edge.fromNodeId] = {
+          nodeId: edge.fromNodeId,
+          nodeType: 'unknown',
+          entries: 0,
+          failures: 0,
+          timeouts: 0,
+          dropoffs: 0,
+          conversions: 0,
+          avgLatencyMs: 0,
+          edgeOutCount: 0
+        };
+      }
+      nodeMap[edge.fromNodeId].edgeOutCount += edge.count;
+    });
+
+    const nodeMetrics = Object.values(nodeMap).map((node) => {
+      const branchDropOff = Math.max(0, node.entries - node.edgeOutCount);
+      const branchDropOffRate = node.entries > 0 ? (branchDropOff / node.entries) * 100 : 0;
+      const totalFailures = node.failures + node.timeouts;
+      const failureRate = node.entries > 0 ? (totalFailures / node.entries) * 100 : 0;
+      const conversionRate = node.entries > 0 ? (node.conversions / node.entries) * 100 : 0;
+      return {
+        ...node,
+        totalFailures,
+        failureRate: Number(failureRate.toFixed(2)),
+        branchDropOff,
+        branchDropOffRate: Number(branchDropOffRate.toFixed(2)),
+        conversionRate: Number(conversionRate.toFixed(2))
+      };
+    });
+
+    nodeMetrics.sort((a, b) => (b.entries || 0) - (a.entries || 0));
+    const failingNodes = [...nodeMetrics]
+      .sort((a, b) => (b.totalFailures + b.branchDropOff) - (a.totalFailures + a.branchDropOff))
+      .slice(0, 12);
+
+    res.json({
+      success: true,
+      windowMinutes,
+      from: windowStart,
+      to: new Date(),
+      flowId: flowId || null,
+      summary: {
+        totalNodeEntries: nodeMetrics.reduce((acc, n) => acc + (n.entries || 0), 0),
+        totalFailures: nodeMetrics.reduce((acc, n) => acc + (n.totalFailures || 0), 0),
+        totalDropoffs: nodeMetrics.reduce((acc, n) => acc + (n.branchDropOff || 0), 0),
+        totalTransitions: edgeTransitions.reduce((acc, e) => acc + (e.count || 0), 0)
+      },
+      nodeMetrics,
+      edgeTransitions,
+      failingNodes,
+      recentFailures
+    });
+  } catch (error) {
+    console.error('Flow Observability Error:', error);
+    res.status(500).json({ success: false, message: 'Server Error' });
+  }
+});
+
 // GET /api/analytics/bot-health
 // @desc    Get real-time health status of the bot (mocked/calculated)
 // @access  Private

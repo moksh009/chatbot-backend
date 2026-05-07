@@ -36,6 +36,7 @@ const WhatsAppUtils = require('./whatsapp');
 const messageBuffer = require('./messageBuffer');
 const { parseWhatsAppPayload } = require("./parseWhatsAppPayload");
 const { normalizeHandleId, findInteractiveEdgeForButtonAcrossGraph } = require("./graphButtonRouting");
+const { logFlowEvent } = require("./flowObservability");
 
 
 const SESSION_LOCK_TIMEOUT = 10000; // 10 seconds (Fallback for TTL)
@@ -1850,6 +1851,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 
   // C) User is in the middle of a flow
   let matchingEdge = null;
+  let edgeMatchMode = null;
   const sourceEdges = flowEdges.filter(e => e.source === currentStepId);
   const bid = normalizeHandleId(buttonId).toLowerCase();
 
@@ -1868,6 +1870,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
       const availableHandles = sourceEdges.map(e => normalizeHandleId(e.sourceHandle || '')).filter(Boolean);
       log.warn(`[Graph] Button ID mismatch: incoming="${bid}", available sourceHandles=[${availableHandles.join(', ')}], currentStep=${currentStepId}`);
     }
+    if (matchingEdge) edgeMatchMode = 'interactive';
   }
 
   // C.1) Stale interactive: user tapped a button/list on an older bubble while lastStepId moved on.
@@ -1875,6 +1878,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     const resolved = findInteractiveEdgeForButtonAcrossGraph(flowNodes, flowEdges, buttonId, currentStepId);
     if (resolved) {
       matchingEdge = resolved;
+      edgeMatchMode = 'interactive_cross_step';
       log.info(`[Graph] Resolved cross-step interactive: button "${bid}" via source ${resolved.source} → ${resolved.target} (edge ${resolved.id})`);
     }
   }
@@ -1887,22 +1891,38 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
       if (e.trigger?.type === 'keyword') return userTextLower.includes(String(e.trigger.value || '').toLowerCase());
       return false;
     });
+    if (matchingEdge) edgeMatchMode = 'text_match';
   }
 
   // Last priority: auto-forward edge only when there is no explicit user selection
   if (!matchingEdge && !bid) {
     const autoHandles = ['a', 'bottom', 'output', 'default', null, undefined, ''];
     matchingEdge = sourceEdges.find((e) => !e.trigger && autoHandles.includes(normalizeHandleId(e.sourceHandle)));
+    if (matchingEdge) edgeMatchMode = 'auto_default';
   }
 
   // GAP FIX: Fallback edge
   if (!matchingEdge && currentStepId) {
     matchingEdge = flowEdges.find(e => e.source === currentStepId && normalizeHandleId(e.sourceHandle) === 'fallback');
+    if (matchingEdge) edgeMatchMode = 'fallback';
   }
 
   // BUG 1 FIX: Unwired Button -> AI Fallback natively
   if (!matchingEdge && incomingTrigger.buttonId) {
     log.info(`[Button Route] Unwired button clicked: ${incomingTrigger.buttonId} (${userText}). Routing to AI Fallback natively.`);
+    await logFlowEvent({
+      clientId: client.clientId,
+      flowId: convo?.activeFlowId || convo?.metadata?.activeFlowId,
+      nodeId: currentStepId || 'unknown',
+      nodeType: currentNode?.type || 'unknown',
+      phone,
+      action: 'failure',
+      metadata: {
+        reason: 'unwired_button',
+        input: incomingTrigger.buttonId,
+        channel
+      }
+    });
     // Store button text inside parsedMessage to ensure AI context receives it
     if (!parsedMessage.text) parsedMessage.text = {};
     if (!parsedMessage.text.body) {
@@ -1918,6 +1938,20 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 
   if (matchingEdge) {
     log.info(`Graph: edge match from ${currentStepId} → ${matchingEdge.target}`);
+    await logFlowEvent({
+      clientId: client.clientId,
+      flowId: convo?.activeFlowId || convo?.metadata?.activeFlowId,
+      nodeId: currentStepId || matchingEdge.source || 'unknown',
+      nodeType: currentNode?.type || 'unknown',
+      phone,
+      action: 'edge_transition',
+      metadata: {
+        toNodeId: matchingEdge.target,
+        sourceHandle: matchingEdge.sourceHandle || null,
+        targetHandle: matchingEdge.targetHandle || null,
+        mode: edgeMatchMode || 'matched'
+      }
+    });
     return await executeNode(matchingEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
   }
 
@@ -1993,6 +2027,21 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
   }
   
   log.info(`Graph: no match from ${currentStepId} for "${userText || incomingTrigger.buttonId}"`);
+  if (currentStepId) {
+    await logFlowEvent({
+      clientId: client.clientId,
+      flowId: convo?.activeFlowId || convo?.metadata?.activeFlowId,
+      nodeId: currentStepId,
+      nodeType: currentNode?.type || 'unknown',
+      phone,
+      action: 'dropoff',
+      metadata: {
+        reason: 'no_matching_edge',
+        input: userText || incomingTrigger.buttonId || null,
+        channel
+      }
+    });
+  }
   return false;
 }
 
@@ -2000,6 +2049,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 // EXECUTE A SPECIFIC NODE
 // ─────────────────────────────────────────────────────────────────────────────
 async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, phone, io, channel = 'whatsapp', parsedMessage = {}) {
+  const execStartedAt = Date.now();
   const rawNode = flowNodes.find(n => n.id === nodeId);
   if (!rawNode) { log.warn(`[Exec] Node ${nodeId} not found in ${flowNodes.length} nodes`); return false; }
   log.info(`[Exec] Node ${nodeId} type=${rawNode.type} label="${(rawNode.data?.label || '').substring(0, 30)}"`);
@@ -2038,20 +2088,15 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     log.error(`Visit tracking failed for node ${nodeId}:`, { error: err.message });
   }
 
-  // Enterprise Analytics: Record node entry for heatmap and versioning insights
-  try {
-    const FlowAnalytics = require('../models/FlowAnalytics');
-    await FlowAnalytics.create({
-      clientId: client.clientId,
-      flowId: (convo?.activeFlowId || convo?.metadata?.activeFlowId || 'default_legacy'),
-      nodeId,
-      nodeType: node.type,
-      phone,
-      action: 'entry'
-    });
-  } catch (err) {
-    log.error(`[FlowEngine] Analytics record failure: ${err.message}`);
-  }
+  await logFlowEvent({
+    clientId: client.clientId,
+    flowId: convo?.activeFlowId || convo?.metadata?.activeFlowId,
+    nodeId,
+    nodeType: node.type,
+    phone,
+    action: 'entry',
+    metadata: { channel }
+  });
 
 
   let sent = true;
@@ -2063,6 +2108,19 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     );
   } catch (timeoutErr) {
     log.error(`[NodeTimeout] ${nodeId} timed out. Sending Text Fallback.`);
+    await logFlowEvent({
+      clientId: client.clientId,
+      flowId: convo?.activeFlowId || convo?.metadata?.activeFlowId,
+      nodeId,
+      nodeType: node.type,
+      phone,
+      action: 'timeout',
+      metadata: {
+        latencyMs: Date.now() - execStartedAt,
+        reason: timeoutErr?.message || 'send_timeout',
+        channel
+      }
+    });
     // Emergency Text Fallback to keep conversation moving
     await sendWhatsAppText(client, phone, node.data?.text || node.data?.body || "Resuming our conversation... Choose an option below.");
   }
@@ -2077,7 +2135,22 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     }
   });
 
-  if (!sent && node.type !== 'logic' && node.type !== 'delay' && node.type !== 'set_variable' && node.type !== 'shopify_call' && node.type !== 'http_request' && node.type !== 'webhook' && node.type !== 'link' && node.type !== 'restart' && node.type !== 'trigger' && node.type !== 'TriggerNode' && node.type !== 'automation' && node.type !== 'abandoned_cart' && node.type !== 'cod_prepaid' && node.type !== 'warranty_check') return false;
+  if (!sent && node.type !== 'logic' && node.type !== 'delay' && node.type !== 'set_variable' && node.type !== 'shopify_call' && node.type !== 'http_request' && node.type !== 'webhook' && node.type !== 'link' && node.type !== 'restart' && node.type !== 'trigger' && node.type !== 'TriggerNode' && node.type !== 'automation' && node.type !== 'abandoned_cart' && node.type !== 'cod_prepaid' && node.type !== 'warranty_check') {
+    await logFlowEvent({
+      clientId: client.clientId,
+      flowId: convo?.activeFlowId || convo?.metadata?.activeFlowId,
+      nodeId,
+      nodeType: node.type,
+      phone,
+      action: 'failure',
+      metadata: {
+        reason: 'send_failed',
+        latencyMs: Date.now() - execStartedAt,
+        channel
+      }
+    });
+    return false;
+  }
 
   // --- SPECIAL NODE LOGIC (Automated Traversal) ---
   if (node.type === 'logic') {

@@ -2,6 +2,8 @@
 
 const log = require('./logger')('EventProcessor');
 const { findEventTriggeredFlow } = require('./triggerEngine');
+const { buildEventEnvelope } = require('./eventEnvelope');
+const { emitToClient } = require('./socket');
 
 /**
  * EVENT PROCESSOR
@@ -51,7 +53,19 @@ async function processShopifyEvent(client, topic, data) {
     };
     const normalized = legacyMap[eventKey] || eventKey;
 
-    await triggerFlowForEvent(normalized, eventData, client);
+    const envelope = buildEventEnvelope({
+        channel: 'whatsapp',
+        eventType: normalized,
+        clientId: client.clientId,
+        userId: eventData.phone,
+        payload: eventData,
+        meta: {
+            source: 'shopify_webhook',
+            topic
+        }
+    });
+
+    await triggerFlowForEnvelope(envelope, client);
 }
 
 async function triggerFlowForEvent(eventName, eventData, client, status = null) {
@@ -73,7 +87,33 @@ async function triggerFlowForEvent(eventName, eventData, client, status = null) 
     }
 }
 
+async function triggerFlowForEnvelope(envelope, client, status = null) {
+    const eventName = envelope?.eventType;
+    const eventData = envelope?.payload || {};
+    if (!eventName || !eventData?.phone) return;
+
+    const { normalizePhone } = require('./helpers');
+    const cleanPhone = normalizePhone(eventData.phone);
+    const ev = String(eventName || '').toLowerCase();
+
+    emitToClient(client.clientId, 'orchestration:event', envelope);
+    const result = await findEventTriggeredFlow(ev, eventData, client, status);
+
+    if (result?.flow && result.startNodeId) {
+        log.info(`Envelope ${eventName} matched flow: ${result.flow.name} for ${cleanPhone}`);
+        const { runFlow } = require('./dualBrainEngine');
+        await runFlow(client, cleanPhone, result.flow, result.startNodeId, {
+            triggerSource: `event_${ev}`,
+            eventContext: eventData,
+            eventEnvelope: envelope
+        });
+    } else {
+        log.debug(`No flow matched for envelope event ${eventName} | Client: ${client.clientId}`);
+    }
+}
+
 module.exports = {
     processShopifyEvent,
-    triggerFlowForEvent
+    triggerFlowForEvent,
+    triggerFlowForEnvelope
 };

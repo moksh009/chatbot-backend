@@ -4,6 +4,8 @@
  * Robust WhatsApp Webhook Payload Parser
  * Extracts message content, type, and sender info across all message formats.
  */
+const { buildEventEnvelope } = require('./eventEnvelope');
+
 function parseWhatsAppPayload(body) {
   try {
     const entry = body.entry?.[0];
@@ -118,6 +120,22 @@ function parseWhatsAppPayload(body) {
       default:
         console.warn(`[Parser] Unknown message type: ${messages.type}`);
     }
+
+    parsed.envelope = buildEventEnvelope({
+      channel: 'whatsapp',
+      eventType: parsed.type || 'inbound_message',
+      userId: parsed.from,
+      message: {
+        id: parsed.messageId,
+        type: parsed.type,
+        from: parsed.from
+      },
+      payload: parsed,
+      meta: {
+        source: 'parse_whatsapp_payload',
+        phoneNumberId: parsed.phoneNumberId
+      }
+    });
 
     return parsed;
   } catch (err) {
