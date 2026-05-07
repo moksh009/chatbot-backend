@@ -19,6 +19,14 @@ function resolveClientId(req) {
   return tenantClientId(req);
 }
 
+function isStuckInProgressJob(job) {
+  if (!job) return false;
+  if (!['generating', 'submitting', 'generation_complete'].includes(job.status)) return false;
+  const updatedAt = new Date(job.updatedAt || job.startedAt || Date.now()).getTime();
+  const ageMs = Date.now() - updatedAt;
+  return ageMs > 5 * 60 * 1000; // 5 minutes without progress
+}
+
 // ─── GET /api/auto-templates/status ───────────────────────────────────────
 router.get('/status', protect, async (req, res) => {
   try {
@@ -27,6 +35,21 @@ router.get('/status', protect, async (req, res) => {
 
     const job = await TemplateGenerationJob.findOne({ clientId }).lean();
     if (!job) return res.json({ success: true, job: null, counts: null });
+
+    const stuck = isStuckInProgressJob(job);
+    if (stuck) {
+      await TemplateGenerationJob.updateOne(
+        { _id: job._id },
+        { $set: { status: 'idle', pausedByUser: false, updatedAt: new Date() } }
+      );
+      return res.json({
+        success: true,
+        job: { ...job, status: 'idle' },
+        counts: {},
+        staleDetected: true,
+        message: 'Detected stale generation/submission job and reset it to idle.'
+      });
+    }
 
     const counts = await MetaTemplate.aggregate([
       { $match: { clientId, source: 'auto_generated' } },
@@ -67,7 +90,14 @@ router.post('/start', protect, async (req, res) => {
     // Idempotency: if already running, return current state
     const existingJob = await TemplateGenerationJob.findOne({ clientId });
     if (existingJob && ['generating', 'submitting', 'generation_complete'].includes(existingJob.status)) {
+      if (isStuckInProgressJob(existingJob)) {
+        await TemplateGenerationJob.updateOne(
+          { _id: existingJob._id },
+          { $set: { status: 'idle', pausedByUser: false, updatedAt: new Date() } }
+        );
+      } else {
       return res.json({ success: true, message: 'Generation already in progress', job: existingJob });
+      }
     }
 
     const client = await Client.findOne({ clientId }).lean();
