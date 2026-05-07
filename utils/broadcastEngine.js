@@ -11,6 +11,7 @@ const log = require('./logger')('BroadcastEngine');
 const { incrementStat } = require('./statCacheEngine');
 const { resolveImportBatchObjectId } = require('./importBatchResolver');
 const { shouldRequireMarketingOptIn, mongoMarketingOptInOnly, mongoNotOptedOut, canSendToContact } = require('./marketingConsent');
+const { buildMappedBodyComponent } = require('./templateParams');
 
 function normalizePhone(p) {
   if (!p) return '';
@@ -137,38 +138,18 @@ async function processBroadcast(data) {
                     if (!tName) { failed++; continue; }
                     const components = templateComponents ? JSON.parse(JSON.stringify(templateComponents)) : [];
                     
-                    if (variableMapping && Object.keys(variableMapping).length > 0) {
-                        const bodyParams = [];
-                        const sortedKeys = Object.keys(variableMapping).sort((a,b) => parseInt(a) - parseInt(b));
-                        sortedKeys.forEach(vIndex => {
-                            const dataField = variableMapping[vIndex];
-                            let val = '';
-
-                            if (dataField === 'customText') {
-                                val = (data?.customTextValues && data.customTextValues[vIndex]) || '';
-                            } else if (dataField === 'businessName') {
-                                val = client.businessName || client.name || 'Our Store';
-                            } else if (dataField === 'lastOrderDate') {
-                                val = lead.lastPurchaseDate ? new Date(lead.lastPurchaseDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : 'N/A';
-                            } else if (dataField === 'lastOrderValue') {
-                                val = lead.totalSpent ? `₹${lead.totalSpent.toLocaleString('en-IN')}` : '₹0';
-                            } else if (dataField === 'tags') {
-                                val = Array.isArray(lead.tags) ? lead.tags.join(', ') : '';
-                            } else {
-                                val = lead[dataField] || lead.capturedData?.[dataField] || '';
-                                if (dataField === 'name' && !val) val = 'Customer';
-                            }
-
-                            bodyParams.push({ type: 'text', text: String(val).slice(0, 1000) });
-                        });
-
-                        if (bodyParams.length > 0) {
-                            const existingBodyIndex = components.findIndex(c => c.type === 'body');
-                            if (existingBodyIndex !== -1) {
-                                components[existingBodyIndex].parameters = bodyParams;
-                            } else {
-                                components.push({ type: 'body', parameters: bodyParams });
-                            }
+                    const mappedBody = buildMappedBodyComponent({
+                        variableMapping: variableMapping || {},
+                        row: lead,
+                        customTextValues: data?.customTextValues || {},
+                        client,
+                    });
+                    if (mappedBody) {
+                        const existingBodyIndex = components.findIndex(c => c.type === 'body');
+                        if (existingBodyIndex !== -1) {
+                            components[existingBodyIndex].parameters = mappedBody.parameters;
+                        } else {
+                            components.push(mappedBody);
                         }
                     }
 

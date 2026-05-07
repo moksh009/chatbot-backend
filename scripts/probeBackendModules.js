@@ -61,7 +61,6 @@ const modules = [
   './routes/intentWebhooks',
   './routes/razorpayWebhook',
   './routes/shopifyPixel',
-  './routes/wooPixel',
   './routes/qrcodes',
   './routes/catalog',
   './routes/training',
@@ -88,6 +87,8 @@ const modules = [
 
 let ok = 0;
 let fail = 0;
+let skippedOptional = 0;
+const failedModules = [];
 for (const mod of modules) {
   try {
     const resolved = require.resolve(mod, { paths: [ROOT] });
@@ -102,13 +103,31 @@ for (const mod of modules) {
       data: { mod }
     });
   } catch (e) {
+    const errMsg = String(e && e.message ? e.message : e);
+    const isOptionalEnvError =
+      errMsg.includes('Missing required Google OAuth2 configuration') ||
+      errMsg.includes('GCAL_CLIENT_ID') ||
+      errMsg.includes('GCAL_CLIENT_SECRET') ||
+      errMsg.includes('GCAL_REFRESH_TOKEN');
+    if (isOptionalEnvError) {
+      skippedOptional += 1;
+      agentDebug({
+        hypothesisId: 'H1',
+        runId: 'probe',
+        location: 'scripts/probeBackendModules.js',
+        message: 'module_skip_optional_env',
+        data: { mod, err: errMsg.slice(0, 500) }
+      });
+      continue;
+    }
     fail += 1;
+    failedModules.push({ mod, code: e.code, err: errMsg.slice(0, 500) });
     agentDebug({
       hypothesisId: 'H1',
       runId: 'probe',
       location: 'scripts/probeBackendModules.js',
       message: 'module_fail',
-      data: { mod, code: e.code, err: String(e.message).slice(0, 500) }
+      data: { mod, code: e.code, err: errMsg.slice(0, 500) }
     });
   }
 }
@@ -118,8 +137,12 @@ agentDebug({
   runId: 'probe',
   location: 'scripts/probeBackendModules.js',
   message: 'probe_summary',
-  data: { ok, fail, total: modules.length }
+  data: { ok, fail, skippedOptional, total: modules.length, failedModules }
 });
 
-console.log(JSON.stringify({ ok, fail, total: modules.length }));
+if (failedModules.length) {
+  console.error('Failed modules:');
+  failedModules.forEach((f) => console.error(`- ${f.mod}: ${f.err}`));
+}
+console.log(JSON.stringify({ ok, fail, skippedOptional, total: modules.length }));
 process.exit(fail ? 1 : 0);

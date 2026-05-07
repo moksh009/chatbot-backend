@@ -28,7 +28,9 @@ const {
   mongoNotOptedOut,
   shouldRequireMarketingOptIn,
   canSendToContact,
+  evaluateAudiencePolicySummary,
 } = require('../utils/marketingConsent');
+const { validateTemplateEligibility } = require('../utils/templateEligibility');
 
 try {
   fs.mkdirSync('uploads', { recursive: true });
@@ -242,7 +244,7 @@ router.post('/from-hot-leads', protect, async (req, res) => {
 // @desc    Send a template message to multiple contacts (max 250)
 // @access  Private
 router.post('/quick-send', protect, async (req, res) => {
-  const { leadId, leadIds, templateName, channel } = req.body;
+  const { leadId, leadIds, templateName, channel, strictValidation = true } = req.body;
   const clientId = req.user.clientId;
   if (!req.body.templateCategory) {
     return res.status(400).json({
@@ -269,6 +271,28 @@ router.post('/quick-send', protect, async (req, res) => {
   try {
     const client = await Client.findOne({ clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+    const template = (client.syncedMetaTemplates || []).find((t) => t?.name === templateName);
+    const preflight = validateTemplateEligibility({
+      template,
+      contextPurpose: 'campaign',
+      strict: strictValidation !== false
+    });
+    if (!preflight.ok) {
+      log.warn('[QuickSend][TemplatePreflightFailed]', {
+        clientId,
+        templateName,
+        contextPurpose: 'campaign',
+        missingVariables: preflight.missingVariables,
+        requiredVariableCount: preflight.requiredVariableCount,
+        reasons: preflight.reasons
+      });
+      return res.status(400).json({
+        success: false,
+        message: preflight.reasons.join(' '),
+        missingVariables: preflight.missingVariables,
+        requiredVariableCount: preflight.requiredVariableCount,
+      });
+    }
 
     const leads = await AdLead.find({ _id: { $in: finalLeadIds }, clientId });
     if (leads.length === 0) return res.status(404).json({ success: false, message: 'No valid leads found' });
@@ -452,6 +476,7 @@ router.post('/start', protect, async (req, res) => {
     // --- Unified Processing ---
     // Save variables to the campaign so the cron can process them
     campaign.variableMapping = req.body.variableMapping || {};
+    campaign.customTextValues = req.body.customTextValues || {};
     campaign.templateComponents = req.body.templateComponents || [];
     campaign.languageCode = req.body.languageCode || 'en';
     
@@ -564,13 +589,32 @@ router.post('/start', protect, async (req, res) => {
     if (candidateTemplateName) {
         const synced = client.syncedMetaTemplates || [];
         const tpl = synced.find(t => t?.name === candidateTemplateName);
-        const status = String(tpl?.status || '').toUpperCase();
-        if (tpl && status && status !== 'APPROVED') {
-            campaign.status = 'FAILED';
-            await campaign.save();
-            return res.status(400).json({
-                message: `Template "${candidateTemplateName}" is not approved (status: ${status}). Pick an approved template.`
-            });
+        const mappedVariables = Object.keys(campaign.variableMapping || {})
+          .sort((a, b) => Number(a) - Number(b))
+          .map((k) => campaign.variableMapping[k]);
+        const preflight = validateTemplateEligibility({
+          template: tpl,
+          contextPurpose: 'campaign',
+          providedVariables: mappedVariables,
+          strict: true
+        });
+        if (!preflight.ok) {
+          log.warn('[CampaignStart][TemplatePreflightFailed]', {
+            clientId: req.user.clientId,
+            campaignId: String(campaign._id),
+            templateName: candidateTemplateName,
+            contextPurpose: 'campaign',
+            missingVariables: preflight.missingVariables,
+            requiredVariableCount: preflight.requiredVariableCount,
+            reasons: preflight.reasons
+          });
+          campaign.status = 'FAILED';
+          await campaign.save();
+          return res.status(400).json({
+            message: preflight.reasons.join(' '),
+            missingVariables: preflight.missingVariables,
+            requiredVariableCount: preflight.requiredVariableCount,
+          });
         }
     }
 
@@ -992,9 +1036,16 @@ router.get('/templates', protect, async (req, res) => {
     const client = await Client.findOne({ clientId }).select('syncedMetaTemplates').lean();
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
-    const approvedTemplates = (client.syncedMetaTemplates || []).filter(
-      (t) => String(t?.status || '').toUpperCase() === 'APPROVED'
-    );
+    const contextPurpose = String(req.query.contextPurpose || 'campaign').toLowerCase();
+    const approvedTemplates = (client.syncedMetaTemplates || []).filter((t) => {
+      const statusOk = String(t?.status || '').toUpperCase() === 'APPROVED';
+      if (!statusOk) return false;
+      const primary = String(t?.primaryPurpose || 'utility').toLowerCase();
+      const secondary = Array.isArray(t?.secondaryPurposes)
+        ? t.secondaryPurposes.map((p) => String(p || '').toLowerCase())
+        : [];
+      return primary === contextPurpose || secondary.includes(contextPurpose) || primary === 'utility';
+    });
     res.json({ success: true, templates: approvedTemplates });
   } catch (err) {
     console.error('[CampaignTemplates] Error:', err);
@@ -1069,17 +1120,9 @@ router.get('/audience-preview', protect, async (req, res) => {
     }
 
     const cat = String(templateCategory || 'MARKETING').toUpperCase();
-    const counts = { total: leads.length, willSend: 0, optedOut: 0, unknownBlocked: 0 };
+    const counts = evaluateAudiencePolicySummary(leads, cat);
     const sourceMap = new Map();
     for (const lead of leads) {
-      const status = lead.optStatus || 'unknown';
-      if (status === 'opted_out') {
-        counts.optedOut += 1;
-      } else if (cat === 'MARKETING' && status !== 'opted_in') {
-        counts.unknownBlocked += 1;
-      } else {
-        counts.willSend += 1;
-      }
       const src = lead.optInSource || 'unknown';
       sourceMap.set(src, (sourceMap.get(src) || 0) + 1);
     }

@@ -31,8 +31,7 @@ const scheduleFollowUpSequenceCron = () => {
             // Fetch limits mapped to index status and pending checks 
             const sequences = await FollowUpSequence.find({
                 status: "active",
-                "steps.status": "pending",
-                "steps.sendAt": { $lte: now }
+                steps: { $elemMatch: { status: "pending", sendAt: { $lte: now } } }
             }).limit(500);
 
             console.log(`[SequenceCron] Found ${sequences.length} sequences with due steps.`);

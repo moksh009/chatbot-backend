@@ -340,7 +340,6 @@ app.use('/api/intelligence', require('./routes/intelligenceDna'));
 // The frontend calls these paths but backend mounts under different names.
 app.use('/api/flow-builder', flowRoutes);           // Frontend: /api/flow-builder/flows → /api/flow/flows
 app.use('/api/users', teamRoutes);                   // Frontend: /api/users/team → /api/team
-app.use('/api/automation', sequencesRoutes);          // Frontend: /api/automation/sequences → /api/sequences
 
 // Phase 30: Auto-Keywords
 app.use('/api/keywords', require('./routes/keywords'));

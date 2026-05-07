@@ -12,6 +12,7 @@ const {
   shouldRequireMarketingOptIn,
   canSendToContact,
 } = require('../utils/marketingConsent');
+const { buildMappedBodyComponent } = require('../utils/templateParams');
 
 /** Minimum gap between WhatsApp Cloud API sends (burst-safe). */
 const MIN_MESSAGE_GAP_MS = 50;
@@ -262,22 +263,18 @@ const scheduleCampaignCron = () => {
             try {
               let components = campaign.templateComponents ? JSON.parse(JSON.stringify(campaign.templateComponents)) : [];
 
-              if (campaign.variableMapping && Object.keys(campaign.variableMapping).length > 0) {
-                const bodyParams = [];
-                const sortedKeys = Object.keys(campaign.variableMapping).sort((a, b) => parseInt(a) - parseInt(b));
-                sortedKeys.forEach((k) => {
-                  const dataField = campaign.variableMapping[k];
-                  let val = row[dataField] || row.capturedData?.[dataField] || '';
-                  if (dataField === 'name') val = row.name || 'Customer';
-                  bodyParams.push({ type: 'text', text: String(val || '-') });
-                });
-                if (bodyParams.length > 0) {
-                  const existingBodyIndex = components.findIndex(c => c.type === 'body');
-                  if (existingBodyIndex !== -1) {
-                    components[existingBodyIndex].parameters = bodyParams;
-                  } else {
-                    components.push({ type: 'body', parameters: bodyParams });
-                  }
+              const mappedBody = buildMappedBodyComponent({
+                variableMapping: campaign.variableMapping || {},
+                row,
+                customTextValues: campaign.customTextValues || {},
+                client,
+              });
+              if (mappedBody) {
+                const existingBodyIndex = components.findIndex(c => c.type === 'body');
+                if (existingBodyIndex !== -1) {
+                  components[existingBodyIndex].parameters = mappedBody.parameters;
+                } else {
+                  components.push(mappedBody);
                 }
               }
 

@@ -78,8 +78,8 @@ router.post('/', protect, async (req, res) => {
 // Phase 28: Generate multiple flow variants from a natural language prompt
 router.post('/ai-build', protect, async (req, res) => {
   try {
-    const { prompt, yOffset, generateVariants } = req.body;
-    if (!prompt || !prompt.trim()) {
+    const { prompt, yOffset, generateVariants, strategy, returnPlan } = req.body;
+    if (!prompt || !String(prompt).trim()) {
       return res.status(400).json({ success: false, message: 'Prompt is required' });
     }
 
@@ -89,15 +89,63 @@ router.post('/ai-build', protect, async (req, res) => {
     const { buildFlowFromPrompt, generateFlowVariants } = require('../utils/aiFlowBuilder');
     
     if (generateVariants) {
-      const variants = await generateFlowVariants(prompt.trim(), client);
+      const variants = await generateFlowVariants(String(prompt).trim(), client);
       return res.json({ success: true, variants });
     }
 
-    const result = await buildFlowFromPrompt(prompt.trim(), client, yOffset ?? 500);
+    // Bridge: deterministic ecommerce generator when preset is selected.
+    if (String(strategy?.preset || "").toLowerCase() === 'ecommerce') {
+      const { generateEcommerceFlow } = require('../utils/flowGenerator');
+      const wizardData = {
+        businessName: client.businessName || client.name || undefined,
+        shopDomain: client.platformVars?.shopDomain || client.platformVars?.shopifyDomain || undefined,
+        checkoutUrl: client.platformVars?.checkoutUrl || undefined,
+        googleReviewUrl: client.platformVars?.googleReviewUrl || client.googleReviewUrl || undefined,
+        currency: client.platformVars?.baseCurrency || undefined,
+        tone: strategy?.tone,
+        botLanguage: strategy?.language,
+        flowType: strategy?.flowType,
+        riskPosture: strategy?.riskPosture,
+        useAiCopy: false,
+      };
+      const det = await generateEcommerceFlow(client, wizardData);
+      return res.json({
+        success: true,
+        ...(returnPlan ? { plan: null } : {}),
+        nodes: det.nodes,
+        edges: det.edges,
+        mode: 'deterministic_ecommerce'
+      });
+    }
+
+    // Planner -> Compiler (enterprise path). If planner fails, fall back to legacy direct generator.
+    let plan = null;
+    try {
+      const { planFlow } = require('../utils/flowPlanner');
+      plan = await planFlow({ prompt: String(prompt).trim(), strategy: strategy || {}, client });
+    } catch (_) {
+      plan = null;
+    }
+
+    if (plan) {
+      const { compilePlanToGraph } = require('../utils/flowCompiler');
+      const compiled = compilePlanToGraph(plan, { yOffset: yOffset ?? 500 });
+      return res.json({
+        success: true,
+        ...(returnPlan ? { plan } : {}),
+        nodes: compiled.nodes,
+        edges: compiled.edges,
+        mode: 'planner_compiler'
+      });
+    }
+
+    const result = await buildFlowFromPrompt(String(prompt).trim(), client, yOffset ?? 500);
     res.json({
       success: true,
+      ...(returnPlan ? { plan: null } : {}),
       nodes: result.nodes,
-      edges: result.edges
+      edges: result.edges,
+      mode: 'legacy_direct'
     });
   } catch (error) {
     console.error('[AI Flow Builder] Error:', error.message);
@@ -202,6 +250,23 @@ router.post('/publish', protect, async (req, res) => {
     const flow = await WhatsAppFlow.findOne({ clientId, flowId });
 
     if (!flow) return res.status(404).json({ success: false, message: 'Flow not found' });
+
+    // Strict publish preflight: block bad graphs/templates before they go live.
+    const client = await Client.findOne({ clientId }).lean();
+    const { preflightValidateFlowGraph } = require('../utils/flowPublishPreflight');
+    const preflight = preflightValidateFlowGraph({
+      nodes: flow.nodes || [],
+      edges: flow.edges || [],
+      client: client || { syncedMetaTemplates: [] },
+    });
+    if (!preflight.valid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Flow publish blocked: validation failed.',
+        errors: preflight.errors,
+        warnings: preflight.warnings,
+      });
+    }
 
     // 1. Create a snapshot in FlowHistory
     await FlowHistory.create({

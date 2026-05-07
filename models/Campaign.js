@@ -16,6 +16,7 @@ const CampaignSchema = new mongoose.Schema({
 
   audience: { type: Array, default: [] }, // Array of resolved phone numbers + mappings
   variableMapping: { type: mongoose.Schema.Types.Mixed },
+  customTextValues: { type: mongoose.Schema.Types.Mixed, default: {} },
   templateComponents: { type: Array, default: [] },
   languageCode: { type: String, default: 'en' },
   // Phase 22: Smart Send logic

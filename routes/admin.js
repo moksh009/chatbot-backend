@@ -1897,9 +1897,26 @@ router.post('/flow/publish/:clientId', protect, async (req, res) => {
     if (!client) return res.status(404).json({ error: 'Client not found' });
 
     const { nodes = [], edges = [], note, flowId } = req.body;
+
+    // Strict publish preflight (same gate as canonical /api/flow/publish)
+    const { preflightValidateFlowGraph } = require('../utils/flowPublishPreflight');
+    const preflight = preflightValidateFlowGraph({
+      nodes,
+      edges,
+      client: client.toObject ? client.toObject() : client,
+    });
+    if (!preflight.valid) {
+      return res.status(400).json({
+        success: false,
+        error: 'Flow publish blocked: validation failed.',
+        errors: preflight.errors,
+        warnings: preflight.warnings,
+      });
+    }
     
     // 1. Identify Templates used in the flow
-    const templateNodes = nodes.filter(n => n.type === 'template');
+    const { normalizeNodeType } = require('../utils/flowNodeContract');
+    const templateNodes = nodes.filter(n => normalizeNodeType(n.type) === 'template');
     const templateNames = [...new Set(templateNodes.map(n => n.data?.templateName).filter(Boolean))];
 
     log.info(`[Publish] ${clientId} attempting to publish flow with ${templateNames.length} unique templates.`);

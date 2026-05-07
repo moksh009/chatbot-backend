@@ -6,12 +6,15 @@
  * Errors = hard stops (send will fail). Warnings = soft issues (send may partially succeed).
  */
 
+const { validateTemplateEligibility } = require('./templateEligibility');
+const { normalizeNodeType } = require('./flowNodeContract');
+
 // ── TEMPLATE VALIDATOR ──────────────────────────────────────────────────────
 
 /**
  * Validates a Meta WhatsApp template before sending.
  */
-async function validateTemplateForSend(client, templateName, variables = [], phone = null) {
+async function validateTemplateForSend(client, templateName, variables = [], phone = null, options = {}) {
   const errors   = [];
   const warnings = [];
 
@@ -44,14 +47,18 @@ async function validateTemplateForSend(client, templateName, variables = [], pho
     return { valid: false, errors, warnings };
   }
 
-  // 4. Template must be APPROVED
-  if (template.status !== 'APPROVED') {
+  // 4. Shared template eligibility (status + variable readiness + purpose tags)
+  const eligibility = validateTemplateEligibility({
+    template,
+    contextPurpose: options.contextPurpose || 'utility',
+    providedVariables: Array.isArray(variables) ? variables : [],
+    strict: true
+  });
+  if (!eligibility.ok) {
     errors.push({
       code:    'TEMPLATE_NOT_APPROVED',
-      message: `Template "${templateName}" is ${template.status}, not APPROVED.`,
-      fix:     template.status === 'PENDING'
-        ? 'Meta is still reviewing this template. Wait for approval (usually 10–15 minutes).'
-        : 'This template was rejected by Meta. Create a new template following Meta guidelines.'
+      message: eligibility.reasons.join(' '),
+      fix: 'Select an approved template that matches this use-case and has all required variables mapped.'
     });
   }
 
@@ -239,9 +246,11 @@ function validateFlowNode(node, client) {
   const errors   = [];
   const warnings = [];
 
-  switch (node.type) {
-    case 'TemplateNode': {
-      const { templateName } = node.data || {};
+  const nodeType = normalizeNodeType(node?.type);
+
+  switch (nodeType) {
+    case 'template': {
+      const templateName = node.data?.templateName || node.data?.name;
       if (!templateName) {
         errors.push({
           code:    'NODE_NO_TEMPLATE',
@@ -251,6 +260,13 @@ function validateFlowNode(node, client) {
         });
       } else {
         const template = (client.syncedMetaTemplates || []).find(t => t.name === templateName);
+        const variables = Array.isArray(node.data?.variables) ? node.data.variables : [];
+        const eligibility = validateTemplateEligibility({
+          template,
+          contextPurpose: 'flow',
+          providedVariables: variables,
+          strict: true
+        });
         if (!template) {
           errors.push({
             code:    'NODE_TEMPLATE_NOT_FOUND',
@@ -258,20 +274,21 @@ function validateFlowNode(node, client) {
             message: `Template "${templateName}" not found. It may have been deleted from Meta.`,
             fix:     'Sync templates from Meta in Template Studio, then re-select.'
           });
-        } else if (template.status !== 'APPROVED') {
+        } else if (!eligibility.ok) {
           errors.push({
             code:    'NODE_TEMPLATE_NOT_APPROVED',
             nodeId:  node.id,
-            message: `Template "${templateName}" is ${template.status}, not APPROVED.`,
-            fix:     'Wait for Meta approval or select a different template.'
+            message: eligibility.reasons.join(' '),
+            fix:     'Select an approved flow-eligible template and fill required variables.'
           });
         }
       }
       break;
     }
 
-    case 'MessageNode': {
-      if (!node.data?.text && !node.data?.imageUrl) {
+    case 'message': {
+      const body = node.data?.text || node.data?.body;
+      if (!body && !node.data?.imageUrl) {
         errors.push({
           code:    'NODE_EMPTY_MESSAGE',
           nodeId:  node.id,
@@ -282,7 +299,7 @@ function validateFlowNode(node, client) {
       break;
     }
 
-    case 'InteractiveNode': {
+    case 'interactive': {
       const buttons = node.data?.buttonsList || node.data?.buttons || [];
       if (buttons.length === 0) {
         errors.push({
@@ -313,8 +330,10 @@ function validateFlowNode(node, client) {
       break;
     }
 
-    case 'CaptureNode': {
-      if (!node.data?.variable) {
+    case 'capture_input': {
+      const variable = node.data?.variable;
+      const question = node.data?.question || node.data?.text;
+      if (!variable) {
         errors.push({
           code:    'NODE_NO_VARIABLE',
           nodeId:  node.id,
@@ -322,7 +341,7 @@ function validateFlowNode(node, client) {
           fix:     "Set a variable name (e.g. 'customer_email') to store the captured input."
         });
       }
-      if (!node.data?.text) {
+      if (!question) {
         errors.push({
           code:    'NODE_NO_QUESTION',
           nodeId:  node.id,
@@ -333,8 +352,9 @@ function validateFlowNode(node, client) {
       break;
     }
 
-    case 'WebhookNode': {
-      if (!node.data?.url) {
+    case 'http_request': {
+      const url = node.data?.url;
+      if (!url) {
         errors.push({
           code:    'NODE_NO_URL',
           nodeId:  node.id,
@@ -342,7 +362,7 @@ function validateFlowNode(node, client) {
           fix:     'Add the external URL to call.'
         });
       }
-      if (node.data?.url && !node.data.url.startsWith('https://')) {
+      if (url && !String(url).startsWith('https://')) {
         warnings.push({
           code:    'NODE_HTTP_URL',
           nodeId:  node.id,

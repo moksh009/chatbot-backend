@@ -15,6 +15,7 @@ const { getPrebuiltTemplates } = require('../utils/flowGenerator');
 const { hydrateApprovedProductTemplatesForClient } = require('../utils/templateImageHydrate');
 const MetaTemplate = require('../models/MetaTemplate');
 const { normalizeTemplateStatus } = require('../constants/templateLifecycle');
+const { normalizePurpose } = require('../utils/templateEligibility');
 
 // --- Helper Functions ---
 async function getClientCredentials(clientId, userId) {
@@ -84,6 +85,10 @@ router.get('/sync', protect, async (req, res) => {
                 
                 return {
                     ...tpl,
+                    primaryPurpose: normalizePurpose(tpl.primaryPurpose || 'utility'),
+                    secondaryPurposes: Array.isArray(tpl.secondaryPurposes)
+                      ? tpl.secondaryPurposes.map((p) => normalizePurpose(p))
+                      : [],
                     variableMetrics: {
                         bodyVariables: bodyVars,
                         headerVariables: headerVars,
@@ -211,10 +216,26 @@ router.get('/list', protect, async (req, res) => {
           });
         });
 
-        const merged = Array.from(mergedMap.values()).map((tpl) => ({
+        let merged = Array.from(mergedMap.values()).map((tpl) => ({
           ...tpl,
           id: tpl.id || tpl.name || tpl._id?.toString?.(),
+          primaryPurpose: normalizePurpose(tpl.primaryPurpose || 'utility'),
+          secondaryPurposes: Array.isArray(tpl.secondaryPurposes)
+            ? tpl.secondaryPurposes.map((p) => normalizePurpose(p))
+            : [],
         }));
+        const contextPurpose = req.query.contextPurpose
+          ? normalizePurpose(req.query.contextPurpose, 'utility')
+          : null;
+        if (contextPurpose) {
+          merged = merged.filter((tpl) => {
+            const primary = normalizePurpose(tpl.primaryPurpose || 'utility');
+            const secondary = Array.isArray(tpl.secondaryPurposes)
+              ? tpl.secondaryPurposes.map((p) => normalizePurpose(p))
+              : [];
+            return primary === contextPurpose || secondary.includes(contextPurpose) || primary === 'utility';
+          });
+        }
         res.json({
           success: true,
           data: merged,

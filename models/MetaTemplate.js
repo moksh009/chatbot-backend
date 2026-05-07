@@ -29,6 +29,17 @@ const MetaTemplateSchema = new mongoose.Schema({
   productPrice: { type: String, default: '' },
   productPageUrl: { type: String, default: '' },
   productImageUrl: { type: String, default: '' },
+  // Eligibility tags (hybrid): one primary purpose + optional secondary contexts.
+  primaryPurpose: {
+    type: String,
+    enum: ['campaign', 'sequence', 'flow', 'ig', 'utility'],
+    default: 'utility'
+  },
+  secondaryPurposes: {
+    type: [String],
+    enum: ['campaign', 'sequence', 'flow', 'ig', 'utility'],
+    default: []
+  },
 
   // Meta submission tracking
   metaTemplateId: { type: String, default: null },
@@ -67,5 +78,6 @@ MetaTemplateSchema.index({ clientId: 1, source: 1, submissionStatus: 1 });
 MetaTemplateSchema.index({ clientId: 1, autoGenProductId: 1 });
 MetaTemplateSchema.index({ clientId: 1, templateKey: 1 });
 MetaTemplateSchema.index({ clientId: 1, templateKind: 1, readinessRequired: 1 });
+MetaTemplateSchema.index({ clientId: 1, primaryPurpose: 1 });
 
 module.exports = mongoose.model('MetaTemplate', MetaTemplateSchema);

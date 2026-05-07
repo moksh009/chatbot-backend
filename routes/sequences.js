@@ -10,9 +10,24 @@ const Campaign = require('../models/Campaign');
 const Client = require('../models/Client');
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
 const { resolveImportBatchObjectId } = require('../utils/importBatchResolver');
+const { validateTemplateEligibility } = require('../utils/templateEligibility');
 
 // Max active sequences per lead
 const MAX_ACTIVE_SEQUENCES = 2;
+
+function normalizeDelayUnit(unit) {
+  const raw = String(unit || 'm').toLowerCase().trim();
+  if (raw === 'm' || raw === 'min' || raw === 'mins' || raw === 'minute' || raw === 'minutes') return 'm';
+  if (raw === 'h' || raw === 'hr' || raw === 'hrs' || raw === 'hour' || raw === 'hours') return 'h';
+  if (raw === 'd' || raw === 'day' || raw === 'days') return 'd';
+  return 'm';
+}
+
+function normalizeDelayValue(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return n;
+}
 
 // Root handler for frontend compatibility (/api/automation -> /api/automation/)
 router.get('/', protect, async (req, res) => {
@@ -26,23 +41,24 @@ router.get('/', protect, async (req, res) => {
   }
 });
 
-// Explicit route to handle /api/automation/sequences
-router.get('/sequences', protect, async (req, res) => {
-  try {
-    const clientId = tenantClientId(req);
-    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-
-    const { leadId } = req.query;
-    const query = { clientId };
-    if (leadId) query.leadId = leadId;
-
-    const sequences = await FollowUpSequence.find(query).populate('leadId', 'name').sort({ createdAt: -1 });
-    res.json({ success: true, sequences });
-  } catch (error) {
-    console.error('Sequence fetch error:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
+function validateSequenceSteps(steps, syncedMetaTemplates = []) {
+  const failures = [];
+  (steps || []).forEach((step, idx) => {
+    if (String(step?.type || '').toLowerCase() !== 'whatsapp') return;
+    const templateName = step?.templateName;
+    if (!templateName) return;
+    const template = syncedMetaTemplates.find((t) => t?.name === templateName);
+    const eligibility = validateTemplateEligibility({
+      template,
+      contextPurpose: 'sequence',
+      strict: true
+    });
+    if (!eligibility.ok) {
+      failures.push({ step: idx + 1, templateName, reasons: eligibility.reasons });
+    }
+  });
+  return failures;
+}
 
 router.post('/:clientId', protect, async (req, res) => {
   try {
@@ -59,6 +75,19 @@ router.post('/:clientId', protect, async (req, res) => {
     
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ message: 'Client not found' });
+    const stepFailures = validateSequenceSteps(steps, client.syncedMetaTemplates || []);
+    if (stepFailures.length) {
+      console.warn('[Sequences][TemplatePreflightFailed]', {
+        clientId,
+        contextPurpose: 'sequence',
+        failures: stepFailures
+      });
+      return res.status(400).json({
+        success: false,
+        message: 'One or more WhatsApp sequence steps have invalid/unapproved templates.',
+        details: stepFailures
+      });
+    }
 
     const limitCheck = await checkLimit(client._id, 'sequences');
     if (!limitCheck.allowed) {
@@ -87,7 +116,9 @@ router.post('/:clientId', protect, async (req, res) => {
       let currentSendAt = moment();
       const mappedSteps = steps.map(s => {
         const { delayValue, delayUnit, type, templateId, templateName, subject, content } = s;
-        currentSendAt = currentSendAt.add(delayValue || 0, delayUnit || 'm');
+        const normalizedUnit = normalizeDelayUnit(delayUnit);
+        const normalizedValue = normalizeDelayValue(delayValue);
+        currentSendAt = currentSendAt.add(normalizedValue, normalizedUnit);
 
         return {
           type: type || 'whatsapp',
@@ -95,8 +126,8 @@ router.post('/:clientId', protect, async (req, res) => {
           templateName,
           subject,
           content,
-          delayValue,
-          delayUnit,
+          delayValue: normalizedValue,
+          delayUnit: normalizedUnit,
           sendAt: currentSendAt.toDate(),
           status: "pending"
         };
@@ -191,6 +222,20 @@ router.post('/:clientId/enroll-from-campaign', protect, async (req, res) => {
     }
 
     const template = SEQUENCE_TEMPLATES.find(t => t.id === templateId);
+    const templateFailures = validateSequenceSteps(template?.steps || [], client.syncedMetaTemplates || []);
+    if (templateFailures.length) {
+      console.warn('[Sequences][PlaybookTemplatePreflightFailed]', {
+        clientId,
+        templateId,
+        contextPurpose: 'sequence',
+        failures: templateFailures
+      });
+      return res.status(400).json({
+        success: false,
+        message: 'Selected playbook includes WhatsApp templates that are not approved/eligible.',
+        details: templateFailures
+      });
+    }
     if (!template) {
       return res.status(404).json({ success: false, message: 'Template not found' });
     }
@@ -231,15 +276,17 @@ router.post('/:clientId/enroll-from-campaign', protect, async (req, res) => {
 
       let currentSendAt = moment();
       const mappedSteps = template.steps.map(s => {
-        currentSendAt = currentSendAt.add(s.delayValue || 0, s.delayUnit || 'm');
+        const normalizedUnit = normalizeDelayUnit(s.delayUnit);
+        const normalizedValue = normalizeDelayValue(s.delayValue);
+        currentSendAt = currentSendAt.add(normalizedValue, normalizedUnit);
         return {
            type: s.type || 'whatsapp',
            templateId: s.templateId,
            templateName: s.templateName,
            subject: s.subject,
            content: s.content,
-           delayValue: s.delayValue,
-           delayUnit: s.delayUnit,
+           delayValue: normalizedValue,
+           delayUnit: normalizedUnit,
            condition: s.condition, // Store condition if template has one
            sendAt: currentSendAt.toDate(),
            status: "pending"
@@ -309,6 +356,21 @@ router.post('/:clientId/from-imported-list', protect, async (req, res) => {
     }
 
     const client = await Client.findOne({ clientId }).select('_id').lean();
+    const fullClient = await Client.findOne({ clientId }).select('syncedMetaTemplates').lean();
+    const templateFailures = validateSequenceSteps(template?.steps || [], fullClient?.syncedMetaTemplates || []);
+    if (templateFailures.length) {
+      console.warn('[Sequences][ImportedPlaybookTemplatePreflightFailed]', {
+        clientId,
+        templateId,
+        contextPurpose: 'sequence',
+        failures: templateFailures
+      });
+      return res.status(400).json({
+        success: false,
+        message: 'Selected playbook includes WhatsApp templates that are not approved/eligible.',
+        details: templateFailures
+      });
+    }
     if (!client) {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
@@ -334,15 +396,17 @@ router.post('/:clientId/from-imported-list', protect, async (req, res) => {
 
       let currentSendAt = moment();
       const mappedSteps = (template.steps || []).map(step => {
-        currentSendAt = currentSendAt.add(step.delayValue || 0, step.delayUnit || 'm');
+        const normalizedUnit = normalizeDelayUnit(step.delayUnit);
+        const normalizedValue = normalizeDelayValue(step.delayValue);
+        currentSendAt = currentSendAt.add(normalizedValue, normalizedUnit);
         return {
           type: step.type || 'whatsapp',
           templateId: step.templateId,
           templateName: step.templateName,
           subject: step.subject,
           content: step.content,
-          delayValue: step.delayValue,
-          delayUnit: step.delayUnit,
+          delayValue: normalizedValue,
+          delayUnit: normalizedUnit,
           condition: step.condition,
           sendAt: currentSendAt.toDate(),
           status: 'pending'

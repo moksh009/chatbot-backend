@@ -149,6 +149,34 @@ async function canSendToContact(clientId, leadLike, templateCategory) {
   return { canSend: true, reason: null };
 }
 
+function evaluateLeadPolicy(optStatus, templateCategory = 'MARKETING') {
+  const status = String(optStatus || 'unknown').toLowerCase();
+  const cat = String(templateCategory || 'MARKETING').toUpperCase();
+  if (status === 'opted_out') {
+    return { canSend: false, reason: 'opted_out' };
+  }
+  if (cat === 'MARKETING' && status !== 'opted_in') {
+    return { canSend: false, reason: 'not_opted_in_for_marketing' };
+  }
+  return { canSend: true, reason: null };
+}
+
+function evaluateAudiencePolicySummary(leads = [], templateCategory = 'MARKETING') {
+  const summary = { total: leads.length, willSend: 0, optedOut: 0, unknownBlocked: 0 };
+  for (const lead of leads) {
+    const status = String(lead?.optStatus || 'unknown').toLowerCase();
+    const decision = evaluateLeadPolicy(status, templateCategory);
+    if (decision.canSend) {
+      summary.willSend += 1;
+    } else if (decision.reason === 'opted_out') {
+      summary.optedOut += 1;
+    } else {
+      summary.unknownBlocked += 1;
+    }
+  }
+  return summary;
+}
+
 module.exports = {
   normalizePhoneDigits,
   shouldRequireMarketingOptIn,
@@ -158,4 +186,6 @@ module.exports = {
   filterAudienceForMarketingOptIn,
   filterAudienceByOptStatus,
   canSendToContact,
+  evaluateLeadPolicy,
+  evaluateAudiencePolicySummary,
 };
