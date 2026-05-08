@@ -246,6 +246,77 @@ router.get('/list', protect, async (req, res) => {
     }
 });
 
+// 1c. Update template purpose tags for campaign/sequence/flow routing
+router.put('/purpose', protect, async (req, res) => {
+    try {
+        const tenantId = tenantClientId(req);
+        const {
+            clientId: bodyClientId,
+            templateName,
+            primaryPurpose = 'utility',
+            secondaryPurposes = [],
+        } = req.body || {};
+        const clientId = bodyClientId || tenantId;
+
+        if (!tenantId || tenantId !== clientId) {
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
+        if (!templateName) {
+            return res.status(400).json({ success: false, message: 'templateName is required' });
+        }
+
+        const normalizedPrimary = normalizePurpose(primaryPurpose, 'utility');
+        const normalizedSecondary = Array.from(new Set(
+            (Array.isArray(secondaryPurposes) ? secondaryPurposes : [])
+                .map((p) => normalizePurpose(p))
+                .filter((p) => p !== normalizedPrimary)
+        ));
+
+        // Persist on local client template collections (used by list/sync views).
+        const client = await Client.findOne({ clientId });
+        if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+        const mutateByName = (list = []) => {
+            if (!Array.isArray(list)) return list;
+            return list.map((tpl) => {
+                if (!tpl || tpl.name !== templateName) return tpl;
+                return {
+                    ...tpl,
+                    primaryPurpose: normalizedPrimary,
+                    secondaryPurposes: normalizedSecondary,
+                };
+            });
+        };
+
+        client.messageTemplates = mutateByName(client.messageTemplates);
+        client.syncedMetaTemplates = mutateByName(client.syncedMetaTemplates);
+        await client.save();
+
+        // Persist in canonical templates too for durable routing.
+        await MetaTemplate.updateMany(
+            { clientId, name: templateName },
+            {
+                $set: {
+                    primaryPurpose: normalizedPrimary,
+                    secondaryPurposes: normalizedSecondary,
+                    updatedAt: new Date(),
+                }
+            }
+        );
+
+        return res.json({
+            success: true,
+            data: {
+                templateName,
+                primaryPurpose: normalizedPrimary,
+                secondaryPurposes: normalizedSecondary,
+            }
+        });
+    } catch (error) {
+        return res.status(500).json({ success: false, message: error.message });
+    }
+});
+
 // Update AI-generated product template locally before Meta publish.
 router.put('/product-template/:clientId/:templateName', protect, async (req, res) => {
     try {
@@ -522,6 +593,10 @@ router.post('/push-local', protect, async (req, res) => {
                 category,
                 components: rawComponents,
                 source: local.source || 'push_local',
+                primaryPurpose: normalizePurpose(local.primaryPurpose || 'utility'),
+                secondaryPurposes: Array.isArray(local.secondaryPurposes)
+                  ? local.secondaryPurposes.map((p) => normalizePurpose(p))
+                  : [],
                 createdAt: new Date(),
             };
 

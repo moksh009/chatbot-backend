@@ -1999,7 +1999,10 @@ router.get('/agent-performance', protect, async (req, res) => {
     if (!clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
-    const query = { clientId };
+    const days = Math.max(1, Math.min(parseInt(req.query.days, 10) || 30, 365));
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+    const query = { clientId, updatedAt: { $gte: since } };
 
     // 1. Fetch Conversations with FRT metrics (lean + select only needed fields)
     const convos = await Conversation.find({
@@ -2023,12 +2026,16 @@ router.get('/agent-performance', protect, async (req, res) => {
       frtSamples.length > 0 ? frtSamples.reduce((a, b) => a + b, 0) / frtSamples.length : null;
 
     // 3. Resolution Rate & Avg Resolution Time (parallel queries)
-    const [totalConvos, resolvedConvos, csatConvos] = await Promise.all([
+    const [totalConvos, resolvedConvos, csatConvos, pipelineAgg] = await Promise.all([
       Conversation.countDocuments(query),
       Conversation.find({ ...query, resolvedAt: { $exists: true, $ne: null } })
         .select('resolvedAt firstInboundAt')
         .lean(),
-      Conversation.find({ ...query, "csatScore.rating": { $exists: true } }).select('csatScore').lean()
+      Conversation.find({ ...query, "csatScore.rating": { $exists: true } }).select('csatScore').lean(),
+      Conversation.aggregate([
+        { $match: query },
+        { $group: { _id: { $ifNull: ['$status', 'UNKNOWN'] }, count: { $sum: 1 } } }
+      ])
     ]);
     const resolutionRate = totalConvos > 0 ? (resolvedConvos.length / totalConvos * 100).toFixed(1) : "0";
     
@@ -2094,9 +2101,15 @@ router.get('/agent-performance', protect, async (req, res) => {
           ? `${(avgFRT / 60).toFixed(1)}m`
           : `${avgFRT.toFixed(0)}s`;
     const avgResOut = avgResolutionTime == null ? '—' : `${avgResolutionTime}h`;
+    const pipelineMap = Object.fromEntries((pipelineAgg || []).map((row) => [String(row._id || 'UNKNOWN'), row.count || 0]));
+    const resolvedFromStatus = pipelineMap.CLOSED || 0;
+    const awaitingInput = pipelineMap.WAITING_FOR_INPUT || 0;
+    const humanTakeover = (pipelineMap.HUMAN_TAKEOVER || 0) + (pipelineMap.HUMAN_SUPPORT || 0);
+    const openTotal = Math.max(0, totalConvos - resolvedFromStatus);
 
     res.json({
         success: true,
+        windowDays: days,
         avgFRT: avgFRTOut,
         resolutionRate: `${resolutionRate}%`,
         avgResolutionTime: avgResOut,
@@ -2104,7 +2117,14 @@ router.get('/agent-performance', protect, async (req, res) => {
         avgCSAT: `${avgCSAT}/5`,
         totalConversations: totalConvos,
         resolvedConversations: resolvedCount,
-        agents: agentsOut
+        agents: agentsOut,
+        pipeline: {
+          total: totalConvos,
+          resolved: resolvedFromStatus || resolvedCount,
+          open: openTotal,
+          awaitingInput,
+          humanTakeover
+        }
     });
 
   } catch (err) {

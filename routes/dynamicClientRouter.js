@@ -527,10 +527,14 @@ router.get('/restore-cart', async (req, res) => {
 router.post('/orders/:orderId/send-review-request', protect, async (req, res) => {
   try {
     const { clientId, orderId } = req.params;
+    const scopedClientId = tenantClientId(req);
+    if (!scopedClientId || scopedClientId !== clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
     const Order = require('../models/Order');
     const ReviewRequest = require('../models/ReviewRequest');
 
-    const order = await Order.findOne({ _id: orderId, clientId });
+    const order = await Order.findOne({ _id: orderId, clientId: scopedClientId });
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
     const phone = order.customerPhone || order.phone;

@@ -330,6 +330,14 @@ router.post('/:clientId/discounts', protect, verifyClientAccess, async (req, res
   const { clientId } = req.params;
   try {
     const { title, type, value, expiryHours = 24, prefix = 'TOPAI' } = req.body;
+    const numericValue = Number(value);
+    const normalizedType = type === 'fixed' ? 'fixed' : 'percentage';
+    if (!Number.isFinite(numericValue) || numericValue <= 0) {
+      return res.status(400).json({ success: false, error: 'Discount value must be greater than 0' });
+    }
+    if (!Number.isFinite(Number(expiryHours)) || Number(expiryHours) <= 0) {
+      return res.status(400).json({ success: false, error: 'Expiry must be a positive number of hours' });
+    }
 
     const discount = await withShopifyRetry(clientId, async (shop) => {
         const priceRuleRes = await shop.post('/price_rules.json', {
@@ -338,11 +346,11 @@ router.post('/:clientId/discounts', protect, verifyClientAccess, async (req, res
             target_type: 'line_item',
             target_selection: 'all',
             allocation_method: 'across',
-            value_type: type === 'percentage' ? 'percentage' : 'fixed_amount',
-            value: `-${value}`,
+            value_type: normalizedType === 'percentage' ? 'percentage' : 'fixed_amount',
+            value: `-${numericValue}`,
             customer_selection: 'all',
             starts_at: new Date().toISOString(),
-            ends_at: addHours(new Date(), expiryHours).toISOString(),
+            ends_at: addHours(new Date(), Number(expiryHours)).toISOString(),
             usage_limit: 1
           }
         });
@@ -361,8 +369,8 @@ router.post('/:clientId/discounts', protect, verifyClientAccess, async (req, res
     const savedEntry = {
       code: discount.code,
       title: title || discount.code,
-      type: type === 'percentage' ? 'percentage' : 'fixed_amount',
-      value: Number(value),
+      type: normalizedType === 'percentage' ? 'percentage' : 'fixed_amount',
+      value: numericValue,
       expiryHours: Number(expiryHours),
       priceRuleId: discount.price_rule_id,
       shopifyId: discount.id,

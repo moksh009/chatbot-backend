@@ -8,6 +8,18 @@ const WarrantyRecord = require('../models/WarrantyRecord');
 const Client = require('../models/Client');
 const { withShopifyRetry } = require('../utils/shopifyHelper');
 
+const normalizePhone = (value = '') => String(value).trim();
+const parseDurationMonths = (raw) => {
+    if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+    const text = String(raw || '').toLowerCase();
+    if (text.includes('3 year')) return 36;
+    if (text.includes('2 year')) return 24;
+    if (text.includes('1 year')) return 12;
+    if (text.includes('6 month')) return 6;
+    const match = text.match(/(\d+)/);
+    return match ? Number(match[1]) : 12;
+};
+
 /**
  * @route   GET /api/warranty/batches
  * @desc    Fetch all warranty batches for a client
@@ -54,7 +66,16 @@ router.post('/batches', protect, async (req, res) => {
 router.patch('/batches/:id', protect, async (req, res) => {
     try {
         const { id } = req.params;
-        const { status, durationMonths, applyRetroactively, voidExisting } = req.body;
+        const {
+            status,
+            durationMonths,
+            applyRetroactively,
+            voidExisting,
+            batchName,
+            shopifyProductIds,
+            validFrom,
+            validUntil
+        } = req.body;
         const clientId = req.user.clientId;
 
         const batch = await WarrantyBatch.findOne({ _id: id, clientId });
@@ -62,7 +83,15 @@ router.patch('/batches/:id', protect, async (req, res) => {
 
         // Update fields
         if (status) batch.status = status;
-        if (durationMonths) batch.durationMonths = durationMonths;
+        if (durationMonths) batch.durationMonths = Number(durationMonths);
+        if (batchName) batch.batchName = String(batchName).trim();
+        if (Array.isArray(shopifyProductIds)) {
+            batch.shopifyProductIds = shopifyProductIds.map((v) => String(v));
+        }
+        if (validFrom) batch.validFrom = new Date(validFrom);
+        if (typeof validUntil !== 'undefined') {
+            batch.validUntil = validUntil ? new Date(validUntil) : null;
+        }
         
         await batch.save();
 
@@ -150,10 +179,97 @@ router.get('/unassigned-orders', protect, async (req, res) => {
     const Order = require('../models/Order');
     try {
         const clientId = req.user.clientId;
-        const orders = await Order.find({ clientId }).limit(20);
-        res.json({ success: true, leads: orders }); // Keeping "leads" key for frontend compatibility during transition
+        const records = await WarrantyRecord.find({ clientId }).select('shopifyOrderId').lean();
+        const assignedOrderIds = new Set(
+            records
+                .map((r) => String(r.shopifyOrderId || '').trim())
+                .filter(Boolean)
+        );
+
+        const orders = await Order.find({ clientId }).sort({ createdAt: -1 }).limit(60).lean();
+        const leads = orders
+            .filter((o) => {
+                const oid = String(o.shopifyOrderId || o.orderId || '').trim();
+                return oid && !assignedOrderIds.has(oid);
+            })
+            .slice(0, 20)
+            .map((o) => ({
+                _id: o._id,
+                name: o.customerName || o.name || 'Customer',
+                phoneNumber: o.customerPhone || o.phone || '',
+                lastInteraction: o.createdAt || new Date(),
+                lastOrderId: o.shopifyOrderId || o.orderId || '',
+                activityLog: [{ action: 'order_placed', at: o.createdAt || new Date() }]
+            }));
+
+        res.json({ success: true, leads }); // Keeping "leads" key for frontend compatibility during transition
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+/**
+ * @route   POST /api/warranty/manual-register
+ * @desc    Create warranty record manually from dashboard form
+ */
+router.post('/manual-register', protect, async (req, res) => {
+    try {
+        const clientId = req.user.clientId;
+        const {
+            phoneNumber,
+            productName,
+            serialNumber,
+            orderId,
+            duration,
+            purchaseDate
+        } = req.body || {};
+
+        if (!phoneNumber || !productName) {
+            return res.status(400).json({ success: false, message: 'Customer Phone and Product Name are required' });
+        }
+
+        const normalizedPhone = normalizePhone(phoneNumber);
+        const months = parseDurationMonths(duration);
+        const purchase = purchaseDate ? new Date(purchaseDate) : new Date();
+        const expiry = new Date(purchase);
+        expiry.setMonth(expiry.getMonth() + months);
+
+        let contact = await Contact.findOne({ clientId, phoneNumber: normalizedPhone });
+        if (!contact) {
+            contact = await Contact.create({
+                clientId,
+                phoneNumber: normalizedPhone,
+                name: 'Manual Customer'
+            });
+        }
+
+        let batch = await WarrantyBatch.findOne({ clientId, status: 'active' }).sort({ createdAt: -1 });
+        if (!batch) {
+            batch = await WarrantyBatch.create({
+                clientId,
+                batchName: 'Manual Registrations',
+                shopifyProductIds: [],
+                durationMonths: months,
+                validFrom: new Date(),
+                status: 'active'
+            });
+        }
+
+        const record = await WarrantyRecord.create({
+            clientId,
+            customerId: contact._id,
+            shopifyOrderId: String(orderId || `manual-${Date.now()}`),
+            productId: String(serialNumber || productName),
+            productName: String(productName),
+            purchaseDate: purchase,
+            expiryDate: expiry,
+            batchId: batch._id,
+            status: 'active'
+        });
+
+        return res.status(201).json({ success: true, record });
+    } catch (err) {
+        return res.status(500).json({ success: false, message: err.message });
     }
 });
 
@@ -166,10 +282,17 @@ router.get('/check', async (req, res) => {
         const { phone } = req.query;
         if (!phone) return res.status(400).json({ success: false, message: 'Phone is required' });
         
-        const contact = await Contact.findOne({ phoneNumber: phone });
-        if (!contact) return res.json({ success: true, hasWarranty: false });
+        const scopedClientId = String(req.query.clientId || '').trim();
+        let scopedContact = null;
+        if (scopedClientId) {
+            scopedContact = await Contact.findOne({ clientId: scopedClientId, phoneNumber: phone }).lean();
+        }
+        if (!scopedContact) {
+            scopedContact = await Contact.findOne({ phoneNumber: phone }).lean();
+        }
+        if (!scopedContact) return res.json({ success: true, hasWarranty: false });
 
-        const record = await WarrantyRecord.findOne({ customerId: contact._id, status: 'active' })
+        const record = await WarrantyRecord.findOne({ customerId: scopedContact._id, status: 'active' })
             .populate('batchId', 'batchName durationMonths')
             .sort({ expiryDate: -1 });
 
