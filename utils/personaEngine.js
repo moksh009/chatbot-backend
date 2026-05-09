@@ -349,19 +349,24 @@ async function buildKnowledgeContext(clientId) {
     }
 
     const KnowledgeDocument = require('../models/KnowledgeDocument');
-    const docs = await KnowledgeDocument.find({ 
-      clientId, 
-      isActive: true, 
-      status: 'processed' 
+    const docs = await KnowledgeDocument.find({
+      clientId,
+      isActive: true,
     })
       .sort({ updatedAt: -1 })
-      .limit(20)
-      .select('title content')
+      .limit(24)
+      .select('title content documentType')
       .lean();
 
     if (!docs || docs.length === 0) return '';
 
-    const sections = docs.map(doc => `### ${doc.title}\n${doc.content}`);
+    const sections = docs.map((doc) => {
+      const label = doc.documentType
+        ? String(doc.documentType).replace(/_/g, ' ')
+        : '';
+      const tag = label ? `[${label}] ` : '';
+      return `### ${tag}${doc.title}\n${doc.content}`;
+    });
     let contextString = `\n\nDYNAMIC KNOWLEDGE BASE (${docs.length} documents):\n${sections.join('\n\n')}`;
     
     if (contextString.length > 12000) {
@@ -378,11 +383,17 @@ async function buildKnowledgeContext(clientId) {
   }
 }
 
+function clearKnowledgeContextCache(clientId) {
+  if (clientId) knowledgeCache.delete(clientId);
+  else knowledgeCache.clear();
+}
+
 module.exports = {
   buildPersonaSystemPrompt,
   applyPersonaPostProcess,
   syncPersonaToFlows,
   buildKnowledgeContext,
+  clearKnowledgeContextCache,
   normalizePersonaTone,
   syncPersonaAcrossSystem,
 };

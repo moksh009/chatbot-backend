@@ -5,6 +5,7 @@ const { protect } = require('../middleware/auth');
 const { ensureClientForUser } = require('../utils/ensureClientForUser');
 const log = require('../utils/logger')('KnowledgeRoute');
 const { tenantClientId } = require('../utils/queryHelpers');
+const { clearKnowledgeContextCache } = require('../utils/personaEngine');
 
 /**
  * @route   GET /api/knowledge
@@ -242,22 +243,38 @@ router.get('/documents', protect, async (req, res) => {
 router.post('/documents', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
-    const { title, content, sourceType, sourceUrl } = req.body;
+    const {
+      title,
+      content,
+      sourceType,
+      sourceUrl,
+      documentType,
+      type,
+      isActive,
+    } = req.body;
 
     if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
     if (!title?.trim() || !content?.trim()) {
       return res.status(400).json({ success: false, message: 'Title and content are required.' });
     }
 
+    const dt = documentType || type || 'custom';
+    const allowedTypes = ['product_catalog', 'sop', 'faq', 'policy', 'custom'];
+    const normalizedType = allowedTypes.includes(dt) ? dt : 'custom';
+
     const KnowledgeDocument = require('../models/KnowledgeDocument');
     const doc = await KnowledgeDocument.create({
       clientId,
       title: title.trim(),
       content: content.trim(),
+      documentType: normalizedType,
       sourceType: sourceType || 'manual',
-      sourceUrl: sourceUrl || undefined
+      sourceUrl: sourceUrl || undefined,
+      isActive: isActive !== false,
+      status: 'processed',
     });
 
+    clearKnowledgeContextCache(clientId);
     log.info(`Knowledge doc created for ${clientId}: "${title.substring(0, 40)}"`);
     res.status(201).json({ success: true, document: doc });
   } catch (err) {
@@ -275,7 +292,7 @@ router.put('/documents/:id', protect, async (req, res) => {
     const tenantId = tenantClientId(req);
     if (!tenantId) return res.status(403).json({ success: false, message: 'Unauthorized' });
 
-    const { title, content, isActive } = req.body;
+    const { title, content, isActive, documentType, type } = req.body;
     const KnowledgeDocument = require('../models/KnowledgeDocument');
 
     const existing = await KnowledgeDocument.findById(req.params.id);
@@ -284,16 +301,23 @@ router.put('/documents/:id', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Forbidden' });
     }
 
+    const rawType = documentType || type;
+    const allowedTypes = ['product_catalog', 'sop', 'faq', 'policy', 'custom'];
+    const normalizedType =
+      rawType && allowedTypes.includes(rawType) ? rawType : undefined;
+
     const doc = await KnowledgeDocument.findByIdAndUpdate(
       req.params.id,
-      { 
+      {
         ...(title !== undefined && { title: title.trim() }),
         ...(content !== undefined && { content: content.trim() }),
-        ...(isActive !== undefined && { isActive })
+        ...(isActive !== undefined && { isActive }),
+        ...(normalizedType && { documentType: normalizedType }),
       },
       { new: true }
     );
 
+    clearKnowledgeContextCache(tenantId);
     res.json({ success: true, document: doc });
   } catch (err) {
     log.error('Knowledge Document Update Error:', err);
@@ -319,6 +343,7 @@ router.delete('/documents/:id', protect, async (req, res) => {
 
     const doc = await KnowledgeDocument.findByIdAndDelete(req.params.id);
 
+    clearKnowledgeContextCache(tenantId);
     res.json({ success: true, message: 'Document deleted' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -331,10 +356,10 @@ router.delete('/documents/:id', protect, async (req, res) => {
 router.post('/test', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
-    const { query } = req.body;
+    const query = req.body.query ?? req.body.question;
 
     if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-    if (!query) return res.status(400).json({ success: false, message: 'Query required' });
+    if (!query || !String(query).trim()) return res.status(400).json({ success: false, message: 'Query required' });
 
     const { buildKnowledgeContext } = require('../utils/personaEngine');
     const { platformGenerateText } = require('../utils/gemini');
@@ -347,7 +372,7 @@ router.post('/test', protect, async (req, res) => {
 
     const systemPrompt = `You are a helpful business assistant. Use ONLY the following business knowledge to answer the user's question. If the answer is not in the knowledge base, say "I don't have that information in my knowledge base." Do NOT make up answers.\n${context}`;
 
-    const answer = await platformGenerateText(systemPrompt, query);
+    const answer = await platformGenerateText(systemPrompt, String(query).trim());
 
     res.json({ success: true, answer, contextUsed: true });
   } catch (err) {

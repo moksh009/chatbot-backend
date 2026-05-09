@@ -33,6 +33,7 @@ function aiRateLimit(maxRequests = 5, windowMs = 60000) {
 router.post('/', verifyDashboardToken, IntentApiController.upsertIntent);
 router.get('/', verifyDashboardToken, IntentApiController.getIntents);
 router.get('/pending-phrases', verifyDashboardToken, IntentApiController.getPendingPhrases);
+router.get('/conversation-messages/:conversationId', verifyDashboardToken, IntentApiController.getTrainingConversationMessages);
 router.get('/stats', verifyDashboardToken, IntentApiController.getIntentStats);
 router.get('/analytics', verifyDashboardToken, IntentApiController.getIntentAnalytics);
 router.get('/suggest-clusters', verifyDashboardToken, IntentApiController.suggestClusters);

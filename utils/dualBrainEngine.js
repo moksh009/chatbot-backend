@@ -1724,6 +1724,24 @@ async function runDualBrainEngine(parsedMessage, client) {
   const keywordHandled = await tryKeywordFallback(parsedMessage, client, convo, phone, channel);
   if (keywordHandled) return true;
 
+  // STEP 6b: Dashboard NLP intents — low-confidence free text becomes a Training Inbox row with conversation thread.
+  if (parsedMessage.text?.body && convo?._id) {
+    const trimmedIntentProbe = String(parsedMessage.text.body || '').trim();
+    if (trimmedIntentProbe.length > 2) {
+      try {
+        const NlpEngineService = require('../services/NlpEngineService');
+        await NlpEngineService.enqueueWhatsAppTrainingGapIfUnhandled(
+          client.clientId,
+          phone,
+          trimmedIntentProbe,
+          convo._id
+        );
+      } catch (gapErr) {
+        log.warn('[DualBrain] Training Inbox NLP bridge failed:', { error: gapErr.message });
+      }
+    }
+  }
+
   // STEP 7: PRIORITY 3 — Gemini AI Fallback
   // Only use AI if there is text body. Otherwise, let the caller handle it.
   if (parsedMessage.text?.body) {
@@ -3974,6 +3992,13 @@ async function runAIFallback(parsedMessage, client, phone, lead, channel = 'what
       .join('\n');
     
     const policyStore = client.nicheData?.policies || "Standard 7-day return policy applies unless specified.";
+    let knowledgeDocumentsCtx = '';
+    try {
+      const { buildKnowledgeContext } = require('./personaEngine');
+      knowledgeDocumentsCtx = await buildKnowledgeContext(client.clientId);
+    } catch (kErr) {
+      log.warn('[AI] Knowledge document context unavailable:', kErr.message);
+    }
     // Phase 29 Track 3: AI Persona
     const persona = client.ai?.persona;
     const systemPrompt = buildPersonaSystemPrompt(client, client.nicheData?.aiPromptContext);
@@ -4015,8 +4040,11 @@ KNOWLEDGE BASE:
 [Products]
 ${productCatalog || "General inquiry handling."}
 
-[Policies & FAQ]
+[Policies & short FAQ snippets]
 ${policyStore}
+
+[Intelligence Hub — curated documents]
+${knowledgeDocumentsCtx || "[No active Knowledge Base documents yet — add long-form FAQs, SOPs, and policies under Intelligence → Knowledge Base.]"}
 
 ${fewShot}
 

@@ -206,6 +206,79 @@ class NlpEngineService {
   }
 
   /**
+   * WhatsApp / Live Chat bridge: classify with trained intents; enqueue Training Inbox only on LOW confidence.
+   * Does NOT run ActionExecutor — dualBrain handles customer-facing replies (e.g. Gemini fallback).
+   */
+  async enqueueWhatsAppTrainingGapIfUnhandled(clientId, phoneNumber, phrase, conversationId) {
+    const text = String(phrase || '').trim();
+    if (!text || text.length < 2) return { recorded: false, reason: 'empty' };
+
+    let result;
+    try {
+      result = await this.simulate(clientId, text);
+    } catch (e) {
+      console.error('[NLPEngine] enqueueWhatsAppTrainingGap classify error:', e.message);
+      return { recorded: false, reason: 'classify_error' };
+    }
+
+    const { intent, score } = result;
+    const confident =
+      typeof score === 'number' &&
+      score >= CONFIDENCE_THRESHOLD &&
+      intent &&
+      intent !== 'None';
+
+    if (confident) {
+      return { recorded: false, reason: 'matched', intent, score };
+    }
+
+    try {
+      const exists = await UnrecognizedPhrase.findOne({
+        clientId,
+        phrase: text,
+        status: 'PENDING'
+      })
+        .select('_id')
+        .lean();
+
+      if (!exists) {
+        await UnrecognizedPhrase.create({
+          clientId,
+          phrase: text,
+          phoneNumber: phoneNumber || '',
+          language: result.language || 'unknown',
+          source: 'WHATSAPP',
+          status: 'PENDING',
+          conversationId: conversationId || undefined
+        });
+        console.log(
+          `[NLPEngine] Training Inbox gap (WHATSAPP): "${text.substring(0, 80)}…" conversation=${conversationId || 'none'}`
+        );
+        return { recorded: true, intent, score };
+      }
+    } catch (err) {
+      console.error('[NLPEngine] enqueueWhatsAppTrainingGap save error:', err.message);
+      return { recorded: false, reason: 'save_error' };
+    }
+
+    return { recorded: false, reason: 'duplicate_pending', intent, score };
+  }
+
+  /** Resolve conversation for aggregated WhatsApp / Meta text pipeline (phone variants). */
+  async resolveConversationForPhone(clientId, phoneNumber) {
+    const raw = String(phoneNumber || '');
+    const cleanPhone = raw.replace(/\D/g, '');
+    const phoneVariants = [
+      raw,
+      cleanPhone,
+      cleanPhone.startsWith('91') ? cleanPhone.slice(2) : `91${cleanPhone}`,
+      cleanPhone.startsWith('+') ? cleanPhone : `+${cleanPhone}`
+    ].filter(Boolean);
+    const uniq = [...new Set(phoneVariants)];
+    return Conversation.findOne({ clientId, phone: { $in: uniq } });
+  }
+
+  /**
    * Process aggregated text and execute actions.
    */
   async processIncomingText(clientId, phoneNumber, finalString) {
@@ -217,6 +290,8 @@ class NlpEngineService {
 
       console.log(`[NLPEngine] Analysis Result: Intent: ${intent} | Score: ${score.toFixed(4)}`);
 
+      const conversationDoc = await this.resolveConversationForPhone(clientId, phoneNumber);
+
       // BUG 6 FIX: Use unified confidence threshold from nlpConfig
       if (score < CONFIDENCE_THRESHOLD || intent === 'None' || !intent) {
         console.warn(`[NLPEngine] Intent confidence too low or UNKNOWN (${score.toFixed(4)}). Logging for review.`);
@@ -227,7 +302,9 @@ class NlpEngineService {
           phrase: finalString,
           phoneNumber,
           language: result.language || 'unknown',
-          status: 'PENDING'
+          source: 'WHATSAPP',
+          status: 'PENDING',
+          conversationId: conversationDoc ? conversationDoc._id : undefined
         }).catch(err => console.error('[NLPEngine] Failed to log unrecognized phrase:', err));
 
         return result;
@@ -244,24 +321,9 @@ class NlpEngineService {
           { $set: { lastTriggeredAt: new Date() }, $inc: { totalTriggerCount: 1 } }
         ).catch(() => {}); // fire and forget
 
-        // Normalize phone for comparison (ensure it's just digits)
-        const cleanPhone = phoneNumber.replace(/\D/g, '');
-        
-        // Variants to try: exact, clean, 91 prefix, +91 prefix
-        const phoneVariants = [
-          phoneNumber, 
-          cleanPhone, 
-          cleanPhone.startsWith('91') ? cleanPhone.slice(2) : '91' + cleanPhone,
-          cleanPhone.startsWith('+') ? cleanPhone : '+' + cleanPhone
-        ];
-
         // MODULE 2: Update Conversation with last detected intent context
         try {
-          let conversation = await Conversation.findOne({ 
-            clientId, 
-            phone: { $in: phoneVariants } 
-          });
-
+          const conversation = conversationDoc;
 
           if (conversation) {
             await Conversation.updateOne(

@@ -24,9 +24,15 @@ const unrecognizedPhraseSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  conversationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Conversation',
+    default: null,
+    index: true
+  },
   source: {
     type: String,
-    enum: ['LIVE_CHAT', 'SIMULATOR'],
+    enum: ['LIVE_CHAT', 'SIMULATOR', 'WHATSAPP'],
     default: 'LIVE_CHAT'
   },
   status: {

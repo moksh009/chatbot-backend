@@ -1,7 +1,10 @@
+const mongoose = require('mongoose');
 const IntentRule = require('../models/IntentRule');
 const NlpEngineService = require('../services/NlpEngineService');
 const UnrecognizedPhrase = require('../models/UnrecognizedPhrase');
 const IntentAnalytics = require('../models/IntentAnalytics');
+const Conversation = require('../models/Conversation');
+const Message = require('../models/Message');
 const { CONFIDENCE_THRESHOLD } = require('../utils/nlpConfig');
 const ClientModel = require('../models/Client');
 const { botGenerateJSON } = require('../utils/gemini');
@@ -18,6 +21,18 @@ const { tenantClientId } = require('../utils/queryHelpers');
  */
 function resolveClientId(req) {
   return tenantClientId(req);
+}
+
+function previewTrainingMessageBody(m) {
+  const text =
+    (m.content && String(m.content).trim()) ||
+    (m.translatedContent && String(m.translatedContent).trim()) ||
+    (m.voiceTranscript && String(m.voiceTranscript).trim()) ||
+    '';
+  if (text) return text;
+  if (m.mediaUrl) return '[Media attachment]';
+  if (m.type && m.type !== 'text') return `[${m.type}]`;
+  return '[Non-text message]';
 }
 
 /**
@@ -281,6 +296,57 @@ exports.getPendingPhrases = async (req, res) => {
 };
 
 /**
+ * Loads recent messages for Training Inbox "conversation context" (WhatsApp / Live Chat threads).
+ */
+exports.getTrainingConversationMessages = async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    const { conversationId } = req.params;
+
+    if (!clientId) {
+      return res.status(401).json({ success: false, message: 'Unauthorized.' });
+    }
+    if (!conversationId || !mongoose.Types.ObjectId.isValid(conversationId)) {
+      return res.status(400).json({ success: false, message: 'Invalid conversation id.' });
+    }
+
+    const convo = await Conversation.findOne({ _id: conversationId, clientId }).lean();
+    if (!convo) {
+      return res.status(404).json({ success: false, message: 'Conversation not found.' });
+    }
+
+    const rows = await Message.find({ conversationId: convo._id, clientId })
+      .sort({ timestamp: -1 })
+      .limit(60)
+      .lean();
+
+    rows.reverse();
+
+    const messages = rows.map((m) => ({
+      id: String(m._id),
+      direction: m.direction,
+      body: previewTrainingMessageBody(m),
+      timestamp: m.timestamp,
+      channel: m.channel || 'whatsapp',
+      type: m.type
+    }));
+
+    return res.status(200).json({
+      success: true,
+      conversation: {
+        id: String(convo._id),
+        phone: convo.phone,
+        customerName: convo.customerName || ''
+      },
+      messages
+    });
+  } catch (error) {
+    console.error('[IntentApi] Conversation context:', error.message);
+    res.status(500).json({ success: false, error: 'Failed to load conversation context.' });
+  }
+};
+
+/**
  * BUG 3 FIX: Returns stats matching frontend field expectations.
  */
 exports.getIntentStats = async (req, res) => {
@@ -335,7 +401,6 @@ exports.deleteIntent = async (req, res) => {
       return res.status(401).json({ success: false, message: 'Unauthorized: Client identity missing.' });
     }
 
-    const mongoose = require('mongoose');
     if (!mongoose.Types.ObjectId.isValid(intentId)) {
       return res.status(400).json({ success: false, message: 'Invalid intent identity format.' });
     }
