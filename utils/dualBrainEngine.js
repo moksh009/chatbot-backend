@@ -2034,16 +2034,60 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     }
   }
 
-  // Fallback: Check if the user's text matches a button title
+  // Fallback: map typed text/number to interactive options (buttons + list rows)
   if (currentNode?.type === 'interactive') {
-    const btns = currentNode.data?.buttonsList || [];
-    const matchedBtn = btns.find(b => b.title?.toLowerCase() === userTextLower);
-    if (matchedBtn) {
-      const handleEdge = flowEdges.find(e =>
-        e.source === currentStepId &&
-        (normalizeHandleId(e.sourceHandle) === (matchedBtn.id || matchedBtn.title?.toLowerCase().replace(/\s+/g, '_')))
-      );
-      if (handleEdge) return await executeNode(handleEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+    const sourceEdgesForNode = flowEdges.filter((e) => e.source === currentStepId);
+    const numericChoice = Number.parseInt(userText, 10);
+    const isNumericChoice = Number.isInteger(numericChoice) && numericChoice > 0;
+    const normalizeTitle = (v = '') =>
+      String(v || '')
+        .toLowerCase()
+        .replace(/[\u{1F300}-\u{1FAFF}]/gu, '')
+        .replace(/[^\p{L}\p{N}\s]/gu, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const options = [];
+    const btns = Array.isArray(currentNode.data?.buttonsList) ? currentNode.data.buttonsList : [];
+    btns.forEach((b) => {
+      options.push({
+        id: normalizeHandleId(b?.id || b?.title || ''),
+        title: String(b?.title || ''),
+      });
+    });
+
+    const sections = Array.isArray(currentNode.data?.sections) ? currentNode.data.sections : [];
+    sections.forEach((section) => {
+      (Array.isArray(section?.rows) ? section.rows : []).forEach((row) => {
+        options.push({
+          id: normalizeHandleId(row?.id || row?.title || ''),
+          title: String(row?.title || ''),
+        });
+      });
+    });
+
+    if (options.length) {
+      let picked = null;
+      if (isNumericChoice && numericChoice <= options.length) {
+        picked = options[numericChoice - 1];
+      } else {
+        const normalizedInput = normalizeTitle(userTextLower);
+        picked = options.find((opt) => {
+          const optId = normalizeHandleId(opt.id || '').toLowerCase();
+          const optTitle = normalizeTitle(opt.title);
+          return normalizedInput === optTitle || normalizedInput === optId;
+        });
+      }
+
+      if (picked) {
+        const handleEdge = sourceEdgesForNode.find(
+          (e) => normalizeHandleId(e.sourceHandle || '').toLowerCase() === normalizeHandleId(picked.id || '').toLowerCase()
+        );
+        if (handleEdge) {
+          log.info(`[Graph] Matched typed interactive choice "${userText}" to handle "${picked.id}" on ${currentStepId}`);
+          return await executeNode(handleEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
+        }
+      }
     }
   }
   
@@ -4106,7 +4150,11 @@ async function sendWhatsAppText(client, phone, body, channel = 'whatsapp') {
   try {
     const convo = await Conversation.findOne({ phone, clientId: client.clientId });
     const translated = await translateToUserLanguage(body, convo?.detectedLanguage, client);
-    const bodyContent = String(translated || body).substring(0, 4096);
+    let bodyContent = String(translated || body || '').trim();
+    if (!bodyContent || bodyContent === 'null' || bodyContent === 'undefined' || bodyContent === '[object Object]') {
+      bodyContent = 'Thanks for your message — tap *menu* anytime to see options.';
+    }
+    bodyContent = bodyContent.substring(0, 4096);
     const res = await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
       messaging_product: 'whatsapp', to: phone, type: 'text', text: { body: bodyContent }
     }, { headers: { Authorization: `Bearer ${token}` } });
