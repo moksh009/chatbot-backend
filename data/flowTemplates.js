@@ -1,4 +1,13 @@
+const { buildFlow: buildApexLightFlow } = require('./apexLightOwnerFlow');
+const _apex = buildApexLightFlow();
+
 module.exports = {
+
+  // ── APEX LIGHT (HDMI 2.1 / 2.0 owner support + catalogue) ─────────────────
+  apex_light: {
+    nodes: _apex.nodes,
+    edges: _apex.edges,
+  },
 
   // ── ECOMMERCE TEMPLATE ────────────────────────────────────────────────────
   ecommerce: {
