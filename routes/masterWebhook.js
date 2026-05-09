@@ -5,86 +5,12 @@ const log = require('../utils/logger')('MasterWebhook');
 const Conversation = require('../models/Conversation');
 const Campaign = require('../models/Campaign');
 const CampaignMessage = require('../models/CampaignMessage');
-const { handleWhatsAppMessage, saveInboundMessage } = require('../utils/dualBrainEngine');
+const { handleWhatsAppMessage, saveInboundMessage, handleWhatsAppCatalogOrder } = require('../utils/dualBrainEngine');
 const { processOrderForLoyalty } = require('../utils/walletService');
 const { logActivity } = require('../utils/activityLogger');
 const { recalculateLeadScore } = require('../utils/scoringHelper');
 const { buildEventEnvelope } = require('../utils/eventEnvelope');
 const { emitToClient } = require('../utils/socket');
-const { withShopifyRetry } = require('../utils/shopifyHelper');
-
-function normalizeStoreBase(shopDomain = '') {
-  const clean = String(shopDomain || '').replace(/^https?:\/\//, '').trim();
-  return clean ? `https://${clean}` : '';
-}
-
-async function buildCatalogCheckoutContext(clientDoc, orderItems = []) {
-  const storeBase = normalizeStoreBase(clientDoc?.shopDomain);
-  const fallbackCheckout = clientDoc?.platformVars?.checkoutUrl || (storeBase ? `${storeBase}/cart` : '');
-  const cleanItems = Array.isArray(orderItems) ? orderItems : [];
-  if (!cleanItems.length) {
-    return { checkoutUrl: fallbackCheckout, items: [], titles: [], handles: [], totalPrice: 0 };
-  }
-
-  const retailerIds = [...new Set(
-    cleanItems.map((i) => String(i?.product_retailer_id || '').trim()).filter(Boolean)
-  )];
-  const productMap = new Map();
-
-  if (clientDoc?.clientId && retailerIds.length) {
-    try {
-      const products = await withShopifyRetry(clientDoc.clientId, async (shop) => {
-        const resp = await shop.get('/products.json', {
-          params: { ids: retailerIds.join(','), fields: 'id,title,handle,variants,images' }
-        });
-        return resp.data?.products || [];
-      });
-      products.forEach((p) => {
-        const key = String(p.id || '').trim();
-        productMap.set(key, {
-          variantId: String(p?.variants?.[0]?.id || '').trim(),
-          title: p.title || 'Product',
-          handle: p.handle || '',
-          image: p?.images?.[0]?.src || '',
-          url: storeBase && p.handle ? `${storeBase}/products/${p.handle}` : ''
-        });
-      });
-    } catch (err) {
-      log.warn(`[CatalogCheckout] product mapping failed: ${err.message}`);
-    }
-  }
-
-  let totalPrice = 0;
-  const permalinkItems = [];
-  const items = [];
-  const titles = [];
-  const handles = [];
-
-  cleanItems.forEach((item) => {
-    const retailerId = String(item?.product_retailer_id || '').trim();
-    const quantity = Math.max(1, Number(item?.quantity || 1) || 1);
-    const mapped = productMap.get(retailerId);
-    const variantId = mapped?.variantId || (/^\d{8,}$/.test(retailerId) ? retailerId : '');
-    const itemPrice = Number(item?.item_price ?? item?.price ?? 0);
-    if (Number.isFinite(itemPrice) && itemPrice > 0) totalPrice += (itemPrice * quantity);
-
-    if (variantId) permalinkItems.push(`${variantId}:${quantity}`);
-    items.push({
-      variant_id: variantId || retailerId,
-      quantity,
-      image: mapped?.image || '',
-      url: mapped?.url || ''
-    });
-    if (mapped?.title) titles.push(mapped.title);
-    if (mapped?.handle) handles.push(mapped.handle);
-  });
-
-  const checkoutUrl = permalinkItems.length
-    ? `${storeBase}/cart/${permalinkItems.join(',')}?utm_source=whatsapp_catalog&utm_medium=chatbot`
-    : fallbackCheckout;
-
-  return { checkoutUrl, items, titles, handles, totalPrice };
-}
 
 /**
  * Middleware to verify Meta X-Hub-Signature-256
@@ -313,16 +239,22 @@ async function processMessages(messages, metadata, contacts) {
           log.info(`🛒 WA Catalog order from ${from}`, { items: orderItems.length });
 
           const Client = require('../models/Client');
-          const clientDoc = await Client.findOne(
-            { phoneNumberId: phone_number_id },
-            { _id: 1, clientId: 1, shopDomain: 1, whatsappToken: 1, phoneNumberId: 1, platformVars: 1, loyaltyConfig: 1 }
-          ).lean();
+          const clientDoc = await Client.findOne({ phoneNumberId: phone_number_id }).lean();
           if (!clientDoc?.clientId) {
             log.warn('Catalog order received but client not found by phoneNumberId', { phone_number_id });
             continue;
           }
 
-          const checkoutCtx = await buildCatalogCheckoutContext(clientDoc, orderItems);
+          let coResult = {
+            shortUrl: '',
+            checkoutUrl: '',
+            totalPrice: 0
+          };
+          try {
+            coResult = await handleWhatsAppCatalogOrder(clientDoc, from, message.order || {});
+          } catch (ce) {
+            log.error(`[CatalogOrder] handleWhatsAppCatalogOrder failed: ${ce.message}`);
+          }
 
           const AdLead = require('../models/AdLead');
           const lead = await AdLead.findOneAndUpdate(
@@ -331,26 +263,23 @@ async function processMessages(messages, metadata, contacts) {
               $set: {
                 cartStatus: 'whatsapp_order_placed',
                 lastInteraction: new Date(),
-                checkoutUrl: checkoutCtx.checkoutUrl || '',
-                cartUrl: checkoutCtx.checkoutUrl || '',
-                'cartSnapshot.items': checkoutCtx.items,
-                'cartSnapshot.titles': checkoutCtx.titles,
-                'cartSnapshot.handles': checkoutCtx.handles,
-                'cartSnapshot.total_price': checkoutCtx.totalPrice,
+                checkoutUrl: coResult.shortUrl || '',
+                cartUrl: coResult.checkoutUrl || '',
+                'cartSnapshot.items': orderItems,
+                'cartSnapshot.total_price': coResult.totalPrice,
                 'cartSnapshot.updatedAt': new Date()
               },
               $push: {
                 activityLog: { action: 'whatsapp_catalog_order', details: `WA Catalog order: ${orderItems.length} item(s)`, timestamp: new Date() },
                 commerceEvents: {
                   event: 'whatsapp_order_placed',
-                  amount: checkoutCtx.totalPrice || 0,
-                  currency: 'INR',
+                  amount: coResult.totalPrice || 0,
+                  currency: orderItems[0]?.currency || 'INR',
                   timestamp: new Date(),
                   metadata: {
                     items: orderItems,
-                    cartItems: checkoutCtx.items,
                     catalogOrderId: message.id,
-                    checkoutUrl: checkoutCtx.checkoutUrl || ''
+                    checkoutUrl: coResult.shortUrl || ''
                   }
                 }
               }
@@ -358,20 +287,13 @@ async function processMessages(messages, metadata, contacts) {
             { new: true, lean: true, upsert: true, setDefaultsOnInsert: true }
           );
 
-          const ackText = checkoutCtx.checkoutUrl
-            ? `✅ Thank you! We've captured ${orderItems.length} item(s).\nComplete checkout in one tap 👉 ${checkoutCtx.checkoutUrl}`
-            : `✅ Thank you! We've received your order for ${orderItems.length} item(s). Our team will confirm shortly.`;
-          require('../utils/whatsapp')
-            .sendText(clientDoc, from, ackText)
-            .catch(e => log.error('Catalog Ack failed', { error: e.message }));
-
           // Fire external webhook
           if (clientDoc && lead) {
             try {
               require('../utils/webhookDelivery').fireWebhookEvent(clientDoc._id, 'order.created', {
                 phone: from,
                 items: orderItems,
-                checkoutUrl: checkoutCtx.checkoutUrl || '',
+                checkoutUrl: coResult.shortUrl || '',
                 source: 'whatsapp_catalog'
               });
             } catch (_) {}
@@ -393,7 +315,7 @@ async function processMessages(messages, metadata, contacts) {
             // Phase 27: Loyalty Points Award (WhatsApp Catalog Order)
             const loyaltyEnabled = clientDoc.loyaltyConfig?.isEnabled || clientDoc.loyaltyConfig?.enabled;
             if (loyaltyEnabled) {
-                const totalAmount = checkoutCtx.totalPrice || orderItems.reduce((sum, item) => sum + (Number(item?.price || 0) * Number(item?.quantity || 1)), 0);
+                const totalAmount = coResult.totalPrice || orderItems.reduce((sum, item) => sum + (Number(item?.price || 0) * Number(item?.quantity || 1)), 0);
                 if (totalAmount > 0) {
                    processOrderForLoyalty(clientDoc.clientId, from, totalAmount, `WACAT_${message.id}`)
                      .then(res => { if (res) log.info(`Awarded ${res.pointsAwarded} points (WA Catalog) to ${from}`); })
@@ -475,9 +397,10 @@ async function processMessages(messages, metadata, contacts) {
       // resolves the client, and calls runDualBrainEngine internally.
       // DO NOT use processInboundMessage (deleted legacy dual-pipeline).
       handleWhatsAppMessage(message, from, phone_number_id, (contacts || []).find(c => c.wa_id === from)?.profile?.name || '')
-        .then(() => {
-          // TRIGGER WATERFALL ENGINE: Update score in real-time (Interactions count as metric)
-          recalculateLeadScore(client.clientId, from).catch(() => {});
+        .then(async () => {
+          const Cli = require('../models/Client');
+          const cdoc = await Cli.findOne({ phoneNumberId: phone_number_id }).select('clientId').lean();
+          if (cdoc?.clientId) recalculateLeadScore(cdoc.clientId, from).catch(() => {});
         })
         .catch(err => log.error("Engine processing error", { phone: from, error: err.message }));
 

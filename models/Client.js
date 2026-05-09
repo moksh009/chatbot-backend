@@ -673,9 +673,29 @@ const ClientSchema = new mongoose.Schema({
 
   // Phase 24: WhatsApp Catalog
   waCatalogId:         { type: String, default: '' },
+  /** Meta Commerce Manager catalog id (alias of waCatalogId; WhatsApp product_list uses this) */
+  facebookCatalogId:   { type: String, default: '' },
+  facebookPageId:      { type: String, default: '' },
+  shopifyStorefrontToken: { type: String, default: '' },
+  shopifyLastProductSync: { type: Date },
+  /** Count of indexed variant rows (Shopify → Mongo sync for Flow Builder) */
+  shopifyProductCount: { type: Number, default: 0 },
+  shopifyCollectionCount: { type: Number, default: 0 },
+  shopifySyncInProgress: { type: Boolean, default: false },
+  shopifySyncLastError:  { type: String, default: '' },
+  commerceEnabled:     { type: Boolean, default: false },
+  catalogSynced:       { type: Boolean, default: false },
+  commerceAutoSyncDaily: { type: Boolean, default: false },
   catalogSyncedAt:     { type: Date },
   catalogProductCount: { type: Number, default: 0 },
   catalogEnabled:      { type: Boolean, default: false },
+  commerceBotSettings: {
+    checkoutMessage: { type: String, default: '' },
+    cartReminderDelay: { type: Number, default: 30 },
+    cartReminderMessage: { type: String, default: '' },
+    catalogWelcomeMessage: { type: String, default: '' },
+    showCatalogOnFirstMessage: { type: Boolean, default: false }
+  },
 
   // Phase 24: Smart Cart Recovery
   smartCartRecovery:   { type: Boolean, default: false },

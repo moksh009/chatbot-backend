@@ -43,16 +43,20 @@ const verifyShopifyWebhook = async (req, res, next) => {
         return res.status(401).send('Missing headers');
     }
 
-    // Find the client to get their secret for verification
-    const client = await Client.findOne({ shopDomain: shop });
-    if (!client) {
+    const verifyRow = await Client.findOne({ shopDomain: shop })
+      .select('commerce.shopify.webhookSecret shopifyWebhookSecret shopifyClientSecret')
+      .lean();
+    if (!verifyRow) {
         log.error(`Webhook verification failed: No client found for shop ${shop}`);
         return res.status(401).send('Client not found');
     }
 
     // Use Webhook Secret if available, otherwise fallback to Client Secret
     // Support both Tier 2.5 modular sub-documents and legacy fields
-    const secretRaw = client.commerce?.shopify?.webhookSecret || client.shopifyWebhookSecret || client.shopifyClientSecret;
+    const secretRaw =
+      verifyRow.commerce?.shopify?.webhookSecret ||
+      verifyRow.shopifyWebhookSecret ||
+      verifyRow.shopifyClientSecret;
     const secret = decrypt(secretRaw);
 
     if (!secret) {
@@ -67,15 +71,25 @@ const verifyShopifyWebhook = async (req, res, next) => {
         .update(body, 'utf8')
         .digest('base64');
 
+    const loadFullClient = () => Client.findOne({ shopDomain: shop }).lean();
+
     if (hash === hmac) {
-        req.client = client;
+        req.client = await loadFullClient();
+        if (!req.client) {
+          log.error(`Webhook: client disappeared for shop ${shop}`);
+          return res.status(401).send('Client not found');
+        }
         req.topic = topic;
         next();
     } else {
         log.error(`Invalid HMAC for shop ${shop}. Expected: ${hash}, Received: ${hmac}`);
         // In local/test environments we might allow it, but for prod hardening we fail.
         if (process.env.NODE_ENV === 'production') return res.status(401).send('Invalid signature');
-        req.client = client;
+        req.client = await loadFullClient();
+        if (!req.client) {
+          log.error(`Webhook: client disappeared for shop ${shop}`);
+          return res.status(401).send('Client not found');
+        }
         req.topic = topic;
         next();
     }
@@ -334,7 +348,8 @@ async function fireEventFlow(client, eventName, data, status = null) {
     });
   }
 
-  const prevMeta = (await Conversation.findById(convo._id).lean())?.metadata || {};
+  const prevMeta =
+    convo.metadata && typeof convo.metadata === 'object' ? { ...convo.metadata } : {};
   await Conversation.findByIdAndUpdate(convo._id, {
     $set: { metadata: { ...prevMeta, ...metaPatch, lastCommerceEventAt: new Date() } },
   });
@@ -357,8 +372,10 @@ async function fireEventFlow(client, eventName, data, status = null) {
     ).catch((e) => log.warn(`[FlowTrigger] Lead cart snapshot update failed: ${e.message}`));
   }
 
-  const convoFresh = await Conversation.findById(convo._id);
-  const leadFresh = await AdLead.findOne({ phoneNumber: phone, clientId: client.clientId }).lean();
+  const [convoFresh, leadFresh] = await Promise.all([
+    Conversation.findById(convo._id).lean(),
+    AdLead.findOne({ phoneNumber: phone, clientId: client.clientId }).lean(),
+  ]);
 
   const { executeAutomationFlow } = require('../utils/dualBrainEngine');
   await executeAutomationFlow({
@@ -525,6 +542,24 @@ async function handleOrder(client, data) {
         total: data.total_price,
         isCOD: (data.gateway === 'Cash on Delivery (COD)' || (data.payment_gateway_names || []).join('').toLowerCase().includes('cod'))
     });
+
+    // 2b. Attribute WhatsApp checkout short links (Commerce)
+    try {
+      const CheckoutLink = require("../models/CheckoutLink");
+      await CheckoutLink.findOneAndUpdate(
+        { clientId: client.clientId, phone: cleanPhone, converted: false },
+        {
+          $set: {
+            converted: true,
+            convertedAt: new Date(),
+            shopifyOrderId: String(data.id || "")
+          }
+        },
+        { sort: { createdAt: -1 } }
+      );
+    } catch (clErr) {
+      log.warn(`[CheckoutLink] attribution skipped: ${clErr.message}`);
+    }
 
     // 3. Create internal Order record
     const newOrder = await Order.create({

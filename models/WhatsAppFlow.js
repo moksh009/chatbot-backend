@@ -87,4 +87,6 @@ WhatsAppFlowSchema.pre('save', function(next) {
   next();
 });
 
+WhatsAppFlowSchema.index({ clientId: 1, updatedAt: -1 });
+
 module.exports = mongoose.model('WhatsAppFlow', WhatsAppFlowSchema);

@@ -69,6 +69,8 @@ const WhatsApp = {
   // Catalog methods — delegated to WhatsAppUtils module
   sendCatalog: (...args) => WhatsAppUtils.sendCatalog(...args),
   sendMultiProduct: (...args) => WhatsAppUtils.sendMultiProduct(...args),
+  sendProductList: (...args) => WhatsAppUtils.sendProductList(...args),
+  sendSingleProduct: (...args) => WhatsAppUtils.sendSingleProduct(...args),
   sendAudio: (...args) => WhatsAppUtils.sendAudio ? WhatsAppUtils.sendAudio(...args) : Promise.resolve(),
 };
 
@@ -331,12 +333,18 @@ async function handleWhatsAppMessage(from, message, phoneNumberId, profileName =
         
         try {
             const data = JSON.parse(flowResponse.response_json || '{}');
+            const prevLead = await AdLead.findOne({ phoneNumber: from, clientId: client.clientId })
+              .select('capturedData')
+              .lean();
+            const mergedCaptured = { ...(prevLead?.capturedData || {}), ...data };
             const lead = await AdLead.findOneAndUpdate(
                 { phoneNumber: from, clientId: client.clientId },
-                { 
-                    $set: { lastInteraction: new Date() },
-                    $set: { capturedData: { ...( (await AdLead.findOne({phoneNumber: from, clientId: client.clientId}))?.capturedData || {} ), ...data } },
-                    $push: { activityLog: { action: 'whatsapp_flow_submitted', details: `Submitted Meta Flow ID: ${flowResponse.flow_id}` } }
+                {
+                  $set: {
+                    lastInteraction: new Date(),
+                    capturedData: mergedCaptured
+                  },
+                  $push: { activityLog: { action: 'whatsapp_flow_submitted', details: `Submitted Meta Flow ID: ${flowResponse.flow_id}` } }
                 },
                 { upsert: true, new: true }
             );
@@ -1784,6 +1792,19 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
                 || parsedMessage.interactive?.list_reply?.id 
                 || parsedMessage.button?.payload 
                 || '';
+
+  if (buttonId && String(buttonId).startsWith("collection_")) {
+    const selId = String(buttonId).replace(/^collection_/, "");
+    const md = { ...(convo.metadata || {}), selectedCollectionId: selId, checkout_url: convo.metadata?.checkout_url };
+    await Conversation.findByIdAndUpdate(convo._id, {
+      $set: {
+        metadata: md,
+        lastBrowsedCollectionId: selId,
+        lastBrowsedCollectionAt: new Date()
+      }
+    });
+    convo.metadata = md;
+  }
 
   // Ecommerce webhook events should only be routed via the trigger engine, not graph traversal
   // Graph traversal requires an actual user interaction
@@ -3503,16 +3524,145 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     }
 
     case 'catalog': {
-      const { catalogType, productId, productIds, body, header, footer } = data;
-      const bodyText = String(body || data.text || "Check out our collection!").substring(0, 1024);
-      
-      if (catalogType === 'multi') {
-        const ids = (productIds || '').split(',').map(id => id.trim()).filter(Boolean);
-        const sections = [{ title: 'Our Picks', product_items: ids.map(id => ({ product_retailer_id: id })) }];
-        await WhatsApp.sendMultiProduct(client, phone, (header || 'Catalog').substring(0, 60), bodyText, sections);
-      } else {
-        await WhatsApp.sendCatalog(client, phone, bodyText, (footer || '').substring(0, 60), catalogType === 'single' ? productId : null);
+      const ShopifyProduct = require("../models/ShopifyProduct");
+      const catalogId =
+        client.facebookCatalogId || client.waCatalogId || client.metaCatalogId || process.env.META_CATALOG_ID;
+      const bodyText = String(data.body || data.text || "Check out our collection!").substring(0, 1024);
+      const ct = data.catalogType || "full";
+
+      if (!catalogId) {
+        const storeHint = client.shopDomain ? `https://${String(client.shopDomain).replace(/^https?:\/\//, "")}` : "our store";
+        await WhatsApp.sendText(client, phone, `Browse our store: ${storeHint}`);
+        return true;
       }
+
+      if (ct === "single" || ct === "single_product") {
+        const pid = data.productRetailerId || data.productId;
+        if (!pid) {
+          await WhatsApp.sendText(client, phone, bodyText);
+          return true;
+        }
+        await WhatsApp.sendSingleProduct(client, phone, {
+          body: bodyText,
+          catalogId,
+          productRetailerId: pid
+        });
+        return true;
+      }
+
+      if (ct === "multi" || ct === "multi_legacy") {
+        const ids = String(data.productIds || "")
+          .split(",")
+          .map((id) => id.trim())
+          .filter(Boolean);
+        const sections = [
+          {
+            title: String(data.sectionTitle || "Our Picks").substring(0, 24),
+            product_items: ids.map((id) => ({ product_retailer_id: id }))
+          }
+        ];
+        await WhatsApp.sendProductList(client, phone, {
+          header: (data.header || "Catalog").substring(0, 60),
+          body: bodyText,
+          footer: data.footer,
+          catalogId,
+          sections
+        });
+        return true;
+      }
+
+      if (ct === "collection") {
+        let collId = data.collectionId;
+        if (data.useSelectedCollection && convo?.metadata?.selectedCollectionId) {
+          collId = convo.metadata.selectedCollectionId;
+        }
+        const maxItems = Math.min(30, Math.max(1, Number(data.maxItems || data.limit || 20) || 20));
+        const q = { clientId: client.clientId, collectionIds: String(collId), inStock: true };
+        let products = await ShopifyProduct.find(q).limit(maxItems).lean();
+        if (!products.length && collId) {
+          products = await ShopifyProduct.find({ clientId: client.clientId, inStock: true }).limit(maxItems).lean();
+        }
+        if (!products.length) {
+          await WhatsApp.sendText(
+            client,
+            phone,
+            "This collection is currently empty. Please sync products from the dashboard."
+          );
+          return true;
+        }
+        await WhatsApp.sendProductList(client, phone, {
+          header: String(data.header || "Our Collection").substring(0, 60),
+          body: bodyText,
+          footer: data.footer,
+          catalogId,
+          sections: [
+            {
+              title: String(data.sectionTitle || "Products").substring(0, 24),
+              product_items: products.map((p) => ({ product_retailer_id: String(p.shopifyVariantId) }))
+            }
+          ]
+        });
+        return true;
+      }
+
+      if (ct === "multi_collection") {
+        const configs = Array.isArray(data.collections) ? data.collections : [];
+        const sections = [];
+        let budget = 30;
+        for (const c of configs.slice(0, 10)) {
+          if (budget <= 0) break;
+          const per = Math.max(1, Math.floor(budget / Math.max(1, configs.length)));
+          const take = Math.min(per, budget);
+          const prods = await ShopifyProduct.find({
+            clientId: client.clientId,
+            collectionIds: String(c.collectionId || c.id),
+            inStock: true
+          })
+            .limit(take)
+            .lean();
+          if (prods.length) {
+            sections.push({
+              title: String(c.title || "Products").substring(0, 24),
+              product_items: prods.map((p) => ({ product_retailer_id: String(p.shopifyVariantId) }))
+            });
+            budget -= prods.length;
+          }
+        }
+        if (!sections.length) {
+          await WhatsApp.sendCatalog(client, phone, bodyText, (data.footer || "").substring(0, 60), null);
+          return true;
+        }
+        await WhatsApp.sendProductList(client, phone, {
+          header: String(data.header || "Our Products").substring(0, 60),
+          body: bodyText,
+          footer: data.footer,
+          catalogId,
+          sections
+        });
+        return true;
+      }
+
+      const thumb = data.thumbnailProductId || data.productId || null;
+      await WhatsApp.sendCatalog(client, phone, bodyText, (data.footer || "").substring(0, 60), thumb);
+      return true;
+    }
+
+    case "cart_handler": {
+      let tpl =
+        data.checkoutMessage ||
+        client.commerceBotSettings?.checkoutMessage ||
+        "Complete your checkout 👉 {{checkout_url}}\n\nTotal: {{currency}} {{cart_total}}";
+      const total = convo?.lastCheckoutValue ?? 0;
+      const link = convo?.lastCheckoutUrl || "";
+      const currency = convo?.pendingCart?.items?.[0]?.currency || "INR";
+      tpl = injectVariables(String(tpl), {
+        checkout_url: link,
+        cart_total: Number(total).toLocaleString("en-IN"),
+        currency,
+        item_count: String(convo?.pendingCart?.items?.length || 0),
+        first_name: (lead?.name || "there").split(/\s+/)[0]
+      });
+      await WhatsApp.sendText(client, phone, tpl.substring(0, 4096));
       return true;
     }
 
@@ -4301,6 +4451,72 @@ async function executeAutomationFlow(opts) {
   return walkFlow({ suppressConversationPersistence: true, ...opts });
 }
 
+/**
+ * After catalogCheckoutService builds permalink + CheckoutLink, send cart_handler or default checkout text.
+ * Called from masterWebhook (order.type === 'order').
+ */
+async function deliverCartCheckoutFromFlow(client, phone, orderData, checkoutBundle) {
+  const normalizedPhone = normalizePhone(phone);
+  const items = orderData?.product_items || [];
+  const total = Number(checkoutBundle?.totalPrice) || 0;
+  const currency = items[0]?.currency || "INR";
+  const shortUrl = checkoutBundle?.shortUrl || checkoutBundle?.checkoutUrl || "";
+
+  let convo = await Conversation.findOneAndUpdate(
+    { phone: normalizedPhone, clientId: client.clientId },
+    {
+      $set: {
+        pendingCart: { catalogId: orderData?.catalog_id, items, addedAt: new Date() },
+        lastCheckoutUrl: shortUrl,
+        lastCheckoutShortCode: checkoutBundle?.shortCode,
+        lastCheckoutValue: total,
+        lastCheckoutAt: new Date(),
+        "metadata.checkout_url": shortUrl,
+        "metadata.cart_total": String(total),
+        "metadata.currency": currency,
+        "metadata.item_count": String(items.length)
+      }
+    },
+    { new: true, upsert: true }
+  );
+
+  const lead = await AdLead.findOne({ phoneNumber: normalizedPhone, clientId: client.clientId }).lean();
+
+  const { nodes: flowNodes, edges: flowEdges } = await getFlowGraphForConversation(client, convo);
+  const flatNodes = flattenFlowNodes(flowNodes);
+  const cartEdge = (flowEdges || []).find(
+    (e) => e.source === convo?.lastStepId && e.sourceHandle === "cart"
+  );
+  if (cartEdge) {
+    const target = flatNodes.find((n) => n.id === cartEdge.target);
+    if (target && target.type === "cart_handler") {
+      const ctx = await buildVariableContext(client, normalizedPhone, convo, lead);
+      Object.assign(ctx, {
+        checkout_url: shortUrl,
+        cart_total: String(total),
+        currency,
+        item_count: String(items.length)
+      });
+      const hydrated = injectNodeVariables(target, ctx);
+      await sendNodeContent(hydrated, client, normalizedPhone, lead, convo, "whatsapp", {});
+      return true;
+    }
+  }
+
+  const tpl =
+    client.commerceBotSettings?.checkoutMessage ||
+    `Complete your checkout 👉 {{checkout_url}}\n\nTotal: {{currency}} {{cart_total}}`;
+  const out = injectVariables(String(tpl), {
+    checkout_url: shortUrl,
+    cart_total: String(total),
+    currency,
+    item_count: String(items.length),
+    first_name: (lead?.name || "there").split(/\s+/)[0]
+  });
+  await sendWhatsAppText(client, normalizedPhone, out);
+  return true;
+}
+
 module.exports = {
   handleWhatsAppMessage,
   runDualBrainEngine,
@@ -4311,5 +4527,6 @@ module.exports = {
   sendNodeContent,
   saveInboundMessage,
   saveOutboundMessage,
+  deliverCartCheckoutFromFlow
 };
 

@@ -949,6 +949,7 @@ router.patch('/my-settings', protect, async (req, res) => {
       flowDraft,
       wabaId, phoneNumberId, whatsappToken,
       shopDomain, shopifyClientId, shopifyClientSecret, shopifyAccessToken, shopifyWebhookSecret,
+      facebookCatalogId, shopifyStorefrontToken,
       storeType,
       instagramConnected, instagramPageId, instagramAccessToken, instagramAppSecret,
       googleReviewUrl, adminPhone, adminEmail,
@@ -1087,6 +1088,13 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (shopifyWebhookSecret !== undefined && shopifyWebhookSecret !== '••••••••' && shopifyWebhookSecret.trim() !== '') {
       updateFields.shopifyWebhookSecret = shopifyWebhookSecret;
       updateFields['commerce.shopify.webhookSecret'] = shopifyWebhookSecret;
+    }
+
+    if (facebookCatalogId !== undefined) {
+      updateFields.facebookCatalogId = String(facebookCatalogId || '').trim();
+    }
+    if (shopifyStorefrontToken !== undefined && shopifyStorefrontToken !== '••••••••' && String(shopifyStorefrontToken).trim() !== '') {
+      updateFields.shopifyStorefrontToken = String(shopifyStorefrontToken).trim();
     }
 
     if (storeType !== undefined) {

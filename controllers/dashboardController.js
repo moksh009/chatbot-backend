@@ -355,7 +355,7 @@ exports.deleteSupplier = async (req, res) => {
 exports.getFlows = async (req, res) => {
   try {
     const clientId = req.user.clientId;
-    const client = await Client.findOne({ clientId });
+    const client = await Client.findOne({ clientId }).select('flowHistory').lean();
     res.json({ 
       success: true, 
       data: {
@@ -651,13 +651,17 @@ exports.getOperationsSummary = async (req, res) => {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
 
-    const [orders, suppliers, clientDoc] = await Promise.all([
+    const clientDoc = await Client.findOne({ clientId }).select('_id').lean();
+    if (!clientDoc) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const [orders, supplierCount] = await Promise.all([
       Order.find({ clientId, createdAt: { $gte: startDate } }).select('totalPrice items').lean(),
-      Supplier.countDocuments({ clientId: req.user.id }),
-      Client.findOne({ clientId }).select('_id').lean()
+      Supplier.countDocuments({ clientId: clientDoc._id })
     ]);
 
-    const actualSupplierCount = suppliers || await Supplier.countDocuments({ clientId: clientDoc?._id });
+    const actualSupplierCount = supplierCount;
     
     // Calculate Health Metrics
     const totalRevenue = orders.reduce((sum, o) => sum + (o.totalPrice || 0), 0);
@@ -695,13 +699,15 @@ exports.getRestockDrafts = async (req, res) => {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
 
-    const [orders, suppliers, clientDoc] = await Promise.all([
+    const clientDoc = await Client.findOne({ clientId }).select('_id brand').lean();
+    if (!clientDoc) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const [orders, actualSuppliers] = await Promise.all([
       Order.find({ clientId, createdAt: { $gte: startDate } }).select('items').lean(),
-      Supplier.find({ clientId: req.user._id }).lean(),
-      Client.findOne({ clientId }).select('_id brand').lean()
+      Supplier.find({ clientId: clientDoc._id }).lean()
     ]);
-    
-    const actualSuppliers = suppliers.length > 0 ? suppliers : await Supplier.find({ clientId: clientDoc?._id }).lean();
 
     const skuMap = {};
     orders.forEach(o => {

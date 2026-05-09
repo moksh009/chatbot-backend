@@ -3,6 +3,7 @@ const router = express.Router();
 const Client = require('../models/Client');
 const { tenantClientId } = require('../utils/queryHelpers');
 const { protect } = require('../middleware/auth');
+const { apiCache } = require('../middleware/apiCache');
 const { fixFlowWithAI } = require('../controllers/flowFixController');
 
 router.post('/fix', protect, fixFlowWithAI);
@@ -371,7 +372,7 @@ router.get('/:flowId/versions', protect, async (req, res) => {
     const clientId = req.user.clientId;
     const FlowHistory = require('../models/FlowHistory');
     
-    const history = await FlowHistory.find({ clientId, flowId }).sort({ version: -1 }).limit(20);
+    const history = await FlowHistory.find({ clientId, flowId }).sort({ version: -1 }).limit(20).lean();
     res.json({ success: true, history });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -409,14 +410,13 @@ router.post('/:flowId/rollback/:versionId', protect, async (req, res) => {
 // GET /api/flow/
 // Root handler for frontend compatibility
 // --- GET ALL FLOWS ---
-router.get('/', protect, async (req, res) => {
+router.get('/', protect, apiCache(25), async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
 
     const WhatsAppFlow = require('../models/WhatsAppFlow');
-    // Fetch from the source-of-truth collection
-    const dbFlows = await WhatsAppFlow.find({ clientId });
+    const dbFlows = await WhatsAppFlow.find({ clientId }).lean();
 
     // Map and filter out any corrupted flows with missing IDs
     const flows = dbFlows
@@ -445,18 +445,20 @@ router.get('/', protect, async (req, res) => {
 
 
 // GET /api/flow/flows
-router.get('/flows', protect, async (req, res) => {
+router.get('/flows', protect, apiCache(25), async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized access to flows' });
     }
 
-    const client = await Client.findOne({ clientId });
+    const WhatsAppFlow = require('../models/WhatsAppFlow');
+    const [client, dbFlows] = await Promise.all([
+      Client.findOne({ clientId }).select('flowFolders flowNodes flowEdges').lean(),
+      WhatsAppFlow.find({ clientId }).lean()
+    ]);
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
-    const WhatsAppFlow = require('../models/WhatsAppFlow');
-    const dbFlows = await WhatsAppFlow.find({ clientId });
     const formattedFlows = dbFlows.map(f => ({
       id: f.flowId,
       name: f.name,
@@ -474,8 +476,8 @@ router.get('/flows', protect, async (req, res) => {
       lastSyncedAt: f.lastSyncedAt
     }));
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       flows: formattedFlows,
       flowFolders: client.flowFolders || [],
       legacy: {

@@ -15,7 +15,7 @@ const { apiCache } = require('../middleware/apiCache');
 router.post('/batch-data', protect, apiCache(60), dashboardController.getBatchData);
 
 // Layout management
-router.get('/layout', protect, dashboardController.getLayout);
+router.get('/layout', protect, apiCache(30), dashboardController.getLayout);
 router.post('/layout', protect, dashboardController.saveLayout);
 router.delete('/layout/reset', protect, dashboardController.resetLayout);
 
@@ -26,14 +26,14 @@ router.get('/widget/:widgetType', protect, (req, res) => {
   dashboardController.getBatchData(req, res);
 });
 
-router.get('/forecast', protect, dashboardController.getForecast);
-router.get('/competitors', protect, dashboardController.getCompetitorIntel); // Alias to original
-router.get('/competitor-intel', protect, dashboardController.getCompetitorIntel);
-router.get('/suppliers', protect, dashboardController.getSuppliers);
+router.get('/forecast', protect, apiCache(45), dashboardController.getForecast);
+router.get('/competitors', protect, apiCache(120), dashboardController.getCompetitorIntel); // Alias to original
+router.get('/competitor-intel', protect, apiCache(120), dashboardController.getCompetitorIntel);
+router.get('/suppliers', protect, apiCache(120), dashboardController.getSuppliers);
 router.delete('/suppliers/:id', protect, dashboardController.deleteSupplier);
-router.get('/restock-drafts', protect, dashboardController.getRestockDrafts);
-router.get('/operations-summary', protect, dashboardController.getOperationsSummary);
-router.get('/quality-stats', protect, dashboardController.getQualityStats);
+router.get('/restock-drafts', protect, apiCache(60), dashboardController.getRestockDrafts);
+router.get('/operations-summary', protect, apiCache(60), dashboardController.getOperationsSummary);
+router.get('/quality-stats', protect, apiCache(45), dashboardController.getQualityStats);
 router.post('/competitors', protect, dashboardController.createCompetitor);
 router.post('/competitors/:id/battle-plan', protect, dashboardController.generateBattlePlan);
 router.post('/suppliers', protect, dashboardController.createSupplier);

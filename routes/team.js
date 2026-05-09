@@ -16,7 +16,7 @@ const { tenantClientId } = require('../utils/queryHelpers');
 router.get('/', protect, async (req, res) => {
     try {
         const clientId = req.user.clientId;
-        const users = await User.find({ clientId }).select('-password');
+        const users = await User.find({ clientId }).select('-password').lean();
         res.json({ success: true, team: users });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -28,22 +28,30 @@ router.get('/team', protect, async (req, res) => {
         const clientId = req.user.clientId;
         console.log(`[TeamAPI] Fetching team for authenticated user clientId: ${clientId}`);
         
-        const users = await User.find({ clientId }).select('-password');
-        const performanceMetrics = await Conversation.aggregate([
-            { $match: { clientId, assignedTo: { $exists: true, $ne: null } } },
-            { $group: {
-                _id: "$assignedTo",
-                totalAssigned: { $sum: 1 },
-                resolvedCount: { $sum: { $cond: [{ $eq: ["$status", "CLOSED"] }, 1, 0] } },
-                avgCsat: { $avg: "$csatScore.rating" },
-                lastActive: { $max: "$lastInteraction" }
-            }}
+        const [users, performanceMetrics] = await Promise.all([
+            User.find({ clientId }).select('-password').lean(),
+            Conversation.aggregate([
+                { $match: { clientId, assignedTo: { $exists: true, $ne: null } } },
+                {
+                    $group: {
+                        _id: '$assignedTo',
+                        totalAssigned: { $sum: 1 },
+                        resolvedCount: { $sum: { $cond: [{ $eq: ['$status', 'CLOSED'] }, 1, 0] } },
+                        avgCsat: { $avg: '$csatScore.rating' },
+                        lastActive: { $max: '$lastInteraction' }
+                    }
+                }
+            ])
         ]);
 
-        const teamWithMetrics = users.map(user => {
-            const metric = performanceMetrics.find(m => m._id && m._id.toString() === user._id.toString());
+        const metricByUser = new Map(
+            performanceMetrics.map((m) => [String(m._id), m])
+        );
+
+        const teamWithMetrics = users.map((user) => {
+            const metric = metricByUser.get(String(user._id));
             return {
-                ...user.toObject(),
+                ...user,
                 id: user._id.toString(),
                 metrics: {
                     assignedChats: metric ? metric.totalAssigned : 0,
@@ -69,27 +77,31 @@ router.get('/:clientId', protect, async (req, res) => {
         }
         console.log(`[TeamAPI] Fetching team for explicitly provided clientId: ${clientId}`);
 
-        // 1. Fetch all users for this client
-        const users = await User.find({ clientId }).select('-password');
-
-        // 2. Fetch conversation assignment metrics for these users
-        const performanceMetrics = await Conversation.aggregate([
-            { $match: { clientId, assignedTo: { $exists: true, $ne: null } } },
-            { $group: {
-                _id: "$assignedTo",
-                totalAssigned: { $sum: 1 },
-                resolvedCount: { $sum: { $cond: [{ $eq: ["$status", "CLOSED"] }, 1, 0] } },
-                avgCsat: { $avg: "$csatScore.rating" },
-                lastActive: { $max: "$lastInteraction" }
-            }}
+        const [users, performanceMetrics] = await Promise.all([
+            User.find({ clientId }).select('-password').lean(),
+            Conversation.aggregate([
+                { $match: { clientId, assignedTo: { $exists: true, $ne: null } } },
+                {
+                    $group: {
+                        _id: '$assignedTo',
+                        totalAssigned: { $sum: 1 },
+                        resolvedCount: { $sum: { $cond: [{ $eq: ['$status', 'CLOSED'] }, 1, 0] } },
+                        avgCsat: { $avg: '$csatScore.rating' },
+                        lastActive: { $max: '$lastInteraction' }
+                    }
+                }
+            ])
         ]);
 
-        // Map metrics back to users
-        const teamWithMetrics = users.map(user => {
-            const metric = performanceMetrics.find(m => m._id && m._id.toString() === user._id.toString());
+        const metricByUser = new Map(
+            performanceMetrics.map((m) => [String(m._id), m])
+        );
+
+        const teamWithMetrics = users.map((user) => {
+            const metric = metricByUser.get(String(user._id));
             return {
-                ...user.toObject(),
-                id: user._id.toString(), // Normalize for frontend
+                ...user,
+                id: user._id.toString(),
                 metrics: {
                     assignedChats: metric ? metric.totalAssigned : 0,
                     resolvedChats: metric ? metric.resolvedCount : 0,

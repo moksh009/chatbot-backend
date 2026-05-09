@@ -230,6 +230,10 @@ const workspaceRoutes = require('./routes/workspace');
 app.use('/api/workspace', workspaceRoutes);
 const shopifyWebhookRoutes = require('./routes/shopifyWebhook');
 app.use('/api/shopify/webhook', shopifyWebhookRoutes);
+const shopifyCatalogRoutes = require('./routes/shopifyCatalog');
+const checkoutShortLinkRoutes = require('./routes/checkoutShortLink');
+app.use('/api/shopify-catalog', shopifyCatalogRoutes);
+app.use('/api/r', checkoutShortLinkRoutes);
 const shopifyComplianceRoutes = require('./routes/shopifyComplianceWebhooks');
 app.use('/api/shopify/compliance', shopifyComplianceRoutes);
 const adminRoutes = require('./routes/admin'); // Added for DFY SaaS Super Admin
@@ -422,6 +426,9 @@ cron.schedule('*/10 * * * *', () => {
 
 // Initialize Abandoned Cart Cron Job
 scheduleAbandonedCartCron();
+
+const scheduleCheckoutLinkRecoveryCron = require('./cron/checkoutLinkRecoveryCron');
+scheduleCheckoutLinkRecoveryCron();
 
 // Initialize Review Collection Cron Job
 const scheduleReviewCron = require('./cron/reviewCollection');

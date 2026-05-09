@@ -52,6 +52,8 @@ function buildProductContext(product, index) {
     || rawName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
   return {
     id:       product.shopifyId || product.id || `prod_${index}`,
+    variantId:
+      String(product.shopifyVariantId || product.variantId || product.variant_id || product.id || "").trim() || null,
     title:    rawName,
     price:    product.price || "0",
     imageUrl: product.imageUrl || (images[0]?.src || ""),
@@ -143,6 +145,15 @@ const truncate = (str, max = 24) => {
   const v = String(str || "");
   return v.length > max ? `${v.slice(0, max - 3)}...` : v;
 };
+
+/** Stable workspace id used in ShopifyCollection queries (matches `clientId` on synced docs). */
+function resolvePersistedClientId(client) {
+  if (!client) return "";
+  const c = client.clientId ?? client.id;
+  if (c != null && String(c).trim()) return String(c).trim();
+  if (client._id != null) return String(client._id).trim();
+  return "";
+}
 
 /** Main commerce graph: columns left→right, rows for parallel lanes (ReactFlow). */
 function flowPos(col, row) {
@@ -251,6 +262,14 @@ function buildContext(client = {}, wizardData = {}) {
     returnsInfo:         wizardData.returnsInfo         || policies.returnPolicy     || "",
     fallbackMessage:     wizardData.fallbackMessage     || "I can help with that. Let me route you to the right place.",
     products:            (wizardData.products || []).slice(0, 20).map((p, i) => buildProductContext(p, i)),
+    shopCollections:     (Array.isArray(wizardData.collections) ? wizardData.collections : [])
+      .map((c) => ({
+        shopifyCollectionId: String(c.shopifyCollectionId || c.id || "").trim(),
+        title: String(c.title || "").trim(),
+        whatsappMenuLabel: String(c.whatsappMenuLabel || c.title || "").trim()
+      }))
+      .filter((c) => c.shopifyCollectionId)
+      .slice(0, 10),
     storeUrl:            wizardData.shopDomain
       ? `https://${String(wizardData.shopDomain).replace(/^https?:\/\//, "")}`
       : (wizardData.checkoutUrl || pv.checkoutUrl || "").replace(/\/checkout$/, ""),
@@ -302,6 +321,8 @@ function buildIDs(client, wizardData) {
     cat_ck_delay:     `cat_ck_delay_${ts}`,
     cat_ck_ping:      `cat_ck_ping_${ts}`,
     cat_ck_follow:    `cat_ck_follow_${ts}`,
+    cat_shop_by_selection: `cat_shop_by_sel_${ts}`,
+    cat_cart_handler: `cat_cart_handler_${ts}`,
     // Order ops
     ord_track:        `ord_track_${ts}`,
     ord_status_msg:   `ord_status_msg_${ts}`,
@@ -542,10 +563,14 @@ function buildMainMenu(ctx, IDS, menuRows) {
 }
 
 function buildCatalogBranch(ctx, IDS) {
-  const { F, products, storeUrl } = ctx;
-  const nodes = [], edges = [];
+  const { F, products, storeUrl, shopCollections = [] } = ctx;
+  const nodes = [];
+  const edges = [];
   const MAX_CATEGORY_ROWS = 5;
   const categoryNodeIds = [IDS.cat_cat_0, IDS.cat_cat_1, IDS.cat_cat_2, IDS.cat_cat_3, IDS.cat_cat_4];
+  const useShopCols = Array.isArray(shopCollections) && shopCollections.length > 0;
+  const shopCols = useShopCols ? shopCollections.slice(0, 9) : [];
+
   const productBuckets = new Map();
   products.forEach((p) => {
     const key = String(p.category || "General").trim() || "General";
@@ -556,9 +581,43 @@ function buildCatalogBranch(ctx, IDS) {
     .sort((a, b) => b[1].length - a[1].length)
     .slice(0, MAX_CATEGORY_ROWS);
   const featuredProducts = products.slice(0, 8);
-  const featuredIds = featuredProducts.map((p) => String(p.id || "").trim()).filter(Boolean);
+  const featuredVariantIds = featuredProducts
+    .map((p) => String(p.variantId || p.id || "").trim())
+    .filter(Boolean);
+
+  const listRows = [{ id: "featured", title: "Featured", description: "Bestsellers and trending picks" }];
+  if (useShopCols) {
+    shopCols.forEach((c) => {
+      listRows.push({
+        id: `collection_${c.shopifyCollectionId}`,
+        title: truncate(c.whatsappMenuLabel || c.title, 24),
+        description: "Browse in WhatsApp"
+      });
+    });
+  } else if (sortedCategories.length) {
+    sortedCategories.forEach(([name, items], idx) => {
+      listRows.push({
+        id: `cat_${idx}`,
+        title: truncate(name, 24),
+        description: `${items.length} item${items.length > 1 ? "s" : ""}`
+      });
+    });
+  } else {
+    listRows.push({ id: "cat_0", title: "General", description: "Core products" });
+  }
 
   nodes.push(
+    {
+      id: IDS.cat_cart_handler,
+      type: "cart_handler",
+      position: flowPos(6, 2),
+      data: {
+        label: "Cart & checkout",
+        checkoutMessage:
+          "Complete your checkout 👉 {{checkout_url}}\n\nTotal: {{currency}} {{cart_total}}\n\nThis link is valid for a short time.",
+        heatmapCount: 0
+      }
+    },
     {
       id: IDS.cat_list, type: "catalog", position: flowPos(5, 1),
       data: {
@@ -577,23 +636,12 @@ function buildCatalogBranch(ctx, IDS) {
       data: {
         label: "Category menu",
         interactiveType: "list",
-        text: "Want curated products? Pick a collection:",
+        text: useShopCols
+          ? "Pick a collection to see products in WhatsApp (no templates per product)."
+          : "Want curated products? Pick a collection:",
         buttonText: "View collections",
-        sections: [{
-          title: "{{brand_name}} collections",
-          rows: [
-            { id: "featured", title: "Featured", description: "Bestsellers and trending picks" },
-            ...(
-              sortedCategories.length
-                ? sortedCategories.map(([name, items], idx) => ({
-                    id: `cat_${idx}`,
-                    title: truncate(name, 24),
-                    description: `${items.length} item${items.length > 1 ? "s" : ""}`
-                  }))
-                : [{ id: "cat_0", title: "General", description: "Core products" }]
-            )
-          ]
-        }],
+        populateFromShopify: useShopCols,
+        sections: [{ title: "{{brand_name}} store", rows: listRows }],
         heatmapCount: 0
       }
     },
@@ -603,11 +651,11 @@ function buildCatalogBranch(ctx, IDS) {
       position: flowPos(7, 0),
       data: {
         label: "Featured collection",
-        catalogType: featuredIds.length ? "multi" : "full",
+        catalogType: featuredVariantIds.length ? "multi" : "full",
         header: "Featured picks",
         body: "Checkout our best-performing products from {{brand_name}}.",
         footer: "Tap to view items",
-        productIds: featuredIds.join(","),
+        productIds: featuredVariantIds.join(","),
         heatmapCount: 0
       }
     },
@@ -640,27 +688,45 @@ function buildCatalogBranch(ctx, IDS) {
       }
     }
   );
-  sortedCategories.forEach(([name, items], idx) => {
-    const targetNodeId = categoryNodeIds[idx];
-    const productIds = items
-      .slice(0, 8)
-      .map((p) => String(p.id || "").trim())
-      .filter(Boolean);
+  if (useShopCols) {
     nodes.push({
-      id: targetNodeId,
+      id: IDS.cat_shop_by_selection,
       type: "catalog",
-      position: flowPos(7, 1 + idx),
+      position: flowPos(7, 1),
       data: {
-        label: `Collection: ${truncate(name, 22)}`,
-        catalogType: productIds.length ? "multi" : "full",
-        header: truncate(name, 40),
-        body: `Browse ${name} from {{brand_name}}.`,
-        footer: "Tap to view items",
-        productIds: productIds.join(","),
+        label: "Collection (from menu)",
+        catalogType: "collection",
+        useSelectedCollection: true,
+        maxItems: 30,
+        header: "{{brand_name}}",
+        body: "Tap a product to view details and add to cart in WhatsApp.",
+        footer: "Secure checkout",
         heatmapCount: 0
       }
     });
-  });
+  } else {
+    sortedCategories.forEach(([name, items], idx) => {
+      const targetNodeId = categoryNodeIds[idx];
+      const productIds = items
+        .slice(0, 8)
+        .map((p) => String(p.variantId || p.id || "").trim())
+        .filter(Boolean);
+      nodes.push({
+        id: targetNodeId,
+        type: "catalog",
+        position: flowPos(7, 1 + idx),
+        data: {
+          label: `Collection: ${truncate(name, 22)}`,
+          catalogType: productIds.length ? "multi" : "full",
+          header: truncate(name, 40),
+          body: `Browse ${name} from {{brand_name}}.`,
+          footer: "Tap to view items",
+          productIds: productIds.join(","),
+          heatmapCount: 0
+        }
+      });
+    });
+  }
 
   const supEntryProduct = F.enableSupportEscalation
     ? (F.enableBusinessHoursGate && !F.enable247 ? IDS.sup_sch : IDS.sup_capture)
@@ -683,21 +749,55 @@ function buildCatalogBranch(ctx, IDS) {
     { id: `e_${IDS.cat_list}_cats`, source: IDS.cat_list, target: IDS.cat_category_menu },
     { id: `e_${IDS.cat_category_menu}_featured`, source: IDS.cat_category_menu, target: IDS.cat_featured, sourceHandle: "featured" },
     { id: `e_${IDS.cat_featured}_next`, source: IDS.cat_featured, target: IDS.cat_addr_prompt },
+    { id: `e_${IDS.cat_list}_cart`, source: IDS.cat_list, target: IDS.cat_cart_handler, sourceHandle: "cart" },
+    { id: `e_${IDS.cat_featured}_cart`, source: IDS.cat_featured, target: IDS.cat_cart_handler, sourceHandle: "cart" },
+    { id: `e_${IDS.cat_cart_handler}_next`, source: IDS.cat_cart_handler, target: IDS.cat_addr_prompt, sourceHandle: "a" },
     { id: `e_${IDS.cat_addr_prompt}_checkout`, source: IDS.cat_addr_prompt, target: IDS.cat_addr_done, sourceHandle: "checkout" },
     { id: `e_${IDS.cat_addr_prompt}_support`, source: IDS.cat_addr_prompt, target: supEntryProduct, sourceHandle: "support" },
     { id: `e_${IDS.cat_addr_prompt}_menu`, source: IDS.cat_addr_prompt, target: IDS.main_menu, sourceHandle: "menu" }
   );
-  sortedCategories.forEach(([_, __], idx) => {
-    const targetNodeId = categoryNodeIds[idx];
+  if (useShopCols) {
+    shopCols.forEach((c) => {
+      const hid = `collection_${c.shopifyCollectionId}`;
+      edges.push({
+        id: `e_${IDS.cat_category_menu}_${hid}`,
+        source: IDS.cat_category_menu,
+        target: IDS.cat_shop_by_selection,
+        sourceHandle: hid
+      });
+    });
     edges.push(
-      { id: `e_${IDS.cat_category_menu}_cat_${idx}`, source: IDS.cat_category_menu, target: targetNodeId, sourceHandle: `cat_${idx}` },
-      { id: `e_${targetNodeId}_next`, source: targetNodeId, target: IDS.cat_addr_prompt }
+      { id: `e_${IDS.cat_shop_by_selection}_next`, source: IDS.cat_shop_by_selection, target: IDS.cat_addr_prompt },
+      {
+        id: `e_${IDS.cat_shop_by_selection}_cart`,
+        source: IDS.cat_shop_by_selection,
+        target: IDS.cat_cart_handler,
+        sourceHandle: "cart"
+      }
     );
-  });
+  } else {
+    sortedCategories.forEach(([_, __], idx) => {
+      const targetNodeId = categoryNodeIds[idx];
+      edges.push(
+        { id: `e_${IDS.cat_category_menu}_cat_${idx}`, source: IDS.cat_category_menu, target: targetNodeId, sourceHandle: `cat_${idx}` },
+        { id: `e_${targetNodeId}_next`, source: targetNodeId, target: IDS.cat_addr_prompt },
+        {
+          id: `e_${targetNodeId}_cart`,
+          source: targetNodeId,
+          target: IDS.cat_cart_handler,
+          sourceHandle: "cart"
+        }
+      );
+    });
 
-  if (sortedCategories.length === 0) {
-    // Default route if no category metadata is available.
-    edges.push({ id: `e_${IDS.cat_category_menu}_cat_0`, source: IDS.cat_category_menu, target: IDS.cat_featured, sourceHandle: "cat_0" });
+    if (sortedCategories.length === 0) {
+      edges.push({
+        id: `e_${IDS.cat_category_menu}_cat_0`,
+        source: IDS.cat_category_menu,
+        target: IDS.cat_featured,
+        sourceHandle: "cat_0"
+      });
+    }
   }
 
   if (products.length === 0) {
@@ -1536,13 +1636,40 @@ function buildAIFallback(ctx, IDS) {
 // 5. ORCHESTRATOR
 // ═════════════════════════════════════════════════════════════════════════
 async function generateEcommerceFlow(client, wizardData = {}) {
-  const ctx = buildContext(client, wizardData);
-  const IDS = buildIDs(client, wizardData);
+  const mergedWizard = { ...wizardData };
+  const rawCols = mergedWizard.collections;
+  if ((!Array.isArray(rawCols) || rawCols.length === 0)) {
+    const clientIdStr = resolvePersistedClientId(client);
+    if (clientIdStr) {
+      try {
+        const ShopifyCollection = require("../models/ShopifyCollection");
+        const docs = await ShopifyCollection.find({ clientId: clientIdStr })
+          .sort({ sortOrder: 1, title: 1 })
+          .limit(12)
+          .lean();
+        const picked = docs
+          .filter((d) => d && d.shopifyCollectionId && d.whatsappEnabled !== false)
+          .slice(0, 10)
+          .map((d) => ({
+            shopifyCollectionId: String(d.shopifyCollectionId || "").trim(),
+            title: String(d.title || "").trim(),
+            whatsappMenuLabel: String(d.whatsappMenuLabel || d.title || "").trim()
+          }))
+          .filter((c) => c.shopifyCollectionId);
+        if (picked.length) mergedWizard.collections = picked;
+      } catch (err) {
+        console.warn("[flowGenerator] ShopifyCollection preload skipped:", err?.message || err);
+      }
+    }
+  }
+
+  const ctx = buildContext(client, mergedWizard);
+  const IDS = buildIDs(client, mergedWizard);
   const F = ctx.F;
 
   // Marketing copy (best-effort)
   const defaults = buildDefaultContent(ctx);
-  const ai = wizardData.useAiCopy === true ? await generateAIContent(ctx) : {};
+  const ai = mergedWizard.useAiCopy === true ? await generateAIContent(ctx) : {};
   const content = { ...defaults, ...ai };
 
   // AI fallback first so other branches can reference IDS.ai_fallback

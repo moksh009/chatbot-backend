@@ -48,7 +48,7 @@ OUTPUT SCHEMA (JSON):
     }
   ],
   "outline": [
-    { "step": "string", "node": "trigger|message|interactive|capture_input|template|livechat|shopify_call|order_action|loyalty_action|warranty_check|review|delay|logic|catalog", "copyBrief": "string",
+    { "step": "string", "node": "trigger|message|interactive|capture_input|template|livechat|shopify_call|order_action|loyalty_action|warranty_check|review|delay|logic|catalog|cart_handler", "copyBrief": "string",
       "buttons": [ { "id": "string", "title": "string", "targetStep": "string" } ]
     }
   ],
@@ -58,6 +58,10 @@ OUTPUT SCHEMA (JSON):
 RULES:
 - Keep outline 6-18 steps.
 - Use quick replies/buttons wherever possible.
+- CRITICAL (ecommerce): NEVER plan one WhatsApp template per product — use catalog nodes (product_list / catalog_message) and a cart_handler after add-to-cart (order webhook).
+- WhatsApp Commerce limits: max 30 products per product_list, max 10 sections; product_retailer_id = Shopify variant id after Meta catalog sync.
+- Node types for shops: catalog (browse / collections), cart_handler (checkout link after cart), interactive list (category menu).
+- Variables for cart/checkout copy: {{checkout_url}}, {{cart_total}}, {{item_count}}, {{currency}}.
 - For ecommerce catalogs, prefer catalog-first flow design (WhatsApp catalog + cart + checkout guidance) over one-template-per-product patterns.
 - In ecommerce mode, include these key steps when relevant: catalog open, category/filter selection, featured products push, checkout link guidance, and post-catalog support fallback.
 - If includeInstallHelp/includeWarrantyLookup/includeLoyaltyPoints is true, include those branches in outline.

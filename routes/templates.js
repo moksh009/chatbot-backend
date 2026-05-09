@@ -16,6 +16,7 @@ const { hydrateApprovedProductTemplatesForClient } = require('../utils/templateI
 const MetaTemplate = require('../models/MetaTemplate');
 const { normalizeTemplateStatus } = require('../constants/templateLifecycle');
 const { normalizePurpose } = require('../utils/templateEligibility');
+const { apiCache } = require('../middleware/apiCache');
 
 // --- Helper Functions ---
 async function getClientCredentials(clientId, userId) {
@@ -383,7 +384,7 @@ router.put('/product-template/:clientId/:templateName', protect, async (req, res
 });
 
 // 2. Get Template Statistics (Read Rate and Revenue)
-router.get('/:clientId/stats', protect, async (req, res) => {
+router.get('/:clientId/stats', protect, apiCache(30), async (req, res) => {
     try {
         const { clientId } = req.params;
         const Message = require('../models/Message');
@@ -392,24 +393,32 @@ router.get('/:clientId/stats', protect, async (req, res) => {
         // Verify access
         await getClientCredentials(clientId, req.user.id);
 
-        // Fetch real messages to calculate Read Rate
-        const totalSent = await Message.countDocuments({ clientId, direction: 'outgoing', type: 'template' });
-        const totalRead = await Message.countDocuments({ clientId, direction: 'outgoing', status: 'read' });
-        const totalDelivered = await Message.countDocuments({ clientId, direction: 'outgoing', status: 'delivered' });
-        
+        const [statusBreakdown, stats, client] = await Promise.all([
+          Message.aggregate([
+            { $match: { clientId, direction: 'outgoing', type: 'template' } },
+            { $group: { _id: '$status', n: { $sum: 1 } } }
+          ]),
+          Order.aggregate([
+            { $match: { clientId } },
+            { $group: { _id: null, totalRevenue: { $sum: '$totalPrice' } } }
+          ]),
+          Client.findOne({ clientId }).select('syncedMetaTemplates').lean()
+        ]);
+
+        let totalSent = 0;
+        let totalRead = 0;
+        let totalDelivered = 0;
+        for (const row of statusBreakdown) {
+          const n = row.n || 0;
+          totalSent += n;
+          if (row._id === 'read') totalRead = n;
+          if (row._id === 'delivered') totalDelivered = n;
+        }
+
         const readRate = totalSent > 0 ? Math.round((totalRead / totalSent) * 100) : 0;
         const deliveryRate = totalSent > 0 ? Math.round((totalDelivered / totalSent) * 100) : 0;
 
-        // Fetch revenue (simplified: total revenue for the client)
-        const stats = await Order.aggregate([
-            { $match: { clientId } },
-            { $group: { _id: null, totalRevenue: { $sum: "$totalPrice" } } }
-        ]);
-        
         const revenue = stats.length > 0 ? stats[0].totalRevenue : 0;
-
-        // Fetch the list of synced templates from the client document for the count
-        const client = await Client.findOne({ clientId });
         
         res.json({
             success: true,

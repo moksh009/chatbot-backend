@@ -89,12 +89,32 @@ const ConversationSchema = new mongoose.Schema({
   aiAuditFeedback: { type: String, default: "" },
   lastAuditedAt: { type: Date },
 
+  // WhatsApp Commerce — catalog cart context for agents + recovery
+  pendingCart: { type: mongoose.Schema.Types.Mixed, default: null },
+  lastCheckoutUrl: { type: String, default: '' },
+  lastCheckoutValue: { type: Number, default: 0 },
+  lastCheckoutAt: { type: Date },
+
   // Module 2: Intent Engine Live Context
   lastDetectedIntent: {
     intentName:      { type: String, default: null },
     confidenceScore: { type: Number, default: 0 },
     detectedAt:      { type: Date,   default: null }
   },
+
+  /** WhatsApp Commerce — pending cart from catalog order webhook */
+  pendingCart: {
+    catalogId: { type: String, default: '' },
+    items: { type: mongoose.Schema.Types.Mixed, default: [] },
+    addedAt: { type: Date }
+  },
+  lastBrowsedCollectionId: { type: String, default: '' },
+  lastBrowsedCollectionAt: { type: Date },
+  lastCheckoutUrl: { type: String, default: '' },
+  lastCheckoutShortCode: { type: String, default: '' },
+  lastCheckoutValue: { type: Number, default: 0 },
+  lastCheckoutAt: { type: Date },
+  checkoutLinkClicked: { type: Boolean, default: false },
 
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }

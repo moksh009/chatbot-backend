@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const { resolveClient, tenantClientId } = require('../utils/queryHelpers');
 const router = express.Router();
 const FollowUpSequence = require('../models/FollowUpSequence');
@@ -14,6 +15,26 @@ const { validateTemplateEligibility } = require('../utils/templateEligibility');
 
 // Max active sequences per lead
 const MAX_ACTIVE_SEQUENCES = 2;
+
+/**
+ * One aggregation instead of N countDocuments — enrollment hot path.
+ * Returns Map leadIdStr -> active count (DB state before this request mutates it).
+ */
+async function activeSequenceCountMap(clientId, leadIds) {
+  const unique = [...new Set((leadIds || []).filter(Boolean).map((id) => String(id)))];
+  const oids = unique
+    .filter((id) => mongoose.Types.ObjectId.isValid(id))
+    .map((id) => new mongoose.Types.ObjectId(id));
+  if (!oids.length) return new Map();
+
+  const rows = await FollowUpSequence.aggregate([
+    { $match: { clientId, status: 'active', leadId: { $in: oids } } },
+    { $group: { _id: '$leadId', n: { $sum: 1 } } }
+  ]);
+  const m = new Map();
+  rows.forEach((r) => m.set(String(r._id), r.n));
+  return m;
+}
 
 function normalizeDelayUnit(unit) {
   const raw = String(unit || 'm').toLowerCase().trim();
@@ -34,7 +55,10 @@ router.get('/', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-    const sequences = await FollowUpSequence.find({ clientId }).populate('leadId', 'name').sort({ createdAt: -1 });
+    const sequences = await FollowUpSequence.find({ clientId })
+      .populate('leadId', 'name')
+      .sort({ createdAt: -1 })
+      .lean();
     res.json({ success: true, sequences });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -73,7 +97,7 @@ router.post('/:clientId', protect, async (req, res) => {
       return res.status(400).json({ success: false, message: 'No leads provided' });
     }
     
-    const client = await Client.findOne({ clientId });
+    const client = await Client.findOne({ clientId }).select('syncedMetaTemplates').lean();
     if (!client) return res.status(404).json({ message: 'Client not found' });
     const stepFailures = validateSequenceSteps(steps, client.syncedMetaTemplates || []);
     if (stepFailures.length) {
@@ -97,15 +121,14 @@ router.post('/:clientId', protect, async (req, res) => {
     const enrolledSequences = [];
     const errors = [];
 
+    const leadOidList = leads.map((l) => l.leadId).filter(Boolean);
+    let countMap = await activeSequenceCountMap(clientId, leadOidList);
+
     for (const lead of leads) {
       const { leadId, phone, email } = lead;
 
-      // Check for existing active sequences
-      const activeCount = await FollowUpSequence.countDocuments({
-        clientId,
-        leadId,
-        status: "active"
-      });
+      const lid = leadId ? String(leadId) : '';
+      let activeCount = lid ? countMap.get(lid) || 0 : 0;
 
       if (activeCount >= MAX_ACTIVE_SEQUENCES) {
         errors.push({ leadId, message: 'Active sequence limit reached' });
@@ -144,20 +167,24 @@ router.post('/:clientId', protect, async (req, res) => {
       });
 
       await sequence.save();
-      
+
+      if (lid) {
+        countMap.set(lid, activeCount + 1);
+      }
+
       if (leadId) {
-        await AdLead.findByIdAndUpdate(leadId, { 
+        await AdLead.findByIdAndUpdate(leadId, {
           $set: { "metaData.hasActiveSequence": true }
         });
       }
       enrolledSequences.push(sequence);
     }
 
-    res.json({ 
-      success: true, 
-      count: enrolledSequences.length, 
+    res.json({
+      success: true,
+      count: enrolledSequences.length,
       skipped: errors.length,
-      errors: errors.length > 0 ? errors : undefined 
+      errors: errors.length > 0 ? errors : undefined
     });
   } catch (error) {
     console.error('Sequence creation error:', error);
@@ -176,7 +203,10 @@ router.get('/:clientId', protect, async (req, res) => {
     const query = { clientId };
     if (leadId) query.leadId = leadId;
 
-    const sequences = await FollowUpSequence.find(query).populate('leadId', 'name').sort({ createdAt: -1 });
+    const sequences = await FollowUpSequence.find(query)
+      .populate('leadId', 'name')
+      .sort({ createdAt: -1 })
+      .lean();
     res.json({ success: true, sequences });
   } catch (error) {
     console.error('Sequence fetch error:', error);
@@ -215,7 +245,7 @@ router.post('/:clientId/enroll-from-campaign', protect, async (req, res) => {
       return res.status(404).json({ success: false, message: 'Campaign not found' });
     }
 
-    const client = await Client.findOne({ clientId });
+    const client = await Client.findOne({ clientId }).select('_id syncedMetaTemplates').lean();
     const limitCheck = await checkLimit(client?._id, 'sequences');
     if (!limitCheck.allowed) {
       return res.status(403).json({ success: false, message: limitCheck.reason });
@@ -263,11 +293,15 @@ router.post('/:clientId/enroll-from-campaign', protect, async (req, res) => {
     const enrolledSequences = [];
     const errors = [];
 
+    let countMap = await activeSequenceCountMap(
+      clientId,
+      leads.map((l) => l._id)
+    );
+
     // Enrollment loop
     for (const lead of leads) {
-      const activeCount = await FollowUpSequence.countDocuments({
-        clientId, leadId: lead._id, status: "active"
-      });
+      const lid = String(lead._id);
+      let activeCount = countMap.get(lid) || 0;
 
       if (activeCount >= MAX_ACTIVE_SEQUENCES) {
         errors.push({ leadId: lead._id, message: 'Limit reached' });
@@ -303,6 +337,7 @@ router.post('/:clientId/enroll-from-campaign', protect, async (req, res) => {
       });
 
       await sequence.save();
+      countMap.set(lid, activeCount + 1);
       await AdLead.findByIdAndUpdate(lead._id, { $set: { "metaData.hasActiveSequence": true } });
       enrolledSequences.push(sequence);
     }
@@ -355,9 +390,8 @@ router.post('/:clientId/from-imported-list', protect, async (req, res) => {
       return res.status(400).json({ success: false, message: 'No leads found in this imported list' });
     }
 
-    const client = await Client.findOne({ clientId }).select('_id').lean();
-    const fullClient = await Client.findOne({ clientId }).select('syncedMetaTemplates').lean();
-    const templateFailures = validateSequenceSteps(template?.steps || [], fullClient?.syncedMetaTemplates || []);
+    const client = await Client.findOne({ clientId }).select('_id syncedMetaTemplates').lean();
+    const templateFailures = validateSequenceSteps(template?.steps || [], client?.syncedMetaTemplates || []);
     if (templateFailures.length) {
       console.warn('[Sequences][ImportedPlaybookTemplatePreflightFailed]', {
         clientId,
@@ -382,12 +416,14 @@ router.post('/:clientId/from-imported-list', protect, async (req, res) => {
     const enrolledSequences = [];
     const errors = [];
 
+    let countMap = await activeSequenceCountMap(
+      clientId,
+      leads.map((l) => l._id)
+    );
+
     for (const lead of leads) {
-      const activeCount = await FollowUpSequence.countDocuments({
-        clientId,
-        leadId: lead._id,
-        status: 'active'
-      });
+      const lid = String(lead._id);
+      let activeCount = countMap.get(lid) || 0;
 
       if (activeCount >= MAX_ACTIVE_SEQUENCES) {
         errors.push({ leadId: lead._id, message: 'Active sequence limit reached' });
@@ -424,6 +460,7 @@ router.post('/:clientId/from-imported-list', protect, async (req, res) => {
       });
 
       await sequence.save();
+      countMap.set(lid, activeCount + 1);
       await AdLead.findByIdAndUpdate(lead._id, { $set: { 'metaData.hasActiveSequence': true } });
       enrolledSequences.push(sequence);
     }

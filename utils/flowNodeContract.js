@@ -40,6 +40,7 @@ const CANONICAL_NODE_TYPES = new Set([
   'admin_alert',
   'livechat',
   'catalog',
+  'cart_handler',
   'segment',
   'email',
   'sequence',

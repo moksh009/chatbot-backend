@@ -26,7 +26,7 @@ const getGeminiClient = () => {
 // GET /api/analytics/notifications
 // @desc    Get unread conversation counts and pending order counts for sidebar badges
 // @access  Private
-router.get('/notifications', protect, async (req, res) => {
+router.get('/notifications', protect, apiCache(15), async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) {
@@ -65,7 +65,7 @@ router.get('/notifications', protect, async (req, res) => {
 // GET /api/analytics/:clientId/activities
 // @desc    Get real-time activity pulse history
 // @access  Private
-router.get('/:clientId/activities', protect, async (req, res) => {
+router.get('/:clientId/activities', protect, apiCache(20), async (req, res) => {
     try {
         const clientId = tenantClientId(req);
         if (!clientId || clientId !== req.params.clientId) {
@@ -74,7 +74,8 @@ router.get('/:clientId/activities', protect, async (req, res) => {
 
         const activities = await ActivityLog.find({ clientId })
             .sort({ createdAt: -1 })
-            .limit(50);
+            .limit(50)
+            .lean();
 
         res.json({ success: true, activities });
     } catch (err) {
@@ -86,7 +87,7 @@ router.get('/:clientId/activities', protect, async (req, res) => {
 // GET /api/analytics/import-sessions
 // @desc    Get CSV import history
 // @access  Private
-router.get('/import-sessions', protect, async (req, res) => {
+router.get('/import-sessions', protect, apiCache(30), async (req, res) => {
     try {
         const clientId = tenantClientId(req);
         if (!clientId) {
@@ -94,7 +95,7 @@ router.get('/import-sessions', protect, async (req, res) => {
         }
         
         const ImportSession = require('../models/ImportSession');
-        const sessions = await ImportSession.find({ clientId }).sort({ createdAt: -1 }).limit(20);
+        const sessions = await ImportSession.find({ clientId }).sort({ createdAt: -1 }).limit(20).lean();
         res.json(sessions);
     } catch (error) {
         res.status(500).json({ message: 'History fetch failed' });
@@ -335,8 +336,8 @@ router.get('/bot-health', protect, async (req, res) => {
     if (!clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
-    const client = await Client.findOne({ clientId });
-    
+    const client = await Client.findOne({ clientId }).select('isActive').lean();
+
     // In a real scenario, we might check WhatsApp Cloud API health or recent message success rate
     // For now, we return a healthy status if the client exists and is active
     res.json({
@@ -1667,7 +1668,7 @@ router.get('/flow-heatmap-legacy', protect, async (req, res) => {
     if (!clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
-    const client = await Client.findOne({ clientId });
+    const client = await Client.findOne({ clientId }).select('flowNodes').lean();
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
     // Filter nodes that have visitCount > 0 or are triggers
@@ -1703,7 +1704,7 @@ router.get('/abandoned-products', protect, async (req, res) => {
     const stats = await DailyStat.find({
       clientId,
       date: { $gte: since.toISOString().split('T')[0] }
-    });
+    }).lean();
 
     // Aggregate product abandon counts
     const productMap = {};
@@ -1717,10 +1718,14 @@ router.get('/abandoned-products', protect, async (req, res) => {
 
     // Try to fetch images from recent orders for these products
     const productNames = Object.keys(productMap);
-    const recentOrders = await Order.find({ 
-      clientId, 
-      "items.name": { $in: productNames } 
-    }).sort({ createdAt: -1 }).limit(50);
+    const recentOrders = await Order.find({
+      clientId,
+      'items.name': { $in: productNames }
+    })
+      .select('items')
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
 
     const imageMap = {};
     recentOrders.forEach(order => {

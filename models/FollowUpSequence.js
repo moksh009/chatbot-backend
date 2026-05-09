@@ -28,5 +28,7 @@ const FollowUpSequenceSchema = new mongoose.Schema({
 
 FollowUpSequenceSchema.index({ status: 1, "steps.sendAt": 1 });
 FollowUpSequenceSchema.index({ clientId: 1, status: 1 });
+/** Active sequences per lead — speeds enrollment checks + cron */
+FollowUpSequenceSchema.index({ clientId: 1, leadId: 1, status: 1 });
 
 module.exports = mongoose.model('FollowUpSequence', FollowUpSequenceSchema);

@@ -473,7 +473,8 @@ const WhatsApp = {
     const { token, phoneNumberId } = this.getCredentials(client);
     const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
-    const catalogId = client.waCatalogId || client.metaCatalogId || process.env.META_CATALOG_ID;
+    const catalogId =
+      client.facebookCatalogId || client.waCatalogId || client.metaCatalogId || process.env.META_CATALOG_ID;
     if (!catalogId) {
       throw new Error(`[WhatsApp] Missing catalog ID for ${client.clientId}`);
     }
@@ -499,6 +500,125 @@ const WhatsApp = {
       return res.data;
     } catch (err) {
       this.handleError(err, url, "sendMultiProduct", { client, phone: validPhone });
+    }
+  },
+
+  /**
+   * Multi-product list with Meta limits enforced (30 items, 10 sections).
+   */
+  async sendProductList(client, phone, { header, body, footer, catalogId: catalogOverride, sections }) {
+    let sectionsOut = Array.isArray(sections) ? sections.slice(0, 10) : [];
+    let total = 0;
+    for (const s of sectionsOut) {
+      total += (s.product_items || []).length;
+    }
+    if (total > 30) {
+      let remaining = 30;
+      sectionsOut = sectionsOut
+        .map((sec) => {
+          const raw = sec.product_items || [];
+          const taken = raw.slice(0, remaining);
+          remaining -= taken.length;
+          return { ...sec, product_items: taken.map((p) => ({ product_retailer_id: String(p.product_retailer_id) })) };
+        })
+        .filter((sec) => (sec.product_items || []).length > 0);
+      log.warn(`[Commerce] Product list truncated to 30 items for ${phone}`);
+    }
+
+    const catalogId =
+      catalogOverride ||
+      client.facebookCatalogId ||
+      client.waCatalogId ||
+      client.metaCatalogId ||
+      process.env.META_CATALOG_ID;
+
+    const headerText = String(header || 'Our Products').substring(0, 60);
+    const bodyText = String(body || 'Browse and add to cart').substring(0, 1024);
+    const sectionsTrimmed = sectionsOut.map((section) => ({
+      title: String(section.title || 'Products').substring(0, 24),
+      product_items: (section.product_items || []).map((p) => ({
+        product_retailer_id: String(p.product_retailer_id)
+      }))
+    }));
+
+    const validPhone = validatePhone(phone);
+    await this.ensureNotSuppressed(client, validPhone);
+    const { token, phoneNumberId } = this.getCredentials(client);
+    const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
+
+    if (!catalogId) {
+      throw new Error(`[WhatsApp] Missing catalog ID for ${client.clientId}`);
+    }
+
+    const interactive = {
+      type: 'product_list',
+      header: { type: 'text', text: headerText },
+      body: { text: bodyText },
+      action: {
+        catalog_id: catalogId,
+        sections: sectionsTrimmed
+      }
+    };
+    if (footer && String(footer).trim()) {
+      interactive.footer = { text: String(footer).substring(0, 60) };
+    }
+
+    try {
+      const res = await axios.post(
+        url,
+        {
+          messaging_product: 'whatsapp',
+          to: validPhone,
+          type: 'interactive',
+          interactive
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      return res.data;
+    } catch (err) {
+      this.handleError(err, url, 'sendProductList', { client, phone: validPhone });
+    }
+  },
+
+  /** Single product card (interactive type product) */
+  async sendSingleProduct(client, phone, { body, catalogId: catalogOverride, productRetailerId }) {
+    const validPhone = validatePhone(phone);
+    await this.ensureNotSuppressed(client, validPhone);
+    const { token, phoneNumberId } = this.getCredentials(client);
+    const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
+    const catalogId =
+      catalogOverride ||
+      client.facebookCatalogId ||
+      client.waCatalogId ||
+      client.metaCatalogId ||
+      process.env.META_CATALOG_ID;
+    if (!catalogId) {
+      throw new Error(`[WhatsApp] Missing catalog ID for ${client.clientId}`);
+    }
+
+    const interactive = {
+      type: 'product',
+      body: { text: String(body || 'Check out this product!').substring(0, 1024) },
+      action: {
+        catalog_id: catalogId,
+        product_retailer_id: String(productRetailerId)
+      }
+    };
+
+    try {
+      const res = await axios.post(
+        url,
+        {
+          messaging_product: 'whatsapp',
+          to: validPhone,
+          type: 'interactive',
+          interactive
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      return res.data;
+    } catch (err) {
+      this.handleError(err, url, 'sendSingleProduct', { client, phone: validPhone });
     }
   },
 

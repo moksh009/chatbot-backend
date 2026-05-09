@@ -42,6 +42,7 @@ const MessageSchema = new mongoose.Schema({
 // ✅ Phase R3: Performance indexes — conversationId+timestamp was missing, causing full-collection scans on Live Chat load
 MessageSchema.index({ conversationId: 1, timestamp: -1 }); // Primary Live Chat history query
 MessageSchema.index({ clientId: 1, timestamp: -1 });        // Analytics queries (messages per period)
+MessageSchema.index({ clientId: 1, direction: 1, type: 1, status: 1 }); // Template analytics / stats
 MessageSchema.index({ messageId: 1 }, { unique: true, sparse: true });    // Webhook deduplication lookup
 
 module.exports = mongoose.model('Message', MessageSchema);

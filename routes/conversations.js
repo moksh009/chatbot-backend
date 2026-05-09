@@ -12,6 +12,11 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const { uploadToCloud } = require('../utils/cloudinary');
+const { normalizePhone } = require('../utils/helpers');
+const { injectVariables } = require('../utils/variableInjector');
+const { generateCheckoutForOrder, publicApiBase } = require('../utils/commerceCheckoutService');
+const CheckoutLinkModel = require('../models/CheckoutLink');
+const AdLeadModel = require('../models/AdLead');
 const { correctAIResponse } = require('../controllers/flowFixController');
 const Notification = require('../models/Notification');
 const { logAction } = require('../middleware/audit');
@@ -228,7 +233,10 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
     
     // 1. Fetch main conversation
     let conversation = await Conversation.findOne({ _id: id, clientId })
-      .select('phone customerName status botPaused botStatus unreadCount channel assignedTo summary lastDetectedIntent requiresAttention attentionReason clientId')
+      .select(
+        'phone customerName status botPaused botStatus unreadCount channel assignedTo summary lastDetectedIntent requiresAttention attentionReason clientId ' +
+          'pendingCart lastBrowsedCollectionId lastBrowsedCollectionAt lastCheckoutUrl lastCheckoutShortCode lastCheckoutValue lastCheckoutAt checkoutLinkClicked'
+      )
       .lean();
       
     if (!conversation) {
@@ -247,7 +255,7 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
     const phoneSuffix = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
     
     // 2. Load all secondary data concurrently
-    const [messages, lead, orders, wallet, activeSequence, notes] = await Promise.all([
+    const [messages, lead, orders, wallet, activeSequence, notes, latestCheckoutLink] = await Promise.all([
       // Messages
       Message.find({ conversationId: id })
         .sort({ timestamp: -1 })
@@ -333,6 +341,23 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
            const ConversationNote = require('../models/ConversationNote');
            return await ConversationNote.find({ conversationId: id }).sort({ createdAt: 1 }).lean();
          } catch { return []; }
+      })(),
+      (async () => {
+        try {
+          const pn = normalizePhone(phone);
+          if (!pn) return null;
+          const cid = conversation.clientId || clientId;
+          return CheckoutLinkModel.findOne({
+            clientId: cid,
+            converted: false,
+            phone: pn
+          })
+            .sort({ createdAt: -1 })
+            .select('shortCode fullUrl cartRecoverySent createdAt totalValue currency')
+            .lean();
+        } catch {
+          return null;
+        }
       })()
     ]);
     
@@ -349,11 +374,122 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
       lead, 
       orders, 
       wallet, 
-      activeSequence 
+      activeSequence,
+      latestCheckoutLink 
     });
   } catch (error) {
     console.error('[FullContext Error]:', error);
     res.status(500).json({ message: 'Server Error fetching full context' });
+  }
+});
+
+// Agent: resend WhatsApp checkout (permalink / short link or regenerate from pendingCart)
+router.post('/:id/resend-checkout', protect, logPersonalDataAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { regenerate } = req.body || {};
+    const query = { _id: id };
+    if (req.user.role !== 'SUPER_ADMIN') query.clientId = req.user.clientId;
+
+    const conversation = await Conversation.findOne(query);
+    if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
+
+    const client = await Client.findOne({ clientId: conversation.clientId });
+    if (!client) return res.status(404).json({ message: 'Client not found' });
+
+    const normalizedPhone = normalizePhone(conversation.phone);
+    if (!normalizedPhone) return res.status(400).json({ message: 'Invalid conversation phone' });
+
+    let shortUrl = '';
+    let shortCode = '';
+    let total = Number(conversation.lastCheckoutValue) || 0;
+
+    if (!regenerate) {
+      const link = await CheckoutLinkModel.findOne({
+        clientId: conversation.clientId,
+        converted: false,
+        phone: normalizedPhone
+      })
+        .sort({ createdAt: -1 })
+        .lean();
+      if (link) {
+        const base = publicApiBase();
+        shortUrl = base ? `${base}/api/r/${link.shortCode}` : link.fullUrl;
+        shortCode = link.shortCode;
+        if (!total && Number(link.totalValue)) total = Number(link.totalValue);
+      }
+    }
+
+    const rawItems = conversation.pendingCart?.items;
+    const pendingItems = (Array.isArray(rawItems) ? rawItems : [])
+      .map((i) => ({
+        product_retailer_id: String(i.product_retailer_id ?? i.variantId ?? i.id ?? '').trim(),
+        quantity: Math.max(1, Number(i.quantity || 1) || 1),
+        item_price: Number(i.item_price ?? i.price ?? 0) || 0,
+        currency: i.currency || 'INR'
+      }))
+      .filter((i) => i.product_retailer_id);
+
+    if (!shortUrl && pendingItems.length) {
+      const bundle = await generateCheckoutForOrder(client, normalizedPhone, pendingItems);
+      shortUrl = bundle.shortUrl || '';
+      shortCode = bundle.shortCode || '';
+      if (!total && Number(bundle.totalValue)) total = Number(bundle.totalValue);
+    }
+
+    if (!shortUrl) {
+      return res.status(400).json({
+        success: false,
+        message: 'No active checkout link or saved cart. The customer can shop from the catalog again.'
+      });
+    }
+
+    const currency = pendingItems[0]?.currency || rawItems?.[0]?.currency || 'INR';
+    const lead = await AdLeadModel.findOne({
+      clientId: conversation.clientId,
+      phoneNumber: normalizedPhone
+    })
+      .select('name')
+      .lean();
+
+    const tpl =
+      client.commerceBotSettings?.checkoutMessage ||
+      'Complete your checkout 👉 {{checkout_url}}\n\nTotal: {{currency}} {{cart_total}}';
+    const text = injectVariables(String(tpl), {
+      checkout_url: shortUrl,
+      cart_total: String(total),
+      currency,
+      item_count: String(pendingItems.length || conversation.pendingCart?.items?.length || 0),
+      first_name: (lead?.name || 'there').split(/\s+/)[0]
+    });
+
+    await WhatsApp.sendText(client, normalizedPhone, text);
+    await createMessage({
+      clientId: conversation.clientId,
+      conversationId: conversation._id,
+      phone: normalizedPhone,
+      direction: 'outgoing',
+      type: 'text',
+      body: text,
+      metadata: { agent_resend_checkout: true, shortCode }
+    });
+
+    await Conversation.updateOne(
+      { _id: conversation._id },
+      {
+        $set: {
+          lastCheckoutUrl: shortUrl,
+          lastCheckoutShortCode: shortCode,
+          lastCheckoutAt: new Date(),
+          lastCheckoutValue: total
+        }
+      }
+    );
+
+    res.json({ success: true, shortUrl });
+  } catch (error) {
+    console.error('[resend-checkout]', error);
+    res.status(500).json({ message: error.message || 'Failed to resend checkout' });
   }
 });
 
