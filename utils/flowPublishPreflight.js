@@ -20,11 +20,17 @@ function preflightValidateFlowGraph({ nodes = [], edges = [], client }) {
   }
 
   const triggerNodes = safeNodes.filter((n) => normalizeNodeType(n?.type) === 'trigger');
-  if (triggerNodes.length !== 1) {
+  if (triggerNodes.length < 1) {
     errors.push({
       code: 'FLOW_TRIGGER_COUNT',
-      message: `Flow must have exactly 1 trigger node, found ${triggerNodes.length}.`,
-      fix: 'Add exactly one entry trigger node and remove extras.'
+      message: `Flow must have at least 1 trigger node, found ${triggerNodes.length}.`,
+      fix: 'Add at least one entry trigger node.'
+    });
+  } else if (triggerNodes.length > 1) {
+    warnings.push({
+      code: 'FLOW_MULTIPLE_TRIGGERS',
+      message: `Flow contains ${triggerNodes.length} trigger nodes.`,
+      fix: 'This is valid for multi-entry automations. Ensure each trigger maps to a deliberate branch.'
     });
   }
 
