@@ -87,10 +87,14 @@ router.post('/ai-build', protect, async (req, res) => {
     const client = await Client.findOne({ clientId: req.user.clientId });
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
-    const { buildFlowFromPrompt, generateFlowVariants } = require('../utils/aiFlowBuilder');
+    const { buildFlowFromPrompt, generateFlowVariants, validateAndCleanFlow } = require('../utils/aiFlowBuilder');
     
     if (generateVariants) {
-      const variants = await generateFlowVariants(String(prompt).trim(), client);
+      const variantsRaw = await generateFlowVariants(String(prompt).trim(), client);
+      const variants = variantsRaw.map((v) => {
+        const cleaned = validateAndCleanFlow({ nodes: v.nodes || [], edges: v.edges || [] }, yOffset ?? 0);
+        return { ...v, nodes: cleaned.nodes, edges: cleaned.edges };
+      });
       return res.json({ success: true, variants });
     }
 
@@ -126,11 +130,12 @@ router.post('/ai-build', protect, async (req, res) => {
         useAiCopy: false,
       };
       const det = await generateEcommerceFlow(client, wizardData);
+      const detClean = validateAndCleanFlow({ nodes: det.nodes || [], edges: det.edges || [] }, yOffset ?? 0);
       return res.json({
         success: true,
         ...(returnPlan ? { plan: null } : {}),
-        nodes: det.nodes,
-        edges: det.edges,
+        nodes: detClean.nodes,
+        edges: detClean.edges,
         mode: 'deterministic_ecommerce'
       });
     }
@@ -147,21 +152,23 @@ router.post('/ai-build', protect, async (req, res) => {
     if (plan) {
       const { compilePlanToGraph } = require('../utils/flowCompiler');
       const compiled = compilePlanToGraph(plan, { yOffset: yOffset ?? 500 });
+      const compiledClean = validateAndCleanFlow({ nodes: compiled.nodes || [], edges: compiled.edges || [] }, 0);
       return res.json({
         success: true,
         ...(returnPlan ? { plan } : {}),
-        nodes: compiled.nodes,
-        edges: compiled.edges,
+        nodes: compiledClean.nodes,
+        edges: compiledClean.edges,
         mode: 'planner_compiler'
       });
     }
 
     const result = await buildFlowFromPrompt(String(prompt).trim(), client, yOffset ?? 500);
+    const resultClean = validateAndCleanFlow({ nodes: result.nodes || [], edges: result.edges || [] }, 0);
     res.json({
       success: true,
       ...(returnPlan ? { plan: null } : {}),
-      nodes: result.nodes,
-      edges: result.edges,
+      nodes: resultClean.nodes,
+      edges: resultClean.edges,
       mode: 'legacy_direct'
     });
   } catch (error) {

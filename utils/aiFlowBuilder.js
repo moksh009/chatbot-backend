@@ -23,28 +23,30 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 // Gemini is strictly constrained to only these type strings.
 
 const NODE_TYPES = {
-  trigger:        { handles: { out: ['bottom'] }, desc: 'Flow entry point. data: { trigger: { type, keywords?, matchMode?, channel? } }' },
-  message:        { handles: { in: ['top'], out: ['bottom'] }, desc: 'Send text message. data: { body: "...", action?: "ESCALATE_HUMAN" | "GIVE_LOYALTY" | "GENERATE_PAYMENT" }' },
-  interactive:    { handles: { in: ['top'], dynamic: true }, desc: 'Buttons/List. data: { interactiveType: "button"|"list", body: "...", buttonsList: [{id,title}] }' },
-  template:       { handles: { in: ['top'], out: ['bottom'] }, desc: 'Meta WA Template. data: { templateName: "..." }' },
+  trigger:        { handles: { out: ['bottom'] }, desc: 'Flow entry point. data: { triggerType: "first_message|keyword|...", keywords?:[], matchMode? }' },
+  message:        { handles: { in: ['top'], out: ['bottom'] }, desc: 'Send text message. data: { text: "..." } (body is accepted and normalized)' },
+  interactive:    { handles: { in: ['top'], dynamic: true }, desc: 'Buttons/List. data: { interactiveType: "button"|"list", text: "...", buttonsList:[{id,title}] }' },
+  template:       { handles: { in: ['top'], out: ['bottom'] }, desc: 'Meta WA template node. data: { templateName: "..." }' },
+  image:          { handles: { in: ['top'], out: ['bottom'] }, desc: 'Image/media message node.' },
   capture_input:  { handles: { in: ['top'], out: ['bottom'] }, desc: 'Save user reply. data: { question: "...", variable: "..." }' },
-  logic:          { handles: { in: ['top'], out: ['true','false'] }, desc: 'Conditional branch. data: { variable: "...", operator: "eq|gt|lt|contains|exists", value: "..." }' },
-  delay:          { handles: { in: ['top'], out: ['bottom'] }, desc: 'Wait. data: { waitValue: 1, waitUnit: "minutes"|"hours"|"days" }' },
-  shopify_call:   { handles: { in: ['top'], out: ['bottom'] }, desc: 'Shopify action. data: { action: "product_search"|"order_status"|"cart_recovery" }' },
-  http_request:   { handles: { in: ['top'], out: ['bottom'] }, desc: 'Call external API. data: { url: "...", method: "GET"|"POST", body: {} }' },
-  tag_lead:       { handles: { in: ['top'], out: ['bottom'] }, desc: 'Tag lead. data: { tag: "...", action: "add"|"remove" }' },
-  escalate:       { handles: { in: ['top'] }, desc: 'Hand off to human agent. data: { dept: "support", priority: "high" }' },
-  ab_test:        { handles: { in: ['top'], out: ['a','b'] }, desc: 'A/B split. data: { splitRatio: 50 }' },
-  payment_link:   { handles: { in: ['top'], out: ['bottom'] }, desc: 'Send payment link. data: { amount: 500, description: "...", action: "GENERATE_PAYMENT" }' },
-  loyalty_action: { handles: { in: ['top'], out: ['bottom'] }, desc: 'Loyalty. data: { loyaltyAction: "add"|"redeem", points: 50 }' },
-  order_action:   { handles: { in: ['top'], out: ['bottom'] }, desc: 'Order ops. data: { action: "CHECK_ORDER_STATUS"|"CANCEL_ORDER"|"INITIATE_RETURN" }' },
-  cod_prepaid:    { handles: { in: ['top'], out: ['paid','cod'] }, desc: 'COD conversion. data: { discountAmount: 50, action: "CONVERT_COD_TO_PREPAID" }' },
-  abandoned_cart: { handles: { in: ['top'], out: ['recovered'] }, desc: 'Cart recovery step. data: { stepNumber: 1, action: "CART_RECOVERY_SEND_STEP" }' },
-  review:         { handles: { in: ['top'], out: ['bottom'] }, desc: 'Review collection. data: { action: "SEND_REVIEW_REQUEST" }' },
-  warranty_check: { handles: { in: ['top'], out: ['bottom'] }, desc: 'Warranty lookup. data: { action: "WARRANTY_CHECK" }' },
-  catalog:        { handles: { in: ['top'], out: ['bottom'] }, desc: 'WhatsApp catalog message. data: { catalogType: "full"|"single"|"multi", body: "...", header?: "...", footer?: "..." }' },
-  admin_alert:    { handles: { in: ['top'], out: ['bottom'] }, desc: 'Alert admin. data: { topic: "..." }' },
-  livechat:       { handles: { in: ['top'] }, desc: 'Transfer to live agent. data: { dept: "support" }' },
+  logic:          { handles: { in: ['top'], out: ['true','false'] }, desc: 'Conditional branch. data: { variable, operator, value }' },
+  delay:          { handles: { in: ['top'], out: ['bottom'] }, desc: 'Wait node. data: { waitValue, waitUnit }' },
+  shopify_call:   { handles: { in: ['top'], out: ['bottom'] }, desc: 'Shopify action. data: { action: "CHECK_ORDER_STATUS|search_products|..." }' },
+  catalog:        { handles: { in: ['top'], out: ['bottom'] }, desc: 'WhatsApp catalog message. data: { catalogType, body/text, header?, footer? }' },
+  cart_handler:   { handles: { in: ['top'], out: ['a'] }, desc: 'Checkout/cart handler. data: { checkoutMessage?: "..." }' },
+  order_action:   { handles: { in: ['top'], out: ['bottom'] }, desc: 'Order operation node.' },
+  abandoned_cart: { handles: { in: ['top'], out: ['recovered'] }, desc: 'Cart recovery automation step.' },
+  cod_prepaid:    { handles: { in: ['top'], out: ['paid','cod'] }, desc: 'COD conversion branch.' },
+  review:         { handles: { in: ['top'], out: ['positive','negative'] }, desc: 'Review collection node.' },
+  loyalty_action: { handles: { in: ['top'], out: ['success','fail'] }, desc: 'Loyalty branch node.' },
+  warranty_check: { handles: { in: ['top'], out: ['active','expired','none'] }, desc: 'Warranty lookup node.' },
+  email:          { handles: { in: ['top'], out: ['bottom'] }, desc: 'Email node.' },
+  tag_lead:       { handles: { in: ['top'], out: ['bottom'] }, desc: 'Tag lead. data: { tag, action }' },
+  admin_alert:    { handles: { in: ['top'], out: ['bottom'] }, desc: 'Alert admin.' },
+  http_request:   { handles: { in: ['top'], out: ['bottom'] }, desc: 'Call external API.' },
+  link:           { handles: { in: ['top'], out: ['bottom'] }, desc: 'Redirect/link node.' },
+  automation:     { handles: { in: ['top'], out: ['bottom'] }, desc: 'Automation helper node.' },
+  livechat:       { handles: { in: ['top'], out: ['bottom'] }, desc: 'Transfer to live agent.' },
 };
 
 const SUPPORTED_TYPES = Object.keys(NODE_TYPES);
@@ -108,20 +110,16 @@ function verifyAllEdgesMatchButtonIds(nodes, edges) {
     }
 
     const outgoingEdges = edges.filter(e => e.source === node.id);
+    const fallbackHandles = Array.from(validIds);
     for (const edge of outgoingEdges) {
       if (!edge.sourceHandle || !validIds.has(String(edge.sourceHandle))) {
+        if (fallbackHandles.length > 0) {
+          const idx = outgoingEdges.indexOf(edge);
+          edge.sourceHandle = fallbackHandles[idx] || fallbackHandles[0];
+          continue;
+        }
         valid = false;
         errorMsgs.push(`Edge ${edge.id} from node ${node.id} has invalid sourceHandle "${edge.sourceHandle}". Allowed IDs: ${Array.from(validIds).join(', ')}`);
-        
-        // Auto-heal attempt: if only one valid ID exists, just map it
-        if (validIds.size === 1) {
-           edge.sourceHandle = Array.from(validIds)[0];
-           valid = true;
-           errorMsgs.pop();
-        } else {
-           // Otherwise just clear it so it doesn't break ReactFlow entirely
-           edge.sourceHandle = null;
-        }
       }
     }
   }
@@ -150,9 +148,10 @@ function validateAndCleanFlow(parsed, yOffset = 0) {
         triggernode: 'trigger', trigger_node: 'trigger',
         conditionNode: 'logic', condition: 'logic',
         buttonNode: 'interactive', button: 'interactive',
-        escalateNode: 'escalate', human_handoff: 'livechat',
-        payment: 'payment_link', loyalty: 'loyalty_action',
-        order: 'order_action',
+        escalateNode: 'livechat', human_handoff: 'livechat',
+        payment: 'message', payment_link: 'message',
+        loyalty: 'loyalty_action', order: 'order_action',
+        ab_test: 'logic',
       };
       const coerced = typeMap[node.type] || typeMap[node.type?.toLowerCase()];
       if (!coerced) continue; // Skip entirely unknown types
@@ -161,9 +160,25 @@ function validateAndCleanFlow(parsed, yOffset = 0) {
     if (seenIds.has(node.id)) continue;
     seenIds.add(node.id);
 
+    // Normalize common data-key drifts from AI output.
+    if (node.type === 'template' && !node.data?.templateName && node.data?.metaTemplateName) {
+      node.data = { ...node.data, templateName: node.data.metaTemplateName };
+    }
+    if ((node.type === 'interactive' || node.type === 'message' || node.type === 'catalog') && !node.data?.text && node.data?.body) {
+      node.data = { ...node.data, text: node.data.body };
+    }
+    if (node.type === 'trigger' && !node.data?.triggerType && node.data?.trigger?.type) {
+      node.data = { ...node.data, triggerType: node.data.trigger.type };
+    }
+
     // Ensure interactive nodes have buttonsList
     if (node.type === 'interactive' && !Array.isArray(node.data?.buttonsList)) {
-      node.data = { ...node.data, buttonsList: [{ id: 'btn_1', title: 'Yes' }, { id: 'btn_2', title: 'No' }] };
+      node.data = {
+        ...node.data,
+        interactiveType: node.data?.interactiveType || 'button',
+        text: node.data?.text || node.data?.body || 'Choose an option:',
+        buttonsList: [{ id: 'btn_1', title: 'Yes' }, { id: 'btn_2', title: 'No' }],
+      };
     }
 
     // Apply y offset
@@ -175,6 +190,21 @@ function validateAndCleanFlow(parsed, yOffset = 0) {
       },
       data: { ...(node.data || {}) }
     });
+  }
+
+  // Ensure there is always one trigger node as flow entry.
+  if (!validNodes.some((n) => n.type === 'trigger')) {
+    const firstNode = validNodes[0];
+    const triggerNode = {
+      id: 'ai_trigger_0',
+      type: 'trigger',
+      position: { x: 300, y: 50 + yOffset },
+      data: { label: 'Start', triggerType: 'first_message' },
+    };
+    validNodes.unshift(triggerNode);
+    if (firstNode) {
+      edges.unshift({ id: 'e_ai_trigger_0', source: 'ai_trigger_0', target: firstNode.id });
+    }
   }
 
   // Clean edges: remove any that reference non-existent nodes
@@ -189,7 +219,11 @@ function validateAndCleanFlow(parsed, yOffset = 0) {
       animated: false
     }));
 
-  return verifyAllEdgesMatchButtonIds(validNodes, validEdges);
+  const healed = verifyAllEdgesMatchButtonIds(validNodes, validEdges);
+  return {
+    ...healed,
+    nodes: healed.nodes.slice(0, 40),
+  };
 }
 
 // ─── FALLBACK FLOW ────────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ const { generateFlowForClient } = require('../utils/flowAutogen');
 const { convertLegacyToVisual } = require('../utils/legacyConverter');
 const { runFullMigration } = require('../scripts/phase9MigrationLogic');
 const { getGeminiModel } = require('../utils/gemini');
+const { validateAndCleanFlow } = require('../utils/aiFlowBuilder');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const path = require('path');
 const fs = require('fs');
@@ -1581,8 +1582,9 @@ router.post('/generate-flow', protect, async (req, res) => {
       return res.status(500).json({ error: 'AI response missing nodes or edges', flow });
     }
 
-    console.log('[generate-flow] Success — nodes:', flow.nodes.length, '| edges:', flow.edges.length);
-    res.json({ success: true, nodes: flow.nodes, edges: flow.edges });
+    const cleanedGraph = validateAndCleanFlow({ nodes: flow.nodes || [], edges: flow.edges || [] }, 0);
+    console.log('[generate-flow] Success — nodes:', cleanedGraph.nodes.length, '| edges:', cleanedGraph.edges.length);
+    res.json({ success: true, nodes: cleanedGraph.nodes, edges: cleanedGraph.edges });
   } catch (err) {
     console.error('[generate-flow] FATAL:', err.message, err.stack?.slice(0, 500));
     res.status(500).json({ 
@@ -1661,8 +1663,13 @@ router.post('/flow/fix', protect, async (req, res) => {
       return res.status(500).json({ error: 'AI output missing nodes/edges' });
     }
 
+    const cleanedGraph = validateAndCleanFlow({
+      nodes: fixedGraph.nodes || nodes || [],
+      edges: fixedGraph.edges || edges || []
+    }, 0);
+
     console.log('[flow/fix] Success - Returning fixed graph.');
-    res.json({ success: true, nodes: fixedGraph.nodes, edges: fixedGraph.edges });
+    res.json({ success: true, nodes: cleanedGraph.nodes, edges: cleanedGraph.edges });
   } catch (err) {
     console.error('[flow/fix] FATAL:', err.message);
     res.status(500).json({ error: 'AI Auto-Fix Failed: ' + err.message });
