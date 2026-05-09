@@ -409,6 +409,17 @@ function buildDefaultContent(ctx) {
   return getCopyPack(ctx);
 }
 
+function normalizeWelcomeCopy(raw, ctx) {
+  const brand = ctx?.businessName || ctx?.client?.businessName || "our store";
+  const bot = ctx?.botName || "our assistant";
+  const text = String(raw || "").trim();
+  const hasAidaJargon = /\battention:|\binterest:|\bdesire:|\baction:/i.test(text);
+  if (!text || hasAidaJargon) {
+    return `Hi {{first_name}} 👋 Welcome to ${brand}.\nI am ${bot}. I can help you browse products, track an order, or connect you to support.\nTap an option below to continue.`;
+  }
+  return text;
+}
+
 async function generateAIContent(ctx) {
   const { client, businessName, businessDescription, botName, tone, botLanguage, currency, products } = ctx;
   const productsSummary = products.slice(0, 8)
@@ -512,12 +523,13 @@ function buildEntry(ctx, IDS, content, welcomeTemplate) {
     if (buttonsList.length > 3) {
       buttonsList = buttonsList.slice(0, 3);
     }
+    const welcomeText = normalizeWelcomeCopy(content.welcome_a, ctx);
     nodes.push({
       id: IDS.welcome, type: "interactive", position: flowPos(2, 5),
       data: {
         label: "Welcome Message", interactiveType: "button",
         imageUrl: client.brand?.businessLogo || client.brand?.logoUrl || client.businessLogo || "",
-        text: content.welcome_a,
+        text: welcomeText,
         buttonsList,
         heatmapCount: 0
       }

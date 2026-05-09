@@ -2122,9 +2122,10 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 
   let sent = true;
   try {
+    const nodeTimeoutMs = node?.type === 'interactive' ? 12000 : 6000;
     sent = await withTimeout(
       sendNodeContent(node, client, phone, lead, convo, channel, parsedMessage),
-      6000, 
+      nodeTimeoutMs,
       `Node Content (${node.type})`
     );
   } catch (timeoutErr) {
@@ -4146,33 +4147,8 @@ async function sendWhatsAppInteractive(client, phone, interactive, bodyText = ''
   const phoneNumberId = client.premiumPhoneId || client.phoneNumberId;
   if (!token || !phoneNumberId) return false;
 
+  let payloadData = null;
   try {
-    const convo = await Conversation.findOne({ phone, clientId: client.clientId });
-    const lang = convo?.detectedLanguage;
-
-    if (lang && lang !== 'en') {
-        if (interactive.body?.text) interactive.body.text = await translateToUserLanguage(interactive.body.text, lang, client);
-        if (interactive.header?.text) interactive.header.text = await translateToUserLanguage(interactive.header.text, lang, client);
-        if (interactive.action?.buttons) {
-            for (const btn of interactive.action.buttons) {
-                if (btn.reply?.title) {
-                    const transTitle = await translateToUserLanguage(btn.reply.title, lang, client);
-                    btn.reply.title = transTitle.substring(0, 20);
-                }
-            }
-        }
-        if (interactive.action?.sections) {
-            for (const sec of interactive.action.sections) {
-                if (sec.title) sec.title = (await translateToUserLanguage(sec.title, lang, client)).substring(0, 24);
-                if (sec.rows) {
-                    for (const row of sec.rows) {
-                        if (row.title) row.title = (await translateToUserLanguage(row.title, lang, client)).substring(0, 24);
-                        if (row.description) row.description = (await translateToUserLanguage(row.description, lang, client)).substring(0, 72);
-                    }
-                }
-            }
-        }
-    }
 
     if (!interactive.body?.text) {
       interactive.body = {
@@ -4187,6 +4163,7 @@ async function sendWhatsAppInteractive(client, phone, interactive, bodyText = ''
       type: 'interactive',
       interactive
     };
+    payloadData = data;
 
     if (interactive.footer) {
       data.interactive.footer = { text: (interactive.footer.text || interactive.footer || '').substring(0, 60) };
@@ -4201,7 +4178,7 @@ async function sendWhatsAppInteractive(client, phone, interactive, bodyText = ''
         clientId: client.clientId,
         phone,
         error: errorData,
-        payload: JSON.stringify(data, null, 2)
+        payload: payloadData ? JSON.stringify(payloadData, null, 2) : '[unavailable]'
     });
     // Graceful fallback to plain text so user still gets a response.
     try {
