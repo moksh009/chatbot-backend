@@ -173,6 +173,8 @@ function buildBrandUpdate(wizardData = {}, client = {}) {
     out.shopDomain = host;
     out["platformVars.storeUrl"] = `https://${host}`;
   }
+  setIfTruthy(out, "facebookCatalogId", wizardData.facebookCatalogId);
+  setIfTruthy(out, "shopifyStorefrontToken", wizardData.shopifyStorefrontToken);
   setIfTruthy(out, "platformVars.agentName", wizardData.botName);
   if (wizardData.botName) out["nicheData.botName"] = wizardData.botName;
 
