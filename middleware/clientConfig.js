@@ -89,9 +89,11 @@ const loadClientConfig = async (req, res, next) => {
       
       // === NEW SAAS ARCHITECTURE FIELDS ===
       nicheData: client.nicheData || {},
+      platformVars: client.platformVars || {},
       flowData: client.flowData || {},
       automationFlows: client.automationFlows || [],
       messageTemplates: client.messageTemplates || [],
+      syncedMetaTemplates: client.syncedMetaTemplates || [],
       flowNodes: client.flowNodes || [],
       flowEdges: client.flowEdges || [],
       
@@ -99,6 +101,12 @@ const loadClientConfig = async (req, res, next) => {
       adminPhone: client.adminPhone || '',
       shopDomain: client.shopDomain || '',
       shopifyAccessToken: client.shopifyAccessToken || '',
+      shopifyStorefrontToken: client.shopifyStorefrontToken || '',
+      facebookCatalogId: client.facebookCatalogId || '',
+      waCatalogId: client.waCatalogId || '',
+      metaCatalogId: client.metaCatalogId || '',
+      commerceBotSettings: client.commerceBotSettings || {},
+      wabaId: client.wabaId || '',
       razorpayKeyId: client.razorpayKeyId || '',
       razorpaySecret: client.razorpaySecret || '',
       googleReviewUrl: client.googleReviewUrl || '',

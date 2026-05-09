@@ -721,13 +721,13 @@ const WhatsApp = {
         }
       }
     } else {
-      // Template body shape is unknown when unsynced. Send zero params so Meta
-      // can accept static templates; if it still fails, catch block falls back to text.
-      log.warn(`[WhatsApp] Template ${templateName} not synced for ${client.clientId}. Using sequential fallback. Variables: [${variables.join(', ')}]`);
-      components = [];
-      if (headerImage) {
-        components.push({ type: 'header', parameters: [{ type: 'image', image: { link: headerImage } }] });
-      }
+      // If template metadata is unavailable, skip template send entirely and fall
+      // back to text. Sending blind template payloads causes 132000/132012 errors.
+      log.warn(`[WhatsApp] Template ${templateName} not synced for ${client.clientId}. Sending text fallback. Variables: [${variables.join(', ')}]`);
+      const fallbackText = variables.length > 0
+        ? variables.join('\n')
+        : `Hi! Welcome to ${client.businessName || client.name || 'our store'}. How can I help you today?`;
+      return await this.sendText(client, phone, String(fallbackText).substring(0, 4096));
     }
 
     // Structured diagnostics: log exact parameter counts for troubleshooting
@@ -742,7 +742,8 @@ const WhatsApp = {
         err.status === 404 ||
         (err.data?.error_data?.details || "").includes("template name") ||
         (err.message || "").includes("132001") ||
-        (err.message || "").includes("132000")
+        (err.message || "").includes("132000") ||
+        (err.message || "").includes("132012")
       ) {
         log.warn(`[WhatsApp] Template ${templateName} failed (Missing). Falling back to TEXT for ${phone}`);
         

@@ -4261,7 +4261,11 @@ async function sendWhatsAppSmartTemplate(client, phone, templateName, variables 
     }
     return res;
   } catch (err) {
-    if ((err.message || "").includes("132001")) {
+    if (
+      (err.message || "").includes("132001") ||
+      (err.message || "").includes("132000") ||
+      (err.message || "").includes("132012")
+    ) {
       log.warn(`[DualBrain] Template ${templateName} failed (Missing). Fallback was triggered in WhatsApp utility.`);
       return;
     }
