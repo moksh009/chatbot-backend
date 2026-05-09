@@ -13,6 +13,23 @@ const { sendSystemOTPEmail } = require('../utils/emailService');
 const { ensureClientForUser } = require('../utils/ensureClientForUser');
 const { LEGAL_DOCS_VERSION } = require('../config/legalDocs');
 const { validateStrongPassword } = require('../utils/passwordPolicy');
+const { getAccessForUserClient } = require('../utils/accessFlags');
+
+/** Canonical dashboard gates — must match TrialGate / workspaceAccess on the SPA. */
+async function workspaceAccessForResponse(reqUser, clientDocOrNull) {
+  if (!clientDocOrNull) {
+    return {
+      manuallySuspended: false,
+      trialWindowActive: false,
+      hasPaidAccess: false,
+      dashboardLocked: true
+    };
+  }
+  const lean = typeof clientDocOrNull.toObject === 'function'
+    ? clientDocOrNull.toObject()
+    : clientDocOrNull;
+  return getAccessForUserClient(reqUser, lean);
+}
 
 /** Grandfathered clients may omit onboardingCompleted; missing Client doc means not onboarded. */
 function computeClientOnboardingCompleted(isAdminBypass, client) {
@@ -149,6 +166,7 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
 
     // --- PHASE 10 ROBUSTNESS: Ensure fallback for missing client ---
     const clientConfig = client ? client.toObject() : {};
+    const access = await workspaceAccessForResponse(user, client);
 
     res.json({
         _id: user._id,
@@ -164,6 +182,10 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
         hasCompletedTour: user.hasCompletedTour,
         trialActive: client ? client.trialActive : null,
         trialEndsAt: client ? client.trialEndsAt : null,
+        manuallySuspended: access.manuallySuspended,
+        trialWindowActive: access.trialWindowActive,
+        hasPaidAccess: access.hasPaidAccess,
+        dashboardLocked: access.dashboardLocked,
         // Phase 32: New-user onboarding gate fields
         onboardingCompleted: computeClientOnboardingCompleted(
           user.role === 'SUPER_ADMIN' || user.isLifetimeAdmin === true,
@@ -208,7 +230,7 @@ router.get('/bootstrap', protect, async (req, res) => {
     const [client, unreadCount, todayStats, recentConversations] = await Promise.all([
       // 1. Client settings + User
       Client.findOne({ clientId })
-        .select('clientId businessName name ai.persona adminPhone brand billing trialActive trialEndsAt shopDomain phoneNumberId wabaId whatsappToken shopifyAccessToken shopifyConnectionStatus shopifyInstallLink instagramConnected instagramPageId instagramUsername instagramProfilePic instagramAccessToken instagramTokenExpiry metaAdsConnected commerce social whatsapp config visualFlows metaAdsToken metaAdAccountId emailUser emailAppPassword metaAppId geminiApiKey openaiApiKey activePaymentGateway razorpayKeyId razorpaySecret cashfreeAppId cashfreeSecretKey faq googleConnected gmailAddress emailMethod onboardingCompleted onboardingSkipped onboardingSkippedAt onboardingStep onboardingData wizardCompleted')
+        .select('clientId businessName name ai.persona adminPhone brand billing isPaidAccount isLifetimeAdmin trialActive trialEndsAt shopDomain phoneNumberId wabaId whatsappToken shopifyAccessToken shopifyConnectionStatus shopifyInstallLink instagramConnected instagramPageId instagramUsername instagramProfilePic instagramAccessToken instagramTokenExpiry metaAdsConnected commerce social whatsapp config visualFlows metaAdsToken metaAdAccountId emailUser emailAppPassword metaAppId geminiApiKey openaiApiKey activePaymentGateway razorpayKeyId razorpaySecret cashfreeAppId cashfreeSecretKey faq googleConnected gmailAddress emailMethod onboardingCompleted onboardingSkipped onboardingSkippedAt onboardingStep onboardingData wizardCompleted plan tier')
         .lean()
         .then(c => {
           if (!c) return null;
@@ -269,6 +291,7 @@ router.get('/bootstrap', protect, async (req, res) => {
     const isAdminBypass =
       user.role === 'SUPER_ADMIN' || user.isLifetimeAdmin === true;
     const onboardingCompleted = computeClientOnboardingCompleted(isAdminBypass, client);
+    const access = await workspaceAccessForResponse(user, client);
 
     res.json({
       user: {
@@ -280,12 +303,17 @@ router.get('/bootstrap', protect, async (req, res) => {
         isLifetimeAdmin: user.isLifetimeAdmin,
         hasCompletedTour: user.hasCompletedTour,
         business_type: 'ecommerce',
+        manuallySuspended: access.manuallySuspended,
+        trialWindowActive: access.trialWindowActive,
+        hasPaidAccess: access.hasPaidAccess,
+        dashboardLocked: access.dashboardLocked,
         // Phase 32: surfaced at top-level user for quick guard checks
         onboardingCompleted,
         onboardingStep: client?.onboardingStep || 0,
         onboardingSkipped: !!(client && client.onboardingSkipped),
         onboardingSkippedAt: client?.onboardingSkippedAt ?? null
       },
+      workspaceAccess: access,
       client: client || {},
       inbox: { unreadCount, recentConversations },
       stats: todayStats
@@ -382,6 +410,7 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
       const isAdminBypass =
         user.role === 'SUPER_ADMIN' || user.isLifetimeAdmin === true;
       const onboardingCompleted = computeClientOnboardingCompleted(isAdminBypass, client);
+      const access = await workspaceAccessForResponse(user, client);
 
       res.json({
         _id: user._id,
@@ -398,6 +427,11 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
         hasCompletedTour: user.hasCompletedTour,
         trialActive: client ? client.trialActive : null,
         trialEndsAt: client ? client.trialEndsAt : null,
+        manuallySuspended: access.manuallySuspended,
+        trialWindowActive: access.trialWindowActive,
+        hasPaidAccess: access.hasPaidAccess,
+        dashboardLocked: access.dashboardLocked,
+        workspaceAccess: access,
         // Phase 32
         onboardingCompleted,
         onboardingStep: client?.onboardingStep || 0,

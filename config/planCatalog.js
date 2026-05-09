@@ -329,18 +329,31 @@ function buildPlanAccessBundle(client, sub) {
     };
   }
 
-  const trialLive =
-    client &&
-    client.trialActive !== false &&
-    client.trialEndsAt &&
-    new Date(client.trialEndsAt) > new Date();
-  const paid = sub && sub.status === 'active' && isPaidPlanSlug(sub.plan);
+  const {
+    isManuallySuspended,
+    isTrialWindowActive,
+    hasPaidEntitlements,
+    hasPaidActiveSubscription
+  } = require('../utils/accessFlags');
+
+  if (isManuallySuspended(client)) {
+    return {
+      billingPlanSlug: 'none',
+      hubs: { marketing: false, automation: false, commerce: false },
+      intelligenceV2: false
+    };
+  }
+
+  const paid = hasPaidEntitlements(client, sub);
+  const trialLive = isTrialWindowActive(client, sub);
 
   if (trialLive && !paid) {
     return { billingPlanSlug: 'trial', ...getPlanAccessSnapshot('trial') };
   }
   if (paid) {
-    const slug = normalizePlanSlug(sub.plan);
+    const slug = hasPaidActiveSubscription(sub)
+      ? normalizePlanSlug(sub.plan)
+      : normalizePlanSlug(sub?.plan || String(client.plan || '').toLowerCase() || 'dfy_growth');
     return { billingPlanSlug: slug, ...getPlanAccessSnapshot(slug) };
   }
   return {

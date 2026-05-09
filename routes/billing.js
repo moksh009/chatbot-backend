@@ -22,7 +22,10 @@ router.get('/usage', protect, async (req, res) => {
     const client = await Client.findOne({ clientId: req.user.clientId });
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
-    let sub = await Subscription.findOne({ clientId: client._id });
+    let sub = await Subscription.findOne({ clientId: client.clientId });
+    if (!sub) {
+      sub = await Subscription.findOne({ clientId: String(client._id) });
+    }
     
     if (!sub) {
       sub = {
@@ -60,7 +63,10 @@ router.get('/:clientId', protect, async (req, res) => {
     }
 
     // Get Subscription status
-    let sub = await Subscription.findOne({ clientId: client._id });
+    let sub = await Subscription.findOne({ clientId: client.clientId });
+    if (!sub) {
+      sub = await Subscription.findOne({ clientId: String(client._id) });
+    }
     
     // Master Plan from Client document
     const masterPlan = client.plan || 'CX Agent (V1)';

@@ -3,6 +3,7 @@ const { PLAN_LIMITS, normalizePlanSlug } = require('../config/planCatalog');
 const {
   isTrialWindowActive,
   hasPaidActiveSubscription,
+  hasPaidEntitlements,
   resolveSubscriptionForClient,
   ensureTrialSubscriptionRecord
 } = require('./accessFlags');
@@ -11,7 +12,14 @@ function effectivePlanKey(sub, client) {
   if (hasPaidActiveSubscription(sub)) {
     return normalizePlanSlug(sub.plan);
   }
-  if (isTrialWindowActive(client)) {
+  if (hasPaidEntitlements(client, sub)) {
+    if (sub?.plan && String(sub.plan).toLowerCase() !== 'trial') {
+      const s = normalizePlanSlug(sub.plan);
+      if (PLAN_LIMITS[s]) return s;
+    }
+    return 'dfy_growth';
+  }
+  if (isTrialWindowActive(client, sub)) {
     return 'trial';
   }
   const master = (client?.plan || 'CX Agent (V1)').toLowerCase().trim();
@@ -41,13 +49,13 @@ async function checkLimit(identifier, limitType) {
   }
 
   let sub = await resolveSubscriptionForClient(client);
-  if (!sub && isTrialWindowActive(client)) {
+  if (!sub && isTrialWindowActive(client, null)) {
     await ensureTrialSubscriptionRecord(client.clientId);
     sub = await resolveSubscriptionForClient(client);
   }
 
-  const trialLive = isTrialWindowActive(client);
-  const paid = hasPaidActiveSubscription(sub);
+  const trialLive = isTrialWindowActive(client, sub);
+  const paid = hasPaidEntitlements(client, sub);
 
   if (!sub && !trialLive) {
     return { allowed: false, reason: 'No active subscription', code: 'NO_SUBSCRIPTION' };
