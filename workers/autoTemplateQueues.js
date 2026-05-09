@@ -6,11 +6,8 @@ require('dotenv').config();
  * Shared by autoTemplateWorker.js and routes/autoTemplates.js
  */
 const { Queue } = require('bullmq');
-const Redis = require('ioredis');
 const log = require('../utils/logger')('AutoTemplateQueues');
-
-const isInternalRenderRedis = (process.env.REDIS_URL || '').includes('red-');
-const isRunningOnRender = !!process.env.RENDER;
+const { getQueueRedis } = require('../utils/redisFactory');
 
 let redisConnection = null;
 let generationQueue = null;
@@ -18,26 +15,11 @@ let submissionSchedulerQueue = null;
 let batchSubmitterQueue = null;
 let statusPollerQueue = null;
 
-if (isInternalRenderRedis && !isRunningOnRender) {
-  log.warn('[AutoTemplate] Render-internal Redis detected locally. Auto Template queues DISABLED.');
-} else if (process.env.REDIS_URL) {
-  redisConnection = new Redis(process.env.REDIS_URL, {
-    maxRetriesPerRequest: null,
-    retryStrategy: (times) => {
-      if (times > 3) {
-        log.error('[AutoTemplate] Redis connection failed persistently. Queues disabled.');
-        return null;
-      }
-      return Math.min(times * 100, 3000);
-    }
-  });
+if (process.env.REDIS_URL) {
+  redisConnection = getQueueRedis();
+}
 
-  redisConnection.on('error', (err) => {
-    if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED') {
-      log.warn('[AutoTemplate] Redis unreachable. Queues DISABLED.');
-    }
-  });
-
+if (redisConnection) {
   const queueOpts = { connection: redisConnection };
   generationQueue = new Queue('template-generation', queueOpts);
   submissionSchedulerQueue = new Queue('template-submission-scheduler', queueOpts);
@@ -46,7 +28,7 @@ if (isInternalRenderRedis && !isRunningOnRender) {
 
   log.info('[AutoTemplate] All 4 queues initialized.');
 } else {
-  log.warn('[AutoTemplate] No REDIS_URL configured. Auto Template queues DISABLED.');
+  log.warn('[AutoTemplate] Auto Template queues DISABLED (no REDIS_URL or Redis unreachable/skipped).');
 }
 
 /**

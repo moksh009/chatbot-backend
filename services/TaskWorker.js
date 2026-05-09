@@ -1,6 +1,6 @@
 const { Worker } = require('bullmq');
-const Redis = require('ioredis');
 const log = require('../utils/logger')('TaskWorker');
+const { getQueueRedis } = require('../utils/redisFactory');
 const fs = require('fs');
 const csv = require('csv-parser');
 const _ = require('lodash');
@@ -10,32 +10,9 @@ const { normalizePhone, findBestMatch, resolveMappedHeader } = require('../utils
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
 const { incrementStat } = require('../utils/statCacheEngine');
 
-const isInternalRenderRedis = (process.env.REDIS_URL || '').includes('red-');
-const isRunningOnRender = !!process.env.RENDER;
-
-let redisConnection = null;
-
-if (isInternalRenderRedis && !isRunningOnRender) {
-  log.warn('[TaskWorker] ⚠️ Render-internal Redis detected locally. Worker is DISABLED.');
-} else {
-  redisConnection = new Redis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
-    maxRetriesPerRequest: null,
-    retryStrategy: (times) => {
-      if (times > 3) {
-        log.error('[TaskWorker] Redis connection failed persistently. Disabling worker.');
-        return null; // Stop retrying
-      }
-      return Math.min(times * 100, 3000);
-    }
-  });
-
-  redisConnection.on('error', (err) => {
-    if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED') {
-      log.warn('[TaskWorker] ⚠️ Redis unreachable. Background Enterprise Tasks are DISABLED.');
-    } else {
-      log.error('[TaskWorker] Redis Error:', err.message);
-    }
-  });
+const redisConnection = getQueueRedis();
+if (!redisConnection) {
+  log.warn('[TaskWorker] ⚠️ Redis unavailable. Background Enterprise Tasks are DISABLED.');
 }
 
 /**

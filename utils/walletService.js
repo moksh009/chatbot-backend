@@ -1,8 +1,41 @@
 const CustomerWallet = require('../models/CustomerWallet');
 const Client = require('../models/Client');
 const AdLead = require('../models/AdLead');
+const LoyaltyTransaction = require('../models/LoyaltyTransaction');
 const { normalizePhone } = require('./helpers');
 const log = require('./logger')('WalletService');
+
+function resolveTierFromThresholds(lifetimePoints, loyaltyConfig = {}) {
+    const score = Number(lifetimePoints || 0);
+    const t = loyaltyConfig?.tierThresholds || {};
+    const bronze = Number(t.bronze ?? 0);
+    const silver = Number(t.silver ?? 500);
+    const gold = Number(t.gold ?? 2000);
+    const platinum = Number(t.platinum ?? 5000);
+
+    if (score >= platinum) return 'Platinum';
+    if (score >= gold) return 'Gold';
+    if (score >= silver) return 'Silver';
+    if (score >= bronze) return 'Bronze';
+    return 'Bronze';
+}
+
+async function appendLedgerTx({ clientId, phone, orderId = '', type, amount, reason, balanceAfter }) {
+    try {
+        await LoyaltyTransaction.create({
+            clientId,
+            phone: normalizePhone(phone),
+            orderId: orderId ? String(orderId) : undefined,
+            type,
+            amount: Number(amount || 0),
+            reason: String(reason || '').slice(0, 300),
+            balanceAfter: Number(balanceAfter || 0),
+            timestamp: new Date()
+        });
+    } catch (err) {
+        log.error('Failed to append loyalty ledger tx', { error: err.message, clientId, phone, type, orderId });
+    }
+}
 
 /**
  * Calculates and awards loyalty points based on order value and client-specific config.
@@ -64,13 +97,19 @@ async function processOrderForLoyalty(clientId, phone, orderAmount, orderId) {
             timestamp: new Date()
         });
 
-        // 4. Update Tiers
-        if (wallet.lifetimePoints > 5000) wallet.tier = 'Platinum';
-        else if (wallet.lifetimePoints > 2000) wallet.tier = 'Gold';
-        else if (wallet.lifetimePoints > 500) wallet.tier = 'Silver';
-        else wallet.tier = 'Bronze';
+        // 4. Update tiers (single logic path using client thresholds)
+        wallet.tier = resolveTierFromThresholds(wallet.lifetimePoints, config);
 
         await wallet.save();
+        await appendLedgerTx({
+            clientId,
+            phone: cleanPhone,
+            orderId,
+            type: 'earn',
+            amount: pointsToAward,
+            reason: `Order #${orderId} reward`,
+            balanceAfter: wallet.balance
+        });
         
         // Layer 2: Sync to AdLead for O(1) leaderboard querying
         await AdLead.findOneAndUpdate(
@@ -119,6 +158,15 @@ async function redeemPoints(clientId, phone, pointsToRedeem, metadata = 'Redempt
     });
 
     await wallet.save();
+    await appendLedgerTx({
+        clientId,
+        phone: clean,
+        orderId: typeof metadata === 'object' ? metadata.orderId || '' : '',
+        type: 'redeem',
+        amount: -pointsToRedeem,
+        reason,
+        balanceAfter: wallet.balance
+    });
     
     // Layer 2: Sync to AdLead for O(1) leaderboard querying
     await AdLead.findOneAndUpdate(
@@ -174,6 +222,15 @@ async function reverseOrderPoints(clientId, orderId) {
         });
 
         await wallet.save();
+        await appendLedgerTx({
+            clientId,
+            phone: wallet.phone,
+            orderId,
+            type: 'adjust',
+            amount: -pointsToDeduct,
+            reason: `Refund/Cancellation reversal for #${orderId}`,
+            balanceAfter: wallet.balance
+        });
         
         // Layer 2: Sync to AdLead for O(1) leaderboard querying
         await AdLead.findOneAndUpdate(
@@ -221,12 +278,18 @@ async function addPoints(clientId, phone, points, reason = 'Flow reward') {
         timestamp: new Date()
     });
 
-    if (wallet.lifetimePoints > 5000) wallet.tier = 'Platinum';
-    else if (wallet.lifetimePoints > 2000) wallet.tier = 'Gold';
-    else if (wallet.lifetimePoints > 500) wallet.tier = 'Silver';
-    else wallet.tier = 'Bronze';
+    const client = await Client.findOne({ clientId }).select('loyaltyConfig').lean();
+    wallet.tier = resolveTierFromThresholds(wallet.lifetimePoints, client?.loyaltyConfig || {});
 
     await wallet.save();
+    await appendLedgerTx({
+        clientId,
+        phone: clean,
+        type: 'earn',
+        amount: n,
+        reason: String(reason).slice(0, 200),
+        balanceAfter: wallet.balance
+    });
 
     await AdLead.findOneAndUpdate(
         { phoneNumber: clean, clientId },

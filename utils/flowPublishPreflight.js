@@ -46,6 +46,17 @@ function preflightValidateFlowGraph({ nodes = [], edges = [], client }) {
     }
   });
 
+  const outgoingBySource = new Map();
+  safeEdges.forEach((e) => {
+    if (!e?.source) return;
+    const list = outgoingBySource.get(e.source) || [];
+    list.push(e);
+    outgoingBySource.set(e.source, list);
+  });
+
+  const hasHandle = (nodeId, handleId) =>
+    (outgoingBySource.get(nodeId) || []).some((e) => String(e.sourceHandle || '') === String(handleId));
+
   const graphAnalysis = analyzeFlowGraph({ nodes: safeNodes, edges: safeEdges });
   if (graphAnalysis.unreachable.size > 0) {
     warnings.push({
@@ -69,6 +80,50 @@ function preflightValidateFlowGraph({ nodes = [], edges = [], client }) {
     const res = validateFlowNode(node, client);
     if (res?.errors?.length) errors.push(...res.errors);
     if (res?.warnings?.length) warnings.push(...res.warnings);
+
+    const type = normalizeNodeType(node?.type);
+    if (type === 'loyalty_action') {
+      const actionType = String(node?.data?.actionType || 'GIVE_LOYALTY').toUpperCase();
+      const pointsRequired = Number(node?.data?.pointsRequired || 0);
+      if (actionType === 'REDEEM_POINTS') {
+        if (!(pointsRequired > 0)) {
+          errors.push({
+            code: 'LOYALTY_REDEEM_POINTS_INVALID',
+            message: `Loyalty node "${node?.id || ''}" must have pointsRequired > 0.`,
+            fix: 'Set a positive pointsRequired in node settings.'
+          });
+        }
+        if (!hasHandle(node.id, 'success') || !hasHandle(node.id, 'fail')) {
+          errors.push({
+            code: 'LOYALTY_REDEEM_BRANCH_MISSING',
+            message: `Loyalty redeem node "${node?.id || ''}" requires both success and fail branches.`,
+            fix: 'Connect both success and fail handles to downstream nodes.'
+          });
+        }
+      }
+    }
+
+    if (type === 'review') {
+      if (!hasHandle(node.id, 'positive') || !hasHandle(node.id, 'negative')) {
+        errors.push({
+          code: 'REVIEW_BRANCH_MISSING',
+          message: `Review node "${node?.id || ''}" requires both positive and negative branches.`,
+          fix: 'Connect both positive and negative handles to downstream nodes.'
+        });
+      }
+    }
+
+    if (type === 'warranty_check') {
+      const requiredHandles = ['active', 'expired', 'none'];
+      const missing = requiredHandles.filter((h) => !hasHandle(node.id, h));
+      if (missing.length) {
+        errors.push({
+          code: 'WARRANTY_BRANCH_MISSING',
+          message: `Warranty node "${node?.id || ''}" is missing branch(es): ${missing.join(', ')}.`,
+          fix: 'Connect active, expired, and none handles to downstream nodes.'
+        });
+      }
+    }
   });
 
   const copyLint = lintCopyInFlow({ nodes: safeNodes });

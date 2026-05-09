@@ -1,16 +1,16 @@
 const socketIo = require('socket.io');
 const { createAdapter } = require('@socket.io/redis-adapter');
-const Redis = require('ioredis');
 const log = require('./logger')('Socket');
+const { getAppRedis, getQueueRedis } = require('./redisFactory');
 
 let io = null;
 
 /**
  * Initializes Socket.io with the given HTTP server.
- * Handles Redis adapter configuration for horizontal scaling.
+ * Uses shared Redis singleton(s) + duplicate subscriber — avoids extra TCP connections.
  */
 const init = (server) => {
-  let ioOptions = {
+  const ioOptions = {
     cors: {
       origin: process.env.FRONTEND_URL || '*',
       methods: ['GET', 'POST', 'PUT', 'DELETE'],
@@ -21,54 +21,34 @@ const init = (server) => {
 
   io = socketIo(server, ioOptions);
 
-  if (process.env.REDIS_URL) {
-    const isInternalRenderRedis = process.env.REDIS_URL.includes('red-');
-    const isRunningOnRender = !!process.env.RENDER;
+  const pubClient = getAppRedis() || getQueueRedis();
+  const shouldAttachRedis = !!(process.env.REDIS_URL && pubClient);
 
-    // Skip Redis if running locally and trying to connect to internal Render Redis
-    if (!(isInternalRenderRedis && !isRunningOnRender)) {
-      try {
-        const pubClient = new Redis(process.env.REDIS_URL, {
-          maxRetriesPerRequest: 1,
-          connectTimeout: 5000,
-          retryStrategy: (times) => (times > 1 ? null : 1000)
-        });
-
-        pubClient.on('connect', () => {
-          global.redisConnected = true;
-          global.redisClient = pubClient;
-          log.success('✅ Redis connected successfully.');
-        });
-
-        pubClient.on('error', (err) => {
-          log.warn('⚠️ Redis Connection Error:', { message: err.message, code: err.code });
-        });
-
-        const subClient = pubClient.duplicate();
-        io.adapter(createAdapter(pubClient, subClient));
-        log.info('Socket.io Redis Adapter attached.');
-      } catch (err) {
-        log.error('Failed to initialize Redis Adapter:', err.message);
-      }
-    } else {
-      log.warn('⚠️ Skipping Redis Adapter in local environment for Render-internal URL.');
+  if (shouldAttachRedis) {
+    try {
+      const subClient = pubClient.duplicate();
+      io.adapter(createAdapter(pubClient, subClient));
+      global.redisClient = pubClient;
+      global.redisConnected = true;
+      log.info('Socket.io Redis Adapter attached (shared Redis client).');
+    } catch (err) {
+      log.error('Failed to initialize Redis Adapter:', err.message);
     }
+  } else if (!process.env.REDIS_URL) {
+    log.warn('⚠️ REDIS_URL not set — Socket.io running without Redis adapter (single instance only).');
   }
 
-  // Maintain backward compatibility with global.io
   global.io = io;
 
   io.on('connection', (socket) => {
     log.info('New client connected', { socketId: socket.id });
 
-    // Join room based on clientId if provided in query
     const clientId = socket.handshake.query.clientId;
     if (clientId) {
       socket.join(`client_${clientId}`);
       log.info(`Socket joined client room`, { socketId: socket.id, clientId });
     }
 
-    // Join Super Admin room if role is provided
     const userRole = socket.handshake.query.role;
     if (userRole === 'SUPER_ADMIN') {
       socket.join('super_admin_room');
@@ -80,7 +60,6 @@ const init = (server) => {
       log.info(`Socket joined agent room`, { socketId: socket.id, agentId });
     });
 
-    // Dynamic room join (e.g. SuperAdmin switching clients)
     socket.on('join_client_room', ({ clientId: roomClientId } = {}) => {
       if (roomClientId) {
         socket.join(`client_${roomClientId}`);
@@ -88,7 +67,6 @@ const init = (server) => {
       }
     });
 
-    // Legacy/Alias
     socket.on('join_client', (cid) => {
       if (cid) {
         socket.join(`client_${cid}`);
@@ -104,9 +82,6 @@ const init = (server) => {
   return io;
 };
 
-/**
- * Returns the initialized Socket.io instance.
- */
 const getIO = () => {
   if (!io) {
     throw new Error('Socket.io not initialized! Call init(server) first.');
@@ -114,10 +89,6 @@ const getIO = () => {
   return io;
 };
 
-/**
- * Emits an event to all sockets in a specific client room.
- * This is the preferred way to send real-time updates.
- */
 const emitToClient = (clientId, event, data) => {
   if (!io) {
     log.warn(`Cannot emit ${event} - IO not initialized.`);

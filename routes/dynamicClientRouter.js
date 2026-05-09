@@ -543,9 +543,9 @@ router.post('/orders/:orderId/send-review-request', protect, async (req, res) =>
     const client = req.clientConfig;
 
     await ReviewRequest.findOneAndUpdate(
-      { clientId: client._id, phone, orderNumber: order.orderNumber || order.orderId },
+      { clientId: scopedClientId, phone, orderNumber: order.orderNumber || order.orderId },
       {
-        clientId: client._id,
+        clientId: scopedClientId,
         phone,
         orderNumber: order.orderNumber || order.orderId,
         productName: order.items?.[0]?.name || 'your order',

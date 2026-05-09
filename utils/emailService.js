@@ -614,7 +614,12 @@ async function sendCODToPrepaidEmail(client, { customerEmail, customerName, orde
 /**
  * Send a Review Request email after purchase.
  */
-async function sendReviewRequestEmail(client, { customerEmail, customerName, productName, reviewUrl }) {
+async function sendReviewRequestEmail(client, { customerEmail, customerName, productName, productImage, reviewUrl }) {
+    const imageBlock = productImage
+        ? `<div style="text-align:center;margin:24px 0;">
+                <img src="${productImage}" alt="${productName || 'Product'}" style="max-width:220px;max-height:220px;border-radius:12px;object-fit:cover;border:1px solid #e2e8f0;" />
+           </div>`
+        : '';
     const html = `
         <div style="font-family: 'Inter', Arial, sans-serif; max-width: 600px; margin: auto; padding: 40px; border: 1px solid #f1f5f9; border-radius: 24px; background: #ffffff;">
             <div style="text-align: center; margin-bottom: 32px;">
@@ -626,6 +631,7 @@ async function sendReviewRequestEmail(client, { customerEmail, customerName, pro
                 Hi ${customerName || 'there'}! 👋 <br/>
                 We'd love to hear what you think about your recent purchase of <strong>${productName || 'our product'}</strong>.
             </p>
+            ${imageBlock}
             
             <div style="text-align: center; margin: 40px 0;">
                 <a href="${reviewUrl}" style="display: inline-block; padding: 18px 36px; background: #6366f1; color: white; border-radius: 16px; text-decoration: none; font-weight: 700; font-size: 16px; box-shadow: 0 10px 15px -3px rgba(99, 102, 241, 0.3);">

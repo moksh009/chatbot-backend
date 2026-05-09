@@ -19,6 +19,9 @@ INPUT:
   - channelMix: ${s.channelMix || ""}
   - tone: ${s.tone || ""}
   - language: ${s.language || ""}
+  - includeInstallHelp: ${typeof s.includeInstallHelp === "boolean" ? s.includeInstallHelp : ""}
+  - includeWarrantyLookup: ${typeof s.includeWarrantyLookup === "boolean" ? s.includeWarrantyLookup : ""}
+  - includeLoyaltyPoints: ${typeof s.includeLoyaltyPoints === "boolean" ? s.includeLoyaltyPoints : ""}
 - Business context:
 ${businessCtx || "(none)"}
 
@@ -45,7 +48,7 @@ OUTPUT SCHEMA (JSON):
     }
   ],
   "outline": [
-    { "step": "string", "node": "trigger|message|interactive|capture_input|template|livechat|shopify_call|order_action|loyalty_action|warranty_check|review|delay|logic", "copyBrief": "string",
+    { "step": "string", "node": "trigger|message|interactive|capture_input|template|livechat|shopify_call|order_action|loyalty_action|warranty_check|review|delay|logic|catalog", "copyBrief": "string",
       "buttons": [ { "id": "string", "title": "string", "targetStep": "string" } ]
     }
   ],
@@ -55,6 +58,9 @@ OUTPUT SCHEMA (JSON):
 RULES:
 - Keep outline 6-18 steps.
 - Use quick replies/buttons wherever possible.
+- For ecommerce catalogs, prefer catalog-first flow design (WhatsApp catalog + cart + checkout guidance) over one-template-per-product patterns.
+- In ecommerce mode, include these key steps when relevant: catalog open, category/filter selection, featured products push, checkout link guidance, and post-catalog support fallback.
+- If includeInstallHelp/includeWarrantyLookup/includeLoyaltyPoints is true, include those branches in outline.
 - Avoid unverifiable scarcity/guarantee claims.
 - Include escalation/handoff in support flows.
 `;

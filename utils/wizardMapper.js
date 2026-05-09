@@ -65,6 +65,10 @@ function buildFeaturesUpdate(wizardData = {}) {
       f.codDiscountAmount ?? wizardData.codDiscount, 0, 5000, 50);
   }
   setBool(out, "wizardFeatures.enableAbandonedCart", f.enableAbandonedCart);
+  setBool(out, "wizardFeatures.enableCatalogCheckoutRecovery", f.enableCatalogCheckoutRecovery);
+  if (f.catalogCheckoutDelayMin !== undefined) {
+    out["wizardFeatures.catalogCheckoutDelayMin"] = clampNum(f.catalogCheckoutDelayMin, 1, 180, 20);
+  }
   if (wizardData.cartTiming || f.cartNudgeMinutes1 !== undefined) {
     const t = wizardData.cartTiming || {};
     out["wizardFeatures.cartNudgeMinutes1"] = clampNum(f.cartNudgeMinutes1 ?? t.msg1, 1, 1440, 15);
@@ -116,6 +120,9 @@ function buildFeaturesUpdate(wizardData = {}) {
     f.warrantySupportEmail || wizardData.warrantySupportEmail || wizardData.supportEmail);
   setIfTruthy(out, "wizardFeatures.warrantyClaimUrl",
     f.warrantyClaimUrl || wizardData.warrantyClaimUrl);
+  setBool(out, "wizardFeatures.enableInstallSupport", f.enableInstallSupport);
+  setIfTruthy(out, "wizardFeatures.installSupportPrompt",
+    f.installSupportPrompt || wizardData.installSupportPrompt);
   setBool(out, "wizardFeatures.enableFAQ", f.enableFAQ);
   setBool(out, "wizardFeatures.enableSupportEscalation", f.enableSupportEscalation);
   if (f.humanEscalationTimeoutMin !== undefined) {

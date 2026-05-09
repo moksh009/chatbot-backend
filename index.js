@@ -159,12 +159,18 @@ const whitelabelMiddleware = require('./middleware/whitelabel');
 app.use(whitelabelMiddleware);
 
 const HealthController = require('./controllers/HealthController');
-app.use('/public', express.static(path.join(__dirname, 'public')));
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+const requestMetrics = require('./middleware/requestMetrics');
 
-// Debug Middleware: Log all incoming requests
+app.use('/public', express.static(path.join(__dirname, 'public'), { maxAge: 86400000 }));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), { maxAge: '1h' }));
+
+app.use(requestMetrics.middleware());
+
+// Debug: set REQUEST_LOG=true to trace every request (avoid default prod noise + CPU)
 app.use((req, res, next) => {
-  log.info(`${req.method} ${req.originalUrl}`);
+  if (process.env.REQUEST_LOG === 'true') {
+    log.info(`${req.method} ${req.originalUrl}`);
+  }
   next();
 });
 
@@ -310,7 +316,11 @@ const shopifyPixelRoutes = require('./routes/shopifyPixel');
 app.use('/api/shopify-pixel', shopifyPixelRoutes);
 
 // Phase 24: Growth & Health Check (Deep Monitoring)
-app.get('/api/health', HealthController.checkHealth);
+app.get('/api/health', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  await HealthController.checkHealth(req, res);
+});
+app.get('/api/metrics/summary', HealthController.metricsSummary);
 
 // Inbound Messaging Webhooks
 app.use('/api/webhooks', require('./routes/intentWebhooks'));

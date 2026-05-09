@@ -5,7 +5,9 @@ const ReviewRequestSchema = new mongoose.Schema({
   phone: { type: String, required: true },
   orderId: { type: String },
   orderNumber: String,
+  productId: String,
   productName: String,
+  productImage: String,
   reviewUrl: String,
   status: { 
     type: String, 

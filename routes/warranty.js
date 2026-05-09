@@ -8,7 +8,7 @@ const WarrantyRecord = require('../models/WarrantyRecord');
 const Client = require('../models/Client');
 const { withShopifyRetry } = require('../utils/shopifyHelper');
 
-const normalizePhone = (value = '') => String(value).trim();
+const { normalizePhone } = require('../utils/helpers');
 const parseDurationMonths = (raw) => {
     if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
     const text = String(raw || '').toLowerCase();
@@ -283,16 +283,14 @@ router.get('/check', async (req, res) => {
         if (!phone) return res.status(400).json({ success: false, message: 'Phone is required' });
         
         const scopedClientId = String(req.query.clientId || '').trim();
-        let scopedContact = null;
-        if (scopedClientId) {
-            scopedContact = await Contact.findOne({ clientId: scopedClientId, phoneNumber: phone }).lean();
+        if (!scopedClientId) {
+            return res.status(400).json({ success: false, message: 'clientId is required' });
         }
-        if (!scopedContact) {
-            scopedContact = await Contact.findOne({ phoneNumber: phone }).lean();
-        }
+        const cleanPhone = normalizePhone(phone);
+        const scopedContact = await Contact.findOne({ clientId: scopedClientId, phoneNumber: cleanPhone }).lean();
         if (!scopedContact) return res.json({ success: true, hasWarranty: false });
 
-        const record = await WarrantyRecord.findOne({ customerId: scopedContact._id, status: 'active' })
+        const record = await WarrantyRecord.findOne({ clientId: scopedClientId, customerId: scopedContact._id, status: 'active' })
             .populate('batchId', 'batchName durationMonths')
             .sort({ expiryDate: -1 });
 

@@ -15,6 +15,13 @@ function inferActionFromStep(step) {
   return null;
 }
 
+function inferCatalogType(step, brief) {
+  const t = `${String(step || "")} ${String(brief || "")}`.toLowerCase();
+  if (t.includes("single")) return "single";
+  if (t.includes("multi") || t.includes("grid")) return "multi";
+  return "full";
+}
+
 function compilePlanToGraph(plan, { yOffset = 0 } = {}) {
   const outline = Array.isArray(plan?.outline) ? plan.outline : [];
   if (!outline.length) return { nodes: [], edges: [] };
@@ -91,6 +98,24 @@ function compilePlanToGraph(plan, { yOffset = 0 } = {}) {
         data: {
           label: s.step || "Shopify action",
           action: inferred || "CHECK_ORDER_STATUS",
+          heatmapCount: 0,
+        },
+      });
+      return;
+    }
+
+    if (type === "catalog") {
+      const catalogType = inferCatalogType(s.step, brief);
+      nodes.push({
+        id,
+        type: "catalog",
+        position: pos(idx, yOffset),
+        data: {
+          label: s.step || "Catalog",
+          catalogType,
+          header: "{{brand_name}}",
+          body: (brief || "Browse products in WhatsApp catalog and continue to checkout.").slice(0, 512),
+          footer: "Secure checkout",
           heatmapCount: 0,
         },
       });

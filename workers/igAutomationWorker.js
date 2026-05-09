@@ -1,12 +1,9 @@
 "use strict";
 
 const { Worker, Queue } = require('bullmq');
-const Redis = require('ioredis');
 const log = require('../utils/logger')('IGAutoWorker');
 const { registerQueues } = require('../utils/igWebhookProcessor');
-
-const isInternalRenderRedis = (process.env.REDIS_URL || '').includes('red-');
-const isRunningOnRender = !!process.env.RENDER;
+const { getQueueRedis } = require('../utils/redisFactory');
 
 let redisConnection = null;
 let commentDmQueue = null;
@@ -14,26 +11,11 @@ let commentReplyQueue = null;
 let followGateQueue = null;
 let storyDmQueue = null;
 
-if (isInternalRenderRedis && !isRunningOnRender) {
-  log.warn('[IGAutoWorker] ⚠️ Render-internal Redis detected locally. IG Automation workers are DISABLED.');
-  log.info('[IGAutoWorker] Webhook processor will use inline fallback for job execution.');
-} else if (process.env.REDIS_URL) {
-  redisConnection = new Redis(process.env.REDIS_URL, {
-    maxRetriesPerRequest: null,
-    retryStrategy: (times) => {
-      if (times > 3) {
-        log.error('[IGAutoWorker] Redis connection failed persistently. IG workers disabled.');
-        return null;
-      }
-      return Math.min(times * 100, 3000);
-    }
-  });
+if (process.env.REDIS_URL) {
+  redisConnection = getQueueRedis();
+}
 
-  redisConnection.on('error', (err) => {
-    if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED') {
-      log.warn('[IGAutoWorker] ⚠️ Redis unreachable. IG Automation workers are DISABLED.');
-    }
-  });
+if (redisConnection) {
 
   // Initialize queues
   const queueOpts = { connection: redisConnection };
@@ -112,8 +94,11 @@ if (isInternalRenderRedis && !isRunningOnRender) {
   });
 
   log.info('[IGAutoWorker] ✅ All 4 IG Automation workers initialized');
-} else {
+} else if (!process.env.REDIS_URL) {
   log.warn('[IGAutoWorker] No REDIS_URL configured. IG Automation workers are DISABLED.');
+  log.info('[IGAutoWorker] Webhook processor will use inline fallback for job execution.');
+} else {
+  log.warn('[IGAutoWorker] Redis unavailable (e.g. internal URL from local dev). IG workers DISABLED.');
   log.info('[IGAutoWorker] Webhook processor will use inline fallback for job execution.');
 }
 

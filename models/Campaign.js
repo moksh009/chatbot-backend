@@ -76,4 +76,6 @@ const CampaignSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
+CampaignSchema.index({ clientId: 1, createdAt: -1 });
+
 module.exports = mongoose.model('Campaign', CampaignSchema);

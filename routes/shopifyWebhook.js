@@ -530,14 +530,22 @@ async function handleOrder(client, data) {
     const newOrder = await Order.create({
         clientId: client.clientId,
         orderId: data.name || `#${data.id}`,
+        orderNumber: data.name || `#${data.id}`,
+        shopifyOrderId: String(data.id || ''),
         customerName: data.customer ? `${data.customer.first_name} ${data.customer.last_name || ''}` : 'Shopify Customer',
         customerPhone: cleanPhone,
+        customerEmail: data.email || data.customer?.email || '',
         amount: parseFloat(data.total_price),
+        totalPrice: parseFloat(data.total_price),
+        financialStatus: data.financial_status || '',
+        fulfillmentStatus: data.fulfillment_status || '',
         status: data.financial_status === 'paid' ? 'Paid' : 'Pending',
         items: data.line_items.map(item => ({
             name: item.title,
             quantity: item.quantity,
-            price: parseFloat(item.price)
+            price: parseFloat(item.price),
+            sku: item.sku || '',
+            image: item.image_url || ''
         })),
         address: data.shipping_address ? `${data.shipping_address.address1}, ${data.shipping_address.city}` : '',
         createdAt: data.created_at

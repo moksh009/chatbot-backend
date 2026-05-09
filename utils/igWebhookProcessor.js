@@ -1,5 +1,8 @@
 "use strict";
 
+const crypto = require('crypto');
+const { getAppRedis, getQueueRedis } = require('./redisFactory');
+
 const IGAutomation = require('../models/IGAutomation');
 const IGAutomationSession = require('../models/IGAutomationSession');
 const IGProcessedComment = require('../models/IGProcessedComment');
@@ -167,13 +170,26 @@ async function saveToIGConversation(clientId, igsid, messageText, messageType = 
  * Main entry point — routes webhook payload to handlers
  */
 async function processIGWebhookPayload(body) {
-  // Checklist item 4: Log the entry point
   console.log('[IG Webhook] Received payload. Entry count:', body?.entry?.length || 0);
 
-  // Checklist item 5: Handle empty or malformed payloads gracefully
   if (!Array.isArray(body?.entry) || body.entry.length === 0) {
     console.warn('[IG Webhook] Received empty or malformed payload:', JSON.stringify(body));
     return;
+  }
+
+  const redisDedupe = getAppRedis() || getQueueRedis();
+  if (redisDedupe) {
+    try {
+      const fp = crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex');
+      const key = `ig_wh:payload:${fp}`;
+      const firstDelivery = await redisDedupe.set(key, '1', 'NX', 'EX', 172800);
+      if (firstDelivery !== 'OK') {
+        log.info('[IG Webhook] Duplicate payload delivery skipped (Meta retry)');
+        return;
+      }
+    } catch (e) {
+      log.warn('[IG Webhook] Dedupe check failed — continuing:', e.message);
+    }
   }
 
   const entries = body.entry;
@@ -191,15 +207,29 @@ async function processIGWebhookPayload(body) {
       }
     }
 
-    // Handle messaging events (button clicks, story replies)
     const messaging = entry.messaging || [];
     for (const msg of messaging) {
+      if (redisDedupe) {
+        const mid = msg.message?.mid;
+        if (mid) {
+          try {
+            const midKey = `ig_wm:mid:${mid}`;
+            const seen = await redisDedupe.set(midKey, '1', 'NX', 'EX', 604800);
+            if (seen !== 'OK') {
+              log.info(`[IG Webhook] Duplicate messaging event skipped mid=${mid}`);
+              continue;
+            }
+          } catch (e) {
+            log.warn('[IG Webhook] mid dedupe failed:', e.message);
+          }
+        }
+      }
+
       if (msg.message?.attachments?.[0]?.type === 'story_mention') {
         await handleStoryReplyEvent(pageId, msg);
       } else if (msg.postback) {
         await handleButtonPostback(pageId, msg);
       } else if (msg.message) {
-        // Generic incoming DM — save to IGConversation for unified inbox
         await handleIncomingDM(pageId, msg);
       }
     }

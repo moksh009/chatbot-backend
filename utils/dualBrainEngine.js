@@ -2333,7 +2333,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   // 3. Review Node: Send review buttons and wait for rating
   if (node.type === 'review') {
     // Send the review prompt with rating buttons (handled by sendNodeContent case 'review')
-    await sendNodeContent(node.type, node.data, client, phone, convo, channel);
+    await sendNodeContent(node, client, phone, lead, convo, channel, parsedMessage);
     
     // Set lastStepId so that when the user taps a rating button,
     // tryGraphTraversal will match the button_reply.id ('positive' or 'negative')
@@ -2877,7 +2877,9 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
           };
           const fulfillStatus = order.fulfillment_status || order.financial_status || 'Confirmed';
           const emoji = statusEmoji[fulfillStatus.toLowerCase()] || '📦';
-          const items = (order.line_items || []).map(i => `• ${i.title} × ${i.quantity}`).join('\n');
+          const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
+          const items = lineItems.map(i => `• ${i.title} × ${i.quantity}`).join('\n');
+          const firstItemTitle = String(lineItems[0]?.title || '').trim();
           const tracking = order.fulfillments?.[0]?.tracking_url;
           const payGw = (order.payment_gateway_names || []).join(', ') || order.processing_method || '';
 
@@ -2917,6 +2919,8 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
             order_status: fulfillStatus,
             payment_method: payGw,
             is_shipped: isShippedLike ? "true" : "false",
+            first_product_title: firstItemTitle,
+            last_order_items_count: String(lineItems.length || 0),
           };
           await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: mergedMeta } });
           convo.metadata = mergedMeta;

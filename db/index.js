@@ -4,11 +4,15 @@ const mongoose = require("mongoose");
 async function connectDB(){
     try {
         console.log("Attempting to connect to MongoDB...");
+        const maxPool = Math.min(
+            50,
+            Math.max(2, parseInt(process.env.MONGODB_MAX_POOL_SIZE || '10', 10) || 10)
+        );
         const connectionInstance = await mongoose.connect(`${process.env.MONGODB_URI}`, {
             serverSelectionTimeoutMS: 5000,
             socketTimeoutMS: 45000,
-            maxPoolSize: 10,
-            minPoolSize: 2,
+            maxPoolSize: maxPool,
+            minPoolSize: Math.min(2, maxPool),
             family: 4, // Force IPv4 to resolve SSL/TLS handshake issues on local network
         })
         console.log(`\n MongoDB connected !! DB HOST: ${connectionInstance.connection.host}`);

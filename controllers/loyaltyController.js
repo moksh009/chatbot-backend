@@ -44,7 +44,7 @@ async function getLoyaltyStats(req, res) {
             issuedTodayResult,
             redemptionStats,
             recentTransactions,
-            topCustomers
+            topWallets
         ] = await Promise.all([
             // Total points in circulation, active members
             CustomerWallet.aggregate([
@@ -82,11 +82,11 @@ async function getLoyaltyStats(req, res) {
                 .lean()
                 .catch(() => []),
 
-            // Top 5 customers
-            AdLead.find({ clientId: cid, loyaltyPoints: { $gt: 0 } })
-                .sort({ loyaltyPoints: -1 })
+            // Top 5 wallets (authoritative source for loyalty balance + lifetime points)
+            CustomerWallet.find({ clientId: cid, balance: { $gt: 0 } })
+                .sort({ balance: -1 })
                 .limit(5)
-                .select('phoneNumber loyaltyPoints loyaltyTier')
+                .select('phone balance lifetimePoints tier')
                 .lean()
                 .catch(() => [])
         ]);
@@ -95,10 +95,11 @@ async function getLoyaltyStats(req, res) {
         const rd = redemptionStats[0] || { totalRedeemed: 0, redemptionCount: 0, uniqueRedeemers: [] };
         const issuedToday = issuedTodayResult[0]?.issuedToday || 0;
 
-        const mappedTopCustomers = (topCustomers || []).map(c => ({
-            phone: c.phoneNumber,
-            balance: c.loyaltyPoints,
-            tier: c.loyaltyTier
+        const mappedTopCustomers = (topWallets || []).map(c => ({
+            phone: c.phone,
+            balance: Number(c.balance || 0),
+            lifetimePoints: Number(c.lifetimePoints || 0),
+            tier: c.tier || 'Bronze'
         }));
 
         const redemptionVelocity = ws.totalMembers > 0
@@ -217,10 +218,31 @@ async function getLoyaltyTransactions(req, res) {
     if (!clientId) return res.status(403).json({ message: 'Unauthorized' });
 
     try {
-        const transactions = await LoyaltyTransaction.find({ clientId })
+        let transactions = await LoyaltyTransaction.find({ clientId })
             .sort({ timestamp: -1 })
             .limit(50)
             .lean();
+
+        // Fallback for legacy wallets where transactions were stored only in CustomerWallet.transactions.
+        if (!transactions.length) {
+            const wallets = await CustomerWallet.find(
+                { clientId, transactions: { $exists: true, $ne: [] } },
+                { phone: 1, transactions: 1 }
+            ).lean();
+
+            transactions = (wallets || [])
+                .flatMap((w) => (w.transactions || []).map((t) => ({
+                    _id: `${w.phone}_${new Date(t.timestamp || Date.now()).getTime()}_${t.type || 'tx'}`,
+                    clientId,
+                    phone: w.phone,
+                    type: t.type || 'adjust',
+                    amount: Number(t.amount || 0),
+                    reason: t.reason || '',
+                    timestamp: t.timestamp || new Date()
+                })))
+                .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+                .slice(0, 50);
+        }
         
         res.json({ transactions });
     } catch (err) {
@@ -405,13 +427,14 @@ async function adjustWalletBalance(req, res) {
     }
 
     try {
-        let wallet = await CustomerWallet.findOne({ clientId: resolvedClientId, phone });
+        const normalizedPhone = require('../utils/helpers').normalizePhone(phone);
+        let wallet = await CustomerWallet.findOne({ clientId: resolvedClientId, phone: normalizedPhone });
         
         if (!wallet) {
             // Create wallet if it doesn't exist
             wallet = await CustomerWallet.create({ 
                 clientId: resolvedClientId, 
-                phone, 
+                phone: normalizedPhone, 
                 balance: 0, 
                 lifetimePoints: 0 
             });
@@ -431,6 +454,15 @@ async function adjustWalletBalance(req, res) {
         });
 
         await wallet.save();
+        await LoyaltyTransaction.create({
+            clientId: resolvedClientId,
+            phone: normalizedPhone,
+            type: 'adjust',
+            amount: adjustmentAmount,
+            reason: reason || 'Admin manual adjustment',
+            balanceAfter: wallet.balance,
+            timestamp: new Date()
+        });
 
         log.info(`Manual adjustment of ${adjustmentAmount} points for ${phone} (${resolvedClientId})`);
         
@@ -516,7 +548,7 @@ async function getLoyaltyStatus(req, res) {
         const client = await Client.findOne({ clientId: resolvedClientId }).select('loyaltyConfig');
 
         res.json({
-            isEnabled: client?.loyaltyConfig?.isEnabled || false,
+            isEnabled: client?.loyaltyConfig?.isEnabled ?? client?.loyaltyConfig?.enabled ?? false,
             wallet: wallet || { balance: 0, tier: 'Bronze' },
             config: client?.loyaltyConfig || {}
         });

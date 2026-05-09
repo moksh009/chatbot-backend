@@ -1,54 +1,56 @@
 const { Worker } = require('bullmq');
-const Redis = require('ioredis');
+const { getQueueRedis } = require('../utils/redisFactory');
 const NlpEngineService = require('./NlpEngineService');
 
-// Redis connection specific for the worker
-const redisConnection = new Redis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
-  maxRetriesPerRequest: null,
-});
+const redisConnection = getQueueRedis();
 
 /**
  * BullMQ Worker for the 'nlp-queue'.
- * Handles processing of aggregated messages after the 10-second delay.
+ * Handles processing of aggregated messages after the delay window.
  */
-const nlpWorker = new Worker('nlp-queue', async (job) => {
-  const { clientId, phoneNumber } = job.data;
-  
-  try {
-    console.log(`[NLP_WORKER] Processing buffered text for Client: ${clientId}, Phone: ${phoneNumber}...`);
+const nlpWorker = redisConnection
+  ? new Worker(
+      'nlp-queue',
+      async (job) => {
+        const { clientId, phoneNumber } = job.data;
 
-    const redisKey = `chat_buffer:${clientId}:${phoneNumber}`;
+        try {
+          console.log(`[NLP_WORKER] Processing buffered text for Client: ${clientId}, Phone: ${phoneNumber}...`);
 
-    // 1. Fetch the final aggregated string from Redis
-    const finalString = await redisConnection.get(redisKey);
+          const redisKey = `chat_buffer:${clientId}:${phoneNumber}`;
 
-    if (!finalString) {
-      console.warn(`[NLP_WORKER] No buffer found for key: ${redisKey}. Skipping.`);
-      return;
-    }
+          const finalString = await redisConnection.get(redisKey);
 
-    // 2. Clear the buffer immediately to prevent double processing
-    await redisConnection.del(redisKey);
+          if (!finalString) {
+            console.warn(`[NLP_WORKER] No buffer found for key: ${redisKey}. Skipping.`);
+            return;
+          }
 
-    // 3. Pass to NLP Engine for classification
-    await NlpEngineService.processIncomingText(clientId, phoneNumber, finalString);
+          await redisConnection.del(redisKey);
 
-    console.log(`[NLP_WORKER] Successfully processed job #${job.id}`);
-  } catch (error) {
-    console.error(`[NLP_WORKER] Error processing job #${job.id}:`, error);
-    throw error; // Re-queue if it fails
-  }
-}, { 
-  connection: redisConnection,
-  concurrency: 10 // Adjust based on server capacity
-});
+          await NlpEngineService.processIncomingText(clientId, phoneNumber, finalString);
 
-nlpWorker.on('completed', (job) => {
-  console.log(`[NLP_WORKER] Job ${job.id} completed.`);
-});
+          console.log(`[NLP_WORKER] Successfully processed job #${job.id}`);
+        } catch (error) {
+          console.error(`[NLP_WORKER] Error processing job #${job.id}:`, error);
+          throw error;
+        }
+      },
+      {
+        connection: redisConnection,
+        concurrency: 10
+      }
+    )
+  : null;
 
-nlpWorker.on('failed', (job, err) => {
-  console.error(`[NLP_WORKER] Job ${job.id} failed with error: ${err.message}`);
-});
+if (nlpWorker) {
+  nlpWorker.on('completed', (job) => {
+    console.log(`[NLP_WORKER] Job ${job.id} completed.`);
+  });
+
+  nlpWorker.on('failed', (job, err) => {
+    console.error(`[NLP_WORKER] Job ${job.id} failed:`, err);
+  });
+}
 
 module.exports = nlpWorker;

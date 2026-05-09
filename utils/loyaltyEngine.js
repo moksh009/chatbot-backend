@@ -8,7 +8,8 @@ async function awardLoyaltyPoints({ clientId, phone, orderId, orderAmount, isBac
     // 1. Get loyalty config
     const client = await Client.findOne({ clientId }).select("loyaltyConfig").lean();
     const config = client?.loyaltyConfig;
-    if (!config?.isEnabled) return { skipped: true, reason: "Loyalty disabled" };
+    const loyaltyEnabled = config?.isEnabled ?? config?.enabled;
+    if (!loyaltyEnabled) return { skipped: true, reason: "Loyalty disabled" };
 
     if (!phone) return { skipped: true, reason: "No phone specified" };
 

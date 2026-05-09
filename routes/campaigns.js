@@ -755,7 +755,7 @@ router.get('/:clientId/overview', protect, async (req, res) => {
   try {
     const { client } = await resolveClient(req);
     const clientId = client.clientId;
-    const campaigns = await Campaign.find({ clientId }).sort({ createdAt: -1 });
+    const campaigns = await Campaign.find({ clientId }).sort({ createdAt: -1 }).lean();
     const CampaignMessage = require('../models/CampaignMessage');
 
     // Aggregate stats from CampaignMessage for ground-truth data

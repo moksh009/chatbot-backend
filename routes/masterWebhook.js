@@ -11,6 +11,80 @@ const { logActivity } = require('../utils/activityLogger');
 const { recalculateLeadScore } = require('../utils/scoringHelper');
 const { buildEventEnvelope } = require('../utils/eventEnvelope');
 const { emitToClient } = require('../utils/socket');
+const { withShopifyRetry } = require('../utils/shopifyHelper');
+
+function normalizeStoreBase(shopDomain = '') {
+  const clean = String(shopDomain || '').replace(/^https?:\/\//, '').trim();
+  return clean ? `https://${clean}` : '';
+}
+
+async function buildCatalogCheckoutContext(clientDoc, orderItems = []) {
+  const storeBase = normalizeStoreBase(clientDoc?.shopDomain);
+  const fallbackCheckout = clientDoc?.platformVars?.checkoutUrl || (storeBase ? `${storeBase}/cart` : '');
+  const cleanItems = Array.isArray(orderItems) ? orderItems : [];
+  if (!cleanItems.length) {
+    return { checkoutUrl: fallbackCheckout, items: [], titles: [], handles: [], totalPrice: 0 };
+  }
+
+  const retailerIds = [...new Set(
+    cleanItems.map((i) => String(i?.product_retailer_id || '').trim()).filter(Boolean)
+  )];
+  const productMap = new Map();
+
+  if (clientDoc?.clientId && retailerIds.length) {
+    try {
+      const products = await withShopifyRetry(clientDoc.clientId, async (shop) => {
+        const resp = await shop.get('/products.json', {
+          params: { ids: retailerIds.join(','), fields: 'id,title,handle,variants,images' }
+        });
+        return resp.data?.products || [];
+      });
+      products.forEach((p) => {
+        const key = String(p.id || '').trim();
+        productMap.set(key, {
+          variantId: String(p?.variants?.[0]?.id || '').trim(),
+          title: p.title || 'Product',
+          handle: p.handle || '',
+          image: p?.images?.[0]?.src || '',
+          url: storeBase && p.handle ? `${storeBase}/products/${p.handle}` : ''
+        });
+      });
+    } catch (err) {
+      log.warn(`[CatalogCheckout] product mapping failed: ${err.message}`);
+    }
+  }
+
+  let totalPrice = 0;
+  const permalinkItems = [];
+  const items = [];
+  const titles = [];
+  const handles = [];
+
+  cleanItems.forEach((item) => {
+    const retailerId = String(item?.product_retailer_id || '').trim();
+    const quantity = Math.max(1, Number(item?.quantity || 1) || 1);
+    const mapped = productMap.get(retailerId);
+    const variantId = mapped?.variantId || (/^\d{8,}$/.test(retailerId) ? retailerId : '');
+    const itemPrice = Number(item?.item_price ?? item?.price ?? 0);
+    if (Number.isFinite(itemPrice) && itemPrice > 0) totalPrice += (itemPrice * quantity);
+
+    if (variantId) permalinkItems.push(`${variantId}:${quantity}`);
+    items.push({
+      variant_id: variantId || retailerId,
+      quantity,
+      image: mapped?.image || '',
+      url: mapped?.url || ''
+    });
+    if (mapped?.title) titles.push(mapped.title);
+    if (mapped?.handle) handles.push(mapped.handle);
+  });
+
+  const checkoutUrl = permalinkItems.length
+    ? `${storeBase}/cart/${permalinkItems.join(',')}?utm_source=whatsapp_catalog&utm_medium=chatbot`
+    : fallbackCheckout;
+
+  return { checkoutUrl, items, titles, handles, totalPrice };
+}
 
 /**
  * Middleware to verify Meta X-Hub-Signature-256
@@ -238,32 +312,68 @@ async function processMessages(messages, metadata, contacts) {
           const orderItems = message.order?.product_items || [];
           log.info(`🛒 WA Catalog order from ${from}`, { items: orderItems.length });
 
+          const Client = require('../models/Client');
+          const clientDoc = await Client.findOne(
+            { phoneNumberId: phone_number_id },
+            { _id: 1, clientId: 1, shopDomain: 1, whatsappToken: 1, phoneNumberId: 1, platformVars: 1, loyaltyConfig: 1 }
+          ).lean();
+          if (!clientDoc?.clientId) {
+            log.warn('Catalog order received but client not found by phoneNumberId', { phone_number_id });
+            continue;
+          }
+
+          const checkoutCtx = await buildCatalogCheckoutContext(clientDoc, orderItems);
+
           const AdLead = require('../models/AdLead');
           const lead = await AdLead.findOneAndUpdate(
-            { phoneNumber: from },
+            { clientId: clientDoc.clientId, phoneNumber: from },
             {
               $set: {
                 cartStatus: 'whatsapp_order_placed',
                 lastInteraction: new Date(),
-                'cartSnapshot.items': orderItems.map(i => ({ variant_id: i.product_retailer_id, quantity: i.quantity }))
+                checkoutUrl: checkoutCtx.checkoutUrl || '',
+                cartUrl: checkoutCtx.checkoutUrl || '',
+                'cartSnapshot.items': checkoutCtx.items,
+                'cartSnapshot.titles': checkoutCtx.titles,
+                'cartSnapshot.handles': checkoutCtx.handles,
+                'cartSnapshot.total_price': checkoutCtx.totalPrice,
+                'cartSnapshot.updatedAt': new Date()
               },
               $push: {
                 activityLog: { action: 'whatsapp_catalog_order', details: `WA Catalog order: ${orderItems.length} item(s)`, timestamp: new Date() },
-                commerceEvents: { event: 'whatsapp_order_placed', amount: 0, currency: 'INR', timestamp: new Date(), metadata: { items: orderItems, catalogOrderId: message.id } }
+                commerceEvents: {
+                  event: 'whatsapp_order_placed',
+                  amount: checkoutCtx.totalPrice || 0,
+                  currency: 'INR',
+                  timestamp: new Date(),
+                  metadata: {
+                    items: orderItems,
+                    cartItems: checkoutCtx.items,
+                    catalogOrderId: message.id,
+                    checkoutUrl: checkoutCtx.checkoutUrl || ''
+                  }
+                }
               }
             },
-            { new: true, lean: true }
+            { new: true, lean: true, upsert: true, setDefaultsOnInsert: true }
           );
 
-          // Send acknowledgment
-          // Send acknowledgment (catalog order — no need for full engine processing)
-          require('../utils/whatsapp').sendText({whatsappToken: clientDoc?.whatsappToken || '', phoneNumberId: phone_number_id}, from, `✅ Thank you! We've received your order for ${orderItems.length} item(s). Our team will confirm shortly.`).catch(e => log.error('Catalog Ack failed', { error: e.message }));
+          const ackText = checkoutCtx.checkoutUrl
+            ? `✅ Thank you! We've captured ${orderItems.length} item(s).\nComplete checkout in one tap 👉 ${checkoutCtx.checkoutUrl}`
+            : `✅ Thank you! We've received your order for ${orderItems.length} item(s). Our team will confirm shortly.`;
+          require('../utils/whatsapp')
+            .sendText(clientDoc, from, ackText)
+            .catch(e => log.error('Catalog Ack failed', { error: e.message }));
 
           // Fire external webhook
-          const clientDoc = await require('../models/Client').findOne({ phoneNumberId: phone_number_id }, { _id: 1, clientId: 1 }).lean();
           if (clientDoc && lead) {
             try {
-              require('../utils/webhookDelivery').fireWebhookEvent(clientDoc._id, 'order.created', { phone: from, items: orderItems, source: 'whatsapp_catalog' });
+              require('../utils/webhookDelivery').fireWebhookEvent(clientDoc._id, 'order.created', {
+                phone: from,
+                items: orderItems,
+                checkoutUrl: checkoutCtx.checkoutUrl || '',
+                source: 'whatsapp_catalog'
+              });
             } catch (_) {}
 
             // Create Dashboard Notification
@@ -281,8 +391,9 @@ async function processMessages(messages, metadata, contacts) {
             AdLead.pushJourneyEvent(lead.clientId, from, 'order_placed', { itemsCount: orderItems.length }).catch(() => {});
 
             // Phase 27: Loyalty Points Award (WhatsApp Catalog Order)
-            if (clientDoc.loyaltyConfig?.isEnabled) {
-                const totalAmount = orderItems.reduce((sum, item) => sum + (item.price || 0) * item.quantity, 0);
+            const loyaltyEnabled = clientDoc.loyaltyConfig?.isEnabled || clientDoc.loyaltyConfig?.enabled;
+            if (loyaltyEnabled) {
+                const totalAmount = checkoutCtx.totalPrice || orderItems.reduce((sum, item) => sum + (Number(item?.price || 0) * Number(item?.quantity || 1)), 0);
                 if (totalAmount > 0) {
                    processOrderForLoyalty(clientDoc.clientId, from, totalAmount, `WACAT_${message.id}`)
                      .then(res => { if (res) log.info(`Awarded ${res.pointsAwarded} points (WA Catalog) to ${from}`); })

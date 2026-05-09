@@ -41,6 +41,13 @@ function buildProductContext(product, index) {
   const altTexts = images.map(img => img?.alt).filter(Boolean).join(" ");
   const features = (altTexts || product.description || product.descriptionHtml || "").slice(0, 300);
   const rawName  = product.name || product.title || `Product ${index + 1}`;
+  const rawCategory =
+    product.category
+    || product.productType
+    || product.product_type
+    || product.collection
+    || product.vendor
+    || "General";
   const handle   = product.handle
     || rawName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
   return {
@@ -50,7 +57,7 @@ function buildProductContext(product, index) {
     imageUrl: product.imageUrl || (images[0]?.src || ""),
     handle,
     features,
-    category: product.category || "General",
+    category: String(rawCategory || "General").trim() || "General",
   };
 }
 
@@ -185,6 +192,8 @@ function buildContext(client = {}, wizardData = {}) {
     enableCodToPrepaid:      false,
     codDiscountAmount:       50,
     enableAbandonedCart:     true,
+    enableCatalogCheckoutRecovery: true,
+    catalogCheckoutDelayMin: 20,
     cartNudgeMinutes1:       15,
     cartNudgeHours2:         2,
     cartNudgeHours3:         24,
@@ -202,6 +211,8 @@ function buildContext(client = {}, wizardData = {}) {
     warrantySupportPhone:    "",
     warrantySupportEmail:    "",
     warrantyClaimUrl:        "",
+    enableInstallSupport:    false,
+    installSupportPrompt:    "Need install help? Share your exact product name and I will guide you.",
     enableFAQ:               true,
     enableSupportEscalation: true,
     humanEscalationTimeoutMin: 30,
@@ -277,10 +288,20 @@ function buildIDs(client, wizardData) {
     main_menu:        `main_menu_${ts}`,
     // Catalog
     cat_list:         `cat_list_${ts}`,
+    cat_category_menu:`cat_category_menu_${ts}`,
+    cat_featured:     `cat_featured_${ts}`,
+    cat_cat_0:        `cat_cat_0_${ts}`,
+    cat_cat_1:        `cat_cat_1_${ts}`,
+    cat_cat_2:        `cat_cat_2_${ts}`,
+    cat_cat_3:        `cat_cat_3_${ts}`,
+    cat_cat_4:        `cat_cat_4_${ts}`,
     cat_addr_prompt:  `cat_addr_prompt_${ts}`,
     cat_addr_cap:     `cat_addr_cap_${ts}`,
     cat_addr_done:    `cat_addr_done_${ts}`,
     cat_addr_alert:   `cat_addr_alert_${ts}`,
+    cat_ck_delay:     `cat_ck_delay_${ts}`,
+    cat_ck_ping:      `cat_ck_ping_${ts}`,
+    cat_ck_follow:    `cat_ck_follow_${ts}`,
     // Order ops
     ord_track:        `ord_track_${ts}`,
     ord_status_msg:   `ord_status_msg_${ts}`,
@@ -314,6 +335,14 @@ function buildIDs(client, wizardData) {
     war_active:       `war_active_${ts}`,
     war_expired:      `war_expired_${ts}`,
     war_none:         `war_none_${ts}`,
+    // Install support
+    ins_hub:          `ins_hub_${ts}`,
+    ins_lookup:       `ins_lookup_${ts}`,
+    ins_confirm:      `ins_confirm_${ts}`,
+    ins_capture:      `ins_capture_${ts}`,
+    ins_search:       `ins_search_${ts}`,
+    ins_result:       `ins_result_${ts}`,
+    ins_no_match:     `ins_no_match_${ts}`,
     // Loyalty
     loy_menu:         `loy_menu_${ts}`,
     loy_balance:      `loy_balance_${ts}`,
@@ -513,163 +542,225 @@ function buildMainMenu(ctx, IDS, menuRows) {
 }
 
 function buildCatalogBranch(ctx, IDS) {
-  const { F, currency, products, storeUrl, client, wizardData } = ctx;
+  const { F, products, storeUrl } = ctx;
   const nodes = [], edges = [];
+  const MAX_CATEGORY_ROWS = 5;
+  const categoryNodeIds = [IDS.cat_cat_0, IDS.cat_cat_1, IDS.cat_cat_2, IDS.cat_cat_3, IDS.cat_cat_4];
+  const productBuckets = new Map();
+  products.forEach((p) => {
+    const key = String(p.category || "General").trim() || "General";
+    if (!productBuckets.has(key)) productBuckets.set(key, []);
+    productBuckets.get(key).push(p);
+  });
+  const sortedCategories = Array.from(productBuckets.entries())
+    .sort((a, b) => b[1].length - a[1].length)
+    .slice(0, MAX_CATEGORY_ROWS);
+  const featuredProducts = products.slice(0, 8);
+  const featuredIds = featuredProducts.map((p) => String(p.id || "").trim()).filter(Boolean);
 
-  nodes.push({
-    id: IDS.cat_list, type: "interactive", position: flowPos(5, 1),
-    data: {
-      label: "Product Catalog", interactiveType: "list",
-      text: "Ready to explore {{brand_name}} products? Pick one below 👇",
-      buttonText: "View Products",
-      sections: [{
-        title: "{{brand_name}} — Products",
-        rows: products.length
-          ? products.map((p, i) => ({
-              id: `p_${i}`, title: truncate(p.title, 24),
-              description: `${currency}${parseInt(p.price || 0, 10).toLocaleString("en-IN")}`
-            }))
-          : [{ id: "no_products", title: "No products yet", description: "Sync your store first" }]
-      }],
-      heatmapCount: 0
+  nodes.push(
+    {
+      id: IDS.cat_list, type: "catalog", position: flowPos(5, 1),
+      data: {
+        label: "WhatsApp Catalog",
+        catalogType: "full",
+        header: "{{brand_name}}",
+        body: "Browse {{brand_name}} products directly in WhatsApp. Add to cart and continue when ready.",
+        footer: "Secure checkout",
+        heatmapCount: 0
+      }
+    },
+    {
+      id: IDS.cat_category_menu,
+      type: "interactive",
+      position: flowPos(6, 0),
+      data: {
+        label: "Category menu",
+        interactiveType: "list",
+        text: "Want curated products? Pick a collection:",
+        buttonText: "View collections",
+        sections: [{
+          title: "{{brand_name}} collections",
+          rows: [
+            { id: "featured", title: "Featured", description: "Bestsellers and trending picks" },
+            ...(
+              sortedCategories.length
+                ? sortedCategories.map(([name, items], idx) => ({
+                    id: `cat_${idx}`,
+                    title: truncate(name, 24),
+                    description: `${items.length} item${items.length > 1 ? "s" : ""}`
+                  }))
+                : [{ id: "cat_0", title: "General", description: "Core products" }]
+            )
+          ]
+        }],
+        heatmapCount: 0
+      }
+    },
+    {
+      id: IDS.cat_featured,
+      type: "catalog",
+      position: flowPos(7, 0),
+      data: {
+        label: "Featured collection",
+        catalogType: featuredIds.length ? "multi" : "full",
+        header: "Featured picks",
+        body: "Checkout our best-performing products from {{brand_name}}.",
+        footer: "Tap to view items",
+        productIds: featuredIds.join(","),
+        heatmapCount: 0
+      }
+    },
+    {
+      id: IDS.cat_addr_prompt,
+      type: "interactive",
+      position: flowPos(6, 1),
+      data: {
+        label: "Catalog next actions",
+        interactiveType: "button",
+        text: "Opened the catalog. What should I help you with next?",
+        buttonsList: [
+          { id: "checkout", title: "🛒 Checkout link" },
+          { id: "support", title: "🎧 Product help" },
+          { id: "menu", title: "⬅️ Main Menu" }
+        ],
+        heatmapCount: 0
+      }
+    },
+    {
+      id: IDS.cat_addr_done,
+      type: "message",
+      position: flowPos(7, 0),
+      data: {
+        label: "Checkout link",
+        text: storeUrl
+          ? `Complete checkout here: ${storeUrl}/cart`
+          : "Your checkout link is ready in store settings. Meanwhile, I can help with product details or connect you to support.",
+        heatmapCount: 0
+      }
     }
+  );
+  sortedCategories.forEach(([name, items], idx) => {
+    const targetNodeId = categoryNodeIds[idx];
+    const productIds = items
+      .slice(0, 8)
+      .map((p) => String(p.id || "").trim())
+      .filter(Boolean);
+    nodes.push({
+      id: targetNodeId,
+      type: "catalog",
+      position: flowPos(7, 1 + idx),
+      data: {
+        label: `Collection: ${truncate(name, 22)}`,
+        catalogType: productIds.length ? "multi" : "full",
+        header: truncate(name, 40),
+        body: `Browse ${name} from {{brand_name}}.`,
+        footer: "Tap to view items",
+        productIds: productIds.join(","),
+        heatmapCount: 0
+      }
+    });
   });
 
   const supEntryProduct = F.enableSupportEscalation
     ? (F.enableBusinessHoursGate && !F.enable247 ? IDS.sup_sch : IDS.sup_capture)
     : IDS.ai_fallback;
 
-  if (products.length) {
-    nodes.push(
-      {
-        id: IDS.cat_addr_prompt,
-        type: "message",
-        position: flowPos(6, 0),
-        data: {
-          label: "Delivery address",
-          text: "📍 Share your *full delivery address* (house, street, city, PIN) so {{brand_name}} can arrange delivery or a callback.",
-          heatmapCount: 0
-        }
-      },
-      {
-        id: IDS.cat_addr_cap,
-        type: "capture_input",
-        position: flowPos(7, 0),
-        data: {
-          label: "Capture address",
-          variable: "shipping_address",
-          question: "Type your complete shipping address in one message.",
-          text: "Type your complete shipping address in one message.",
-          heatmapCount: 0
-        }
-      },
-      {
-        id: IDS.cat_addr_done,
-        type: "message",
-        position: flowPos(8, 0),
-        data: {
-          label: "Address received",
-          text: "✅ Thanks — we saved your address. A teammate may confirm details on WhatsApp shortly.",
-          heatmapCount: 0
-        }
+  if (products.length === 0) {
+    nodes.push({
+      id: IDS.cat_addr_cap,
+      type: "message",
+      position: flowPos(7, 2),
+      data: {
+        label: "Catalog unavailable",
+        text: "Catalog is not synced yet. Connect your store to load products, or ask support to share direct links.",
+        heatmapCount: 0
       }
-    );
-    edges.push(
-      { id: `e_${IDS.cat_addr_prompt}_cap`, source: IDS.cat_addr_prompt, target: IDS.cat_addr_cap },
-      { id: `e_${IDS.cat_addr_cap}_done`, source: IDS.cat_addr_cap, target: IDS.cat_addr_done }
-    );
-    if (F.enableAdminAlerts) {
-      nodes.push({
-        id: IDS.cat_addr_alert,
-        type: "admin_alert",
-        position: flowPos(9, 0),
-        data: {
-          label: "Buy intent alert",
-          priority: "medium",
-          topic: "Buy intent — {{brand_name}}",
-          phone: ctx.adminPhone || client.adminPhone || "",
-          heatmapCount: 0
-        }
-      });
-      edges.push(
-        { id: `e_${IDS.cat_addr_done}_al`, source: IDS.cat_addr_done, target: IDS.cat_addr_alert },
-        { id: `e_${IDS.cat_addr_alert}_mm`, source: IDS.cat_addr_alert, target: IDS.main_menu }
-      );
-    } else {
-      edges.push({ id: `e_${IDS.cat_addr_done}_mm`, source: IDS.cat_addr_done, target: IDS.main_menu });
-    }
+    });
   }
 
-  products.forEach((p, i) => {
-    const prodId = `prod_${i}_${IDS.seed}`;
-    const canonicalTplName = `prod_${p.handle}`.replace(/[^a-z0-9_]/gi, "_").toLowerCase().slice(0, 50);
-    const legacyTplName    = `${client.clientId}_${p.handle}`.replace(/[^a-z0-9_]/gi, "_").toLowerCase().slice(0, 50);
-    const hasTemplate = (client.syncedMetaTemplates || [])
-      .some(t => t.productHandle === p.handle || t.name === canonicalTplName || t.name === legacyTplName);
-
-    if (!hasTemplate && wizardData.productMode === "template") {
-      wizardData.customTemplates = wizardData.customTemplates || [];
-      if (!wizardData.customTemplates.find(t => t.name === canonicalTplName)) {
-        wizardData.customTemplates.push({
-          name: canonicalTplName, category: "MARKETING", language: "en",
-          components: [
-            { type: "HEADER", format: "IMAGE", _imageUrl: p.imageUrl || "" },
-            { type: "BODY",   text: `Product: *{{1}}*\n\n💰 Price: ${currency}{{2}}\n\n{{3}}` },
-            { type: "BUTTONS", buttons: [
-              { type: "URL", text: "Order Now", url: `${storeUrl}/products/${p.handle}` },
-              { type: "QUICK_REPLY", text: "Talk to Agent" }
-            ]}
-          ]
-        });
-      }
-    }
-
-    nodes.push({
-      id: prodId,
-      type: hasTemplate ? "template" : "interactive",
-      position: flowPos(6, 2 + i),
-      data: hasTemplate ? {
-        label: truncate(`Product: ${p.title}`, 30),
-        templateName: canonicalTplName,
-        imageUrl: p.imageUrl || "",
-        shopifyProductId: p.id,
-        shopifyProductUrl: `${storeUrl}/products/${p.handle}`,
-        buttonsList: [
-          { id: "buy",   title: "Buy" },
-          { id: "agent", title: "Talk to Agent" },
-          { id: "menu",  title: "Main Menu" }
-        ],
-        variables: ["customer_name", "product_price", "warranty"],
-        heatmapCount: 0
-      } : {
-        label: truncate(`Product: ${p.title}`, 30),
-        interactiveType: "button", imageUrl: p.imageUrl || "",
-        text: `*${p.title}*\n\n💰 Price: {{currency}}${parseInt(p.price || 0, 10).toLocaleString("en-IN")}\n✅ {{warranty_duration}} Warranty | 🚚 Free Shipping`,
-        buttonsList: [
-          { id: "buy",   title: "🛒 Buy Now" },
-          { id: "agent", title: "📞 Talk to Agent" },
-          { id: "menu",  title: "⬅️ Main Menu" }
-        ],
-        shopifyProductId: p.id,
-        shopifyProductUrl: `${storeUrl}/products/${p.handle}`,
-        heatmapCount: 0
-      }
-    });
-
-    const buyTarget = products.length ? IDS.cat_addr_prompt : IDS.ai_fallback;
-    edges.push({ id: `e_${IDS.cat_list}_p${i}`, source: IDS.cat_list, target: prodId, sourceHandle: `p_${i}` });
-    edges.push({ id: `e_${prodId}_buy`, source: prodId, target: buyTarget, sourceHandle: "buy" });
-    edges.push({ id: `e_${prodId}_agent`, source: prodId, target: supEntryProduct, sourceHandle: "agent" });
-    edges.push({ id: `e_${prodId}_menu`, source: prodId, target: IDS.main_menu, sourceHandle: "menu" });
+  edges.push(
+    { id: `e_${IDS.cat_list}_cats`, source: IDS.cat_list, target: IDS.cat_category_menu },
+    { id: `e_${IDS.cat_category_menu}_featured`, source: IDS.cat_category_menu, target: IDS.cat_featured, sourceHandle: "featured" },
+    { id: `e_${IDS.cat_featured}_next`, source: IDS.cat_featured, target: IDS.cat_addr_prompt },
+    { id: `e_${IDS.cat_addr_prompt}_checkout`, source: IDS.cat_addr_prompt, target: IDS.cat_addr_done, sourceHandle: "checkout" },
+    { id: `e_${IDS.cat_addr_prompt}_support`, source: IDS.cat_addr_prompt, target: supEntryProduct, sourceHandle: "support" },
+    { id: `e_${IDS.cat_addr_prompt}_menu`, source: IDS.cat_addr_prompt, target: IDS.main_menu, sourceHandle: "menu" }
+  );
+  sortedCategories.forEach(([_, __], idx) => {
+    const targetNodeId = categoryNodeIds[idx];
+    edges.push(
+      { id: `e_${IDS.cat_category_menu}_cat_${idx}`, source: IDS.cat_category_menu, target: targetNodeId, sourceHandle: `cat_${idx}` },
+      { id: `e_${targetNodeId}_next`, source: targetNodeId, target: IDS.cat_addr_prompt }
+    );
   });
 
-  if (!products.length) {
-    edges.push({
-      id: `e_${IDS.cat_list}_nop`,
-      source: IDS.cat_list,
-      target: IDS.main_menu,
-      sourceHandle: "no_products"
-    });
+  if (sortedCategories.length === 0) {
+    // Default route if no category metadata is available.
+    edges.push({ id: `e_${IDS.cat_category_menu}_cat_0`, source: IDS.cat_category_menu, target: IDS.cat_featured, sourceHandle: "cat_0" });
+  }
+
+  if (products.length === 0) {
+    edges.push({ id: `e_${IDS.cat_addr_done}_na`, source: IDS.cat_addr_done, target: IDS.cat_addr_cap });
+    edges.push({ id: `e_${IDS.cat_addr_cap}_mm`, source: IDS.cat_addr_cap, target: IDS.main_menu });
+  } else {
+    edges.push({ id: `e_${IDS.cat_addr_done}_mm`, source: IDS.cat_addr_done, target: IDS.main_menu });
+    if (F.enableCatalogCheckoutRecovery) {
+      const followupMinutes = Math.max(1, Number(F.catalogCheckoutDelayMin || 20));
+      nodes.push(
+        {
+          id: IDS.cat_ck_delay,
+          type: "delay",
+          position: flowPos(8, 0),
+          data: {
+            label: `Wait ${followupMinutes} min`,
+            duration: followupMinutes,
+            unit: "minutes",
+            waitValue: followupMinutes,
+            waitUnit: "minutes",
+            heatmapCount: 0
+          }
+        },
+        {
+          id: IDS.cat_ck_ping,
+          type: "interactive",
+          position: flowPos(9, 0),
+          data: {
+            label: "Checkout follow-up",
+            interactiveType: "button",
+            text: "Need help finishing checkout?",
+            buttonsList: [
+              { id: "resend", title: "🔁 Resend checkout link" },
+              { id: "support", title: "🎧 Talk to support" },
+              { id: "done", title: "✅ Already done" }
+            ],
+            heatmapCount: 0
+          }
+        },
+        {
+          id: IDS.cat_ck_follow,
+          type: "message",
+          position: flowPos(10, 0),
+          data: {
+            label: "Resend checkout link",
+            text: storeUrl
+              ? `Here is your checkout link again: ${storeUrl}/cart`
+              : "Checkout link is not configured yet. Share your issue and support will help you complete the order.",
+            heatmapCount: 0
+          }
+        }
+      );
+      edges.push(
+        { id: `e_${IDS.cat_addr_done}_ckd`, source: IDS.cat_addr_done, target: IDS.cat_ck_delay },
+        { id: `e_${IDS.cat_ck_delay}_ckp`, source: IDS.cat_ck_delay, target: IDS.cat_ck_ping },
+        { id: `e_${IDS.cat_ck_ping}_resend`, source: IDS.cat_ck_ping, target: IDS.cat_ck_follow, sourceHandle: "resend" },
+        { id: `e_${IDS.cat_ck_ping}_support`, source: IDS.cat_ck_ping, target: supEntryProduct, sourceHandle: "support" },
+        { id: `e_${IDS.cat_ck_ping}_done`, source: IDS.cat_ck_ping, target: IDS.main_menu, sourceHandle: "done" },
+        { id: `e_${IDS.cat_ck_follow}_mm`, source: IDS.cat_ck_follow, target: IDS.main_menu }
+      );
+      const directMainMenuIdx = edges.findIndex((e) => e.id === `e_${IDS.cat_addr_done}_mm`);
+      if (directMainMenuIdx >= 0) edges.splice(directMainMenuIdx, 1);
+    }
   }
 
   return {
@@ -1058,6 +1149,129 @@ function buildLoyaltyBranch(ctx, IDS, content) {
   };
 }
 
+function buildInstallSupportBranch(ctx, IDS) {
+  const { F } = ctx;
+  const nodes = [], edges = [];
+  const supportPrompt =
+    String(F.installSupportPrompt || "").trim() ||
+    "Need install help? Share your exact product name and I will guide you.";
+
+  nodes.push(
+    {
+      id: IDS.ins_hub,
+      type: "interactive",
+      position: flowPos(5, 16),
+      data: {
+        label: "Install Support Hub",
+        interactiveType: "button",
+        text: supportPrompt,
+        buttonsList: [
+          { id: "last_order", title: "🧾 Use my latest order" },
+          { id: "type_name", title: "⌨️ Type product name" },
+          { id: "menu", title: "⬅️ Main Menu" }
+        ],
+        heatmapCount: 0
+      }
+    },
+    {
+      id: IDS.ins_lookup,
+      type: "shopify_call",
+      position: flowPos(6, 15),
+      data: {
+        label: "Latest purchase lookup",
+        action: "CHECK_ORDER_STATUS",
+        silent: true,
+        variable: "latest_order_ctx",
+        heatmapCount: 0
+      }
+    },
+    {
+      id: IDS.ins_confirm,
+      type: "interactive",
+      position: flowPos(7, 15),
+      data: {
+        label: "Install product confirm",
+        interactiveType: "button",
+        text: "We found your recent product: {{first_product_title|latest purchased product}}. Need setup help for this item?",
+        buttonsList: [
+          { id: "yes", title: "✅ Yes, this product" },
+          { id: "no", title: "❌ Different product" },
+          { id: "menu", title: "⬅️ Main Menu" }
+        ],
+        heatmapCount: 0
+      }
+    },
+    {
+      id: IDS.ins_capture,
+      type: "capture_input",
+      position: flowPos(8, 16),
+      data: {
+        label: "Capture product for install",
+        variable: "install_product_query",
+        question: "Type the full product name exactly as shown on your order.",
+        text: "Type the full product name exactly as shown on your order.",
+        heatmapCount: 0
+      }
+    },
+    {
+      id: IDS.ins_search,
+      type: "shopify_call",
+      position: flowPos(9, 16),
+      data: {
+        label: "Search product support context",
+        action: "search_products",
+        query: "{{install_product_query}}",
+        variable: "install_product_result",
+        heatmapCount: 0
+      }
+    },
+    {
+      id: IDS.ins_result,
+      type: "message",
+      position: flowPos(10, 15),
+      data: {
+        label: "Install support response",
+        text: "Got it. For *{{install_product_query|this product}}*, follow your package QR/video guide first, then app pairing (2.4GHz Wi-Fi if required), and power-cycle once before retry. If you share a short issue video, we can resolve it faster.",
+        heatmapCount: 0
+      }
+    },
+    {
+      id: IDS.ins_no_match,
+      type: "message",
+      position: flowPos(10, 17),
+      data: {
+        label: "Install no match",
+        text: "I could not auto-match that product yet. I am routing this to support for a precise installation walkthrough.",
+        action: "ESCALATE_HUMAN",
+        heatmapCount: 0
+      }
+    }
+  );
+
+  edges.push(
+    { id: `e_${IDS.ins_hub}_lo`, source: IDS.ins_hub, target: IDS.ins_lookup, sourceHandle: "last_order" },
+    { id: `e_${IDS.ins_hub}_tn`, source: IDS.ins_hub, target: IDS.ins_capture, sourceHandle: "type_name" },
+    { id: `e_${IDS.ins_hub}_mm`, source: IDS.ins_hub, target: IDS.main_menu, sourceHandle: "menu" },
+    { id: `e_${IDS.ins_lookup}_ok`, source: IDS.ins_lookup, target: IDS.ins_confirm },
+    { id: `e_${IDS.ins_lookup}_nf`, source: IDS.ins_lookup, target: IDS.ins_capture, sourceHandle: "no_order" },
+    { id: `e_${IDS.ins_confirm}_y`, source: IDS.ins_confirm, target: IDS.ins_capture, sourceHandle: "yes" },
+    { id: `e_${IDS.ins_confirm}_n`, source: IDS.ins_confirm, target: IDS.ins_capture, sourceHandle: "no" },
+    { id: `e_${IDS.ins_confirm}_mm`, source: IDS.ins_confirm, target: IDS.main_menu, sourceHandle: "menu" },
+    { id: `e_${IDS.ins_capture}_sr`, source: IDS.ins_capture, target: IDS.ins_search },
+    { id: `e_${IDS.ins_search}_ok`, source: IDS.ins_search, target: IDS.ins_result, sourceHandle: "success" },
+    { id: `e_${IDS.ins_search}_fail`, source: IDS.ins_search, target: IDS.ins_no_match, sourceHandle: "not_found" },
+    { id: `e_${IDS.ins_result}_mm`, source: IDS.ins_result, target: IDS.main_menu },
+    { id: `e_${IDS.ins_no_match}_mm`, source: IDS.ins_no_match, target: IDS.main_menu }
+  );
+
+  return {
+    nodes, edges,
+    menuRow: { id: "install_help", title: "🛠️ Install Help" },
+    entryNodeId: IDS.ins_hub,
+    sourceHandle: "install_help"
+  };
+}
+
 function buildSupportBranch(ctx, IDS, content) {
   const { F, openTime, closeTime, workingDays, adminPhone, client } = ctx;
   const nodes = [], edges = [];
@@ -1352,6 +1566,7 @@ async function generateEcommerceFlow(client, wizardData = {}) {
   if (F.enableOrderTracking)     branches.push(buildOrderBranch(ctx, IDS, content));
   if (F.enableReturnsRefunds)    branches.push(buildReturnsBranch(ctx, IDS, content));
   if (F.enableWarranty)          branches.push(buildWarrantyBranch(ctx, IDS, content));
+  if (F.enableInstallSupport)    branches.push(buildInstallSupportBranch(ctx, IDS));
   if (F.enableLoyalty)           branches.push(buildLoyaltyBranch(ctx, IDS, content));
   if (F.enableSupportEscalation) branches.push(buildSupportBranch(ctx, IDS, content));
   if (F.enableFAQ)               branches.push(buildFAQBranch(ctx, IDS, content));
@@ -1505,6 +1720,7 @@ function getPrebuiltTemplates(wizardData = {}) {
     : (checkoutUrl || "");
 
   const allProducts = products.map((p, i) => buildProductContext(p, i));
+  const legacyProductTemplateMode = wizardData.productMode === "template_legacy";
   const copy = getCopyPack({
     F: wizardData.features || {},
     tone: wizardData.tone || "friendly",
@@ -1560,7 +1776,7 @@ function getPrebuiltTemplates(wizardData = {}) {
       body: copy.template_welcome_with_logo_body,
       variables: ["business_name"]
     },
-    ...productTemplates,
+    ...(legacyProductTemplateMode ? productTemplates : []),
     {
       id: "order_confirmed", name: "order_confirmed",
       category: "UTILITY", language: "en", status: "not_submitted", required: true,

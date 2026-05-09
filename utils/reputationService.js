@@ -32,14 +32,21 @@ async function scheduleReviewRequest(client, orderData) {
         const scheduledFor = new Date();
         scheduledFor.setDate(scheduledFor.getDate() + 3);
 
-        const reviewUrl = client.brand?.googleReviewUrl || '';
+        const reviewUrl = client.brand?.googleReviewUrl || client.googleReviewUrl || '';
+        const firstItem = Array.isArray(orderData?.line_items) && orderData.line_items.length
+            ? orderData.line_items[0]
+            : null;
+        const productId = firstItem?.product_id ? String(firstItem.product_id) : '';
+        const productImage = firstItem?.image_url || firstItem?.image || '';
 
         const newRequest = await ReviewRequest.create({
             clientId: client.clientId,
             phone: cleanPhone,
             orderId: String(orderData.id),
             orderNumber: orderData.name || `#${orderData.id}`,
-            productName: orderData.line_items?.[0]?.title || 'Your Purchase',
+            productId,
+            productName: firstItem?.title || 'Your Purchase',
+            productImage: productImage || '',
             reviewUrl: reviewUrl,
             status: 'scheduled',
             scheduledFor
@@ -50,6 +57,65 @@ async function scheduleReviewRequest(client, orderData) {
     } catch (err) {
         log.error('Failed to schedule review request:', err.message);
     }
+}
+
+/**
+ * Dispatch one review request document (used by cron + dry-run scripts).
+ */
+async function dispatchReviewRequest(req) {
+    const Client = require('../models/Client');
+    const client = await Client.findOne({ clientId: req.clientId });
+    if (!client) return;
+
+    const lead = await AdLead.findOne({ phoneNumber: req.phone, clientId: req.clientId }).lean();
+    const customerName = lead?.firstName || "Customer";
+    const customerEmail = lead?.email;
+
+    const shopHost = (client.shopDomain || client.commerce?.shopify?.domain || "").replace(/^https?:\/\//, "").split("/")[0];
+    const rawTok = client.shopifyAccessToken || client.commerce?.shopify?.accessToken;
+    const { decrypt } = require("./encryption");
+    const shopifyTok = rawTok ? decrypt(rawTok) : "";
+
+    let productImage = req.productImage || null;
+    try {
+        if (!productImage && req.productId && shopHost && shopifyTok) {
+            const res = await require('axios').get(
+                `https://${shopHost}/admin/api/${shopifyAdminApiVersion}/products/${req.productId}.json`,
+                { headers: { "X-Shopify-Access-Token": shopifyTok } }
+            );
+            productImage = res.data.product?.images?.[0]?.src || client.logoUrl || null;
+        }
+    } catch { productImage = client.logoUrl || null; }
+
+    try {
+        await WhatsApp.sendSmartTemplate(
+            client,
+            req.phone,
+            'review_request',
+            [customerName, req.productName],
+            productImage
+        );
+    } catch (waErr) {
+        log.warn(`Meta template review_request failed for ${req.phone}, falling back to text`);
+        const message = `Hi ${customerName}! 👋 \n\nHow was your experience with *${req.productName}*? \n\nReply with a number:\n5 - Perfect! ⭐\n4 - Great\n3 - Okay\n2 - Poor\n1 - Terrible 😡`;
+        await WhatsApp.sendText(client, req.phone, message);
+    }
+
+    if (customerEmail) {
+        await EmailService.sendReviewRequestEmail(client, {
+            customerEmail,
+            customerName,
+            productName: req.productName,
+            productImage,
+            reviewUrl: req.reviewUrl
+        });
+    }
+
+    req.status = 'sent';
+    req.sentAt = new Date();
+    await req.save();
+
+    log.info(`Review request sent to ${req.phone} (${customerEmail || 'no email'}) for order ${req.orderId}`);
 }
 
 /**
@@ -67,59 +133,9 @@ async function processPendingReviewRequests() {
 
         log.info(`Processing ${pending.length} pending review requests`);
 
-        const Client = require('../models/Client');
         for (const req of pending) {
             try {
-                const client = await Client.findOne({ clientId: req.clientId });
-                if (!client) continue;
-
-                // 1. Fetch Lead for Name and Email
-                const lead = await AdLead.findOne({ phoneNumber: req.phone, clientId: req.clientId }).lean();
-                const customerName = lead?.firstName || "Customer";
-                const customerEmail = lead?.email;
-
-                // 2. Determine Product Image
-                let productImage = null;
-                try {
-                    const res = await require('axios').get(
-                        `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}/products/${req.productId}.json`,
-                        { headers: { "X-Shopify-Access-Token": client.shopifyAccessToken } }
-                    );
-                    productImage = res.data.product?.images?.[0]?.src || client.logoUrl || null;
-                } catch { productImage = client.logoUrl || null; }
-
-                // 3. Dispatch via WhatsApp (Smart Template)
-                // Template: review_request
-                // Parameters: {{1}}=Name, {{2}}=Product
-                try {
-                    await WhatsApp.sendSmartTemplate(
-                        client, 
-                        req.phone, 
-                        'review_request', 
-                        [customerName, req.productName], 
-                        productImage
-                    );
-                } catch (waErr) {
-                    log.warn(`Meta template review_request failed for ${req.phone}, falling back to text`);
-                    const message = `Hi ${customerName}! 👋 \n\nHow was your experience with *${req.productName}*? \n\nReply with a number:\n5 - Perfect! ⭐\n4 - Great\n3 - Okay\n2 - Poor\n1 - Terrible 😡`;
-                    await WhatsApp.sendText(client, req.phone, message);
-                }
-
-                // 4. Dispatch via Email (Multi-channel coverage)
-                if (customerEmail) {
-                    await EmailService.sendReviewRequestEmail(client, {
-                        customerEmail,
-                        customerName,
-                        productName: req.productName,
-                        reviewUrl: req.reviewUrl
-                    });
-                }
-                
-                req.status = 'sent';
-                req.sentAt = new Date();
-                await req.save();
-
-                log.info(`Review request sent to ${req.phone} (${customerEmail || 'no email'}) for order ${req.orderId}`);
+                await dispatchReviewRequest(req);
             } catch (itemErr) {
                 log.error(`Failed to send review request ${req._id}:`, itemErr.message);
             }
@@ -131,5 +147,6 @@ async function processPendingReviewRequests() {
 
 module.exports = {
     scheduleReviewRequest,
-    processPendingReviewRequests
+    processPendingReviewRequests,
+    dispatchReviewRequest
 };

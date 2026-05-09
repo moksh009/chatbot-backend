@@ -324,43 +324,8 @@ const scheduleAbandonedCartCron = () => {
         }
     });
 
-    // 2. Post-Purchase Review Collection - Runs daily at 10:00 IST
-    cron.schedule('30 4 * * *', async () => {
-        console.log('⏰ Running Post-Purchase Review Collector...');
-        try {
-            const ReviewRequest = require('../models/ReviewRequest');
-            const dueReviews = await ReviewRequest.find({
-                status: "scheduled",
-                scheduledFor: { $lte: new Date() }
-            });
-
-            for (const review of dueReviews) {
-                const client = await Client.findOne({ clientId: review.clientId });
-                if (!client) continue;
-
-                const payload = {
-                    type: "button",
-                    body: { text: `Hi! How's your *${review.productName}*? 😊\n\nYour feedback genuinely helps us improve!` },
-                    action: {
-                        buttons: [
-                            { type: "reply", reply: { id: `rv_good_${review._id}`, title: "😍 Loved it!" } },
-                            { type: "reply", reply: { id: `rv_ok_${review._id}`,   title: "😐 It's okay" } },
-                            { type: "reply", reply: { id: `rv_bad_${review._id}`,  title: "😕 Not happy" } }
-                        ]
-                    }
-                };
-
-                try {
-                    await WhatsApp.sendInteractive(client, review.phone, payload, payload.body.text);
-                    await ReviewRequest.findByIdAndUpdate(review._id, { status: "sent", sentAt: new Date() });
-                } catch (e) {
-                    log.error('WhatsApp Review Error:', e.message);
-                }
-            }
-        } catch (e) {
-            log.error('Review Cron Error:', e);
-        }
-    });
+    // NOTE: Review dispatch is unified in cron/reviewCollection.js via reputationService.
+    // Keeping a single scheduler avoids duplicate sends and status drift.
 };
 
 module.exports = scheduleAbandonedCartCron;

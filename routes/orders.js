@@ -158,9 +158,9 @@ router.post('/:clientId/orders/:orderId/send-review-request', protect, async (re
 
     // Schedule immediately (scheduledFor = now)
     await ReviewRequest.findOneAndUpdate(
-      { clientId: client._id, phone, orderNumber: order.orderNumber || order.orderId },
+      { clientId, phone, orderNumber: order.orderNumber || order.orderId },
       {
-        clientId: client._id,
+        clientId,
         phone,
         orderNumber: order.orderNumber || order.orderId,
         productName: order.items?.[0]?.name || 'your order',

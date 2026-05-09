@@ -109,6 +109,8 @@ const WizardFeaturesSchema = new mongoose.Schema({
   enableCodToPrepaid:      { type: Boolean, default: false }, // Auto-nudge after COD orders to convert to prepaid
   codDiscountAmount:       { type: Number,  default: 50    }, // ₹ off to incentivize switch
   enableAbandonedCart:     { type: Boolean, default: true  }, // 3-step cart recovery drip
+  enableCatalogCheckoutRecovery: { type: Boolean, default: true }, // Follow up after catalog open with checkout reminder
+  catalogCheckoutDelayMin: { type: Number,  default: 20    }, // Minutes before first checkout reminder
   cartNudgeMinutes1:       { type: Number,  default: 15    },
   cartNudgeHours2:         { type: Number,  default: 2     },
   cartNudgeHours3:         { type: Number,  default: 24    },
@@ -130,6 +132,8 @@ const WizardFeaturesSchema = new mongoose.Schema({
   warrantySupportPhone:    { type: String,  default: "" },
   warrantySupportEmail:    { type: String,  default: "" },
   warrantyClaimUrl:        { type: String,  default: "" },
+  enableInstallSupport:    { type: Boolean, default: false },
+  installSupportPrompt:    { type: String,  default: "Need install help? Share your exact product name and I will guide you." },
   enableFAQ:               { type: Boolean, default: true  },
   enableSupportEscalation: { type: Boolean, default: true  },
   humanEscalationTimeoutMin: { type: Number, default: 30   }, // Auto-return to bot after N minutes
@@ -751,6 +755,8 @@ const ClientSchema = new mongoose.Schema({
   commerceAutomationVersion: { type: Number, default: 0 },
   commerceAutomationMigratedAt: { type: Date, default: null },
   commerceAutomationLegacySnapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  // Warranty legacy migration tracking (admin/reporting)
+  warrantyMigrationStatus: { type: mongoose.Schema.Types.Mixed, default: {} },
 
   // Phase 29: Dashboard Personalization
   dashboardConfig: {

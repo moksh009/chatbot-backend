@@ -96,6 +96,20 @@ router.post('/ai-build', protect, async (req, res) => {
     // Bridge: deterministic ecommerce generator when preset is selected.
     if (String(strategy?.preset || "").toLowerCase() === 'ecommerce') {
       const { generateEcommerceFlow } = require('../utils/flowGenerator');
+      const ecommerceFeatures = {
+        enableCatalog: true,
+        enableCatalogCheckoutRecovery: true,
+        catalogCheckoutDelayMin: 20,
+        enableOrderTracking: true,
+        enableReturnsRefunds: true,
+        enableCancelOrder: true,
+        enableSupportEscalation: true,
+        enableAIFallback: true,
+        enableFAQ: true,
+        enableInstallSupport: strategy?.includeInstallHelp !== false,
+        enableWarranty: strategy?.includeWarrantyLookup !== false,
+        enableLoyalty: !!strategy?.includeLoyaltyPoints,
+      };
       const wizardData = {
         businessName: client.businessName || client.name || undefined,
         shopDomain: client.platformVars?.shopDomain || client.platformVars?.shopifyDomain || undefined,
@@ -106,6 +120,8 @@ router.post('/ai-build', protect, async (req, res) => {
         botLanguage: strategy?.language,
         flowType: strategy?.flowType,
         riskPosture: strategy?.riskPosture,
+        productMode: 'catalog',
+        features: ecommerceFeatures,
         useAiCopy: false,
       };
       const det = await generateEcommerceFlow(client, wizardData);
@@ -180,6 +196,50 @@ router.post('/simulate', protect, async (req, res) => {
         const btnIndex = buttons.findIndex(b => b.title.toLowerCase() === textLower);
         const sourceHandle = btnIndex !== -1 ? (buttons[btnIndex].id || `btn_${btnIndex}`) : textLower.replace(/\s+/g, '_');
         edgeUsed = outgoingEdges.find(e => e.sourceHandle === sourceHandle);
+      } else if (currentNode?.type === 'review') {
+        const textLower = String(userInput || '').toLowerCase();
+        let sourceHandle = '';
+        if (
+          textLower.includes('excellent') ||
+          textLower.includes('great') ||
+          textLower.includes('good') ||
+          textLower.includes('love') ||
+          textLower.includes('5') ||
+          textLower.includes('4') ||
+          textLower.includes('positive')
+        ) {
+          sourceHandle = 'positive';
+        } else if (
+          textLower.includes('bad') ||
+          textLower.includes('poor') ||
+          textLower.includes('issue') ||
+          textLower.includes('negative') ||
+          textLower.includes('1') ||
+          textLower.includes('2')
+        ) {
+          sourceHandle = 'negative';
+        } else if (textLower.includes('average') || textLower.includes('3')) {
+          sourceHandle = 'negative';
+        }
+        edgeUsed = outgoingEdges.find(e => String(e.sourceHandle || '') === sourceHandle) || null;
+      } else if (currentNode?.type === 'loyalty_action') {
+        const actionType = String(currentNode?.data?.actionType || 'GIVE_LOYALTY').toUpperCase();
+        if (actionType === 'REDEEM_POINTS') {
+          const required = Number(currentNode?.data?.pointsRequired || 0);
+          const current = Number(updatedVariables?.loyalty_points || 0);
+          const isSuccess = required > 0 ? current >= required : true;
+          if (isSuccess) updatedVariables.loyalty_points = Math.max(0, current - required);
+          edgeUsed = outgoingEdges.find(e => String(e.sourceHandle || '') === (isSuccess ? 'success' : 'fail')) || null;
+        } else {
+          const points = Number(currentNode?.data?.points || 0);
+          const current = Number(updatedVariables?.loyalty_points || 0);
+          updatedVariables.loyalty_points = current + Math.max(0, points);
+          edgeUsed = outgoingEdges[0];
+        }
+      } else if (currentNode?.type === 'warranty_check') {
+        const branch = String(updatedVariables?._warranty_branch || 'active').toLowerCase();
+        const normalized = ['active', 'expired', 'none'].includes(branch) ? branch : 'none';
+        edgeUsed = outgoingEdges.find(e => String(e.sourceHandle || '') === normalized) || null;
       } else if (currentNode?.type === 'capture_input' || currentNode?.type === 'CaptureNode') {
         const varName = currentNode.data?.variable || 'captured_input';
         updatedVariables[varName] = userInput;

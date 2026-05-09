@@ -2,7 +2,11 @@
 
 const axios = require('axios');
 const log = require('./logger')('WhatsApp');
+const { getBreaker } = require('./circuitBreaker');
 const { translateWhatsAppError } = require('./whatsappErrors');
+
+/** Shared breaker for WhatsApp Cloud API (Graph) — avoids hammering Meta during outages */
+const waGraphBreaker = getBreaker('whatsapp_graph', { failureThreshold: 5, resetTimeoutMs: 45000 });
 const { decrypt } = require('./encryption');
 const AdLead = require('../models/AdLead');
 const SuppressionList = require('../models/SuppressionList');
@@ -186,18 +190,20 @@ const WhatsApp = {
     
     console.log("[WA] Sending interactive:", JSON.stringify(payload, null, 2));
     
-    const response = await axios.post(
-      `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
-      payload,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json"
-        },
-        timeout: 10000
-      }
+    const response = await waGraphBreaker.exec(() =>
+      axios.post(
+        `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
+        payload,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json"
+          },
+          timeout: 10000
+        }
+      )
     );
-    
+
     return response.data;
   },
 
@@ -213,12 +219,18 @@ const WhatsApp = {
     const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
     try {
-      const res = await axios.post(url, {
-        messaging_product: 'whatsapp',
-        to: validPhone,
-        type: 'text',
-        text: { body: String(body).substring(0, 4096) }
-      }, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await waGraphBreaker.exec(() =>
+        axios.post(
+          url,
+          {
+            messaging_product: 'whatsapp',
+            to: validPhone,
+            type: 'text',
+            text: { body: String(body).substring(0, 4096) }
+          },
+          { headers: { Authorization: `Bearer ${token}` }, timeout: 10000 }
+        )
+      );
       return res.data;
     } catch (err) {
       this.handleError(err, url, "sendText", { client, phone: validPhone });
@@ -461,13 +473,18 @@ const WhatsApp = {
     const { token, phoneNumberId } = this.getCredentials(client);
     const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
+    const catalogId = client.waCatalogId || client.metaCatalogId || process.env.META_CATALOG_ID;
+    if (!catalogId) {
+      throw new Error(`[WhatsApp] Missing catalog ID for ${client.clientId}`);
+    }
+
     // sections format: [{ title: '...', product_items: [{ product_retailer_id: '...' }] }]
     const interactive = {
       type: 'product_list',
       header: { type: 'text', text: headerText.substring(0, 60) },
       body: { text: bodyText.substring(0, 1024) },
       action: {
-        catalog_id: client.metaCatalogId || process.env.META_CATALOG_ID,
+        catalog_id: catalogId,
         sections
       }
     };

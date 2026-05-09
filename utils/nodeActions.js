@@ -567,7 +567,12 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
     case "SEND_REVIEW_REQUEST": {
       try {
         const Order = require('../models/Order');
-        const order = await Order.findOne({ customerPhone: phone, clientId: client.clientId, status: { $in: ['Delivered', 'delivered'] } }).sort({ createdAt: -1 });
+        const ReviewRequest = require('../models/ReviewRequest');
+        const order = await Order.findOne({
+          clientId: client.clientId,
+          status: { $in: ['Delivered', 'delivered'] },
+          $or: [{ customerPhone: phone }, { phone }]
+        }).sort({ createdAt: -1 }).lean();
         
         const productName = order?.lineItems?.[0]?.title || node.data?.productName || 'your recent purchase';
         const reviewUrl   = node.data?.reviewUrl || client.nicheData?.storeUrl || '';
@@ -577,6 +582,31 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
           : `⭐ How was *${productName}*?\n\nYour feedback means the world to us! It takes just 10 seconds and helps other customers decide.\n\n👉 Leave your review: ${reviewUrl}`;
 
         await WhatsApp.sendText(client, phone, msgBody);
+
+        // Keep review analytics and lifecycle in sync with flow-origin sends.
+        await ReviewRequest.findOneAndUpdate(
+          {
+            clientId: client.clientId,
+            phone,
+            status: { $in: ['scheduled', 'sent'] }
+          },
+          {
+            $set: {
+              orderId: String(order?.orderId || order?._id || ''),
+              orderNumber: String(order?.orderNumber || ''),
+              productName,
+              reviewUrl,
+              status: 'sent',
+              sentAt: new Date()
+            },
+            $setOnInsert: {
+              clientId: client.clientId,
+              phone,
+              scheduledFor: new Date()
+            }
+          },
+          { upsert: true, sort: { createdAt: -1 } }
+        );
       } catch (err) {
         console.error('[NodeActions] SEND_REVIEW_REQUEST error:', err.message);
       }
@@ -602,7 +632,7 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
       try {
         const ReviewRequest = require('../models/ReviewRequest');
         // Find the most recent pending review request for this user
-        const review = await ReviewRequest.findOne({ customerPhone: phone, clientId: client.clientId }).sort({ createdAt: -1 });
+        const review = await ReviewRequest.findOne({ phone, clientId: client.clientId }).sort({ createdAt: -1 });
         if (review) {
           review.status = 'responded_positive';
           review.response = 'positive';
@@ -617,7 +647,7 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
     case "LOG_REVIEW_NEGATIVE": {
       try {
         const ReviewRequest = require('../models/ReviewRequest');
-        const review = await ReviewRequest.findOne({ customerPhone: phone, clientId: client.clientId }).sort({ createdAt: -1 });
+        const review = await ReviewRequest.findOne({ phone, clientId: client.clientId }).sort({ createdAt: -1 });
         if (review) {
           review.status = 'responded_negative';
           review.response = 'negative';

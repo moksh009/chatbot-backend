@@ -8,7 +8,11 @@
     "dev": "nodemon index.js",
     "flow-regression": "node scripts/flowRegressionSmoke.js",
     "integration-probe": "node scripts/probeBackendModules.js",
-    "smoke:template-eligibility": "node scripts/templateEligibilitySmokePass.js"
+    "smoke:template-eligibility": "node scripts/templateEligibilitySmokePass.js",
+    "smoke:flow-preflight-guards": "node scripts/flowPreflightNodeGuardsSmoke.js",
+    "dry-run:review-pipeline": "node scripts/reviewPipelineDryRun.js",
+    "qa:ci": "npm run integration-probe && npm run flow-regression && npm run smoke:flow-preflight-guards",
+    "load-smoke:k6": "k6 run scripts/load/k6-smoke.js"
   },
   "dependencies": {
     "@google-cloud/text-to-speech": "^6.4.0",

@@ -100,6 +100,180 @@ router.post('/test-whatsapp-send', protect, async (req, res) => {
   }
 });
 
+// --- WARRANTY MIGRATION REPORT ---
+router.get('/warranty/migration-report', protect, async (req, res) => {
+  try {
+    const WarrantyRecord = require('../models/WarrantyRecord');
+    const AdLead = require('../models/AdLead');
+    const targetClientId =
+      (req.user.role === 'SUPER_ADMIN' && req.query.clientId)
+        ? String(req.query.clientId).trim()
+        : req.user.clientId;
+
+    if (!targetClientId) {
+      return res.status(400).json({ success: false, message: 'Missing clientId' });
+    }
+
+    const [leadAgg, canonicalCount] = await Promise.all([
+      AdLead.aggregate([
+        { $match: { clientId: targetClientId } },
+        {
+          $project: {
+            legacyCount: {
+              $cond: [
+                { $isArray: '$warrantyRecords' },
+                { $size: '$warrantyRecords' },
+                0
+              ]
+            }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            leadsWithLegacy: { $sum: { $cond: [{ $gt: ['$legacyCount', 0] }, 1, 0] } },
+            legacyRecordCount: { $sum: '$legacyCount' }
+          }
+        }
+      ]),
+      WarrantyRecord.countDocuments({ clientId: targetClientId })
+    ]);
+
+    const legacy = leadAgg[0] || { leadsWithLegacy: 0, legacyRecordCount: 0 };
+    const pendingEstimate = Math.max(0, Number(legacy.legacyRecordCount || 0) - Number(canonicalCount || 0));
+
+    return res.json({
+      success: true,
+      clientId: targetClientId,
+      report: {
+        leadsWithLegacy: Number(legacy.leadsWithLegacy || 0),
+        legacyRecordCount: Number(legacy.legacyRecordCount || 0),
+        canonicalWarrantyRecordCount: Number(canonicalCount || 0),
+        pendingMigrationEstimate: pendingEstimate
+      },
+      lastRun: (await Client.findOne({ clientId: targetClientId }).select('warrantyMigrationStatus').lean())?.warrantyMigrationStatus || null
+    });
+  } catch (err) {
+    log.error('Warranty migration report failed', { error: err.message });
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// --- RUN WARRANTY LEGACY MIGRATION (CLIENT SCOPED) ---
+router.post('/warranty/migrate-legacy', protect, async (req, res) => {
+  try {
+    const AdLead = require('../models/AdLead');
+    const Contact = require('../models/Contact');
+    const WarrantyBatch = require('../models/WarrantyBatch');
+    const WarrantyRecord = require('../models/WarrantyRecord');
+
+    const targetClientId =
+      (req.user.role === 'SUPER_ADMIN' && req.body?.clientId)
+        ? String(req.body.clientId).trim()
+        : req.user.clientId;
+    if (!targetClientId) {
+      return res.status(400).json({ success: false, message: 'Missing clientId' });
+    }
+
+    const toDate = (v) => {
+      const d = new Date(v);
+      return Number.isNaN(d.getTime()) ? new Date() : d;
+    };
+    const makeKey = (orderId, productName, purchaseDate) =>
+      `${String(orderId || '')}::${String(productName || '').toLowerCase()}::${toDate(purchaseDate).toISOString().slice(0, 10)}`;
+
+    let batch = await WarrantyBatch.findOne({ clientId: targetClientId, status: 'active' }).sort({ createdAt: -1 });
+    if (!batch) {
+      batch = await WarrantyBatch.create({
+        clientId: targetClientId,
+        batchName: 'Legacy Warranty Migration',
+        shopifyProductIds: [],
+        durationMonths: 12,
+        validFrom: new Date(),
+        status: 'active',
+      });
+    }
+
+    const leads = await AdLead.find({
+      clientId: targetClientId,
+      warrantyRecords: { $exists: true, $ne: [] },
+    }).lean();
+
+    let migrated = 0;
+    let skipped = 0;
+    let errors = 0;
+
+    for (const lead of leads) {
+      try {
+        let contact = await Contact.findOne({ clientId: targetClientId, phoneNumber: lead.phoneNumber });
+        if (!contact) {
+          contact = await Contact.create({
+            clientId: targetClientId,
+            phoneNumber: lead.phoneNumber,
+            name: lead.name || 'Customer',
+            email: lead.email || '',
+          });
+        }
+
+        const existing = await WarrantyRecord.find({ clientId: targetClientId, customerId: contact._id }).lean();
+        const existingKeys = new Set(
+          existing.map((r) => makeKey(r.shopifyOrderId, r.productName, r.purchaseDate))
+        );
+
+        for (const legacy of lead.warrantyRecords || []) {
+          const key = makeKey(legacy.orderId, legacy.productName, legacy.purchaseDate || legacy.registeredAt);
+          if (existingKeys.has(key)) {
+            skipped += 1;
+            continue;
+          }
+          const purchaseDate = toDate(legacy.purchaseDate || legacy.registeredAt || Date.now());
+          const expiryDate = toDate(legacy.expiryDate || purchaseDate);
+          const status = ['active', 'expired', 'terminated', 'void'].includes(String(legacy.status || '').toLowerCase())
+            ? String(legacy.status).toLowerCase()
+            : 'active';
+
+          await WarrantyRecord.create({
+            clientId: targetClientId,
+            customerId: contact._id,
+            shopifyOrderId: String(legacy.orderId || `legacy-${lead._id}-${Date.now()}`),
+            productId: String(legacy.serialNumber || legacy.productName || 'legacy-product'),
+            productName: String(legacy.productName || 'Registered Product'),
+            purchaseDate,
+            expiryDate,
+            batchId: batch._id,
+            status,
+          });
+          existingKeys.add(key);
+          migrated += 1;
+        }
+      } catch (err) {
+        errors += 1;
+      }
+    }
+
+    const runSummary = {
+      ranAt: new Date(),
+      leadsScanned: leads.length,
+      migrated,
+      skipped,
+      errors
+    };
+    await Client.updateOne(
+      { clientId: targetClientId },
+      { $set: { warrantyMigrationStatus: runSummary } }
+    );
+
+    return res.json({
+      success: true,
+      clientId: targetClientId,
+      result: runSummary
+    });
+  } catch (err) {
+    log.error('Warranty legacy migration failed', { error: err.message });
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 
 // --- GET ALL CLIENTS ---
 router.get('/clients', protect, isSuperAdmin, sanitizeMiddleware, async (req, res) => {
@@ -958,17 +1132,39 @@ router.patch('/my-settings', protect, async (req, res) => {
     }
     if (businessLogo !== undefined) updateFields.businessLogo = businessLogo;
     if (authorizedSignature !== undefined) updateFields.authorizedSignature = authorizedSignature;
-    if (warrantyEmailEnabled !== undefined) updateFields.warrantyEmailEnabled = !!warrantyEmailEnabled;
-    if (warrantyWhatsappEnabled !== undefined) updateFields.warrantyWhatsappEnabled = !!warrantyWhatsappEnabled;
-    if (warrantyDuration !== undefined) updateFields.warrantyDuration = String(warrantyDuration || '');
-    if (warrantyPolicy !== undefined) updateFields.warrantyPolicy = String(warrantyPolicy || '');
-    if (warrantySupportPhone !== undefined) updateFields.warrantySupportPhone = String(warrantySupportPhone || '');
-    if (warrantySupportEmail !== undefined) updateFields.warrantySupportEmail = String(warrantySupportEmail || '');
-    if (warrantyClaimUrl !== undefined) updateFields.warrantyClaimUrl = String(warrantyClaimUrl || '');
+    if (warrantyEmailEnabled !== undefined) {
+      updateFields['brand.warrantyEmailEnabled'] = !!warrantyEmailEnabled;
+    }
+    if (warrantyWhatsappEnabled !== undefined) {
+      updateFields['brand.warrantyWhatsappEnabled'] = !!warrantyWhatsappEnabled;
+    }
+    if (warrantyDuration !== undefined) {
+      const val = String(warrantyDuration || '');
+      updateFields['platformVars.warrantyDuration'] = val;
+      updateFields['brand.warrantyDefaultDuration'] = val;
+      updateFields['wizardFeatures.warrantyDuration'] = val;
+    }
+    if (warrantyPolicy !== undefined) updateFields['policies.warrantyPolicy'] = String(warrantyPolicy || '');
+    if (warrantySupportPhone !== undefined) {
+      const val = String(warrantySupportPhone || '');
+      updateFields['brand.warrantySupportPhone'] = val;
+      updateFields['wizardFeatures.warrantySupportPhone'] = val;
+    }
+    if (warrantySupportEmail !== undefined) {
+      const val = String(warrantySupportEmail || '');
+      updateFields['wizardFeatures.warrantySupportEmail'] = val;
+      updateFields['platformVars.supportEmail'] = val;
+    }
+    if (warrantyClaimUrl !== undefined) {
+      const val = String(warrantyClaimUrl || '');
+      updateFields['brand.warrantyClaimUrl'] = val;
+      updateFields['wizardFeatures.warrantyClaimUrl'] = val;
+    }
     if (loyaltyConfig !== undefined) {
       updateFields.loyaltyConfig = loyaltyConfig;
-      if (loyaltyConfig?.isEnabled !== undefined) {
-        updateFields['wizardFeatures.loyaltyProgram'] = !!loyaltyConfig.isEnabled;
+      if (loyaltyConfig?.isEnabled !== undefined || loyaltyConfig?.enabled !== undefined) {
+        const isEnabled = loyaltyConfig?.isEnabled ?? loyaltyConfig?.enabled;
+        updateFields['wizardFeatures.enableLoyalty'] = !!isEnabled;
       }
       const silverThreshold = Number(loyaltyConfig?.tierThresholds?.silver);
       const goldThreshold = Number(loyaltyConfig?.tierThresholds?.gold);

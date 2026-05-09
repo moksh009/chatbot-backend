@@ -42,6 +42,7 @@ const NODE_TYPES = {
   abandoned_cart: { handles: { in: ['top'], out: ['recovered'] }, desc: 'Cart recovery step. data: { stepNumber: 1, action: "CART_RECOVERY_SEND_STEP" }' },
   review:         { handles: { in: ['top'], out: ['bottom'] }, desc: 'Review collection. data: { action: "SEND_REVIEW_REQUEST" }' },
   warranty_check: { handles: { in: ['top'], out: ['bottom'] }, desc: 'Warranty lookup. data: { action: "WARRANTY_CHECK" }' },
+  catalog:        { handles: { in: ['top'], out: ['bottom'] }, desc: 'WhatsApp catalog message. data: { catalogType: "full"|"single"|"multi", body: "...", header?: "...", footer?: "..." }' },
   admin_alert:    { handles: { in: ['top'], out: ['bottom'] }, desc: 'Alert admin. data: { topic: "..." }' },
   livechat:       { handles: { in: ['top'] }, desc: 'Transfer to live agent. data: { dept: "support" }' },
 };
