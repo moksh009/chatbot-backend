@@ -1,10 +1,15 @@
 const Subscription = require('../models/Subscription');
 const { isPaidPlanSlug } = require('../config/planCatalog');
 
-/** Super Admin toggled OFF "Has access (trial/premium)" — dashboard should show Account Suspended. */
-function isManuallySuspended(client) {
+/** Admin unchecked "Has access" — stored as trialActive:false (legacy). */
+function hasAdminAccessToggleOff(client) {
   if (!client || client.isLifetimeAdmin) return false;
   return client.trialActive === false;
+}
+
+/** Hard suspend (partner / reseller flows) blocks regardless of dates. */
+function isHardSuspended(client) {
+  return !!(client?.suspendedAt);
 }
 
 /** Client calendar trial (end date still in the future). Independent of Subscription row. */
@@ -24,10 +29,10 @@ function isSubscriptionTrialLive(sub, client) {
 
 /**
  * User may use the product during trial: calendar on Client and/or active trial on Subscription.
- * Manual suspend (trialActive === false) overrides everything.
+ * Stale scripts sometimes set trialActive:false while trialEndsAt is still future — calendar wins unless hard-suspended.
  */
 function isTrialWindowActive(client, sub) {
-  if (isManuallySuspended(client)) return false;
+  if (isHardSuspended(client)) return false;
   if (isCalendarTrialLive(client)) return true;
   if (isSubscriptionTrialLive(sub, client)) return true;
   return false;
@@ -89,9 +94,16 @@ function computeAccessPayload(client, sub, user) {
     };
   }
 
-  const manuallySuspended = isManuallySuspended(client);
   const trialWindowActive = isTrialWindowActive(client, sub);
   const paid = hasPaidEntitlements(client, sub);
+
+  /**
+   * Red "Account Suspended" UX: honest revoke with no entitlement left — not a poisoned trialActive flag.
+   * Mid-trial / paid hard stop: use Client.suspendedAt (or adjust trialEndsAt in admin).
+   */
+  const manuallySuspended =
+    isHardSuspended(client) ||
+    (hasAdminAccessToggleOff(client) && !trialWindowActive && !paid);
 
   const dashboardLocked =
     manuallySuspended === true ? true : !trialWindowActive && !paid;
@@ -129,7 +141,8 @@ async function ensureTrialSubscriptionRecord(clientIdString) {
 }
 
 module.exports = {
-  isManuallySuspended,
+  hasAdminAccessToggleOff,
+  isHardSuspended,
   isCalendarTrialLive,
   isSubscriptionTrialLive,
   isTrialWindowActive,

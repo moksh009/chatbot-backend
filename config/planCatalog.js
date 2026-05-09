@@ -330,13 +330,14 @@ function buildPlanAccessBundle(client, sub) {
   }
 
   const {
-    isManuallySuspended,
+    isHardSuspended,
+    hasAdminAccessToggleOff,
     isTrialWindowActive,
     hasPaidEntitlements,
     hasPaidActiveSubscription
   } = require('../utils/accessFlags');
 
-  if (isManuallySuspended(client)) {
+  if (isHardSuspended(client)) {
     return {
       billingPlanSlug: 'none',
       hubs: { marketing: false, automation: false, commerce: false },
@@ -344,8 +345,16 @@ function buildPlanAccessBundle(client, sub) {
     };
   }
 
-  const paid = hasPaidEntitlements(client, sub);
   const trialLive = isTrialWindowActive(client, sub);
+  const paid = hasPaidEntitlements(client, sub);
+
+  if (hasAdminAccessToggleOff(client) && !trialLive && !paid) {
+    return {
+      billingPlanSlug: 'none',
+      hubs: { marketing: false, automation: false, commerce: false },
+      intelligenceV2: false
+    };
+  }
 
   if (trialLive && !paid) {
     return { billingPlanSlug: 'trial', ...getPlanAccessSnapshot('trial') };
