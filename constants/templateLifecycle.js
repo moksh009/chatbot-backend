@@ -1,18 +1,11 @@
 "use strict";
 
 const PREBUILT_REQUIRED_TEMPLATES = [
-  "welcome_with_logo",
   "order_confirmed",
-  "shipping_update",
-  "order_delivered",
-  "order_cancelled",
   "cart_recovery_1",
   "cart_recovery_2",
-  "cod_to_prepaid",
   "admin_human_alert",
-  "review_request",
-  "warranty_registration",
-  "loyalty_points"
+  "review_request"
 ];
 
 const TEMPLATE_STATUS = {

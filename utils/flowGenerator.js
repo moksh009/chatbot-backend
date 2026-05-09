@@ -1712,17 +1712,8 @@ async function generateEcommerceFlow(client, wizardData = {}) {
   // AI fallback first so other branches can reference IDS.ai_fallback
   const fallbackOut = buildAIFallback(ctx, IDS);
 
-  // Welcome template lookup
-  const syncTpl = (client.syncedMetaTemplates || []).map((t) => ({
-    ...t,
-    _st: String(t.status || "").toUpperCase()
-  }));
-  const welcomeTemplate =
-    syncTpl.find((t) => t.name === "welcome_with_logo" && t._st === "APPROVED")
-    || syncTpl.find((t) => String(t.name || "").toLowerCase().includes("welcome") && t._st === "APPROVED")
-    || null;
-
-  const entryOut   = buildEntry(ctx, IDS, content, welcomeTemplate);
+  // Always use interactive/message welcome path (no welcome template dependency).
+  const entryOut   = buildEntry(ctx, IDS, content, null);
 
   // Branch builders — call only the enabled ones
   const branches = [];
@@ -1884,7 +1875,6 @@ function getPrebuiltTemplates(wizardData = {}) {
     : (checkoutUrl || "");
 
   const allProducts = products.map((p, i) => buildProductContext(p, i));
-  const legacyProductTemplateMode = wizardData.productMode === "template_legacy";
   const copy = getCopyPack({
     F: wizardData.features || {},
     tone: wizardData.tone || "friendly",
@@ -1892,55 +1882,7 @@ function getPrebuiltTemplates(wizardData = {}) {
     flowType: wizardData.flowType || "ecommerce",
   });
 
-  const productTemplates = allProducts.map((p) => {
-    const safeName = `prod_${p.handle.replace(/[^a-z0-9_]/gi, "_").toLowerCase()}`.substring(0, 50);
-    const buyUrl   = storeBase ? `${storeBase}/products/${p.handle}` : "";
-    const featureLine = (p.features || "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 90);
-    const bodyText = `✨ *${p.title}*\n\n` +
-      `Price: *${currency}${p.price}*\n\n` +
-      `${featureLine || "Built for everyday reliability, comfort, and performance."}\n\n` +
-      `Want this in your cart? Tap below to view full details and checkout in one step.`;
-    return {
-      id: safeName, name: safeName, category: "MARKETING", language: "en",
-      status: "not_submitted", required: true,
-      description: `Rich product card for "${p.title}" — IMAGE header + buy button.`,
-      components: [
-        { type: "HEADER", format: "IMAGE", _imageUrl: p.imageUrl || "" },
-        { type: "BODY",   text: bodyText },
-        { type: "FOOTER", text: brandSafe },
-        { type: "BUTTONS", buttons: [
-          ...(buyUrl
-            ? [{ type: "URL", text: "🛒 Buy Now", url: buyUrl }]
-            : [{ type: "QUICK_REPLY", text: "🛒 Buy Now" }]),
-          { type: "QUICK_REPLY", text: "⬅️ Main Menu" }
-        ]}
-      ],
-      body: bodyText,
-      variables: []
-    };
-  });
-
   return [
-    {
-      id: "welcome_with_logo", name: "welcome_with_logo",
-      category: "MARKETING", language: "en", status: "not_submitted", required: true,
-      description: "Branded welcome — IMAGE header (your logo) + quick-reply main menu.",
-      components: [
-        { type: "HEADER", format: "IMAGE", _imageUrl: businessLogo || "" },
-        { type: "BODY",   text: copy.template_welcome_with_logo_body },
-        { type: "BUTTONS", buttons: [
-          { type: "QUICK_REPLY", text: "Browse products" },
-          { type: "QUICK_REPLY", text: "Track my order" },
-          { type: "QUICK_REPLY", text: "Talk to support" }
-        ]}
-      ],
-      body: copy.template_welcome_with_logo_body,
-      variables: ["business_name"]
-    },
-    ...(legacyProductTemplateMode ? productTemplates : []),
     {
       id: "order_confirmed", name: "order_confirmed",
       category: "UTILITY", language: "en", status: "not_submitted", required: true,

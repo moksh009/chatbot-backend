@@ -48,7 +48,7 @@ OUTPUT SCHEMA (JSON):
     }
   ],
   "outline": [
-    { "step": "string", "node": "trigger|message|interactive|capture_input|template|livechat|shopify_call|order_action|loyalty_action|warranty_check|review|delay|logic|catalog|cart_handler", "copyBrief": "string",
+    { "step": "string", "node": "trigger|message|interactive|capture_input|livechat|shopify_call|order_action|loyalty_action|warranty_check|review|delay|logic|catalog|cart_handler", "copyBrief": "string",
       "buttons": [ { "id": "string", "title": "string", "targetStep": "string" } ]
     }
   ],
@@ -63,6 +63,7 @@ RULES:
 - Node types for shops: catalog (browse / collections), cart_handler (checkout link after cart), interactive list (category menu).
 - Variables for cart/checkout copy: {{checkout_url}}, {{cart_total}}, {{item_count}}, {{currency}}.
 - For ecommerce catalogs, prefer catalog-first flow design (WhatsApp catalog + cart + checkout guidance) over one-template-per-product patterns.
+- Avoid "template" nodes for welcome/product messaging; use message or interactive nodes unless it is critical automation messaging (cart recovery, review request, admin alert, order confirmation).
 - In ecommerce mode, include these key steps when relevant: catalog open, category/filter selection, featured products push, checkout link guidance, and post-catalog support fallback.
 - If includeInstallHelp/includeWarrantyLookup/includeLoyaltyPoints is true, include those branches in outline.
 - Avoid unverifiable scarcity/guarantee claims.

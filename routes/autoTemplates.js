@@ -133,8 +133,8 @@ router.post('/start', protect, async (req, res) => {
       }
     }
 
-    // required prebuilt + products
-    const totalTemplates = PREBUILT_REQUIRED_TEMPLATES.length + products.length;
+    // Required prebuilt only (product templates intentionally disabled).
+    const totalTemplates = PREBUILT_REQUIRED_TEMPLATES.length;
 
     // Create or reset job tracker
     await TemplateGenerationJob.findOneAndUpdate(
@@ -183,41 +183,9 @@ router.post('/start', protect, async (req, res) => {
       }
     }
 
-    // Enqueue product template generation jobs
-    for (const product of products) {
-      if (generationQueue) {
-        await generationQueue.add('generate', {
-          clientId,
-          templateType: 'product',
-          productId: product.id,
-          productHandle: product.handle,
-          productName: product.title,
-          productDescription: product.description,
-          productPrice: product.price,
-          productPageUrl: product.url,
-          productImageUrl: product.image || null
-        }, { attempts: 3, backoff: { type: 'exponential', delay: 3000 } });
-      } else {
-        const { handleGenerationJob } = require('../workers/autoTemplateWorker');
-        setTimeout(() => {
-          handleGenerationJob({
-            clientId,
-            templateType: 'product',
-            productId: product.id,
-            productHandle: product.handle,
-            productName: product.title,
-            productDescription: product.description,
-            productPrice: product.price,
-            productPageUrl: product.url,
-            productImageUrl: product.image || null
-          }).catch(e => console.error('[Inline Generation] Product error:', e));
-        }, 0);
-      }
-    }
-
     res.json({
       success: true,
-      message: `Generation started for ${totalTemplates} templates (${PREBUILT_REQUIRED_TEMPLATES.length} prebuilt + ${products.length} product)`,
+      message: `Generation started for ${totalTemplates} templates (${PREBUILT_REQUIRED_TEMPLATES.length} prebuilt)`,
       totalTemplates
     });
   } catch (err) {

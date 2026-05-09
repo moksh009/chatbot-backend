@@ -26,7 +26,6 @@ const NODE_TYPES = {
   trigger:        { handles: { out: ['bottom'] }, desc: 'Flow entry point. data: { triggerType: "first_message|keyword|...", keywords?:[], matchMode? }' },
   message:        { handles: { in: ['top'], out: ['bottom'] }, desc: 'Send text message. data: { text: "..." } (body is accepted and normalized)' },
   interactive:    { handles: { in: ['top'], dynamic: true }, desc: 'Buttons/List. data: { interactiveType: "button"|"list", text: "...", buttonsList:[{id,title}] }' },
-  template:       { handles: { in: ['top'], out: ['bottom'] }, desc: 'Meta WA template node. data: { templateName: "..." }' },
   image:          { handles: { in: ['top'], out: ['bottom'] }, desc: 'Image/media message node.' },
   capture_input:  { handles: { in: ['top'], out: ['bottom'] }, desc: 'Save user reply. data: { question: "...", variable: "..." }' },
   logic:          { handles: { in: ['top'], out: ['true','false'] }, desc: 'Conditional branch. data: { variable, operator, value }' },
@@ -152,6 +151,7 @@ function validateAndCleanFlow(parsed, yOffset = 0) {
         payment: 'message', payment_link: 'message',
         loyalty: 'loyalty_action', order: 'order_action',
         ab_test: 'logic',
+        template: 'message', wa_template: 'message',
       };
       const coerced = typeMap[node.type] || typeMap[node.type?.toLowerCase()];
       if (!coerced) continue; // Skip entirely unknown types
@@ -161,8 +161,18 @@ function validateAndCleanFlow(parsed, yOffset = 0) {
     seenIds.add(node.id);
 
     // Normalize common data-key drifts from AI output.
-    if (node.type === 'template' && !node.data?.templateName && node.data?.metaTemplateName) {
-      node.data = { ...node.data, templateName: node.data.metaTemplateName };
+    if (node.type === 'template') {
+      // Keep AI builder low-template by default: render template-like copy as message.
+      const fallbackText =
+        node.data?.text ||
+        node.data?.body ||
+        "Hello! How can we help you today?";
+      node.type = 'message';
+      node.data = {
+        ...node.data,
+        label: node.data?.label || 'Message',
+        text: String(fallbackText).slice(0, 1024),
+      };
     }
     if ((node.type === 'interactive' || node.type === 'message' || node.type === 'catalog') && !node.data?.text && node.data?.body) {
       node.data = { ...node.data, text: node.data.body };
