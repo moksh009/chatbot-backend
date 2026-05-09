@@ -420,6 +420,14 @@ function normalizeWelcomeCopy(raw, ctx) {
   return text;
 }
 
+function sanitizeInteractiveImageUrl(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  if (/^data:/i.test(raw)) return "";
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return "";
+}
+
 async function generateAIContent(ctx) {
   const { client, businessName, businessDescription, botName, tone, botLanguage, currency, products } = ctx;
   const productsSummary = products.slice(0, 8)
@@ -497,52 +505,63 @@ function buildEntry(ctx, IDS, content, welcomeTemplate) {
     );
   }
 
-  // Welcome — template if available, else interactive button bubble
+  // Welcome — template if available, else interactive list menu
   const wTpl = welcomeTemplate;
+  const safeWelcomeImage = sanitizeInteractiveImageUrl(
+    client.brand?.businessLogo || client.brand?.logoUrl || client.businessLogo || ""
+  );
   if (wTpl) {
     nodes.push({
       id: IDS.welcome, type: "template", position: flowPos(2, 5),
       data: {
         label: "Welcome Template",
         templateName: wTpl.name,
-        imageUrl: client.brand?.businessLogo || client.brand?.logoUrl || client.businessLogo || "",
+        imageUrl: safeWelcomeImage,
         variables: ["{{brand_name}}", "{{bot_name}}"],
         heatmapCount: 0
       }
     });
   } else {
-    const btnShop = F.enableCatalog ? [{ id: "shop", title: "🛍️ Browse Products" }] : [];
-    const btnTrack = F.enableOrderTracking ? [{ id: "track", title: "📦 Track Order" }] : [];
-    const btnSupport = F.enableSupportEscalation ? [{ id: "support", title: "🎧 Get Support" }] : [];
-    let buttonsList = [...btnShop, ...btnTrack, ...btnSupport];
-    if (buttonsList.length === 0) {
-      buttonsList = [{ id: "menu", title: "📋 Open Menu" }];
-    } else if (!buttonsList.find((b) => b.id === "menu")) {
-      buttonsList = [...buttonsList, { id: "menu", title: "📋 Main Menu" }];
-    }
-    if (buttonsList.length > 3) {
-      buttonsList = buttonsList.slice(0, 3);
+    const welcomeRows = [];
+    if (F.enableCatalog) welcomeRows.push({ id: "shop", title: "🛍️ Shop Collection" });
+    if (F.enableOrderTracking) welcomeRows.push({ id: "track", title: "📦 Track My Order" });
+    if (F.enableReturnsRefunds) welcomeRows.push({ id: "returns", title: "🔄 Return / Cancel" });
+    if (F.enableWarranty) welcomeRows.push({ id: "warranty", title: "🛡️ Warranty" });
+    if (F.enableLoyalty) welcomeRows.push({ id: "loyalty", title: "💎 My Rewards" });
+    if (F.enableSupportEscalation) welcomeRows.push({ id: "support", title: "🎧 Talk to Human" });
+    if (F.enableFAQ) welcomeRows.push({ id: "faq", title: "❓ FAQs" });
+    if (!welcomeRows.length) {
+      welcomeRows.push({ id: "menu", title: "📋 Open Menu" });
     }
     const welcomeText = normalizeWelcomeCopy(content.welcome_a, ctx);
     nodes.push({
       id: IDS.welcome, type: "interactive", position: flowPos(2, 5),
       data: {
-        label: "Welcome Message", interactiveType: "button",
-        imageUrl: client.brand?.businessLogo || client.brand?.logoUrl || client.businessLogo || "",
+        label: "Welcome Message", interactiveType: "list",
+        imageUrl: safeWelcomeImage,
         text: welcomeText,
-        buttonsList,
+        buttonText: "Open Menu",
+        sections: [{ title: "{{brand_name}}", rows: welcomeRows.slice(0, 10) }],
         heatmapCount: 0
       }
     });
     const tgtShop = F.enableCatalog ? IDS.cat_list : IDS.main_menu;
     const tgtTrack = F.enableOrderTracking ? IDS.ord_track : IDS.main_menu;
+    const tgtReturns = F.enableReturnsRefunds ? IDS.ret_hub : IDS.main_menu;
+    const tgtWarranty = F.enableWarranty ? IDS.war_hub : IDS.main_menu;
+    const tgtLoyalty = F.enableLoyalty ? IDS.loy_menu : IDS.main_menu;
     const supEntry = F.enableBusinessHoursGate && !F.enable247 ? IDS.sup_sch : IDS.sup_capture;
     const tgtSupport = F.enableSupportEscalation ? supEntry : IDS.main_menu;
-    buttonsList.forEach((b) => {
+    const tgtFaq = F.enableFAQ ? IDS.faq_msg : IDS.main_menu;
+    welcomeRows.forEach((b) => {
       let target = IDS.main_menu;
       if (b.id === "shop") target = tgtShop;
       else if (b.id === "track") target = tgtTrack;
+      else if (b.id === "returns") target = tgtReturns;
+      else if (b.id === "warranty") target = tgtWarranty;
+      else if (b.id === "loyalty") target = tgtLoyalty;
       else if (b.id === "support") target = tgtSupport;
+      else if (b.id === "faq") target = tgtFaq;
       else if (b.id === "menu") target = IDS.main_menu;
       edges.push({
         id: `e_${IDS.welcome}_${b.id}`,

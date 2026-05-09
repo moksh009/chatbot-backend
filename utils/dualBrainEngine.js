@@ -4149,6 +4149,17 @@ async function sendWhatsAppInteractive(client, phone, interactive, bodyText = ''
 
   let payloadData = null;
   try {
+    // Meta rejects data/base64 URIs in interactive.header.image.link.
+    const headerLink = interactive?.header?.image?.link;
+    if (headerLink) {
+      const safeLink = String(headerLink).trim();
+      const isHttp = /^https?:\/\//i.test(safeLink);
+      if (!isHttp) {
+        delete interactive.header;
+      } else {
+        interactive.header.image.link = safeLink;
+      }
+    }
 
     if (!interactive.body?.text) {
       interactive.body = {

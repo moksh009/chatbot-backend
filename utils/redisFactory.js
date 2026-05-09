@@ -48,6 +48,19 @@ function queueRetryStrategy(times) {
   return Math.min(times * 100, 3000);
 }
 
+async function ensureNoEviction(redis, label) {
+  if (!redis || process.env.REDIS_ENFORCE_NOEVICTION === 'false') return;
+  try {
+    const current = await redis.config('GET', 'maxmemory-policy');
+    const policy = Array.isArray(current) ? String(current[1] || '').toLowerCase() : '';
+    if (policy === 'noeviction') return;
+    await redis.config('SET', 'maxmemory-policy', 'noeviction');
+    log.warn(`[Redis/${label}] Updated maxmemory-policy from "${policy || 'unknown'}" to "noeviction".`);
+  } catch (err) {
+    log.warn(`[Redis/${label}] Could not enforce noeviction: ${err.message}`);
+  }
+}
+
 /**
  * App/session Redis — caching, dedupe, optional general use.
  * @returns {import('ioredis').Redis | null}
@@ -61,7 +74,10 @@ function getAppRedis() {
     retryStrategy: sharedRetryStrategy
   });
   appRedisSingleton.on('error', (err) => log.warn('[Redis/App] Connection error:', err.message));
-  appRedisSingleton.on('connect', () => log.info('[Redis/App] Connected successfully.'));
+  appRedisSingleton.on('connect', () => {
+    log.info('[Redis/App] Connected successfully.');
+    ensureNoEviction(appRedisSingleton, 'App');
+  });
   return appRedisSingleton;
 }
 
@@ -84,7 +100,10 @@ function getQueueRedis() {
       log.warn('[Redis/Queue] Error:', err.message);
     }
   });
-  queueRedisSingleton.on('connect', () => log.info('[Redis/Queue] Connected.'));
+  queueRedisSingleton.on('connect', () => {
+    log.info('[Redis/Queue] Connected.');
+    ensureNoEviction(queueRedisSingleton, 'Queue');
+  });
   return queueRedisSingleton;
 }
 
