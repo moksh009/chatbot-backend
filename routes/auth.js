@@ -7,6 +7,8 @@ const { protect } = require('../middleware/auth');
 const { sanitizeMiddleware } = require('../utils/sanitize');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs'); // ✅ Phase R4: for authenticated change-password
+/** Node Crypto (HMAC state signing). Do not rely on global `crypto` — Node 19+ exposes Web Crypto globally without createHmac. */
+const crypto = require('crypto');
 const { sendSystemOTPEmail } = require('../utils/emailService');
 const { ensureClientForUser } = require('../utils/ensureClientForUser');
 const { LEGAL_DOCS_VERSION } = require('../config/legalDocs');
