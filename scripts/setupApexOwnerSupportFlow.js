@@ -1,3 +1,7 @@
+const path = require('path');
+// Standalone scripts do not load .env unless we call dotenv (unlike index.js).
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+
 const mongoose = require('mongoose');
 const Client = require('../models/Client');
 const WhatsAppFlow = require('../models/WhatsAppFlow');
@@ -61,6 +65,9 @@ async function run() {
     updatedAt: new Date(),
   };
 
+  // Do NOT set trialActive here. The dashboard TrialGate treats
+  // `client.trialActive === false` as "Account Suspended" regardless of billing.
+  // Only update plan/commerce-related fields plus this flow payload.
   await Client.updateOne(
     { clientId: CLIENT_ID },
     {
@@ -68,7 +75,6 @@ async function run() {
         plan: 'CX Agent (V2)',
         tier: 'v2',
         isPaidAccount: true,
-        trialActive: false,
         'billing.plan': 'CX Agent (V2)',
         'billing.tier': 'v2',
         'billing.isPaidAccount': true,
