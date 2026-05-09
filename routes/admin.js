@@ -2100,7 +2100,7 @@ router.post('/flow/publish/:clientId', protect, async (req, res) => {
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ error: 'Client not found' });
 
-    const { nodes = [], edges = [], note, flowId } = req.body;
+    const { nodes = [], edges = [], note, flowId, forcePublish = false } = req.body;
 
     // Strict publish preflight (same gate as canonical /api/flow/publish)
     const { preflightValidateFlowGraph } = require('../utils/flowPublishPreflight');
@@ -2109,13 +2109,16 @@ router.post('/flow/publish/:clientId', protect, async (req, res) => {
       edges,
       client: client.toObject ? client.toObject() : client,
     });
-    if (!preflight.valid) {
+    if (!preflight.valid && !forcePublish) {
       return res.status(400).json({
         success: false,
         error: 'Flow publish blocked: validation failed.',
         errors: preflight.errors,
         warnings: preflight.warnings,
       });
+    }
+    if (!preflight.valid && forcePublish) {
+      log.warn(`[Publish Override] ${clientId} forced publish with ${preflight.errors.length} error(s).`);
     }
     
     // 1. Identify Templates used in the flow
@@ -2217,7 +2220,9 @@ router.post('/flow/publish/:clientId', protect, async (req, res) => {
       success: true, 
       message: 'Automation published successfully.', 
       version: client.flowHistory.length,
-      syncResults
+      syncResults,
+      preflight,
+      publishOverride: !!forcePublish
     });
   } catch (err) {
     log.error('[Publish] Critical failure:', err.message);
