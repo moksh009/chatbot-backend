@@ -24,6 +24,21 @@ function validatePhone(phone) {
   return cleanPhone;
 }
 
+function resolveCatalogId(client, fallback = "") {
+  return (
+    fallback ||
+    client?.facebookCatalogId ||
+    client?.waCatalogId ||
+    client?.metaCatalogId ||
+    client?.commerceBotSettings?.facebookCatalogId ||
+    client?.commerceBotSettings?.waCatalogId ||
+    client?.platformVars?.facebookCatalogId ||
+    client?.platformVars?.waCatalogId ||
+    process.env.META_CATALOG_ID ||
+    ""
+  );
+}
+
 /**
  * Unified WhatsApp Cloud API helper
  */
@@ -473,8 +488,7 @@ const WhatsApp = {
     const { token, phoneNumberId } = this.getCredentials(client);
     const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
-    const catalogId =
-      client.facebookCatalogId || client.waCatalogId || client.metaCatalogId || process.env.META_CATALOG_ID;
+    const catalogId = resolveCatalogId(client);
     if (!catalogId) {
       throw new Error(`[WhatsApp] Missing catalog ID for ${client.clientId}`);
     }
@@ -525,12 +539,7 @@ const WhatsApp = {
       log.warn(`[Commerce] Product list truncated to 30 items for ${phone}`);
     }
 
-    const catalogId =
-      catalogOverride ||
-      client.facebookCatalogId ||
-      client.waCatalogId ||
-      client.metaCatalogId ||
-      process.env.META_CATALOG_ID;
+    const catalogId = resolveCatalogId(client, catalogOverride);
 
     const headerText = String(header || 'Our Products').substring(0, 60);
     const bodyText = String(body || 'Browse and add to cart').substring(0, 1024);
@@ -586,12 +595,7 @@ const WhatsApp = {
     await this.ensureNotSuppressed(client, validPhone);
     const { token, phoneNumberId } = this.getCredentials(client);
     const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
-    const catalogId =
-      catalogOverride ||
-      client.facebookCatalogId ||
-      client.waCatalogId ||
-      client.metaCatalogId ||
-      process.env.META_CATALOG_ID;
+    const catalogId = resolveCatalogId(client, catalogOverride);
     if (!catalogId) {
       throw new Error(`[WhatsApp] Missing catalog ID for ${client.clientId}`);
     }
@@ -717,19 +721,10 @@ const WhatsApp = {
         }
       }
     } else {
-      // Fallback: If template not synced, send variables sequentially
+      // Template body shape is unknown when unsynced. Send zero params so Meta
+      // can accept static templates; if it still fails, catch block falls back to text.
       log.warn(`[WhatsApp] Template ${templateName} not synced for ${client.clientId}. Using sequential fallback. Variables: [${variables.join(', ')}]`);
-      if (variables.length > 0) {
-        components.push({
-          type: 'body',
-          parameters: variables.map(v => ({ type: 'text', text: String(v).substring(0, 1024) }))
-        });
-      } else {
-        // If no variables provided but template is not synced,
-        // use empty components array. If Meta still rejects, the main catch block
-        // will trigger the TEXT fallback.
-        components = [];
-      }
+      components = [];
       if (headerImage) {
         components.push({ type: 'header', parameters: [{ type: 'image', image: { link: headerImage } }] });
       }
@@ -743,7 +738,12 @@ const WhatsApp = {
     try {
       return await this.sendTemplate(client, phone, templateName, languageCode, components || []);
     } catch (err) {
-      if (err.status === 404 || (err.data?.error_data?.details || "").includes("template name") || (err.message || "").includes("132001")) {
+      if (
+        err.status === 404 ||
+        (err.data?.error_data?.details || "").includes("template name") ||
+        (err.message || "").includes("132001") ||
+        (err.message || "").includes("132000")
+      ) {
         log.warn(`[WhatsApp] Template ${templateName} failed (Missing). Falling back to TEXT for ${phone}`);
         
         // REHES (Resilient High-Entropy Sending): attempt to extract buttons/options from the flow graph if available

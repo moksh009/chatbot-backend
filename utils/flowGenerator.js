@@ -362,6 +362,7 @@ function buildIDs(client, wizardData) {
     ins_confirm:      `ins_confirm_${ts}`,
     ins_capture:      `ins_capture_${ts}`,
     ins_search:       `ins_search_${ts}`,
+    ins_search_latest:`ins_search_latest_${ts}`,
     ins_result:       `ins_result_${ts}`,
     ins_no_match:     `ins_no_match_${ts}`,
     // Loyalty
@@ -732,7 +733,8 @@ function buildCatalogBranch(ctx, IDS) {
     ? (F.enableBusinessHoursGate && !F.enable247 ? IDS.sup_sch : IDS.sup_capture)
     : IDS.ai_fallback;
 
-  if (products.length === 0) {
+  const isCatalogUnavailable = products.length === 0 && !useShopCols;
+  if (isCatalogUnavailable) {
     nodes.push({
       id: IDS.cat_addr_cap,
       type: "message",
@@ -800,7 +802,7 @@ function buildCatalogBranch(ctx, IDS) {
     }
   }
 
-  if (products.length === 0) {
+  if (isCatalogUnavailable) {
     edges.push({ id: `e_${IDS.cat_addr_done}_na`, source: IDS.cat_addr_done, target: IDS.cat_addr_cap });
     edges.push({ id: `e_${IDS.cat_addr_cap}_mm`, source: IDS.cat_addr_cap, target: IDS.main_menu });
   } else {
@@ -1326,6 +1328,18 @@ function buildInstallSupportBranch(ctx, IDS) {
       }
     },
     {
+      id: IDS.ins_search_latest,
+      type: "shopify_call",
+      position: flowPos(9, 15),
+      data: {
+        label: "Search latest ordered product support context",
+        action: "search_products",
+        query: "{{first_product_title}}",
+        variable: "install_product_result",
+        heatmapCount: 0
+      }
+    },
+    {
       id: IDS.ins_result,
       type: "message",
       position: flowPos(10, 15),
@@ -1354,10 +1368,12 @@ function buildInstallSupportBranch(ctx, IDS) {
     { id: `e_${IDS.ins_hub}_mm`, source: IDS.ins_hub, target: IDS.main_menu, sourceHandle: "menu" },
     { id: `e_${IDS.ins_lookup}_ok`, source: IDS.ins_lookup, target: IDS.ins_confirm },
     { id: `e_${IDS.ins_lookup}_nf`, source: IDS.ins_lookup, target: IDS.ins_capture, sourceHandle: "no_order" },
-    { id: `e_${IDS.ins_confirm}_y`, source: IDS.ins_confirm, target: IDS.ins_capture, sourceHandle: "yes" },
+    { id: `e_${IDS.ins_confirm}_y`, source: IDS.ins_confirm, target: IDS.ins_search_latest, sourceHandle: "yes" },
     { id: `e_${IDS.ins_confirm}_n`, source: IDS.ins_confirm, target: IDS.ins_capture, sourceHandle: "no" },
     { id: `e_${IDS.ins_confirm}_mm`, source: IDS.ins_confirm, target: IDS.main_menu, sourceHandle: "menu" },
     { id: `e_${IDS.ins_capture}_sr`, source: IDS.ins_capture, target: IDS.ins_search },
+    { id: `e_${IDS.ins_search_latest}_ok`, source: IDS.ins_search_latest, target: IDS.ins_result, sourceHandle: "success" },
+    { id: `e_${IDS.ins_search_latest}_fail`, source: IDS.ins_search_latest, target: IDS.ins_no_match, sourceHandle: "not_found" },
     { id: `e_${IDS.ins_search}_ok`, source: IDS.ins_search, target: IDS.ins_result, sourceHandle: "success" },
     { id: `e_${IDS.ins_search}_fail`, source: IDS.ins_search, target: IDS.ins_no_match, sourceHandle: "not_found" },
     { id: `e_${IDS.ins_result}_mm`, source: IDS.ins_result, target: IDS.main_menu },
@@ -1637,6 +1653,27 @@ function buildAIFallback(ctx, IDS) {
 // ═════════════════════════════════════════════════════════════════════════
 async function generateEcommerceFlow(client, wizardData = {}) {
   const mergedWizard = { ...wizardData };
+  const rawProducts = mergedWizard.products;
+  if (!Array.isArray(rawProducts) || rawProducts.length === 0) {
+    const clientIdStr = resolvePersistedClientId(client);
+    if (clientIdStr) {
+      try {
+        const ShopifyProduct = require("../models/ShopifyProduct");
+        const docs = await ShopifyProduct.find({ clientId: clientIdStr, status: { $ne: "draft" } })
+          .sort({ updatedAt: -1, createdAt: -1 })
+          .limit(120)
+          .lean();
+        const picked = docs
+          .filter((d) => d && (d.shopifyId || d.id))
+          .slice(0, 40)
+          .map((d, i) => buildProductContext(d, i));
+        if (picked.length) mergedWizard.products = picked;
+      } catch (err) {
+        console.warn("[flowGenerator] ShopifyProduct preload skipped:", err?.message || err);
+      }
+    }
+  }
+
   const rawCols = mergedWizard.collections;
   if ((!Array.isArray(rawCols) || rawCols.length === 0)) {
     const clientIdStr = resolvePersistedClientId(client);

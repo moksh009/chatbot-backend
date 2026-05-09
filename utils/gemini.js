@@ -214,7 +214,9 @@ async function generateTextFast(prompt, apiKey, options = {}) {
 }
 
 function getGeminiModel(apiKey) {
-    return getStudioClient(apiKey);
+    const genAI = getStudioClient(apiKey);
+    if (!genAI) return null;
+    return genAI.getGenerativeModel({ model: BOT_MODEL });
 }
 
 // ------------------------------------------------------------------

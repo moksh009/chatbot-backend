@@ -36,6 +36,16 @@ const { platformGenerateText } = require('../utils/gemini');
 const { decrypt } = require('../utils/encryption');
 const { PREBUILT_REQUIRED_TEMPLATES } = require('../constants/templateLifecycle');
 
+function normalizeMetaLanguage(raw) {
+  const v = String(raw || "").trim().toLowerCase().replace("-", "_");
+  if (!v) return "en";
+  if (v === "hinglish" || v === "guajarlish") return "en";
+  if (v === "english") return "en";
+  if (v === "hindi" || v === "hi_in") return "hi";
+  if (v === "gujarati" || v === "gu_in") return "gu";
+  return v;
+}
+
 // ─── FIXED TEMPLATE DEFINITIONS ───────────────────────────────────────────────
 const FIXED_TEMPLATES = {
   welcome_with_logo: {
@@ -321,7 +331,7 @@ async function submitSingleTemplate(client, templateId, clientId) {
   const payload = {
     name: template.name,
     category: template.category,
-    language: template.language || 'en',
+    language: normalizeMetaLanguage(template.language),
     components
   };
 
@@ -457,7 +467,7 @@ async function handleGenerationJob(data) {
     const client = await Client.findOne({ clientId }).lean();
     const brandName = client.platformVars?.brandName || client.businessName || clientId;
     const currency = client.platformVars?.baseCurrency || '₹';
-    const language = client.platformVars?.defaultLanguage || 'en';
+    const language = normalizeMetaLanguage(client.platformVars?.defaultLanguage || 'en');
     const tone = client.platformVars?.defaultTone || 'friendly and professional';
 
     let generatedBody, templateName, category, headerType, headerValue, footerText, buttons, variableMapping;

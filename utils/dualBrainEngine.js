@@ -3526,13 +3526,24 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'catalog': {
       const ShopifyProduct = require("../models/ShopifyProduct");
       const catalogId =
-        client.facebookCatalogId || client.waCatalogId || client.metaCatalogId || process.env.META_CATALOG_ID;
+        client.facebookCatalogId ||
+        client.waCatalogId ||
+        client.metaCatalogId ||
+        client.commerceBotSettings?.facebookCatalogId ||
+        client.commerceBotSettings?.waCatalogId ||
+        client.platformVars?.facebookCatalogId ||
+        client.platformVars?.waCatalogId ||
+        process.env.META_CATALOG_ID;
       const bodyText = String(data.body || data.text || "Check out our collection!").substring(0, 1024);
       const ct = data.catalogType || "full";
 
       if (!catalogId) {
         const storeHint = client.shopDomain ? `https://${String(client.shopDomain).replace(/^https?:\/\//, "")}` : "our store";
-        await WhatsApp.sendText(client, phone, `Browse our store: ${storeHint}`);
+        await WhatsApp.sendText(
+          client,
+          phone,
+          `Browse our store: ${storeHint}\n\nTo enable in-chat catalog cards: go to Settings -> Commerce, paste your Meta Catalog ID, then click "Import from Shopify" in WA Catalog.`
+        );
         return true;
       }
 
