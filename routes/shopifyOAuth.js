@@ -41,8 +41,60 @@ const shopifyAdminApiVersion = require('../utils/shopifyAdminApiVersion');
 // ─── Configuration ───────────────────────────────────────────────────────────
 const SHOPIFY_CLIENT_ID = () => process.env.SHOPIFY_CLIENT_ID;
 const SHOPIFY_CLIENT_SECRET = () => process.env.SHOPIFY_CLIENT_SECRET;
-const SHOPIFY_SCOPES = () => process.env.SHOPIFY_SCOPES || 'read_products,write_products,read_orders,write_orders,read_customers,write_customers,read_checkouts,write_checkouts,read_themes,write_themes,read_price_rules,write_price_rules,read_discounts,write_discounts,read_shopify_payments_payouts';
-const SHOPIFY_REDIRECT_URI = () => process.env.SHOPIFY_REDIRECT_URI || `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/api/shopify/callback`;
+const SHOPIFY_SCOPES = () =>
+  (
+    process.env.SHOPIFY_SCOPES ||
+    'read_products,write_products,read_orders,write_orders,read_customers,write_customers,read_checkouts,write_checkouts,read_themes,write_themes,read_price_rules,write_price_rules,read_discounts,write_discounts,read_shopify_payments_payouts'
+  ).replace(/\s+/g, '');
+
+/**
+ * Canonical callback URL — MUST match Shopify Partner Dashboard "Allowed redirection URL(s)" exactly.
+ */
+function resolveShopifyRedirectUri() {
+  const explicit = String(process.env.SHOPIFY_REDIRECT_URI || '').trim();
+  const base = String(process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com')
+    .trim()
+    .replace(/\/+$/, '');
+  const candidate = explicit || `${base}/api/shopify/callback`;
+  try {
+    const u = new URL(candidate);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('redirect must be https or http');
+    return u.toString();
+  } catch (err) {
+    const fb = `${base}/api/shopify/callback`;
+    console.error('[ShopifyOAuth] Invalid SHOPIFY_REDIRECT_URI — using SERVER_URL fallback:', candidate, err.message);
+    return fb;
+  }
+}
+
+/**
+ * Shopify requires redirect_uri on every /admin/oauth/authorize request.
+ * Use URLSearchParams so scope commas / specials never break parsing (unencoded query caused "redirect_uri is missing").
+ * Order: client_id → redirect_uri → state → scope (critical params before very long scope strings / proxy limits).
+ */
+function buildShopifyAuthorizeURL(shopHostname, { appClientId, scopes, state }) {
+  const redirectUri = resolveShopifyRedirectUri();
+  const cid = String(appClientId || '').trim();
+  const sc = typeof scopes === 'string' ? scopes.trim() : '';
+  if (!cid || !sc) throw new Error('Shopify OAuth: missing client_id or scopes');
+  if (!redirectUri) throw new Error('Shopify OAuth: redirect_uri resolved empty — set SHOPIFY_REDIRECT_URI or SERVER_URL');
+
+  const p = new URLSearchParams();
+  p.set('client_id', cid);
+  p.set('redirect_uri', redirectUri);
+  if (state != null && String(state) !== '') p.set('state', String(state));
+  p.set('scope', sc);
+
+  const qs = p.toString();
+  const authUrl = `https://${shopHostname}/admin/oauth/authorize?${qs}`;
+  if (authUrl.length > 7500) {
+    console.warn(
+      `[ShopifyOAuth] OAuth URL is very long (${authUrl.length} chars). Consider shortening SHOPIFY_SCOPES — some proxies truncate.`
+    );
+  }
+  return authUrl;
+}
+
 const FRONTEND_URL = () => process.env.FRONTEND_URL || 'https://dash.topedgeai.com';
 
 // ── Helper: Extract shopDomain from install link ──────────────────────────────
@@ -421,14 +473,17 @@ router.post('/auth', async (req, res) => {
       maxAge: 10 * 60 * 1000
     });
 
-    const scopes = SHOPIFY_SCOPES();
-    const redirectUri = SHOPIFY_REDIRECT_URI();
-    const authUrl =
-      `https://${cleanShop}/admin/oauth/authorize` +
-      `?client_id=${encodeURIComponent(appClientId)}` +
-      `&scope=${encodeURIComponent(scopes)}` +
-      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-      `&state=${encodeURIComponent(nonce)}`;
+    let authUrl;
+    try {
+      authUrl = buildShopifyAuthorizeURL(cleanShop, {
+        appClientId,
+        scopes: SHOPIFY_SCOPES(),
+        state: nonce
+      });
+    } catch (e) {
+      console.error('❌ [ShopifyOAuth] build authorize URL failed:', e.message);
+      return res.status(500).json({ success: false, error: e.message || 'OAuth URL build failed — check SERVER_URL / SHOPIFY_REDIRECT_URI' });
+    }
 
     console.log(`🔄 [ShopifyOAuth] OAuth URL built for clientId=${clientId} shop=${cleanShop}`);
 
@@ -495,21 +550,32 @@ router.get('/app-load', async (req, res) => {
       console.error(`❌ [ShopifyOAuth] Still no client found for shop '${shop}' after aggressive scan.`);
     }
 
-    // 1. Get exact App scopes
-    const scopes = SHOPIFY_SCOPES(); 
-    
-    // 2. Get Client ID and Callback URL
-    const clientId = SHOPIFY_CLIENT_ID(); 
-    const serverUrl = process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com';
-    const redirectUri = `${serverUrl}/api/shopify/callback`;
+    const oauthClientId = SHOPIFY_CLIENT_ID();
+    if (!oauthClientId || !SHOPIFY_CLIENT_SECRET()) {
+      return res.status(500).send('Shopify OAuth is not configured.');
+    }
 
-    // 3. Immediately redirect to OAuth to get the token. 
-    // Since the app is already installed via the Custom Link, Shopify will skip the prompt
-    // and instantly bounce the user to your /callback route with the 'code'.
-    const authUrl = `https://${shop}/admin/oauth/authorize?client_id=${clientId}&scope=${scopes}&redirect_uri=${redirectUri}`;
+    const nonce = crypto.randomBytes(24).toString('hex');
+    nonceStore.set(nonce, {
+      clientId: client ? client.clientId : null,
+      shop,
+      createdAt: Date.now()
+    });
 
-    console.log(`🔄 [ShopifyOAuth] App installed via custom link. Fetching token for ${shop}...`);
-    return res.redirect(authUrl);
+    let authUrl;
+    try {
+      authUrl = buildShopifyAuthorizeURL(shop, {
+        appClientId: oauthClientId,
+        scopes: SHOPIFY_SCOPES(),
+        state: nonce
+      });
+    } catch (e) {
+      console.error('❌ [ShopifyOAuth] app-load authorize URL:', e.message);
+      return res.status(500).send('OAuth redirect configuration error.');
+    }
+
+    console.log(`🔄 [ShopifyOAuth] App-load authorize for shop=${shop}`);
+    return res.redirect(302, authUrl);
 
   } catch (error) {
     console.error('❌ [ShopifyOAuth] App load error:', error);
@@ -571,15 +637,17 @@ router.get('/callback', async (req, res) => {
         const pending = nonceStore.get(state);
         if (pending) {
           nonceStore.delete(state);
-          client = await Client.findOne({ clientId: pending.clientId });
-          if (client && pending.shop && shop === pending.shop) {
-            await Client.updateOne(
-              { clientId: pending.clientId },
-              { $set: { shopDomain: shop, 'commerce.shopify.domain': shop, storeType: 'shopify', 'commerce.storeType': 'shopify' } }
-            );
+          if (pending.clientId) {
+            client = await Client.findOne({ clientId: pending.clientId });
+            if (client && pending.shop && shop === pending.shop) {
+              await Client.updateOne(
+                { clientId: pending.clientId },
+                { $set: { shopDomain: shop, 'commerce.shopify.domain': shop, storeType: 'shopify', 'commerce.storeType': 'shopify' } }
+              );
+            }
           }
           if (client) {
-            console.log(`✅ [ShopifyOAuth] Client resolved via OAuth state: ${pending.clientId}`);
+            console.log(`✅ [ShopifyOAuth] Client resolved via OAuth state: ${pending.clientId || 'cookie-fallback-next'}`);
           }
         }
       }
@@ -761,9 +829,6 @@ router.get('/install', (req, res) => {
     });
 
     const clientIdEnv = SHOPIFY_CLIENT_ID();
-    const scopes = SHOPIFY_SCOPES();
-    const redirectUri = SHOPIFY_REDIRECT_URI();
-
     if (!clientIdEnv) {
       return res.status(500).json({
         success: false,
@@ -771,11 +836,17 @@ router.get('/install', (req, res) => {
       });
     }
 
-    const authUrl = `https://${cleanShop}/admin/oauth/authorize` +
-      `?client_id=${encodeURIComponent(clientIdEnv)}` +
-      `&scope=${encodeURIComponent(scopes)}` +
-      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-      `&state=${encodeURIComponent(state)}`;
+    let authUrl;
+    try {
+      authUrl = buildShopifyAuthorizeURL(cleanShop, {
+        appClientId: clientIdEnv,
+        scopes: SHOPIFY_SCOPES(),
+        state
+      });
+    } catch (e) {
+      console.error('[ShopifyOAuth] /install authorize URL:', e.message);
+      return res.status(500).json({ success: false, message: 'OAuth redirect URL invalid — set SHOPIFY_REDIRECT_URI or SERVER_URL' });
+    }
 
     console.log(`🔄 [ShopifyOAuth] App Store install initiated for shop=${cleanShop}`);
     return res.redirect(authUrl);
