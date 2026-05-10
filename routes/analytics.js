@@ -456,7 +456,18 @@ router.get('/realtime', protect, apiCache(60), async (req, res) => {
     ]);
     const aiHandled = aiHandledAgg[0]?.count || 0;
     const totalHandled = aiHandled + humanHandled;
-    const aiResolutionRate = totalHandled > 0 ? (aiHandled / totalHandled) * 100 : 0;
+    
+    // Task 1.2 Update: Accurate AI Resolution Rate
+    const aiResRateAgg = await require('../models/Conversation').aggregate([
+      { $match: { clientId, resolvedAt: { $gte: startDate } } },
+      { $group: {
+          _id: null,
+          totalResolved: { $sum: 1 },
+          aiResolved: { $sum: { $cond: [{ $not: ["$assignedTo"] }, 1, 0] } }
+      }}
+    ]);
+    const resStats = aiResRateAgg[0] || { totalResolved: 0, aiResolved: 0 };
+    const aiResolutionRate = resStats.totalResolved > 0 ? (resStats.aiResolved / resStats.totalResolved) * 100 : 0;
 
     const flowPerf = flowPerfAgg[0] || { flowsSent: 0, flowsCompleted: 0 };
     const flowCompletionRate = flowPerf.flowsSent > 0 ? (flowPerf.flowsCompleted / flowPerf.flowsSent) * 100 : 0;

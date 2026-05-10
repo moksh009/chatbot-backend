@@ -495,6 +495,7 @@ require('./cron/insightsCron')();
 require('./cron/csatCron')();
 require('./cron/leadScoringCron');
 require('./cron/igTokenRefresher');
+require('./cron/autoResolutionCron');
 
 const http = require('http');
 const socketIo = require('socket.io');
