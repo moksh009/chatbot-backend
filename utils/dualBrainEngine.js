@@ -3387,7 +3387,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'message':
     case 'MessageNode':
     case 'livechat': {
-      let body = data.text || data.body || (type === 'livechat' ? 'Connecting you to a human...' : '');
+      let body = data.handoffMessage || data.text || data.body || (type === 'livechat' ? '👋 Connecting you to our team…\nA support agent will be with you shortly.' : '');
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
       const safeBody = String(body || '').trim();
       if (!safeBody || safeBody === 'null' || safeBody === 'undefined') {
