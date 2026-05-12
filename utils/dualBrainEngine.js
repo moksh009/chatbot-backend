@@ -2455,6 +2455,46 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 
   // 7. Loyalty Action Node
   if (node.type === 'loyalty_action' || node.type === 'loyalty') {
+    const rawAct = String(
+      node.data?.actionType || node.data?.action || node.data?.loyaltyAction || 'GIVE_LOYALTY'
+    ).toUpperCase();
+    if (
+      rawAct === 'CHECK_LOYALTY' ||
+      rawAct === 'LOOKUP_POINTS' ||
+      rawAct === 'CHECK_BALANCE' ||
+      rawAct === 'FETCH_POINTS'
+    ) {
+      const walletService = require('./walletService');
+      const balance = await walletService.getBalance(client.clientId, phone);
+      const prev = convo.metadata || {};
+      const nextMeta = {
+        ...prev,
+        loyalty_points_balance: String(balance),
+        loyalty_has_points: balance > 0 ? 'true' : 'false',
+      };
+      await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: nextMeta } });
+      convo.metadata = nextMeta;
+      const targetHandle = balance > 0 ? 'has_points' : 'none';
+      const nextEdge = flowEdges.find(
+        (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === targetHandle
+      );
+      if (nextEdge) {
+        return await executeNode(
+          nextEdge.target,
+          flowNodes,
+          flowEdges,
+          client,
+          convo,
+          lead,
+          phone,
+          io,
+          channel,
+          parsedMessage
+        );
+      }
+      return true;
+    }
+
     const { handleNodeAction } = require('./nodeActions');
     const action = node.data?.actionType || 'GIVE_LOYALTY';
 
@@ -2508,9 +2548,53 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     }
     
     await handleNodeAction(action, node, client, phone, convo, lead);
-  }
 
-  // 9. Warranty Check Node — branching driven by Order + warranty window (see nodeActions WARRANTY_CHECK)
+    if (action === 'CHECK_ORDER_STATUS') {
+      const fresh = await Conversation.findById(convo._id).select('metadata').lean();
+      const found = String(fresh?.metadata?.last_order_lookup_found || '') === 'true';
+      if (found) {
+        const succEdge = flowEdges.find(
+          (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === 'success'
+        );
+        if (succEdge) {
+          return await executeNode(
+            succEdge.target,
+            flowNodes,
+            flowEdges,
+            client,
+            convo,
+            lead,
+            phone,
+            io,
+            channel,
+            parsedMessage
+          );
+        }
+      }
+      if (!found) {
+        const noEdge = flowEdges.find(
+          (e) =>
+            e.source === nodeId &&
+            ['no_order', 'not_found', 'error'].includes(normalizeHandleId(e.sourceHandle))
+        );
+        if (noEdge) {
+          return await executeNode(
+            noEdge.target,
+            flowNodes,
+            flowEdges,
+            client,
+            convo,
+            lead,
+            phone,
+            io,
+            channel,
+            parsedMessage
+          );
+        }
+      }
+    }
+  }
+  // 9. Warranty Check / Lookup — branches active | expired | none (see nodeActions WARRANTY_CHECK)
   if (node.type === 'warranty_check' || node.type === 'warranty_lookup') {
     const { handleNodeAction } = require('./nodeActions');
     const Conversation = require('../models/Conversation');
@@ -2908,126 +2992,47 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         }
       } 
       
-      // --- USP 2: REAL-TIME ORDER TRACKING (Multi-format phone search) ---
+      // --- USP 2: ORDER TRACKING (Shopify + local Order — shared resolver) ---
       else if (action === 'ORDER_STATUS' || action === 'get_order' || action === 'CHECK_ORDER_STATUS') {
-        resultData = await withShopifyRetry(client.clientId, async (shopify) => {
-          // Try multiple phone formats — Shopify stores vary
-          const phoneDigits = phone.replace(/\D/g, '');
-          const phoneLast10 = phoneDigits.slice(-10);
-          const phoneFormats = [
-            phone.replace('+', ''),           // 91XXXXXXXXXX
-            phoneLast10,                       // XXXXXXXXXX
-            `+${phoneDigits}`,                 // +91XXXXXXXXXX
-            phoneDigits                        // raw digits
-          ];
+        const { resolveLatestOrderContext } = require("./orderLookupService");
+        const silentLookup = !!node.data?.silent;
+        const r = await resolveLatestOrderContext({ client, phone });
+        const mergedMeta = { ...(convo.metadata || {}), ...(r.mergedMeta || {}) };
+        await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: mergedMeta } });
+        convo.metadata = mergedMeta;
 
-          let order = null;
-          for (const ph of phoneFormats) {
-            try {
-              const res = await shopify.get(`/orders.json?status=any&limit=1&phone=${encodeURIComponent(ph)}`);
-              if (res.data.orders?.length > 0) {
-                order = res.data.orders[0];
-                break;
-              }
-            } catch (_) { continue; }
+        if (!r.found) {
+          if (!silentLookup && r.userMessage) {
+            await sendWhatsAppText(client, phone, r.userMessage);
           }
-
-          if (!order) {
-            const silentLookup = !!node.data?.silent;
-            if (!silentLookup) {
-              await sendWhatsAppText(client, phone,
-                "I couldn't find any orders linked to your number. " +
-                "Please share your order ID (e.g. #1042) and I'll look it up!"
-              );
-            }
-            // Save to metadata for logic node branching
-            await Conversation.findByIdAndUpdate(convo._id, {
-              'metadata.shopify_order_found': 'false'
-            });
-            // Route to not_found edge if configured
-            const noOrderEdge = flowEdges.find(e => e.source === nodeId &&
-              (normalizeHandleId(e.sourceHandle) === 'not_found' ||
-               normalizeHandleId(e.sourceHandle) === 'no_order' ||
-               normalizeHandleId(e.sourceHandle) === 'error'));
-            if (noOrderEdge) {
-              return await executeNode(noOrderEdge.target, flowNodes, flowEdges, client, convo, lead, phone, io, channel, parsedMessage);
-            }
-            return { error: 'No order found for this number' };
+          const noOrderEdge = flowEdges.find(
+            (e) =>
+              e.source === nodeId &&
+              (normalizeHandleId(e.sourceHandle) === "not_found" ||
+                normalizeHandleId(e.sourceHandle) === "no_order" ||
+                normalizeHandleId(e.sourceHandle) === "error")
+          );
+          if (noOrderEdge) {
+            return await executeNode(
+              noOrderEdge.target,
+              flowNodes,
+              flowEdges,
+              client,
+              convo,
+              lead,
+              phone,
+              io,
+              channel,
+              parsedMessage
+            );
           }
-
-          const statusEmoji = {
-            pending: '⏳', confirmed: '✅', processing: '🔄',
-            shipped: '🚚', delivered: '🎉', cancelled: '❌', refunded: '💰'
-          };
-          const fulfillStatus = order.fulfillment_status || order.financial_status || 'Confirmed';
-          const emoji = statusEmoji[fulfillStatus.toLowerCase()] || '📦';
-          const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
-          const items = lineItems.map(i => `• ${i.title} × ${i.quantity}`).join('\n');
-          const firstItemTitle = String(lineItems[0]?.title || '').trim();
-          const tracking = order.fulfillments?.[0]?.tracking_url;
-          const payGw = (order.payment_gateway_names || []).join(', ') || order.processing_method || '';
-
-          let firstProductImage = '';
-          const li0 = lineItems[0];
-          if (li0?.product_id) {
-            try {
-              const pr = await shopify.get(`/products/${li0.product_id}.json`);
-              const product = pr.data?.product;
-              const imgs = Array.isArray(product?.images) ? product.images : [];
-              firstProductImage =
-                (imgs[0] && imgs[0].src) ||
-                (product?.image && product.image.src) ||
-                '';
-            } catch (imgErr) {
-              log.warn('[CHECK_ORDER_STATUS] product image fetch skipped', { message: imgErr.message });
-            }
+          resultData = { error: "No order found for this number" };
+        } else {
+          if (!silentLookup && r.userMessage) {
+            await sendWhatsAppText(client, phone, r.userMessage);
           }
-
-          const silentLookup = !!node.data?.silent;
-          if (!silentLookup) {
-            let msg = `${emoji} *Order #${order.order_number}*\n\n`;
-            msg += `Status: *${fulfillStatus.toUpperCase()}*\n`;
-            msg += `Items:\n${items || 'N/A'}\n`;
-            msg += `Total: *${order.currency} ${parseFloat(order.total_price).toFixed(2)}*`;
-            if (tracking) msg += `\n\n📍 Track: ${tracking}`;
-            if (order.order_status_url) msg += `\n🔗 Details: ${order.order_status_url}`;
-
-            await sendWhatsAppText(client, phone, msg);
-          }
-
-          // Save order data to metadata
-          const orderData = {
-            orderNumber: order.order_number, orderId: order.id,
-            status: fulfillStatus, totalPrice: order.total_price,
-            trackingUrl: tracking || null, currency: order.currency,
-            itemsSummary: items || '',
-            payment_method: payGw,
-          };
-          const fsRaw = String(order.fulfillment_status || "").toLowerCase();
-          const hasFulfillment = Array.isArray(order.fulfillments) && order.fulfillments.length > 0;
-          const isShippedLike =
-            fsRaw === "fulfilled" ||
-            fsRaw === "partial" ||
-            fsRaw === "shipped" ||
-            (hasFulfillment && fsRaw !== "restocked");
-          const mergedMeta = {
-            ...(convo.metadata || {}),
-            lastOrder: orderData,
-            shopify_order_found: "true",
-            shopify_order_id: order.id,
-            order_number: order.name ? String(order.name) : `#${order.order_number}`,
-            order_status: fulfillStatus,
-            payment_method: payGw,
-            is_shipped: isShippedLike ? "true" : "false",
-            first_product_title: firstItemTitle,
-            first_product_image: firstProductImage,
-            last_order_items_count: String(lineItems.length || 0),
-          };
-          await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: mergedMeta } });
-          convo.metadata = mergedMeta;
-
-          return orderData;
-        });
+          resultData = r.orderData;
+        }
       }
 
       else if (action === 'CANCEL_ORDER') {
@@ -3813,6 +3818,29 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIORITY 2: KEYWORD FALLBACK
 // ─────────────────────────────────────────────────────────────────────────────
+
+/** Keyword action `track_order` — uses same resolver as flows + order_action. */
+async function handleUniversalOrderTracking(client, phone, convo) {
+  const { resolveLatestOrderContext } = require("./orderLookupService");
+  try {
+    const r = await resolveLatestOrderContext({ client, phone });
+    const prev = convo?.metadata || {};
+    if (convo?._id && r.mergedMeta) {
+      await Conversation.findByIdAndUpdate(convo._id, {
+        $set: { metadata: { ...prev, ...r.mergedMeta } },
+      });
+    }
+    if (r.userMessage) await sendWhatsAppText(client, phone, r.userMessage);
+  } catch (err) {
+    log.error("[track_order] lookup failed", { message: err.message });
+    await sendWhatsAppText(
+      client,
+      phone,
+      "We could not look up your order right now. Please share your *order ID* or try again in a few minutes."
+    );
+  }
+}
+
 async function tryKeywordFallback(parsedMessage, client, convo, phone) {
   const text     = (parsedMessage.text?.body || '').toLowerCase().trim();
   const keywords = client.simpleSettings?.keywords || [];
@@ -3850,7 +3878,7 @@ async function tryKeywordFallback(parsedMessage, client, convo, phone) {
         }
         break;
       }
-      case 'track_order': await handleUniversalOrderTracking(client, phone); return true;
+      case 'track_order': await handleUniversalOrderTracking(client, phone, convo); return true;
       case 'initiate_return': {
         const { handleNodeAction } = require('./nodeActions');
         await handleNodeAction('INITIATE_RETURN', {}, client, phone, convo, lead);

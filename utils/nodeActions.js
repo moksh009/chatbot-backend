@@ -409,26 +409,43 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
 
     case "CHECK_ORDER_STATUS": {
       try {
-        const localOrder = await Order.findOne({ 
-          $or: [{ customerPhone: phone }, { phone: phone }], 
-          clientId: client.clientId 
-        }).sort({ createdAt: -1 });
-
-        let statusMsg = "";
-        if (!localOrder) {
-          statusMsg = "I couldn't find any recent orders associated with your number. 😕";
-        } else {
-          statusMsg = `📦 *Order ${localOrder.orderId}*\n` +
-                      `Status: *${localOrder.status || 'Processing'}*\n` +
-                      `Total: ₹${localOrder.totalPrice || localOrder.amount}\n` +
-                      `Placed: ${new Date(localOrder.createdAt).toLocaleDateString('en-IN')}\n`;
-          
-          if (localOrder.trackingUrl) statusMsg += `🚚 Tracking: ${localOrder.trackingUrl}`;
+        const { resolveLatestOrderContext } = require("./orderLookupService");
+        const r = await resolveLatestOrderContext({ client, phone });
+        const prev = convo?.metadata || {};
+        if (convo?._id && r.mergedMeta) {
+          await Conversation.findByIdAndUpdate(convo._id, {
+            $set: { metadata: { ...prev, ...r.mergedMeta } },
+          });
         }
-
-        await WhatsApp.sendText(client, phone, statusMsg);
+        const custom =
+          (node.data?.body && String(node.data.body).trim()) ||
+          (node.data?.text && String(node.data.text).trim()) ||
+          "";
+        const convoPlain =
+          convo && typeof convo.toObject === "function" ? convo.toObject() : { ...(convo || {}) };
+        const mergedConvo = {
+          ...convoPlain,
+          metadata: { ...prev, ...(r.mergedMeta || {}) },
+        };
+        let out = r.userMessage || "";
+        if (custom) {
+          const rendered = String(replaceVariables(custom, client, lead, mergedConvo) || "").trim();
+          if (rendered) out = rendered;
+        }
+        if (!out) {
+          out =
+            "We could not look up your order just now. Please share your *order ID* or try again shortly.";
+        }
+        await WhatsApp.sendText(client, phone, out.substring(0, 4096));
       } catch (err) {
         console.error("[NodeActions] CHECK_ORDER_STATUS error:", err.message);
+        try {
+          await WhatsApp.sendText(
+            client,
+            phone,
+            "We could not look up your order right now. Please share your *order ID* or try again in a few minutes."
+          );
+        } catch (_) {}
       }
       break;
     }
