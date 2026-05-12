@@ -1127,7 +1127,7 @@ router.get('/templates', protect, async (req, res) => {
 // @route   GET /api/campaigns/audience-estimate
 // @desc    Get estimated reach for a segment or source
 router.get('/audience-estimate', protect, async (req, res) => {
-    const { source, segmentId, importBatchId } = req.query;
+    const { source, segmentId, importBatchId, campaignId } = req.query;
     const cid = req.user.clientId;
     let count = 0;
 
@@ -1155,6 +1155,9 @@ router.get('/audience-estimate', protect, async (req, res) => {
                     { addToCartCount: { $gt: 0 }, isOrderPlaced: { $ne: true } }
                 ]
             });
+        } else if (source === 'manual' && campaignId && mongoose.Types.ObjectId.isValid(String(campaignId))) {
+            const campaign = await Campaign.findOne({ _id: campaignId, clientId: cid }).select('audience').lean();
+            count = Array.isArray(campaign?.audience) ? campaign.audience.length : 0;
         }
 
         res.json({ success: true, count });
@@ -1171,23 +1174,69 @@ router.get('/audience-estimate', protect, async (req, res) => {
 router.get('/audience-preview', protect, async (req, res) => {
   try {
     const cid = req.user.clientId;
-    const { segmentId, importBatchId, templateCategory = 'MARKETING' } = req.query;
+    const {
+      source: sourceRaw,
+      segmentId,
+      importBatchId,
+      campaignId,
+      templateCategory = 'MARKETING',
+    } = req.query;
     let leads = [];
 
-    if (segmentId) {
+    let source = String(sourceRaw || '').toLowerCase();
+    if (!source) {
+      if (segmentId) source = 'segment';
+      else if (importBatchId) source = 'imported';
+      else if (campaignId) source = 'manual';
+    }
+
+    if (source === 'segment' && segmentId) {
       const segment = await Segment.findOne({ _id: segmentId, clientId: cid }).lean();
       if (!segment) return res.status(404).json({ success: false, message: 'Segment not found' });
       leads = await AdLead.find({ clientId: cid, ...segment.query })
         .select('optStatus optInSource')
         .lean();
-    } else if (importBatchId) {
+    } else if (source === 'imported' && importBatchId) {
       const resolved = await resolveImportBatchObjectId(importBatchId, cid);
       if (!resolved) return res.status(404).json({ success: false, message: 'Import batch not found' });
       leads = await AdLead.find({ clientId: cid, importBatchId: resolved })
         .select('optStatus optInSource')
         .lean();
+    } else if (source === 'manual' && campaignId) {
+      if (!mongoose.Types.ObjectId.isValid(String(campaignId))) {
+        return res.status(400).json({ success: false, message: 'Invalid campaign id' });
+      }
+      const campaign = await Campaign.findOne({ _id: campaignId, clientId: cid }).select('audience').lean();
+      if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+      const phones = [
+        ...new Set(
+          (campaign.audience || [])
+            .map((row) => String(row?.phone || row?.phoneNumber || '').trim())
+            .filter(Boolean)
+        ),
+      ];
+      if (phones.length) {
+        leads = await AdLead.find({ clientId: cid, phoneNumber: { $in: phones } })
+          .select('optStatus optInSource')
+          .lean();
+      } else {
+        leads = [];
+      }
+    } else if (source === 'hot') {
+      leads = await AdLead.find({
+        clientId: cid,
+        $or: [
+          { cartStatus: 'abandoned' },
+          { addToCartCount: { $gt: 0 }, isOrderPlaced: { $ne: true } },
+        ],
+      })
+        .select('optStatus optInSource')
+        .lean();
     } else {
-      leads = await AdLead.find({ clientId: cid }).select('optStatus optInSource').lean();
+      return res.status(400).json({
+        success: false,
+        message: 'Specify a valid audience source (segment, imported, manual, or hot) with the required ids.',
+      });
     }
 
     const cat = String(templateCategory || 'MARKETING').toUpperCase();
