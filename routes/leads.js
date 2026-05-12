@@ -478,7 +478,7 @@ router.post('/bulk-template', protect, async (req, res) => {
 // Triggers an automated multi-step sequence for multiple leads
 router.post('/bulk-sequence', protect, async (req, res) => {
     try {
-        const { leadIds, sequenceName, steps, type } = req.body;
+        const { leadIds, sequenceName, steps, type, enrollment } = req.body;
         const clientId = req.user.clientId;
 
         if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
@@ -490,18 +490,26 @@ router.post('/bulk-sequence', protect, async (req, res) => {
 
         const results = [];
         for (const lead of leads) {
-            // Calculate send times for steps based on delays
             let cumulativeDelay = 0;
-            const sequenceSteps = steps.map(step => {
+            const sequenceSteps = steps.map((step, index) => {
                 const delayMs = (step.delayValue || 0) * (step.delayUnit === 'm' ? 60000 : step.delayUnit === 'h' ? 3600000 : 86400000);
-                cumulativeDelay += delayMs;
-                
+                const parallel = Boolean(step.parallelWithPrevious) && index > 0;
+                if (!parallel) {
+                    cumulativeDelay += delayMs;
+                }
+                const { parallelWithPrevious: _p, ...rest } = step;
                 return {
-                    ...step,
+                    ...rest,
+                    parallelWithPrevious: parallel,
                     sendAt: new Date(Date.now() + cumulativeDelay),
-                    status: 'pending'
+                    status: 'pending',
                 };
             });
+
+            const blueprint =
+                enrollment && typeof enrollment === 'object' && enrollment.blueprint && typeof enrollment.blueprint === 'object'
+                    ? enrollment.blueprint
+                    : null;
 
             const sequence = await FollowUpSequence.create({
                 clientId,
@@ -511,7 +519,11 @@ router.post('/bulk-sequence', protect, async (req, res) => {
                 name: sequenceName || 'Automated Sequence',
                 type: type || 'custom',
                 status: 'active',
-                steps: sequenceSteps
+                steps: sequenceSteps,
+                enrollment: {
+                    mode: 'instant',
+                    blueprint,
+                },
             });
 
             // Mark lead as recovery-in-progress

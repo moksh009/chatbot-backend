@@ -7,9 +7,18 @@ const FollowUpSequenceSchema = new mongoose.Schema({
   email: { type: String },
   name: { type: String, default: 'Untitled Sequence' },
   type: { type: String, enum: ["custom", "loyalty_reminder", "review_request", "abandoned_cart", "warranty_resend", "warranty_certificate"], default: "custom" },
+  /** How / why this sequence was started; blueprint fields reserved for future auto-enrollment workers */
+  enrollment: {
+    mode: { type: String, enum: ['instant', 'blueprint'], default: 'instant' },
+    blueprint: { type: mongoose.Schema.Types.Mixed, default: null },
+  },
   status: { type: String, enum: ["active", "completed", "cancelled", "paused"], default: "active" },
   steps: [{
-    type: { type: String, enum: ['whatsapp', 'email'], default: 'whatsapp' },
+    type: {
+      type: String,
+      enum: ['whatsapp', 'email', 'loyalty_reminder', 'review_request', 'warranty_resend'],
+      default: 'whatsapp',
+    },
     templateId: String, // For Meta WhatsApp Templates
     templateName: String,
     subject: String, // For Email
@@ -22,7 +31,9 @@ const FollowUpSequenceSchema = new mongoose.Schema({
     errorLog: String,
     condition: String,
     mediaType: { type: String, enum: ['none', 'static', 'dynamic'], default: 'none' },
-    mediaUrl: String
+    mediaUrl: String,
+    /** When true, sendAt matches previous step (same beat as WhatsApp + email) */
+    parallelWithPrevious: { type: Boolean, default: false },
   }]
 }, { timestamps: true });
 

@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const { resolveClient, tenantClientId } = require('../utils/queryHelpers');
 const router = express.Router();
 const TaskQueueService = require('../services/TaskQueueService');
@@ -205,6 +206,68 @@ router.post('/from-imported-list', protect, async (req, res) => {
     } catch (err) {
         log.error('[from-imported-list] Failed:', err.message);
         res.status(500).json({ error: 'Failed to create campaign from imported list' });
+    }
+});
+
+// @route   POST /api/campaigns/from-leads
+// @desc    Create a DRAFT campaign with a fixed audience from CRM lead IDs (Audience hub / mass message).
+// @access  Private
+router.post('/from-leads', protect, async (req, res) => {
+    const { leadIds, name } = req.body || {};
+    try {
+        const rawIds = Array.isArray(leadIds) ? leadIds : [];
+        const objectIds = [
+            ...new Set(
+                rawIds
+                    .map((id) => String(id || '').trim())
+                    .filter((id) => mongoose.Types.ObjectId.isValid(id))
+                    .map((id) => new mongoose.Types.ObjectId(id))
+            ),
+        ];
+        if (objectIds.length === 0) {
+            return res.status(400).json({ error: 'leadIds must be a non-empty array of valid lead IDs' });
+        }
+        if (objectIds.length > 10000) {
+            return res.status(400).json({ error: 'Maximum 10,000 leads per CRM broadcast' });
+        }
+
+        const client = await Client.findOne({ clientId: req.user.clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
+        if (!client) return res.status(404).json({ error: 'Client not found' });
+
+        const limits = await checkLimit(client._id, 'campaigns');
+        if (!limits.allowed) {
+            return res.status(403).json({ error: limits.reason });
+        }
+
+        const leads = await AdLead.find({
+            _id: { $in: objectIds },
+            clientId: req.user.clientId,
+        }).lean();
+
+        if (!leads.length) {
+            return res.status(400).json({ error: 'No matching leads found for this account' });
+        }
+
+        const audience = leads.map((l) => ({
+            phone: l.phoneNumber,
+            name: l.name || '',
+            ...l,
+        }));
+
+        await incrementUsage(client._id, 'campaigns', 1);
+
+        const campaign = await Campaign.create({
+            clientId: req.user.clientId,
+            name: name || `CRM · ${audience.length} contacts`,
+            status: 'DRAFT',
+            audience,
+            audienceCount: audience.length,
+        });
+
+        res.json(campaign);
+    } catch (err) {
+        log.error('[from-leads] Failed:', err.message);
+        res.status(500).json({ error: 'Failed to create campaign from selected leads' });
     }
 });
 
@@ -433,9 +496,17 @@ router.post('/start', protect, async (req, res) => {
     const campaign = await Campaign.findOne({ _id: campaignId, clientId: req.user.clientId });
     if (!campaign) return res.status(404).json({ message: 'Campaign not found' });
     
-    // Support CSV, Segment, and Imported List campaigns
-    if (!campaign.csvFile && !campaign.segmentId && !campaign.importBatchId) {
-        return res.status(400).json({ message: 'No audience (CSV, Segment, or Imported List) attached to campaign' });
+    const hasInlineAudience = Array.isArray(campaign.audience) && campaign.audience.length > 0;
+    // CSV / segment / import resolve audience at start; CRM-from-leads stores audience on the document;
+    // smart-send campaigns resolve audience in the worker.
+    if (
+        !campaign.csvFile &&
+        !campaign.segmentId &&
+        !campaign.importBatchId &&
+        !hasInlineAudience &&
+        !campaign.isSmartSend
+    ) {
+        return res.status(400).json({ message: 'No audience attached to this campaign' });
     }
 
     log.info(`Campaign START: campaignId=${campaignId} | clientId=${req.user.clientId} | templateType=${templateType}`);
