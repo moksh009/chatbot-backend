@@ -37,6 +37,7 @@ const messageBuffer = require('./messageBuffer');
 const { parseWhatsAppPayload } = require("./parseWhatsAppPayload");
 const { normalizeHandleId, findInteractiveEdgeForButtonAcrossGraph } = require("./graphButtonRouting");
 const { logFlowEvent } = require("./flowObservability");
+const { buildInteractiveHeaderFromNodeData } = require("./waInteractiveHeader");
 
 
 const SESSION_LOCK_TIMEOUT = 10000; // 10 seconds (Fallback for TTL)
@@ -3475,8 +3476,8 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
             parameters: { display_text: (data.btnUrlTitle || 'Visit').substring(0, 20), url: data.btnUrlLink }
           }
         };
-        if (data.imageUrl) interactive.header = { type: 'image', image: { link: data.imageUrl } };
-        else if (data.header) interactive.header = { type: 'text', text: data.header.substring(0, 60) };
+        const ctaHdr = buildInteractiveHeaderFromNodeData(data);
+        if (ctaHdr) interactive.header = ctaHdr;
         await WhatsApp.sendInteractive(client, phone, interactive, String(body).substring(0, 1024));
         return true;
       }
@@ -3532,8 +3533,8 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
             sections
           }
         };
-        if (data.imageUrl) interactive.header = { type: 'image', image: { link: data.imageUrl } };
-        else if (data.header) interactive.header = { type: 'text', text: data.header.substring(0, 60) };
+        const listHdr = buildInteractiveHeaderFromNodeData(data);
+        if (listHdr) interactive.header = listHdr;
         await WhatsApp.sendInteractive(client, phone, interactive, String(body).substring(0, 1024));
         return true;
       }
@@ -3550,8 +3551,8 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
           }))
         }
       };
-      if (data.imageUrl) interactive.header = { type: 'image', image: { link: data.imageUrl } };
-      else if (data.header) interactive.header = { type: 'text', text: data.header.substring(0, 60) };
+      const btnHdr = buildInteractiveHeaderFromNodeData(data);
+      if (btnHdr) interactive.header = btnHdr;
       await WhatsApp.sendInteractive(client, phone, interactive, String(body).substring(0, 1024));
       return true;
     }
