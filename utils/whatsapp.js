@@ -378,7 +378,7 @@ const WhatsApp = {
         seenIds.add(btn.reply.id);
         
         if (btn.reply.title.length > 20) {
-          btn.reply.title = btn.reply.title.substring(0, 17) + '...';
+          btn.reply.title = btn.reply.title.substring(0, 20);
         }
       });
     } else if (interactive.type === 'list') {

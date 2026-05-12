@@ -39,6 +39,20 @@ const { normalizeHandleId, findInteractiveEdgeForButtonAcrossGraph } = require("
 const { logFlowEvent } = require("./flowObservability");
 const { buildInteractiveHeaderFromNodeData } = require("./waInteractiveHeader");
 
+/** Resolved Meta / WA catalog id (same precedence as catalog send path). */
+function getClientCatalogIdString(client) {
+  return String(
+    client.facebookCatalogId ||
+      client.waCatalogId ||
+      client.metaCatalogId ||
+      client.commerceBotSettings?.facebookCatalogId ||
+      client.commerceBotSettings?.waCatalogId ||
+      client.platformVars?.facebookCatalogId ||
+      client.platformVars?.waCatalogId ||
+      process.env.META_CATALOG_ID ||
+      ''
+  ).trim();
+}
 
 const SESSION_LOCK_TIMEOUT = 10000; // 10 seconds (Fallback for TTL)
 
@@ -2183,6 +2197,27 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   });
 
 
+  // Apex: catalog nodes with apexDualMethod skip outbound when no Meta catalog id — branch on no_catalog edge (Method 2).
+  if (node.type === 'catalog' && (node.data || {}).apexDualMethod && !getClientCatalogIdString(client)) {
+    const noCat = flowEdges.find(
+      (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === 'no_catalog'
+    );
+    if (noCat) {
+      return await executeNode(
+        noCat.target,
+        flowNodes,
+        flowEdges,
+        client,
+        convo,
+        lead,
+        phone,
+        io,
+        channel,
+        parsedMessage
+      );
+    }
+  }
+
   let sent = true;
   try {
     const nodeTimeoutMs = node?.type === 'interactive' ? 12000 : 6000;
@@ -2235,6 +2270,26 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       }
     });
     return false;
+  }
+
+  if (!sent && node.type === 'catalog' && (node.data || {}).apexDualMethod) {
+    const noCat = flowEdges.find(
+      (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === 'no_catalog'
+    );
+    if (noCat) {
+      return await executeNode(
+        noCat.target,
+        flowNodes,
+        flowEdges,
+        client,
+        convo,
+        lead,
+        phone,
+        io,
+        channel,
+        parsedMessage
+      );
+    }
   }
 
   // --- SPECIAL NODE LOGIC (Automated Traversal) ---
@@ -2997,7 +3052,21 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       else if (action === 'ORDER_STATUS' || action === 'get_order' || action === 'CHECK_ORDER_STATUS') {
         const { resolveLatestOrderContext } = require("./orderLookupService");
         const silentLookup = !!node.data?.silent;
-        const r = await resolveLatestOrderContext({ client, phone });
+        const variable = node.data?.variable;
+        let r;
+        try {
+          r = await resolveLatestOrderContext({ client, phone });
+        } catch (lookupErr) {
+          log.error(`[shopify_call] CHECK_ORDER_STATUS resolver threw: ${lookupErr.message}`);
+          const prevMeta = { ...(convo.metadata || {}) };
+          if (variable) {
+            prevMeta[variable] = null;
+            prevMeta[`${variable}_error`] = lookupErr.message || "lookup_failed";
+          }
+          await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: prevMeta } });
+          convo.metadata = prevMeta;
+          r = { found: false, mergedMeta: prevMeta, userMessage: null };
+        }
         const mergedMeta = { ...(convo.metadata || {}), ...(r.mergedMeta || {}) };
         await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: mergedMeta } });
         convo.metadata = mergedMeta;
@@ -3151,7 +3220,22 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       }
     } catch (err) {
       log.error(`Shopify Action ${action} Failed:`, { error: err.message });
-      await sendWhatsAppText(client, phone, "I'm having a bit of trouble connecting to the store right now. Please try again in a minute! 🔄");
+      const silentLookup = !!(node?.data && node.data.silent);
+      const isOrderLookup =
+        action === "ORDER_STATUS" || action === "get_order" || action === "CHECK_ORDER_STATUS";
+      if (!(silentLookup && isOrderLookup)) {
+        await sendWhatsAppText(
+          client,
+          phone,
+          "I'm having a bit of trouble connecting to the store right now. Please try again in a minute! 🔄"
+        );
+      }
+      if (isOrderLookup && node?.data?.variable) {
+        const v = String(node.data.variable).trim();
+        const cleared = { ...(convo.metadata || {}), [v]: null, [`${v}_error`]: err.message || "lookup_failed" };
+        await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: cleared } });
+        convo.metadata = cleared;
+      }
       const errEdge = flowEdges.find(
         (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === "error"
       );
@@ -3168,6 +3252,28 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
           channel,
           parsedMessage
         );
+      }
+      if (isOrderLookup) {
+        const noOrderEdge = flowEdges.find(
+          (e) =>
+            e.source === nodeId &&
+            (normalizeHandleId(e.sourceHandle) === "no_order" ||
+              normalizeHandleId(e.sourceHandle) === "not_found")
+        );
+        if (noOrderEdge) {
+          return await executeNode(
+            noOrderEdge.target,
+            flowNodes,
+            flowEdges,
+            client,
+            convo,
+            lead,
+            phone,
+            io,
+            channel,
+            parsedMessage
+          );
+        }
       }
     }
   }
@@ -3397,12 +3503,17 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
 
   switch (type) {
     case 'image': {
-      const imageUrl = data.imageUrl || '';
+      const imageUrl = String(data.imageUrl || '').trim();
       const caption = data.caption || '';
-      if (!imageUrl) return true;
-       else {
-        await WhatsApp.sendImage(client, phone, imageUrl, caption);
+      const captionTrim = String(caption).trim();
+      const imgOk = imageUrl && /^https?:\/\//i.test(imageUrl);
+      if (!imgOk) {
+        if (captionTrim) {
+          await WhatsApp.sendText(client, phone, captionTrim.substring(0, 4096));
+        }
+        return true;
       }
+      await WhatsApp.sendImage(client, phone, imageUrl, caption);
       return true;
     }
 
@@ -3628,19 +3739,15 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
 
     case 'catalog': {
       const ShopifyProduct = require("../models/ShopifyProduct");
-      const catalogId =
-        client.facebookCatalogId ||
-        client.waCatalogId ||
-        client.metaCatalogId ||
-        client.commerceBotSettings?.facebookCatalogId ||
-        client.commerceBotSettings?.waCatalogId ||
-        client.platformVars?.facebookCatalogId ||
-        client.platformVars?.waCatalogId ||
-        process.env.META_CATALOG_ID;
+      const catalogId = getClientCatalogIdString(client);
       const bodyText = String(data.body || data.text || "Check out our collection!").substring(0, 1024);
       const ct = data.catalogType || "full";
 
       if (!catalogId) {
+        if (data.apexDualMethod) {
+          log.info(`[catalog] apexDualMethod + no catalog id — skipping hint (flow uses no_catalog edge)`);
+          return true;
+        }
         const storeHint = client.shopDomain ? `https://${String(client.shopDomain).replace(/^https?:\/\//, "")}` : "our store";
         await WhatsApp.sendText(
           client,
@@ -3675,13 +3782,19 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
             product_items: ids.map((id) => ({ product_retailer_id: id }))
           }
         ];
-        await WhatsApp.sendProductList(client, phone, {
-          header: (data.header || "Catalog").substring(0, 60),
-          body: bodyText,
-          footer: data.footer,
-          catalogId,
-          sections
-        });
+        try {
+          await WhatsApp.sendProductList(client, phone, {
+            header: (data.header || "Catalog").substring(0, 60),
+            body: bodyText,
+            footer: data.footer,
+            catalogId,
+            sections
+          });
+        } catch (plErr) {
+          log.error(`[catalog] sendProductList failed: ${plErr.message}`);
+          if (data.apexDualMethod) return false;
+          await sendWhatsAppText(client, phone, bodyText.substring(0, 4096));
+        }
         return true;
       }
 
