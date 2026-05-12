@@ -3,7 +3,7 @@ const router = express.Router();
 const Client = require('../models/Client');
 const { tenantClientId } = require('../utils/queryHelpers');
 const { protect } = require('../middleware/auth');
-const { apiCache } = require('../middleware/apiCache');
+const { clearClientCache } = require('../middleware/apiCache');
 const { fixFlowWithAI } = require('../controllers/flowFixController');
 
 router.post('/fix', protect, fixFlowWithAI);
@@ -56,6 +56,8 @@ router.post('/', protect, async (req, res) => {
       }
     );
 
+    await clearClientCache(clientId);
+
     res.json({
       success: true,
       flow: {
@@ -84,7 +86,10 @@ router.post('/ai-build', protect, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Prompt is required' });
     }
 
-    const client = await Client.findOne({ clientId: req.user.clientId });
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+
+    const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
     const { buildFlowFromPrompt, generateFlowVariants, validateAndCleanFlow } = require('../utils/aiFlowBuilder');
@@ -232,7 +237,11 @@ router.post('/simulate', protect, async (req, res) => {
         edgeUsed = outgoingEdges.find(e => String(e.sourceHandle || '') === sourceHandle) || null;
       } else if (currentNode?.type === 'loyalty_action') {
         const actionType = String(currentNode?.data?.actionType || 'GIVE_LOYALTY').toUpperCase();
-        if (actionType === 'REDEEM_POINTS') {
+        if (['CHECK_LOYALTY', 'LOOKUP_POINTS', 'CHECK_BALANCE', 'FETCH_POINTS'].includes(actionType)) {
+          const bal = Number(updatedVariables?.loyalty_points_balance ?? updatedVariables?.loyalty_points ?? 0);
+          const handle = bal > 0 ? 'has_points' : 'none';
+          edgeUsed = outgoingEdges.find(e => String(e.sourceHandle || '') === handle) || null;
+        } else if (actionType === 'REDEEM_POINTS') {
           const required = Number(currentNode?.data?.pointsRequired || 0);
           const current = Number(updatedVariables?.loyalty_points || 0);
           const isSuccess = required > 0 ? current >= required : true;
@@ -242,7 +251,51 @@ router.post('/simulate', protect, async (req, res) => {
           const points = Number(currentNode?.data?.points || 0);
           const current = Number(updatedVariables?.loyalty_points || 0);
           updatedVariables.loyalty_points = current + Math.max(0, points);
+          updatedVariables.loyalty_points_balance =
+            Number(updatedVariables?.loyalty_points_balance ?? current) + Math.max(0, points);
           edgeUsed = outgoingEdges[0];
+        }
+      } else if (currentNode?.type === 'order_action') {
+        const act = String(currentNode?.data?.actionType || currentNode?.data?.action || 'CHECK_ORDER_STATUS');
+        if (act === 'CHECK_ORDER_STATUS') {
+          const found = String(updatedVariables?.last_order_lookup_found || '').toLowerCase() === 'true';
+          if (found) {
+            edgeUsed =
+              outgoingEdges.find(e => String(e.sourceHandle || '').toLowerCase() === 'success') ||
+              outgoingEdges.find(e => !e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'output') ||
+              null;
+          } else {
+            edgeUsed =
+              outgoingEdges.find(e =>
+                ['no_order', 'not_found', 'error'].includes(String(e.sourceHandle || '').toLowerCase())
+              ) || null;
+          }
+        } else {
+          edgeUsed =
+            outgoingEdges.find(e => !e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'output') ||
+            outgoingEdges[0] ||
+            null;
+        }
+      } else if (currentNode?.type === 'shopify_call') {
+        const shopAct = String(currentNode?.data?.action || '');
+        if (shopAct === 'CHECK_ORDER_STATUS') {
+          const silent = !!currentNode?.data?.silent;
+          const found = String(updatedVariables?.last_order_lookup_found || '').toLowerCase() === 'true';
+          if (!found) {
+            edgeUsed =
+              outgoingEdges.find(e =>
+                ['no_order', 'not_found', 'error'].includes(String(e.sourceHandle || '').toLowerCase())
+              ) || null;
+          } else if (silent) {
+            edgeUsed = outgoingEdges.find(e => String(e.sourceHandle || '').toLowerCase() === 'success') || null;
+          } else {
+            edgeUsed =
+              outgoingEdges.find(e => String(e.sourceHandle || '').toLowerCase() === 'success') ||
+              outgoingEdges.find(e => !e.sourceHandle || e.sourceHandle === 'a') ||
+              null;
+          }
+        } else {
+          edgeUsed = outgoingEdges[0] || null;
         }
       } else if (currentNode?.type === 'warranty_check') {
         const branch = String(updatedVariables?._warranty_branch || 'active').toLowerCase();
@@ -299,6 +352,8 @@ router.post('/save', protect, async (req, res) => {
 
     // Legacy fallback: also save to Client model for compatibility
     await Client.updateOne({ clientId }, { flowNodes: nodes, flowEdges: edges });
+
+    await clearClientCache(clientId);
 
     res.json({ success: true, message: 'Draft saved successfully' });
   } catch (error) {
@@ -364,6 +419,7 @@ router.post('/publish', protect, async (req, res) => {
     // Clear trigger cache to load the fresh flows
     const { clearTriggerCache } = require('../utils/triggerEngine');
     clearTriggerCache(clientId);
+    await clearClientCache(clientId);
 
     res.json({ success: true, message: `Flow published successfully (v${flow.version})`, version: flow.version });
   } catch (error) {
@@ -417,7 +473,7 @@ router.post('/:flowId/rollback/:versionId', protect, async (req, res) => {
 // GET /api/flow/
 // Root handler for frontend compatibility
 // --- GET ALL FLOWS ---
-router.get('/', protect, apiCache(25), async (req, res) => {
+router.get('/', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
@@ -443,6 +499,8 @@ router.get('/', protect, apiCache(25), async (req, res) => {
         status:      f.status || 'DRAFT'
       }));
 
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
     res.json({ success: true, flows });
   } catch (err) {
     console.error('Error fetching flows:', err);
@@ -452,7 +510,7 @@ router.get('/', protect, apiCache(25), async (req, res) => {
 
 
 // GET /api/flow/flows
-router.get('/flows', protect, apiCache(25), async (req, res) => {
+router.get('/flows', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) {
@@ -483,6 +541,8 @@ router.get('/flows', protect, apiCache(25), async (req, res) => {
       lastSyncedAt: f.lastSyncedAt
     }));
 
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
     res.json({
       success: true,
       flows: formattedFlows,
@@ -503,7 +563,8 @@ router.get('/flows', protect, apiCache(25), async (req, res) => {
 router.post('/:flowId/duplicate', protect, async (req, res) => {
   try {
     const { flowId } = req.params;
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
     const WhatsAppFlow = require('../models/WhatsAppFlow');
 
     const original = await WhatsAppFlow.findOne({ clientId, flowId });
@@ -523,6 +584,7 @@ router.post('/:flowId/duplicate', protect, async (req, res) => {
     });
 
     await clone.save();
+    await clearClientCache(clientId);
     res.json({
       success: true,
       message: 'Flow duplicated successfully',
@@ -739,6 +801,7 @@ router.delete('/:flowId', protect, async (req, res) => {
       }
     }
 
+    await clearClientCache(clientId);
     res.json({ success: true, message: 'Flow deleted and state synchronized successfully' });
   } catch (error) {
     console.error('[FlowDelete] Error:', error);

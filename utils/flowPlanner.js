@@ -22,6 +22,9 @@ INPUT:
   - includeInstallHelp: ${typeof s.includeInstallHelp === "boolean" ? s.includeInstallHelp : ""}
   - includeWarrantyLookup: ${typeof s.includeWarrantyLookup === "boolean" ? s.includeWarrantyLookup : ""}
   - includeLoyaltyPoints: ${typeof s.includeLoyaltyPoints === "boolean" ? s.includeLoyaltyPoints : ""}
+  - includeOrderTracking: ${typeof s.includeOrderTracking === "boolean" ? s.includeOrderTracking : ""}
+  - includeHumanHandoff: ${typeof s.includeHumanHandoff === "boolean" ? s.includeHumanHandoff : ""}
+  - includeCatalogBrowse: ${typeof s.includeCatalogBrowse === "boolean" ? s.includeCatalogBrowse : ""}
 - Business context:
 ${businessCtx || "(none)"}
 
@@ -65,7 +68,9 @@ RULES:
 - For ecommerce catalogs, prefer catalog-first flow design (WhatsApp catalog + cart + checkout guidance) over one-template-per-product patterns.
 - Avoid "template" nodes for welcome/product messaging; use message or interactive nodes unless it is critical automation messaging (cart recovery, review request, admin alert, order confirmation).
 - In ecommerce mode, include these key steps when relevant: catalog open, category/filter selection, featured products push, checkout link guidance, and post-catalog support fallback.
-- If includeInstallHelp/includeWarrantyLookup/includeLoyaltyPoints is true, include those branches in outline.
+- If includeInstallHelp/includeWarrantyLookup/includeLoyaltyPoints/includeOrderTracking is true, include those branches in outline (use shopify_call or order_action CHECK_ORDER_STATUS with no_order/not_found edges where needed).
+- If includeHumanHandoff is true, include a livechat or explicit agent path and a clear customer message before handoff.
+- If includeCatalogBrowse is true, include catalog or product_list style browsing in the outline for WhatsApp commerce limits.
 - Avoid unverifiable scarcity/guarantee claims.
 - Include escalation/handoff in support flows.
 `;

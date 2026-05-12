@@ -6,6 +6,7 @@ const mongoose = require('mongoose');
 const Client = require('../models/Client');
 const WhatsAppFlow = require('../models/WhatsAppFlow');
 const { clearTriggerCache } = require('../utils/triggerEngine');
+const { clearClientCache } = require('../middleware/apiCache');
 const {
   buildFlow,
   FLOW_ID,
@@ -15,6 +16,12 @@ const {
 
 /** Target Apex Light production client — change if onboarding another tenant */
 const CLIENT_ID = 'shubhampatelsbusiness_1cfb2b';
+
+/**
+ * Upserts the canonical Apex flow into WhatsAppFlow + Client.visualFlows,
+ * bumps version, clears API flow list cache so the Flow Builder sees fresh nodes/edges.
+ * Run: node scripts/setupApexOwnerSupportFlow.js (from chatbot-backend-main, with MONGODB_URI set).
+ */
 
 async function run() {
   const uri = process.env.MONGODB_URI || process.env.MONGO_URI;
@@ -26,18 +33,23 @@ async function run() {
 
   const { nodes, edges } = buildFlow();
 
+  const existing = await WhatsAppFlow.findOne({ clientId: CLIENT_ID, flowId: FLOW_ID }).select('version').lean();
+  const nextVersion = (existing?.version || 0) + 1 || 1;
+
   await WhatsAppFlow.updateMany(
     { clientId: CLIENT_ID, platform: 'whatsapp', flowId: { $ne: FLOW_ID } },
     { $set: { status: 'DRAFT' } }
   );
 
+  const now = new Date();
   const update = {
     clientId: CLIENT_ID,
     flowId: FLOW_ID,
     name: FLOW_NAME,
     platform: 'whatsapp',
     status: 'PUBLISHED',
-    version: 2,
+    version: nextVersion,
+    updatedAt: now,
     nodes,
     edges,
     publishedNodes: nodes,
@@ -50,7 +62,7 @@ async function run() {
     },
     description: FLOW_DESCRIPTION,
     categories: ['support', 'warranty', 'installation', 'owner_experience', 'catalog', 'apex_light'],
-    lastSyncedAt: new Date(),
+    lastSyncedAt: now,
   };
 
   const flowDoc = await WhatsAppFlow.findOneAndUpdate(
@@ -67,7 +79,7 @@ async function run() {
     isActive: true,
     nodes,
     edges,
-    updatedAt: new Date(),
+    updatedAt: now,
   };
 
   // Do NOT set trialActive here. The dashboard TrialGate treats
@@ -92,6 +104,7 @@ async function run() {
   await Client.updateOne({ clientId: CLIENT_ID }, { $push: { visualFlows: visualEntry } });
 
   clearTriggerCache(CLIENT_ID);
+  await clearClientCache(CLIENT_ID);
 
   console.log(
     JSON.stringify(

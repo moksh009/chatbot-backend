@@ -3151,6 +3151,23 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     } catch (err) {
       log.error(`Shopify Action ${action} Failed:`, { error: err.message });
       await sendWhatsAppText(client, phone, "I'm having a bit of trouble connecting to the store right now. Please try again in a minute! 🔄");
+      const errEdge = flowEdges.find(
+        (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === "error"
+      );
+      if (errEdge) {
+        return await executeNode(
+          errEdge.target,
+          flowNodes,
+          flowEdges,
+          client,
+          convo,
+          lead,
+          phone,
+          io,
+          channel,
+          parsedMessage
+        );
+      }
     }
   }
 
