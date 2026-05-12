@@ -642,9 +642,8 @@ exports.getIntentAnalytics = async (req, res) => {
 
     const totalProcessed = dailyStats.reduce((s, d) => s + d.totalMessagesProcessed, 0);
     const totalMatched = dailyStats.reduce((s, d) => s + d.intentsMatched, 0);
-    const avgConfidence = totalProcessed > 0
-      ? parseFloat(((totalMatched / totalProcessed) * 100).toFixed(1))
-      : 100;
+    const avgConfidence =
+      totalProcessed > 0 ? parseFloat(((totalMatched / totalProcessed) * 100).toFixed(1)) : null;
 
     res.status(200).json({
       success: true,
@@ -654,7 +653,8 @@ exports.getIntentAnalytics = async (req, res) => {
         count: i.totalTriggerCount || 0,
         lastTriggered: i.lastTriggeredAt
       })),
-      avgConfidence
+      avgConfidence,
+      hasAnalyticsTraffic: totalProcessed > 0,
     });
   } catch (error) {
     console.error('[IntentApi] Analytics Error:', error);

@@ -377,86 +377,190 @@ exports.getQualityStats = async (req, res) => {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
 
-    // 1. Fetch Conversations with AI Scores
     const TrainingCase = require('../models/TrainingCase');
-    const [qualityDocs, allConvs, orders, totalLosingOrderConvs, totalCorrections, dropoffs] = await Promise.all([
-      Conversation.find({ clientId, aiQualityScore: { $gt: 0 }, createdAt: { $gte: startDate } }).select('aiQualityScore csatScore sentimentScore firstInboundAt firstResponseAt').lean(),
+    const KnowledgeDocument = require('../models/KnowledgeDocument');
+    const UnrecognizedPhrase = require('../models/UnrecognizedPhrase');
+    const WhatsAppFlow = require('../models/WhatsAppFlow');
+    const IntentRule = require('../models/IntentRule');
+    const { buildBotQualityRecommendations } = require('../utils/botQualityInsights');
+
+    const [
+      qualityDocs,
+      allConvs,
+      aiHandledConvs,
+      orders,
+      totalCorrections,
+      dropoffs,
+      pendingPhrases,
+      activeKb,
+      draftKb,
+      publishedFlows,
+      intentsDefined,
+      intentsCold,
+    ] = await Promise.all([
+      Conversation.find({ clientId, aiQualityScore: { $gt: 0 }, createdAt: { $gte: startDate } })
+        .select('aiQualityScore csatScore sentimentScore firstInboundAt firstResponseAt createdAt')
+        .lean(),
       Conversation.countDocuments({ clientId, createdAt: { $gte: startDate } }),
+      Conversation.countDocuments({ clientId, createdAt: { $gte: startDate }, botPaused: { $ne: true } }),
       Order.find({ clientId, createdAt: { $gte: startDate } }).select('phone customerPhone').lean(),
-      Conversation.countDocuments({ clientId, createdAt: { $gte: startDate }, lastMessage: /buy|price|order|cost/i }),
       TrainingCase.countDocuments({ clientId, createdAt: { $gte: startDate } }),
       Conversation.aggregate([
-        { $match: { clientId, createdAt: { $gte: startDate }, "lastNodeVisited.nodeLabel": { $exists: true, $ne: null } } },
-        { $group: { _id: "$lastNodeVisited.nodeLabel", count: { $sum: 1 }, nodeId: { $first: "$lastNodeVisited.nodeId" } } },
+        {
+          $match: {
+            clientId,
+            createdAt: { $gte: startDate },
+            'lastNodeVisited.nodeLabel': { $exists: true, $ne: null },
+          },
+        },
+        { $group: { _id: '$lastNodeVisited.nodeLabel', count: { $sum: 1 }, nodeId: { $first: '$lastNodeVisited.nodeId' } } },
         { $sort: { count: -1 } },
-        { $limit: 3 }
-      ])
+        { $limit: 5 },
+      ]),
+      UnrecognizedPhrase.countDocuments({ clientId, status: 'PENDING' }),
+      KnowledgeDocument.countDocuments({ clientId, isActive: true }),
+      KnowledgeDocument.countDocuments({ clientId, isActive: false }),
+      WhatsAppFlow.countDocuments({ clientId, status: 'PUBLISHED' }),
+      IntentRule.countDocuments({ clientId, isActive: true }),
+      IntentRule.countDocuments({
+        clientId,
+        isActive: true,
+        $or: [{ totalTriggerCount: { $exists: false } }, { totalTriggerCount: null }, { totalTriggerCount: 0 }],
+      }),
     ]);
 
-    // Format Dropoffs
-    const dropoffNodes = dropoffs.map(d => ({
-      label: d._id || 'Unknown Step',
+    const dropoffNodes = dropoffs.map((d) => ({
+      label: d._id || 'Unknown step',
       count: d.count,
-      nodeId: d.nodeId
+      nodeId: d.nodeId,
     }));
 
-    // 2. Aggregate Dimensions
-    const avgScore = qualityDocs.length > 0 
-      ? Math.round(qualityDocs.reduce((acc, curr) => acc + curr.aiQualityScore, 0) / qualityDocs.length)
-      : 85; // Fallback to 85 if no data
+    const qualitySample = qualityDocs.length;
+    const avgScore =
+      qualitySample > 0
+        ? Math.round(qualityDocs.reduce((acc, curr) => acc + curr.aiQualityScore, 0) / qualitySample)
+        : null;
 
-    const avgCsat = qualityDocs.filter(d => d.csatScore?.rating).length > 0
-      ? (qualityDocs.filter(d => d.csatScore?.rating).reduce((acc, curr) => acc + curr.csatScore.rating, 0) / qualityDocs.filter(d => d.csatScore?.rating).length).toFixed(1)
-      : 4.8;
+    const csatRatings = qualityDocs.filter((d) => d.csatScore?.rating != null);
+    const avgCsat =
+      csatRatings.length > 0
+        ? (csatRatings.reduce((acc, curr) => acc + Number(curr.csatScore.rating), 0) / csatRatings.length).toFixed(1)
+        : null;
 
-    // Speed calculation (Seconds)
-    const speedDocs = qualityDocs.filter(d => d.firstInboundAt && d.firstResponseAt);
-    const avgSpeedSeconds = speedDocs.length > 0
-      ? Math.round(speedDocs.reduce((acc, curr) => acc + (new Date(curr.firstResponseAt) - new Date(curr.firstInboundAt)), 0) / speedDocs.length / 1000)
-      : 45;
+    const speedDocs = qualityDocs.filter((d) => d.firstInboundAt && d.firstResponseAt);
+    const avgSpeedSeconds =
+      speedDocs.length > 0
+        ? Math.round(
+            speedDocs.reduce(
+              (acc, curr) => acc + (new Date(curr.firstResponseAt) - new Date(curr.firstInboundAt)),
+              0
+            ) /
+              speedDocs.length /
+              1000
+          )
+        : null;
 
-    // Conversion (Win Rate)
-    const orderPhones = new Set(orders.map(o => o.phone || o.customerPhone).filter(Boolean));
-    const winRate = allConvs > 0 ? ((orderPhones.size / allConvs) * 100).toFixed(1) : 12.4;
+    const orderPhones = new Set(orders.map((o) => o.phone || o.customerPhone).filter(Boolean));
+    const winRatePct = allConvs > 0 ? (orderPhones.size / allConvs) * 100 : null;
 
-    // Historical Trend (Last 7 Days)
+    const coveragePct = allConvs > 0 ? (aiHandledConvs / allConvs) * 100 : null;
+
     const history = [];
     for (let i = 6; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const dayName = d.toLocaleDateString('en-US', { weekday: 'short' });
-      const dayStart = new Date(d.setHours(0,0,0,0));
-      const dayEnd = new Date(d.setHours(23,59,59,999));
-      
-      const dayConvs = qualityDocs.filter(c => new Date(c.createdAt) >= dayStart && new Date(c.createdAt) <= dayEnd);
-      const dayScore = dayConvs.length > 0 
-        ? Math.round(dayConvs.reduce((acc, curr) => acc + curr.aiQualityScore, 0) / dayConvs.length)
-        : Math.floor(Math.random() * (95 - 80) + 80); // Logical baseline for visualization
+      const day = new Date();
+      day.setDate(day.getDate() - i);
+      const dayName = day.toLocaleDateString('en-US', { weekday: 'short' });
+      const dayStart = new Date(day);
+      dayStart.setHours(0, 0, 0, 0);
+      const dayEnd = new Date(day);
+      dayEnd.setHours(23, 59, 59, 999);
 
-      history.push({ name: dayName, score: dayScore });
+      const dayConvs = qualityDocs.filter((c) => {
+        const t = new Date(c.createdAt);
+        return t >= dayStart && t <= dayEnd;
+      });
+      const dayScore =
+        dayConvs.length > 0
+          ? Math.round(dayConvs.reduce((a, c) => a + c.aiQualityScore, 0) / dayConvs.length)
+          : null;
+      history.push({
+        name: dayName,
+        score: dayScore ?? 0,
+        hasData: dayConvs.length > 0,
+      });
     }
 
+    let drift = null;
+    const withData = history.filter((h) => h.hasData);
+    if (withData.length >= 4) {
+      const mid = Math.floor(withData.length / 2);
+      const early = withData.slice(0, mid);
+      const late = withData.slice(mid);
+      const avg = (arr) => arr.reduce((s, h) => s + h.score, 0) / arr.length;
+      drift = Math.round(avg(late) - avg(early));
+    }
+
+    const dimensions =
+      qualitySample > 0 && avgScore != null
+        ? [
+            { subject: 'Accuracy', A: Math.min(100, avgScore), fullMark: 100 },
+            { subject: 'Tone', A: Math.min(100, avgScore + 5), fullMark: 100 },
+            {
+              subject: 'Speed',
+              A: avgSpeedSeconds != null ? Math.max(0, Math.min(100, 100 - avgSpeedSeconds / 2)) : 50,
+              fullMark: 100,
+            },
+            { subject: 'Retention', A: Math.max(0, Math.min(100, avgScore - 10)), fullMark: 100 },
+            {
+              subject: 'Sales',
+              A: winRatePct != null ? Math.min(100, winRatePct * 5) : 0,
+              fullMark: 100,
+            },
+          ]
+        : [];
+
+    const displayScore =
+      avgScore != null ? avgScore : coveragePct != null ? Math.round(Math.min(100, coveragePct)) : null;
+
+    const { recommendations, summaryLine, gradeLetter, gradeTone } = buildBotQualityRecommendations({
+      pendingPhrases,
+      activeKb,
+      draftKb,
+      publishedFlows,
+      qualitySample,
+      conversations30d: allConvs,
+      dropoffNodes,
+      corrections: totalCorrections,
+      intentsDefined,
+      intentsCold,
+      compositeScore: displayScore,
+    });
+
     const stats = {
-      avgScore,
+      avgScore: avgScore ?? 0,
+      displayScore,
+      qualitySample,
+      gradeLetter,
+      gradeTone,
+      summaryLine,
+      recommendations,
       totalConversations: allConvs,
-      winRate,
+      aiHandledConversations: aiHandledConvs,
+      coveragePct: coveragePct != null ? Number(coveragePct.toFixed(1)) : null,
+      winRate: winRatePct != null ? winRatePct.toFixed(1) : null,
       csat: avgCsat,
-      drift: -4, // Comparative logic can be added later
+      drift,
+      driftAvailable: drift != null,
       totalCorrections,
       dropoffNodes,
-      dimensions: [
-        { subject: 'Accuracy', A: avgScore, fullMark: 100 },
-        { subject: 'Tone', A: Math.min(avgScore + 5, 100), fullMark: 100 },
-        { subject: 'Speed', A: Math.max(100 - (avgSpeedSeconds / 2), 60), fullMark: 100 },
-        { subject: 'Retention', A: Math.min(avgScore - 10, 100), fullMark: 100 },
-        { subject: 'Sales', A: Math.min(parseFloat(winRate) * 5, 100), fullMark: 100 },
-      ],
-      history
+      dimensions,
+      history,
+      hasScoredQuality: qualitySample > 0,
     };
 
     res.json({ success: true, stats });
   } catch (error) {
-    logger.error("Quality Stats Error", error);
+    logger.error('Quality Stats Error', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -468,7 +572,7 @@ exports.createCompetitor = async (req, res) => {
     if (!clientDoc) return res.status(404).json({ success: false, message: "Client not found" });
 
     const competitor = await Competitor.create({
-      clientId: clientDoc._id,
+      clientId: req.user.clientId,
       name,
       website,
       products,

@@ -349,6 +349,79 @@ router.delete('/documents/:id', protect, async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+/**
+ * @route   POST /api/knowledge/documents/import-url
+ * @desc    Fetch a public URL and create a Draft KnowledgeDocument (same store as retrieval).
+ */
+router.post('/documents/import-url', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    const raw = req.body.url || req.body.websiteUrl;
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+    if (!raw || !String(raw).trim()) {
+      return res.status(400).json({ success: false, message: 'url is required' });
+    }
+
+    let url;
+    try {
+      url = new URL(String(raw).trim().startsWith('http') ? String(raw).trim() : `https://${String(raw).trim()}`);
+    } catch {
+      return res.status(400).json({ success: false, message: 'Invalid URL' });
+    }
+
+    const axios = require('axios');
+    let html = '';
+    try {
+      const scrapeRes = await axios.get(url.href, {
+        timeout: 18000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; TopEdgeAI/1.0; +https://topedgeai.com)',
+          Accept: 'text/html,application/xhtml+xml',
+        },
+        maxRedirects: 5,
+      });
+      html = String(scrapeRes.data || '');
+    } catch (e) {
+      return res.status(400).json({ success: false, message: `Could not fetch URL: ${e.message}` });
+    }
+
+    const text = html
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 14500);
+
+    if (text.length < 80) {
+      return res.status(400).json({
+        success: false,
+        message: 'Very little readable text was extracted. Try another page (e.g. FAQ or About).',
+      });
+    }
+
+    const KnowledgeDocument = require('../models/KnowledgeDocument');
+    const hostname = url.hostname.replace(/^www\./, '');
+    const doc = await KnowledgeDocument.create({
+      clientId,
+      title: `Imported: ${hostname}`,
+      content: `Source: ${url.href}\n\n${text}`,
+      documentType: 'custom',
+      sourceType: 'website',
+      sourceUrl: url.href,
+      isActive: false,
+      status: 'processed',
+    });
+
+    clearKnowledgeContextCache(clientId);
+    res.status(201).json({ success: true, document: doc });
+  } catch (err) {
+    log.error('Knowledge import-url Error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 /**
  * @route   POST /api/knowledge/test
  * @desc    Test knowledge extraction via Gemini using the dynamic context
@@ -361,20 +434,42 @@ router.post('/test', protect, async (req, res) => {
     if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
     if (!query || !String(query).trim()) return res.status(400).json({ success: false, message: 'Query required' });
 
+    const KnowledgeDocument = require('../models/KnowledgeDocument');
     const { buildKnowledgeContext } = require('../utils/personaEngine');
     const { platformGenerateText } = require('../utils/gemini');
 
+    const activeDocs = await KnowledgeDocument.find({ clientId, isActive: true })
+      .select('title')
+      .sort({ updatedAt: -1 })
+      .limit(24)
+      .lean();
+
+    const sources = activeDocs.map((d) => d.title).filter(Boolean);
+
     const context = await buildKnowledgeContext(clientId);
-    
+
     if (!context) {
-      return res.json({ success: true, answer: "Knowledge base is empty. Please add documents or FAQs first." });
+      return res.json({
+        success: true,
+        answer:
+          'No active knowledge documents yet. Add documents (or import a website as a draft, then mark Active) to test retrieval here.',
+        sources: [],
+        activeDocCount: 0,
+        contextUsed: false,
+      });
     }
 
     const systemPrompt = `You are a helpful business assistant. Use ONLY the following business knowledge to answer the user's question. If the answer is not in the knowledge base, say "I don't have that information in my knowledge base." Do NOT make up answers.\n${context}`;
 
     const answer = await platformGenerateText(systemPrompt, String(query).trim());
 
-    res.json({ success: true, answer, contextUsed: true });
+    res.json({
+      success: true,
+      answer,
+      sources,
+      activeDocCount: activeDocs.length,
+      contextUsed: true,
+    });
   } catch (err) {
     log.error('Knowledge Test Error:', err);
     res.status(500).json({ success: false, error: err.message });
