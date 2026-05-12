@@ -42,7 +42,12 @@ async function run() {
     edges,
     publishedNodes: nodes,
     publishedEdges: edges,
-    triggerConfig: { type: 'KEYWORD' },
+    triggerConfig: {
+      type: 'keyword',
+      channel: 'whatsapp',
+      keywords: ['hi', 'hello', 'hey', 'menu', 'start', 'hii', 'hiii', 'help', 'apex', 'namaste'],
+      matchMode: 'contains',
+    },
     description: FLOW_DESCRIPTION,
     categories: ['support', 'warranty', 'installation', 'owner_experience', 'catalog', 'apex_light'],
     lastSyncedAt: new Date(),

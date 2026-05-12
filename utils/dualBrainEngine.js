@@ -2967,6 +2967,22 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
           const tracking = order.fulfillments?.[0]?.tracking_url;
           const payGw = (order.payment_gateway_names || []).join(', ') || order.processing_method || '';
 
+          let firstProductImage = '';
+          const li0 = lineItems[0];
+          if (li0?.product_id) {
+            try {
+              const pr = await shopify.get(`/products/${li0.product_id}.json`);
+              const product = pr.data?.product;
+              const imgs = Array.isArray(product?.images) ? product.images : [];
+              firstProductImage =
+                (imgs[0] && imgs[0].src) ||
+                (product?.image && product.image.src) ||
+                '';
+            } catch (imgErr) {
+              log.warn('[CHECK_ORDER_STATUS] product image fetch skipped', { message: imgErr.message });
+            }
+          }
+
           const silentLookup = !!node.data?.silent;
           if (!silentLookup) {
             let msg = `${emoji} *Order #${order.order_number}*\n\n`;
@@ -3004,6 +3020,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
             payment_method: payGw,
             is_shipped: isShippedLike ? "true" : "false",
             first_product_title: firstItemTitle,
+            first_product_image: firstProductImage,
             last_order_items_count: String(lineItems.length || 0),
           };
           await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: mergedMeta } });

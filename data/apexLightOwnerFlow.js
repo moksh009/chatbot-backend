@@ -1,13 +1,20 @@
 /**
- * Apex Light — owner support flow (Hdmi 2.1 & 2.0 FAQ PDF + catalogue).
- * WhatsApp limits: max 3 reply buttons per message; list messages max 10 rows total
- * across all sections (engine slices in dualBrainEngine). Sticky nodes are editor-only (no edges).
+ * Apex Light — owner support flow (Hdmi 2.1 & 2.0 FAQ + catalogue + smart install).
+ * WhatsApp limits: max 3 reply buttons per message; list messages max 10 rows per section.
+ * Sticky nodes are editor-only (no edges).
+ *
+ * Entry: keyword greetings → logo image → single hub list (install / track / warranty / shop / catalogue / models / troubleshoot / human).
+ * Install path: silent CHECK_ORDER_STATUS by WhatsApp phone → confirm with optional product image header → 2.1 / 2.0 routing or typed fallback.
  */
 
 const FLOW_ID = 'flow_apex_owner_support_hub_v1';
-const FLOW_NAME = 'Apex Light — Owner Support & Catalogue';
+const FLOW_NAME = 'Apex Light — Smart support hub';
 const FLOW_DESCRIPTION =
-  'PDF-aligned support: purchased vs purchase path, HDMI 2.1/2.0 guides, troubleshoot, warranty, Shopify order lookup, WhatsApp catalogue.';
+  'Keyword welcome + logo, unified service list, HDMI 2.1/2.0 guides, troubleshoot, warranty, Shopify order lookup with product image, WhatsApp catalogue, CSV/order-import note.';
+
+/** Replace with Apex-hosted HTTPS logo (Meta requires a public https image link). */
+const APEX_PUBLIC_LOGO_URL =
+  'https://apexlight.in/cdn/shop/files/07708086-ccae-4d21-93e2-fe0ed52b33a2.jpg?v=1714210021';
 
 /** Long-form answers — sourced from client HDMI 2.1 / 2.0 FAQ document */
 const COPY = {
@@ -16,6 +23,14 @@ const COPY = {
 If you want to *purchase* or have *questions before you buy*, message or call us on *9328613239* — we reply fastest there.
 
 Right after this message you can also *open our WhatsApp catalogue* to see products with images and add to cart (enable Meta Catalog under Settings → Commerce if needed).`,
+
+  orderHint: `We could not find an order linked to *this WhatsApp number* yet.
+
+That usually means either the purchase was on another number, or your store team is still importing offline sales.
+
+✅ *What you can do right now*
+• Send your *order ID* (e.g. #1234) *or* the *exact product name* as printed on your bill — we will route you to the right install video.
+• Ask your Apex contact to *upload / sync order data* in the dashboard (Shopify orders or imported CSV with phone + SKU) so future chats auto-match your buys.`,
 
   m21_install: `*Apex HDMI 2.1 TV Backlight* (up to 90")
 
@@ -171,15 +186,36 @@ function buildFlow() {
       'note_wa_limits',
       -420,
       -40,
-      'WhatsApp allows max *3 buttons* per message — this flow uses lists (≤10 rows each) plus 3-button entry. Duplicate list row IDs across the graph confuse routing — all IDs here are unique.',
+      'WhatsApp allows max *3 buttons* per message — this flow uses lists (≤10 rows per section) plus 3-button confirmations. Every list row `id` must be unique across the whole graph.',
       '⚠️ WhatsApp limits'
     ),
     sticky(
       'note_catalog',
       -420,
       200,
-      '*Catalog node* needs Meta Catalogue ID (+ Shopify sync). If missing, user gets Commerce setup hint text.',
+      '*Catalog node* needs Meta Catalogue ID (+ Shopify sync). If missing, users see Commerce setup hint text.',
       '🛒 Catalogue'
+    ),
+    sticky(
+      'note_logo',
+      -420,
+      440,
+      'Set `n_welcome_logo.data.imageUrl` to your real Apex logo (HTTPS, publicly reachable). The placeholder is only for layout/testing.',
+      '🖼 Brand image'
+    ),
+    sticky(
+      'note_csv',
+      -420,
+      680,
+      '*Order matching:* Uses Shopify `CHECK_ORDER_STATUS` by phone. For offline / marketplace orders, your team should import orders (CSV or commerce import) so phone numbers resolve — then silent lookup + product image work automatically.',
+      '📥 Orders & CSV'
+    ),
+    sticky(
+      'note_trigger',
+      -420,
+      920,
+      '*Keyword entry* fires when users type hi/hello/menu/etc. For brand-new chats whose *first* message is not a keyword, publish a small companion *first_message* flow that nudges them to type *menu* — or switch this trigger to *first_message* if you prefer catch-all welcome over repeat greetings.',
+      '⚡ Trigger choice'
     ),
 
     {
@@ -187,51 +223,81 @@ function buildFlow() {
       type: 'trigger',
       position: { x: 80, y: 120 },
       data: {
-        label: 'Entry — Apex Light',
-        triggerType: 'first_message',
-        trigger: { type: 'first_message', channel: 'whatsapp' },
+        label: 'Entry — greetings',
+        triggerType: 'keyword',
+        trigger: {
+          type: 'keyword',
+          channel: 'whatsapp',
+          keywords: ['hi', 'hello', 'hey', 'menu', 'start', 'hii', 'hiii', 'help', 'apex', 'namaste'],
+          matchMode: 'contains',
+        },
       },
     },
     {
-      id: 'n_entry',
-      type: 'interactive',
+      id: 'n_welcome_logo',
+      type: 'image',
       position: { x: 420, y: 120 },
       data: {
-        label: 'STEP 1 — Purchased?',
-        interactiveType: 'button',
+        label: 'Welcome — Apex visual',
+        imageUrl: APEX_PUBLIC_LOGO_URL,
+        caption:
+          '*Welcome to Apex Light.*\n\nNext message: tap *Open menu* for instant install videos, order status, warranty, catalogue, and human help.',
+      },
+    },
+    {
+      id: 'n_main_menu',
+      type: 'interactive',
+      position: { x: 760, y: 120 },
+      data: {
+        label: 'Apex hub — main menu',
+        interactiveType: 'list',
         header: 'Apex Light',
-        text:
-          'Hi! Have you *already purchased* our product, or do you want to *buy / ask about a product*?\n\nYou can also open the *full service menu*.',
-        buttonsList: [
-          { id: 'ent_have', title: 'I already own one' },
-          { id: 'ent_buy', title: 'Buy or product info' },
-          { id: 'ent_help', title: 'All services menu' },
+        buttonText: 'Open menu',
+        text: `What do you need?
+
+*Install help* checks your latest order using *this WhatsApp number* (Shopify or imported order data) and sends the right *HDMI 2.1 / 2.0* video + tips.
+
+You can also jump straight to *orders*, *warranty*, *catalogue*, or *troubleshooting*.`,
+        sections: [
+          {
+            title: 'Tap an option',
+            rows: [
+              { id: 'mnu_install', title: 'Install & setup help', description: 'Video + HDMI tips' },
+              { id: 'mnu_track', title: 'Track my order', description: 'Latest status' },
+              { id: 'mnu_warranty', title: 'Warranty coverage', description: 'Active or expired' },
+              { id: 'mnu_shop', title: 'Shop / pre-sales', description: 'Call + guidance' },
+              { id: 'mnu_catalog', title: 'Browse catalogue', description: 'WhatsApp shop' },
+              { id: 'mnu_models', title: 'Pick my model (list)', description: 'If unsure of name' },
+              { id: 'mnu_fix', title: 'Troubleshoot', description: 'Common symptoms' },
+              { id: 'mnu_human', title: 'Talk to a human', description: '9328613239' },
+            ],
+          },
         ],
       },
     },
     {
       id: 'n_buy_intro',
       type: 'message',
-      position: { x: 780, y: 0 },
-      data: { label: 'Purchase / pre-sales (PDF path B)', text: COPY.buyIntro },
+      position: { x: 1120, y: 0 },
+      data: { label: 'Purchase / pre-sales', text: COPY.buyIntro },
     },
     {
       id: 'n_catalog',
       type: 'catalog',
-      position: { x: 1080, y: 0 },
+      position: { x: 1420, y: 0 },
       data: {
         label: 'WhatsApp catalogue',
-        body: 'Browse Apex products below. Tap any item for details — add to cart to check out when checkout is enabled.',
-        text: 'Browse Apex products below. Tap any item for details — add to cart to check out when checkout is enabled.',
+        body: 'Browse Apex products below. Tap any item for details — add to cart when checkout is enabled.',
+        text: 'Browse Apex products below. Tap any item for details — add to cart when checkout is enabled.',
         catalogType: 'full',
       },
     },
     {
       id: 'n_have_pick',
       type: 'interactive',
-      position: { x: 780, y: 220 },
+      position: { x: 1120, y: 280 },
       data: {
-        label: 'STEP 2 — Which product? (1/3)',
+        label: 'Which product? (1/3)',
         interactiveType: 'list',
         buttonText: 'See models',
         text: 'Choose the product you *already have* (page 1 of 3):',
@@ -257,9 +323,9 @@ function buildFlow() {
     {
       id: 'n_have_pick2',
       type: 'interactive',
-      position: { x: 780, y: 420 },
+      position: { x: 1120, y: 520 },
       data: {
-        label: 'STEP 2 — Which product? (2/3)',
+        label: 'Which product? (2/3)',
         interactiveType: 'list',
         buttonText: 'See models',
         text: 'More models you may own:',
@@ -285,9 +351,9 @@ function buildFlow() {
     {
       id: 'n_have_pick3',
       type: 'interactive',
-      position: { x: 780, y: 620 },
+      position: { x: 1120, y: 760 },
       data: {
-        label: 'STEP 2 — Which product? (3/3)',
+        label: 'Which product? (3/3)',
         interactiveType: 'list',
         buttonText: 'See models',
         text: 'Final models + Govee co-branded lines:',
@@ -299,31 +365,7 @@ function buildFlow() {
               { id: 'p3_gtv', title: 'Govee TV Backlight 3 Lite', description: '' },
               { id: 'p3_gbar', title: 'Govee RGBIC TV bars', description: '' },
               { id: 'p3_dock', title: 'Apex Stream Dock', description: '' },
-              { id: 'p3_back', title: '⬆ Back to start', description: '' },
-            ],
-          },
-        ],
-      },
-    },
-    {
-      id: 'n_svc_menu',
-      type: 'interactive',
-      position: { x: 780, y: -180 },
-      data: {
-        label: 'All services — list menu',
-        interactiveType: 'list',
-        buttonText: 'Choose',
-        text: 'Pick a service:',
-        sections: [
-          {
-            title: 'Apex Light support hub',
-            rows: [
-              { id: 'svc_cat', title: 'Browse catalogue', description: 'Product cards' },
-              { id: 'svc_war', title: 'Warranty status', description: '' },
-              { id: 'svc_inst', title: 'Install help', description: 'uses last order' },
-              { id: 'svc_fix', title: 'Troubleshoot', description: '' },
-              { id: 'svc_ord', title: 'Order status', description: '' },
-              { id: 'svc_human', title: 'Talk to a human', description: '' },
+              { id: 'p3_back', title: '⬆ Back to menu', description: '' },
             ],
           },
         ],
@@ -332,7 +374,7 @@ function buildFlow() {
     {
       id: 'n_hub21',
       type: 'interactive',
-      position: { x: 1180, y: 180 },
+      position: { x: 1520, y: 260 },
       data: {
         label: 'HDMI 2.1 — topic menu',
         interactiveType: 'list',
@@ -347,7 +389,7 @@ function buildFlow() {
               { id: 'h21_hdmi', title: 'HDMI / no sync', description: '' },
               { id: 'h21_wifi', title: 'Smart Life / Wi‑Fi', description: '' },
               { id: 'h21_reset', title: 'Full reboot steps', description: '' },
-              { id: 'h21_back', title: 'Pick another model', description: '' },
+              { id: 'h21_back', title: '← Back to hub', description: '' },
             ],
           },
         ],
@@ -356,7 +398,7 @@ function buildFlow() {
     {
       id: 'n_hub20',
       type: 'interactive',
-      position: { x: 1180, y: 420 },
+      position: { x: 1520, y: 500 },
       data: {
         label: 'HDMI 2.0 — topic menu',
         interactiveType: 'list',
@@ -371,7 +413,7 @@ function buildFlow() {
               { id: 'h20_hdmi', title: 'HDMI / sync rules', description: '' },
               { id: 'h20_wifi', title: 'Smart Life / Wi‑Fi', description: '' },
               { id: 'h20_reset', title: 'Reset & PS flicker tip', description: '' },
-              { id: 'h20_back', title: 'Pick another model', description: '' },
+              { id: 'h20_back', title: '← Back to hub', description: '' },
             ],
           },
         ],
@@ -380,73 +422,73 @@ function buildFlow() {
     {
       id: 'n_m21a',
       type: 'message',
-      position: { x: 1560, y: 120 },
+      position: { x: 1920, y: 120 },
       data: { label: '2.1 — install/video', text: COPY.m21_install },
     },
     {
       id: 'n_m21b',
       type: 'message',
-      position: { x: 1560, y: 260 },
+      position: { x: 1920, y: 260 },
       data: { label: '2.1 — strip', text: COPY.m21_strip },
     },
     {
       id: 'n_m21c',
       type: 'message',
-      position: { x: 1560, y: 400 },
+      position: { x: 1920, y: 400 },
       data: { label: '2.1 — hdmi', text: COPY.m21_hdmi },
     },
     {
       id: 'n_m21d',
       type: 'message',
-      position: { x: 1560, y: 540 },
+      position: { x: 1920, y: 540 },
       data: { label: '2.1 — wifi', text: COPY.m21_wifi },
     },
     {
       id: 'n_m21e',
       type: 'message',
-      position: { x: 1560, y: 680 },
+      position: { x: 1920, y: 680 },
       data: { label: '2.1 — restart', text: COPY.m21_restart },
     },
     {
       id: 'n_m20a',
       type: 'message',
-      position: { x: 1560, y: 820 },
+      position: { x: 1920, y: 820 },
       data: { label: '2.0 — install/video', text: COPY.m20_install },
     },
     {
       id: 'n_m20b',
       type: 'message',
-      position: { x: 1560, y: 960 },
+      position: { x: 1920, y: 960 },
       data: { label: '2.0 — strip', text: COPY.m20_strip },
     },
     {
       id: 'n_m20c',
       type: 'message',
-      position: { x: 1560, y: 1100 },
+      position: { x: 1920, y: 1100 },
       data: { label: '2.0 — hdmi', text: COPY.m20_hdmi },
     },
     {
       id: 'n_m20d',
       type: 'message',
-      position: { x: 1560, y: 1240 },
+      position: { x: 1920, y: 1240 },
       data: { label: '2.0 — wifi', text: COPY.m20_wifi },
     },
     {
       id: 'n_m20e',
       type: 'message',
-      position: { x: 1560, y: 1380 },
+      position: { x: 1920, y: 1380 },
       data: { label: '2.0 — restart/PS', text: COPY.m20_restart },
     },
     {
       id: 'n_other_line',
       type: 'message',
-      position: { x: 1180, y: 860 },
+      position: { x: 1520, y: 860 },
       data: { label: 'Non-HDMI-backlight guidance', text: COPY.other_products },
     },
     {
       id: 'n_govee_line',
       type: 'message',
-      position: { x: 1180, y: 1000 },
+      position: { x: 1520, y: 1000 },
       data: { label: 'Govee / Dock line', text: COPY.govee_misc },
     },
     {
@@ -458,16 +500,16 @@ function buildFlow() {
     {
       id: 'n_w_active',
       type: 'message',
-      position: { x: 1460, y: -260 },
+      position: { x: 1460, y: -280 },
       data: {
         label: 'Warranty active',
-        text: 'Warranty is active for {{_warranty_product_name|your product}}.\nEnds: {{_warranty_expires_display|N/A}}\nOrder ref: {{_warranty_order_ref|-}}',
+        text: '✅ Warranty is *active* for {{_warranty_product_name|your product}}.\n\nEnds: {{_warranty_expires_display|N/A}}\nOrder ref: {{_warranty_order_ref|-}}',
       },
     },
     {
       id: 'n_w_exp',
       type: 'message',
-      position: { x: 1460, y: -160 },
+      position: { x: 1460, y: -180 },
       data: {
         label: 'Warranty expired',
         text: 'Warranty has expired for {{_warranty_product_name|this product}}.\nExpiry: {{_warranty_expires_display|N/A}}',
@@ -476,10 +518,10 @@ function buildFlow() {
     {
       id: 'n_w_none',
       type: 'message',
-      position: { x: 1460, y: -60 },
+      position: { x: 1460, y: -80 },
       data: {
         label: 'Warranty not found',
-        text: 'No warranty on file for this number yet. Share your *order ID* on 9328613239 and we will help right away.',
+        text: 'No warranty on file for this number yet. Share your *order ID* on *9328613239* and we will help right away.',
       },
     },
     {
@@ -494,17 +536,30 @@ function buildFlow() {
       },
     },
     {
+      id: 'n_order_hint',
+      type: 'message',
+      position: { x: 1460, y: 40 },
+      data: { label: 'No order — explain + CSV', text: COPY.orderHint },
+    },
+    {
       id: 'n_install_confirm',
       type: 'interactive',
       position: { x: 1460, y: -40 },
       data: {
         label: 'Install — confirm product',
         interactiveType: 'button',
-        text: 'Latest order product: {{first_product_title|your last order}}.\nWant *install links* for this item?',
+        header: 'Your purchase',
+        imageUrl: '{{first_product_image}}',
+        text: `We matched this number to a recent order:
+
+📦 *Order:* {{order_number|your order}}
+🛒 *Product:* {{first_product_title|your item}}
+
+Tap *Yes* to open the correct *install video + steps* for this product, or *Different* if you need help with another item.`,
         buttonsList: [
           { id: 'ins_yes', title: 'Yes, this product' },
           { id: 'ins_no', title: 'Different product' },
-          { id: 'ins_menu', title: 'Back to services' },
+          { id: 'ins_menu', title: 'Back to main menu' },
         ],
       },
     },
@@ -523,42 +578,42 @@ function buildFlow() {
     {
       id: 'n_ask_model',
       type: 'message',
-      position: { x: 1800, y: 100 },
+      position: { x: 1800, y: 140 },
       data: {
-        label: 'Ask product name',
-        text: 'Type the *full product name* as on your bill (e.g. "Apex HDMI 2.1 TV Backlight").',
+        label: 'Ask order or product',
+        text: 'Please reply with *one* of the following:\n• Your *order ID* (e.g. #1042 or the number on your invoice)\n• *Exact product name* as printed on your bill (e.g. *Apex HDMI 2.1 TV Backlight*)\n\nWe use this to open the right install pack.',
       },
     },
     {
       id: 'n_cap_model',
       type: 'capture_input',
-      position: { x: 2120, y: 100 },
+      position: { x: 2120, y: 140 },
       data: {
-        label: 'Capture product',
-        question: 'Product name',
-        text: 'Send the product name',
+        label: 'Capture order / product',
+        question: 'Order ID or product name',
+        text: 'Send your order ID or full product name in one message.',
         variable: 'install_product_query',
       },
     },
     {
       id: 'n_cap_l21',
       type: 'logic',
-      position: { x: 2440, y: 40 },
-      data: { label: 'Typed 2.1?', variable: 'metadata.install_product_query', operator: 'contains', value: '2.1' },
+      position: { x: 2440, y: 80 },
+      data: { label: 'Typed 2.1?', variable: 'install_product_query', operator: 'contains', value: '2.1' },
     },
     {
       id: 'n_cap_l20',
       type: 'logic',
-      position: { x: 2440, y: 140 },
-      data: { label: 'Typed 2.0?', variable: 'metadata.install_product_query', operator: 'contains', value: '2.0' },
+      position: { x: 2440, y: 180 },
+      data: { label: 'Typed 2.0?', variable: 'install_product_query', operator: 'contains', value: '2.0' },
     },
     {
       id: 'n_cap_fallback',
       type: 'message',
-      position: { x: 2760, y: 200 },
+      position: { x: 2760, y: 240 },
       data: {
         label: 'Manual handoff',
-        text: 'We will confirm with you manually. Messaging *9328613239* speeds this up.',
+        text: 'Thanks — our team will read your message and confirm the exact model.\n\nFor fastest help, send a *photo of the product label* to *9328613239*.',
         action: 'ESCALATE_HUMAN',
       },
     },
@@ -581,7 +636,7 @@ function buildFlow() {
               { id: 't_color', title: 'Wrong colours / direction', description: '' },
               { id: 't_ps5', title: 'PS5 flicker / blackout', description: '' },
               { id: 't_hdmi', title: 'No device / cabling', description: '' },
-              { id: 't_back', title: 'Back to services', description: '' },
+              { id: 't_back', title: '← Back to hub', description: '' },
             ],
           },
         ],
@@ -626,7 +681,7 @@ function buildFlow() {
     {
       id: 'n_order',
       type: 'order_action',
-      position: { x: 1120, y: 260 },
+      position: { x: 1120, y: 200 },
       data: { label: 'Order status', actionType: 'CHECK_ORDER_STATUS', action: 'CHECK_ORDER_STATUS' },
     },
     {
@@ -635,20 +690,20 @@ function buildFlow() {
       position: { x: 1120, y: 380 },
       data: {
         label: 'Human handoff',
-        text: 'Connecting you to the team — for fastest help send *photos or a short video* on *9328613239*.',
+        text: 'Connecting you to the team — for fastest help send *photos or a short video* on *9328613239*.\n\nWhen you are done, tap *Main menu* below to return to the bot.',
         action: 'ESCALATE_HUMAN',
       },
     },
     {
       id: 'n_footer',
       type: 'interactive',
-      position: { x: 1900, y: 320 },
+      position: { x: 2280, y: 360 },
       data: {
         label: 'Anything else?',
         interactiveType: 'button',
         text: 'Was that helpful?',
         buttonsList: [
-          { id: 'f_menu', title: 'Main services' },
+          { id: 'f_menu', title: 'Main menu' },
           { id: 'f_start', title: 'Start over' },
           { id: 'f_human', title: 'Talk to human' },
         ],
@@ -657,15 +712,23 @@ function buildFlow() {
   ];
 
   const edges = [
-    { id: 'e_t0', source: 'n_trigger', target: 'n_entry' },
-    { id: 'e_e1', source: 'n_entry', sourceHandle: 'ent_have', target: 'n_have_pick' },
-    { id: 'e_e2', source: 'n_entry', sourceHandle: 'ent_buy', target: 'n_buy_intro' },
-    { id: 'e_e3', source: 'n_entry', sourceHandle: 'ent_help', target: 'n_svc_menu' },
+    { id: 'e_t0', source: 'n_trigger', target: 'n_welcome_logo' },
+    { id: 'e_logo_menu', source: 'n_welcome_logo', sourceHandle: 'a', target: 'n_main_menu' },
+
+    { id: 'e_mnu_install', source: 'n_main_menu', sourceHandle: 'mnu_install', target: 'n_install_lookup' },
+    { id: 'e_mnu_models', source: 'n_main_menu', sourceHandle: 'mnu_models', target: 'n_have_pick' },
+    { id: 'e_mnu_track', source: 'n_main_menu', sourceHandle: 'mnu_track', target: 'n_order' },
+    { id: 'e_mnu_warranty', source: 'n_main_menu', sourceHandle: 'mnu_warranty', target: 'n_warranty' },
+    { id: 'e_mnu_shop', source: 'n_main_menu', sourceHandle: 'mnu_shop', target: 'n_buy_intro' },
+    { id: 'e_mnu_catalog', source: 'n_main_menu', sourceHandle: 'mnu_catalog', target: 'n_catalog' },
+    { id: 'e_mnu_fix', source: 'n_main_menu', sourceHandle: 'mnu_fix', target: 'n_tr_menu' },
+    { id: 'e_mnu_human', source: 'n_main_menu', sourceHandle: 'mnu_human', target: 'n_human' },
+
     { id: 'e_buy_cat', source: 'n_buy_intro', target: 'n_catalog' },
 
     { id: 'e_p1_more', source: 'n_have_pick', sourceHandle: 'p1_more', target: 'n_have_pick2' },
     { id: 'e_p2_more', source: 'n_have_pick2', sourceHandle: 'p2_more', target: 'n_have_pick3' },
-    { id: 'e_p3_back', source: 'n_have_pick3', sourceHandle: 'p3_back', target: 'n_entry' },
+    { id: 'e_p3_back', source: 'n_have_pick3', sourceHandle: 'p3_back', target: 'n_main_menu' },
 
     { id: 'e_p1_21', source: 'n_have_pick', sourceHandle: 'p1_hdmi21', target: 'n_hub21' },
     { id: 'e_p1_20', source: 'n_have_pick', sourceHandle: 'p1_hdmi20', target: 'n_hub20' },
@@ -692,22 +755,18 @@ function buildFlow() {
     { id: 'e_p3_gb', source: 'n_have_pick3', sourceHandle: 'p3_gbar', target: 'n_govee_line' },
     { id: 'e_p3_dk', source: 'n_have_pick3', sourceHandle: 'p3_dock', target: 'n_govee_line' },
 
-    { id: 'e_svc_cat', source: 'n_svc_menu', sourceHandle: 'svc_cat', target: 'n_catalog' },
-    { id: 'e_svc_war', source: 'n_svc_menu', sourceHandle: 'svc_war', target: 'n_warranty' },
-    { id: 'e_svc_in', source: 'n_svc_menu', sourceHandle: 'svc_inst', target: 'n_install_lookup' },
-    { id: 'e_svc_fx', source: 'n_svc_menu', sourceHandle: 'svc_fix', target: 'n_tr_menu' },
-    { id: 'e_svc_or', source: 'n_svc_menu', sourceHandle: 'svc_ord', target: 'n_order' },
-    { id: 'e_svc_hm', source: 'n_svc_menu', sourceHandle: 'svc_human', target: 'n_human' },
-
     { id: 'e_w_a', source: 'n_warranty', sourceHandle: 'active', target: 'n_w_active' },
     { id: 'e_w_e', source: 'n_warranty', sourceHandle: 'expired', target: 'n_w_exp' },
     { id: 'e_w_n', source: 'n_warranty', sourceHandle: 'none', target: 'n_w_none' },
 
     { id: 'e_ins_def', source: 'n_install_lookup', target: 'n_install_confirm' },
-    { id: 'e_ins_noord', source: 'n_install_lookup', sourceHandle: 'no_order', target: 'n_ask_model' },
+    { id: 'e_ins_noord', source: 'n_install_lookup', sourceHandle: 'no_order', target: 'n_order_hint' },
+    { id: 'e_hint_ask', source: 'n_order_hint', target: 'n_ask_model' },
+
     { id: 'e_ins_yes', source: 'n_install_confirm', sourceHandle: 'ins_yes', target: 'n_ins_y21' },
     { id: 'e_ins_no', source: 'n_install_confirm', sourceHandle: 'ins_no', target: 'n_ask_model' },
-    { id: 'e_ins_menu', source: 'n_install_confirm', sourceHandle: 'ins_menu', target: 'n_svc_menu' },
+    { id: 'e_ins_menu', source: 'n_install_confirm', sourceHandle: 'ins_menu', target: 'n_main_menu' },
+
     { id: 'e_ins21_t', source: 'n_ins_y21', sourceHandle: 'true', target: 'n_m21a' },
     { id: 'e_ins21_f', source: 'n_ins_y21', sourceHandle: 'false', target: 'n_ins_y20' },
     { id: 'e_ins20_t', source: 'n_ins_y20', sourceHandle: 'true', target: 'n_m20a' },
@@ -725,14 +784,14 @@ function buildFlow() {
     { id: 'e_h21_h', source: 'n_hub21', sourceHandle: 'h21_hdmi', target: 'n_m21c' },
     { id: 'e_h21_w', source: 'n_hub21', sourceHandle: 'h21_wifi', target: 'n_m21d' },
     { id: 'e_h21_r', source: 'n_hub21', sourceHandle: 'h21_reset', target: 'n_m21e' },
-    { id: 'e_h21_b', source: 'n_hub21', sourceHandle: 'h21_back', target: 'n_have_pick' },
+    { id: 'e_h21_b', source: 'n_hub21', sourceHandle: 'h21_back', target: 'n_main_menu' },
 
     { id: 'e_h20_v', source: 'n_hub20', sourceHandle: 'h20_vid', target: 'n_m20a' },
     { id: 'e_h20_s', source: 'n_hub20', sourceHandle: 'h20_strip', target: 'n_m20b' },
     { id: 'e_h20_h', source: 'n_hub20', sourceHandle: 'h20_hdmi', target: 'n_m20c' },
     { id: 'e_h20_w', source: 'n_hub20', sourceHandle: 'h20_wifi', target: 'n_m20d' },
     { id: 'e_h20_r', source: 'n_hub20', sourceHandle: 'h20_reset', target: 'n_m20e' },
-    { id: 'e_h20_b', source: 'n_hub20', sourceHandle: 'h20_back', target: 'n_have_pick' },
+    { id: 'e_h20_b', source: 'n_hub20', sourceHandle: 'h20_back', target: 'n_main_menu' },
 
     { id: 'e_tr1', source: 'n_tr_menu', sourceHandle: 't_sync', target: 'n_tt1' },
     { id: 'e_tr2', source: 'n_tr_menu', sourceHandle: 't_half', target: 'n_tt2' },
@@ -740,7 +799,7 @@ function buildFlow() {
     { id: 'e_tr4', source: 'n_tr_menu', sourceHandle: 't_color', target: 'n_tt4' },
     { id: 'e_tr5', source: 'n_tr_menu', sourceHandle: 't_ps5', target: 'n_tt5' },
     { id: 'e_tr6', source: 'n_tr_menu', sourceHandle: 't_hdmi', target: 'n_tt6' },
-    { id: 'e_tr_b', source: 'n_tr_menu', sourceHandle: 't_back', target: 'n_svc_menu' },
+    { id: 'e_tr_b', source: 'n_tr_menu', sourceHandle: 't_back', target: 'n_main_menu' },
 
     { id: 'e_ord_f', source: 'n_order', target: 'n_footer' },
 
@@ -767,9 +826,10 @@ function buildFlow() {
     { id: 'e_f_tt5', source: 'n_tt5', target: 'n_footer' },
     { id: 'e_f_tt6', source: 'n_tt6', target: 'n_footer' },
 
-    { id: 'e_ff_menu', source: 'n_footer', sourceHandle: 'f_menu', target: 'n_svc_menu' },
-    { id: 'e_ff_start', source: 'n_footer', sourceHandle: 'f_start', target: 'n_entry' },
+    { id: 'e_ff_menu', source: 'n_footer', sourceHandle: 'f_menu', target: 'n_main_menu' },
+    { id: 'e_ff_start', source: 'n_footer', sourceHandle: 'f_start', target: 'n_welcome_logo' },
     { id: 'e_ff_human', source: 'n_footer', sourceHandle: 'f_human', target: 'n_human' },
+    { id: 'e_human_footer', source: 'n_human', target: 'n_footer' },
   ];
 
   return { nodes, edges, FLOW_ID, FLOW_NAME, FLOW_DESCRIPTION };
