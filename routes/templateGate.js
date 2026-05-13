@@ -19,7 +19,7 @@ const TEMPLATE_BLUEPRINTS = {
     components: [
       {
         type: 'BODY',
-        text: 'Hey there! 🎁 You have *{{1}} Points* worth *{{2}}* in your rewards wallet. ⏰ Your points expire in *{{3}} days*. Tier: *{{4}}*. Reply REDEEM to claim your discount!',
+        text: 'Hey there! 🎁\nYou have *{{1}} Points* worth *{{2}}* in your rewards wallet.\n⏰ Expires in *{{3}} days* · Tier: *{{4}}*\nReply REDEEM to claim your discount!',
         example: { body_text: [['500', '₹50', '30', 'Gold']] }
       },
       {
@@ -37,7 +37,7 @@ const TEMPLATE_BLUEPRINTS = {
     components: [
       {
         type: 'BODY',
-        text: 'Hi {{1}}! 🌟 We hope you loved your recent purchase of *{{2}}*. Would you mind sharing your experience? Your feedback means a lot to us!',
+        text: 'Hi {{1}}! 🌟\nWe hope you loved your recent purchase of *{{2}}*.\nWould you mind sharing your experience?\nYour feedback means a lot to us!',
         example: { body_text: [['John', 'Premium Earbuds']] }
       },
       {
@@ -55,7 +55,7 @@ const TEMPLATE_BLUEPRINTS = {
     components: [
       {
         type: 'BODY',
-        text: 'Hey {{1}}! 🛒 You left *{{2}}* worth *{{3}}* in your cart. Complete your order before it sells out!',
+        text: 'Hey {{1}}! 🛒\nYou left *{{2}}* worth *{{3}}* in your cart.\nComplete your order before it sells out!',
         example: { body_text: [['Sarah', 'Wireless Headphones', '₹2,499']] }
       },
       {
@@ -73,7 +73,7 @@ const TEMPLATE_BLUEPRINTS = {
     components: [
       {
         type: 'BODY',
-        text: 'Hi {{1}}! ✅ Your warranty for *{{2}}* has been registered successfully. Your coverage is valid until *{{3}}*. Save this message for your records.',
+        text: 'Hi {{1}}! ✅\nYour warranty for *{{2}}* is registered.\nCoverage valid until *{{3}}*.\nSave this message for your records.',
         example: { body_text: [['Customer', 'Smart Watch Pro', '25 Dec 2027']] }
       },
       {
