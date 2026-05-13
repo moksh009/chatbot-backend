@@ -246,25 +246,25 @@ async function getOrdersCommerceInsights(clientId, range = '30d') {
   const steps = [
     {
       id: 'discovery',
-      label: 'Storefront traffic',
-      subtitle: 'Pixel events: page, product & search (not Meta Ads)',
+      label: 'Storefront events',
+      subtitle: 'Pixel: page_view, product_view, search (same window)',
       count: discoveryCount,
       source: 'pixel_events',
     },
     {
       id: 'interactions',
-      label: 'WhatsApp interactions',
-      subtitle: 'Inbound customer messages',
+      label: 'Inbound WhatsApp',
+      subtitle: 'Customer → you messages (same window)',
       count: interactionsCount,
       source: 'messages_incoming',
     },
     {
       id: 'cart',
-      label: 'Checkout & cart pressure',
+      label: 'Checkout signals',
       subtitle:
         abandonedShopify.success && !abandonedShopify.insufficient
-          ? 'Open Shopify checkouts + checkout_started pixel'
-          : 'checkout_started pixel (Shopify checkouts unavailable)',
+          ? 'max(open Shopify checkouts, checkout_started pixel)'
+          : 'checkout_started pixel only (Shopify checkouts API unavailable)',
       count: cartSignal,
       source: 'shopify_checkouts_pixel',
       checkoutStartedPixel,
@@ -273,26 +273,23 @@ async function getOrdersCommerceInsights(clientId, range = '30d') {
     {
       id: 'orders',
       label: 'Paid orders',
-      subtitle: 'financial_status = paid',
+      subtitle: 'Shopify orders with financial_status = paid',
       count: paidCount,
       source: 'orders',
     },
   ];
 
-  const edges = [];
-  for (let i = 0; i < steps.length - 1; i += 1) {
-    const from = steps[i];
-    const to = steps[i + 1];
-    const base = Math.max(from.count, 1);
-    const throughputPct = Math.min(100, Math.round((to.count / base) * 1000) / 10);
-    const dropoffPct = Math.round((100 - throughputPct) * 10) / 10;
-    edges.push({
-      from: from.id,
-      to: to.id,
-      throughputPct,
-      dropoffPct,
-    });
-  }
+  /**
+   * These four counts are not a sequential funnel (WhatsApp can exceed storefront events).
+   * We expose them as parallel signals only — do not derive step-to-step "conversion %".
+   */
+  const funnel = {
+    model: 'parallel_signals',
+    disclosure:
+      'Each number is a separate total for the same date range. They are not subsets of each other, so there is no step-to-step conversion rate.',
+    steps,
+    edges: [],
+  };
 
   const checkoutDropValue =
     abandonedShopify.success && !abandonedShopify.insufficient
@@ -311,8 +308,8 @@ async function getOrdersCommerceInsights(clientId, range = '30d') {
     definitions: {
       funnelWindow:
         range === 'all'
-          ? `Orders and waterfall load at most the last ${ORDER_RANGE_ALL_DAYS} days of synced history. Funnel pixel/message activity uses the same order window floor vs last 365 days of signals (whichever is newer).`
-          : 'Orders, waterfall, funnel activity, and ROI use the same rolling window.',
+          ? `Orders and waterfall load at most the last ${ORDER_RANGE_ALL_DAYS} days of synced history. Pixel and WhatsApp signal tiles use the same order-window floor vs the last 365 days of events (whichever is newer).`
+          : 'Orders, waterfall, commerce signal tiles, and ROI use the same rolling window.',
       potentialLoss:
         '₹ sum of non-cancelled orders with age strictly between 48 hours and 30 days where (1) financial pending (or empty financial with status pending), or (2) unpaid with High RTO risk. Older dead leads are excluded so the KPI cannot grow without bound.',
       automationRoi:
@@ -321,6 +318,8 @@ async function getOrdersCommerceInsights(clientId, range = '30d') {
       interactions: 'Count of WhatsApp inbound (incoming) messages.',
       cart: 'Max of open incomplete Shopify checkouts (when API works) and checkout_started pixel events in the window.',
       paidOrders: 'Orders with financial_status paid (Shopify) in the window.',
+      funnelSignals:
+        'The four funnel tiles are parallel signals, not a strict funnel. Inbound WhatsApp can be higher than storefront pixel counts because chats include returning customers, campaigns, and traffic outside the pixel scope.',
     },
     kpis: {
       netRealized: Math.round(netRealized * 100) / 100,
@@ -351,8 +350,7 @@ async function getOrdersCommerceInsights(clientId, range = '30d') {
       netRevenueWaterfall: Math.round(netRevenueWaterfall * 100) / 100,
     },
     funnel: {
-      steps,
-      edges,
+      ...funnel,
       shopifyAbandoned: abandonedShopify,
     },
   };

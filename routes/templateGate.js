@@ -84,7 +84,22 @@ const TEMPLATE_BLUEPRINTS = {
         ]
       }
     ]
-  }
+  },
+  /** RTO Protection — NDR rescue (must match `rtoProtectionService` body variable order). */
+  rto_ndr_rescue: {
+    category: 'UTILITY',
+    language: 'en',
+    components: [
+      {
+        type: 'BODY',
+        text:
+          'Hi {{1}}, we could not complete delivery for order *{{2}}*.\n\n' +
+          'Please reply in this chat with a *10-digit mobile number* or your *full address and PIN code* so we can try again.\n\n' +
+          'Reference: {{3}}',
+        example: { body_text: [['Priya', '#1042', '5678901234']] },
+      },
+    ],
+  },
 };
 
 /**
@@ -156,7 +171,7 @@ router.get('/status', protect, async (req, res) => {
  */
 router.post('/submit', protect, async (req, res) => {
   try {
-    const { name, components: customComponents } = req.body;
+    const { name, components: customComponents, category: reqCategory, language: reqLanguage } = req.body;
     const clientId = tenantClientId(req);
     if (!clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
@@ -187,9 +202,9 @@ router.post('/submit', protect, async (req, res) => {
     const blueprint = TEMPLATE_BLUEPRINTS[name];
     const templatePayload = {
       name,
-      category: blueprint?.category || 'MARKETING',
-      language: blueprint?.language || 'en',
-      components: customComponents || blueprint?.components || []
+      category: blueprint?.category || reqCategory || 'MARKETING',
+      language: blueprint?.language || reqLanguage || 'en',
+      components: customComponents || blueprint?.components || [],
     };
 
     const url = `https://graph.facebook.com/v21.0/${wabaId}/message_templates`;
