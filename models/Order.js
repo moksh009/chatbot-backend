@@ -21,6 +21,27 @@ const OrderSchema = new mongoose.Schema({
   paymentMethod: { type: String },
   storeString: { type: String },
   isCOD: { type: Boolean, default: false },
+  /** RTO Protection — COD WhatsApp confirmation */
+  isCodConfirmed: { type: Boolean, default: false },
+  codConfirmationSentAt: { type: Date },
+  codConfirmationRespondedAt: { type: Date },
+  codConfirmationDeadlineAt: { type: Date },
+  /** pending | confirmed | cancelled */
+  codConfirmationResponse: { type: String, default: '' },
+  /** Count of courier non-delivery style events (from fulfillment webhooks). */
+  deliveryAttempts: { type: Number, default: 0 },
+  /** safe | at_risk | returned — operational RTO shielding state */
+  rtoStatus: { type: String, enum: ['safe', 'at_risk', 'returned'], default: 'safe' },
+  ndrRescueSentAt: { type: Date },
+  lastNdrEventAt: { type: Date },
+  /** Estimated ₹ attributed to RTO prevention (e.g. fake COD cancel). */
+  rtoValueAttributed: { type: Number, default: 0 },
+  /** Webhook idempotency: short-lived lock while COD WhatsApp is in flight. */
+  codConfirmationProcessingAt: { type: Date },
+  /** Webhook idempotency: short-lived lock while NDR template send is in flight. */
+  ndrRescueProcessingAt: { type: Date },
+  /** Last Shopify cancel API error (COD fake-cancel path). */
+  shopifyCancelError: { type: String, default: '' },
   razorpayLinkId: { type: String },
   razorpayUrl: { type: String },
   cashfreeLinkId: { type: String },
@@ -66,8 +87,10 @@ const OrderSchema = new mongoose.Schema({
 OrderSchema.index({ orderId: 1, clientId: 1 }, { unique: true });
 // Performance indexes for dashboard queries
 OrderSchema.index({ clientId: 1, createdAt: -1 });
+OrderSchema.index({ clientId: 1, financialStatus: 1 });
 OrderSchema.index({ clientId: 1, status: 1 });
 OrderSchema.index({ clientId: 1, isCOD: 1 });
+OrderSchema.index({ clientId: 1, codConfirmationResponse: 1 });
 OrderSchema.index({ phone: 1 });
 OrderSchema.index({ clientId: 1, phone: 1 });
 

@@ -2,6 +2,8 @@ const express = require('express');
 const { resolveClient, tenantClientId } = require('../utils/queryHelpers');
 const router = express.Router();
 const Order = require('../models/Order');
+const Client = require('../models/Client');
+const { aggregateRtoProtectionStats } = require('../utils/rtoProtectionService');
 const { protect } = require('../middleware/auth');
 const { logAction } = require('../middleware/audit');
 
@@ -75,15 +77,31 @@ router.get('/:clientId/cod-pipeline', protect, logPersonalDataAccess, async (req
   }
 });
 
+router.get('/:clientId/commerce-insights', protect, logPersonalDataAccess, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    const range = ['7d', '30d', 'all'].includes(String(req.query.range)) ? req.query.range : '30d';
+    const { getOrdersCommerceInsights } = require('../utils/ordersCommerceInsights');
+    const payload = await getOrdersCommerceInsights(clientId, range);
+    res.json(payload);
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 router.get('/:clientId/rto-analytics', protect, logPersonalDataAccess, async (req, res) => {
   try {
-    const { clientId } = req.params;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
-    // Dummy RTO analytics response, full aggregation is complex
-    res.json({ success: true, rtoRate: 15, rtoCost: 4500, saved: 12000, products: [] });
+    const client = await Client.findOne({ clientId }).lean();
+    const payload = await aggregateRtoProtectionStats(clientId, client);
+    res.json(payload);
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -101,7 +119,6 @@ router.post('/:clientId/bulk-action', protect, async (req, res) => {
     if (action_type === 'status_update') {
       await Order.updateMany({ _id: { $in: targetOrderIds }, clientId }, { $set: { status: new_status } });
     } else if (action_type === 'cod_verify') {
-      const Client = require('../models/Client');
       const client = await Client.findOne({ clientId });
       if (client) {
         const { sendTemplateMessage } = require('../utils/whatsappAPI');
@@ -151,7 +168,6 @@ router.post('/:clientId/orders/:orderId/send-review-request', protect, async (re
     const phone = order.customerPhone || order.phone;
     if (!phone) return res.status(400).json({ success: false, message: 'Order has no customer phone' });
 
-    const Client = require('../models/Client');
     const ReviewRequest = require('../models/ReviewRequest');
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });

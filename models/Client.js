@@ -154,6 +154,17 @@ const WizardFeaturesSchema = new mongoose.Schema({
   enableOrderConfirmTpl:   { type: Boolean, default: true  }
 }, { _id: false });
 
+/** RTO Protection Suite — COD confirmation + NDR rescue (WhatsApp). */
+const RtoProtectionSchema = new mongoose.Schema({
+  requireCodConfirmation: { type: Boolean, default: false },
+  enableNdrRescue: { type: Boolean, default: false },
+  codConfirmationHours: { type: Number, default: 24 },
+  estimatedRtoCostPerOrder: { type: Number, default: 800 },
+  /** Meta utility template (approved) — required outside 24h session; default name merchants can create. */
+  ndrTemplateName: { type: String, default: 'rto_ndr_rescue' },
+  ndrTemplateLanguage: { type: String, default: 'en' },
+}, { _id: false });
+
 // ───────────────────────────────────────────────────────────────────────────
 // Plain-text business policies the AI / generator can quote verbatim.
 // ───────────────────────────────────────────────────────────────────────────
@@ -251,6 +262,7 @@ const ClientSchema = new mongoose.Schema({
 
   // --- WIZARD-OWNED CONFIG (Onboarding → Settings → Generator) ---
   wizardFeatures: { type: WizardFeaturesSchema, default: () => ({}) },
+  rtoProtection: { type: RtoProtectionSchema, default: () => ({}) },
   policies:       { type: PoliciesSchema,       default: () => ({}) },
 
   // --- TIER 3: ONBOARDING WIZARD CENTRALIZED VARS ---

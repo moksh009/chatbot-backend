@@ -148,7 +148,7 @@ router.patch('/config', protect, async (req, res) => {
     }
     
     // Whitelist allowable fields for dynamic patching
-    const { nicheData, instagramConnected, isGenericBot } = req.body;
+    const { nicheData, instagramConnected, isGenericBot, rtoProtection } = req.body;
     const updates = {};
     
     // Surgical update for nicheData to prevent overwriting other keys
@@ -160,6 +160,22 @@ router.patch('/config', protect, async (req, res) => {
 
     if (instagramConnected !== undefined) updates.instagramConnected = instagramConnected;
     if (isGenericBot !== undefined) updates.isGenericBot = isGenericBot;
+
+    if (rtoProtection && typeof rtoProtection === 'object') {
+      const allowed = [
+        'requireCodConfirmation',
+        'enableNdrRescue',
+        'codConfirmationHours',
+        'estimatedRtoCostPerOrder',
+        'ndrTemplateName',
+        'ndrTemplateLanguage',
+      ];
+      for (const key of allowed) {
+        if (rtoProtection[key] !== undefined) {
+          updates[`rtoProtection.${key}`] = rtoProtection[key];
+        }
+      }
+    }
 
     const updated = await Client.findOneAndUpdate({ clientId }, { $set: updates }, { new: true });
     res.json({ success: true, client: updated });

@@ -17,6 +17,17 @@ const log = require('../utils/logger')('ShopifyWebhook');
 const commerceAutomationService = require('../utils/commerceAutomationService');
 const shopifyAdminApiVersion = require('../utils/shopifyAdminApiVersion');
 
+/** Push reconciled order to dashboard (Orders page) without manual refresh */
+function emitOrderUpdatedToDashboard(io, clientId, orderDoc) {
+    if (!io || !clientId || !orderDoc) return;
+    try {
+        const payload = typeof orderDoc.toObject === 'function' ? orderDoc.toObject() : orderDoc;
+        io.to(`client_${clientId}`).emit('order_updated', payload);
+    } catch (e) {
+        log.warn(`[Socket] order_updated emit failed: ${e.message}`);
+    }
+}
+
 async function getProductImageForOrder(order, client) {
   // Try to get from order line items first (fastest)
   const lineItem = order.line_items?.[0];
@@ -95,7 +106,7 @@ const verifyShopifyWebhook = async (req, res, next) => {
     }
 };
 
-async function reconcileLocalOrderFromShopifyAdmin(client, orderPayload, topic) {
+async function reconcileLocalOrderFromShopifyAdmin(client, orderPayload, topic, io) {
     if (!orderPayload || orderPayload.id == null) return;
     const { buildShopifyOrderSet, shopifyOrderFilter } = require('../utils/shopifyOrderMapper');
     const { dispatchOrderStatusAutomation } = require('../utils/orderEventDispatcher');
@@ -105,6 +116,7 @@ async function reconcileLocalOrderFromShopifyAdmin(client, orderPayload, topic) 
     const prevStatus = prev?.status || '';
     const prevTrack = `${prev?.trackingUrl || ''}|${prev?.trackingNumber || ''}`;
     const doc = await Order.findOneAndUpdate(filter, { $set }, { upsert: true, new: true, setDefaultsOnInsert: true });
+    emitOrderUpdatedToDashboard(io, client.clientId, doc);
     const newStatus = doc.status;
     const newTrack = `${doc.trackingUrl || ''}|${doc.trackingNumber || ''}`;
     const statusChanged = String(prevStatus).toLowerCase() !== String(newStatus).toLowerCase();
@@ -126,10 +138,11 @@ async function reconcileLocalOrderFromShopifyAdmin(client, orderPayload, topic) 
     });
 }
 
-async function handleFulfillmentWebhookForAdmin(client, fulfillment, topic) {
+async function handleFulfillmentWebhookForAdmin(client, fulfillment, topic, io) {
     const orderId = fulfillment?.order_id;
     if (!orderId) return;
     const { dispatchOrderStatusAutomation } = require('../utils/orderEventDispatcher');
+    const { maybeSendNdrRescueFromFulfillment, NDR_SHIPMENT_TRIGGERS } = require('../utils/rtoProtectionService');
     const oidStr = String(orderId);
     const prev = await Order.findOne({ clientId: client.clientId, shopifyOrderId: oidStr }).lean();
     if (!prev) {
@@ -137,6 +150,26 @@ async function handleFulfillmentWebhookForAdmin(client, fulfillment, topic) {
         return;
     }
     const prevStatus = prev.status || 'pending';
+    const shipmentStatus = String(
+        fulfillment.shipment_status || fulfillment.status || ''
+    ).toLowerCase();
+
+    if (NDR_SHIPMENT_TRIGGERS.has(shipmentStatus)) {
+        await maybeSendNdrRescueFromFulfillment(client, fulfillment, io).catch((e) =>
+            log.warn(`[RTOProtection] NDR path failed: ${e.message}`)
+        );
+        const urls = fulfillment.tracking_urls;
+        const trackingUrl = (Array.isArray(urls) && urls[0]) || fulfillment.tracking_url || prev.trackingUrl || '';
+        const trackingNumber = fulfillment.tracking_number || prev.trackingNumber || '';
+        const doc = await Order.findOneAndUpdate(
+            { clientId: client.clientId, shopifyOrderId: oidStr },
+            { $set: { trackingUrl, trackingNumber, fulfillmentStatus: shipmentStatus || prev.fulfillmentStatus } },
+            { new: true }
+        );
+        if (doc) emitOrderUpdatedToDashboard(io, client.clientId, doc);
+        return;
+    }
+
     const urls = fulfillment.tracking_urls;
     const trackingUrl = (Array.isArray(urls) && urls[0]) || fulfillment.tracking_url || prev.trackingUrl || '';
     const trackingNumber = fulfillment.tracking_number || prev.trackingNumber || '';
@@ -153,6 +186,8 @@ async function handleFulfillmentWebhookForAdmin(client, fulfillment, topic) {
         },
         { new: true }
     );
+    if (doc) emitOrderUpdatedToDashboard(io, client.clientId, doc);
+    if (!doc) return;
     await dispatchOrderStatusAutomation({
         clientConfig: client,
         order: doc.toObject(),
@@ -175,6 +210,8 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
     log.info(`Received Shopify Webhook: ${topic} for ${client.clientId}`);
 
     res.status(200).send('OK');
+
+    const io = req.app.get('socketio');
 
     try {
         switch (topic) {
@@ -224,14 +261,14 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
                 }).catch(e => log.error('Commerce automations cancelled failed:', e.message));
                 break;
             case 'orders/updated':
-                await reconcileLocalOrderFromShopifyAdmin(client, data, topic);
+                await reconcileLocalOrderFromShopifyAdmin(client, data, topic, io);
                 break;
             case 'fulfillments/create':
             case 'fulfillments/update':
-                await handleFulfillmentWebhookForAdmin(client, data, topic);
+                await handleFulfillmentWebhookForAdmin(client, data, topic, io);
                 break;
             case 'orders/fulfilled': {
-                await reconcileLocalOrderFromShopifyAdmin(client, data, topic);
+                await reconcileLocalOrderFromShopifyAdmin(client, data, topic, io);
                 const { schedulePostDeliveryUpsell } = require('../utils/upsellEngine');
                 const { scheduleReviewRequest } = require('../utils/reputationService');
                 await schedulePostDeliveryUpsell(client, data);
@@ -629,6 +666,13 @@ async function handleOrder(client, data) {
     }
 
     // 3. Create internal Order record
+    const pgw = Array.isArray(data.payment_gateway_names) ? data.payment_gateway_names : [];
+    const isCODOrder =
+        String(data.gateway || '').toLowerCase().includes('cash on delivery') ||
+        pgw.some((g) => String(g).toLowerCase().includes('cod')) ||
+        pgw.map(String).includes('Cash on Delivery') ||
+        pgw.map(String).includes('manual');
+
     const newOrder = await Order.create({
         clientId: client.clientId,
         orderId: data.name || `#${data.id}`,
@@ -642,6 +686,7 @@ async function handleOrder(client, data) {
         financialStatus: data.financial_status || '',
         fulfillmentStatus: data.fulfillment_status || '',
         status: data.financial_status === 'paid' ? 'Paid' : 'Pending',
+        isCOD: isCODOrder,
         items: data.line_items.map(item => ({
             name: item.title,
             quantity: item.quantity,
@@ -692,9 +737,8 @@ async function handleOrder(client, data) {
 
     // --- COD to Prepaid Conversion ---
     const codActive = (client.automationFlows || []).find(f => f.id === 'cod_to_prepaid')?.isActive;
-    const isCOD = data.gateway === 'Cash on Delivery' || data.payment_gateway_names?.includes('Cash on Delivery') || data.payment_gateway_names?.includes('manual');
 
-    if (codActive && isCOD) {
+    if (codActive && isCODOrder) {
         log.info(`Converting COD order ${data.name} to Prepaid for ${client.clientId}`);
         const niche = client.nicheData || {};
         const WhatsApp = require('../utils/whatsapp');
@@ -793,6 +837,11 @@ async function handleOrder(client, data) {
             metadata: { orderId: newOrder.orderId }
         });
     }
+
+    const { maybeSendCodConfirmationAfterOrderCreate } = require('../utils/rtoProtectionService');
+    await maybeSendCodConfirmationAfterOrderCreate(client, newOrder).catch((e) =>
+        log.warn(`[RTOProtection] COD confirm hook: ${e.message}`)
+    );
 
     // 4. Track in DailyStat
     const isRecovered = lead && lead.recoveryStep > 0;

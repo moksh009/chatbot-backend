@@ -1327,6 +1327,12 @@ const updateOrderStatus = async (req, res) => {
         if (trackingUrl) order.trackingUrl = trackingUrl;
         await order.save();
 
+        if (io) {
+            try {
+                io.to(`client_${clientId}`).emit('order_updated', order.toObject());
+            } catch (_) { /* non-fatal */ }
+        }
+
         const { dispatchOrderStatusAutomation } = require('../../utils/orderEventDispatcher');
         const dispatchResult = await dispatchOrderStatusAutomation({
             clientConfig: req.clientConfig,
@@ -1365,6 +1371,13 @@ const updateOrderAddress = async (req, res) => {
         );
 
         if (!order) return res.status(404).json({ error: 'Order not found' });
+
+        const io = req.app.get('socketio');
+        if (io) {
+            try {
+                io.to(`client_${clientId}`).emit('order_updated', order.toObject());
+            } catch (_) { /* non-fatal */ }
+        }
 
         res.json({ success: true, order });
     } catch (error) {

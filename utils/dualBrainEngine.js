@@ -1094,6 +1094,29 @@ async function runDualBrainEngine(parsedMessage, client) {
     return true;
   }
 
+  // ── RTO Protection Suite: COD confirm + NDR rescue (WhatsApp button taps) ──
+  if (parsedMessage.type === 'interactive' && parsedMessage.interactive?.button_reply?.id) {
+    const rtoBid = String(parsedMessage.interactive.button_reply.id);
+    if (rtoBid.startsWith('rto_cod_confirm_') || rtoBid.startsWith('rto_cod_cancel_')) {
+      const rtoProtectionService = require('./rtoProtectionService');
+      if (!rtoProtectionService.rtoCfg(client).requireCodConfirmation) {
+        await sendWhatsAppText(
+          client,
+          phone,
+          'COD confirmation on WhatsApp is turned off for this store. For order help, reply *menu*.'
+        );
+        return true;
+      }
+      await rtoProtectionService.handleCodConfirmationButton({ client, phone, buttonId: rtoBid });
+      return true;
+    }
+    if (rtoBid.startsWith('rto_ndr_alt_') || rtoBid.startsWith('rto_ndr_addr_')) {
+      const rtoProtectionService = require('./rtoProtectionService');
+      await rtoProtectionService.handleNdrRescueButton({ client, phone, buttonId: rtoBid });
+      return true;
+    }
+  }
+
   // Legacy Reputation Hub early-exit removed: Review routing is now handled natively
   // by tryGraphTraversal via the 'positive' and 'negative' sourceHandles.
 

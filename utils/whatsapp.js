@@ -678,7 +678,8 @@ const WhatsApp = {
    * Smartly builds components and sends a Meta Template based on its synced structure.
    * Prevents parameter mismatch errors and handles image headers.
    */
-  async sendSmartTemplate(client, phone, templateName, rawVariables = [], headerImage = null, languageCode = 'en') {
+  async sendSmartTemplate(client, phone, templateName, rawVariables = [], headerImage = null, languageCode = 'en', opts = {}) {
+    const disableSessionFallback = !!(opts && opts.disableSessionFallback);
     const syncedTemplates = client.syncedMetaTemplates || [];
     const template = syncedTemplates.find(t => t.name === templateName);
     
@@ -724,9 +725,17 @@ const WhatsApp = {
       // If template metadata is unavailable, skip template send entirely and fall
       // back to text. Sending blind template payloads causes 132000/132012 errors.
       log.warn(`[WhatsApp] Template ${templateName} not synced for ${client.clientId}. Sending text fallback. Variables: [${variables.join(', ')}]`);
+      if (disableSessionFallback) {
+        const err = new Error(
+          `[WhatsApp] Template "${templateName}" is not in syncedMetaTemplates for ${client.clientId}. ` +
+            'Utility sends (e.g. NDR outside the 24h window) cannot use session text — sync this template in Meta and refresh template cache.'
+        );
+        err.code = 'WHATSAPP_TEMPLATE_NOT_SYNCED';
+        throw err;
+      }
       const fallbackText = variables.length > 0
         ? variables.join('\n')
-        : `Hi! Welcome to ${client.businessName || client.name || 'our store'}. How can I help you today?`;
+        : `Hi! Welcome to ${client.businessName || client.name || 'our store'}. How can we help you today?`;
       return await this.sendText(client, phone, String(fallbackText).substring(0, 4096));
     }
 
@@ -746,7 +755,10 @@ const WhatsApp = {
         (err.message || "").includes("132012")
       ) {
         log.warn(`[WhatsApp] Template ${templateName} failed (Missing). Falling back to TEXT for ${phone}`);
-        
+        if (disableSessionFallback) {
+          throw err;
+        }
+
         // REHES (Resilient High-Entropy Sending): attempt to extract buttons/options from the flow graph if available
         let textFallback = "";
         const syncedTemplates = client.syncedMetaTemplates || [];
@@ -763,9 +775,12 @@ const WhatsApp = {
         }
 
         if (!textFallback) {
-            textFallback = variables.length > 0 ? variables.join('\n') : "Hello! We are here to help. Pick an option below:";
+          textFallback = variables.length > 0 ? variables.join('\n') : "Hello! We are here to help. Pick an option below:";
         }
         
+        if (disableSessionFallback) {
+          throw err;
+        }
         return await this.sendText(client, phone, textFallback);
       }
       throw err; // Re-throw if it's a different error
