@@ -15,7 +15,7 @@ const { checkLimit, incrementUsage } = require('../utils/planLimits');
 const TaskQueueService = require('../services/TaskQueueService');
 const path = require('path');
 const { stringify } = require('csv-stringify');
-const { sendEmail } = require('../utils/emailService');
+const { sendEmail, isWorkspaceEmailReady } = require('../utils/emailService');
 const { mergeEmailForLead, KNOWN_EMAIL_TOKEN_KEYS } = require('../utils/emailMergeFields');
 const crypto = require('crypto');
 const archiver = require('archiver');
@@ -243,10 +243,11 @@ router.post('/:clientId/bulk-email', protect, logAction('BULK_EMAIL'), async (re
         if (!client) {
             return res.status(404).json({ success: false, message: 'Client not found' });
         }
-        if (!client.emailUser || !client.emailAppPassword) {
+        if (!isWorkspaceEmailReady(client)) {
             return res.status(400).json({
                 success: false,
-                message: 'Email is not configured for this workspace. Add SMTP / app password in settings before broadcasting.'
+                message:
+                    'Email is not configured for this workspace. Connect Gmail (OAuth) or add SMTP / app password in Settings before broadcasting.'
             });
         }
 

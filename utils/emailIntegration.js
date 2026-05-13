@@ -5,15 +5,13 @@
 const emailService = require('./emailService');
 
 /**
- * Sends an email using the client's SMTP credentials (emailUser + emailAppPassword).
- * Saves the message in the DB and returns the Message record.
+ * Sends an email using the workspace's outbound configuration: Gmail OAuth (API)
+ * or SMTP (email user + app password), via emailService.sendEmail.
  */
 async function sendEmailMessage(client, toEmail, subject, text, html = '') {
-  const emailUser = client.emailUser;
-  const hasPass = client.emailAppPassword || process.env.EMAIL_APP_PASSWORD;
-  if (!emailUser || !hasPass) {
+  if (!emailService.isWorkspaceEmailReady(client)) {
     throw new Error(
-      'Email not configured: add workspace SMTP in Settings (sending address + app password, host e.g. smtp.gmail.com, port 465).'
+      'Email not configured: connect Gmail (OAuth) in Settings → Integrations, or add SMTP with your sending address and app password.'
     );
   }
 
@@ -29,11 +27,15 @@ async function sendEmailMessage(client, toEmail, subject, text, html = '') {
   });
 
   if (!ok) {
-    throw new Error('SMTP send failed. Confirm app password, SMTP_HOST, and try port 465 from your host.');
+    throw new Error(
+      client.emailMethod === 'gmail_oauth'
+        ? 'Gmail send failed. Reconnect Gmail in Settings or check Google API / token access.'
+        : 'SMTP send failed. Confirm app password, SMTP_HOST, and try port 465 from your host.'
+    );
   }
 
   const Message = require('../models/Message');
-  const fromAddress = emailUser;
+  const fromAddress = client.emailUser || client.gmailAddress || '';
   const msgData = {
     clientId: client.clientId,
     from: fromAddress,
@@ -41,7 +43,7 @@ async function sendEmailMessage(client, toEmail, subject, text, html = '') {
     direction: 'outgoing',
     type: 'text',
     content: subject ? `Subject: ${subject}\n\n${text || ''}` : text || '',
-    messageId: `smtp_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+    messageId: `${client.emailMethod === 'gmail_oauth' ? 'gmail' : 'smtp'}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
     status: 'sent',
     channel: 'email',
     originalType: 'email'

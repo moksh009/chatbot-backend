@@ -4,6 +4,163 @@ const net = require('net');
 const axios = require('axios');
 const { decrypt } = require('./encryption');
 
+/** True when workspace can send mail via Gmail OAuth (gmail.send) or SMTP / env app password. */
+function isWorkspaceEmailReady(client) {
+    if (!client) return false;
+    const fromOAuth =
+        client.emailMethod === 'gmail_oauth' &&
+        !!(String(client.gmailRefreshToken || '').trim() || String(client.gmailAccessToken || '').trim()) &&
+        !!(String(client.emailUser || client.gmailAddress || '').trim());
+    if (fromOAuth) return true;
+    const hasUser = !!String(client.emailUser || '').trim();
+    const hasPass = !!(client.emailAppPassword || process.env.EMAIL_APP_PASSWORD);
+    return hasUser && hasPass;
+}
+
+/**
+ * Refresh Gmail access token; persists new access token on the Client when possible.
+ */
+async function refreshClientGmailAccessToken(client) {
+    const rt = String(client.gmailRefreshToken || '').trim();
+    if (!rt) return null;
+    const clientId = String(process.env.GCAL_CLIENT_ID || '').trim();
+    const clientSecret = String(process.env.GCAL_CLIENT_SECRET || '').trim();
+    if (!clientId || !clientSecret) {
+        console.warn('[EmailService] Gmail refresh skipped — GCAL_CLIENT_ID / GCAL_CLIENT_SECRET not set');
+        return null;
+    }
+    try {
+        const { data } = await axios.post(
+            'https://oauth2.googleapis.com/token',
+            new URLSearchParams({
+                client_id: clientId,
+                client_secret: clientSecret,
+                refresh_token: rt,
+                grant_type: 'refresh_token'
+            }).toString(),
+            { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 25000 }
+        );
+        const newAt = data && data.access_token ? String(data.access_token) : '';
+        if (!newAt) return null;
+        if (client.clientId) {
+            try {
+                const Client = require('../models/Client');
+                await Client.updateOne({ clientId: client.clientId }, { $set: { gmailAccessToken: newAt } });
+            } catch (e) {
+                console.warn('[EmailService] Could not persist refreshed gmailAccessToken:', e.message);
+            }
+        }
+        return newAt;
+    } catch (e) {
+        const d = e.response && e.response.data;
+        console.warn('[EmailService] Gmail token refresh failed:', d || e.message);
+        return null;
+    }
+}
+
+function escapeMimeHeader(value) {
+    const s = String(value ?? '').replace(/\r?\n/g, ' ');
+    if (/^[\x20-\x7E]*$/.test(s)) return s;
+    return `=?UTF-8?B?${Buffer.from(s, 'utf8').toString('base64')}?=`;
+}
+
+/**
+ * Build a minimal RFC 822 message (HTML body) for Gmail API users.messages.send `raw`.
+ */
+function buildHtmlMimeMessage({ fromAddr, fromName, to, subject, html }) {
+    const safeSubject = escapeMimeHeader(subject || '(no subject)');
+    const fromLine = fromName ? `"${String(fromName).replace(/"/g, "'")}" <${fromAddr}>` : fromAddr;
+    const htmlBuf = Buffer.from(String(html || '<p></p>'), 'utf8');
+    const htmlB64 = htmlBuf.toString('base64');
+    const folded = htmlB64.replace(/.{1,76}/g, (m) => `${m}\r\n`).trimEnd();
+
+    return [
+        `From: ${fromLine}`,
+        `To: ${String(to).trim()}`,
+        `Subject: ${safeSubject}`,
+        'MIME-Version: 1.0',
+        'Content-Type: text/html; charset=UTF-8',
+        'Content-Transfer-Encoding: base64',
+        '',
+        folded,
+        ''
+    ].join('\r\n');
+}
+
+function toGmailRawBase64(rfc822) {
+    return Buffer.from(rfc822, 'utf8')
+        .toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
+}
+
+/**
+ * Send using Gmail API (gmail.send). Does not fall back to SMTP on failure.
+ */
+async function sendViaGmailApi(client, { to, subject, html }) {
+    const fromAddr = String(client.gmailAddress || client.emailUser || '').trim();
+    if (!fromAddr) {
+        console.warn('[EmailService] Gmail API send skipped — no from address on client');
+        return false;
+    }
+
+    let access = String(client.gmailAccessToken || '').trim();
+    if (!access) {
+        access = (await refreshClientGmailAccessToken(client)) || '';
+    }
+    if (!access) {
+        console.warn('[EmailService] Gmail API send skipped — no access token (connect Gmail or re-authorize with offline access).');
+        return false;
+    }
+
+    const storeName = String(client.name || 'Store').replace(/"/g, "'").slice(0, 120);
+    const rfc822 = buildHtmlMimeMessage({
+        fromAddr,
+        fromName: storeName,
+        to,
+        subject,
+        html
+    });
+    const raw = toGmailRawBase64(rfc822);
+
+    const postSend = async (token) =>
+        axios.post(
+            'https://gmail.googleapis.com/gmail/v1/users/me/messages/send',
+            { raw },
+            {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                timeout: 35000
+            }
+        );
+
+    try {
+        await postSend(access);
+        console.log(`[EmailService] ✅ Email sent via Gmail API to ${to} | Subject: ${subject}`);
+        return true;
+    } catch (err) {
+        const status = err.response && err.response.status;
+        if (status === 401 && String(client.gmailRefreshToken || '').trim()) {
+            const fresh = await refreshClientGmailAccessToken(client);
+            if (fresh) {
+                try {
+                    await postSend(fresh);
+                    console.log(`[EmailService] ✅ Email sent via Gmail API (after refresh) to ${to}`);
+                    return true;
+                } catch (err2) {
+                    console.warn('[EmailService] Gmail API send failed after refresh:', err2.response?.data || err2.message);
+                }
+            }
+        } else {
+            console.warn('[EmailService] Gmail API send failed:', err.response?.data || err.message);
+        }
+        return false;
+    }
+}
+
 /** Prefer A records over AAAA on hosts where IPv6 egress is broken (common on PaaS). */
 if (typeof dns.setDefaultResultOrder === 'function') {
   try {
@@ -443,6 +600,20 @@ async function sendEmail(client, { to, subject, html }) {
     const from = fromAddr ? `"${storeName}" <${fromAddr}>` : null;
     const mail = from ? { from, to, subject, html } : { to, subject, html };
 
+    const useGmailApi =
+        client.emailMethod === 'gmail_oauth' &&
+        !!(String(client.gmailRefreshToken || '').trim() || String(client.gmailAccessToken || '').trim()) &&
+        !!(String(client.gmailAddress || client.emailUser || '').trim());
+
+    if (useGmailApi) {
+        const okGmail = await sendViaGmailApi(client, { to, subject, html });
+        if (okGmail) return true;
+        console.error(
+            `[EmailService] Gmail API send failed for ${to} — workspace uses gmail_oauth; fix tokens or reconnect Gmail. Not using SMTP/Resend fallback for this workspace.`
+        );
+        return false;
+    }
+
     const hasClientSmtp = !!(
         client.emailUser &&
         (client.emailAppPassword || process.env.EMAIL_APP_PASSWORD)
@@ -875,6 +1046,7 @@ async function sendAdminConfirmationEmail(adminEmail, { agentName, agentEmail, b
 
 module.exports = {
     sendEmail,
+    isWorkspaceEmailReady,
     escapeHtml,
     buildAdminEscalationEmailHtml,
     sendAbandonedCartEmail,

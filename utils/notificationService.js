@@ -1,7 +1,7 @@
 "use strict";
 
 const WhatsApp = require('./whatsapp');
-const { sendEmail, buildAdminEscalationEmailHtml } = require('./emailService');
+const { sendEmail, buildAdminEscalationEmailHtml, isWorkspaceEmailReady } = require('./emailService');
 const log = require('./logger')('NotificationService');
 
 function resolveAdminAlertChannel(client, explicitChannel) {
@@ -111,21 +111,22 @@ const NotificationService = {
     const brandName =
       client.businessName || client.name || client.brand?.businessName || client.clientId || 'Your brand';
 
-    // 2. Parallel Email Alerts (merchant SMTP / Gmail on Client; sendEmail handles retries)
+    // 2. Parallel Email Alerts (merchant SMTP or Gmail OAuth on client; sendEmail handles transport)
     if ((channel === 'email' || channel === 'both') && adminEmails.length > 0) {
-      if (!client.emailUser || !client.emailAppPassword) {
-        log.warn('Admin email alert skipped — client emailUser/emailAppPassword not configured');
+      if (!isWorkspaceEmailReady(client)) {
+        log.warn('Admin email alert skipped — workspace outbound email not configured');
         results.email.push({
           email: adminEmails[0],
           status: 'skipped',
-          error: 'SMTP not configured on workspace — add Email credentials under Settings → Integrations',
+          error:
+            'Email not configured — connect Gmail (OAuth) or add SMTP (email + app password) under Settings → Integrations, or switch alerts to WhatsApp only.',
         });
         try {
           await NotificationService.createNotification(client, {
             type: 'system',
             title: 'Admin email alert could not send',
             message:
-              'Human escalation requested email delivery but this workspace has no outbound SMTP (email user + app password). Configure email in Settings → Integrations, or switch alerts to WhatsApp only.',
+              'Human escalation requested email delivery but this workspace has no outbound email. Connect Gmail OAuth or configure SMTP in Settings → Integrations, or switch alerts to WhatsApp only.',
             customerPhone,
             metadata: { topic, triggerSource },
           });
@@ -147,13 +148,17 @@ const NotificationService = {
               subject: `🚨 ${brandName}: human help needed — ${customerPhone || 'customer'}`,
               html,
             });
-            results.email.push({ email, status: ok ? 'success' : 'failed', error: ok ? undefined : 'sendEmail returned false (SMTP failure)' });
+            results.email.push({
+              email,
+              status: ok ? 'success' : 'failed',
+              error: ok ? undefined : 'sendEmail returned false (check Gmail OAuth or SMTP)',
+            });
             if (!ok) {
               try {
                 await NotificationService.createNotification(client, {
                   type: 'system',
-                  title: 'Admin alert email failed (SMTP)',
-                  message: `Could not deliver escalation email to ${email}. Check SMTP credentials and inbox limits.`,
+                  title: 'Admin alert email failed',
+                  message: `Could not deliver escalation email to ${email}. Check Gmail connection or SMTP credentials and inbox limits.`,
                   customerPhone,
                   metadata: { topic, triggerSource },
                 });
