@@ -931,9 +931,12 @@ const handleShopifyOrderFulfilledWebhook = async (req, res) => {
         const phone = normalizePhone(phoneRaw);
 
         const orderNumber = payload.order_number || payload.name;
-        const productName = payload.line_items?.[0]?.title || "your product";
-        const trackingUrl = payload.fulfillments?.[0]?.tracking_url || "";
-        const trackingNum = payload.fulfillments?.[0]?.tracking_number || "";
+        const productName = payload.line_items?.[0]?.title || 'your product';
+        const trackingUrl = payload.fulfillments?.[0]?.tracking_url || '';
+        const trackingNum = payload.fulfillments?.[0]?.tracking_number || '';
+
+        const prevDoc = await Order.findOne({ shopifyOrderId: String(payload.id), clientId }).lean();
+        const prevStatus = prevDoc?.status || 'pending';
 
         const orderDoc = await Order.findOneAndUpdate(
             { shopifyOrderId: String(payload.id), clientId },
@@ -949,50 +952,22 @@ const handleShopifyOrderFulfilledWebhook = async (req, res) => {
             { new: true }
         );
 
-        const io = req.app.get('socketio');
-        const statusTemplates = req.clientConfig.nicheData?.orderStatusTemplates || {};
-        let shippedOk = false;
-        if (statusTemplates.shipped && orderDoc) {
-            const r = await sendMappedOrderStatusWhatsApp({
+        const { dispatchOrderStatusAutomation } = require('../../utils/orderEventDispatcher');
+        if (orderDoc) {
+            await dispatchOrderStatusAutomation({
                 clientConfig: req.clientConfig,
-                order: orderDoc,
-                status: 'shipped',
+                order: orderDoc.toObject(),
+                previousStatus: prevStatus,
+                newStatus: 'shipped',
                 trackingNumber: trackingNum,
                 trackingUrl,
-                io,
-            });
-            shippedOk = !!r.ok;
-        }
-
-        const shippingTemplate = req.clientConfig.nicheData?.shipping_updates_template;
-        if (!shippedOk && shippingTemplate) {
-            await sendWhatsAppTemplate({
-                phoneNumberId: req.clientConfig.phoneNumberId,
-                to: phone,
-                templateName: shippingTemplate,
-                bodyParams: [
-                    orderNumber,
-                    trackingNum || 'N/A',
-                    trackingUrl || 'N/A'
-                ],
-                buttonUrlParam: trackingUrl || null,
-                io,
-                clientConfig: req.clientConfig,
-            });
-        } else if (!shippedOk) {
-            const shippingMsg = `📦 Your order #${orderNumber} has been shipped!\n\n` +
-                (trackingUrl ? `🚚 Track here: ${trackingUrl}\n\n` : "") +
-                `Expected delivery in 3-5 business days. We'll keep you posted!`;
-            await sendWhatsAppText({
-                phoneNumberId: req.clientConfig.phoneNumberId,
-                to: phone,
-                body: shippingMsg,
-                io,
-                clientConfig: req.clientConfig,
+                io: req.app.get('socketio'),
+                source: 'shopify_webhook:order_fulfilled_legacy',
+                options: {},
             });
         }
 
-        const reviewFlow = (req.clientConfig.automationFlows || []).find(f => f.id === "review_collection");
+        const reviewFlow = (req.clientConfig.automationFlows || []).find(f => f.id === 'review_collection');
         if (reviewFlow?.isActive) {
             const delayDays = reviewFlow?.config?.delayDays || 4;
             const scheduledFor = new Date(Date.now() + delayDays * 24 * 60 * 60 * 1000);
@@ -1000,14 +975,14 @@ const handleShopifyOrderFulfilledWebhook = async (req, res) => {
                 { clientId: req.clientConfig._id, phone, orderNumber },
                 {
                     clientId: req.clientConfig._id, phone, orderNumber, productName,
-                    reviewUrl: req.clientConfig.googleReviewUrl || "",
-                    scheduledFor, status: "scheduled"
+                    reviewUrl: req.clientConfig.googleReviewUrl || '',
+                    scheduledFor, status: 'scheduled'
                 },
                 { upsert: true }
             );
         }
     } catch (err) {
-        console.error("[EcommerceEngine] Order fulfilled error:", err);
+        console.error('[EcommerceEngine] Order fulfilled error:', err);
     }
 };
 
@@ -1235,6 +1210,56 @@ async function sendMappedOrderStatusWhatsApp({ clientConfig, order, status, trac
     return { ok: !!ok, templateAttempted: true, templateName };
 }
 
+/**
+ * Push dashboard-driven status to Shopify BEFORE mutating local Mongo state.
+ * 3PL-driven updates flow the opposite direction (Shopify → webhooks → us).
+ */
+async function syncOrderStatusToShopifyAPI({ clientId, order, status, trackingNumber, trackingUrl, nicheData }) {
+    if (!order.shopifyOrderId) return { ok: true, skipped: true };
+    let shopifyApi;
+    try {
+        shopifyApi = await getShopifyClient(clientId);
+    } catch (e) {
+        return { ok: false, error: 'Unable to reach Shopify (credentials or network).' };
+    }
+    const st = String(status || '').toLowerCase();
+    const nd = nicheData || {};
+    try {
+        if (st === 'shipped' || st === 'fulfilled') {
+            let activeLocId = nd.shopifyLocationId;
+            if (!activeLocId) {
+                try {
+                    const locRes = await shopifyApi.get('/locations.json');
+                    activeLocId = locRes.data.locations?.[0]?.id;
+                } catch (locErr) {
+                    console.error('[ShopifySync] locations fetch:', locErr.message);
+                }
+            }
+            const tn = trackingNumber || order.trackingNumber;
+            const tu = trackingUrl || order.trackingUrl;
+            const urls = tu ? [tu] : [];
+            await shopifyApi.post(`/orders/${order.shopifyOrderId}/fulfillments.json`, {
+                fulfillment: {
+                    location_id: activeLocId || null,
+                    tracking_number: tn || undefined,
+                    tracking_urls: urls,
+                    notify_customer: false,
+                },
+            });
+            return { ok: true };
+        }
+        if (st === 'cancelled') {
+            await shopifyApi.post(`/orders/${order.shopifyOrderId}/cancel.json`, { reason: 'customer' });
+            return { ok: true };
+        }
+        return { ok: true, skipped: true };
+    } catch (err) {
+        const detail = err.response?.data || err.message;
+        console.error('[ShopifySync] status push failed:', typeof detail === 'object' ? JSON.stringify(detail) : detail);
+        return { ok: false, error: detail };
+    }
+}
+
 function dedupeOrdersByShopifyKey(orders) {
     if (!Array.isArray(orders) || orders.length === 0) return orders;
     const score = (doc) => {
@@ -1264,102 +1289,63 @@ const updateOrderStatus = async (req, res) => {
     try {
         const { orderId } = req.params;
         const { status, trackingNumber, trackingUrl } = req.body;
-        const { clientId, shopDomain, shopifyAccessToken, nicheData, phoneNumberId, whatsappToken } = req.clientConfig;
+        const { clientId, shopDomain, shopifyAccessToken, nicheData } = req.clientConfig;
         const io = req.app.get('socketio');
 
         const order = await Order.findOne({ _id: orderId, clientId });
         if (!order) return res.status(404).json({ error: 'Order not found' });
 
         const oldStatus = order.status;
+        if (
+            String(oldStatus || '').toLowerCase() === String(status || '').toLowerCase() &&
+            !(trackingNumber || trackingUrl)
+        ) {
+            return res.json({ success: true, order, whatsapp: { skipped: true, reason: 'no_op' } });
+        }
+
+        if (shopDomain && shopifyAccessToken && order.shopifyOrderId) {
+            const sync = await syncOrderStatusToShopifyAPI({
+                clientId,
+                order,
+                status,
+                trackingNumber: trackingNumber || '',
+                trackingUrl: trackingUrl || '',
+                nicheData: nicheData || {},
+            });
+            if (!sync.ok) {
+                return res.status(502).json({
+                    error: 'Shopify rejected this status update. Your dashboard was not changed.',
+                    shopifySyncFailed: true,
+                    details: sync.error,
+                    order,
+                });
+            }
+        }
+
         order.status = status;
         if (trackingNumber) order.trackingNumber = trackingNumber;
         if (trackingUrl) order.trackingUrl = trackingUrl;
         await order.save();
 
-        // 1. SHOPIFY SYNC
-        if (shopDomain && shopifyAccessToken && order.shopifyOrderId) {
-            try {
-                const shopifyApi = await getShopifyClient(clientId);
-
-                if (status === 'shipped' || status === 'fulfilled') {
-                    // --- PHASE 11 ROBUSTNESS FIX ---
-                    let activeLocId = nicheData.shopifyLocationId;
-                    if (!activeLocId) {
-                        try {
-                            const locRes = await shopifyApi.get('/locations.json');
-                            activeLocId = locRes.data.locations?.[0]?.id;
-                            console.log(`[ShopifySync] Auto-detected Location ID: ${activeLocId}`);
-                        } catch (locErr) {
-                            console.error("[ShopifySync] Failed to fetch locations:", locErr.message);
-                        }
-                    }
-
-                    await shopifyApi.post(`/orders/${order.shopifyOrderId}/fulfillments.json`, {
-                        fulfillment: {
-                            location_id: activeLocId || null,
-                            tracking_number: trackingNumber || order.trackingNumber,
-                            tracking_urls: [trackingUrl || order.trackingUrl].filter(Boolean),
-                            notify_customer: false
-                        }
-                    });
-                } else if (status === 'cancelled') {
-                    await shopifyApi.post(`/orders/${order.shopifyOrderId}/cancel.json`);
-                }
-            } catch (err) {
-                console.error(`[ShopifySync] Failed for order ${order.orderNumber || order.orderId}:`, err.response?.data || err.message);
-            }
-        }
-
-        // 2. WHATSAPP (Status Automations Manager mappings + plain-text fallback)
-        let wa = { ok: false, templateAttempted: false };
-        try {
-            wa = await sendMappedOrderStatusWhatsApp({
-                clientConfig: req.clientConfig,
-                order,
-                status,
-                trackingNumber,
-                trackingUrl,
-                io,
-            });
-        } catch (waErr) {
-            console.error('[UpdateOrderStatus] WhatsApp template error:', waErr.message);
-        }
-
-        const shouldTextFallback =
-            status !== oldStatus &&
-            (order.customerPhone || order.phone) &&
-            (!wa.templateAttempted || !wa.ok);
-        if (shouldTextFallback) {
-            try {
-                const rawPhone = order.customerPhone || order.phone;
-                const phone = normalizePhone(rawPhone);
-                let msg = `Hi ${order.customerName || 'there'}, your order #${order.orderNumber || order.orderId} status has been updated to *${status}*.`;
-                if ((status === 'shipped' || status === 'fulfilled') && (trackingUrl || order.trackingUrl)) {
-                    msg += `\n\nTrack here: ${trackingUrl || order.trackingUrl}`;
-                }
-                await sendWhatsAppText({ phoneNumberId, to: phone, body: msg, io, clientConfig: req.clientConfig });
-            } catch (txtErr) {
-                console.error('[UpdateOrderStatus] WhatsApp text fallback error:', txtErr.message);
-            }
-        }
-
-        await commerceAutomationService.runAutomationsForEvent({
+        const { dispatchOrderStatusAutomation } = require('../../utils/orderEventDispatcher');
+        const dispatchResult = await dispatchOrderStatusAutomation({
             clientConfig: req.clientConfig,
-            eventType: status,
-            order: {
-                orderId: order.orderId,
-                orderNumber: order.orderNumber,
-                customerPhone: order.customerPhone || order.phone,
-                customerName: order.customerName,
-                items: order.items || [],
-                trackingUrl: trackingUrl || order.trackingUrl,
-                trackingNumber: trackingNumber || order.trackingNumber,
-            },
-        }).catch((err) => {
-            console.error('[UpdateOrderStatus] unified automation run failed:', err.message);
+            order: order.toObject ? order.toObject() : order,
+            previousStatus: oldStatus,
+            newStatus: status,
+            trackingNumber: trackingNumber || order.trackingNumber,
+            trackingUrl: trackingUrl || order.trackingUrl,
+            io,
+            source: 'dashboard_manual',
+            options: { force: true },
         });
 
-        res.json({ success: true, order, whatsapp: { templateAttempted: wa.templateAttempted, ok: wa.ok, template: wa.templateName || null } });
+        res.json({
+            success: true,
+            order,
+            whatsapp: dispatchResult.whatsapp || {},
+            dispatch: dispatchResult,
+        });
     } catch (error) {
         console.error('[UpdateOrderStatus] Error:', error);
         res.status(500).json({ error: 'Failed to update order status' });
@@ -1399,5 +1385,7 @@ module.exports = {
     restoreCart,
     logRestoreEvent,
     updateOrderStatus,
-    updateOrderAddress
+    updateOrderAddress,
+    sendMappedOrderStatusWhatsApp,
+    syncOrderStatusToShopifyAPI,
 };

@@ -95,6 +95,77 @@ const verifyShopifyWebhook = async (req, res, next) => {
     }
 };
 
+async function reconcileLocalOrderFromShopifyAdmin(client, orderPayload, topic) {
+    if (!orderPayload || orderPayload.id == null) return;
+    const { buildShopifyOrderSet, shopifyOrderFilter } = require('../utils/shopifyOrderMapper');
+    const { dispatchOrderStatusAutomation } = require('../utils/orderEventDispatcher');
+    const $set = buildShopifyOrderSet(client.clientId, orderPayload, { preferLogisticsStatus: true });
+    const filter = shopifyOrderFilter(client.clientId, orderPayload);
+    const prev = await Order.findOne(filter).lean();
+    const prevStatus = prev?.status || '';
+    const prevTrack = `${prev?.trackingUrl || ''}|${prev?.trackingNumber || ''}`;
+    const doc = await Order.findOneAndUpdate(filter, { $set }, { upsert: true, new: true, setDefaultsOnInsert: true });
+    const newStatus = doc.status;
+    const newTrack = `${doc.trackingUrl || ''}|${doc.trackingNumber || ''}`;
+    const statusChanged = String(prevStatus).toLowerCase() !== String(newStatus).toLowerCase();
+    const trackingFilledIn = newTrack !== prevTrack && !!(doc.trackingUrl || doc.trackingNumber);
+    const shouldNotify =
+        statusChanged ||
+        (String(newStatus).toLowerCase() === 'shipped' && trackingFilledIn);
+    if (!shouldNotify) return;
+    await dispatchOrderStatusAutomation({
+        clientConfig: client,
+        order: doc.toObject(),
+        previousStatus: prevStatus || 'pending',
+        newStatus,
+        trackingNumber: doc.trackingNumber,
+        trackingUrl: doc.trackingUrl,
+        io: null,
+        source: `shopify_webhook:${topic}`,
+        options: {},
+    });
+}
+
+async function handleFulfillmentWebhookForAdmin(client, fulfillment, topic) {
+    const orderId = fulfillment?.order_id;
+    if (!orderId) return;
+    const { dispatchOrderStatusAutomation } = require('../utils/orderEventDispatcher');
+    const oidStr = String(orderId);
+    const prev = await Order.findOne({ clientId: client.clientId, shopifyOrderId: oidStr }).lean();
+    if (!prev) {
+        log.warn(`[Webhook] fulfillment for missing local order shopify:${oidStr}`);
+        return;
+    }
+    const prevStatus = prev.status || 'pending';
+    const urls = fulfillment.tracking_urls;
+    const trackingUrl = (Array.isArray(urls) && urls[0]) || fulfillment.tracking_url || prev.trackingUrl || '';
+    const trackingNumber = fulfillment.tracking_number || prev.trackingNumber || '';
+    const doc = await Order.findOneAndUpdate(
+        { clientId: client.clientId, shopifyOrderId: oidStr },
+        {
+            $set: {
+                status: 'shipped',
+                fulfillmentStatus: 'fulfilled',
+                trackingUrl,
+                trackingNumber,
+                fulfilledAt: new Date(),
+            },
+        },
+        { new: true }
+    );
+    await dispatchOrderStatusAutomation({
+        clientConfig: client,
+        order: doc.toObject(),
+        previousStatus: prevStatus,
+        newStatus: 'shipped',
+        trackingNumber,
+        trackingUrl,
+        io: null,
+        source: `shopify_webhook:${topic}`,
+        options: {},
+    });
+}
+
 // POST /api/shopify/webhook
 router.post('/', verifyShopifyWebhook, async (req, res) => {
     const topic = req.topic;
@@ -152,7 +223,15 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
                   },
                 }).catch(e => log.error('Commerce automations cancelled failed:', e.message));
                 break;
+            case 'orders/updated':
+                await reconcileLocalOrderFromShopifyAdmin(client, data, topic);
+                break;
+            case 'fulfillments/create':
+            case 'fulfillments/update':
+                await handleFulfillmentWebhookForAdmin(client, data, topic);
+                break;
             case 'orders/fulfilled': {
+                await reconcileLocalOrderFromShopifyAdmin(client, data, topic);
                 const { schedulePostDeliveryUpsell } = require('../utils/upsellEngine');
                 const { scheduleReviewRequest } = require('../utils/reputationService');
                 await schedulePostDeliveryUpsell(client, data);
@@ -161,25 +240,13 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
                 await fireEventFlow(client, 'order_fulfilled', data).catch(e =>
                   log.warn(`[FlowTrigger] order_fulfilled flow fire failed: ${e.message}`)
                 );
-                
-                await commerceAutomationService.runAutomationsForEvent({
-                  clientConfig: client,
-                  eventType: 'fulfilled',
-                  order: {
-                    orderId: data.name || data.id,
-                    orderNumber: data.name,
-                    customerPhone: data.phone || data.customer?.phone || data.billing_address?.phone,
-                    customerName: data.customer?.first_name || 'Customer',
-                    items: data.line_items.map(i => ({ sku: i.sku, name: i.title })),
-                  },
-                }).catch(e => log.error('Commerce automations fulfilled failed:', e.message));
-                
+
                 // --- PHASE 30.5: Enterprise Warranty Auto-Assign (ENGINE) ---
                 const { processWarrantyAutoAssignment } = require('../utils/warrantyEngine');
-                await processWarrantyAutoAssignment(client, data).catch(e => 
+                await processWarrantyAutoAssignment(client, data).catch(e =>
                     log.error('[Warranty] Auto-assignment failed:', e.message)
                 );
-                
+
                 break;
             }
             case 'inventory_levels/update':

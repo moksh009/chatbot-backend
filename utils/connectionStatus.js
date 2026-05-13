@@ -43,6 +43,10 @@ function buildConnectionStatusPayload(client) {
     client.commerce?.shopify?.accessToken ||
     '';
   const shopifyTok = decryptToken(shopifyEnc);
+  /** True if a non-trivial credential is on file (decrypted session token or encrypted blob). */
+  const shopifyCredentialPresent =
+    (typeof shopifyTok === 'string' && shopifyTok.length > 8) ||
+    (typeof shopifyEnc === 'string' && shopifyEnc.trim().length > 12);
 
   const phoneId =
     client.phoneNumberId ||
@@ -76,7 +80,7 @@ function buildConnectionStatusPayload(client) {
   );
 
   return {
-    shopify_connected: !!(shopifyTok.length > 8 && isValidShopDomain(shopDomain)),
+    shopify_connected: !!(shopifyCredentialPresent && isValidShopDomain(shopDomain)),
     whatsapp_connected: !!(waTok.length > 5 && phoneId && waba),
     meta_connected: !!metaAdsOk,
     instagram_connected: !!(decryptToken(instagramTok).length > 10 && instagramPage),

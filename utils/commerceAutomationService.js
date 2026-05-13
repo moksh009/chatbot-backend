@@ -261,7 +261,8 @@ function getOrderStatusTemplateMap(automations = []) {
   return map;
 }
 
-async function runAutomationsForEvent({ clientConfig, eventType, order }) {
+async function runAutomationsForEvent({ clientConfig, eventType, order, options = {} }) {
+  const { skipOrderStatusRules = false } = options;
   const automations = await ensureMigration(clientConfig, { persist: true });
   const normalizedEvent = normalizeEvent(eventType);
   const active = automations.filter((a) => a.isActive && normalizeEvent(a.event) === normalizedEvent);
@@ -271,6 +272,7 @@ async function runAutomationsForEvent({ clientConfig, eventType, order }) {
   for (const automation of active) {
     try {
       if (automation.triggerType === 'order_status') {
+        if (skipOrderStatusRules) continue;
         await runAutomationAction({ clientConfig, order, automation, item: null });
         matched += 1;
         continue;

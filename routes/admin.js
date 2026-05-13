@@ -949,7 +949,7 @@ router.patch('/my-settings', protect, async (req, res) => {
       /** Lightweight auto-save merge: PATCH { flowDraft: { flowId, nodes, edges, syncLiveGraph? } } */
       flowDraft,
       wabaId, phoneNumberId, whatsappToken,
-      shopDomain, shopifyClientId, shopifyClientSecret, shopifyAccessToken, shopifyWebhookSecret,
+      shopDomain, shopifyClientId, shopifyClientSecret, shopifyAccessToken, shopifyWebhookSecret, shopifyConnectionStatus,
       facebookCatalogId, shopifyStorefrontToken,
       storeType,
       instagramConnected, instagramPageId, instagramAccessToken, instagramAppSecret,
@@ -1078,17 +1078,46 @@ router.patch('/my-settings', protect, async (req, res) => {
       updateFields.shopifyClientId = shopifyClientId;
       updateFields['commerce.shopify.clientId'] = shopifyClientId;
     }
-    if (shopifyClientSecret !== undefined && shopifyClientSecret !== '••••••••' && shopifyClientSecret.trim() !== '') {
-      updateFields.shopifyClientSecret = shopifyClientSecret;
-      updateFields['commerce.shopify.clientSecret'] = shopifyClientSecret;
+    if (shopifyClientSecret !== undefined) {
+      const emptyCs =
+        shopifyClientSecret === null ||
+        (typeof shopifyClientSecret === 'string' && shopifyClientSecret.trim() === '');
+      if (emptyCs) {
+        updateFields.shopifyClientSecret = '';
+        updateFields['commerce.shopify.clientSecret'] = '';
+      } else if (shopifyClientSecret !== '••••••••' && String(shopifyClientSecret).trim() !== '') {
+        updateFields.shopifyClientSecret = shopifyClientSecret;
+        updateFields['commerce.shopify.clientSecret'] = shopifyClientSecret;
+      }
     }
-    if (shopifyAccessToken !== undefined && shopifyAccessToken !== '••••••••' && shopifyAccessToken.trim() !== '') {
-      updateFields.shopifyAccessToken = shopifyAccessToken;
-      updateFields['commerce.shopify.accessToken'] = shopifyAccessToken;
+    if (shopifyAccessToken !== undefined) {
+      const emptyTok =
+        shopifyAccessToken === null ||
+        (typeof shopifyAccessToken === 'string' && shopifyAccessToken.trim() === '');
+      if (emptyTok) {
+        updateFields.shopifyAccessToken = '';
+        updateFields['commerce.shopify.accessToken'] = '';
+        updateFields.shopifyRefreshToken = '';
+        updateFields['commerce.shopify.refreshToken'] = '';
+      } else if (shopifyAccessToken !== '••••••••' && String(shopifyAccessToken).trim() !== '') {
+        updateFields.shopifyAccessToken = shopifyAccessToken;
+        updateFields['commerce.shopify.accessToken'] = shopifyAccessToken;
+      }
     }
-    if (shopifyWebhookSecret !== undefined && shopifyWebhookSecret !== '••••••••' && shopifyWebhookSecret.trim() !== '') {
-      updateFields.shopifyWebhookSecret = shopifyWebhookSecret;
-      updateFields['commerce.shopify.webhookSecret'] = shopifyWebhookSecret;
+    if (shopifyWebhookSecret !== undefined) {
+      const emptyWh =
+        shopifyWebhookSecret === null ||
+        (typeof shopifyWebhookSecret === 'string' && shopifyWebhookSecret.trim() === '');
+      if (emptyWh) {
+        updateFields.shopifyWebhookSecret = '';
+        updateFields['commerce.shopify.webhookSecret'] = '';
+      } else if (shopifyWebhookSecret !== '••••••••' && String(shopifyWebhookSecret).trim() !== '') {
+        updateFields.shopifyWebhookSecret = shopifyWebhookSecret;
+        updateFields['commerce.shopify.webhookSecret'] = shopifyWebhookSecret;
+      }
+    }
+    if (shopifyConnectionStatus !== undefined) {
+      updateFields.shopifyConnectionStatus = shopifyConnectionStatus;
     }
 
     if (facebookCatalogId !== undefined) {

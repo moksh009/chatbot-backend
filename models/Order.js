@@ -57,7 +57,10 @@ const OrderSchema = new mongoose.Schema({
   
   // Phase 25: Track 8 RTO Predictor
   rtoRiskScore: { type: Number, default: 0 },
-  rtoRiskLevel: { type: String, enum: ['Low', 'Medium', 'High'], default: 'Low' }
+  rtoRiskLevel: { type: String, enum: ['Low', 'Medium', 'High'], default: 'Low' },
+
+  /** Dedupes identical Shopify webhook bursts (status + tracking fingerprint). */
+  lastDispatchSignature: { type: String, default: '' },
 });
 
 OrderSchema.index({ orderId: 1, clientId: 1 }, { unique: true });

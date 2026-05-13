@@ -60,11 +60,38 @@ function derivePlatformStatus(data) {
   return 'pending';
 }
 
+/** Primary carrier tracking from Shopify order payload (3PL writes here). */
+function extractPrimaryFulfillment(data) {
+  const list = Array.isArray(data?.fulfillments) ? data.fulfillments : [];
+  const f = list[0] || {};
+  const urls = f.tracking_urls;
+  const url = (Array.isArray(urls) && urls[0]) || f.tracking_url || '';
+  return {
+    trackingNumber: f.tracking_number != null ? String(f.tracking_number) : '',
+    trackingUrl: url ? String(url) : '',
+  };
+}
+
+/**
+ * Platform status when reconciling from Shopify Admin order JSON (webhooks / sync).
+ * Fulfillment from Shiprocket/Delhivery updates Shopify first; we mirror shipped here.
+ */
+function deriveLogisticsAwareStatus(data) {
+  if (data?.cancelled_at) return 'cancelled';
+  const fs = String(data?.financial_status || '').toLowerCase();
+  const ful = String(data?.fulfillment_status || '').toLowerCase();
+  if (fs === 'refunded' || fs === 'partially_refunded' || fs === 'voided') return 'cancelled';
+  if (ful === 'fulfilled') return 'shipped';
+  if (ful === 'partial') return 'processing';
+  return derivePlatformStatus(data);
+}
+
 /**
  * Builds the $set payload for upserting a Shopify order into our Order collection.
  * Keeps platform `status` for Kanban / legacy filters; stores raw Shopify financial/fulfillment separately.
+ * @param {object} [options] preferLogisticsStatus: use fulfillment-aware status (webhook / 3PL sync)
  */
-function buildShopifyOrderSet(clientId, data) {
+function buildShopifyOrderSet(clientId, data, options = {}) {
   const phone = data.phone || data.customer?.phone || data.billing_address?.phone || data.shipping_address?.phone;
   const cleanPhone = phone ? String(phone).replace(/\D/g, '').slice(-10) : '0000000000';
 
@@ -82,6 +109,10 @@ function buildShopifyOrderSet(clientId, data) {
     image: lineItemImage(item),
   }));
 
+  const ff = extractPrimaryFulfillment(data);
+  const useLogistics = !!options.preferLogisticsStatus;
+  const platformStatus = useLogistics ? deriveLogisticsAwareStatus(data) : derivePlatformStatus(data);
+
   return {
     clientId,
     shopifyOrderId: String(data.id),
@@ -92,7 +123,7 @@ function buildShopifyOrderSet(clientId, data) {
     customerEmail: data.email || data.customer?.email || null,
     amount: parseFloat(data.total_price || 0),
     totalPrice: parseFloat(data.total_price || 0),
-    status: derivePlatformStatus(data),
+    status: platformStatus,
     financialStatus,
     fulfillmentStatus,
     paymentMethod: paymentGatewaysSummary(data) || (data.gateway ? String(data.gateway) : 'Shopify'),
@@ -106,6 +137,8 @@ function buildShopifyOrderSet(clientId, data) {
     billingAddress: data.billing_address || undefined,
     createdAt: data.created_at ? new Date(data.created_at) : new Date(),
     storeString: 'Shopify',
+    trackingNumber: ff.trackingNumber || '',
+    trackingUrl: ff.trackingUrl || '',
   };
 }
 
@@ -124,4 +157,6 @@ module.exports = {
   resolveCustomerDisplayName,
   paymentGatewaysSummary,
   detectCodFromShopify,
+  extractPrimaryFulfillment,
+  deriveLogisticsAwareStatus,
 };
