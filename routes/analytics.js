@@ -572,7 +572,8 @@ router.get('/leads', protect, apiCache(30), async (req, res) => {
 
     const { limit = 20, search = '', page = 1, tag, segmentScore, lastSeen, sortBy } = req.query;
     const pageNum = parseInt(page) || 1;
-    const limitNum = Math.min(parseInt(limit) || 20, 100);
+    /** Cap raised so segment builder / exports can request deeper pages without a separate endpoint. */
+    const limitNum = Math.min(parseInt(limit) || 20, 500);
 
     if (search) {
       const searchRegex = new RegExp(search, 'i');

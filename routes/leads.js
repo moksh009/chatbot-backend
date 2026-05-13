@@ -560,7 +560,18 @@ router.post('/:leadId/send-recovery', protect, async (req, res) => {
             .lean();
         if (!client) return res.status(404).json({ message: 'Client not found' });
 
-        const cartTitles = lead.cartSnapshot?.titles?.slice(0, 2).join(', ') || 'items in your cart';
+        const snap = lead.cartSnapshot || {};
+        let cartTitles = Array.isArray(snap.titles) && snap.titles.length
+            ? snap.titles.slice(0, 3).filter(Boolean).join(', ')
+            : '';
+        if (!cartTitles && Array.isArray(snap.items) && snap.items.length) {
+            cartTitles = snap.items
+                .map((i) => i?.title || i?.name || i?.product_title)
+                .filter(Boolean)
+                .slice(0, 3)
+                .join(', ');
+        }
+        if (!cartTitles) cartTitles = 'items in your cart';
         const cartValue = lead.cartSnapshot?.totalPrice
             ? `₹${Number(lead.cartSnapshot.totalPrice).toLocaleString('en-IN')}`
             : '';

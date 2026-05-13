@@ -72,7 +72,9 @@ router.get('/:id/leads', protect, async (req, res) => {
         if (!segment) return res.status(404).json({ error: 'Segment not found' });
 
         const count = await AdLead.countDocuments({ ...segment.query, clientId: req.user.clientId });
-        const leads = await AdLead.find({ ...segment.query, clientId: req.user.clientId }).limit(100); // Preview limit
+        const leads = await AdLead.find({ ...segment.query, clientId: req.user.clientId })
+            .limit(500)
+            .select('name phoneNumber email lastInteraction ordersCount leadScore cartStatus totalSpent');
 
         res.json({ success: true, count, leads });
     } catch (err) {
@@ -107,7 +109,10 @@ router.post('/preview', protect, async (req, res) => {
     try {
         const generatedQuery = translateConditionsToQuery(conditions);
         const count = await AdLead.countDocuments({ ...generatedQuery, clientId });
-        const leads = await AdLead.find({ ...generatedQuery, clientId }).limit(10).select('name phoneNumber email lastInteraction');
+        const leads = await AdLead.find({ ...generatedQuery, clientId })
+            .limit(12)
+            .select('name phoneNumber email lastInteraction ordersCount leadScore cartStatus')
+            .lean();
 
         res.json({ success: true, count, leads });
     } catch (err) {
