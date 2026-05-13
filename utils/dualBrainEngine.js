@@ -17,7 +17,7 @@ const { generateText, getGeminiModel } = require('./gemini');
 const { createMessage } = require("./createMessage");
 const { injectVariables, buildVariableContext, injectNodeVariables, injectVariablesLegacy } = require("./variableInjector");
 const { findMatchingFlow, findFlowStartNode } = require("./triggerEngine");
-const { evaluateRules, executeRuleActions } = require("./rulesEngine");
+const { findMatchingRule } = require("./rulesEngine");
 const { evaluateRouting } = require("./routingEngine");
 const { sendEmail } = require("./emailService");
 const { checkLimit, incrementUsage } = require("../utils/planLimits");
@@ -859,82 +859,148 @@ async function runDualBrainEngine(parsedMessage, client) {
       }
   }
 
-  // ── PHASE 22: EVALUATE AUTOMATION RULES ────────────────────────────────────
-  const rulesActions = evaluateRules(client.automationRules, parsedMessage.text?.body, variableContext);
-  if (rulesActions && rulesActions.length > 0) {
-    const results = await executeRuleActions(rulesActions, client, phone, {});
+  // ── PHASE 22: EVALUATE AUTOMATION RULES (ordered actions; optional Flow Builder passthrough) ──
+  const matchedRule = findMatchingRule(client.automationRules, parsedMessage.text?.body, variableContext);
+  if (matchedRule?.actions?.length) {
+    const moment = require('moment');
+    const SEQUENCE_TEMPLATES = require('../data/sequenceTemplates');
+    const FollowUpSequence = require('../models/FollowUpSequence');
+    const axios = require('axios');
+
+    const continueToFlow = matchedRule.continueToFlowAfterActions === true;
     let ruleIntercepted = false;
 
-    for (const msg of results.messages) {
-      if (msg.startsWith('[TEMPLATE]')) {
-        const tName = msg.replace('[TEMPLATE]', '').trim();
-        await sendWhatsAppTemplate(client, phone, tName, [variableContext.first_name || '']);
-      } else {
-        await sendWhatsAppText(client, phone, msg);
+    const emitLeadTags = async () => {
+      const fresh = await AdLead.findById(lead._id).select('tags').lean();
+      if (fresh && io) {
+        io.to(`client_${client.clientId}`).emit('lead_tags_updated', {
+          phone: lead.phoneNumber,
+          leadId: String(lead._id),
+          tags: fresh.tags || [],
+        });
       }
-      ruleIntercepted = true;
-    }
+    };
 
-    if (results.tags && results.tags.length > 0) {
-      await AdLead.findByIdAndUpdate(lead._id, { $addToSet: { tags: { $each: results.tags } } });
-    }
+    const normalizeSeqUnit = (u) => {
+      const raw = String(u || 'm').toLowerCase();
+      if (raw === 'm' || raw === 'min' || raw === 'mins') return 'm';
+      if (raw === 'h' || raw === 'hr' || raw === 'hour' || raw === 'hours') return 'h';
+      if (raw === 'd' || raw === 'day' || raw === 'days') return 'd';
+      return 'm';
+    };
 
-    if (results.enrollSequences && results.enrollSequences.length > 0) {
-      // Basic enrollment implementation for rules
-      const FollowUpSequence = require('../models/FollowUpSequence');
-      for (const seqId of results.enrollSequences) {
-         try {
-           const seqData = require('../data/sequenceTemplates').find(t => t.id === seqId);
-           if (seqData) {
-               const mappedSteps = seqData.steps.map(s => {
-                  return {
-                     type: s.type || 'whatsapp',
-                     templateName: s.templateName,
-                     content: s.content,
-                     delayValue: s.delayValue,
-                     delayUnit: s.delayUnit,
-                     sendAt: new Date(Date.now() + (s.delayValue || 0) * 60000), // simplified
-                     status: "pending"
-                  };
-               });
-               await FollowUpSequence.create({
-                  clientId: client.clientId,
-                  leadId: lead._id,
-                  phone: lead.phoneNumber,
-                  name: seqData.name,
-                  steps: mappedSteps
-               });
-           }
-         } catch(e) {}
+    const mapTemplateToSteps = (seqData) => {
+      let cursor = moment();
+      return (seqData.steps || []).map((s) => {
+        const unit = normalizeSeqUnit(s.delayUnit);
+        const val = Number(s.delayValue) || 0;
+        const addUnit = unit === 'm' ? 'minutes' : unit === 'h' ? 'hours' : 'days';
+        cursor = cursor.clone().add(val, addUnit);
+        return {
+          type: 'whatsapp',
+          templateName: s.templateName || '',
+          content: s.content || '',
+          delayValue: val,
+          delayUnit: unit,
+          sendAt: cursor.toDate(),
+          status: 'pending',
+        };
+      });
+    };
+
+    for (const action of matchedRule.actions) {
+      try {
+        switch (action.type) {
+          case 'send_message':
+            if (action.text) {
+              await sendWhatsAppText(client, phone, action.text);
+              ruleIntercepted = true;
+            }
+            break;
+          case 'send_template':
+            if (action.templateName) {
+              await sendWhatsAppSmartTemplate(
+                client,
+                phone,
+                action.templateName,
+                [variableContext.first_name || 'Customer'],
+                null,
+                variableContext.detectedLanguage || 'en'
+              );
+              ruleIntercepted = true;
+            }
+            break;
+          case 'add_tag':
+            if (action.tag) {
+              await AdLead.findByIdAndUpdate(lead._id, { $addToSet: { tags: action.tag } });
+              await emitLeadTags();
+            }
+            break;
+          case 'pause_bot':
+            await Conversation.findByIdAndUpdate(convo._id, {
+              botPaused: true,
+              isBotPaused: true,
+              botStatus: 'paused',
+            });
+            if (io) {
+              io.to(`client_${client.clientId}`).emit('bot_status_changed', {
+                conversationId: convo._id,
+                botPaused: true,
+                status: 'paused',
+              });
+            }
+            ruleIntercepted = true;
+            break;
+          case 'enroll_sequence':
+            if (action.sequenceId) {
+              try {
+                const seqData = SEQUENCE_TEMPLATES.find((t) => t.id === action.sequenceId);
+                if (seqData) {
+                  const mappedSteps = mapTemplateToSteps(seqData);
+                  await FollowUpSequence.create({
+                    clientId: client.clientId,
+                    leadId: lead._id,
+                    phone: lead.phoneNumber,
+                    name: seqData.name || 'Automation sequence',
+                    type: 'custom',
+                    steps: mappedSteps,
+                  });
+                }
+              } catch (seqErr) {
+                log.warn('[RulesEngine] enroll_sequence failed', seqErr.message);
+              }
+            }
+            break;
+          case 'assign_agent':
+            if (action.agentId) {
+              convo.assignedAgent = action.agentId;
+              await Conversation.findByIdAndUpdate(convo._id, { assignedAgent: action.agentId });
+            }
+            break;
+          case 'execute_webhook':
+            if (action.webhookUrl) {
+              axios.post(action.webhookUrl, { lead, convo, client, event: 'automation_rule_trigger' }).catch((e) => log.error(`Webhook failed: ${action.webhookUrl}`, e));
+            }
+            break;
+          case 'adjust_score':
+            if (action.score) {
+              await AdLead.findByIdAndUpdate(lead._id, { $inc: { leadScore: action.score } });
+            }
+            break;
+          default:
+            break;
+        }
+      } catch (actErr) {
+        log.error('[RulesEngine] action failed', actErr.message);
       }
     }
 
-    if (results.pauseBot) {
-       await Conversation.findByIdAndUpdate(convo._id, { botPaused: true, isBotPaused: true, botStatus: 'paused' });
-       ruleIntercepted = true;
+    if (ruleIntercepted && !continueToFlow) {
+      log.info(`Rules Engine intercepted message processing for ${phone} (exclusive mode)`);
+      return true;
     }
-    
-    if (results.scoreAdjustments !== 0) {
-       await AdLead.findByIdAndUpdate(lead._id, { $inc: { leadScore: results.scoreAdjustments } });
-    }
-    
-    if (results.webhooks && results.webhooks.length > 0) {
-       const axios = require('axios');
-       for (const url of results.webhooks) {
-          axios.post(url, { lead, convo, client, event: 'automation_rule_trigger' }).catch(e => log.error(`Webhook failed: ${url}`, e));
-       }
-    }
-
-    // Phase 22 Routing Handoff trigger
-    if (results.handoff) {
-       // Just flag for routing engine processing (done later in phase 22)
-       convo.assignedAgent = results.handoff;
-       await Conversation.findByIdAndUpdate(convo._id, { assignedAgent: results.handoff });
-    }
-
-    if (ruleIntercepted) {
-      log.info(`Rules Engine Intercepted message processing for ${phone}`);
-      return true; 
+    if (ruleIntercepted && continueToFlow) {
+      log.info(`Rules Engine ran actions for ${phone}; continuing to flows / AI (continueToFlowAfterActions)`);
     }
   }
 

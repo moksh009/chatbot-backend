@@ -22,6 +22,7 @@ const WIDGET_TYPES = new Set([
   'popup',
   'spin_wheel',
   'exit_intent',
+  'exit_popup', // storefront embed (growth-widget.js) uses exit_popup
   'discount_bar',
   'checkout_optin',
   'mystery_gift',

@@ -62,26 +62,31 @@ const evaluateTrigger = (trigger, messageText, context) => {
  * @returns {Array|null} Array of actions to take, or null if no match
  */
 const evaluateRules = (rules, messageText, evalContext) => {
+    const rule = findMatchingRule(rules, messageText, evalContext);
+    return rule ? rule.actions : null;
+};
+
+/**
+ * Returns the first matching automation rule (full object), or null.
+ * Used by DualBrain to run actions in order and honor continueToFlowAfterActions.
+ */
+const findMatchingRule = (rules, messageText, evalContext) => {
     if (!rules || !Array.isArray(rules) || rules.length === 0) return null;
 
-    // Filter active rules and sort by priority (lower number = higher priority)
     const activeRules = rules.filter(r => r.isActive).sort((a, b) => (a.priority || 10) - (b.priority || 10));
 
     for (const rule of activeRules) {
-        // 1. Check Trigger
         const triggerMatch = evaluateTrigger(rule.trigger, messageText, evalContext);
         if (!triggerMatch) continue;
 
-        // 2. Check Conditions (all must match if grouped as AND, but let's assume AND for now)
         let conditionsMatch = true;
         if (rule.conditions && Array.isArray(rule.conditions) && rule.conditions.length > 0) {
             conditionsMatch = rule.conditions.every(cond => evaluateCondition(cond, evalContext));
         }
 
-        // 3. Return Actions if match
         if (conditionsMatch) {
             console.log(`[RulesEngine] Match found: ${rule.name}`);
-            return rule.actions;
+            return rule;
         }
     }
 
@@ -143,5 +148,6 @@ const executeRuleActions = async (actions, client, phone, dependencies) => {
 
 module.exports = {
     evaluateRules,
-    executeRuleActions
+    executeRuleActions,
+    findMatchingRule,
 };

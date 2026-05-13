@@ -2352,13 +2352,21 @@ router.get('/operators', protect, async (req, res) => {
   }
 });
 
+function maskPhoneDigits(phone) {
+  const d = String(phone || '').replace(/\D/g, '');
+  if (!d) return '';
+  if (d.length <= 4) return `••••${d}`;
+  return `•••• ${d.slice(-4)}`;
+}
+
 // GET /api/analytics/optin-overview
 router.get('/optin-overview', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
 
-    const days = req.query.period === '7d' ? 7 : req.query.period === '90d' ? 90 : 30;
+    const period = String(req.query.period || '30d').toLowerCase();
+    const days = period === '7d' ? 7 : period === '90d' ? 90 : 30;
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
     const [statusAgg, sourceAgg, trendAgg, recent] = await Promise.all([
@@ -2383,9 +2391,9 @@ router.get('/optin-overview', protect, async (req, res) => {
         { $sort: { _id: 1 } },
       ]),
       AdLead.find({ clientId, optStatus: { $in: ['opted_in', 'pending', 'opted_out'] } })
-        .sort({ updatedAt: -1 })
-        .limit(10)
-        .select('name optInSource optStatus updatedAt')
+        .sort({ optInDate: -1, updatedAt: -1 })
+        .limit(12)
+        .select('name optInSource optStatus optInDate updatedAt phoneNumber')
         .lean(),
     ]);
 
@@ -2398,8 +2406,18 @@ router.get('/optin-overview', protect, async (req, res) => {
     const pending = map.pending || 0;
     const optInRate = totalLeads > 0 ? Number(((optedIn / totalLeads) * 100).toFixed(1)) : 0;
 
+    const trendMap = {};
+    trendAgg.forEach((x) => { trendMap[x._id] = x.newOptIns; });
+    const filledTrend = [];
+    for (let i = days - 1; i >= 0; i -= 1) {
+      const d = new Date(Date.now() - i * 24 * 60 * 60 * 1000);
+      const key = d.toISOString().slice(0, 10);
+      filledTrend.push({ date: key, newOptIns: trendMap[key] || 0 });
+    }
+
     res.json({
       success: true,
+      periodDays: days,
       totalLeads,
       optedIn,
       unknown,
@@ -2407,12 +2425,13 @@ router.get('/optin-overview', protect, async (req, res) => {
       pending,
       optInRate,
       bySource: sourceAgg.map((x) => ({ source: x._id || 'unknown', count: x.count })),
-      trend: trendAgg.map((x) => ({ date: x._id, newOptIns: x.newOptIns })),
+      trend: filledTrend,
       recentOptIns: recent.map((x) => ({
         name: x.name || 'Customer',
+        phoneMasked: maskPhoneDigits(x.phoneNumber),
         source: x.optInSource || 'unknown',
         status: x.optStatus || 'unknown',
-        timestamp: x.updatedAt || null,
+        timestamp: x.optInDate || x.updatedAt || null,
       })),
     });
   } catch (err) {

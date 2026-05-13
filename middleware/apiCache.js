@@ -10,6 +10,30 @@ function getRedisForCache() {
 }
 
 /**
+ * Delete keys matching a pattern without Redis KEYS (KEYS blocks the server O(N)).
+ * Uses SCAN + batched DEL — safe under load for large keyspaces.
+ */
+async function redisDeleteByPattern(redisClient, pattern) {
+  let cursor = '0';
+  let deleted = 0;
+  do {
+    const [nextCursor, keys] = await redisClient.scan(
+      cursor,
+      'MATCH',
+      pattern,
+      'COUNT',
+      400
+    );
+    cursor = String(nextCursor);
+    if (keys && keys.length) {
+      await redisClient.del(...keys);
+      deleted += keys.length;
+    }
+  } while (cursor !== '0');
+  return deleted;
+}
+
+/**
  * Express middleware to cache API responses
  * @param {number} ttlSeconds Time to live in seconds
  */
@@ -81,10 +105,7 @@ const clearClientCache = async (clientId) => {
   try {
     const redisClient = getRedisForCache();
     if (redisClient) {
-      const keys = await redisClient.keys(`api_cache:${clientId}:*`);
-      if (keys.length > 0) {
-        await redisClient.del(keys);
-      }
+      await redisDeleteByPattern(redisClient, `api_cache:${clientId}:*`);
     } else {
       const keys = memoryCache.keys().filter((k) => k.startsWith(`api_cache:${clientId}:`));
       keys.forEach((k) => memoryCache.del(k));
