@@ -14,8 +14,16 @@ const {
   FLOW_DESCRIPTION,
 } = require('../data/apexLightOwnerFlow');
 
-/** Target Apex Light production client — change if onboarding another tenant */
-const CLIENT_ID = 'shubhampatelsbusiness_1cfb2b';
+/** Default client — override with `APEX_SYNC_CLIENT_ID` or `--clientId=...` */
+const DEFAULT_CLIENT_ID = 'shubhampatelsbusiness_1cfb2b';
+
+function resolveClientId() {
+  const fromEnv = process.env.APEX_SYNC_CLIENT_ID || process.env.SYNC_CLIENT_ID;
+  if (fromEnv && String(fromEnv).trim()) return String(fromEnv).trim();
+  const arg = process.argv.find((a) => a.startsWith('--clientId='));
+  if (arg) return arg.split('=').slice(1).join('=').trim();
+  return DEFAULT_CLIENT_ID;
+}
 
 /**
  * Pushes `data/apexLightOwnerFlow.js` (buildFlow) into MongoDB: WhatsAppFlow + Client.visualFlows.
@@ -26,9 +34,12 @@ const CLIENT_ID = 'shubhampatelsbusiness_1cfb2b';
  *
  * Run from chatbot-backend-main:
  *   node scripts/setupApexOwnerSupportFlow.js
+ *   APEX_SYNC_CLIENT_ID=other_client node scripts/setupApexOwnerSupportFlow.js
+ *   node scripts/setupApexOwnerSupportFlow.js --clientId=other_client
  */
 
 async function run() {
+  const CLIENT_ID = resolveClientId();
   const uri = process.env.MONGODB_URI || process.env.MONGO_URI;
   if (!uri) throw new Error('MONGODB_URI or MONGO_URI is required');
 
@@ -37,6 +48,12 @@ async function run() {
   if (!client) throw new Error(`Client not found: ${CLIENT_ID}`);
 
   const { nodes, edges } = buildFlow();
+
+  const greetNode = nodes.find((n) => n.id === 'n_trigger');
+  const greetingKeywords = Array.isArray(greetNode?.data?.trigger?.keywords)
+    ? greetNode.data.trigger.keywords.map((k) => String(k).trim()).filter(Boolean)
+    : [];
+  const matchMode = greetNode?.data?.trigger?.matchMode || 'contains';
 
   const existing = await WhatsAppFlow.findOne({ clientId: CLIENT_ID, flowId: FLOW_ID }).select('version').lean();
   const nextVersion = (existing?.version || 0) + 1 || 1;
@@ -62,8 +79,11 @@ async function run() {
     triggerConfig: {
       type: 'keyword',
       channel: 'whatsapp',
-      keywords: ['hi', 'hello', 'hey', 'menu', 'start', 'hii', 'hiii', 'help', 'apex', 'namaste'],
-      matchMode: 'contains',
+      keywords:
+        greetingKeywords.length > 0
+          ? greetingKeywords
+          : ['hi', 'hello', 'hey', 'menu', 'start', 'hii', 'hiii', 'help', 'apex', 'namaste'],
+      matchMode,
     },
     description: FLOW_DESCRIPTION,
     categories: ['support', 'warranty', 'installation', 'owner_experience', 'catalog', 'apex_light'],
@@ -111,6 +131,19 @@ async function run() {
   clearTriggerCache(CLIENT_ID);
   await clearClientCache(CLIENT_ID);
 
+  const hasWelcomeLogo = nodes.some((n) => n.id === 'n_welcome_logo');
+  const eT0 = edges.find((e) => e.id === 'e_t0');
+  const mainMenu = nodes.find((n) => n.id === 'n_main_menu');
+  const verification = {
+    hasWelcomeLogoNode: hasWelcomeLogo,
+    entryEdge_e_t0_target: eT0?.target || null,
+    mainMenuHasImageUrl: !!(mainMenu?.data && mainMenu.data.imageUrl),
+  };
+
+  console.warn(
+    '[setupApexOwnerSupportFlow] After this sync: hard-refresh the Flow Builder before clicking Publish — Publish copies the *editor* draft to live; a stale tab can overwrite Mongo with an old graph.'
+  );
+
   console.log(
     JSON.stringify(
       {
@@ -120,7 +153,8 @@ async function run() {
         flowDbId: String(flowDoc._id),
         nodeCount: nodes.length,
         edgeCount: edges.length,
-        note: "MongoDB updated. Redeploy Render (or restart API) if server code changed. New chats should see one welcome+menu message.",
+        verification,
+        note: 'MongoDB nodes + publishedNodes updated from repo buildFlow(). Redeploy API if server code changed. Use the same MONGODB_URI as production.',
       },
       null,
       2

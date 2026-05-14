@@ -10,6 +10,7 @@ const Client = require('../../models/Client');
 const { sendOrderConfirmationEmail, sendCODToPrepaidEmail } = require('../../utils/emailService');
 const { runDualBrainEngine } = require('../../utils/dualBrainEngine');
 const { generateText } = require('../../utils/gemini');
+const { resolveClientGeminiKey } = require('../../utils/clientGeminiKey');
 const { normalizePhone } = require('../../utils/helpers');
 const { getShopifyClient } = require('../../utils/shopifyHelper');
 const { buildShopifyOrderSet, shopifyOrderFilter, detectCodFromShopify } = require('../../utils/shopifyOrderMapper');
@@ -720,8 +721,9 @@ const handleWebhook = async (req, res) => {
                 return res.status(200).end();
             }
 
-            // Gemini AI Fallback for Product Queries
-            if (plan === 'CX Agent (V2)' && req.clientConfig.geminiApiKey) {
+            // Gemini AI Fallback for Product Queries — merchant key only (never platform GEMINI_API_KEY)
+            const tenantKey = resolveClientGeminiKey(req.clientConfig);
+            if (plan === 'CX Agent (V2)' && tenantKey) {
                 const prompt = `You are an AI sales agent for an ecommerce store. 
                 Knowledge Base: ${JSON.stringify(nicheData.products || {})}
                 User Message: ${userMsg}
@@ -729,7 +731,9 @@ const handleWebhook = async (req, res) => {
                 const userMessage = userMsg;
 
                 try {
-                    const aiText = await generateText(`${prompt}\n\nUser: ${userMessage}`, req.clientConfig.geminiApiKey);
+                    const aiText = await generateText(`${prompt}\n\nUser: ${userMessage}`, tenantKey, {
+                      noEnvFallback: true,
+                    });
                     if (aiText) await sendWhatsAppText({ ...helperParams, to: from, body: aiText });
                 } catch (e) {
                     console.error('[EcommerceEngine] AI FATAL Error:', e.message);

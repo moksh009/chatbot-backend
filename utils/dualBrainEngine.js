@@ -43,6 +43,7 @@ const {
   getEffectiveWhatsAppPhoneNumberId,
 } = require("./clientWhatsAppCreds");
 const { discoverClientByPhoneId } = require("./clientDiscovery");
+const { resolveClientGeminiKey } = require("./clientGeminiKey");
 
 /** Resolved Meta / WA catalog id (same precedence as catalog send path). */
 function getClientCatalogIdString(client) {
@@ -443,7 +444,7 @@ async function checkIntent(userText, intentDescription, apiKey) {
 User Message: "${userText}"
 Intent Description: "${intentDescription}"
 Does the user message match the intent description? Reply ONLY with "YES" or "NO".`;
-    const response = await generateText(prompt, apiKey);
+    const response = await generateText(prompt, apiKey, { noEnvFallback: true });
     if (response && response.toUpperCase().includes('YES')) {
       return true;
     }
@@ -646,10 +647,11 @@ async function runDualBrainEngine(parsedMessage, client) {
     // Only call detection/translation if not handled by a keyword.
     const { detectLanguage, translateText } = require('./translationEngine');
     let detectedLanguage = 'en';
-    
+    const inboundGeminiKey = resolveClientGeminiKey(client);
+
     if (inboundText && inboundText.length > 2) {
         try {
-            detectedLanguage = await detectLanguage(inboundText, client?.geminiApiKey || process.env.GEMINI_API_KEY);
+            detectedLanguage = await detectLanguage(inboundText, inboundGeminiKey || '');
             parsedMessage.detectedLanguage = detectedLanguage;
         } catch (err) {
             log.warn('[Language] Detection skipped (Invalid Key/Timeout)');
@@ -756,7 +758,11 @@ async function runDualBrainEngine(parsedMessage, client) {
       inboundText && 
       detectedLanguage !== (translationConfig.agentLanguage || 'en')
   ) {
-      const translated = await translateText(inboundText, translationConfig.agentLanguage || 'en', client?.geminiApiKey || process.env.GEMINI_API_KEY);
+      const translated = await translateText(
+        inboundText,
+        translationConfig.agentLanguage || 'en',
+        inboundGeminiKey || ''
+      );
       if (translated && translated !== inboundText) {
           parsedMessage.translatedContent = translated;
           parsedMessage.originalText = inboundText;
@@ -1817,17 +1823,23 @@ async function runDualBrainEngine(parsedMessage, client) {
     try {
       const match = await findMatchingFlow(parsedMessage, client, convo);
       if (match && !match.isLegacy && match.flow) {
-        const flow       = match.flow;
-        const flowNodes  = flattenFlowNodes(flow.nodes || []);
-        const flowEdges  = flow.edges || [];
+        const flow = match.flow;
+        // Prefer published snapshot (same as getFlowGraphForConversation) — draft `nodes` can lag behind live traffic.
+        const rawNodes =
+          (flow.publishedNodes && flow.publishedNodes.length > 0 ? flow.publishedNodes : flow.nodes) || [];
+        const rawEdges =
+          (flow.publishedEdges && flow.publishedEdges.length > 0 ? flow.publishedEdges : flow.edges) || [];
+        const flowNodes = flattenFlowNodes(rawNodes);
+        const flowEdges = rawEdges;
         const startNodeId = findFlowStartNode(flowNodes, flowEdges);
 
         log.info(`[TriggerEngine] Matched flow "${flow.name || flow.id}" via ${match.triggerType}. Starting at node: ${startNodeId}`);
 
         if (startNodeId && flowNodes.length) {
           // Track which flow is now active
+          const resolvedActiveFlowId = flow.flowId || (flow._id != null ? String(flow._id) : flow.id || null);
           await Conversation.findByIdAndUpdate(convo._id, {
-            activeFlowId: flow.id || null,
+            activeFlowId: resolvedActiveFlowId,
             lastMessageAt: new Date()
           });
           const freshConvo = await Conversation.findById(convo._id);
@@ -2170,7 +2182,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
       // 2. AI Intent Detection Fallback (Priority 1B)
       if (!matchingTrigger && userText.length > 3) {
           const intentNodes = flowNodes.filter(n => (n.type === 'trigger' || n.type === 'TriggerNode') && n.data?.triggerType === 'intent' && n.data?.intentDescription);
-          const apiKey = client.geminiApiKey || client.config?.geminiApiKey;
+          const apiKey = resolveClientGeminiKey(client);
           
           if (intentNodes.length > 0 && apiKey) {
               log.info(`AI Intent: Checking ${intentNodes.length} intent triggers for "${userText}"`);
@@ -2342,9 +2354,9 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         `If you cannot answer from the knowledge above, reply exactly: NEEDS_HUMAN`;
       let reply = "";
       try {
-        const key = client.ai?.geminiKey || client.geminiApiKey || process.env.GEMINI_API_KEY;
+        const key = resolveClientGeminiKey(client);
         reply = await Promise.race([
-          generateTextFast(prompt, key),
+          generateTextFast(prompt, key, { noEnvFallback: true }),
           new Promise((_, rej) => setTimeout(() => rej(new Error("ai_timeout")), 5000)),
         ]);
       } catch (_) {
@@ -4415,8 +4427,11 @@ async function runAIFallback(parsedMessage, client, phone, lead, channel = 'what
       if (orderIntentRegex.test(text)) {
         log.info(`[NativeOrder] Detecting products in message: "${text}"`);
         const products = client.nicheData?.products || [];
-        const apiKey = client.geminiApiKey || client.config?.geminiApiKey || process.env.GEMINI_API_KEY;
-        const parsed = await extractOrderDetails(text, products, apiKey);
+        const orderParseKey = resolveClientGeminiKey(client);
+        if (!orderParseKey) {
+          log.warn(`[NativeOrder] Skipping order NLP — no merchant Gemini key for ${client.clientId}`);
+        } else {
+        const parsed = await extractOrderDetails(text, products, orderParseKey);
 
         if (parsed.isOrderIntent && Array.isArray(parsed.items) && parsed.items.length > 0) {
           log.info(`[NativeOrder] Valid items parsed: ${parsed.items.length}`);
@@ -4455,7 +4470,14 @@ async function runAIFallback(parsedMessage, client, phone, lead, channel = 'what
             return true;
           }
         }
+        }
       }
+    }
+
+    const tenantGeminiKey = resolveClientGeminiKey(client);
+    if (!tenantGeminiKey) {
+      log.warn(`[AI Fallback] No merchant Gemini key for ${client.clientId} — skipping AI (platform key is not used for tenant bots).`);
+      return false;
     }
 
     // Billing: Check and Increment AI usage
@@ -4574,14 +4596,9 @@ REPLY:
 
     let reply;
     try {
-      const apiKeyToUse = client.geminiApiKey;
-      if (!apiKeyToUse) {
-        log.warn(`[AI Fallback] No Gemini API key for ${client.clientId}`);
-        throw new Error("No API Key");
-      }
       reply = await withTimeout(
-        generateText(prompt, apiKeyToUse), 
-        8000, 
+        generateText(prompt, tenantGeminiKey, { noEnvFallback: true }),
+        8000,
         "Gemini AI Fallback Generation"
       );
     } catch (aiErr) {

@@ -33,8 +33,15 @@ TEXT:
 ${text}
 `;
 
+  const key = geminiKey && String(geminiKey).trim();
+  if (!key) return text;
+
   try {
-    const result = await generateText(prompt, geminiKey, { temperature: 0.1, maxTokens: 800 });
+    const result = await generateText(prompt, key, {
+      temperature: 0.1,
+      maxTokens: 800,
+      noEnvFallback: true,
+    });
     return result ? result.trim() : text;
   } catch (error) {
     console.error("Translation engine error:", error);
@@ -48,7 +55,9 @@ ${text}
  */
 async function detectLanguage(text, geminiKey) {
   if (!text || !text.trim()) return 'en';
-  
+  const key = geminiKey && String(geminiKey).trim();
+  if (!key) return 'en';
+
   const prompt = `
 Identify the dominant language of the following text.
 Return ONLY the two-letter ISO 639-1 language code (e.g., 'en', 'es', 'fr', 'hi').
@@ -58,7 +67,11 @@ ${text}
 `;
 
   try {
-    const result = await generateText(prompt, geminiKey, { temperature: 0.0, maxTokens: 10 });
+    const result = await generateText(prompt, key, {
+      temperature: 0.0,
+      maxTokens: 10,
+      noEnvFallback: true,
+    });
     return result ? result.trim().toLowerCase().slice(0, 2) : 'en';
   } catch (error) {
     return 'en';

@@ -82,15 +82,21 @@ async function generateText(prompt, apiKey, options = {}) {
         temperature = 0.7,
         timeout     = 35000,
         maxRetries  = 2,
-        isPlatform  = false // Explicit flag for platform calls
+        isPlatform  = false, // Explicit flag for platform calls
+        /** When true, never substitute GEMINI_API_KEY — use for merchant WhatsApp / tenant bot paths only. */
+        noEnvFallback = false,
     } = options;
     
     // 1. Determine Routing Strategy
-    let activeKey = apiKey?.trim();
+    let activeKey = typeof apiKey === "string" ? apiKey.trim() : "";
     const platformKey = process.env.GEMINI_API_KEY?.trim();
     
-    // If no key provided, assume platform call
     if (!activeKey) {
+        if (noEnvFallback) {
+            logger.warn("generateText: no API key and noEnvFallback=true — skipping");
+            return null;
+        }
+        // If no key provided, assume internal / platform call
         activeKey = platformKey;
     }
     

@@ -1,5 +1,6 @@
 const Client = require('../models/Client');
 const { decrypt } = require('../utils/encryption');
+const { resolveClientGeminiKey } = require('../utils/clientGeminiKey');
 
 /**
  * Middleware to load client configuration based on route parameter 'clientId'
@@ -52,16 +53,16 @@ const loadClientConfig = async (req, res, next) => {
       }
     }
 
-    // === Resolve Gemini API Key === 
-    const rawDbGeminiKey = (client.geminiApiKey || client.openaiApiKey || "").trim() || null;
-    const rawEnvGeminiKey = (process.env.GEMINI_API_KEY || "").trim() || null;
-    const resolvedGeminiKey = rawDbGeminiKey || rawEnvGeminiKey || null;
+    // === Gemini (tenant bot AI) — DB only; never promote server GEMINI_API_KEY onto webhooks ===
+    const resolvedGeminiKey = resolveClientGeminiKey(client);
 
     if (!finalToken) {
       console.warn(`[ClientConfig] ⚠️ No WhatsApp token found for client: ${clientId}`);
     }
     if (!resolvedGeminiKey) {
-      console.warn(`[ClientConfig] ⚠️ No Gemini API key found for client: ${clientId}`);
+      console.warn(
+        `[ClientConfig] No Gemini API key on Client ${clientId} — WhatsApp AI fallback / translations use the merchant key only. Add one under client AI settings.`
+      );
     }
 
     const waVerify =
