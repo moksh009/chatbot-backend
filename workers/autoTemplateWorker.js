@@ -199,6 +199,19 @@ function cleanShortText(value, max = 100) {
   return String(value || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
 }
 
+/** Meta rejects BODY text where a {{n}} variable is the first or last token (subcode 2388299). */
+function sanitizeMetaTemplateBodyForSubmission(text) {
+  let s = String(text || "").replace(/\r\n/g, "\n").trim();
+  if (!s) return "Thanks for choosing us — we will keep you posted here.";
+  if (/^\{\{\s*\d+\s*\}\}/.test(s)) {
+    s = `Thanks — ${s}`;
+  }
+  if (/\{\{\s*\d+\s*\}\}\s*$/s.test(s)) {
+    s = `${s}\n\n— Team`;
+  }
+  return s;
+}
+
 // ─── BUILD SUBMISSION QUEUE ────────────────────────────────────────────────
 async function buildSubmissionQueue(clientId) {
   const drafts = await MetaTemplate.find({
@@ -302,7 +315,13 @@ async function submitSingleTemplate(client, templateId, clientId) {
     components.push({ type: 'HEADER', format: 'TEXT', text: template.headerValue });
   }
 
-  const bodyComponent = { type: 'BODY', text: template.body };
+  const safeBody = sanitizeMetaTemplateBodyForSubmission(template.body);
+  if (safeBody !== template.body) {
+    template.body = safeBody;
+    await template.save().catch(() => {});
+  }
+
+  const bodyComponent = { type: 'BODY', text: safeBody };
   let vm = template.variableMapping;
   if (vm && !(vm instanceof Map)) {
     vm = new Map(Object.entries(vm));

@@ -2292,7 +2292,34 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, phone, io, channel = 'whatsapp', parsedMessage = {}) {
   const execStartedAt = Date.now();
   const rawNode = flowNodes.find(n => n.id === nodeId);
-  if (!rawNode) { log.warn(`[Exec] Node ${nodeId} not found in ${flowNodes.length} nodes`); return false; }
+  if (!rawNode) {
+    log.warn(`[Exec] Node ${nodeId} not found in ${flowNodes.length} nodes — recovering to hub`);
+    const hubId =
+      flowNodes.find((n) => n.id === "n_main_menu")?.id ||
+      flowNodes.find(
+        (n) =>
+          n.type === "interactive" &&
+          Array.isArray(n.data?.buttonsList) &&
+          n.data.buttonsList.length > 0
+      )?.id ||
+      null;
+    if (!hubId) {
+      log.warn(`[Exec] No hub node available for recovery`);
+      return false;
+    }
+    if (convo?._id) {
+      await Conversation.findByIdAndUpdate(convo._id, {
+        $set: {
+          lastStepId: hubId,
+          captureResumeNodeId: null,
+          waitingForVariable: null,
+          status: "BOT_ACTIVE",
+        },
+      }).catch(() => {});
+    }
+    const freshConvo = convo?._id ? await Conversation.findById(convo._id) : convo;
+    return executeNode(hubId, flowNodes, flowEdges, client, freshConvo || convo, lead, phone, io, channel, parsedMessage);
+  }
   log.info(`[Exec] Node ${nodeId} type=${rawNode.type} label="${(rawNode.data?.label || '').substring(0, 30)}"`);
 
   // Phase 20: Inject variables into node data before sending

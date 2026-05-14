@@ -16,7 +16,7 @@ const HDMI21_CUT = "https://apexlight.in/cdn/shop/files/hdmi21_cut_points.jpg";
 const HDMI20_WIRING = "https://apexlight.in/cdn/shop/files/hdmi20_wiring_diagram.jpg";
 
 const COPY = {
-  "mainMenuText": "Hi! How can we help you today?\n\n🛍️ Explore our products with prices\n📦 Get your product installed (quick guide)\n🎧 Talk to our support team",
+  "mainMenuText": "👋 *Welcome to Apex Light!*\n\nTurn watching and gaming into a stunning experience.\n\n💡 *What would you like to do today?*\n\nHi! How can we help you today?\n\n🛍️ Explore our products with prices\n📦 Get your product installed (quick guide)\n🎧 Talk to our support team",
   "serviceMenuText": "*More services*\n\nTrack an order, check warranty, troubleshoot, browse the shop, or pick your model. You can also return to the three main choices.",
   "tvIntro": "📺 *TV Backlights — Our Range*\n\nAll models support HDMI sync up to 90\" TV. Tap the product links below to visit the product page and order directly.",
   "tvProducts": "🔆 *Apex HDMI 2.1 TV Backlight* (32-90 inch)\nPrice: Rs. 9,999\n🛒 https://apexlight.in/products/apex-hdmi-2-1-version-tv-backlight\n\n🔆 *Apex HDMI 2.0 TV Backlight* (up to 90 inch)\nPrice: Rs. 7,599\n🛒 https://apexlight.in/products/apex-hdmi-sync-tv-backlight-for-all-tv-sizes-upto-90-inches\n\n🔆 *Apex HDMI 2.0 + Bar Light* (up to 90 inch)\nPrice: Rs. 10,499\n🛒 https://apexlight.in/products/apex-hdmi-sync-tv-backlight-hdmi-sync-bar-light\n\n🔆 *Govee TV Backlight 3 Lite*\nPrice: Rs. 8,499\n🛒 https://apexlight.in/products/govee-tv-backlight-3-lite-with-fish-eye-correction-function-sync-to-55-65-inch-tvs-11-8ft-rgbicw-wi-fi-tv-led-backlight-strip-with-camera-voice-and-app-control-adapterwork-with-all-smart-tv-and-everything",
@@ -205,19 +205,6 @@ function buildFlow() {
     }
   },
   {
-    "id": "n_welcome_logo",
-    "type": "image",
-    "position": {
-      "x": 420,
-      "y": 120
-    },
-    "data": {
-      "label": "Welcome — Apex logo",
-      "imageUrl": "https://apexlight.in/cdn/shop/files/07708086-ccae-4d21-93e2-fe0ed52b33a2.jpg?v=1714210021",
-      "caption": "👋 *Welcome to Apex Light!*\n\nTurn watching and gaming into a stunning experience.\n\n💡 *What would you like to do today?*\nTap *Open menu* below to get started."
-    }
-  },
-  {
     "id": "n_main_menu",
     "type": "interactive",
     "position": {
@@ -228,7 +215,8 @@ function buildFlow() {
       "label": "Main hub — 3 buttons",
       "interactiveType": "button",
       "header": "Apex Light",
-      "text": "Hi! How can we help you today?\n\n🛍️ Explore our products with prices\n📦 Get your product installed (quick guide)\n🎧 Talk to our support team",
+      "imageUrl": "https://apexlight.in/cdn/shop/files/07708086-ccae-4d21-93e2-fe0ed52b33a2.jpg?v=1714210021",
+      "text": "👋 *Welcome to Apex Light!*\n\nTurn watching and gaming into a stunning experience.\n\n💡 *What would you like to do today?*\n\nHi! How can we help you today?\n\n🛍️ Explore our products with prices\n📦 Get your product installed (quick guide)\n🎧 Talk to our support team",
       "buttonsList": [
         {
           "id": "btn_explore",
@@ -1522,23 +1510,17 @@ function buildFlow() {
   {
     "id": "e_t0",
     "source": "n_trigger",
-    "target": "n_welcome_logo"
+    "target": "n_main_menu"
   },
   {
     "id": "e_t_first",
     "source": "n_trigger_first",
-    "target": "n_welcome_logo"
+    "target": "n_main_menu"
   },
   {
     "id": "e_t_svc",
     "source": "n_trigger_services",
     "target": "n_service_menu"
-  },
-  {
-    "id": "e_logo_menu",
-    "source": "n_welcome_logo",
-    "sourceHandle": "a",
-    "target": "n_main_menu"
   },
   {
     "id": "e_btn_explore",
@@ -2418,7 +2400,7 @@ function buildFlow() {
     "id": "e_ff_start",
     "source": "n_footer",
     "sourceHandle": "f_start",
-    "target": "n_welcome_logo"
+    "target": "n_main_menu"
   }
 ];
   const removedInstallNodeIds = new Set([
