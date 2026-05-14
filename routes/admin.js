@@ -2481,6 +2481,7 @@ router.get('/whatsapp-webhook-instructions', protect, async (req, res) => {
       getWhatsAppWebhookPublicConfig,
       getMasterVerifyToken,
     } = require('../utils/whatsappWebhookPublic');
+    const { buildWebhookDashboardStatus } = require('../utils/whatsappWebhookLifecycle');
 
     const clientId = req.user.clientId;
     if (!clientId) {
@@ -2493,7 +2494,7 @@ router.get('/whatsapp-webhook-instructions', protect, async (req, res) => {
     const callbackUrlTenant = `${origin}/api/client/${encClientId}/webhook`;
 
     let client = await Client.findOne({ clientId })
-      .select('phoneNumberId wabaId clientId verifyToken whatsapp.phoneNumberId whatsapp.wabaId whatsapp.verifyToken')
+      .select('phoneNumberId wabaId clientId verifyToken whatsapp.phoneNumberId whatsapp.wabaId whatsapp.verifyToken platformVars')
       .lean();
 
     if (!client) {
@@ -2516,19 +2517,29 @@ router.get('/whatsapp-webhook-instructions', protect, async (req, res) => {
       await Client.updateOne({ clientId }, { $set: { verifyToken: vtWa } });
     }
 
+    const fresh = await Client.findOne({ clientId })
+      .select('phoneNumberId wabaId whatsapp.phoneNumberId whatsapp.wabaId platformVars verifyToken whatsapp.verifyToken')
+      .lean();
+
     const phoneNumberId =
-      client.phoneNumberId || client.whatsapp?.phoneNumberId || '';
-    const wabaId = client.wabaId || client.whatsapp?.wabaId || '';
+      fresh?.phoneNumberId || fresh?.whatsapp?.phoneNumberId || '';
+    const wabaId = fresh?.wabaId || fresh?.whatsapp?.wabaId || '';
+    const tenantVt =
+      String(fresh?.whatsapp?.verifyToken || '').trim() ||
+      String(fresh?.verifyToken || '').trim() ||
+      tenantVerifyToken;
+
+    const status = buildWebhookDashboardStatus(fresh?.platformVars || {}, phoneNumberId);
 
     res.json({
       success: true,
       origin,
       routingModel: 'per_workspace_url',
       callbackUrlTenant,
-      /** Same as callbackUrlTenant — primary field for dashboards */
+      /** Same as callbackUrlTenant — use this in Meta */
       callbackUrlPrimary: callbackUrlTenant,
-      verifyToken: tenantVerifyToken,
-      verifyTokenTenant: tenantVerifyToken,
+      verifyToken: tenantVt,
+      verifyTokenTenant: tenantVt,
       /** Legacy: one Meta app + one server META_APP_SECRET; not suitable when each tenant has their own Meta app */
       sharedWebhookRoot: cfgShared.callbackUrlPrimary,
       sharedWebhookAlternate: cfgShared.callbackUrlAlternate,
@@ -2538,21 +2549,39 @@ router.get('/whatsapp-webhook-instructions', protect, async (req, res) => {
       clientId,
       clientPhoneNumberId: phoneNumberId || null,
       clientWabaId: wabaId || null,
+      ...status,
       checklist: [
-        'Meta for Developers → your app → WhatsApp → Configuration.',
-        `Callback URL: paste exactly ${callbackUrlTenant} (includes your workspace id). Click Verify and save.`,
-        'Verify token: paste the value below (unique to this workspace). It must match character-for-character.',
-        'Webhooks → WhatsApp Business Account → Manage → subscribe to messages (and template status if you use templates).',
-        'Use the same Meta app that issued your permanent access token.',
+        'Open Meta for Developers → your app → WhatsApp → Configuration.',
+        `Callback URL: paste exactly this (includes your workspace id):\n${callbackUrlTenant}`,
+        'Verify token: paste the token below — must match exactly.',
+        'Click “Verify and save”, then under Webhooks subscribe to “messages” (and template status if you use templates).',
       ],
       multiTenantNote:
-        'Each workspace gets its own Callback URL path and verify token so customers who each created their own Meta app can subscribe webhooks without sharing one global VERIFY_TOKEN. Inbound POSTs to this URL are routed to your workspace from the URL; we still recommend the Phone Number ID in settings match your Meta number.',
+        'Each workspace uses its own URL path (/api/client/{your_id}/webhook) and its own verify token stored in TopEdge. Deploy with SERVER_URL or PUBLIC_WEBHOOK_BASE_URL set to your public API origin.',
       postUsesSignature: cfgShared.metaAppSecretConfigured
-        ? 'The shared root URLs (/ and /whatsapp-webhook) verify X-Hub-Signature-256 using META_APP_SECRET — only valid if that secret matches the Meta app sending events. Per-workspace URLs accept POSTs without that check (required when each tenant uses a different Meta app secret).'
+        ? 'Shared root URLs (/ and /whatsapp-webhook) verify X-Hub-Signature-256 with META_APP_SECRET — only when that secret matches your Meta app. Per-workspace URLs do not use that check (required for BYOA).'
         : 'META_APP_SECRET is not set on this server — signature verification is not enforced on shared root URLs.',
     });
   } catch (err) {
     log.warn('whatsapp-webhook-instructions failed', { error: err.message });
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// POST /admin/whatsapp-webhook-ack — user confirms they pasted URL/token in Meta (optional hint for status)
+router.post('/whatsapp-webhook-ack', protect, async (req, res) => {
+  try {
+    const clientId = req.user.clientId;
+    if (!clientId) {
+      return res.status(400).json({ success: false, message: 'No clientId on session' });
+    }
+    await Client.updateOne(
+      { clientId },
+      { $set: { 'platformVars.whatsappWebhookSetupAckAt': new Date() } }
+    );
+    res.json({ success: true });
+  } catch (err) {
+    log.warn('whatsapp-webhook-ack failed', { error: err.message });
     res.status(500).json({ success: false, message: err.message });
   }
 });

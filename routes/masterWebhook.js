@@ -213,6 +213,8 @@ async function processMessages(messages, metadata, contacts) {
           meta: { source: 'master_webhook' }
         });
         emitToClient(clientDocForEnvelope.clientId, 'orchestration:event', envelope);
+        const { touchInboundWebhook } = require('../utils/whatsappWebhookLifecycle');
+        touchInboundWebhook(clientDocForEnvelope.clientId).catch(() => {});
       }
 
       // 2. Extract Meta Referral (Ad Attribution)

@@ -13,6 +13,11 @@ const choiceSalonController = require('./clientcodes/choice_salon_holi');
 const topedgeController = require('./clientcodes/topedgeai');
 const genericEcommerceEngine = require('./engines/genericEcommerce');
 const commerceAutomationService = require('../utils/commerceAutomationService');
+const {
+  hasWhatsAppWebhookPayload,
+  touchInboundWebhook,
+  touchMetaWebhookVerified,
+} = require('../utils/whatsappWebhookLifecycle');
 
 // Middleware to load client config
 router.use(loadClientConfig);
@@ -67,15 +72,14 @@ router.get('/webhook', (req, res) => {
   if (mode && token) {
     if (mode === 'subscribe' && token === VERIFY_TOKEN) {
       console.log(`[Webhook Verification] SUCCESS for Client: ${req.clientConfig.clientId}`);
-      res.status(200).send(challenge);
-    } else {
-      console.warn(`[Webhook Verification] FAILED for Client: ${req.clientConfig.clientId} | Expected: ${VERIFY_TOKEN} | Received: ${token}`);
-      res.sendStatus(403);
+      touchMetaWebhookVerified(req.clientConfig.clientId).catch(() => {});
+      return res.status(200).send(challenge);
     }
-  } else {
-    console.warn(`[Webhook Verification] MISSING PARAMS for Client: ${req.clientConfig.clientId}`);
-    res.sendStatus(400);
+    console.warn(`[Webhook Verification] FAILED for Client: ${req.clientConfig.clientId} | Expected: ${VERIFY_TOKEN} | Received: ${token}`);
+    return res.sendStatus(403);
   }
+  console.warn(`[Webhook Verification] MISSING PARAMS for Client: ${req.clientConfig.clientId}`);
+  return res.sendStatus(400);
 });
 
 // Webhook Event Handling (POST)
@@ -103,13 +107,17 @@ router.post('/webhook', async (req, res) => {
             await InboundDeduplication.create({ messageId, clientId, phone });
         } else {
             // If phone is missing (unlikely for messages), we log it but don't crash
-            log.warn(`[Webhook Router] Deduplication: missing phone for messageId ${messageId}`);
+            console.warn(`[Webhook Router] Deduplication: missing phone for messageId ${messageId}`);
             await InboundDeduplication.create({ messageId, clientId, phone: 'unknown' });
         }
       }
     } catch (dedupErr) {
       console.error(`[Webhook Router] Deduplication check failed:`, dedupErr.message);
       // Continue anyway to ensure delivery
+    }
+
+    if (hasWhatsAppWebhookPayload(req.body)) {
+      touchInboundWebhook(clientId).catch(() => {});
     }
 
     console.log(`[Webhook Router] INCOMING POST -> Client: ${clientId} | Type: ${businessType} | Flow: EcommerceEngine`);

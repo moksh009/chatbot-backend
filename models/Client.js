@@ -293,6 +293,12 @@ const ClientSchema = new mongoose.Schema({
     shopifyProductCount: { type: Number, default: 0 },
     shopifyDomain: { type: String, trim: true, default: '' },
     shopifyPhoneField: { type: Boolean, default: false },
+    /** Meta GET webhook verification succeeded for this workspace URL (WhatsApp → Configuration). */
+    whatsappWebhookMetaVerifiedAt: { type: Date, default: null },
+    /** Last inbound WhatsApp Cloud API POST (messages or statuses) routed to this client. */
+    whatsappLastInboundWebhookAt: { type: Date, default: null },
+    /** User clicked “I connected webhook in Meta” in dashboard (hint only). */
+    whatsappWebhookSetupAckAt: { type: Date, default: null },
   },
 
   faq: [{
