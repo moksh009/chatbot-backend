@@ -379,9 +379,10 @@ const inboxRoutes = require('./routes/inboxRoutes');
 app.use('/api/inbox', inboxRoutes);
 
 
-// Master Webhook (Root Route for WhatsApp Meta Cloud API)
+// Master Webhook (WhatsApp Cloud API — shared callback for all tenants; routes by phone_number_id)
 const masterWebhook = require('./routes/masterWebhook');
 app.use('/', masterWebhook);
+app.use('/whatsapp-webhook', masterWebhook);
 
 // Homepage endpoint (already handled above if root, but keeping as specific /homepage)
 app.get('/homepage', (req, res) => {

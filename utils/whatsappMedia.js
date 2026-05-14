@@ -2,6 +2,7 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const log = require('./logger')('WhatsAppMedia');
+const { getEffectiveWhatsAppAccessToken } = require('./clientWhatsAppCreds');
 
 /**
  * Utility to handle WhatsApp Media resolution and local storage.
@@ -22,7 +23,7 @@ if (!fs.existsSync(UPLOADS_DIR)) {
  * 3. Saves to local uploads directory
  */
 async function resolveAndSaveMedia(mediaId, client, extension = 'bin') {
-  const token = client.whatsappToken || process.env.WHATSAPP_TOKEN;
+  const token = getEffectiveWhatsAppAccessToken(client) || process.env.WHATSAPP_TOKEN;
   if (!token) {
     log.error('WhatsApp Token missing for media resolution');
     return null;

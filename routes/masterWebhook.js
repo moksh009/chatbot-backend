@@ -11,6 +11,7 @@ const { logActivity } = require('../utils/activityLogger');
 const { recalculateLeadScore } = require('../utils/scoringHelper');
 const { buildEventEnvelope } = require('../utils/eventEnvelope');
 const { emitToClient } = require('../utils/socket');
+const { phoneNumberIdMatchFilter } = require('../utils/clientWhatsAppCreds');
 
 /**
  * Middleware to verify Meta X-Hub-Signature-256
@@ -51,7 +52,10 @@ router.get('/', (req, res) => {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
-    const verifyToken = process.env.VERIFY_TOKEN || 'my_verify_token';
+    const verifyToken =
+      process.env.VERIFY_TOKEN ||
+      process.env.WHATSAPP_VERIFY_TOKEN ||
+      'my_verify_token';
 
     if (mode && token === verifyToken) {
         log.info('Webhook Root Verified');
@@ -190,10 +194,10 @@ async function processMessages(messages, metadata, contacts) {
       }
 
       log.info(`Incoming from ${from}: ${message.type}`, { messageId });
-      const clientDocForEnvelope = await require('../models/Client').findOne(
-        { phoneNumberId: phone_number_id },
-        { clientId: 1 }
-      ).lean();
+      const waClientFilter = phoneNumberIdMatchFilter(phone_number_id);
+      const clientDocForEnvelope = waClientFilter
+        ? await require('../models/Client').findOne(waClientFilter, { clientId: 1 }).lean()
+        : null;
       if (clientDocForEnvelope?.clientId) {
         const envelope = buildEventEnvelope({
           channel: 'whatsapp',
@@ -244,7 +248,7 @@ async function processMessages(messages, metadata, contacts) {
           log.info(`🛒 WA Catalog order from ${from}`, { items: orderItems.length });
 
           const Client = require('../models/Client');
-          const clientDoc = await Client.findOne({ phoneNumberId: phone_number_id }).lean();
+          const clientDoc = waClientFilter ? await Client.findOne(waClientFilter).lean() : null;
           if (!clientDoc?.clientId) {
             log.warn('Catalog order received but client not found by phoneNumberId', { phone_number_id });
             continue;
@@ -359,7 +363,7 @@ async function processMessages(messages, metadata, contacts) {
       // Phase 29: Track 6 - Supplier B2B Bypass
       const Supplier = require('../models/Supplier');
       const Client = require('../models/Client');
-      const client = await Client.findOne({ phoneNumberId: phone_number_id }).lean();
+      const client = waClientFilter ? await Client.findOne(waClientFilter).lean() : null;
       
       if (client) {
         const isSupplier = await Supplier.exists({ clientId: client._id, phone: from });
@@ -403,8 +407,10 @@ async function processMessages(messages, metadata, contacts) {
       // DO NOT use processInboundMessage (deleted legacy dual-pipeline).
       handleWhatsAppMessage(message, from, phone_number_id, (contacts || []).find(c => c.wa_id === from)?.profile?.name || '')
         .then(async () => {
-          const Cli = require('../models/Client');
-          const cdoc = await Cli.findOne({ phoneNumberId: phone_number_id }).select('clientId').lean();
+          const Client = require('../models/Client');
+          const cdoc = waClientFilter
+            ? await Client.findOne(waClientFilter).select('clientId').lean()
+            : null;
           if (cdoc?.clientId) recalculateLeadScore(cdoc.clientId, from).catch(() => {});
         })
         .catch(err => log.error("Engine processing error", { phone: from, error: err.message }));

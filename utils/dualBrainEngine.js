@@ -38,6 +38,11 @@ const { parseWhatsAppPayload } = require("./parseWhatsAppPayload");
 const { normalizeHandleId, findInteractiveEdgeForButtonAcrossGraph } = require("./graphButtonRouting");
 const { logFlowEvent } = require("./flowObservability");
 const { buildInteractiveHeaderFromNodeData } = require("./waInteractiveHeader");
+const {
+  getEffectiveWhatsAppAccessToken,
+  getEffectiveWhatsAppPhoneNumberId,
+} = require("./clientWhatsAppCreds");
+const { discoverClientByPhoneId } = require("./clientDiscovery");
 
 /** Resolved Meta / WA catalog id (same precedence as catalog send path). */
 function getClientCatalogIdString(client) {
@@ -325,8 +330,8 @@ function replaceVariables(text, client, lead, convo) {
 async function handleWhatsAppMessage(from, message, phoneNumberId, profileName = '') {
   let client;
   try {
-    // 0. Find Client first to scope the session lock
-    client = await Client.findOne({ phoneNumberId });
+    // 0. Find Client first to scope the session lock (root + nested whatsapp + WABA)
+    client = await discoverClientByPhoneId(phoneNumberId);
     if (!client) {
         log.warn(`Client not found for phoneId: ${phoneNumberId}`);
         return;
@@ -880,7 +885,8 @@ async function runDualBrainEngine(parsedMessage, client) {
     const FollowUpSequence = require('../models/FollowUpSequence');
     const axios = require('axios');
 
-    const continueToFlow = matchedRule.continueToFlowAfterActions === true;
+    // Default: run flow/AI after rule actions unless the rule explicitly sets continueToFlowAfterActions: false
+    const continueToFlow = matchedRule.continueToFlowAfterActions !== false;
     let ruleIntercepted = false;
 
     const emitLeadTags = async () => {
@@ -4464,8 +4470,8 @@ REPLY:
 
 async function sendWhatsAppText(client, phone, body, channel = 'whatsapp') {
 
-  const token = client.premiumAccessToken || client.whatsappToken;
-  const phoneNumberId = client.premiumPhoneId || client.phoneNumberId;
+  const token = getEffectiveWhatsAppAccessToken(client);
+  const phoneNumberId = getEffectiveWhatsAppPhoneNumberId(client);
   if (!token || !phoneNumberId) return;
   try {
     const convo = await Conversation.findOne({ phone, clientId: client.clientId });
@@ -4483,8 +4489,8 @@ async function sendWhatsAppText(client, phone, body, channel = 'whatsapp') {
 }
 
 async function sendWhatsAppImage(client, phone, imageUrl, caption) {
-  const token = client.premiumAccessToken || client.whatsappToken;
-  const phoneNumberId = client.premiumPhoneId || client.phoneNumberId;
+  const token = getEffectiveWhatsAppAccessToken(client);
+  const phoneNumberId = getEffectiveWhatsAppPhoneNumberId(client);
   if (!token || !phoneNumberId) return;
   try {
     const convo = await Conversation.findOne({ phone, clientId: client.clientId });
@@ -4498,8 +4504,8 @@ async function sendWhatsAppImage(client, phone, imageUrl, caption) {
 
 
 async function sendWhatsAppAudio(client, phone, audioUrl) {
-  const token = client.premiumAccessToken || client.whatsappToken;
-  const phoneNumberId = client.premiumPhoneId || client.phoneNumberId;
+  const token = getEffectiveWhatsAppAccessToken(client);
+  const phoneNumberId = getEffectiveWhatsAppPhoneNumberId(client);
   if (!token || !phoneNumberId) return;
   try {
     const res = await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
@@ -4511,8 +4517,8 @@ async function sendWhatsAppAudio(client, phone, audioUrl) {
 
 
 async function sendWhatsAppInteractive(client, phone, interactive, bodyText = '') {
-  const token = client.premiumAccessToken || client.whatsappToken;
-  const phoneNumberId = client.premiumPhoneId || client.phoneNumberId;
+  const token = getEffectiveWhatsAppAccessToken(client);
+  const phoneNumberId = getEffectiveWhatsAppPhoneNumberId(client);
   if (!token || !phoneNumberId) return false;
 
   let payloadData = null;
@@ -4583,8 +4589,8 @@ async function sendWhatsAppInteractive(client, phone, interactive, bodyText = ''
 }
 
 async function sendWhatsAppTemplate(client, phone, templateName, languageCode, components = []) {
-  const token = client.whatsappToken;
-  const phoneNumberId = client.phoneNumberId;
+  const token = getEffectiveWhatsAppAccessToken(client);
+  const phoneNumberId = getEffectiveWhatsAppPhoneNumberId(client);
   if (!token || !phoneNumberId) return;
   
   try {
@@ -4634,8 +4640,8 @@ async function sendWhatsAppSmartTemplate(client, phone, templateName, variables 
 }
 
 async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, screen) {
-  const token = client.premiumAccessToken || client.whatsappToken;
-  const phoneNumberId = client.premiumPhoneId || client.phoneNumberId;
+  const token = getEffectiveWhatsAppAccessToken(client);
+  const phoneNumberId = getEffectiveWhatsAppPhoneNumberId(client);
   if (!token || !phoneNumberId) return;
 
   try {

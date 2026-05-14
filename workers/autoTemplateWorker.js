@@ -59,14 +59,14 @@ const FIXED_TEMPLATES = {
     category: 'UTILITY',
     purpose: 'Confirm a new order has been received and is being processed. Include order number and total amount.',
     variables: { '1': 'Customer Name', '2': 'Order Number', '3': 'Order Total' },
-    bodyText: 'Hi {{1}}, your order {{2}} has been confirmed! We are processing it now. Your total is {{3}}.',
+    bodyText: 'Hi {{1}}, your order {{2}} has been confirmed! We are processing it now. Your total is {{3}}. Thank you — we will update you when it ships.',
     buttons: [{ type: 'QUICK_REPLY', text: 'Track Order' }]
   },
   shipping_update: {
     category: 'UTILITY',
     purpose: 'Notify the customer that their order has shipped. Include order number and tracking information.',
     variables: { '1': 'Customer Name', '2': 'Order Number', '3': 'Tracking URL' },
-    bodyText: 'Hi {{1}}, good news! Your order {{2}} has shipped. Track your package here: {{3}}',
+    bodyText: 'Hi {{1}}, good news! Your order {{2}} has shipped. Track your package here: {{3}} Reply here if the link does not open.',
     buttons: [{ type: 'QUICK_REPLY', text: 'Track Package' }]
   },
   order_delivered: {
@@ -87,21 +87,21 @@ const FIXED_TEMPLATES = {
     category: 'MARKETING',
     purpose: 'Ask for a review post-delivery.',
     variables: { '1': 'Customer Name', '2': 'Review Link' },
-    bodyText: 'Hi {{1}}, we hope you are loving your recent purchase! Could you take a minute to leave a review? It helps us out a lot: {{2}}',
+    bodyText: 'Hi {{1}}, we hope you are loving your recent purchase! Could you take a minute to leave a review? It helps us a lot. Review link: {{2}} Thank you!',
     buttons: [{ type: 'QUICK_REPLY', text: 'Leave Review' }]
   },
   cod_to_prepaid: {
     category: 'MARKETING',
     purpose: 'Offer a discount to convert Cash on Delivery to Prepaid.',
     variables: { '1': 'Customer Name', '2': 'Order Number', '3': 'Discount Amount', '4': 'Payment Link' },
-    bodyText: 'Hi {{1}}, convert your COD order {{2}} to prepaid and get an instant {{3}} discount! Click here to pay securely: {{4}}',
+    bodyText: 'Hi {{1}}, convert your COD order {{2}} to prepaid and get an instant {{3}} discount! Pay securely here: {{4}} Reply here if you need help.',
     buttons: [{ type: 'QUICK_REPLY', text: 'Pay Now' }]
   },
   warranty_registration: {
     category: 'UTILITY',
     purpose: 'Send warranty activation link post-purchase.',
     variables: { '1': 'Customer Name', '2': 'Order Number', '3': 'Warranty Link' },
-    bodyText: 'Hi {{1}}, protect your new purchase! Click here to register your warranty for order {{2}} within the next 48 hours: {{3}}',
+    bodyText: 'Hi {{1}}, protect your new purchase! Register your warranty for order {{2}} within the next 48 hours using this link: {{3}} Message us here with questions.',
     buttons: [{ type: 'QUICK_REPLY', text: 'Register Warranty' }]
   },
   loyalty_points: {
@@ -115,21 +115,21 @@ const FIXED_TEMPLATES = {
     category: 'MARKETING',
     purpose: 'A polite first nudge sent 30 minutes after cart abandonment.',
     variables: { '1': 'Customer Name', '2': 'Product Name', '3': 'Cart Total', '4': 'Checkout URL' },
-    bodyText: 'Hi {{1}}, you left {{2}} in your cart! Your total is {{3}}. Click here to complete your order before it sells out: {{4}}',
+    bodyText: 'Hi {{1}}, you left {{2}} in your cart! Your total is {{3}}. Complete your order before it sells out here: {{4}} Thanks for shopping with us!',
     buttons: [{ type: 'QUICK_REPLY', text: 'Complete Order' }]
   },
   cart_recovery_2: {
     category: 'MARKETING',
     purpose: 'A second follow-up sent 24 hours after abandonment.',
     variables: { '1': 'Customer Name', '2': 'Product Name', '3': 'Checkout URL' },
-    bodyText: 'Hi {{1}}, your {{2}} is still reserved! Complete your purchase today with a special discount: {{3}}',
+    bodyText: 'Hi {{1}}, your {{2}} is still reserved! Complete your purchase today with a special discount using this link: {{3}} We are here if you need help.',
     buttons: [{ type: 'QUICK_REPLY', text: 'Shop Now' }, { type: 'QUICK_REPLY', text: 'Help Me' }]
   },
   admin_human_alert: {
     category: 'UTILITY',
     purpose: 'Notify admin/support for urgent takeover events.',
     variables: { '1': 'Customer Name', '2': 'Customer Phone', '3': 'Issue Summary' },
-    bodyText: 'Admin alert: {{1}} ({{2}}) needs urgent support. Context: {{3}}',
+    bodyText: 'Admin alert: {{1}} ({{2}}) needs urgent support. Context: {{3}} Please open the inbox in the dashboard.',
     buttons: [{ type: 'QUICK_REPLY', text: 'Open Inbox' }]
   }
 };

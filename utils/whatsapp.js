@@ -7,7 +7,10 @@ const { translateWhatsAppError } = require('./whatsappErrors');
 
 /** Shared breaker for WhatsApp Cloud API (Graph) — avoids hammering Meta during outages */
 const waGraphBreaker = getBreaker('whatsapp_graph', { failureThreshold: 5, resetTimeoutMs: 45000 });
-const { decrypt } = require('./encryption');
+const {
+  getEffectiveWhatsAppAccessToken,
+  getEffectiveWhatsAppPhoneNumberId,
+} = require('./clientWhatsAppCreds');
 const AdLead = require('../models/AdLead');
 const SuppressionList = require('../models/SuppressionList');
 
@@ -791,19 +794,10 @@ const WhatsApp = {
    * Internal helper to extract credentials with validation
    */
   getCredentials(client) {
-    let token = client.whatsappToken || client.premiumAccessToken || process.env.WHATSAPP_TOKEN;
-    const phoneNumberId = client.phoneNumberId || client.premiumPhoneId || process.env.WHATSAPP_PHONENUMBER_ID;
-
-    // --- DECRYPTION FIX: Always decrypt if exists (supports plain-text fallback) ---
-    if (token) {
-        try {
-            const decrypted = decrypt(token);
-            if (decrypted) token = decrypted;  // Only replace if decryption succeeded
-        } catch (err) {
-            // Token is plain-text — use as-is, this is expected for legacy clients
-            log.info(`[WhatsApp] Token is plain-text for ${client.clientId} (not encrypted)`);
-        }
-    }
+    const token =
+      getEffectiveWhatsAppAccessToken(client) || process.env.WHATSAPP_TOKEN;
+    const phoneNumberId =
+      getEffectiveWhatsAppPhoneNumberId(client) || process.env.WHATSAPP_PHONENUMBER_ID;
 
     if (!token || !phoneNumberId) {
       throw new Error(`[WhatsApp] Missing credentials for client ${client.clientId}`);

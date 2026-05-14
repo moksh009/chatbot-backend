@@ -2450,6 +2450,53 @@ router.post('/test-whatsapp', protect, async (req, res) => {
   }
 });
 
+// GET /admin/whatsapp-webhook-instructions — Meta app webhook URL + verify token (shared app; routes by Phone Number ID)
+router.get('/whatsapp-webhook-instructions', protect, async (req, res) => {
+  try {
+    const { getWhatsAppWebhookPublicConfig } = require('../utils/whatsappWebhookPublic');
+    const cfg = getWhatsAppWebhookPublicConfig();
+    const client = await Client.findOne({ clientId: req.user.clientId })
+      .select('phoneNumberId wabaId clientId whatsapp.phoneNumberId whatsapp.wabaId')
+      .lean();
+
+    const phoneNumberId =
+      client?.phoneNumberId ||
+      (client && client.whatsapp && client.whatsapp.phoneNumberId) ||
+      '';
+    const wabaId =
+      client?.wabaId ||
+      (client && client.whatsapp && client.whatsapp.wabaId) ||
+      '';
+
+    res.json({
+      success: true,
+      origin: cfg.origin,
+      callbackUrlPrimary: cfg.callbackUrlPrimary,
+      callbackUrlAlternate: cfg.callbackUrlAlternate,
+      verifyToken: cfg.verifyToken,
+      metaAppSecretConfigured: cfg.metaAppSecretConfigured,
+      recommendedWebhookFields: cfg.recommendedWebhookFields,
+      multiTenantNote: cfg.multiTenantNote,
+      clientId: req.user.clientId,
+      clientPhoneNumberId: phoneNumberId || null,
+      clientWabaId: wabaId || null,
+      checklist: [
+        'Meta for Developers → your app → WhatsApp → Configuration.',
+        'Callback URL: paste either URL below (both hit the same inbox). Click Verify and save.',
+        'Verify token: must match exactly what we show below (set VERIFY_TOKEN or WHATSAPP_VERIFY_TOKEN on the server).',
+        'Webhooks → WhatsApp Business Account → Manage → subscribe to the recommended fields.',
+        'Use the same Meta app that issued your permanent access token; Phone Number ID must belong to that app.',
+      ],
+      postUsesSignature: cfg.metaAppSecretConfigured
+        ? 'Inbound POST requests require a valid X-Hub-Signature-256 (META_APP_SECRET on this server).'
+        : 'META_APP_SECRET is not set — webhooks still work, but signature verification is skipped.',
+    });
+  } catch (err) {
+    log.warn('whatsapp-webhook-instructions failed', { error: err.message });
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // POST /admin/test-shopify — Validates Shopify Admin API credentials
 router.post('/test-shopify', protect, async (req, res) => {
   try {
