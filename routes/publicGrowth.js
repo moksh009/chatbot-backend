@@ -18,6 +18,14 @@ const subscribeLimiter = rateLimit({
   message: { success: false, message: 'Too many requests. Try again shortly.' },
 });
 
+const cartEventLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many cart events. Try again shortly.' },
+});
+
 const WIDGET_TYPES = new Set([
   'popup',
   'spin_wheel',
@@ -242,6 +250,109 @@ router.post('/subscribe', subscribeLimiter, async (req, res) => {
     });
   } catch (e) {
     console.error('[publicGrowth/subscribe]', e);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+/**
+ * POST /api/public/growth/cart-event
+ * Storefront pixel: records browse-cart intent + Shopify-style recover URL for WhatsApp templates.
+ * Body: embedKey (required), phone, checkoutToken?, cartTotal?, cartItems?, pageUrl?, checkoutUrl?
+ */
+router.post('/cart-event', cartEventLimiter, async (req, res) => {
+  try {
+    const embedKey = String(req.body.embedKey || req.body.key || '').trim();
+    if (!embedKey || embedKey.length < 16) {
+      return res.status(400).json({ success: false, message: 'embedKey required' });
+    }
+    const client = await Client.findOne({
+      growthEmbedPublicKey: embedKey,
+      growthEmbedEnabled: { $ne: false },
+      isActive: { $ne: false },
+    })
+      .select('clientId shopDomain businessName growthCompliance')
+      .lean();
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Unknown or disabled embed key' });
+    }
+
+    const phoneNorm = normalizePhoneDigits(req.body.phone);
+    if (!phoneNorm) {
+      return res.status(400).json({ success: false, message: 'Valid phone required' });
+    }
+
+    const storeHost = String(client.shopDomain || '').replace(/^https?:\/\//, '').split('/')[0];
+    const checkoutToken = String(req.body.checkoutToken || req.body.token || '').trim();
+    const explicitUrl = String(req.body.checkoutUrl || '').trim();
+    const recoverUrl =
+      explicitUrl ||
+      (checkoutToken && storeHost ? `https://${storeHost}/cart/recover/${checkoutToken}` : '');
+
+    const cartTotal = Number(req.body.cartTotal);
+    const pageUrl = String(req.body.pageUrl || '').slice(0, 2000);
+    const items = Array.isArray(req.body.cartItems) ? req.body.cartItems : [];
+
+    await AdLead.findOneAndUpdate(
+      { clientId: client.clientId, phoneNumber: phoneNorm },
+      {
+        $set: {
+          cartUrl: recoverUrl,
+          cartValue: Number.isFinite(cartTotal) ? cartTotal : 0,
+          cartStatus: 'abandoned',
+          cartAbandonedAt: new Date(),
+          lastInteraction: new Date(),
+          cartItems: items.length ? items.slice(0, 40) : [],
+        },
+        $setOnInsert: {
+          phoneNumber: phoneNorm,
+          clientId: client.clientId,
+        },
+        $inc: { addToCartCount: 1 },
+        $push: {
+          activityLog: {
+            $each: [
+              {
+                action: 'pixel_cart_event',
+                details: pageUrl || 'cart-event',
+                timestamp: new Date(),
+              },
+            ],
+            $position: 0,
+            $slice: 40,
+          },
+        },
+      },
+      { upsert: true }
+    );
+
+    const Conversation = require('../models/Conversation');
+    let convo = await Conversation.findOne({ phone: phoneNorm, clientId: client.clientId });
+    if (!convo) {
+      convo = await Conversation.create({
+        phone: phoneNorm,
+        clientId: client.clientId,
+        channel: 'whatsapp',
+        status: 'active',
+        source: 'growth/cart-event',
+      });
+    }
+    const prev = convo.metadata && typeof convo.metadata === 'object' ? { ...convo.metadata } : {};
+    await Conversation.findByIdAndUpdate(convo._id, {
+      $set: {
+        metadata: {
+          ...prev,
+          checkout_url: recoverUrl,
+          cart_url: recoverUrl,
+          cart_total: Number.isFinite(cartTotal) ? String(cartTotal) : prev.cart_total,
+          commerce_event: 'pixel_cart',
+          lastCommerceEventAt: new Date(),
+        },
+      },
+    });
+
+    return res.json({ success: true, recoverUrl: recoverUrl || null });
+  } catch (e) {
+    console.error('[publicGrowth/cart-event]', e);
     return res.status(500).json({ success: false, message: 'Server error' });
   }
 });

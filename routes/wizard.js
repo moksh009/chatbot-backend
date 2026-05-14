@@ -318,82 +318,98 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     }
 
     console.log(`[Wizard] Starting flow generation for ${clientId}...`);
-    
+
+    const { generateCommerceWizardPack } = require("../utils/flowGenerator");
+    const { createFlowsFromCommercePack, deletePriorWizardFlows } = require("../utils/wizardCommercePackPersist");
+
     // Get pre-built templates based on user's wizard data (like business name, cart timing)
     const templates = getPrebuiltTemplates(wizardData);
-    
-    // Generate the complete flow (passing templates so nodes can use them)
-    const generated = await generateEcommerceFlow(client, { ...wizardData, templates });
-    const { nodes, edges, automationFlows = [] } = generated;
 
-    // Replace mode: Flow Builder lists `WhatsAppFlow` documents. Older wizard runs only
-    // updated `Client.visualFlows` / deleted one `flowModelId`, so stale main + automation
-    // rows stayed in the collection — remove all wizard-generated flows before inserting new ones.
+    const useCommercePack = wizardData.commerceFlowPack !== false;
+
+    // Replace mode: remove prior wizard / automation WhatsAppFlow rows before inserting new ones.
     if (wizardData.replaceExisting !== false) {
-      const delResult = await WhatsAppFlow.deleteMany({
-        clientId,
-        $or: [
-          { flowId: { $regex: "^flow_wizard_" } },
-          { flowId: { $regex: "^auto_" } },
-          { generatedBy: "wizard" },
-          { isAutomation: true },
-          { name: { $regex: "^Automation:" } },
-        ],
-      });
+      const delResult = await deletePriorWizardFlows(clientId);
       log.info(
         `[Wizard] Replace mode: removed ${delResult.deletedCount} prior WhatsAppFlow document(s) for ${clientId}`
       );
+    } else if (useCommercePack) {
+      await WhatsAppFlow.deleteMany({
+        clientId,
+        flowId: { $regex: "^flow_wizard_" },
+      });
+    }
+
+    let nodes;
+    let edges;
+    let mainNodes;
+    let mainEdges;
+    let automationFlows = [];
+    let persistedPack = null;
+    let newFlow;
+
+    if (useCommercePack) {
+      const pack = await generateCommerceWizardPack(client, { ...wizardData, templates });
+      automationFlows = pack.automationFlows || [];
+      persistedPack = await createFlowsFromCommercePack(clientId, pack.flows, {
+        generatedBy: "wizard",
+        status: "PUBLISHED",
+        idPrefix: "flow_wizard",
+        visualInlineGraph: true,
+        visualMaxNodes: 20,
+      });
+      mainNodes = persistedPack.mainNodes;
+      mainEdges = persistedPack.mainEdges;
+      nodes = mainNodes;
+      edges = mainEdges;
+      newFlow =
+        persistedPack.visualEntries.find((v) => v.isActive) || persistedPack.visualEntries[0] || {
+          id: persistedPack.primaryFlowId,
+        };
+    } else {
+      // Single-graph legacy path (main + embedded automations)
+      const generated = await generateEcommerceFlow(client, { ...wizardData, templates });
+      nodes = generated.nodes;
+      edges = generated.edges;
+      automationFlows = generated.automationFlows || [];
+      mainNodes = nodes;
+      mainEdges = edges;
+
+      const flowId = `flow_wizard_${Date.now()}`;
+      newFlow = {
+        id: flowId,
+        name: `${wizardData.businessName || client.name} — Main Flow`,
+        platform: "whatsapp",
+        isActive: true,
+        folderId: "",
+        nodes: nodes.length > 20 ? [] : nodes,
+        edges: nodes.length > 20 ? [] : edges,
+        nodeCount: nodes.length,
+        edgeCount: edges.length,
+        flowModelId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        generatedBy: "wizard",
+      };
+
+      if (mainNodes.length > 20) {
+        const storedFlow = await WhatsAppFlow.create({
+          clientId,
+          flowId,
+          name: newFlow.name,
+          platform: "whatsapp",
+          nodes: mainNodes,
+          edges: mainEdges,
+          status: "PUBLISHED",
+          generatedBy: "wizard",
+        });
+        newFlow.flowModelId = storedFlow._id;
+        console.log(`[Wizard] Main flow offloaded to WhatsAppFlow model: ${storedFlow._id} (${mainNodes.length} nodes)`);
+      }
     }
 
     // Generate system prompt
     const systemPrompt = await generateSystemPrompt(client, wizardData);
-
-    // Build the new flow object
-    // Phase R4 Fix: nodes/edges always stored empty here (full data in WhatsAppFlow model)
-    // nodeCount is stored so FlowBuilder card displays correct count without loading all nodes
-    const flowId = `flow_wizard_${Date.now()}`;
-    const newFlow = {
-      id:          flowId,
-      name:        `${wizardData.businessName || client.name} — Main Flow`,
-      platform:    "whatsapp",
-      isActive:    true,
-      folderId:    "",
-      nodes:       nodes.length > 20 ? [] : nodes,
-      edges:       nodes.length > 20 ? [] : edges,
-      nodeCount:   nodes.length,   // Always stored for card display
-      edgeCount:   edges.length,   // Always stored for card display
-      flowModelId: null,            // Populated if > 20 nodes
-      createdAt:   new Date(),
-      updatedAt:   new Date(),
-      generatedBy: "wizard"
-    };
-
-    // Commerce automations live in the same flow as the main journey (use Flow folders / layout).
-    // Runtime: triggerEngine scans all trigger nodes and starts from the matching commerce trigger.
-    const mainNodes = nodes;
-    const mainEdges = edges;
-
-    // Update newFlow to use full graph (main + automations)
-    newFlow.nodes = mainNodes.length > 20 ? [] : mainNodes;
-    newFlow.edges = mainNodes.length > 20 ? [] : mainEdges;
-    newFlow.nodeCount = mainNodes.length;
-    newFlow.edgeCount = mainEdges.length;
-
-    // ✅ Phase R4: Smart Flow Storage — always offload to WhatsAppFlow model when > 20 nodes
-    if (mainNodes.length > 20) {
-      const storedFlow = await WhatsAppFlow.create({
-        clientId,
-        flowId,
-        name:     newFlow.name,
-        platform: 'whatsapp',
-        nodes:    mainNodes,
-        edges:    mainEdges,
-        status:   'PUBLISHED',
-        generatedBy: 'wizard',
-      });
-      newFlow.flowModelId = storedFlow._id;
-      console.log(`[Wizard] Main flow offloaded to WhatsAppFlow model: ${storedFlow._id} (${mainNodes.length} nodes)`);
-    }
 
     // ─── Build the canonical wizard → DB update via the central mapper ───────
     // All field-mapping rules live in utils/wizardMapper.js so we have ONE
@@ -409,11 +425,36 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       $set.flowEdges = mainEdges;
     }
 
-    // Decide visualFlows mutation: replace existing active flow OR push new one.
+    // Decide visualFlows mutation: commerce pack replaces wizard rows, legacy path updates active slot.
     let updateQuery;
-    if (wizardData.replaceExisting !== false) {
+    if (useCommercePack && persistedPack) {
       const existingFlows = client.visualFlows || [];
-      const activeFlowIdx = existingFlows.findIndex(f => f.isActive && f.platform === 'whatsapp');
+      const kept = existingFlows.filter((vf) => {
+        const id = String(vf.id || "");
+        const gen = vf.generatedBy || "";
+        return (
+          gen !== "wizard" &&
+          gen !== "commerce_wizard_v2" &&
+          !id.startsWith("flow_wizard_") &&
+          !id.startsWith("flow_gfw_")
+        );
+      });
+      const normalizedKept = kept.map((vf) =>
+        vf.platform === "whatsapp" ? { ...vf, isActive: false } : vf
+      );
+      if (wizardData.replaceExisting !== false) {
+        updateQuery = { $set: { ...$set, visualFlows: [...normalizedKept, ...persistedPack.visualEntries] } };
+      } else {
+        const scrubbed = existingFlows.filter((vf) => {
+          const id = String(vf.id || "");
+          const gen = vf.generatedBy || "";
+          return gen !== "wizard" && !id.startsWith("flow_wizard_");
+        });
+        updateQuery = { $set: { ...$set, visualFlows: [...scrubbed, ...persistedPack.visualEntries] } };
+      }
+    } else if (wizardData.replaceExisting !== false) {
+      const existingFlows = client.visualFlows || [];
+      const activeFlowIdx = existingFlows.findIndex((f) => f.isActive && f.platform === "whatsapp");
 
       if (activeFlowIdx !== -1) {
         if (existingFlows[activeFlowIdx].flowModelId) {
@@ -422,11 +463,11 @@ router.post("/:clientId/complete", protect, async (req, res) => {
         }
         existingFlows[activeFlowIdx] = {
           ...existingFlows[activeFlowIdx],
-          nodes:       newFlow.nodes,
-          edges:       newFlow.edges,
+          nodes: newFlow.nodes,
+          edges: newFlow.edges,
           flowModelId: newFlow.flowModelId,
-          updatedAt:   new Date(),
-          generatedBy: 'wizard'
+          updatedAt: new Date(),
+          generatedBy: "wizard",
         };
         updateQuery = { $set: { ...$set, visualFlows: existingFlows } };
       } else {
@@ -442,10 +483,10 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       client._id, updateQuery, { new: true, runValidators: true }
     );
 
-    // Commerce triggers (cart, order_placed, fulfilled, etc.) are embedded in the main graph
-    // (`automationFlows` from generator is always empty). Legacy per-trigger docs are removed
-    // by the deleteMany filter above when replaceExisting is true.
+    // Commerce triggers: pack path uses standalone `WhatsAppFlow` automation docs; legacy path embeds triggers in the main graph.
+    const { clearClientCache } = require("../middleware/apiCache");
     clearTriggerCache(clientId);
+    clearClientCache(clientId);
     await syncPlatformVarsToFlows(clientId);
 
     const { syncPersonaAcrossSystem } = require("../utils/personaEngine");
@@ -464,26 +505,47 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     // Notify any open dashboard tabs that the flow regenerated (FlowBuilder
     // listens for this and refetches without a hard refresh).
     try {
-      emitToClient(clientId, 'wizard:flow-regenerated', {
+      emitToClient(clientId, "wizard:flow-regenerated", {
         clientId,
         flowId: newFlow.id,
+        flowIds: persistedPack?.flowIds,
+        commerceFlowPack: !!useCommercePack,
         nodeCount: mainNodes.length,
         edgeCount: mainEdges.length,
-        source: 'wizard_complete',
-        generatedAt: new Date()
+        source: "wizard_complete",
+        generatedAt: new Date(),
       });
-    } catch (_) { /* socket optional */ }
+    } catch (_) {
+      /* socket optional */
+    }
 
-    const action = wizardData.replaceExisting !== false ? 'replaced' : 'added';
-    console.log(`[Wizard] ✅ Complete! Flow ${action} with ${nodes.length} nodes for ${clientId}`);
+    const action = wizardData.replaceExisting !== false ? "replaced" : "added";
+    console.log(
+      `[Wizard] ✅ Complete! Flow ${action} with ${nodes.length} main nodes for ${clientId}` +
+        (useCommercePack && persistedPack ? ` (${persistedPack.flowIds.length} flows in pack)` : "")
+    );
+
+    const flowSummaries = persistedPack
+      ? persistedPack.created.map((c) => ({
+          flowId: c.flowId,
+          slug: c.f.slug,
+          name: c.f.name,
+          isAutomation: !!c.f.isAutomation,
+          nodeCount: (c.f.nodes || []).length,
+          edgeCount: (c.f.edges || []).length,
+        }))
+      : undefined;
 
     res.json({
-      success:        true,
-      flowId:         newFlow.id,
+      success: true,
+      flowId: newFlow.id,
+      flowIds: persistedPack?.flowIds,
+      flowSummaries,
+      commerceFlowPack: !!useCommercePack,
       nodesGenerated: nodes.length,
       edgesGenerated: edges.length,
       action,
-      message:        `Your bot is live! ${nodes.length} nodes generated and ${action} successfully.`
+      message: `Your bot is live! ${nodes.length} main nodes generated and ${action} successfully.`,
     });
 
   } catch (err) {

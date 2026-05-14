@@ -5,8 +5,129 @@ const { tenantClientId } = require('../utils/queryHelpers');
 const { protect } = require('../middleware/auth');
 const { clearClientCache } = require('../middleware/apiCache');
 const { fixFlowWithAI } = require('../controllers/flowFixController');
+const { clearTriggerCache } = require('../utils/triggerEngine');
 
 router.post('/fix', protect, fixFlowWithAI);
+
+/**
+ * POST /api/flow/generate-from-wizard
+ * Builds the multi-flow commerce pack (main + abandoned cart + COD confirmation, etc.),
+ * persists optional wizard payload to the client, and creates draft WhatsAppFlow docs.
+ */
+router.post('/generate-from-wizard', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+
+    const body = req.body || {};
+    const persist = body.persist !== false;
+
+    if (persist) {
+      const { universalFeaturesToWizardFeatures } = require('../utils/universalCommerceMapper');
+      const featuresObj = body.features || body.onboardingData?.features;
+      const wfSet = {};
+      if (featuresObj && typeof featuresObj === 'object' && Object.keys(featuresObj).length > 0) {
+        const flat = universalFeaturesToWizardFeatures(featuresObj);
+        for (const [k, v] of Object.entries(flat)) {
+          if (v !== undefined) wfSet[`wizardFeatures.${k}`] = v;
+        }
+        wfSet['onboardingData.features'] = featuresObj;
+      }
+      const step1 = body.step1 || body.onboardingData?.step1 || {};
+      const brandName = body.brandName || step1.brandName;
+      const supportPhone = body.supportPhone || step1.supportPhone;
+      const supportEmail = body.supportEmail || step1.supportEmail;
+      const industry = body.industry || step1.industry || body.onboardingData?.industry;
+      const websiteUrl = body.websiteUrl || step1.websiteUrl || body.onboardingData?.websiteUrl;
+
+      const $set = { ...wfSet };
+      if (brandName) {
+        $set['onboardingData.brandName'] = brandName;
+        $set.businessName = brandName;
+        $set.name = brandName;
+        $set['platformVars.brandName'] = brandName;
+      }
+      if (industry) $set['onboardingData.industry'] = industry;
+      if (supportPhone) {
+        $set['platformVars.supportWhatsapp'] = supportPhone;
+        $set.adminPhone = supportPhone;
+      }
+      if (supportEmail) {
+        $set['platformVars.supportEmail'] = supportEmail;
+        $set.adminEmail = supportEmail;
+      }
+      if (body.botName) {
+        $set['ai.persona.name'] = body.botName;
+        $set['platformVars.agentName'] = body.botName;
+      }
+      if (body.primaryLanguage) $set['ai.persona.language'] = body.primaryLanguage;
+      if (body.brandTone) {
+        $set['ai.persona.tone'] = body.brandTone;
+        $set['platformVars.defaultTone'] = body.brandTone;
+      }
+      if (body.aiKnowledgeBaseText) {
+        $set['ai.persona.knowledgeBase'] = String(body.aiKnowledgeBaseText).slice(0, 12000);
+      }
+      if (brandName || supportPhone || supportEmail || industry || websiteUrl || Object.keys(step1).length) {
+        $set['onboardingData.step1'] = {
+          ...step1,
+          ...(brandName ? { brandName } : {}),
+          ...(supportPhone ? { supportPhone } : {}),
+          ...(supportEmail ? { supportEmail } : {}),
+          ...(industry ? { industry } : {}),
+          ...(websiteUrl ? { websiteUrl } : {}),
+        };
+      }
+
+      if (Object.keys($set).length > 0) {
+        await Client.updateOne({ clientId }, { $set });
+      }
+    }
+
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    const { generateCommerceWizardPack } = require('../utils/flowGenerator');
+    const { createFlowsFromCommercePack } = require('../utils/wizardCommercePackPersist');
+    const pack = await generateCommerceWizardPack(client, body);
+
+    const folderId = body.folderId || '';
+    const persisted = await createFlowsFromCommercePack(clientId, pack.flows, {
+      generatedBy: 'commerce_wizard_v2',
+      status: 'DRAFT',
+      idPrefix: 'flow_gfw',
+      folderId,
+      visualInlineGraph: true,
+      visualMaxNodes: -1,
+    });
+
+    const created = persisted.created.map((c) => ({
+      id: c.flowId,
+      slug: c.f.slug,
+      name: c.f.name,
+      isAutomation: !!c.f.isAutomation,
+      automationTrigger: c.f.automationTrigger || '',
+      nodeCount: (c.f.nodes || []).length,
+      edgeCount: (c.f.edges || []).length,
+    }));
+
+    for (const entry of persisted.visualEntries) {
+      await Client.updateOne({ clientId }, { $push: { visualFlows: entry } });
+    }
+
+    await clearClientCache(clientId);
+    clearTriggerCache(clientId);
+
+    res.json({
+      success: true,
+      flows: created,
+      automationFlows: pack.automationFlows || [],
+    });
+  } catch (err) {
+    console.error('[POST /flow/generate-from-wizard]', err);
+    res.status(500).json({ success: false, message: err.message || 'Generation failed' });
+  }
+});
 
 // POST /api/flow — create draft flow (canonical WhatsAppFlow + Client.visualFlows append)
 router.post('/', protect, async (req, res) => {

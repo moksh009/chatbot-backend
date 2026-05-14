@@ -1,5 +1,9 @@
 /**
  * One-shot generator for data/apexLightOwnerFlow.js — run: node scripts/genApexLightOwnerFlow.js
+ *
+ * Note: The checked-in apexLightOwnerFlow.js is the source of truth and merges
+ * apexLightOwnerFlowInstallPack.js for installation + FAQ + support gate. Regenerating
+ * this file overwrites that wiring — prefer editing apexLightOwnerFlow.js + the install pack.
  */
 const fs = require('fs');
 const path = require('path');

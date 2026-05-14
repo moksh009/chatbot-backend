@@ -266,8 +266,133 @@ async function resolveLatestOrderContext({ client, phone }) {
   };
 }
 
+/**
+ * Resolve order for flow `shopify_call` when customer typed order id OR alternate phone.
+ * Falls back to WhatsApp phone via resolveLatestOrderContext.
+ */
+async function resolveOrderContextByIdentifier({ client, phone, identifier }) {
+  const raw = String(identifier || "").trim();
+  if (!raw) {
+    return resolveLatestOrderContext({ client, phone });
+  }
+
+  const digits = raw.replace(/\D/g, "");
+  const looksPhone = digits.length >= 10;
+
+  if (looksPhone && !/[#A-Za-z]/.test(raw)) {
+    const synthetic = digits.length > 10 ? `+${digits}` : digits;
+    return resolveLatestOrderContext({ client, phone: synthetic });
+  }
+
+  const nameQuery = raw.replace(/^#/, "").trim();
+  if (!nameQuery) {
+    return resolveLatestOrderContext({ client, phone });
+  }
+
+  let shopifyPayload = null;
+  try {
+    shopifyPayload = await withShopifyRetry(client.clientId, async (shopify) => {
+      const res = await shopify.get(
+        `/orders.json?status=any&limit=5&name=${encodeURIComponent(nameQuery)}`
+      );
+      const orders = res.data.orders || [];
+      if (!orders.length) return null;
+      const order = orders[0];
+      const li0 = (Array.isArray(order.line_items) ? order.line_items : [])[0];
+      const firstProductImage = li0?.product_id
+        ? await fetchFirstProductImage(shopify, li0.product_id)
+        : "";
+      return { order, firstProductImage };
+    });
+  } catch (e) {
+    log.warn("[OrderLookup] name lookup failed", { message: e.message });
+  }
+
+  if (!shopifyPayload?.order) {
+    return resolveLatestOrderContext({ client, phone });
+  }
+
+  const shopifyOrder = shopifyPayload.order;
+  const preImage = shopifyPayload.firstProductImage || "";
+  const baseMeta = {
+    shopify_order_found: "false",
+    last_order_lookup_found: "false",
+    first_product_title: "",
+    first_product_image: "",
+  };
+  const fulfillStatus =
+    shopifyOrder.fulfillment_status || shopifyOrder.financial_status || "Confirmed";
+  const lineItems = Array.isArray(shopifyOrder.line_items) ? shopifyOrder.line_items : [];
+  const items = lineItems.map((i) => `• ${i.title} × ${i.quantity}`).join("\n");
+  const firstItemTitle = String(lineItems[0]?.title || "").trim();
+  const tracking = shopifyOrder.fulfillments?.[0]?.tracking_url;
+  const payGw = (shopifyOrder.payment_gateway_names || []).join(", ").trim();
+  const statusEmoji = {
+    pending: "⏳",
+    confirmed: "✅",
+    processing: "🔄",
+    shipped: "🚚",
+    delivered: "🎉",
+    cancelled: "❌",
+    refunded: "💰",
+  };
+  const emoji = statusEmoji[String(fulfillStatus).toLowerCase()] || "📦";
+  let msg = `${emoji} *Order #${shopifyOrder.order_number}*\n\n`;
+  msg += `Status: *${String(fulfillStatus).toUpperCase()}*\n`;
+  msg += `Items:\n${items || "N/A"}\n`;
+  msg += `Total: *${shopifyOrder.currency} ${parseFloat(shopifyOrder.total_price || 0).toFixed(2)}*`;
+  if (tracking) msg += `\n\n📍 Track: ${tracking}`;
+  if (shopifyOrder.order_status_url) msg += `\n🔗 Details: ${shopifyOrder.order_status_url}`;
+
+  const orderData = {
+    orderNumber: shopifyOrder.order_number,
+    orderId: shopifyOrder.id,
+    status: fulfillStatus,
+    totalPrice: shopifyOrder.total_price,
+    trackingUrl: tracking || null,
+    currency: shopifyOrder.currency,
+    itemsSummary: items || "",
+    payment_method: payGw,
+  };
+
+  const fsRaw = String(shopifyOrder.fulfillment_status || "").toLowerCase();
+  const hasFulfillment =
+    Array.isArray(shopifyOrder.fulfillments) && shopifyOrder.fulfillments.length > 0;
+  const isShippedLike =
+    fsRaw === "fulfilled" ||
+    fsRaw === "partial" ||
+    fsRaw === "shipped" ||
+    (hasFulfillment && fsRaw !== "restocked");
+
+  const mergedMeta = {
+    ...baseMeta,
+    lastOrder: orderData,
+    shopify_order_found: "true",
+    last_order_lookup_found: "true",
+    shopify_order_id: shopifyOrder.id,
+    order_number: shopifyOrder.name
+      ? String(shopifyOrder.name)
+      : `#${shopifyOrder.order_number}`,
+    order_status: fulfillStatus,
+    payment_method: payGw,
+    is_shipped: isShippedLike ? "true" : "false",
+    first_product_title: firstItemTitle,
+    first_product_image: preImage,
+    last_order_items_count: String(lineItems.length || 0),
+  };
+
+  return {
+    found: true,
+    source: "shopify_name",
+    userMessage: msg,
+    orderData,
+    mergedMeta,
+  };
+}
+
 module.exports = {
   resolveLatestOrderContext,
+  resolveOrderContextByIdentifier,
   findLocalOrder,
   phoneSearchVariants,
 };

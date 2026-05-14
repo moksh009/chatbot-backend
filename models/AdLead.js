@@ -67,6 +67,15 @@ const adLeadSchema = new mongoose.Schema({
     type: String,
     default: 'Bronze'
   },
+  /** Optional expiry for loyalty points (used by reminder cron when set). */
+  loyaltyExpiresAt: {
+    type: Date,
+    default: null
+  },
+  loyaltyReminderSentAt: {
+    type: Date,
+    default: null
+  },
   totalSpent: {
     type: Number,
     default: 0

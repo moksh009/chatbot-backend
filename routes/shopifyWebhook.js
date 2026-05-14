@@ -371,9 +371,13 @@ async function buildCommerceMetadataPatch(client, eventName, data, status = null
   const lineList = formatLineItemsBullets(enriched) || '—';
   const first = enriched[0];
   const storeHost = client.shopDomain ? String(client.shopDomain).replace(/^https?:\/\//, '') : '';
+  const checkoutToken = data.checkout_token || data.token || '';
+  const recoverCandidate =
+    storeHost && checkoutToken ? `https://${storeHost}/cart/recover/${checkoutToken}` : '';
   const checkoutUrl =
     data.abandoned_checkout_url
     || data.checkout_url
+    || recoverCandidate
     || (data.token && storeHost ? `https://${storeHost}/checkouts/cn/${data.token}` : '')
     || (storeHost ? `https://${storeHost}` : '');
 

@@ -241,6 +241,13 @@ function buildContext(client = {}, wizardData = {}) {
     ...features
   };
 
+  // Wizard "Cart recovery" step stores `cartTiming.msg1/msg2/msg3` (minutes / hours / hours).
+  // Flat `features.cartNudge*` may be stale if the user only changed the timing step — prefer cartTiming.
+  const ct = wizardData.cartTiming || {};
+  if (ct.msg1 != null && Number(ct.msg1) > 0) F.cartNudgeMinutes1 = Number(ct.msg1);
+  if (ct.msg2 != null && Number(ct.msg2) > 0) F.cartNudgeHours2 = Number(ct.msg2);
+  if (ct.msg3 != null && Number(ct.msg3) > 0) F.cartNudgeHours3 = Number(ct.msg3);
+
   return {
     client,
     wizardData,
@@ -543,7 +550,7 @@ function buildEntry(ctx, IDS, content, welcomeTemplate) {
         imageUrl: safeWelcomeImage,
         text: welcomeText,
         buttonText: "Open Menu",
-        sections: [{ title: "{{brand_name}}", rows: welcomeRows.slice(0, 10) }],
+        sections: [{ title: "{{brand_name}}", rows: welcomeRows.slice(0, 8) }],
         heatmapCount: 0
       }
     });
@@ -589,7 +596,7 @@ function buildMainMenu(ctx, IDS, menuRows) {
       label: "Main Hub Menu", interactiveType: "list",
       text: "How can {{bot_name}} help you today? Tap an option below 👇",
       buttonText: "Open Menu",
-      sections: [{ title: "{{brand_name}}", rows: menuRows }],
+      sections: [{ title: "{{brand_name}}", rows: menuRows.slice(0, 8) }],
       heatmapCount: 0
     }
   };
@@ -1511,18 +1518,20 @@ function buildFAQBranch(ctx, IDS, content) {
   };
 }
 
-function buildAbandonedCart(ctx, IDS, content) {
+function buildAbandonedCart(ctx, IDS, content, opts = {}) {
   const { cartTiming } = ctx;
+  const terminalId = opts.terminalNodeId || IDS.main_menu;
   const nodes = [{
     id: IDS.trig_cart, type: "trigger", position: autoPos(0, 2),
     data: { label: "Abandoned Cart Trigger", triggerType: "abandoned_cart", heatmapCount: 0 }
   }];
   const edges = [];
+  const maxSteps = typeof opts.maxSteps === "number" ? Math.min(3, Math.max(1, opts.maxSteps)) : 3;
   const steps = [
     { delay: cartTiming.msg1, unit: "minutes", text: content.cart_recovery_1 },
     { delay: cartTiming.msg2, unit: "hours",   text: content.cart_recovery_2 },
     { delay: cartTiming.msg3, unit: "hours",   text: content.cart_recovery_3 }
-  ];
+  ].slice(0, maxSteps);
   let prev = IDS.trig_cart;
   steps.forEach((step, i) => {
     const dId = `cart_delay_${i}_${IDS.seed}`;
@@ -1547,7 +1556,7 @@ function buildAbandonedCart(ctx, IDS, content) {
     prev = mId;
   });
   const lastMsgId = `cart_msg_${steps.length - 1}_${IDS.seed}`;
-  edges.push({ id: `e_${lastMsgId}_mm`, source: lastMsgId, target: IDS.main_menu });
+  edges.push({ id: `e_${lastMsgId}_term`, source: lastMsgId, target: terminalId });
   return { nodes, edges };
 }
 
@@ -1760,8 +1769,9 @@ async function generateEcommerceFlow(client, wizardData = {}) {
   if (F.enableFAQ)               branches.push(buildFAQBranch(ctx, IDS, content));
 
   // Build the menu using only enabled branches' rows.
-  const menuRows = branches.filter(b => b.menuRow).map(b => b.menuRow);
-  const menuOut  = buildMainMenu(ctx, IDS, menuRows);
+    // WhatsApp list rows: keep ≤ 8 (spec buffer under Meta's 10-row cap).
+    const menuRows = branches.filter(b => b.menuRow).map(b => b.menuRow).slice(0, 8);
+    const menuOut  = buildMainMenu(ctx, IDS, menuRows);
 
   // Wire menu → branch entries
   const menuEdges = branches
@@ -1776,9 +1786,10 @@ async function generateEcommerceFlow(client, wizardData = {}) {
   // Commerce automations (cart, order confirm, reviews) are merged into this single graph
   // so merchants publish one WhatsApp flow document. Webhooks still match triggers by node.
   const commerceSlices = [];
-  if (F.enableAbandonedCart) commerceSlices.push(buildAbandonedCart(ctx, IDS, content));
-  if (F.enableOrderConfirmTpl) commerceSlices.push(buildOrderConfirmAndCod(ctx, IDS, content));
-  if (F.enableReviewCollection) commerceSlices.push(buildReviewAutomation(ctx, IDS, content));
+  const splitAuto = !!mergedWizard._splitAutomations;
+  if (!splitAuto && F.enableAbandonedCart) commerceSlices.push(buildAbandonedCart(ctx, IDS, content));
+  if (!splitAuto && F.enableOrderConfirmTpl) commerceSlices.push(buildOrderConfirmAndCod(ctx, IDS, content));
+  if (!splitAuto && F.enableReviewCollection) commerceSlices.push(buildReviewAutomation(ctx, IDS, content));
 
   const b2bParallel = F.enableB2BWholesale ? buildB2BBranch(ctx, IDS) : { nodes: [], edges: [] };
 
@@ -1840,6 +1851,185 @@ async function generateEcommerceFlow(client, wizardData = {}) {
     edges: cleanEdges,
     automationFlows: [],
   };
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// 5b. MULTI-FLOW PACK — main conversational graph + isolated automation flows
+//     (triggerEngine prefers `isAutomation: true` docs for commerce webhooks)
+// ═════════════════════════════════════════════════════════════════════════
+
+async function generateCommerceWizardPack(client, body = {}) {
+  const { buildWizardDataFromUniversal } = require("./universalCommerceMapper");
+  const merged = buildWizardDataFromUniversal(client, body);
+  const mainFeatures = {
+    ...(merged.features || {}),
+    enableAbandonedCart: false,
+    enableOrderConfirmTpl: false,
+    enableReviewCollection: false,
+  };
+  const mainWizard = { ...merged, features: mainFeatures, _splitAutomations: true };
+  const main = await generateEcommerceFlow(client, mainWizard);
+
+  const flows = [
+    {
+      slug: "main_commerce",
+      name: body.mainFlowName || `${merged.businessName || "Store"} — Main`,
+      isAutomation: false,
+      automationTrigger: "",
+      nodes: main.nodes,
+      edges: main.edges,
+    },
+  ];
+
+  const ctx = buildContext(client, merged);
+  const defaults = buildDefaultContent(ctx);
+  const content = { ...defaults, ...(merged.useAiCopy === true ? await generateAIContent(ctx).catch(() => ({})) : {}) };
+
+  const uni = merged._universalFeatures || {};
+
+  if (merged.features?.enableAbandonedCart) {
+    const IDS = buildIDs(client, { ...merged, preserveNodeIds: false });
+    const reminders = Math.min(3, Math.max(1, Number(uni.abandonedCart?.reminders) || 3));
+    const term = `cart_term_${IDS.seed}`;
+    const slice = buildAbandonedCart(ctx, IDS, content, { terminalNodeId: term, maxSteps: reminders });
+    slice.nodes.push({
+      id: term,
+      type: "message",
+      position: autoPos(6, 4),
+      data: {
+        label: "Cart flow end",
+        text:
+          "You're all set! If you need anything else, message us here anytime — we're happy to help. 🙌",
+        heatmapCount: 0,
+        suppressAIFallbackLink: true,
+      },
+    });
+    flows.push({
+      slug: "abandoned_cart",
+      name: `${merged.businessName || "Store"} — Abandoned cart`,
+      isAutomation: true,
+      automationTrigger: "abandoned_cart",
+      nodes: slice.nodes,
+      edges: slice.edges,
+    });
+  }
+
+  const codOn =
+    uni.codConfirmation && typeof uni.codConfirmation.enabled === "boolean"
+      ? uni.codConfirmation.enabled
+      : !!merged.features?.enableOrderConfirmTpl;
+
+  if (codOn) {
+    const IDS = buildIDs(client, { ...merged, preserveNodeIds: false });
+    const timingMin = Math.max(1, Number(uni.codConfirmation?.timingMinutes) || 10);
+    const term = `cod_conf_term_${IDS.seed}`;
+    const nodes = [
+      {
+        id: IDS.trig_order,
+        type: "trigger",
+        position: autoPos(0, 0),
+        data: { label: "COD confirmation trigger", triggerType: "order_placed", heatmapCount: 0 },
+      },
+      {
+        id: `codcf_delay_${IDS.seed}`,
+        type: "delay",
+        position: autoPos(1, 0),
+        data: {
+          label: `Wait ${timingMin} min`,
+          duration: timingMin,
+          unit: "minutes",
+          waitValue: timingMin,
+          waitUnit: "minutes",
+          heatmapCount: 0,
+        },
+      },
+      {
+        id: `codcf_ask_${IDS.seed}`,
+        type: "interactive",
+        position: autoPos(2, 0),
+        data: {
+          label: "COD confirm",
+          interactiveType: "button",
+          text:
+            "🛒 *Order {{order_number|update}}*\n\nPlease confirm your Cash on Delivery order so we can dispatch it.\n\nTap *Yes* to confirm or *No* if you want to cancel.",
+          buttonsList: [
+            { id: "cod_yes", title: "✅ Confirm" },
+            { id: "cod_no", title: "❌ Cancel" },
+          ],
+          heatmapCount: 0,
+        },
+      },
+      {
+        id: `codcf_yes_${IDS.seed}`,
+        type: "message",
+        position: autoPos(3, -1),
+        data: {
+          label: "COD confirmed",
+          text: "🎉 Thank you for confirming! We're preparing your order now.",
+          heatmapCount: 0,
+          suppressAIFallbackLink: true,
+        },
+      },
+      {
+        id: `codcf_no_${IDS.seed}`,
+        type: "message",
+        position: autoPos(3, 1),
+        data: {
+          label: "COD cancelled path",
+          text:
+            "We've received your request. Our team will review your order shortly. You can also reach us on {{support_phone|WhatsApp}}.",
+          heatmapCount: 0,
+          suppressAIFallbackLink: true,
+        },
+      },
+      {
+        id: term,
+        type: "message",
+        position: autoPos(4, 0),
+        data: {
+          label: "COD flow end",
+          text: "Thanks for chatting with us today! 💚",
+          heatmapCount: 0,
+          suppressAIFallbackLink: true,
+        },
+      },
+    ];
+    const edges = [
+      { id: `e_cf_${IDS.trig_order}_d`, source: IDS.trig_order, target: `codcf_delay_${IDS.seed}` },
+      { id: `e_cf_d_a`, source: `codcf_delay_${IDS.seed}`, target: `codcf_ask_${IDS.seed}` },
+      {
+        id: `e_cf_a_y`,
+        source: `codcf_ask_${IDS.seed}`,
+        target: `codcf_yes_${IDS.seed}`,
+        sourceHandle: "cod_yes",
+      },
+      {
+        id: `e_cf_a_n`,
+        source: `codcf_ask_${IDS.seed}`,
+        target: `codcf_no_${IDS.seed}`,
+        sourceHandle: "cod_no",
+      },
+      { id: `e_cf_y_t`, source: `codcf_yes_${IDS.seed}`, target: term },
+      { id: `e_cf_n_t`, source: `codcf_no_${IDS.seed}`, target: term },
+    ];
+    flows.push({
+      slug: "cod_confirmation",
+      name: `${merged.businessName || "Store"} — COD confirmation`,
+      isAutomation: true,
+      automationTrigger: "order_placed",
+      nodes,
+      edges,
+    });
+  }
+
+  for (const f of flows) {
+    verifyAllEdgesMatchButtonIds(f.nodes, f.edges);
+    if (!verifyFlowIntegrity(f.nodes, f.edges)) {
+      throw new Error(`Flow integrity validation failed for ${f.slug}`);
+    }
+  }
+
+  return { flows, automationFlows: main.automationFlows || [] };
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -2026,6 +2216,7 @@ ${brandSafe} prioritises prepaid orders for dispatch — choose below when you a
 // ═════════════════════════════════════════════════════════════════════════
 module.exports = {
   generateEcommerceFlow,
+  generateCommerceWizardPack,
   generateSystemPrompt,
   getPrebuiltTemplates,
   verifyFlowIntegrity,

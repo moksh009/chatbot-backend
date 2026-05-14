@@ -1959,6 +1959,29 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     convo.metadata = md;
   }
 
+  if (buttonId && /^cat_/i.test(String(buttonId))) {
+    const selId = String(buttonId).replace(/^cat_/i, "");
+    const md = {
+      ...(convo.metadata || {}),
+      selectedCollectionId: selId,
+      selected_collection_id: selId,
+      last_interactive_list_id: String(buttonId),
+    };
+    await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: md } });
+    convo.metadata = md;
+  }
+
+  if (buttonId && /^order_/i.test(String(buttonId))) {
+    const oid = String(buttonId).replace(/^order_/i, "");
+    const md = {
+      ...(convo.metadata || {}),
+      selected_order_id: oid,
+      selected_order_name: buttonId,
+    };
+    await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: md } });
+    convo.metadata = md;
+  }
+
   // Ecommerce webhook events should only be routed via the trigger engine, not graph traversal
   // Graph traversal requires an actual user interaction
   const isEcommerceEvent = !userText && !buttonId && 
@@ -2276,8 +2299,41 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   // This resolves {{customer_name}}, {{order_id}}, etc. in all text fields
   let node = rawNode;
   try {
-    // Build context fresh if not already built (fallback for legacy paths)
-    const ctx = convo?._variableContext || await buildVariableContext(client, phone, convo, lead);
+    let ctx = convo?._variableContext || await buildVariableContext(client, phone, convo, lead);
+    if (rawNode.type === "message" && rawNode.data?.isAiResponse) {
+      const { generateTextFast } = require("./gemini");
+      const userIssue = String(ctx.customer_issue || ctx.last_input || "").trim();
+      const kb = String(
+        client.ai?.persona?.knowledgeBase || client.ai?.systemPrompt || ""
+      );
+      const brand = ctx.brand_name || client.businessName || "our store";
+      const tone = client.ai?.persona?.tone || "friendly";
+      const prompt =
+        `You are ${ctx.bot_name || "Assistant"} for ${brand}. Tone: ${tone}.\n` +
+        `Knowledge:\n${kb.slice(0, 3500)}\n\nCustomer says: "${userIssue}"\n` +
+        `Reply in under 280 characters for WhatsApp.\n` +
+        `If you cannot answer from the knowledge above, reply exactly: NEEDS_HUMAN`;
+      let reply = "";
+      try {
+        const key = client.ai?.geminiKey || client.geminiApiKey || process.env.GEMINI_API_KEY;
+        reply = await Promise.race([
+          generateTextFast(prompt, key),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("ai_timeout")), 5000)),
+        ]);
+      } catch (_) {
+        reply = "";
+      }
+      const clean = String(reply || "").trim();
+      const needs = !clean || clean.toUpperCase().includes("NEEDS_HUMAN");
+      ctx.ai_response = needs ? "" : clean.slice(0, 500);
+      ctx.ai_needs_human = needs ? "true" : "false";
+      await Conversation.findByIdAndUpdate(convo._id, {
+        $set: {
+          "metadata.ai_response": ctx.ai_response,
+          "metadata.ai_needs_human": ctx.ai_needs_human,
+        },
+      }).catch(() => {});
+    }
     node = injectNodeVariables(rawNode, ctx);
   } catch (varErr) {
     log.warn('Variable injection failed for node', { nodeId, error: varErr.message });
@@ -2641,16 +2697,41 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       rawAct === 'FETCH_POINTS'
     ) {
       const walletService = require('./walletService');
+      const { normalizePhone } = require('./helpers');
+      const cleanPhone = normalizePhone(phone);
       const balance = await walletService.getBalance(client.clientId, phone);
+      let leadPoints = 0;
+      let loyaltyExpiresAt = null;
+      try {
+        const row = await AdLead.findOne({ clientId: client.clientId, phoneNumber: cleanPhone })
+          .select('loyaltyPoints loyaltyExpiresAt')
+          .lean();
+        leadPoints = Number(row?.loyaltyPoints) || 0;
+        loyaltyExpiresAt = row?.loyaltyExpiresAt || null;
+      } catch (_) {}
+      const wf = client.wizardFeatures?.toObject ? client.wizardFeatures.toObject() : (client.wizardFeatures || {});
+      const pointsPerRupee = Math.max(
+        1,
+        Number(wf.loyaltyPointsPerUnit) > 0 ? Math.round(Number(wf.loyaltyPointsPerUnit) / 100) : 1
+      );
+      const combined = Math.max(balance, leadPoints);
+      const rupeeValue = Math.floor(combined / pointsPerRupee);
+      let expiryNote = '';
+      if (loyaltyExpiresAt && new Date(loyaltyExpiresAt) > new Date()) {
+        expiryNote = `⚠️ Points expire on *${new Date(loyaltyExpiresAt).toLocaleDateString('en-IN')}*`;
+      }
       const prev = convo.metadata || {};
       const nextMeta = {
         ...prev,
         loyalty_points_balance: String(balance),
-        loyalty_has_points: balance > 0 ? 'true' : 'false',
+        loyalty_points: String(combined),
+        loyalty_rupee_value: String(rupeeValue),
+        loyalty_expiry_note: expiryNote,
+        loyalty_has_points: combined > 0 ? 'true' : 'false',
       };
       await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: nextMeta } });
       convo.metadata = nextMeta;
-      const targetHandle = balance > 0 ? 'has_points' : 'none';
+      const targetHandle = combined > 0 ? 'has_points' : 'none';
       const nextEdge = flowEdges.find(
         (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === targetHandle
       );
@@ -3170,12 +3251,18 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       
       // --- USP 2: ORDER TRACKING (Shopify + local Order — shared resolver) ---
       else if (action === 'ORDER_STATUS' || action === 'get_order' || action === 'CHECK_ORDER_STATUS') {
-        const { resolveLatestOrderContext } = require("./orderLookupService");
+        const { resolveLatestOrderContext, resolveOrderContextByIdentifier } = require("./orderLookupService");
         const silentLookup = !!node.data?.silent;
         const variable = node.data?.variable;
+        const qVar = node.data?.queryVariable;
+        const identifier = qVar ? String(convo?.metadata?.[qVar] || "").trim() : "";
         let r;
         try {
-          r = await resolveLatestOrderContext({ client, phone });
+          if (identifier) {
+            r = await resolveOrderContextByIdentifier({ client, phone, identifier });
+          } else {
+            r = await resolveLatestOrderContext({ client, phone });
+          }
         } catch (lookupErr) {
           log.error(`[shopify_call] CHECK_ORDER_STATUS resolver threw: ${lookupErr.message}`);
           const prevMeta = { ...(convo.metadata || {}) };
@@ -3223,6 +3310,61 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
           }
           resultData = r.orderData;
         }
+      }
+
+      else if (action === "GET_CUSTOMER_ORDERS") {
+        const qVar = node.data?.queryVariable || "cancel_identifier";
+        const identifier = String(convo?.metadata?.[qVar] || "").trim();
+        const { withShopifyRetry } = require("./shopifyHelper");
+        let ordersPayload = [];
+        let mergedExtra = {
+          customer_orders: [],
+          customer_name: "there",
+          order_list_text: "",
+        };
+        try {
+          await withShopifyRetry(client.clientId, async (shopify) => {
+            const digits = identifier.replace(/\D/g, "");
+            let orders = [];
+            if (digits.length >= 10) {
+              const res = await shopify.get(
+                `/orders.json?status=any&limit=5&phone=${encodeURIComponent(digits)}`
+              );
+              orders = res.data.orders || [];
+            } else if (identifier) {
+              const res = await shopify.get(
+                `/orders.json?status=any&limit=5&name=${encodeURIComponent(identifier.replace(/^#/, ""))}`
+              );
+              orders = res.data.orders || [];
+            }
+            ordersPayload = (orders || []).slice(0, 5).map((o) => ({
+              id: o.id,
+              name: o.name || `#${o.order_number}`,
+              order_number: o.order_number,
+              total_price: o.total_price,
+              currency: o.currency,
+              fulfillment_status: o.fulfillment_status,
+              financial_status: o.financial_status,
+              line_items: o.line_items || [],
+              created_at: o.created_at,
+            }));
+            mergedExtra.customer_orders = ordersPayload;
+            mergedExtra.customer_name =
+              (orders[0]?.customer?.first_name || "").trim() || "there";
+            mergedExtra.order_list_text = ordersPayload
+              .map((o, i) => `${i + 1}. ${o.name} — ${o.currency} ${o.total_price}`)
+              .join("\n");
+          });
+        } catch (ge) {
+          log.warn(`[shopify_call] GET_CUSTOMER_ORDERS: ${ge.message}`);
+        }
+        const prevMeta = { ...(convo.metadata || {}), ...mergedExtra };
+        if (variable) {
+          prevMeta[variable] = ordersPayload;
+        }
+        await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: prevMeta } });
+        convo.metadata = prevMeta;
+        resultData = { orders: ordersPayload };
       }
 
       else if (action === 'CANCEL_ORDER') {
@@ -3726,8 +3868,41 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       if (data.interactiveType === 'list' || (data.sections && data.sections.length > 0)) {
         let sections;
         let totalRows = 0;
-        if (data.sections && data.sections.length > 0) {
-          sections = data.sections.map(section => {
+        let sourceSections = Array.isArray(data.sections) ? data.sections : [];
+        if (data.dynamicSections && data.dynamicSectionsVariable && convo) {
+          try {
+            const ctxDyn = await buildVariableContext(client, phone, convo, lead);
+            const dynKey = data.dynamicSectionsVariable;
+            let customerOrders = ctxDyn[dynKey] || convo.metadata?.[dynKey] || [];
+            if (typeof customerOrders === "string") {
+              try {
+                customerOrders = JSON.parse(customerOrders);
+              } catch (_) {
+                customerOrders = [];
+              }
+            }
+            if (!Array.isArray(customerOrders)) customerOrders = [];
+            const dynRows = customerOrders.slice(0, 10).map((order) => {
+              const title = String(order.name || order.order_number || `#${order.id}`).substring(0, 24);
+              const li0 = order.line_items?.[0];
+              const desc = li0
+                ? `${String(li0.title || "").substring(0, 36)} — ${order.currency || "₹"}${order.total_price}`
+                : `${order.currency || "₹"}${order.total_price}`;
+              return {
+                id: `order_${order.id}`,
+                title,
+                description: String(desc).substring(0, 72),
+              };
+            });
+            if (dynRows.length) {
+              sourceSections = [{ title: data.dynamicSectionTitle || "Your orders", rows: dynRows }];
+            }
+          } catch (de) {
+            log.warn(`[interactive] dynamicSections failed: ${de.message}`);
+          }
+        }
+        if (sourceSections && sourceSections.length > 0) {
+          sections = sourceSections.map(section => {
             const rows = (section.rows || []).slice(0, 10 - totalRows).map(row => {
               const descRaw = row.description != null ? String(row.description).trim() : "";
               const descOk =

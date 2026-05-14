@@ -187,6 +187,7 @@ router.get('/:clientId/growth-embed', protect, verifyClientAccess, async (req, r
       compliance: doc.growthCompliance || {},
       widgetConfig: doc.growthWidgetConfig || {},
       subscribeUrl: `${origin}/api/public/growth/subscribe`,
+      cartEventUrl: `${origin}/api/public/growth/cart-event`,
       configUrl: `${origin}/api/public/growth/config?key=${doc.growthEmbedPublicKey}`,
       scriptUrl: `${origin}/embed/growth-widget.js`,
     });
@@ -210,6 +211,7 @@ router.post('/:clientId/growth-embed/regenerate', protect, verifyClientAccess, a
       success: true,
       embedKey: doc.growthEmbedPublicKey,
       subscribeUrl: `${origin}/api/public/growth/subscribe`,
+      cartEventUrl: `${origin}/api/public/growth/cart-event`,
       scriptUrl: `${origin}/embed/growth-widget.js`,
     });
   } catch (error) {

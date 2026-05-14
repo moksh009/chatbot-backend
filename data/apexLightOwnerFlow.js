@@ -6,7 +6,9 @@
 
 const FLOW_ID = "flow_apex_owner_support_hub_v2";
 const FLOW_NAME = "Apex Light — WhatsApp support & commerce";
-const FLOW_DESCRIPTION = "Keyword + first_message welcome (3-button hub), dual Meta catalog + text fallback per category, silent order lookup, HDMI 2.1/2.0 hubs, service list (track/warranty/fix/models/shop), admin alert + live handoff, footer loopbacks.";
+const FLOW_DESCRIPTION = "Keyword + first_message welcome (3-button hub), dual Meta catalog + text fallback per category, install list + FAQ packs, silent order lookup for order/warranty paths, HDMI 2.1/2.0 deep-dive hubs, service list (track/warranty/fix/models/shop), support FAQ gate then admin alert + live handoff, footer loopbacks.";
+
+const apexLightOwnerFlowInstallPack = require("./apexLightOwnerFlowInstallPack");
 
 const LOGO = "https://apexlight.in/cdn/shop/files/07708086-ccae-4d21-93e2-fe0ed52b33a2.jpg?v=1714210021";
 const HDMI21_WIRING = "https://apexlight.in/cdn/shop/files/hdmi21_wiring_diagram.jpg";
@@ -1315,156 +1317,7 @@ function buildFlow() {
       "text": "No warranty on file for this number yet. Share your *order ID* on *9328613239* and we will help right away."
     }
   },
-  {
-    "id": "n_install_intro",
-    "type": "message",
-    "position": {
-      "x": 1120,
-      "y": -120
-    },
-    "data": {
-      "label": "Install intro",
-      "text": "📦 *Installation Help*\n\nWe'll pull up the right guide for your product right away. Checking your last order..."
-    }
-  },
-  {
-    "id": "n_install_lookup",
-    "type": "shopify_call",
-    "position": {
-      "x": 1120,
-      "y": -40
-    },
-    "data": {
-      "label": "Silent order lookup",
-      "action": "CHECK_ORDER_STATUS",
-      "silent": true,
-      "variable": "latest_order_ctx"
-    }
-  },
-  {
-    "id": "n_install_no_order",
-    "type": "message",
-    "position": {
-      "x": 1460,
-      "y": 40
-    },
-    "data": {
-      "label": "No order on file",
-      "text": "🔍 *No order found on this number*\n\nThat's okay — this can happen if:\n• The order was placed with a different phone number\n• Your team is still importing offline sales\n\n*What to do:*\nReply with your *order ID* (e.g. #1042) or the *exact product name* from your bill.\n\nExamples:\n• Apex HDMI 2.1 TV Backlight\n• Apex HDMI 2.0 TV Backlight"
-    }
-  },
-  {
-    "id": "n_install_confirm",
-    "type": "interactive",
-    "position": {
-      "x": 1460,
-      "y": -40
-    },
-    "data": {
-      "label": "Install — confirm product",
-      "interactiveType": "button",
-      "header": "Your purchase",
-      "imageUrl": "{{first_product_image}}",
-      "text": "We found your order! 🎉\n\n📦 *Order:* {{order_number|your order}}\n🛒 *Product:* {{first_product_title|your last item}}\n\nIs this the product you need installation help for?",
-      "buttonsList": [
-        {
-          "id": "ins_yes",
-          "title": "Yes, this one"
-        },
-        {
-          "id": "ins_no",
-          "title": "Different product"
-        },
-        {
-          "id": "ins_menu",
-          "title": "Back to menu"
-        }
-      ]
-    }
-  },
-  {
-    "id": "n_detect_model",
-    "type": "logic",
-    "position": {
-      "x": 1800,
-      "y": -120
-    },
-    "data": {
-      "label": "Line has 2.1?",
-      "variable": "metadata.first_product_title",
-      "operator": "contains",
-      "value": "2.1"
-    }
-  },
-  {
-    "id": "n_detect_model_20",
-    "type": "logic",
-    "position": {
-      "x": 1800,
-      "y": -20
-    },
-    "data": {
-      "label": "Else 2.0?",
-      "variable": "metadata.first_product_title",
-      "operator": "contains",
-      "value": "2.0"
-    }
-  },
-  {
-    "id": "n_install_type_capture",
-    "type": "capture_input",
-    "position": {
-      "x": 2120,
-      "y": 140
-    },
-    "data": {
-      "label": "Capture order / product",
-      "question": "Order ID or product name",
-      "text": "Please type your product name or order number:",
-      "variable": "install_product_query",
-      "validationType": "any"
-    }
-  },
-  {
-    "id": "n_detect_typed_model",
-    "type": "logic",
-    "position": {
-      "x": 2440,
-      "y": 80
-    },
-    "data": {
-      "label": "Typed 2.1?",
-      "variable": "install_product_query",
-      "operator": "contains",
-      "value": "2.1"
-    }
-  },
-  {
-    "id": "n_detect_typed_20",
-    "type": "logic",
-    "position": {
-      "x": 2440,
-      "y": 180
-    },
-    "data": {
-      "label": "Typed 2.0?",
-      "variable": "install_product_query",
-      "operator": "contains",
-      "value": "2.0"
-    }
-  },
-  {
-    "id": "n_typed_fallback",
-    "type": "message",
-    "position": {
-      "x": 2760,
-      "y": 240
-    },
-    "data": {
-      "label": "Typed fallback",
-      "text": "Thanks! Our team will check your product and send the right guide.\n\n📞 For fastest help, send a *photo of your product label* on *9328613239* and we'll confirm the exact model within minutes."
-    }
-  },
+  ...apexLightOwnerFlowInstallPack.nodes,
   {
     "id": "n_tr_menu",
     "type": "interactive",
@@ -2568,7 +2421,29 @@ function buildFlow() {
     "target": "n_welcome_logo"
   }
 ];
-  return { nodes, edges, FLOW_ID, FLOW_NAME, FLOW_DESCRIPTION };
+  const removedInstallNodeIds = new Set([
+    "n_install_intro",
+    "n_install_lookup",
+    "n_install_no_order",
+    "n_install_confirm",
+    "n_detect_model",
+    "n_detect_model_20",
+    "n_install_type_capture",
+    "n_detect_typed_model",
+    "n_detect_typed_20",
+    "n_typed_fallback",
+  ]);
+  const installPackEdgeIds = new Set(apexLightOwnerFlowInstallPack.edges.map((e) => e.id));
+  const mergedEdges = [
+    ...edges.filter(
+      (e) =>
+        !installPackEdgeIds.has(e.id) &&
+        !removedInstallNodeIds.has(e.source) &&
+        !removedInstallNodeIds.has(e.target)
+    ),
+    ...apexLightOwnerFlowInstallPack.edges,
+  ];
+  return { nodes, edges: mergedEdges, FLOW_ID, FLOW_NAME, FLOW_DESCRIPTION };
 }
 
 module.exports = {

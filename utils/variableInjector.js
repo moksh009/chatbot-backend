@@ -200,6 +200,41 @@ async function buildVariableContext(client, phone, convo, lead) {
   const discountCode = leadLean?.activeDiscountCode || meta.discount_code || "";
   const lifetimeValue = leadLean?.lifetimeValue || 0;
 
+  let product_list_text = meta.product_list_text || "";
+  const selCol = meta.selectedCollectionId || meta.selected_collection_id;
+  if (selCol && clientLean.clientId && !product_list_text) {
+    try {
+      const ShopifyProduct = require("../models/ShopifyProduct");
+      const prods = await ShopifyProduct.find({
+        clientId: String(clientLean.clientId),
+        collectionIds: String(selCol),
+        inStock: { $ne: false },
+      })
+        .sort({ updatedAt: -1 })
+        .limit(20)
+        .lean();
+      const cur = clientLean.platformVars?.baseCurrency || "₹";
+      product_list_text = (prods || [])
+        .map((p, i) => {
+          const pr = p.price != null ? Number(p.price).toLocaleString("en-IN") : "—";
+          const url =
+            p.productUrl ||
+            p.onlineStoreUrl ||
+            (clientLean.shopDomain
+              ? `https://${String(clientLean.shopDomain).replace(/^https?:\/\//, "")}/products/${p.handle || ""}`
+              : "");
+          return `${i + 1}. *${p.title || "Item"}*\n   Price: ${cur}${pr}\n   ${url}`;
+        })
+        .join("\n\n");
+    } catch (_) {
+      product_list_text = "";
+    }
+  }
+  const selected_category_name =
+    meta.selected_category_name
+    || meta.collection_title
+    || "Selected category";
+
   // Legacy flat keys (dualBrainEngine, campaigns, older templates)
   const legacy = {
     customer_name: ctx.customer_name || leadLean?.name || convoLean?.customerName || "there",
@@ -240,6 +275,8 @@ async function buildVariableContext(client, phone, convo, lead) {
     first_product_title: meta.first_product_title || "",
     first_product_image: meta.first_product_image || "",
     shipping_address: meta.shipping_address || "",
+    product_list_text: product_list_text || "Catalog is syncing — our team can share product links on request.",
+    selected_category_name,
   };
 
   return {
