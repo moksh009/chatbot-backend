@@ -188,6 +188,16 @@ async function handleFulfillmentWebhookForAdmin(client, fulfillment, topic, io) 
     );
     if (doc) emitOrderUpdatedToDashboard(io, client.clientId, doc);
     if (!doc) return;
+
+    const prevShipped = String(prevStatus || '').toLowerCase() === 'shipped';
+    const prevTrackSig = `${prev.trackingUrl || ''}|${prev.trackingNumber || ''}`;
+    const newTrackSig = `${doc.trackingUrl || ''}|${doc.trackingNumber || ''}`;
+    if (prevShipped && newTrackSig === prevTrackSig) {
+        return;
+    }
+    const trackingOnlyRefresh =
+        prevShipped && newTrackSig !== prevTrackSig && !!(doc.trackingUrl || doc.trackingNumber);
+
     await dispatchOrderStatusAutomation({
         clientConfig: client,
         order: doc.toObject(),
@@ -197,7 +207,7 @@ async function handleFulfillmentWebhookForAdmin(client, fulfillment, topic, io) 
         trackingUrl,
         io: null,
         source: `shopify_webhook:${topic}`,
-        options: {},
+        options: { trackingOnlyRefresh },
     });
 }
 

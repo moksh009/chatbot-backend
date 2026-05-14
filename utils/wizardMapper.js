@@ -151,6 +151,7 @@ function buildFeaturesUpdate(wizardData = {}) {
   // Notifications
   setBool(out, "wizardFeatures.enableAdminAlerts", f.enableAdminAlerts);
   setBool(out, "wizardFeatures.enableOrderConfirmTpl", f.enableOrderConfirmTpl);
+  setBool(out, "wizardFeatures.enableAutoShopifyShippedWhatsApp", f.enableAutoShopifyShippedWhatsApp);
 
   return out;
 }

@@ -97,8 +97,9 @@ const AiSchema = new mongoose.Schema({
 // branches. The Settings → Features panel mutates these fields and triggers
 // a background flow regeneration.
 //
-// IMPORTANT: every toggle here MUST have a matching builder block in
-// flowGenerator.js. Adding a toggle without a builder = dead UI.
+// IMPORTANT: every toggle that changes the *generated WhatsApp flow graph* MUST have
+// a matching builder block in flowGenerator.js. Pure server/webhook toggles
+// (e.g. enableAutoShopifyShippedWhatsApp) intentionally have no flow branch.
 // ───────────────────────────────────────────────────────────────────────────
 const WizardFeaturesSchema = new mongoose.Schema({
   // Core commerce
@@ -151,7 +152,13 @@ const WizardFeaturesSchema = new mongoose.Schema({
 
   // Notifications
   enableAdminAlerts:       { type: Boolean, default: true  }, // WhatsApp + email blast on critical events
-  enableOrderConfirmTpl:   { type: Boolean, default: true  }
+  enableOrderConfirmTpl:   { type: Boolean, default: true  },
+  /**
+   * When true (default), Shopify fulfillment / order webhooks that mark an order shipped
+   * may send the mapped "shipped" WhatsApp template (and session fallback text).
+   * Does not alter generated chat flows — server-side automation only.
+   */
+  enableAutoShopifyShippedWhatsApp: { type: Boolean, default: true }
 }, { _id: false });
 
 /** RTO Protection Suite — COD confirmation + NDR rescue (WhatsApp). */

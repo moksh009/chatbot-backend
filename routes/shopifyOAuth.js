@@ -196,8 +196,10 @@ function isValidShopDomain(shop) {
 /**
  * Register essential webhooks after successful OAuth
  */
+const { SHOPIFY_APP_WEBHOOK_TOPICS } = require('../constants/shopifyWebhookTopics');
+
 async function registerWebhooks(shopDomain, accessToken, clientId) {
-  const topics = ['checkouts/create', 'checkouts/update', 'orders/create'];
+  const topics = SHOPIFY_APP_WEBHOOK_TOPICS;
   const webhookUrl = `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/api/shopify/webhook`;
 
   for (const topic of topics) {

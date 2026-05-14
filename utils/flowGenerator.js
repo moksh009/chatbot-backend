@@ -236,6 +236,8 @@ function buildContext(client = {}, wizardData = {}) {
     enableMultiLanguage:     false,
     enableAdminAlerts:       true,
     enableOrderConfirmTpl:   true,
+    /** Webhook-only; see orderEventDispatcher (no flow branch). */
+    enableAutoShopifyShippedWhatsApp: true,
     ...features
   };
 

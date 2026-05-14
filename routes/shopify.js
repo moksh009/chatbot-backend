@@ -7,6 +7,7 @@ const { getShopifyClient, withShopifyRetry, exchangeShopifyToken } = require('..
 const { buildConnectionStatusPayload } = require('../utils/connectionStatus');
 const { buildShopifyOrderSet, shopifyOrderFilter } = require('../utils/shopifyOrderMapper');
 const shopifyAdminApiVersion = require('../utils/shopifyAdminApiVersion');
+const { SHOPIFY_APP_WEBHOOK_TOPICS } = require('../constants/shopifyWebhookTopics');
 
 // ── INTERNAL SYNC AUTH BYPASS ────────────────────────────────────────────────
 // Allows the server to call its own sync routes during OAuth callback
@@ -19,7 +20,7 @@ const internalOrProtect = (req, res, next) => {
 };
 
 async function registerWebhooks(shopDomain, accessToken, clientId) {
-  const topics = ['checkouts/create', 'checkouts/update', 'orders/create'];
+  const topics = SHOPIFY_APP_WEBHOOK_TOPICS;
   const webhookUrl = `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/api/shopify/webhook`;
 
   for (const topic of topics) {

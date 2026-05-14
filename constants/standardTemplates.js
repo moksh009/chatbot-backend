@@ -4,6 +4,10 @@
  * Standard Ecommerce Templates for Meta Cloud API
  * Prefixed with eco_ for easy identification.
  * All include an IMAGE header and a FOOTER.
+ *
+ * `eco_shipping_update` pairs with order status automation: map it under
+ * Settings → Order status → **shipped** (nicheData.orderStatusTemplates.shipped).
+ * Body {{1}}–{{3}} match sendMappedOrderStatusWhatsApp (name, order #, tracking URL).
  */
 const STANDARD_TEMPLATES = [
   {

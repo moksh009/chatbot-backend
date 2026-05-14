@@ -28,7 +28,7 @@ function dispatchSignature(newStatus, trackingUrl, trackingNumber) {
  * @param {string} [params.trackingUrl]
  * @param {object|null} params.io - socket.io (optional)
  * @param {string} params.source - e.g. dashboard_manual | shopify_webhook:fulfillments/create
- * @param {object} [params.options] force: bypass webhook dedupe
+ * @param {object} [params.options] force: bypass webhook dedupe; trackingOnlyRefresh: same status but new tracking (Shopify fulfillment updates)
  */
 async function dispatchOrderStatusAutomation({
   clientConfig,
@@ -42,34 +42,52 @@ async function dispatchOrderStatusAutomation({
   options = {},
 }) {
   const force = !!options.force;
+  const trackingOnlyRefresh = !!options.trackingOnlyRefresh;
   const prev = String(previousStatus || '').toLowerCase();
   const next = String(newStatus || '').toLowerCase();
-  if (!next || prev === next) {
+  const isWebhook = String(source).startsWith('shopify_webhook');
+  const trackRefreshAllowed = trackingOnlyRefresh && isWebhook;
+
+  if (!next || (prev === next && !trackRefreshAllowed)) {
     return { skipped: true, reason: 'no_status_change' };
   }
 
   const oid = order._id || order.id;
   const sig = dispatchSignature(next, trackingUrl, trackingNumber);
-  const isWebhook = String(source).startsWith('shopify_webhook');
 
   if (!force && isWebhook && order.lastDispatchSignature === sig) {
     return { skipped: true, reason: 'duplicate_webhook_signature' };
   }
 
+  const wf =
+    clientConfig.wizardFeatures && typeof clientConfig.wizardFeatures.toObject === 'function'
+      ? clientConfig.wizardFeatures.toObject()
+      : clientConfig.wizardFeatures || {};
+  /** Default true when unset — backward compatible. */
+  const autoShopifyShippedWaEnabled = wf.enableAutoShopifyShippedWhatsApp !== false;
+  const skipWebhookShippedCustomerWa =
+    isWebhook &&
+    (next === 'shipped' || next === 'fulfilled') &&
+    !autoShopifyShippedWaEnabled;
+
   const { sendMappedOrderStatusWhatsApp } = require('../routes/engines/genericEcommerce');
 
-  let wa = { ok: false, templateAttempted: false, templateName: null };
-  try {
-    wa = await sendMappedOrderStatusWhatsApp({
-      clientConfig,
-      order,
-      status: next,
-      trackingNumber: trackingNumber || order.trackingNumber,
-      trackingUrl: trackingUrl || order.trackingUrl,
-      io,
-    });
-  } catch (e) {
-    console.error('[OrderEventDispatcher] sendMappedOrderStatusWhatsApp:', e.message);
+  let wa = { ok: false, templateAttempted: false, templateName: null, skipped: false };
+  if (!skipWebhookShippedCustomerWa) {
+    try {
+      wa = await sendMappedOrderStatusWhatsApp({
+        clientConfig,
+        order,
+        status: next,
+        trackingNumber: trackingNumber || order.trackingNumber,
+        trackingUrl: trackingUrl || order.trackingUrl,
+        io,
+      });
+    } catch (e) {
+      console.error('[OrderEventDispatcher] sendMappedOrderStatusWhatsApp:', e.message);
+    }
+  } else {
+    wa = { ok: false, templateAttempted: false, templateName: null, skipped: true, reason: 'auto_shopify_shipped_wa_disabled' };
   }
 
   let auto = { matched: 0 };
@@ -96,6 +114,7 @@ async function dispatchOrderStatusAutomation({
   }
 
   const shouldTextFallback =
+    !skipWebhookShippedCustomerWa &&
     (order.customerPhone || order.phone) &&
     (!wa.templateAttempted || !wa.ok) &&
     auto.matched === 0;
@@ -134,6 +153,7 @@ async function dispatchOrderStatusAutomation({
     skipped: false,
     whatsapp: wa,
     automations: auto,
+    autoShopifyShippedWaDisabled: skipWebhookShippedCustomerWa,
   };
 }
 
