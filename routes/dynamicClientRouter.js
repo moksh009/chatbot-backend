@@ -18,6 +18,7 @@ const {
   touchInboundWebhook,
   touchMetaWebhookVerified,
 } = require('../utils/whatsappWebhookLifecycle');
+const { getMetaWebhookVerifyQuery } = require('../utils/metaHubQuery');
 
 // Middleware to load client config
 router.use(loadClientConfig);
@@ -57,9 +58,7 @@ router.put('/integrations', protect, async (req, res) => {
 
 // Webhook Verification (GET)
 router.get('/webhook', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
+  const { mode, token, challenge } = getMetaWebhookVerifyQuery(req);
 
   // Verify token should match what's in the client config or a global verify token
   // Prioritize client-specific token, fallback to global env
@@ -310,9 +309,7 @@ const { runDualBrainEngine } = require("../utils/dualBrainEngine");
 
 // Verification handshake for Instagram Messenger API
 router.get("/webhook/instagram", async (req, res) => {
-  const mode      = req.query["hub.mode"];
-  const token     = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
+  const { mode, token, challenge } = getMetaWebhookVerifyQuery(req);
   
   try {
     const client = req.clientConfig;

@@ -6,6 +6,7 @@ const { runDualBrainEngine } = require("../utils/dualBrainEngine");
 const { replyToInstagramComment, sendInstagramDM } = require("../utils/instagramApi");
 const InstagramAutomation = require("../models/InstagramAutomation");
 const crypto = require("crypto");
+const { getMetaWebhookVerifyQuery } = require("../utils/metaHubQuery");
 
 // Middleware to verify Instagram Webhook signature (HMAC-SHA256)
 const verifyInstagramSignature = async (req, res, buf) => {
@@ -32,9 +33,7 @@ const verifyInstagramSignature = async (req, res, buf) => {
  * Verification handshake for Instagram Messenger API
  */
 router.get("/:clientId/webhook/instagram", async (req, res) => {
-  const mode      = req.query["hub.mode"];
-  const token     = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
+  const { mode, token, challenge } = getMetaWebhookVerifyQuery(req);
   
   try {
     const client = await Client.findOne({ clientId: req.params.clientId });

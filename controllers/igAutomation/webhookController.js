@@ -5,15 +5,14 @@ const router = express.Router();
 const verifyMetaSignature = require('../../middleware/verifyMetaSignature');
 const { processIGWebhookPayload } = require('../../utils/igWebhookProcessor');
 const log = require('../../utils/logger')('IGWebhook');
+const { getMetaWebhookVerifyQuery } = require('../../utils/metaHubQuery');
 
 /**
  * GET /api/ig-automation/webhook
  * Meta webhook verification handshake — responds with hub.challenge.
  */
 router.get('/', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
+  const { mode, token, challenge } = getMetaWebhookVerifyQuery(req);
 
   const expectedToken = process.env.IG_WEBHOOK_VERIFY_TOKEN || process.env.META_VERIFY_TOKEN;
   if (mode === 'subscribe' && token === expectedToken) {

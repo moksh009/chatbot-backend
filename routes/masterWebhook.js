@@ -12,6 +12,7 @@ const { recalculateLeadScore } = require('../utils/scoringHelper');
 const { buildEventEnvelope } = require('../utils/eventEnvelope');
 const { emitToClient } = require('../utils/socket');
 const { phoneNumberIdMatchFilter } = require('../utils/clientWhatsAppCreds');
+const { getMetaWebhookVerifyQuery } = require('../utils/metaHubQuery');
 
 /**
  * Middleware to verify Meta X-Hub-Signature-256
@@ -49,15 +50,13 @@ const verifyMetaSignature = (req, res, next) => {
 
 // 1. Webhook Verification (GET)
 router.get('/', (req, res) => {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
+    const { mode, token, challenge } = getMetaWebhookVerifyQuery(req);
     const verifyToken =
       process.env.VERIFY_TOKEN ||
       process.env.WHATSAPP_VERIFY_TOKEN ||
       'my_verify_token';
 
-    if (mode && token === verifyToken) {
+    if (mode === 'subscribe' && token === verifyToken) {
         log.info('Webhook Root Verified');
         return res.status(200).send(challenge);
     }
