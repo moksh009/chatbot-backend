@@ -990,6 +990,93 @@ router.patch('/my-settings', protect, async (req, res) => {
       return res.status(400).json({ message: 'No target clientId specified' });
     }
 
+    // ── SaaS: server-side WhatsApp validation (do not trust UI-only checks) ─────────
+    let _waVerifySnapshot = null;
+    const waPatchRequested =
+      wabaId !== undefined ||
+      phoneNumberId !== undefined ||
+      (whatsappToken !== undefined &&
+        whatsappToken !== '••••••••' &&
+        String(whatsappToken).trim() !== '');
+
+    if (waPatchRequested) {
+      const existing = await Client.findOne({ clientId: targetClientId })
+        .select('phoneNumberId wabaId whatsappToken clientId name platformVars')
+        .lean();
+
+      if (!existing) {
+        return res.status(404).json({ success: false, message: 'Client not found' });
+      }
+
+      const effPid =
+        phoneNumberId !== undefined
+          ? String(phoneNumberId).trim()
+          : String(existing.phoneNumberId || '').trim();
+
+      let effTok = '';
+      if (
+        whatsappToken !== undefined &&
+        whatsappToken !== '••••••••' &&
+        String(whatsappToken).trim() !== ''
+      ) {
+        effTok = String(whatsappToken).trim();
+      } else {
+        try {
+          effTok = decrypt(existing.whatsappToken || '') || '';
+        } catch (_) {
+          effTok = '';
+        }
+      }
+
+      const effWaba =
+        wabaId !== undefined ? String(wabaId).trim() : String(existing.wabaId || '').trim();
+
+      if (!effPid || !effTok) {
+        return res.status(400).json({
+          success: false,
+          message:
+            'WhatsApp: Phone Number ID and permanent access token are both required. Paste a fresh system user token if you rotated it.',
+        });
+      }
+
+      if (!effWaba) {
+        return res.status(400).json({
+          success: false,
+          message: 'WhatsApp Business Account ID (WABA ID) is required so we can verify ownership.',
+        });
+      }
+
+      const { validateWhatsAppCloudCredentials } = require('../utils/whatsappMetaValidate');
+      const v = await validateWhatsAppCloudCredentials({
+        phoneNumberId: effPid,
+        whatsappToken: effTok,
+        wabaId: effWaba,
+      });
+
+      if (!v.ok) {
+        return res.status(400).json({
+          success: false,
+          message: v.message,
+          code: v.code,
+        });
+      }
+
+      const dup = await Client.findOne({
+        phoneNumberId: effPid,
+        clientId: { $ne: targetClientId },
+      })
+        .select('clientId name')
+        .lean();
+
+      if (dup) {
+        return res.status(409).json({
+          success: false,
+          message: `This WhatsApp number is already linked to another workspace (${dup.name || dup.clientId}). Each Cloud API number can only map to one tenant here.`,
+        });
+      }
+      _waVerifySnapshot = v;
+    }
+
     const updateFields = {};
     if (nicheData !== undefined) updateFields.nicheData = nicheData;
     if (flowData !== undefined) updateFields.flowData = flowData;
@@ -1069,7 +1156,13 @@ router.patch('/my-settings', protect, async (req, res) => {
       updateFields.whatsappToken = whatsappToken;
       updateFields['whatsapp.accessToken'] = whatsappToken;
     }
-    
+
+    if (waPatchRequested && _waVerifySnapshot && _waVerifySnapshot.ok) {
+      updateFields['platformVars.whatsappLastVerifiedAt'] = new Date();
+      updateFields['platformVars.whatsappVerifiedDisplayNumber'] =
+        _waVerifySnapshot.display_phone_number || '';
+    }
+
     if (shopDomain !== undefined) {
       updateFields.shopDomain = shopDomain;
       updateFields['commerce.shopify.domain'] = shopDomain;
@@ -2312,33 +2405,36 @@ router.get('/audit-logs', protect, authorize('SUPER_ADMIN', 'CLIENT_ADMIN'), asy
 // ── ONBOARDING: Connection Test Endpoints ─────────────────────────────────────
 // Pre-save credential validation for the onboarding wizards and settings page.
 
-// POST /admin/test-whatsapp — Validates Meta Graph API credentials
+// POST /admin/test-whatsapp — Validates Meta Graph API credentials (phone + optional WABA ownership)
 router.post('/test-whatsapp', protect, async (req, res) => {
   try {
-    const { phoneNumberId, whatsappToken } = req.body;
+    const { phoneNumberId, whatsappToken, wabaId } = req.body;
     if (!phoneNumberId || !whatsappToken) {
       return res.status(400).json({ success: false, message: 'Phone Number ID and Access Token are required.' });
     }
 
-    const response = await axios.get(
-      `https://graph.facebook.com/v21.0/${phoneNumberId}`,
-      {
-        headers: { Authorization: `Bearer ${whatsappToken}` },
-        timeout: 10000
-      }
-    );
+    const { validateWhatsAppCloudCredentials } = require('../utils/whatsappMetaValidate');
+    const v = await validateWhatsAppCloudCredentials({
+      phoneNumberId,
+      whatsappToken,
+      wabaId: wabaId || '',
+    });
 
-    if (response.data && response.data.display_phone_number) {
-      res.json({
-        success: true,
-        phone: response.data.display_phone_number,
-        name: response.data.verified_name || null,
-        qualityRating: response.data.quality_rating || null,
-        message: `Connected to ${response.data.display_phone_number}`
+    if (!v.ok) {
+      return res.status(400).json({
+        success: false,
+        message: v.message,
+        code: v.code,
       });
-    } else {
-      res.json({ success: false, message: 'Unexpected response from Meta API. Check your Phone Number ID.' });
     }
+
+    res.json({
+      success: true,
+      phone: v.display_phone_number,
+      name: v.verified_name || null,
+      qualityRating: v.quality_rating || null,
+      message: `Connected to ${v.display_phone_number}`,
+    });
   } catch (err) {
     const metaError = err.response?.data?.error;
     const code = metaError?.code || err.response?.status;

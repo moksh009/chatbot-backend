@@ -176,6 +176,11 @@ async function processMessages(messages, metadata, contacts) {
     const messageId = message.id;
     const phone_number_id = metadata?.phone_number_id;
 
+    if (!phone_number_id) {
+      log.warn(`[MasterWebhook] Skipping message ${messageId}: missing metadata.phone_number_id`);
+      continue;
+    }
+
     try {
       // 1. DEDUPLICATION CHECK
       const existingConvo = await Conversation.findOne({ phone: from, processedMessageIds: messageId }, { _id: 1 }).lean();

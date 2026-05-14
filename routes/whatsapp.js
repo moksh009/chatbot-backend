@@ -121,24 +121,39 @@ router.post('/send-template', protect, async (req, res) => {
 // @desc    Verify WhatsApp credentials against Meta API
 // @access  Private
 router.post('/verify', protect, async (req, res) => {
-  const { phoneNumberId, wabaId, whatsappToken } = req.body;
+  const { phoneNumberId, wabaId, whatsappToken, token } = req.body;
+  const tok = whatsappToken || token;
 
-  if (!phoneNumberId || !wabaId || !whatsappToken) {
-    return res.status(400).json({ success: false, message: 'phoneNumberId, wabaId, and whatsappToken are required' });
+  if (!phoneNumberId || !wabaId || !tok) {
+    return res.status(400).json({ success: false, message: 'phoneNumberId, wabaId, and whatsappToken (or token) are required' });
   }
 
   try {
-    // Ping Meta API to verify the token and WABA ID
-    const url = `https://graph.facebook.com/v21.0/${wabaId}`;
-    const response = await axios.get(url, {
-      headers: { Authorization: `Bearer ${whatsappToken}` }
+    const { validateWhatsAppCloudCredentials } = require('../utils/whatsappMetaValidate');
+    const v = await validateWhatsAppCloudCredentials({
+      phoneNumberId,
+      whatsappToken: tok,
+      wabaId,
     });
 
-    log.info(`[WhatsApp] Credentials verified successfully for WABA ${wabaId}`);
-    
-    // We don't save the token here, this is just a stateless verification
-    res.json({ success: true, message: 'Credentials verified successfully', data: { id: response.data.id, name: response.data.name } });
+    if (!v.ok) {
+      return res.status(400).json({
+        success: false,
+        message: v.message,
+        code: v.code,
+      });
+    }
 
+    log.info(`[WhatsApp] Credentials verified for ${phoneNumberId} / WABA ${wabaId}`);
+    res.json({
+      success: true,
+      message: 'Credentials verified successfully',
+      data: {
+        display_phone_number: v.display_phone_number,
+        verified_name: v.verified_name,
+        quality_rating: v.quality_rating,
+      },
+    });
   } catch (error) {
     const errorData = error.response?.data || error.message;
     const statusCode = error.response?.status || 500;
