@@ -14,7 +14,13 @@ const STILL_HUMAN =
   '\n\nStill stuck? Tap *Talk to human* below or send a video to *9328613239*.';
 
 const COPY = {
-  mainMenuText: `Hi! How can we help you today?
+  mainMenuText: `👋 *Welcome to Apex Light!*
+
+Turn watching and gaming into a stunning experience.
+
+💡 *What would you like to do today?*
+
+Hi! How can we help you today?
 
 🛍️ Explore our products with prices
 📦 Get your product installed (quick guide)
@@ -488,21 +494,6 @@ Once imported, customers' phone numbers will resolve to their product and the si
     },
   },
   {
-    id: 'n_welcome_logo',
-    type: 'image',
-    position: { x: 420, y: 120 },
-    data: {
-      label: 'Welcome — Apex logo',
-      imageUrl: LOGO,
-      caption: `👋 *Welcome to Apex Light!*
-
-Turn watching and gaming into a stunning experience.
-
-💡 *What would you like to do today?*
-Tap *Open menu* below to get started.`,
-    },
-  },
-  {
     id: 'n_main_menu',
     type: 'interactive',
     position: { x: 760, y: 120 },
@@ -510,6 +501,7 @@ Tap *Open menu* below to get started.`,
       label: 'Main hub — 3 buttons',
       interactiveType: 'button',
       header: 'Apex Light',
+      imageUrl: LOGO,
       text: COPY.mainMenuText,
       buttonsList: [
         { id: 'btn_explore', title: 'Explore Products' },
@@ -1145,10 +1137,9 @@ For fastest help, you can also call or message directly on *9328613239*.
 ];
 
 const edges = [
-  { id: 'e_t0', source: 'n_trigger', target: 'n_welcome_logo' },
-  { id: 'e_t_first', source: 'n_trigger_first', target: 'n_welcome_logo' },
+  { id: 'e_t0', source: 'n_trigger', target: 'n_main_menu' },
+  { id: 'e_t_first', source: 'n_trigger_first', target: 'n_main_menu' },
   { id: 'e_t_svc', source: 'n_trigger_services', target: 'n_service_menu' },
-  { id: 'e_logo_menu', source: 'n_welcome_logo', sourceHandle: 'a', target: 'n_main_menu' },
 
   { id: 'e_btn_explore', source: 'n_main_menu', sourceHandle: 'btn_explore', target: 'n_product_menu' },
   { id: 'e_btn_install', source: 'n_main_menu', sourceHandle: 'btn_install', target: 'n_install_intro' },
@@ -1338,7 +1329,7 @@ const edges = [
 
   { id: 'e_ff_menu', source: 'n_footer', sourceHandle: 'f_menu', target: 'n_main_menu' },
   { id: 'e_ff_support', source: 'n_footer', sourceHandle: 'f_support', target: 'n_admin_alert' },
-  { id: 'e_ff_start', source: 'n_footer', sourceHandle: 'f_start', target: 'n_welcome_logo' },
+  { id: 'e_ff_start', source: 'n_footer', sourceHandle: 'f_start', target: 'n_main_menu' },
 ];
 
 const header = `/**

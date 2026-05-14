@@ -18,9 +18,14 @@ const {
 const CLIENT_ID = 'shubhampatelsbusiness_1cfb2b';
 
 /**
- * Upserts the canonical Apex flow into WhatsAppFlow + Client.visualFlows,
- * bumps version, clears API flow list cache so the Flow Builder sees fresh nodes/edges.
- * Run: node scripts/setupApexOwnerSupportFlow.js (from chatbot-backend-main, with MONGODB_URI set).
+ * Pushes `data/apexLightOwnerFlow.js` (buildFlow) into MongoDB: WhatsAppFlow + Client.visualFlows.
+ * WhatsApp live traffic uses the **published flow in the database**, not the repo file alone — run this
+ * after editing the Apex flow (or publish the same graph from the dashboard).
+ *
+ * Requires MONGODB_URI (or MONGO_URI). Then redeploy/restart the API so runtime code matches (e.g. DualBrain fixes).
+ *
+ * Run from chatbot-backend-main:
+ *   node scripts/setupApexOwnerSupportFlow.js
  */
 
 async function run() {
@@ -115,6 +120,7 @@ async function run() {
         flowDbId: String(flowDoc._id),
         nodeCount: nodes.length,
         edgeCount: edges.length,
+        note: "MongoDB updated. Redeploy Render (or restart API) if server code changed. New chats should see one welcome+menu message.",
       },
       null,
       2
