@@ -1,6 +1,6 @@
 /**
- * Public WhatsApp Cloud API webhook configuration (shared across all tenants).
- * Inbound routing uses metadata.phone_number_id on each event — each client stores their own ID.
+ * Public WhatsApp Cloud API webhook base URL (for legacy single-app installs).
+ * Per-tenant webhooks use `/api/client/:clientId/webhook` + per-client verifyToken in MongoDB.
  */
 
 function inferWebhookOrigin() {
@@ -43,7 +43,7 @@ function getWhatsAppWebhookPublicConfig() {
     metaAppSecretConfigured: Boolean(process.env.META_APP_SECRET),
     recommendedWebhookFields: ['messages', 'message_template_status_update'],
     multiTenantNote:
-      'Webhook URL and verify token are configured once on your Meta app. Every TopEdge workspace uses the same callback; we route each message by Phone Number ID saved in your settings.',
+      'Prefer per-workspace URLs (/api/client/{clientId}/webhook) and tokens stored in the database. The root URLs below are optional legacy when one Meta app serves every tenant and META_APP_SECRET matches that app.',
   };
 }
 

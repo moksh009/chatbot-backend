@@ -13,6 +13,7 @@ const { validateAndCleanFlow } = require('../utils/aiFlowBuilder');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const axios = require('axios');
 const shopifyAdminApiVersion = require('../utils/shopifyAdminApiVersion');
 const { encrypt, decrypt } = require('../utils/encryption');
@@ -540,6 +541,10 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
       systemPrompt = await generateText(`Generate a professional personality system prompt for a WhatsApp business named "${businessName}". Business type is ${businessType || 'general'}. Keep it concise, helpful, and friendly.`);
     }
 
+    const resolvedWebhookVerify =
+      (webhookVerifyToken && String(webhookVerifyToken).trim()) ||
+      `te_wa_${crypto.randomBytes(18).toString('hex')}`;
+
     // 3. Prepare Dual-Write Payload (Tier 2.5 Parallel Run)
     // Map incoming flat fields to the new modular sub-documents
     const clientData = {
@@ -547,6 +552,7 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
       clientId: clientId.trim(),
       businessName,
       name: businessName, // Legacy sync
+      verifyToken: resolvedWebhookVerify,
       systemPrompt: systemPrompt || 'You are a helpful assistant.',
       isActive: true,
       flowNodes: [],
@@ -564,7 +570,7 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
         phoneNumberId: phoneNumberId,
         wabaId: req.body.wabaId || '',
         accessToken: req.body.whatsappToken || '',
-        verifyToken: req.body.verifyToken || ''
+        verifyToken: resolvedWebhookVerify,
       },
       commerce: {
         storeType: req.body.storeType || 'shopify',
@@ -609,7 +615,6 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
     const savedClient = await newClient.save();
 
     // ── AUTOMATED USER PROVISIONING ──
-    const crypto = require('crypto');
     const generatedPassword = crypto.randomBytes(4).toString('hex'); // 8 chars
     const loginEmail = adminEmail || `${clientId.trim().toLowerCase()}@chatbot.com`;
 
@@ -948,7 +953,7 @@ router.patch('/my-settings', protect, async (req, res) => {
       simpleSettings, clientId, isAIFallbackEnabled, flowFolders, visualFlows,
       /** Lightweight auto-save merge: PATCH { flowDraft: { flowId, nodes, edges, syncLiveGraph? } } */
       flowDraft,
-      wabaId, phoneNumberId, whatsappToken,
+      wabaId, phoneNumberId, whatsappToken, verifyToken,
       shopDomain, shopifyClientId, shopifyClientSecret, shopifyAccessToken, shopifyWebhookSecret, shopifyConnectionStatus,
       facebookCatalogId, shopifyStorefrontToken,
       storeType,
@@ -1151,6 +1156,25 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (phoneNumberId !== undefined) {
       updateFields.phoneNumberId = phoneNumberId;
       updateFields['whatsapp.phoneNumberId'] = phoneNumberId;
+    }
+    if (verifyToken !== undefined) {
+      const v = String(verifyToken || '').trim();
+      if (v.length > 0) {
+        if (v.length < 6) {
+          return res.status(400).json({
+            success: false,
+            message: 'Webhook verify token must be at least 6 characters.',
+          });
+        }
+        if (v.length > 256) {
+          return res.status(400).json({
+            success: false,
+            message: 'Webhook verify token is too long (max 256).',
+          });
+        }
+        updateFields.verifyToken = v;
+        updateFields['whatsapp.verifyToken'] = v;
+      }
     }
     if (whatsappToken !== undefined && whatsappToken !== '••••••••' && whatsappToken.trim() !== '') {
       updateFields.whatsappToken = whatsappToken;
@@ -2450,46 +2474,82 @@ router.post('/test-whatsapp', protect, async (req, res) => {
   }
 });
 
-// GET /admin/whatsapp-webhook-instructions — Meta app webhook URL + verify token (shared app; routes by Phone Number ID)
+// GET /admin/whatsapp-webhook-instructions — per-workspace Callback URL + verify token for Meta BYOA webhooks
 router.get('/whatsapp-webhook-instructions', protect, async (req, res) => {
   try {
-    const { getWhatsAppWebhookPublicConfig } = require('../utils/whatsappWebhookPublic');
-    const cfg = getWhatsAppWebhookPublicConfig();
-    const client = await Client.findOne({ clientId: req.user.clientId })
-      .select('phoneNumberId wabaId clientId whatsapp.phoneNumberId whatsapp.wabaId')
+    const {
+      getWhatsAppWebhookPublicConfig,
+      getMasterVerifyToken,
+    } = require('../utils/whatsappWebhookPublic');
+
+    const clientId = req.user.clientId;
+    if (!clientId) {
+      return res.status(400).json({ success: false, message: 'No clientId on session' });
+    }
+
+    const cfgShared = getWhatsAppWebhookPublicConfig();
+    const origin = cfgShared.origin;
+    const encClientId = encodeURIComponent(clientId);
+    const callbackUrlTenant = `${origin}/api/client/${encClientId}/webhook`;
+
+    let client = await Client.findOne({ clientId })
+      .select('phoneNumberId wabaId clientId verifyToken whatsapp.phoneNumberId whatsapp.wabaId whatsapp.verifyToken')
       .lean();
 
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const vtWa = String(client.whatsapp?.verifyToken || '').trim();
+    const vtRoot = String(client.verifyToken || '').trim();
+    let tenantVerifyToken = vtWa || vtRoot;
+
+    if (!tenantVerifyToken) {
+      tenantVerifyToken = `te_wa_${crypto.randomBytes(18).toString('hex')}`;
+      await Client.updateOne(
+        { clientId },
+        { $set: { verifyToken: tenantVerifyToken, 'whatsapp.verifyToken': tenantVerifyToken } }
+      );
+    } else if (vtRoot && !vtWa) {
+      await Client.updateOne({ clientId }, { $set: { 'whatsapp.verifyToken': vtRoot } });
+    } else if (vtWa && !vtRoot) {
+      await Client.updateOne({ clientId }, { $set: { verifyToken: vtWa } });
+    }
+
     const phoneNumberId =
-      client?.phoneNumberId ||
-      (client && client.whatsapp && client.whatsapp.phoneNumberId) ||
-      '';
-    const wabaId =
-      client?.wabaId ||
-      (client && client.whatsapp && client.whatsapp.wabaId) ||
-      '';
+      client.phoneNumberId || client.whatsapp?.phoneNumberId || '';
+    const wabaId = client.wabaId || client.whatsapp?.wabaId || '';
 
     res.json({
       success: true,
-      origin: cfg.origin,
-      callbackUrlPrimary: cfg.callbackUrlPrimary,
-      callbackUrlAlternate: cfg.callbackUrlAlternate,
-      verifyToken: cfg.verifyToken,
-      metaAppSecretConfigured: cfg.metaAppSecretConfigured,
-      recommendedWebhookFields: cfg.recommendedWebhookFields,
-      multiTenantNote: cfg.multiTenantNote,
-      clientId: req.user.clientId,
+      origin,
+      routingModel: 'per_workspace_url',
+      callbackUrlTenant,
+      /** Same as callbackUrlTenant — primary field for dashboards */
+      callbackUrlPrimary: callbackUrlTenant,
+      verifyToken: tenantVerifyToken,
+      verifyTokenTenant: tenantVerifyToken,
+      /** Legacy: one Meta app + one server META_APP_SECRET; not suitable when each tenant has their own Meta app */
+      sharedWebhookRoot: cfgShared.callbackUrlPrimary,
+      sharedWebhookAlternate: cfgShared.callbackUrlAlternate,
+      verifyTokenShared: getMasterVerifyToken(),
+      metaAppSecretConfigured: cfgShared.metaAppSecretConfigured,
+      recommendedWebhookFields: cfgShared.recommendedWebhookFields,
+      clientId,
       clientPhoneNumberId: phoneNumberId || null,
       clientWabaId: wabaId || null,
       checklist: [
         'Meta for Developers → your app → WhatsApp → Configuration.',
-        'Callback URL: paste either URL below (both hit the same inbox). Click Verify and save.',
-        'Verify token: must match exactly what we show below (set VERIFY_TOKEN or WHATSAPP_VERIFY_TOKEN on the server).',
-        'Webhooks → WhatsApp Business Account → Manage → subscribe to the recommended fields.',
-        'Use the same Meta app that issued your permanent access token; Phone Number ID must belong to that app.',
+        `Callback URL: paste exactly ${callbackUrlTenant} (includes your workspace id). Click Verify and save.`,
+        'Verify token: paste the value below (unique to this workspace). It must match character-for-character.',
+        'Webhooks → WhatsApp Business Account → Manage → subscribe to messages (and template status if you use templates).',
+        'Use the same Meta app that issued your permanent access token.',
       ],
-      postUsesSignature: cfg.metaAppSecretConfigured
-        ? 'Inbound POST requests require a valid X-Hub-Signature-256 (META_APP_SECRET on this server).'
-        : 'META_APP_SECRET is not set — webhooks still work, but signature verification is skipped.',
+      multiTenantNote:
+        'Each workspace gets its own Callback URL path and verify token so customers who each created their own Meta app can subscribe webhooks without sharing one global VERIFY_TOKEN. Inbound POSTs to this URL are routed to your workspace from the URL; we still recommend the Phone Number ID in settings match your Meta number.',
+      postUsesSignature: cfgShared.metaAppSecretConfigured
+        ? 'The shared root URLs (/ and /whatsapp-webhook) verify X-Hub-Signature-256 using META_APP_SECRET — only valid if that secret matches the Meta app sending events. Per-workspace URLs accept POSTs without that check (required when each tenant uses a different Meta app secret).'
+        : 'META_APP_SECRET is not set on this server — signature verification is not enforced on shared root URLs.',
     });
   } catch (err) {
     log.warn('whatsapp-webhook-instructions failed', { error: err.message });

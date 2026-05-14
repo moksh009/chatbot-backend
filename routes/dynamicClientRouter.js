@@ -58,7 +58,11 @@ router.get('/webhook', (req, res) => {
 
   // Verify token should match what's in the client config or a global verify token
   // Prioritize client-specific token, fallback to global env
-  const VERIFY_TOKEN = req.clientConfig.verifyToken || process.env.WHATSAPP_VERIFY_TOKEN || 'my_verify_token';
+  const VERIFY_TOKEN =
+    req.clientConfig.verifyToken ||
+    process.env.WHATSAPP_VERIFY_TOKEN ||
+    process.env.VERIFY_TOKEN ||
+    'my_verify_token';
 
   if (mode && token) {
     if (mode === 'subscribe' && token === VERIFY_TOKEN) {

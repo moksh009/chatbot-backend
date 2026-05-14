@@ -3,6 +3,7 @@
  * Safe to call on every bootstrap/login — no-op when Client already exists.
  */
 const Client = require('../models/Client');
+const crypto = require('crypto');
 
 async function ensureClientForUser(user) {
   if (!user || !user.clientId) return null;
@@ -16,6 +17,7 @@ async function ensureClientForUser(user) {
     (user.email && String(user.email).split('@')[0]) ||
     'Workspace';
   const businessType = 'ecommerce';
+  const vt = `te_wa_${crypto.randomBytes(18).toString('hex')}`;
 
   try {
     client = await Client.create({
@@ -27,6 +29,13 @@ async function ensureClientForUser(user) {
       trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
       plan: 'CX Agent (V1)',
       businessType,
+      verifyToken: vt,
+      whatsapp: {
+        phoneNumberId: '',
+        wabaId: '',
+        accessToken: '',
+        verifyToken: vt,
+      },
       flowNodes: [],
       flowEdges: [],
       onboardingCompleted: false,

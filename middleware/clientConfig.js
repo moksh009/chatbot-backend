@@ -64,6 +64,16 @@ const loadClientConfig = async (req, res, next) => {
       console.warn(`[ClientConfig] ⚠️ No Gemini API key found for client: ${clientId}`);
     }
 
+    const waVerify =
+      (client.whatsapp && String(client.whatsapp.verifyToken || '').trim()) || '';
+    const rootVerify = String(client.verifyToken || '').trim();
+    const resolvedVerifyToken =
+      process.env[`VERIFY_TOKEN${envSuffix}`] ||
+      waVerify ||
+      rootVerify ||
+      process.env.VERIFY_TOKEN ||
+      process.env.WHATSAPP_VERIFY_TOKEN;
+
     req.clientConfig = {
       _id: client._id,
       clientId: client.clientId,
@@ -76,7 +86,7 @@ const loadClientConfig = async (req, res, next) => {
 
       // Use the resolved finalToken, ensuring it is decrypted if stored in encrypted format
       whatsappToken: decrypt(finalToken),
-      verifyToken: process.env[`VERIFY_TOKEN${envSuffix}`] || client.verifyToken || process.env.WHATSAPP_VERIFY_TOKEN,
+      verifyToken: resolvedVerifyToken,
       googleCalendarId: client.googleCalendarId || process.env[`GOOGLE_CALENDAR_ID${envSuffix}`] || process.env.GOOGLE_CALENDAR_ID,
       
       // Phase 13: Deprecating OpenAI name in config
