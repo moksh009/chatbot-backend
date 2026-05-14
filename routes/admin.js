@@ -2551,10 +2551,11 @@ router.get('/whatsapp-webhook-instructions', protect, async (req, res) => {
       clientWabaId: wabaId || null,
       ...status,
       checklist: [
-        'Open Meta for Developers → your app → WhatsApp → Configuration.',
-        `Callback URL: paste exactly this (includes your workspace id):\n${callbackUrlTenant}`,
-        'Verify token: paste the token below — must match exactly.',
-        'Click “Verify and save”, then under Webhooks subscribe to “messages” (and template status if you use templates).',
+        'Meta for Developers → your app → WhatsApp → Configuration.',
+        `Callback URL — paste exactly (includes your workspace id):\n${callbackUrlTenant}`,
+        'Verify token — paste from below (must match exactly). Click “Verify and save” in Meta.',
+        'Required for inbound chats: in the same Meta app, open Webhooks → WhatsApp Business Account → Manage → turn ON “messages”. If “messages” is off, customer replies never reach TopEdge.',
+        'Optional: subscribe “message_template_status_update” if you use Meta-approved templates.',
       ],
       multiTenantNote:
         'Each workspace uses its own URL path (/api/client/{your_id}/webhook) and its own verify token stored in TopEdge. Deploy with SERVER_URL or PUBLIC_WEBHOOK_BASE_URL set to your public API origin.',

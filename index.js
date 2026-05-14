@@ -249,6 +249,7 @@ app.use('/api/client/:clientId', dynamicClientRouter);
 app.use('/api/business', businessRoutes);
 app.use('/api/admin', adminRoutes); // Super Admin Route Registration
 app.use('/api/templates', templatesRoutes);
+app.use('/api/meta-templates', require('./routes/metaTemplates'));
 app.use('/api/auto-templates', require('./routes/autoTemplates'));
 app.use('/api/whatsapp', whatsappRoutes);
 const whatsappFlowsRoutes = require('./routes/whatsappFlows');

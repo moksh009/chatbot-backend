@@ -31,6 +31,10 @@ function touchInboundWebhook(clientId) {
   ).exec();
 }
 
+/** Shown in dashboard until users understand Meta’s “messages” subscription requirement. */
+const MESSAGES_FIELD_REMINDER =
+  'In Meta: open your app → WhatsApp → scroll to Webhooks → next to “WhatsApp Business Account” click Manage → turn ON the “messages” field (subscribe). If “messages” is off, Meta will not send customer replies to TopEdge — you will only see outbound traffic.';
+
 /**
  * Human-readable webhook setup status for the dashboard (Meta + inbound activity).
  * @param {Record<string, unknown>} platformVars
@@ -52,6 +56,7 @@ function buildWebhookDashboardStatus(platformVars = {}, phoneNumberId) {
     webhookMetaVerifiedAt: metaV || null,
     webhookLastInboundAt: lastIn || null,
     webhookSetupAckAt: userAck || null,
+    messagesFieldReminder: MESSAGES_FIELD_REMINDER,
   };
 
   if (!pid) {
@@ -59,6 +64,7 @@ function buildWebhookDashboardStatus(platformVars = {}, phoneNumberId) {
       ...base,
       webhookStatus: 'needs_whatsapp',
       webhookStatusLabel: 'Save WhatsApp credentials',
+      webhookStatusHeadline: null,
       webhookStatusDetail:
         'Add Phone Number ID and access token in this screen first. Then copy your workspace webhook URL into Meta.',
     };
@@ -67,34 +73,38 @@ function buildWebhookDashboardStatus(platformVars = {}, phoneNumberId) {
     return {
       ...base,
       webhookStatus: 'live',
-      webhookStatusLabel: 'Receiving webhooks',
-      webhookStatusDetail: `Last inbound event ${formatAgo(lastIn)}.`,
+      webhookStatusLabel: 'Receiving customer messages',
+      webhookStatusHeadline: 'WhatsApp is fully configured with TopEdge',
+      webhookStatusDetail: `Meta is sending inbound traffic. Last message webhook: ${formatAgo(lastIn)}. Keep the “messages” field subscribed in Meta so this continues.`,
     };
   }
   if (metaOk) {
     return {
       ...base,
       webhookStatus: 'verified',
-      webhookStatusLabel: 'Meta verified',
+      webhookStatusLabel: 'Callback verified',
+      webhookStatusHeadline: 'WhatsApp webhook successfully configured with TopEdge',
       webhookStatusDetail:
-        'Meta successfully reached your callback URL. Send a test message to your WhatsApp Business number to confirm inbound delivery.',
+        'Meta successfully verified your Callback URL and verify token — our server is linked. Customer chats still need the “messages” webhook field enabled in Meta (see the important note below). Send a test “hi” from your phone to confirm once “messages” is on.',
     };
   }
   if (ackOk) {
     return {
       ...base,
       webhookStatus: 'acknowledged',
-      webhookStatusLabel: 'You marked as done',
+      webhookStatusLabel: 'You marked setup done',
+      webhookStatusHeadline: null,
       webhookStatusDetail:
-        'Waiting for the first webhook event from Meta. If nothing arrives, double-check the Callback URL and field subscriptions in Meta.',
+        'We are waiting for Meta to send the first webhook. If nothing arrives, re-check Callback URL, verify token, and that “messages” is subscribed under Webhooks → WhatsApp Business Account → Manage.',
     };
   }
   return {
     ...base,
     webhookStatus: 'action_required',
-    webhookStatusLabel: 'Finish setup in Meta',
+    webhookStatusLabel: 'Finish Meta setup',
+    webhookStatusHeadline: null,
     webhookStatusDetail:
-      'Paste your workspace Callback URL and verify token in Meta → WhatsApp → Configuration, click Verify and save, then subscribe to “messages”.',
+      'Paste your workspace Callback URL and verify token in Meta → WhatsApp → Configuration, then click Verify and save. Then subscribe to the “messages” field (see below) or inbound chats will not arrive.',
   };
 }
 

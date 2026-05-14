@@ -15,6 +15,7 @@ const TEMPLATE_STATUS = {
   PENDING_REVIEW: "pending_meta_review",
   APPROVED: "approved",
   REJECTED: "rejected",
+  FLAGGED: "flagged",
   SUBMISSION_FAILED: "submission_failed",
   GENERATION_FAILED: "generation_failed"
 };
@@ -33,6 +34,7 @@ function normalizeTemplateStatus(rawStatus) {
   const status = String(rawStatus || "").toLowerCase();
   if (status === TEMPLATE_STATUS.APPROVED || status === "approved") return NORMALIZED_LIFECYCLE_STATUS.APPROVED;
   if (status === TEMPLATE_STATUS.REJECTED || status === "rejected") return NORMALIZED_LIFECYCLE_STATUS.REJECTED;
+  if (status === TEMPLATE_STATUS.FLAGGED || status === "flagged") return NORMALIZED_LIFECYCLE_STATUS.PENDING_REVIEW;
   if (status === TEMPLATE_STATUS.PENDING_REVIEW || status === "pending" || status === "in_appeal") return NORMALIZED_LIFECYCLE_STATUS.PENDING_REVIEW;
   if (status === TEMPLATE_STATUS.SUBMITTING) return NORMALIZED_LIFECYCLE_STATUS.SUBMITTING;
   if (status === TEMPLATE_STATUS.QUEUED) return NORMALIZED_LIFECYCLE_STATUS.QUEUED;

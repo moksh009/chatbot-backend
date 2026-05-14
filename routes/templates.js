@@ -181,6 +181,16 @@ router.get('/list', protect, async (req, res) => {
         const canonical = await MetaTemplate.find({ clientId })
           .sort({ updatedAt: -1 })
           .lean();
+        const usageTagToPurpose = (tag) => {
+          const m = {
+            Campaign: 'campaign',
+            Sequence: 'sequence',
+            'Flow Builder': 'flow',
+            Utility: 'utility',
+          };
+          return m[tag] || 'utility';
+        };
+
         canonical.forEach((tpl) => {
           if (!tpl?.name) return;
           const mappedStatus = normalizeTemplateStatus(tpl.submissionStatus);
@@ -192,16 +202,61 @@ router.get('/list', protect, async (req, res) => {
             mappedStatus === 'SUBMITTING' ? 'SUBMITTING' :
             mappedStatus === 'DRAFT' ? 'DRAFT' : 'PENDING';
           const components = [];
-          if (tpl.headerType && tpl.headerType !== 'NONE') {
-            if (String(tpl.headerType).toUpperCase() === 'IMAGE') {
-              components.push({ type: 'HEADER', format: 'IMAGE', _imageUrl: tpl.headerValue || tpl.productImageUrl || '' });
-            } else {
-              components.push({ type: 'HEADER', format: 'TEXT', text: tpl.headerValue || '' });
+          const fd = tpl.formData && typeof tpl.formData === 'object' ? tpl.formData : null;
+          const hasRichForm =
+            fd &&
+            (fd.bodyText != null ||
+              fd.headerText ||
+              fd.headerImageUrl ||
+              (fd.buttons && fd.buttons.length));
+
+          if (hasRichForm) {
+            const bodyTxt = fd.bodyText != null ? fd.bodyText : tpl.body || '';
+            if (fd.mediaSample === 'Image' && fd.headerImageUrl) {
+              components.push({ type: 'HEADER', format: 'IMAGE', _imageUrl: fd.headerImageUrl });
+            } else if (fd.headerText && String(fd.headerText).trim()) {
+              components.push({ type: 'HEADER', format: 'TEXT', text: fd.headerText });
             }
+            components.push({ type: 'BODY', text: bodyTxt });
+            const foot = fd.footerText != null ? fd.footerText : tpl.footerText;
+            if (foot) components.push({ type: 'FOOTER', text: foot });
+            const btnSrc = fd.buttons && fd.buttons.length ? fd.buttons : tpl.buttons;
+            if (Array.isArray(btnSrc) && btnSrc.length) {
+              const mappedBtns = btnSrc.map((b) => {
+                if (b.buttonType) {
+                  if (b.buttonType === 'QUICK_REPLY') return { type: 'QUICK_REPLY', text: b.text };
+                  if (b.buttonType === 'URL') {
+                    const row = { type: 'URL', text: b.text, url: b.url || '' };
+                    if (b.urlType === 'Dynamic' && b.sampleUrl) row.example = [b.sampleUrl];
+                    return row;
+                  }
+                  if (b.buttonType === 'PHONE_NUMBER') {
+                    return { type: 'PHONE_NUMBER', text: b.text, phone_number: b.phoneNumber || '' };
+                  }
+                }
+                return b;
+              });
+              components.push({ type: 'BUTTONS', buttons: mappedBtns });
+            }
+          } else {
+            if (tpl.headerType && tpl.headerType !== 'NONE') {
+              if (String(tpl.headerType).toUpperCase() === 'IMAGE') {
+                components.push({ type: 'HEADER', format: 'IMAGE', _imageUrl: tpl.headerValue || tpl.productImageUrl || '' });
+              } else {
+                components.push({ type: 'HEADER', format: 'TEXT', text: tpl.headerValue || '' });
+              }
+            }
+            components.push({ type: 'BODY', text: tpl.body || '' });
+            if (tpl.footerText) components.push({ type: 'FOOTER', text: tpl.footerText });
+            if (Array.isArray(tpl.buttons) && tpl.buttons.length) components.push({ type: 'BUTTONS', buttons: tpl.buttons });
           }
-          components.push({ type: 'BODY', text: tpl.body || '' });
-          if (tpl.footerText) components.push({ type: 'FOOTER', text: tpl.footerText });
-          if (Array.isArray(tpl.buttons) && tpl.buttons.length) components.push({ type: 'BUTTONS', buttons: tpl.buttons });
+
+          const usageTags = Array.isArray(tpl.usageTags) ? tpl.usageTags : [];
+          const primaryFromUsage = usageTags.length ? usageTagToPurpose(usageTags[0]) : null;
+          const secondaryFromUsage = usageTags.length > 1
+            ? usageTags.slice(1).map(usageTagToPurpose)
+            : [];
+
           mergedMap.set(tpl.name, {
             ...mergedMap.get(tpl.name),
             id: tpl.metaTemplateId || tpl._id?.toString?.() || tpl.name,
@@ -213,7 +268,13 @@ router.get('/list', protect, async (req, res) => {
             source: tpl.source || 'canonical_meta_template',
             templateKind: tpl.templateKind || 'custom',
             readinessRequired: !!tpl.readinessRequired,
-            submissionStatus: tpl.submissionStatus
+            submissionStatus: tpl.submissionStatus,
+            primaryPurpose: primaryFromUsage || tpl.primaryPurpose || 'utility',
+            secondaryPurposes: usageTags.length ? secondaryFromUsage : (Array.isArray(tpl.secondaryPurposes) ? tpl.secondaryPurposes : []),
+            metaApiError: tpl.metaApiError,
+            formData: fd || undefined,
+            usageTags,
+            _canonicalId: tpl._id,
           });
         });
 
