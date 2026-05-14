@@ -759,10 +759,13 @@ async function runDualBrainEngine(parsedMessage, client) {
   }
 
   // STEP 3: Save inbound message to DB + emit to dashboard
-  // Do not block first bot reply on heavy sentiment/intent enrichment.
-  saveInboundMessage(phone, client.clientId, parsedMessage, io, channel, convo._id).catch((err) => {
-    log.error('Deferred inbound save failed:', { error: err.message });
-  });
+  // Must finish before automation rules: "first_message" triggers use inbound counts
+  // from the Message collection; a deferred save left counts at 0 so rules mis-fired.
+  try {
+    await saveInboundMessage(phone, client.clientId, parsedMessage, io, channel, convo._id);
+  } catch (err) {
+    log.error('[InboundSave] Failed:', { error: err.message });
+  }
 
   // STEP 3.5: SUBSCRIPTION LIMIT CHECK (Phase 23)
   const limits = await checkLimit(client._id, 'messages');
@@ -860,7 +863,17 @@ async function runDualBrainEngine(parsedMessage, client) {
   }
 
   // ── PHASE 22: EVALUATE AUTOMATION RULES (ordered actions; optional Flow Builder passthrough) ──
-  const matchedRule = findMatchingRule(client.automationRules, parsedMessage.text?.body, variableContext);
+  let inboundCountPostSave = 0;
+  try {
+    inboundCountPostSave = await Message.countDocuments({
+      conversationId: convo._id,
+      direction: 'inbound',
+    });
+  } catch (cntErr) {
+    log.warn('[DualBrain] inbound count for rules failed:', cntErr.message);
+  }
+  const ruleEvalContext = { ...variableContext, _inboundCountPostSave: inboundCountPostSave };
+  const matchedRule = findMatchingRule(client.automationRules, parsedMessage.text?.body, ruleEvalContext);
   if (matchedRule?.actions?.length) {
     const moment = require('moment');
     const SEQUENCE_TEMPLATES = require('../data/sequenceTemplates');
@@ -1440,8 +1453,13 @@ async function runDualBrainEngine(parsedMessage, client) {
     const resumeKeywords = /^(menu|hi|hello|hey|start|help|main menu)$/i;
     const canResumeFromHandoff =
       ["HUMAN_SUPPORT", "HUMAN_TAKEOVER"].includes(convo.status) && resumeKeywords.test(t);
-    if (canResumeFromHandoff) {
-      log.info(`[DualBrain] Resuming bot after handoff for ${phone} (keyword: "${t}")`);
+    // Rules like pause_bot set botPaused while status stays BOT_ACTIVE — users were stranded with no reply.
+    const canResumeFromPausedBot =
+      convo.botPaused &&
+      resumeKeywords.test(t) &&
+      convo.status !== "OPTED_OUT";
+    if (canResumeFromHandoff || canResumeFromPausedBot) {
+      log.info(`[DualBrain] Resuming bot for ${phone} (keyword: "${t}", handoff=${!!canResumeFromHandoff}, paused=${!!canResumeFromPausedBot})`);
       await Conversation.findByIdAndUpdate(convo._id, {
         $set: {
           botPaused: false,
@@ -1849,8 +1867,15 @@ async function runDualBrainEngine(parsedMessage, client) {
   // STEP 7: PRIORITY 3 — Gemini AI Fallback
   // Only use AI if there is text body. Otherwise, let the caller handle it.
   if (parsedMessage.text?.body) {
-    await runAIFallback(parsedMessage, client, phone, lead, channel, convo);
+    const aiOk = await runAIFallback(parsedMessage, client, phone, lead, channel, convo);
     analyzeConversationIntelligence(client, phone, convo);
+    if (!aiOk) {
+      await sendWhatsAppText(
+        client,
+        phone,
+        "Thanks for your message! Type *menu* or *hi* anytime to see options again."
+      );
+    }
     return true;
   }
   
@@ -4409,11 +4434,12 @@ REPLY:
       const voiceUrl = await generateVoiceReply(reply, client.ai?.voiceReplyLanguage || 'en-IN');
       if (voiceUrl) {
         await sendWhatsAppAudio(client, phone, voiceUrl);
-        return;
+        return true;
       }
     }
 
     await sendWhatsAppText(client, phone, reply);
+    return true;
   } catch (err) {
     log.error('AI Fallback error:', { error: err.message });
     // --- PHASE 30: LOG AI FAILURE ---
@@ -4429,9 +4455,10 @@ REPLY:
     const updatedConvo = await Conversation.findOneAndUpdate({ phone, clientId: client.clientId }, { $inc: { consecutiveFailedMessages: 1 } }, { new: true });
     if (updatedConvo && updatedConvo.consecutiveFailedMessages >= 3) {
       await handleUniversalEscalate(client, phone, updatedConvo);
-      return;
+      return true;
     }
     await sendWhatsAppText(client, phone, "I'm having a bit of trouble understanding. Let me check with my team! 😊");
+    return true;
   }
 }
 

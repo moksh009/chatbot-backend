@@ -45,6 +45,12 @@ const evaluateTrigger = (trigger, messageText, context) => {
     }
 
     if (type === 'first_message') {
+        // Prefer count supplied by dualBrainEngine (Message collection). The flat
+        // variableContext from buildVariableContext does not include convo.messages,
+        // so the old check was always 0 and treated every inbound as "first".
+        if (typeof context._inboundCountPostSave === 'number' && context._inboundCountPostSave > 0) {
+            return context._inboundCountPostSave === 1;
+        }
         const historyCount = context.convo?.messages?.length || 0;
         return historyCount <= 1;
     }
