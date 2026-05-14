@@ -220,15 +220,15 @@ function buildFlow() {
       "buttonsList": [
         {
           "id": "btn_explore",
-          "title": "Explore Products"
+          "title": "🛍️ Shop & prices"
         },
         {
           "id": "btn_install",
-          "title": "Installation Guide"
+          "title": "📦 Setup help"
         },
         {
           "id": "btn_support",
-          "title": "Contact Support"
+          "title": "💬 Get help"
         }
       ]
     }
@@ -1475,7 +1475,7 @@ function buildFlow() {
         "Dashboard",
         "WhatsApp"
       ],
-      "handoffMessage": "👋 *Connecting you to our support team*\n\nOur team has been notified and will be with you shortly.\n\nFor fastest help, you can also call or message directly on *9328613239*.\n\n📸 If you have a product issue, sending a *short video or photo* helps us solve it faster."
+      "handoffMessage": "🙌 *You’re connected to our team*\n\nWe’ve flagged this chat for a human — someone will read your messages shortly.\n\n⚡ *Quick help:* call or WhatsApp *9328613239* anytime.\n\n📸 Sending a *short photo or video* of your setup speeds things up massively."
     }
   },
   {
@@ -1488,19 +1488,19 @@ function buildFlow() {
     "data": {
       "label": "Footer — loopback",
       "interactiveType": "button",
-      "text": "Was that helpful? What would you like to do next?",
+      "text": "✨ *Anything else we can do?*\n\nPick an option below — we’re here to help.",
       "buttonsList": [
         {
           "id": "f_menu",
-          "title": "Main menu"
+          "title": "🏠 Main menu"
         },
         {
           "id": "f_support",
-          "title": "Talk to team"
+          "title": "💬 Talk to team"
         },
         {
           "id": "f_start",
-          "title": "Start over"
+          "title": "🔄 Start over"
         }
       ]
     }
@@ -2226,11 +2226,6 @@ function buildFlow() {
     "id": "e_admin_handoff",
     "source": "n_admin_alert",
     "target": "n_human_handoff"
-  },
-  {
-    "id": "e_handoff_footer",
-    "source": "n_human_handoff",
-    "target": "n_footer"
   },
   {
     "id": "e_tr1",

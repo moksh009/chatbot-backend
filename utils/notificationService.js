@@ -1,6 +1,7 @@
 "use strict";
 
 const WhatsApp = require('./whatsapp');
+const { normalizePhone } = require('./helpers');
 const { sendEmail, buildAdminEscalationEmailHtml, isWorkspaceEmailReady } = require('./emailService');
 const log = require('./logger')('NotificationService');
 
@@ -71,7 +72,15 @@ const NotificationService = {
     }
 
     if ((channel === 'whatsapp' || channel === 'both') && adminWhatsapps.length > 0) {
+      const customerNorm = normalizePhone(customerPhone);
       await Promise.all(adminWhatsapps.map(async (number) => {
+        const adminNorm = normalizePhone(number);
+        if (customerNorm && adminNorm && adminNorm === customerNorm) {
+          log.warn(
+            `[sendAdminAlert] Skipping WhatsApp to ${number} — same number as customer; admin alert would appear in the customer's chat. Fix Admin Phone / Admin Alert WhatsApp in Settings.`
+          );
+          return;
+        }
         try {
           log.info(`Sending WhatsApp Admin Alert to ${number}`);
           const res = await WhatsApp.sendTemplate(

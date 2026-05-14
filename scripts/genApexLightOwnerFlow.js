@@ -1292,7 +1292,6 @@ const edges = [
   { id: 'e_other_menu', source: 'n_other_products', sourceHandle: 'other_menu', target: 'n_main_menu' },
 
   { id: 'e_admin_handoff', source: 'n_admin_alert', target: 'n_human_handoff' },
-  { id: 'e_handoff_footer', source: 'n_human_handoff', target: 'n_footer' },
 
   { id: 'e_tr1', source: 'n_tr_menu', sourceHandle: 't_sync', target: 'n_tt1' },
   { id: 'e_tr2', source: 'n_tr_menu', sourceHandle: 't_half', target: 'n_tt2' },
