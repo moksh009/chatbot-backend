@@ -74,6 +74,9 @@ function buildFeaturesUpdate(wizardData = {}) {
     out["wizardFeatures.cartNudgeMinutes1"] = clampNum(f.cartNudgeMinutes1 ?? t.msg1, 1, 1440, 15);
     out["wizardFeatures.cartNudgeHours2"]   = clampNum(f.cartNudgeHours2   ?? t.msg2, 1, 168, 2);
     out["wizardFeatures.cartNudgeHours3"]   = clampNum(f.cartNudgeHours3   ?? t.msg3, 1, 720, 24);
+    if (t.msg1_template !== undefined) out["wizardFeatures.cartNudgeTemplate1"] = String(t.msg1_template || "").trim();
+    if (t.msg2_template !== undefined) out["wizardFeatures.cartNudgeTemplate2"] = String(t.msg2_template || "").trim();
+    if (t.msg3_template !== undefined) out["wizardFeatures.cartNudgeTemplate3"] = String(t.msg3_template || "").trim();
   }
 
   // Loyalty & growth

@@ -337,6 +337,7 @@ app.get('/api/metrics/summary', HealthController.metricsSummary);
 app.use('/api/webhooks', require('./routes/intentWebhooks'));
 app.use('/api/qrcodes', require('./routes/qrcodes'));
 app.use('/api/catalog', require('./routes/catalog'));
+app.use('/api/meta/workspace', require('./routes/metaWorkspace'));
 // app.use('/api/payout', protect, require('./routes/payout')); // REMOVED: File doesn't exist
 app.use('/api/training', require('./routes/training'));
 // app.use('/api/ig-automation', protect, require('./routes/igAutomation')); // REMOVED: Redundant and points to missing igAutomation.js (use /api/instagram-automations instead)

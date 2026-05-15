@@ -110,6 +110,44 @@ function applySettingsSyncMirrors(updateFields, body = {}) {
     updateFields["wizardFeatures.cartNudgeMinutes1"] = clamp(t.msg1, 1, 1440, 15);
     updateFields["wizardFeatures.cartNudgeHours2"] = clamp(t.msg2, 1, 168, 2);
     updateFields["wizardFeatures.cartNudgeHours3"] = clamp(t.msg3, 1, 720, 24);
+    if (t.msg1_template !== undefined) {
+      updateFields["wizardFeatures.cartNudgeTemplate1"] = String(t.msg1_template || "").trim();
+    }
+    if (t.msg2_template !== undefined) {
+      updateFields["wizardFeatures.cartNudgeTemplate2"] = String(t.msg2_template || "").trim();
+    }
+    if (t.msg3_template !== undefined) {
+      updateFields["wizardFeatures.cartNudgeTemplate3"] = String(t.msg3_template || "").trim();
+    }
+  }
+
+  const policyBody = body.policies && typeof body.policies === "object" ? body.policies : body;
+  const policyFields = [
+    ["returnPolicy", "policies.returnPolicy", "knowledgeBase.returnPolicy"],
+    ["refundPolicy", "policies.refundPolicy", null],
+    ["shippingPolicy", "policies.shippingPolicy", "knowledgeBase.shippingPolicy"],
+    ["privacyUrl", "policies.privacyUrl", null],
+    ["termsUrl", "policies.termsUrl", null],
+  ];
+  for (const [key, policyPath, kbPath] of policyFields) {
+    if (policyBody[key] !== undefined) {
+      const val = String(policyBody[key] || "").trim();
+      updateFields[policyPath] = val;
+      if (kbPath) updateFields[kbPath] = val;
+    }
+  }
+  if (body.shippingTime !== undefined) {
+    const st = String(body.shippingTime || "").trim();
+    updateFields["platformVars.shippingTime"] = st;
+    if (!policyBody.shippingPolicy && st) {
+      updateFields["policies.shippingPolicy"] = st;
+    }
+  }
+  if (body.returnsPolicyUrl !== undefined) {
+    updateFields["platformVars.returnsPolicyUrl"] = String(body.returnsPolicyUrl || "").trim();
+  }
+  if (body.faqUrl !== undefined) {
+    updateFields["platformVars.faqUrl"] = String(body.faqUrl || "").trim();
   }
 
   if (body.geminiApiKey !== undefined && body.geminiApiKey !== "••••••••" && String(body.geminiApiKey).trim()) {
@@ -153,7 +191,24 @@ function flattenClientForSettingsUI(client = {}) {
       msg1: wf.cartNudgeMinutes1 ?? 15,
       msg2: wf.cartNudgeHours2 ?? 2,
       msg3: wf.cartNudgeHours3 ?? 24,
+      msg1_template: wf.cartNudgeTemplate1 || "",
+      msg2_template: wf.cartNudgeTemplate2 || "",
+      msg3_template: wf.cartNudgeTemplate3 || "",
     },
+    policies: {
+      returnPolicy: client.policies?.returnPolicy || client.knowledgeBase?.returnPolicy || "",
+      refundPolicy: client.policies?.refundPolicy || "",
+      shippingPolicy:
+        client.policies?.shippingPolicy ||
+        client.knowledgeBase?.shippingPolicy ||
+        pv.shippingTime ||
+        "",
+      privacyUrl: client.policies?.privacyUrl || "",
+      termsUrl: client.policies?.termsUrl || "",
+    },
+    shippingTime: pv.shippingTime || "",
+    returnsPolicyUrl: pv.returnsPolicyUrl || "",
+    faqUrl: pv.faqUrl || "",
     facebookCatalogId: client.facebookCatalogId || client.waCatalogId || "",
     waCatalogId: client.waCatalogId || client.facebookCatalogId || "",
     googleReviewUrl: pv.googleReviewUrl || client.googleReviewUrl || client.brand?.googleReviewUrl || "",

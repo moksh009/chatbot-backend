@@ -35,6 +35,21 @@ function run() {
   assert.equal(flat.botName, "Bot");
   assert.equal(flat.facebookCatalogId, "111");
 
+  const cartFields = {};
+  applySettingsSyncMirrors(cartFields, {
+    cartTiming: { msg1: 20, msg2: 3, msg3: 48, msg1_template: "cart_nudge_1" },
+  });
+  assert.equal(cartFields["wizardFeatures.cartNudgeMinutes1"], 20);
+  assert.equal(cartFields["wizardFeatures.cartNudgeTemplate1"], "cart_nudge_1");
+
+  const policyFields = {};
+  applySettingsSyncMirrors(policyFields, {
+    policies: { returnPolicy: "7-day returns", shippingPolicy: "3-5 days" },
+    shippingTime: "3-5 days",
+  });
+  assert.equal(policyFields["policies.returnPolicy"], "7-day returns");
+  assert.equal(policyFields["knowledgeBase.returnPolicy"], "7-day returns");
+
   console.log("settingsSyncMapper tests passed");
 }
 

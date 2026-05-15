@@ -117,6 +117,9 @@ const WizardFeaturesSchema = new mongoose.Schema({
   cartNudgeMinutes1:       { type: Number,  default: 15    },
   cartNudgeHours2:         { type: Number,  default: 2     },
   cartNudgeHours3:         { type: Number,  default: 24    },
+  cartNudgeTemplate1:      { type: String,  default: ""    },
+  cartNudgeTemplate2:      { type: String,  default: ""    },
+  cartNudgeTemplate3:      { type: String,  default: ""    },
 
   // Loyalty & growth
   enableLoyalty:           { type: Boolean, default: false },
