@@ -328,10 +328,12 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     ).trim();
     if (catalogId) {
       try {
-        await Client.updateOne(
-          { clientId },
-          { $set: { facebookCatalogId: catalogId, waCatalogId: catalogId, catalogEnabled: true } }
-        );
+        const catalogSet = { facebookCatalogId: catalogId, waCatalogId: catalogId, catalogEnabled: true };
+        const wizardCatalogToken = String(wizardData.metaCatalogAccessToken || "").trim();
+        if (wizardCatalogToken && wizardCatalogToken !== "••••••••") {
+          catalogSet.metaCatalogAccessToken = wizardCatalogToken;
+        }
+        await Client.updateOne({ clientId }, { $set: catalogSet });
         const { runMetaCatalogImport } = require("../utils/metaCatalogSync");
         const imp = await runMetaCatalogImport(clientId);
         log.info(`[Wizard] Meta catalog import: ${imp.synced} products, ${imp.collections} collections`);

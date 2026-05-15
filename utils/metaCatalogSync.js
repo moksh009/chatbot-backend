@@ -81,6 +81,29 @@ async function fetchCatalogIdFromPhone(phoneId, token) {
   return cid ? String(cid).trim() : null;
 }
 
+/** Catalogs linked to WABA — often works with whatsapp_business_management (no catalog_management). */
+async function fetchCatalogsFromWaba(wabaId, token) {
+  if (!wabaId || !token) return [];
+  try {
+    const data = await graphGet(`/${wabaId}/product_catalogs`, token, {
+      fields: "id,name,product_count",
+      limit: 50,
+    });
+    return (data.data || []).map((c) => ({
+      id: String(c.id),
+      name: c.name || "",
+      productCount: c.product_count || 0,
+    }));
+  } catch (_) {
+    return [];
+  }
+}
+
+/** Quick catalog metadata probe (validates ID + token pair). */
+async function probeCatalog(catalogId, token) {
+  return graphGet(`/${catalogId}`, token, { fields: "id,name,product_count" });
+}
+
 /** List catalogs the token can access via Business portfolio. */
 async function listOwnedCatalogs(token) {
   const catalogs = [];
@@ -173,6 +196,27 @@ async function fetchProductSetsWithMembers(catalogId, token) {
 /**
  * Pick catalog ID + token that can list products.
  */
+async function tryFetchProducts(catalogId, token, attempts, label) {
+  if (!catalogId) return null;
+  try {
+    await probeCatalog(catalogId, token);
+    const products = await fetchAllCatalogProducts(catalogId, token);
+    if (products.length > 0) {
+      return { catalogId, token, products, source: label };
+    }
+    attempts.push({ catalogId, label, products: 0 });
+  } catch (e) {
+    const data = e?.response?.data?.error;
+    attempts.push({
+      catalogId,
+      label,
+      error: data?.message || e.message,
+      code: data?.code,
+    });
+  }
+  return null;
+}
+
 async function resolveCatalogAccess(client) {
   const tokens = getMetaCatalogAccessTokens(client);
   if (!tokens.length) {
@@ -181,70 +225,59 @@ async function resolveCatalogAccess(client) {
 
   const configuredId = resolveCatalogId(client);
   const phoneId = getEffectiveWhatsAppPhoneNumberId(client);
+  const wabaId = String(client.wabaId || client.whatsapp?.wabaId || "").trim();
   const attempts = [];
 
-  for (const token of tokens) {
-    let catalogId = configuredId;
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    const tokenLabel = i === 0 ? "metaCatalogAccessToken" : i === 1 ? "metaAdsToken" : "whatsappToken";
 
+    let catalogId = configuredId;
     if (phoneId) {
       try {
         const fromPhone = await fetchCatalogIdFromPhone(phoneId, token);
-        if (fromPhone) {
-          catalogId = fromPhone;
-          attempts.push({ token: "ok", catalogId, source: "phone_commerce_settings" });
-        }
+        if (fromPhone) catalogId = fromPhone;
       } catch (e) {
-        attempts.push({ token: "phone_lookup_failed", error: e.message });
+        attempts.push({ tokenLabel, step: "phone_commerce_settings", error: e.message });
       }
     }
 
-    if (catalogId) {
-      try {
-        const products = await fetchAllCatalogProducts(catalogId, token);
-        if (products.length > 0) {
-          return { catalogId, token, products, tokenIndex: tokens.indexOf(token) };
-        }
-        attempts.push({ catalogId, token: "ok", products: 0 });
-      } catch (e) {
-        attempts.push({ catalogId, token: "products_failed", error: e.message });
-      }
-    }
-  }
+    let hit = await tryFetchProducts(catalogId, token, attempts, `${tokenLabel}:configured`);
+    if (hit) return hit;
 
-  // Discover catalogs via Business API (needs business_management / catalog_management)
-  for (const token of tokens) {
+    const wabaCatalogs = await fetchCatalogsFromWaba(wabaId, token);
+    for (const c of wabaCatalogs) {
+      hit = await tryFetchProducts(c.id, token, attempts, `${tokenLabel}:waba_catalog`);
+      if (hit) return { ...hit, discovered: wabaCatalogs };
+    }
+
     const owned = await listOwnedCatalogs(token);
-    if (!owned.length) continue;
-
-    const prefer =
-      owned.find((c) => c.id === configuredId) ||
-      owned.sort((a, b) => (b.productCount || 0) - (a.productCount || 0))[0];
-
-    try {
-      const products = await fetchAllCatalogProducts(prefer.id, token);
-      if (products.length > 0) {
-        return {
-          catalogId: prefer.id,
-          token,
-          products,
-          discovered: owned,
-          source: "owned_product_catalogs",
-        };
-      }
-    } catch (e) {
-      attempts.push({ catalogId: prefer.id, error: e.message });
+    const ordered = [
+      ...owned.filter((c) => c.id === configuredId),
+      ...owned.filter((c) => c.id !== configuredId).sort((a, b) => (b.productCount || 0) - (a.productCount || 0)),
+    ];
+    for (const c of ordered) {
+      hit = await tryFetchProducts(c.id, token, attempts, `${tokenLabel}:business_catalog`);
+      if (hit) return { ...hit, discovered: owned };
     }
   }
 
   const err = new Error(
-    "Could not read products from Meta catalog with any connected token. " +
-      "WhatsApp tokens alone usually cannot call the Catalog API — add a System User token with catalog_management."
+    "Could not read products from Meta catalog with any token saved on this account.\n\n" +
+      "Common fixes:\n" +
+      "1) Settings → Commerce → paste the System User token in **Meta catalog access token** (not WhatsApp token).\n" +
+      "2) When generating the token, select app **topedge ai** and enable **catalog_management** + **business_management**.\n" +
+      "3) Employee system users often cannot pick catalog_management — ask a Business **Admin** to generate the token or upgrade the system user role.\n" +
+      "4) Use the catalog ID from Commerce Manager URL (must match Apexlight_Products / Shopify catalog in your screenshot)."
   );
   err.attempts = attempts;
   err.accessibleCatalogs = [];
   for (const token of tokens) {
+    const wabaCats = await fetchCatalogsFromWaba(wabaId, token);
     const owned = await listOwnedCatalogs(token);
-    if (owned.length) err.accessibleCatalogs.push(...owned);
+    for (const c of [...wabaCats, ...owned]) {
+      if (!err.accessibleCatalogs.some((x) => x.id === c.id)) err.accessibleCatalogs.push(c);
+    }
   }
   throw err;
 }
@@ -263,6 +296,8 @@ async function diagnoseMetaCatalogAccess(clientId) {
     phoneNumberId: phoneId,
     tokenCount: tokens.length,
     hasMetaCatalogAccessToken: !!String(client.metaCatalogAccessToken || "").trim(),
+    metaCatalogTokenSaved: !!String(client.metaCatalogAccessToken || "").trim(),
+    tokenSourcesTried: ["metaCatalogAccessToken", "metaAdsToken", "whatsappToken"],
     hasMetaAdsToken: !!String(client.metaAdsToken || "").trim(),
     hasWhatsAppToken: !!getEffectiveWhatsAppAccessToken(client),
     phoneLinkedCatalogId: null,

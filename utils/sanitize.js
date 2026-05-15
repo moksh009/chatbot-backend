@@ -24,6 +24,8 @@ const SENSITIVE_FIELDS = [
   'instagramAppSecret',
   'instagramPendingToken',
   'metaAdsAccessToken',
+  'metaCatalogAccessToken',
+  'shopifyStorefrontToken',
   'secret',
   'apiKey',
   'password'

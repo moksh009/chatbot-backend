@@ -92,6 +92,7 @@ const WhatsApp = {
   sendMultiProduct: (...args) => WhatsAppUtils.sendMultiProduct(...args),
   sendProductList: (...args) => WhatsAppUtils.sendProductList(...args),
   sendSingleProduct: (...args) => WhatsAppUtils.sendSingleProduct(...args),
+  sendMpmMarketingTemplate: (...args) => WhatsAppUtils.sendMpmMarketingTemplate(...args),
   sendAudio: (...args) => WhatsAppUtils.sendAudio ? WhatsAppUtils.sendAudio(...args) : Promise.resolve(),
 };
 

@@ -955,7 +955,7 @@ router.patch('/my-settings', protect, async (req, res) => {
       flowDraft,
       wabaId, phoneNumberId, whatsappToken, verifyToken,
       shopDomain, shopifyClientId, shopifyClientSecret, shopifyAccessToken, shopifyWebhookSecret, shopifyConnectionStatus,
-      facebookCatalogId, shopifyStorefrontToken,
+      facebookCatalogId, metaCatalogAccessToken, shopifyStorefrontToken,
       storeType,
       instagramConnected, instagramPageId, instagramAccessToken, instagramAppSecret,
       googleReviewUrl, adminPhone, adminEmail,
@@ -1240,7 +1240,6 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (facebookCatalogId !== undefined) {
       updateFields.facebookCatalogId = String(facebookCatalogId || '').trim();
     }
-    const { metaCatalogAccessToken } = req.body;
     if (
       metaCatalogAccessToken !== undefined &&
       metaCatalogAccessToken !== '••••••••' &&

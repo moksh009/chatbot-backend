@@ -114,6 +114,7 @@ const loadClientConfig = async (req, res, next) => {
       shopifyAccessToken: client.shopifyAccessToken || '',
       shopifyStorefrontToken: client.shopifyStorefrontToken || '',
       facebookCatalogId: client.facebookCatalogId || '',
+      hasMetaCatalogAccessToken: !!String(client.metaCatalogAccessToken || '').trim(),
       waCatalogId: client.waCatalogId || '',
       metaCatalogId: client.metaCatalogId || '',
       commerceBotSettings: client.commerceBotSettings || {},
