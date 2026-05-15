@@ -924,8 +924,16 @@ router.get('/my-settings', protect, sanitizeMiddleware, async (req, res) => {
       });
     }
 
-    // 3. Return payload (sanitized via middleware)
-    res.json(client);
+    const { flattenClientForSettingsUI } = require('../utils/settingsSyncMapper');
+    const flat = flattenClientForSettingsUI(
+      client.toObject ? client.toObject() : client
+    );
+
+    // 3. Return payload (sanitized via middleware) + UI-friendly mirrors
+    res.json({
+      ...(client.toObject ? client.toObject() : client),
+      ...flat,
+    });
 
   } catch (err) {
     log.error('Critical Settings Failure (500)', { 
@@ -974,8 +982,13 @@ router.patch('/my-settings', protect, async (req, res) => {
       ai,
       loyaltyConfig,
       businessName,
+      botName,
+      supportPhone,
+      tone,
+      botLanguage,
       businessLogo,
       authorizedSignature,
+      commerceFlowPack,
       warrantyEmailEnabled,
       warrantyWhatsappEnabled,
       warrantyDuration,
@@ -1292,7 +1305,28 @@ router.patch('/my-settings', protect, async (req, res) => {
       updateFields.businessName = businessName;
       updateFields['brand.businessName'] = businessName;
     }
+    if (botName !== undefined) {
+      updateFields['platformVars.agentName'] = String(botName || '').trim();
+      updateFields['ai.persona.name'] = String(botName || '').trim();
+    }
+    if (supportPhone !== undefined) {
+      updateFields['platformVars.supportWhatsapp'] = String(supportPhone || '').trim();
+      updateFields['platformVars.supportPhone'] = String(supportPhone || '').trim();
+    }
+    if (tone !== undefined) {
+      const { normalizePersonaTone } = require('../utils/personaEngine');
+      const nt = normalizePersonaTone(tone) || String(tone || '').trim();
+      if (nt) {
+        updateFields['platformVars.defaultTone'] = nt;
+        updateFields['ai.persona.tone'] = nt;
+      }
+    }
+    if (botLanguage !== undefined) {
+      updateFields['platformVars.defaultLanguage'] = String(botLanguage || '').trim();
+      updateFields['ai.persona.language'] = String(botLanguage || '').trim();
+    }
     if (businessLogo !== undefined) updateFields.businessLogo = businessLogo;
+    if (typeof commerceFlowPack === 'boolean') updateFields.commerceFlowPack = commerceFlowPack;
     if (authorizedSignature !== undefined) updateFields.authorizedSignature = authorizedSignature;
     if (warrantyEmailEnabled !== undefined) {
       updateFields['brand.warrantyEmailEnabled'] = !!warrantyEmailEnabled;
@@ -1370,6 +1404,9 @@ router.patch('/my-settings', protect, async (req, res) => {
       updateFields['ai.persona'] = ai.persona;
     }
 
+    const { applySettingsSyncMirrors } = require('../utils/settingsSyncMapper');
+    applySettingsSyncMirrors(updateFields, req.body);
+
     const updated = await Client.findOneAndUpdate(
       { clientId: targetClientId },
       { $set: updateFields },
@@ -1414,12 +1451,39 @@ router.patch('/my-settings', protect, async (req, res) => {
 
     log.success(`${req.user.role} updated settings for: ${targetClientId}`);
     
-    // PHASE 3: Trigger AI Node Sync asynchronously
-    if (ai && ai.persona) {
-      syncPersonaToFlows(targetClientId, ai.persona).catch(err => {
-        console.error('[PersonaSync] Async Exception:', err);
-      });
+    const personaNeedsSync =
+      ai?.persona ||
+      botName !== undefined ||
+      tone !== undefined ||
+      botLanguage !== undefined;
+
+    if (personaNeedsSync) {
+      try {
+        const { syncPersonaAcrossSystem } = require('../utils/personaEngine');
+        const personaPatch = {
+          ...(ai?.persona || {}),
+          ...(botName !== undefined ? { name: String(botName || '').trim() } : {}),
+          ...(tone !== undefined
+            ? { tone: require('../utils/personaEngine').normalizePersonaTone(tone) || tone }
+            : {}),
+          ...(botLanguage !== undefined ? { language: String(botLanguage || '').trim() } : {}),
+        };
+        await syncPersonaAcrossSystem(targetClientId, personaPatch, {
+          systemPrompt: updated.ai?.systemPrompt || updated.systemPrompt,
+        });
+      } catch (syncErr) {
+        log.warn(`[Settings] Persona sync skipped: ${syncErr.message}`);
+      }
     }
+
+    try {
+      const { emitToClient } = require('../utils/socket');
+      emitToClient(targetClientId, 'client:config-updated', {
+        clientId: targetClientId,
+        source: 'settings',
+        at: new Date().toISOString(),
+      });
+    } catch (_) {}
 
     res.json({ 
       success: true, 

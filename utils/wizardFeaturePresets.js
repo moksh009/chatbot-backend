@@ -93,6 +93,41 @@ const PRESETS = {
     enableWarranty: false,
     enableLoyalty: false,
   },
+  "salon/spa": {
+    enableCatalog: false,
+    enableOrderTracking: false,
+    enableFAQ: true,
+    enableSupportEscalation: true,
+    enableAIFallback: true,
+    enableInstallSupport: true,
+    enableBusinessHoursGate: true,
+  },
+  "clinic/doctor": {
+    enableCatalog: false,
+    enableFAQ: true,
+    enableSupportEscalation: true,
+    enableAIFallback: true,
+    enableBusinessHoursGate: true,
+  },
+  "real estate": {
+    enableCatalog: false,
+    enableFAQ: true,
+    enableSupportEscalation: true,
+    enableAIFallback: true,
+  },
+  education: {
+    enableCatalog: false,
+    enableFAQ: true,
+    enableSupportEscalation: true,
+    enableAIFallback: true,
+  },
+  restaurant: {
+    enableCatalog: false,
+    enableOrderTracking: true,
+    enableFAQ: true,
+    enableSupportEscalation: true,
+    enableAIFallback: true,
+  },
 };
 
 function normalizeBusinessType(raw) {

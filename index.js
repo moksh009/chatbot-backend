@@ -21,6 +21,12 @@ if (dotenvResult.error && dotenvResult.error.code !== 'ENOENT') {
 }
 // If ENOENT, it just means no file, which is fine if envs are injected otherwise.
 
+if (process.env.NODE_ENV === 'production' && !String(process.env.PUBLIC_BASE_URL || '').trim()) {
+  log.warn(
+    '[Config] PUBLIC_BASE_URL is not set — wizard logos, /uploads media, and WhatsApp header images may not resolve. See .env.example.'
+  );
+}
+
 
 const cors = require('cors');
 const compression = require('compression'); // Performance: GZIP compression — reduces payload sizes by 70-80%

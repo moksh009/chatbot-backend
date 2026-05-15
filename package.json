@@ -11,7 +11,9 @@
     "smoke:template-eligibility": "node scripts/templateEligibilitySmokePass.js",
     "smoke:flow-preflight-guards": "node scripts/flowPreflightNodeGuardsSmoke.js",
     "dry-run:review-pipeline": "node scripts/reviewPipelineDryRun.js",
-    "qa:ci": "npm run integration-probe && npm run flow-regression && npm run smoke:flow-preflight-guards",
+    "test:catalog-menu": "node tests/catalogMenuBuilder.test.js",
+    "test:settings-sync": "node tests/settingsSyncMapper.test.js",
+    "qa:ci": "npm run integration-probe && npm run flow-regression && npm run smoke:flow-preflight-guards && npm run test:catalog-menu && npm run test:settings-sync",
     "load-smoke:k6": "k6 run scripts/load/k6-smoke.js"
   },
   "dependencies": {
