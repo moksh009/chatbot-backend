@@ -103,6 +103,65 @@ async function enrichMpmNodeDataFromDb(clientId, node) {
   return applyMpmFieldsToNodeData(node?.data || {}, patch, resolveMpmTemplateNameForClient(client));
 }
 
+/**
+ * Ensure every mpm_template node has productIds (slot match → keywords → broad title match).
+ */
+function fillMissingMpmNodePatches(nodes, products, templateName = "", existingPatches = {}) {
+  const patches = { ...existingPatches };
+  const mpmNodes = (nodes || []).filter(
+    (n) => n.type === "catalog" && n.data?.catalogType === "mpm_template"
+  );
+
+  for (const node of mpmNodes) {
+    const cur = patches[node.id];
+    if (cur?.productIds && String(cur.productIds).trim()) continue;
+
+    const single = buildPatchesForNodes([node], products, templateName);
+    if (single[node.id]?.productIds) {
+      patches[node.id] = { ...single[node.id], ...cur };
+      continue;
+    }
+
+    const label = String(
+      node.data?.sectionTitle || node.data?.header || node.data?.label || ""
+    ).toLowerCase();
+    const terms = [
+      ...(APEX_NODE_KEYWORDS[node.id] || []),
+      ...label.split(/[\s,—–\-|/]+/).filter((w) => w.length > 2),
+    ];
+    let matched = products.filter((p) => matchesKeywords(p, terms));
+    if (!matched.length && label) {
+      matched = products.filter((p) => {
+        const hay = [
+          p.title,
+          p.variantTitle,
+          p.productType,
+          ...(p.collectionTitles || []),
+          ...(p.tags || []),
+        ]
+          .join(" ")
+          .toLowerCase();
+        return hay.includes(label.slice(0, Math.min(label.length, 12)));
+      });
+    }
+    matched.sort((a, b) => (a.price || 0) - (b.price || 0));
+    matched = matched.slice(0, MAX_PER_SECTION);
+    if (!matched.length) continue;
+
+    const ids = matched.map((p) => String(p.shopifyVariantId));
+    patches[node.id] = {
+      productIds: ids.join(","),
+      thumbnailProductRetailerId: ids[0],
+      count: ids.length,
+      sectionTitle: node.data?.sectionTitle || node.data?.header || "Products",
+      header: node.data?.header || node.data?.sectionTitle,
+      metaTemplateName: templateName || node.data?.metaTemplateName || "",
+    };
+  }
+
+  return patches;
+}
+
 function buildPatchesForNodes(mpmNodes, products, templateName = "") {
   const patches = {};
 
@@ -173,7 +232,8 @@ async function autoPatchMpmFlowNodes(clientId, opts = {}) {
     return { patched: 0, flowId: flowDoc.flowId, message: "No mpm_template nodes" };
   }
 
-  const patches = buildPatchesForNodes(mpmNodes, products, mpmTemplateName);
+  let patches = buildPatchesForNodes(mpmNodes, products, mpmTemplateName);
+  patches = fillMissingMpmNodePatches(flowDoc.nodes, products, mpmTemplateName, patches);
   if (!Object.keys(patches).length) {
     return { patched: 0, flowId: flowDoc.flowId, message: "No keyword matches", mpmTemplateName };
   }
@@ -431,12 +491,14 @@ async function syncExploreMenuFromCollections(clientId, opts = {}) {
   const clientDoc = await Client.findOne({ clientId }).select("syncedMetaTemplates messageTemplates").lean();
   const mpmTemplateName = resolveMpmTemplateNameForClient(clientDoc);
 
-  const mpmNodePatches = buildPatchesForNodes(
-    nodes.filter((n) => n.type === "catalog" && n.data?.catalogType === "mpm_template"),
-    products,
-    mpmTemplateName
-  );
-  mpmPatches = { ...mpmNodePatches, ...mpmPatches };
+  mpmPatches = fillMissingMpmNodePatches(nodes, products, mpmTemplateName, {
+    ...buildPatchesForNodes(
+      nodes.filter((n) => n.type === "catalog" && n.data?.catalogType === "mpm_template"),
+      products,
+      mpmTemplateName
+    ),
+    ...mpmPatches,
+  });
 
   const patchNodes = (nodeList) =>
     nodeList.map((n) => {
@@ -498,12 +560,24 @@ async function syncExploreMenuFromCollections(clientId, opts = {}) {
     );
   }
 
+  const mpmNodeIds = nodes
+    .filter((n) => n.type === "catalog" && n.data?.catalogType === "mpm_template")
+    .map((n) => n.id);
+  const patchedWithIds = mpmNodeIds.filter((id) => {
+    const n = newNodes.find((x) => x.id === id);
+    return String(n?.data?.productIds || "").trim().length > 0;
+  });
+
   return {
     ok: true,
     flowId: flowDoc.flowId,
     menuUpdated: !!menuSections,
     mpmPatched: Object.keys(mpmPatches).length,
+    mpmNodesTotal: mpmNodeIds.length,
+    mpmNodesWithIds: patchedWithIds.length,
+    mpmNodeIdsMissing: mpmNodeIds.filter((id) => !patchedWithIds.includes(id)),
     collectionsInDb: collections.length,
+    productsInDb: products.length,
   };
 }
 
@@ -511,6 +585,7 @@ module.exports = {
   autoPatchMpmFlowNodes,
   syncExploreMenuFromCollections,
   buildPatchesForNodes,
+  fillMissingMpmNodePatches,
   enrichMpmNodeDataFromDb,
   resolveMpmTemplateNameForClient,
   applyMpmFieldsToNodeData,

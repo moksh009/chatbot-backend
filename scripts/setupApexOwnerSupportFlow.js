@@ -141,6 +141,14 @@ async function run() {
   clearTriggerCache(CLIENT_ID);
   await clearClientCache(CLIENT_ID);
 
+  let mpmPatchSummary = null;
+  try {
+    const { syncApexCatalogFlowFromMeta } = require('../utils/apexCatalogFlowSync');
+    mpmPatchSummary = await syncApexCatalogFlowFromMeta(CLIENT_ID, { flowId: FLOW_ID });
+  } catch (patchErr) {
+    console.warn('[setupApexOwnerSupportFlow] MPM auto-patch skipped:', patchErr.message);
+  }
+
   const hasWelcomeLogo = nodes.some((n) => n.id === 'n_welcome_logo');
   const eT0 = edges.find((e) => e.id === 'e_t0');
   const mainMenu = nodes.find((n) => n.id === 'n_main_menu');
@@ -163,6 +171,7 @@ async function run() {
         flowDbId: String(flowDoc._id),
         nodeCount: nodes.length,
         edgeCount: edges.length,
+        mpmPatch: mpmPatchSummary,
         verification,
         note: 'MongoDB nodes + publishedNodes updated from repo buildFlow(). Redeploy API if server code changed. Use the same MONGODB_URI as production.',
       },

@@ -1470,7 +1470,8 @@ function buildFlow() {
       "topic": "Customer needs support — Apex Light",
       "alertChannel": "both",
       "priority": "high",
-      "triggerSource": "WhatsApp support request"
+      "triggerSource": "WhatsApp support request",
+      "useClientAdminSettings": true
     }
   },
   {

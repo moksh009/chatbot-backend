@@ -100,10 +100,22 @@ router.post("/:clientId/link", verifyToken, async (req, res) => {
     const clientId = req.params.clientId;
     setImmediate(() => {
       runMetaCatalogImport(clientId)
-        .then((result) => autoPatchMpmFlowNodes(clientId).then((patch) => ({ result, patch })))
+        .then(async (result) => {
+          let patch = { mpmPatched: 0 };
+          try {
+            const { syncApexCatalogFlowFromMeta } = require("../utils/apexCatalogFlowSync");
+            const apexSync = await syncApexCatalogFlowFromMeta(clientId);
+            if (apexSync.ok) patch = apexSync;
+            else patch = await autoPatchMpmFlowNodes(clientId);
+          } catch (syncErr) {
+            patch = await autoPatchMpmFlowNodes(clientId);
+            log.warn(`[Catalog] Apex MPM patch after link: ${syncErr.message}`);
+          }
+          return { result, patch };
+        })
         .then(({ result, patch }) => {
           log.info(
-            `[Catalog] Auto-import after link: ${result.synced} products, ${patch.patched} flow nodes patched`
+            `[Catalog] Auto-import after link: ${result.synced} products, ${patch.mpmPatched || patch.patched || 0} MPM nodes patched`
           );
         })
         .catch((err) => log.error(`[Catalog] Auto-import after link failed: ${err.message}`));
@@ -114,6 +126,51 @@ router.post("/:clientId/link", verifyToken, async (req, res) => {
       message: "Catalog linked. Importing products from Meta Commerce in the background…",
       catalogId: id,
       importStarted: true,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── POST /api/catalog/:clientId/patch-flow-mpm — fill MPM productIds on flow ─
+router.post("/:clientId/patch-flow-mpm", verifyToken, async (req, res) => {
+  const clientId = req.params.clientId;
+  try {
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ success: false, message: "Client not found" });
+
+    const productCount = await ShopifyProduct.countDocuments({ clientId });
+    if (!productCount) {
+      const catalogId = resolveCatalogId(client);
+      if (!catalogId) {
+        return res.status(400).json({
+          success: false,
+          message: "No products in cache. Link a Meta catalog ID first, then sync.",
+        });
+      }
+      await runMetaCatalogImport(clientId);
+    }
+
+    let result = { ok: false };
+    try {
+      const { syncApexCatalogFlowFromMeta } = require("../utils/apexCatalogFlowSync");
+      result = await syncApexCatalogFlowFromMeta(clientId, { flowId: req.body?.flowId });
+    } catch (apexErr) {
+      log.warn(`[Catalog] patch-flow-mpm apex sync: ${apexErr.message}`);
+    }
+    if (!result.ok) {
+      const patch = await autoPatchMpmFlowNodes(clientId, { flowId: req.body?.flowId });
+      result = { ok: true, ...patch, mpmPatched: patch.patched };
+    }
+
+    res.json({
+      success: true,
+      flowId: result.flowId,
+      mpmPatched: result.mpmPatched || 0,
+      mpmNodesTotal: result.mpmNodesTotal,
+      mpmNodesWithIds: result.mpmNodesWithIds,
+      mpmNodeIdsMissing: result.mpmNodeIdsMissing || [],
+      menuUpdated: !!result.menuUpdated,
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
