@@ -503,6 +503,12 @@ const ClientSchema = new mongoose.Schema({
     // Step 5: Generated flow ref
     generatedFlowId: { type: String, default: "" },
     generatedFlowName: { type: String, default: "" },
+    /** Commerce Form → Flow wizard: step-1 snapshot (brand, support, industry) */
+    step1: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+    /** Nested feature toggles from Commerce wizard (browseProducts, orderTracking, …) */
+    features: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+    /** Admin notification preferences from Commerce wizard */
+    adminAlerts: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
     // Analytics meta
     stepTimings: { type: mongoose.Schema.Types.Mixed, default: {} } // { "0": secondsSpent, "1": secondsSpent, ... }
   },

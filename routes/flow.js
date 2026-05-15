@@ -68,6 +68,12 @@ router.post('/generate-from-wizard', protect, async (req, res) => {
       if (body.aiKnowledgeBaseText) {
         $set['ai.persona.knowledgeBase'] = String(body.aiKnowledgeBaseText).slice(0, 12000);
       }
+      if (body.facebookCatalogId != null && String(body.facebookCatalogId).trim()) {
+        $set.facebookCatalogId = String(body.facebookCatalogId).trim();
+      }
+      if (body.adminAlerts && typeof body.adminAlerts === 'object') {
+        $set['onboardingData.adminAlerts'] = body.adminAlerts;
+      }
       if (brandName || supportPhone || supportEmail || industry || websiteUrl || Object.keys(step1).length) {
         $set['onboardingData.step1'] = {
           ...step1,
