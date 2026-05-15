@@ -9,6 +9,7 @@ const FLOW_NAME = "Apex Light — WhatsApp support & commerce";
 const FLOW_DESCRIPTION = "Keyword + first_message welcome (3-button hub), Meta MPM marketing template per explore category (Commerce Content IDs) + text/link fallback without catalog, install list + FAQ packs, silent order lookup, HDMI hubs, service list, support FAQ gate, admin alert + live handoff, footer loopbacks.";
 
 const apexLightOwnerFlowInstallPack = require("./apexLightOwnerFlowInstallPack");
+const { injectApexCatalogGraph } = require("./apexCatalogSlots");
 
 const LOGO = "https://apexlight.in/cdn/shop/files/07708086-ccae-4d21-93e2-fe0ed52b33a2.jpg?v=1714210021";
 const HDMI21_WIRING = "https://apexlight.in/cdn/shop/files/hdmi21_wiring_diagram.jpg";
@@ -301,42 +302,27 @@ function buildFlow() {
     "data": {
       "label": "Explore — categories",
       "interactiveType": "list",
-      "buttonText": "Select category",
-      "text": "✨ *Apex Light Product Catalogue*\n\nChoose a category — we’ll send a WhatsApp *View items* product carousel (images & prices from your Meta catalog). If catalog isn’t linked yet, you’ll get text links instead.",
+      "buttonText": "Explore products",
+      "text": "✨ *Explore Apex Light*\n\nPick a category — *Best Sellers* and top collections first, then more ranges. Each opens a WhatsApp carousel (tap *View items* on the next message).",
       "sections": [
         {
-          "title": "Product categories",
+          "title": "⭐ Top picks",
           "rows": [
-            {
-              "id": "cat_tv",
-              "title": "TV Backlights",
-              "description": "HDMI sync for any TV"
-            },
-            {
-              "id": "cat_monitor",
-              "title": "Monitor Sync",
-              "description": "PC & monitor lighting"
-            },
-            {
-              "id": "cat_govee",
-              "title": "Govee Collection",
-              "description": "Premium smart lights"
-            },
-            {
-              "id": "cat_floor",
-              "title": "Floor Lamps",
-              "description": "RGBIC & uplighter"
-            },
-            {
-              "id": "cat_gaming",
-              "title": "Gaming Lights",
-              "description": "Bars, hexagons & more"
-            },
-            {
-              "id": "cat_strip",
-              "title": "LED Strip Lights",
-              "description": "COB, neon, edge"
-            }
+            { "id": "cat_bestseller", "title": "Best Sellers", "description": "🔥 Top picks" },
+            { "id": "cat_tv", "title": "TV Backlights", "description": "HDMI sync for TV" },
+            { "id": "cat_gaming", "title": "Gaming Lights", "description": "Setup lighting" },
+            { "id": "cat_govee", "title": "Govee Collection", "description": "Authorized Govee" },
+            { "id": "cat_monitor", "title": "Monitor Sync", "description": "PC & desk" }
+          ]
+        },
+        {
+          "title": "🛍️ More to explore",
+          "rows": [
+            { "id": "cat_floor", "title": "Floor Lamps", "description": "Floor & table" },
+            { "id": "cat_strip", "title": "LED Strips", "description": "COB, neon, RGB" },
+            { "id": "cat_wall", "title": "Wall & Panels", "description": "Hexagon, lines" },
+            { "id": "cat_hdmi", "title": "HDMI & Kits", "description": "Sync accessories" },
+            { "id": "cat_smart", "title": "Smart Home", "description": "Docks & more" }
           ]
         }
       ]
@@ -2452,7 +2438,14 @@ function buildFlow() {
     ),
     ...apexLightOwnerFlowInstallPack.edges,
   ];
-  return { nodes, edges: mergedEdges, FLOW_ID, FLOW_NAME, FLOW_DESCRIPTION };
+  const injected = injectApexCatalogGraph(nodes, mergedEdges);
+  return {
+    nodes: injected.nodes,
+    edges: injected.edges,
+    FLOW_ID,
+    FLOW_NAME,
+    FLOW_DESCRIPTION,
+  };
 }
 
 module.exports = {

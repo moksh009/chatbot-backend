@@ -13,12 +13,16 @@ const STOP_WORDS = new Set([
 
 /** Apex seed flow — optional explicit keywords per node (overrides auto-derive) */
 const APEX_NODE_KEYWORDS = {
+  n_cat_bestseller_pl: ["best seller", "bestseller", "top", "popular", "featured"],
   n_cat_tv_pl: ["tv", "television", "hdmi", "backlight", "sync tv"],
   n_cat_monitor_pl: ["monitor", "screen sync"],
   n_cat_govee_pl: ["govee"],
   n_cat_floor_pl: ["floor", "table lamp", "uplighter", "standing", "lamp"],
   n_cat_gaming_pl: ["gaming", "game", "bar light", "triangle", "hexagon", "wall light", "wall line"],
   n_cat_strip_pl: ["strip", "neon", "rope light", "cob", "edge light"],
+  n_cat_wall_pl: ["wall", "panel", "hexagon", "triangle", "line"],
+  n_cat_hdmi_pl: ["hdmi", "sync box", "accessories"],
+  n_cat_smart_pl: ["smart", "stream", "dock"],
 };
 
 function deriveKeywordsFromNode(node) {
