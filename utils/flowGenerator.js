@@ -1579,7 +1579,8 @@ function buildOrderConfirmAndCod(ctx, IDS, content) {
     { id: `e_${IDS.conf_msg}_mm`, source: IDS.conf_msg, target: IDS.main_menu }
   ];
 
-  if (F.enableCodToPrepaid) {
+  // COD → prepaid nudge is "coming soon" in the wizard — keep branch off until payment rails ship.
+  if (F.enableCodToPrepaid && !F.codPrepaidComingSoon) {
     nodes.push(
       { id: IDS.cod_check, type: "logic", position: autoPos(2, 0),
         data: { label: "Is COD?", variable: "payment_method", operator: "contains", value: "cod", heatmapCount: 0 } },

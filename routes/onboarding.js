@@ -7,6 +7,73 @@ const { protect } = require('../middleware/auth');
 const { mapFeatureToggle } = require('../utils/wizardMapper');
 const { syncPersonaAcrossSystem } = require('../utils/personaEngine');
 
+/** v2 (8 steps) → v3 (7 steps): features before products; cart_timing merged into features. */
+const V2_TO_V3_INDEX = { 0: 0, 1: 1, 2: 4, 3: 3, 4: 5, 5: 2, 6: 2, 7: 6 };
+
+function remapStepIndexToV3(idx) {
+  if (typeof idx !== 'number' || idx < 0) return 0;
+  if (idx > 7) return 6;
+  return V2_TO_V3_INDEX[idx] ?? Math.min(6, idx);
+}
+
+function mergeCartTimingIntoFeatures(sd) {
+  if (!sd?.cart_timing || typeof sd.cart_timing !== 'object') return false;
+  if (!sd.features || typeof sd.features !== 'object') sd.features = {};
+  const legacy = sd.cart_timing;
+  if (legacy.cartTiming) {
+    sd.features.cartTiming = { ...(sd.features.cartTiming || {}), ...legacy.cartTiming };
+  }
+  if (legacy.features && typeof legacy.features === 'object') {
+    sd.features.features = { ...(sd.features.features || {}), ...legacy.features };
+  }
+  return true;
+}
+
+function migrateWizardSchema(wizard) {
+  const sd = wizard.stepData || {};
+  let touched = false;
+
+  if (wizard.wizardSchemaVersion == null || wizard.wizardSchemaVersion < 2) {
+    if (typeof wizard.currentStep === 'number' && wizard.currentStep >= 2) {
+      wizard.currentStep = Math.min(7, wizard.currentStep + 1);
+    }
+    if (Array.isArray(wizard.completedSteps)) {
+      wizard.completedSteps = [...new Set(
+        wizard.completedSteps
+          .filter((s) => typeof s === 'number' && s >= 0 && s <= 6)
+          .map((s) => (s >= 2 ? Math.min(7, s + 1) : s))
+      )];
+    }
+    wizard.wizardSchemaVersion = 2;
+    touched = true;
+  }
+
+  if (wizard.wizardSchemaVersion < 3) {
+    if (mergeCartTimingIntoFeatures(sd)) touched = true;
+    if (typeof wizard.currentStep === 'number') {
+      wizard.currentStep = remapStepIndexToV3(wizard.currentStep);
+    }
+    if (Array.isArray(wizard.completedSteps)) {
+      wizard.completedSteps = [...new Set(
+        wizard.completedSteps
+          .filter((s) => typeof s === 'number' && s >= 0)
+          .map((s) => remapStepIndexToV3(s))
+          .filter((s) => s >= 0 && s <= 6)
+      )];
+    }
+    wizard.wizardSchemaVersion = 3;
+    touched = true;
+  }
+
+  if (touched) {
+    wizard.stepData = sd;
+    wizard.markModified('stepData');
+    wizard.markModified('currentStep');
+    wizard.markModified('completedSteps');
+    wizard.markModified('wizardSchemaVersion');
+  }
+}
+
 /** One-time shape repair for wizard docs saved before step-order fix. */
 function repairLegacyWizardBuckets(wizard) {
   const sd = wizard.stepData || {};
@@ -47,37 +114,20 @@ router.get('/:clientId', protect, async (req, res) => {
     }
 
     repairLegacyWizardBuckets(wizardDoc);
-
-    // One-time migration: v1 had 7 steps; v2 inserts `escalation` at index 2 — shift indices ≥2.
-    if (wizardDoc.wizardSchemaVersion == null || wizardDoc.wizardSchemaVersion < 2) {
-      if (typeof wizardDoc.currentStep === 'number' && wizardDoc.currentStep >= 2) {
-        wizardDoc.currentStep = Math.min(7, wizardDoc.currentStep + 1);
-      }
-      if (Array.isArray(wizardDoc.completedSteps)) {
-        wizardDoc.completedSteps = [...new Set(
-          wizardDoc.completedSteps
-            .filter((s) => typeof s === 'number' && s >= 0 && s <= 6)
-            .map((s) => (s >= 2 ? Math.min(7, s + 1) : s))
-        )];
-      }
-      wizardDoc.wizardSchemaVersion = 2;
-      wizardDoc.markModified('currentStep');
-      wizardDoc.markModified('completedSteps');
-      wizardDoc.markModified('wizardSchemaVersion');
-    }
+    migrateWizardSchema(wizardDoc);
 
     if (wizardDoc.isModified && wizardDoc.isModified()) {
       await wizardDoc.save();
     }
 
     let wizard = wizardDoc.toObject ? wizardDoc.toObject() : wizardDoc;
-    if (typeof wizard.currentStep === 'number' && wizard.currentStep > 7) {
-      wizard = { ...wizard, currentStep: 7 };
+    if (typeof wizard.currentStep === 'number' && wizard.currentStep > 6) {
+      wizard = { ...wizard, currentStep: 6 };
     }
     if (Array.isArray(wizard.completedSteps)) {
       wizard = {
         ...wizard,
-        completedSteps: [...new Set(wizard.completedSteps.filter((s) => s >= 0 && s <= 7))],
+        completedSteps: [...new Set(wizard.completedSteps.filter((s) => s >= 0 && s <= 6))],
       };
     }
 
@@ -100,7 +150,7 @@ router.patch('/step/:stepNumber', protect, async (req, res) => {
     }
 
     const stepNum = parseInt(stepNumber, 10);
-    if (isNaN(stepNum) || stepNum < 0 || stepNum > 7) {
+    if (isNaN(stepNum) || stepNum < 0 || stepNum > 6) {
       return res.status(400).json({ success: false, error: 'Invalid step number' });
     }
 
@@ -113,6 +163,7 @@ router.patch('/step/:stepNumber', protect, async (req, res) => {
     }
 
     repairLegacyWizardBuckets(wizard);
+    migrateWizardSchema(wizard);
 
     const prevStepBlob =
       wizard.stepData &&
@@ -168,6 +219,12 @@ router.patch('/step/:stepNumber', protect, async (req, res) => {
 
     // intelligence (tone / language / keys / prompt live on shared flat `data`)
     if (stepId === 'ai' && stepData) {
+      if (stepData.faqUrl && String(stepData.faqUrl).trim()) {
+        pvUpdate.faqUrl = String(stepData.faqUrl).trim();
+      }
+      if (stepData.aiKnowledgeBase && String(stepData.aiKnowledgeBase).trim()) {
+        pvUpdate['ai.persona.knowledgeBase'] = String(stepData.aiKnowledgeBase).trim().slice(0, 5000);
+      }
       const nextName = stepData.botName || stepData.activePersona;
       const prevName = prevStepBlob.botName || prevStepBlob.activePersona;
       if (nextName !== undefined && String(nextName ?? '') !== String(prevName ?? '')) {
@@ -202,11 +259,17 @@ router.patch('/step/:stepNumber', protect, async (req, res) => {
     if (stepData?.closeTime)             pvUpdate['config.businessHours.closeTime'] = stepData.closeTime;
     if (stepData?.workingDays?.length)  pvUpdate['config.businessHours.workingDays'] = stepData.workingDays;
 
-    if (stepId === 'cart_timing' && stepData?.cartTiming) {
-      const t = stepData.cartTiming;
+    const syncCartTimingToFeatures = (t) => {
+      if (!t) return;
       pvUpdate['wizardFeatures.cartNudgeMinutes1'] = Number(t.msg1 ?? 15) || 15;
       pvUpdate['wizardFeatures.cartNudgeHours2'] = Number(t.msg2 ?? 2) || 2;
       pvUpdate['wizardFeatures.cartNudgeHours3'] = Number(t.msg3 ?? 24) || 24;
+    };
+    if (stepId === 'cart_timing' && stepData?.cartTiming) {
+      syncCartTimingToFeatures(stepData.cartTiming);
+    }
+    if (stepId === 'features' && stepData?.cartTiming) {
+      syncCartTimingToFeatures(stepData.cartTiming);
     }
 
     if (stepId === 'escalation' && stepData) {

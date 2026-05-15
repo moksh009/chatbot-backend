@@ -38,7 +38,9 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const mongoose = require('mongoose');
 const { runMetaCatalogImport } = require('../utils/metaCatalogSync');
-const { autoPatchMpmFlowNodes } = require('../utils/flowMpmPatch');
+const { syncApexCatalogFlowFromMeta } = require('../utils/apexCatalogFlowSync');
+const { clearTriggerCache } = require('../utils/triggerEngine');
+const { clearClientCache } = require('../middleware/apiCache');
 
 const FLOW_ID = 'flow_apex_owner_support_hub_v2';
 
@@ -66,13 +68,12 @@ async function run() {
     console.log(`  → ${imp.synced} products, ${imp.collections} collections`);
   }
 
-  const patch = await autoPatchMpmFlowNodes(CLIENT_ID, { flowId: FLOW_ID });
-  console.log(`\n✅ Patched ${patch.patched} MPM nodes in flow ${patch.flowId || FLOW_ID}`);
-  if (patch.patches) {
-    for (const [nodeId, p] of Object.entries(patch.patches)) {
-      console.log(`  ${nodeId}: ${p.count} products (thumb ${p.thumbnailProductRetailerId})`);
-    }
-  }
+  const sync = await syncApexCatalogFlowFromMeta(CLIENT_ID, { flowId: FLOW_ID });
+  console.log(`\n✅ Category menu + MPM sync:`, JSON.stringify(sync.assignments || sync, null, 2));
+
+  clearTriggerCache(CLIENT_ID);
+  await clearClientCache(CLIENT_ID);
+  console.log('\nCaches cleared. Test on WhatsApp: Explore → pick a category → tap View items.');
 }
 
 run()

@@ -61,7 +61,7 @@ const COPY = {
   "tr_colors": "*Colours wrong / opposite direction*\n\n*2.1:* Swap the two strip USB plugs on the sync box; then toggle *direction* in Smart Life strip setup.\n\n*2.0:* Direction is fixed by the *bottom-left clockwise* install path — if strips were started wrong, redo placement per the video.\n\nStill stuck? Tap *Talk to human* below or send a video to *9328613239*.",
   "tr_ps5": "*Screen flicker with PlayStation*\n\nDisable *VRR* and *HDR* in PS video settings; set HDMI to *4:2:0* if flashing continues. Confirm HDMI cables are rated for your setup.\n\nStill stuck? Tap *Talk to human* below or send a video to *9328613239*.",
   "tr_cables": "*\"No signal\" / handshake issues*\n\nReconnect in FAQ order; try another TV HDMI port for *OUT*; swap HDMI cables one at a time. Message us with photos of cable routing if unresolved.\n\nStill stuck? Tap *Talk to human* below or send a video to *9328613239*.",
-  "catAfterBrowse": "Tap *View items* on the carousel message to browse in WhatsApp — or use *Main menu* below for more help."
+  "catAfterBrowse": "Tap *View items* on the message above — WhatsApp opens the swipeable product carousel (images, prices, add to cart). Or use *Main menu* below."
 };
 
 function sticky(id, x, y, text, label = 'Implementation note') {
@@ -783,7 +783,7 @@ function buildFlow() {
     },
     "data": {
       "label": "After Meta product list",
-      "text": "Tap *View items* on the template above to open the WhatsApp shop carousel — or use *Main menu* below for more help."
+      "text": "Tap *View items* on the message above — WhatsApp opens the swipeable product carousel. Or use *Main menu* below for more help."
     }
   },
   {

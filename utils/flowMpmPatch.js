@@ -54,8 +54,20 @@ function buildPatchesForNodes(mpmNodes, products) {
   const patches = {};
 
   for (const node of mpmNodes) {
-    const keywords = deriveKeywordsFromNode(node);
-    let matched = products.filter((p) => matchesKeywords(p, keywords));
+    const collectionId = String(node.data?.metaCollectionId || "").trim();
+    let matched = [];
+    if (collectionId) {
+      matched = products.filter(
+        (p) =>
+          p.inStock !== false &&
+          Array.isArray(p.collectionIds) &&
+          p.collectionIds.map(String).includes(collectionId)
+      );
+    }
+    if (!matched.length) {
+      const keywords = deriveKeywordsFromNode(node);
+      matched = products.filter((p) => matchesKeywords(p, keywords));
+    }
     matched.sort((a, b) => (a.price || 0) - (b.price || 0));
     matched = matched.slice(0, MAX_PER_SECTION);
 

@@ -34,8 +34,9 @@ function resolveClientId() {
  * 2) Dashboard → sync WhatsApp templates so `syncedMetaTemplates` includes "carosuel".
  * 3) Meta Manager → Catalog: link catalog ID `25779917041614766` (or yours) in dashboard.
  * 4) Run THIS script:  node scripts/setupApexOwnerSupportFlow.js
- * 5) Import from Meta + auto-fill flow nodes:  node scripts/patchApexMpmProductIds.js
- *    (No Shopify access needed — reads WhatsApp/Meta Commerce catalog via Graph API)
+ * 5) Import Meta catalog + sync categories + MPM IDs (recommended one-liner):
+ *      node scripts/refreshApexCatalogFlow.js
+ *    Or only patch IDs:  node scripts/patchApexMpmProductIds.js
  * Optional env: `SEED_MPM_META_TEMPLATE_NAME=my_tpl` to override template name in seed nodes.
  *
  * Requires MONGODB_URI (or MONGO_URI). Restart the API after backend code changes.

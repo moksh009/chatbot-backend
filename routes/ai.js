@@ -205,7 +205,7 @@ router.post('/crawl-faq', protect, async (req, res) => {
 
     await Client.updateOne(
       { clientId },
-      { $set: { 'ai.persona.knowledgeBase': text } }
+      { $set: { 'ai.persona.knowledgeBase': text, faqUrl: url.href } }
     );
 
     const approxQuestions = (text.match(/\?/g) || []).length;
@@ -214,6 +214,8 @@ router.post('/crawl-faq', protect, async (req, res) => {
       crawlOk: true,
       charCount: text.length,
       approxQuestions,
+      knowledgeBase: text,
+      faqUrl: url.href,
     });
   } catch (err) {
     log.error('crawl-faq error:', err.message);

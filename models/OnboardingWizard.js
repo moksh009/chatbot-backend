@@ -5,27 +5,20 @@ const mongoose = require("mongoose");
 /**
  * OnboardingWizard — Persistent step-by-step wizard state.
  *
- * Architecture:
- *   One document per clientId. Each wizard step writes to its own sub-key
- *   inside `stepData`. This survives browser refreshes, device switches,
- *   and server restarts — replacing the previous localStorage-only approach.
+ * Step IDs — MUST match STEPS array in OnboardingWizard.jsx (7 steps, schema v3):
+ *   0: business | 1: connections | 2: features | 3: products | 4: escalation
+ *   5: ai | 6: architecture
  *
- * Step IDs — MUST match STEPS array order in OnboardingWizard.jsx (8 steps):
- *   0: business | 1: connections | 2: escalation | 3: products | 4: ai
- *   5: cart_timing | 6: features | 7: architecture
- *
- * Legacy keys (whatsapp, store, operations, payment, …) remain on stepData for
- * older documents; PATCH may copy legacy → canonical buckets when needed.
+ * `cart_timing` remains as optional legacy bucket; cart ladder lives in features step UI.
  */
 
 const STEP_IDS = [
   "business",
   "connections",
-  "escalation",
-  "products",
-  "ai",
-  "cart_timing",
   "features",
+  "products",
+  "escalation",
+  "ai",
   "architecture",
 ];
 
@@ -39,10 +32,9 @@ const OnboardingWizardSchema = new mongoose.Schema(
       trim: true,
     },
 
-    /** Wizard content schema — bump when inserting new steps (see onboarding route migration). */
     wizardSchemaVersion: {
       type: Number,
-      default: 2,
+      default: 3,
       min: 1,
       max: 10,
     },
@@ -51,7 +43,7 @@ const OnboardingWizardSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: 0,
-      max: 7,
+      max: 6,
     },
 
     completedSteps: {
@@ -65,18 +57,15 @@ const OnboardingWizardSchema = new mongoose.Schema(
       default: "in_progress",
     },
 
-    // Step data — each step writes to its own sub-document.
-    // Using Mixed types to avoid schema churn as wizard fields evolve.
     stepData: {
       business:     { type: mongoose.Schema.Types.Mixed, default: null },
       connections:  { type: mongoose.Schema.Types.Mixed, default: null },
-      escalation:   { type: mongoose.Schema.Types.Mixed, default: null },
-      products:     { type: mongoose.Schema.Types.Mixed, default: null },
-      ai:           { type: mongoose.Schema.Types.Mixed, default: null },
-      cart_timing:  { type: mongoose.Schema.Types.Mixed, default: null },
       features:     { type: mongoose.Schema.Types.Mixed, default: null },
+      products:     { type: mongoose.Schema.Types.Mixed, default: null },
+      escalation:   { type: mongoose.Schema.Types.Mixed, default: null },
+      ai:           { type: mongoose.Schema.Types.Mixed, default: null },
       architecture: { type: mongoose.Schema.Types.Mixed, default: null },
-      // Legacy buckets (pre–step-order fix)
+      cart_timing:  { type: mongoose.Schema.Types.Mixed, default: null },
       whatsapp:     { type: mongoose.Schema.Types.Mixed, default: null },
       store:        { type: mongoose.Schema.Types.Mixed, default: null },
       operations:   { type: mongoose.Schema.Types.Mixed, default: null },
@@ -86,18 +75,16 @@ const OnboardingWizardSchema = new mongoose.Schema(
       templates:    { type: mongoose.Schema.Types.Mixed, default: null },
     },
 
-    // Post-launch deployment stats
     deploymentResult: {
       type: mongoose.Schema.Types.Mixed,
       default: null,
     },
   },
   {
-    timestamps: true, // createdAt + updatedAt
+    timestamps: true,
   }
 );
 
-// Expose STEP_IDS for route-level validation
 OnboardingWizardSchema.statics.STEP_IDS = STEP_IDS;
 
 module.exports = mongoose.model("OnboardingWizard", OnboardingWizardSchema);

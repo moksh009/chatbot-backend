@@ -136,15 +136,33 @@ router.post("/:clientId/sync", verifyToken, async (req, res) => {
     }
 
     const result = await runMetaCatalogImport(clientId);
-    const patch = await autoPatchMpmFlowNodes(clientId);
+
+    let patch = { patched: 0 };
+    let categoryMenuSynced = false;
+    try {
+      const { syncApexCatalogFlowFromMeta } = require("../utils/apexCatalogFlowSync");
+      const apexSync = await syncApexCatalogFlowFromMeta(clientId);
+      if (apexSync.ok) {
+        patch = { patched: apexSync.mpmPatched || 0, flowId: apexSync.flowId };
+        categoryMenuSynced = !!apexSync.menuUpdated;
+      }
+    } catch (apexErr) {
+      log.warn(`[Catalog] Apex menu sync skipped: ${apexErr.message}`);
+    }
+    if (!patch.patched) {
+      patch = await autoPatchMpmFlowNodes(clientId);
+    }
 
     res.json({
       success: true,
       synced: result.synced,
       collections: result.collections,
       flowNodesPatched: patch.patched,
+      categoryMenuSynced,
       source: "meta_catalog",
-      message: `Imported ${result.synced} products from Meta catalog. Flow Builder updated ${patch.patched} carousel nodes.`,
+      message: `Imported ${result.synced} products from Meta catalog. Flow updated ${patch.patched} MPM nodes${
+        categoryMenuSynced ? " and category menu from Meta collections." : "."
+      }`,
     });
   } catch (err) {
     log.error(`[Catalog] sync failed for ${clientId}: ${err.message}`);

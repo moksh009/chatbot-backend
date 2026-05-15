@@ -297,6 +297,69 @@ router.get("/:clientId/setup-checklist", protect, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// POST /api/wizard/:clientId/flow-graph-preview
+// Dry-run commerce pack — no DB writes; powers Review step mini-graph.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post("/:clientId/flow-graph-preview", protect, async (req, res) => {
+  const { clientId } = req.params;
+  const { wizardData } = req.body || {};
+
+  try {
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ success: false, error: "Client not found" });
+
+    const tenantId = tenantClientId(req);
+    if (!tenantId || tenantId !== clientId) {
+      return res.status(403).json({ success: false, error: "Unauthorized" });
+    }
+
+    const { generateCommerceWizardPack } = require("../utils/flowGenerator");
+    const templates = getPrebuiltTemplates(wizardData || {});
+    const previewData = {
+      ...(wizardData || {}),
+      templates,
+      features: {
+        ...(wizardData?.features || {}),
+        enableCodToPrepaid: false,
+        codPrepaidComingSoon: true,
+      },
+    };
+    const pack = await generateCommerceWizardPack(client, previewData);
+    const flows = (pack.flows || []).map((f) => {
+      const nodes = f.nodes || [];
+      const edges = f.edges || [];
+      return {
+        slug: f.slug,
+        name: f.name,
+        isAutomation: !!f.isAutomation,
+        automationTrigger: f.automationTrigger || "",
+        nodeCount: nodes.length,
+        edgeCount: edges.length,
+        previewNodes: nodes.slice(0, 14).map((n) => ({
+          id: n.id,
+          type: n.type,
+          label:
+            String(
+              n.data?.label ||
+                n.data?.text ||
+                n.data?.body ||
+                n.data?.question ||
+                n.type
+            ).slice(0, 56) || n.type,
+        })),
+      };
+    });
+    const totalNodes = flows.reduce((sum, f) => sum + f.nodeCount, 0);
+    const totalEdges = flows.reduce((sum, f) => sum + f.edgeCount, 0);
+
+    res.json({ success: true, flows, totalNodes, totalEdges });
+  } catch (err) {
+    log.error(`flow-graph-preview failed: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message || "preview_failed" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /api/wizard/:clientId/complete
 // Called when user clicks Launch in Step 10 of the onboarding wizard
 // Generates the flow, saves it, marks wizard as complete
@@ -368,8 +431,17 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     let persistedPack = null;
     let newFlow;
 
+    const launchWizardData = {
+      ...wizardData,
+      features: {
+        ...(wizardData.features || {}),
+        enableCodToPrepaid: false,
+        codPrepaidComingSoon: true,
+      },
+    };
+
     if (useCommercePack) {
-      const pack = await generateCommerceWizardPack(client, { ...wizardData, templates });
+      const pack = await generateCommerceWizardPack(client, { ...launchWizardData, templates });
       automationFlows = pack.automationFlows || [];
       persistedPack = await createFlowsFromCommercePack(clientId, pack.flows, {
         generatedBy: "wizard",
@@ -402,7 +474,7 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       }
     } else {
       // Single-graph legacy path (main + embedded automations)
-      const generated = await generateEcommerceFlow(client, { ...wizardData, templates });
+      const generated = await generateEcommerceFlow(client, { ...launchWizardData, templates });
       nodes = generated.nodes;
       edges = generated.edges;
       automationFlows = generated.automationFlows || [];
@@ -443,12 +515,12 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     }
 
     // Generate system prompt
-    const systemPrompt = await generateSystemPrompt(client, wizardData);
+    const systemPrompt = await generateSystemPrompt(client, launchWizardData);
 
     // ─── Build the canonical wizard → DB update via the central mapper ───────
     // All field-mapping rules live in utils/wizardMapper.js so we have ONE
     // source of truth instead of 150 lines of brittle inline spreads.
-    const mapped = mapWizardToClient(wizardData, client, { systemPrompt });
+    const mapped = mapWizardToClient(launchWizardData, client, { systemPrompt });
     const $set = mapped.$set;
     const { persona: personaPatch, systemPrompt: personaSystemPrompt } =
       pullPersonaBundleFromSet($set);
