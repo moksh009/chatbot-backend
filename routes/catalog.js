@@ -7,7 +7,11 @@ const AdLead = require("../models/AdLead");
 const ShopifyProduct = require("../models/ShopifyProduct");
 const { protect: verifyToken } = require("../middleware/auth");
 const { sendCatalogMessage, sendSingleProduct, sendMultiProduct } = require("../utils/whatsappCatalog");
-const { runMetaCatalogImport, resolveCatalogId } = require("../utils/metaCatalogSync");
+const {
+  runMetaCatalogImport,
+  resolveCatalogId,
+  diagnoseMetaCatalogAccess,
+} = require("../utils/metaCatalogSync");
 const { autoPatchMpmFlowNodes } = require("../utils/flowMpmPatch");
 const log = require("../utils/logger")("CatalogRoutes");
 
@@ -69,17 +73,28 @@ router.get("/:clientId/products", verifyToken, async (req, res) => {
   }
 });
 
+// ─── GET /api/catalog/:clientId/diagnose — token + catalog access check ─────
+router.get("/:clientId/diagnose", verifyToken, async (req, res) => {
+  try {
+    const report = await diagnoseMetaCatalogAccess(req.params.clientId);
+    res.json({ success: true, ...report });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // ─── POST /api/catalog/:clientId/link — link catalog ID + auto-import ───────
 router.post("/:clientId/link", verifyToken, async (req, res) => {
   try {
-    const { catalogId } = req.body;
+    const { catalogId, metaCatalogAccessToken } = req.body;
     if (!catalogId) return res.status(400).json({ success: false, message: "catalogId is required" });
 
     const id = String(catalogId).trim();
-    await Client.findOneAndUpdate(
-      { clientId: req.params.clientId },
-      { $set: { waCatalogId: id, facebookCatalogId: id, catalogEnabled: true } }
-    );
+    const $set = { waCatalogId: id, facebookCatalogId: id, catalogEnabled: true };
+    if (metaCatalogAccessToken && String(metaCatalogAccessToken).trim() && metaCatalogAccessToken !== "••••••••") {
+      $set.metaCatalogAccessToken = String(metaCatalogAccessToken).trim();
+    }
+    await Client.findOneAndUpdate({ clientId: req.params.clientId }, { $set });
 
     // Auto-import products from Meta catalog in background
     const clientId = req.params.clientId;

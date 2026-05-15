@@ -4,7 +4,11 @@ const axios = require("axios");
 const Client = require("../models/Client");
 const ShopifyProduct = require("../models/ShopifyProduct");
 const ShopifyCollection = require("../models/ShopifyCollection");
-const { getEffectiveWhatsAppAccessToken } = require("./clientWhatsAppCreds");
+const {
+  getEffectiveWhatsAppAccessToken,
+  getEffectiveWhatsAppPhoneNumberId,
+  getMetaCatalogAccessTokens,
+} = require("./clientWhatsAppCreds");
 const log = require("./logger")("MetaCatalogSync");
 
 const GRAPH = "https://graph.facebook.com/v21.0";
@@ -48,10 +52,15 @@ function graphErrorMessage(err) {
   const code = data.code;
   const msg = data.message || data.error_user_msg || "Meta API error";
   if (code === 190 || err.response?.status === 401) {
-    return "WhatsApp token invalid or expired — reconnect WhatsApp in Settings.";
+    return "Meta access token invalid or expired — reconnect in Settings.";
   }
-  if (code === 100 || code === 803) {
-    return `Catalog access denied: ${msg}. Ensure the token has catalog_management permission.`;
+  if (code === 100 || code === 803 || err.response?.status === 400) {
+    return (
+      `Catalog API denied: ${msg}\n\n` +
+      "Fix: In Meta Business Settings → System users, create a token with catalog_management " +
+      "and assign your product catalog. Paste it in Settings → Commerce → Meta catalog access token. " +
+      "Or connect Meta Ads (business_management) under Meta Manager."
+    );
   }
   return msg;
 }
@@ -64,19 +73,49 @@ async function graphGet(path, token, params = {}) {
   return resp.data;
 }
 
-/**
- * Fetch all products from a Meta Commerce catalog (already linked to Shopify on Meta's side).
- */
+/** Catalog ID linked to this WhatsApp phone (authoritative for WABA token). */
+async function fetchCatalogIdFromPhone(phoneId, token) {
+  if (!phoneId || !token) return null;
+  const data = await graphGet(`/${phoneId}`, token, { fields: "commerce_settings" });
+  const cid = data.commerce_settings?.catalog_id;
+  return cid ? String(cid).trim() : null;
+}
+
+/** List catalogs the token can access via Business portfolio. */
+async function listOwnedCatalogs(token) {
+  const catalogs = [];
+  try {
+    const me = await graphGet("/me", token, { fields: "businesses{id,name}" });
+    for (const biz of me.businesses?.data || []) {
+      try {
+        const data = await graphGet(`/${biz.id}/owned_product_catalogs`, token, {
+          fields: "id,name,product_count",
+          limit: 50,
+        });
+        for (const c of data.data || []) {
+          catalogs.push({
+            id: String(c.id),
+            name: c.name || "",
+            productCount: c.product_count || 0,
+            businessId: String(biz.id),
+            businessName: biz.name || "",
+          });
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return catalogs;
+}
+
 async function fetchAllCatalogProducts(catalogId, token) {
   const products = [];
-  let url = `/${catalogId}/products`;
   let after = null;
 
   for (let page = 0; page < 50; page++) {
     const params = { fields: PRODUCT_FIELDS, limit: PAGE_LIMIT };
     if (after) params.after = after;
 
-    const data = await graphGet(url, token, params);
+    const data = await graphGet(`/${catalogId}/products`, token, params);
     const batch = data.data || [];
     products.push(...batch);
 
@@ -88,9 +127,6 @@ async function fetchAllCatalogProducts(catalogId, token) {
   return products;
 }
 
-/**
- * Fetch product sets (Meta's version of collections) and member retailer_ids.
- */
 async function fetchProductSetsWithMembers(catalogId, token) {
   const sets = [];
   let after = null;
@@ -108,7 +144,7 @@ async function fetchProductSetsWithMembers(catalogId, token) {
     after = next;
   }
 
-  const setMembers = new Map(); // setId → { name, retailerIds: Set }
+  const setMembers = new Map();
 
   for (const set of sets) {
     const retailerIds = new Set();
@@ -135,18 +171,153 @@ async function fetchProductSetsWithMembers(catalogId, token) {
 }
 
 /**
- * Import Meta Commerce catalog → MongoDB product cache (ShopifyProduct + ShopifyCollection).
- * No Shopify API access required — products already live in Meta's catalog.
+ * Pick catalog ID + token that can list products.
  */
-async function runMetaCatalogImport(clientId, opts = {}) {
+async function resolveCatalogAccess(client) {
+  const tokens = getMetaCatalogAccessTokens(client);
+  if (!tokens.length) {
+    throw new Error("No Meta access token — connect WhatsApp in Settings first.");
+  }
+
+  const configuredId = resolveCatalogId(client);
+  const phoneId = getEffectiveWhatsAppPhoneNumberId(client);
+  const attempts = [];
+
+  for (const token of tokens) {
+    let catalogId = configuredId;
+
+    if (phoneId) {
+      try {
+        const fromPhone = await fetchCatalogIdFromPhone(phoneId, token);
+        if (fromPhone) {
+          catalogId = fromPhone;
+          attempts.push({ token: "ok", catalogId, source: "phone_commerce_settings" });
+        }
+      } catch (e) {
+        attempts.push({ token: "phone_lookup_failed", error: e.message });
+      }
+    }
+
+    if (catalogId) {
+      try {
+        const products = await fetchAllCatalogProducts(catalogId, token);
+        if (products.length > 0) {
+          return { catalogId, token, products, tokenIndex: tokens.indexOf(token) };
+        }
+        attempts.push({ catalogId, token: "ok", products: 0 });
+      } catch (e) {
+        attempts.push({ catalogId, token: "products_failed", error: e.message });
+      }
+    }
+  }
+
+  // Discover catalogs via Business API (needs business_management / catalog_management)
+  for (const token of tokens) {
+    const owned = await listOwnedCatalogs(token);
+    if (!owned.length) continue;
+
+    const prefer =
+      owned.find((c) => c.id === configuredId) ||
+      owned.sort((a, b) => (b.productCount || 0) - (a.productCount || 0))[0];
+
+    try {
+      const products = await fetchAllCatalogProducts(prefer.id, token);
+      if (products.length > 0) {
+        return {
+          catalogId: prefer.id,
+          token,
+          products,
+          discovered: owned,
+          source: "owned_product_catalogs",
+        };
+      }
+    } catch (e) {
+      attempts.push({ catalogId: prefer.id, error: e.message });
+    }
+  }
+
+  const err = new Error(
+    "Could not read products from Meta catalog with any connected token. " +
+      "WhatsApp tokens alone usually cannot call the Catalog API — add a System User token with catalog_management."
+  );
+  err.attempts = attempts;
+  err.accessibleCatalogs = [];
+  for (const token of tokens) {
+    const owned = await listOwnedCatalogs(token);
+    if (owned.length) err.accessibleCatalogs.push(...owned);
+  }
+  throw err;
+}
+
+async function diagnoseMetaCatalogAccess(clientId) {
   const client = await Client.findOne({ clientId });
   if (!client) throw new Error("Client not found");
 
-  const catalogId = resolveCatalogId(client);
-  if (!catalogId) throw new Error("No Meta catalog ID linked. Enter catalog ID in Meta Manager → Catalog.");
+  const tokens = getMetaCatalogAccessTokens(client);
+  const phoneId = getEffectiveWhatsAppPhoneNumberId(client);
+  const configuredId = resolveCatalogId(client);
 
-  const token = getEffectiveWhatsAppAccessToken(client);
-  if (!token) throw new Error("WhatsApp access token missing — connect WhatsApp in Settings first.");
+  const report = {
+    clientId,
+    configuredCatalogId: configuredId,
+    phoneNumberId: phoneId,
+    tokenCount: tokens.length,
+    hasMetaCatalogAccessToken: !!String(client.metaCatalogAccessToken || "").trim(),
+    hasMetaAdsToken: !!String(client.metaAdsToken || "").trim(),
+    hasWhatsAppToken: !!getEffectiveWhatsAppAccessToken(client),
+    phoneLinkedCatalogId: null,
+    accessibleCatalogs: [],
+    recommendedCatalogId: null,
+    canImport: false,
+    hint: "",
+  };
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (phoneId && !report.phoneLinkedCatalogId) {
+      try {
+        report.phoneLinkedCatalogId = await fetchCatalogIdFromPhone(phoneId, token);
+      } catch (_) {}
+    }
+    const owned = await listOwnedCatalogs(token);
+    for (const c of owned) {
+      if (!report.accessibleCatalogs.some((x) => x.id === c.id)) {
+        report.accessibleCatalogs.push({ ...c, tokenIndex: i });
+      }
+    }
+  }
+
+  if (report.phoneLinkedCatalogId && report.phoneLinkedCatalogId !== configuredId) {
+    report.hint =
+      `Dashboard catalog ID (${configuredId}) differs from WhatsApp-linked catalog (${report.phoneLinkedCatalogId}). Use the linked ID.`;
+    report.recommendedCatalogId = report.phoneLinkedCatalogId;
+  } else if (report.accessibleCatalogs.length) {
+    const best = report.accessibleCatalogs.sort(
+      (a, b) => (b.productCount || 0) - (a.productCount || 0)
+    )[0];
+    report.recommendedCatalogId = best.id;
+    report.hint = `Token can see catalog "${best.name}" (${best.id}) with ${best.productCount || "?"} products.`;
+  }
+
+  try {
+    const access = await resolveCatalogAccess(client);
+    report.canImport = true;
+    report.recommendedCatalogId = access.catalogId;
+    report.sampleProductCount = access.products.length;
+    report.importSource = access.source || "direct";
+  } catch (e) {
+    report.canImport = false;
+    report.importError = e.message;
+    report.attempts = e.attempts;
+    if (e.accessibleCatalogs?.length) report.accessibleCatalogs = e.accessibleCatalogs;
+  }
+
+  return report;
+}
+
+async function runMetaCatalogImport(clientId, opts = {}) {
+  const client = await Client.findOne({ clientId });
+  if (!client) throw new Error("Client not found");
 
   await Client.updateOne(
     { clientId },
@@ -154,32 +325,44 @@ async function runMetaCatalogImport(clientId, opts = {}) {
   );
 
   try {
-    log.info(`[MetaCatalogImport] ${clientId} catalog=${catalogId}`);
+    const access = await resolveCatalogAccess(client);
+    const { catalogId, token, products: rawProducts } = access;
 
-    const [rawProducts, { sets, setMembers }] = await Promise.all([
-      fetchAllCatalogProducts(catalogId, token),
-      fetchProductSetsWithMembers(catalogId, token).catch((err) => {
-        log.warn(`[MetaCatalogImport] product_sets skipped: ${err.message}`);
-        return { sets: [], setMembers: new Map() };
-      }),
-    ]);
+    log.info(
+      `[MetaCatalogImport] ${clientId} catalog=${catalogId} products=${rawProducts.length} source=${access.source || "token"}`
+    );
 
-    if (!rawProducts.length) {
-      throw new Error(
-        "Meta catalog returned 0 products. Check catalog ID and that products are approved in Commerce Manager."
+    const configured = resolveCatalogId(client);
+    if (configuredMismatch(configured, catalogId)) {
+      log.warn(
+        `[MetaCatalogImport] Using catalog ${catalogId} (token-accessible), not dashboard value ${configured}`
       );
     }
 
-    // retailer_id → collection titles from product sets
+    let sets = [];
+    let setMembers = new Map();
+    try {
+      const ps = await fetchProductSetsWithMembers(catalogId, token);
+      sets = ps.sets;
+      setMembers = ps.setMembers;
+    } catch (err) {
+      log.warn(`[MetaCatalogImport] product_sets skipped: ${err.message}`);
+    }
+
+    if (!rawProducts.length) {
+      throw new Error(
+        "Meta catalog returned 0 products. Check that items are approved in Commerce Manager."
+      );
+    }
+
     const retailerToCollections = new Map();
-    for (const [setId, { name, retailerIds }] of setMembers) {
+    for (const [, { name, retailerIds }] of setMembers) {
       for (const rid of retailerIds) {
         if (!retailerToCollections.has(rid)) retailerToCollections.set(rid, []);
         retailerToCollections.get(rid).push(name);
       }
     }
 
-    // Replace cache for this client (Meta is source of truth when Shopify isn't connected)
     if (!opts.mergeOnly) {
       await ShopifyProduct.deleteMany({ clientId });
     }
@@ -221,7 +404,6 @@ async function runMetaCatalogImport(clientId, opts = {}) {
       synced++;
     }
 
-    // Sync product sets as collections
     let syncedCollections = 0;
     for (const set of sets) {
       const sid = String(set.id);
@@ -294,8 +476,15 @@ async function runMetaCatalogImport(clientId, opts = {}) {
   }
 }
 
+function configuredMismatch(configured, resolved) {
+  return configured && resolved && configured !== resolved;
+}
+
 module.exports = {
   resolveCatalogId,
   runMetaCatalogImport,
   fetchAllCatalogProducts,
+  diagnoseMetaCatalogAccess,
+  fetchCatalogIdFromPhone,
+  listOwnedCatalogs,
 };

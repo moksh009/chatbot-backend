@@ -67,9 +67,34 @@ function phoneNumberIdMatchFilter(phoneNumberId) {
   };
 }
 
+/**
+ * Tokens that may read Meta Commerce catalog (/{catalog-id}/products).
+ * Order: dedicated catalog token → Meta Ads/Business token → WhatsApp token.
+ */
+function getMetaCatalogAccessTokens(client) {
+  if (!client) return [];
+  const seen = new Set();
+  const out = [];
+  const push = (val) => {
+    const t = maybeDecryptSecret(val);
+    if (t && !seen.has(t)) {
+      seen.add(t);
+      out.push(t);
+    }
+  };
+  push(client.metaCatalogAccessToken);
+  push(client.metaAdsToken);
+  push(client.social?.metaAds?.accessToken);
+  push(client.premiumAccessToken);
+  push(client.whatsappToken);
+  push(client.whatsapp?.accessToken);
+  return out;
+}
+
 module.exports = {
   maybeDecryptSecret,
   getEffectiveWhatsAppAccessToken,
   getEffectiveWhatsAppPhoneNumberId,
+  getMetaCatalogAccessTokens,
   phoneNumberIdMatchFilter,
 };

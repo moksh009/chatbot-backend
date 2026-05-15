@@ -706,6 +706,8 @@ const ClientSchema = new mongoose.Schema({
   waCatalogId:         { type: String, default: '' },
   /** Meta Commerce Manager catalog id (alias of waCatalogId; WhatsApp product_list uses this) */
   facebookCatalogId:   { type: String, default: '' },
+  /** System User or Business token with catalog_management — required to import products via Graph API */
+  metaCatalogAccessToken: { type: String, default: '' },
   facebookPageId:      { type: String, default: '' },
   shopifyStorefrontToken: { type: String, default: '' },
   shopifyLastProductSync: { type: Date },
@@ -867,6 +869,7 @@ function encryptSubDocs(doc) {
   
   // Legacy Encryptions
   if (doc.whatsappToken) doc.whatsappToken = enc(doc.whatsappToken);
+  if (doc.metaCatalogAccessToken) doc.metaCatalogAccessToken = enc(doc.metaCatalogAccessToken);
   if (doc.shopifyAccessToken) doc.shopifyAccessToken = enc(doc.shopifyAccessToken);
   if (doc.shopifyRefreshToken) doc.shopifyRefreshToken = enc(doc.shopifyRefreshToken);
   if (doc.shopifyWebhookSecret) doc.shopifyWebhookSecret = enc(doc.shopifyWebhookSecret);
@@ -962,7 +965,7 @@ function encryptUpdateQuery(update) {
   const encPaths = [
     'whatsapp.accessToken', 'commerce.shopify.accessToken', 'commerce.shopify.refreshToken', 'commerce.shopify.clientSecret', 'commerce.shopify.webhookSecret',
     'ai.geminiKey', 'ai.openaiKey', 'social.instagram.accessToken', 'social.instagram.appSecret', 'social.metaAds.accessToken',
-    'whatsappToken', 'shopifyAccessToken', 'shopifyRefreshToken', 'shopifyWebhookSecret', 'shopifyClientSecret',
+    'whatsappToken', 'metaCatalogAccessToken', 'shopifyAccessToken', 'shopifyRefreshToken', 'shopifyWebhookSecret', 'shopifyClientSecret',
     'geminiApiKey', 'openaiApiKey', 'instagramAccessToken', 
     'instagramAppSecret', 'igAccessToken', 'razorpaySecret', 'cashfreeSecretKey', 'stripeSecretKey', 
     'payuMerchantSalt', 'phonepeSaltKey', 'emailAppPassword'

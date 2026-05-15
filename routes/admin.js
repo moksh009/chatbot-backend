@@ -1240,6 +1240,14 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (facebookCatalogId !== undefined) {
       updateFields.facebookCatalogId = String(facebookCatalogId || '').trim();
     }
+    const { metaCatalogAccessToken } = req.body;
+    if (
+      metaCatalogAccessToken !== undefined &&
+      metaCatalogAccessToken !== '••••••••' &&
+      String(metaCatalogAccessToken).trim() !== ''
+    ) {
+      updateFields.metaCatalogAccessToken = String(metaCatalogAccessToken).trim();
+    }
     if (shopifyStorefrontToken !== undefined && shopifyStorefrontToken !== '••••••••' && String(shopifyStorefrontToken).trim() !== '') {
       updateFields.shopifyStorefrontToken = String(shopifyStorefrontToken).trim();
     }

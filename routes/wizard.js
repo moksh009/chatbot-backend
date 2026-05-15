@@ -322,6 +322,24 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     const { generateCommerceWizardPack } = require("../utils/flowGenerator");
     const { createFlowsFromCommercePack, deletePriorWizardFlows } = require("../utils/wizardCommercePackPersist");
 
+    // Meta catalog import (no Shopify required — products already in Commerce Manager)
+    const catalogId = String(
+      wizardData.facebookCatalogId || client.facebookCatalogId || client.waCatalogId || ""
+    ).trim();
+    if (catalogId) {
+      try {
+        await Client.updateOne(
+          { clientId },
+          { $set: { facebookCatalogId: catalogId, waCatalogId: catalogId, catalogEnabled: true } }
+        );
+        const { runMetaCatalogImport } = require("../utils/metaCatalogSync");
+        const imp = await runMetaCatalogImport(clientId);
+        log.info(`[Wizard] Meta catalog import: ${imp.synced} products, ${imp.collections} collections`);
+      } catch (metaErr) {
+        log.warn(`[Wizard] Meta catalog import skipped: ${metaErr.message}`);
+      }
+    }
+
     // Get pre-built templates based on user's wizard data (like business name, cart timing)
     const templates = getPrebuiltTemplates(wizardData);
 
@@ -366,6 +384,20 @@ router.post("/:clientId/complete", protect, async (req, res) => {
         persistedPack.visualEntries.find((v) => v.isActive) || persistedPack.visualEntries[0] || {
           id: persistedPack.primaryFlowId,
         };
+
+      try {
+        const { autoPatchMpmFlowNodes } = require("../utils/flowMpmPatch");
+        for (const entry of persistedPack.visualEntries || []) {
+          if (entry?.id) {
+            const patch = await autoPatchMpmFlowNodes(clientId, { flowId: entry.id });
+            if (patch.patched > 0) {
+              log.info(`[Wizard] Auto-filled ${patch.patched} MPM nodes in flow ${entry.id}`);
+            }
+          }
+        }
+      } catch (patchErr) {
+        log.warn(`[Wizard] MPM auto-patch skipped: ${patchErr.message}`);
+      }
     } else {
       // Single-graph legacy path (main + embedded automations)
       const generated = await generateEcommerceFlow(client, { ...wizardData, templates });
