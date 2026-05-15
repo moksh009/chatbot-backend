@@ -138,6 +138,91 @@ async function createCheckoutLinkRecord({
 /**
  * Main entry: permalink first unless storefront token yields a URL.
  */
+function normalizeWaOrderItems(productItems = []) {
+  return (Array.isArray(productItems) ? productItems : [])
+    .map((i) => ({
+      product_retailer_id: String(i?.product_retailer_id ?? i?.variantId ?? i?.id ?? "").trim(),
+      quantity: Math.max(1, Number(i?.quantity || 1) || 1),
+      item_price: Number(i?.item_price ?? i?.price ?? 0) || 0,
+      currency: i?.currency || "INR",
+    }))
+    .filter((i) => i.product_retailer_id);
+}
+
+/**
+ * Re-send or regenerate checkout for a conversation (agent, flow "resend" button, recovery).
+ */
+async function resendCheckoutToCustomer(clientDoc, phone, convo = null, lead = null) {
+  const normalized = phone ? normalizePhone(phone) : "";
+  if (!normalized || !clientDoc?.clientId) return { ok: false, reason: "missing_phone" };
+
+  let shortUrl = convo?.lastCheckoutUrl || convo?.metadata?.checkout_url || "";
+  let shortCode = convo?.lastCheckoutShortCode || "";
+  let total = Number(convo?.lastCheckoutValue) || 0;
+
+  const rawItems = convo?.pendingCart?.items;
+  const items = normalizeWaOrderItems(rawItems);
+
+  if (!shortUrl && items.length) {
+    const bundle = await generateCheckoutForOrder(clientDoc, normalized, items);
+    shortUrl = bundle.shortUrl || bundle.fullUrl || "";
+    shortCode = bundle.shortCode || "";
+    total = Number(bundle.totalValue) || total;
+  }
+
+  if (!shortUrl) {
+    const latest = await CheckoutLink.findOne({
+      clientId: clientDoc.clientId,
+      phone: normalized,
+      converted: false,
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+    if (latest) {
+      const base = publicApiBase();
+      shortUrl = base ? `${base}/api/r/${latest.shortCode}` : latest.fullUrl;
+      shortCode = latest.shortCode;
+      if (!total) total = Number(latest.totalValue) || 0;
+    }
+  }
+
+  if (!shortUrl) return { ok: false, reason: "no_cart" };
+
+  const currency = items[0]?.currency || "INR";
+  const { injectVariables } = require("./variableInjector");
+  const tpl =
+    clientDoc.commerceBotSettings?.checkoutMessage ||
+    "Complete your checkout 👉 {{checkout_url}}\n\nTotal: {{currency}} {{cart_total}}";
+  const text = injectVariables(String(tpl), {
+    checkout_url: shortUrl,
+    cart_total: String(total),
+    currency,
+    item_count: String(items.length || convo?.pendingCart?.items?.length || 0),
+    first_name: (lead?.name || "there").split(/\s+/)[0],
+  });
+
+  const WhatsApp = require("./whatsapp");
+  await WhatsApp.sendText(clientDoc, normalized, text.substring(0, 4096));
+
+  const Conversation = require("../models/Conversation");
+  await Conversation.updateOne(
+    { clientId: clientDoc.clientId, phone: normalized },
+    {
+      $set: {
+        lastCheckoutUrl: shortUrl,
+        lastCheckoutShortCode: shortCode,
+        lastCheckoutValue: total,
+        lastCheckoutAt: new Date(),
+        "metadata.checkout_url": shortUrl,
+        "metadata.cart_total": String(total),
+        "metadata.currency": currency,
+      },
+    }
+  );
+
+  return { ok: true, shortUrl, shortCode, total, currency, text };
+}
+
 async function generateCheckoutForOrder(clientDoc, phone, productItems = []) {
   let { fullUrl, totalValue, currency } = buildCartPermalink(clientDoc, productItems);
 
@@ -168,8 +253,10 @@ async function generateCheckoutForOrder(clientDoc, phone, productItems = []) {
 
 module.exports = {
   normalizeStoreBase,
+  normalizeWaOrderItems,
   buildCartPermalink,
   generateCheckoutForOrder,
   createCheckoutLinkRecord,
-  publicApiBase
+  resendCheckoutToCustomer,
+  publicApiBase,
 };

@@ -1970,6 +1970,19 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
                 || parsedMessage.button?.payload 
                 || '';
 
+  if (buttonId && /^(resend|resend_checkout)$/i.test(String(buttonId))) {
+    try {
+      const { resendCheckoutToCustomer } = require("./commerceCheckoutService");
+      const result = await resendCheckoutToCustomer(client, phone, convo, lead);
+      if (result.ok) {
+        log.info(`[Graph] Resent checkout link to ${phone}`);
+        return true;
+      }
+    } catch (resendErr) {
+      log.warn(`[Graph] resend checkout failed: ${resendErr.message}`);
+    }
+  }
+
   if (buttonId && String(buttonId).startsWith("collection_")) {
     const selId = String(buttonId).replace(/^collection_/, "");
     const md = { ...(convo.metadata || {}), selectedCollectionId: selId, checkout_url: convo.metadata?.checkout_url };
@@ -4412,9 +4425,29 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         data.checkoutMessage ||
         client.commerceBotSettings?.checkoutMessage ||
         "Complete your checkout 👉 {{checkout_url}}\n\nTotal: {{currency}} {{cart_total}}";
-      const total = convo?.lastCheckoutValue ?? 0;
-      const link = convo?.lastCheckoutUrl || "";
+      let total = convo?.lastCheckoutValue ?? 0;
+      let link = convo?.lastCheckoutUrl || convo?.metadata?.checkout_url || "";
       const currency = convo?.pendingCart?.items?.[0]?.currency || "INR";
+      if (!link && convo?.pendingCart?.items?.length) {
+        try {
+          const { generateCheckoutForOrder } = require("./commerceCheckoutService");
+          const bundle = await generateCheckoutForOrder(client, phone, convo.pendingCart.items);
+          link = bundle.shortUrl || bundle.fullUrl || "";
+          total = Number(bundle.totalValue) || total;
+          if (convo?._id && link) {
+            await Conversation.findByIdAndUpdate(convo._id, {
+              $set: {
+                lastCheckoutUrl: link,
+                lastCheckoutShortCode: bundle.shortCode,
+                lastCheckoutValue: total,
+                "metadata.checkout_url": link,
+              },
+            });
+          }
+        } catch (cartErr) {
+          log.warn(`[cart_handler] checkout regenerate failed: ${cartErr.message}`);
+        }
+      }
       tpl = injectVariables(String(tpl), {
         checkout_url: link,
         cart_total: Number(total).toLocaleString("en-IN"),
@@ -5247,7 +5280,41 @@ async function executeAutomationFlow(opts) {
 }
 
 /**
- * After catalogCheckoutService builds permalink + CheckoutLink, send cart_handler or default checkout text.
+ * WhatsApp catalog order webhook: build per-user checkout link + send message.
+ * Multi-tenant: clientDoc.shopDomain + variant IDs from that store's catalog sync.
+ */
+async function handleWhatsAppCatalogOrder(clientDoc, phone, orderData = {}) {
+  const { generateCheckoutForOrder } = require("./commerceCheckoutService");
+  const items = Array.isArray(orderData.product_items) ? orderData.product_items : [];
+  if (!items.length) {
+    log.warn("[CatalogOrder] No product_items on order payload");
+    return { shortUrl: "", checkoutUrl: "", totalPrice: 0, shortCode: "" };
+  }
+
+  const bundle = await generateCheckoutForOrder(clientDoc, phone, items);
+  await deliverCartCheckoutFromFlow(clientDoc, phone, orderData, {
+    shortUrl: bundle.shortUrl,
+    checkoutUrl: bundle.fullUrl,
+    shortCode: bundle.shortCode,
+    totalPrice: bundle.totalValue,
+    currency: bundle.currency,
+  });
+
+  log.info(
+    `[CatalogOrder] Checkout for ${clientDoc.clientId} / ${phone}: ${bundle.shortUrl ? "short link" : "direct"} (${items.length} items)`
+  );
+
+  return {
+    shortUrl: bundle.shortUrl || bundle.fullUrl || "",
+    checkoutUrl: bundle.fullUrl || "",
+    totalPrice: Number(bundle.totalValue) || 0,
+    shortCode: bundle.shortCode || "",
+    currency: bundle.currency || "INR",
+  };
+}
+
+/**
+ * After commerceCheckoutService builds permalink + CheckoutLink, send cart_handler or default checkout text.
  * Called from masterWebhook (order.type === 'order').
  */
 async function deliverCartCheckoutFromFlow(client, phone, orderData, checkoutBundle) {
@@ -5322,6 +5389,7 @@ module.exports = {
   sendNodeContent,
   saveInboundMessage,
   saveOutboundMessage,
-  deliverCartCheckoutFromFlow
+  handleWhatsAppCatalogOrder,
+  deliverCartCheckoutFromFlow,
 };
 

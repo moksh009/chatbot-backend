@@ -123,7 +123,9 @@ async function buildVariableContext(client, phone, convo, lead) {
     clientLean.nicheData?.storeUrl
     || (clientLean.shopDomain ? `https://${String(clientLean.shopDomain).replace(/^https?:\/\//, "")}` : "");
   const checkoutUrl =
-    leadLean?.checkoutUrl
+    convoLean?.lastCheckoutUrl
+    || meta.checkout_url
+    || leadLean?.checkoutUrl
     || (leadLean?.cartSnapshot?.token
       ? `${storeUrl}/cart/${leadLean.cartSnapshot.token}?utm_source=whatsapp`
       : (clientLean.platformVars?.checkoutUrl || storeUrl));

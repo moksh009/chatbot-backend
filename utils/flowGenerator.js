@@ -875,9 +875,8 @@ function buildCatalogBranch(ctx, IDS) {
       position: flowPos(7, 0),
       data: {
         label: "Checkout link",
-        text: storeUrl
-          ? `Complete checkout here: ${storeUrl}/cart`
-          : "Your checkout link is ready in store settings. Meanwhile, I can help with product details or connect you to support.",
+        text:
+          "Complete your checkout here 👉 {{checkout_url}}\n\nTotal: {{currency}} {{cart_total}}\n\nThis link is for your cart only and expires soon.",
         heatmapCount: 0
       }
     }
@@ -1096,13 +1095,12 @@ function buildCatalogBranch(ctx, IDS) {
         },
         {
           id: IDS.cat_ck_follow,
-          type: "message",
+          type: "cart_handler",
           position: flowPos(10, 0),
           data: {
             label: "Resend checkout link",
-            text: storeUrl
-              ? `Here is your checkout link again: ${storeUrl}/cart`
-              : "Checkout link is not configured yet. Share your issue and support will help you complete the order.",
+            checkoutMessage:
+              "Here is your checkout link again 👉 {{checkout_url}}\n\nTotal: {{currency}} {{cart_total}}",
             heatmapCount: 0
           }
         }
