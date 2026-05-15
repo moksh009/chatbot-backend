@@ -107,6 +107,8 @@ function buildShopifyOrderSet(clientId, data, options = {}) {
     price: parseFloat(item.price),
     sku: item.sku || '',
     image: lineItemImage(item),
+    productId: item.product_id != null ? String(item.product_id) : '',
+    variantId: item.variant_id != null ? String(item.variant_id) : '',
   }));
 
   const ff = extractPrimaryFulfillment(data);

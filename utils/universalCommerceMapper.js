@@ -62,7 +62,7 @@ function nestedUniversalToWizardFeatures(universal = {}) {
   return {
     enableCatalog: bool(browse.enabled, true),
     enableOrderTracking: bool(u.orderTracking?.enabled, true),
-    enableReturnsRefunds: bool(help.enabled, false),
+    enableReturnsRefunds: bool(help.enableReturns, false),
     enableCancelOrder: bool(cancel.enabled, true),
     cancelRequireReason: cancel.requireReason !== false,
     cancelAllowModify: cancel.allowModify !== false,

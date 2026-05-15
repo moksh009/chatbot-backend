@@ -7,11 +7,13 @@ const mongoose = require('mongoose');
  */
 const ButtonFormSchema = new mongoose.Schema(
   {
-    buttonType: { type: String, enum: ['QUICK_REPLY', 'URL', 'PHONE_NUMBER'] },
+    buttonType: { type: String, enum: ['QUICK_REPLY', 'URL', 'PHONE_NUMBER', 'COPY_CODE'] },
     text: { type: String },
     url: { type: String, default: null },
     urlType: { type: String, enum: ['Static', 'Dynamic'], default: 'Static' },
     sampleUrl: { type: String, default: null },
+    urlVarSamples: { type: mongoose.Schema.Types.Mixed, default: null },
+    couponCode: { type: String, default: null },
     phoneNumber: { type: String, default: null },
   },
   { _id: false }

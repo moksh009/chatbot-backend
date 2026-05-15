@@ -239,7 +239,7 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
           if (!order) {
             order = await Order.findOne({
               clientId: client.clientId,
-              ...orderIdMatch,
+              $and: [phoneOr, orderIdMatch],
             })
               .sort({ createdAt: -1 })
               .lean();
@@ -611,7 +611,7 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
         try {
           const AdLead = require('../models/AdLead');
           await AdLead.findOneAndUpdate(
-            { phone, clientId: client.clientId },
+            { phoneNumber: phone, clientId: client.clientId },
             { $set: { 'metadata.codConversionOffered': true, 'metadata.lastCodOfferAt': new Date() } }
           );
         } catch { /* non-blocking */ }
@@ -629,7 +629,7 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
 
         // Get lead for cart data
         const AdLead = require('../models/AdLead');
-        const leadRecord = lead || await AdLead.findOne({ phone, clientId: client.clientId });
+        const leadRecord = lead || await AdLead.findOne({ phoneNumber: phone, clientId: client.clientId });
 
         let messageText = null;
 
@@ -654,7 +654,7 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
         try {
           const AdLead2 = require('../models/AdLead');
           await AdLead2.findOneAndUpdate(
-            { phone, clientId: client.clientId },
+            { phoneNumber: phone, clientId: client.clientId },
             {
               $set: { [`metadata.cartRecoveryStep${stepNumber}SentAt`]: new Date() },
               $inc: { 'metadata.cartRecoveryStepsSent': 1 }
@@ -769,6 +769,60 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
         }
       } catch (err) {
         console.error('[NodeActions] LOG_REVIEW_NEGATIVE error:', err.message);
+      }
+      break;
+    }
+
+    case "CART_RECOVERY_START": {
+      try {
+        const AdLead = require("../models/AdLead");
+        const { normalizePhone } = require("./helpers");
+        const clean = normalizePhone(phone);
+        await AdLead.findOneAndUpdate(
+          { phoneNumber: clean, clientId: client.clientId },
+          {
+            $set: {
+              cartStatus: "abandoned",
+              recoveryStep: 0,
+              recoveryStartedAt: new Date(),
+            },
+          },
+          { upsert: false }
+        );
+        if (convo?._id) {
+          const Conversation = require("../models/Conversation");
+          await Conversation.findByIdAndUpdate(convo._id, {
+            $set: { "metadata.cartRecoveryActive": true },
+          });
+        }
+      } catch (err) {
+        console.error("[NodeActions] CART_RECOVERY_START error:", err.message);
+      }
+      break;
+    }
+
+    case "ORDER_REFUND_STATUS": {
+      try {
+        const Order = require("../models/Order");
+        const { normalizePhone } = require("./helpers");
+        const clean = normalizePhone(phone);
+        const order = await Order.findOne({
+          clientId: client.clientId,
+          $or: [{ customerPhone: clean }, { customerPhone: phone }],
+        })
+          .sort({ createdAt: -1 })
+          .lean();
+        const status = String(order?.financialStatus || order?.status || "").toLowerCase();
+        let msg =
+          "For *{{brand_name}}* orders, refunds usually post within *5–7 business days* after approval, depending on your bank.";
+        if (status.includes("refund")) {
+          msg = "✅ Your refund for order *{{order_number}}* has been initiated. It may take 5–7 business days to reflect in your account.";
+        } else if (order) {
+          msg = `Order *${order.orderNumber || order.orderId}* status: *${order.status || "processing"}*. If you requested a refund, our team will confirm on WhatsApp shortly.`;
+        }
+        await WhatsApp.sendText(client, phone, replaceVariables(msg, client, lead, convo));
+      } catch (err) {
+        console.error("[NodeActions] ORDER_REFUND_STATUS error:", err.message);
       }
       break;
     }

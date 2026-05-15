@@ -43,6 +43,35 @@ router.get('/', protect, logPersonalDataAccess, async (req, res) => {
   }
 });
 
+// GET /api/orders/products?clientId=X — distinct products from order line items
+router.get('/products', protect, logPersonalDataAccess, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    const { getDistinctOrderProducts } = require('../utils/ordersFilterAggregations');
+    const products = await getDistinctOrderProducts(clientId);
+    res.json({ success: true, products });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// GET /api/orders/states?clientId=X — states extracted from shipping addresses
+router.get('/states', protect, logPersonalDataAccess, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    const { getDistinctOrderStates } = require('../utils/ordersFilterAggregations');
+    const states = await getDistinctOrderStates(clientId);
+    res.json({ success: true, states });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 
 router.get('/:clientId/cod-pipeline', protect, logPersonalDataAccess, async (req, res) => {
   try {

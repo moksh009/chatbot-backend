@@ -7,7 +7,8 @@ const CartRecoveryAttempt = require('../models/CartRecoveryAttempt');
 const {
   calculateAndStoreAllProducts,
   buildDashboardMetrics,
-  buildProductIntelligence
+  buildProductIntelligence,
+  getOrdersByState,
 } = require('../utils/storeEconomicsEngine');
 const { withShopifyRetry } = require('../utils/shopifyHelper');
 
@@ -140,16 +141,18 @@ router.get('/dashboard', async (req, res) => {
     const { clientId, startDate, endDate } = req.query;
     if (!clientId || !startDate || !endDate) return res.status(400).json({ success: false, error: 'Missing required parameters' });
 
-    const [metrics, productIntelligence] = await Promise.all([
+    const [metrics, productIntelligence, ordersByState] = await Promise.all([
       buildDashboardMetrics(clientId, startDate, endDate),
-      buildProductIntelligence(clientId, startDate, endDate)
+      buildProductIntelligence(clientId, startDate, endDate),
+      getOrdersByState(clientId, startDate, endDate),
     ]);
 
     res.json({
       success: true,
       data: {
         ...metrics,
-        ...productIntelligence
+        ...productIntelligence,
+        ordersByState,
       }
     });
   } catch (error) {

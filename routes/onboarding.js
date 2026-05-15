@@ -196,6 +196,15 @@ router.patch('/step/:stepNumber', protect, async (req, res) => {
     // business — persona socket only when persona-facing fields actually change
     if (stepId === 'business' && stepData) {
       if (stepData.businessName)        { pvUpdate.businessName = stepData.businessName; pvUpdate['platformVars.brandName'] = stepData.businessName; }
+      if (stepData.industry)            pvUpdate.industry = stepData.industry;
+      if (stepData.supportPhone) {
+        pvUpdate['platformVars.supportWhatsapp'] = stepData.supportPhone;
+        pvUpdate.supportPhone = stepData.supportPhone;
+      }
+      if (stepData.googleReviewUrl && String(stepData.googleReviewUrl).trim()) {
+        pvUpdate.googleReviewUrl = String(stepData.googleReviewUrl).trim();
+        pvUpdate['platformVars.googleReviewUrl'] = String(stepData.googleReviewUrl).trim();
+      }
       if (stepData.botName !== undefined && wizardStepFieldChanged(prevStepBlob, stepData, 'botName')) {
         queuePersona({ name: stepData.botName });
       }
@@ -288,7 +297,7 @@ router.patch('/step/:stepNumber', protect, async (req, res) => {
       }
     }
 
-    if (stepId === 'features' && stepData?.features && typeof stepData.features === 'object') {
+    if (stepData?.features && typeof stepData.features === 'object') {
       Object.assign(pvUpdate, mapFeatureToggle(stepData.features));
     }
 

@@ -233,6 +233,9 @@ router.get('/list', protect, async (req, res) => {
                   if (b.buttonType === 'PHONE_NUMBER') {
                     return { type: 'PHONE_NUMBER', text: b.text, phone_number: b.phoneNumber || '' };
                   }
+                  if (b.buttonType === 'COPY_CODE') {
+                    return { type: 'COPY_CODE', text: b.text, example: b.couponCode || '' };
+                  }
                 }
                 return b;
               });

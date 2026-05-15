@@ -11,6 +11,15 @@ const shopifyAdminApiVersion = require('./shopifyAdminApiVersion');
  */
 async function scheduleReviewRequest(client, orderData) {
     try {
+        const wf = client.wizardFeatures || {};
+        const reviewsOn =
+            wf.enableReviewCollection === true ||
+            client.onboardingData?.features?.enableReviewCollection === true;
+        if (!reviewsOn) {
+            log.debug(`[Reputation] Review collection disabled for ${client.clientId} — skip schedule`);
+            return;
+        }
+
         const phone = orderData.phone || orderData.customer?.phone || orderData.billing_address?.phone;
         if (!phone) return;
 

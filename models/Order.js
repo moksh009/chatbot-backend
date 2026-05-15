@@ -71,6 +71,8 @@ const OrderSchema = new mongoose.Schema({
     price: Number,
     sku: String,
     image: String,
+    productId: String,
+    variantId: String,
   }],
   shippingAddress: { type: Object },
   billingAddress: { type: Object },
@@ -93,5 +95,6 @@ OrderSchema.index({ clientId: 1, isCOD: 1 });
 OrderSchema.index({ clientId: 1, codConfirmationResponse: 1 });
 OrderSchema.index({ phone: 1 });
 OrderSchema.index({ clientId: 1, phone: 1 });
+OrderSchema.index({ clientId: 1, 'items.productId': 1 });
 
 module.exports = mongoose.model('Order', OrderSchema);

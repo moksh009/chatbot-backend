@@ -193,12 +193,21 @@ async function buildDashboardMetrics(clientId, startDate, endDate) {
     { name: 'Fixed Overheads', value: Math.round((totalFixedOverheads / totalCosts) * 10000) / 100 }
   ] : [];
 
+  const codPct = totalOrderCount > 0 ? Math.round((codOrderCount / totalOrderCount) * 1000) / 10 : 0;
+  const prepaidPct = totalOrderCount > 0 ? Math.round((prepaidOrderCount / totalOrderCount) * 1000) / 10 : 0;
+
   return {
     heroMetrics: {
       trueNetProfit,
       totalGrossRevenue,
       liveRtoRate: actualRtoRate,
       liveRtoRateIsConfigured: actualRtoRate.isConfigured
+    },
+    paymentMethodSplit: {
+      codOrders: codOrderCount,
+      prepaidOrders: prepaidOrderCount,
+      codPercent: codPct,
+      prepaidPercent: prepaidPct,
     },
     waterfall,
     totalOrderCount,
@@ -207,6 +216,45 @@ async function buildDashboardMetrics(clientId, startDate, endDate) {
     costComposition,
     timeline: { startDate, endDate }
   };
+}
+
+/**
+ * Geographic order distribution from Mongo order shipping addresses.
+ */
+async function getOrdersByState(clientId, startDate, endDate) {
+  const Order = require('../models/Order');
+  const { extractStateFromAddress } = require('./extractStateFromAddress');
+
+  const query = { clientId };
+  if (startDate || endDate) {
+    query.createdAt = {};
+    if (startDate) query.createdAt.$gte = new Date(startDate);
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      query.createdAt.$lte = end;
+    }
+  }
+
+  const orders = await Order.find(query)
+    .select('shippingAddress state address city totalPrice amount')
+    .lean();
+
+  const stateMap = {};
+  for (const order of orders) {
+    const state =
+      extractStateFromAddress(order.shippingAddress) ||
+      extractStateFromAddress(order.state) ||
+      extractStateFromAddress([order.address, order.city, order.state].filter(Boolean).join(', '));
+    if (!state) continue;
+    if (!stateMap[state]) stateMap[state] = { orderCount: 0, totalRevenue: 0 };
+    stateMap[state].orderCount += 1;
+    stateMap[state].totalRevenue += Number(order.totalPrice ?? order.amount ?? 0);
+  }
+
+  return Object.entries(stateMap)
+    .map(([state, data]) => ({ state, ...data }))
+    .sort((a, b) => b.orderCount - a.orderCount);
 }
 
 /**
@@ -413,6 +461,7 @@ module.exports = {
   calculateNetProfitPerProduct,
   calculateAndStoreAllProducts,
   buildDashboardMetrics,
+  getOrdersByState,
   computeActualRtoRate,
   buildProductIntelligence,
   determinePrimaryCostDriver,

@@ -18,6 +18,109 @@ const { hydrateProductTemplateRecord } = require("../utils/templateImageHydrate"
 const MetaTemplate = require("../models/MetaTemplate");
 const { PREBUILT_REQUIRED_TEMPLATES } = require("../constants/templateLifecycle");
 
+function assertWizardTenant(req, clientId) {
+  const tenantId = tenantClientId(req);
+  if (!tenantId || tenantId !== clientId) {
+    return { ok: false };
+  }
+  return { ok: true };
+}
+
+/** Regenerate main + automation flows after settings feature toggles. */
+async function regenerateClientFlowsFromFeatures(client, source = "settings_features") {
+  const { generateCommerceWizardPack } = require("../utils/flowGenerator");
+  const { createFlowsFromCommercePack, deletePriorWizardFlows } = require("../utils/wizardCommercePackPersist");
+  const { buildWizardDataFromUniversal } = require("../utils/universalCommerceMapper");
+
+  const wf =
+    client.wizardFeatures && typeof client.wizardFeatures.toObject === "function"
+      ? client.wizardFeatures.toObject()
+      : { ...(client.wizardFeatures || {}) };
+
+  const wizardData = buildWizardDataFromUniversal(client, {
+    features: wf,
+    preserveNodeIds: true,
+    brandName: client.platformVars?.brandName || client.businessName,
+    botName: client.platformVars?.agentName || client.ai?.persona?.name,
+    tone: client.platformVars?.defaultTone || client.ai?.persona?.tone,
+    botLanguage: client.platformVars?.defaultLanguage || client.ai?.persona?.language,
+    adminPhone: client.platformVars?.adminWhatsappNumber || client.adminPhone,
+    adminEmail: client.adminEmail,
+    googleReviewUrl: client.platformVars?.googleReviewUrl || client.googleReviewUrl,
+    facebookCatalogId: client.facebookCatalogId,
+    cartTiming: {
+      msg1: wf.cartNudgeMinutes1,
+      msg2: wf.cartNudgeHours2,
+      msg3: wf.cartNudgeHours3,
+    },
+  });
+  const templates = getPrebuiltTemplates(wizardData);
+  const useCommercePack = client.commerceFlowPack !== false;
+
+  if (useCommercePack) {
+    await deletePriorWizardFlows(client.clientId);
+    const pack = await generateCommerceWizardPack(client, { ...wizardData, templates });
+    const persistedPack = await createFlowsFromCommercePack(client.clientId, pack.flows, {
+      generatedBy: source,
+      status: "PUBLISHED",
+      idPrefix: "flow_wizard",
+      visualInlineGraph: true,
+      visualMaxNodes: 20,
+    });
+
+    const existingFlows = client.visualFlows || [];
+    const kept = existingFlows.filter((vf) => {
+      const id = String(vf.id || "");
+      const gen = vf.generatedBy || "";
+      return (
+        gen !== "wizard" &&
+        gen !== source &&
+        gen !== "commerce_wizard_v2" &&
+        gen !== "settings_features" &&
+        !id.startsWith("flow_wizard_") &&
+        !id.startsWith("flow_gfw_")
+      );
+    });
+    const normalizedKept = kept.map((vf) =>
+      vf.platform === "whatsapp" ? { ...vf, isActive: false } : vf
+    );
+
+    await Client.findByIdAndUpdate(client._id, {
+      $set: {
+        flowNodes: persistedPack.mainNodes,
+        flowEdges: persistedPack.mainEdges,
+        visualFlows: [...normalizedKept, ...persistedPack.visualEntries],
+      },
+    });
+
+    return {
+      nodes: persistedPack.mainNodes.length,
+      edges: persistedPack.mainEdges.length,
+      automationCount: (pack.automationFlows || []).length,
+    };
+  }
+
+  const genOut = await generateEcommerceFlow(client, { ...wizardData, templates });
+  const { nodes, edges } = genOut;
+  const visualFlows = client.visualFlows || [];
+  const activeIdx = visualFlows.findIndex((f) => f.isActive && f.platform === "whatsapp");
+  if (activeIdx !== -1) {
+    visualFlows[activeIdx] = {
+      ...visualFlows[activeIdx],
+      nodes: nodes.length > 20 ? [] : nodes,
+      edges: nodes.length > 20 ? [] : edges,
+      nodeCount: nodes.length,
+      edgeCount: edges.length,
+      updatedAt: new Date(),
+      generatedBy: source,
+    };
+  }
+  await Client.findByIdAndUpdate(client._id, {
+    $set: { flowNodes: nodes, flowEdges: edges, visualFlows },
+  });
+  return { nodes: nodes.length, edges: edges.length, automationCount: (genOut.automationFlows || []).length };
+}
+
 async function syncPendingTemplatesForClient(client) {
   const axios = require("axios");
   const { decrypt } = require("../utils/encryption");
@@ -320,8 +423,7 @@ router.post("/:clientId/flow-graph-preview", protect, async (req, res) => {
       templates,
       features: {
         ...(wizardData?.features || {}),
-        enableCodToPrepaid: false,
-        codPrepaidComingSoon: true,
+        codPrepaidComingSoon: !wizardData?.features?.enableCodToPrepaid,
       },
     };
     const pack = await generateCommerceWizardPack(client, previewData);
@@ -435,8 +537,7 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       ...wizardData,
       features: {
         ...(wizardData.features || {}),
-        enableCodToPrepaid: false,
-        codPrepaidComingSoon: true,
+        codPrepaidComingSoon: !wizardData?.features?.enableCodToPrepaid,
       },
     };
 
@@ -672,6 +773,9 @@ router.post("/:clientId/generate-from-url", protect, async (req, res) => {
   const { url, geminiApiKey } = req.body;
 
   if (!url) return res.status(400).json({ error: "URL is required" });
+  if (!assertWizardTenant(req, clientId).ok) {
+    return res.status(403).json({ error: "Unauthorized" });
+  }
 
   try {
     const cheerio = require('cheerio');
@@ -745,6 +849,10 @@ router.get("/:clientId/shopify-products", protect, async (req, res) => {
   const { clientId } = req.params;
   const axios = require("axios");
   const { decrypt } = require("../utils/encryption");
+
+  if (!assertWizardTenant(req, clientId).ok) {
+    return res.status(403).json({ error: "Unauthorized" });
+  }
 
   try {
     const client = await Client.findOne({ clientId });
@@ -880,6 +988,9 @@ router.get("/:clientId/debug-shopify", protect, async (req, res) => {
 router.post("/:clientId/templates", protect, async (req, res) => {
   const { clientId } = req.params;
   const { wizardData } = req.body;
+  if (!assertWizardTenant(req, clientId).ok) {
+    return res.status(403).json({ error: "Unauthorized" });
+  }
   try {
     const client = await Client.findOne({ clientId }).lean();
     const templates = getPrebuiltTemplates(wizardData || {});
@@ -1154,8 +1265,12 @@ router.post("/:clientId/submit-automation-templates", protect, async (req, res) 
 });
 
 router.post("/:clientId/verify-gemini", protect, async (req, res) => {
+  const { clientId } = req.params;
   const { apiKey } = req.body;
   if (!apiKey) return res.status(400).json({ success: false, error: "API Key is required" });
+  if (!assertWizardTenant(req, clientId).ok) {
+    return res.status(403).json({ success: false, error: "Unauthorized" });
+  }
 
   try {
     // Phase 30: Use Fast wrapper with decrypt support
@@ -1221,65 +1336,19 @@ router.patch("/:clientId/features", protect, async (req, res) => {
     let regenSummary = null;
     if (regenerate) {
       try {
-        const wizardData = {
-          businessName:       client.platformVars?.brandName || client.businessName,
-          botName:            client.platformVars?.agentName || client.ai?.persona?.name,
-          tone:               client.platformVars?.defaultTone || client.ai?.persona?.tone,
-          botLanguage:        client.platformVars?.defaultLanguage || client.ai?.persona?.language,
-          businessDescription:client.platformVars?.businessDescription,
-          adminPhone:         client.platformVars?.adminWhatsappNumber || client.adminPhone,
-          checkoutUrl:        client.platformVars?.checkoutUrl,
-          googleReviewUrl:    client.platformVars?.googleReviewUrl,
-          openTime:           client.platformVars?.openTime,
-          closeTime:          client.platformVars?.closeTime,
-          warrantyDuration:   client.wizardFeatures?.warrantyDuration || client.platformVars?.warrantyDuration,
-          warrantySupportPhone: client.wizardFeatures?.warrantySupportPhone || client.brand?.warrantySupportPhone,
-          warrantySupportEmail: client.wizardFeatures?.warrantySupportEmail || client.platformVars?.supportEmail,
-          warrantyClaimUrl:   client.wizardFeatures?.warrantyClaimUrl || client.brand?.warrantyClaimUrl,
-          currency:           client.platformVars?.baseCurrency,
-          features:           (client.wizardFeatures && client.wizardFeatures.toObject) ? client.wizardFeatures.toObject() : client.wizardFeatures,
-          replaceExisting:    true,
-          preserveNodeIds:    true   // keeps active conversations alive on regen
-        };
-        const genOut = await generateEcommerceFlow(client, wizardData);
-        const { nodes, edges } = genOut;
-
         clearTriggerCache(clientId);
+        regenSummary = await regenerateClientFlowsFromFeatures(client, "settings_features");
 
-        // Update client with the regenerated flow (legacy + visualFlows[active]).
-        const visualFlows = client.visualFlows || [];
-        const activeIdx = visualFlows.findIndex(f => f.isActive && f.platform === 'whatsapp');
-        if (activeIdx !== -1) {
-          visualFlows[activeIdx] = {
-            ...visualFlows[activeIdx],
-            nodes:       nodes.length > 20 ? [] : nodes,
-            edges:       nodes.length > 20 ? [] : edges,
-            nodeCount:   nodes.length,
-            edgeCount:   edges.length,
-            updatedAt:   new Date(),
-            generatedBy: 'settings_features'
-          };
-        }
-        await Client.findByIdAndUpdate(client._id, {
-          $set: {
-            flowNodes: nodes,
-            flowEdges: edges,
-            visualFlows
-          }
-        });
-
-        // Live-notify dashboards.
         try {
-          emitToClient(clientId, 'wizard:flow-regenerated', {
+          emitToClient(clientId, "wizard:flow-regenerated", {
             clientId,
-            source: 'feature_toggle',
-            nodeCount: nodes.length,
-            edgeCount: edges.length,
-            generatedAt: new Date()
+            source: "feature_toggle",
+            nodeCount: regenSummary.nodes,
+            edgeCount: regenSummary.edges,
+            automationCount: regenSummary.automationCount,
+            generatedAt: new Date(),
           });
         } catch (_) {}
-
-        regenSummary = { nodes: nodes.length, edges: edges.length };
       } catch (genErr) {
         log.error(`[Features] Regen failed for ${clientId}: ${genErr.message}`);
         regenSummary = { error: genErr.message };

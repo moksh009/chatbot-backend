@@ -114,10 +114,22 @@ function buildMetaComponents({
         }
         if (btn.buttonType === 'URL') {
           const btnObj = { type: 'URL', text: btn.text, url: btn.url };
-          if (btn.urlType === 'Dynamic' && btn.sampleUrl) {
-            btnObj.example = [btn.sampleUrl];
+          if (btn.urlType === 'Dynamic') {
+            const sample =
+              btn.sampleUrl ||
+              (btn.urlVarSamples && typeof btn.urlVarSamples === 'object'
+                ? Object.values(btn.urlVarSamples).find((v) => String(v || '').trim())
+                : null);
+            if (sample) btnObj.example = [String(sample).trim()];
           }
           return btnObj;
+        }
+        if (btn.buttonType === 'COPY_CODE') {
+          return {
+            type: 'COPY_CODE',
+            text: btn.text,
+            example: btn.couponCode,
+          };
         }
         if (btn.buttonType === 'PHONE_NUMBER') {
           return { type: 'PHONE_NUMBER', text: btn.text, phone_number: btn.phoneNumber };
@@ -284,6 +296,25 @@ async function submitTemplateToMeta(req, res) {
       }
       if (btn.buttonType === 'URL' && !btn.url) {
         return res.status(400).json({ error: 'Visit Website buttons require a URL.' });
+      }
+      if (btn.buttonType === 'URL' && btn.urlType === 'Dynamic') {
+        const urlVars = (btn.url || '').match(/\{\{\d+\}\}/g) || [];
+        if (urlVars.length > 0) {
+          const samples = btn.urlVarSamples && typeof btn.urlVarSamples === 'object' ? btn.urlVarSamples : {};
+          const sampleUrl = String(btn.sampleUrl || '').trim();
+          const missing = urlVars.some((tok) => !String(samples[tok] || sampleUrl).trim());
+          if (missing) {
+            return res.status(400).json({ error: 'Please enter a valid website URL for each dynamic URL variable.' });
+          }
+        }
+      }
+      if (btn.buttonType === 'COPY_CODE') {
+        if (!btn.text || btn.text.length > 25) {
+          return res.status(400).json({ error: 'Copy offer code button text must be 1–25 characters.' });
+        }
+        if (!btn.couponCode || btn.couponCode.length > 15) {
+          return res.status(400).json({ error: 'Coupon code must be 1–15 characters.' });
+        }
       }
       if (btn.buttonType === 'PHONE_NUMBER' && !btn.phoneNumber) {
         return res.status(400).json({ error: 'Call Number buttons require a phone number.' });

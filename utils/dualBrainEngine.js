@@ -179,6 +179,14 @@ async function getFlowGraphForConversation(client, convo) {
       }).lean();
     }
     if (flowDoc) {
+      if (flowDoc.clientId && flowDoc.clientId !== client.clientId) {
+        log.warn(
+          `[FlowGraph] Flow ${activeFlowId} belongs to ${flowDoc.clientId}, not ${client.clientId} — ignoring`
+        );
+        flowDoc = null;
+      }
+    }
+    if (flowDoc) {
       // CRITICAL: Read from publishedNodes/publishedEdges (immutable snapshot)
       // Never read from draft nodes — prevents live edits from affecting running bots
       const pubNodes = flowDoc.publishedNodes || [];

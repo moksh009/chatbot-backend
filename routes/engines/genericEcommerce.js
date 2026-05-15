@@ -1008,21 +1008,13 @@ const handleShopifyLinkOpenedWebhook = async (req, res) => {
 const getClientOrders = async (req, res) => {
     try {
         const clientConfig = req.clientConfig;
-        const { phone } = req.query;
-        
-        let query = { clientId: clientConfig.clientId };
-        
-        if (phone) {
-            // Standardize phone (remove +, spaces, leading zeros for matching)
-            const cleanPhone = phone.replace(/\D/g, '').slice(-10); 
-            query.$or = [
-                { phone: new RegExp(cleanPhone + '$') },
-                { customerPhone: new RegExp(cleanPhone + '$') }
-            ];
-        }
+        const { buildOrderListQuery, filterOrdersByStatusTab } = require('../../utils/orderListQuery');
+        const { mongoQuery, statusTab } = buildOrderListQuery(clientConfig.clientId, req.query);
 
-        const raw = await Order.find(query).sort({ createdAt: -1 }).limit(200);
-        const orders = dedupeOrdersByShopifyKey(raw).slice(0, 100);
+        const raw = await Order.find(mongoQuery).sort({ createdAt: -1 }).limit(500).lean();
+        let orders = dedupeOrdersByShopifyKey(raw);
+        orders = filterOrdersByStatusTab(orders, statusTab || req.query.statusTab || 'All');
+        orders = orders.slice(0, 100);
         res.json({ success: true, orders });
     } catch (error) {
         console.error('[getClientOrders] Error:', error);

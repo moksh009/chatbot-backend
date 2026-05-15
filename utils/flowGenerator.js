@@ -2598,6 +2598,19 @@ async function generateCommerceWizardPack(client, body = {}) {
     });
   }
 
+  if (merged.features?.enableReviewCollection) {
+    const IDS = buildIDs(client, { ...merged, preserveNodeIds: false });
+    const reviewSlice = buildReviewAutomation(ctx, IDS, content);
+    flows.push({
+      slug: "order_fulfilled_review",
+      name: `${merged.businessName || "Store"} — Review request`,
+      isAutomation: true,
+      automationTrigger: "order_fulfilled",
+      nodes: reviewSlice.nodes,
+      edges: reviewSlice.edges,
+    });
+  }
+
   for (const f of flows) {
     verifyAllEdgesMatchButtonIds(f.nodes, f.edges);
     if (!verifyFlowIntegrity(f.nodes, f.edges)) {
