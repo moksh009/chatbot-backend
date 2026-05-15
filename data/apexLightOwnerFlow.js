@@ -1,12 +1,12 @@
 /**
- * Apex Light — complete WhatsApp support & commerce (TopEdge Flow Builder).
+ * Apex Light — **reference / seed** WhatsApp flow (TopEdge Flow Builder).
  * Primary hub: 3 reply buttons (WA max 3). Full service list: n_service_menu (keywords: track, order, warranty, troubleshoot, model, shop… OR troubleshoot → Back to hub).
- * Each explore category: Meta product_list when catalog id is set (apexDualMethod), else text fallback via no_catalog edge.
+ * Each explore category: optional **MPM marketing template** (`catalogType: mpm_template`, per-node `metaTemplateName` / `productIds`) when catalog is configured, else text+link fallback via `no_catalog`. This JSON is one tenant’s story; other clients use their own flows with the same node types (`multi`, `full`, `mpm_template`, etc.) — all handled generically in dualBrainEngine + utils/whatsapp.
  */
 
 const FLOW_ID = "flow_apex_owner_support_hub_v2";
 const FLOW_NAME = "Apex Light — WhatsApp support & commerce";
-const FLOW_DESCRIPTION = "Keyword + first_message welcome (3-button hub), dual Meta catalog + text fallback per category, install list + FAQ packs, silent order lookup for order/warranty paths, HDMI 2.1/2.0 deep-dive hubs, service list (track/warranty/fix/models/shop), support FAQ gate then admin alert + live handoff, footer loopbacks.";
+const FLOW_DESCRIPTION = "Keyword + first_message welcome (3-button hub), Meta MPM marketing template per explore category (Commerce Content IDs) + text/link fallback without catalog, install list + FAQ packs, silent order lookup, HDMI hubs, service list, support FAQ gate, admin alert + live handoff, footer loopbacks.";
 
 const apexLightOwnerFlowInstallPack = require("./apexLightOwnerFlowInstallPack");
 
@@ -15,10 +15,16 @@ const HDMI21_WIRING = "https://apexlight.in/cdn/shop/files/hdmi21_wiring_diagram
 const HDMI21_CUT = "https://apexlight.in/cdn/shop/files/hdmi21_cut_points.jpg";
 const HDMI20_WIRING = "https://apexlight.in/cdn/shop/files/hdmi20_wiring_diagram.jpg";
 
+/** Meta WABA template (exact name in Manager). Header: Best Seller {{1}} items · Body/footer fixed · MPM button View items */
+const APEX_MPM_TEMPLATE = Object.freeze({
+  metaTemplateName: "carosuel",
+  languageCode: "en",
+});
+
 const COPY = {
   "mainMenuText": "👋 *Welcome to Apex Light!*\n\nTurn watching and gaming into a stunning experience.\n\n💡 *What would you like to do today?*\n\nHi! How can we help you today?\n\n🛍️ Explore our products with prices\n📦 Get your product installed (quick guide)\n🎧 Talk to our support team",
   "serviceMenuText": "*More services*\n\nTrack an order, check warranty, troubleshoot, browse the shop, or pick your model. You can also return to the three main choices.",
-  "tvIntro": "📺 *TV Backlights — Our Range*\n\nAll models support HDMI sync up to 90\" TV. Tap the product links below to visit the product page and order directly.",
+  "tvIntro": "📺 *TV Backlights — Our Range*\n\nHDMI sync for many TV sizes. If you didn’t get the WhatsApp product carousel above, scroll up — or we’ll show direct links here.",
   "tvProducts": "🔆 *Apex HDMI 2.1 TV Backlight* (32-90 inch)\nPrice: Rs. 9,999\n🛒 https://apexlight.in/products/apex-hdmi-2-1-version-tv-backlight\n\n🔆 *Apex HDMI 2.0 TV Backlight* (up to 90 inch)\nPrice: Rs. 7,599\n🛒 https://apexlight.in/products/apex-hdmi-sync-tv-backlight-for-all-tv-sizes-upto-90-inches\n\n🔆 *Apex HDMI 2.0 + Bar Light* (up to 90 inch)\nPrice: Rs. 10,499\n🛒 https://apexlight.in/products/apex-hdmi-sync-tv-backlight-hdmi-sync-bar-light\n\n🔆 *Govee TV Backlight 3 Lite*\nPrice: Rs. 8,499\n🛒 https://apexlight.in/products/govee-tv-backlight-3-lite-with-fish-eye-correction-function-sync-to-55-65-inch-tvs-11-8ft-rgbicw-wi-fi-tv-led-backlight-strip-with-camera-voice-and-app-control-adapterwork-with-all-smart-tv-and-everything",
   "tvCta": "Need help choosing? Our team is happy to suggest the right model for your TV size and setup.",
   "monitorIntro": "📺 *Monitor Sync Lighting*\n\nBring your PC or gaming setup to life with monitor-synced colours.",
@@ -55,7 +61,7 @@ const COPY = {
   "tr_colors": "*Colours wrong / opposite direction*\n\n*2.1:* Swap the two strip USB plugs on the sync box; then toggle *direction* in Smart Life strip setup.\n\n*2.0:* Direction is fixed by the *bottom-left clockwise* install path — if strips were started wrong, redo placement per the video.\n\nStill stuck? Tap *Talk to human* below or send a video to *9328613239*.",
   "tr_ps5": "*Screen flicker with PlayStation*\n\nDisable *VRR* and *HDR* in PS video settings; set HDMI to *4:2:0* if flashing continues. Confirm HDMI cables are rated for your setup.\n\nStill stuck? Tap *Talk to human* below or send a video to *9328613239*.",
   "tr_cables": "*\"No signal\" / handshake issues*\n\nReconnect in FAQ order; try another TV HDMI port for *OUT*; swap HDMI cables one at a time. Message us with photos of cable routing if unresolved.\n\nStill stuck? Tap *Talk to human* below or send a video to *9328613239*.",
-  "catAfterBrowse": "Tap a product card above to open details in your WhatsApp shop — or use *Main menu* below for more help."
+  "catAfterBrowse": "Tap *View items* on the carousel message to browse in WhatsApp — or use *Main menu* below for more help."
 };
 
 function sticky(id, x, y, text, label = 'Implementation note') {
@@ -97,7 +103,7 @@ function buildFlow() {
     },
     "data": {
       "label": "🛒 Catalog dual-path",
-      "text": "*Method 1:* Each category has a catalog (multi) node with placeholder Shopify variant IDs — replace with real IDs from `POST /api/shopify-catalog/sync-products`. When `facebookCatalogId` is set, Meta sends product_list; when missing or send fails, the engine follows `no_catalog` to Method 2 text."
+      "text": "*Template `carosuel` (Meta):* Header *Best Seller {{1}} items* (we send item count only). Body/footer fixed in Meta. Button *View items* = MPM sections from `productIds` + `sectionTitle`. Language `en`. Sync templates in dashboard; set `facebookCatalogId`. `no_catalog` = text links fallback."
     }
   },
   {
@@ -296,7 +302,7 @@ function buildFlow() {
       "label": "Explore — categories",
       "interactiveType": "list",
       "buttonText": "Select category",
-      "text": "✨ *Apex Light Product Catalogue*\n\nBrowse our full range of smart lighting products below. Select a category to see products with prices and direct links.",
+      "text": "✨ *Apex Light Product Catalogue*\n\nChoose a category — we’ll send a WhatsApp *View items* product carousel (images & prices from your Meta catalog). If catalog isn’t linked yet, you’ll get text links instead.",
       "sections": [
         {
           "title": "Product categories",
@@ -344,14 +350,17 @@ function buildFlow() {
       "y": -220
     },
     "data": {
-      "label": "M1 TV — product_list",
-      "catalogType": "multi",
+      "label": "M1 TV — MPM carousel",
+      "catalogType": "mpm_template",
+      "metaTemplateName": "carosuel",
+      "languageCode": "en",
       "apexDualMethod": true,
       "header": "TV Backlights",
-      "text": "Our HDMI sync TV backlights bring your screen to life. Tap any product to view and add to cart.",
-      "body": "Our HDMI sync TV backlights bring your screen to life. Tap any product to view and add to cart.",
-      "productIds": "SHOPIFY_VARIANT_ID_FOR_HDMI21,SHOPIFY_VARIANT_ID_FOR_HDMI20,SHOPIFY_VARIANT_ID_FOR_GOVEE_3_LITE,SHOPIFY_VARIANT_ID_FOR_HDMI20_BAR",
-      "sectionTitle": "TV Backlights"
+      "sectionTitle": "TV Backlights",
+      "text": "Here are our HDMI sync TV picks — tap *View items* to browse in WhatsApp.",
+      "body": "Here are our HDMI sync TV picks — tap *View items* to browse in WhatsApp.",
+      "productIds": "49652790919463,44466392989991,45467464794407",
+      "thumbnailProductRetailerId": "49652790919463"
     }
   },
   {
@@ -362,14 +371,17 @@ function buildFlow() {
       "y": -80
     },
     "data": {
-      "label": "M1 Monitor — product_list",
-      "catalogType": "multi",
+      "label": "M1 Monitor — MPM carousel",
+      "catalogType": "mpm_template",
+      "metaTemplateName": "carosuel",
+      "languageCode": "en",
       "apexDualMethod": true,
       "header": "Monitor Sync",
-      "text": "Monitor-sync lighting for PC and desk setups.",
-      "body": "Monitor-sync lighting for PC and desk setups.",
-      "productIds": "SHOPIFY_VARIANT_ID_MONITOR_BACKLIGHT,SHOPIFY_VARIANT_ID_MONITOR_BAR,SHOPIFY_VARIANT_ID_MONITOR_LAMP,SHOPIFY_VARIANT_ID_TRIANGLE,SHOPIFY_VARIANT_ID_HEX",
-      "sectionTitle": "Monitor Sync"
+      "sectionTitle": "Monitor Sync",
+      "text": "Monitor-sync lighting for PC and desk — tap *View items* to browse.",
+      "body": "Monitor-sync lighting for PC and desk — tap *View items* to browse.",
+      "productIds": "48956493037863,49512050262311,49355111760167,49424133357863,44471069868327",
+      "thumbnailProductRetailerId": "48956493037863"
     }
   },
   {
@@ -380,14 +392,17 @@ function buildFlow() {
       "y": 60
     },
     "data": {
-      "label": "M1 Govee — product_list",
-      "catalogType": "multi",
+      "label": "M1 Govee — MPM carousel",
+      "catalogType": "mpm_template",
+      "metaTemplateName": "carosuel",
+      "languageCode": "en",
       "apexDualMethod": true,
       "header": "Govee Collection",
-      "text": "Apex-authorized Govee picks.",
-      "body": "Apex-authorized Govee picks.",
-      "productIds": "SHOPIFY_VARIANT_ID_GOVEE_3_LITE,SHOPIFY_VARIANT_ID_GOVEE_BARS,SHOPIFY_VARIANT_ID_GOVEE_FLOOR,SHOPIFY_VARIANT_ID_GOVEE_STRIP",
-      "sectionTitle": "Govee"
+      "sectionTitle": "Govee picks",
+      "text": "Apex-authorized Govee highlights — tap *View items*.",
+      "body": "Apex-authorized Govee highlights — tap *View items*.",
+      "productIds": "49652790919463,44466392989991,45467464794407,49512050262311",
+      "thumbnailProductRetailerId": "49652790919463"
     }
   },
   {
@@ -398,14 +413,17 @@ function buildFlow() {
       "y": 200
     },
     "data": {
-      "label": "M1 Floor — product_list",
-      "catalogType": "multi",
+      "label": "M1 Floor — MPM carousel",
+      "catalogType": "mpm_template",
+      "metaTemplateName": "carosuel",
+      "languageCode": "en",
       "apexDualMethod": true,
       "header": "Floor Lamps",
-      "text": "Floor and table lamps with RGBIC and uplighter options.",
-      "body": "Floor and table lamps with RGBIC and uplighter options.",
-      "productIds": "SHOPIFY_VARIANT_ID_FLOOR_MON,SHOPIFY_VARIANT_ID_FLOOR_RGBIC,SHOPIFY_VARIANT_ID_FLOOR_UPLIGHT,SHOPIFY_VARIANT_ID_FLOOR_SPEAKER,SHOPIFY_VARIANT_ID_TABLE_RGBCW",
-      "sectionTitle": "Floor lamps"
+      "sectionTitle": "Floor & table",
+      "text": "Floor and table lamps — tap *View items* to browse.",
+      "body": "Floor and table lamps — tap *View items* to browse.",
+      "productIds": "49424133357863,49355111760167,44471069868327,49512050262311,45467464794407",
+      "thumbnailProductRetailerId": "49424133357863"
     }
   },
   {
@@ -416,14 +434,17 @@ function buildFlow() {
       "y": 340
     },
     "data": {
-      "label": "M1 Gaming — product_list",
-      "catalogType": "multi",
+      "label": "M1 Gaming — MPM carousel",
+      "catalogType": "mpm_template",
+      "metaTemplateName": "carosuel",
+      "languageCode": "en",
       "apexDualMethod": true,
       "header": "Gaming Lights",
-      "text": "Gaming bars, hexagons, wall lines, and HDMI sync TV kits.",
-      "body": "Gaming bars, hexagons, wall lines, and HDMI sync TV kits.",
-      "productIds": "SHOPIFY_VARIANT_ID_GAMING_HDMI21,SHOPIFY_VARIANT_ID_GAMING_BARS,SHOPIFY_VARIANT_ID_GAMING_MON_BAR,SHOPIFY_VARIANT_ID_GAMING_TRI,SHOPIFY_VARIANT_ID_GAMING_HEX_L,SHOPIFY_VARIANT_ID_GAMING_HEX_S,SHOPIFY_VARIANT_ID_GAMING_WALL6,SHOPIFY_VARIANT_ID_GAMING_WALL9",
-      "sectionTitle": "Gaming"
+      "sectionTitle": "Gaming & setup",
+      "text": "Gaming bars, wall lines, HDMI kits — tap *View items*.",
+      "body": "Gaming bars, wall lines, HDMI kits — tap *View items*.",
+      "productIds": "49512050262311,49652790919463,44466392989991,45467464794407,49355111760167,44471069868327",
+      "thumbnailProductRetailerId": "49512050262311"
     }
   },
   {
@@ -434,14 +455,17 @@ function buildFlow() {
       "y": 480
     },
     "data": {
-      "label": "M1 Strips — product_list",
-      "catalogType": "multi",
+      "label": "M1 Strips — MPM carousel",
+      "catalogType": "mpm_template",
+      "metaTemplateName": "carosuel",
+      "languageCode": "en",
       "apexDualMethod": true,
       "header": "LED Strip Lights",
-      "text": "COB, neon edge, and RGB-IC strips.",
-      "body": "COB, neon edge, and RGB-IC strips.",
-      "productIds": "SHOPIFY_VARIANT_ID_STRIP_COB,SHOPIFY_VARIANT_ID_STRIP_EDGE,SHOPIFY_VARIANT_ID_STRIP_NEON,SHOPIFY_VARIANT_ID_STRIP_DESK,SHOPIFY_VARIANT_ID_STRIP_RGBIC",
-      "sectionTitle": "LED strips"
+      "sectionTitle": "LED strips",
+      "text": "COB, neon, RGB-IC strips — tap *View items*.",
+      "body": "COB, neon, RGB-IC strips — tap *View items*.",
+      "productIds": "49424133357863,49355111760167,49652790919463,44466392989991,49512050262311",
+      "thumbnailProductRetailerId": "49424133357863"
     }
   },
   {
@@ -453,7 +477,7 @@ function buildFlow() {
     },
     "data": {
       "label": "TV intro",
-      "text": "📺 *TV Backlights — Our Range*\n\nAll models support HDMI sync up to 90\" TV. Tap the product links below to visit the product page and order directly."
+      "text": "📺 *TV Backlights — Our Range*\n\nIf you didn’t get the carousel message above, here are direct links and prices below."
     }
   },
   {
@@ -759,7 +783,7 @@ function buildFlow() {
     },
     "data": {
       "label": "After Meta product list",
-      "text": "Tap a product card above to open details in your WhatsApp shop — or use *Main menu* below for more help."
+      "text": "Tap *View items* on the template above to open the WhatsApp shop carousel — or use *Main menu* below for more help."
     }
   },
   {
@@ -1506,6 +1530,14 @@ function buildFlow() {
     }
   }
 ];
+  const seedMpmMetaTemplate = String(process.env.SEED_MPM_META_TEMPLATE_NAME || '').trim();
+  if (seedMpmMetaTemplate) {
+    for (const n of nodes) {
+      if (n?.type === 'catalog' && n?.data?.catalogType === 'mpm_template') {
+        n.data = { ...n.data, metaTemplateName: seedMpmMetaTemplate };
+      }
+    }
+  }
   const edges = [
   {
     "id": "e_t0",

@@ -27,6 +27,47 @@ function validatePhone(phone) {
   return cleanPhone;
 }
 
+/**
+ * Build Meta MPM template `sections` (max 10 sections, 30 product_items total).
+ * @param {{ sections?: Array<{ title?: string, product_items?: Array<{ product_retailer_id?: string }> }>, productIds?: string, sectionTitle?: string }} opts
+ */
+function normalizeMpmTemplateSections(opts = {}) {
+  const { sections: rawSections, productIds, sectionTitle } = opts;
+  let sectionsIn = Array.isArray(rawSections) && rawSections.length > 0 ? rawSections : null;
+  if (!sectionsIn && productIds) {
+    const ids = String(productIds)
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean)
+      .filter((id) => !/^SHOPIFY_/i.test(id));
+    if (ids.length) {
+      sectionsIn = [
+        {
+          title: String(sectionTitle || "Products").substring(0, 24),
+          product_items: ids.map((id) => ({ product_retailer_id: String(id) })),
+        },
+      ];
+    }
+  }
+  if (!sectionsIn || !sectionsIn.length) return [];
+
+  let budget = 30;
+  const out = [];
+  for (const sec of sectionsIn.slice(0, 10)) {
+    if (budget <= 0) break;
+    const title = String(sec.title || "Products").substring(0, 24);
+    const items = (sec.product_items || [])
+      .map((p) => ({
+        product_retailer_id: String(p.product_retailer_id || p.id || "").trim(),
+      }))
+      .filter((p) => p.product_retailer_id);
+    const slice = items.slice(0, budget);
+    budget -= slice.length;
+    if (slice.length) out.push({ title, product_items: slice });
+  }
+  return out;
+}
+
 function resolveCatalogId(client, fallback = "") {
   return (
     fallback ||
@@ -788,6 +829,132 @@ const WhatsApp = {
       }
       throw err; // Re-throw if it's a different error
     }
+  },
+
+  /**
+   * Marketing template with MPM (multi-product) "View items" button.
+   * Multi-tenant: `templateName`, body vars, and product sections are passed per send — no tenant id in this helper.
+   * @see https://developers.facebook.com/docs/whatsapp/cloud-api/guides/send-message-templates/mpm-template-messages/
+   * @param {object} client
+   * @param {string} phone
+   * @param {object} opts
+   * @param {string} opts.templateName — approved template name on the WABA
+   * @param {string} [opts.languageCode='en_US']
+   * @param {string[]|string} [opts.bodyVariables] — fills {{1}}, {{2}}, … in template BODY (comma-string ok)
+   * @param {string} [opts.headerText] — if template HEADER is TEXT with a variable
+   * @param {string} [opts.headerImage] — if template HEADER is IMAGE
+   * @param {string} opts.thumbnailProductRetailerId — Commerce Manager Content ID for carousel thumbnail
+   * @param {string} [opts.productIds] — comma-separated Content IDs (single section with sectionTitle)
+   * @param {string} [opts.sectionTitle]
+   * @param {Array} [opts.sections] — full sections array override
+   * @param {number} [opts.mpmButtonIndex=0]
+   */
+  async sendMpmMarketingTemplate(client, phone, opts = {}) {
+    const templateName = opts.templateName || opts.metaTemplateName;
+    if (!templateName) throw new Error("[WhatsApp] MPM send requires templateName");
+
+    const thumbnailProductRetailerId = String(opts.thumbnailProductRetailerId || "").trim();
+    if (!thumbnailProductRetailerId) {
+      throw new Error("[WhatsApp] MPM send requires thumbnailProductRetailerId");
+    }
+
+    const sectionsOut = normalizeMpmTemplateSections({
+      sections: opts.sections,
+      productIds: opts.productIds,
+      sectionTitle: opts.sectionTitle,
+    });
+    if (!sectionsOut.length) {
+      throw new Error("[WhatsApp] MPM send requires at least one product (sections or productIds)");
+    }
+
+    const syncedTemplates = client.syncedMetaTemplates || [];
+    const template = syncedTemplates.find((t) => t.name === templateName);
+    if (!template) {
+      const err = new Error(
+        `[WhatsApp] Template "${templateName}" is not in syncedMetaTemplates for ${client.clientId}. Sync templates from Meta Manager.`
+      );
+      err.code = "WHATSAPP_TEMPLATE_NOT_SYNCED";
+      throw err;
+    }
+
+    const countTemplateParams = (text) => {
+      const paramMatches = String(text || "").match(/{{(\d+)}}/g) || [];
+      if (!paramMatches.length) return 0;
+      return Math.max(...paramMatches.map((m) => parseInt(m.match(/\d+/)[0], 10)));
+    };
+
+    const buildTextParameters = (paramCount, rawVars, fallbackForIndex) => {
+      let vars = rawVars;
+      if (typeof vars === "string") vars = vars.split(",").map((s) => s.trim());
+      if (!Array.isArray(vars)) vars = [];
+      const parameters = [];
+      for (let i = 1; i <= paramCount; i++) {
+        let val = vars[i - 1];
+        if ((val === undefined || val === null || String(val).trim() === "") && typeof fallbackForIndex === "function") {
+          val = fallbackForIndex(i);
+        }
+        if (val === undefined || val === null || String(val).trim() === "") val = "-";
+        parameters.push({ type: "text", text: String(val).substring(0, 1024) });
+      }
+      return parameters;
+    };
+
+    const itemCount = sectionsOut.reduce((n, s) => n + (s.product_items || []).length, 0);
+
+    const components = [];
+    const header = template.components?.find((c) => c.type === "HEADER");
+    const headerParamCount = header?.format === "TEXT" ? countTemplateParams(header.text) : 0;
+
+    if (header?.format === "IMAGE" && opts.headerImage) {
+      components.push({
+        type: "header",
+        parameters: [{ type: "image", image: { link: String(opts.headerImage) } }],
+      });
+    } else if (headerParamCount > 0) {
+      const headerVars =
+        opts.mpmHeaderVariables ??
+        (opts.mpmHeaderText != null || opts.headerText != null
+          ? [opts.mpmHeaderText ?? opts.headerText]
+          : opts.headerVariables);
+      const headerParameters = buildTextParameters(headerParamCount, headerVars, (idx) =>
+        idx === 1 ? String(itemCount) : undefined
+      );
+      if (headerParameters.length) {
+        components.push({ type: "header", parameters: headerParameters });
+      }
+    }
+
+    const body = template.components?.find((c) => c.type === "BODY");
+    const bodyParamCount = body?.text ? countTemplateParams(body.text) : 0;
+    if (bodyParamCount > 0) {
+      const bodyParameters = buildTextParameters(bodyParamCount, opts.bodyVariables, null);
+      if (bodyParameters.length) {
+        components.push({ type: "body", parameters: bodyParameters });
+      }
+    }
+
+    const mpmIdx = Number(opts.mpmButtonIndex);
+    components.push({
+      type: "button",
+      sub_type: "mpm",
+      index: Number.isFinite(mpmIdx) && mpmIdx >= 0 ? mpmIdx : 0,
+      parameters: [
+        {
+          type: "action",
+          action: {
+            thumbnail_product_retailer_id: thumbnailProductRetailerId,
+            sections: sectionsOut,
+          },
+        },
+      ],
+    });
+
+    const lang = String(opts.languageCode || template.language || "en").trim() || "en";
+
+    log.info(
+      `[WhatsApp] sendMpmMarketingTemplate -> ${templateName} (${lang}) | sections=${sectionsOut.length} | items=${itemCount} | thumb=${thumbnailProductRetailerId}`
+    );
+    return await this.sendTemplate(client, phone, templateName, lang, components);
   },
 
   /**

@@ -62,7 +62,7 @@ RULES:
 - Keep outline 6-18 steps.
 - Use quick replies/buttons wherever possible.
 - CRITICAL (ecommerce): NEVER plan one WhatsApp template per product — use catalog nodes (product_list / catalog_message) and a cart_handler after add-to-cart (order webhook).
-- WhatsApp Commerce limits: max 30 products per product_list, max 10 sections; product_retailer_id = Shopify variant id after Meta catalog sync.
+- WhatsApp Commerce limits: max 30 products per product_list or MPM template sections, max 10 sections; product_retailer_id = Commerce Manager Content ID (usually Shopify variant id after Meta catalog sync). MPM uses approved marketing template + `metaTemplateName` + `thumbnailProductRetailerId`.
 - Node types for shops: catalog (browse / collections), cart_handler (checkout link after cart), interactive list (category menu).
 - Variables for cart/checkout copy: {{checkout_url}}, {{cart_total}}, {{item_count}}, {{currency}}.
 - For ecommerce catalogs, prefer catalog-first flow design (WhatsApp catalog + cart + checkout guidance) over one-template-per-product patterns.

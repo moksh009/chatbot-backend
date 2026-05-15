@@ -30,9 +30,15 @@ function resolveClientId() {
  * WhatsApp live traffic uses the **published flow in the database**, not the repo file alone — run this
  * after editing the Apex flow (or publish the same graph from the dashboard).
  *
- * Requires MONGODB_URI (or MONGO_URI). Then redeploy/restart the API so runtime code matches (e.g. DualBrain fixes).
+ * 1) Approve an MPM marketing template in Meta; body vars {{1}}… must match what nodes send (or set `mpmBodyVariables` per node in Flow Builder).
+ * 2) Dashboard → sync WhatsApp templates so `syncedMetaTemplates` includes that template name (per tenant).
+ * 3) Client Settings → Commerce: Meta catalog ID; Content IDs in flow must exist for that catalog.
+ * 4) From `chatbot-backend-main`: `node scripts/setupApexOwnerSupportFlow.js` (or `APEX_SYNC_CLIENT_ID=… node scripts/setupApexOwnerSupportFlow.js`).
+ * Optional: `SEED_MPM_META_TEMPLATE_NAME=my_tpl` rewrites `metaTemplateName` on every `mpm_template` node in this **seed** flow only (useful for white-label deploys; other tenants typically edit flows in the dashboard).
  *
- * Run from chatbot-backend-main:
+ * Requires MONGODB_URI (or MONGO_URI). Restart the API after backend code changes.
+ *
+ * Examples:
  *   node scripts/setupApexOwnerSupportFlow.js
  *   APEX_SYNC_CLIENT_ID=other_client node scripts/setupApexOwnerSupportFlow.js
  *   node scripts/setupApexOwnerSupportFlow.js --clientId=other_client

@@ -4105,6 +4105,58 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         return true;
       }
 
+      // mpm_template: tenant-agnostic — all inputs come from node.data (flow JSON / Flow Builder).
+      // Any client may use multi | full | collection | mpm_template side by side; no client id branching here.
+      if (ct === "mpm_template") {
+        const templateName = data.metaTemplateName || data.templateName || data.mpmTemplateName;
+        const ids = String(data.productIds || "")
+          .split(",")
+          .map((id) => id.trim())
+          .filter(Boolean)
+          .filter((id) => !/^SHOPIFY_/i.test(id));
+        const thumb = String(data.thumbnailProductRetailerId || ids[0] || "").trim();
+
+        if (!templateName || !thumb || !ids.length) {
+          log.warn(`[catalog] mpm_template missing templateName, thumbnail, or productIds — node ${node?.id || ""}`);
+          if (data.apexDualMethod) return false;
+          await WhatsApp.sendText(client, phone, bodyText.substring(0, 4096));
+          return true;
+        }
+
+        let bodyVariables = undefined;
+        if (Array.isArray(data.mpmBodyVariables)) {
+          bodyVariables = data.mpmBodyVariables.map((x) => String(x));
+        } else if (typeof data.mpmBodyVariables === "string" && data.mpmBodyVariables.trim()) {
+          bodyVariables = data.mpmBodyVariables.split(",").map((s) => s.trim());
+        }
+
+        const mpmHeaderText =
+          data.mpmHeaderText != null && String(data.mpmHeaderText).trim() !== ""
+            ? String(data.mpmHeaderText).trim()
+            : String(ids.length);
+
+        try {
+          await WhatsApp.sendMpmMarketingTemplate(client, phone, {
+            templateName,
+            languageCode: data.languageCode || "en",
+            bodyVariables,
+            mpmHeaderText,
+            headerText: mpmHeaderText,
+            headerImage: data.headerImageUrl || data.mpmHeaderImage || null,
+            thumbnailProductRetailerId: thumb,
+            productIds: data.productIds,
+            sectionTitle: data.sectionTitle || data.header,
+            sections: Array.isArray(data.mpmSections) ? data.mpmSections : null,
+            mpmButtonIndex: data.mpmButtonIndex,
+          });
+        } catch (mpmErr) {
+          log.error(`[catalog] sendMpmMarketingTemplate failed: ${mpmErr.message}`);
+          if (data.apexDualMethod) return false;
+          await sendWhatsAppText(client, phone, bodyText.substring(0, 4096));
+        }
+        return true;
+      }
+
       if (ct === "multi" || ct === "multi_legacy") {
         const ids = String(data.productIds || "")
           .split(",")
