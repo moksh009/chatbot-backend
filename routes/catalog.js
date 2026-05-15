@@ -1,12 +1,15 @@
 "use strict";
 
-const express           = require("express");
-const router            = express.Router();
-const Client            = require("../models/Client");
-const AdLead            = require("../models/AdLead");
-const { verifyToken }   = require("../middleware/auth");
-const { getCatalogId, syncProductsToCatalog, sendCatalogMessage, sendSingleProduct, sendMultiProduct } = require("../utils/whatsappCatalog");
-const shopifyAdminApiVersion = require("../utils/shopifyAdminApiVersion");
+const express = require("express");
+const router = express.Router();
+const Client = require("../models/Client");
+const AdLead = require("../models/AdLead");
+const ShopifyProduct = require("../models/ShopifyProduct");
+const { protect: verifyToken } = require("../middleware/auth");
+const { sendCatalogMessage, sendSingleProduct, sendMultiProduct } = require("../utils/whatsappCatalog");
+const { runMetaCatalogImport, resolveCatalogId } = require("../utils/metaCatalogSync");
+const { autoPatchMpmFlowNodes } = require("../utils/flowMpmPatch");
+const log = require("../utils/logger")("CatalogRoutes");
 
 // ─── GET /api/catalog/:clientId — status + product count ────────────────────
 router.get("/:clientId", verifyToken, async (req, res) => {
@@ -14,101 +17,122 @@ router.get("/:clientId", verifyToken, async (req, res) => {
     const client = await Client.findOne({ clientId: req.params.clientId });
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
 
-    // Count WA orders
+    const cachedCount = await ShopifyProduct.countDocuments({ clientId: req.params.clientId });
+
     const waOrdersToday = await AdLead.countDocuments({
-      clientId:   client._id,
+      clientId: client._id,
       cartStatus: "whatsapp_order_placed",
-      lastInteraction: { $gte: new Date(Date.now() - 86400000) }
+      lastInteraction: { $gte: new Date(Date.now() - 86400000) },
     });
 
     const waRevenueAgg = await AdLead.aggregate([
       { $match: { clientId: client._id, cartStatus: "whatsapp_order_placed" } },
-      { $group: { _id: null, total: { $sum: "$cartSnapshot.total_price" } } }
+      { $group: { _id: null, total: { $sum: "$cartSnapshot.total_price" } } },
     ]);
 
+    const catalogId = resolveCatalogId(client);
+
     res.json({
-      success:          true,
-      catalogId:        client.waCatalogId || null,
-      catalogEnabled:   client.catalogEnabled || false,
-      productCount:     client.catalogProductCount || 0,
-      catalogSyncedAt:  client.catalogSyncedAt || null,
+      success: true,
+      catalogId: catalogId || null,
+      catalogEnabled: client.catalogEnabled || !!catalogId,
+      productCount: cachedCount || client.catalogProductCount || client.shopifyProductCount || 0,
+      catalogSyncedAt: client.catalogSyncedAt || client.shopifyLastProductSync || null,
+      shopifyConnected: !!(client.shopDomain && client.shopifyAccessToken),
       waOrdersToday,
-      waRevenue:        waRevenueAgg[0]?.total || 0
+      waRevenue: waRevenueAgg[0]?.total || 0,
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// ─── POST /api/catalog/:clientId/link — link catalog ID ─────────────────────
+// ─── GET /api/catalog/:clientId/products — cached products (Meta or Shopify) ─
+router.get("/:clientId/products", verifyToken, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 60));
+    const search = String(req.query.search || "").trim();
+
+    const q = { clientId };
+    if (search) {
+      q.$or = [
+        { title: new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") },
+        { shopifyVariantId: new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") },
+      ];
+    }
+
+    const products = await ShopifyProduct.find(q).sort({ title: 1 }).limit(limit).lean();
+    res.json({ success: true, products, source: "cache" });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── POST /api/catalog/:clientId/link — link catalog ID + auto-import ───────
 router.post("/:clientId/link", verifyToken, async (req, res) => {
   try {
     const { catalogId } = req.body;
     if (!catalogId) return res.status(400).json({ success: false, message: "catalogId is required" });
 
+    const id = String(catalogId).trim();
     await Client.findOneAndUpdate(
       { clientId: req.params.clientId },
-      { $set: { waCatalogId: catalogId, catalogEnabled: true } }
+      { $set: { waCatalogId: id, facebookCatalogId: id, catalogEnabled: true } }
     );
-    res.json({ success: true, message: "Catalog linked successfully" });
+
+    // Auto-import products from Meta catalog in background
+    const clientId = req.params.clientId;
+    setImmediate(() => {
+      runMetaCatalogImport(clientId)
+        .then((result) => autoPatchMpmFlowNodes(clientId).then((patch) => ({ result, patch })))
+        .then(({ result, patch }) => {
+          log.info(
+            `[Catalog] Auto-import after link: ${result.synced} products, ${patch.patched} flow nodes patched`
+          );
+        })
+        .catch((err) => log.error(`[Catalog] Auto-import after link failed: ${err.message}`));
+    });
+
+    res.json({
+      success: true,
+      message: "Catalog linked. Importing products from Meta Commerce in the background…",
+      catalogId: id,
+      importStarted: true,
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// ─── POST /api/catalog/:clientId/sync — sync products from Shopify/WC to Meta
+// ─── POST /api/catalog/:clientId/sync — import FROM Meta catalog → cache ────
 router.post("/:clientId/sync", verifyToken, async (req, res) => {
+  const clientId = req.params.clientId;
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
+    const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
-    if (!client.waCatalogId) return res.status(400).json({ success: false, message: "No catalog linked" });
 
-    let products = [];
-
-    // Pull from Shopify if connected
-    if (client.shopDomain && client.shopifyAccessToken) {
-      const axios = require("axios");
-      let url = `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}/products.json?limit=250&status=active`;
-      let hasMore = true;
-
-      while (hasMore && products.length < 500) {
-        const resp = await axios.get(url, { headers: { "X-Shopify-Access-Token": client.shopifyAccessToken } });
-        const batch = resp.data.products || [];
-        products.push(...batch.map(p => ({
-          id:          p.id,
-          title:       p.title,
-          description: p.body_html,
-          price:       p.variants?.[0]?.price || "0",
-          image:       p.images?.[0]?.src || "",
-          available:   p.status === "active" && (p.variants?.[0]?.inventory_quantity || 0) > 0,
-          url:         `https://${client.shopDomain}/products/${p.handle}`
-        })));
-        hasMore = batch.length === 250;
-        if (hasMore && resp.headers?.link?.includes('rel="next"')) {
-          const match = resp.headers.link.match(/<([^>]+)>; rel="next"/);
-          if (match) url = match[1];
-          else hasMore = false;
-        } else hasMore = false;
-      }
-    }
-    // Manual/custom products from request body
-    else if (req.body.products?.length) {
-      products = req.body.products;
+    const catalogId = resolveCatalogId(client);
+    if (!catalogId) {
+      return res.status(400).json({
+        success: false,
+        message: "No Meta catalog ID linked. Enter your Commerce Manager catalog ID first.",
+      });
     }
 
-    if (!products.length) {
-      return res.status(400).json({ success: false, message: "No products found to sync" });
-    }
+    const result = await runMetaCatalogImport(clientId);
+    const patch = await autoPatchMpmFlowNodes(clientId);
 
-    const synced = await syncProductsToCatalog(client, products);
-
-    await Client.findOneAndUpdate(
-      { clientId: req.params.clientId },
-      { $set: { catalogSyncedAt: new Date(), catalogProductCount: synced } }
-    );
-
-    res.json({ success: true, synced, message: `Synced ${synced} products to Meta catalog` });
+    res.json({
+      success: true,
+      synced: result.synced,
+      collections: result.collections,
+      flowNodesPatched: patch.patched,
+      source: "meta_catalog",
+      message: `Imported ${result.synced} products from Meta catalog. Flow Builder updated ${patch.patched} carousel nodes.`,
+    });
   } catch (err) {
+    log.error(`[Catalog] sync failed for ${clientId}: ${err.message}`);
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -119,12 +143,12 @@ router.get("/:clientId/orders", verifyToken, async (req, res) => {
     const client = await Client.findOne({ clientId: req.params.clientId });
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
 
-    const page  = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 20;
 
     const orders = await AdLead.find({
-      clientId:   client._id,
-      cartStatus: "whatsapp_order_placed"
+      clientId: client._id,
+      cartStatus: "whatsapp_order_placed",
     })
       .select("phoneNumber name cartSnapshot lastInteraction leadScore")
       .sort({ lastInteraction: -1 })
@@ -150,7 +174,13 @@ router.post("/:clientId/send", verifyToken, async (req, res) => {
     if (type === "single") {
       await sendSingleProduct(client, phone, bodyText || "Check out this product:", productId);
     } else if (type === "multi") {
-      await sendMultiProduct(client, phone, headerText || "Our Products", bodyText || "Browse our collection:", sections || []);
+      await sendMultiProduct(
+        client,
+        phone,
+        headerText || "Our Products",
+        bodyText || "Browse our collection:",
+        sections || []
+      );
     } else {
       await sendCatalogMessage(client, phone, bodyText || "Browse our full catalog:", productId);
     }

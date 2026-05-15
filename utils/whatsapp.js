@@ -911,12 +911,9 @@ const WhatsApp = {
         parameters: [{ type: "image", image: { link: String(opts.headerImage) } }],
       });
     } else if (headerParamCount > 0) {
-      const headerVars =
-        opts.mpmHeaderVariables ??
-        (opts.mpmHeaderText != null || opts.headerText != null
-          ? [opts.mpmHeaderText ?? opts.headerText]
-          : opts.headerVariables);
-      const headerParameters = buildTextParameters(headerParamCount, headerVars, (idx) =>
+      // {{1}} in header = item count (number). Build one param per placeholder.
+      const rawHeaderVars = opts.mpmHeaderVariables ?? opts.headerVariables ?? opts.mpmHeaderText ?? opts.headerText;
+      const headerParameters = buildTextParameters(headerParamCount, rawHeaderVars, (idx) =>
         idx === 1 ? String(itemCount) : undefined
       );
       if (headerParameters.length) {
@@ -927,6 +924,7 @@ const WhatsApp = {
     const body = template.components?.find((c) => c.type === "BODY");
     const bodyParamCount = body?.text ? countTemplateParams(body.text) : 0;
     if (bodyParamCount > 0) {
+      // Only add body component when template actually has variables in body
       const bodyParameters = buildTextParameters(bodyParamCount, opts.bodyVariables, null);
       if (bodyParameters.length) {
         components.push({ type: "body", parameters: bodyParameters });

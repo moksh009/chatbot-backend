@@ -30,11 +30,13 @@ function resolveClientId() {
  * WhatsApp live traffic uses the **published flow in the database**, not the repo file alone — run this
  * after editing the Apex flow (or publish the same graph from the dashboard).
  *
- * 1) Approve an MPM marketing template in Meta; body vars {{1}}… must match what nodes send (or set `mpmBodyVariables` per node in Flow Builder).
- * 2) Dashboard → sync WhatsApp templates so `syncedMetaTemplates` includes that template name (per tenant).
- * 3) Client Settings → Commerce: Meta catalog ID; Content IDs in flow must exist for that catalog.
- * 4) From `chatbot-backend-main`: `node scripts/setupApexOwnerSupportFlow.js` (or `APEX_SYNC_CLIENT_ID=… node scripts/setupApexOwnerSupportFlow.js`).
- * Optional: `SEED_MPM_META_TEMPLATE_NAME=my_tpl` rewrites `metaTemplateName` on every `mpm_template` node in this **seed** flow only (useful for white-label deploys; other tenants typically edit flows in the dashboard).
+ * 1) Approve MPM template in Meta. Header = "Best Seller + {{1}} + items" (Number variable). Body = static. Add sample "3" for {{1}}.
+ * 2) Dashboard → sync WhatsApp templates so `syncedMetaTemplates` includes "carosuel".
+ * 3) Meta Manager → Catalog: link catalog ID `25779917041614766` (or yours) in dashboard.
+ * 4) Run THIS script:  node scripts/setupApexOwnerSupportFlow.js
+ * 5) Import from Meta + auto-fill flow nodes:  node scripts/patchApexMpmProductIds.js
+ *    (No Shopify access needed — reads WhatsApp/Meta Commerce catalog via Graph API)
+ * Optional env: `SEED_MPM_META_TEMPLATE_NAME=my_tpl` to override template name in seed nodes.
  *
  * Requires MONGODB_URI (or MONGO_URI). Restart the API after backend code changes.
  *
