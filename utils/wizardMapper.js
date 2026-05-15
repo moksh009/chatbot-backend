@@ -179,6 +179,13 @@ function buildBrandUpdate(wizardData = {}, client = {}) {
   setIfTruthy(out, "platformVars.agentName", wizardData.botName);
   if (wizardData.botName) out["nicheData.botName"] = wizardData.botName;
 
+  setIfTruthy(out, "platformVars.supportWhatsapp", wizardData.supportPhone);
+  if (wizardData.supportPhone) {
+    out["platformVars.supportPhone"] = wizardData.supportPhone;
+  }
+  setIfTruthy(out, "onboardingData.industry", wizardData.industry);
+  setIfTruthy(out, "onboardingData.step1.industry", wizardData.industry);
+
   setIfTruthy(out, "platformVars.adminWhatsappNumber", wizardData.adminPhone);
   setIfTruthy(out, "adminPhone",                       wizardData.adminPhone);
   setIfTruthy(out, "adminAlertWhatsapp",               wizardData.adminPhone);
