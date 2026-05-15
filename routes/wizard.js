@@ -460,17 +460,20 @@ router.post("/:clientId/complete", protect, async (req, res) => {
         };
 
       try {
-        const { autoPatchMpmFlowNodes } = require("../utils/flowMpmPatch");
+        const { autoPatchMpmFlowNodes, syncExploreMenuFromCollections } = require("../utils/flowMpmPatch");
         for (const entry of persistedPack.visualEntries || []) {
-          if (entry?.id) {
-            const patch = await autoPatchMpmFlowNodes(clientId, { flowId: entry.id });
-            if (patch.patched > 0) {
-              log.info(`[Wizard] Auto-filled ${patch.patched} MPM nodes in flow ${entry.id}`);
-            }
+          if (!entry?.id) continue;
+          const patch = await autoPatchMpmFlowNodes(clientId, { flowId: entry.id });
+          if (patch.patched > 0) {
+            log.info(`[Wizard] Auto-filled ${patch.patched} MPM nodes in flow ${entry.id}`);
+          }
+          const menuSync = await syncExploreMenuFromCollections(clientId, { flowId: entry.id });
+          if (menuSync.ok && menuSync.menuUpdated) {
+            log.info(`[Wizard] Explore menu synced (${menuSync.mpmPatched} MPM) in flow ${entry.id}`);
           }
         }
       } catch (patchErr) {
-        log.warn(`[Wizard] MPM auto-patch skipped: ${patchErr.message}`);
+        log.warn(`[Wizard] MPM/menu sync skipped: ${patchErr.message}`);
       }
     } else {
       // Single-graph legacy path (main + embedded automations)

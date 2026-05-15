@@ -2,6 +2,7 @@
 
 const Client = require("../models/Client");
 const WhatsAppFlow = require("../models/WhatsAppFlow");
+const ShopifyCollection = require("../models/ShopifyCollection");
 const ShopifyProduct = require("../models/ShopifyProduct");
 const log = require("./logger")("FlowMpmPatch");
 
@@ -165,8 +166,286 @@ async function autoPatchMpmFlowNodes(clientId, opts = {}) {
   return { patched, flowId: flowDoc.flowId, patches };
 }
 
+/** Wizard-generated flows: category list node id / label hints */
+const WIZARD_MENU_NODE_IDS = ["n_cat_category_menu", "cat_category_menu"];
+const TOP_SECTION = "⭐ Top picks";
+const MORE_SECTION = "🛍️ More to explore";
+
+function normTitle(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function menuLabelFromCollection(collection, slot) {
+  let raw = String(collection.whatsappMenuLabel || collection.title || slot?.defaultTitle || "Products").trim();
+  raw = raw.replace(/\s*\([^)]*\)\s*/g, " ").replace(/\s+/g, " ").trim();
+  if (slot?.menuRowId === "cat_bestseller" || slot?.menuRowId === "featured") {
+    if (!raw.startsWith("🔥")) raw = `🔥 ${raw}`;
+  }
+  if (raw.length <= 24) return raw;
+  const cut = raw.slice(0, 24);
+  const sp = cut.lastIndexOf(" ");
+  return (sp > 10 ? cut.slice(0, sp) : cut.slice(0, 23)).trim();
+}
+
+function assignCollectionsToSlots(collections, slots) {
+  const available = [...collections].sort((a, b) => (b.productsCount || 0) - (a.productsCount || 0));
+  const assignments = [];
+  const used = new Set();
+
+  const bsSlot = slots.find((s) => s.menuRowId === "cat_bestseller" || s.menuRowId === "featured");
+  const bsCol = available.find((c) => {
+    const t = normTitle(c.title);
+    return t.includes("best seller") || t.includes("bestseller") || t.includes("top seller");
+  });
+  if (bsSlot && bsCol) {
+    used.add(bsCol.shopifyCollectionId);
+    assignments.push({ slot: bsSlot, collection: bsCol, isBestseller: true });
+  }
+
+  for (const slot of slots) {
+    if (assignments.some((a) => a.slot.menuRowId === slot.menuRowId)) continue;
+    let best = null;
+    let bestScore = 0;
+    for (const col of available) {
+      if (used.has(col.shopifyCollectionId)) continue;
+      let score = 0;
+      for (const term of slot.matchTerms || []) {
+        const t = normTitle(term);
+        if (!t) continue;
+        const title = normTitle(col.title);
+        if (title.includes(t)) score += t.length + 2;
+      }
+      if (slot.menuRowId === "cat_gaming" && normTitle(col.title).includes("wall") && !normTitle(col.title).includes("gaming")) {
+        score -= 8;
+      }
+      if ((col.productsCount || 0) > 0) score += 1;
+      if (score > bestScore) {
+        bestScore = score;
+        best = col;
+      }
+    }
+    if (best && bestScore > 0) {
+      used.add(best.shopifyCollectionId);
+      assignments.push({ slot, collection: best });
+    } else {
+      const fallback = available.find((c) => !used.has(c.shopifyCollectionId));
+      if (fallback) {
+        used.add(fallback.shopifyCollectionId);
+        assignments.push({ slot, collection: fallback, fallback: true });
+      }
+    }
+  }
+  return assignments;
+}
+
+function buildTwoSectionMenu(assignments, slots) {
+  const rows = assignments.map(({ slot, collection }) => ({
+    id: slot.menuRowId,
+    title: menuLabelFromCollection(collection, slot),
+    description: `${collection.productsCount || 0} items`.slice(0, 72),
+    collectionId: collection.shopifyCollectionId,
+  }));
+  return [
+    { title: TOP_SECTION.slice(0, 24), rows: rows.slice(0, 5) },
+    { title: MORE_SECTION.slice(0, 24), rows: rows.slice(5, 10) },
+  ].filter((s) => s.rows.length > 0);
+}
+
+function findExploreMenuNode(nodes, menuNodeId) {
+  if (menuNodeId) return nodes.find((n) => n.id === menuNodeId);
+  return nodes.find(
+    (n) =>
+      n.type === "interactive" &&
+      n.data?.interactiveType === "list" &&
+      (n.data?.populateFromShopify ||
+        WIZARD_MENU_NODE_IDS.includes(n.id) ||
+        String(n.id || "").includes("cat_category_menu") ||
+        /category menu|explore our store/i.test(n.data?.label || n.data?.text || ""))
+  );
+}
+
+/**
+ * Multi-tenant: rebuild explore list (2 sections, up to 10 rows) + MPM product IDs from Mongo collections.
+ * Apex passes custom `slots` + `menuNodeId` from data/apexCatalogSlots.js.
+ */
+async function syncExploreMenuFromCollections(clientId, opts = {}) {
+  const flowId = opts.flowId;
+  const menuNodeId = opts.menuNodeId;
+  const slots = opts.slots;
+  const injectGraph = opts.injectGraph === true;
+
+  const collections = await ShopifyCollection.find({
+    clientId,
+    whatsappEnabled: { $ne: false },
+  })
+    .sort({ sortOrder: 1, productsCount: -1 })
+    .lean();
+
+  const products = await ShopifyProduct.find({ clientId, inStock: true })
+    .select("shopifyVariantId title collectionIds collectionTitles tags price inStock")
+    .lean();
+
+  if (!products.length) {
+    return { ok: false, reason: "no_products" };
+  }
+
+  const flowQuery = { clientId, status: "PUBLISHED" };
+  if (flowId) flowQuery.flowId = flowId;
+  const flowDoc = await WhatsAppFlow.findOne(flowQuery).sort({ updatedAt: -1 });
+  if (!flowDoc?.nodes?.length) {
+    return { ok: false, reason: "no_flow" };
+  }
+
+  let nodes = [...flowDoc.nodes];
+  let edges = [...(flowDoc.edges || [])];
+
+  if (injectGraph && slots?.length) {
+    try {
+      const { injectApexCatalogGraph } = require("../data/apexCatalogSlots");
+      ({ nodes, edges } = injectApexCatalogGraph(nodes, edges));
+    } catch (_) {}
+  }
+
+  const menuNode = findExploreMenuNode(nodes, menuNodeId);
+  if (!menuNode && !slots?.length && !collections.length) {
+    return { ok: false, reason: "no_menu_node", flowId: flowDoc.flowId };
+  }
+
+  let mpmPatches = {};
+  let menuSections = null;
+
+  if (!slots?.length && collections.length && menuNode) {
+    const sorted = [...collections].sort((a, b) => {
+      const aT = String(a.title || "").toLowerCase();
+      const bT = String(b.title || "").toLowerCase();
+      const aBs = aT.includes("best seller") || aT.includes("bestseller");
+      const bBs = bT.includes("best seller") || bT.includes("bestseller");
+      if (aBs && !bBs) return -1;
+      if (!aBs && bBs) return 1;
+      return (b.productsCount || 0) - (a.productsCount || 0);
+    });
+    const rows = sorted.slice(0, MAX_PER_SECTION).map((c) => ({
+      id: `collection_${c.shopifyCollectionId}`,
+      title: menuLabelFromCollection(c, null),
+      description: `${c.productsCount || 0} items`.slice(0, 72),
+      collectionId: c.shopifyCollectionId,
+    }));
+    menuSections = [
+      { title: TOP_SECTION.slice(0, 24), rows: rows.slice(0, 5) },
+      { title: MORE_SECTION.slice(0, 24), rows: rows.slice(5, MAX_PER_SECTION) },
+    ].filter((s) => s.rows.length > 0);
+  }
+
+  if (slots?.length && collections.length) {
+    const assignments = assignCollectionsToSlots(collections, slots);
+    menuSections = buildTwoSectionMenu(assignments, slots);
+
+    for (const { slot, collection, isBestseller } of assignments) {
+      const label = menuLabelFromCollection(collection, slot);
+      let matched = products.filter(
+        (p) =>
+          p.inStock !== false &&
+          Array.isArray(p.collectionIds) &&
+          p.collectionIds.map(String).includes(String(collection.shopifyCollectionId))
+      );
+      if (isBestseller) matched.sort((a, b) => (b.price || 0) - (a.price || 0));
+      else matched.sort((a, b) => (a.price || 0) - (b.price || 0));
+      matched = matched.slice(0, MAX_PER_SECTION);
+      if (!matched.length) continue;
+      const ids = matched.map((p) => String(p.shopifyVariantId));
+      mpmPatches[slot.nodeId] = {
+        productIds: ids.join(","),
+        thumbnailProductRetailerId: ids[0],
+        sectionTitle: label,
+        header: label,
+        metaCollectionId: collection.shopifyCollectionId,
+        count: ids.length,
+      };
+    }
+  }
+
+  const mpmNodePatches = buildPatchesForNodes(
+    nodes.filter((n) => n.type === "catalog" && n.data?.catalogType === "mpm_template"),
+    products
+  );
+  mpmPatches = { ...mpmNodePatches, ...mpmPatches };
+
+  const patchNodes = (nodeList) =>
+    nodeList.map((n) => {
+      if (menuNode && n.id === menuNode.id && menuSections) {
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            buttonText: "Explore products",
+            text:
+              "✨ *Explore our store*\n\n*Best sellers* and top collections first — then more ranges below. Each opens a WhatsApp carousel (tap *View items*).",
+            sections: menuSections,
+            populateFromShopify: true,
+          },
+        };
+      }
+      const mp = mpmPatches[n.id];
+      if (!mp) return n;
+      return {
+        ...n,
+        data: {
+          ...n.data,
+          productIds: mp.productIds || n.data.productIds,
+          thumbnailProductRetailerId: mp.thumbnailProductRetailerId || n.data.thumbnailProductRetailerId,
+          sectionTitle: mp.sectionTitle || n.data.sectionTitle,
+          header: mp.header || n.data.header,
+          metaCollectionId: mp.metaCollectionId || n.data.metaCollectionId,
+          mpmHeaderText: String(mp.count || ""),
+        },
+      };
+    });
+
+  const newNodes = patchNodes(nodes);
+  await WhatsAppFlow.updateOne(
+    { _id: flowDoc._id },
+    {
+      $set: {
+        nodes: newNodes,
+        edges,
+        publishedNodes: newNodes,
+        publishedEdges: edges,
+        updatedAt: new Date(),
+      },
+    }
+  );
+
+  const client = await Client.findOne({ clientId }).select("visualFlows").lean();
+  const vfIndex = (client?.visualFlows || []).findIndex((f) => f.id === flowDoc.flowId);
+  if (vfIndex !== -1) {
+    await Client.updateOne(
+      { clientId, "visualFlows.id": flowDoc.flowId },
+      {
+        $set: {
+          [`visualFlows.${vfIndex}.nodes`]: patchNodes(client.visualFlows[vfIndex].nodes),
+          [`visualFlows.${vfIndex}.edges`]: edges,
+          [`visualFlows.${vfIndex}.updatedAt`]: new Date(),
+        },
+      }
+    );
+  }
+
+  return {
+    ok: true,
+    flowId: flowDoc.flowId,
+    menuUpdated: !!menuSections,
+    mpmPatched: Object.keys(mpmPatches).length,
+    collectionsInDb: collections.length,
+  };
+}
+
 module.exports = {
   autoPatchMpmFlowNodes,
+  syncExploreMenuFromCollections,
   buildPatchesForNodes,
   deriveKeywordsFromNode,
   APEX_NODE_KEYWORDS,

@@ -146,6 +146,60 @@ const truncate = (str, max = 24) => {
   return v.length > max ? `${v.slice(0, max - 3)}...` : v;
 };
 
+const CATALOG_TOP_SECTION = "⭐ Top picks";
+const CATALOG_MORE_SECTION = "🛍️ More to explore";
+const MAX_EXPLORE_MENU_ROWS = 10;
+
+function normCollectionTitle(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isBestsellerCollection(col) {
+  const t = normCollectionTitle(col?.title || col?.whatsappMenuLabel);
+  return t.includes("best seller") || t.includes("bestseller") || t.includes("top seller");
+}
+
+function sortShopCollectionsForMenu(cols) {
+  return [...cols].sort((a, b) => {
+    const aBs = isBestsellerCollection(a);
+    const bBs = isBestsellerCollection(b);
+    if (aBs && !bBs) return -1;
+    if (!aBs && bBs) return 1;
+    return (b.productsCount || 0) - (a.productsCount || 0);
+  });
+}
+
+function menuLabelForCollection(col) {
+  let raw = String(col.whatsappMenuLabel || col.title || "Products").trim();
+  if (isBestsellerCollection(col) && !raw.startsWith("🔥")) raw = `🔥 ${raw}`;
+  return truncate(raw, 24);
+}
+
+function buildExploreMenuSections(cols) {
+  const rows = cols.slice(0, MAX_EXPLORE_MENU_ROWS).map((c) => ({
+    id: `collection_${c.shopifyCollectionId}`,
+    title: menuLabelForCollection(c),
+    description: "Browse in WhatsApp",
+  }));
+  return [
+    { title: truncate(CATALOG_TOP_SECTION, 24), rows: rows.slice(0, 5) },
+    { title: truncate(CATALOG_MORE_SECTION, 24), rows: rows.slice(5, MAX_EXPLORE_MENU_ROWS) },
+  ].filter((s) => s.rows.length > 0);
+}
+
+function resolveMpmTemplateName(client = {}, wizardData = {}) {
+  const explicit = String(wizardData.mpmTemplateName || wizardData.metaTemplateName || "").trim();
+  if (explicit) return explicit;
+  const synced = Array.isArray(client.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
+  const approved = synced.filter((t) => String(t.status || "APPROVED").toUpperCase() === "APPROVED");
+  const carousel = approved.find((t) => /carosuel|carousel|mpm/i.test(String(t.name || "")));
+  return carousel?.name || approved[0]?.name || "";
+}
+
 /** Stable workspace id used in ShopifyCollection queries (matches `clientId` on synced docs). */
 function resolvePersistedClientId(client) {
   if (!client) return "";
@@ -248,6 +302,21 @@ function buildContext(client = {}, wizardData = {}) {
   if (ct.msg2 != null && Number(ct.msg2) > 0) F.cartNudgeHours2 = Number(ct.msg2);
   if (ct.msg3 != null && Number(ct.msg3) > 0) F.cartNudgeHours3 = Number(ct.msg3);
 
+  const facebookCatalogId = String(
+    wizardData.facebookCatalogId || client.facebookCatalogId || client.waCatalogId || ""
+  ).trim();
+  let productMode = wizardData.productMode;
+  if (!productMode) {
+    try {
+      const { resolveProductMode } = require("./universalCommerceMapper");
+      productMode = resolveProductMode(wizardData.features || {}, client);
+    } catch {
+      productMode = "text_list";
+    }
+  }
+  const mpmTemplateName = resolveMpmTemplateName(client, wizardData);
+  const useMpmCatalog = productMode === "catalog" && !!facebookCatalogId && !!mpmTemplateName;
+
   return {
     client,
     wizardData,
@@ -275,10 +344,15 @@ function buildContext(client = {}, wizardData = {}) {
       .map((c) => ({
         shopifyCollectionId: String(c.shopifyCollectionId || c.id || "").trim(),
         title: String(c.title || "").trim(),
-        whatsappMenuLabel: String(c.whatsappMenuLabel || c.title || "").trim()
+        whatsappMenuLabel: String(c.whatsappMenuLabel || c.title || "").trim(),
+        productsCount: Number(c.productsCount) || 0,
       }))
       .filter((c) => c.shopifyCollectionId)
-      .slice(0, 10),
+      .slice(0, MAX_EXPLORE_MENU_ROWS),
+    facebookCatalogId,
+    productMode,
+    mpmTemplateName,
+    useMpmCatalog,
     storeUrl:            wizardData.shopDomain
       ? `https://${String(wizardData.shopDomain).replace(/^https?:\/\//, "")}`
       : (wizardData.checkoutUrl || pv.checkoutUrl || "").replace(/\/checkout$/, ""),
@@ -287,7 +361,7 @@ function buildContext(client = {}, wizardData = {}) {
       msg1: F.cartNudgeMinutes1,
       msg2: F.cartNudgeHours2,
       msg3: F.cartNudgeHours3
-    }
+    },
   };
 }
 
@@ -604,13 +678,14 @@ function buildMainMenu(ctx, IDS, menuRows) {
 }
 
 function buildCatalogBranch(ctx, IDS) {
-  const { F, products, storeUrl, shopCollections = [] } = ctx;
+  const { F, products, storeUrl, shopCollections = [], useMpmCatalog, mpmTemplateName } = ctx;
   const nodes = [];
   const edges = [];
-  const MAX_CATEGORY_ROWS = 5;
+  const MAX_CATEGORY_ROWS = 10;
   const categoryNodeIds = [IDS.cat_cat_0, IDS.cat_cat_1, IDS.cat_cat_2, IDS.cat_cat_3, IDS.cat_cat_4];
   const useShopCols = Array.isArray(shopCollections) && shopCollections.length > 0;
-  const shopCols = useShopCols ? shopCollections.slice(0, 9) : [];
+  const shopCols = useShopCols ? sortShopCollectionsForMenu(shopCollections).slice(0, MAX_EXPLORE_MENU_ROWS) : [];
+  const collectionMpmNodeId = (idx) => `cat_mpm_${IDS.seed}_${idx}`;
 
   const productBuckets = new Map();
   products.forEach((p) => {
@@ -626,26 +701,55 @@ function buildCatalogBranch(ctx, IDS) {
     .map((p) => String(p.variantId || p.id || "").trim())
     .filter(Boolean);
 
-  const listRows = [{ id: "featured", title: "Featured", description: "Bestsellers and trending picks" }];
+  const listRows = [];
+  let menuSections;
   if (useShopCols) {
+    menuSections = buildExploreMenuSections(shopCols);
     shopCols.forEach((c) => {
       listRows.push({
         id: `collection_${c.shopifyCollectionId}`,
-        title: truncate(c.whatsappMenuLabel || c.title, 24),
-        description: "Browse in WhatsApp"
-      });
-    });
-  } else if (sortedCategories.length) {
-    sortedCategories.forEach(([name, items], idx) => {
-      listRows.push({
-        id: `cat_${idx}`,
-        title: truncate(name, 24),
-        description: `${items.length} item${items.length > 1 ? "s" : ""}`
+        title: menuLabelForCollection(c),
+        description: "Browse in WhatsApp",
       });
     });
   } else {
-    listRows.push({ id: "cat_0", title: "General", description: "Core products" });
+    listRows.push({ id: "featured", title: "Featured", description: "Bestsellers and trending picks" });
+    if (sortedCategories.length) {
+      sortedCategories.forEach(([name, items], idx) => {
+        listRows.push({
+          id: `cat_${idx}`,
+          title: truncate(name, 24),
+          description: `${items.length} item${items.length > 1 ? "s" : ""}`,
+        });
+      });
+    } else {
+      listRows.push({ id: "cat_0", title: "General", description: "Core products" });
+    }
+    menuSections = [{ title: "{{brand_name}} store", rows: listRows }];
   }
+
+  const featuredCatalogData =
+    useMpmCatalog && featuredVariantIds.length
+      ? {
+          catalogType: "mpm_template",
+          metaTemplateName: mpmTemplateName,
+          languageCode: "en",
+          header: "Featured picks",
+          sectionTitle: "Featured picks",
+          body: "Checkout our best-performing products from {{brand_name}}. Tap *View items* for the carousel.",
+          text: "Checkout our best-performing products from {{brand_name}}. Tap *View items* for the carousel.",
+          productIds: featuredVariantIds.join(","),
+          thumbnailProductRetailerId: featuredVariantIds[0],
+          heatmapCount: 0,
+        }
+      : {
+          catalogType: featuredVariantIds.length ? "multi" : "full",
+          header: "Featured picks",
+          body: "Checkout our best-performing products from {{brand_name}}.",
+          footer: "Tap to view items",
+          productIds: featuredVariantIds.join(","),
+          heatmapCount: 0,
+        };
 
   nodes.push(
     {
@@ -678,11 +782,13 @@ function buildCatalogBranch(ctx, IDS) {
         label: "Category menu",
         interactiveType: "list",
         text: useShopCols
-          ? "Pick a collection to see products in WhatsApp (no templates per product)."
+          ? useMpmCatalog
+            ? "✨ *Explore our store*\n\nBest sellers and top collections first — tap a row, then *View items* for the WhatsApp carousel."
+            : "Pick a collection to see products in WhatsApp."
           : "Want curated products? Pick a collection:",
-        buttonText: "View collections",
+        buttonText: useShopCols ? "Explore products" : "View collections",
         populateFromShopify: useShopCols,
-        sections: [{ title: "{{brand_name}} store", rows: listRows }],
+        sections: menuSections,
         heatmapCount: 0
       }
     },
@@ -690,15 +796,7 @@ function buildCatalogBranch(ctx, IDS) {
       id: IDS.cat_featured,
       type: "catalog",
       position: flowPos(7, 0),
-      data: {
-        label: "Featured collection",
-        catalogType: featuredVariantIds.length ? "multi" : "full",
-        header: "Featured picks",
-        body: "Checkout our best-performing products from {{brand_name}}.",
-        footer: "Tap to view items",
-        productIds: featuredVariantIds.join(","),
-        heatmapCount: 0
-      }
+      data: { label: "Featured collection", ...featuredCatalogData },
     },
     {
       id: IDS.cat_addr_prompt,
@@ -729,7 +827,30 @@ function buildCatalogBranch(ctx, IDS) {
       }
     }
   );
-  if (useShopCols) {
+  if (useShopCols && useMpmCatalog) {
+    shopCols.forEach((c, idx) => {
+      const label = menuLabelForCollection(c);
+      nodes.push({
+        id: collectionMpmNodeId(idx),
+        type: "catalog",
+        position: flowPos(7, 1 + idx * 0.15),
+        data: {
+          label: `MPM — ${truncate(c.title, 22)}`,
+          catalogType: "mpm_template",
+          metaTemplateName: mpmTemplateName,
+          languageCode: "en",
+          header: label,
+          sectionTitle: label,
+          body: `Here are our *${label}* — tap *View items* for the WhatsApp carousel.`,
+          text: `Here are our *${label}* — tap *View items* for the WhatsApp carousel.`,
+          metaCollectionId: c.shopifyCollectionId,
+          productIds: "",
+          thumbnailProductRetailerId: "",
+          heatmapCount: 0,
+        },
+      });
+    });
+  } else if (useShopCols) {
     nodes.push({
       id: IDS.cat_shop_by_selection,
       type: "catalog",
@@ -752,19 +873,35 @@ function buildCatalogBranch(ctx, IDS) {
         .slice(0, 8)
         .map((p) => String(p.variantId || p.id || "").trim())
         .filter(Boolean);
+      const catLabel = truncate(name, 40);
+      const catBody = `Browse ${name} from {{brand_name}}.`;
       nodes.push({
         id: targetNodeId,
         type: "catalog",
         position: flowPos(7, 1 + idx),
-        data: {
-          label: `Collection: ${truncate(name, 22)}`,
-          catalogType: productIds.length ? "multi" : "full",
-          header: truncate(name, 40),
-          body: `Browse ${name} from {{brand_name}}.`,
-          footer: "Tap to view items",
-          productIds: productIds.join(","),
-          heatmapCount: 0
-        }
+        data: useMpmCatalog && productIds.length
+          ? {
+              label: `MPM — ${truncate(name, 22)}`,
+              catalogType: "mpm_template",
+              metaTemplateName: mpmTemplateName,
+              languageCode: "en",
+              header: catLabel,
+              sectionTitle: catLabel,
+              body: `${catBody} Tap *View items* for the carousel.`,
+              text: `${catBody} Tap *View items* for the carousel.`,
+              productIds: productIds.join(","),
+              thumbnailProductRetailerId: productIds[0],
+              heatmapCount: 0,
+            }
+          : {
+              label: `Collection: ${truncate(name, 22)}`,
+              catalogType: productIds.length ? "multi" : "full",
+              header: catLabel,
+              body: catBody,
+              footer: "Tap to view items",
+              productIds: productIds.join(","),
+              heatmapCount: 0,
+            },
       });
     });
   }
@@ -789,7 +926,6 @@ function buildCatalogBranch(ctx, IDS) {
 
   edges.push(
     { id: `e_${IDS.cat_list}_cats`, source: IDS.cat_list, target: IDS.cat_category_menu },
-    { id: `e_${IDS.cat_category_menu}_featured`, source: IDS.cat_category_menu, target: IDS.cat_featured, sourceHandle: "featured" },
     { id: `e_${IDS.cat_featured}_next`, source: IDS.cat_featured, target: IDS.cat_addr_prompt },
     { id: `e_${IDS.cat_list}_cart`, source: IDS.cat_list, target: IDS.cat_cart_handler, sourceHandle: "cart" },
     { id: `e_${IDS.cat_featured}_cart`, source: IDS.cat_featured, target: IDS.cat_cart_handler, sourceHandle: "cart" },
@@ -798,14 +934,38 @@ function buildCatalogBranch(ctx, IDS) {
     { id: `e_${IDS.cat_addr_prompt}_support`, source: IDS.cat_addr_prompt, target: supEntryProduct, sourceHandle: "support" },
     { id: `e_${IDS.cat_addr_prompt}_menu`, source: IDS.cat_addr_prompt, target: IDS.main_menu, sourceHandle: "menu" }
   );
-  if (useShopCols) {
+  if (!useShopCols) {
+    edges.push({
+      id: `e_${IDS.cat_category_menu}_featured`,
+      source: IDS.cat_category_menu,
+      target: IDS.cat_featured,
+      sourceHandle: "featured",
+    });
+  }
+
+  if (useShopCols && useMpmCatalog) {
+    shopCols.forEach((c, idx) => {
+      const hid = `collection_${c.shopifyCollectionId}`;
+      const nid = collectionMpmNodeId(idx);
+      edges.push(
+        {
+          id: `e_${IDS.cat_category_menu}_${hid}`,
+          source: IDS.cat_category_menu,
+          target: nid,
+          sourceHandle: hid,
+        },
+        { id: `e_${nid}_next`, source: nid, target: IDS.cat_addr_prompt },
+        { id: `e_${nid}_cart`, source: nid, target: IDS.cat_cart_handler, sourceHandle: "cart" }
+      );
+    });
+  } else if (useShopCols) {
     shopCols.forEach((c) => {
       const hid = `collection_${c.shopifyCollectionId}`;
       edges.push({
         id: `e_${IDS.cat_category_menu}_${hid}`,
         source: IDS.cat_category_menu,
         target: IDS.cat_shop_by_selection,
-        sourceHandle: hid
+        sourceHandle: hid,
       });
     });
     edges.push(
@@ -814,7 +974,7 @@ function buildCatalogBranch(ctx, IDS) {
         id: `e_${IDS.cat_shop_by_selection}_cart`,
         source: IDS.cat_shop_by_selection,
         target: IDS.cat_cart_handler,
-        sourceHandle: "cart"
+        sourceHandle: "cart",
       }
     );
   } else {
@@ -1727,15 +1887,17 @@ async function generateEcommerceFlow(client, wizardData = {}) {
           .sort({ sortOrder: 1, title: 1 })
           .limit(12)
           .lean();
-        const picked = docs
-          .filter((d) => d && d.shopifyCollectionId && d.whatsappEnabled !== false)
-          .slice(0, 10)
-          .map((d) => ({
-            shopifyCollectionId: String(d.shopifyCollectionId || "").trim(),
-            title: String(d.title || "").trim(),
-            whatsappMenuLabel: String(d.whatsappMenuLabel || d.title || "").trim()
-          }))
-          .filter((c) => c.shopifyCollectionId);
+        const picked = sortShopCollectionsForMenu(
+          docs
+            .filter((d) => d && d.shopifyCollectionId && d.whatsappEnabled !== false)
+            .map((d) => ({
+              shopifyCollectionId: String(d.shopifyCollectionId || "").trim(),
+              title: String(d.title || "").trim(),
+              whatsappMenuLabel: String(d.whatsappMenuLabel || d.title || "").trim(),
+              productsCount: Number(d.productsCount) || 0,
+            }))
+            .filter((c) => c.shopifyCollectionId)
+        ).slice(0, MAX_EXPLORE_MENU_ROWS);
         if (picked.length) mergedWizard.collections = picked;
       } catch (err) {
         console.warn("[flowGenerator] ShopifyCollection preload skipped:", err?.message || err);

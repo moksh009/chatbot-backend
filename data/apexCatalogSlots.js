@@ -86,6 +86,7 @@ const APEX_CATALOG_SLOTS = [
 ];
 
 const MENU_NODE_ID = "n_product_menu";
+const DEFAULT_FLOW_ID = "flow_apex_owner_support_hub_v2";
 const BROWSE_DONE_NODE_ID = "n_cat_browse_done";
 const TOP_SECTION_TITLE = "⭐ Top picks";
 const MORE_SECTION_TITLE = "🛍️ More to explore";
@@ -167,6 +168,7 @@ module.exports = {
   APEX_CATALOG_SLOTS,
   APEX_MPM_TEMPLATE,
   MENU_NODE_ID,
+  DEFAULT_FLOW_ID,
   BROWSE_DONE_NODE_ID,
   TOP_SECTION_TITLE,
   MORE_SECTION_TITLE,

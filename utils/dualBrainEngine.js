@@ -3840,19 +3840,6 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'message':
     case 'MessageNode':
     case 'livechat': {
-      if (data.sendWarrantyPdf || data.warrantyPdf) {
-        try {
-          const { sendWarrantyCertificate } = require("./warrantyPdf");
-          let meta = { ...(convo?.metadata || {}) };
-          try {
-            meta = { ...meta, ...(await buildVariableContext(client, phone, convo, lead)) };
-          } catch (_) {}
-          await sendWarrantyCertificate(client, phone, meta);
-          return true;
-        } catch (wErr) {
-          log.warn(`[message] warranty PDF path failed: ${wErr.message}`);
-        }
-      }
       let body = data.handoffMessage || data.text || data.body || (type === 'livechat' ? '👋 Connecting you to our team…\nA support agent will be with you shortly.' : '');
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
       const safeBody = String(body || '').trim();
