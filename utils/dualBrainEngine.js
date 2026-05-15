@@ -1986,10 +1986,49 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 
   if (buttonId && /^order_/i.test(String(buttonId))) {
     const oid = String(buttonId).replace(/^order_/i, "");
+    const orders = Array.isArray(convo.metadata?.customer_orders) ? convo.metadata.customer_orders : [];
+    const pick = orders.find((o) => String(o.id) === String(oid));
+    const fs = String(pick?.fulfillment_status || "").toLowerCase();
+    const shipped = /fulfilled|shipped|delivered|out_for_delivery|in_transit/.test(fs);
     const md = {
       ...(convo.metadata || {}),
       selected_order_id: oid,
-      selected_order_name: buttonId,
+      selected_order_name: pick?.name || buttonId,
+      selected_order_status: fs,
+      is_shipped: shipped ? "true" : "false",
+    };
+    await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: md } });
+    convo.metadata = md;
+  }
+
+  if (buttonId && /^help_/i.test(String(buttonId))) {
+    const helpLabels = {
+      help_not_received: "Order not received",
+      help_damaged: "Damaged / wrong item",
+      help_return: "Return / exchange",
+      help_install: "Installation help",
+      help_other: "Other issue",
+    };
+    const md = {
+      ...(convo.metadata || {}),
+      help_issue_type: helpLabels[String(buttonId)] || String(buttonId),
+    };
+    await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: md } });
+    convo.metadata = md;
+  }
+
+  if (buttonId && /^reason_/i.test(String(buttonId))) {
+    const reasonMap = {
+      reason_wrong: "Ordered by mistake",
+      reason_price: "Found a better price",
+      reason_delay: "Delivery too slow",
+      reason_address: "Wrong address",
+      reason_mind: "Changed my mind",
+      reason_other: "Other reason",
+    };
+    const md = {
+      ...(convo.metadata || {}),
+      cancel_reason: reasonMap[String(buttonId)] || String(buttonId),
     };
     await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: md } });
     convo.metadata = md;
@@ -3840,6 +3879,18 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     case 'message':
     case 'MessageNode':
     case 'livechat': {
+      if (data.isAiResponse && String(convo?.metadata?.ai_needs_human || "") === "true") {
+        return true;
+      }
+      if (data.sendWarrantyPdf) {
+        try {
+          const { handleNodeAction } = require("./nodeActions");
+          await handleNodeAction("SEND_WARRANTY_PDF", node, client, phone, convo, lead);
+        } catch (wpErr) {
+          log.warn(`[sendNodeContent] warranty PDF: ${wpErr.message}`);
+        }
+        return true;
+      }
       let body = data.handoffMessage || data.text || data.body || (type === 'livechat' ? '👋 Connecting you to our team…\nA support agent will be with you shortly.' : '');
       body = await translateToUserLanguage(body, convo?.detectedLanguage, client);
       const safeBody = String(body || '').trim();

@@ -712,6 +712,18 @@ async function handleOrder(client, data) {
         createdAt: data.created_at
     });
 
+    // Auto-assign warranty records on order_placed (wizard enableWarranty)
+    const wf = client.wizardFeatures || client.onboardingData?.features || {};
+    const warrantyOn =
+      wf.enableWarranty === true ||
+      wf.warranty?.enabled === true;
+    if (warrantyOn) {
+      const { assignWarranty } = require('../utils/warrantyService');
+      await assignWarranty(client, cleanPhone, data).catch((e) =>
+        log.warn(`[Warranty] order_placed assign failed: ${e.message}`)
+      );
+    }
+
     // --- PHASE 27: Loyalty Points Award ---
     if (client.loyaltyConfig?.isEnabled && newOrder.amount > 0) {
         const { awardLoyaltyPoints } = require('../utils/loyaltyEngine');

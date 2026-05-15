@@ -76,13 +76,19 @@ function scheduleLoyaltyUrgency() {
         try {
             const dayMs = 86400000;
             const clients = await Client.find({
-                'onboardingData.features.loyalty.sendReminders': true,
+                $or: [
+                    { 'onboardingData.features.loyalty.sendReminders': true },
+                    { 'wizardFeatures.loyaltySendReminders': true },
+                ],
             })
                 .select('clientId businessName onboardingData')
                 .lean();
 
             for (const c of clients) {
-                const days = Number(c.onboardingData?.features?.loyalty?.reminderDaysBeforeExpiry) || 7;
+                const days =
+                    Number(c.onboardingData?.features?.loyalty?.reminderDaysBeforeExpiry) ||
+                    Number(c.wizardFeatures?.loyaltyReminderDaysBeforeExpiry) ||
+                    7;
                 const windowEnd = new Date(Date.now() + days * dayMs);
                 const client = await Client.findOne({ clientId: c.clientId });
                 if (!client) continue;

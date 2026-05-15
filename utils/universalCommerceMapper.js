@@ -64,13 +64,25 @@ function nestedUniversalToWizardFeatures(universal = {}) {
     enableOrderTracking: bool(u.orderTracking?.enabled, true),
     enableReturnsRefunds: bool(help.enabled, false),
     enableCancelOrder: bool(cancel.enabled, true),
+    cancelRequireReason: cancel.requireReason !== false,
+    cancelAllowModify: cancel.allowModify !== false,
     enableWarranty: bool(warranty.enabled, false),
-    enableInstallSupport: bool(help.hasInstallSupport, false),
+    warrantyGeneratePdf: warranty.generatePDF !== false,
+    warrantyDuration: warranty.defaultPeriod
+      ? `${warranty.defaultPeriod} ${warranty.defaultUnit || "months"}`
+      : undefined,
+    enableInstallSupport: bool(help.enabled, bool(help.hasInstallSupport, false)),
+    helpIncludeInstallGuide: help.hasInstallSupport !== false,
     installSupportPrompt:
       help.installProductType
         ? `Need setup help for ${help.installProductType}? Share your product name and a photo — our team guides you step by step.`
         : undefined,
     enableLoyalty: bool(loyalty.enabled, false),
+    loyaltySendReminders: loyalty.sendReminders !== false,
+    loyaltyReminderDaysBeforeExpiry: Math.max(
+      1,
+      Math.min(30, Number(loyalty.reminderDaysBeforeExpiry) || 7)
+    ),
     loyaltyPointsPerUnit: Math.max(1, Math.round(100 * (Number(loyalty.pointsValue) > 0 ? Number(loyalty.pointsValue) : 1))),
     enableFAQ: bool(aiDesk.enabled, false),
     enableAIFallback: bool(aiDesk.enabled, false),
@@ -177,6 +189,7 @@ function buildSyntheticUniversalFeatures(body = {}, flat = {}, client = {}) {
   }
 
   const codMinRaw =
+    flat.codConfirmationMinutes ??
     body.codConfirmationMinutes ??
     body.codConfirmMinutes ??
     body.onboardingData?.codConfirmationMinutes;

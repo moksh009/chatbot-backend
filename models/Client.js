@@ -107,6 +107,8 @@ const WizardFeaturesSchema = new mongoose.Schema({
   enableOrderTracking:     { type: Boolean, default: true  }, // Shopify order status branch
   enableReturnsRefunds:    { type: Boolean, default: true  }, // Returns + refund branch
   enableCancelOrder:       { type: Boolean, default: true  }, // Cancellation flow under order ops
+  cancelRequireReason:     { type: Boolean, default: true  },
+  cancelAllowModify:       { type: Boolean, default: true  },
   enableCodToPrepaid:      { type: Boolean, default: false }, // Auto-nudge after COD orders to convert to prepaid
   codDiscountAmount:       { type: Number,  default: 50    }, // ₹ off to incentivize switch
   enableAbandonedCart:     { type: Boolean, default: true  }, // 3-step cart recovery drip
@@ -118,6 +120,8 @@ const WizardFeaturesSchema = new mongoose.Schema({
 
   // Loyalty & growth
   enableLoyalty:           { type: Boolean, default: false },
+  loyaltySendReminders:    { type: Boolean, default: true  },
+  loyaltyReminderDaysBeforeExpiry: { type: Number, default: 7 },
   loyaltyPointsPerUnit:    { type: Number,  default: 10    }, // Points per ₹100
   loyaltySignupBonus:      { type: Number,  default: 100   },
   loyaltySilverThreshold:  { type: Number,  default: 500   },
@@ -129,11 +133,14 @@ const WizardFeaturesSchema = new mongoose.Schema({
 
   // Service & post-purchase
   enableWarranty:          { type: Boolean, default: false },
+  warrantyGeneratePdf:     { type: Boolean, default: true  },
   warrantyDuration:        { type: String,  default: "1 Year" },
   warrantySupportPhone:    { type: String,  default: "" },
   warrantySupportEmail:    { type: String,  default: "" },
   warrantyClaimUrl:        { type: String,  default: "" },
   enableInstallSupport:    { type: Boolean, default: false },
+  helpIncludeInstallGuide: { type: Boolean, default: true  },
+  installProductType:      { type: String,  default: "Electronics" },
   installSupportPrompt:    { type: String,  default: "Need install help? Share your exact product name and I will guide you." },
   enableFAQ:               { type: Boolean, default: true  },
   enableSupportEscalation: { type: Boolean, default: true  },
@@ -153,6 +160,7 @@ const WizardFeaturesSchema = new mongoose.Schema({
   // Notifications
   enableAdminAlerts:       { type: Boolean, default: true  }, // WhatsApp + email blast on critical events
   enableOrderConfirmTpl:   { type: Boolean, default: true  },
+  codConfirmationMinutes:  { type: Number,  default: 10   },
   /**
    * When true (default), Shopify fulfillment / order webhooks that mark an order shipped
    * may send the mapped "shipped" WhatsApp template (and session fallback text).

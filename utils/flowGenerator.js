@@ -216,6 +216,39 @@ function flowPos(col, row) {
   return { x: Math.round(40 + col * DX), y: Math.round(56 + row * DY) };
 }
 
+/** Main hub rows — max 8 (WhatsApp list cap). IDs match menu edge sourceHandles. */
+function buildMainMenuRows(F) {
+  const rows = [];
+  if (F.enableCatalog) {
+    rows.push({ id: "mnu_browse", title: "🛍️ Browse Products", description: "Explore our collection" });
+  }
+  if (F.enableOrderTracking) {
+    rows.push({ id: "mnu_track", title: "📦 Track My Order", description: "Status & tracking link" });
+  }
+  if (F.enableCancelOrder) {
+    rows.push({ id: "mnu_cancel", title: "❌ Cancel / Modify Order", description: "Change or cancel an order" });
+  }
+  if (F.enableInstallSupport) {
+    rows.push({ id: "mnu_help", title: "🤝 Help With My Order", description: "Delivery, returns, setup" });
+  }
+  if (F.enableWarranty) {
+    rows.push({ id: "mnu_warranty", title: "🛡️ Warranty Details", description: "Coverage & certificate" });
+  }
+  if (F.enableLoyalty) {
+    rows.push({ id: "mnu_loyalty", title: "⭐ My Loyalty Points", description: "Balance & redeem" });
+  }
+  if (F.enableAIFallback) {
+    rows.push({ id: "mnu_ai", title: "🆘 Need Help?", description: "Ask us anything" });
+  }
+  if (F.enableSupportEscalation) {
+    rows.push({ id: "mnu_agent", title: "👨‍💼 Talk to Agent", description: "Speak with our team" });
+  }
+  if (!rows.length) {
+    rows.push({ id: "mnu_menu", title: "📋 Main Menu", description: "Get started" });
+  }
+  return rows.slice(0, 8);
+}
+
 /** Automation triggers (cart / order / review) — isolated left stack, no overlap with hub. */
 function autoPos(col, row) {
   const DX = 440;
@@ -252,7 +285,7 @@ function buildContext(client = {}, wizardData = {}) {
   const F = {
     enableCatalog:           true,
     enableOrderTracking:     true,
-    enableReturnsRefunds:    true,
+    enableReturnsRefunds:    false,
     enableCancelOrder:       true,
     enableCodToPrepaid:      false,
     codDiscountAmount:       50,
@@ -273,6 +306,7 @@ function buildContext(client = {}, wizardData = {}) {
     reviewDelayDays:         4,
     enableWarranty:          false,
     warrantyDuration:        "1 Year",
+    warrantyGeneratePdf:     true,
     warrantySupportPhone:    "",
     warrantySupportEmail:    "",
     warrantyClaimUrl:        "",
@@ -292,6 +326,10 @@ function buildContext(client = {}, wizardData = {}) {
     enableOrderConfirmTpl:   true,
     /** Webhook-only; see orderEventDispatcher (no flow branch). */
     enableAutoShopifyShippedWhatsApp: true,
+    cancelRequireReason: true,
+    cancelAllowModify: true,
+    warrantyGeneratePdf: true,
+    helpIncludeInstallGuide: true,
     ...features
   };
 
@@ -336,6 +374,7 @@ function buildContext(client = {}, wizardData = {}) {
     checkoutUrl:         wizardData.checkoutUrl         || pv.checkoutUrl            || "",
     currency:            wizardData.currency            || pv.baseCurrency           || "₹",
     warrantyDuration:    F.warrantyDuration             || pv.warrantyDuration       || "1 Year",
+    warrantyGeneratePdf: F.warrantyGeneratePdf !== false,
     faqText:             wizardData.faqText             || persona.knowledgeBase     || "",
     returnsInfo:         wizardData.returnsInfo         || policies.returnPolicy     || "",
     fallbackMessage:     wizardData.fallbackMessage     || "I can help with that. Let me route you to the right place.",
@@ -418,6 +457,22 @@ function buildIDs(client, wizardData) {
     can_action:       `can_action_${ts}`,
     can_succ:         `can_succ_${ts}`,
     can_fail:         `can_fail_${ts}`,
+    can_flow_ask:     `can_flow_ask_${ts}`,
+    can_flow_lookup:  `can_flow_lookup_${ts}`,
+    can_flow_list:    `can_flow_list_${ts}`,
+    can_flow_resolve: `can_flow_resolve_${ts}`,
+    can_flow_shipped: `can_flow_shipped_${ts}`,
+    can_flow_choice:  `can_flow_choice_${ts}`,
+    can_flow_reason:  `can_flow_reason_${ts}`,
+    can_flow_alert:   `can_flow_alert_${ts}`,
+    can_flow_done:    `can_flow_done_${ts}`,
+    can_flow_modify:  `can_flow_modify_${ts}`,
+  // AI help desk
+    ai_capture:       `ai_capture_${ts}`,
+    ai_respond:       `ai_respond_${ts}`,
+    ai_check:         `ai_check_${ts}`,
+    ai_escalate:      `ai_escalate_${ts}`,
+    ord_ask:          `ord_ask_${ts}`,
     // Returns
     ret_hub:          `ret_hub_${ts}`,
     ret_reason:       `ret_reason_${ts}`,
@@ -448,6 +503,24 @@ function buildIDs(client, wizardData) {
     ins_search_latest:`ins_search_latest_${ts}`,
     ins_result:       `ins_result_${ts}`,
     ins_no_match:     `ins_no_match_${ts}`,
+    help_ask:         `help_ask_${ts}`,
+    help_lookup:      `help_lookup_${ts}`,
+    help_menu:        `help_menu_${ts}`,
+    help_not_found:   `help_not_found_${ts}`,
+    help_alert:       `help_alert_${ts}`,
+    help_done:        `help_done_${ts}`,
+    help_install_msg: `help_install_msg_${ts}`,
+    help_other_cap:   `help_other_cap_${ts}`,
+    war_ask:          `war_ask_${ts}`,
+    war_active_hub:   `war_active_hub_${ts}`,
+    war_pdf:          `war_pdf_${ts}`,
+    war_claim_cap:    `war_claim_cap_${ts}`,
+    war_claim_alert:  `war_claim_alert_${ts}`,
+    war_claim_done:   `war_claim_done_${ts}`,
+    loy_check:        `loy_check_${ts}`,
+    loy_show:         `loy_show_${ts}`,
+    loy_zero:         `loy_zero_${ts}`,
+    loy_code:         `loy_code_${ts}`,
     // Loyalty
     loy_menu:         `loy_menu_${ts}`,
     loy_balance:      `loy_balance_${ts}`,
@@ -605,74 +678,56 @@ function buildEntry(ctx, IDS, content, welcomeTemplate) {
       }
     });
   } else {
-    const welcomeRows = [];
-    if (F.enableCatalog) welcomeRows.push({ id: "shop", title: "🛍️ Shop Collection" });
-    if (F.enableOrderTracking) welcomeRows.push({ id: "track", title: "📦 Track My Order" });
-    if (F.enableReturnsRefunds) welcomeRows.push({ id: "returns", title: "🔄 Return / Cancel" });
-    if (F.enableWarranty) welcomeRows.push({ id: "warranty", title: "🛡️ Warranty" });
-    if (F.enableLoyalty) welcomeRows.push({ id: "loyalty", title: "💎 My Rewards" });
-    if (F.enableSupportEscalation) welcomeRows.push({ id: "support", title: "🎧 Talk to Human" });
-    if (F.enableFAQ) welcomeRows.push({ id: "faq", title: "❓ FAQs" });
-    if (!welcomeRows.length) {
-      welcomeRows.push({ id: "menu", title: "📋 Open Menu" });
-    }
     const welcomeText = normalizeWelcomeCopy(content.welcome_a, ctx);
     nodes.push({
-      id: IDS.welcome, type: "interactive", position: flowPos(2, 5),
+      id: IDS.welcome,
+      type: "interactive",
+      position: flowPos(2, 5),
       data: {
-        label: "Welcome Message", interactiveType: "list",
+        label: "Welcome Message",
+        interactiveType: "button",
         imageUrl: safeWelcomeImage,
         text: welcomeText,
-        buttonText: "Open Menu",
-        sections: [{ title: "{{brand_name}}", rows: welcomeRows.slice(0, 8) }],
-        heatmapCount: 0
-      }
+        buttonsList: [{ id: "open_menu", title: "📋 Open menu" }],
+        heatmapCount: 0,
+      },
     });
-    const tgtShop = F.enableCatalog ? IDS.cat_list : IDS.main_menu;
-    const tgtTrack = F.enableOrderTracking ? IDS.ord_track : IDS.main_menu;
-    const tgtReturns = F.enableReturnsRefunds ? IDS.ret_hub : IDS.main_menu;
-    const tgtWarranty = F.enableWarranty ? IDS.war_hub : IDS.main_menu;
-    const tgtLoyalty = F.enableLoyalty ? IDS.loy_menu : IDS.main_menu;
-    const supEntry = F.enableBusinessHoursGate && !F.enable247 ? IDS.sup_sch : IDS.sup_capture;
-    const tgtSupport = F.enableSupportEscalation ? supEntry : IDS.main_menu;
-    const tgtFaq = F.enableFAQ ? IDS.faq_msg : IDS.main_menu;
-    welcomeRows.forEach((b) => {
-      let target = IDS.main_menu;
-      if (b.id === "shop") target = tgtShop;
-      else if (b.id === "track") target = tgtTrack;
-      else if (b.id === "returns") target = tgtReturns;
-      else if (b.id === "warranty") target = tgtWarranty;
-      else if (b.id === "loyalty") target = tgtLoyalty;
-      else if (b.id === "support") target = tgtSupport;
-      else if (b.id === "faq") target = tgtFaq;
-      else if (b.id === "menu") target = IDS.main_menu;
-      edges.push({
-        id: `e_${IDS.welcome}_${b.id}`,
-        source: IDS.welcome,
-        target,
-        sourceHandle: b.id
-      });
+    edges.push({
+      id: `e_${IDS.welcome}_mm`,
+      source: IDS.welcome,
+      target: IDS.main_menu,
+      sourceHandle: "open_menu",
     });
   }
   edges.push({ id: `e_${IDS.trig_main}_w`, source: IDS.trig_main, target: IDS.welcome });
   if (wTpl) {
-    edges.push({ id: `e_${IDS.welcome}_mm`, source: IDS.welcome, target: IDS.main_menu });
+    edges.push({ id: `e_${IDS.welcome}_mm_tpl`, source: IDS.welcome, target: IDS.main_menu });
   }
 
   return { nodes, edges, label: "Welcome → {{brand_name}}", hasWelcomeTemplate: !!wTpl };
 }
 
 function buildMainMenu(ctx, IDS, menuRows) {
-  if (!menuRows.length) return { nodes: [], edges: [] };
+  const rows = (menuRows && menuRows.length ? menuRows : buildMainMenuRows(ctx.F)).slice(0, 8);
+  if (!rows.length) return { nodes: [], edges: [] };
+  const { client } = ctx;
+  const safeLogo = sanitizeInteractiveImageUrl(
+    client.brand?.businessLogo || client.brand?.logoUrl || client.businessLogo || ""
+  );
   const node = {
-    id: IDS.main_menu, type: "interactive", position: flowPos(3, 5),
+    id: IDS.main_menu,
+    type: "interactive",
+    position: flowPos(3, 5),
     data: {
-      label: "Main Hub Menu", interactiveType: "list",
-      text: "How can {{bot_name}} help you today? Tap an option below 👇",
+      label: "Main Hub Menu",
+      interactiveType: "list",
+      imageUrl: safeLogo,
+      text:
+        "Welcome to *{{brand_name}}* 👋\n\nHow can *{{bot_name}}* help you today? Tap an option below.",
       buttonText: "Open Menu",
-      sections: [{ title: "{{brand_name}}", rows: menuRows.slice(0, 8) }],
-      heatmapCount: 0
-    }
+      sections: [{ title: "How can we help?", rows }],
+      heatmapCount: 0,
+    },
   };
   return { nodes: [node], edges: [] };
 }
@@ -1066,10 +1121,291 @@ function buildCatalogBranch(ctx, IDS) {
   }
 
   return {
-    nodes, edges,
-    menuRow: { id: "shop", title: "🛍️ Shop Collection" },
+    nodes,
+    edges,
+    menuRow: { id: "mnu_browse", title: "🛍️ Browse Products" },
     entryNodeId: IDS.cat_list,
-    sourceHandle: "shop"
+    sourceHandle: "mnu_browse",
+  };
+}
+
+function buildCancelOrderBranch(ctx, IDS, content) {
+  const { F, adminPhone, client } = ctx;
+  const nodes = [];
+  const edges = [];
+  const requireReason = F.cancelRequireReason !== false;
+
+  nodes.push(
+    {
+      id: IDS.can_flow_ask,
+      type: "capture_input",
+      position: flowPos(5, 10),
+      data: {
+        label: "Cancel — ask identifier",
+        variable: "cancel_identifier",
+        question:
+          "😔 Sorry to hear that!\n\nPlease share your *registered phone number* or *Order ID* (e.g. #1042) so we can find your order.",
+        text:
+          "😔 Sorry to hear that!\n\nPlease share your *registered phone number* or *Order ID* (e.g. #1042) so we can find your order.",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.can_flow_lookup,
+      type: "shopify_call",
+      position: flowPos(6, 10),
+      data: {
+        label: "Fetch customer orders",
+        action: "GET_CUSTOMER_ORDERS",
+        queryVariable: "cancel_identifier",
+        variable: "customer_orders",
+        silent: true,
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.can_flow_list,
+      type: "interactive",
+      position: flowPos(7, 10),
+      data: {
+        label: "Select order to cancel",
+        interactiveType: "list",
+        buttonText: "Select order",
+        text: "Hi *{{customer_name|there}}*! 👋\n\nHere are your recent orders. Which one would you like to cancel or modify?",
+        sections: [{ title: "Your orders", rows: [] }],
+        dynamicSections: true,
+        dynamicSectionsVariable: "customer_orders",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.can_flow_resolve,
+      type: "shopify_call",
+      position: flowPos(8, 10),
+      data: {
+        label: "Load selected order",
+        action: "CHECK_ORDER_STATUS",
+        queryVariable: "selected_order_name",
+        silent: true,
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.can_flow_shipped,
+      type: "interactive",
+      position: flowPos(9, 11),
+      data: {
+        label: "Already shipped",
+        interactiveType: "button",
+        text:
+          "😕 *Order {{order_number|your order}}* has already been processed for delivery and cannot be cancelled or modified at this stage.\n\nYou can refuse delivery when the courier arrives — it will return to us and your refund will be processed in 5–7 business days.\n\nWhat would you like to do next?",
+        buttonsList: [
+          { id: "shipped_menu", title: "🏠 Main menu" },
+          { id: "shipped_agent", title: "👨‍💼 Talk to agent" },
+          { id: "shipped_track", title: "📦 Track order" },
+        ],
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.can_flow_choice,
+      type: "interactive",
+      position: flowPos(9, 10),
+      data: {
+        label: "Cancel or modify",
+        interactiveType: "button",
+        text: "✅ *Order {{order_number|selected}}* can still be changed.\n\nWhat would you like to do?",
+        buttonsList: [
+          { id: "action_cancel", title: "❌ Cancel order" },
+          { id: "action_modify", title: "✏️ Modify order" },
+          { id: "action_back", title: "⬅️ Main menu" },
+        ],
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.can_flow_reason,
+      type: "interactive",
+      position: flowPos(10, 10),
+      data: {
+        label: "Cancellation reason",
+        interactiveType: "list",
+        buttonText: "Select reason",
+        text: "We're sorry to see you go 😔\n\nCould you tell us why you'd like to cancel? This helps us improve.",
+        sections: [
+          {
+            title: "Reason",
+            rows: [
+              { id: "reason_wrong", title: "Ordered by mistake", description: "" },
+              { id: "reason_price", title: "Found better price", description: "" },
+              { id: "reason_delay", title: "Delivery too slow", description: "" },
+              { id: "reason_address", title: "Wrong address", description: "" },
+              { id: "reason_mind", title: "Changed my mind", description: "" },
+              { id: "reason_other", title: "Other reason", description: "" },
+            ],
+          },
+        ],
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.can_flow_alert,
+      type: "admin_alert",
+      position: flowPos(11, 10),
+      data: {
+        label: "Cancel request — admin",
+        priority: "high",
+        alertChannel: "both",
+        topic: "Cancellation request — {{order_number}}",
+        customMessage:
+          "Customer {{customer_name|Unknown}} ({{phone}}) requested cancellation for *{{order_number}}*.\nReason: {{cancel_reason|Not provided}}\nStatus: {{order_status|unknown}}",
+        phone: adminPhone || client.adminPhone || "",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.can_flow_done,
+      type: "message",
+      position: flowPos(12, 10),
+      data: {
+        label: "Cancel request received",
+        text:
+          "✅ *Your cancellation request has been received.*\n\nOur team will review it within *2–4 hours* and confirm on WhatsApp. For urgent help, call *{{supportPhone|our support line}}*.",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.can_flow_modify,
+      type: "interactive",
+      position: flowPos(10, 12),
+      data: {
+        label: "Modify order menu",
+        interactiveType: "list",
+        buttonText: "What to change",
+        text: "What would you like to change about *{{order_number|your order}}*?",
+        sections: [
+          {
+            title: "Modification",
+            rows: [
+              { id: "mod_address", title: "📍 Delivery address", description: "Before shipping" },
+              { id: "mod_phone", title: "📱 Contact number", description: "" },
+              { id: "mod_variant", title: "👕 Size / variant", description: "Subject to stock" },
+              { id: "mod_other", title: "✏️ Other changes", description: "" },
+            ],
+          },
+        ],
+        heatmapCount: 0,
+      },
+    }
+  );
+
+  edges.push(
+    { id: `e_${IDS.can_flow_ask}_lk`, source: IDS.can_flow_ask, target: IDS.can_flow_lookup },
+    { id: `e_${IDS.can_flow_lookup}_ls`, source: IDS.can_flow_lookup, target: IDS.can_flow_list },
+    { id: `e_${IDS.can_flow_list}_rs`, source: IDS.can_flow_list, target: IDS.can_flow_resolve },
+    { id: `e_${IDS.can_flow_resolve}_lg`, source: IDS.can_flow_resolve, target: IDS.can_logic, sourceHandle: "success" },
+    { id: `e_${IDS.can_flow_resolve}_nf`, source: IDS.can_flow_resolve, target: IDS.can_flow_ask, sourceHandle: "not_found" },
+    { id: `e_${IDS.can_logic}_ship`, source: IDS.can_logic, target: IDS.can_flow_shipped, sourceHandle: "true" },
+    { id: `e_${IDS.can_logic}_ok`, source: IDS.can_logic, target: IDS.can_flow_choice, sourceHandle: "false" },
+    { id: `e_${IDS.can_flow_choice}_cn`, source: IDS.can_flow_choice, target: requireReason ? IDS.can_flow_reason : IDS.can_flow_alert, sourceHandle: "action_cancel" },
+    { id: `e_${IDS.can_flow_choice}_md`, source: IDS.can_flow_choice, target: IDS.can_flow_modify, sourceHandle: "action_modify" },
+    { id: `e_${IDS.can_flow_choice}_mm`, source: IDS.can_flow_choice, target: IDS.main_menu, sourceHandle: "action_back" },
+    { id: `e_${IDS.can_flow_reason}_al`, source: IDS.can_flow_reason, target: IDS.can_flow_alert },
+    { id: `e_${IDS.can_flow_alert}_dn`, source: IDS.can_flow_alert, target: IDS.can_flow_done },
+    { id: `e_${IDS.can_flow_done}_mm`, source: IDS.can_flow_done, target: IDS.main_menu },
+    { id: `e_${IDS.can_flow_shipped}_mm`, source: IDS.can_flow_shipped, target: IDS.main_menu, sourceHandle: "shipped_menu" },
+    { id: `e_${IDS.can_flow_shipped}_ag`, source: IDS.can_flow_shipped, target: IDS.sup_capture, sourceHandle: "shipped_agent" },
+    { id: `e_${IDS.can_flow_shipped}_tr`, source: IDS.can_flow_shipped, target: IDS.ord_ask, sourceHandle: "shipped_track" },
+    { id: `e_${IDS.can_flow_modify}_al`, source: IDS.can_flow_modify, target: IDS.can_flow_alert }
+  );
+
+  nodes.push({
+    id: IDS.can_logic,
+    type: "logic",
+    position: flowPos(8, 11),
+    data: {
+      label: "Order already shipped?",
+      variable: "is_shipped",
+      operator: "eq",
+      value: "true",
+      heatmapCount: 0,
+    },
+  });
+
+  return {
+    nodes,
+    edges,
+    menuRow: { id: "mnu_cancel", title: "❌ Cancel / Modify Order" },
+    entryNodeId: IDS.can_flow_ask,
+    sourceHandle: "mnu_cancel",
+  };
+}
+
+function buildAiHelpDeskBranch(ctx, IDS) {
+  const { F } = ctx;
+  const nodes = [
+    {
+      id: IDS.ai_capture,
+      type: "capture_input",
+      position: flowPos(5, 20),
+      data: {
+        label: "AI help — describe issue",
+        variable: "customer_issue",
+        question:
+          "🆘 *I'm here to help!*\n\nTell me what's going on — describe your issue in as much detail as you like.",
+        text:
+          "🆘 *I'm here to help!*\n\nTell me what's going on — describe your issue in as much detail as you like.",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.ai_respond,
+      type: "message",
+      position: flowPos(6, 20),
+      data: {
+        label: "AI response",
+        text: "{{ai_response}}",
+        isAiResponse: true,
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.ai_check,
+      type: "logic",
+      position: flowPos(7, 20),
+      data: {
+        label: "Needs human?",
+        variable: "ai_needs_human",
+        operator: "eq",
+        value: "true",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.ai_escalate,
+      type: "message",
+      position: flowPos(8, 20),
+      data: {
+        label: "Escalate to human",
+        text:
+          "🤔 That's a tricky one — I'm connecting you with our support team now. They'll reply on this chat shortly!",
+        heatmapCount: 0,
+      },
+    },
+  ];
+  const edges = [
+    { id: `e_${IDS.ai_capture}_rsp`, source: IDS.ai_capture, target: IDS.ai_respond },
+    { id: `e_${IDS.ai_respond}_chk`, source: IDS.ai_respond, target: IDS.ai_check },
+    { id: `e_${IDS.ai_check}_esc`, source: IDS.ai_check, target: IDS.ai_escalate, sourceHandle: "true" },
+    { id: `e_${IDS.ai_check}_mm`, source: IDS.ai_check, target: IDS.main_menu, sourceHandle: "false" },
+    { id: `e_${IDS.ai_escalate}_sp`, source: IDS.ai_escalate, target: IDS.sup_capture },
+  ];
+  return {
+    nodes,
+    edges,
+    menuRow: { id: "mnu_ai", title: "🆘 Need Help?" },
+    entryNodeId: IDS.ai_capture,
+    sourceHandle: "mnu_ai",
   };
 }
 
@@ -1079,15 +1415,30 @@ function buildOrderBranch(ctx, IDS, content) {
 
   nodes.push(
     {
+      id: IDS.ord_ask,
+      type: "capture_input",
+      position: flowPos(4, 4),
+      data: {
+        label: "Track — ask identifier",
+        variable: "order_identifier",
+        question:
+          "📦 *Let's track your order!*\n\nShare your *Order ID* (e.g. #1042) or the *mobile number* used at checkout.",
+        text:
+          "📦 *Let's track your order!*\n\nShare your *Order ID* (e.g. #1042) or the *mobile number* used at checkout.",
+        heatmapCount: 0,
+      },
+    },
+    {
       id: IDS.ord_track,
       type: "shopify_call",
       position: flowPos(5, 4),
       data: {
         label: "Check Order Status",
         action: "CHECK_ORDER_STATUS",
+        queryVariable: "order_identifier",
         silent: true,
-        heatmapCount: 0
-      }
+        heatmapCount: 0,
+      },
     },
     {
       id: IDS.ord_status_msg,
@@ -1108,138 +1459,38 @@ function buildOrderBranch(ctx, IDS, content) {
         variable: "order_id_manual",
         question: content.order_not_found_prompt,
         text: content.order_not_found_prompt,
-        heatmapCount: 0
-      }
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: `${IDS.ord_track}_retry`,
+      type: "shopify_call",
+      position: flowPos(5, 3),
+      data: {
+        label: "Retry order lookup",
+        action: "CHECK_ORDER_STATUS",
+        queryVariable: "order_id_manual",
+        silent: true,
+        heatmapCount: 0,
+      },
     }
   );
   edges.push(
+    { id: `e_${IDS.ord_ask}_tr`, source: IDS.ord_ask, target: IDS.ord_track },
     { id: `e_${IDS.ord_track}_nf`, source: IDS.ord_track, target: IDS.ord_notfound, sourceHandle: "not_found" },
     { id: `e_${IDS.ord_track}_ok`, source: IDS.ord_track, target: IDS.ord_status_msg, sourceHandle: "success" },
-    // After manual order id, re-run lookup (engine merges order_id_manual into metadata).
-    { id: `e_${IDS.ord_notfound}_retry`, source: IDS.ord_notfound, target: IDS.ord_track }
+    { id: `e_${IDS.ord_notfound}_retry`, source: IDS.ord_notfound, target: `${IDS.ord_track}_retry` },
+    { id: `e_${IDS.ord_track}_retry_ok`, source: `${IDS.ord_track}_retry`, target: IDS.ord_status_msg, sourceHandle: "success" },
+    { id: `e_${IDS.ord_track}_retry_nf`, source: `${IDS.ord_track}_retry`, target: IDS.main_menu, sourceHandle: "not_found" },
+    { id: `e_${IDS.ord_status_msg}_mm`, source: IDS.ord_status_msg, target: IDS.main_menu }
   );
 
-  if (F.enableCancelOrder) {
-    const hubButtons = [
-      { id: "cancel", title: "❌ Cancel Order" },
-      ...(F.enableReturnsRefunds ? [{ id: "returns", title: "🔄 Returns" }] : []),
-      { id: "menu", title: "⬅️ Main Menu" }
-    ];
-    nodes.push(
-      {
-        id: IDS.ord_hub,
-        type: "interactive",
-        position: flowPos(7, 5),
-        data: {
-          label: "Order Management",
-          interactiveType: "button",
-          text: content.order_hub_prompt,
-          buttonsList: hubButtons,
-          heatmapCount: 0
-        }
-      },
-      {
-        id: IDS.can_confirm,
-        type: "interactive",
-        position: flowPos(8, 5),
-        data: {
-          label: "Confirm Cancellation",
-          interactiveType: "button",
-          text: content.cancellation_confirm,
-          buttonsList: [
-            { id: "yes", title: "✅ Yes, Cancel It" },
-            { id: "no", title: "❌ Keep My Order" }
-          ],
-          heatmapCount: 0
-        }
-      },
-      {
-        id: IDS.can_logic,
-        type: "logic",
-        position: flowPos(9, 5),
-        data: {
-          label: "Shipped? (Shopify)",
-          variable: "is_shipped",
-          operator: "eq",
-          value: "true",
-          heatmapCount: 0
-        }
-      },
-      {
-        id: IDS.can_shipped,
-        type: "message",
-        position: flowPos(11, 6),
-        data: { label: "Already Shipped Error", text: content.in_transit_error, heatmapCount: 0 }
-      },
-      {
-        id: IDS.can_reason,
-        type: "capture_input",
-        position: flowPos(10, 5),
-        data: {
-          label: "Cancellation Reason",
-          variable: "cancel_reason",
-          question: content.cancel_reason_prompt,
-          text: content.cancel_reason_prompt,
-          heatmapCount: 0
-        }
-      },
-      {
-        id: IDS.can_action,
-        type: "shopify_call",
-        position: flowPos(11, 5),
-        data: { label: "Process Cancellation", action: "CANCEL_ORDER", heatmapCount: 0 }
-      },
-      {
-        id: IDS.can_succ,
-        type: "message",
-        position: flowPos(12, 5),
-        data: { label: "Cancel Success", text: content.cancellation_success, heatmapCount: 0 }
-      },
-      {
-        id: IDS.can_fail,
-        type: "message",
-        position: flowPos(12, 6),
-        data: {
-          label: "Cancel Failed",
-          text: content.cancel_failed_user,
-          heatmapCount: 0
-        }
-      }
-    );
-    edges.push(
-      { id: `e_${IDS.ord_status_msg}_hub`, source: IDS.ord_status_msg, target: IDS.ord_hub },
-      { id: `e_${IDS.ord_hub}_can`, source: IDS.ord_hub, target: IDS.can_confirm, sourceHandle: "cancel" },
-      { id: `e_${IDS.ord_hub}_menu`, source: IDS.ord_hub, target: IDS.main_menu, sourceHandle: "menu" }
-    );
-    if (F.enableReturnsRefunds && hubButtons.some((b) => b.id === "returns")) {
-      edges.push({
-        id: `e_${IDS.ord_hub}_ret`,
-        source: IDS.ord_hub,
-        target: IDS.ret_hub,
-        sourceHandle: "returns"
-      });
-    }
-    edges.push(
-      { id: `e_${IDS.can_confirm}_y`, source: IDS.can_confirm, target: IDS.can_logic, sourceHandle: "yes" },
-      { id: `e_${IDS.can_confirm}_n`, source: IDS.can_confirm, target: IDS.main_menu, sourceHandle: "no" },
-      { id: `e_${IDS.can_logic}_t`, source: IDS.can_logic, target: IDS.can_shipped, sourceHandle: "true" },
-      { id: `e_${IDS.can_logic}_f`, source: IDS.can_logic, target: IDS.can_reason, sourceHandle: "false" },
-      { id: `e_${IDS.can_reason}_act`, source: IDS.can_reason, target: IDS.can_action },
-      { id: `e_${IDS.can_action}_s`, source: IDS.can_action, target: IDS.can_succ, sourceHandle: "success" },
-      { id: `e_${IDS.can_action}_f`, source: IDS.can_action, target: IDS.can_fail, sourceHandle: "fail" },
-      { id: `e_${IDS.can_shipped}_mm`, source: IDS.can_shipped, target: IDS.main_menu },
-      { id: `e_${IDS.can_succ}_mm`, source: IDS.can_succ, target: IDS.main_menu },
-      { id: `e_${IDS.can_fail}_mm`, source: IDS.can_fail, target: IDS.main_menu }
-    );
-  } else {
-    edges.push({ id: `e_${IDS.ord_status_msg}_mm`, source: IDS.ord_status_msg, target: IDS.main_menu });
-  }
-
   return {
-    nodes, edges,
-    menuRow: { id: "track", title: "📦 Track My Order" },
-    entryNodeId: IDS.ord_track,
-    sourceHandle: "track"
+    nodes,
+    edges,
+    menuRow: { id: "mnu_track", title: "📦 Track My Order" },
+    entryNodeId: IDS.ord_ask,
+    sourceHandle: "mnu_track",
   };
 }
 
@@ -1335,256 +1586,400 @@ function buildReturnsBranch(ctx, IDS, content) {
 }
 
 function buildWarrantyBranch(ctx, IDS, content) {
-  const nodes = [], edges = [];
+  const { F, adminPhone, client } = ctx;
+  const nodes = [];
+  const edges = [];
+  const generatePdf = F.warrantyGeneratePdf !== false;
+
   nodes.push(
-    { id: IDS.war_hub, type: "interactive", position: flowPos(5, 11),
-      data: { label: "Warranty Hub", interactiveType: "button",
-        text: content.warranty_welcome,
+    {
+      id: IDS.war_ask,
+      type: "capture_input",
+      position: flowPos(5, 11),
+      data: {
+        label: "Warranty — identifier",
+        variable: "warranty_identifier",
+        question:
+          "🛡️ *Warranty check*\n\nShare your *Order ID* or *registered mobile number* to look up coverage.",
+        text:
+          "🛡️ *Warranty check*\n\nShare your *Order ID* or *registered mobile number* to look up coverage.",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.war_engine,
+      type: "warranty_check",
+      position: flowPos(6, 11),
+      data: {
+        label: "Warranty lookup",
+        action: "WARRANTY_CHECK",
+        queryVariable: "warranty_identifier",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.war_active_hub,
+      type: "interactive",
+      position: flowPos(7, 11),
+      data: {
+        label: "Warranty active",
+        interactiveType: "button",
+        text:
+          "✅ *Your warranty is active!*\n\n📦 Product: *{{_warranty_product_name|your product}}*\n📅 Purchased: {{_warranty_purchase_date|N/A}}\n⏳ Expires: *{{_warranty_expires_display|N/A}}*\n🔖 Order: {{_warranty_order_ref|-}}",
         buttonsList: [
-          { id: "reg",   title: "✅ Register" },
-          { id: "check", title: "🔍 Check Status" },
-          { id: "menu",  title: "⬅️ Main Menu" }
-        ], heatmapCount: 0 } },
-    { id: IDS.war_serial,  type: "capture_input", position: flowPos(6, 10),
-      data: { label: "Warranty Serial", variable: "warranty_serial",
-        question: "Enter serial number or order id.", text: "Enter serial number or order id.", heatmapCount: 0 } },
-    { id: IDS.war_date,    type: "capture_input", position: flowPos(7, 10),
-      data: { label: "Purchase Date", variable: "purchase_date",
-        question: "Enter purchase date (DD/MM/YYYY).", text: "Enter purchase date (DD/MM/YYYY).", heatmapCount: 0 } },
-    { id: IDS.war_tag,     type: "tag_lead", position: flowPos(8, 10),
-      data: { label: "Warranty Tag", action: "add", tag: "warranty-enrolled", heatmapCount: 0 } },
-    { id: IDS.war_success, type: "message", position: flowPos(9, 10),
-      data: { label: "Warranty Success", text: content.warranty_reg_success, heatmapCount: 0 } },
-    { id: IDS.war_lookup,  type: "capture_input", position: flowPos(6, 12),
-      data: { label: "Lookup Serial", variable: "lookup_serial",
-        question: content.warranty_lookup_prompt, text: content.warranty_lookup_prompt, heatmapCount: 0 } },
-    { id: IDS.war_engine,  type: "warranty_check", position: flowPos(7, 12),
-      data: { label: "Warranty Check", action: "WARRANTY_CHECK", heatmapCount: 0 } },
-    { id: IDS.war_active,  type: "message", position: flowPos(8, 11),
-      data: { label: "Warranty Active",
-        text: content.warranty_active_msg, heatmapCount: 0 } },
-    { id: IDS.war_expired, type: "message", position: flowPos(8, 12),
-      data: { label: "Warranty Expired",
-        text: content.warranty_expired_msg, heatmapCount: 0 } },
-    { id: IDS.war_none,    type: "message", position: flowPos(8, 13),
-      data: { label: "No Warranty",
-        text: content.warranty_none_msg, heatmapCount: 0 } }
+          ...(generatePdf ? [{ id: "war_pdf", title: "📄 Get certificate" }] : []),
+          { id: "war_claim", title: "🔧 Raise a claim" },
+          { id: "war_menu", title: "🏠 Main menu" },
+        ],
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.war_pdf,
+      type: "message",
+      position: flowPos(8, 10),
+      data: {
+        label: "Send warranty PDF",
+        text: "📄 Generating your warranty certificate…",
+        sendWarrantyPdf: true,
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.war_claim_cap,
+      type: "capture_input",
+      position: flowPos(8, 12),
+      data: {
+        label: "Warranty claim",
+        variable: "warranty_claim_issue",
+        question: "Describe the issue with your product (damage, defect, not working, etc.).",
+        text: "Describe the issue with your product (damage, defect, not working, etc.).",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.war_claim_alert,
+      type: "admin_alert",
+      position: flowPos(9, 12),
+      data: {
+        label: "Warranty claim alert",
+        priority: "high",
+        alertChannel: "both",
+        topic: "Warranty claim — {{_warranty_order_ref}}",
+        customMessage:
+          "Warranty claim from {{phone}}.\nProduct: {{_warranty_product_name}}\nOrder: {{_warranty_order_ref}}\nIssue: {{warranty_claim_issue}}",
+        phone: adminPhone || client.adminPhone || "",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.war_claim_done,
+      type: "message",
+      position: flowPos(10, 12),
+      data: {
+        label: "Claim received",
+        text: "✅ *Claim received.* Our team will review and contact you on WhatsApp within 24 hours.",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.war_expired,
+      type: "message",
+      position: flowPos(7, 12),
+      data: {
+        label: "Warranty expired",
+        text:
+          content.warranty_expired_msg ||
+          "⚠️ *Warranty expired* for {{_warranty_product_name|your product}}.\n\nExpiry: {{_warranty_expires_display|N/A}}\n\nOur team may still help — contact *{{supportPhone}}*.",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.war_none,
+      type: "message",
+      position: flowPos(7, 13),
+      data: {
+        label: "No warranty",
+        text:
+          content.warranty_none_msg ||
+          "🔍 *No warranty found* for this number.\n\nTry your *Order ID* or contact *{{supportPhone}}* and we'll link your purchase.",
+        heatmapCount: 0,
+      },
+    }
   );
+
   edges.push(
-    { id: `e_${IDS.war_hub}_reg`,   source: IDS.war_hub,    target: IDS.war_serial, sourceHandle: "reg" },
-    { id: `e_${IDS.war_hub}_chk`,   source: IDS.war_hub,    target: IDS.war_lookup, sourceHandle: "check" },
-    { id: `e_${IDS.war_hub}_menu`,  source: IDS.war_hub,    target: IDS.main_menu,  sourceHandle: "menu" },
-    { id: `e_${IDS.war_serial}_d`,  source: IDS.war_serial, target: IDS.war_date },
-    { id: `e_${IDS.war_date}_t`,    source: IDS.war_date,   target: IDS.war_tag },
-    { id: `e_${IDS.war_tag}_s`,     source: IDS.war_tag,    target: IDS.war_success },
-    { id: `e_${IDS.war_lookup}_e`,  source: IDS.war_lookup, target: IDS.war_engine },
-    { id: `e_${IDS.war_engine}_a`,  source: IDS.war_engine, target: IDS.war_active,  sourceHandle: "active" },
-    { id: `e_${IDS.war_engine}_x`,  source: IDS.war_engine, target: IDS.war_expired, sourceHandle: "expired" },
-    { id: `e_${IDS.war_engine}_n`,  source: IDS.war_engine, target: IDS.war_none,    sourceHandle: "none" },
-    { id: `e_${IDS.war_success}_mm`, source: IDS.war_success, target: IDS.main_menu },
-    { id: `e_${IDS.war_active}_mm`, source: IDS.war_active, target: IDS.main_menu },
+    { id: `e_${IDS.war_ask}_eng`, source: IDS.war_ask, target: IDS.war_engine },
+    { id: `e_${IDS.war_engine}_a`, source: IDS.war_engine, target: IDS.war_active_hub, sourceHandle: "active" },
+    { id: `e_${IDS.war_engine}_x`, source: IDS.war_engine, target: IDS.war_expired, sourceHandle: "expired" },
+    { id: `e_${IDS.war_engine}_n`, source: IDS.war_engine, target: IDS.war_none, sourceHandle: "none" },
+    { id: `e_${IDS.war_active_hub}_pdf`, source: IDS.war_active_hub, target: IDS.war_pdf, sourceHandle: "war_pdf" },
+    { id: `e_${IDS.war_active_hub}_cl`, source: IDS.war_active_hub, target: IDS.war_claim_cap, sourceHandle: "war_claim" },
+    { id: `e_${IDS.war_active_hub}_mm`, source: IDS.war_active_hub, target: IDS.main_menu, sourceHandle: "war_menu" },
+    { id: `e_${IDS.war_pdf}_mm`, source: IDS.war_pdf, target: IDS.main_menu },
+    { id: `e_${IDS.war_claim_cap}_al`, source: IDS.war_claim_cap, target: IDS.war_claim_alert },
+    { id: `e_${IDS.war_claim_alert}_dn`, source: IDS.war_claim_alert, target: IDS.war_claim_done },
+    { id: `e_${IDS.war_claim_done}_mm`, source: IDS.war_claim_done, target: IDS.main_menu },
     { id: `e_${IDS.war_expired}_mm`, source: IDS.war_expired, target: IDS.main_menu },
     { id: `e_${IDS.war_none}_mm`, source: IDS.war_none, target: IDS.main_menu }
   );
 
   return {
-    nodes, edges,
-    menuRow: { id: "warranty", title: "🛡️ Warranty" },
-    entryNodeId: IDS.war_hub,
-    sourceHandle: "warranty"
+    nodes,
+    edges,
+    menuRow: { id: "mnu_warranty", title: "🛡️ Warranty Details" },
+    entryNodeId: IDS.war_ask,
+    sourceHandle: "mnu_warranty",
   };
 }
 
 function buildLoyaltyBranch(ctx, IDS, content) {
   const { F } = ctx;
-  const nodes = [], edges = [];
-
-  // Build menu rows dynamically: referral row appears only if enabled.
-  const loyRows = [
-    { id: "pts", title: "💎 My Points" },
-    { id: "red", title: "🎁 Redeem" }
-  ];
-  if (F.enableReferral) loyRows.push({ id: "ref", title: "📢 Refer & Earn" });
-  loyRows.push({ id: "menu", title: "⬅️ Main Menu" });
-
-  nodes.push(
-    { id: IDS.loy_menu, type: "interactive", position: flowPos(5, 14),
-      data: { label: "Rewards Hub", interactiveType: "list",
-        text: content.loyalty_welcome, buttonText: "My Rewards",
-        sections: [{ title: "{{brand_name}} — Rewards", rows: loyRows }], heatmapCount: 0 } },
-    { id: IDS.loy_balance, type: "message", position: flowPos(6, 13),
-      data: { label: "Points Balance", text: content.loyalty_points_msg, heatmapCount: 0 } },
-    { id: IDS.loy_redeem, type: "loyalty_action", position: flowPos(6, 14),
-      data: { label: "Redeem Loyalty", actionType: "REDEEM_POINTS", pointsRequired: 100, heatmapCount: 0 } },
-    { id: IDS.loy_redeem_ok, type: "message", position: flowPos(7, 13),
-      data: { label: "Redeem Success", text: "🎁 *{{brand_name}}* — redemption locked in. Your checkout discount is live on the next cart we see from this number.", heatmapCount: 0 } },
-    { id: IDS.loy_redeem_fail, type: "message", position: flowPos(7, 15),
-      data: { label: "Insufficient Points", text: "You’re close 💎 You have *{{loyalty_points}} pts* — keep shopping *{{brand_name}}* and this reward unlocks automatically.", heatmapCount: 0 } }
-  );
-  edges.push(
-    { id: `e_${IDS.loy_menu}_pts`, source: IDS.loy_menu, target: IDS.loy_balance, sourceHandle: "pts" },
-    { id: `e_${IDS.loy_menu}_red`, source: IDS.loy_menu, target: IDS.loy_redeem,  sourceHandle: "red" },
-    { id: `e_${IDS.loy_menu}_mn`,  source: IDS.loy_menu, target: IDS.main_menu,   sourceHandle: "menu" },
-    { id: `e_${IDS.loy_redeem}_s`, source: IDS.loy_redeem, target: IDS.loy_redeem_ok,   sourceHandle: "success" },
-    { id: `e_${IDS.loy_redeem}_f`, source: IDS.loy_redeem, target: IDS.loy_redeem_fail, sourceHandle: "fail" },
-    { id: `e_${IDS.loy_balance}_mm`, source: IDS.loy_balance, target: IDS.main_menu },
-    { id: `e_${IDS.loy_redeem_ok}_mm`, source: IDS.loy_redeem_ok, target: IDS.main_menu },
-    { id: `e_${IDS.loy_redeem_fail}_mm`, source: IDS.loy_redeem_fail, target: IDS.main_menu }
-  );
-
-  if (F.enableReferral) {
-    nodes.push({
-      id: IDS.loy_refer, type: "message", position: flowPos(6, 16),
-      data: { label: "Refer", text: content.referral_msg, heatmapCount: 0 }
-    });
-    edges.push(
-      { id: `e_${IDS.loy_menu}_ref`, source: IDS.loy_menu, target: IDS.loy_refer, sourceHandle: "ref" },
-      { id: `e_${IDS.loy_refer}_mm`, source: IDS.loy_refer, target: IDS.main_menu }
-    );
-  }
-
-  return {
-    nodes, edges,
-    menuRow: { id: "loyalty", title: "💎 My Rewards" },
-    entryNodeId: IDS.loy_menu,
-    sourceHandle: "loyalty"
-  };
-}
-
-function buildInstallSupportBranch(ctx, IDS) {
-  const { F } = ctx;
-  const nodes = [], edges = [];
-  const supportPrompt =
-    String(F.installSupportPrompt || "").trim() ||
-    "Need install help? Share your exact product name and I will guide you.";
+  const nodes = [];
+  const edges = [];
+  const minRedeem = Math.max(50, Number(F.loyaltyRedeemMinPoints) || 100);
 
   nodes.push(
     {
-      id: IDS.ins_hub,
-      type: "interactive",
-      position: flowPos(5, 16),
+      id: IDS.loy_check,
+      type: "loyalty_action",
+      position: flowPos(5, 14),
       data: {
-        label: "Install Support Hub",
-        interactiveType: "button",
-        text: supportPrompt,
-        buttonsList: [
-          { id: "last_order", title: "🧾 Use my latest order" },
-          { id: "type_name", title: "⌨️ Type product name" },
-          { id: "menu", title: "⬅️ Main Menu" }
-        ],
-        heatmapCount: 0
-      }
+        label: "Check loyalty balance",
+        actionType: "CHECK_BALANCE",
+        heatmapCount: 0,
+      },
     },
     {
-      id: IDS.ins_lookup,
-      type: "shopify_call",
+      id: IDS.loy_show,
+      type: "interactive",
+      position: flowPos(6, 14),
+      data: {
+        label: "Loyalty balance",
+        interactiveType: "button",
+        text:
+          "⭐ *Your loyalty points*\n\n💰 Balance: *{{loyalty_points|0}} points*\n💵 Worth: *₹{{loyalty_rupee_value|0}}*\n{{loyalty_expiry_note}}\n\nRedeem for a discount code on your next order?",
+        buttonsList: [
+          { id: "loy_redeem", title: "🎁 Redeem points" },
+          { id: "loy_menu", title: "🏠 Main menu" },
+        ],
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.loy_zero,
+      type: "message",
       position: flowPos(6, 15),
       data: {
-        label: "Latest purchase lookup",
-        action: "CHECK_ORDER_STATUS",
-        silent: true,
-        variable: "latest_order_ctx",
-        heatmapCount: 0
-      }
+        label: "No points yet",
+        text:
+          "You don't have redeemable points yet 💎\n\nShop *{{brand_name}}* and earn rewards automatically on every order!",
+        heatmapCount: 0,
+      },
     },
     {
-      id: IDS.ins_confirm,
-      type: "interactive",
-      position: flowPos(7, 15),
+      id: IDS.loy_redeem,
+      type: "loyalty_action",
+      position: flowPos(7, 14),
       data: {
-        label: "Install product confirm",
-        interactiveType: "button",
-        text: "We found your recent product: {{first_product_title|latest purchased product}}. Need setup help for this item?",
-        buttonsList: [
-          { id: "yes", title: "✅ Yes, this product" },
-          { id: "no", title: "❌ Different product" },
-          { id: "menu", title: "⬅️ Main Menu" }
-        ],
-        heatmapCount: 0
-      }
+        label: "Redeem + discount code",
+        actionType: "REDEEM_POINTS",
+        pointsRequired: minRedeem,
+        createShopifyDiscount: true,
+        heatmapCount: 0,
+      },
     },
     {
-      id: IDS.ins_capture,
-      type: "capture_input",
+      id: IDS.loy_code,
+      type: "message",
+      position: flowPos(8, 14),
+      data: {
+        label: "Discount code issued",
+        text:
+          "🎁 *Here's your discount code!*\n\nCode: *{{generated_discount_code}}*\n💵 Value: ₹{{loyalty_rupee_value}} off\n⏰ Valid 48 hours — use at checkout on our store.\n\n🛒 {{storeUrl}}",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.loy_redeem_fail,
+      type: "message",
       position: flowPos(8, 16),
       data: {
-        label: "Capture product for install",
-        variable: "install_product_query",
-        question: "Type the full product name exactly as shown on your order.",
-        text: "Type the full product name exactly as shown on your order.",
-        heatmapCount: 0
-      }
-    },
-    {
-      id: IDS.ins_search,
-      type: "shopify_call",
-      position: flowPos(9, 16),
-      data: {
-        label: "Search product support context",
-        action: "search_products",
-        query: "{{install_product_query}}",
-        variable: "install_product_result",
-        heatmapCount: 0
-      }
-    },
-    {
-      id: IDS.ins_search_latest,
-      type: "shopify_call",
-      position: flowPos(9, 15),
-      data: {
-        label: "Search latest ordered product support context",
-        action: "search_products",
-        query: "{{first_product_title}}",
-        variable: "install_product_result",
-        heatmapCount: 0
-      }
-    },
-    {
-      id: IDS.ins_result,
-      type: "message",
-      position: flowPos(10, 15),
-      data: {
-        label: "Install support response",
-        text: "Got it. For *{{install_product_query|this product}}*, follow your package QR/video guide first, then app pairing (2.4GHz Wi-Fi if required), and power-cycle once before retry. If you share a short issue video, we can resolve it faster.",
-        heatmapCount: 0
-      }
-    },
-    {
-      id: IDS.ins_no_match,
-      type: "message",
-      position: flowPos(10, 17),
-      data: {
-        label: "Install no match",
-        text: "I could not auto-match that product yet. I am routing this to support for a precise installation walkthrough.",
-        action: "ESCALATE_HUMAN",
-        heatmapCount: 0
-      }
+        label: "Redeem failed",
+        text:
+          "We couldn't generate a code right now. Contact *{{supportPhone}}* and we'll apply your points manually.",
+        heatmapCount: 0,
+      },
     }
   );
 
   edges.push(
-    { id: `e_${IDS.ins_hub}_lo`, source: IDS.ins_hub, target: IDS.ins_lookup, sourceHandle: "last_order" },
-    { id: `e_${IDS.ins_hub}_tn`, source: IDS.ins_hub, target: IDS.ins_capture, sourceHandle: "type_name" },
-    { id: `e_${IDS.ins_hub}_mm`, source: IDS.ins_hub, target: IDS.main_menu, sourceHandle: "menu" },
-    { id: `e_${IDS.ins_lookup}_ok`, source: IDS.ins_lookup, target: IDS.ins_confirm },
-    { id: `e_${IDS.ins_lookup}_nf`, source: IDS.ins_lookup, target: IDS.ins_capture, sourceHandle: "no_order" },
-    { id: `e_${IDS.ins_confirm}_y`, source: IDS.ins_confirm, target: IDS.ins_search_latest, sourceHandle: "yes" },
-    { id: `e_${IDS.ins_confirm}_n`, source: IDS.ins_confirm, target: IDS.ins_capture, sourceHandle: "no" },
-    { id: `e_${IDS.ins_confirm}_mm`, source: IDS.ins_confirm, target: IDS.main_menu, sourceHandle: "menu" },
-    { id: `e_${IDS.ins_capture}_sr`, source: IDS.ins_capture, target: IDS.ins_search },
-    { id: `e_${IDS.ins_search_latest}_ok`, source: IDS.ins_search_latest, target: IDS.ins_result, sourceHandle: "success" },
-    { id: `e_${IDS.ins_search_latest}_fail`, source: IDS.ins_search_latest, target: IDS.ins_no_match, sourceHandle: "not_found" },
-    { id: `e_${IDS.ins_search}_ok`, source: IDS.ins_search, target: IDS.ins_result, sourceHandle: "success" },
-    { id: `e_${IDS.ins_search}_fail`, source: IDS.ins_search, target: IDS.ins_no_match, sourceHandle: "not_found" },
-    { id: `e_${IDS.ins_result}_mm`, source: IDS.ins_result, target: IDS.main_menu },
-    { id: `e_${IDS.ins_no_match}_mm`, source: IDS.ins_no_match, target: IDS.main_menu }
+    { id: `e_${IDS.loy_check}_has`, source: IDS.loy_check, target: IDS.loy_show, sourceHandle: "has_points" },
+    { id: `e_${IDS.loy_check}_zero`, source: IDS.loy_check, target: IDS.loy_zero, sourceHandle: "none" },
+    { id: `e_${IDS.loy_show}_rd`, source: IDS.loy_show, target: IDS.loy_redeem, sourceHandle: "loy_redeem" },
+    { id: `e_${IDS.loy_show}_mm`, source: IDS.loy_show, target: IDS.main_menu, sourceHandle: "loy_menu" },
+    { id: `e_${IDS.loy_redeem}_ok`, source: IDS.loy_redeem, target: IDS.loy_code, sourceHandle: "success" },
+    { id: `e_${IDS.loy_redeem}_fail`, source: IDS.loy_redeem, target: IDS.loy_redeem_fail, sourceHandle: "fail" },
+    { id: `e_${IDS.loy_code}_mm`, source: IDS.loy_code, target: IDS.main_menu },
+    { id: `e_${IDS.loy_zero}_mm`, source: IDS.loy_zero, target: IDS.main_menu },
+    { id: `e_${IDS.loy_redeem_fail}_mm`, source: IDS.loy_redeem_fail, target: IDS.main_menu }
   );
 
   return {
-    nodes, edges,
-    menuRow: { id: "install_help", title: "🛠️ Install Help" },
-    entryNodeId: IDS.ins_hub,
-    sourceHandle: "install_help"
+    nodes,
+    edges,
+    menuRow: { id: "mnu_loyalty", title: "⭐ My Loyalty Points" },
+    entryNodeId: IDS.loy_check,
+    sourceHandle: "mnu_loyalty",
+  };
+}
+
+/** Help with order — tracking issues, returns, optional install guide (wizard: enableInstallSupport). */
+function buildInstallSupportBranch(ctx, IDS, content) {
+  const { F, adminPhone, client } = ctx;
+  const nodes = [];
+  const edges = [];
+  const hasInstall = F.helpIncludeInstallGuide !== false;
+
+  const helpRows = [
+    { id: "help_not_received", title: "📦 Order not received", description: "Delayed or missing" },
+    { id: "help_damaged", title: "💔 Damaged / wrong item", description: "Report an issue" },
+    { id: "help_return", title: "↩️ Return / exchange", description: "Start a return" },
+  ];
+  if (hasInstall) {
+    helpRows.push({
+      id: "help_install",
+      title: "🔧 Installation help",
+      description: "Setup guidance",
+    });
+  }
+  helpRows.push({ id: "help_other", title: "❓ Something else", description: "Describe issue" });
+
+  nodes.push(
+    {
+      id: IDS.help_ask,
+      type: "capture_input",
+      position: flowPos(5, 16),
+      data: {
+        label: "Help — identifier",
+        variable: "help_identifier",
+        question:
+          "🤝 *I'm here to help!*\n\nShare your *Order ID* or *phone number*, then tell us what you need.",
+        text:
+          "🤝 *I'm here to help!*\n\nShare your *Order ID* or *phone number*, then tell us what you need.",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.help_lookup,
+      type: "shopify_call",
+      position: flowPos(6, 16),
+      data: {
+        label: "Help order lookup",
+        action: "CHECK_ORDER_STATUS",
+        queryVariable: "help_identifier",
+        silent: true,
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.help_menu,
+      type: "interactive",
+      position: flowPos(7, 16),
+      data: {
+        label: "Help issue menu",
+        interactiveType: "list",
+        buttonText: "Select issue",
+        text: "I found your order *{{order_number|details}}*. What do you need help with?",
+        sections: [{ title: "Select your issue", rows: helpRows }],
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.help_not_found,
+      type: "message",
+      position: flowPos(7, 17),
+      data: {
+        label: "Order not found (help)",
+        text:
+          "🔍 We couldn't find that order.\n\nDouble-check your *Order ID* or try the phone used at checkout. Type *menu* to go back.",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.help_install_msg,
+      type: "message",
+      position: flowPos(8, 15),
+      data: {
+        label: "Install guide",
+        text:
+          String(F.installSupportPrompt || "").trim() ||
+          "🔧 For setup help, share your *product name* and a short video/photo of the issue. Our team will guide you step by step on *{{supportPhone}}*.",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.help_other_cap,
+      type: "capture_input",
+      position: flowPos(8, 15),
+      data: {
+        label: "Help — describe issue",
+        variable: "help_issue_detail",
+        question: "Please describe your issue in a few words so our team can help faster.",
+        text: "Please describe your issue in a few words so our team can help faster.",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.help_alert,
+      type: "admin_alert",
+      position: flowPos(8, 16),
+      data: {
+        label: "Help request alert",
+        priority: "high",
+        alertChannel: "both",
+        topic: "Order help — {{order_number}}",
+        customMessage:
+          "Customer ({{phone}}) needs help with order *{{order_number}}*.\nIssue: {{help_issue_type|General}}\nDetails: {{help_issue_detail|—}}",
+        phone: adminPhone || client.adminPhone || "",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.help_done,
+      type: "message",
+      position: flowPos(9, 16),
+      data: {
+        label: "Help request received",
+        text:
+          "✅ *We've received your request.*\n\nOur team will reply on this chat within *2–4 hours*. For urgent issues, call *{{supportPhone}}*.",
+        heatmapCount: 0,
+      },
+    }
+  );
+
+  edges.push(
+    { id: `e_${IDS.help_ask}_lk`, source: IDS.help_ask, target: IDS.help_lookup },
+    { id: `e_${IDS.help_lookup}_ok`, source: IDS.help_lookup, target: IDS.help_menu, sourceHandle: "success" },
+    { id: `e_${IDS.help_lookup}_nf`, source: IDS.help_lookup, target: IDS.help_not_found, sourceHandle: "not_found" },
+    { id: `e_${IDS.help_not_found}_mm`, source: IDS.help_not_found, target: IDS.main_menu },
+    { id: `e_${IDS.help_menu}_inst`, source: IDS.help_menu, target: IDS.help_install_msg, sourceHandle: "help_install" },
+    { id: `e_${IDS.help_install_msg}_mm`, source: IDS.help_install_msg, target: IDS.main_menu },
+    { id: `e_${IDS.help_menu}_nr`, source: IDS.help_menu, target: IDS.help_alert, sourceHandle: "help_not_received" },
+    { id: `e_${IDS.help_menu}_dm`, source: IDS.help_menu, target: IDS.help_alert, sourceHandle: "help_damaged" },
+    { id: `e_${IDS.help_menu}_rt`, source: IDS.help_menu, target: IDS.help_alert, sourceHandle: "help_return" },
+    { id: `e_${IDS.help_menu}_ot`, source: IDS.help_menu, target: IDS.help_other_cap, sourceHandle: "help_other" },
+    { id: `e_${IDS.help_other_cap}_al`, source: IDS.help_other_cap, target: IDS.help_alert },
+    { id: `e_${IDS.help_alert}_dn`, source: IDS.help_alert, target: IDS.help_done },
+    { id: `e_${IDS.help_done}_mm`, source: IDS.help_done, target: IDS.main_menu }
+  );
+
+  return {
+    nodes,
+    edges,
+    menuRow: { id: "mnu_help", title: "🤝 Help With My Order" },
+    entryNodeId: IDS.help_ask,
+    sourceHandle: "mnu_help",
   };
 }
 
@@ -1609,9 +2004,15 @@ function buildSupportBranch(ctx, IDS, content) {
 
   nodes.push(
     { id: IDS.sup_capture, type: "capture_input", position: flowPos(6, 17),
-      data: { label: "Support Query", variable: "support_query",
-        question: content.support_capture_prompt,
-        text: content.support_capture_prompt, heatmapCount: 0 } },
+      data: {
+        label: "Agent — describe issue",
+        variable: "agent_issue_description",
+        question:
+          "👨‍💼 *Connect with our team*\n\nBriefly describe what you need help with (e.g. damaged product, wrong item, return label).",
+        text:
+          "👨‍💼 *Connect with our team*\n\nBriefly describe what you need help with (e.g. damaged product, wrong item, return label).",
+        heatmapCount: 0,
+      } },
     { id: IDS.sup_tag, type: "tag_lead", position: flowPos(7, 17),
       data: { label: "Tag Pending Human", action: "add", tag: "pending-human", heatmapCount: 0 } },
     { id: IDS.sup_confirm, type: "message", position: flowPos(9, 17),
@@ -1629,10 +2030,19 @@ function buildSupportBranch(ctx, IDS, content) {
 
   if (F.enableAdminAlerts) {
     nodes.push({
-      id: IDS.sup_alert, type: "admin_alert", position: flowPos(8, 17),
-      data: { label: "Admin Alert", priority: "high",
-        topic: "Human request — {{brand_name}}",
-        phone: adminPhone || client.adminPhone || "", heatmapCount: 0 }
+      id: IDS.sup_alert,
+      type: "admin_alert",
+      position: flowPos(8, 17),
+      data: {
+        label: "Admin Alert",
+        priority: "high",
+        alertChannel: "both",
+        topic: "Agent request — {{brand_name}}",
+        customMessage:
+          "Customer {{customer_name|Unknown}} ({{phone}}) requested an agent.\n\nIssue: {{agent_issue_description|No details provided}}",
+        phone: adminPhone || client.adminPhone || "",
+        heatmapCount: 0,
+      },
     });
     edges.push(
       { id: `e_${IDS.sup_tag}_al`, source: IDS.sup_tag, target: IDS.sup_alert },
@@ -1653,10 +2063,11 @@ function buildSupportBranch(ctx, IDS, content) {
   }
 
   return {
-    nodes, edges,
-    menuRow: { id: "support", title: "🎧 Talk to Human" },
+    nodes,
+    edges,
+    menuRow: { id: "mnu_agent", title: "👨‍💼 Talk to Agent" },
     entryNodeId: F.enableBusinessHoursGate && !F.enable247 ? IDS.sup_sch : IDS.sup_capture,
-    sourceHandle: "support"
+    sourceHandle: "mnu_agent",
   };
 }
 
@@ -1924,12 +2335,14 @@ async function generateEcommerceFlow(client, wizardData = {}) {
   const branches = [];
   if (F.enableCatalog)           branches.push(buildCatalogBranch(ctx, IDS));
   if (F.enableOrderTracking)     branches.push(buildOrderBranch(ctx, IDS, content));
+  if (F.enableCancelOrder)       branches.push(buildCancelOrderBranch(ctx, IDS, content));
   if (F.enableReturnsRefunds)    branches.push(buildReturnsBranch(ctx, IDS, content));
   if (F.enableWarranty)          branches.push(buildWarrantyBranch(ctx, IDS, content));
-  if (F.enableInstallSupport)    branches.push(buildInstallSupportBranch(ctx, IDS));
+  if (F.enableInstallSupport)    branches.push(buildInstallSupportBranch(ctx, IDS, content));
   if (F.enableLoyalty)           branches.push(buildLoyaltyBranch(ctx, IDS, content));
+  if (F.enableAIFallback)        branches.push(buildAiHelpDeskBranch(ctx, IDS));
+  else if (F.enableFAQ)          branches.push(buildFAQBranch(ctx, IDS, content));
   if (F.enableSupportEscalation) branches.push(buildSupportBranch(ctx, IDS, content));
-  if (F.enableFAQ)               branches.push(buildFAQBranch(ctx, IDS, content));
 
   // Build the menu using only enabled branches' rows.
     // WhatsApp list rows: keep ≤ 8 (spec buffer under Meta's 10-row cap).
