@@ -470,6 +470,8 @@ const ClientSchema = new mongoose.Schema({
   // Phase 20: AI Onboarding Wizard
   wizardCompleted:       { type: Boolean, default: false },
   wizardCompletedAt:     { type: Date,    default: null },
+  /** When true, wizard launch creates separate main + automation flows (not one mega canvas). */
+  commerceFlowPack:    { type: Boolean, default: true },
 
   // Phase 32: Full-screen New-User Onboarding (Instantly / Bitespeed inspired)
   // Gates the dashboard. Set to true only when user finishes Step 7 (Enter Dashboard)

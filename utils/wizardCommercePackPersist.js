@@ -2,6 +2,29 @@
 
 const WhatsAppFlow = require("../models/WhatsAppFlow");
 
+/** Flow Builder sidebar folders for wizard-generated multi-flow packs */
+const WIZARD_PACK_FOLDERS = [
+  { id: "folder_wizard_main", name: "Main commerce bot", createdAt: new Date() },
+  { id: "folder_wizard_automation", name: "Automations", createdAt: new Date() },
+];
+
+function folderIdForPackFlow(f) {
+  if (f?.slug === "main_commerce") return "folder_wizard_main";
+  if (f?.isAutomation) return "folder_wizard_automation";
+  return "folder_wizard_main";
+}
+
+function ensureWizardFlowFolders(existing = []) {
+  const list = Array.isArray(existing) ? [...existing] : [];
+  const ids = new Set(list.map((f) => f.id));
+  for (const folder of WIZARD_PACK_FOLDERS) {
+    if (!ids.has(folder.id)) {
+      list.push({ ...folder, createdAt: folder.createdAt || new Date() });
+    }
+  }
+  return list;
+}
+
 /**
  * Creates one WhatsAppFlow document per pack slice and returns metadata for Client.visualFlows.
  * @param {string} clientId
@@ -19,7 +42,7 @@ async function createFlowsFromCommercePack(clientId, flows, opts = {}) {
   const generatedBy = opts.generatedBy || "wizard";
   const status = opts.status || "PUBLISHED";
   const idPrefix = opts.idPrefix || "flow_wizard";
-  const folderId = opts.folderId || "";
+  const defaultFolderId = opts.folderId || "";
   const includeGraph = opts.visualInlineGraph !== false;
   const maxNodes =
     opts.visualMaxNodes === undefined ? 20 : opts.visualMaxNodes < 0 ? Number.POSITIVE_INFINITY : opts.visualMaxNodes;
@@ -32,6 +55,7 @@ async function createFlowsFromCommercePack(clientId, flows, opts = {}) {
     const flowId = `${idPrefix}_${base}_${i}_${slug}`;
     const nodes = f.nodes || [];
     const edges = f.edges || [];
+    const folderId = defaultFolderId || folderIdForPackFlow(f);
 
     const doc = await WhatsAppFlow.create({
       clientId,
@@ -110,6 +134,9 @@ async function deletePriorWizardFlows(clientId) {
 }
 
 module.exports = {
+  WIZARD_PACK_FOLDERS,
+  folderIdForPackFlow,
+  ensureWizardFlowFolders,
   createFlowsFromCommercePack,
   deletePriorWizardFlows,
 };

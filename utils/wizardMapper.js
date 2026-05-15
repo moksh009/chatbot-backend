@@ -431,6 +431,9 @@ function mapWizardToClient(wizardData = {}, client = {}, opts = {}) {
     wizardCompleted:    true,
     wizardCompletedAt:  new Date(),
     isAIFallbackEnabled: featuresUpdate["wizardFeatures.enableAIFallback"] !== false,
+    ...(typeof wizardData.commerceFlowPack === "boolean"
+      ? { commerceFlowPack: wizardData.commerceFlowPack }
+      : {}),
     ...buildBrandUpdate(wizardData, client),
     ...buildAiUpdate(wizardData, systemPrompt),
     ...buildPoliciesUpdate(wizardData),

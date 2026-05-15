@@ -1,6 +1,9 @@
 "use strict";
 
 const express = require("express");
+const path = require("path");
+const fs = require("fs");
+const multer = require("multer");
 const router  = express.Router();
 const Client  = require("../models/Client");
 const { protect } = require("../middleware/auth");
@@ -26,10 +29,45 @@ function assertWizardTenant(req, clientId) {
   return { ok: true };
 }
 
+const logoUploadDir = path.join(__dirname, "../uploads/logos");
+const logoStorage = multer.diskStorage({
+  destination(_req, _file, cb) {
+    fs.mkdirSync(logoUploadDir, { recursive: true });
+    cb(null, logoUploadDir);
+  },
+  filename(req, file, cb) {
+    const ext = path.extname(file.originalname || "") || ".png";
+    const safeExt = /^\.(jpe?g|png|gif|webp)$/i.test(ext) ? ext.toLowerCase() : ".png";
+    cb(null, `${req.params.clientId}_${Date.now()}${safeExt}`);
+  },
+});
+const logoUpload = multer({
+  storage: logoStorage,
+  limits: { fileSize: 2 * 1024 * 1024 },
+  fileFilter(_req, file, cb) {
+    if (!file.mimetype || !file.mimetype.startsWith("image/")) {
+      return cb(new Error("Only image files are allowed"));
+    }
+    cb(null, true);
+  },
+});
+
+function publicLogoUrl(req, filename) {
+  const base = String(process.env.PUBLIC_BASE_URL || "").trim().replace(/\/$/, "");
+  if (base) return `${base}/uploads/logos/${filename}`;
+  const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
+  const host = req.headers["x-forwarded-host"] || req.get("host");
+  return `${protocol}://${host}/uploads/logos/${filename}`;
+}
+
 /** Regenerate main + automation flows after settings feature toggles. */
 async function regenerateClientFlowsFromFeatures(client, source = "settings_features") {
   const { generateCommerceWizardPack } = require("../utils/flowGenerator");
-  const { createFlowsFromCommercePack, deletePriorWizardFlows } = require("../utils/wizardCommercePackPersist");
+  const {
+    createFlowsFromCommercePack,
+    deletePriorWizardFlows,
+    ensureWizardFlowFolders,
+  } = require("../utils/wizardCommercePackPersist");
   const { buildWizardDataFromUniversal } = require("../utils/universalCommerceMapper");
 
   const wf =
@@ -90,6 +128,8 @@ async function regenerateClientFlowsFromFeatures(client, source = "settings_feat
         flowNodes: persistedPack.mainNodes,
         flowEdges: persistedPack.mainEdges,
         visualFlows: [...normalizedKept, ...persistedPack.visualEntries],
+        flowFolders: ensureWizardFlowFolders(client.flowFolders || []),
+        commerceFlowPack: true,
       },
     });
 
@@ -485,7 +525,11 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     console.log(`[Wizard] Starting flow generation for ${clientId}...`);
 
     const { generateCommerceWizardPack } = require("../utils/flowGenerator");
-    const { createFlowsFromCommercePack, deletePriorWizardFlows } = require("../utils/wizardCommercePackPersist");
+    const {
+      createFlowsFromCommercePack,
+      deletePriorWizardFlows,
+      ensureWizardFlowFolders,
+    } = require("../utils/wizardCommercePackPersist");
 
     // Meta catalog import (no Shopify required — products already in Commerce Manager)
     const catalogId = String(
@@ -633,6 +677,11 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     if (wizardData.replaceExisting !== false) {
       $set.flowNodes = mainNodes;
       $set.flowEdges = mainEdges;
+    }
+
+    if (useCommercePack && persistedPack) {
+      const { ensureWizardFlowFolders } = require("../utils/wizardCommercePackPersist");
+      $set.flowFolders = ensureWizardFlowFolders(client.flowFolders || []);
     }
 
     // Decide visualFlows mutation: commerce pack replaces wizard rows, legacy path updates active slot.
@@ -1261,6 +1310,35 @@ router.post("/:clientId/submit-automation-templates", protect, async (req, res) 
 
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post("/:clientId/upload-logo", protect, logoUpload.single("logo"), async (req, res) => {
+  const { clientId } = req.params;
+  if (!assertWizardTenant(req, clientId).ok) {
+    return res.status(403).json({ success: false, error: "Unauthorized" });
+  }
+  if (!req.file) {
+    return res.status(400).json({ success: false, error: "No image uploaded" });
+  }
+
+  try {
+    const url = publicLogoUrl(req, req.file.filename);
+    const rel = `/uploads/logos/${req.file.filename}`;
+    await Client.updateOne(
+      { clientId },
+      {
+        $set: {
+          businessLogo: url,
+          "brand.businessLogo": url,
+          "brand.logoUrl": url,
+        },
+      }
+    );
+    res.json({ success: true, url, path: rel });
+  } catch (err) {
+    log.error("[Wizard] Logo upload failed:", err.message);
+    res.status(500).json({ success: false, error: err.message || "Logo upload failed" });
   }
 });
 

@@ -271,7 +271,12 @@ function buildContext(client = {}, wizardData = {}) {
     ? client.wizardFeatures.toObject()
     : (client.wizardFeatures || {});
   const live = wizardData.features || {};
-  const features = { ...persistedFeatures, ...live };
+  const { mergeWizardFeatures } = require("./wizardFeaturePresets");
+  const features = mergeWizardFeatures(
+    { ...persistedFeatures, ...live },
+    wizardData.businessType || client.businessType,
+    wizardData.industry
+  );
 
   // Allow legacy wizardData top-level fields to feed features for backward compat.
   if (typeof features.enableB2BWholesale !== "boolean" && typeof wizardData.b2bEnabled === "boolean") {
@@ -386,8 +391,7 @@ function buildContext(client = {}, wizardData = {}) {
         whatsappMenuLabel: String(c.whatsappMenuLabel || c.title || "").trim(),
         productsCount: Number(c.productsCount) || 0,
       }))
-      .filter((c) => c.shopifyCollectionId)
-      .slice(0, MAX_EXPLORE_MENU_ROWS),
+      .filter((c) => c.shopifyCollectionId),
     facebookCatalogId,
     productMode,
     mpmTemplateName,
@@ -430,6 +434,7 @@ function buildIDs(client, wizardData) {
     // Catalog
     cat_list:         `cat_list_${ts}`,
     cat_category_menu:`cat_category_menu_${ts}`,
+    cat_category_menu_more:`cat_category_menu_more_${ts}`,
     cat_featured:     `cat_featured_${ts}`,
     cat_cat_0:        `cat_cat_0_${ts}`,
     cat_cat_1:        `cat_cat_1_${ts}`,
@@ -581,6 +586,10 @@ function sanitizeInteractiveImageUrl(url) {
   if (!raw) return "";
   if (/^data:/i.test(raw)) return "";
   if (/^https?:\/\//i.test(raw)) return raw;
+  if (raw.startsWith("/uploads/")) {
+    const base = String(process.env.PUBLIC_BASE_URL || "").trim().replace(/\/$/, "");
+    return base ? `${base}${raw}` : "";
+  }
   return "";
 }
 
@@ -664,7 +673,11 @@ function buildEntry(ctx, IDS, content, welcomeTemplate) {
   // Welcome — template if available, else interactive list menu
   const wTpl = welcomeTemplate;
   const safeWelcomeImage = sanitizeInteractiveImageUrl(
-    client.brand?.businessLogo || client.brand?.logoUrl || client.businessLogo || ""
+    ctx?.wizardData?.businessLogo ||
+      client.brand?.businessLogo ||
+      client.brand?.logoUrl ||
+      client.businessLogo ||
+      ""
   );
   if (wTpl) {
     nodes.push({
@@ -712,7 +725,11 @@ function buildMainMenu(ctx, IDS, menuRows) {
   if (!rows.length) return { nodes: [], edges: [] };
   const { client } = ctx;
   const safeLogo = sanitizeInteractiveImageUrl(
-    client.brand?.businessLogo || client.brand?.logoUrl || client.businessLogo || ""
+    ctx?.wizardData?.businessLogo ||
+      client.brand?.businessLogo ||
+      client.brand?.logoUrl ||
+      client.businessLogo ||
+      ""
   );
   const node = {
     id: IDS.main_menu,
@@ -734,13 +751,20 @@ function buildMainMenu(ctx, IDS, menuRows) {
 
 function buildCatalogBranch(ctx, IDS) {
   const { F, products, storeUrl, shopCollections = [], useMpmCatalog, mpmTemplateName } = ctx;
+  const {
+    splitCollectionsForWhatsAppMenu,
+    MORE_ROW_ID,
+    OVERFLOW_PAGE_TITLE,
+    collectionToRow,
+  } = require("./catalogMenuBuilder");
   const nodes = [];
   const edges = [];
   const MAX_CATEGORY_ROWS = 10;
   const categoryNodeIds = [IDS.cat_cat_0, IDS.cat_cat_1, IDS.cat_cat_2, IDS.cat_cat_3, IDS.cat_cat_4];
   const useShopCols = Array.isArray(shopCollections) && shopCollections.length > 0;
-  const shopCols = useShopCols ? sortShopCollectionsForMenu(shopCollections).slice(0, MAX_EXPLORE_MENU_ROWS) : [];
-  const collectionMpmNodeId = (idx) => `cat_mpm_${IDS.seed}_${idx}`;
+  const menuSplit = useShopCols ? splitCollectionsForWhatsAppMenu(sortShopCollectionsForMenu(shopCollections)) : null;
+  const shopColsForMpm = menuSplit?.allCollections || [];
+  const collectionMpmNodeId = (col) => `cat_mpm_${IDS.seed}_${String(col.shopifyCollectionId || "").replace(/\W/g, "")}`;
 
   const productBuckets = new Map();
   products.forEach((p) => {
@@ -758,15 +782,10 @@ function buildCatalogBranch(ctx, IDS) {
 
   const listRows = [];
   let menuSections;
-  if (useShopCols) {
-    menuSections = buildExploreMenuSections(shopCols);
-    shopCols.forEach((c) => {
-      listRows.push({
-        id: `collection_${c.shopifyCollectionId}`,
-        title: menuLabelForCollection(c),
-        description: "Browse in WhatsApp",
-      });
-    });
+  const hasOverflowMenu = !!menuSplit?.hasOverflow;
+  if (useShopCols && menuSplit) {
+    menuSections = menuSplit.primarySections;
+    menuSplit.primary.forEach((c) => listRows.push(collectionToRow(c)));
   } else {
     listRows.push({ id: "featured", title: "Featured", description: "Bestsellers and trending picks" });
     if (sortedCategories.length) {
@@ -838,8 +857,12 @@ function buildCatalogBranch(ctx, IDS) {
         interactiveType: "list",
         text: useShopCols
           ? useMpmCatalog
-            ? "✨ *Explore our store*\n\nBest sellers and top collections first — tap a row, then *View items* for the WhatsApp carousel."
-            : "Pick a collection to see products in WhatsApp."
+            ? hasOverflowMenu
+              ? "✨ *Explore our store*\n\nTop collections below — tap *More categories* for additional ranges."
+              : "✨ *Explore our store*\n\nTap a collection, then *View items* for the WhatsApp carousel."
+            : hasOverflowMenu
+              ? "Pick a collection — tap *More categories* for the rest."
+              : "Pick a collection to see products in WhatsApp."
           : "Want curated products? Pick a collection:",
         buttonText: useShopCols ? "Explore products" : "View collections",
         populateFromShopify: useShopCols,
@@ -847,6 +870,24 @@ function buildCatalogBranch(ctx, IDS) {
         heatmapCount: 0
       }
     },
+    ...(hasOverflowMenu
+      ? [
+          {
+            id: IDS.cat_category_menu_more,
+            type: "interactive",
+            position: flowPos(6, 1),
+            data: {
+              label: "More categories",
+              interactiveType: "list",
+              text: `*${OVERFLOW_PAGE_TITLE}*\n\nAdditional collections from {{brand_name}}.`,
+              buttonText: "View more",
+              populateFromShopify: true,
+              sections: menuSplit.overflowSections,
+              heatmapCount: 0,
+            },
+          },
+        ]
+      : []),
     {
       id: IDS.cat_featured,
       type: "catalog",
@@ -882,12 +923,13 @@ function buildCatalogBranch(ctx, IDS) {
     }
   );
   if (useShopCols && useMpmCatalog) {
-    shopCols.forEach((c, idx) => {
+    shopColsForMpm.forEach((c, idx) => {
       const label = menuLabelForCollection(c);
+      const nid = collectionMpmNodeId(c);
       nodes.push({
-        id: collectionMpmNodeId(idx),
+        id: nid,
         type: "catalog",
-        position: flowPos(7, 1 + idx * 0.15),
+        position: flowPos(7, 1 + idx * 0.12),
         data: {
           label: `MPM — ${truncate(c.title, 22)}`,
           catalogType: "mpm_template",
@@ -997,31 +1039,48 @@ function buildCatalogBranch(ctx, IDS) {
     });
   }
 
+  if (hasOverflowMenu) {
+    edges.push({
+      id: `e_${IDS.cat_category_menu}_more`,
+      source: IDS.cat_category_menu,
+      target: IDS.cat_category_menu_more,
+      sourceHandle: MORE_ROW_ID,
+    });
+  }
+
   if (useShopCols && useMpmCatalog) {
-    shopCols.forEach((c, idx) => {
-      const hid = `collection_${c.shopifyCollectionId}`;
-      const nid = collectionMpmNodeId(idx);
+    const wireMenuToMpm = (menuId, col) => {
+      const hid = `collection_${col.shopifyCollectionId}`;
+      const nid = collectionMpmNodeId(col);
       edges.push(
         {
-          id: `e_${IDS.cat_category_menu}_${hid}`,
-          source: IDS.cat_category_menu,
+          id: `e_${menuId}_${hid}`,
+          source: menuId,
           target: nid,
           sourceHandle: hid,
         },
         { id: `e_${nid}_next`, source: nid, target: IDS.cat_addr_prompt },
         { id: `e_${nid}_cart`, source: nid, target: IDS.cat_cart_handler, sourceHandle: "cart" }
       );
-    });
+    };
+    menuSplit.primary.forEach((c) => wireMenuToMpm(IDS.cat_category_menu, c));
+    if (hasOverflowMenu) {
+      menuSplit.overflow.forEach((c) => wireMenuToMpm(IDS.cat_category_menu_more, c));
+    }
   } else if (useShopCols) {
-    shopCols.forEach((c) => {
-      const hid = `collection_${c.shopifyCollectionId}`;
+    const wireColToShop = (menuId, col) => {
+      const hid = `collection_${col.shopifyCollectionId}`;
       edges.push({
-        id: `e_${IDS.cat_category_menu}_${hid}`,
-        source: IDS.cat_category_menu,
+        id: `e_${menuId}_${hid}`,
+        source: menuId,
         target: IDS.cat_shop_by_selection,
         sourceHandle: hid,
       });
-    });
+    };
+    shopColsForMpm.forEach((c) => wireColToShop(IDS.cat_category_menu, c));
+    if (hasOverflowMenu) {
+      menuSplit.overflow.forEach((c) => wireColToShop(IDS.cat_category_menu_more, c));
+    }
     edges.push(
       { id: `e_${IDS.cat_shop_by_selection}_next`, source: IDS.cat_shop_by_selection, target: IDS.cat_addr_prompt },
       {
@@ -2294,7 +2353,7 @@ async function generateEcommerceFlow(client, wizardData = {}) {
         const ShopifyCollection = require("../models/ShopifyCollection");
         const docs = await ShopifyCollection.find({ clientId: clientIdStr })
           .sort({ sortOrder: 1, title: 1 })
-          .limit(12)
+          .limit(200)
           .lean();
         const picked = sortShopCollectionsForMenu(
           docs
@@ -2306,7 +2365,7 @@ async function generateEcommerceFlow(client, wizardData = {}) {
               productsCount: Number(d.productsCount) || 0,
             }))
             .filter((c) => c.shopifyCollectionId)
-        ).slice(0, MAX_EXPLORE_MENU_ROWS);
+        );
         if (picked.length) mergedWizard.collections = picked;
       } catch (err) {
         console.warn("[flowGenerator] ShopifyCollection preload skipped:", err?.message || err);

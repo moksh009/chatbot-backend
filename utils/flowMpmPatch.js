@@ -289,10 +289,102 @@ async function autoPatchMpmFlowNodes(clientId, opts = {}) {
 }
 
 /** Wizard-generated flows: category list node id / label hints */
-const WIZARD_MENU_NODE_IDS = ["n_cat_category_menu", "cat_category_menu"];
+const WIZARD_MENU_NODE_IDS = ["n_cat_category_menu", "cat_category_menu", "cat_category_menu_more"];
 const TOP_SECTION = "Top picks";
 const MORE_SECTION = "More ranges";
 const FOOTER_AFTER_CATALOG = "n_footer";
+
+const {
+  splitCollectionsForWhatsAppMenu,
+  MORE_ROW_ID,
+  OVERFLOW_PAGE_TITLE,
+} = require("./catalogMenuBuilder");
+
+function extractMenuSeedFromNodeId(nodeId) {
+  const m = String(nodeId || "").match(/cat_category_menu(?:_more)?_(.+)$/);
+  return m ? m[1] : "";
+}
+
+function findOverflowMenuNode(nodes, primaryMenuId) {
+  const seed = extractMenuSeedFromNodeId(primaryMenuId);
+  if (seed) {
+    const exact = nodes.find((n) => n.id === `cat_category_menu_more_${seed}`);
+    if (exact) return exact;
+  }
+  return nodes.find(
+    (n) =>
+      n.type === "interactive" &&
+      n.data?.interactiveType === "list" &&
+      (String(n.id || "").includes("cat_category_menu_more") ||
+        /more categor/i.test(n.data?.label || n.data?.text || ""))
+  );
+}
+
+function mpmNodeIdForCollection(col, seed) {
+  return `cat_mpm_${seed}_${String(col.shopifyCollectionId || "").replace(/\W/g, "")}`;
+}
+
+function findMpmNodeForCollection(nodes, col) {
+  const cid = String(col.shopifyCollectionId || "");
+  return nodes.find(
+    (n) =>
+      n.type === "catalog" &&
+      n.data?.catalogType === "mpm_template" &&
+      String(n.data?.metaCollectionId || "") === cid
+  );
+}
+
+function ensureOverflowMenuNode(nodes, primaryMenu, menuSplit) {
+  if (!menuSplit?.hasOverflow || !primaryMenu) return { nodes, overflowNode: null };
+
+  let overflowNode = findOverflowMenuNode(nodes, primaryMenu.id);
+  const seed = extractMenuSeedFromNodeId(primaryMenu.id) || "menu";
+  const overflowId = overflowNode?.id || `cat_category_menu_more_${seed}`;
+
+  if (!overflowNode) {
+    overflowNode = {
+      id: overflowId,
+      type: "interactive",
+      position: {
+        x: (primaryMenu.position?.x || 0) + 40,
+        y: (primaryMenu.position?.y || 0) + 120,
+      },
+      data: {
+        label: "More categories",
+        interactiveType: "list",
+        text: `*${OVERFLOW_PAGE_TITLE}*\n\nAdditional collections from {{brand_name}}.`,
+        buttonText: "View more",
+        populateFromShopify: true,
+        sections: menuSplit.overflowSections,
+        heatmapCount: 0,
+      },
+    };
+    nodes = [...nodes, overflowNode];
+  }
+
+  return { nodes, overflowNode };
+}
+
+function ensureMenuOverflowEdges(edges, primaryMenuId, overflowNodeId, menuSplit) {
+  if (!menuSplit?.hasOverflow || !primaryMenuId || !overflowNodeId) return edges;
+
+  const edgeId = `e_${primaryMenuId}_${MORE_ROW_ID}`;
+  const rest = (edges || []).filter(
+    (e) => !(e.source === primaryMenuId && e.sourceHandle === MORE_ROW_ID)
+  );
+  const hasEdge = rest.some(
+    (e) => e.source === primaryMenuId && e.target === overflowNodeId && e.sourceHandle === MORE_ROW_ID
+  );
+  if (!hasEdge) {
+    rest.push({
+      id: edgeId,
+      source: primaryMenuId,
+      target: overflowNodeId,
+      sourceHandle: MORE_ROW_ID,
+    });
+  }
+  return rest;
+}
 
 function normTitle(s) {
   return String(s || "")
@@ -437,27 +529,45 @@ async function syncExploreMenuFromCollections(clientId, opts = {}) {
 
   let mpmPatches = {};
   let menuSections = null;
+  let overflowMenuSections = null;
+  let menuSplit = null;
+  let overflowNode = null;
 
   if (!slots?.length && collections.length && menuNode) {
-    const sorted = [...collections].sort((a, b) => {
-      const aT = String(a.title || "").toLowerCase();
-      const bT = String(b.title || "").toLowerCase();
-      const aBs = aT.includes("best seller") || aT.includes("bestseller");
-      const bBs = bT.includes("best seller") || bT.includes("bestseller");
-      if (aBs && !bBs) return -1;
-      if (!aBs && bBs) return 1;
-      return (b.productsCount || 0) - (a.productsCount || 0);
-    });
-    const rows = sorted.slice(0, MAX_PER_SECTION).map((c) => ({
-      id: `collection_${c.shopifyCollectionId}`,
-      title: menuLabelFromCollection(c, null),
-      description: "Tap to browse".slice(0, 72),
-      collectionId: c.shopifyCollectionId,
-    }));
-    menuSections = [
-      { title: TOP_SECTION.slice(0, 24), rows: rows.slice(0, 5) },
-      { title: MORE_SECTION.slice(0, 24), rows: rows.slice(5, MAX_PER_SECTION) },
-    ].filter((s) => s.rows.length > 0);
+    menuSplit = splitCollectionsForWhatsAppMenu(collections);
+    menuSections = menuSplit.primarySections;
+    overflowMenuSections = menuSplit.hasOverflow ? menuSplit.overflowSections : null;
+
+    const ensured = ensureOverflowMenuNode(nodes, menuNode, menuSplit);
+    nodes = ensured.nodes;
+    overflowNode = ensured.overflowNode;
+    if (menuSplit.hasOverflow && overflowNode) {
+      edges = ensureMenuOverflowEdges(edges, menuNode.id, overflowNode.id, menuSplit);
+    }
+
+    for (const col of menuSplit.allCollections || []) {
+      const label = menuLabelFromCollection(col, null);
+      let matched = products.filter(
+        (p) =>
+          p.inStock !== false &&
+          Array.isArray(p.collectionIds) &&
+          p.collectionIds.map(String).includes(String(col.shopifyCollectionId))
+      );
+      matched.sort((a, b) => (a.price || 0) - (b.price || 0));
+      matched = matched.slice(0, MAX_PER_SECTION);
+      if (!matched.length) continue;
+      const ids = matched.map((p) => String(p.shopifyVariantId));
+      const existing = findMpmNodeForCollection(nodes, col);
+      const nodeId = existing?.id || mpmNodeIdForCollection(col, extractMenuSeedFromNodeId(menuNode.id));
+      mpmPatches[nodeId] = {
+        productIds: ids.join(","),
+        thumbnailProductRetailerId: ids[0],
+        sectionTitle: label,
+        header: label,
+        metaCollectionId: col.shopifyCollectionId,
+        count: ids.length,
+      };
+    }
   }
 
   if (slots?.length && collections.length) {
@@ -503,14 +613,30 @@ async function syncExploreMenuFromCollections(clientId, opts = {}) {
   const patchNodes = (nodeList) =>
     nodeList.map((n) => {
       if (menuNode && n.id === menuNode.id && menuSections) {
+        const overflowHint = menuSplit?.hasOverflow
+          ? " Tap *More categories* for additional ranges."
+          : "";
         return {
           ...n,
           data: {
             ...n.data,
             buttonText: "Explore products",
             text:
-              "*Explore Apex Light*\n\nBest sellers and collections below. Tap a range, then *View items* on each product message.",
+              (n.data?.text && !/explore apex light/i.test(n.data.text)
+                ? n.data.text
+                : `✨ *Explore our store*\n\nTop collections below.${overflowHint} Tap a range, then *View items* on each product message.`),
             sections: menuSections,
+            populateFromShopify: true,
+          },
+        };
+      }
+      if (overflowNode && n.id === overflowNode.id && overflowMenuSections) {
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            buttonText: "View more",
+            sections: overflowMenuSections,
             populateFromShopify: true,
           },
         };
@@ -572,6 +698,8 @@ async function syncExploreMenuFromCollections(clientId, opts = {}) {
     ok: true,
     flowId: flowDoc.flowId,
     menuUpdated: !!menuSections,
+    overflowMenuUpdated: !!overflowMenuSections,
+    hasOverflowMenu: !!menuSplit?.hasOverflow,
     mpmPatched: Object.keys(mpmPatches).length,
     mpmNodesTotal: mpmNodeIds.length,
     mpmNodesWithIds: patchedWithIds.length,
