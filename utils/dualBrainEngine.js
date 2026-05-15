@@ -4168,15 +4168,58 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       // mpm_template: tenant-agnostic — all inputs come from node.data (flow JSON / Flow Builder).
       // Any client may use multi | full | collection | mpm_template side by side; no client id branching here.
       if (ct === "mpm_template") {
-        const templateName = data.metaTemplateName || data.templateName || data.mpmTemplateName;
-        const ids = String(data.productIds || "")
+        let mpmData = { ...data };
+        let templateName = mpmData.metaTemplateName || mpmData.templateName || mpmData.mpmTemplateName;
+        let ids = String(mpmData.productIds || "")
           .split(",")
           .map((id) => id.trim())
           .filter(Boolean)
           .filter((id) => !/^SHOPIFY_/i.test(id));
-        const thumb = String(data.thumbnailProductRetailerId || ids[0] || "").trim();
+        let thumb = String(mpmData.thumbnailProductRetailerId || ids[0] || "").trim();
 
         if (!templateName || !thumb || !ids.length) {
+          try {
+            const { enrichMpmNodeDataFromDb } = require("./flowMpmPatch");
+            const enriched = await enrichMpmNodeDataFromDb(client.clientId, { id: node?.id, data: mpmData });
+            if (enriched) {
+              mpmData = enriched;
+              templateName = mpmData.metaTemplateName || mpmData.templateName || mpmData.mpmTemplateName;
+              ids = String(mpmData.productIds || "")
+                .split(",")
+                .map((id) => id.trim())
+                .filter(Boolean)
+                .filter((id) => !/^SHOPIFY_/i.test(id));
+              thumb = String(mpmData.thumbnailProductRetailerId || ids[0] || "").trim();
+              log.info(`[catalog] MPM node ${node?.id} enriched from DB (${ids.length} products)`);
+            }
+          } catch (enrichErr) {
+            log.warn(`[catalog] MPM enrich failed: ${enrichErr.message}`);
+          }
+        }
+
+        if (!templateName || !thumb || !ids.length) {
+          if (catalogId && ids.length) {
+            log.warn(
+              `[catalog] mpm_template missing approved template — falling back to product_list for node ${node?.id || ""}`
+            );
+            try {
+              await WhatsApp.sendProductList(client, phone, {
+                header: (mpmData.header || "Catalog").substring(0, 60),
+                body: bodyText,
+                footer: (mpmData.footer || "Tap to view items").substring(0, 60),
+                catalogId,
+                sections: [
+                  {
+                    title: String(mpmData.sectionTitle || "Our Picks").substring(0, 24),
+                    product_items: ids.map((id) => ({ product_retailer_id: id })),
+                  },
+                ],
+              });
+              return true;
+            } catch (plErr) {
+              log.warn(`[catalog] product_list fallback failed: ${plErr.message}`);
+            }
+          }
           log.warn(`[catalog] mpm_template missing templateName, thumbnail, or productIds — node ${node?.id || ""}`);
           if (data.apexDualMethod) return false;
           await WhatsApp.sendText(client, phone, bodyText.substring(0, 4096));
@@ -4198,19 +4241,38 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         try {
           await WhatsApp.sendMpmMarketingTemplate(client, phone, {
             templateName,
-            languageCode: data.languageCode || "en",
+            languageCode: mpmData.languageCode || "en",
             bodyVariables,
             mpmHeaderText,
             headerText: mpmHeaderText,
-            headerImage: data.headerImageUrl || data.mpmHeaderImage || null,
+            headerImage: mpmData.headerImageUrl || mpmData.mpmHeaderImage || null,
             thumbnailProductRetailerId: thumb,
-            productIds: data.productIds,
-            sectionTitle: data.sectionTitle || data.header,
-            sections: Array.isArray(data.mpmSections) ? data.mpmSections : null,
-            mpmButtonIndex: data.mpmButtonIndex,
+            productIds: mpmData.productIds,
+            sectionTitle: mpmData.sectionTitle || mpmData.header,
+            sections: Array.isArray(mpmData.mpmSections) ? mpmData.mpmSections : null,
+            mpmButtonIndex: mpmData.mpmButtonIndex,
           });
         } catch (mpmErr) {
           log.error(`[catalog] sendMpmMarketingTemplate failed: ${mpmErr.message}`);
+          if (catalogId && ids.length) {
+            try {
+              await WhatsApp.sendProductList(client, phone, {
+                header: (mpmData.header || "Catalog").substring(0, 60),
+                body: bodyText,
+                footer: (mpmData.footer || "Tap to view items").substring(0, 60),
+                catalogId,
+                sections: [
+                  {
+                    title: String(mpmData.sectionTitle || "Our Picks").substring(0, 24),
+                    product_items: ids.map((id) => ({ product_retailer_id: id })),
+                  },
+                ],
+              });
+              return true;
+            } catch (plErr) {
+              log.warn(`[catalog] product_list fallback failed: ${plErr.message}`);
+            }
+          }
           if (data.apexDualMethod) return false;
           await sendWhatsAppText(client, phone, bodyText.substring(0, 4096));
         }

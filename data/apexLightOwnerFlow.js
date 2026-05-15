@@ -10,6 +10,7 @@ const FLOW_DESCRIPTION = "Keyword + first_message welcome (3-button hub), Meta M
 
 const apexLightOwnerFlowInstallPack = require("./apexLightOwnerFlowInstallPack");
 const { injectApexCatalogGraph } = require("./apexCatalogSlots");
+const { folderizeApexFlowGraph } = require("../utils/apexFlowFolderize");
 
 const LOGO = "https://apexlight.in/cdn/shop/files/07708086-ccae-4d21-93e2-fe0ed52b33a2.jpg?v=1714210021";
 const HDMI21_WIRING = "https://apexlight.in/cdn/shop/files/hdmi21_wiring_diagram.jpg";
@@ -2439,12 +2440,14 @@ function buildFlow() {
     ...apexLightOwnerFlowInstallPack.edges,
   ];
   const injected = injectApexCatalogGraph(nodes, mergedEdges);
+  const folderized = folderizeApexFlowGraph(injected.nodes, injected.edges);
   return {
-    nodes: injected.nodes,
-    edges: injected.edges,
+    nodes: folderized.nodes,
+    edges: folderized.edges,
     FLOW_ID,
     FLOW_NAME,
     FLOW_DESCRIPTION,
+    folderStats: folderized.stats,
   };
 }
 

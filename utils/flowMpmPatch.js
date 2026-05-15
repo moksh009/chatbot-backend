@@ -55,7 +55,55 @@ function matchesKeywords(product, keywords) {
   return keywords.some((kw) => haystack.includes(kw));
 }
 
-function buildPatchesForNodes(mpmNodes, products) {
+/** Approved Meta marketing template with MPM / carousel button (tenant-specific name). */
+function resolveMpmTemplateNameForClient(client = {}) {
+  const synced = Array.isArray(client.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
+  const approved = synced.filter((t) => String(t.status || "APPROVED").toUpperCase() === "APPROVED");
+  const carousel = approved.find((t) => /carosuel|carousel|mpm/i.test(String(t.name || "")));
+  return carousel?.name || approved[0]?.name || "";
+}
+
+function applyMpmFieldsToNodeData(data, patch, templateName) {
+  const next = { ...data };
+  if (patch?.productIds) next.productIds = patch.productIds;
+  if (patch?.thumbnailProductRetailerId) {
+    next.thumbnailProductRetailerId = patch.thumbnailProductRetailerId;
+  }
+  if (patch?.sectionTitle) next.sectionTitle = patch.sectionTitle;
+  if (patch?.header) next.header = patch.header;
+  if (patch?.metaCollectionId) next.metaCollectionId = patch.metaCollectionId;
+  if (patch?.count != null) next.mpmHeaderText = String(patch.count);
+  const tpl = String(templateName || data.metaTemplateName || data.templateName || "").trim();
+  if (tpl) {
+    next.metaTemplateName = tpl;
+    next.templateName = tpl;
+  }
+  return next;
+}
+
+/**
+ * Runtime: fill missing MPM fields from Mongo products + client templates (no flow DB write).
+ */
+async function enrichMpmNodeDataFromDb(clientId, node) {
+  const client = await Client.findOne({ clientId })
+    .select("syncedMetaTemplates messageTemplates")
+    .lean();
+  const products = await ShopifyProduct.find({ clientId, inStock: true })
+    .select("shopifyVariantId title variantTitle productType collectionTitles tags vendor price inStock collectionIds")
+    .lean();
+  if (!products.length) return null;
+
+  const patches = buildPatchesForNodes(
+    [{ id: node?.id || "runtime", data: node?.data || {} }],
+    products,
+    resolveMpmTemplateNameForClient(client)
+  );
+  const patch = patches[node?.id || "runtime"];
+  if (!patch?.productIds) return null;
+  return applyMpmFieldsToNodeData(node?.data || {}, patch, resolveMpmTemplateNameForClient(client));
+}
+
+function buildPatchesForNodes(mpmNodes, products, templateName = "") {
   const patches = {};
 
   for (const node of mpmNodes) {
@@ -83,6 +131,7 @@ function buildPatchesForNodes(mpmNodes, products) {
       productIds: ids.join(","),
       thumbnailProductRetailerId: ids[0],
       count: ids.length,
+      metaTemplateName: templateName || node.data?.metaTemplateName || node.data?.templateName || "",
     };
   }
 
@@ -103,6 +152,11 @@ async function autoPatchMpmFlowNodes(clientId, opts = {}) {
     return { patched: 0, flowId: null };
   }
 
+  const clientDoc = await Client.findOne({ clientId })
+    .select("syncedMetaTemplates messageTemplates visualFlows")
+    .lean();
+  const mpmTemplateName = resolveMpmTemplateNameForClient(clientDoc);
+
   const products = await ShopifyProduct.find({ clientId, inStock: true })
     .select("shopifyVariantId title variantTitle productType collectionTitles tags vendor price")
     .lean();
@@ -119,22 +173,26 @@ async function autoPatchMpmFlowNodes(clientId, opts = {}) {
     return { patched: 0, flowId: flowDoc.flowId, message: "No mpm_template nodes" };
   }
 
-  const patches = buildPatchesForNodes(mpmNodes, products);
+  const patches = buildPatchesForNodes(mpmNodes, products, mpmTemplateName);
   if (!Object.keys(patches).length) {
-    return { patched: 0, flowId: flowDoc.flowId, message: "No keyword matches" };
+    return { patched: 0, flowId: flowDoc.flowId, message: "No keyword matches", mpmTemplateName };
   }
 
   const patchNodes = (nodes) =>
     (nodes || []).map((n) => {
       const p = patches[n.id];
-      if (!p) return n;
+      if (!p) {
+        if (n.type === "catalog" && n.data?.catalogType === "mpm_template" && mpmTemplateName) {
+          return {
+            ...n,
+            data: applyMpmFieldsToNodeData(n.data, { metaTemplateName: mpmTemplateName }, mpmTemplateName),
+          };
+        }
+        return n;
+      }
       return {
         ...n,
-        data: {
-          ...n.data,
-          productIds: p.productIds,
-          thumbnailProductRetailerId: p.thumbnailProductRetailerId,
-        },
+        data: applyMpmFieldsToNodeData(n.data, p, p.metaTemplateName || mpmTemplateName),
       };
     });
 
@@ -146,14 +204,13 @@ async function autoPatchMpmFlowNodes(clientId, opts = {}) {
     { $set: { nodes: newNodes, publishedNodes: newPublished, updatedAt: new Date() } }
   );
 
-  const client = await Client.findOne({ clientId }).select("visualFlows").lean();
-  const vfIndex = (client?.visualFlows || []).findIndex((f) => f.id === flowDoc.flowId);
+  const vfIndex = (clientDoc?.visualFlows || []).findIndex((f) => f.id === flowDoc.flowId);
   if (vfIndex !== -1) {
     await Client.updateOne(
       { clientId, "visualFlows.id": flowDoc.flowId },
       {
         $set: {
-          [`visualFlows.${vfIndex}.nodes`]: patchNodes(client.visualFlows[vfIndex].nodes),
+          [`visualFlows.${vfIndex}.nodes`]: patchNodes(clientDoc.visualFlows[vfIndex].nodes),
           [`visualFlows.${vfIndex}.updatedAt`]: new Date(),
         },
       }
@@ -161,9 +218,12 @@ async function autoPatchMpmFlowNodes(clientId, opts = {}) {
   }
 
   const patched = Object.keys(patches).length;
-  log.info(`[FlowMpmPatch] ${clientId} flow=${flowDoc.flowId} patched ${patched} MPM nodes`);
+  log.info(
+    `[FlowMpmPatch] ${clientId} flow=${flowDoc.flowId} patched ${patched} MPM nodes` +
+      (mpmTemplateName ? ` template=${mpmTemplateName}` : " (no approved MPM template on client)")
+  );
 
-  return { patched, flowId: flowDoc.flowId, patches };
+  return { patched, flowId: flowDoc.flowId, patches, mpmTemplateName };
 }
 
 /** Wizard-generated flows: category list node id / label hints */
@@ -368,9 +428,13 @@ async function syncExploreMenuFromCollections(clientId, opts = {}) {
     }
   }
 
+  const clientDoc = await Client.findOne({ clientId }).select("syncedMetaTemplates messageTemplates").lean();
+  const mpmTemplateName = resolveMpmTemplateNameForClient(clientDoc);
+
   const mpmNodePatches = buildPatchesForNodes(
     nodes.filter((n) => n.type === "catalog" && n.data?.catalogType === "mpm_template"),
-    products
+    products,
+    mpmTemplateName
   );
   mpmPatches = { ...mpmNodePatches, ...mpmPatches };
 
@@ -390,18 +454,18 @@ async function syncExploreMenuFromCollections(clientId, opts = {}) {
         };
       }
       const mp = mpmPatches[n.id];
-      if (!mp) return n;
+      if (!mp) {
+        if (n.type === "catalog" && n.data?.catalogType === "mpm_template" && mpmTemplateName) {
+          return {
+            ...n,
+            data: applyMpmFieldsToNodeData(n.data, { metaTemplateName: mpmTemplateName }, mpmTemplateName),
+          };
+        }
+        return n;
+      }
       return {
         ...n,
-        data: {
-          ...n.data,
-          productIds: mp.productIds || n.data.productIds,
-          thumbnailProductRetailerId: mp.thumbnailProductRetailerId || n.data.thumbnailProductRetailerId,
-          sectionTitle: mp.sectionTitle || n.data.sectionTitle,
-          header: mp.header || n.data.header,
-          metaCollectionId: mp.metaCollectionId || n.data.metaCollectionId,
-          mpmHeaderText: String(mp.count || ""),
-        },
+        data: applyMpmFieldsToNodeData(n.data, mp, mp.metaTemplateName || mpmTemplateName),
       };
     });
 
@@ -447,6 +511,9 @@ module.exports = {
   autoPatchMpmFlowNodes,
   syncExploreMenuFromCollections,
   buildPatchesForNodes,
+  enrichMpmNodeDataFromDb,
+  resolveMpmTemplateNameForClient,
+  applyMpmFieldsToNodeData,
   deriveKeywordsFromNode,
   APEX_NODE_KEYWORDS,
 };

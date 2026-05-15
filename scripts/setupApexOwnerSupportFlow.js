@@ -34,6 +34,7 @@ function resolveClientId() {
  * 2) Dashboard → sync WhatsApp templates so `syncedMetaTemplates` includes "carosuel".
  * 3) Meta Manager → Catalog: link catalog ID `25779917041614766` (or yours) in dashboard.
  * 4) Run THIS script:  node scripts/setupApexOwnerSupportFlow.js
+ *    (includes in-canvas folder groups — or run node scripts/folderizeApexLightFlow.js on existing DB copy)
  * 5) Import Meta catalog + sync categories + MPM IDs (recommended one-liner):
  *      node scripts/refreshApexCatalogFlow.js
  *    Or only patch IDs:  node scripts/patchApexMpmProductIds.js
