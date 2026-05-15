@@ -87,9 +87,9 @@ const APEX_CATALOG_SLOTS = [
 
 const MENU_NODE_ID = "n_product_menu";
 const DEFAULT_FLOW_ID = "flow_apex_owner_support_hub_v2";
-const BROWSE_DONE_NODE_ID = "n_cat_browse_done";
-const TOP_SECTION_TITLE = "⭐ Top picks";
-const MORE_SECTION_TITLE = "🛍️ More to explore";
+const FOOTER_NODE_ID = "n_footer";
+const TOP_SECTION_TITLE = "Top picks";
+const MORE_SECTION_TITLE = "More ranges";
 const ROWS_PER_SECTION = 5;
 
 function makeMpmNode(slot, y) {
@@ -106,8 +106,8 @@ function makeMpmNode(slot, y) {
       apexDualMethod: true,
       header: title,
       sectionTitle: title,
-      text: `Here are our *${title}* — tap *View items* for the WhatsApp carousel.`,
-      body: `Here are our *${title}* — tap *View items* for the WhatsApp carousel.`,
+      text: `*${title}* — tap *View items* on each message to browse.`,
+      body: `*${title}* — tap *View items* on each message to browse.`,
       productIds: "",
       thumbnailProductRetailerId: "",
     },
@@ -144,7 +144,7 @@ function injectApexCatalogGraph(nodes, edges) {
       edges.push({
         id: defId,
         source: slot.nodeId,
-        target: BROWSE_DONE_NODE_ID,
+        target: FOOTER_NODE_ID,
       });
       edgeIds.add(defId);
     }
@@ -155,7 +155,7 @@ function injectApexCatalogGraph(nodes, edges) {
         id: ncId,
         source: slot.nodeId,
         sourceHandle: "no_catalog",
-        target: BROWSE_DONE_NODE_ID,
+        target: FOOTER_NODE_ID,
       });
       edgeIds.add(ncId);
     }
@@ -169,7 +169,7 @@ module.exports = {
   APEX_MPM_TEMPLATE,
   MENU_NODE_ID,
   DEFAULT_FLOW_ID,
-  BROWSE_DONE_NODE_ID,
+  FOOTER_NODE_ID,
   TOP_SECTION_TITLE,
   MORE_SECTION_TITLE,
   ROWS_PER_SECTION,

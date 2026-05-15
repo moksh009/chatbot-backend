@@ -150,6 +150,7 @@ function buildFlow() {
           "hello",
           "hey",
           "menu",
+          "main menu",
           "start",
           "hii",
           "hiii",
@@ -304,12 +305,12 @@ function buildFlow() {
       "label": "Explore — categories",
       "interactiveType": "list",
       "buttonText": "Explore products",
-      "text": "✨ *Explore Apex Light*\n\nPick a category — *Best Sellers* and top collections first, then more ranges. Each opens a WhatsApp carousel (tap *View items* on the next message).",
+      "text": "*Explore Apex Light*\n\nBest sellers and collections below. Tap a range, then *View items* on each product message.",
       "sections": [
         {
-          "title": "⭐ Top picks",
+          "title": "Top picks",
           "rows": [
-            { "id": "cat_bestseller", "title": "Best Sellers", "description": "🔥 Top picks" },
+            { "id": "cat_bestseller", "title": "Best Sellers", "description": "Tap to browse" },
             { "id": "cat_tv", "title": "TV Backlights", "description": "HDMI sync for TV" },
             { "id": "cat_gaming", "title": "Gaming Lights", "description": "Setup lighting" },
             { "id": "cat_govee", "title": "Govee Collection", "description": "Authorized Govee" },
@@ -317,7 +318,7 @@ function buildFlow() {
           ]
         },
         {
-          "title": "🛍️ More to explore",
+          "title": "More ranges",
           "rows": [
             { "id": "cat_floor", "title": "Floor Lamps", "description": "Floor & table" },
             { "id": "cat_strip", "title": "LED Strips", "description": "COB, neon, RGB" },
@@ -759,18 +760,6 @@ function buildFlow() {
           "title": "Back to menu"
         }
       ]
-    }
-  },
-  {
-    "id": "n_cat_browse_done",
-    "type": "message",
-    "position": {
-      "x": 1980,
-      "y": 620
-    },
-    "data": {
-      "label": "After Meta product list",
-      "text": "Tap *View items* on the message above — WhatsApp opens the swipeable product carousel. Or use *Main menu* below for more help."
     }
   },
   {
@@ -1500,19 +1489,19 @@ function buildFlow() {
     "data": {
       "label": "Footer — loopback",
       "interactiveType": "button",
-      "text": "✨ *Anything else we can do?*\n\nPick an option below — we’re here to help.",
+      "text": "*Anything else we can help with?*\n\nChoose an option below.",
       "buttonsList": [
         {
           "id": "f_menu",
-          "title": "🏠 Main menu"
+          "title": "Main menu"
         },
         {
           "id": "f_support",
-          "title": "💬 Talk to team"
+          "title": "Talk to team"
         },
         {
-          "id": "f_start",
-          "title": "🔄 Start over"
+          "id": "f_explore",
+          "title": "Explore products"
         }
       ]
     }
@@ -1558,7 +1547,7 @@ function buildFlow() {
     "id": "e_btn_support",
     "source": "n_main_menu",
     "sourceHandle": "btn_support",
-    "target": "n_admin_alert"
+    "target": "n_support_pre"
   },
   {
     "id": "e_svc_track",
@@ -1651,7 +1640,7 @@ function buildFlow() {
   {
     "id": "e_tv_pl_def",
     "source": "n_cat_tv_pl",
-    "target": "n_cat_browse_done"
+    "target": "n_footer"
   },
   {
     "id": "e_mon_nc",
@@ -1672,7 +1661,7 @@ function buildFlow() {
   {
     "id": "e_mon_pl_def",
     "source": "n_cat_monitor_pl",
-    "target": "n_cat_browse_done"
+    "target": "n_footer"
   },
   {
     "id": "e_gov_nc",
@@ -1693,7 +1682,7 @@ function buildFlow() {
   {
     "id": "e_gov_pl_def",
     "source": "n_cat_govee_pl",
-    "target": "n_cat_browse_done"
+    "target": "n_footer"
   },
   {
     "id": "e_fl_nc",
@@ -1714,7 +1703,7 @@ function buildFlow() {
   {
     "id": "e_fl_pl_def",
     "source": "n_cat_floor_pl",
-    "target": "n_cat_browse_done"
+    "target": "n_footer"
   },
   {
     "id": "e_gm_nc",
@@ -1735,7 +1724,7 @@ function buildFlow() {
   {
     "id": "e_gm_pl_def",
     "source": "n_cat_gaming_pl",
-    "target": "n_cat_browse_done"
+    "target": "n_footer"
   },
   {
     "id": "e_st_nc",
@@ -1756,11 +1745,6 @@ function buildFlow() {
   {
     "id": "e_st_pl_def",
     "source": "n_cat_strip_pl",
-    "target": "n_cat_browse_done"
-  },
-  {
-    "id": "e_cat_done_f",
-    "source": "n_cat_browse_done",
     "target": "n_footer"
   },
   {
@@ -2412,10 +2396,10 @@ function buildFlow() {
     "target": "n_admin_alert"
   },
   {
-    "id": "e_ff_start",
+    "id": "e_ff_explore",
     "source": "n_footer",
-    "sourceHandle": "f_start",
-    "target": "n_main_menu"
+    "sourceHandle": "f_explore",
+    "target": "n_product_menu"
   }
 ];
   const removedInstallNodeIds = new Set([
@@ -2441,7 +2425,23 @@ function buildFlow() {
     ...apexLightOwnerFlowInstallPack.edges,
   ];
   const injected = injectApexCatalogGraph(nodes, mergedEdges);
-  const folderized = folderizeApexFlowGraph(injected.nodes, injected.edges);
+  const strippedNodes = injected.nodes.filter((n) => n.id !== "n_cat_browse_done");
+  const strippedEdges = injected.edges
+    .filter((e) => e.source !== "n_cat_browse_done")
+    .map((e) => (e.target === "n_cat_browse_done" ? { ...e, target: "n_footer" } : e))
+    .map((e) => {
+      if (e.source === "n_footer" && e.sourceHandle === "f_start") {
+        return { ...e, id: e.id === "e_ff_start" ? "e_ff_explore" : e.id, sourceHandle: "f_explore", target: "n_product_menu" };
+      }
+      return e;
+    });
+  const footerNode = strippedNodes.find((n) => n.id === "n_footer");
+  if (footerNode?.data?.buttonsList) {
+    footerNode.data.buttonsList = footerNode.data.buttonsList.map((b) =>
+      b.id === "f_start" ? { id: "f_explore", title: "Explore products" } : b
+    );
+  }
+  const folderized = folderizeApexFlowGraph(strippedNodes, strippedEdges);
   return {
     nodes: folderized.nodes,
     edges: folderized.edges,

@@ -59,10 +59,22 @@ async function run() {
 
   const { nodes, edges } = buildFlow();
 
+  const triggerKeywordNodes = nodes.filter(
+    (n) =>
+      (n.type === 'trigger' || n.type === 'TriggerNode') &&
+      String(n.data?.triggerType || n.data?.trigger?.type || '').toLowerCase() === 'keyword'
+  );
+  const mergedKeywords = [
+    ...new Set(
+      triggerKeywordNodes.flatMap((n) => {
+        const kws = n.data?.trigger?.keywords || n.data?.keywords || [];
+        return Array.isArray(kws) ? kws : String(kws).split(',');
+      })
+    ),
+  ]
+    .map((k) => String(k).trim())
+    .filter(Boolean);
   const greetNode = nodes.find((n) => n.id === 'n_trigger');
-  const greetingKeywords = Array.isArray(greetNode?.data?.trigger?.keywords)
-    ? greetNode.data.trigger.keywords.map((k) => String(k).trim()).filter(Boolean)
-    : [];
   const matchMode = greetNode?.data?.trigger?.matchMode || 'contains';
 
   const existing = await WhatsAppFlow.findOne({ clientId: CLIENT_ID, flowId: FLOW_ID }).select('version').lean();
@@ -90,8 +102,8 @@ async function run() {
       type: 'keyword',
       channel: 'whatsapp',
       keywords:
-        greetingKeywords.length > 0
-          ? greetingKeywords
+        mergedKeywords.length > 0
+          ? mergedKeywords
           : ['hi', 'hello', 'hey', 'menu', 'start', 'hii', 'hiii', 'help', 'apex', 'namaste'],
       matchMode,
     },

@@ -6,7 +6,9 @@ const ShopifyCollection = require("../models/ShopifyCollection");
 const ShopifyProduct = require("../models/ShopifyProduct");
 const log = require("./logger")("FlowMpmPatch");
 
-const MAX_PER_SECTION = 10;
+/** Max SKUs stored on flow node (send logic batches 10 per WhatsApp message). */
+const MAX_PER_SECTION = 30;
+const MPM_SEND_BATCH_SIZE = 10;
 const STOP_WORDS = new Set([
   "m1", "m2", "mpm", "carousel", "catalog", "our", "the", "and", "for", "here", "are", "tap",
   "view", "items", "browse", "whatsapp", "picks", "highlights", "kits", "lines",
@@ -288,8 +290,9 @@ async function autoPatchMpmFlowNodes(clientId, opts = {}) {
 
 /** Wizard-generated flows: category list node id / label hints */
 const WIZARD_MENU_NODE_IDS = ["n_cat_category_menu", "cat_category_menu"];
-const TOP_SECTION = "⭐ Top picks";
-const MORE_SECTION = "🛍️ More to explore";
+const TOP_SECTION = "Top picks";
+const MORE_SECTION = "More ranges";
+const FOOTER_AFTER_CATALOG = "n_footer";
 
 function normTitle(s) {
   return String(s || "")
@@ -302,9 +305,6 @@ function normTitle(s) {
 function menuLabelFromCollection(collection, slot) {
   let raw = String(collection.whatsappMenuLabel || collection.title || slot?.defaultTitle || "Products").trim();
   raw = raw.replace(/\s*\([^)]*\)\s*/g, " ").replace(/\s+/g, " ").trim();
-  if (slot?.menuRowId === "cat_bestseller" || slot?.menuRowId === "featured") {
-    if (!raw.startsWith("🔥")) raw = `🔥 ${raw}`;
-  }
   if (raw.length <= 24) return raw;
   const cut = raw.slice(0, 24);
   const sp = cut.lastIndexOf(" ");
@@ -366,7 +366,7 @@ function buildTwoSectionMenu(assignments, slots) {
   const rows = assignments.map(({ slot, collection }) => ({
     id: slot.menuRowId,
     title: menuLabelFromCollection(collection, slot),
-    description: `${collection.productsCount || 0} items`.slice(0, 72),
+      description: "Tap to browse".slice(0, 72),
     collectionId: collection.shopifyCollectionId,
   }));
   return [
@@ -451,7 +451,7 @@ async function syncExploreMenuFromCollections(clientId, opts = {}) {
     const rows = sorted.slice(0, MAX_PER_SECTION).map((c) => ({
       id: `collection_${c.shopifyCollectionId}`,
       title: menuLabelFromCollection(c, null),
-      description: `${c.productsCount || 0} items`.slice(0, 72),
+      description: "Tap to browse".slice(0, 72),
       collectionId: c.shopifyCollectionId,
     }));
     menuSections = [
@@ -509,7 +509,7 @@ async function syncExploreMenuFromCollections(clientId, opts = {}) {
             ...n.data,
             buttonText: "Explore products",
             text:
-              "✨ *Explore our store*\n\n*Best sellers* and top collections first — then more ranges below. Each opens a WhatsApp carousel (tap *View items*).",
+              "*Explore Apex Light*\n\nBest sellers and collections below. Tap a range, then *View items* on each product message.",
             sections: menuSections,
             populateFromShopify: true,
           },

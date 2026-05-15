@@ -48,23 +48,44 @@ async function findMatchingFlow(parsedMessage, client, convo) {
   const getFlowNodes = (flow) => flow.publishedNodes?.length > 0 ? flow.publishedNodes : (flow.nodes || []);
   const getFlowEdges = (flow) => flow.publishedEdges?.length > 0 ? flow.publishedEdges : (flow.edges || []);
 
-  // ── PRIORITY 1: Check keyword triggers ─────────────────────────────────────
-  const keywordFlow = flows.find((flow) => {
-    const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(getFlowNodes(flow));
-    if (!trigger || (trigger.type !== "keyword" && trigger.type !== "KEYWORD")) return false;
+  // ── PRIORITY 1: Check keyword triggers (all trigger nodes in each flow) ───
+  let keywordHit = null;
+  for (const flow of flows) {
+    const nodes = getFlowNodes(flow);
+    const edges = getFlowEdges(flow);
+    const entry = findKeywordTriggerEntry(text, nodes, edges, channel);
+    if (entry?.startNodeId) {
+      keywordHit = { flow, triggerType: "keyword", startNodeId: entry.startNodeId, triggerNodeId: entry.triggerNodeId };
+      break;
+    }
+  }
 
-    // Channel check
-    const flowChannel = (trigger.channel || flow.channel || "both").toLowerCase();
-    if (flowChannel !== "both" && flowChannel !== channel) return false;
+  // Legacy: flow-level triggerConfig only (single trigger blob)
+  if (!keywordHit) {
+    const keywordFlow = flows.find((flow) => {
+      const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(getFlowNodes(flow));
+      if (!trigger || (trigger.type !== "keyword" && trigger.type !== "KEYWORD")) return false;
 
-    const keywords  = trigger.keywords || [];
-    const matchMode = trigger.matchMode || "contains";
+      const flowChannel = (trigger.channel || flow.channel || "both").toLowerCase();
+      if (flowChannel !== "both" && flowChannel !== channel) return false;
 
-    return keywords.some((keyword) => checkKeywordMatch(text, keyword, matchMode));
-  });
+      const keywords = trigger.keywords || [];
+      const matchMode = trigger.matchMode || "contains";
+      return keywords.some((keyword) => checkKeywordMatch(text, keyword, matchMode));
+    });
+    if (keywordFlow) {
+      const nodes = getFlowNodes(keywordFlow);
+      const edges = getFlowEdges(keywordFlow);
+      keywordHit = {
+        flow: keywordFlow,
+        triggerType: "keyword",
+        startNodeId: findFlowStartNode(nodes, edges),
+      };
+    }
+  }
 
-  if (keywordFlow) {
-    return { flow: keywordFlow, triggerType: "keyword" };
+  if (keywordHit) {
+    return keywordHit;
   }
 
   // ── PRIORITY 1.2: Check Meta Ad triggers ───────────────────────────────────
@@ -407,6 +428,44 @@ function checkKeywordMatch(text, keyword, matchMode = "contains") {
   }
 }
 
+/**
+ * Match incoming text against every keyword trigger node in a flow.
+ * Longest keyword wins (e.g. "track my order" beats "order").
+ */
+function findKeywordTriggerEntry(text, nodes, edges, channel = "whatsapp") {
+  if (!text || !Array.isArray(nodes)) return null;
+
+  const triggerNodes = nodes.filter((n) => n.type === "trigger" || n.type === "TriggerNode");
+  let best = null;
+  let bestLen = 0;
+
+  for (const node of triggerNodes) {
+    const cfg = getTriggerConfigFromNode(node);
+    if (!cfg || (cfg.type !== "keyword" && cfg.type !== "KEYWORD")) continue;
+
+    const flowChannel = (cfg.channel || "both").toLowerCase();
+    if (flowChannel !== "both" && flowChannel !== channel) continue;
+
+    const keywords = cfg.keywords || [];
+    const matchMode = cfg.matchMode || "contains";
+
+    for (const kw of keywords) {
+      if (!checkKeywordMatch(text, kw, matchMode)) continue;
+      const len = String(kw).trim().length;
+      if (len >= bestLen) {
+        const edge = (edges || []).find((e) => e.source === node.id);
+        bestLen = len;
+        best = {
+          triggerNodeId: node.id,
+          startNodeId: edge?.target || null,
+        };
+      }
+    }
+  }
+
+  return best;
+}
+
 function findFlowStartNode(flowNodes, flowEdges) {
   // Accept either raw arrays or use publishedNodes when available
   const nodes = Array.isArray(flowNodes) ? flowNodes : [];
@@ -429,10 +488,12 @@ function clearTriggerCache(clientId) {
 
 module.exports = {
   findMatchingFlow,
+  findKeywordTriggerEntry,
   checkKeywordMatch,
   getTriggerFromNodes,
+  getTriggerConfigFromNode,
   findFlowStartNode,
   matchEventTrigger,
   findEventTriggeredFlow,
-  clearTriggerCache
+  clearTriggerCache,
 };

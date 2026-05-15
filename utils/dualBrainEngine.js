@@ -1840,9 +1840,12 @@ async function runDualBrainEngine(parsedMessage, client) {
           (flow.publishedEdges && flow.publishedEdges.length > 0 ? flow.publishedEdges : flow.edges) || [];
         const flowNodes = flattenFlowNodes(rawNodes);
         const flowEdges = rawEdges;
-        const startNodeId = findFlowStartNode(flowNodes, flowEdges);
+        const startNodeId = match.startNodeId || findFlowStartNode(flowNodes, flowEdges);
 
-        log.info(`[TriggerEngine] Matched flow "${flow.name || flow.id}" via ${match.triggerType}. Starting at node: ${startNodeId}`);
+        log.info(
+          `[TriggerEngine] Matched flow "${flow.name || flow.id}" via ${match.triggerType}. Starting at node: ${startNodeId}` +
+            (match.triggerNodeId ? ` (trigger ${match.triggerNodeId})` : "")
+        );
 
         if (startNodeId && flowNodes.length) {
           // Track which flow is now active
@@ -2051,6 +2054,29 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
   if (isEcommerceEvent && !currentStepId) {
     log.info(`[Graph] Skipping traversal for ecommerce event with no user text for ${phone}`);
     return false;
+  }
+
+  // A0) Flow canvas trigger nodes (track order, warranty, hi, menu, …)
+  if (userTextLower && userTextLower.length > 0) {
+    const { findKeywordTriggerEntry } = require("./triggerEngine");
+    const triggerEntry = findKeywordTriggerEntry(userText, flowNodes, flowEdges, channel);
+    if (triggerEntry?.startNodeId) {
+      log.info(
+        `[Graph] Trigger keyword "${userText}" → ${triggerEntry.startNodeId} (from ${triggerEntry.triggerNodeId})`
+      );
+      return await executeNode(
+        triggerEntry.startNodeId,
+        flowNodes,
+        flowEdges,
+        client,
+        convo,
+        lead,
+        phone,
+        io,
+        channel,
+        parsedMessage
+      );
+    }
   }
 
   // A) GLOBAL KEYWORD / ROLE JUMP
@@ -4239,18 +4265,17 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
             : String(ids.length);
 
         try {
-          await WhatsApp.sendMpmMarketingTemplate(client, phone, {
+          const { sendMpmInBatches } = require("./mpmBatchSend");
+          await sendMpmInBatches(WhatsApp, client, phone, {
             templateName,
             languageCode: mpmData.languageCode || "en",
             bodyVariables,
-            mpmHeaderText,
-            headerText: mpmHeaderText,
             headerImage: mpmData.headerImageUrl || mpmData.mpmHeaderImage || null,
             thumbnailProductRetailerId: thumb,
-            productIds: mpmData.productIds,
+            productIds: ids,
             sectionTitle: mpmData.sectionTitle || mpmData.header,
-            sections: Array.isArray(mpmData.mpmSections) ? mpmData.mpmSections : null,
             mpmButtonIndex: mpmData.mpmButtonIndex,
+            delayMs: ids.length > 10 ? 900 : 0,
           });
         } catch (mpmErr) {
           log.error(`[catalog] sendMpmMarketingTemplate failed: ${mpmErr.message}`);
