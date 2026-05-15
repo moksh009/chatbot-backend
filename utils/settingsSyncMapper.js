@@ -88,6 +88,30 @@ function applySettingsSyncMirrors(updateFields, body = {}) {
     updateFields["brand.logoUrl"] = logo;
   }
 
+  if (body.businessDescription !== undefined) {
+    const desc = String(body.businessDescription || "").trim();
+    updateFields["platformVars.businessDescription"] = desc;
+    updateFields["ai.persona.description"] = desc;
+  }
+
+  if (body.industry !== undefined) {
+    const ind = String(body.industry || "").trim();
+    updateFields["onboardingData.industry"] = ind;
+    updateFields["onboardingData.step1.industry"] = ind;
+  }
+
+  if (body.cartTiming !== undefined && typeof body.cartTiming === "object") {
+    const t = body.cartTiming;
+    const clamp = (v, min, max, def) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return def;
+      return Math.min(max, Math.max(min, n));
+    };
+    updateFields["wizardFeatures.cartNudgeMinutes1"] = clamp(t.msg1, 1, 1440, 15);
+    updateFields["wizardFeatures.cartNudgeHours2"] = clamp(t.msg2, 1, 168, 2);
+    updateFields["wizardFeatures.cartNudgeHours3"] = clamp(t.msg3, 1, 720, 24);
+  }
+
   if (body.geminiApiKey !== undefined && body.geminiApiKey !== "••••••••" && String(body.geminiApiKey).trim()) {
     const key = String(body.geminiApiKey).trim();
     updateFields.geminiApiKey = key;
@@ -114,6 +138,7 @@ function applySettingsSyncMirrors(updateFields, body = {}) {
 function flattenClientForSettingsUI(client = {}) {
   const pv = client.platformVars || {};
   const persona = client.ai?.persona || {};
+  const wf = client.wizardFeatures || {};
   return {
     businessName: pv.brandName || client.businessName || client.name || "",
     botName: pv.agentName || persona.name || client.nicheData?.botName || "",
@@ -121,6 +146,14 @@ function flattenClientForSettingsUI(client = {}) {
     tone: persona.tone || pv.defaultTone || "friendly",
     botLanguage: persona.language || pv.defaultLanguage || "English",
     businessLogo: client.businessLogo || client.brand?.businessLogo || client.brand?.logoUrl || "",
+    businessDescription:
+      pv.businessDescription || client.ai?.persona?.description || "",
+    industry: client.onboardingData?.industry || client.onboardingData?.step1?.industry || "",
+    cartTiming: {
+      msg1: wf.cartNudgeMinutes1 ?? 15,
+      msg2: wf.cartNudgeHours2 ?? 2,
+      msg3: wf.cartNudgeHours3 ?? 24,
+    },
     facebookCatalogId: client.facebookCatalogId || client.waCatalogId || "",
     waCatalogId: client.waCatalogId || client.facebookCatalogId || "",
     googleReviewUrl: pv.googleReviewUrl || client.googleReviewUrl || client.brand?.googleReviewUrl || "",
