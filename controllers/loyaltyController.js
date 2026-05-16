@@ -490,6 +490,14 @@ async function generateAIRewardCode(req, res) {
         const client = await Client.findOne({ clientId: resolvedClientId });
         if (!client) return res.status(404).json({ message: 'Client not found' });
 
+        const { isLoyaltyEnabled } = require('../utils/featureFlags');
+        if (!isLoyaltyEnabled(client)) {
+            return res.status(403).json({
+                success: false,
+                message: 'Loyalty program is turned off for this workspace. Enable it under Audience → Loyalty.',
+            });
+        }
+
         const wallet = await getWallet(resolvedClientId, phone);
         
         let amount = customValue || 50; // Default or AI suggested
@@ -561,6 +569,14 @@ async function sendReviewRequest(req, res) {
     const { phone, orderId } = req.body;
     try {
         const { client } = await resolveClient(req);
+
+        const { isReviewCollectionEnabled } = require('../utils/featureFlags');
+        if (!isReviewCollectionEnabled(client)) {
+            return res.status(403).json({
+                success: false,
+                message: 'Review requests are turned off for this workspace. Enable them under Audience → Reviews.',
+            });
+        }
         
         if (!phone) return res.status(400).json({ message: 'Phone number required' });
 
