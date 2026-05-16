@@ -512,6 +512,7 @@ function mapFeatureToggle(features = {}) {
   // Mirror legacy where it matters
   if (typeof features.enable247 === "boolean")        $set["config.businessHours.is247"]      = features.enable247;
   if (typeof features.enableLoyalty === "boolean")    $set["loyaltyConfig.enabled"]           = features.enableLoyalty;
+  if (typeof features.enableLoyalty === "boolean")    $set["loyaltyConfig.isEnabled"]         = features.enableLoyalty;
   if (features.loyaltyPointsPerUnit !== undefined)    $set["loyaltyConfig.pointsPerUnit"]      = clampNum(features.loyaltyPointsPerUnit, 1, 100000, 10);
   if (features.loyaltySignupBonus !== undefined)      $set["loyaltyConfig.welcomeBonus"]       = clampNum(features.loyaltySignupBonus, 0, 1000000, 100);
   if (features.loyaltySilverThreshold !== undefined)  $set["loyaltyConfig.tierThresholds.silver"] = clampNum(features.loyaltySilverThreshold, 0, 1000000, 500);
@@ -527,9 +528,33 @@ function mapFeatureToggle(features = {}) {
   return $set;
 }
 
+/**
+ * Keep Settings → Automations flow toggles aligned with wizardFeatures.
+ */
+function syncAutomationFlowsFromFeatures(client, features = {}) {
+  const flows = Array.isArray(client?.automationFlows) ? [...client.automationFlows] : [];
+  if (!flows.length) return null;
+
+  let changed = false;
+  const next = flows.map((f) => {
+    const flow = typeof f.toObject === "function" ? f.toObject() : { ...f };
+    if (flow.id === "review_collection" && typeof features.enableReviewCollection === "boolean") {
+      if (flow.isActive !== features.enableReviewCollection) changed = true;
+      return { ...flow, isActive: features.enableReviewCollection };
+    }
+    if (flow.id === "abandoned_cart" && typeof features.enableAbandonedCart === "boolean") {
+      if (flow.isActive !== features.enableAbandonedCart) changed = true;
+      return { ...flow, isActive: features.enableAbandonedCart };
+    }
+    return flow;
+  });
+  return changed ? next : null;
+}
+
 module.exports = {
   mapWizardToClient,
   mapFeatureToggle,
+  syncAutomationFlowsFromFeatures,
   buildFeaturesUpdate,
   buildAutomationFlows,
   pullPersonaBundleFromSet,

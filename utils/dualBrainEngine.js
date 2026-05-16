@@ -1148,6 +1148,11 @@ async function runDualBrainEngine(parsedMessage, client) {
   // ── RTO Protection Suite: COD confirm + NDR rescue (WhatsApp button taps) ──
   if (parsedMessage.type === 'interactive' && parsedMessage.interactive?.button_reply?.id) {
     const rtoBid = String(parsedMessage.interactive.button_reply.id);
+    if (rtoBid === 'cod_yes' || rtoBid === 'cod_no') {
+      const rtoProtectionService = require('./rtoProtectionService');
+      const handled = await rtoProtectionService.handleFlowCodButton({ client, phone, buttonId: rtoBid });
+      if (handled) return true;
+    }
     if (rtoBid.startsWith('rto_cod_confirm_') || rtoBid.startsWith('rto_cod_cancel_')) {
       const rtoProtectionService = require('./rtoProtectionService');
       if (!rtoProtectionService.rtoCfg(client).requireCodConfirmation) {

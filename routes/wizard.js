@@ -13,7 +13,7 @@ const { clearTriggerCache } = require("../utils/triggerEngine");
 const { syncPlatformVarsToFlows } = require("../utils/platformVarsSync");
 const { withShopifyRetry } = require("../utils/shopifyHelper");
 const { generateText, generateTextFast } = require("../utils/gemini");
-const { mapWizardToClient, mapFeatureToggle, pullPersonaBundleFromSet } = require("../utils/wizardMapper");
+const { mapWizardToClient, mapFeatureToggle, pullPersonaBundleFromSet, syncAutomationFlowsFromFeatures } = require("../utils/wizardMapper");
 const { emitToClient } = require("../utils/socket");
 const log = require("../utils/logger")("Wizard");
 const { tenantClientId } = require("../utils/queryHelpers");
@@ -524,6 +524,21 @@ router.post("/:clientId/complete", protect, async (req, res) => {
 
     console.log(`[Wizard] Starting flow generation for ${clientId}...`);
 
+    const useCommercePack = wizardData.commerceFlowPack !== false;
+    const enabledFeatures = Object.entries(wizardData.features || {})
+      .filter(([, enabled]) => enabled === true)
+      .map(([key]) => key);
+    console.log(
+      `[Wizard] Validation snapshot for ${clientId}: ${JSON.stringify({
+        commerceFlowPack: useCommercePack,
+        replaceExisting: wizardData.replaceExisting !== false,
+        featuresEnabled: enabledFeatures,
+        industry: wizardData.industry || wizardData.businessType || null,
+        hasShopify: !!(wizardData.shopifyDomain || client.shopifyDomain),
+        hasCatalog: !!(wizardData.facebookCatalogId || client.facebookCatalogId || client.waCatalogId),
+      })}`
+    );
+
     const { generateCommerceWizardPack } = require("../utils/flowGenerator");
     const {
       createFlowsFromCommercePack,
@@ -553,8 +568,6 @@ router.post("/:clientId/complete", protect, async (req, res) => {
 
     // Get pre-built templates based on user's wizard data (like business name, cart timing)
     const templates = getPrebuiltTemplates(wizardData);
-
-    const useCommercePack = wizardData.commerceFlowPack !== false;
 
     // Replace mode: remove prior wizard / automation WhatsAppFlow rows before inserting new ones.
     if (wizardData.replaceExisting !== false) {
@@ -1416,12 +1429,21 @@ router.patch("/:clientId/features", protect, async (req, res) => {
       return res.status(400).json({ error: "No valid feature/profile fields supplied" });
     }
 
-    const client = await Client.findOneAndUpdate(
+    let client = await Client.findOneAndUpdate(
       { clientId },
       { $set },
       { new: true, runValidators: true }
     );
     if (!client) return res.status(404).json({ error: "Client not found" });
+
+    const syncedFlows = syncAutomationFlowsFromFeatures(client, features);
+    if (syncedFlows) {
+      client = await Client.findOneAndUpdate(
+        { clientId },
+        { $set: { automationFlows: syncedFlows } },
+        { new: true }
+      );
+    }
 
     let regenSummary = null;
     if (regenerate) {

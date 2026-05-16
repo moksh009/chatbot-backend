@@ -15,33 +15,34 @@ const {
     getLoyaltyTransactions
 } = require('../controllers/loyaltyController');
 const { protect } = require('../middleware/auth');
+const { requireFeature } = require('../utils/featureFlags');
 const Client = require('../models/Client');
 const WhatsApp = require('../utils/whatsapp');
 const axios = require('axios');
 const { decrypt } = require('../utils/encryption');
 
 // Admin-authenticated routes (require JWT)
-router.get('/stats', protect, getLoyaltyStats);
-router.get('/wallet', protect, getCustomerWallet);
-router.get('/transactions', protect, getLoyaltyTransactions);
-router.post('/backfill', protect, backfillOrderPoints);
-router.post('/send-reminder', protect, sendLoyaltyReminderTemplate);
+router.get('/stats', protect, requireFeature('loyalty'), getLoyaltyStats);
+router.get('/wallet', protect, requireFeature('loyalty'), getCustomerWallet);
+router.get('/transactions', protect, requireFeature('loyalty'), getLoyaltyTransactions);
+router.post('/backfill', protect, requireFeature('loyalty'), backfillOrderPoints);
+router.post('/send-reminder', protect, requireFeature('loyalty'), sendLoyaltyReminderTemplate);
 
 // Shared routes (used by both chat engine and admin panel)
 router.get('/status', protect, getLoyaltyStatus);
-router.post('/redeem', protect, redeemLoyaltyPoints);
+router.post('/redeem', protect, requireFeature('loyalty'), redeemLoyaltyPoints);
 
 // Admin-Only Adjustment & Rewards
-router.post('/adjust', protect, adjustWalletBalance); // Legacy
-router.post('/generate-reward', protect, generateAIRewardCode);
+router.post('/adjust', protect, requireFeature('loyalty'), adjustWalletBalance);
+router.post('/generate-reward', protect, requireFeature('loyalty'), generateAIRewardCode);
 
 // Client specific phase 7 requests
-router.post('/:clientId/manual-assign', protect, adjustWalletBalance);
-router.post('/:clientId/send-reminder', protect, sendLoyaltyReminderTemplate);
+router.post('/:clientId/manual-assign', protect, requireFeature('loyalty'), adjustWalletBalance);
+router.post('/:clientId/send-reminder', protect, requireFeature('loyalty'), sendLoyaltyReminderTemplate);
 
 // Reputation & Review Stats
-router.get('/reputation-stats', protect, getReputationStats);
-router.post('/send-review-request', protect, sendReviewRequest);
+router.get('/reputation-stats', protect, requireFeature('reviews'), getReputationStats);
+router.post('/send-review-request', protect, requireFeature('reviews'), sendReviewRequest);
 
 /**
  * GET /api/loyalty/template-status

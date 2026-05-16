@@ -436,6 +436,9 @@ cron.schedule('*/10 * * * *', () => {
 // Initialize Abandoned Cart Cron Job
 scheduleAbandonedCartCron();
 
+const scheduleCodConfirmationCron = require('./cron/codConfirmationCron');
+scheduleCodConfirmationCron();
+
 const scheduleCheckoutLinkRecoveryCron = require('./cron/checkoutLinkRecoveryCron');
 scheduleCheckoutLinkRecoveryCron();
 

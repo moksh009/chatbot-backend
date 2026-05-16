@@ -548,7 +548,18 @@ async function handleCheckout(client, data) {
 
     const cartItems = data.line_items.map(item => item.title).join(', ');
     const firstItemImage = enrichedItems[0]?.image || client.logoUrl || null;
-    
+
+    const storeHost = client.shopDomain ? String(client.shopDomain).replace(/^https?:\/\//, '').split('/')[0] : '';
+    const checkoutToken = data.checkout_token || data.token || '';
+    const recoverUrl =
+      storeHost && checkoutToken ? `https://${storeHost}/cart/recover/${checkoutToken}` : '';
+    const checkoutUrl =
+      data.abandoned_checkout_url ||
+      data.checkout_url ||
+      recoverUrl ||
+      (data.token && storeHost ? `https://${storeHost}/checkouts/cn/${data.token}` : '') ||
+      '';
+
     const { updateLeadWithScoring } = require('../utils/leadScoring');
     await updateLeadWithScoring(
         cleanPhone, 
@@ -558,11 +569,16 @@ async function handleCheckout(client, data) {
             name: data.customer?.first_name ? `${data.customer.first_name} ${data.customer.last_name || ''}` : undefined,
             email: data.email || data.customer?.email,
             lastSeen: new Date(),
-            checkoutUrl: data.abandoned_checkout_url,
+            checkoutUrl,
+            checkoutToken: checkoutToken || undefined,
             isOrderPlaced: false,
             cartSnapshot: {
                 items: enrichedItems,
-                updatedAt: new Date()
+                updatedAt: new Date(),
+                checkoutUrl,
+                checkoutToken: checkoutToken || '',
+                total_price: data.total_price,
+                currency: data.currency || 'INR',
             }
         }, // String/Value updates
         {} // Boolean updates
@@ -713,11 +729,8 @@ async function handleOrder(client, data) {
     });
 
     // Auto-assign warranty records on order_placed (wizard enableWarranty)
-    const wf = client.wizardFeatures || client.onboardingData?.features || {};
-    const warrantyOn =
-      wf.enableWarranty === true ||
-      wf.warranty?.enabled === true;
-    if (warrantyOn) {
+    const { isWarrantyEnabled } = require('../utils/featureFlags');
+    if (isWarrantyEnabled(client)) {
       const { assignWarranty } = require('../utils/warrantyService');
       await assignWarranty(client, cleanPhone, data).catch((e) =>
         log.warn(`[Warranty] order_placed assign failed: ${e.message}`)

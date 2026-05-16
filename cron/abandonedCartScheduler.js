@@ -61,7 +61,15 @@ async function sendRichNudge(client, lead, text, options = {}) {
 
         const itemName = lead.cartSnapshot?.items?.[0]?.title || "items in your cart";
         const totalValue = lead.cartSnapshot?.totalPrice ? `₹${lead.cartSnapshot.totalPrice}` : "";
-        const checkoutUrl = lead.checkoutUrl || "";
+        const storeHost = client.shopDomain ? String(client.shopDomain).replace(/^https?:\/\//, '').split('/')[0] : '';
+        const token = lead.checkoutToken || lead.cartSnapshot?.checkoutToken || '';
+        const recoverFromToken =
+          storeHost && token ? `https://${storeHost}/cart/recover/${token}` : '';
+        const checkoutUrl =
+          lead.checkoutUrl ||
+          lead.cartSnapshot?.checkoutUrl ||
+          recoverFromToken ||
+          '';
 
         let successfullySent = false;
 
@@ -175,7 +183,8 @@ const scheduleAbandonedCartCron = () => {
 
                 // ✅ Phase R3: GAP 2 — Respect the abandoned cart toggle setting
                 // Was sending recovery messages even when the feature was disabled in settings
-                if (client.settings?.abandonedCartEnabled === false) {
+                const { isAbandonedCartEnabled } = require('../utils/featureFlags');
+                if (!isAbandonedCartEnabled(client)) {
                     log.debug(`[AbandonedCart] Skipping client ${client.clientId} — feature disabled`);
                     continue;
                 }

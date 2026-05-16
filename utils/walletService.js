@@ -43,8 +43,14 @@ async function appendLedgerTx({ clientId, phone, orderId = '', type, amount, rea
  */
 async function processOrderForLoyalty(clientId, phone, orderAmount, orderId) {
     try {
-        const client = await Client.findOne({ clientId }).select('loyaltyConfig');
+        const client = await Client.findOne({ clientId }).select('loyaltyConfig wizardFeatures onboardingData');
         if (!client) return null;
+
+        const { isLoyaltyEnabled } = require('./featureFlags');
+        if (!isLoyaltyEnabled(client)) {
+            log.debug(`[Loyalty] Skipping points — loyalty disabled for ${clientId}`);
+            return { skipped: true, reason: 'loyalty_disabled' };
+        }
 
         // Use config defaults if loyalty hasn't been explicitly configured yet
         const config = client.loyaltyConfig || {

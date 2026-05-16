@@ -41,7 +41,15 @@ async function scheduleReviewRequest(client, orderData) {
         const scheduledFor = new Date();
         scheduledFor.setDate(scheduledFor.getDate() + 3);
 
-        const reviewUrl = client.brand?.googleReviewUrl || client.googleReviewUrl || '';
+        const reviewUrl =
+            client.brand?.googleReviewUrl ||
+            client.googleReviewUrl ||
+            client.platformVars?.googleReviewUrl ||
+            '';
+        if (!reviewUrl.trim()) {
+            log.warn(`[Reputation] No Google review URL for ${client.clientId} — skip schedule`);
+            return;
+        }
         const firstItem = Array.isArray(orderData?.line_items) && orderData.line_items.length
             ? orderData.line_items[0]
             : null;

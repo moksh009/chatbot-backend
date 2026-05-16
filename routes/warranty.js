@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
+const { requireFeature } = require('../utils/featureFlags');
+const featureWarranty = requireFeature('warranty');
 const AdLead = require('../models/AdLead');
 const Contact = require('../models/Contact');
 const WarrantyBatch = require('../models/WarrantyBatch');
@@ -24,7 +26,7 @@ const parseDurationMonths = (raw) => {
  * @route   GET /api/warranty/batches
  * @desc    Fetch all warranty batches for a client
  */
-router.get('/batches', protect, async (req, res) => {
+router.get('/batches', protect, featureWarranty, async (req, res) => {
     try {
         const clientId = req.user.clientId;
         const batches = await WarrantyBatch.find({ clientId }).sort({ createdAt: -1 });
@@ -38,7 +40,7 @@ router.get('/batches', protect, async (req, res) => {
  * @route   POST /api/warranty/batches
  * @desc    Create a new warranty batch
  */
-router.post('/batches', protect, async (req, res) => {
+router.post('/batches', protect, featureWarranty, async (req, res) => {
     try {
         const { batchName, shopifyProductIds, durationMonths, validFrom, validUntil } = req.body;
         const clientId = req.user.clientId;
@@ -63,7 +65,7 @@ router.post('/batches', protect, async (req, res) => {
  * @route   PATCH /api/warranty/batches/:id
  * @desc    Update or Terminate a warranty batch
  */
-router.patch('/batches/:id', protect, async (req, res) => {
+router.patch('/batches/:id', protect, featureWarranty, async (req, res) => {
     try {
         const { id } = req.params;
         const {
@@ -133,7 +135,7 @@ router.patch('/batches/:id', protect, async (req, res) => {
  * @route   GET /api/warranty/records
  * @desc    Fetch all live warranty records
  */
-router.get('/records', protect, async (req, res) => {
+router.get('/records', protect, featureWarranty, async (req, res) => {
     try {
         const clientId = req.user.clientId;
         const records = await WarrantyRecord.find({ clientId })
@@ -151,7 +153,7 @@ router.get('/records', protect, async (req, res) => {
  * @route   PATCH /api/warranty/records/:id
  * @desc    Update individual warranty record (Task 4.2)
  */
-router.patch('/records/:id', protect, async (req, res) => {
+router.patch('/records/:id', protect, featureWarranty, async (req, res) => {
     try {
         const { id } = req.params;
         const { expiryDate, status } = req.body;
@@ -174,7 +176,7 @@ router.patch('/records/:id', protect, async (req, res) => {
  * Legacy Support / Redirects
  * We keep some old endpoint names but point them to the new logic if appropriate
  */
-router.get('/unassigned-orders', protect, async (req, res) => {
+router.get('/unassigned-orders', protect, featureWarranty, async (req, res) => {
     // For now, return mock empty or actual pending orders from Order model
     const Order = require('../models/Order');
     try {
@@ -212,7 +214,7 @@ router.get('/unassigned-orders', protect, async (req, res) => {
  * @route   POST /api/warranty/manual-register
  * @desc    Create warranty record manually from dashboard form
  */
-router.post('/manual-register', protect, async (req, res) => {
+router.post('/manual-register', protect, featureWarranty, async (req, res) => {
     try {
         const clientId = req.user.clientId;
         const {
@@ -315,7 +317,7 @@ router.get('/check', async (req, res) => {
  * @route   POST /api/warranty/resend-notification
  * @desc    Resend warranty certificate via WhatsApp
  */
-router.post('/resend-notification', protect, async (req, res) => {
+router.post('/resend-notification', protect, featureWarranty, async (req, res) => {
     try {
         const { recordId } = req.body;
         const clientId = req.user.clientId;

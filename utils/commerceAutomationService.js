@@ -16,12 +16,15 @@ function normalizeEvent(eventName) {
 }
 
 function normalizeSkuRule(rule = {}) {
+  const mt = String(rule.matchType || 'exact').toLowerCase();
+  const matchType =
+    mt === 'contains' ? 'contains' : mt === 'starts_with' || mt === 'startsWith' ? 'starts_with' : 'exact';
   return {
     id: rule.id || `sku_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     name: rule.description || `SKU ${rule.sku || 'Rule'}`,
     triggerType: 'sku_event',
     event: normalizeEvent(rule.triggerEvent || 'paid'),
-    matchType: rule.matchType === 'contains' ? 'contains' : 'exact',
+    matchType,
     sku: String(rule.sku || '').trim(),
     actionType: rule.actionType === 'sequence' ? 'enroll_sequence' : (Number(rule.delayMinutes || 0) > 0 ? 'delay_then_send' : 'send_template'),
     templateName: rule.templateName || '',
@@ -129,6 +132,13 @@ async function sendAutomationTemplate({ clientConfig, order, automation, item })
   const phone = order.customerPhone || order.phone;
   if (!phone || !automation.templateName) return false;
 
+  if (!isTemplateApprovedForClient(clientConfig, automation.templateName)) {
+    log.warn(
+      `[CommerceAutomation] Skip rule ${automation.id}: template ${automation.templateName} not APPROVED for ${clientConfig.clientId}`
+    );
+    return false;
+  }
+
   const triggerMap = {
     paid: 'order_placed',
     shipped: 'order_fulfilled',
@@ -203,7 +213,15 @@ function matchesSkuRule(automation, item) {
   const sku = String(item?.sku || '').trim().toLowerCase();
   if (!target || !sku) return false;
   if (automation.matchType === 'contains') return sku.includes(target);
+  if (automation.matchType === 'starts_with') return sku.startsWith(target);
   return sku === target;
+}
+
+function isTemplateApprovedForClient(clientConfig, templateName) {
+  if (!templateName) return false;
+  const synced = (clientConfig.syncedMetaTemplates || []).find((t) => t.name === templateName);
+  if (synced && String(synced.status || '').toUpperCase() === 'APPROVED') return true;
+  return false;
 }
 
 function buildUnifiedFromLegacy(clientConfig = {}) {
@@ -257,7 +275,12 @@ async function upsertAutomation(clientId, automation = {}) {
     name: automation.name || 'Automation rule',
     triggerType: automation.triggerType || 'sku_event',
     event: normalizeEvent(automation.event || 'paid'),
-    matchType: automation.matchType === 'contains' ? 'contains' : 'exact',
+    matchType:
+      automation.matchType === 'contains'
+        ? 'contains'
+        : automation.matchType === 'starts_with'
+          ? 'starts_with'
+          : 'exact',
     sku: String(automation.sku || '').trim(),
     actionType: automation.actionType || 'send_template',
     templateName: automation.templateName || '',

@@ -1032,7 +1032,10 @@ const getCartSnapshot = async (req, res) => {
             leadData = await AdLead.findById(uid).catch(() => null);
         }
         if (!leadData) {
-            leadData = await AdLead.findOne({ phoneNumber: uid }).catch(() => null);
+            const cid = req.clientConfig?.clientId || req.params?.clientId;
+            const q = { phoneNumber: uid };
+            if (cid) q.clientId = cid;
+            leadData = await AdLead.findOne(q).catch(() => null);
         }
 
         if (!leadData || !leadData.cartSnapshot) return res.status(404).json({ success: false, message: 'Cart not found' });

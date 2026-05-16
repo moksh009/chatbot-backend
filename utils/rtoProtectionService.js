@@ -406,11 +406,117 @@ async function aggregateRtoProtectionStats(clientId, clientLean) {
   };
 }
 
+/**
+ * Flow Builder COD buttons (cod_yes / cod_no) — sync Order record when customer taps in-chat.
+ */
+async function handleFlowCodButton({ client, phone, buttonId }) {
+  if (buttonId !== 'cod_yes' && buttonId !== 'cod_no') return false;
+
+  const Conversation = require('../models/Conversation');
+  const convo = await Conversation.findOne({ phone, clientId: client.clientId }).lean();
+  const last = convo?.metadata?.lastOrder || {};
+  const orClauses = [];
+  if (last._id) orClauses.push({ _id: last._id });
+  if (last.orderId) orClauses.push({ orderId: String(last.orderId) });
+  if (last.shopifyOrderId) orClauses.push({ shopifyOrderId: String(last.shopifyOrderId) });
+  if (!orClauses.length) return false;
+
+  const order = await Order.findOne({ clientId: client.clientId, $or: orClauses });
+  if (!order || !order.isCOD) return false;
+
+  const WhatsApp = require('./whatsapp');
+  if (buttonId === 'cod_yes') {
+    order.isCodConfirmed = true;
+    order.codConfirmationResponse = 'confirmed';
+    order.codConfirmationRespondedAt = new Date();
+    order.rtoStatus = 'safe';
+    await order.save();
+    await trackEcommerceEvent(client.clientId, { rtoCodConfirmed: 1 }).catch(() => {});
+    return true;
+  }
+
+  let shopifyRes = { ok: true };
+  if (order.shopifyOrderId) {
+    shopifyRes = await cancelOrderInShopify(client, order.shopifyOrderId);
+  }
+  order.codConfirmationResponse = 'cancelled';
+  order.codConfirmationRespondedAt = new Date();
+  order.rtoStatus = 'returned';
+  order.status = 'cancelled';
+  order.shopifyCancelError = shopifyRes.ok ? '' : String(shopifyRes.error || 'shopify_cancel_failed').substring(0, 500);
+  await order.save();
+  await WhatsApp.sendText(
+    client,
+    phone,
+    `Your order *${order.orderNumber || order.orderId}* has been cancelled as requested.`
+  );
+  await trackEcommerceEvent(client.clientId, { rtoFakeCodBlocked: 1 }).catch(() => {});
+  return true;
+}
+
+/**
+ * Notify merchant when COD confirmation is still pending past deadline.
+ */
+async function processCodConfirmationTimeouts(io) {
+  const now = new Date();
+  const overdue = await Order.find({
+    codConfirmationResponse: 'pending',
+    codConfirmationSentAt: { $ne: null },
+    codConfirmationDeadlineAt: { $lte: now },
+  })
+    .limit(40)
+    .lean();
+
+  const { logActivity } = require('./activityLogger');
+
+  for (const order of overdue) {
+    const claimed = await Order.findOneAndUpdate(
+      {
+        _id: order._id,
+        clientId: order.clientId,
+        codConfirmationResponse: 'pending',
+      },
+      { $set: { codConfirmationResponse: 'expired', rtoStatus: 'at_risk' } },
+      { new: true }
+    );
+    if (!claimed) continue;
+
+    const client = await Client.findOne({ clientId: order.clientId }).lean();
+    if (!client) continue;
+
+    const title = `COD not confirmed — ${order.orderNumber || order.orderId}`;
+    const message = `${order.customerName || 'Customer'} (${order.customerPhone || '—'}) has not confirmed COD order within the window.`;
+
+    await logActivity(order.clientId, {
+      type: 'ORDER',
+      status: 'warning',
+      title,
+      message,
+      icon: 'AlertTriangle',
+      url: '/orders',
+      metadata: { orderId: String(order._id), shopifyOrderId: order.shopifyOrderId },
+    }).catch(() => {});
+
+    if (io) {
+      io.to(`client_${order.clientId}`).emit('admin_alert', {
+        topic: title,
+        message,
+        phone: order.customerPhone,
+        leadName: order.customerName,
+      });
+    }
+  }
+
+  return { processed: overdue.length };
+}
+
 module.exports = {
   rtoCfg,
   NDR_SHIPMENT_TRIGGERS,
   maybeSendCodConfirmationAfterOrderCreate,
   handleCodConfirmationButton,
+  handleFlowCodButton,
+  processCodConfirmationTimeouts,
   maybeSendNdrRescueFromFulfillment,
   handleNdrRescueButton,
   aggregateRtoProtectionStats,
