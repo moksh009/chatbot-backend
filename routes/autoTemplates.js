@@ -21,7 +21,7 @@ function resolveClientId(req) {
 
 function isStuckInProgressJob(job) {
   if (!job) return false;
-  if (!['generating', 'submitting', 'generation_complete'].includes(job.status)) return false;
+  if (!['generating', 'submitting', 'generation_complete'].includes(job.status)) return false; // drafts_ready is intentional idle
   const updatedAt = new Date(job.updatedAt || job.startedAt || Date.now()).getTime();
   const ageMs = Date.now() - updatedAt;
   return ageMs > 5 * 60 * 1000; // 5 minutes without progress
@@ -89,7 +89,7 @@ router.post('/start', protect, async (req, res) => {
 
     // Idempotency: if already running, return current state
     const existingJob = await TemplateGenerationJob.findOne({ clientId });
-    if (existingJob && ['generating', 'submitting', 'generation_complete'].includes(existingJob.status)) {
+    if (existingJob && ['generating', 'submitting', 'generation_complete', 'drafts_ready'].includes(existingJob.status)) {
       if (isStuckInProgressJob(existingJob)) {
         await TemplateGenerationJob.updateOne(
           { _id: existingJob._id },
@@ -322,6 +322,126 @@ router.post('/regenerate', protect, async (req, res) => {
     );
 
     res.json({ success: true, message: 'Old drafts cleared. Call /start to regenerate.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── POST /api/auto-templates/submit-to-meta ─────────────────────────────
+// Explicit user action: queue drafts for Meta approval (never auto-fired after generation).
+router.post('/submit-to-meta', protect, async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
+
+    const draftCount = await MetaTemplate.countDocuments({
+      clientId,
+      source: 'auto_generated',
+      submissionStatus: { $in: ['draft', 'generation_failed'] },
+    });
+    if (draftCount === 0) {
+      return res.status(400).json({ success: false, message: 'No drafts ready to submit. Generate templates first.' });
+    }
+
+    const pendingCount = await MetaTemplate.countDocuments({ clientId, submissionStatus: 'pending_meta_review' });
+    if (pendingCount > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `Wait until ${pendingCount} pending template(s) are reviewed by Meta before submitting more.`,
+        pendingCount,
+      });
+    }
+
+    const { buildSubmissionQueue } = require('../workers/autoTemplateWorker');
+    await buildSubmissionQueue(clientId);
+
+    res.json({
+      success: true,
+      message: `Submitting ${draftCount} template(s) to Meta for approval. Review can take 24–48 hours.`,
+      draftCount,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── GET /api/auto-templates/library ─────────────────────────────────────
+router.get('/library', protect, async (req, res) => {
+  try {
+    const { PREBUILT_TEMPLATE_LIBRARY } = require('../constants/prebuiltTemplateLibrary');
+    const clientId = resolveClientId(req);
+    const drafts = clientId
+      ? await MetaTemplate.find({ clientId, isPrebuilt: true }).select('name templateKey submissionStatus autoTrigger isActive totalSends').lean()
+      : [];
+    res.json({ success: true, library: PREBUILT_TEMPLATE_LIBRARY, clientPrebuilts: drafts });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ─── POST /api/auto-templates/library/preview ────────────────────────────
+router.post('/library/preview', protect, async (req, res) => {
+  try {
+    const { PREBUILT_TEMPLATE_LIBRARY } = require('../constants/prebuiltTemplateLibrary');
+    const { resolveTemplateVariables } = require('../services/templateVariableResolver');
+    const { key } = req.body || {};
+    const clientId = resolveClientId(req);
+    if (!key) return res.status(400).json({ success: false, message: 'Missing template key' });
+
+    const entry = PREBUILT_TEMPLATE_LIBRARY.find((t) => t.key === key || t.metaName === key);
+    if (!entry) return res.status(404).json({ success: false, message: 'Template not in library' });
+
+    const client = clientId
+      ? await Client.findOne({ clientId }).select('businessName brandName nicheData').lean()
+      : null;
+    const brand = client?.businessName || client?.brandName || 'Your Store';
+
+    const sampleContext = {
+      first_name: 'Priya',
+      order_id: '#TE-1042',
+      order_items: 'Wireless Earbuds Pro',
+      order_total: '₹2,499',
+      shipping_address: '12 MG Road, Bangalore 560001',
+      brand_name: brand,
+      cart_total: '₹1,999',
+      checkout_url: 'https://checkout.example.com/cart/abc123',
+      tracking_url: 'https://track.example.com/TE-1042',
+      estimated_delivery: '3–5 business days',
+      loyalty_points: '450',
+      loyalty_cash_value: '₹45',
+      loyalty_expiry_date: '30 Jun 2026',
+      google_review_url: 'https://g.page/r/example/review',
+      warranty_duration: '12 months',
+      order_date: '16 May 2026',
+      first_product_image: client?.nicheData?.businessLogo || 'https://via.placeholder.com/400x200?text=Product',
+    };
+
+    const resolvedBody = await resolveTemplateVariables(entry.bodyText, sampleContext);
+    let clientStatus = null;
+    if (clientId) {
+      const doc = await MetaTemplate.findOne({
+        clientId,
+        $or: [{ templateKey: entry.key }, { name: entry.metaName }],
+      })
+        .select('submissionStatus name totalSends')
+        .lean();
+      clientStatus = doc
+        ? { name: doc.name, status: doc.submissionStatus, totalSends: doc.totalSends || 0 }
+        : null;
+    }
+
+    res.json({
+      success: true,
+      entry,
+      preview: {
+        body: resolvedBody,
+        headerText: entry.headerText || null,
+        headerType: entry.headerType,
+        buttons: entry.buttons || [],
+        sampleContext,
+      },
+      clientStatus,
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

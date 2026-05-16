@@ -65,23 +65,49 @@ async function sendRichNudge(client, lead, text, options = {}) {
 
         let successfullySent = false;
 
-        // 2. If Meta Template is configured, use Smart Template
+        // 2. If Meta Template is configured, use unified templateSender
         if (templateName) {
-            log.info(`[Nudge] Sending Smart Template ${templateName} to ${phone}`);
-            
-            // Standard Variable Mapping:
-            // {{1}}: Name, {{2}}: Product, {{3}}: Total, {{4}}: Link
-            const variables = [
-                lead.name || 'there',
-                itemName,
-                totalValue,
-                checkoutUrl
-            ];
-
-            await WhatsApp.sendSmartTemplate(client, phone, templateName, variables, imageUrl);
-            await recordNudge(lead, `[Template: ${templateName}]`, 'template');
-            successfullySent = true;
-        } else {
+            log.info(`[Nudge] Sending template ${templateName} to ${phone} via templateSender`);
+            try {
+                const { sendByName, sendByTrigger } = require('../services/templateSender');
+                const cartContext = {
+                    cart: {
+                        checkout_url: checkoutUrl,
+                        total_price: lead.cartSnapshot?.totalPrice,
+                        line_items: lead.cartSnapshot?.items || [],
+                    },
+                    extra: { name: lead.name },
+                };
+                let result = await sendByTrigger({
+                    clientId: client.clientId,
+                    phone,
+                    trigger: 'abandoned_cart',
+                    templateName,
+                    contextData: cartContext,
+                    email: lead.email,
+                });
+                if (!result?.whatsapp?.sent) {
+                    result = await sendByName({
+                        clientId: client.clientId,
+                        phone,
+                        templateName,
+                        contextData: cartContext,
+                        email: lead.email,
+                    });
+                }
+                if (result?.whatsapp?.sent) {
+                    await recordNudge(lead, `[Template: ${templateName}]`, 'template');
+                    successfullySent = true;
+                }
+            } catch (tplErr) {
+                log.warn(`[Nudge] templateSender failed, falling back to sendSmartTemplate: ${tplErr.message}`);
+                const variables = [lead.name || 'there', itemName, totalValue, checkoutUrl];
+                await WhatsApp.sendSmartTemplate(client, phone, templateName, variables, imageUrl);
+                await recordNudge(lead, `[Template: ${templateName}]`, 'template');
+                successfullySent = true;
+            }
+        }
+        if (!successfullySent) {
             // 3. Fallback to Interactive/Image/Text
             const activeButtons = buttons.filter(b => b && b.trim()).slice(0, 3).map((b, i) => ({
                 type: 'reply',

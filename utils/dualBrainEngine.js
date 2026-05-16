@@ -1029,15 +1029,25 @@ async function runDualBrainEngine(parsedMessage, client) {
           }
         }
       } else if (matchedTrigger.actionType === 'send_template') {
-        const tpl = (client.messageTemplates || []).find((t) => t.id === matchedTrigger.targetId);
-        if (tpl && tpl.templateName) {
+        const { resolveClientTemplate } = require('./clientTemplateLookup');
+        const tpl = await resolveClientTemplate(client, { id: matchedTrigger.targetId });
+        const tplName = tpl?.templateName || tpl?.name;
+        if (tplName) {
+          const { sendByName } = require('../services/templateSender');
+          const sent = await sendByName({
+            clientId: client.clientId,
+            phone,
+            templateName: tplName,
+            contextData: {},
+          });
+          if (sent?.whatsapp?.sent) return true;
           await sendWhatsAppTemplate({
             phoneNumberId: client.phoneNumberId,
             to: phone,
             io,
             clientConfig: client,
-            templateName: tpl.templateName,
-            languageCode: 'en_US',
+            templateName: tplName,
+            languageCode: tpl.language || 'en_US',
           });
           return true;
         }
@@ -1233,7 +1243,29 @@ async function runDualBrainEngine(parsedMessage, client) {
   // Re-permission campaign button / keyword confirmation
   const rePermissionYes = ['repermission_yes', 're_permission_yes', 'yes_sign_me_up', 'yes sign me up'];
   const rePermissionNo = ['repermission_no', 're_permission_no', 'no_thanks', 'no thanks'];
-  const inboundButtonId = String(parsedMessage?.interactive?.button_reply?.id || '').toLowerCase().trim();
+  const rawInboundId =
+    parsedMessage?.interactive?.button_reply?.id ||
+    parsedMessage?.interactive?.list_reply?.id ||
+    '';
+  const inboundButtonId = String(rawInboundId).toLowerCase().trim();
+
+  if (/^csat_\d_/i.test(String(rawInboundId))) {
+    try {
+      const Conversation = require('../models/Conversation');
+      const { handleCSATResponse } = require('./csatService');
+      const convo = await Conversation.findOne({ clientId: client.clientId, phone }).sort({ updatedAt: -1 });
+      if (convo) {
+        const reply = await handleCSATResponse(convo._id, rawInboundId);
+        if (reply) {
+          await sendWhatsAppText(client, phone, reply);
+          return true;
+        }
+      }
+    } catch (csatErr) {
+      log.warn(`[DualBrain] CSAT handler skipped: ${csatErr.message}`);
+    }
+  }
+
   if (rePermissionYes.includes(inboundButtonId) || userTextLower === 'yes sign me up') {
     await AdLead.findOneAndUpdate(
       { phoneNumber: phone, clientId: client.clientId, optStatus: { $in: ['unknown', 'pending', 'opted_out'] } },
@@ -1579,14 +1611,20 @@ async function runDualBrainEngine(parsedMessage, client) {
   // ── PRIORITY 0: CAPTURE MODE ─────────────────────────────────────────────
   // If bot is waiting for text input from this user, handle it NOW.
   if (convo.status === 'WAITING_FOR_INPUT' && convo.waitingForVariable) {
-    const lastInteraction = convo.updatedAt || convo.lastMessageAt || new Date();
-    const hoursSinceLast = (new Date() - new Date(lastInteraction)) / 3600000;
+    const captureAnchor = convo.captureStartedAt || convo.lastInteraction || convo.updatedAt || convo.lastMessageAt || new Date();
+    const hoursSinceCapture = (new Date() - new Date(captureAnchor)) / 3600000;
     
-    // Safeguard 4: 24-hour TTL check
-    if (hoursSinceLast > 24) {
+    // Safeguard 4: 24-hour TTL from capture start (not stale conversation.updatedAt)
+    if (hoursSinceCapture > 24) {
       log.info(`⏰ Capture state expired (24h+). Clearing wait state for ${phone}.`);
       await Conversation.findByIdAndUpdate(convo._id, {
-        $set: { status: 'BOT_ACTIVE', waitingForVariable: null, captureResumeNodeId: null, captureRetries: 0 }
+        $set: {
+          status: 'BOT_ACTIVE',
+          waitingForVariable: null,
+          captureResumeNodeId: null,
+          captureStartedAt: null,
+          captureRetries: 0,
+        }
       });
       // Fall through to normal processing (treat as fresh intent)
     } else {
@@ -1646,6 +1684,7 @@ async function runDualBrainEngine(parsedMessage, client) {
           status:              'BOT_ACTIVE',
           waitingForVariable:  null,
           captureResumeNodeId: null,
+          captureStartedAt:    null,
           captureRetries:      0,
           lastStepId:          convo.captureResumeNodeId || convo.lastStepId || null
         }
@@ -3861,11 +3900,12 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         status: 'WAITING_FOR_INPUT',
         waitingForVariable: targetVar,
         captureResumeNodeId: nextEdge ? nextEdge.target : null,
+        captureStartedAt: new Date(),
         captureRetries: 0,
         lastStepId: nodeId
       });
     }
-  } else if (node.type !== 'logic' && node.type !== 'restart') {
+  } else if (node.type !== 'logic' && node.type !== 'restart' && node.type !== 'livechat') {
     const autoEdge = flowEdges.find(e => e.source === nodeId && (!e.trigger || e.trigger?.type === 'auto') && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom' || e.sourceHandle === 'output'));
     if (autoEdge) {
       setTimeout(async () => {
@@ -3889,7 +3929,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     if (!s || s === "null" || s === "undefined" || s === "[object Object]") return fallback;
     return s;
   };
-  if (node.data?.action && !['shopify_call', 'http_request', 'logic', 'delay', 'trigger', 'cod_prepaid', 'loyalty_action', 'loyalty', 'warranty_check', 'warranty_lookup', 'order_action', 'segment', 'ab_test', 'abandoned_cart', 'review'].includes(type)) {
+  if (node.data?.action && !['shopify_call', 'http_request', 'logic', 'delay', 'trigger', 'cod_prepaid', 'loyalty_action', 'loyalty', 'warranty_check', 'warranty_lookup', 'order_action', 'segment', 'ab_test', 'abandoned_cart', 'review', 'tag_lead', 'TagNode', 'livechat'].includes(type)) {
     const { handleNodeAction } = require("./nodeActions");
     handleNodeAction(node.data.action, node, client, phone, convo, lead).catch((err) => {
       log.error(`Action Error (${node.data.action}):`, { error: err.message });

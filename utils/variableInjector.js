@@ -161,6 +161,12 @@ async function buildVariableContext(client, phone, convo, lead) {
         clientLean.loyaltyConfig?.referralBonus
         ?? wf.referralPointsBonus
         ?? 500,
+      estimatedDelivery: "3–5 business days",
+      orderDate: orderNumFlat
+        ? ""
+        : (latest?.createdAt
+          ? new Date(latest.createdAt).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })
+          : ""),
     }
   };
 

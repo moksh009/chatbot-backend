@@ -1,34 +1,46 @@
 const cron = require('node-cron');
 const Conversation = require('../models/Conversation');
-const Client = require('../models/Client');
+const { triggerCSAT, triggerIdleCSAT } = require('../utils/csatService');
+const log = require('../utils/logger')('CsatCron');
 
 const scheduleCsatCron = () => {
-  // CSAT follow-up (check resolved conversations needing CSAT)
-  cron.schedule("*/10 * * * *", async () => {
+  // Resolved conversations — survey ~1h after close
+  cron.schedule('*/10 * * * *', async () => {
     try {
       const resolved = await Conversation.find({
-        status: "CLOSED", // Maps to 'resolved' in our system or 'CLOSED'
-        resolvedAt: { $lte: new Date(Date.now() - 5 * 60 * 1000) }, // 5 min after resolve
-        csatScore: { $exists: false },
-        csatSent: { $ne: true }
-      });
-      
+        status: 'CLOSED',
+        channel: 'whatsapp',
+        resolvedAt: { $lte: new Date(Date.now() - 55 * 60 * 1000) },
+        csatSent: { $ne: true },
+        $or: [{ csatScore: { $exists: false } }, { 'csatScore.rating': { $exists: false } }],
+      }).limit(40);
+
       for (const convo of resolved) {
-        // Find client config to verify CSAT is enabled
-        const client = await Client.findOne({ clientId: convo.clientId });
-        if (!client) continue;
-
-        // Auto-send CSAT configured checking
-        // if (!client.config.autoCsat) continue;
-
-        console.log(`⭐ Sending CSAT to ${convo.phone} for client ${convo.clientId}`);
-        // TODO: Actually send the 5-star or Great/Good/Okay/Bad button message
-        
-        convo.csatSent = true;
-        await convo.save();
+        await triggerCSAT(convo);
       }
     } catch (err) {
-      console.error('❌ Error in CSAT cron:', err);
+      log.error('Resolved CSAT pass failed', { error: err.message });
+    }
+  });
+
+  // Idle conversations — no messages for 90+ minutes
+  cron.schedule('*/15 * * * *', async () => {
+    try {
+      const idleCutoff = new Date(Date.now() - 90 * 60 * 1000);
+      const idle = await Conversation.find({
+        channel: 'whatsapp',
+        status: { $in: ['BOT_ACTIVE', 'WAITING_FOR_INPUT', 'HUMAN_TAKEOVER', 'HUMAN_SUPPORT'] },
+        lastMessageAt: { $lte: idleCutoff },
+        csatSent: { $ne: true },
+        botPaused: { $ne: true },
+        $or: [{ csatScore: { $exists: false } }, { 'csatScore.rating': { $exists: false } }],
+      }).limit(50);
+
+      for (const convo of idle) {
+        await triggerIdleCSAT(convo);
+      }
+    } catch (err) {
+      log.error('Idle CSAT pass failed', { error: err.message });
     }
   });
 };

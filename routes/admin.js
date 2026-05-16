@@ -1490,9 +1490,13 @@ router.patch('/my-settings', protect, async (req, res) => {
 
     try {
       const { emitToClient } = require('../utils/socket');
+      const draftOnlyKeys = new Set(['flowDraft', 'clientId']);
+      const bodyKeys = Object.keys(req.body || {}).filter((k) => req.body[k] !== undefined);
+      const isFlowDraftOnly =
+        flowDraft?.flowId && bodyKeys.length > 0 && bodyKeys.every((k) => draftOnlyKeys.has(k));
       emitToClient(targetClientId, 'client:config-updated', {
         clientId: targetClientId,
-        source: 'settings',
+        source: isFlowDraftOnly ? 'flow-draft' : 'settings',
         at: new Date().toISOString(),
       });
     } catch (_) {}

@@ -724,6 +724,24 @@ async function handleOrder(client, data) {
       );
     }
 
+    // Order confirmation / COD confirmation via unified templateSender
+    try {
+      const { sendByTrigger } = require('../services/templateSender');
+      const orderTrigger = isCODOrder ? 'cod_order_placed' : 'order_placed';
+      await sendByTrigger({
+        clientId: client.clientId,
+        phone: cleanPhone,
+        trigger: orderTrigger,
+        contextData: {
+          order: data,
+          email: data.email || data.customer?.email,
+        },
+        email: data.email || data.customer?.email,
+      });
+    } catch (tplErr) {
+      log.warn(`[ShopifyWebhook] order template send skipped: ${tplErr.message}`);
+    }
+
     // --- PHASE 27: Loyalty Points Award ---
     if (client.loyaltyConfig?.isEnabled && newOrder.amount > 0) {
         const { awardLoyaltyPoints } = require('../utils/loyaltyEngine');
@@ -805,13 +823,25 @@ async function handleOrder(client, data) {
                 // We try to send smartly using predefined sync list
                 // If it fails, our smart sender gracefully falls back to sequential text params
                 try {
-                    await WhatsApp.sendSmartTemplate(
-                        client, 
-                        cleanPhone, 
-                        templateName, 
-                        [customerName, orderId, total, paymentLinkUrl], // Assumes {{1}}=Name, {{2}}=Order, {{3}}=Total, {{4}}=Link
-                        firstItemImage
-                    );
+                    const { sendByName } = require('../services/templateSender');
+                    const codResult = await sendByName({
+                        clientId: client.clientId,
+                        phone: cleanPhone,
+                        templateName,
+                        contextData: {
+                            order: data,
+                            extra: { payment_link: paymentLinkUrl, payment_gateway: paymentGateway },
+                        },
+                    });
+                    if (!codResult?.whatsapp?.sent) {
+                        await WhatsApp.sendSmartTemplate(
+                            client,
+                            cleanPhone,
+                            templateName,
+                            [customerName, orderId, total, paymentLinkUrl],
+                            firstItemImage
+                        );
+                    }
                     log.info(`COD Payment link (${paymentGateway}) sent to ${cleanPhone}`);
                 } catch (metaErr) {
                     log.warn(`[ShopifyWebhook] Meta Template ${templateName} failed or not synced. Falling back to simple interactive message.`);

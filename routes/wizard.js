@@ -1131,9 +1131,21 @@ router.post("/:clientId/template-status/sync", protect, async (req, res) => {
 
 // ────────────────────────────────────────────────────────────────────────────────
 // POST /api/wizard/:clientId/submit-automation-templates
-// Submits core bot templates (Welcome, Order Conf, Recovery, Admin Alerts)
+// DISABLED — no dashboard UI calls this route. Use:
+//   POST /api/auto-templates/start → drafts_ready → POST /api/auto-templates/submit-to-meta
+// Set ENABLE_LEGACY_WIZARD_TEMPLATE_SUBMIT=true to re-enable the old direct Meta submit loop.
 // ────────────────────────────────────────────────────────────────────────────────
 router.post("/:clientId/submit-automation-templates", protect, async (req, res) => {
+  if (process.env.ENABLE_LEGACY_WIZARD_TEMPLATE_SUBMIT !== "true") {
+    return res.status(410).json({
+      success: false,
+      deprecated: true,
+      message:
+        "submit-automation-templates is disabled. Use Meta Manager → Draft Templates → Submit to Meta.",
+      replacement: "/api/auto-templates/submit-to-meta",
+    });
+  }
+
   const { clientId } = req.params;
   const { wizardData } = req.body;
   const axios = require("axios");

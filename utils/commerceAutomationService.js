@@ -128,6 +128,52 @@ async function enrollSequence({ clientConfig, order, automation }) {
 async function sendAutomationTemplate({ clientConfig, order, automation, item }) {
   const phone = order.customerPhone || order.phone;
   if (!phone || !automation.templateName) return false;
+
+  const triggerMap = {
+    paid: 'order_placed',
+    shipped: 'order_fulfilled',
+    delivered: 'order_delivered',
+    cancelled: 'order_cancelled',
+  };
+  const trigger = triggerMap[automation.event] || null;
+
+  try {
+    const { sendByName, sendByTrigger } = require('../services/templateSender');
+    const contextData = {
+      order: {
+        name: order.orderNumber || order.orderId,
+        orderNumber: order.orderNumber,
+        customer: { first_name: order.customerName },
+        line_items: (order.items || []).map((i) => ({ title: i.name, sku: i.sku })),
+        total_price: order.amount || order.totalPrice,
+        phone: order.customerPhone,
+      },
+      extra: { item },
+    };
+
+    let result;
+    if (trigger) {
+      result = await sendByTrigger({
+        clientId: clientConfig.clientId,
+        phone,
+        trigger,
+        templateName: automation.templateName,
+        contextData,
+      });
+    }
+    if (!result?.whatsapp?.sent) {
+      result = await sendByName({
+        clientId: clientConfig.clientId,
+        phone,
+        templateName: automation.templateName,
+        contextData,
+      });
+    }
+    if (result?.whatsapp?.sent) return true;
+  } catch (err) {
+    log.warn(`[CommerceAutomation] templateSender failed, falling back: ${err.message}`);
+  }
+
   const variables = inferBodyVariables(automation, order, item);
   await WhatsApp.sendSmartTemplate(
     clientConfig,

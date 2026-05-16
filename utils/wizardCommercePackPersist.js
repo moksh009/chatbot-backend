@@ -4,8 +4,8 @@ const WhatsAppFlow = require("../models/WhatsAppFlow");
 
 /** Flow Builder sidebar folders for wizard-generated multi-flow packs */
 const WIZARD_PACK_FOLDERS = [
-  { id: "folder_wizard_main", name: "Main commerce bot", createdAt: new Date() },
-  { id: "folder_wizard_automation", name: "Automations", createdAt: new Date() },
+  { id: "folder_wizard_main", name: "Main bot (publish this)", createdAt: new Date() },
+  { id: "folder_wizard_automation", name: "Automations (background)", createdAt: new Date() },
 ];
 
 function folderIdForPackFlow(f) {

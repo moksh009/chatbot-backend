@@ -581,16 +581,61 @@ function normalizeWelcomeCopy(raw, ctx) {
   return text;
 }
 
+function getPublicBaseUrl() {
+  return String(
+    process.env.PUBLIC_BASE_URL ||
+      process.env.PUBLIC_WEBHOOK_BASE_URL ||
+      process.env.SERVER_URL ||
+      process.env.RENDER_EXTERNAL_URL ||
+      ""
+  )
+    .trim()
+    .replace(/\/$/, "");
+}
+
 function sanitizeInteractiveImageUrl(url) {
   const raw = String(url || "").trim();
   if (!raw) return "";
   if (/^data:/i.test(raw)) return "";
   if (/^https?:\/\//i.test(raw)) return raw;
   if (raw.startsWith("/uploads/")) {
-    const base = String(process.env.PUBLIC_BASE_URL || "").trim().replace(/\/$/, "");
+    const base = getPublicBaseUrl();
     return base ? `${base}${raw}` : "";
   }
   return "";
+}
+
+/** Soft footer on branch endings — avoids spamming the full list menu after every answer. */
+function withMenuHint(text) {
+  const s = String(text || "").trim();
+  if (!s || /reply \*menu\*/i.test(s)) return s;
+  return `${s}\n\n_Reply *menu* anytime for more options._`;
+}
+
+/** WhatsApp list cap (8 rows) + dedupe overlapping commerce rows. */
+function consolidateMenuRows(branches, F) {
+  let rows = branches.filter((b) => b.menuRow).map((b) => ({ ...b.menuRow }));
+
+  const hasCancel = rows.some((r) => r.id === "mnu_cancel");
+  const hasReturns = rows.some((r) => r.id === "returns");
+  if (hasCancel && hasReturns) {
+    rows = rows.filter((r) => r.id !== "returns");
+    rows = rows.map((r) =>
+      r.id === "mnu_cancel"
+        ? {
+            ...r,
+            title: "📦 Orders & returns",
+            description: "Track, cancel, modify, or return",
+          }
+        : r
+    );
+  }
+
+  if (F.enableAIFallback && F.enableInstallSupport) {
+    rows = rows.filter((r) => r.id !== "mnu_help");
+  }
+
+  return rows.slice(0, 8);
 }
 
 async function generateAIContent(ctx) {
@@ -691,36 +736,18 @@ function buildEntry(ctx, IDS, content, welcomeTemplate) {
       }
     });
   } else {
-    const welcomeText = normalizeWelcomeCopy(content.welcome_a, ctx);
-    nodes.push({
-      id: IDS.welcome,
-      type: "interactive",
-      position: flowPos(2, 5),
-      data: {
-        label: "Welcome Message",
-        interactiveType: "button",
-        imageUrl: safeWelcomeImage,
-        text: welcomeText,
-        buttonsList: [{ id: "open_menu", title: "📋 Open menu" }],
-        heatmapCount: 0,
-      },
-    });
-    edges.push({
-      id: `e_${IDS.welcome}_mm`,
-      source: IDS.welcome,
-      target: IDS.main_menu,
-      sourceHandle: "open_menu",
-    });
+    // No separate "Open menu" tap — main hub list is the first message (built in buildMainMenu).
+    edges.push({ id: `e_${IDS.trig_main}_mm`, source: IDS.trig_main, target: IDS.main_menu });
   }
-  edges.push({ id: `e_${IDS.trig_main}_w`, source: IDS.trig_main, target: IDS.welcome });
   if (wTpl) {
+    edges.push({ id: `e_${IDS.trig_main}_w`, source: IDS.trig_main, target: IDS.welcome });
     edges.push({ id: `e_${IDS.welcome}_mm_tpl`, source: IDS.welcome, target: IDS.main_menu });
   }
 
   return { nodes, edges, label: "Welcome → {{brand_name}}", hasWelcomeTemplate: !!wTpl };
 }
 
-function buildMainMenu(ctx, IDS, menuRows) {
+function buildMainMenu(ctx, IDS, menuRows, content = {}) {
   const rows = (menuRows && menuRows.length ? menuRows : buildMainMenuRows(ctx.F)).slice(0, 8);
   if (!rows.length) return { nodes: [], edges: [] };
   const { client } = ctx;
@@ -731,6 +758,7 @@ function buildMainMenu(ctx, IDS, menuRows) {
       client.businessLogo ||
       ""
   );
+  const welcomeText = normalizeWelcomeCopy(content.welcome_a, ctx);
   const node = {
     id: IDS.main_menu,
     type: "interactive",
@@ -739,9 +767,9 @@ function buildMainMenu(ctx, IDS, menuRows) {
       label: "Main Hub Menu",
       interactiveType: "list",
       imageUrl: safeLogo,
-      text:
-        "Welcome to *{{brand_name}}* 👋\n\nHow can *{{bot_name}}* help you today? Tap an option below.",
-      buttonText: "Open Menu",
+      listHeaderType: safeLogo ? "image" : undefined,
+      text: welcomeText,
+      buttonText: "Menu",
       sections: [{ title: "How can we help?", rows }],
       heatmapCount: 0,
     },
@@ -955,6 +983,7 @@ function buildCatalogBranch(ctx, IDS) {
         label: "Collection (from menu)",
         catalogType: "collection",
         useSelectedCollection: true,
+        collectionId: String(shopCollections[0]?.shopifyCollectionId || shopCollections[0]?.id || "").trim(),
         maxItems: 30,
         header: "{{brand_name}}",
         body: "Tap a product to view details and add to cart in WhatsApp.",
@@ -1145,9 +1174,9 @@ function buildCatalogBranch(ctx, IDS) {
             interactiveType: "button",
             text: "Need help finishing checkout?",
             buttonsList: [
-              { id: "resend", title: "🔁 Resend checkout link" },
-              { id: "support", title: "🎧 Talk to support" },
-              { id: "done", title: "✅ Already done" }
+              { id: "resend", title: "🔁 Resend link" },
+              { id: "support", title: "🎧 Support" },
+              { id: "done", title: "✅ Done" }
             ],
             heatmapCount: 0
           }
@@ -1270,12 +1299,21 @@ function buildCancelOrderBranch(ctx, IDS, content) {
       position: flowPos(9, 10),
       data: {
         label: "Cancel or modify",
-        interactiveType: "button",
+        interactiveType: "list",
+        buttonText: "Choose action",
         text: "✅ *Order {{order_number|selected}}* can still be changed.\n\nWhat would you like to do?",
-        buttonsList: [
-          { id: "action_cancel", title: "❌ Cancel order" },
-          { id: "action_modify", title: "✏️ Modify order" },
-          { id: "action_back", title: "⬅️ Main menu" },
+        sections: [
+          {
+            title: "Order options",
+            rows: [
+              { id: "action_cancel", title: "❌ Cancel order", description: "Request cancellation" },
+              { id: "action_modify", title: "✏️ Modify order", description: "Address, size, etc." },
+              ...(F.enableReturnsRefunds
+                ? [{ id: "action_return", title: "↩️ Start return", description: "Return or exchange" }]
+                : []),
+              { id: "action_back", title: "⬅️ Main menu", description: "" },
+            ],
+          },
         ],
         heatmapCount: 0,
       },
@@ -1366,6 +1404,9 @@ function buildCancelOrderBranch(ctx, IDS, content) {
     { id: `e_${IDS.can_logic}_ok`, source: IDS.can_logic, target: IDS.can_flow_choice, sourceHandle: "false" },
     { id: `e_${IDS.can_flow_choice}_cn`, source: IDS.can_flow_choice, target: requireReason ? IDS.can_flow_reason : IDS.can_flow_alert, sourceHandle: "action_cancel" },
     { id: `e_${IDS.can_flow_choice}_md`, source: IDS.can_flow_choice, target: IDS.can_flow_modify, sourceHandle: "action_modify" },
+    ...(F.enableReturnsRefunds
+      ? [{ id: `e_${IDS.can_flow_choice}_ret`, source: IDS.can_flow_choice, target: IDS.ret_hub, sourceHandle: "action_return" }]
+      : []),
     { id: `e_${IDS.can_flow_choice}_mm`, source: IDS.can_flow_choice, target: IDS.main_menu, sourceHandle: "action_back" },
     { id: `e_${IDS.can_flow_reason}_al`, source: IDS.can_flow_reason, target: IDS.can_flow_alert },
     { id: `e_${IDS.can_flow_alert}_dn`, source: IDS.can_flow_alert, target: IDS.can_flow_done },
@@ -1392,7 +1433,11 @@ function buildCancelOrderBranch(ctx, IDS, content) {
   return {
     nodes,
     edges,
-    menuRow: { id: "mnu_cancel", title: "❌ Cancel / Modify Order" },
+    menuRow: {
+      id: "mnu_cancel",
+      title: F.enableReturnsRefunds ? "📦 Orders & returns" : "❌ Cancel / Modify Order",
+      description: F.enableReturnsRefunds ? "Track, cancel, modify, or return" : "Change or cancel an order",
+    },
     entryNodeId: IDS.can_flow_ask,
     sourceHandle: "mnu_cancel",
   };
@@ -1503,7 +1548,7 @@ function buildOrderBranch(ctx, IDS, content) {
       position: flowPos(6, 4),
       data: {
         label: "Order status (flow)",
-        text: content.order_status_msg,
+        text: withMenuHint(content.order_status_msg),
         heatmapCount: 0
       }
     },
@@ -1538,8 +1583,7 @@ function buildOrderBranch(ctx, IDS, content) {
     { id: `e_${IDS.ord_track}_ok`, source: IDS.ord_track, target: IDS.ord_status_msg, sourceHandle: "success" },
     { id: `e_${IDS.ord_notfound}_retry`, source: IDS.ord_notfound, target: `${IDS.ord_track}_retry` },
     { id: `e_${IDS.ord_track}_retry_ok`, source: `${IDS.ord_track}_retry`, target: IDS.ord_status_msg, sourceHandle: "success" },
-    { id: `e_${IDS.ord_track}_retry_nf`, source: `${IDS.ord_track}_retry`, target: IDS.main_menu, sourceHandle: "not_found" },
-    { id: `e_${IDS.ord_status_msg}_mm`, source: IDS.ord_status_msg, target: IDS.main_menu }
+    { id: `e_${IDS.ord_track}_retry_nf`, source: `${IDS.ord_track}_retry`, target: IDS.main_menu, sourceHandle: "not_found" }
   );
 
   return {
@@ -1634,12 +1678,16 @@ function buildReturnsBranch(ctx, IDS, content) {
     edges.push({ id: `e_${IDS.ret_tag}_mm`, source: IDS.ret_tag, target: IDS.main_menu });
   }
 
-  return {
-    nodes, edges,
-    menuRow: { id: "returns", title: "🔄 Return / Cancel" },
+  const out = {
+    nodes,
+    edges,
     entryNodeId: IDS.ret_hub,
-    sourceHandle: "returns"
+    sourceHandle: "returns",
   };
+  if (!F.enableCancelOrder) {
+    out.menuRow = { id: "returns", title: "🔄 Return / Refund", description: "Start a return or check refund" };
+  }
+  return out;
 }
 
 function buildWarrantyBranch(ctx, IDS, content) {
@@ -1757,9 +1805,10 @@ function buildWarrantyBranch(ctx, IDS, content) {
       position: flowPos(7, 13),
       data: {
         label: "No warranty",
-        text:
+        text: withMenuHint(
           content.warranty_none_msg ||
-          "🔍 *No warranty found* for this number.\n\nTry your *Order ID* or contact *{{supportPhone}}* and we'll link your purchase.",
+            "🔍 *No warranty found* for this number.\n\nTry your *Order ID* or contact *{{supportPhone}}* and we'll link your purchase."
+        ),
         heatmapCount: 0,
       },
     }
@@ -1777,8 +1826,7 @@ function buildWarrantyBranch(ctx, IDS, content) {
     { id: `e_${IDS.war_claim_cap}_al`, source: IDS.war_claim_cap, target: IDS.war_claim_alert },
     { id: `e_${IDS.war_claim_alert}_dn`, source: IDS.war_claim_alert, target: IDS.war_claim_done },
     { id: `e_${IDS.war_claim_done}_mm`, source: IDS.war_claim_done, target: IDS.main_menu },
-    { id: `e_${IDS.war_expired}_mm`, source: IDS.war_expired, target: IDS.main_menu },
-    { id: `e_${IDS.war_none}_mm`, source: IDS.war_none, target: IDS.main_menu }
+    { id: `e_${IDS.war_expired}_mm`, source: IDS.war_expired, target: IDS.main_menu }
   );
 
   return {
@@ -1829,8 +1877,9 @@ function buildLoyaltyBranch(ctx, IDS, content) {
       position: flowPos(6, 15),
       data: {
         label: "No points yet",
-        text:
-          "You don't have redeemable points yet 💎\n\nShop *{{brand_name}}* and earn rewards automatically on every order!",
+        text: withMenuHint(
+          "You don't have redeemable points yet 💎\n\nShop *{{brand_name}}* and earn rewards automatically on every order!"
+        ),
         heatmapCount: 0,
       },
     },
@@ -1878,7 +1927,6 @@ function buildLoyaltyBranch(ctx, IDS, content) {
     { id: `e_${IDS.loy_redeem}_ok`, source: IDS.loy_redeem, target: IDS.loy_code, sourceHandle: "success" },
     { id: `e_${IDS.loy_redeem}_fail`, source: IDS.loy_redeem, target: IDS.loy_redeem_fail, sourceHandle: "fail" },
     { id: `e_${IDS.loy_code}_mm`, source: IDS.loy_code, target: IDS.main_menu },
-    { id: `e_${IDS.loy_zero}_mm`, source: IDS.loy_zero, target: IDS.main_menu },
     { id: `e_${IDS.loy_redeem_fail}_mm`, source: IDS.loy_redeem_fail, target: IDS.main_menu }
   );
 
@@ -2024,20 +2072,28 @@ function buildInstallSupportBranch(ctx, IDS, content) {
     { id: `e_${IDS.help_install_msg}_mm`, source: IDS.help_install_msg, target: IDS.main_menu },
     { id: `e_${IDS.help_menu}_nr`, source: IDS.help_menu, target: IDS.help_alert, sourceHandle: "help_not_received" },
     { id: `e_${IDS.help_menu}_dm`, source: IDS.help_menu, target: IDS.help_alert, sourceHandle: "help_damaged" },
-    { id: `e_${IDS.help_menu}_rt`, source: IDS.help_menu, target: IDS.help_alert, sourceHandle: "help_return" },
+    {
+      id: `e_${IDS.help_menu}_rt`,
+      source: IDS.help_menu,
+      target: F.enableReturnsRefunds ? IDS.ret_hub : IDS.help_alert,
+      sourceHandle: "help_return",
+    },
     { id: `e_${IDS.help_menu}_ot`, source: IDS.help_menu, target: IDS.help_other_cap, sourceHandle: "help_other" },
     { id: `e_${IDS.help_other_cap}_al`, source: IDS.help_other_cap, target: IDS.help_alert },
     { id: `e_${IDS.help_alert}_dn`, source: IDS.help_alert, target: IDS.help_done },
     { id: `e_${IDS.help_done}_mm`, source: IDS.help_done, target: IDS.main_menu }
   );
 
-  return {
+  const out = {
     nodes,
     edges,
-    menuRow: { id: "mnu_help", title: "🤝 Help With My Order" },
     entryNodeId: IDS.help_ask,
     sourceHandle: "mnu_help",
   };
+  if (!F.enableAIFallback) {
+    out.menuRow = { id: "mnu_help", title: "🤝 Help With My Order", description: "Delivery, returns, setup" };
+  }
+  return out;
 }
 
 function buildSupportBranch(ctx, IDS, content) {
@@ -2079,7 +2135,16 @@ function buildSupportBranch(ctx, IDS, content) {
       data: {
         label: "Live chat handoff",
         topic: "Customer requested human support — {{brand_name}}",
-        text: content.livechat_queue_body,
+        handoffMessage:
+          content.livechat_queue_body ||
+          content.agent_handoff_msg ||
+          "Connecting you with our team on WhatsApp. Please stay on this chat — an agent will reply shortly.",
+        text:
+          content.livechat_queue_body ||
+          content.agent_handoff_msg ||
+          "Connecting you with our team on WhatsApp. Please stay on this chat — an agent will reply shortly.",
+        flowTerminal: true,
+        suppressAIFallbackLink: true,
         heatmapCount: 0,
       } }
   );
@@ -2104,14 +2169,12 @@ function buildSupportBranch(ctx, IDS, content) {
     edges.push(
       { id: `e_${IDS.sup_tag}_al`, source: IDS.sup_tag, target: IDS.sup_alert },
       { id: `e_${IDS.sup_alert}_cf`, source: IDS.sup_alert, target: IDS.sup_confirm },
-      { id: `e_${IDS.sup_confirm}_lc`, source: IDS.sup_confirm, target: IDS.sup_livechat },
-      { id: `e_${IDS.sup_livechat}_mm`, source: IDS.sup_livechat, target: IDS.main_menu }
+      { id: `e_${IDS.sup_confirm}_lc`, source: IDS.sup_confirm, target: IDS.sup_livechat }
     );
   } else {
     edges.push(
       { id: `e_${IDS.sup_tag}_cf`, source: IDS.sup_tag, target: IDS.sup_confirm },
-      { id: `e_${IDS.sup_confirm}_lc`, source: IDS.sup_confirm, target: IDS.sup_livechat },
-      { id: `e_${IDS.sup_livechat}_mm`, source: IDS.sup_livechat, target: IDS.main_menu }
+      { id: `e_${IDS.sup_confirm}_lc`, source: IDS.sup_confirm, target: IDS.sup_livechat }
     );
   }
 
@@ -2256,6 +2319,7 @@ function buildReviewAutomation(ctx, IDS, content, opts = {}) {
         action: "LOG_REVIEW_POSITIVE",
         heatmapCount: 0,
         suppressAIFallbackLink: true,
+        flowTerminal: true,
       } },
     { id: IDS.rev_negative, type: "message", position: autoPos(2, 7),
       data: {
@@ -2264,6 +2328,7 @@ function buildReviewAutomation(ctx, IDS, content, opts = {}) {
         action: "LOG_REVIEW_NEGATIVE",
         heatmapCount: 0,
         suppressAIFallbackLink: true,
+        flowTerminal: true,
       } }
   ];
   const edges = [
@@ -2407,10 +2472,9 @@ async function generateEcommerceFlow(client, wizardData = {}) {
   else if (F.enableFAQ)          branches.push(buildFAQBranch(ctx, IDS, content));
   if (F.enableSupportEscalation) branches.push(buildSupportBranch(ctx, IDS, content));
 
-  // Build the menu using only enabled branches' rows.
-    // WhatsApp list rows: keep ≤ 8 (spec buffer under Meta's 10-row cap).
-    const menuRows = branches.filter(b => b.menuRow).map(b => b.menuRow).slice(0, 8);
-    const menuOut  = buildMainMenu(ctx, IDS, menuRows);
+  // Build the menu using only enabled branches' rows (deduped, ≤8 for WhatsApp).
+    const menuRows = consolidateMenuRows(branches, F);
+    const menuOut  = buildMainMenu(ctx, IDS, menuRows, content);
 
   // Wire menu → branch entries
   const menuEdges = branches
@@ -2459,7 +2523,7 @@ async function generateEcommerceFlow(client, wizardData = {}) {
   // Wire remaining dead-ends to main menu (keeps inbox flows resumable; AI fallback still exists for unwired taps)
   if (F.enableAIFallback) {
     const sources = new Set(dedupEdges.map(e => e.source));
-    const deadEndTypes = ["message", "shopify_call", "loyalty_action", "tag_lead", "review", "warranty_check", "cod_prepaid", "admin_alert", "livechat"];
+    const deadEndTypes = ["shopify_call", "loyalty_action", "tag_lead", "review", "warranty_check", "cod_prepaid", "admin_alert"];
     dedupNodes.forEach(node => {
       if (node.data?.suppressAIFallbackLink) return;
       if (deadEndTypes.includes(node.type) && !sources.has(node.id) && node.id !== IDS.ai_fallback && node.id !== IDS.main_menu) {
@@ -2541,6 +2605,7 @@ async function generateCommerceWizardPack(client, body = {}) {
           "You're all set! If you need anything else, message us here anytime — we're happy to help. 🙌",
         heatmapCount: 0,
         suppressAIFallbackLink: true,
+        flowTerminal: true,
       },
     });
     flows.push({
@@ -2607,6 +2672,7 @@ async function generateCommerceWizardPack(client, body = {}) {
           text: "🎉 Thank you for confirming! We're preparing your order now.",
           heatmapCount: 0,
           suppressAIFallbackLink: true,
+          flowTerminal: true,
         },
       },
       {
@@ -2619,6 +2685,7 @@ async function generateCommerceWizardPack(client, body = {}) {
             "We've received your request. Our team will review your order shortly. You can also reach us on {{support_phone|WhatsApp}}.",
           heatmapCount: 0,
           suppressAIFallbackLink: true,
+          flowTerminal: true,
         },
       },
       {
@@ -2630,6 +2697,7 @@ async function generateCommerceWizardPack(client, body = {}) {
           text: "Thanks for chatting with us today! 💚",
           heatmapCount: 0,
           suppressAIFallbackLink: true,
+          flowTerminal: true,
         },
       },
     ];

@@ -146,17 +146,35 @@ router.get('/list', protect, async (req, res) => {
         const client = await Client.findOne({ clientId }, 'syncedMetaTemplates templatesSyncedAt messageTemplates pendingTemplates');
         if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
+        const MetaTemplate = require('../models/MetaTemplate');
+        const metaDocs = await MetaTemplate.find({ clientId }).lean();
+
         const synced = Array.isArray(client.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
         const localTemplates = Array.isArray(client.messageTemplates) ? client.messageTemplates : [];
         const pendingMap = new Map((Array.isArray(client.pendingTemplates) ? client.pendingTemplates : []).map(t => [t.name, String(t.status || 'PENDING').toUpperCase()]));
 
-        // Prefer local messageTemplates for rich metadata/source, but hydrate status from synced/pending.
+        // MetaTemplate is canonical; legacy messageTemplates fill gaps only.
         const mergedMap = new Map();
-        localTemplates.forEach((tpl) => {
+        metaDocs.forEach((tpl) => {
           if (!tpl?.name) return;
+          mergedMap.set(tpl.name, {
+            id: tpl._id,
+            name: tpl.name,
+            category: tpl.category,
+            language: tpl.language,
+            status: String(tpl.submissionStatus || 'draft').toUpperCase(),
+            source: 'meta_template',
+            autoTrigger: tpl.autoTrigger,
+            templateKey: tpl.templateKey,
+            isPrebuilt: tpl.isPrebuilt,
+            body: tpl.body,
+          });
+        });
+        localTemplates.forEach((tpl) => {
+          if (!tpl?.name || mergedMap.has(tpl.name)) return;
           const pendingStatus = pendingMap.get(tpl.name);
           const status = pendingStatus || String(tpl.status || 'PENDING').toUpperCase();
-          mergedMap.set(tpl.name, { ...tpl, status });
+          mergedMap.set(tpl.name, { ...tpl, status, source: tpl.source || 'message_templates' });
         });
 
         synced.forEach((tpl) => {

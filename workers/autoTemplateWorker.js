@@ -146,9 +146,19 @@ function buildProductTemplateName(handle) {
 
 // ─── HELPER: Find unique template name (collision loop) ────────────────────
 async function getUniqueTemplateName(clientId, baseName) {
+  const client = await Client.findOne({ clientId }).select("syncedMetaTemplates").lean();
+  const synced = client?.syncedMetaTemplates || [];
+  const onMeta = synced.some((t) => String(t.name || "").toLowerCase() === String(baseName).toLowerCase());
+  if (onMeta) return baseName;
+
+  const existing = await MetaTemplate.findOne({ clientId, name: baseName }).lean();
+  if (existing && ["approved", "pending_meta_review"].includes(existing.submissionStatus)) {
+    return baseName;
+  }
+
   let name = baseName;
   let suffix = 1;
-  while (await MetaTemplate.findOne({ clientId, name })) {
+  while (await MetaTemplate.findOne({ clientId, name, submissionStatus: { $nin: ["approved", "pending_meta_review"] } })) {
     suffix++;
     name = `${baseName.slice(0, 47)}_${suffix}`;
   }
@@ -165,16 +175,41 @@ function emitToClient(clientId, event, data) {
 
 // ─── GENERATION: Fixed Templates ────────────────────────────────────────
 async function generateFixedTemplate(templateId, ctx) {
+  const { getPrebuiltByKey } = require('../constants/prebuiltTemplateLibrary');
+  const lib = getPrebuiltByKey(templateId);
   const def = FIXED_TEMPLATES[templateId];
-  if (!def) throw new Error(`Unknown fixed template: ${templateId}`);
+  if (!def && !lib) throw new Error(`Unknown fixed template: ${templateId}`);
+
+  const body = lib?.bodyText || def.bodyText;
+  const category = lib?.category || def.category;
+  let headerType = 'TEXT';
+  let headerValue = ctx.brandName;
+  if (lib?.headerType === 'IMAGE') {
+    headerType = 'IMAGE';
+    headerValue = '';
+  } else if (lib?.headerText) {
+    headerValue = lib.headerText;
+  }
+
+  const legacyMap = def?.variables || {};
+  const variableMappings = lib?.variableMappings || null;
+  const variableMapping =
+    variableMappings?.body
+      ? Object.fromEntries(Object.entries(variableMappings.body).map(([k, v]) => [k, v]))
+      : legacyMap;
 
   return {
-    body: def.bodyText,
-    category: def.category,
-    headerType: 'TEXT',
-    headerValue: ctx.brandName,
-    buttons: def.buttons,
-    variableMapping: def.variables
+    body,
+    category,
+    headerType,
+    headerValue,
+    buttons: lib?.buttons || def?.buttons,
+    variableMapping,
+    variableMappings,
+    autoTrigger: lib?.autoTrigger || null,
+    isPrebuilt: true,
+    templateKey: lib?.key || templateId,
+    metaName: lib?.metaName || templateId,
   };
 }
 
@@ -415,6 +450,27 @@ async function submitSingleTemplate(client, templateId, clientId) {
         return;
       }
 
+      // Meta: content in this language already exists (duplicate submit)
+      if (errorData?.error_subcode === 2388024 || /already exists/i.test(errorData?.error_user_msg || "")) {
+        log.warn(`[Template Submit] ${template.name} already exists on Meta — marking pending review`);
+        template.submissionStatus = "pending_meta_review";
+        template.rejectionReason = null;
+        template.metaApiError = "Already exists on Meta (synced)";
+        await template.save();
+        await SubmissionQueueItem.findOneAndUpdate(
+          { clientId, templateId },
+          { $set: { status: "submitted" } }
+        );
+        await SubmissionLog.create({
+          clientId,
+          templateId: template._id,
+          templateName: template.name,
+          action: "duplicate_language_skipped",
+          metaResponse: errorData,
+        });
+        return;
+      }
+
       log.error(`[Template Submit] Meta API error for ${template.name}:`, JSON.stringify(errorData));
       template.submissionStatus = 'submission_failed';
       template.rejectionReason = errorData?.message || 'Unknown Meta API error';
@@ -490,17 +546,25 @@ async function handleGenerationJob(data) {
     const tone = client.platformVars?.defaultTone || 'friendly and professional';
 
     let generatedBody, templateName, category, headerType, headerValue, footerText, buttons, variableMapping;
+    let variableMappings = null;
+    let isPrebuilt = false;
+    let autoTrigger = null;
+    let templateKey = fixedTemplateId || "";
 
     if (templateType === 'fixed') {
       const result = await generateFixedTemplate(fixedTemplateId, { brandName, currency, language, tone });
       generatedBody = result.body;
-      templateName = fixedTemplateId;
+      templateName = result.metaName || fixedTemplateId;
       category = result.category;
       headerType = result.headerType;
       headerValue = result.headerValue;
       footerText = 'Reply STOP to Unsubscribe';
       buttons = result.buttons;
       variableMapping = result.variableMapping;
+      variableMappings = result.variableMappings || null;
+      isPrebuilt = !!result.isPrebuilt;
+      autoTrigger = result.autoTrigger || null;
+      templateKey = result.templateKey || fixedTemplateId;
     } else {
       const result = await generateProductTagline({
         brandName, currency, language, tone, productName,
@@ -538,8 +602,11 @@ async function handleGenerationJob(data) {
           headerType, headerValue, body: generatedBody,
           footerText, buttons, variableMapping,
           source: 'auto_generated', autoGenProductId: productId || fixedTemplateId,
-          templateKey: fixedTemplateId || templateName,
+          templateKey: templateKey || fixedTemplateId || templateName,
           templateKind: templateType === 'product' ? 'product' : 'prebuilt',
+          variableMappings,
+          isPrebuilt,
+          autoTrigger,
           readinessRequired: true,
           productHandle: productHandle || '',
           productName: productName || '',
@@ -564,9 +631,15 @@ async function handleGenerationJob(data) {
     });
 
     if (genJob.generatedCount >= genJob.totalTemplates) {
-      await TemplateGenerationJob.findOneAndUpdate({ clientId }, { $set: { status: 'generation_complete', updatedAt: new Date() } });
-      await buildSubmissionQueue(clientId);
-      emitToClient(clientId, 'templateGenerationComplete', { clientId });
+      await TemplateGenerationJob.findOneAndUpdate(
+        { clientId },
+        { $set: { status: 'drafts_ready', updatedAt: new Date() } }
+      );
+      emitToClient(clientId, 'templateGenerationComplete', {
+        clientId,
+        draftsReady: true,
+        message: 'Drafts are ready. Review them, then submit to Meta when you are ready.',
+      });
     }
   } catch (err) {
     log.error(`[Template Generation] Failed for ${clientId}, type: ${templateType}:`, err.message);
@@ -586,13 +659,11 @@ async function handleGenerationJob(data) {
       error: err.message
     });
     if (genJobAfterFail && genJobAfterFail.generatedCount >= genJobAfterFail.totalTemplates) {
-      await TemplateGenerationJob.findOneAndUpdate({ clientId }, { $set: { status: 'generation_complete', updatedAt: new Date() } });
-      try {
-        await buildSubmissionQueue(clientId);
-      } catch (qErr) {
-        log.error('[AutoTemplate] buildSubmissionQueue after errors:', qErr.message);
-      }
-      emitToClient(clientId, 'templateGenerationComplete', { clientId });
+      await TemplateGenerationJob.findOneAndUpdate(
+        { clientId },
+        { $set: { status: 'drafts_ready', updatedAt: new Date() } }
+      );
+      emitToClient(clientId, 'templateGenerationComplete', { clientId, draftsReady: true });
     }
     return;
   }

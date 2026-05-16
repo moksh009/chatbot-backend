@@ -8,7 +8,7 @@ const TemplateGenerationJobSchema = new mongoose.Schema({
   clientId: { type: String, required: true, unique: true, index: true },
   status: {
     type: String,
-    enum: ['idle', 'generating', 'generation_complete', 'submitting', 'paused', 'completed', 'failed'],
+    enum: ['idle', 'generating', 'generation_complete', 'drafts_ready', 'submitting', 'paused', 'completed', 'failed'],
     default: 'idle'
   },
   pausedByUser: { type: Boolean, default: false },
