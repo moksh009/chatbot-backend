@@ -2240,8 +2240,9 @@ function buildOrderConfirmAndCod(ctx, IDS, content) {
   return { nodes, edges };
 }
 
-function buildReviewAutomation(ctx, IDS, content) {
+function buildReviewAutomation(ctx, IDS, content, opts = {}) {
   const { googleReviewUrl } = ctx;
+  const standalone = opts.standalone === true;
   const nodes = [
     { id: IDS.trig_fulfill, type: "trigger", position: autoPos(0, 6),
       data: { label: "Order Fulfilled Trigger", triggerType: "order_fulfilled", heatmapCount: 0 } },
@@ -2269,9 +2270,14 @@ function buildReviewAutomation(ctx, IDS, content) {
     { id: `e_${IDS.trig_fulfill}_rv`, source: IDS.trig_fulfill, target: IDS.rev_request },
     { id: `e_${IDS.rev_request}_p`,   source: IDS.rev_request,  target: IDS.rev_positive, sourceHandle: "positive" },
     { id: `e_${IDS.rev_request}_n`,   source: IDS.rev_request,  target: IDS.rev_negative, sourceHandle: "negative" },
-    { id: `e_${IDS.rev_positive}_mm`, source: IDS.rev_positive, target: IDS.main_menu },
-    { id: `e_${IDS.rev_negative}_mm`, source: IDS.rev_negative, target: IDS.main_menu }
   ];
+  // Standalone automation flows (wizard pack) have no main menu — wire back only when embedded in main graph
+  if (!standalone) {
+    edges.push(
+      { id: `e_${IDS.rev_positive}_mm`, source: IDS.rev_positive, target: IDS.main_menu },
+      { id: `e_${IDS.rev_negative}_mm`, source: IDS.rev_negative, target: IDS.main_menu }
+    );
+  }
   return { nodes, edges };
 }
 
@@ -2657,7 +2663,7 @@ async function generateCommerceWizardPack(client, body = {}) {
 
   if (merged.features?.enableReviewCollection) {
     const IDS = buildIDs(client, { ...merged, preserveNodeIds: false });
-    const reviewSlice = buildReviewAutomation(ctx, IDS, content);
+    const reviewSlice = buildReviewAutomation(ctx, IDS, content, { standalone: true });
     flows.push({
       slug: "order_fulfilled_review",
       name: `${merged.businessName || "Store"} — Review request`,
