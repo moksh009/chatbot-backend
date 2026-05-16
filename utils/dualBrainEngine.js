@@ -613,44 +613,9 @@ async function runDualBrainEngine(parsedMessage, client) {
         { upsert: true, new: true }
     );
 
-    // --- STEP 1: KEYWORD-FIRST BYPASS (Priority 1.0) ---
-    // Instant triggers for "hi", "menu", etc. bypass AI overhead.
-    if (inboundText && !convo.botPaused) {
-        const KeywordTrigger = require('../models/KeywordTrigger');
-        const triggers = await KeywordTrigger.find({ clientId: client.clientId, isActive: true });
-        
-        const matchedTrigger = triggers.find(t => {
-            if (t.type === 'exact') return txtLower === t.keyword.toLowerCase();
-            return txtLower.includes(t.keyword.toLowerCase()); // fuzzy/contains
-        });
-
-        if (matchedTrigger) {
-            log.info(`[KeywordEngine] Instant match: ${matchedTrigger.keyword}. Bypassing AI.`);
-            
-            if (matchedTrigger.actionType === 'trigger_flow') {
-                const flow = (client.visualFlows || []).find(f => f.id === matchedTrigger.targetId);
-                if (flow) {
-                    const startNode = findMatchingFlow(flattenFlowNodes(flow.nodes), inboundText) || findFlowStartNode(flattenFlowNodes(flow.nodes));
-                    if (startNode) {
-                        return await runFlow(client, phone, flow, startNode.id, { triggerSource: 'keyword' });
-                    }
-                }
-            } else if (matchedTrigger.actionType === 'send_template') {
-                const tpl = (client.messageTemplates || []).find(t => t.id === matchedTrigger.targetId);
-                if (tpl && tpl.templateName) {
-                    await sendWhatsAppTemplate({
-                        phoneNumberId: client.phoneNumberId,
-                        to: phone,
-                        io,
-                        clientConfig: client,
-                        templateName: tpl.templateName,
-                        languageCode: 'en_US'
-                    });
-                    return true;
-                }
-            }
-        }
-    }
+    // --- STEP 1: KEYWORD TRIGGERS (Settings → Keyword triggers) ---
+    // Moved to *after* Smart message rules (automationRules) so hub rules can win
+    // when they send a reply or pause — see block after PHASE 22 rules evaluation.
 
     // --- STEP 2: SELECTIVE AI INGESTION (Phase 30) ---
     // Only call detection/translation if not handled by a keyword.
@@ -900,8 +865,9 @@ async function runDualBrainEngine(parsedMessage, client) {
     const FollowUpSequence = require('../models/FollowUpSequence');
     const axios = require('axios');
 
-    // Default: run flow/AI after rule actions unless the rule explicitly sets continueToFlowAfterActions: false
-    const continueToFlow = matchedRule.continueToFlowAfterActions !== false;
+    // Only continue into Flow Builder / graph when explicitly opted in (checkbox ON).
+    // Undefined/false = exclusive (matches Rules UI: "Leave off so this rule alone handles…").
+    const continueToFlow = matchedRule.continueToFlowAfterActions === true;
     let ruleIntercepted = false;
 
     const emitLeadTags = async () => {
@@ -1035,6 +1001,47 @@ async function runDualBrainEngine(parsedMessage, client) {
     }
     if (ruleIntercepted && continueToFlow) {
       log.info(`Rules Engine ran actions for ${phone}; continuing to flows / AI (continueToFlowAfterActions)`);
+    }
+  }
+
+  // --- STEP 1b: KEYWORD TRIGGERS (Settings → Keyword triggers → flow/template) ---
+  // Runs after Smart rules so automation-hub rules can take priority on the same keyword.
+  if (inboundText && !convo.botPaused) {
+    const KeywordTrigger = require('../models/KeywordTrigger');
+    const triggers = await KeywordTrigger.find({ clientId: client.clientId, isActive: true });
+
+    const matchedTrigger = triggers.find((t) => {
+      if (t.type === 'exact') return txtLower === t.keyword.toLowerCase();
+      return txtLower.includes(t.keyword.toLowerCase()); // fuzzy/contains
+    });
+
+    if (matchedTrigger) {
+      log.info(`[KeywordEngine] Match after rules: ${matchedTrigger.keyword}.`);
+
+      if (matchedTrigger.actionType === 'trigger_flow') {
+        const flow = (client.visualFlows || []).find((f) => f.id === matchedTrigger.targetId);
+        if (flow) {
+          const startNode =
+            findMatchingFlow(flattenFlowNodes(flow.nodes), inboundText) ||
+            findFlowStartNode(flattenFlowNodes(flow.nodes));
+          if (startNode) {
+            return await runFlow(client, phone, flow, startNode.id, { triggerSource: 'keyword' });
+          }
+        }
+      } else if (matchedTrigger.actionType === 'send_template') {
+        const tpl = (client.messageTemplates || []).find((t) => t.id === matchedTrigger.targetId);
+        if (tpl && tpl.templateName) {
+          await sendWhatsAppTemplate({
+            phoneNumberId: client.phoneNumberId,
+            to: phone,
+            io,
+            clientConfig: client,
+            templateName: tpl.templateName,
+            languageCode: 'en_US',
+          });
+          return true;
+        }
+      }
     }
   }
 

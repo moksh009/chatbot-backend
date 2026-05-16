@@ -419,14 +419,37 @@ router.post('/:id/resolve', protect, async (req, res) => {
 // @access  Public
 router.get('/config/:clientId', async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId }).select('businessName activeConfig.whatsappNumber');
+    const client = await Client.findOne({ clientId: req.params.clientId })
+      .select(
+        'businessName name adminPhone brand.businessName brand.adminPhone platformVars.supportWhatsapp platformVars.supportPhone platformVars.brandName ai.persona.name'
+      )
+      .lean();
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
-    const name = client.businessName || 'Support';
+    const pv = client.platformVars || {};
+    const name =
+      client.brand?.businessName ||
+      pv.brandName ||
+      client.businessName ||
+      client.name ||
+      'Support';
+    const agent = client.ai?.persona?.name || 'Support team';
+    const wa = String(
+      pv.supportWhatsapp ||
+        pv.supportPhone ||
+        client.adminPhone ||
+        client.brand?.adminPhone ||
+        ''
+    ).replace(/\D/g, '');
+
     res.json({
       businessName: name,
-      avatarLetter: name.charAt(0).toUpperCase(),
-      greeting: `Hi! Welcome to ${name}. How can we help you today? 👋`
+      avatarLetter: String(name).charAt(0).toUpperCase(),
+      agentName: agent,
+      /** Preferred WhatsApp for visitors (digits, no +) — widget can fall back to embed param */
+      supportWhatsApp: wa,
+      greeting: `Hi — you’ve reached ${name}. How can we help?`,
+      supportHint: 'We read every message and reply as soon as we can.',
     });
   } catch (err) {
     res.status(500).json({ message: err.message });

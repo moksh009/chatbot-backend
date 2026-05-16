@@ -183,7 +183,9 @@
     if (!e.data) return;
     if (e.data.type === 'topedge_close') closeWidget();
     if (e.data.type === 'topedge_wa_redirect') {
-      var url = 'https://wa.me/' + CONFIG.waNumber + '?text=' + encodeURIComponent(e.data.text || '');
+      var num = String(e.data.waNumber || CONFIG.waNumber || '').replace(/\D/g, '');
+      if (!num) return;
+      var url = 'https://wa.me/' + num + '?text=' + encodeURIComponent(e.data.text || '');
       window.open(url, '_blank');
       closeWidget();
     }

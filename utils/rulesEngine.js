@@ -79,7 +79,10 @@ const evaluateRules = (rules, messageText, evalContext) => {
 const findMatchingRule = (rules, messageText, evalContext) => {
     if (!rules || !Array.isArray(rules) || rules.length === 0) return null;
 
-    const activeRules = rules.filter(r => r.isActive).sort((a, b) => (a.priority || 10) - (b.priority || 10));
+    // Treat missing isActive as ON (older saved rules); only explicit false disables.
+    const activeRules = rules
+        .filter((r) => r.isActive !== false)
+        .sort((a, b) => (a.priority || 10) - (b.priority || 10));
 
     for (const rule of activeRules) {
         const triggerMatch = evaluateTrigger(rule.trigger, messageText, evalContext);
