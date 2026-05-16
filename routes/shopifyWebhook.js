@@ -742,6 +742,26 @@ async function handleOrder(client, data) {
       log.warn(`[ShopifyWebhook] order template send skipped: ${tplErr.message}`);
     }
 
+    // Eco order-status templates (paid / confirmed) — same pipeline as shipped/fulfilled webhooks
+    try {
+      const fin = String(data.financial_status || '').toLowerCase();
+      if (fin === 'paid' || fin === 'partially_paid') {
+        const { dispatchOrderStatusAutomation } = require('../utils/orderEventDispatcher');
+        const orderPlain = typeof newOrder.toObject === 'function' ? newOrder.toObject() : newOrder;
+        await dispatchOrderStatusAutomation({
+          clientConfig: client,
+          order: orderPlain,
+          previousStatus: 'pending',
+          newStatus: 'paid',
+          io: null,
+          source: 'shopify_webhook:orders/create',
+          options: { force: true },
+        });
+      }
+    } catch (dispatchErr) {
+      log.warn(`[ShopifyWebhook] paid order status dispatch skipped: ${dispatchErr.message}`);
+    }
+
     // --- PHASE 27: Loyalty Points Award ---
     if (client.loyaltyConfig?.isEnabled && newOrder.amount > 0) {
         const { awardLoyaltyPoints } = require('../utils/loyaltyEngine');

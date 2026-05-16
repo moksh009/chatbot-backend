@@ -235,7 +235,14 @@ router.get('/list', protect, async (req, res) => {
             } else if (fd.headerText && String(fd.headerText).trim()) {
               components.push({ type: 'HEADER', format: 'TEXT', text: fd.headerText });
             }
-            components.push({ type: 'BODY', text: bodyTxt });
+            const bodySamples =
+              (Array.isArray(fd.bodySamples) && fd.bodySamples.length ? fd.bodySamples : null) ||
+              (Array.isArray(tpl.bodySamples) && tpl.bodySamples.length ? tpl.bodySamples : null);
+            const bodyComp = { type: 'BODY', text: bodyTxt };
+            if (bodySamples?.length) {
+              bodyComp.example = { body_text: [bodySamples] };
+            }
+            components.push(bodyComp);
             const foot = fd.footerText != null ? fd.footerText : tpl.footerText;
             if (foot) components.push({ type: 'FOOTER', text: foot });
             const btnSrc = fd.buttons && fd.buttons.length ? fd.buttons : tpl.buttons;
@@ -267,7 +274,10 @@ router.get('/list', protect, async (req, res) => {
                 components.push({ type: 'HEADER', format: 'TEXT', text: tpl.headerValue || '' });
               }
             }
-            components.push({ type: 'BODY', text: tpl.body || '' });
+            const legacyBodySamples = Array.isArray(tpl.bodySamples) && tpl.bodySamples.length ? tpl.bodySamples : null;
+            const legacyBody = { type: 'BODY', text: tpl.body || '' };
+            if (legacyBodySamples) legacyBody.example = { body_text: [legacyBodySamples] };
+            components.push(legacyBody);
             if (tpl.footerText) components.push({ type: 'FOOTER', text: tpl.footerText });
             if (Array.isArray(tpl.buttons) && tpl.buttons.length) components.push({ type: 'BUTTONS', buttons: tpl.buttons });
           }
@@ -296,6 +306,11 @@ router.get('/list', protect, async (req, res) => {
             formData: fd || undefined,
             usageTags,
             _canonicalId: tpl._id,
+            variableMapping:
+              tpl.variableMapping instanceof Map
+                ? Object.fromEntries(tpl.variableMapping)
+                : tpl.variableMapping || {},
+            bodySamples: tpl.bodySamples || fd?.bodySamples,
           });
         });
 

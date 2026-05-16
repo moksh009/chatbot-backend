@@ -119,6 +119,7 @@ async function dispatchOrderStatusAutomation({
     (!wa.templateAttempted || !wa.ok) &&
     auto.matched === 0;
 
+  let textFallbackSent = false;
   if (shouldTextFallback) {
     try {
       const rawPhone = order.customerPhone || order.phone;
@@ -139,10 +140,54 @@ async function dispatchOrderStatusAutomation({
           token,
           clientId: clientConfig.clientId,
         });
+        textFallbackSent = true;
       }
     } catch (e) {
       console.error('[OrderEventDispatcher] text fallback:', e.message);
     }
+  }
+
+  try {
+    const { appendOrderWhatsAppActivity } = require('./orderWhatsAppActivity');
+    if (oid) {
+      if (wa.templateAttempted && wa.templateName) {
+        // sendMappedOrderStatusWhatsApp already logs success/failure
+      } else if (wa.skipped && wa.reason === 'auto_shopify_shipped_wa_disabled') {
+        await appendOrderWhatsAppActivity(oid, {
+          event: next,
+          channel: 'none',
+          success: false,
+          reason: 'auto_shipped_disabled',
+          source,
+        });
+      } else if (textFallbackSent) {
+        await appendOrderWhatsAppActivity(oid, {
+          event: next,
+          channel: 'text',
+          success: true,
+          reason: 'no_template_mapping',
+          source,
+        });
+      } else if (auto.matched > 0) {
+        await appendOrderWhatsAppActivity(oid, {
+          event: next,
+          channel: 'automation',
+          success: true,
+          reason: `${auto.matched} rule(s)`,
+          source,
+        });
+      } else if (!wa.templateAttempted && wa.reason === 'no_mapping') {
+        await appendOrderWhatsAppActivity(oid, {
+          event: next,
+          channel: 'none',
+          success: false,
+          reason: 'no_template_configured',
+          source,
+        });
+      }
+    }
+  } catch (logErr) {
+    console.warn('[OrderEventDispatcher] activity log:', logErr.message);
   }
 
   if (oid && isWebhook) {

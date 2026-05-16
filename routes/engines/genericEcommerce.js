@@ -1203,6 +1203,24 @@ async function sendMappedOrderStatusWhatsApp({ clientConfig, order, status, trac
         io,
         clientConfig,
     });
+
+    try {
+        const { appendOrderWhatsAppActivity, resolveOrderMongoId } = require('../../utils/orderWhatsAppActivity');
+        const oid = await resolveOrderMongoId(order, clientId);
+        if (oid) {
+            await appendOrderWhatsAppActivity(oid, {
+                event: mapKey,
+                templateName,
+                channel: 'template',
+                success: !!ok,
+                reason: ok ? null : 'meta_send_failed',
+                source: 'order_status_template',
+            });
+        }
+    } catch (logErr) {
+        console.warn('[OrderStatusWA] activity log:', logErr.message);
+    }
+
     return { ok: !!ok, templateAttempted: true, templateName };
 }
 
@@ -1342,9 +1360,11 @@ const updateOrderStatus = async (req, res) => {
             options: { force: true },
         });
 
+        const refreshed = await Order.findById(order._id).lean();
+
         res.json({
             success: true,
-            order,
+            order: refreshed || order,
             whatsapp: dispatchResult.whatsapp || {},
             dispatch: dispatchResult,
         });

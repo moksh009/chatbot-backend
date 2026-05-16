@@ -84,6 +84,17 @@ const OrderSchema = new mongoose.Schema({
 
   /** Dedupes identical Shopify webhook bursts (status + tracking fingerprint). */
   lastDispatchSignature: { type: String, default: '' },
+
+  /** Customer WhatsApp sends tied to this order (status templates, automations, fallbacks). */
+  whatsappActivityLog: [{
+    at: { type: Date, default: Date.now },
+    event: { type: String, default: '' },
+    templateName: { type: String, default: null },
+    channel: { type: String, enum: ['template', 'text', 'automation', 'none'], default: 'template' },
+    success: { type: Boolean, default: false },
+    reason: { type: String, default: null },
+    source: { type: String, default: '' },
+  }],
 });
 
 OrderSchema.index({ orderId: 1, clientId: 1 }, { unique: true });

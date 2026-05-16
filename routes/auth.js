@@ -761,28 +761,39 @@ router.get('/google/login', (req, res) => {
  * GET /api/auth/google/callback — Handle Google OAuth callback
  * Exchanges code → Google user info → find or create User + Client → redirect with JWT
  */
+function googleOAuthFrontendPath(mode, query = '') {
+  const FRONTEND_URL = (process.env.FRONTEND_URL || 'https://dash.topedgeai.com').replace(/\/$/, '');
+  const base = String(mode || '').toLowerCase() === 'signup' ? `${FRONTEND_URL}/signup` : `${FRONTEND_URL}/login`;
+  return query ? `${base}?${query}` : base;
+}
+
 router.get('/google/callback', async (req, res) => {
   const FRONTEND_URL = process.env.FRONTEND_URL || 'https://dash.topedgeai.com';
+  let oauthMode = 'login';
   try {
     const { code, state } = req.query;
+    const stateDataEarly = verifyGoogleOAuthState(state) || null;
+    oauthMode = stateDataEarly?.mode || 'login';
+
     if (!code) {
-      return res.redirect(`${FRONTEND_URL}/login?error=google_auth_failed`);
+      return res.redirect(googleOAuthFrontendPath(oauthMode, 'error=google_auth_failed'));
     }
 
     // Decode state
-    const stateData = verifyGoogleOAuthState(state) || null;
+    const stateData = stateDataEarly;
     if (!stateData) {
-      return res.redirect(`${FRONTEND_URL}/login?error=invalid_state`);
+      return res.redirect(googleOAuthFrontendPath(oauthMode, 'error=invalid_state'));
     }
     if (Date.now() - Number(stateData.iat || 0) > 15 * 60 * 1000) {
-      return res.redirect(`${FRONTEND_URL}/login?error=invalid_state`);
+      return res.redirect(googleOAuthFrontendPath(oauthMode, 'error=invalid_state'));
     }
+    oauthMode = stateData.mode || 'login';
 
     const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
     const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
     const REDIRECT_URI = getGoogleAuthRedirectUri();
     if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
-      return res.redirect(`${FRONTEND_URL}/login?error=google_auth_failed`);
+      return res.redirect(googleOAuthFrontendPath(oauthMode, 'error=google_auth_failed'));
     }
 
     // Exchange code for tokens
@@ -805,7 +816,7 @@ router.get('/google/callback', async (req, res) => {
     const { email, name, picture, sub: googleId, email_verified: emailVerified } = userInfoRes.data;
 
     if (!email || emailVerified === false) {
-      return res.redirect(`${FRONTEND_URL}/login?error=no_email`);
+      return res.redirect(googleOAuthFrontendPath(oauthMode, 'error=no_email'));
     }
 
     // Check if user already exists
@@ -824,7 +835,9 @@ router.get('/google/callback', async (req, res) => {
       await ensureClientForUser(user);
 
       const token = generateToken(user._id, user.clientId, user.role);
-      return res.redirect(`${FRONTEND_URL}/login?google_token=${token}&google_success=true`);
+      return res.redirect(
+        googleOAuthFrontendPath(oauthMode, `google_token=${encodeURIComponent(token)}&google_success=true`)
+      );
 
     } else {
       // ── New User: Auto-create Account ──────────────────────
@@ -833,10 +846,11 @@ router.get('/google/callback', async (req, res) => {
         !stateData.legalAccepted ||
         String(stateData.docsVersion || '') !== LEGAL_DOCS_VERSION
       ) {
-        return res.redirect(`${FRONTEND_URL}/signup?error=legal_required`);
+        return res.redirect(googleOAuthFrontendPath('signup', 'error=legal_required'));
       }
       const crypto = require('crypto');
-      const businessName = stateData.businessName || name + "'s Business";
+      const rawBusinessName = String(stateData.businessName || '').trim();
+      const businessName = rawBusinessName || (name ? `${name}'s Business` : 'My Business');
       const businessType = 'ecommerce';
       const safeName = businessName.toLowerCase().replace(/[^a-z0-9]/g, '');
       const uniqueId = crypto.randomBytes(3).toString('hex');
@@ -875,12 +889,16 @@ router.get('/google/callback', async (req, res) => {
       });
 
       const token = generateToken(user._id, user.clientId, user.role);
-      return res.redirect(`${FRONTEND_URL}/login?google_token=${token}&google_success=true&new_user=true`);
+      return res.redirect(
+        googleOAuthFrontendPath(
+          'signup',
+          `google_token=${encodeURIComponent(token)}&google_success=true&new_user=true`
+        )
+      );
     }
   } catch (error) {
     console.error('[Google OAuth] Callback error:', error.response?.data || error.message);
-    const FRONTEND_URL = process.env.FRONTEND_URL || 'https://dash.topedgeai.com';
-    return res.redirect(`${FRONTEND_URL}/login?error=google_auth_failed`);
+    return res.redirect(googleOAuthFrontendPath(oauthMode, 'error=google_auth_failed'));
   }
 });
 
