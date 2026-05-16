@@ -36,7 +36,15 @@ const ScheduledMessageSchema = new mongoose.Schema({
   },
   sourceType: {
     type: String,
-    enum: ['follow_up', 'cart_recovery', 'review', 'delay_node'],
+    enum: [
+      'follow_up',
+      'cart_recovery',
+      'review',
+      'delay_node',
+      'csat_survey',
+      'csat_resolved',
+      'csat_idle',
+    ],
     required: true
   },
   sourceId: {

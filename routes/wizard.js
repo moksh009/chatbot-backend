@@ -636,8 +636,10 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     } else {
       // Single-graph legacy path (main + embedded automations)
       const generated = await generateEcommerceFlow(client, { ...launchWizardData, templates });
-      nodes = generated.nodes;
-      edges = generated.edges;
+      const { folderizeWizardFlowGraph } = require("../utils/wizardFlowFolderize");
+      const folderized = folderizeWizardFlowGraph(generated.nodes, generated.edges);
+      nodes = folderized.nodes;
+      edges = folderized.edges;
       automationFlows = generated.automationFlows || [];
       mainNodes = nodes;
       mainEdges = edges;
@@ -793,8 +795,12 @@ router.post("/:clientId/complete", protect, async (req, res) => {
 
     const action = wizardData.replaceExisting !== false ? "replaced" : "added";
     console.log(
-      `[Wizard] ✅ Complete! Flow ${action} with ${nodes.length} main nodes for ${clientId}` +
-        (useCommercePack && persistedPack ? ` (${persistedPack.flowIds.length} flows in pack)` : "")
+      `[Wizard] ✅ Complete! Flow ${action} with ${nodes.length} nodes for ${clientId}` +
+        (useCommercePack && persistedPack
+          ? persistedPack.flowIds.length === 1
+            ? " (single publishable flow, folderized)"
+            : ` (${persistedPack.flowIds.length} flows — expected 1)`
+          : "")
     );
 
     const flowSummaries = persistedPack

@@ -2,15 +2,12 @@
 
 const WhatsAppFlow = require("../models/WhatsAppFlow");
 
-/** Flow Builder sidebar folders for wizard-generated multi-flow packs */
+/** Flow Builder sidebar — single publishable wizard flow (in-canvas folders use parentId). */
 const WIZARD_PACK_FOLDERS = [
-  { id: "folder_wizard_main", name: "Main bot (publish this)", createdAt: new Date() },
-  { id: "folder_wizard_automation", name: "Automations (background)", createdAt: new Date() },
+  { id: "folder_wizard_main", name: "WhatsApp bot (publish this)", createdAt: new Date() },
 ];
 
-function folderIdForPackFlow(f) {
-  if (f?.slug === "main_commerce") return "folder_wizard_main";
-  if (f?.isAutomation) return "folder_wizard_automation";
+function folderIdForPackFlow() {
   return "folder_wizard_main";
 }
 
@@ -56,6 +53,12 @@ async function createFlowsFromCommercePack(clientId, flows, opts = {}) {
     const nodes = f.nodes || [];
     const edges = f.edges || [];
     const folderId = defaultFolderId || folderIdForPackFlow(f);
+    if (f.isAutomation) {
+      console.warn(
+        `[wizardCommercePackPersist] Skipping legacy automation slice "${f.slug}" — use single-graph wizard pack`
+      );
+      continue;
+    }
 
     const doc = await WhatsAppFlow.create({
       clientId,

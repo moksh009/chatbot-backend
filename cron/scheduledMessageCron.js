@@ -2,7 +2,7 @@ const cron = require('node-cron');
 const ScheduledMessage = require('../models/ScheduledMessage');
 const AdLead = require('../models/AdLead');
 const Client = require('../models/Client');
-const { sendWhatsAppText, sendWhatsAppTemplate } = require('../utils/whatsappHelpers');
+const { sendWhatsAppText, sendWhatsAppTemplate, sendWhatsAppInteractive } = require('../utils/whatsappHelpers');
 const { sendInstagramDM } = require('../utils/instagramApi');
 const { decrypt } = require('../utils/encryption');
 
@@ -78,6 +78,15 @@ module.exports = () => {
                                 components: msg.content.components || [],
                                 token: token,
                                 clientId: client.clientId || client._id
+                            });
+                            sentSuccess = res.success;
+                        } else if (msg.messageType === 'interactive') {
+                            const res = await sendWhatsAppInteractive({
+                                phoneNumberId: phoneId,
+                                to: msg.phone,
+                                content: msg.content,
+                                token: token,
+                                clientId: client.clientId || client._id,
                             });
                             sentSuccess = res.success;
                         } else {

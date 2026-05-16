@@ -2557,199 +2557,38 @@ async function generateEcommerceFlow(client, wizardData = {}) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 5b. MULTI-FLOW PACK — main conversational graph + isolated automation flows
-//     (triggerEngine prefers `isAutomation: true` docs for commerce webhooks)
+// 5b. COMMERCE WIZARD PACK — one publishable WhatsApp flow (Meta allows one active).
+//     Cart / COD / review automations live in the same graph; triggerEngine matches
+//     trigger nodes by event type. Canvas folders (parentId) mirror Apex Light layout.
 // ═════════════════════════════════════════════════════════════════════════
 
 async function generateCommerceWizardPack(client, body = {}) {
   const { buildWizardDataFromUniversal } = require("./universalCommerceMapper");
+  const { folderizeWizardFlowGraph } = require("./wizardFlowFolderize");
   const merged = buildWizardDataFromUniversal(client, body);
-  const mainFeatures = {
-    ...(merged.features || {}),
-    enableAbandonedCart: false,
-    enableOrderConfirmTpl: false,
-    enableReviewCollection: false,
-  };
-  const mainWizard = { ...merged, features: mainFeatures, _splitAutomations: true };
+
+  // Keep all commerce slices in one graph — do NOT split into separate WhatsAppFlow docs.
+  const mainWizard = { ...merged, _splitAutomations: false };
   const main = await generateEcommerceFlow(client, mainWizard);
+  const folderized = folderizeWizardFlowGraph(main.nodes, main.edges);
+
+  verifyAllEdgesMatchButtonIds(folderized.nodes, folderized.edges);
+  if (!verifyFlowIntegrity(folderized.nodes, folderized.edges)) {
+    throw new Error("Flow integrity validation failed for main_commerce");
+  }
 
   const flows = [
     {
       slug: "main_commerce",
-      name: body.mainFlowName || `${merged.businessName || "Store"} — Main`,
+      name: body.mainFlowName || `${merged.businessName || "Store"} — WhatsApp bot`,
       isAutomation: false,
       automationTrigger: "",
-      nodes: main.nodes,
-      edges: main.edges,
+      nodes: folderized.nodes,
+      edges: folderized.edges,
     },
   ];
 
-  const ctx = buildContext(client, merged);
-  const defaults = buildDefaultContent(ctx);
-  const content = { ...defaults, ...(merged.useAiCopy === true ? await generateAIContent(ctx).catch(() => ({})) : {}) };
-
-  const uni = merged._universalFeatures || {};
-
-  if (merged.features?.enableAbandonedCart) {
-    const IDS = buildIDs(client, { ...merged, preserveNodeIds: false });
-    const reminders = Math.min(3, Math.max(1, Number(uni.abandonedCart?.reminders) || 3));
-    const term = `cart_term_${IDS.seed}`;
-    const slice = buildAbandonedCart(ctx, IDS, content, { terminalNodeId: term, maxSteps: reminders });
-    slice.nodes.push({
-      id: term,
-      type: "message",
-      position: autoPos(6, 4),
-      data: {
-        label: "Cart flow end",
-        text:
-          "You're all set! If you need anything else, message us here anytime — we're happy to help. 🙌",
-        heatmapCount: 0,
-        suppressAIFallbackLink: true,
-        flowTerminal: true,
-      },
-    });
-    flows.push({
-      slug: "abandoned_cart",
-      name: `${merged.businessName || "Store"} — Abandoned cart`,
-      isAutomation: true,
-      automationTrigger: "abandoned_cart",
-      nodes: slice.nodes,
-      edges: slice.edges,
-    });
-  }
-
-  const codOn =
-    uni.codConfirmation && typeof uni.codConfirmation.enabled === "boolean"
-      ? uni.codConfirmation.enabled
-      : !!merged.features?.enableOrderConfirmTpl;
-
-  if (codOn) {
-    const IDS = buildIDs(client, { ...merged, preserveNodeIds: false });
-    const timingMin = Math.max(1, Number(uni.codConfirmation?.timingMinutes) || 10);
-    const term = `cod_conf_term_${IDS.seed}`;
-    const nodes = [
-      {
-        id: IDS.trig_order,
-        type: "trigger",
-        position: autoPos(0, 0),
-        data: { label: "COD confirmation trigger", triggerType: "order_placed", heatmapCount: 0 },
-      },
-      {
-        id: `codcf_delay_${IDS.seed}`,
-        type: "delay",
-        position: autoPos(1, 0),
-        data: {
-          label: `Wait ${timingMin} min`,
-          duration: timingMin,
-          unit: "minutes",
-          waitValue: timingMin,
-          waitUnit: "minutes",
-          heatmapCount: 0,
-        },
-      },
-      {
-        id: `codcf_ask_${IDS.seed}`,
-        type: "interactive",
-        position: autoPos(2, 0),
-        data: {
-          label: "COD confirm",
-          interactiveType: "button",
-          text:
-            "🛒 *Order {{order_number|update}}*\n\nPlease confirm your Cash on Delivery order so we can dispatch it.\n\nTap *Yes* to confirm or *No* if you want to cancel.",
-          buttonsList: [
-            { id: "cod_yes", title: "✅ Confirm" },
-            { id: "cod_no", title: "❌ Cancel" },
-          ],
-          heatmapCount: 0,
-        },
-      },
-      {
-        id: `codcf_yes_${IDS.seed}`,
-        type: "message",
-        position: autoPos(3, -1),
-        data: {
-          label: "COD confirmed",
-          text: "🎉 Thank you for confirming! We're preparing your order now.",
-          heatmapCount: 0,
-          suppressAIFallbackLink: true,
-          flowTerminal: true,
-        },
-      },
-      {
-        id: `codcf_no_${IDS.seed}`,
-        type: "message",
-        position: autoPos(3, 1),
-        data: {
-          label: "COD cancelled path",
-          text:
-            "We've received your request. Our team will review your order shortly. You can also reach us on {{support_phone|WhatsApp}}.",
-          heatmapCount: 0,
-          suppressAIFallbackLink: true,
-          flowTerminal: true,
-        },
-      },
-      {
-        id: term,
-        type: "message",
-        position: autoPos(4, 0),
-        data: {
-          label: "COD flow end",
-          text: "Thanks for chatting with us today! 💚",
-          heatmapCount: 0,
-          suppressAIFallbackLink: true,
-          flowTerminal: true,
-        },
-      },
-    ];
-    const edges = [
-      { id: `e_cf_${IDS.trig_order}_d`, source: IDS.trig_order, target: `codcf_delay_${IDS.seed}` },
-      { id: `e_cf_d_a`, source: `codcf_delay_${IDS.seed}`, target: `codcf_ask_${IDS.seed}` },
-      {
-        id: `e_cf_a_y`,
-        source: `codcf_ask_${IDS.seed}`,
-        target: `codcf_yes_${IDS.seed}`,
-        sourceHandle: "cod_yes",
-      },
-      {
-        id: `e_cf_a_n`,
-        source: `codcf_ask_${IDS.seed}`,
-        target: `codcf_no_${IDS.seed}`,
-        sourceHandle: "cod_no",
-      },
-      { id: `e_cf_y_t`, source: `codcf_yes_${IDS.seed}`, target: term },
-      { id: `e_cf_n_t`, source: `codcf_no_${IDS.seed}`, target: term },
-    ];
-    flows.push({
-      slug: "cod_confirmation",
-      name: `${merged.businessName || "Store"} — COD confirmation`,
-      isAutomation: true,
-      automationTrigger: "order_placed",
-      nodes,
-      edges,
-    });
-  }
-
-  if (merged.features?.enableReviewCollection) {
-    const IDS = buildIDs(client, { ...merged, preserveNodeIds: false });
-    const reviewSlice = buildReviewAutomation(ctx, IDS, content, { standalone: true });
-    flows.push({
-      slug: "order_fulfilled_review",
-      name: `${merged.businessName || "Store"} — Review request`,
-      isAutomation: true,
-      automationTrigger: "order_fulfilled",
-      nodes: reviewSlice.nodes,
-      edges: reviewSlice.edges,
-    });
-  }
-
-  for (const f of flows) {
-    verifyAllEdgesMatchButtonIds(f.nodes, f.edges);
-    if (!verifyFlowIntegrity(f.nodes, f.edges)) {
-      throw new Error(`Flow integrity validation failed for ${f.slug}`);
-    }
-  }
-
-  return { flows, automationFlows: main.automationFlows || [] };
+  return { flows, automationFlows: [] };
 }
 
 // ═════════════════════════════════════════════════════════════════════════

@@ -10,6 +10,7 @@ const User = require('../models/User');
 const { STANDARD_TEMPLATES } = require('../constants/standardTemplates');
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
+const { uploadToCloud } = require('../utils/cloudinary');
 const { getFastScore, analyzeWithGeminiAndRewrite } = require('../utils/templateScorer');
 const { getPrebuiltTemplates } = require('../utils/flowGenerator');
 const { hydrateApprovedProductTemplatesForClient } = require('../utils/templateImageHydrate');
@@ -960,7 +961,14 @@ router.post('/upload-media', protect, upload.single('file'), async (req, res) =>
             throw new Error('Meta did not return a media handle (h).');
         }
 
-        res.json({ success: true, handle: uploadRes.data.h });
+        let mediaUrl = null;
+        try {
+            mediaUrl = await uploadToCloud(req.file.buffer, 'template_media', 'image');
+        } catch (cloudErr) {
+            log.warn(`[Template API] Cloudinary mirror failed (handle still returned): ${cloudErr.message}`);
+        }
+
+        res.json({ success: true, handle: uploadRes.data.h, mediaUrl });
     } catch (error) {
         const errData = error.response?.data || error.message;
         console.error('[Template API] Media Upload Error Details:', JSON.stringify(errData, null, 2));

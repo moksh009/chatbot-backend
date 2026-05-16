@@ -680,8 +680,37 @@ const WhatsApp = {
 
     const rawComponents = Array.isArray(components) ? components : [];
 
+    // Sanitize: send API accepts image.link or image.id — never creation-time `handle`
+    const sanitizedComponents = rawComponents.map((comp) => {
+      if (!comp?.parameters || !Array.isArray(comp.parameters)) return comp;
+      const parameters = comp.parameters
+        .map((p) => {
+          if (p?.type === 'image' && p.image) {
+            if (p.image.link && /^https?:\/\//i.test(String(p.image.link))) {
+              return { type: 'image', image: { link: String(p.image.link).slice(0, 2048) } };
+            }
+            if (p.image.id) {
+              return { type: 'image', image: { id: String(p.image.id) } };
+            }
+            if (p.image.handle) {
+              log.warn(`[WhatsApp] Dropping invalid image.handle for template ${templateName} (use link when sending)`);
+              return null;
+            }
+            return null;
+          }
+          if (p?.type === 'text') {
+            const text = String(p.text ?? '').trim();
+            if (!text) return { type: 'text', text: '—' };
+            return { type: 'text', text: text.slice(0, 1024) };
+          }
+          return p;
+        })
+        .filter(Boolean);
+      return { ...comp, parameters };
+    }).filter((c) => !c.parameters || c.parameters.length > 0);
+
     // Pre-flight validation: ensure component structure is valid
-    const validatedComponents = rawComponents.filter(c => {
+    const validatedComponents = sanitizedComponents.filter(c => {
       if (!c || !c.type) {
         log.warn(`[WhatsApp] Dropping invalid component (missing type) for template ${templateName}`);
         return false;
@@ -696,15 +725,19 @@ const WhatsApp = {
     const { token, phoneNumberId } = this.getCredentials(client);
     const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
+    const templatePayload = {
+      name: templateName,
+      language: { code: String(languageCode || 'en').replace('-', '_') },
+    };
+    if (validatedComponents.length > 0) {
+      templatePayload.components = validatedComponents;
+    }
+
     const payload = {
       messaging_product: 'whatsapp',
       to: validPhone,
       type: 'template',
-      template: {
-        name: templateName,
-        language: { code: languageCode },
-        components: validatedComponents
-      }
+      template: templatePayload,
     };
 
     // Debug logging for campaign troubleshooting

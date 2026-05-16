@@ -99,20 +99,18 @@ router.post('/send-template', protect, async (req, res) => {
     res.json({ success: true, data: responseData, messageId: responseData?.messages?.[0]?.id });
 
   } catch (error) {
-    const errorData = error.response?.data || error.message;
-    const statusCode = error.response?.status || 500;
-    
+    const errorData = error.response?.data || error.data || error.message;
+    const statusCode = error.status || error.response?.status || 500;
+
     log.error('Failed to send individual template', { clientId: targetClientId, error: errorData });
 
-    // --- LOGOUT PREVENTION FIX: Map 401 to 400 for the frontend ---
-    const finalStatus = statusCode === 401 ? 400 : statusCode;
-    
-    const friendlyMessage = translateWhatsAppError(errorData);
+    const finalStatus = statusCode === 401 ? 400 : (statusCode >= 400 && statusCode < 600 ? statusCode : 500);
+    const friendlyMessage = error.friendlyMessage || translateWhatsAppError(errorData);
 
-    res.status(finalStatus).json({ 
-      success: false, 
-      message: friendlyMessage, 
-      details: errorData 
+    res.status(finalStatus).json({
+      success: false,
+      message: friendlyMessage,
+      details: errorData,
     });
   }
 });
