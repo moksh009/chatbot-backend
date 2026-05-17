@@ -2,16 +2,11 @@ const express = require('express');
 const dotenv = require('dotenv');
 const log = require('./utils/logger')('Server');
 const connectDB = require('./db');
-const DailyStat = require('./models/DailyStat');
 const Client = require('./models/Client');
-const BirthdayUser = require('./models/BirthdayUser');
-const cron = require('node-cron');
-const { DateTime } = require('luxon');
-// Load birthday data
-const birthdayData = require('./birthdays.json');
-const { sendBirthdayWishWithImage } = require('./utils/sendBirthdayMessage');
 const scheduleAbandonedCartCron = require('./cron/abandonedCartScheduler');
 const scheduleBirthdayCron = require('./cron/birthdayCron');
+const cron = require('node-cron');
+const { apiGeneralLimiter } = require('./middleware/enterpriseLimits');
 // Load environment variables
 // dotenv.config();
 // Silence .env missing warning
@@ -172,6 +167,9 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads'), { maxAge: '1
 
 app.use(requestMetrics.middleware());
 
+// Multi-tenant API flood guard (webhooks excluded — see enterpriseLimits.js)
+app.use('/api', apiGeneralLimiter);
+
 // Debug: set REQUEST_LOG=true to trace every request (avoid default prod noise + CPU)
 app.use((req, res, next) => {
   if (process.env.REQUEST_LOG === 'true') {
@@ -320,7 +318,8 @@ app.use('/api/routing', routingRoutes);
 const intentRoutes = require('./routes/intents');
 const intentWebhookRoutes = require('./routes/intentWebhooks');
 app.use('/api/intents', intentRoutes);
-app.use('/api/webhooks', intentWebhookRoutes); // Mounts /api/webhooks/meta
+app.use('/api/webhooks', intentWebhookRoutes); // POST /api/webhooks/meta
+app.use('/api/webhooks', require('./routes/webhooks')); // Outbound webhook CRUD for dashboard
 
 app.use('/api/razorpay', require('./routes/razorpayWebhook'));
 const shopifyPixelRoutes = require('./routes/shopifyPixel');
@@ -333,8 +332,6 @@ app.get('/api/health', async (req, res) => {
 });
 app.get('/api/metrics/summary', HealthController.metricsSummary);
 
-// Inbound Messaging Webhooks
-app.use('/api/webhooks', require('./routes/intentWebhooks'));
 app.use('/api/qrcodes', require('./routes/qrcodes'));
 app.use('/api/catalog', require('./routes/catalog'));
 app.use('/api/meta/workspace', require('./routes/metaWorkspace'));
@@ -508,6 +505,7 @@ require('./cron/csatCron')();
 require('./cron/leadScoringCron');
 require('./cron/igTokenRefresher');
 require('./cron/autoResolutionCron');
+require('./cron/scheduledMessageCron')();
 
 const http = require('http');
 const socketIo = require('socket.io');

@@ -2,415 +2,585 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
   <title>Chat</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     :root {
-      --theme: #6366f1;
-      --theme-dark: #4f46e5;
+      --theme: #7c3aed;
+      --theme2: #5b21b6;
       --bg: #f8fafc;
       --card: #ffffff;
       --border: #e2e8f0;
       --text: #0f172a;
       --muted: #64748b;
-      --radius: 14px;
+      --bot: #f1f5f9;
+      --user: linear-gradient(135deg, var(--theme), var(--theme2));
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Inter', sans-serif;
     }
-
-    body { background: var(--bg); height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
-
-    /* === HEADER === */
+    html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--text); }
+    .app { display: flex; flex-direction: column; height: 100%; }
     .header {
-      background: var(--theme);
-      padding: 16px 20px;
-      display: flex; align-items: center; gap: 12px;
       flex-shrink: 0;
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: linear-gradient(135deg, var(--theme), var(--theme2));
+      color: #fff;
     }
-    .header-avatar {
-      width: 44px; height: 44px; border-radius: 50%;
-      background: rgba(255,255,255,0.2);
+    .avatar {
+      width: 42px; height: 42px; border-radius: 50%;
+      background: rgba(255,255,255,.22);
       display: flex; align-items: center; justify-content: center;
-      font-size: 22px; font-weight: 800; color: #fff;
-      flex-shrink: 0;
+      font-weight: 800; font-size: 1rem; overflow: hidden; flex-shrink: 0;
     }
-    .header-text h1 { font-size: 15px; font-weight: 700; color: #fff; }
-    .header-text p  { font-size: 11px; color: rgba(255,255,255,0.75); margin-top: 2px; line-height: 1.35; }
+    .avatar img { width: 100%; height: 100%; object-fit: cover; }
+    .header h1 { font-size: 15px; font-weight: 700; line-height: 1.2; }
+    .header p { font-size: 11px; opacity: .85; margin-top: 2px; }
     .header-close {
-      margin-left: auto; cursor: pointer;
-      background: rgba(255,255,255,0.18); border: none; color: #fff;
-      width: 32px; height: 32px; border-radius: 50%;
+      margin-left: auto; width: 32px; height: 32px; border-radius: 50%;
+      border: none; background: rgba(255,255,255,.18); color: #fff; cursor: pointer;
       display: flex; align-items: center; justify-content: center;
-      transition: background 0.2s;
     }
-    .header-close:hover { background: rgba(255,255,255,0.3); }
-    .header-close svg { width: 18px; height: 18px; fill: #fff; }
-
-    /* === TABS === */
-    .tab-bar {
-      display: flex; background: var(--card);
-      border-bottom: 1px solid var(--border);
+    .tabs {
+      display: flex; background: var(--card); border-bottom: 1px solid var(--border);
       flex-shrink: 0;
     }
+    .tabs.hidden { display: none; }
     .tab {
-      flex: 1; padding: 12px;
-      font-size: 12px; font-weight: 700; cursor: pointer;
-      text-align: center; color: var(--muted);
+      flex: 1; padding: 11px; font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--muted); border: none; background: none; cursor: pointer;
       border-bottom: 2px solid transparent;
-      transition: all 0.2s; text-transform: uppercase; letter-spacing: 0.06em;
     }
     .tab.active { color: var(--theme); border-bottom-color: var(--theme); }
-
-    /* === CONTENT === */
-    .panel { display: none; flex: 1; overflow-y: auto; flex-direction: column; }
+    .body { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+    .panel { display: none; flex: 1; flex-direction: column; min-height: 0; }
     .panel.active { display: flex; }
-
-    /* === WHATSAPP PANEL === */
-    .wa-panel {
-      flex: 1; display: flex; flex-direction: column;
-      align-items: center; justify-content: center;
-      padding: 32px 24px; gap: 20px; text-align: center;
-      background: linear-gradient(160deg, #dcfce7 0%, #f0fdf4 100%);
+    .chat-scroll {
+      flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px;
+      scroll-behavior: smooth;
     }
-    .wa-icon-wrap {
-      width: 80px; height: 80px; border-radius: 50%;
-      background: #25d366; display: flex; align-items: center; justify-content: center;
-      box-shadow: 0 8px 32px rgba(37, 211, 102, 0.4);
-      animation: wa-bounce 2s infinite;
+    .bubble {
+      max-width: 88%; padding: 10px 14px; border-radius: 16px; font-size: 13px; line-height: 1.5;
+      animation: fadeUp .25s ease;
     }
-    .wa-icon-wrap svg { width: 44px; height: 44px; fill: #fff; }
-    @keyframes wa-bounce {
-      0%, 100% { transform: translateY(0); }
-      50% { transform: translateY(-6px); }
+    @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    .bubble--bot { align-self: flex-start; background: var(--bot); color: #334155; border-bottom-left-radius: 4px; }
+    .bubble--user { align-self: flex-end; background: var(--user); color: #fff; border-bottom-right-radius: 4px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+    .chip {
+      padding: 8px 14px; border-radius: 999px; font-size: 12px; font-weight: 600;
+      border: 1.5px solid var(--border); background: #fff; color: var(--text); cursor: pointer;
+      transition: all .15s;
     }
-    .wa-title { font-size: 20px; font-weight: 800; color: #166534; }
-    .wa-sub   { font-size: 13px; color: #4ade80; font-weight: 600; }
-    .wa-greeting {
-      background: #fff; border-radius: 12px; padding: 14px 18px;
-      font-size: 13px; color: #374151; line-height: 1.6;
-      border: 1px solid #d1fae5;
-      text-align: left; max-width: 100%; width: 100%;
-      box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+    .chip:hover { border-color: var(--theme); color: var(--theme); background: #faf5ff; }
+    .composer {
+      flex-shrink: 0; padding: 10px 12px 12px; background: var(--card);
+      border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: flex-end;
     }
-    .wa-message-input {
-      width: 100%; padding: 12px 16px;
-      border: 1.5px solid #d1fae5; border-radius: 12px;
-      font-size: 13px; color: #374151; outline: none;
-      background: #fff; resize: none; min-height: 80px;
-      font-family: inherit;
-      transition: border-color 0.2s;
+    .composer.hidden { display: none; }
+    .composer input, .composer textarea {
+      flex: 1; border: 1.5px solid var(--border); border-radius: 12px; padding: 10px 12px;
+      font-size: 13px; font-family: inherit; outline: none; resize: none; min-height: 42px; max-height: 100px;
     }
-    .wa-message-input:focus { border-color: #25d366; }
-    .wa-btn {
-      width: 100%; padding: 14px;
-      background: #25d366; color: #fff;
-      font-size: 14px; font-weight: 800;
-      border: none; border-radius: 12px; cursor: pointer;
-      display: flex; align-items: center; justify-content: center; gap: 10px;
-      box-shadow: 0 4px 16px rgba(37,211,102,0.36);
-      transition: transform 0.2s, box-shadow 0.2s;
+    .composer input:focus, .composer textarea:focus { border-color: var(--theme); }
+    .send-btn {
+      width: 42px; height: 42px; border-radius: 12px; border: none; cursor: pointer;
+      background: linear-gradient(135deg, var(--theme), var(--theme2)); color: #fff;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
     }
-    .wa-btn:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(37,211,102,0.4); }
-    .wa-btn svg { width: 20px; height: 20px; fill: #fff; }
-    .wa-alt {
-      width: 100%; padding: 12px 14px; margin-top: 4px;
-      font-size: 12px; font-weight: 600; color: #166534;
-      background: rgba(255,255,255,0.85); border: 1px solid #bbf7d0;
-      border-radius: 12px; cursor: pointer; font-family: inherit;
-      transition: background 0.2s, border-color 0.2s;
+    .wa-hero {
+      flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 28px 20px; text-align: center; gap: 16px;
+      background: linear-gradient(165deg, #ecfdf5 0%, #f0fdf4 50%, #fff 100%);
     }
-    .wa-alt:hover { background: #fff; border-color: #25d366; }
-
-    /* === FORM PANEL === */
-    .form-back {
-      display: none; align-items: center; gap: 6px;
-      font-size: 12px; font-weight: 600; color: var(--muted);
-      background: none; border: none; cursor: pointer; padding: 0 0 4px;
-      font-family: inherit; margin-bottom: 4px;
+    .wa-icon {
+      width: 72px; height: 72px; border-radius: 50%; background: #25d366;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 12px 32px rgba(37,211,102,.35);
     }
-    .form-back.visible { display: inline-flex; }
-    .form-back:hover { color: var(--theme); }
-    .form-panel { flex: 1; overflow-y: auto; padding: 24px; gap: 16px; display: flex; flex-direction: column; }
-    .form-greeting {
-      padding: 14px 16px;
-      background: linear-gradient(135deg, var(--theme), var(--theme-dark));
-      color: #fff; border-radius: var(--radius);
-      font-size: 13px; line-height: 1.6; font-weight: 500;
+    .wa-icon svg { width: 38px; height: 38px; fill: #fff; }
+    .wa-hero h2 { font-size: 18px; font-weight: 800; color: #166534; }
+    .wa-hero p { font-size: 13px; color: #4ade80; font-weight: 600; }
+    .wa-card {
+      width: 100%; background: #fff; border-radius: 14px; padding: 14px; text-align: left;
+      border: 1px solid #d1fae5; font-size: 13px; line-height: 1.55; color: #374151;
     }
-    .form-field { display: flex; flex-direction: column; gap: 6px; }
-    .form-label { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
-    .form-input {
-      padding: 12px 14px; border: 1.5px solid var(--border);
-      border-radius: 10px; font-size: 13px; color: var(--text);
-      background: var(--card); outline: none; font-family: inherit;
-      transition: border-color 0.2s, box-shadow 0.2s;
+    .wa-card textarea {
+      width: 100%; margin-top: 10px; min-height: 72px; border: 1.5px solid #d1fae5;
+      border-radius: 10px; padding: 10px; font-family: inherit; font-size: 13px; resize: none;
     }
-    .form-input:focus { border-color: var(--theme); box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme) 15%, transparent); }
-
-    textarea.form-input { resize: none; min-height: 90px; }
-
-    .form-submit {
-      padding: 14px; background: var(--theme);
-      color: #fff; font-size: 14px; font-weight: 800;
-      border: none; border-radius: 12px; cursor: pointer;
-      transition: transform 0.2s, box-shadow 0.2s;
-      box-shadow: 0 4px 16px color-mix(in srgb, var(--theme) 40%, transparent);
-      margin-top: auto;
+    .btn-primary {
+      width: 100%; padding: 14px; border: none; border-radius: 12px; font-size: 14px;
+      font-weight: 800; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
     }
-    .form-submit:hover { transform: translateY(-2px); }
-    .form-submit:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
-
-    /* === SUCCESS STATE === */
-    .success-screen {
-      flex: 1; display: none; flex-direction: column;
-      align-items: center; justify-content: center;
-      padding: 32px; gap: 16px; text-align: center;
-      background: linear-gradient(160deg, #f0fdf4 0%, #f8fafc 100%);
+    .btn-wa { background: #25d366; color: #fff; box-shadow: 0 6px 20px rgba(37,211,102,.35); }
+    .btn-theme { background: linear-gradient(135deg, var(--theme), var(--theme2)); color: #fff; }
+    .btn-ghost {
+      width: 100%; padding: 11px; margin-top: 6px; border-radius: 12px; font-size: 12px;
+      font-weight: 600; cursor: pointer; background: #fff; border: 1px solid var(--border); color: var(--muted);
     }
-    .success-screen.visible { display: flex; }
-    .success-circle { width: 72px; height: 72px; border-radius: 50%; background: #22c55e; display: flex; align-items: center; justify-content: center; box-shadow: 0 8px 24px rgba(34,197,94,0.3); }
-    .success-circle svg { width: 36px; height: 36px; fill: #fff; }
-    .success-title { font-size: 20px; font-weight: 800; color: var(--text); }
-    .success-sub   { font-size: 13px; color: var(--muted); }
-
-    /* === FOOTER === */
+    .form-panel { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+    .form-panel label { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+    .form-panel input, .form-panel textarea {
+      width: 100%; padding: 12px; border: 1.5px solid var(--border); border-radius: 12px;
+      font-size: 13px; font-family: inherit;
+    }
+    .form-panel input:focus, .form-panel textarea:focus { outline: none; border-color: var(--theme); }
+    .success {
+      display: none; flex: 1; flex-direction: column; align-items: center; justify-content: center;
+      padding: 32px; text-align: center; gap: 12px;
+    }
+    .success.visible { display: flex; }
+    .success-icon {
+      width: 64px; height: 64px; border-radius: 50%; background: #dcfce7;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .success-icon svg { width: 32px; height: 32px; fill: #16a34a; }
     .footer {
-      padding: 8px; text-align: center;
-      font-size: 10px; color: #94a3b8; font-weight: 600;
-      border-top: 1px solid var(--border); background: var(--card);
-      flex-shrink: 0;
+      flex-shrink: 0; text-align: center; padding: 8px; font-size: 10px; color: #94a3b8;
+      background: var(--card); border-top: 1px solid var(--border);
     }
-    .footer a { color: var(--theme); text-decoration: none; }
-
-    /* === SCROLLBAR === */
-    ::-webkit-scrollbar { width: 4px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    .footer a { color: var(--theme); text-decoration: none; font-weight: 600; }
+    .footer.hidden { display: none; }
+    .typing { font-size: 11px; color: var(--muted); padding: 0 14px 6px; }
+    .handoff-bar {
+      padding: 10px 14px; display: flex; gap: 8px; flex-shrink: 0; background: #faf5ff; border-top: 1px solid #ede9fe;
+    }
+    .handoff-bar button { flex: 1; padding: 10px; border-radius: 10px; font-size: 12px; font-weight: 700; cursor: pointer; border: none; }
+    .handoff-wa { background: #25d366; color: #fff; }
+    .handoff-form { background: #fff; border: 1px solid var(--border); color: var(--text); }
   </style>
 </head>
 <body>
+  <div class="app">
+    <header class="header" id="header">
+      <div class="avatar" id="headerAvatar">S</div>
+      <div>
+        <h1 id="headerTitle">Support</h1>
+        <p id="headerSub">We typically reply in minutes</p>
+      </div>
+      <button type="button" class="header-close" id="closeBtn" aria-label="Close">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+    </header>
 
-<!-- HEADER -->
-<div class="header" id="header">
-  <div class="header-avatar" id="headerAvatar">T</div>
-  <div class="header-text">
-    <h1 id="headerTitle">Support Chat</h1>
-    <p id="headerSub">We reply as soon as we can.</p>
+    <div class="tabs" id="tabBar">
+      <button type="button" class="tab active" data-tab="chat">Chat</button>
+      <button type="button" class="tab" data-tab="whatsapp">WhatsApp</button>
+      <button type="button" class="tab" data-tab="form">Contact</button>
+    </div>
+
+    <div class="body">
+      <div class="panel active" id="panel-guided">
+        <div class="chat-scroll" id="chatScroll"></div>
+        <p class="typing hidden" id="typing">Assistant is typing…</p>
+        <div class="composer hidden" id="composer">
+          <textarea id="userInput" rows="1" placeholder="Type a message…"></textarea>
+          <button type="button" class="send-btn" id="sendBtn" aria-label="Send">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+          </button>
+        </div>
+        <div class="handoff-bar hidden" id="handoffBar">
+          <button type="button" class="handoff-wa" id="handoffWa">WhatsApp</button>
+          <button type="button" class="handoff-form" id="handoffForm">Leave details</button>
+        </div>
+      </div>
+
+      <div class="panel" id="panel-whatsapp">
+        <div class="wa-hero">
+          <div class="wa-icon">
+            <svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.296-.767.966-.94 1.164-.174.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.57-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/></svg>
+          </div>
+          <h2>Chat on WhatsApp</h2>
+          <p>Fastest way to reach us</p>
+          <div class="wa-card" style="max-width:100%">
+            <p id="waGreeting">Hi! How can we help?</p>
+            <textarea id="waMessage" placeholder="Your message…"></textarea>
+          </div>
+          <button type="button" class="btn-primary btn-wa" id="waOpenBtn">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.296-.767.966-.94 1.164-.174.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.57-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/></svg>
+            Open WhatsApp
+          </button>
+          <button type="button" class="btn-ghost" id="waAltForm">Prefer a form instead?</button>
+        </div>
+      </div>
+
+      <div class="panel" id="panel-form">
+        <div id="formContent" class="form-panel">
+          <p id="formGreeting" style="font-size:14px;color:var(--muted);margin-bottom:4px"></p>
+          <div><label>Name *</label><input id="fieldName" type="text" autocomplete="name" /></div>
+          <div><label>Phone *</label><input id="fieldPhone" type="tel" autocomplete="tel" /></div>
+          <div><label>Email</label><input id="fieldEmail" type="email" autocomplete="email" /></div>
+          <div><label>Message *</label><textarea id="fieldMessage" rows="4"></textarea></div>
+          <button type="button" class="btn-primary btn-theme" id="formSubmit">Send to our team</button>
+        </div>
+        <div class="success" id="successScreen">
+          <div class="success-icon"><svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg></div>
+          <h3 style="font-size:18px;font-weight:800">Message sent</h3>
+          <p style="font-size:13px;color:var(--muted)">We'll reply soon — check WhatsApp for updates.</p>
+        </div>
+      </div>
+    </div>
+
+    <footer class="footer" id="footer">Powered by <a href="https://topedgeai.com" target="_blank" rel="noopener">AI</a></footer>
   </div>
-  <button class="header-close" onclick="closeWidget()" title="Close">
-    <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-  </button>
-</div>
-
-<!-- TABS (only shown for dual-mode) -->
-<div class="tab-bar" id="tabBar" style="display:none">
-  <div class="tab active" data-tab="whatsapp" role="tab" onclick="switchTab('whatsapp')">WhatsApp</div>
-  <div class="tab" data-tab="form" role="tab" onclick="switchTab('form')">Message team</div>
-</div>
-
-<!-- WHATSAPP PANEL -->
-<div class="panel active" id="panel-whatsapp">
-  <div class="wa-panel">
-    <div class="wa-icon-wrap">
-      <svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.296-.767.966-.94 1.164-.174.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.57-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/></svg>
-    </div>
-    <div class="wa-title">Message us on WhatsApp</div>
-    <div class="wa-sub">Fastest way to reach our team</div>
-    <div class="wa-greeting" id="waGreeting">Hi! How can we help you today? 👋</div>
-    <textarea class="wa-message-input" id="waMessage" placeholder="Type your message (optional)..."></textarea>
-    <button type="button" class="wa-alt" id="waAltForm" style="display:none" onclick="openFormFromWhatsApp()">Prefer not to use WhatsApp? Leave your details</button>
-    <button class="wa-btn" type="button" onclick="openWhatsApp()">
-      <svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.296-.767.966-.94 1.164-.174.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.57-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/></svg>
-      Open WhatsApp
-    </button>
-  </div>
-</div>
-
-<!-- FORM PANEL -->
-<div class="panel" id="panel-form">
-  <div class="form-panel" id="formContent">
-    <button type="button" class="form-back" id="formBackBtn" onclick="backToWhatsApp()">← Back</button>
-    <div class="form-greeting" id="formGreeting">Hi! How can we help you today? 👋</div>
-    <div class="form-field">
-      <label class="form-label">Your Name *</label>
-      <input class="form-input" id="fieldName" type="text" placeholder="John Doe" />
-    </div>
-    <div class="form-field">
-      <label class="form-label">Phone / WhatsApp *</label>
-      <input class="form-input" id="fieldPhone" type="tel" placeholder="+91 9XXXXXXXXX" />
-    </div>
-    <div class="form-field">
-      <label class="form-label">Email (optional)</label>
-      <input class="form-input" id="fieldEmail" type="email" placeholder="you@company.com" />
-    </div>
-    <div class="form-field">
-      <label class="form-label">Your Message *</label>
-      <textarea class="form-input" id="fieldMessage" placeholder="How can we help you?"></textarea>
-    </div>
-    <button type="button" class="form-submit" id="formSubmit" onclick="submitForm()">Send to our team</button>
-  </div>
-  <div class="success-screen" id="successScreen">
-    <div class="success-circle">
-      <svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>
-    </div>
-    <div class="success-title">Message Sent! 🎉</div>
-    <div class="success-sub">We'll get back to you shortly.<br/>Check your WhatsApp for updates.</div>
-  </div>
-</div>
-
-<!-- FOOTER -->
-<div class="footer">Powered by <a href="https://topedgeai.com" target="_blank">TopEdge AI</a></div>
 
 <script>
-  // ── Parse URL Params ──────────────────────────────────────────────────────
+(function () {
   var params = {};
-  window.location.search.replace(/^\?/, '').split('&').forEach(function(p) {
+  location.search.replace(/^\?/, '').split('&').forEach(function (p) {
     var kv = p.split('=');
     if (kv[0]) params[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1] || '');
   });
 
-  var CONFIG = {
+  var STATE = {
     clientId: params.clientId || 'default',
-    waNumber:  params.waNumber  || '',
-    greeting:  params.greeting  || 'Hi! How can we help you today? 👋',
-    theme:     params.theme     || '#6366f1',
-    mode:      params.mode      || 'whatsapp',
-    apiBase:   window.location.origin
+    apiBase: location.origin,
+    waNumber: '',
+    greeting: 'Hi! How can we help you today? 👋',
+    theme: '#7C3AED',
+    theme2: '#5B21B6',
+    mode: 'both',
+    showPoweredBy: true,
+    poweredByText: 'Powered by AI',
+    poweredByUrl: 'https://topedgeai.com',
+    flow: null,
+    flowCursor: null,
+    waitingInput: false,
+    guided: false,
   };
 
-  function digitsOnly(s) {
-    return String(s || '').replace(/\D/g, '');
+  var chatScroll = document.getElementById('chatScroll');
+  var composer = document.getElementById('composer');
+  var userInput = document.getElementById('userInput');
+  var handoffBar = document.getElementById('handoffBar');
+
+  function digitsOnly(s) { return String(s || '').replace(/\D/g, ''); }
+
+  function applyTheme() {
+    document.documentElement.style.setProperty('--theme', STATE.theme);
+    document.documentElement.style.setProperty('--theme2', STATE.theme2);
   }
 
-  function effectiveWa() {
-    return digitsOnly(CONFIG.waNumber);
+  function setHeader(branding, widget) {
+    var title = widget.headerTitle || branding.businessName || 'Support';
+    document.getElementById('headerTitle').textContent = title;
+    document.getElementById('headerSub').textContent =
+      widget.headerSubtitle || branding.supportHint || 'We typically reply in minutes';
+    var av = document.getElementById('headerAvatar');
+    if (widget.logoUrl || branding.logoUrl) {
+      av.innerHTML = '<img src="' + (widget.logoUrl || branding.logoUrl) + '" alt="" />';
+    } else {
+      av.textContent = (branding.avatarLetter || title.charAt(0) || 'S').toUpperCase();
+    }
+    document.getElementById('waGreeting').textContent = STATE.greeting;
+    document.getElementById('formGreeting').textContent = STATE.greeting;
+    var foot = document.getElementById('footer');
+    if (widget.showPoweredBy === false) {
+      foot.classList.add('hidden');
+    } else {
+      foot.innerHTML =
+        (widget.poweredByText || 'Powered by AI').replace(
+          /AI|TopEdge/i,
+          '<a href="' +
+            (widget.poweredByUrl || 'https://topedgeai.com') +
+            '" target="_blank" rel="noopener">$&</a>'
+        );
+    }
   }
 
-  // ── Apply Theme ───────────────────────────────────────────────────────────
-  document.documentElement.style.setProperty('--theme', CONFIG.theme);
-  document.documentElement.style.setProperty('--theme-dark', CONFIG.theme);
-  document.getElementById('waGreeting').textContent = CONFIG.greeting;
-  document.getElementById('formGreeting').textContent = CONFIG.greeting;
-  document.getElementById('header').style.background = CONFIG.theme;
-  document.getElementById('headerAvatar').textContent = 'T';
-  document.getElementById('headerTitle').textContent  = 'Support';
-
-  // ── Show correct panel ────────────────────────────────────────────────────
-  if (CONFIG.mode === 'form') {
-    document.getElementById('panel-whatsapp').classList.remove('active');
-    document.getElementById('panel-form').classList.add('active');
-    document.getElementById('formBackBtn').classList.remove('visible');
-  } else if (CONFIG.mode === 'both') {
-    document.getElementById('tabBar').style.display = 'flex';
-  } else if (CONFIG.mode === 'whatsapp') {
-    document.getElementById('waAltForm').style.display = 'block';
-  }
-
-  // ── Load client info from API ─────────────────────────────────────────────
-  if (CONFIG.clientId !== 'default') {
-    fetch(CONFIG.apiBase + '/api/support-chat/config/' + CONFIG.clientId)
-      .then(function(r) { return r.json(); })
-      .then(function(d) {
-        if (d.businessName) document.getElementById('headerTitle').textContent = d.businessName;
-        if (d.avatarLetter) document.getElementById('headerAvatar').textContent = d.avatarLetter;
-        if (d.greeting) {
-          CONFIG.greeting = d.greeting;
-          document.getElementById('waGreeting').textContent = d.greeting;
-          document.getElementById('formGreeting').textContent = d.greeting;
-        }
-        if (d.supportHint) document.getElementById('headerSub').textContent = d.supportHint;
-        if (d.supportWhatsApp && !effectiveWa()) {
-          CONFIG.waNumber = d.supportWhatsApp;
-        }
-      })
-      .catch(function() {});
+  function showPanel(id) {
+    document.querySelectorAll('.panel').forEach(function (p) {
+      p.classList.toggle('active', p.id === 'panel-' + id);
+    });
+    document.querySelectorAll('.tab').forEach(function (t) {
+      t.classList.toggle('active', t.getAttribute('data-tab') === id);
+    });
   }
 
   function switchTab(tab) {
-    document.querySelectorAll('.tab').forEach(function(t) {
-      t.classList.toggle('active', t.getAttribute('data-tab') === tab);
-    });
-    document.querySelectorAll('.panel').forEach(function(p) {
-      p.classList.toggle('active', p.id === 'panel-' + tab);
-    });
-    document.getElementById('formBackBtn').classList.remove('visible');
+    if (tab === 'chat' && STATE.guided) showPanel('guided');
+    else showPanel(tab);
   }
 
-  function openFormFromWhatsApp() {
-    document.getElementById('panel-whatsapp').classList.remove('active');
-    document.getElementById('panel-form').classList.add('active');
-    document.getElementById('formBackBtn').classList.add('visible');
-  }
-
-  function backToWhatsApp() {
-    if (CONFIG.mode !== 'whatsapp') return;
-    document.getElementById('panel-form').classList.remove('active');
-    document.getElementById('panel-whatsapp').classList.add('active');
-    document.getElementById('formBackBtn').classList.remove('visible');
-  }
-
-  function closeWidget() {
-    window.parent.postMessage({ type: 'topedge_close' }, '*');
-  }
+  document.getElementById('tabBar').addEventListener('click', function (e) {
+    var tab = e.target.getAttribute('data-tab');
+    if (tab) switchTab(tab);
+  });
+  document.getElementById('closeBtn').addEventListener('click', function () {
+    parent.postMessage({ type: 'topedge_close' }, '*');
+  });
+  document.getElementById('waOpenBtn').addEventListener('click', openWhatsApp);
+  document.getElementById('waAltForm').addEventListener('click', function () { switchTab('form'); });
+  document.getElementById('formSubmit').addEventListener('click', submitForm);
+  document.getElementById('handoffWa').addEventListener('click', openWhatsApp);
+  document.getElementById('handoffForm').addEventListener('click', function () { switchTab('form'); });
+  document.getElementById('sendBtn').addEventListener('click', onUserSend);
+  userInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onUserSend(); }
+  });
 
   function openWhatsApp() {
-    var wa = effectiveWa();
-    if (!wa) {
-      openFormFromWhatsApp();
-      alert('WhatsApp number is not set yet. Please leave your details and we will reach out.');
-      return;
-    }
-    var msg = (document.getElementById('waMessage').value || '').trim() || CONFIG.greeting;
-    window.parent.postMessage({ type: 'topedge_wa_redirect', text: msg, waNumber: wa }, '*');
+    var wa = digitsOnly(STATE.waNumber);
+    if (!wa) { switchTab('form'); return; }
+    var msg = (document.getElementById('waMessage').value || '').trim() || STATE.greeting;
+    parent.postMessage({ type: 'topedge_wa_redirect', text: msg, waNumber: wa }, '*');
   }
 
   function submitForm() {
-    var name    = (document.getElementById('fieldName').value || '').trim();
-    var phone   = (document.getElementById('fieldPhone').value || '').trim();
-    var email   = (document.getElementById('fieldEmail').value || '').trim();
-    var message = (document.getElementById('fieldMessage').value || '').trim();
-
-    if (!name || !phone || !message) {
-      alert('Please fill in all required fields.');
-      return;
-    }
-
+    var name = document.getElementById('fieldName').value.trim();
+    var phone = document.getElementById('fieldPhone').value.trim();
+    var email = document.getElementById('fieldEmail').value.trim();
+    var message = document.getElementById('fieldMessage').value.trim();
+    if (!name || !phone || !message) { alert('Please fill required fields.'); return; }
     var btn = document.getElementById('formSubmit');
     btn.disabled = true;
-    btn.textContent = 'Sending...';
-
-    fetch(CONFIG.apiBase + '/api/support-chat/widget-lead', {
+    btn.textContent = 'Sending…';
+    fetch(STATE.apiBase + '/api/support-chat/widget-lead', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        clientId: CONFIG.clientId,
+        clientId: STATE.clientId,
         name: name,
         phone: phone,
         email: email,
         message: message,
         source: 'website_widget',
-        pageUrl: document.referrer || window.location.href
+        pageUrl: document.referrer || location.href,
+      }),
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (x) {
+        if (!x.ok || !x.d.success) throw new Error(x.d.message || 'Failed');
+        document.getElementById('formContent').style.display = 'none';
+        document.getElementById('successScreen').classList.add('visible');
       })
-    })
-    .then(function(r) {
-      return r.json().then(function(d) {
-        return { ok: r.ok, d: d };
+      .catch(function () {
+        btn.disabled = false;
+        btn.textContent = 'Send to our team';
+        alert('Something went wrong. Try WhatsApp or again later.');
       });
-    })
-    .then(function(x) {
-      if (!x.ok || !x.d.success) {
-        throw new Error(x.d.message || 'Request failed');
-      }
-      document.getElementById('formContent').style.display = 'none';
-      document.getElementById('successScreen').classList.add('visible');
-    })
-    .catch(function() {
-      btn.disabled = false;
-      btn.textContent = 'Send to our team';
-      alert('Something went wrong. Please try again or use WhatsApp.');
-    });
   }
+
+  function addBubble(text, who) {
+    var el = document.createElement('div');
+    el.className = 'bubble bubble--' + (who === 'user' ? 'user' : 'bot');
+    el.textContent = text;
+    chatScroll.appendChild(el);
+    chatScroll.scrollTop = chatScroll.scrollHeight;
+  }
+
+  function addChips(buttons, onPick) {
+    var wrap = document.createElement('div');
+    wrap.className = 'chips';
+    buttons.forEach(function (b) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'chip';
+      btn.textContent = b.label;
+      btn.addEventListener('click', function () { onPick(b); });
+      wrap.appendChild(btn);
+    });
+    chatScroll.appendChild(wrap);
+    chatScroll.scrollTop = chatScroll.scrollHeight;
+  }
+
+  function buildFlowIndex(nodes, edges) {
+    var out = {};
+    edges.forEach(function (e) {
+      if (!out[e.source]) out[e.source] = [];
+      out[e.source].push(e);
+    });
+    var start =
+      nodes.find(function (n) { return n.type === 'trigger'; }) ||
+      nodes.find(function (n) { return n.type === 'message'; }) ||
+      nodes[0];
+    return { nodes: nodes, out: out, currentId: start ? start.id : null };
+  }
+
+  function nodeText(node) {
+    var d = node.data || {};
+    return (d.text || d.label || d.message || '').trim() || '…';
+  }
+
+  function presentNode(node) {
+    var t = node.type;
+    var d = node.data || {};
+    if (t === 'message') {
+      if (d.action === 'ESCALATE_HUMAN') return { kind: 'handoff', text: nodeText(node) };
+      return { kind: 'bot', text: nodeText(node) };
+    }
+    if (t === 'interactive') {
+      var buttons = (d.buttonsList || []).map(function (b) {
+        return { id: b.id, label: b.title || b.label || 'Option' };
+      });
+      if (!buttons.length) buttons.push({ id: 'continue', label: 'Continue' });
+      return { kind: 'buttons', text: nodeText(node), buttons: buttons };
+    }
+    if (t === 'capture_input') {
+      return { kind: 'input', text: d.prompt || d.label || nodeText(node) };
+    }
+    if (t === 'livechat') return { kind: 'handoff', text: nodeText(node) };
+    if (t === 'delay') return { kind: 'skip' };
+    if (t === 'trigger') return { kind: 'skip' };
+    return { kind: 'bot', text: nodeText(node), buttons: [{ id: 'continue', label: 'Continue' }] };
+  }
+
+  function nextNodeId(fromId, handle) {
+    var edges = STATE.flowCursor.out[fromId] || [];
+    if (!edges.length) return null;
+    if (handle) {
+      var match = edges.find(function (e) { return e.sourceHandle === handle; });
+      if (match) return match.target;
+    }
+    return edges[0].target;
+  }
+
+  function nodeById(id) {
+    return STATE.flowCursor.nodes.find(function (n) { return n.id === id; });
+  }
+
+  function advanceFlow(fromId, handle) {
+    var nextId = nextNodeId(fromId, handle);
+    if (!nextId) {
+      showHandoff();
+      return;
+    }
+    STATE.flowCursor.currentId = nextId;
+    runCurrentNode();
+  }
+
+  function showHandoff() {
+    handoffBar.classList.remove('hidden');
+    composer.classList.add('hidden');
+    STATE.waitingInput = false;
+    addBubble('Choose how you would like to continue with our team.', 'bot');
+  }
+
+  function runCurrentNode() {
+    var node = nodeById(STATE.flowCursor.currentId);
+    if (!node) { showHandoff(); return; }
+    var p = presentNode(node);
+    if (p.kind === 'skip') {
+      advanceFlow(node.id);
+      return;
+    }
+    if (p.kind === 'handoff') {
+      addBubble(p.text, 'bot');
+      showHandoff();
+      return;
+    }
+    if (p.kind === 'bot') {
+      addBubble(p.text, 'bot');
+      if (p.buttons && p.buttons.length) {
+        addChips(p.buttons, function (b) {
+          addBubble(b.label, 'user');
+          advanceFlow(node.id, b.id);
+        });
+      } else {
+        setTimeout(function () { advanceFlow(node.id); }, 400);
+      }
+      return;
+    }
+    if (p.kind === 'buttons') {
+      addBubble(p.text, 'bot');
+      addChips(p.buttons, function (b) {
+        addBubble(b.label, 'user');
+        advanceFlow(node.id, b.id);
+      });
+      return;
+    }
+    if (p.kind === 'input') {
+      addBubble(p.text, 'bot');
+      STATE.waitingInput = true;
+      composer.classList.remove('hidden');
+      userInput.focus();
+    }
+  }
+
+  function onUserSend() {
+    var text = userInput.value.trim();
+    if (!text || !STATE.waitingInput) return;
+    userInput.value = '';
+    addBubble(text, 'user');
+    STATE.waitingInput = false;
+    composer.classList.add('hidden');
+    var cur = STATE.flowCursor.currentId;
+    advanceFlow(cur);
+  }
+
+  function startGuided() {
+    STATE.guided = true;
+    document.getElementById('tabBar').classList.add('hidden');
+    showPanel('guided');
+    if (!STATE.flow || !STATE.flow.nodes || !STATE.flow.nodes.length) {
+      addBubble(STATE.greeting, 'bot');
+      addBubble('Our team can help you on WhatsApp or via the contact form.', 'bot');
+      showHandoff();
+      return;
+    }
+    STATE.flowCursor = buildFlowIndex(STATE.flow.nodes, STATE.flow.edges || []);
+    runCurrentNode();
+  }
+
+  function initClassicMode() {
+    var tabBar = document.getElementById('tabBar');
+    if (STATE.mode === 'form') {
+      tabBar.classList.add('hidden');
+      showPanel('form');
+    } else if (STATE.mode === 'whatsapp') {
+      tabBar.classList.add('hidden');
+      showPanel('whatsapp');
+    } else if (STATE.mode === 'both') {
+      tabBar.classList.remove('hidden');
+      showPanel('whatsapp');
+    } else {
+      tabBar.classList.add('hidden');
+      showPanel('whatsapp');
+    }
+  }
+
+  function boot() {
+    applyTheme();
+    if (STATE.clientId === 'default') {
+      initClassicMode();
+      return;
+    }
+    Promise.all([
+      fetch(STATE.apiBase + '/api/support-chat/widget-config/' + encodeURIComponent(STATE.clientId)).then(function (r) { return r.json(); }),
+      fetch(STATE.apiBase + '/api/support-chat/widget-flow/' + encodeURIComponent(STATE.clientId)).then(function (r) { return r.json(); }),
+    ])
+      .then(function (results) {
+        var cfg = results[0] || {};
+        var flowRes = results[1] || {};
+        var w = cfg.widget || {};
+        var b = cfg.branding || {};
+        STATE.theme = w.theme || STATE.theme;
+        STATE.theme2 = w.themeSecondary || STATE.theme2;
+        STATE.mode = w.mode || STATE.mode;
+        STATE.greeting = w.greeting || b.greeting || STATE.greeting;
+        STATE.waNumber = b.supportWhatsApp || STATE.waNumber;
+        STATE.showPoweredBy = w.showPoweredBy;
+        STATE.poweredByText = w.poweredByText;
+        STATE.poweredByUrl = w.poweredByUrl;
+        if (flowRes.flow) STATE.flow = flowRes.flow;
+        applyTheme();
+        setHeader(b, w);
+        if (STATE.mode === 'guided' || w.experience === 'guided') {
+          startGuided();
+        } else {
+          initClassicMode();
+        }
+      })
+      .catch(function () {
+        initClassicMode();
+      });
+  }
+
+  boot();
+})();
 </script>
 </body>
 </html>

@@ -8,6 +8,7 @@ const Subscription      = require("../models/Subscription");
 const { verifyToken }   = require("../middleware/auth");
 const jwt               = require("jsonwebtoken");
 const bcrypt            = require("bcryptjs");
+const { apiCache }      = require("../middleware/apiCache");
 
 // ─── Middleware: only resellers or super admins ──────────────────────────────
 function requireReseller(req, res, next) {
@@ -19,7 +20,7 @@ function requireReseller(req, res, next) {
 }
 
 // ─── GET /api/reseller/dashboard ────────────────────────────────────────────
-router.get("/dashboard", verifyToken, requireReseller, async (req, res) => {
+router.get("/dashboard", verifyToken, requireReseller, apiCache(30), async (req, res) => {
   try {
     const resellerId = req.user?.id;
     const clients    = await Client.find({ resellerUserId: resellerId }).lean();
@@ -63,7 +64,7 @@ router.get("/dashboard", verifyToken, requireReseller, async (req, res) => {
 });
 
 // ─── GET /api/reseller/clients ───────────────────────────────────────────────
-router.get("/clients", verifyToken, requireReseller, async (req, res) => {
+router.get("/clients", verifyToken, requireReseller, apiCache(20), async (req, res) => {
   try {
     const resellerId = req.user?.id;
     const page       = parseInt(req.query.page) || 1;

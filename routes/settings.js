@@ -267,4 +267,47 @@ router.put('/:clientId/growth-widget-config', protect, verifyClientAccess, async
   }
 });
 
+// --- Website chat widget (Settings → Chat Widget) ---
+const {
+  mergeWebsiteWidgetConfig,
+  buildWebsiteWidgetSettingsBundle,
+} = require('../utils/websiteWidgetDefaults');
+
+router.get('/:clientId/website-chat-widget', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const doc = await Client.findOne({ clientId })
+      .select('websiteChatWidgetConfig visualFlows businessName brand.businessName businessLogo')
+      .lean();
+    if (!doc) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    const origin = `${req.protocol}://${req.get('host')}`;
+    const bundle = buildWebsiteWidgetSettingsBundle(doc, { clientId, origin });
+
+    res.json({ success: true, ...bundle });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+router.put('/:clientId/website-chat-widget', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const incoming = req.body?.websiteChatWidgetConfig || req.body || {};
+    const merged = mergeWebsiteWidgetConfig(incoming);
+    const doc = await Client.findOneAndUpdate(
+      { clientId },
+      { $set: { websiteChatWidgetConfig: merged } },
+      { new: true }
+    ).select('websiteChatWidgetConfig');
+    if (!doc) return res.status(404).json({ success: false, message: 'Client not found' });
+    res.json({
+      success: true,
+      websiteChatWidgetConfig: mergeWebsiteWidgetConfig(doc.websiteChatWidgetConfig),
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 module.exports = router;

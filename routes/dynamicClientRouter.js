@@ -6,9 +6,7 @@ const Client = require('../models/Client');
 const InboundDeduplication = require('../models/InboundDeduplication');
 const { tenantClientId } = require('../utils/queryHelpers');
 
-// Import client controllers
-const turfController = require('./clientcodes/turf');
-const salonController = require('./clientcodes/salon');
+// Legacy flow webhook handlers (per-client WhatsApp Flow callbacks)
 const choiceSalonController = require('./clientcodes/choice_salon_holi');
 const topedgeController = require('./clientcodes/topedgeai');
 const genericEcommerceEngine = require('./engines/genericEcommerce');

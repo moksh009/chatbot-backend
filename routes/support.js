@@ -458,6 +458,68 @@ router.post('/:id/resolve', protect, async (req, res) => {
   }
 });
 
+const {
+  pickWebsiteWidgetForPublic,
+  mergeWebsiteWidgetConfig,
+} = require('../utils/websiteWidgetDefaults');
+
+function resolveClientBranding(client) {
+  const pv = client.platformVars || {};
+  const name =
+    client.brand?.businessName ||
+    pv.brandName ||
+    client.businessName ||
+    client.name ||
+    'Support';
+  const agent = client.ai?.persona?.name || client.botName || 'Support team';
+  const wa = String(
+    pv.supportWhatsapp ||
+      pv.supportPhone ||
+      client.adminPhone ||
+      client.brand?.adminPhone ||
+      ''
+  ).replace(/\D/g, '');
+  const widgetCfg = mergeWebsiteWidgetConfig(client.websiteChatWidgetConfig);
+  return {
+    businessName: widgetCfg.headerTitle || name,
+    avatarLetter: String(widgetCfg.headerTitle || name).charAt(0).toUpperCase(),
+    agentName: agent,
+    supportWhatsApp: wa,
+    greeting: widgetCfg.greeting || `Hi — you've reached ${name}. How can we help?`,
+    supportHint:
+      widgetCfg.headerSubtitle || 'We read every message and reply as soon as we can.',
+    logoUrl: widgetCfg.logoUrl || client.businessLogo || '',
+  };
+}
+
+function resolveWebsiteFlow(client) {
+  const cfg = mergeWebsiteWidgetConfig(client.websiteChatWidgetConfig);
+  const flows = client.visualFlows || [];
+  let flow = null;
+  if (cfg.flowId) {
+    flow = flows.find((f) => String(f.id) === String(cfg.flowId));
+  }
+  if (!flow) {
+    flow = flows.find((f) => f.platform === 'website' && f.isActive);
+  }
+  if (!flow && cfg.experience === 'guided') {
+    flow = flows.find((f) => f.isActive);
+  }
+  if (!flow) return null;
+  const nodes =
+    (flow.publishedNodes && flow.publishedNodes.length ? flow.publishedNodes : flow.nodes) || [];
+  const edges =
+    (flow.publishedEdges && flow.publishedEdges.length ? flow.publishedEdges : flow.edges) || [];
+  return {
+    id: flow.id,
+    name: flow.name,
+    platform: flow.platform,
+    nodes,
+    edges,
+    isActive: !!flow.isActive,
+  };
+}
+
 // ── PUBLIC: Widget config (no auth required) ──────────────────────────────
 // @route   GET /api/support-chat/config/:clientId
 // @desc    Returns public branding info for the chat widget
@@ -466,35 +528,38 @@ router.get('/config/:clientId', async (req, res) => {
   try {
     const client = await Client.findOne({ clientId: req.params.clientId })
       .select(
-        'businessName name adminPhone brand.businessName brand.adminPhone platformVars.supportWhatsapp platformVars.supportPhone platformVars.brandName ai.persona.name'
+        'businessName name adminPhone brand.businessName brand.adminPhone businessLogo botName platformVars websiteChatWidgetConfig ai.persona.name'
+      )
+      .lean();
+    if (!client) return res.status(404).json({ message: 'Client not found' });
+    res.json(resolveClientBranding(client));
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// @route   GET /api/support-chat/widget-config/:clientId
+// @desc    Merged branding + widget appearance for embed script / iframe
+// @access  Public
+router.get('/widget-config/:clientId', async (req, res) => {
+  try {
+    const client = await Client.findOne({ clientId: req.params.clientId })
+      .select(
+        'clientId businessName name adminPhone brand businessLogo botName platformVars websiteChatWidgetConfig visualFlows ai.persona.name'
       )
       .lean();
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
-    const pv = client.platformVars || {};
-    const name =
-      client.brand?.businessName ||
-      pv.brandName ||
-      client.businessName ||
-      client.name ||
-      'Support';
-    const agent = client.ai?.persona?.name || 'Support team';
-    const wa = String(
-      pv.supportWhatsapp ||
-        pv.supportPhone ||
-        client.adminPhone ||
-        client.brand?.adminPhone ||
-        ''
-    ).replace(/\D/g, '');
+    const branding = resolveClientBranding(client);
+    const widget = pickWebsiteWidgetForPublic(client.websiteChatWidgetConfig);
+    const activeFlow = resolveWebsiteFlow(client);
 
     res.json({
-      businessName: name,
-      avatarLetter: String(name).charAt(0).toUpperCase(),
-      agentName: agent,
-      /** Preferred WhatsApp for visitors (digits, no +) — widget can fall back to embed param */
-      supportWhatsApp: wa,
-      greeting: `Hi — you’ve reached ${name}. How can we help?`,
-      supportHint: 'We read every message and reply as soon as we can.',
+      clientId: client.clientId,
+      branding,
+      widget,
+      hasPublishedFlow: !!(activeFlow && activeFlow.nodes?.length),
+      activeFlowId: activeFlow?.id || null,
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -573,21 +638,32 @@ router.post('/widget-lead', async (req, res) => {
 // @access  Public
 router.get('/widget-flow/:clientId', async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId }).select('visualFlows avatar botName businessName themeColor');
+    const client = await Client.findOne({ clientId: req.params.clientId })
+      .select('visualFlows websiteChatWidgetConfig businessName botName businessLogo ai.persona.name')
+      .lean();
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
-    // Find the primary flow (e.g., first one or one marked as 'active')
-    const activeFlow = client.visualFlows?.find(f => f.isActive) || client.visualFlows?.[0];
-    
+    const flow = resolveWebsiteFlow(client);
+    const widget = pickWebsiteWidgetForPublic(client.websiteChatWidgetConfig);
+    const branding = resolveClientBranding(client);
+
     res.json({
       success: true,
-      flow: activeFlow || null,
+      flow: flow
+        ? {
+            id: flow.id,
+            name: flow.name,
+            platform: flow.platform,
+            nodes: flow.nodes,
+            edges: flow.edges,
+          }
+        : null,
       branding: {
-        botName: client.botName || 'AI Assistant',
-        avatar: client.avatar || '',
-        businessName: client.businessName || 'Our Store',
-        themeColor: client.themeColor || '#7C3AED'
-      }
+        botName: branding.agentName,
+        businessName: branding.businessName,
+        avatar: branding.logoUrl,
+        themeColor: widget.theme,
+      },
     });
   } catch (err) {
     res.status(500).json({ message: err.message });

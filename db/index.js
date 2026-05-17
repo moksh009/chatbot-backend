@@ -13,6 +13,8 @@ async function connectDB(){
             socketTimeoutMS: 45000,
             maxPoolSize: maxPool,
             minPoolSize: Math.min(2, maxPool),
+            maxIdleTimeMS: 30_000,
+            retryWrites: true,
             family: 4, // Force IPv4 to resolve SSL/TLS handshake issues on local network
         })
         console.log(`\n MongoDB connected !! DB HOST: ${connectionInstance.connection.host}`);

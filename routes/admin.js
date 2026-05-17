@@ -925,14 +925,24 @@ router.get('/my-settings', protect, sanitizeMiddleware, async (req, res) => {
     }
 
     const { flattenClientForSettingsUI } = require('../utils/settingsSyncMapper');
+    const { buildWebsiteWidgetSettingsBundle } = require('../utils/websiteWidgetDefaults');
     const flat = flattenClientForSettingsUI(
       client.toObject ? client.toObject() : client
     );
+
+    const widgetDoc = await Client.findOne({ clientId: targetClientId })
+      .select('websiteChatWidgetConfig visualFlows')
+      .lean();
+    const origin = `${req.protocol}://${req.get('host')}`;
+    const websiteWidgetBundle = widgetDoc
+      ? buildWebsiteWidgetSettingsBundle(widgetDoc, { clientId: targetClientId, origin })
+      : buildWebsiteWidgetSettingsBundle({}, { clientId: targetClientId, origin });
 
     // 3. Return payload (sanitized via middleware) + UI-friendly mirrors
     res.json({
       ...(client.toObject ? client.toObject() : client),
       ...flat,
+      websiteWidgetBundle,
     });
 
   } catch (err) {
@@ -1007,7 +1017,8 @@ router.patch('/my-settings', protect, async (req, res) => {
       warrantyPolicy,
       warrantySupportPhone,
       warrantySupportEmail,
-      warrantyClaimUrl
+      warrantyClaimUrl,
+      websiteChatWidgetConfig,
     } = req.body;
     
     // If Super Admin and clientId provided, use that. Otherwise use user's own.
@@ -1119,6 +1130,10 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (isAIFallbackEnabled !== undefined) updateFields.isAIFallbackEnabled = isAIFallbackEnabled;
     if (flowFolders !== undefined) updateFields.flowFolders = flowFolders;
     if (visualFlows !== undefined) updateFields.visualFlows = visualFlows;
+    if (websiteChatWidgetConfig !== undefined) {
+      const { mergeWebsiteWidgetConfig } = require('../utils/websiteWidgetDefaults');
+      updateFields.websiteChatWidgetConfig = mergeWebsiteWidgetConfig(websiteChatWidgetConfig);
+    }
 
     // Partial flow graph merge (autosave) — avoids sending full visualFlows payloads
     if (flowDraft && flowDraft.flowId) {
@@ -2340,7 +2355,14 @@ router.post('/flow/publish/:clientId', protect, async (req, res) => {
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ error: 'Client not found' });
 
-    const { nodes = [], edges = [], note, flowId, forcePublish = false } = req.body;
+    const {
+      nodes = [],
+      edges = [],
+      note,
+      flowId,
+      forcePublish = false,
+      platform = 'whatsapp',
+    } = req.body;
 
     // Strict publish preflight (same gate as canonical /api/flow/publish)
     const { preflightValidateFlowGraph } = require('../utils/flowPublishPreflight');
@@ -2359,6 +2381,66 @@ router.post('/flow/publish/:clientId', protect, async (req, res) => {
     }
     if (!preflight.valid && forcePublish) {
       log.warn(`[Publish Override] ${clientId} forced publish with ${preflight.errors.length} error(s).`);
+    }
+
+    const targetFlowId =
+      flowId ||
+      client.visualFlows?.find((f) => f.platform === platform && f.isActive)?.id ||
+      client.visualFlows?.find((f) => f.id === flowId)?.id;
+
+    // Website widget: store published graph on visualFlows — no Meta template sync
+    if (platform === 'website') {
+      const flows = Array.isArray(client.visualFlows) ? [...client.visualFlows] : [];
+      const idx = flows.findIndex((f) => String(f.id) === String(targetFlowId));
+      if (idx < 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Website flow not found. Save the flow in Flow Builder first.',
+        });
+      }
+      flows.forEach((f, i) => {
+        if (f.platform === 'website') {
+          flows[i] = { ...f, isActive: String(f.id) === String(targetFlowId) };
+        }
+      });
+      flows[idx] = {
+        ...flows[idx],
+        platform: 'website',
+        isActive: true,
+        nodes,
+        edges,
+        publishedNodes: nodes,
+        publishedEdges: edges,
+        publishedAt: new Date(),
+        updatedAt: new Date(),
+      };
+      client.visualFlows = flows;
+      client.markModified('visualFlows');
+      const cfg = client.websiteChatWidgetConfig || {};
+      client.websiteChatWidgetConfig = {
+        ...cfg,
+        experience: 'guided',
+        flowId: String(targetFlowId),
+        mode: cfg.mode && cfg.mode !== 'guided' ? cfg.mode : 'guided',
+      };
+      await client.save();
+
+      await AuditLog.create({
+        clientId,
+        user_id: req.user.id,
+        action_type: 'PUBLISH_WEBSITE_WIDGET_FLOW',
+        target_resource: targetFlowId,
+        payload: { nodeCount: nodes.length, edgeCount: edges.length, platform: 'website' },
+      });
+
+      return res.json({
+        success: true,
+        message: 'Website chat widget flow published.',
+        platform: 'website',
+        flowId: targetFlowId,
+        preflight,
+        publishOverride: !!forcePublish,
+      });
     }
     
     // 1. Identify Templates used in the flow
@@ -2414,14 +2496,17 @@ router.post('/flow/publish/:clientId', protect, async (req, res) => {
     await client.save();
     
     // 5. Sync to WhatsAppFlow Collection
-    const activeFlow = client.visualFlows?.find(f => f.isActive) || client.visualFlows?.[0];
-    const targetFlowId = flowId || (activeFlow ? activeFlow.id : null);
+    const activeFlow =
+      client.visualFlows?.find((f) => f.isActive && f.platform !== 'website') ||
+      client.visualFlows?.find((f) => f.platform !== 'website') ||
+      client.visualFlows?.[0];
+    const waTargetFlowId = flowId || (activeFlow ? activeFlow.id : null);
     
-    if (targetFlowId) {
+    if (waTargetFlowId) {
        // Mark all others DRAFT, make this one PUBLISHED
        await WhatsAppFlow.updateMany({ clientId, platform: 'whatsapp' }, { $set: { status: 'DRAFT', isActive: false } });
        await WhatsAppFlow.findOneAndUpdate(
-           { clientId, flowId: targetFlowId },
+           { clientId, flowId: waTargetFlowId },
            {
                $set: {
                    status: 'PUBLISHED',
@@ -2447,7 +2532,7 @@ router.post('/flow/publish/:clientId', protect, async (req, res) => {
       clientId,
       user_id: req.user.id,
       action_type: 'PUBLISH_FLOW',
-      target_resource: targetFlowId || 'main',
+      target_resource: waTargetFlowId || 'main',
       payload: {
         nodeCount: nodes.length,
         edgeCount: edges.length,

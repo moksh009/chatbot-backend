@@ -78,10 +78,7 @@ const modules = [
   './routes/igAutomationRoutes',
   './routes/inboxRoutes',
   './routes/masterWebhook',
-  './routes/productTriggers',
   './routes/webhooks',
-  './routes/instagramWebhook',
-  './routes/engines/genericAppointment',
   './routes/engines/genericEcommerce'
 ];
 

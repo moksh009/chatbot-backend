@@ -278,6 +278,31 @@ const ClientSchema = new mongoose.Schema({
     welcomeMessage: { type: String, default: 'Welcome to our WhatsApp updates!' },
   },
 
+  /** Website chat widget (Settings → Chat Widget, public/widget.js) */
+  websiteChatWidgetConfig: {
+    enabled: { type: Boolean, default: true },
+    mode: { type: String, default: 'both' }, // whatsapp | form | both | guided
+    experience: { type: String, default: 'classic' }, // classic | guided
+    flowId: { type: String, default: '' },
+    theme: { type: String, default: '#7C3AED' },
+    themeSecondary: { type: String, default: '#5B21B6' },
+    position: { type: String, default: 'bottom-right' },
+    delaySeconds: { type: Number, default: 3 },
+    greeting: { type: String, default: 'Hi! How can we help you today? 👋' },
+    launcherIcon: { type: String, default: 'chat' }, // chat | whatsapp | sparkle | custom
+    customIconUrl: { type: String, default: '' },
+    headerTitle: { type: String, default: '' },
+    headerSubtitle: { type: String, default: '' },
+    showPoweredBy: { type: Boolean, default: true },
+    poweredByText: { type: String, default: 'Powered by AI' },
+    poweredByUrl: { type: String, default: 'https://topedgeai.com' },
+    logoUrl: { type: String, default: '' },
+    launcherStyle: { type: String, default: 'pill' }, // circle | pill
+    launcherLabel: { type: String, default: 'Chat with us' },
+    autoOpen: { type: Boolean, default: false },
+    bubblePulse: { type: Boolean, default: true },
+  },
+
   // --- WIZARD-OWNED CONFIG (Onboarding → Settings → Generator) ---
   wizardFeatures: { type: WizardFeaturesSchema, default: () => ({}) },
   rtoProtection: { type: RtoProtectionSchema, default: () => ({}) },
