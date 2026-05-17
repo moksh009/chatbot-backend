@@ -101,6 +101,7 @@ router.post('/new', protect, async (req, res) => {
     
     const io = req.app.get('socketio');
     if (io) {
+      io.to(`client_${req.user.clientId}`).emit('support_update', chat);
       io.to('super_admin_room').emit('new_support_activity', chat);
     }
     
@@ -365,6 +366,36 @@ router.post('/:id/reply', protect, async (req, res) => {
   }
 });
 
+// Admin: Take over conversation (human control, AI paused)
+router.post('/:id/takeover', protect, async (req, res) => {
+  if (req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ message: 'Unauthorized' });
+  try {
+    const chat = await SupportChat.findById(req.params.id);
+    if (!chat) return res.status(404).json({ message: 'Chat not found' });
+
+    const note = String(req.body?.message || '').trim();
+    chat.status = 'human_takeover';
+    chat.messages.push({
+      sender: 'ai',
+      text: note || 'A human support specialist has joined this conversation. They will assist you shortly.',
+    });
+    chat.lastMessageAt = Date.now();
+    chat.hasUnreadUser = true;
+    chat.hasUnreadAdmin = false;
+    await chat.save();
+
+    const io = req.app.get('socketio');
+    if (io) {
+      io.to(`client_${chat.clientId}`).emit('support_update', chat);
+      io.to('super_admin_room').emit('support_update', chat);
+    }
+
+    res.json(chat);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // Admin: Release to AI
 router.post('/:id/release', protect, async (req, res) => {
   if (req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ message: 'Unauthorized' });
@@ -372,15 +403,29 @@ router.post('/:id/release', protect, async (req, res) => {
     const chat = await SupportChat.findById(req.params.id);
     if (!chat) return res.status(404).json({ message: 'Chat not found' });
 
-    chat.status = 'active'; // Reset to active
-    chat.messages.push({ sender: 'ai', text: 'Human expert has released control. AI is now back online.' });
+    const customMessage = String(req.body?.message || '').trim();
+    const releaseNote = String(req.body?.internalNote || '').trim();
+
+    chat.status = 'active';
+    chat.messages.push({
+      sender: 'ai',
+      text:
+        customMessage ||
+        'Thanks for chatting with our team. I\'m back online — ask me anything about your dashboard.',
+    });
     chat.lastMessageAt = Date.now();
+    chat.hasUnreadUser = true;
     chat.hasUnreadAdmin = false;
+    if (releaseNote) {
+      if (!Array.isArray(chat.adminNotes)) chat.adminNotes = [];
+      chat.adminNotes.push({ text: releaseNote, createdAt: new Date() });
+    }
     await chat.save();
 
     const io = req.app.get('socketio');
     if (io) {
       io.to(`client_${chat.clientId}`).emit('support_update', chat);
+      io.to('super_admin_room').emit('support_update', chat);
     }
 
     res.json(chat);

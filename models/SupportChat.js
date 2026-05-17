@@ -23,7 +23,11 @@ const supportChatSchema = new mongoose.Schema({
   status: { type: String, enum: ['active', 'human_requested', 'human_takeover', 'resolved'], default: 'active' },
   lastMessageAt: { type: Date, default: Date.now },
   hasUnreadAdmin: { type: Boolean, default: false },
-  hasUnreadUser: { type: Boolean, default: false }
+  hasUnreadUser: { type: Boolean, default: false },
+  adminNotes: [{
+    text: { type: String, default: '' },
+    createdAt: { type: Date, default: Date.now },
+  }],
 }, { timestamps: true });
 
 module.exports = mongoose.model('SupportChat', supportChatSchema);
