@@ -1049,9 +1049,69 @@ router.get("/:clientId/debug-shopify", protect, async (req, res) => {
 
 
 
+function libraryEntryToWizardTemplate(entry) {
+  const components = [];
+  const ht = String(entry.headerType || "NONE").toUpperCase();
+  if (ht === "IMAGE") {
+    components.push({ type: "HEADER", format: "IMAGE", _imageUrl: "" });
+  } else if (ht === "TEXT" && entry.headerText) {
+    components.push({ type: "HEADER", format: "TEXT", text: entry.headerText });
+  }
+  if (entry.bodyText) components.push({ type: "BODY", text: entry.bodyText });
+  if (entry.footerText) components.push({ type: "FOOTER", text: entry.footerText });
+  if (Array.isArray(entry.buttons) && entry.buttons.length) {
+    components.push({ type: "BUTTONS", buttons: entry.buttons });
+  }
+  return {
+    id: entry.key,
+    name: entry.metaName || entry.key,
+    category: entry.category || "UTILITY",
+    language: "en",
+    status: "not_submitted",
+    required: false,
+    description: entry.displayName || entry.metaName,
+    libraryKey: entry.key,
+    components,
+    body: entry.bodyText || "",
+    variables: [],
+  };
+}
+
+function getExtendedWizardTemplates(wizardData = {}) {
+  const { PREBUILT_TEMPLATE_LIBRARY } = require("../constants/prebuiltTemplateLibrary");
+  const feats = wizardData.features || {};
+  const base = getPrebuiltTemplates(wizardData);
+  const names = new Set(base.map((t) => t.name));
+  const extras = [];
+
+  const maybeAdd = (metaName) => {
+    if (names.has(metaName)) return;
+    const entry = PREBUILT_TEMPLATE_LIBRARY.find((t) => t.metaName === metaName || t.key === metaName);
+    if (!entry) return;
+    names.add(entry.metaName);
+    extras.push(libraryEntryToWizardTemplate(entry));
+  };
+
+  if (feats.enableLoyalty) maybeAdd("loyalty_reminder_v1");
+  if (feats.enableWarranty) maybeAdd("warranty_registration_v1");
+  if (feats.enableOrderConfirmTpl !== false) maybeAdd("cod_confirmation_v1");
+  maybeAdd("order_shipped_v1");
+
+  return [...base, ...extras];
+}
+
+function hydrateWizardTemplateStatuses(client, templates) {
+  const pendingMap = new Map((client?.pendingTemplates || []).map((t) => [t.name, String(t.status || "PENDING").toUpperCase()]));
+  const syncedMap = new Map((client?.syncedMetaTemplates || []).map((t) => [t.name, String(t.status || "APPROVED").toUpperCase()]));
+  const msgMap = new Map((client?.messageTemplates || []).map((t) => [t.name, String(t.status || "").toUpperCase()]));
+  return templates.map((tpl) => {
+    const status = syncedMap.get(tpl.name) || pendingMap.get(tpl.name) || msgMap.get(tpl.name) || tpl.status || "not_submitted";
+    return { ...tpl, status };
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/wizard/:clientId/templates
-// Get the pre-built templates to show in Step 8 of the wizard
+// POST /api/wizard/:clientId/templates — list + hydrate status
 // ─────────────────────────────────────────────────────────────────────────────
 router.post("/:clientId/templates", protect, async (req, res) => {
   const { clientId } = req.params;
@@ -1061,18 +1121,106 @@ router.post("/:clientId/templates", protect, async (req, res) => {
   }
   try {
     const client = await Client.findOne({ clientId }).lean();
-    const templates = getPrebuiltTemplates(wizardData || {});
-    const pendingMap = new Map((client?.pendingTemplates || []).map((t) => [t.name, String(t.status || "PENDING").toUpperCase()]));
-    const syncedMap = new Map((client?.syncedMetaTemplates || []).map((t) => [t.name, String(t.status || "APPROVED").toUpperCase()]));
-    const msgMap = new Map((client?.messageTemplates || []).map((t) => [t.name, String(t.status || "").toUpperCase()]));
-
-    const hydrated = templates.map((tpl) => {
-      const status = syncedMap.get(tpl.name) || pendingMap.get(tpl.name) || msgMap.get(tpl.name) || tpl.status || "not_submitted";
-      return { ...tpl, status };
-    });
+    const templates = getExtendedWizardTemplates(wizardData || {});
+    const hydrated = hydrateWizardTemplateStatuses(client, templates);
     res.json({ success: true, templates: hydrated });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+router.put("/:clientId/templates/:templateName", protect, async (req, res) => {
+  const { clientId, templateName } = req.params;
+  if (!assertWizardTenant(req, clientId).ok) {
+    return res.status(403).json({ error: "Unauthorized" });
+  }
+  try {
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ success: false, error: "Client not found" });
+
+    const { components, category, language, body, description } = req.body || {};
+    const name = String(templateName || "").trim();
+    if (!name) return res.status(400).json({ success: false, error: "templateName required" });
+
+    const templates = Array.isArray(client.messageTemplates) ? [...client.messageTemplates] : [];
+    const idx = templates.findIndex((t) => t?.name === name);
+    const prev = idx >= 0 ? templates[idx] : {};
+    const nextComponents = Array.isArray(components) && components.length ? components : prev.components || [];
+    const merged = {
+      ...prev,
+      name,
+      category: (category || prev.category || "UTILITY").toUpperCase(),
+      language: language || prev.language || "en",
+      components: nextComponents,
+      body: body != null ? body : prev.body || "",
+      description: description || prev.description || "",
+      status: String(prev.status || "DRAFT").toUpperCase() === "APPROVED" ? "APPROVED" : "DRAFT",
+      source: "wizard",
+      updatedAt: new Date(),
+    };
+    if (idx >= 0) templates[idx] = merged;
+    else templates.push({ ...merged, createdAt: new Date() });
+
+    await Client.updateOne({ clientId }, { $set: { messageTemplates: templates } });
+    res.json({ success: true, template: merged });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post("/:clientId/templates/prepare", protect, async (req, res) => {
+  const { clientId } = req.params;
+  const { wizardData } = req.body;
+  if (!assertWizardTenant(req, clientId).ok) {
+    return res.status(403).json({ error: "Unauthorized" });
+  }
+  try {
+    const client = await Client.findOne({ clientId });
+    if (!client) return res.status(404).json({ success: false, error: "Client not found" });
+
+    const catalog = getExtendedWizardTemplates(wizardData || {});
+    const templates = Array.isArray(client.messageTemplates) ? [...client.messageTemplates] : [];
+    const byName = new Map(templates.map((t) => [t.name, t]));
+    let added = 0;
+    let updated = 0;
+
+    for (const tpl of catalog) {
+      const name = tpl.name;
+      if (!name) continue;
+      const existing = byName.get(name);
+      if (!existing) {
+        byName.set(name, {
+          name,
+          category: tpl.category || "UTILITY",
+          language: tpl.language || "en",
+          components: tpl.components || [],
+          body: tpl.body || "",
+          description: tpl.description || "",
+          status: "DRAFT",
+          source: "wizard",
+          required: !!tpl.required,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+        added += 1;
+      } else if (!existing.components?.length && tpl.components?.length) {
+        byName.set(name, {
+          ...existing,
+          components: tpl.components,
+          body: tpl.body || existing.body,
+          category: tpl.category || existing.category,
+          updatedAt: new Date(),
+        });
+        updated += 1;
+      }
+    }
+
+    const next = Array.from(byName.values());
+    await Client.updateOne({ clientId }, { $set: { messageTemplates: next } });
+    const hydrated = hydrateWizardTemplateStatuses({ ...client.toObject(), messageTemplates: next }, catalog);
+    res.json({ success: true, added, updated, templates: hydrated });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
