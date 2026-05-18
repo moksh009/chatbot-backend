@@ -209,9 +209,14 @@ router.get('/:id/messages', protect, logPersonalDataAccess, async (req, res) => 
       .limit(limit)
       .lean();
 
+    const chronological = messages.reverse();
+    const oldestWithTs = chronological.find((m) => m.timestamp);
     res.json({
-      messages: messages.reverse(), // Return in chronological order for UI
-      nextCursor: messages.length === limit ? messages[0].timestamp.toISOString() : null,
+      messages: chronological,
+      nextCursor:
+        chronological.length === limit && oldestWithTs?.timestamp
+          ? new Date(oldestWithTs.timestamp).toISOString()
+          : null,
       hasMore: messages.length === limit,
       meta: {
         customerPhone: conversation.phone,
@@ -229,20 +234,22 @@ router.get('/:id/messages', protect, logPersonalDataAccess, async (req, res) => 
 // @access  Private
 router.delete('/:id/messages', protect, logPersonalDataAccess, async (req, res) => {
   try {
-    const clientId = req.user.role === 'SUPER_ADMIN'
-      ? (req.body?.clientId || req.user.clientId)
-      : req.user.clientId;
-    const clearScope = String(req.body?.clearScope || '').trim();
+    const clientId = tenantClientId(req);
+    const clearScope = String(
+      req.body?.clearScope || req.query?.clearScope || ''
+    ).trim();
 
     const { clearConversationMessages } = require('../utils/clearConversationMessages');
     const result = await clearConversationMessages({
       conversationId: req.params.id,
       clientId,
       clearScope,
+      allowAnyClient: req.user.role === 'SUPER_ADMIN',
     });
 
     res.json({ success: true, ...result });
   } catch (error) {
+    console.error('[DELETE /conversations/:id/messages]', error);
     const status = error.statusCode || 500;
     res.status(status).json({
       success: false,
