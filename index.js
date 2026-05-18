@@ -514,7 +514,9 @@ require('./cron/csatCron')();
 require('./cron/leadScoringCron');
 require('./cron/igTokenRefresher');
 require('./cron/autoResolutionCron');
-require('./cron/scheduledMessageCron')();
+if (process.env.CRON_USE_COORDINATOR === 'false') {
+  require('./cron/scheduledMessageCron')();
+}
 } // RUN_CRONS
 
 const http = require('http');

@@ -6,7 +6,8 @@ const { getAppRedis } = require("./redisFactory");
 const DEDUP_TTL_SEC = Number(process.env.WEBHOOK_DEDUP_TTL_SEC || 120);
 
 /**
- * Atomic inbound dedup — call before any expensive webhook work.
+ * Atomic inbound dedup — call ONCE per webhook path (e.g. dynamicClientRouter only).
+ * Do not call again in genericEcommerce; the Redis key is set on first claim.
  * @returns {Promise<boolean>} true if duplicate (should skip processing)
  */
 async function isDuplicateInbound(messageId, clientId, phone = "unknown") {

@@ -588,6 +588,7 @@ async function runDualBrainEngine(parsedMessage, client) {
           const acquired = await redisClient.set(lockKey, _lockOwnerId, 'NX', 'EX', REDIS_SESSION_LOCK_TTL_SEC);
           if (!acquired) {
               log.warn(`[Lock] Session locked for ${phone} — will retry via inbound queue.`);
+              endEngineRun(client.clientId, phone);
               return false;
           }
       } else {
@@ -599,12 +600,14 @@ async function runDualBrainEngine(parsedMessage, client) {
           );
           if (existingLock._lockOwnerId !== _lockOwnerId) {
             log.warn(`[Lock] Session locked for ${phone} — will retry via inbound queue.`);
+            endEngineRun(client.clientId, phone);
             return false;
           }
       }
   } catch (lockErr) {
       if (lockErr.code === 11000) {
         log.warn(`[Lock] Session locked for ${phone} (duplicate key) — will retry via inbound queue.`);
+        endEngineRun(client.clientId, phone);
         return false;
       }
       log.error(`[Lock] Unexpected lock error for ${phone}:`, lockErr.message);

@@ -741,13 +741,8 @@ const handleWebhook = async (req, res) => {
         res.status(200).end();
         if (!messages || !from) return;
 
-        const { isDuplicateInbound } = require('../../utils/webhookDedup');
-        const messageId = messages.id;
-        const clientId = req.clientConfig.clientId;
-        if (messageId && (await isDuplicateInbound(messageId, clientId, from))) {
-            log.info(`[EcommerceEngine] Duplicate webhook skipped ${messageId} for ${clientId}`);
-            return;
-        }
+        // Dedup is handled once in dynamicClientRouter before this handler is called.
+        // A second isDuplicateInbound() here always returned true and dropped every message.
 
         const parsedMessage = {
             ...messages,
@@ -771,6 +766,7 @@ const handleWebhook = async (req, res) => {
             clientConfig: req.clientConfig,
             processor: async (msg, config) => {
                 try {
+                    log.info(`[EcommerceEngine] Processing inbound from ${msg.from} for ${config.clientId}`);
                     await processEcommerceInbound(msg, config, { helperParams, io });
                 } catch (err) {
                     log.error('[EcommerceEngine] Async inbound error:', err.message);
