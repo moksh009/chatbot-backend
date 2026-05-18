@@ -61,6 +61,9 @@ function getClientCatalogIdString(client) {
 }
 
 const SESSION_LOCK_TIMEOUT = 10000; // 10 seconds (Fallback for TTL)
+/** Hard cap for one inbound WhatsApp turn (Render free tier must stay well under this) */
+const DUAL_BRAIN_BUDGET_MS = 22000;
+const REDIS_SESSION_LOCK_TTL_SEC = 60;
 
 /**
  * Helper to wrap promises with a timeout
@@ -453,7 +456,8 @@ async function checkIntent(userText, intentDescription, apiKey) {
 User Message: "${userText}"
 Intent Description: "${intentDescription}"
 Does the user message match the intent description? Reply ONLY with "YES" or "NO".`;
-    const response = await generateText(prompt, apiKey, { noEnvFallback: true });
+    const { generateTextFast } = require('./gemini');
+    const response = await generateTextFast(prompt, apiKey, { noEnvFallback: true });
     if (response && response.toUpperCase().includes('YES')) {
       return true;
     }
@@ -493,10 +497,10 @@ async function runDualBrainEngine(parsedMessage, client) {
   try {
       if (redisClient && redisClient.status === 'ready') {
           // Redis atomic lock (30s TTL)
-          const acquired = await redisClient.set(lockKey, _lockOwnerId, 'NX', 'EX', 30);
+          const acquired = await redisClient.set(lockKey, _lockOwnerId, 'NX', 'EX', REDIS_SESSION_LOCK_TTL_SEC);
           if (!acquired) {
-              log.warn(`[Lock] Session locked for ${phone} by another request. Skipping.`);
-              return true;
+              log.warn(`[Lock] Session locked for ${phone} — will retry via inbound queue.`);
+              return false;
           }
       } else {
           // Fallback to MongoDB if Redis is unavailable
@@ -506,20 +510,20 @@ async function runDualBrainEngine(parsedMessage, client) {
             { upsert: true, new: true, lean: true }
           );
           if (existingLock._lockOwnerId !== _lockOwnerId) {
-            log.warn(`[Lock] Session locked for ${phone} by another request. Skipping.`);
-            return true;
+            log.warn(`[Lock] Session locked for ${phone} — will retry via inbound queue.`);
+            return false;
           }
       }
   } catch (lockErr) {
       if (lockErr.code === 11000) {
-        log.warn(`[Lock] Session locked for ${phone} (duplicate key). Skipping.`);
-        return true;
+        log.warn(`[Lock] Session locked for ${phone} (duplicate key) — will retry via inbound queue.`);
+        return false;
       }
       log.error(`[Lock] Unexpected lock error for ${phone}:`, lockErr.message);
       return true;
   }
 
-  try {
+  const runEngineBody = async () => {
     const profileName = parsedMessage.profileName || '';
     const inboundText = parsedMessage.text?.body || parsedMessage.interactive?.button_reply?.title || parsedMessage.interactive?.list_reply?.title || '';
     const txtLower = inboundText.toLowerCase().trim();
@@ -623,9 +627,9 @@ async function runDualBrainEngine(parsedMessage, client) {
     let detectedLanguage = 'en';
     const inboundGeminiKey = resolveClientGeminiKey(client);
 
-    if (inboundText && inboundText.length > 2) {
+    if (inboundText && inboundText.length > 2 && inboundGeminiKey) {
         try {
-            detectedLanguage = await detectLanguage(inboundText, inboundGeminiKey || '');
+            detectedLanguage = await detectLanguage(inboundText, inboundGeminiKey);
             parsedMessage.detectedLanguage = detectedLanguage;
         } catch (err) {
             log.warn('[Language] Detection skipped (Invalid Key/Timeout)');
@@ -756,7 +760,16 @@ async function runDualBrainEngine(parsedMessage, client) {
   const limits = await checkLimit(client._id, 'messages');
   if (!limits.allowed) {
       log.warn(`Limit Reached for ${client.clientId}. Halting DualBrain Engine processing.`);
-      return true; 
+      try {
+        await sendWhatsAppText(
+          client,
+          phone,
+          "We've reached our WhatsApp message limit for this billing period. Please contact the store team directly — they'll reply as soon as possible."
+        );
+      } catch (limitNotifyErr) {
+        log.warn(`[Limit] Could not notify ${phone}:`, limitNotifyErr.message);
+      }
+      return true;
   }
   // Track this transaction 
   await incrementUsage(client._id, 'messages', 1);
@@ -840,8 +853,8 @@ async function runDualBrainEngine(parsedMessage, client) {
   if (NegotiationEngine.isNegotiationAttempt(incomingText)) {
       log.info(`[DualBrain] 🤖 Negotiation triggered for lead ${lead.phoneNumber}`);
       const negotiatedResponse = await NegotiationEngine.processNegotiation(client, lead, incomingText, convo, phone);
-      if (negotiatedResponse) {
-          await sendWhatsAppText(client, phone, negotiatedResponse);
+      if (negotiatedResponse?.handled && negotiatedResponse.reply) {
+          await sendWhatsAppText(client, phone, negotiatedResponse.reply);
           // Preempt further processing since we're handling the objection
           return true;
       }
@@ -1961,11 +1974,26 @@ async function runDualBrainEngine(parsedMessage, client) {
   }
   
   // Return false so the engine can process legacy interactive IDs
-  analyzeConversationIntelligence(client, phone, convo);
+  setImmediate(() => analyzeConversationIntelligence(client, phone, convo));
     return false;
+  };
+
+  try {
+    return await withTimeout(runEngineBody(), DUAL_BRAIN_BUDGET_MS, 'DualBrain');
   } catch (err) {
-      log.error(`[DualBrain] Critical Engine Error for ${phone}:`, err.message);
-      return false;
+    if (String(err.message || '').includes('timed out')) {
+      log.error(`[DualBrain] Hard timeout (${DUAL_BRAIN_BUDGET_MS}ms) for ${phone} on ${client.clientId}`);
+      try {
+        await sendWhatsAppText(
+          client,
+          phone,
+          "Thanks for your message! We're catching up — type *menu* or try again in a moment."
+        );
+      } catch (_) {}
+      return true;
+    }
+    log.error(`[DualBrain] Critical Engine Error for ${phone}:`, err.message);
+    return false;
   } finally {
       // Release distributed lock — only if WE own it
       try {
@@ -1987,8 +2015,10 @@ async function runDualBrainEngine(parsedMessage, client) {
       }
       // TTL Safety: Warn if engine run approached the 30-second lock timeout
       const _lockElapsed = Date.now() - _lockStartTime;
-      if (_lockElapsed > 25000) {
-        log.warn(`[Lock] ⚠️ Engine took ${_lockElapsed}ms for ${phone} — close to 30s TTL limit!`);
+      if (_lockElapsed > DUAL_BRAIN_BUDGET_MS) {
+        log.warn(`[Lock] ⚠️ Engine took ${_lockElapsed}ms for ${phone} — exceeded ${DUAL_BRAIN_BUDGET_MS}ms budget (deploy timeouts + Shopify 12s cap if still slow).`);
+      } else if (_lockElapsed > 15000) {
+        log.warn(`[Lock] Engine took ${_lockElapsed}ms for ${phone} — investigate Shopify/Gemini nodes in flow.`);
       }
       log.info(`[DualBrain] Completed for ${phone} in ${Date.now() - _lockStartTime}ms`);
   }

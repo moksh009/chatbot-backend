@@ -651,6 +651,7 @@ router.get('/flows', protect, async (req, res) => {
     ]);
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
+    const lite = req.query.lite === '1' || req.query.lite === 'true';
     const formattedFlows = dbFlows.map(f => ({
       id: f.flowId,
       name: f.name,
@@ -659,8 +660,9 @@ router.get('/flows', protect, async (req, res) => {
       isActive: f.status === 'PUBLISHED',
       status: f.status || 'DRAFT',
       version: f.version || 1,
-      nodes: f.nodes || [],
-      edges: f.edges || [],
+      ...(lite
+        ? {}
+        : { nodes: f.nodes || [], edges: f.edges || [] }),
       nodeCount: (f.nodes || []).length,
       edgeCount: (f.edges || []).length,
       createdAt: f.createdAt,
@@ -728,6 +730,44 @@ router.post('/:flowId/duplicate', protect, async (req, res) => {
       }
     });
   } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// GET /api/flow/flows/:flowId/graph — full nodes/edges for one flow (Flow Builder canvas)
+router.get('/flows/:flowId/graph', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized access to flows' });
+    }
+    const { flowId } = req.params;
+    const WhatsAppFlow = require('../models/WhatsAppFlow');
+    const flow = await WhatsAppFlow.findOne({ clientId, flowId }).lean();
+    if (!flow) {
+      return res.status(404).json({ success: false, message: 'Flow not found' });
+    }
+    res.json({
+      success: true,
+      flow: {
+        id: flow.flowId,
+        name: flow.name,
+        platform: flow.platform || 'whatsapp',
+        folderId: flow.folderId || '',
+        isActive: flow.status === 'PUBLISHED',
+        status: flow.status || 'DRAFT',
+        version: flow.version || 1,
+        nodes: flow.nodes || [],
+        edges: flow.edges || [],
+        nodeCount: (flow.nodes || []).length,
+        edgeCount: (flow.edges || []).length,
+        createdAt: flow.createdAt,
+        updatedAt: flow.updatedAt,
+        lastSyncedAt: flow.lastSyncedAt,
+      },
+    });
+  } catch (error) {
+    console.error('[Flow API] Graph load error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });

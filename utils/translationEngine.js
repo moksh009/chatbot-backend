@@ -1,4 +1,4 @@
-const { generateText } = require("./gemini");
+const { generateTextFast } = require("./gemini");
 
 /**
  * Translates text into the target language.
@@ -37,8 +37,7 @@ ${text}
   if (!key) return text;
 
   try {
-    const result = await generateText(prompt, key, {
-      temperature: 0.1,
+    const result = await generateTextFast(prompt, key, {
       maxTokens: 800,
       noEnvFallback: true,
     });
@@ -67,8 +66,7 @@ ${text}
 `;
 
   try {
-    const result = await generateText(prompt, key, {
-      temperature: 0.0,
+    const result = await generateTextFast(prompt, key, {
       maxTokens: 10,
       noEnvFallback: true,
     });

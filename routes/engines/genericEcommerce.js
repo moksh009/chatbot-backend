@@ -9,6 +9,8 @@ const ReviewRequest = require('../../models/ReviewRequest');
 const Client = require('../../models/Client');
 const { sendOrderConfirmationEmail, sendCODToPrepaidEmail } = require('../../utils/emailService');
 const { runDualBrainEngine } = require('../../utils/dualBrainEngine');
+const { enqueueInboundProcessing } = require('../../utils/inboundMessageQueue');
+const log = require('../../utils/logger')('EcommerceEngine');
 const { generateText } = require('../../utils/gemini');
 const { resolveClientGeminiKey } = require('../../utils/clientGeminiKey');
 const { normalizePhone } = require('../../utils/helpers');
@@ -524,36 +526,18 @@ async function sendCODToPrepaidNudge(order, clientConfig, phone) {
 
 // --- 3. WEBHOOK HANDLER ---
 
-const handleWebhook = async (req, res) => {
-    try {
-        const entry = req.body.entry?.[0];
-        const value = entry?.changes?.[0]?.value;
-        const messages = value?.messages?.[0];
-        const contact = value?.contacts?.[0];
-        const profileName = contact?.profile?.name || '';
-        const phoneNumberId = value?.metadata?.phone_number_id;
-        const from = messages?.from;
+async function processEcommerceInbound(parsedMessage, clientConfig, { helperParams, io }) {
+        const messages = parsedMessage;
+        const from = parsedMessage.from;
+        const { clientId, nicheData, plan } = clientConfig;
 
-        res.status(200).end();
-        if (!messages || !from) return;
-
-        const { clientId, whatsappToken: token, nicheData, plan } = req.clientConfig;
-        const io = req.app.get('socketio');
-        const helperParams = { phoneNumberId, token, io, clientConfig: req.clientConfig };
-
-        // Parse Message
-        const parsedMessage = {
-            ...messages,
-            from,
-            profileName,
-            messageId: messages.id
-        };
-
-        // --- DUAL-BRAIN ENGINE (Graph -> Keyword -> AI) ---
-        const handledByDualBrain = await runDualBrainEngine(parsedMessage, req.clientConfig);
-
+        let handledByDualBrain = await runDualBrainEngine(parsedMessage, clientConfig);
+        if (!handledByDualBrain) {
+            await new Promise((r) => setTimeout(r, 1200));
+            handledByDualBrain = await runDualBrainEngine(parsedMessage, clientConfig);
+        }
         if (handledByDualBrain) {
-            return res.status(200).end();
+            return;
         }
 
         const userMsgType = messages?.type;
@@ -562,10 +546,10 @@ const handleWebhook = async (req, res) => {
         // --- STRICT FLOW ENFORCEMENT ---
         // If the client has Flow Builder nodes, we do NOT fall back to legacy hardcoded menus.
         // This ensures the Flow Builder is the single source of truth for the customer experience.
-        const hasFlowNodes = req.clientConfig.flowNodes && req.clientConfig.flowNodes.length > 0;
+        const hasFlowNodes = clientConfig.flowNodes && clientConfig.flowNodes.length > 0;
         if (hasFlowNodes) {
-            console.log(`[EcommerceEngine] Flow nodes exist for ${clientId}. Skipping legacy fallback handlers.`);
-            return res.status(200).end();
+            log.info(`[EcommerceEngine] Flow nodes exist for ${clientId}. Skipping legacy fallback handlers.`);
+            return;
         }
 
         // --- LEGACY INTERACTIVE ACTIONS FLAG ---
@@ -584,29 +568,29 @@ const handleWebhook = async (req, res) => {
             if (interactiveId === 'menu_products') {
                 if (lead) await logActivity(lead._id, 'navigated', 'Product Menu');
                 await sendCatalogue({ ...helperParams, to: from });
-                return res.status(200).end();
+                return;
             }
             if (interactiveId.startsWith('view_prod_')) {
                 const pId = interactiveId.replace('view_prod_', '');
                 if (lead) await logActivity(lead._id, 'viewed_product', pId);
                 await sendProductDetails({ ...helperParams, to: from, productId: pId });
-                return res.status(200).end();
+                return;
             }
             if (interactiveId.startsWith('buy_now_')) {
                 const pId = interactiveId.replace('buy_now_', '');
                 const products = nicheData.products || [];
                 const product = products.find(p => p.id === pId);
                 if (product) {
-                    const url = extractProductUrl(product, req.clientConfig, from);
+                    const url = extractProductUrl(product, clientConfig, from);
                     await sendWhatsAppText({ ...helperParams, to: from, body: `Great choice! Tap the secure link below to complete your order:\n\n👉 ${url}\n\nNeed help? Just reply to this message!` });
                 }
-                return res.status(200).end();
+                return;
             }
 
             if (interactiveId === 'menu_support') {
                 if (lead) await logActivity(lead._id, 'navigated', 'Support Menu');
                 await sendSupportMenu({ ...helperParams, to: from });
-                return res.status(200).end();
+                return;
             }
 
             if (interactiveId.startsWith('faq_')) {
@@ -617,7 +601,7 @@ const handleWebhook = async (req, res) => {
                     if (lead) await logActivity(lead._id, 'read_faq', faq.question);
                     await sendWhatsAppText({ ...helperParams, to: from, body: `*${faq.question}*\n\n${faq.answer}` });
                 }
-                return res.status(200).end();
+                return;
             }
 
             if (interactiveId === 'menu_agent') {
@@ -625,7 +609,7 @@ const handleWebhook = async (req, res) => {
                 await sendWhatsAppText({ ...helperParams, to: from, body: `✅ *Request Received!*\n\nOur human agent has been notified and will reply shortly to your number.` });
                 conversation.status = 'HUMAN_TAKEOVER';
                 await conversation.save();
-                return res.status(200).end();
+                return;
             }
 
             // --- Phase 7 ROI & Review Actions ---
@@ -636,12 +620,12 @@ const handleWebhook = async (req, res) => {
                     const msg = `Here's your secure payment link 🔐\n\n👉 ${order.razorpayUrl}\n\nPay via GPay, PhonePe, or any UPI. Valid for 2 hours.`;
                     await sendWhatsAppText({ ...helperParams, to: from, body: msg });
                 }
-                return res.status(200).end();
+                return;
             }
 
             if (interactiveId.startsWith('cod_keep_')) {
                 await sendWhatsAppText({ ...helperParams, to: from, body: "No problem! Your COD order is confirmed. We'll deliver soon. 📦" });
-                return res.status(200).end();
+                return;
             }
 
             if (interactiveId.startsWith('rv_good_')) {
@@ -650,17 +634,17 @@ const handleWebhook = async (req, res) => {
                 await ReviewRequest.findByIdAndUpdate(reviewId, { status: "responded_positive", response: "positive" });
                 const { startOfDay } = require("date-fns");
                 await DailyStat.findOneAndUpdate(
-                    { clientId: req.clientConfig.clientId, date: startOfDay(new Date()) },
+                    { clientId: clientConfig.clientId, date: startOfDay(new Date()) },
                     { $inc: { reviewsCollected: 1, reviewsPositive: 1 } },
                     { upsert: true }
                 );
-                const reviewUrl = review?.reviewUrl || nicheData.googleReviewUrl || req.clientConfig.googleReviewUrl || "";
+                const reviewUrl = review?.reviewUrl || nicheData.googleReviewUrl || clientConfig.googleReviewUrl || "";
                 const replyText = reviewUrl
                     ? `Thank you so much! 🙏 Could you leave a quick Google review? Takes 30 seconds!\n\n⭐ ${reviewUrl}\n\nMeans the world to us!`
                     : `Thank you so much! 🙏 Your feedback means everything to us!`;
                 await sendWhatsAppText({ ...helperParams, to: from, body: replyText });
-                if (io) io.to(`client_${req.clientConfig.clientId}`).emit("stats_update", { type: "review_positive" });
-                return res.status(200).end();
+                if (io) io.to(`client_${clientConfig.clientId}`).emit("stats_update", { type: "review_positive" });
+                return;
             }
 
             if (interactiveId.startsWith('rv_ok_')) {
@@ -668,16 +652,16 @@ const handleWebhook = async (req, res) => {
                 await ReviewRequest.findByIdAndUpdate(reviewId, { status: "responded_positive", response: "neutral" });
                 const { startOfDay } = require("date-fns");
                 await DailyStat.findOneAndUpdate(
-                    { clientId: req.clientConfig.clientId, date: startOfDay(new Date()) },
+                    { clientId: clientConfig.clientId, date: startOfDay(new Date()) },
                     { $inc: { reviewsCollected: 1 } },
                     { upsert: true }
                 );
-                const reviewUrl = nicheData.googleReviewUrl || req.clientConfig.googleReviewUrl || "";
+                const reviewUrl = nicheData.googleReviewUrl || clientConfig.googleReviewUrl || "";
                 const replyText = reviewUrl
                     ? `Thanks for the feedback! 😊 If you have a moment, a quick review would help a lot:\n\n${reviewUrl}`
                     : "Thanks for your feedback! 😊 We'll keep improving!";
                 await sendWhatsAppText({ ...helperParams, to: from, body: replyText });
-                return res.status(200).end();
+                return;
             }
 
             if (interactiveId.startsWith('rv_bad_')) {
@@ -685,7 +669,7 @@ const handleWebhook = async (req, res) => {
                 await ReviewRequest.findByIdAndUpdate(reviewId, { status: "responded_negative", response: "negative" });
                 const { startOfDay } = require("date-fns");
                 await DailyStat.findOneAndUpdate(
-                    { clientId: req.clientConfig.clientId, date: startOfDay(new Date()) },
+                    { clientId: clientConfig.clientId, date: startOfDay(new Date()) },
                     { $inc: { reviewsCollected: 1, reviewsNegative: 1 } },
                     { upsert: true }
                 );
@@ -696,20 +680,20 @@ const handleWebhook = async (req, res) => {
 
                 // Optimization Shield: Direct Admin Notification for Negative Review
                 const NotificationService = require('../../utils/notificationService');
-                await NotificationService.sendAdminAlert(req.clientConfig, {
+                await NotificationService.sendAdminAlert(clientConfig, {
                     customerPhone: from,
                     topic: `Negative Review (${review?.productName || 'General'})`,
                     triggerSource: 'Review Hub Guardrail',
                     channel: 'whatsapp'
                 }).catch(e => console.error("[ReviewGuard] Alert failed", e.message));
 
-                if (io) io.to(`client_${req.clientConfig.clientId}`).emit("attention_required", {
+                if (io) io.to(`client_${clientConfig.clientId}`).emit("attention_required", {
                     phone: from,
                     reason: "Customer unhappy with product",
                     priority: "high"
                 });
                 await sendWhatsAppText({ ...helperParams, to: from, body: "We're really sorry to hear that 😔 Our team will reach out within a few hours to make it right. Your satisfaction is our priority! 蓝" });
-                return res.status(200).end();
+                return;
             }
         }
 
@@ -718,11 +702,11 @@ const handleWebhook = async (req, res) => {
             const txt = userMsg.toLowerCase();
             if (/^(hi|hello|hey|start|menu|shop)/i.test(txt)) {
                 await sendMainMenu({ ...helperParams, to: from });
-                return res.status(200).end();
+                return;
             }
 
             // Gemini AI Fallback for Product Queries — merchant key only (never platform GEMINI_API_KEY)
-            const tenantKey = resolveClientGeminiKey(req.clientConfig);
+            const tenantKey = resolveClientGeminiKey(clientConfig);
             if (plan === 'CX Agent (V2)' && tenantKey) {
                 const prompt = `You are an AI sales agent for an ecommerce store. 
                 Knowledge Base: ${JSON.stringify(nicheData.products || {})}
@@ -731,24 +715,67 @@ const handleWebhook = async (req, res) => {
                 const userMessage = userMsg;
 
                 try {
-                    const aiText = await generateText(`${prompt}\n\nUser: ${userMessage}`, tenantKey, {
+                    const { generateTextFast } = require('../../utils/gemini');
+                    const aiText = await generateTextFast(`${prompt}\n\nUser: ${userMessage}`, tenantKey, {
                       noEnvFallback: true,
                     });
                     if (aiText) await sendWhatsAppText({ ...helperParams, to: from, body: aiText });
                 } catch (e) {
                     console.error('[EcommerceEngine] AI FATAL Error:', e.message);
                 }
-                return res.status(200).end();
+                return;
             }
 
             // Default fallback
             await sendMainMenu({ ...helperParams, to: from });
         }
 
-        return res.status(200).end();
+}
+
+const handleWebhook = async (req, res) => {
+    try {
+        const entry = req.body.entry?.[0];
+        const value = entry?.changes?.[0]?.value;
+        const messages = value?.messages?.[0];
+        const contact = value?.contacts?.[0];
+        const profileName = contact?.profile?.name || '';
+        const phoneNumberId = value?.metadata?.phone_number_id;
+        const from = messages?.from;
+
+        res.status(200).end();
+        if (!messages || !from) return;
+
+        const parsedMessage = {
+            ...messages,
+            from,
+            profileName,
+            messageId: messages.id,
+        };
+
+        const io = req.app.get('socketio');
+        const helperParams = {
+            phoneNumberId,
+            token: req.clientConfig.whatsappToken,
+            io,
+            clientConfig: req.clientConfig,
+        };
+
+        enqueueInboundProcessing({
+            clientId: req.clientConfig.clientId,
+            phone: from,
+            parsedMessage,
+            clientConfig: req.clientConfig,
+            processor: async (msg, config) => {
+                try {
+                    await processEcommerceInbound(msg, config, { helperParams, io });
+                } catch (err) {
+                    log.error('[EcommerceEngine] Async inbound error:', err.message);
+                }
+            },
+        });
     } catch (err) {
-        console.error('[EcommerceEngine] Webhook Error:', err);
-        return res.status(200).end(); // Acknowledge Meta
+        log.error('[EcommerceEngine] Webhook Error:', err.message);
+        if (!res.headersSent) res.status(200).end();
     }
 };
 

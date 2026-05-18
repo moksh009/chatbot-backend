@@ -97,6 +97,7 @@ async function getShopifyClient(clientId, forceRefresh = false) {
 
     const instance = axios.create({
         baseURL: `https://${domain}/admin/api/${apiVersion}`,
+        timeout: 12000,
         headers: { 
             'X-Shopify-Access-Token': token,
             'Content-Type': 'application/json'

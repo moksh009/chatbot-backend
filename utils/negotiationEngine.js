@@ -1,6 +1,7 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const log = require('./logger');
 const { withShopifyRetry } = require('./shopifyHelper');
+const { withTimeout } = require('./asyncTimeout');
 const { sendWhatsAppText } = require('./dualBrainEngine'); // Re-using to send raw text if needed, wait, better let dualBrainEngine handle sending if we return true text.
 const Conversation = require('../models/Conversation');
 const Client = require('../models/Client');
@@ -30,7 +31,7 @@ async function detectNegotiationIntent(userText, apiKey) {
     Is the customer asking for a discount, better price, offer, coupon code, or trying to negotiate/haggle?
     Return a JSON object: {"isNegotiating": boolean, "aggressive": boolean}`;
 
-    const result = await model.generateContent(prompt);
+    const result = await withTimeout(model.generateContent(prompt), 5000, 'NegotiationIntent');
     const data = JSON.parse(result.response.text().trim());
     return data.isNegotiating;
   } catch (err) {
@@ -135,7 +136,7 @@ async function processNegotiation(client, lead, userText, convo, phone) {
        "replyMessage": (string, what the bot should say to the user. MUST mention the offer. Use friendly emojis)
     }`;
 
-    const result = await model.generateContent(prompt);
+    const result = await withTimeout(model.generateContent(prompt), 6000, 'NegotiationReply');
     const data = JSON.parse(result.response.text().trim());
 
     let finalReply = data.replyMessage;
@@ -144,7 +145,11 @@ async function processNegotiation(client, lead, userText, convo, phone) {
     if (data.offerPercentage > 0 && client.storeType === 'shopify') {
        try {
           const cartTotal = lead?.cart?.totalPrice || 0;
-          const code = await generateNegotiatedDiscount(client, data.offerPercentage, limits.maxDiscountAmountFlat || 1000, cartTotal);
+          const code = await withTimeout(
+            generateNegotiatedDiscount(client, data.offerPercentage, limits.maxDiscountAmountFlat || 1000, cartTotal),
+            10000,
+            'NegotiationShopifyDiscount'
+          );
           
           finalReply += `\n\nUse this exclusive code at checkout: *${code}*`;
           

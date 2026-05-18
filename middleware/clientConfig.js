@@ -2,6 +2,17 @@ const Client = require('../models/Client');
 const { decrypt } = require('../utils/encryption');
 const { resolveClientGeminiKey } = require('../utils/clientGeminiKey');
 
+/** Throttle noisy per-webhook config warnings (one line per client / 10 min) */
+const configWarnAt = new Map();
+const CONFIG_WARN_TTL_MS = 10 * 60 * 1000;
+function warnOncePerClient(clientId, message) {
+  const now = Date.now();
+  const prev = configWarnAt.get(clientId) || 0;
+  if (now - prev < CONFIG_WARN_TTL_MS) return;
+  configWarnAt.set(clientId, now);
+  console.warn(message);
+}
+
 /**
  * Middleware to load client configuration based on route parameter 'clientId'
  */
@@ -60,7 +71,8 @@ const loadClientConfig = async (req, res, next) => {
       console.warn(`[ClientConfig] ⚠️ No WhatsApp token found for client: ${clientId}`);
     }
     if (!resolvedGeminiKey) {
-      console.warn(
+      warnOncePerClient(
+        clientId,
         `[ClientConfig] No Gemini API key on Client ${clientId} — WhatsApp AI fallback / translations use the merchant key only. Add one under client AI settings.`
       );
     }

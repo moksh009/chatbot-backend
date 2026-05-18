@@ -9,6 +9,10 @@ const { buildShopifyOrderSet, shopifyOrderFilter } = require('../utils/shopifyOr
 const shopifyAdminApiVersion = require('../utils/shopifyAdminApiVersion');
 const { SHOPIFY_APP_WEBHOOK_TOPICS } = require('../constants/shopifyWebhookTopics');
 
+/** In-process cache so dashboard polls do not block the event loop on slow Shopify APIs */
+const recentOrdersCache = new Map();
+const RECENT_ORDERS_TTL_MS = 90_000;
+
 // ── INTERNAL SYNC AUTH BYPASS ────────────────────────────────────────────────
 // Allows the server to call its own sync routes during OAuth callback
 const internalOrProtect = (req, res, next) => {
@@ -202,7 +206,11 @@ router.get('/:clientId/recent-orders', protect, verifyClientAccess, async (req, 
       });
     }
 
-    console.log(`[Shopify] Fetching recent orders for ${clientId}...`);
+    const cacheKey = clientId;
+    const cached = recentOrdersCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < RECENT_ORDERS_TTL_MS) {
+      return res.json({ success: true, connected: true, orders: cached.orders, cached: true });
+    }
 
     const result = await withShopifyRetry(clientId, async (shop) => {
       const response = await shop.get('/orders.json?limit=10&status=any');
@@ -220,9 +228,14 @@ router.get('/:clientId/recent-orders', protect, verifyClientAccess, async (req, 
       }));
     });
 
+    recentOrdersCache.set(cacheKey, { at: Date.now(), orders: result });
     res.json({ success: true, connected: true, orders: result });
   } catch (err) {
     console.warn(`[Shopify Recent Orders] soft-fail for ${req.params.clientId}:`, err.message);
+    const stale = recentOrdersCache.get(req.params.clientId);
+    if (stale?.orders?.length) {
+      return res.json({ success: true, connected: true, orders: stale.orders, cached: true, stale: true });
+    }
     const softAuthError =
       err.response?.status === 401 ||
       err.response?.status === 403 ||

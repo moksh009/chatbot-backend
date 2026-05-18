@@ -9,6 +9,7 @@
 const Order = require("../models/Order");
 const { normalizePhone } = require("./helpers");
 const { withShopifyRetry } = require("./shopifyHelper");
+const { withTimeout } = require("./asyncTimeout");
 const log = require("./logger")("OrderLookup");
 
 function phoneSearchVariants(raw) {
@@ -87,7 +88,8 @@ async function resolveLatestOrderContext({ client, phone }) {
   /** @type {null | { order: object; firstProductImage: string }} */
   let shopifyPayload = null;
   try {
-    shopifyPayload = await withShopifyRetry(client.clientId, async (shopify) => {
+    shopifyPayload = await withTimeout(
+      withShopifyRetry(client.clientId, async (shopify) => {
       const variants = uniqueStrings(phoneSearchVariants(phone));
       const formats = variants.length
         ? variants
@@ -114,7 +116,10 @@ async function resolveLatestOrderContext({ client, phone }) {
         ? await fetchFirstProductImage(shopify, li0.product_id)
         : "";
       return { order, firstProductImage };
-    });
+    }),
+      10000,
+      'OrderLookupShopify'
+    );
   } catch (e) {
     log.info("[OrderLookup] Shopify unavailable — falling back to local DB", {
       clientId: client.clientId,
@@ -291,7 +296,8 @@ async function resolveOrderContextByIdentifier({ client, phone, identifier }) {
 
   let shopifyPayload = null;
   try {
-    shopifyPayload = await withShopifyRetry(client.clientId, async (shopify) => {
+    shopifyPayload = await withTimeout(
+      withShopifyRetry(client.clientId, async (shopify) => {
       const res = await shopify.get(
         `/orders.json?status=any&limit=5&name=${encodeURIComponent(nameQuery)}`
       );
@@ -303,7 +309,10 @@ async function resolveOrderContextByIdentifier({ client, phone, identifier }) {
         ? await fetchFirstProductImage(shopify, li0.product_id)
         : "";
       return { order, firstProductImage };
-    });
+    }),
+      10000,
+      'OrderLookupByName'
+    );
   } catch (e) {
     log.warn("[OrderLookup] name lookup failed", { message: e.message });
   }

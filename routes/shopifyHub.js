@@ -8,6 +8,9 @@ const { addHours } = require('date-fns');
 
 const { getShopifyClient, withShopifyRetry } = require('../utils/shopifyHelper');
 
+const pulseCache = new Map();
+const PULSE_CACHE_TTL_MS = 120_000;
+
 /** New tenants / disconnected stores: avoid 500 spam when Shopify is not configured */
 function isDisconnectedShopifyConfig(err) {
   const m = String(err?.message || '');
@@ -34,13 +37,17 @@ router.get('/ping', (req, res) => res.json({ success: true, message: 'Shopify Hu
 router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => {
   const { clientId } = req.params;
   try {
-    
+    const cached = pulseCache.get(clientId);
+    if (cached && Date.now() - cached.at < PULSE_CACHE_TTL_MS) {
+      return res.json({ success: true, ...cached.payload, cached: true });
+    }
+
     const result = await withShopifyRetry(clientId, async (shop) => {
-        // Fetch last 30 days of orders
+        // Fetch last 30 days of orders (capped — full 250-order pulls blocked the Node event loop)
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
         
-        const ordersRes = await shop.get(`/orders.json?status=any&created_at_min=${thirtyDaysAgo.toISOString()}&limit=250`);
+        const ordersRes = await shop.get(`/orders.json?status=any&created_at_min=${thirtyDaysAgo.toISOString()}&limit=50`);
         const orders = ordersRes.data?.orders || [];
 
         // AUTOMATIC SYNC: If no orders found in our DB but Shopify has some, trigger background sync
@@ -88,12 +95,17 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
       return res.status(404).json({ success: false, error: 'Client not found' });
     }
 
-    res.json({
-        success: true,
+    const payload = {
         ...result,
         shopDomain: client.shopDomain || '',
         shopifyConnectionStatus: client.shopifyConnectionStatus || 'disconnected',
         lastShopifyError: client.lastShopifyError || ''
+    };
+    pulseCache.set(clientId, { at: Date.now(), payload });
+
+    res.json({
+        success: true,
+        ...payload
     });
 
   } catch (err) {
