@@ -117,7 +117,7 @@ async function resolveLatestOrderContext({ client, phone }) {
         : "";
       return { order, firstProductImage };
     }),
-      10000,
+      5000,
       'OrderLookupShopify'
     );
   } catch (e) {
@@ -310,7 +310,7 @@ async function resolveOrderContextByIdentifier({ client, phone, identifier }) {
         : "";
       return { order, firstProductImage };
     }),
-      10000,
+      5000,
       'OrderLookupByName'
     );
   } catch (e) {

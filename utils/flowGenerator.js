@@ -472,6 +472,9 @@ function buildIDs(client, wizardData) {
     can_flow_alert:   `can_flow_alert_${ts}`,
     can_flow_done:    `can_flow_done_${ts}`,
     can_flow_modify:  `can_flow_modify_${ts}`,
+    can_flow_mod_capture: `can_flow_mod_capture_${ts}`,
+    can_flow_mod_alert: `can_flow_mod_alert_${ts}`,
+    can_flow_mod_done: `can_flow_mod_done_${ts}`,
   // AI help desk
     ai_capture:       `ai_capture_${ts}`,
     ai_respond:       `ai_respond_${ts}`,
@@ -1250,7 +1253,7 @@ function buildCancelOrderBranch(ctx, IDS, content) {
         label: "Select order to cancel",
         interactiveType: "list",
         buttonText: "Select order",
-        text: "Hi *{{customer_name|there}}*! 👋\n\nHere are your recent orders. Which one would you like to cancel or modify?",
+        text: "Hi *{{first_name|there}}*! 👋\n\nHere are your recent orders. Which one would you like to cancel or modify?",
         sections: [{ title: "Your orders", rows: [] }],
         dynamicSections: true,
         dynamicSectionsVariable: "customer_orders",
@@ -1384,6 +1387,46 @@ function buildCancelOrderBranch(ctx, IDS, content) {
         ],
         heatmapCount: 0,
       },
+    },
+    {
+      id: IDS.can_flow_mod_capture,
+      type: "capture_input",
+      position: flowPos(11, 12),
+      data: {
+        label: "Modify — capture details",
+        variable: "modify_details",
+        question:
+          "✏️ *{{modify_type|Order change}}*\n\nPlease type the updated details for order *{{order_number|your order}}* (e.g. full new address or phone number).",
+        text:
+          "✏️ *{{modify_type|Order change}}*\n\nPlease type the updated details for order *{{order_number|your order}}*.",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.can_flow_mod_alert,
+      type: "admin_alert",
+      position: flowPos(12, 12),
+      data: {
+        label: "Modify request — admin",
+        priority: "high",
+        alertChannel: "both",
+        topic: "Modification request — {{order_number}} ({{modify_type}})",
+        customMessage:
+          "Customer {{customer_name|Unknown}} ({{phone}}) requested a *modification* on *{{order_number}}*.\nType: {{modify_type|Not specified}}\nDetails: {{modify_details|Not provided}}",
+        phone: adminPhone || client.adminPhone || "",
+        heatmapCount: 0,
+      },
+    },
+    {
+      id: IDS.can_flow_mod_done,
+      type: "message",
+      position: flowPos(13, 12),
+      data: {
+        label: "Modify request received",
+        text:
+          "✅ *Your modification request has been received.*\n\nOur team will update order *{{order_number|your order}}* and confirm on WhatsApp within *2–4 hours*.\n\nFor urgent help, call *{{supportPhone|our support line}}*.",
+        heatmapCount: 0,
+      },
     }
   );
 
@@ -1407,7 +1450,13 @@ function buildCancelOrderBranch(ctx, IDS, content) {
     { id: `e_${IDS.can_flow_shipped}_mm`, source: IDS.can_flow_shipped, target: IDS.main_menu, sourceHandle: "shipped_menu" },
     { id: `e_${IDS.can_flow_shipped}_ag`, source: IDS.can_flow_shipped, target: IDS.sup_capture, sourceHandle: "shipped_agent" },
     { id: `e_${IDS.can_flow_shipped}_tr`, source: IDS.can_flow_shipped, target: IDS.ord_ask, sourceHandle: "shipped_track" },
-    { id: `e_${IDS.can_flow_modify}_al`, source: IDS.can_flow_modify, target: IDS.can_flow_alert }
+    { id: `e_${IDS.can_flow_modify}_addr`, source: IDS.can_flow_modify, target: IDS.can_flow_mod_capture, sourceHandle: "mod_address" },
+    { id: `e_${IDS.can_flow_modify}_phone`, source: IDS.can_flow_modify, target: IDS.can_flow_mod_capture, sourceHandle: "mod_phone" },
+    { id: `e_${IDS.can_flow_modify}_var`, source: IDS.can_flow_modify, target: IDS.can_flow_mod_capture, sourceHandle: "mod_variant" },
+    { id: `e_${IDS.can_flow_modify}_oth`, source: IDS.can_flow_modify, target: IDS.can_flow_mod_capture, sourceHandle: "mod_other" },
+    { id: `e_${IDS.can_flow_mod_capture}_al`, source: IDS.can_flow_mod_capture, target: IDS.can_flow_mod_alert },
+    { id: `e_${IDS.can_flow_mod_alert}_dn`, source: IDS.can_flow_mod_alert, target: IDS.can_flow_mod_done },
+    { id: `e_${IDS.can_flow_mod_done}_mm`, source: IDS.can_flow_mod_done, target: IDS.main_menu }
   );
 
   nodes.push({

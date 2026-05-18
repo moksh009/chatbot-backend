@@ -287,12 +287,22 @@ async function buildVariableContext(client, phone, convo, lead) {
     selected_category_name,
   };
 
-  return {
+  const profileName = (leadLean?.name || convoLean?.customerName || "").trim();
+  const metaForMerge = { ...(meta || {}) };
+  if (profileName) {
+    delete metaForMerge.customer_name;
+  }
+  const merged = {
     ...legacy,
     ...ctx,
     ...(leadLean?.capturedData || {}),
-    ...(meta || {})
+    ...metaForMerge,
   };
+  if (profileName) {
+    merged.customer_name = profileName;
+    merged.first_name = profileName.split(/\s+/)[0] || merged.first_name;
+  }
+  return merged;
 }
 
 function injectVariables(text, context) {

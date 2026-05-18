@@ -532,9 +532,7 @@ async function processEcommerceInbound(parsedMessage, clientConfig, { helperPara
         const { clientId, nicheData, plan } = clientConfig;
 
         const handledByDualBrain = await runDualBrainEngine(parsedMessage, clientConfig);
-        if (handledByDualBrain) {
-            return;
-        }
+        return handledByDualBrain;
 
         const userMsgType = messages?.type;
         const userMsg = messages?.text?.body || '';

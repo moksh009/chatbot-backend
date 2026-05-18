@@ -26,6 +26,7 @@ const { createPerfTimer } = require("./enginePerf");
 const { shouldAttemptAICall } = require("./aiGuards");
 const {
   beginEngineRun,
+  getEngineRunId,
   abortEngineRun,
   isEngineRunAborted,
   markOutboundSent,
@@ -581,7 +582,7 @@ async function runDualBrainEngine(parsedMessage, client) {
   const crypto = require('crypto');
   const _lockOwnerId = crypto.randomUUID();
   const lockKey = `lock:session:${client.clientId}:${phone}`;
-  beginEngineRun(client.clientId, phone);
+  const engineRunId = beginEngineRun(client.clientId, phone);
   try {
       if (redisClient && redisClient.status === 'ready') {
           // Redis atomic lock (30s TTL)
@@ -737,7 +738,7 @@ async function runDualBrainEngine(parsedMessage, client) {
 
             const freshConvo = await Conversation.findById(convo._id);
 
-            if (!isEngineRunAborted(client.clientId, phone)) {
+            if (!isEngineRunAborted(client.clientId, phone, getEngineRunId(client.clientId, phone))) {
               const handled = await executeNode(
                 match.startNodeId,
                 flowNodes,
@@ -2269,6 +2270,10 @@ async function runDualBrainEngine(parsedMessage, client) {
 // PRIORITY 1: GRAPH TRAVERSAL
 // ─────────────────────────────────────────────────────────────────────────────
 async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, channel = 'whatsapp') {
+  if (isEngineRunAborted(client.clientId, phone, getEngineRunId(client.clientId, phone))) {
+    log.warn(`[Graph] Skipping traversal — engine run aborted (timeout)`);
+    return false;
+  }
   const { nodes: flowNodes, edges: flowEdges } = await getFlowGraphForConversation(client, convo);
 
   log.info(`[Graph] Traversal start. currentStep=${convo.lastStepId || 'none'}, flowNodes=${flowNodes.length}, flowEdges=${flowEdges.length}`);
@@ -2375,6 +2380,22 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     const md = {
       ...(convo.metadata || {}),
       cancel_reason: reasonMap[String(buttonId)] || String(buttonId),
+    };
+    await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: md } });
+    convo.metadata = md;
+  }
+
+  if (buttonId && /^mod_/i.test(String(buttonId))) {
+    const modMap = {
+      mod_address: "Delivery address",
+      mod_phone: "Contact number",
+      mod_variant: "Size / variant",
+      mod_other: "Other modification",
+    };
+    const md = {
+      ...(convo.metadata || {}),
+      modify_type: modMap[String(buttonId)] || String(buttonId),
+      modification_type: String(buttonId),
     };
     await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: md } });
     convo.metadata = md;
@@ -2715,7 +2736,7 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 // EXECUTE A SPECIFIC NODE
 // ─────────────────────────────────────────────────────────────────────────────
 async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, phone, io, channel = 'whatsapp', parsedMessage = {}) {
-  if (isEngineRunAborted(client.clientId, phone)) {
+  if (isEngineRunAborted(client.clientId, phone, getEngineRunId(client.clientId, phone))) {
     log.warn(`[Exec] Skipping node ${nodeId} — engine run aborted (timeout)`);
     return false;
   }
@@ -2808,7 +2829,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     node = rawNode; // fallback to raw node
   }
 
-  if (isEngineRunAborted(client.clientId, phone)) {
+  if (isEngineRunAborted(client.clientId, phone, getEngineRunId(client.clientId, phone))) {
     return false;
   }
 
@@ -2868,7 +2889,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
 
   let sent = true;
   try {
-    const nodeTimeoutMs = node?.type === 'interactive' ? 12000 : 6000;
+    const nodeTimeoutMs = node?.type === 'interactive' ? 8000 : 5000;
     sent = await withTimeout(
       sendNodeContent(node, client, phone, lead, convo, channel, parsedMessage),
       nodeTimeoutMs,
@@ -2889,8 +2910,13 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         channel
       }
     });
-    // Emergency Text Fallback to keep conversation moving
-    await sendWhatsAppText(client, phone, node.data?.text || node.data?.body || "Resuming our conversation... Choose an option below.");
+    if (!isEngineRunAborted(client.clientId, phone, getEngineRunId(client.clientId, phone))) {
+      await sendWhatsAppText(
+        client,
+        phone,
+        node.data?.text || node.data?.body || "Resuming our conversation... Choose an option below."
+      );
+    }
   }
 
   // Phase 17: Save Last Node Visited
@@ -3789,13 +3815,18 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         const identifier = String(convo?.metadata?.[qVar] || "").trim();
         const { withShopifyRetry } = require("./shopifyHelper");
         let ordersPayload = [];
+        const profileName =
+          (lead?.name || convo?.customerName || convo?.metadata?.customer_name || "").trim();
+        const profileFirst = profileName.split(/\s+/)[0] || "";
         let mergedExtra = {
           customer_orders: [],
-          customer_name: "there",
+          customer_name: profileFirst || "there",
           order_list_text: "",
         };
         try {
-          await withShopifyRetry(client.clientId, async (shopify) => {
+          const { withTimeout: opTimeout } = require("./asyncTimeout");
+          await opTimeout(
+            withShopifyRetry(client.clientId, async (shopify) => {
             const digits = identifier.replace(/\D/g, "");
             let orders = [];
             if (digits.length >= 10) {
@@ -3821,12 +3852,18 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
               created_at: o.created_at,
             }));
             mergedExtra.customer_orders = ordersPayload;
-            mergedExtra.customer_name =
-              (orders[0]?.customer?.first_name || "").trim() || "there";
+            const shopifyFirst = (orders[0]?.customer?.first_name || "").trim();
+            mergedExtra.shopify_customer_first_name = shopifyFirst;
+            if (!profileFirst && shopifyFirst) {
+              mergedExtra.customer_name = shopifyFirst;
+            }
             mergedExtra.order_list_text = ordersPayload
               .map((o, i) => `${i + 1}. ${o.name} — ${o.currency} ${o.total_price}`)
               .join("\n");
-          });
+          }),
+            6000,
+            "GET_CUSTOMER_ORDERS"
+          );
         } catch (ge) {
           log.warn(`[shopify_call] GET_CUSTOMER_ORDERS: ${ge.message}`);
         }
@@ -4206,12 +4243,67 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       });
     }
   } else if (node.type !== 'logic' && node.type !== 'restart' && node.type !== 'livechat') {
-    const autoEdge = flowEdges.find(e => e.source === nodeId && (!e.trigger || e.trigger?.type === 'auto') && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom' || e.sourceHandle === 'output'));
-    if (autoEdge) {
-      setTimeout(async () => {
+    const nodeData = node.data || {};
+    const waitsForUserChoice =
+      node.type === 'interactive' ||
+      node.type === 'InteractiveNode' ||
+      (Array.isArray(nodeData.buttonsList) && nodeData.buttonsList.length > 0) ||
+      (Array.isArray(nodeData.sections) &&
+        nodeData.sections.some((s) => (s.rows || []).length > 0)) ||
+      nodeData.dynamicSections === true;
+    const autoEdge = waitsForUserChoice
+      ? null
+      : flowEdges.find(
+          (e) =>
+            e.source === nodeId &&
+            (!e.trigger || e.trigger?.type === 'auto') &&
+            (!e.sourceHandle ||
+              e.sourceHandle === 'a' ||
+              e.sourceHandle === 'bottom' ||
+              e.sourceHandle === 'output')
+        );
+    if (autoEdge && !isEngineRunAborted(client.clientId, phone, getEngineRunId(client.clientId, phone))) {
+      const chainSync =
+        node.type === 'shopify_call' ||
+        node.type === 'ShopifyNode' ||
+        node.type === 'set_variable' ||
+        node.type === 'SetVariableNode';
+      if (chainSync) {
         const freshConvo = await Conversation.findById(convo._id);
-        await executeNode(autoEdge.target, flowNodes, flowEdges, client, freshConvo, lead, phone, io, channel, parsedMessage);
-      }, 600);
+        if (freshConvo && !isEngineRunAborted(client.clientId, phone, getEngineRunId(client.clientId, phone))) {
+          return await executeNode(
+            autoEdge.target,
+            flowNodes,
+            flowEdges,
+            client,
+            freshConvo,
+            lead,
+            phone,
+            io,
+            channel,
+            parsedMessage
+          );
+        }
+      } else {
+        const autoRunId = getEngineRunId(client.clientId, phone);
+        setTimeout(async () => {
+          if (isEngineRunAborted(client.clientId, phone, autoRunId)) return;
+          const freshConvo = await Conversation.findById(convo._id);
+          if (!freshConvo || isEngineRunAborted(client.clientId, phone, autoRunId)) return;
+          await executeNode(
+            autoEdge.target,
+            flowNodes,
+            flowEdges,
+            client,
+            freshConvo,
+            lead,
+            phone,
+            io,
+            channel,
+            parsedMessage
+          );
+        }, 400);
+      }
     }
   }
 
@@ -4356,9 +4448,11 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         let sourceSections = Array.isArray(data.sections) ? data.sections : [];
         if (data.dynamicSections && data.dynamicSectionsVariable && convo) {
           try {
-            const ctxDyn = await buildVariableContext(client, phone, convo, lead);
             const dynKey = data.dynamicSectionsVariable;
-            let customerOrders = ctxDyn[dynKey] || convo.metadata?.[dynKey] || [];
+            let customerOrders =
+              convo.metadata?.[dynKey] ||
+              convo.metadata?.customer_orders ||
+              [];
             if (typeof customerOrders === "string") {
               try {
                 customerOrders = JSON.parse(customerOrders);
@@ -4407,7 +4501,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
               rows
             };
           }).filter(s => s.rows.length > 0);
-        } else {
+        } else if (buttonsList.length > 0) {
           sections = [{
             title: 'Options',
             rows: buttonsList.slice(0, 10).map(btn => ({
@@ -4415,6 +4509,17 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
               title: (btn.title || 'Option').substring(0, 24)
             }))
           }];
+        } else {
+          sections = [];
+        }
+
+        const rowCount = (sections || []).reduce((n, s) => n + (s.rows?.length || 0), 0);
+        if (!sections?.length || rowCount === 0) {
+          const noOrdersText =
+            convo.metadata?.order_list_text ||
+            "We couldn't find any recent orders for that number. Please double-check your order ID or phone number and try again.";
+          await sendWhatsAppText(client, phone, String(noOrdersText).substring(0, 4096));
+          return true;
         }
 
         let interactive = {
@@ -5267,7 +5372,7 @@ REPLY:
 }
 
 async function sendWhatsAppText(client, phone, body, channel = 'whatsapp') {
-  if (isEngineRunAborted(client.clientId, phone)) return;
+  if (isEngineRunAborted(client.clientId, phone, getEngineRunId(client.clientId, phone))) return;
 
   const token = getEffectiveWhatsAppAccessToken(client);
   const phoneNumberId = getEffectiveWhatsAppPhoneNumberId(client);
@@ -5284,6 +5389,7 @@ async function sendWhatsAppText(client, phone, body, channel = 'whatsapp') {
       messaging_product: 'whatsapp', to: phone, type: 'text', text: { body: bodyContent }
     }, { headers: { Authorization: `Bearer ${token}` } });
     await saveOutboundMessage(phone, client.clientId, 'text', bodyContent, res.data.messages[0].id);
+    markOutboundSent(client.clientId, phone);
   } catch (err) { log.error('sendText error:', { error: err.response?.data?.error?.message || err.message }); }
 }
 
@@ -5316,7 +5422,7 @@ async function sendWhatsAppAudio(client, phone, audioUrl) {
 
 
 async function sendWhatsAppInteractive(client, phone, interactive, bodyText = '', _retried = false) {
-  if (isEngineRunAborted(client.clientId, phone)) return false;
+  if (isEngineRunAborted(client.clientId, phone, getEngineRunId(client.clientId, phone))) return false;
 
   const token = getEffectiveWhatsAppAccessToken(client);
   const phoneNumberId = getEffectiveWhatsAppPhoneNumberId(client);
@@ -5324,6 +5430,18 @@ async function sendWhatsAppInteractive(client, phone, interactive, bodyText = ''
 
   const { sanitizeInteractivePayload } = require("./sanitizeFlowMedia");
   sanitizeInteractivePayload(interactive);
+
+  if (interactive?.type === "list") {
+    const listSections = interactive.action?.sections || [];
+    const listRows = listSections.reduce((n, s) => n + (s.rows?.length || 0), 0);
+    if (!listSections.length || listRows === 0) {
+      const fallback =
+        String(bodyText || interactive.body?.text || "").trim() ||
+        "We couldn't load options right now. Please try again in a moment.";
+      await sendWhatsAppText(client, phone, fallback.substring(0, 4096));
+      return true;
+    }
+  }
 
   let payloadData = null;
   try {
@@ -5348,6 +5466,7 @@ async function sendWhatsAppInteractive(client, phone, interactive, bodyText = ''
 
     const res = await axios.post(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, data, { headers: { Authorization: `Bearer ${token}` } });
     await saveOutboundMessage(phone, client.clientId, 'interactive', interactive.body?.text || '[Interactive]', res.data.messages[0].id);
+    markOutboundSent(client.clientId, phone);
     return true;
   } catch (err) {
     const errorData = err.response?.data || err.message;
@@ -5367,7 +5486,7 @@ async function sendWhatsAppInteractive(client, phone, interactive, bodyText = ''
         payload: payloadData ? JSON.stringify(payloadData, null, 2) : '[unavailable]'
     });
 
-    if (isEngineRunAborted(client.clientId, phone) || wasOutboundSent(client.clientId, phone)) {
+    if (isEngineRunAborted(client.clientId, phone, getEngineRunId(client.clientId, phone)) || wasOutboundSent(client.clientId, phone)) {
       return false;
     }
 

@@ -89,6 +89,10 @@ router.post('/webhook', async (req, res) => {
     const message = entry?.changes?.[0]?.value?.messages?.[0];
     const messageId = message?.id;
 
+    if (!message?.from) {
+      return res.sendStatus(200);
+    }
+
     if (messageId && (await isDuplicateInbound(messageId, clientId, message?.from))) {
       console.log(`[Webhook Router] Duplicate skipped ${messageId} for ${clientId}`);
       return res.sendStatus(200);

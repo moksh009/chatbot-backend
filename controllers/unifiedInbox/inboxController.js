@@ -240,12 +240,26 @@ async function getMessages(req, res) {
 async function markRead(req, res) {
   try {
     const { id } = req.params;
-    const channel = req.body.channel;
+    const channel = req.body?.channel || 'whatsapp';
+
+    if (!id || !/^[a-f\d]{24}$/i.test(String(id))) {
+      return res.status(400).json({ error: 'Invalid conversation id' });
+    }
 
     if (channel === 'instagram') {
-      await IGConversation.findByIdAndUpdate(id, { $set: { isRead: true } });
+      const updated = await IGConversation.findByIdAndUpdate(
+        id,
+        { $set: { isRead: true } },
+        { new: true }
+      ).lean();
+      if (!updated) return res.status(404).json({ error: 'Conversation not found' });
     } else {
-      await Conversation.findByIdAndUpdate(id, { $set: { unreadCount: 0 } });
+      const updated = await Conversation.findByIdAndUpdate(
+        id,
+        { $set: { unreadCount: 0 } },
+        { new: true }
+      ).lean();
+      if (!updated) return res.status(404).json({ error: 'Conversation not found' });
     }
 
     return res.json({ success: true });

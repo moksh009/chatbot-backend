@@ -3,8 +3,8 @@ const log = require('./logger')('InboundQueue');
 /** @type {Map<string, { timer: NodeJS.Timeout | null, latest: object | null, client: object, run: Function }>} */
 const pendingBySession = new Map();
 
-const DEBOUNCE_MS = 350;
-const MAX_RETRIES = 2;
+const DEBOUNCE_MS = 500;
+const MAX_RETRIES = 1;
 
 /**
  * Coalesce rapid WhatsApp events for the same customer into one engine run.
@@ -46,10 +46,18 @@ function scheduleFlush(key, entry) {
     if (!msg || !run) return;
 
     try {
-      await run(msg, client);
+      const handled = await run(msg, client);
+      if (handled === false && entry.retries < MAX_RETRIES) {
+        entry.retries += 1;
+        entry.latest = msg;
+        entry.client = client;
+        entry.run = run;
+        pendingBySession.set(key, entry);
+        scheduleFlush(key, entry);
+      }
     } catch (err) {
       log.error(`[InboundQueue] Processor failed for ${key}:`, err.message);
-      if (entry.retries < MAX_RETRIES) {
+      if (entry.retries < MAX_RETRIES && !String(err.message || "").includes("timed out")) {
         entry.retries += 1;
         entry.latest = msg;
         entry.client = client;

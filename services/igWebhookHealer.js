@@ -113,12 +113,12 @@ async function runOnce() {
   }
 }
 
-// Defer the run by 5s so the HTTP listener is up first and we don't compete
-// with cold-start work (Mongo index builds, NLP engine prime, etc.).
+// Defer so WhatsApp webhooks are not blocked by IG Graph API heal traffic.
 function scheduleStartup() {
+  const delayMs = Number(process.env.IG_WEBHOOK_HEAL_DELAY_MS || 120000);
   setTimeout(() => {
     runOnce().catch(err => log.error(`Heal scheduling error: ${err.message}`));
-  }, 5000);
+  }, delayMs);
 }
 
 module.exports = { runOnce, scheduleStartup };
