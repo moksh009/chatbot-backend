@@ -2,6 +2,7 @@ const axios = require('axios');
 const Client = require('../models/Client');
 const { encrypt, decrypt } = require('./encryption');
 const shopifyAdminApiVersion = require('./shopifyAdminApiVersion');
+const { shopifyBreaker } = require('./circuitBreaker');
 
 /**
  * Robust Shopify Client Generator with Auto-Refresh & Self-Healing
@@ -95,9 +96,11 @@ async function getShopifyClient(clientId, forceRefresh = false) {
         throw new Error('Shopify credentials incomplete or invalid');
     }
 
+    const https = require('https');
     const instance = axios.create({
         baseURL: `https://${domain}/admin/api/${apiVersion}`,
         timeout: 12000,
+        httpsAgent: new https.Agent({ keepAlive: true, maxSockets: 20 }),
         headers: { 
             'X-Shopify-Access-Token': token,
             'Content-Type': 'application/json'
@@ -126,6 +129,7 @@ async function getShopifyClient(clientId, forceRefresh = false) {
  * Automatically detects 401s, rotates tokens, and retries the request up to 3 times.
  */
 async function withShopifyRetry(clientId, operation, retryCount = 0) {
+    return shopifyBreaker.call(async () => {
     try {
         const shop = await getShopifyClient(clientId);
         return await operation(shop);
@@ -166,6 +170,7 @@ async function withShopifyRetry(clientId, operation, retryCount = 0) {
         }
         throw err;
     }
+    });
 }
 
 /**

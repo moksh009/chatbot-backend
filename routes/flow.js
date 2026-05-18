@@ -534,9 +534,15 @@ router.post('/publish', protect, async (req, res) => {
       { $set: { status: 'DRAFT' } }
     );
 
-    // 3. Sync draft to published
-    flow.publishedNodes = flow.nodes;
-    flow.publishedEdges = flow.edges;
+    // 3. Sync draft to published (runtime graph: no stickies, no unreachable orphans)
+    const {
+      stripEditorOnlyNodes,
+      pruneFlowGraphToReachable,
+    } = require("../utils/pruneFlowGraph");
+    const stripped = stripEditorOnlyNodes(flow.nodes || [], flow.edges || []);
+    const pruned = pruneFlowGraphToReachable(stripped.nodes, stripped.edges);
+    flow.publishedNodes = pruned.nodes;
+    flow.publishedEdges = pruned.edges;
     flow.status = 'PUBLISHED';
     flow.version += 1;
     flow.lastSyncedAt = Date.now();

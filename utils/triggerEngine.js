@@ -16,8 +16,39 @@
  */
 
 const WhatsAppFlow = require("../models/WhatsAppFlow");
-const NodeCache = require('node-cache');
-const triggerCache = new NodeCache({ stdTTL: 300, checkperiod: 60 }); // 5 min TTL
+const NodeCache = require("node-cache");
+const { invalidateFlowGraphCache, invalidateTriggerListCache } = require("./flowGraphCache");
+const { getAppRedis } = require("./redisFactory");
+const triggerCache = new NodeCache({ stdTTL: 300, checkperiod: 60 }); // 5 min L1
+const TRIGGER_CACHE_TTL_SEC = 300;
+
+const FLOW_SELECT =
+  "flowId name status triggerConfig publishedNodes publishedEdges nodes edges isAutomation platform channel";
+
+function buildRoutingBundles(flows) {
+  return (flows || []).map((flow) => {
+    const pubNodes =
+      flow.publishedNodes?.length > 0 ? flow.publishedNodes : flow.nodes || [];
+    const pubEdges =
+      flow.publishedEdges?.length > 0 ? flow.publishedEdges : flow.edges || [];
+    const triggerNodes = pubNodes.filter(
+      (n) => n.type === "trigger" || n.type === "TriggerNode"
+    );
+    return {
+      _id: flow._id,
+      flowId: flow.flowId,
+      id: flow.flowId || flow.id,
+      name: flow.name,
+      status: flow.status,
+      triggerConfig: flow.triggerConfig,
+      triggerNodes,
+      publishedNodes: pubNodes,
+      publishedEdges: pubEdges,
+      nodes: pubNodes,
+      edges: pubEdges,
+    };
+  });
+}
 
 /**
  * Given an incoming message and a client's flows array,
@@ -31,27 +62,54 @@ async function findMatchingFlow(parsedMessage, client, convo) {
   let flows = triggerCache.get(cacheKey);
 
   if (!flows) {
-    // ── NEW ARCHITECTURE: Check WhatsAppFlow collection first ──────────────────
-    flows = await WhatsAppFlow.find({ clientId: client.clientId, status: 'PUBLISHED' }).lean();
-
-    // Fallback to client.visualFlows for non-migrated clients
-    if (flows.length === 0 && client.visualFlows?.length > 0) {
-      flows = client.visualFlows;
+    const redis = getAppRedis();
+    const redisKey = `triggers:${client.clientId}`;
+    if (redis && redis.status === "ready") {
+      try {
+        const raw = await redis.get(redisKey);
+        if (raw) {
+          flows = JSON.parse(raw);
+          triggerCache.set(cacheKey, flows);
+        }
+      } catch (_) {}
     }
+  }
+
+  if (!flows) {
+    const docs = await WhatsAppFlow.find({
+      clientId: client.clientId,
+      status: "PUBLISHED",
+    })
+      .select(FLOW_SELECT)
+      .lean();
+
+    flows =
+      docs.length > 0
+        ? buildRoutingBundles(docs)
+        : buildRoutingBundles(client.visualFlows || []);
+
     triggerCache.set(cacheKey, flows);
+    const redis = getAppRedis();
+    if (redis && redis.status === "ready") {
+      redis
+        .setex(`triggers:${client.clientId}`, TRIGGER_CACHE_TTL_SEC, JSON.stringify(flows))
+        .catch(() => {});
+    }
   }
 
   // Shopify / wizard automations must never steal keyword or first_message routing.
   flows = flows.filter((f) => !f.isAutomation);
 
-  // Helper: extract nodes from a flow, preferring publishedNodes over draft nodes
-  const getFlowNodes = (flow) => flow.publishedNodes?.length > 0 ? flow.publishedNodes : (flow.nodes || []);
-  const getFlowEdges = (flow) => flow.publishedEdges?.length > 0 ? flow.publishedEdges : (flow.edges || []);
+  const getFlowNodes = (flow) =>
+    flow.publishedNodes?.length > 0 ? flow.publishedNodes : flow.nodes || [];
+  const getFlowEdges = (flow) =>
+    flow.publishedEdges?.length > 0 ? flow.publishedEdges : flow.edges || [];
 
-  // ── PRIORITY 1: Check keyword triggers (all trigger nodes in each flow) ───
+  // ── PRIORITY 1: Check keyword triggers (trigger nodes only — not full 100+ node scan) ───
   let keywordHit = null;
   for (const flow of flows) {
-    const nodes = getFlowNodes(flow);
+    const nodes =
+      flow.triggerNodes?.length > 0 ? flow.triggerNodes : getFlowNodes(flow);
     const edges = getFlowEdges(flow);
     const entry = findKeywordTriggerEntry(text, nodes, edges, channel);
     if (entry?.startNodeId) {
@@ -484,6 +542,8 @@ function findFlowStartNode(flowNodes, flowEdges) {
 
 function clearTriggerCache(clientId) {
   triggerCache.del(`flows_${clientId}`);
+  invalidateFlowGraphCache(clientId);
+  invalidateTriggerListCache(clientId);
 }
 
 module.exports = {

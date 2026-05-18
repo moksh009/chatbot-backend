@@ -1,76 +1,64 @@
-/**
- * Minimal circuit breaker for outbound HTTP (WhatsApp Graph, OpenAI, Meta).
- * Opens after consecutive failures; half-opens after resetTimeoutMs.
- */
+"use strict";
 
-const log = require('./logger')('CircuitBreaker');
-
-const registry = new Map();
+const log = require("./logger")("CircuitBreaker");
 
 class CircuitBreaker {
-  constructor(name, opts = {}) {
+  constructor(name, threshold = 5, resetTimeMs = 30000) {
     this.name = name;
-    this.failureThreshold = opts.failureThreshold ?? 5;
-    this.resetTimeoutMs = opts.resetTimeoutMs ?? 45000;
     this.failures = 0;
-    this.state = 'closed'; // closed | open | half-open
-    this.openedAt = 0;
+    this.threshold = threshold;
+    this.state = "CLOSED";
+    this.lastFailureTime = null;
+    this.resetTimeMs = resetTimeMs;
   }
 
-  async exec(fn) {
-    if (this.state === 'open') {
-      if (Date.now() - this.openedAt >= this.resetTimeoutMs) {
-        this.state = 'half-open';
-        log.info(`[${this.name}] Circuit half-open — trial request`);
+  async call(fn) {
+    if (this.state === "OPEN") {
+      if (Date.now() - this.lastFailureTime > this.resetTimeMs) {
+        this.state = "HALF_OPEN";
       } else {
-        const err = new Error(`CircuitOpen:${this.name}`);
-        err.code = 'CIRCUIT_OPEN';
-        throw err;
+        throw new Error(`[CircuitBreaker] ${this.name} is OPEN — failing fast`);
       }
     }
 
     try {
       const result = await fn();
-      this.failures = 0;
-      if (this.state === 'half-open') {
-        this.state = 'closed';
-        log.info(`[${this.name}] Circuit closed after successful trial`);
+      if (this.state === "HALF_OPEN") {
+        this.state = "CLOSED";
+        this.failures = 0;
       }
       return result;
-    } catch (e) {
+    } catch (err) {
       this.failures += 1;
-      if (this.failures >= this.failureThreshold || this.state === 'half-open') {
-        this.state = 'open';
-        this.openedAt = Date.now();
-        log.warn(`[${this.name}] Circuit OPEN after ${this.failures} failures`);
+      this.lastFailureTime = Date.now();
+      if (this.failures >= this.threshold) {
+        this.state = "OPEN";
+        log.warn(`[CircuitBreaker] ${this.name} opened after ${this.failures} failures`);
       }
-      throw e;
+      throw err;
     }
   }
-
-  status() {
-    return {
-      name: this.name,
-      state: this.state,
-      failures: this.failures,
-      openedAt: this.openedAt
-    };
-  }
 }
 
-function getBreaker(name, opts) {
-  if (!registry.has(name)) {
-    registry.set(name, new CircuitBreaker(name, opts));
-  }
-  return registry.get(name);
-}
+const shopifyBreaker = new CircuitBreaker("Shopify", 5, 30000);
+const geminiBreaker = new CircuitBreaker("Gemini", 3, 60000);
 
-function allStatuses() {
-  return Array.from(registry.values()).map((b) => b.status());
+const namedBreakers = new Map();
+
+function getBreaker(name, opts = {}) {
+  const key = String(name || "default");
+  if (!namedBreakers.has(key)) {
+    namedBreakers.set(
+      key,
+      new CircuitBreaker(key, opts.failureThreshold || 5, opts.resetTimeoutMs || 30000)
+    );
+  }
+  return namedBreakers.get(key);
 }
 
 module.exports = {
   CircuitBreaker,
+  shopifyBreaker,
+  geminiBreaker,
   getBreaker,
-  allStatuses
 };

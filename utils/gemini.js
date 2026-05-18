@@ -1,5 +1,6 @@
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const logger = require("./logger")("Gemini");
+const { geminiBreaker } = require("./circuitBreaker");
 
 // Dynamically load Vertex AI for enterprise GCP credit usage
 let VertexAI;
@@ -26,6 +27,8 @@ function getStudioClient(apiKey) {
 
 // Initialize Vertex AI for the Platform (Uses GCP Credits)
 let vertexPlatformInstance = null;
+let vertexDeprecationLogged = false;
+
 function getVertexInstance() {
     if (vertexPlatformInstance) return vertexPlatformInstance;
     
@@ -51,6 +54,12 @@ function getVertexInstance() {
             }
             
             vertexPlatformInstance = new VertexAI(config);
+            if (!vertexDeprecationLogged) {
+              vertexDeprecationLogged = true;
+              logger.warn(
+                "VertexAI SDK is deprecated — platform calls still work; migrate to @google/genai when upgrading dependencies."
+              );
+            }
             logger.info(`✅ Vertex AI initialized for project: ${projectId} (${region})`);
             return vertexPlatformInstance;
         } catch (err) {
@@ -93,16 +102,19 @@ async function generateText(prompt, apiKey, options = {}) {
     
     if (!activeKey) {
         if (noEnvFallback) {
-            logger.warn("generateText: no API key and noEnvFallback=true — skipping");
             return null;
         }
-        // If no key provided, assume internal / platform call
         activeKey = platformKey;
     }
-    
-    // Routing Logic: Use Vertex if it's a platform call (either by flag or by matching the platform key)
+
     const vertexInstance = getVertexInstance();
     const useVertex = (isPlatform || activeKey === platformKey) && !!vertexInstance;
+
+    if (!useVertex && noEnvFallback && !isKeyValid(activeKey)) {
+        return null;
+    }
+
+    return geminiBreaker.call(async () => {
     
     // Sanitize prompt
     const safePrompt = String(prompt)
@@ -139,9 +151,7 @@ async function generateText(prompt, apiKey, options = {}) {
                 const currentKey = (attempt > 1 && useVertex) ? platformKey : activeKey;
                 
                 if (!isKeyValid(currentKey)) {
-                    if (attempt === 1 && !useVertex) logger.warn("Invalid API key for AI Studio call.");
-                    // If we have no valid key at all, return null
-                    if (!isKeyValid(currentKey)) return null;
+                    return null;
                 }
                 
                 const genAI = getStudioClient(currentKey);
@@ -192,6 +202,7 @@ async function generateText(prompt, apiKey, options = {}) {
     
     logger.error("All AI attempts exhausted:", lastError?.message);
     return null;
+    });
 }
 
 async function generateJSON(prompt, apiKey, options = {}) {
@@ -211,11 +222,12 @@ async function generateJSON(prompt, apiKey, options = {}) {
 }
 
 async function generateTextFast(prompt, apiKey, options = {}) {
+    const tenantTimeout = Number(process.env.AI_CALL_TIMEOUT_MS || 5000);
     return generateText(prompt, apiKey, {
         ...options,
-        timeout: 6000,
+        timeout: options.timeout ?? tenantTimeout,
         maxRetries: 0,
-        temperature: 0.1
+        temperature: 0.1,
     });
 }
 
@@ -250,12 +262,13 @@ async function botGenerateJSON(prompt, clientApiKey, options = {}) {
 }
 
 module.exports = {
-    getGeminiModel,      // for backward compat
-    generateText,        // general purpose
-    generateJSON,        // structured output
-    generateTextFast,    // real-time
-    platformGenerateText, // dashboard (vertex)
-    platformGenerateJSON, // dashboard (vertex)
-    botGenerateText,      // chatbot (client key)
-    botGenerateJSON       // chatbot (client key)
+    getGeminiModel,
+    generateText,
+    generateJSON,
+    generateTextFast,
+    platformGenerateText,
+    platformGenerateJSON,
+    botGenerateText,
+    botGenerateJSON,
+    isKeyValid,
 };

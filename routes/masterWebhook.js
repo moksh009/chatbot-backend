@@ -174,6 +174,8 @@ async function processStatuses(statuses) {
 }
 
 async function processMessages(messages, metadata, contacts) {
+  const { isDuplicateInbound } = require('../utils/webhookDedup');
+
   for (const message of messages) {
     const from = message.from; 
     const messageId = message.id;
@@ -185,18 +187,25 @@ async function processMessages(messages, metadata, contacts) {
     }
 
     try {
-      // 1. DEDUPLICATION CHECK
+      const waClientFilter = phoneNumberIdMatchFilter(phone_number_id);
+      const clientDocForDedup = waClientFilter
+        ? await require('../models/Client').findOne(waClientFilter, { clientId: 1 }).lean()
+        : null;
+      if (messageId && clientDocForDedup?.clientId) {
+        if (await isDuplicateInbound(messageId, clientDocForDedup.clientId)) {
+          log.debug(`Skipping duplicate message ${messageId} from ${from}`);
+          continue;
+        }
+      }
+
       const existingConvo = await Conversation.findOne({ phone: from, processedMessageIds: messageId }, { _id: 1 }).lean();
       if (existingConvo) {
-        log.debug(`Skipping duplicate message ${messageId} from ${from}`);
+        log.debug(`Skipping duplicate message ${messageId} from ${from} (legacy dedup)`);
         continue; 
       }
 
       log.info(`Incoming from ${from}: ${message.type}`, { messageId });
-      const waClientFilter = phoneNumberIdMatchFilter(phone_number_id);
-      const clientDocForEnvelope = waClientFilter
-        ? await require('../models/Client').findOne(waClientFilter, { clientId: 1 }).lean()
-        : null;
+      const clientDocForEnvelope = clientDocForDedup;
       if (clientDocForEnvelope?.clientId) {
         const envelope = buildEventEnvelope({
           channel: 'whatsapp',

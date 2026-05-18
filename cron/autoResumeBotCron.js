@@ -4,9 +4,7 @@ const Message = require('../models/Message');
 const log = require('../utils/logger');
 const { logActivity } = require('../utils/activityLogger');
 
-const autoResumeBotCron = () => {
-    // Run every 15 minutes
-    cron.schedule('*/15 * * * *', async () => {
+async function runAutoResumeBotTick() {
         try {
             const oneHourAgo = new Date();
             oneHourAgo.setHours(oneHourAgo.getHours() - 1);
@@ -63,7 +61,12 @@ const autoResumeBotCron = () => {
         } catch (error) {
             log.error('[AutoResumeBotCron] Error running cron:', { error: error.message });
         }
-    });
+}
+
+const autoResumeBotCron = () => {
+    if (process.env.CRON_USE_COORDINATOR === 'true') return;
+    cron.schedule('*/15 * * * *', runAutoResumeBotTick);
 };
 
+autoResumeBotCron.runTick = runAutoResumeBotTick;
 module.exports = autoResumeBotCron;

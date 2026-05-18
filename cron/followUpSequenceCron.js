@@ -149,8 +149,7 @@ async function dispatchSequenceStep({ dueStep, seq, client, lead, ctx }) {
 
 let cronRunning = false;
 
-const scheduleFollowUpSequenceCron = () => {
-    cron.schedule('*/5 * * * *', async () => {
+async function runFollowUpSequenceTick() {
         if (cronRunning) {
             console.log('[SequenceCron] Previous run still active, skipping');
             return;
@@ -301,7 +300,12 @@ const scheduleFollowUpSequenceCron = () => {
         } finally {
             cronRunning = false;
         }
-    });
+}
+
+const scheduleFollowUpSequenceCron = () => {
+    if (process.env.CRON_USE_COORDINATOR === 'true') return;
+    cron.schedule('*/5 * * * *', runFollowUpSequenceTick);
 };
 
+scheduleFollowUpSequenceCron.runTick = runFollowUpSequenceTick;
 module.exports = scheduleFollowUpSequenceCron;

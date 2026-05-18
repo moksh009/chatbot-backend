@@ -20,9 +20,7 @@ const STALE_TIMEOUT_HOURS = 2;
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-const scheduleCampaignCron = () => {
-  // Run every 5 minutes
-  cron.schedule("*/5 * * * *", async () => {
+async function runCampaignSchedulerTick() {
     try {
       // ─── Phase 1: Stale Campaign Recovery ───
       const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_HOURS * 60 * 60 * 1000);
@@ -366,7 +364,12 @@ const scheduleCampaignCron = () => {
     } catch (err) {
       log.error('❌ Error in scheduled campaign cron:', err.message);
     }
-  });
+}
+
+const scheduleCampaignCron = () => {
+  if (process.env.CRON_USE_COORDINATOR === 'true') return;
+  cron.schedule('*/5 * * * *', runCampaignSchedulerTick);
 };
 
+scheduleCampaignCron.runTick = runCampaignSchedulerTick;
 module.exports = scheduleCampaignCron;

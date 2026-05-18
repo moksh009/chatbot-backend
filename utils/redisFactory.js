@@ -48,8 +48,11 @@ function queueRetryStrategy(times) {
   return Math.min(times * 100, 3000);
 }
 
+let evictionWarningSent = false;
+
 async function ensureNoEviction(redis, label) {
   if (!redis || process.env.REDIS_ENFORCE_NOEVICTION === 'false') return;
+  if (evictionWarningSent) return;
   try {
     const current = await redis.config('GET', 'maxmemory-policy');
     const policy = Array.isArray(current) ? String(current[1] || '').toLowerCase() : '';
@@ -57,7 +60,39 @@ async function ensureNoEviction(redis, label) {
     await redis.config('SET', 'maxmemory-policy', 'noeviction');
     log.warn(`[Redis/${label}] Updated maxmemory-policy from "${policy || 'unknown'}" to "noeviction".`);
   } catch (err) {
-    log.warn(`[Redis/${label}] Could not enforce noeviction: ${err.message}`);
+    evictionWarningSent = true;
+    log.warn(
+      `[Redis/${label}] Cannot set noeviction via CONFIG (${err.message}). ` +
+        'Set maxmemory-policy=noeviction in your Redis provider dashboard (required for BullMQ).'
+    );
+  }
+}
+
+/** Startup health — ping + log policy once */
+async function logRedisHealth() {
+  const redis = getAppRedis();
+  if (!redis) {
+    log.warn('[Redis] App Redis not configured (REDIS_URL unset in production).');
+    return;
+  }
+  try {
+    await redis.ping();
+    log.info('[Redis] PING ok');
+    try {
+      const current = await redis.config('GET', 'maxmemory-policy');
+      const policy = Array.isArray(current) ? current[1] : current;
+      log.info(`[Redis] maxmemory-policy: ${policy || 'unknown'}`);
+      if (policy && String(policy).toLowerCase() === 'allkeys-lru') {
+        evictionWarningSent = true;
+        log.warn(
+          '[Redis] Policy is allkeys-lru — BullMQ jobs may be evicted. Use noeviction in provider settings.'
+        );
+      }
+    } catch {
+      await ensureNoEviction(redis, 'App');
+    }
+  } catch (err) {
+    log.warn('[Redis] Health check failed:', err.message);
   }
 }
 
@@ -113,5 +148,6 @@ module.exports = {
   resolveAppRedisUrl,
   resolveQueueRedisUrl,
   getAppRedis,
-  getQueueRedis
+  getQueueRedis,
+  logRedisHealth,
 };

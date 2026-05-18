@@ -363,15 +363,6 @@ app.use('/api/users', teamRoutes);                   // Frontend: /api/users/tea
 // Phase 30: Auto-Keywords
 app.use('/api/keywords', require('./routes/keywords'));
 
-// --- CRON JOBS (Phase 21 Resumption) ---
-const scheduleFlowResumption = require('./cron/flowResumptionCron');
-scheduleFlowResumption();
-
-// Phase 27: Loyalty Hub & Enterprise Rewards
-const scheduleLoyaltyUrgency = require('./cron/loyaltyCron');
-scheduleLoyaltyUrgency();
-
-
 const instagramAutomationRoutes = require('./routes/instagramAutomation');
 app.use('/api/instagram-automations', instagramAutomationRoutes);
 
@@ -417,7 +408,23 @@ app.get('/keepalive-ping', (req, res) => {
 app.get('/api/REMOVED_TEMP_ROUTES', (req, res) => res.status(410).json({ message: 'Route removed' }));
 
 
-cron.schedule('*/10 * * * *', () => {
+const RUN_API = process.env.RUN_API !== 'false';
+const RUN_WORKERS = process.env.RUN_WORKERS !== 'false';
+const RUN_CRONS = process.env.RUN_CRONS !== 'false';
+
+if (RUN_CRONS) {
+if (process.env.CRON_USE_COORDINATOR !== 'false') {
+  process.env.CRON_USE_COORDINATOR = 'true';
+}
+const { registerCoordinatedCrons } = require('./cron/cronCoordinator');
+registerCoordinatedCrons();
+
+const scheduleFlowResumption = require('./cron/flowResumptionCron');
+scheduleFlowResumption();
+const scheduleLoyaltyUrgency = require('./cron/loyaltyCron');
+scheduleLoyaltyUrgency();
+
+cron.schedule('*/14 * * * *', () => {
   const url = process.env.SERVER_URL || `https://chatbot-backend-lg5y.onrender.com`;
   log.info(`[Self-Ping] Pinging ${url}/keepalive-ping to prevent sleep...`);
   const https = require('https');
@@ -506,6 +513,7 @@ require('./cron/leadScoringCron');
 require('./cron/igTokenRefresher');
 require('./cron/autoResolutionCron');
 require('./cron/scheduledMessageCron')();
+} // RUN_CRONS
 
 const http = require('http');
 const socketIo = require('socket.io');
@@ -520,12 +528,23 @@ app.set('socketio', io);
 
 connectDB()
   .then(async () => {
-    // Phase 9 & 5: Prime the NLP Engine and Start Task Workers
+    const { logRedisHealth } = require('./utils/redisFactory');
+    await logRedisHealth().catch(() => {});
+
+    const { prewarmFlowCacheForActiveClients } = require('./utils/flowPrewarm');
+    prewarmFlowCacheForActiveClients().catch((err) => {
+      log.warn('[FlowPrewarm] skipped:', err.message);
+    });
+
     const { bootIntentEngine } = require('./services/EngineInitializer');
-    require('./services/NlpWorker'); // Starts the BullMQ NLP worker process
-    require('./services/TaskWorker'); // Starts the Generic Enterprise Task Worker process (Phase 5)
-    require('./workers/igAutomationWorker'); // IG Automation: Comment-to-DM & Story-to-DM workers
-    require('./workers/autoTemplateWorker'); // Auto Template Generation & Staged Meta Submission
+    if (RUN_WORKERS) {
+      require('./services/NlpWorker');
+      require('./services/TaskWorker');
+      require('./workers/igAutomationWorker');
+      require('./workers/autoTemplateWorker');
+    } else {
+      log.info('[Boot] RUN_WORKERS=false — BullMQ workers not started');
+    }
 
     // IG Automation: Validate environment variables (non-fatal warnings)
     validateIGEnvironment();

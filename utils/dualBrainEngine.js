@@ -17,6 +17,19 @@ const { generateText, getGeminiModel } = require('./gemini');
 const { createMessage } = require("./createMessage");
 const { injectVariables, buildVariableContext, injectNodeVariables, injectVariablesLegacy } = require("./variableInjector");
 const { findMatchingFlow, findFlowStartNode } = require("./triggerEngine");
+const {
+  getCachedFlowGraph,
+  getCachedFlowGraphAsync,
+  setCachedFlowGraph,
+} = require("./flowGraphCache");
+const { createPerfTimer } = require("./enginePerf");
+const { shouldAttemptAICall } = require("./aiGuards");
+const {
+  beginEngineRun,
+  abortEngineRun,
+  isEngineRunAborted,
+  endEngineRun,
+} = require("./engineRunRegistry");
 const { findMatchingRule } = require("./rulesEngine");
 const { evaluateRouting } = require("./routingEngine");
 const { sendEmail } = require("./emailService");
@@ -44,6 +57,8 @@ const {
 } = require("./clientWhatsAppCreds");
 const { discoverClientByPhoneId } = require("./clientDiscovery");
 const { resolveClientGeminiKey } = require("./clientGeminiKey");
+const NodeCache = require("node-cache");
+const keywordTriggerCache = new NodeCache({ stdTTL: 120, checkperiod: 30 });
 
 /** Resolved Meta / WA catalog id (same precedence as catalog send path). */
 function getClientCatalogIdString(client) {
@@ -106,6 +121,9 @@ const { generateVoiceReply } = require("./voiceReply");
 // FLOW BUILDER HELPERS — handle nested folders/groups
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Canvas-only types — excluded from runtime traversal (large flows stay fast). */
+const RUNTIME_SKIP_NODE_TYPES = new Set(["folder", "group", "sticky", "comment"]);
+
 function flattenFlowNodes(nodes) {
   const flat = [];
   
@@ -113,7 +131,7 @@ function flattenFlowNodes(nodes) {
     if (!Array.isArray(nodeList)) return;
     for (const node of nodeList) {
       // Add the node itself (if it's an actual conversation node)
-      if (node.type && node.type !== "folder" && node.type !== "group") {
+      if (node.type && !RUNTIME_SKIP_NODE_TYPES.has(node.type)) {
         flat.push(node);
       }
       // Recurse into children/nodes inside folder
@@ -167,19 +185,29 @@ async function getFlowGraphForConversation(client, convo) {
   }
 
   const activeFlowId = String(convo.activeFlowId);
+  const cached =
+    (await getCachedFlowGraphAsync(client.clientId, activeFlowId)) ||
+    getCachedFlowGraph(client.clientId, activeFlowId);
+  if (cached?.nodes?.length) {
+    return { nodes: cached.nodes, edges: cached.edges || [] };
+  }
 
   // 1) Prefer WhatsAppFlow collection — read PUBLISHED state only
   try {
     const WhatsAppFlow = require("../models/WhatsAppFlow");
     let flowDoc = null;
     if (/^[a-f\d]{24}$/i.test(activeFlowId)) {
-      flowDoc = await WhatsAppFlow.findById(activeFlowId).lean();
+      flowDoc = await WhatsAppFlow.findById(activeFlowId)
+        .select("clientId flowId publishedNodes publishedEdges nodes edges")
+        .lean();
     }
     if (!flowDoc) {
       flowDoc = await WhatsAppFlow.findOne({
         clientId: client.clientId,
-        $or: [{ flowId: activeFlowId }, { _id: activeFlowId }]
-      }).lean();
+        $or: [{ flowId: activeFlowId }, { _id: activeFlowId }],
+      })
+        .select("clientId flowId publishedNodes publishedEdges nodes edges")
+        .lean();
     }
     if (flowDoc) {
       if (flowDoc.clientId && flowDoc.clientId !== client.clientId) {
@@ -190,18 +218,26 @@ async function getFlowGraphForConversation(client, convo) {
       }
     }
     if (flowDoc) {
-      // CRITICAL: Read from publishedNodes/publishedEdges (immutable snapshot)
-      // Never read from draft nodes — prevents live edits from affecting running bots
       const pubNodes = flowDoc.publishedNodes || [];
       const pubEdges = flowDoc.publishedEdges || [];
       if (pubNodes.length > 0) {
-        return { nodes: flattenFlowNodes(pubNodes), edges: pubEdges };
+        const graph = { nodes: flattenFlowNodes(pubNodes), edges: pubEdges };
+        setCachedFlowGraph(client.clientId, activeFlowId, {
+          ...graph,
+          flowId: flowDoc.flowId,
+          mongoId: String(flowDoc._id),
+        });
+        return graph;
       }
-      // If publishedNodes is empty but nodes exists, this flow was never published properly
-      // Fall back to nodes with a warning (backwards compatibility for pre-migration flows)
       if (flowDoc.nodes?.length) {
         log.warn(`[FlowGraph] Flow ${activeFlowId} has no publishedNodes — using draft nodes as fallback. Please re-publish.`);
-        return { nodes: flattenFlowNodes(flowDoc.nodes), edges: flowDoc.edges || [] };
+        const graph = { nodes: flattenFlowNodes(flowDoc.nodes), edges: flowDoc.edges || [] };
+        setCachedFlowGraph(client.clientId, activeFlowId, {
+          ...graph,
+          flowId: flowDoc.flowId,
+          mongoId: String(flowDoc._id),
+        });
+        return graph;
       }
     }
   } catch (_) {
@@ -209,12 +245,60 @@ async function getFlowGraphForConversation(client, convo) {
   }
 
   // 2) Fallback to visualFlows held on client settings
-  const visualFlow = (client.visualFlows || []).find(f => String(f.id) === activeFlowId);
+  const visualFlow = (client.visualFlows || []).find((f) => String(f.id) === activeFlowId);
   if (visualFlow?.nodes?.length) {
-    return { nodes: flattenFlowNodes(visualFlow.nodes || []), edges: visualFlow.edges || [] };
+    const graph = {
+      nodes: flattenFlowNodes(visualFlow.nodes || []),
+      edges: visualFlow.edges || [],
+    };
+    setCachedFlowGraph(client.clientId, activeFlowId, graph);
+    return graph;
   }
 
   return { nodes: fallbackNodes, edges: fallbackEdges };
+}
+
+/** Load a published flow by flowId or Mongo _id (webhook path has no visualFlows on client). */
+async function loadPublishedFlowByRef(clientId, flowRef) {
+  if (!clientId || !flowRef) return null;
+  const cached =
+    (await getCachedFlowGraphAsync(clientId, flowRef)) ||
+    getCachedFlowGraph(clientId, flowRef);
+  if (cached?.nodes?.length) {
+    return {
+      id: cached.flowId || String(flowRef),
+      name: cached.name || "",
+      nodes: cached.nodes,
+      edges: cached.edges || [],
+    };
+  }
+  const WhatsAppFlow = require("../models/WhatsAppFlow");
+  const doc = await WhatsAppFlow.findOne({
+    clientId,
+    status: "PUBLISHED",
+    $or: [{ flowId: String(flowRef) }, { _id: String(flowRef) }],
+  })
+    .select("flowId name publishedNodes publishedEdges nodes edges")
+    .lean();
+  if (!doc) return null;
+  const rawNodes =
+    doc.publishedNodes?.length > 0 ? doc.publishedNodes : doc.nodes || [];
+  const rawEdges =
+    doc.publishedEdges?.length > 0 ? doc.publishedEdges : doc.edges || [];
+  const graph = {
+    nodes: flattenFlowNodes(rawNodes),
+    edges: rawEdges,
+    flowId: doc.flowId,
+    mongoId: String(doc._id),
+    name: doc.name,
+  };
+  setCachedFlowGraph(clientId, flowRef, graph);
+  return {
+    id: doc.flowId || String(doc._id),
+    name: doc.name || "",
+    nodes: graph.nodes,
+    edges: graph.edges,
+  };
 }
 
 const { normalizePhone } = require("./helpers");
@@ -494,6 +578,7 @@ async function runDualBrainEngine(parsedMessage, client) {
   const crypto = require('crypto');
   const _lockOwnerId = crypto.randomUUID();
   const lockKey = `lock:session:${client.clientId}:${phone}`;
+  beginEngineRun(client.clientId, phone);
   try {
       if (redisClient && redisClient.status === 'ready') {
           // Redis atomic lock (30s TTL)
@@ -524,22 +609,83 @@ async function runDualBrainEngine(parsedMessage, client) {
   }
 
   const runEngineBody = async () => {
+    const perf = createPerfTimer(client.clientId, phone);
     const profileName = parsedMessage.profileName || '';
     const inboundText = parsedMessage.text?.body || parsedMessage.interactive?.button_reply?.title || parsedMessage.interactive?.list_reply?.title || '';
     const txtLower = inboundText.toLowerCase().trim();
+    const inboundGeminiKey = resolveClientGeminiKey(client);
+    const tenantAiEnabled = shouldAttemptAICall("tenant", client);
 
-    // --- Name Priority Guard (Enterprise) ---
-    // If the lead was imported via CSV or manually renamed, do NOT overwrite customerName with WhatsApp profile.
-    let shouldSetCustomerName = !!profileName;
-    if (profileName) {
-      const existingLeadForName = await AdLead.findOne(
+    // --- Name guard + session upserts in parallel ---
+    const parallelTasks = [
+      Conversation.findOneAndUpdate(
+        { phone, clientId: client.clientId },
+        {
+          $setOnInsert: {
+            phone,
+            clientId: client.clientId,
+            lastStepId: null,
+            botPaused: false,
+            status: "BOT_ACTIVE",
+          },
+          $inc: { unreadCount: 1 },
+          $set: {
+            lastInteraction: new Date(),
+            ...(profileName && { customerName: profileName }),
+          },
+        },
+        { upsert: true, new: true, lean: true }
+      ),
+      AdLead.findOneAndUpdate(
         { phoneNumber: phone, clientId: client.clientId },
-        { isNameCustom: 1, nameSource: 1, name: 1 }
-      ).lean();
-      if ((existingLeadForName?.isNameCustom || existingLeadForName?.nameSource === 'imported') && existingLeadForName?.name) {
-        shouldSetCustomerName = false; // Preserve the CSV/manual name
+        {
+          $setOnInsert: {
+            phoneNumber: phone,
+            clientId: client.clientId,
+            source: parsedMessage.referral ? "Meta Ad" : "Direct",
+          },
+          $set: {
+            lastInteraction: new Date(),
+            lastInboundAt: new Date(),
+            lastMessageContent: inboundText || `[${parsedMessage.type || "Message"}]`,
+            ...(profileName && { name: profileName, nameSource: "whatsapp" }),
+          },
+        },
+        { upsert: true, new: true, lean: true }
+      ),
+    ];
+    if (profileName) {
+      parallelTasks.push(
+        AdLead.findOne(
+          { phoneNumber: phone, clientId: client.clientId },
+          { isNameCustom: 1, nameSource: 1, name: 1 }
+        ).lean()
+      );
+    }
+    const parallelResults = await Promise.all(parallelTasks);
+    let convo = parallelResults[0];
+    let lead = parallelResults[1];
+    let shouldSetCustomerName = !!profileName;
+    if (profileName && parallelResults[2]) {
+      const existingLeadForName = parallelResults[2];
+      if (
+        (existingLeadForName?.isNameCustom || existingLeadForName?.nameSource === "imported") &&
+        existingLeadForName?.name
+      ) {
+        shouldSetCustomerName = false;
+        await Promise.all([
+          Conversation.updateOne(
+            { _id: convo._id },
+            { $unset: { customerName: "" } }
+          ).catch(() => {}),
+          AdLead.updateOne(
+            { _id: lead._id },
+            { $unset: { name: "", nameSource: "" } }
+          ).catch(() => {}),
+        ]);
       }
     }
+    perf.checkpoint("session_upserted");
 
     // --- GAP-GEN-3: COMMERCE AUTOMATION ISOLATION ---
     // If this is an ecommerce event, route it to the isolated WhatsAppFlow automation
@@ -589,34 +735,6 @@ async function runDualBrainEngine(parsedMessage, client) {
       }
     }
 
-    // --- STEP 0: SESSION UPSERT (Mandatory for Keywords) ---
-    let convo = await Conversation.findOneAndUpdate(
-        { phone, clientId: client.clientId },
-        {
-          $setOnInsert: { phone, clientId: client.clientId, lastStepId: null, botPaused: false, status: 'BOT_ACTIVE' },
-          $inc: { unreadCount: 1 },
-          $set: { 
-            lastInteraction: new Date(),
-            ...(shouldSetCustomerName && { customerName: profileName })
-          }
-        },
-        { upsert: true, new: true }
-    );
-
-    let lead = await AdLead.findOneAndUpdate(
-        { phoneNumber: phone, clientId: client.clientId },
-        { 
-          $setOnInsert: { phoneNumber: phone, clientId: client.clientId, source: parsedMessage.referral ? 'Meta Ad' : 'Direct' },
-          $set: { 
-            lastInteraction: new Date(),
-            lastInboundAt: new Date(),
-            lastMessageContent: inboundText || `[${parsedMessage.type || 'Message'}]`,
-            ...(shouldSetCustomerName && { name: profileName, nameSource: 'whatsapp' })
-          }
-        },
-        { upsert: true, new: true }
-    );
-
     // --- STEP 1: KEYWORD TRIGGERS (Settings → Keyword triggers) ---
     // Moved to *after* Smart message rules (automationRules) so hub rules can win
     // when they send a reply or pause — see block after PHASE 22 rules evaluation.
@@ -625,9 +743,8 @@ async function runDualBrainEngine(parsedMessage, client) {
     // Only call detection/translation if not handled by a keyword.
     const { detectLanguage, translateText } = require('./translationEngine');
     let detectedLanguage = 'en';
-    const inboundGeminiKey = resolveClientGeminiKey(client);
 
-    if (inboundText && inboundText.length > 2 && inboundGeminiKey) {
+    if (inboundText && inboundText.length > 2 && tenantAiEnabled) {
         try {
             detectedLanguage = await detectLanguage(inboundText, inboundGeminiKey);
             parsedMessage.detectedLanguage = detectedLanguage;
@@ -755,6 +872,7 @@ async function runDualBrainEngine(parsedMessage, client) {
   } catch (err) {
     log.error('[InboundSave] Failed:', { error: err.message });
   }
+  perf.checkpoint("message_saved");
 
   // STEP 3.5: SUBSCRIPTION LIMIT CHECK (Phase 23)
   const limits = await checkLimit(client._id, 'messages');
@@ -818,7 +936,9 @@ async function runDualBrainEngine(parsedMessage, client) {
       // Check for Direct-To-Flow logic
       if (scannedQr.config?.flowId && scannedQr.config.flowId !== '') {
         log.info(`[QR Logic] Redirecting ${lead.phoneNumber} to flow ${scannedQr.config.flowId}`);
-        const targetFlow = (client.visualFlows || []).find(f => f.id === scannedQr.config.flowId);
+        const targetFlow =
+          (await loadPublishedFlowByRef(client.clientId, scannedQr.config.flowId)) ||
+          (client.visualFlows || []).find((f) => f.id === scannedQr.config.flowId);
         if (targetFlow) {
            const { findFlowStartNode } = require('./triggerEngine');
            const startNodeId = findFlowStartNode(targetFlow.nodes || []);
@@ -834,6 +954,65 @@ async function runDualBrainEngine(parsedMessage, client) {
       const welcomeMsg = scannedQr.config?.welcomeMessage || `🎉 Welcome! We just added 50 VIP Points to your wallet for scanning that code! Type "WALLET" to check your balance.`;
       await sendWhatsAppText(client, phone, welcomeMsg);
       return true;
+    }
+  }
+
+  // ── FAST PATH: greetings → published flow (skip heavy rules/AI for "hi"/"menu") ──
+  const isSimpleGreeting =
+    inboundText &&
+    !convo.botPaused &&
+    !parsedMessage.interactive?.button_reply &&
+    !parsedMessage.interactive?.list_reply &&
+    isGreeting(txtLower) &&
+    txtLower.length <= 24;
+
+  if (isSimpleGreeting && !convo.botPaused && convo.status !== "HUMAN_SUPPORT" && convo.status !== "HUMAN_TAKEOVER") {
+    try {
+      const match = await findMatchingFlow(parsedMessage, client, convo);
+      perf.checkpoint("flow_match_greeting");
+      if (match?.flow && match.startNodeId) {
+        const flow = match.flow;
+        const rawNodes =
+          (flow.publishedNodes && flow.publishedNodes.length > 0
+            ? flow.publishedNodes
+            : flow.nodes) || [];
+        const rawEdges =
+          (flow.publishedEdges && flow.publishedEdges.length > 0
+            ? flow.publishedEdges
+            : flow.edges) || [];
+        const flowNodes = flattenFlowNodes(rawNodes);
+        const flowEdges = rawEdges;
+        const resolvedActiveFlowId =
+          flow.flowId || (flow._id != null ? String(flow._id) : flow.id || null);
+        await Conversation.findByIdAndUpdate(convo._id, {
+          activeFlowId: resolvedActiveFlowId,
+          lastStepId: null,
+          lastMessageAt: new Date(),
+        });
+        const freshConvo = await Conversation.findById(convo._id);
+        if (!isEngineRunAborted(client.clientId, phone)) {
+          const handled = await executeNode(
+            match.startNodeId,
+            flowNodes,
+            flowEdges,
+            client,
+            freshConvo,
+            lead,
+            phone,
+            io,
+            channel,
+            parsedMessage
+          );
+          if (handled !== false) {
+            perf.checkpoint("greeting_sent");
+            perf.finish();
+            setImmediate(() => analyzeConversationIntelligence(client, phone, freshConvo));
+            return true;
+          }
+        }
+      }
+    } catch (fpErr) {
+      log.warn("[DualBrain] Greeting fast-path skipped:", fpErr.message);
     }
   }
 
@@ -1021,7 +1200,14 @@ async function runDualBrainEngine(parsedMessage, client) {
   // Runs after Smart rules so automation-hub rules can take priority on the same keyword.
   if (inboundText && !convo.botPaused) {
     const KeywordTrigger = require('../models/KeywordTrigger');
-    const triggers = await KeywordTrigger.find({ clientId: client.clientId, isActive: true });
+    const kwCacheKey = `kwtrig:${client.clientId}`;
+    let triggers = keywordTriggerCache.get(kwCacheKey);
+    if (!triggers) {
+      triggers = await KeywordTrigger.find({ clientId: client.clientId, isActive: true })
+        .select('keyword type actionType targetId isActive')
+        .lean();
+      keywordTriggerCache.set(kwCacheKey, triggers);
+    }
 
     const matchedTrigger = triggers.find((t) => {
       if (t.type === 'exact') return txtLower === t.keyword.toLowerCase();
@@ -1032,13 +1218,16 @@ async function runDualBrainEngine(parsedMessage, client) {
       log.info(`[KeywordEngine] Match after rules: ${matchedTrigger.keyword}.`);
 
       if (matchedTrigger.actionType === 'trigger_flow') {
-        const flow = (client.visualFlows || []).find((f) => f.id === matchedTrigger.targetId);
+        const flow =
+          (await loadPublishedFlowByRef(client.clientId, matchedTrigger.targetId)) ||
+          (client.visualFlows || []).find((f) => f.id === matchedTrigger.targetId);
         if (flow) {
-          const startNode =
-            findMatchingFlow(flattenFlowNodes(flow.nodes), inboundText) ||
-            findFlowStartNode(flattenFlowNodes(flow.nodes));
-          if (startNode) {
-            return await runFlow(client, phone, flow, startNode.id, { triggerSource: 'keyword' });
+          const flat = flattenFlowNodes(flow.nodes || []);
+          const startNodeId = findFlowStartNode(flat, flow.edges || []);
+          if (startNodeId) {
+            return await runFlow(client, phone, flow, startNodeId, {
+              triggerSource: "keyword",
+            });
           }
         }
       } else if (matchedTrigger.actionType === 'send_template') {
@@ -1868,15 +2057,29 @@ async function runDualBrainEngine(parsedMessage, client) {
 
             // Execute attached flow
             if (metaAd.attachedFlowId) {
-              const adFlow = (client.visualFlows || []).find(f => f.id === metaAd.attachedFlowId);
-              if (adFlow && adFlow.nodes?.length) {
+              const adFlow =
+                (await loadPublishedFlowByRef(client.clientId, metaAd.attachedFlowId)) ||
+                (client.visualFlows || []).find((f) => f.id === metaAd.attachedFlowId);
+              if (adFlow?.nodes?.length) {
                 const adFlowNodes = flattenFlowNodes(adFlow.nodes);
                 const adStartNode = findFlowStartNode(adFlowNodes, adFlow.edges || []);
                 if (adStartNode) {
                   log.info(`🎯 Meta Ad flow: routing ${phone} to flow "${adFlow.name}" from ad "${metaAd.adName}"`);
-                  await Conversation.findByIdAndUpdate(convo._id, { activeFlowId: adFlow.id });
+                  await Conversation.findByIdAndUpdate(convo._id, {
+                    activeFlowId: adFlow.id || metaAd.attachedFlowId,
+                  });
                   const freshConvo = await Conversation.findById(convo._id);
-                  return await executeNode(adStartNode, adFlowNodes, adFlow.edges || [], client, freshConvo, lead, phone, io, channel);
+                  return await executeNode(
+                    adStartNode,
+                    adFlowNodes,
+                    adFlow.edges || [],
+                    client,
+                    freshConvo,
+                    lead,
+                    phone,
+                    io,
+                    channel
+                  );
                 }
               }
             }
@@ -1934,7 +2137,11 @@ async function runDualBrainEngine(parsedMessage, client) {
 
   // STEP 5: PRIORITY 1 — Graph Traversal
   const graphHandled = await tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, channel);
-  if (graphHandled) return true;
+  if (graphHandled) {
+    perf.checkpoint("graph_traversed");
+    perf.finish();
+    return true;
+  }
 
   // STEP 6: PRIORITY 2 — Keyword Fallback
   const keywordHandled = await tryKeywordFallback(parsedMessage, client, convo, phone, channel);
@@ -1959,8 +2166,8 @@ async function runDualBrainEngine(parsedMessage, client) {
   }
 
   // STEP 7: PRIORITY 3 — Gemini AI Fallback
-  // Only use AI if there is text body. Otherwise, let the caller handle it.
-  if (parsedMessage.text?.body) {
+  if (parsedMessage.text?.body && tenantAiEnabled) {
+    perf.checkpoint("before_ai_fallback");
     const aiOk = await runAIFallback(parsedMessage, client, phone, lead, channel, convo);
     analyzeConversationIntelligence(client, phone, convo);
     if (!aiOk) {
@@ -1972,16 +2179,28 @@ async function runDualBrainEngine(parsedMessage, client) {
     }
     return true;
   }
-  
-  // Return false so the engine can process legacy interactive IDs
+
+  if (parsedMessage.text?.body) {
+    await sendWhatsAppText(
+      client,
+      phone,
+      "Thanks for your message! Type *menu* or *hi* anytime to see options again."
+    );
+    perf.finish();
+    return true;
+  }
+
+  perf.finish();
   setImmediate(() => analyzeConversationIntelligence(client, phone, convo));
     return false;
   };
 
   try {
-    return await withTimeout(runEngineBody(), DUAL_BRAIN_BUDGET_MS, 'DualBrain');
+    const result = await withTimeout(runEngineBody(), DUAL_BRAIN_BUDGET_MS, 'DualBrain');
+    return result;
   } catch (err) {
     if (String(err.message || '').includes('timed out')) {
+      abortEngineRun(client.clientId, phone);
       log.error(`[DualBrain] Hard timeout (${DUAL_BRAIN_BUDGET_MS}ms) for ${phone} on ${client.clientId}`);
       try {
         await sendWhatsAppText(
@@ -1995,6 +2214,7 @@ async function runDualBrainEngine(parsedMessage, client) {
     log.error(`[DualBrain] Critical Engine Error for ${phone}:`, err.message);
     return false;
   } finally {
+      endEngineRun(client.clientId, phone);
       // Release distributed lock — only if WE own it
       try {
           if (redisClient && redisClient.status === 'ready') {
@@ -2305,6 +2525,10 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
     if (!parsedMessage.text.body) {
          parsedMessage.text.body = parsedMessage.interactive?.button_reply?.title || parsedMessage.interactive?.list_reply?.title || parsedMessage.button?.text || userText || incomingTrigger.buttonId;
     }
+    if (!resolveClientGeminiKey(client)) {
+      log.info("[Graph] Unwired button — no merchant Gemini key, skipping AI fallback");
+      return false;
+    }
     try {
       return await runAIFallback(parsedMessage, client, phone, lead, channel, convo);
     } catch (aiErr) {
@@ -2470,6 +2694,10 @@ async function tryGraphTraversal(parsedMessage, client, convo, lead, phone, io, 
 // EXECUTE A SPECIFIC NODE
 // ─────────────────────────────────────────────────────────────────────────────
 async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, phone, io, channel = 'whatsapp', parsedMessage = {}) {
+  if (isEngineRunAborted(client.clientId, phone)) {
+    log.warn(`[Exec] Skipping node ${nodeId} — engine run aborted (timeout)`);
+    return false;
+  }
   const execStartedAt = Date.now();
   const rawNode = flowNodes.find(n => n.id === nodeId);
   if (!rawNode) {
@@ -2508,32 +2736,40 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   try {
     let ctx = convo?._variableContext || await buildVariableContext(client, phone, convo, lead);
     if (rawNode.type === "message" && rawNode.data?.isAiResponse) {
-      const { generateTextFast } = require("./gemini");
-      const userIssue = String(ctx.customer_issue || ctx.last_input || "").trim();
-      const kb = String(
-        client.ai?.persona?.knowledgeBase || client.ai?.systemPrompt || ""
-      );
-      const brand = ctx.brand_name || client.businessName || "our store";
-      const tone = client.ai?.persona?.tone || "friendly";
-      const prompt =
-        `You are ${ctx.bot_name || "Assistant"} for ${brand}. Tone: ${tone}.\n` +
-        `Knowledge:\n${kb.slice(0, 3500)}\n\nCustomer says: "${userIssue}"\n` +
-        `Reply in under 280 characters for WhatsApp.\n` +
-        `If you cannot answer from the knowledge above, reply exactly: NEEDS_HUMAN`;
-      let reply = "";
-      try {
-        const key = resolveClientGeminiKey(client);
-        reply = await Promise.race([
-          generateTextFast(prompt, key, { noEnvFallback: true }),
-          new Promise((_, rej) => setTimeout(() => rej(new Error("ai_timeout")), 5000)),
-        ]);
-      } catch (_) {
-        reply = "";
+      const aiKey = resolveClientGeminiKey(client);
+      const staticFallback = String(
+        rawNode.data?.text || rawNode.data?.message || rawNode.data?.body || ""
+      ).trim();
+      if (!aiKey) {
+        ctx.ai_response = staticFallback;
+        ctx.ai_needs_human = staticFallback ? "false" : "true";
+      } else {
+        const { generateTextFast } = require("./gemini");
+        const userIssue = String(ctx.customer_issue || ctx.last_input || "").trim();
+        const kb = String(
+          client.ai?.persona?.knowledgeBase || client.ai?.systemPrompt || ""
+        );
+        const brand = ctx.brand_name || client.businessName || "our store";
+        const tone = client.ai?.persona?.tone || "friendly";
+        const prompt =
+          `You are ${ctx.bot_name || "Assistant"} for ${brand}. Tone: ${tone}.\n` +
+          `Knowledge:\n${kb.slice(0, 3500)}\n\nCustomer says: "${userIssue}"\n` +
+          `Reply in under 280 characters for WhatsApp.\n` +
+          `If you cannot answer from the knowledge above, reply exactly: NEEDS_HUMAN`;
+        let reply = "";
+        try {
+          reply = await Promise.race([
+            generateTextFast(prompt, aiKey, { noEnvFallback: true }),
+            new Promise((_, rej) => setTimeout(() => rej(new Error("ai_timeout")), 5000)),
+          ]);
+        } catch (_) {
+          reply = "";
+        }
+        const clean = String(reply || "").trim();
+        const needs = !clean || clean.toUpperCase().includes("NEEDS_HUMAN");
+        ctx.ai_response = needs ? staticFallback : clean.slice(0, 500);
+        ctx.ai_needs_human = needs && !staticFallback ? "true" : "false";
       }
-      const clean = String(reply || "").trim();
-      const needs = !clean || clean.toUpperCase().includes("NEEDS_HUMAN");
-      ctx.ai_response = needs ? "" : clean.slice(0, 500);
-      ctx.ai_needs_human = needs ? "true" : "false";
       await Conversation.findByIdAndUpdate(convo._id, {
         $set: {
           "metadata.ai_response": ctx.ai_response,
@@ -5473,5 +5709,6 @@ module.exports = {
   saveOutboundMessage,
   handleWhatsAppCatalogOrder,
   deliverCartCheckoutFromFlow,
+  loadPublishedFlowByRef,
 };
 

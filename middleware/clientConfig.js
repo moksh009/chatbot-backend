@@ -24,7 +24,12 @@ const loadClientConfig = async (req, res, next) => {
       return res.status(400).json({ error: 'Client ID is required' });
     }
 
-    const client = await Client.findOne({ clientId });
+    // Exclude multi-MB flow blobs from webhook path — graphs load from WhatsAppFlow on demand.
+    const client = await Client.findOne({ clientId })
+      .select(
+        '-visualFlows -flowNodes -flowEdges'
+      )
+      .lean();
 
     if (!client) {
       const isWebhookPath =
@@ -117,8 +122,9 @@ const loadClientConfig = async (req, res, next) => {
       automationFlows: client.automationFlows || [],
       messageTemplates: client.messageTemplates || [],
       syncedMetaTemplates: client.syncedMetaTemplates || [],
-      flowNodes: client.flowNodes || [],
-      flowEdges: client.flowEdges || [],
+      flowNodes: [],
+      flowEdges: [],
+      visualFlows: [],
       
       // Phase 7 Credentials & URLs
       adminPhone: client.adminPhone || '',

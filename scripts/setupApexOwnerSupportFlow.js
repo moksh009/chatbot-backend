@@ -57,7 +57,13 @@ async function run() {
   const client = await Client.findOne({ clientId: CLIENT_ID });
   if (!client) throw new Error(`Client not found: ${CLIENT_ID}`);
 
-  const { nodes, edges } = buildFlow();
+  const built = buildFlow();
+  const { nodes, edges } = built;
+  if (built.pruneStats?.removedNodes) {
+    console.log(
+      `[setupApexOwnerSupportFlow] Pruned ${built.pruneStats.removedNodes} editor/orphan nodes (${built.pruneStats.beforeNodes} → ${built.pruneStats.afterNodes})`
+    );
+  }
 
   const triggerKeywordNodes = nodes.filter(
     (n) =>

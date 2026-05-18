@@ -16,6 +16,7 @@ const {
   touchInboundWebhook,
   touchMetaWebhookVerified,
 } = require('../utils/whatsappWebhookLifecycle');
+const { isDuplicateInbound } = require('../utils/webhookDedup');
 const { getMetaWebhookVerifyQuery } = require('../utils/metaHubQuery');
 
 // Middleware to load client config
@@ -82,35 +83,14 @@ router.get('/webhook', (req, res) => {
 // Webhook Event Handling (POST)
 router.post('/webhook', async (req, res) => {
   try {
-    const { businessType, clientId, isGenericBot } = req.clientConfig;
-    
-    // --- 1. Top-Level Deduplication ---
-    // Dropping duplicates here prevents buffer-reset loops and eliminates the 20-30s delay.
-    try {
-      const entry = req.body?.entry?.[0];
-      const changes = entry?.changes?.[0];
-      const message = changes?.value?.messages?.[0];
-      const messageId = message?.id;
+    const { businessType, clientId } = req.clientConfig;
 
-      if (messageId) {
-        const phone = message?.from; // Extract sender phone for deduplication
-        const existing = await InboundDeduplication.findOne({ messageId, clientId });
-        if (existing) {
-          console.log(`[Webhook Router] Ignoring duplicate event for ${messageId}`);
-          return res.sendStatus(200);
-        }
-        // Save ID with 2-minute TTL and mandatory phone field
-        if (phone) {
-            await InboundDeduplication.create({ messageId, clientId, phone });
-        } else {
-            // If phone is missing (unlikely for messages), we log it but don't crash
-            console.warn(`[Webhook Router] Deduplication: missing phone for messageId ${messageId}`);
-            await InboundDeduplication.create({ messageId, clientId, phone: 'unknown' });
-        }
-      }
-    } catch (dedupErr) {
-      console.error(`[Webhook Router] Deduplication check failed:`, dedupErr.message);
-      // Continue anyway to ensure delivery
+    const entry = req.body?.entry?.[0];
+    const message = entry?.changes?.[0]?.value?.messages?.[0];
+    const messageId = message?.id;
+
+    if (messageId && (await isDuplicateInbound(messageId, clientId, message?.from))) {
+      return res.sendStatus(200);
     }
 
     if (hasWhatsAppWebhookPayload(req.body)) {

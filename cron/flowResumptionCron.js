@@ -4,7 +4,7 @@ const cron = require('node-cron');
 const Conversation = require('../models/Conversation');
 const Client = require('../models/Client');
 const AdLead = require('../models/AdLead');
-const { executeNode } = require('../utils/dualBrainEngine');
+const { executeNode, loadPublishedFlowByRef } = require('../utils/dualBrainEngine');
 const log = require('../utils/logger')('FlowResumption');
 
 module.exports = function scheduleFlowResumption() {
@@ -17,7 +17,10 @@ module.exports = function scheduleFlowResumption() {
       const pausedConvos = await Conversation.find({
         flowPausedUntil: { $lte: now },
         status: { $in: ['FLOW_PAUSED', 'DELAYED', 'BOT_ACTIVE'] }
-      }).lean();
+      })
+        .select('_id clientId phone activeFlowId pausedAtNodeId flowPausedUntil status')
+        .limit(50)
+        .lean();
 
       if (pausedConvos.length === 0) return;
 
@@ -25,10 +28,14 @@ module.exports = function scheduleFlowResumption() {
 
       for (const convo of pausedConvos) {
         try {
-          const client = await Client.findOne({ clientId: convo.clientId }).lean();
+          const client = await Client.findOne({ clientId: convo.clientId })
+            .select('-visualFlows')
+            .lean();
           if (!client) continue;
 
-          const lead = await AdLead.findOne({ phoneNumber: convo.phone, clientId: convo.clientId }).lean();
+          const lead = await AdLead.findOne({ phoneNumber: convo.phone, clientId: convo.clientId })
+            .select('phoneNumber clientId name email tags customFields')
+            .lean();
           const nodeId = convo.pausedAtNodeId;
           
           if (!nodeId) {
@@ -40,29 +47,21 @@ module.exports = function scheduleFlowResumption() {
             continue;
           }
 
-          // CRITICAL: Use publishedNodes (immutable snapshot), fallback to draft then legacy
-          const WhatsAppFlow = require('../models/WhatsAppFlow');
           let flowNodes = [];
           let flowEdges = [];
           if (convo.activeFlowId) {
-            try {
-              const flowDoc = await WhatsAppFlow.findById(convo.activeFlowId).lean();
-              if (flowDoc) {
-                // Prefer publishedNodes over draft nodes
-                if (flowDoc.publishedNodes?.length > 0) {
-                  flowNodes = flowDoc.publishedNodes;
-                  flowEdges = flowDoc.publishedEdges || [];
-                } else if (flowDoc.nodes?.length > 0) {
-                  log.warn(`[FlowResumption] Flow ${convo.activeFlowId} has no publishedNodes — using draft as fallback`);
-                  flowNodes = flowDoc.nodes;
-                  flowEdges = flowDoc.edges || [];
-                }
-              }
-            } catch (_) { /* non-fatal, try legacy */ }
+            const flow = await loadPublishedFlowByRef(convo.clientId, String(convo.activeFlowId));
+            if (flow?.nodes?.length) {
+              flowNodes = flow.nodes;
+              flowEdges = flow.edges || [];
+            }
           }
           if (!flowNodes.length) {
-            flowNodes = client.flowNodes || [];
-            flowEdges = client.flowEdges || [];
+            const legacy = await Client.findOne({ clientId: convo.clientId })
+              .select('flowNodes flowEdges')
+              .lean();
+            flowNodes = legacy?.flowNodes || [];
+            flowEdges = legacy?.flowEdges || [];
           }
           
           // Clear delay before resuming to prevent re-triggering by cron

@@ -167,9 +167,7 @@ async function sendRichNudge(client, lead, text, options = {}) {
     }
 }
 
-const scheduleAbandonedCartCron = () => {
-    // 1. Abandoned Cart Scheduler - Runs every 5 minutes
-    cron.schedule('*/5 * * * *', async () => {
+async function runAbandonedCartTick() {
         log.info('🚀 Abandoned cart cron tick — processing dynamic recovery steps...');
         try {
             const now = new Date();
@@ -357,10 +355,12 @@ const scheduleAbandonedCartCron = () => {
         } catch (e) {
             log.error('Abandoned Cart Cron Error:', e);
         }
-    });
+}
 
-    // NOTE: Review dispatch is unified in cron/reviewCollection.js via reputationService.
-    // Keeping a single scheduler avoids duplicate sends and status drift.
+const scheduleAbandonedCartCron = () => {
+    if (process.env.CRON_USE_COORDINATOR === 'true') return;
+    cron.schedule('*/5 * * * *', runAbandonedCartTick);
 };
 
+scheduleAbandonedCartCron.runTick = runAbandonedCartTick;
 module.exports = scheduleAbandonedCartCron;

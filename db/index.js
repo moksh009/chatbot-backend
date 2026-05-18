@@ -6,7 +6,7 @@ async function connectDB(){
         console.log("Attempting to connect to MongoDB...");
         const maxPool = Math.min(
             50,
-            Math.max(2, parseInt(process.env.MONGODB_MAX_POOL_SIZE || '10', 10) || 10)
+            Math.max(5, parseInt(process.env.MONGODB_MAX_POOL_SIZE || '20', 10) || 20)
         );
         const connectionInstance = await mongoose.connect(`${process.env.MONGODB_URI}`, {
             serverSelectionTimeoutMS: 5000,

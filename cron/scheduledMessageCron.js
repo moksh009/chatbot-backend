@@ -6,9 +6,7 @@ const { sendWhatsAppText, sendWhatsAppTemplate, sendWhatsAppInteractive } = requ
 const { sendInstagramDM } = require('../utils/instagramApi');
 const { decrypt } = require('../utils/encryption');
 
-module.exports = () => {
-    // Run every 2 minutes
-    cron.schedule('*/2 * * * *', async () => {
+async function runScheduledMessageTick() {
         const now = new Date();
         console.log(`[ScheduledMessageCron] Checking for pending messages at ${now.toISOString()}`);
 
@@ -126,5 +124,12 @@ module.exports = () => {
         } catch (err) {
             console.error('[ScheduledMessageCron] Error:', err.message);
         }
-    });
+}
+
+const scheduleScheduledMessageCron = () => {
+    if (process.env.CRON_USE_COORDINATOR === 'true') return;
+    cron.schedule('*/2 * * * *', runScheduledMessageTick);
 };
+
+scheduleScheduledMessageCron.runTick = runScheduledMessageTick;
+module.exports = scheduleScheduledMessageCron;
