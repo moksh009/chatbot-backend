@@ -224,6 +224,33 @@ router.get('/:id/messages', protect, logPersonalDataAccess, async (req, res) => 
   }
 });
 
+// @route   DELETE /api/conversations/:id/messages
+// @desc    Clear chat messages by scope (conversation record kept)
+// @access  Private
+router.delete('/:id/messages', protect, logPersonalDataAccess, async (req, res) => {
+  try {
+    const clientId = req.user.role === 'SUPER_ADMIN'
+      ? (req.body?.clientId || req.user.clientId)
+      : req.user.clientId;
+    const clearScope = String(req.body?.clearScope || '').trim();
+
+    const { clearConversationMessages } = require('../utils/clearConversationMessages');
+    const result = await clearConversationMessages({
+      conversationId: req.params.id,
+      clientId,
+      clearScope,
+    });
+
+    res.json({ success: true, ...result });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    res.status(status).json({
+      success: false,
+      message: error.message || 'Failed to clear messages',
+    });
+  }
+});
+
 // ✅ Phase 2: Live Chat Mega-Payload (Full Context)
 // Fetches conversation, 50 messages, lead intent, orders, and wallet in 1 round trip
 router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res) => {
@@ -255,7 +282,12 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
     const phoneSuffix = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
     
     // 2. Load all secondary data concurrently
-    const [messages, lead, orders, wallet, activeSequence, notes, latestCheckoutLink] = await Promise.all([
+    const {
+      calculateCustomerLTV,
+      resolveScoreStageNameForClient,
+    } = require('../utils/customerOrderMetrics');
+
+    const [messages, lead, orders, wallet, activeSequence, notes, latestCheckoutLink, ltv] = await Promise.all([
       // Messages
       Message.find({ conversationId: id })
         .sort({ timestamp: -1 })
@@ -272,7 +304,7 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
       (async () => {
          const AdLead = require('../models/AdLead');
          const l = await AdLead.findOne({ clientId: conversation.clientId || clientId, phoneNumber: phone })
-           .select('name email leadScore cartStatus tags intentState source sentimentScore totalSpent lifetimeValue ordersCount lastInteraction isOrderPlaced cartSnapshot addToCartCount checkoutInitiatedCount importBatchId meta inboundIntent warrantyRecords')
+           .select('name email leadScore scoreLabel cartStatus tags intentState source totalSpent lifetimeValue ordersCount lastInteraction isOrderPlaced cartSnapshot addToCartCount checkoutInitiatedCount importBatchId meta warrantyRecords')
            .lean();
          
          if (l) {
@@ -358,12 +390,25 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
         } catch {
           return null;
         }
-      })()
+      })(),
+
+      calculateCustomerLTV(conversation.clientId || clientId, phone),
     ]);
-    
+
+    const leadScore = lead?.leadScore ?? 0;
+    const stageName = await resolveScoreStageNameForClient(
+      conversation.clientId || clientId,
+      leadScore
+    );
+
     // Attach notes for UI backwards compatibility
     if (conversation) {
       conversation.internalNotes = notes || [];
+    }
+
+    if (lead) {
+      lead.ltv = ltv;
+      lead.stageName = stageName;
     }
     
     res.json({ 
@@ -372,6 +417,9 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
       nextCursor: messages.nextCursor, 
       hasMore: messages.hasMore, 
       lead, 
+      leadScore,
+      stageName,
+      ltv,
       orders, 
       wallet, 
       activeSequence,

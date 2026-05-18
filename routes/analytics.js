@@ -1485,10 +1485,25 @@ router.get('/insights', protect, async (req, res) => {
     }
     const query = { clientId };
 
-    const [appts, orders, leads] = await Promise.all([
+    const days = parseInt(req.query.days, 10);
+    let startDate = req.query.startDate ? new Date(req.query.startDate) : null;
+    let endDate = req.query.endDate ? new Date(req.query.endDate) : null;
+    if (!startDate && Number.isFinite(days) && days > 0) {
+      startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+      endDate = new Date();
+    }
+
+    const {
+      calculateAverageLTV,
+      calculateAverageOrderValue,
+    } = require('../utils/customerOrderMetrics');
+
+    const [appts, orders, leads, avgLTV, avgOrderValue] = await Promise.all([
       Appointment.find(query).select('createdAt phone revenue').lean(),
       Order.find(query).select('createdAt amount').lean(),
-      AdLead.find(query).select('createdAt lastSeen ordersCount addToCartCount phoneNumber checkoutInitiatedCount cartStatus').lean()
+      AdLead.find(query).select('createdAt lastSeen ordersCount addToCartCount phoneNumber checkoutInitiatedCount cartStatus').lean(),
+      calculateAverageLTV(clientId, startDate, endDate),
+      calculateAverageOrderValue(clientId, startDate, endDate),
     ]);
 
     // 1. Peak Hours Heatmap (Aggregate Checkouts, Orders, and Appointments)
@@ -1522,23 +1537,16 @@ router.get('/insights', protect, async (req, res) => {
       if (count > 1) { returning++; } else { newLeads++; }
     });
 
-    // 3. Average Order/Booking Value & LTV
     let totalRev = 0;
-    let totalTransactions = 0;
-
-    appts.forEach(a => { if (a.revenue > 0) { totalRev += a.revenue; totalTransactions++; } });
-    orders.forEach(o => { if (o.amount > 0) { totalRev += o.amount; totalTransactions++; } });
-
-    const aov = totalTransactions > 0 ? Math.round(totalRev / totalTransactions) : 0;
-    const uniqueCustomers = returning + newLeads;
-    const ltv = uniqueCustomers > 0 ? Math.round(totalRev / uniqueCustomers) : 0;
+    appts.forEach(a => { if (a.revenue > 0) totalRev += a.revenue; });
+    orders.forEach(o => { if (o.amount > 0) totalRev += o.amount; });
 
     res.json({
       heatmap,
       returningLeads: returning,
       newLeads: newLeads,
-      avgOrderValue: aov,
-      avgLTV: ltv,
+      avgOrderValue: Math.round(avgOrderValue * 100) / 100,
+      avgLTV: Math.round(avgLTV * 100) / 100,
       totalRevenueGlobally: totalRev
     });
   } catch (e) {

@@ -1,6 +1,7 @@
 'use strict';
 
 const Order = require('../models/Order');
+const ShopifyProduct = require('../models/ShopifyProduct');
 const { extractStateFromAddress } = require('./extractStateFromAddress');
 
 async function getDistinctOrderProducts(clientId) {
@@ -75,7 +76,31 @@ async function getDistinctOrderStates(clientId) {
   return Object.values(stateMap).sort((a, b) => b.orderCount - a.orderCount);
 }
 
+/** All synced Shopify catalog products (not limited to products that appear on orders). */
+async function getAllCatalogProductsForFilter(clientId) {
+  const rows = await ShopifyProduct.find({ clientId })
+    .select('shopifyProductId title imageUrl')
+    .sort({ title: 1 })
+    .lean();
+
+  const byProductId = new Map();
+  for (const p of rows) {
+    const id = String(p.shopifyProductId || '').trim();
+    if (!id || byProductId.has(id)) continue;
+    byProductId.set(id, {
+      shopifyProductId: id,
+      productName: p.title || 'Product',
+      productImageUrl: p.imageUrl || '',
+    });
+  }
+
+  return Array.from(byProductId.values()).sort((a, b) =>
+    String(a.productName).localeCompare(String(b.productName), undefined, { sensitivity: 'base' })
+  );
+}
+
 module.exports = {
   getDistinctOrderProducts,
   getDistinctOrderStates,
+  getAllCatalogProductsForFilter,
 };

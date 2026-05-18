@@ -50,8 +50,8 @@ router.get('/products', protect, logPersonalDataAccess, async (req, res) => {
     if (!clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
-    const { getDistinctOrderProducts } = require('../utils/ordersFilterAggregations');
-    const products = await getDistinctOrderProducts(clientId);
+    const { getAllCatalogProductsForFilter } = require('../utils/ordersFilterAggregations');
+    const products = await getAllCatalogProductsForFilter(clientId);
     res.json({ success: true, products });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
