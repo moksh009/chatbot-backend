@@ -594,15 +594,8 @@ function getPublicBaseUrl() {
 }
 
 function sanitizeInteractiveImageUrl(url) {
-  const raw = String(url || "").trim();
-  if (!raw) return "";
-  if (/^data:/i.test(raw)) return "";
-  if (/^https?:\/\//i.test(raw)) return raw;
-  if (raw.startsWith("/uploads/")) {
-    const base = getPublicBaseUrl();
-    return base ? `${base}${raw}` : "";
-  }
-  return "";
+  const { sanitizeInteractiveImageUrl: sanitize } = require("./sanitizeFlowMedia");
+  return sanitize(url);
 }
 
 /** Soft footer on branch endings — avoids spamming the full list menu after every answer. */

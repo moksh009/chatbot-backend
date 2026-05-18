@@ -1,3 +1,5 @@
+const { sanitizeInteractiveImageUrl } = require("./sanitizeFlowMedia");
+
 /**
  * WhatsApp Cloud API: one optional header per interactive message — text | image | video | document.
  * Supports explicit listHeaderType / headerType plus legacy imageUrl + header text.
@@ -9,16 +11,18 @@ function buildInteractiveHeaderFromNodeData(data) {
   if (!data || typeof data !== "object") return null;
 
   const ht = String(data.listHeaderType || data.headerType || "").toLowerCase().trim();
-  const img = String(data.headerImageUrl || data.headerMediaUrl || data.imageUrl || "").trim();
-  const vid = String(data.headerVideoUrl || "").trim();
-  const doc = String(data.headerDocumentUrl || "").trim();
+  const img = sanitizeInteractiveImageUrl(
+    data.headerImageUrl || data.headerMediaUrl || data.imageUrl || ""
+  );
+  const vid = sanitizeInteractiveImageUrl(data.headerVideoUrl || "");
+  const doc = sanitizeInteractiveImageUrl(data.headerDocumentUrl || "");
   const docNameRaw = String(data.headerDocumentFilename || "document.pdf").trim();
   const docName = docNameRaw.slice(0, 240) || "document.pdf";
   const txt = String(data.header || data.listHeaderText || "").trim();
 
-  const imgSafe = img && !img.includes("{{") && /^https?:\/\//i.test(img);
-  const vidSafe = vid && !vid.includes("{{") && /^https?:\/\//i.test(vid);
-  const docSafe = doc && !doc.includes("{{") && /^https?:\/\//i.test(doc);
+  const imgSafe = img && !img.includes("{{");
+  const vidSafe = vid && !vid.includes("{{");
+  const docSafe = doc && !doc.includes("{{");
 
   if (ht === "none") return null;
 

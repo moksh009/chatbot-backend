@@ -174,9 +174,15 @@ async function runAbandonedCartTick() {
             const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
 
             // Fetch all active clients with automation enabled
-            const clients = await Client.find({ 'automationFlows.id': 'abandoned_cart', 'automationFlows.isActive': true });
+            const clients = await Client.find({
+                'automationFlows.id': 'abandoned_cart',
+                'automationFlows.isActive': true,
+            })
+                .select('clientId nicheData automationFlows shopDomain storeType')
+                .lean();
 
             for (const client of clients) {
+                await new Promise((r) => setImmediate(r));
                 const niche = client.nicheData || {};
 
                 // ✅ Phase R3: GAP 2 — Respect the abandoned cart toggle setting
@@ -358,7 +364,7 @@ async function runAbandonedCartTick() {
 }
 
 const scheduleAbandonedCartCron = () => {
-    if (process.env.CRON_USE_COORDINATOR === 'true') return;
+    if (process.env.CRON_USE_COORDINATOR !== 'false') return;
     cron.schedule('*/5 * * * *', runAbandonedCartTick);
 };
 

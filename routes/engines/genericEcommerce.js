@@ -531,11 +531,7 @@ async function processEcommerceInbound(parsedMessage, clientConfig, { helperPara
         const from = parsedMessage.from;
         const { clientId, nicheData, plan } = clientConfig;
 
-        let handledByDualBrain = await runDualBrainEngine(parsedMessage, clientConfig);
-        if (!handledByDualBrain) {
-            await new Promise((r) => setTimeout(r, 1200));
-            handledByDualBrain = await runDualBrainEngine(parsedMessage, clientConfig);
-        }
+        const handledByDualBrain = await runDualBrainEngine(parsedMessage, clientConfig);
         if (handledByDualBrain) {
             return;
         }
@@ -744,6 +740,14 @@ const handleWebhook = async (req, res) => {
 
         res.status(200).end();
         if (!messages || !from) return;
+
+        const { isDuplicateInbound } = require('../../utils/webhookDedup');
+        const messageId = messages.id;
+        const clientId = req.clientConfig.clientId;
+        if (messageId && (await isDuplicateInbound(messageId, clientId, from))) {
+            log.info(`[EcommerceEngine] Duplicate webhook skipped ${messageId} for ${clientId}`);
+            return;
+        }
 
         const parsedMessage = {
             ...messages,

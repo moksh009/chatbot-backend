@@ -16,7 +16,7 @@ async function runCodConfirmationTick() {
 }
 
 function scheduleCodConfirmationCron() {
-  if (process.env.CRON_USE_COORDINATOR === 'true') return;
+  if (process.env.CRON_USE_COORDINATOR !== 'false') return;
   cron.schedule('*/15 * * * *', async () => {
     try {
       await runCodConfirmationTick();

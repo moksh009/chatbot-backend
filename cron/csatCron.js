@@ -40,7 +40,7 @@ async function runSecondaryCsatTick() {
 }
 
 const scheduleCsatCron = () => {
-  if (process.env.CRON_USE_COORDINATOR === 'true') return;
+  if (process.env.CRON_USE_COORDINATOR !== 'false') return;
 
   cron.schedule('*/10 * * * *', async () => {
     try {

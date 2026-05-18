@@ -91,7 +91,7 @@ function invalidateFlowGraphCache(clientId, flowRef) {
 function invalidateTriggerListCache(clientId) {
   const redis = getAppRedis();
   if (redis && redis.status === "ready") {
-    redis.del(`triggers:${clientId}`).catch(() => {});
+    redis.del(`triggers:${clientId}`, `triggers:v2:${clientId}`).catch(() => {});
   }
 }
 

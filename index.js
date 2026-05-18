@@ -415,6 +415,8 @@ const RUN_CRONS = process.env.RUN_CRONS !== 'false';
 if (RUN_CRONS) {
 if (process.env.CRON_USE_COORDINATOR !== 'false') {
   process.env.CRON_USE_COORDINATOR = 'true';
+} else {
+  log.info('[Cron] CRON_USE_COORDINATOR=false — legacy per-file timers enabled');
 }
 const { registerCoordinatedCrons } = require('./cron/cronCoordinator');
 registerCoordinatedCrons();

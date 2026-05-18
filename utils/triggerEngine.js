@@ -21,19 +21,28 @@ const { invalidateFlowGraphCache, invalidateTriggerListCache } = require("./flow
 const { getAppRedis } = require("./redisFactory");
 const triggerCache = new NodeCache({ stdTTL: 300, checkperiod: 60 }); // 5 min L1
 const TRIGGER_CACHE_TTL_SEC = 300;
+const TRIGGER_REDIS_KEY_PREFIX = "triggers:v2:";
 
 const FLOW_SELECT =
   "flowId name status triggerConfig publishedNodes publishedEdges nodes edges isAutomation platform channel";
 
-function buildRoutingBundles(flows) {
+const TRIGGER_NODE_TYPES = new Set([
+  "trigger",
+  "TriggerNode",
+  "intent_trigger",
+  "IntentTriggerNode",
+]);
+
+/** Slim routing index — trigger nodes + edges only (no 100+ node blobs in Redis). */
+function buildSlimRoutingBundles(flows) {
   return (flows || []).map((flow) => {
     const pubNodes =
       flow.publishedNodes?.length > 0 ? flow.publishedNodes : flow.nodes || [];
     const pubEdges =
       flow.publishedEdges?.length > 0 ? flow.publishedEdges : flow.edges || [];
-    const triggerNodes = pubNodes.filter(
-      (n) => n.type === "trigger" || n.type === "TriggerNode"
-    );
+    const triggerNodes = pubNodes.filter((n) => TRIGGER_NODE_TYPES.has(n.type));
+    const triggerIds = new Set(triggerNodes.map((n) => n.id));
+    const routingEdges = pubEdges.filter((e) => triggerIds.has(e.source));
     return {
       _id: flow._id,
       flowId: flow.flowId,
@@ -41,35 +50,35 @@ function buildRoutingBundles(flows) {
       name: flow.name,
       status: flow.status,
       triggerConfig: flow.triggerConfig,
+      channel: flow.channel,
+      isAutomation: flow.isAutomation,
       triggerNodes,
-      publishedNodes: pubNodes,
-      publishedEdges: pubEdges,
-      nodes: pubNodes,
-      edges: pubEdges,
+      routingEdges,
     };
   });
 }
 
-/**
- * Given an incoming message and a client's flows array,
- * returns which flow (if any) should be activated.
- */
-async function findMatchingFlow(parsedMessage, client, convo) {
-  const text    = (parsedMessage.text?.body || "").trim();
-  const channel = parsedMessage.channel || "whatsapp";
-
+async function loadSlimFlowsForClient(client) {
   const cacheKey = `flows_${client.clientId}`;
   let flows = triggerCache.get(cacheKey);
+  if (flows?.[0]?.publishedNodes?.length > 0) {
+    triggerCache.del(cacheKey);
+    flows = null;
+  }
 
   if (!flows) {
     const redis = getAppRedis();
-    const redisKey = `triggers:${client.clientId}`;
+    const redisKey = `${TRIGGER_REDIS_KEY_PREFIX}${client.clientId}`;
     if (redis && redis.status === "ready") {
       try {
         const raw = await redis.get(redisKey);
         if (raw) {
           flows = JSON.parse(raw);
-          triggerCache.set(cacheKey, flows);
+          if (flows?.[0]?.publishedNodes?.length > 0) {
+            flows = null;
+          } else {
+            triggerCache.set(cacheKey, flows);
+          }
         }
       } catch (_) {}
     }
@@ -85,25 +94,51 @@ async function findMatchingFlow(parsedMessage, client, convo) {
 
     flows =
       docs.length > 0
-        ? buildRoutingBundles(docs)
-        : buildRoutingBundles(client.visualFlows || []);
+        ? buildSlimRoutingBundles(docs)
+        : buildSlimRoutingBundles(client.visualFlows || []);
 
     triggerCache.set(cacheKey, flows);
     const redis = getAppRedis();
     if (redis && redis.status === "ready") {
       redis
-        .setex(`triggers:${client.clientId}`, TRIGGER_CACHE_TTL_SEC, JSON.stringify(flows))
+        .setex(`${TRIGGER_REDIS_KEY_PREFIX}${client.clientId}`, TRIGGER_CACHE_TTL_SEC, JSON.stringify(flows))
         .catch(() => {});
     }
   }
 
+  return flows;
+}
+
+const GREETING_WORDS = new Set([
+  "hi",
+  "hello",
+  "hey",
+  "hola",
+  "namaste",
+  "greetings",
+  "start",
+  "menu",
+]);
+
+function isGreetingLikeText(text) {
+  return GREETING_WORDS.has(String(text || "").toLowerCase().trim());
+}
+
+/**
+ * Given an incoming message and a client's flows array,
+ * returns which flow (if any) should be activated.
+ */
+async function findMatchingFlow(parsedMessage, client, convo) {
+  const text    = (parsedMessage.text?.body || "").trim();
+  const channel = parsedMessage.channel || "whatsapp";
+
+  let flows = await loadSlimFlowsForClient(client);
+
   // Shopify / wizard automations must never steal keyword or first_message routing.
   flows = flows.filter((f) => !f.isAutomation);
 
-  const getFlowNodes = (flow) =>
-    flow.publishedNodes?.length > 0 ? flow.publishedNodes : flow.nodes || [];
-  const getFlowEdges = (flow) =>
-    flow.publishedEdges?.length > 0 ? flow.publishedEdges : flow.edges || [];
+  const getFlowNodes = (flow) => flow.triggerNodes || [];
+  const getFlowEdges = (flow) => flow.routingEdges || [];
 
   // ── PRIORITY 1: Check keyword triggers (trigger nodes only — not full 100+ node scan) ───
   let keywordHit = null;
@@ -113,7 +148,13 @@ async function findMatchingFlow(parsedMessage, client, convo) {
     const edges = getFlowEdges(flow);
     const entry = findKeywordTriggerEntry(text, nodes, edges, channel);
     if (entry?.startNodeId) {
-      keywordHit = { flow, triggerType: "keyword", startNodeId: entry.startNodeId, triggerNodeId: entry.triggerNodeId };
+      keywordHit = {
+        flow,
+        flowId: flow.flowId || String(flow._id),
+        triggerType: "keyword",
+        startNodeId: entry.startNodeId,
+        triggerNodeId: entry.triggerNodeId,
+      };
       break;
     }
   }
@@ -136,6 +177,7 @@ async function findMatchingFlow(parsedMessage, client, convo) {
       const edges = getFlowEdges(keywordFlow);
       keywordHit = {
         flow: keywordFlow,
+        flowId: keywordFlow.flowId || String(keywordFlow._id),
         triggerType: "keyword",
         startNodeId: findFlowStartNode(nodes, edges),
       };
@@ -200,7 +242,14 @@ async function findMatchingFlow(parsedMessage, client, convo) {
     });
 
     if (welcomeFlow) {
-      return { flow: welcomeFlow, triggerType: "first_message" };
+      const nodes = getFlowNodes(welcomeFlow);
+      const edges = getFlowEdges(welcomeFlow);
+      return {
+        flow: welcomeFlow,
+        triggerType: "first_message",
+        startNodeId: findFlowStartNode(nodes, edges),
+        flowId: welcomeFlow.flowId || String(welcomeFlow._id),
+      };
     }
 
     // legacy fallback
@@ -208,7 +257,72 @@ async function findMatchingFlow(parsedMessage, client, convo) {
       return {
         flow: { nodes: client.flowNodes, edges: client.flowEdges, isLegacy: true },
         triggerType: "first_message",
+        startNodeId: findFlowStartNode(client.flowNodes, client.flowEdges || []),
         isLegacy: true,
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Fast greeting routing — slim trigger index only; caller loads full graph via loadPublishedFlowByRef.
+ */
+async function findGreetingFlowFast(client, convo, text, channel = "whatsapp") {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return null;
+
+  let flows = await loadSlimFlowsForClient(client);
+  flows = flows.filter((f) => !f.isAutomation);
+
+  for (const flow of flows) {
+    const entry = findKeywordTriggerEntry(
+      trimmed,
+      flow.triggerNodes || [],
+      flow.routingEdges || [],
+      channel
+    );
+    if (entry?.startNodeId) {
+      return {
+        flowId: flow.flowId || String(flow._id),
+        startNodeId: entry.startNodeId,
+        triggerType: "keyword",
+        triggerNodeId: entry.triggerNodeId,
+      };
+    }
+  }
+
+  if (!isGreetingLikeText(trimmed)) return null;
+
+  const isNewConversation =
+    !convo ||
+    !convo.lastStepId ||
+    !convo.lastMessageAt ||
+    convo.status === "new" ||
+    convo.lastStepId === null ||
+    convo.lastStepId === "";
+
+  if (!isNewConversation) return null;
+
+  for (const flow of flows) {
+    const trigger =
+      flow.triggerConfig || getTriggerFromNodes(flow.triggerNodes || []);
+    if (!trigger || (trigger.type !== "first_message" && trigger.type !== "FIRST_MESSAGE")) {
+      continue;
+    }
+    const flowChannel = (trigger.channel || flow.channel || "both").toLowerCase();
+    if (flowChannel !== "both" && flowChannel !== channel) continue;
+
+    const startNodeId = findFlowStartNode(
+      flow.triggerNodes || [],
+      flow.routingEdges || []
+    );
+    if (startNodeId) {
+      return {
+        flowId: flow.flowId || String(flow._id),
+        startNodeId,
+        triggerType: "first_message",
       };
     }
   }
@@ -548,6 +662,8 @@ function clearTriggerCache(clientId) {
 
 module.exports = {
   findMatchingFlow,
+  findGreetingFlowFast,
+  loadSlimFlowsForClient,
   findKeywordTriggerEntry,
   checkKeywordMatch,
   getTriggerFromNodes,

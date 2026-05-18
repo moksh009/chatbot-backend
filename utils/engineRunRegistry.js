@@ -12,9 +12,18 @@ function runKey(clientId, phone) {
 
 function beginEngineRun(clientId, phone) {
   const key = runKey(clientId, phone);
-  const state = { aborted: false, startedAt: Date.now() };
+  const state = { aborted: false, outboundSent: false, startedAt: Date.now() };
   runs.set(key, state);
   return state;
+}
+
+function markOutboundSent(clientId, phone) {
+  const state = runs.get(runKey(clientId, phone));
+  if (state) state.outboundSent = true;
+}
+
+function wasOutboundSent(clientId, phone) {
+  return runs.get(runKey(clientId, phone))?.outboundSent === true;
 }
 
 function abortEngineRun(clientId, phone) {
@@ -35,5 +44,7 @@ module.exports = {
   beginEngineRun,
   abortEngineRun,
   isEngineRunAborted,
+  markOutboundSent,
+  wasOutboundSent,
   endEngineRun,
 };

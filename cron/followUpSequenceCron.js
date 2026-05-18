@@ -303,7 +303,7 @@ async function runFollowUpSequenceTick() {
 }
 
 const scheduleFollowUpSequenceCron = () => {
-    if (process.env.CRON_USE_COORDINATOR === 'true') return;
+    if (process.env.CRON_USE_COORDINATOR !== 'false') return;
     cron.schedule('*/5 * * * *', runFollowUpSequenceTick);
 };
 

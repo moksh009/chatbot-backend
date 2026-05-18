@@ -16,7 +16,7 @@ const log = require("./logger")('DualBrain');
 const { generateText, getGeminiModel } = require('./gemini');
 const { createMessage } = require("./createMessage");
 const { injectVariables, buildVariableContext, injectNodeVariables, injectVariablesLegacy } = require("./variableInjector");
-const { findMatchingFlow, findFlowStartNode } = require("./triggerEngine");
+const { findMatchingFlow, findGreetingFlowFast, findFlowStartNode } = require("./triggerEngine");
 const {
   getCachedFlowGraph,
   getCachedFlowGraphAsync,
@@ -28,6 +28,8 @@ const {
   beginEngineRun,
   abortEngineRun,
   isEngineRunAborted,
+  markOutboundSent,
+  wasOutboundSent,
   endEngineRun,
 } = require("./engineRunRegistry");
 const { findMatchingRule } = require("./rulesEngine");
@@ -285,8 +287,9 @@ async function loadPublishedFlowByRef(clientId, flowRef) {
     doc.publishedNodes?.length > 0 ? doc.publishedNodes : doc.nodes || [];
   const rawEdges =
     doc.publishedEdges?.length > 0 ? doc.publishedEdges : doc.edges || [];
+  const { sanitizeFlowNodesMedia } = require("./sanitizeFlowMedia");
   const graph = {
-    nodes: flattenFlowNodes(rawNodes),
+    nodes: flattenFlowNodes(sanitizeFlowNodesMedia(rawNodes)),
     edges: rawEdges,
     flowId: doc.flowId,
     mongoId: String(doc._id),
@@ -687,6 +690,83 @@ async function runDualBrainEngine(parsedMessage, client) {
     }
     perf.checkpoint("session_upserted");
 
+    // ── EARLY GREETING FAST PATH (before translation, rules, heavy flow loads) ──
+    const isEarlyGreeting =
+      inboundText &&
+      !convo.botPaused &&
+      !parsedMessage.interactive?.button_reply &&
+      !parsedMessage.interactive?.list_reply &&
+      isGreeting(txtLower) &&
+      txtLower.length <= 24 &&
+      convo.status !== "HUMAN_SUPPORT" &&
+      convo.status !== "HUMAN_TAKEOVER";
+
+    if (isEarlyGreeting) {
+      try {
+        const match = await findGreetingFlowFast(client, convo, inboundText, channel);
+        perf.checkpoint("flow_match_greeting");
+
+        if (match?.startNodeId) {
+          const loaded = await loadPublishedFlowByRef(client.clientId, match.flowId);
+          if (loaded?.nodes?.length) {
+            const flowNodes = loaded.nodes;
+            const flowEdges = loaded.edges || [];
+            const resolvedActiveFlowId = loaded.id || match.flowId;
+
+            try {
+              await saveInboundMessage(
+                phone,
+                client.clientId,
+                parsedMessage,
+                io,
+                channel,
+                convo._id
+              );
+            } catch (err) {
+              log.error("[InboundSave] Failed:", { error: err.message });
+            }
+
+            await Conversation.findByIdAndUpdate(convo._id, {
+              activeFlowId: resolvedActiveFlowId,
+              lastStepId: null,
+              lastMessageAt: new Date(),
+            });
+
+            const freshConvo = await Conversation.findById(convo._id);
+
+            if (!isEngineRunAborted(client.clientId, phone)) {
+              const handled = await executeNode(
+                match.startNodeId,
+                flowNodes,
+                flowEdges,
+                client,
+                freshConvo,
+                lead,
+                phone,
+                io,
+                channel,
+                parsedMessage
+              );
+              if (handled !== false) {
+                perf.checkpoint("greeting_sent");
+                perf.finish();
+                setImmediate(() =>
+                  analyzeConversationIntelligence(client, phone, freshConvo)
+                );
+                return true;
+              }
+            }
+          } else {
+            log.warn(
+              `[DualBrain] Greeting flow ${match.flowId} missing published graph — falling through`
+            );
+          }
+        }
+      } catch (fpErr) {
+        log.warn("[DualBrain] Early greeting path skipped:", fpErr.message);
+      }
+    }
+
     // --- GAP-GEN-3: COMMERCE AUTOMATION ISOLATION ---
     // If this is an ecommerce event, route it to the isolated WhatsAppFlow automation
     // (suppressConversationPersistence so lastStepId / activeFlowId stay on the main journey).
@@ -954,65 +1034,6 @@ async function runDualBrainEngine(parsedMessage, client) {
       const welcomeMsg = scannedQr.config?.welcomeMessage || `🎉 Welcome! We just added 50 VIP Points to your wallet for scanning that code! Type "WALLET" to check your balance.`;
       await sendWhatsAppText(client, phone, welcomeMsg);
       return true;
-    }
-  }
-
-  // ── FAST PATH: greetings → published flow (skip heavy rules/AI for "hi"/"menu") ──
-  const isSimpleGreeting =
-    inboundText &&
-    !convo.botPaused &&
-    !parsedMessage.interactive?.button_reply &&
-    !parsedMessage.interactive?.list_reply &&
-    isGreeting(txtLower) &&
-    txtLower.length <= 24;
-
-  if (isSimpleGreeting && !convo.botPaused && convo.status !== "HUMAN_SUPPORT" && convo.status !== "HUMAN_TAKEOVER") {
-    try {
-      const match = await findMatchingFlow(parsedMessage, client, convo);
-      perf.checkpoint("flow_match_greeting");
-      if (match?.flow && match.startNodeId) {
-        const flow = match.flow;
-        const rawNodes =
-          (flow.publishedNodes && flow.publishedNodes.length > 0
-            ? flow.publishedNodes
-            : flow.nodes) || [];
-        const rawEdges =
-          (flow.publishedEdges && flow.publishedEdges.length > 0
-            ? flow.publishedEdges
-            : flow.edges) || [];
-        const flowNodes = flattenFlowNodes(rawNodes);
-        const flowEdges = rawEdges;
-        const resolvedActiveFlowId =
-          flow.flowId || (flow._id != null ? String(flow._id) : flow.id || null);
-        await Conversation.findByIdAndUpdate(convo._id, {
-          activeFlowId: resolvedActiveFlowId,
-          lastStepId: null,
-          lastMessageAt: new Date(),
-        });
-        const freshConvo = await Conversation.findById(convo._id);
-        if (!isEngineRunAborted(client.clientId, phone)) {
-          const handled = await executeNode(
-            match.startNodeId,
-            flowNodes,
-            flowEdges,
-            client,
-            freshConvo,
-            lead,
-            phone,
-            io,
-            channel,
-            parsedMessage
-          );
-          if (handled !== false) {
-            perf.checkpoint("greeting_sent");
-            perf.finish();
-            setImmediate(() => analyzeConversationIntelligence(client, phone, freshConvo));
-            return true;
-          }
-        }
-      }
-    } catch (fpErr) {
-      log.warn("[DualBrain] Greeting fast-path skipped:", fpErr.message);
     }
   }
 
@@ -2099,24 +2120,28 @@ async function runDualBrainEngine(parsedMessage, client) {
     try {
       const match = await findMatchingFlow(parsedMessage, client, convo);
       if (match && !match.isLegacy && match.flow) {
-        const flow = match.flow;
-        // Prefer published snapshot (same as getFlowGraphForConversation) — draft `nodes` can lag behind live traffic.
-        const rawNodes =
-          (flow.publishedNodes && flow.publishedNodes.length > 0 ? flow.publishedNodes : flow.nodes) || [];
-        const rawEdges =
-          (flow.publishedEdges && flow.publishedEdges.length > 0 ? flow.publishedEdges : flow.edges) || [];
-        const flowNodes = flattenFlowNodes(rawNodes);
-        const flowEdges = rawEdges;
+        const flowRef =
+          match.flowId || match.flow.flowId || (match.flow._id != null ? String(match.flow._id) : match.flow.id);
+        const loaded = flowRef ? await loadPublishedFlowByRef(client.clientId, flowRef) : null;
+        const flowNodes = loaded?.nodes?.length
+          ? loaded.nodes
+          : flattenFlowNodes(
+              (match.flow.publishedNodes?.length ? match.flow.publishedNodes : match.flow.nodes) || []
+            );
+        const flowEdges = loaded?.edges?.length
+          ? loaded.edges
+          : (match.flow.publishedEdges?.length ? match.flow.publishedEdges : match.flow.routingEdges) ||
+            match.flow.edges ||
+            [];
         const startNodeId = match.startNodeId || findFlowStartNode(flowNodes, flowEdges);
 
         log.info(
-          `[TriggerEngine] Matched flow "${flow.name || flow.id}" via ${match.triggerType}. Starting at node: ${startNodeId}` +
+          `[TriggerEngine] Matched flow "${match.flow.name || flowRef}" via ${match.triggerType}. Starting at node: ${startNodeId}` +
             (match.triggerNodeId ? ` (trigger ${match.triggerNodeId})` : "")
         );
 
         if (startNodeId && flowNodes.length) {
-          // Track which flow is now active
-          const resolvedActiveFlowId = flow.flowId || (flow._id != null ? String(flow._id) : flow.id || null);
+          const resolvedActiveFlowId = flowRef || loaded?.id || null;
           await Conversation.findByIdAndUpdate(convo._id, {
             activeFlowId: resolvedActiveFlowId,
             lastMessageAt: new Date()
@@ -2202,13 +2227,6 @@ async function runDualBrainEngine(parsedMessage, client) {
     if (String(err.message || '').includes('timed out')) {
       abortEngineRun(client.clientId, phone);
       log.error(`[DualBrain] Hard timeout (${DUAL_BRAIN_BUDGET_MS}ms) for ${phone} on ${client.clientId}`);
-      try {
-        await sendWhatsAppText(
-          client,
-          phone,
-          "Thanks for your message! We're catching up — type *menu* or try again in a moment."
-        );
-      } catch (_) {}
       return true;
     }
     log.error(`[DualBrain] Critical Engine Error for ${phone}:`, err.message);
@@ -2778,9 +2796,17 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
       }).catch(() => {});
     }
     node = injectNodeVariables(rawNode, ctx);
+    if (node?.data) {
+      const { sanitizeNodeMediaData } = require("./sanitizeFlowMedia");
+      node = { ...node, data: sanitizeNodeMediaData(node.data) };
+    }
   } catch (varErr) {
     log.warn('Variable injection failed for node', { nodeId, error: varErr.message });
     node = rawNode; // fallback to raw node
+  }
+
+  if (isEngineRunAborted(client.clientId, phone)) {
+    return false;
   }
 
   // ✅ Phase R3: Atomic node visit counter — was replacing entire flowNodes[] array on every message
@@ -5238,6 +5264,7 @@ REPLY:
 }
 
 async function sendWhatsAppText(client, phone, body, channel = 'whatsapp') {
+  if (isEngineRunAborted(client.clientId, phone)) return;
 
   const token = getEffectiveWhatsAppAccessToken(client);
   const phoneNumberId = getEffectiveWhatsAppPhoneNumberId(client);
@@ -5285,25 +5312,18 @@ async function sendWhatsAppAudio(client, phone, audioUrl) {
 }
 
 
-async function sendWhatsAppInteractive(client, phone, interactive, bodyText = '') {
+async function sendWhatsAppInteractive(client, phone, interactive, bodyText = '', _retried = false) {
+  if (isEngineRunAborted(client.clientId, phone)) return false;
+
   const token = getEffectiveWhatsAppAccessToken(client);
   const phoneNumberId = getEffectiveWhatsAppPhoneNumberId(client);
   if (!token || !phoneNumberId) return false;
 
+  const { sanitizeInteractivePayload } = require("./sanitizeFlowMedia");
+  sanitizeInteractivePayload(interactive);
+
   let payloadData = null;
   try {
-    // Meta rejects data/base64 URIs in interactive.header.image.link.
-    const headerLink = interactive?.header?.image?.link;
-    if (headerLink) {
-      const safeLink = String(headerLink).trim();
-      const isHttp = /^https?:\/\//i.test(safeLink);
-      if (!isHttp) {
-        delete interactive.header;
-      } else {
-        interactive.header.image.link = safeLink;
-      }
-    }
-
     if (!interactive.body?.text) {
       interactive.body = {
         text: String(bodyText || 'Please choose an option').substring(0, 1024)
@@ -5328,13 +5348,26 @@ async function sendWhatsAppInteractive(client, phone, interactive, bodyText = ''
     return true;
   } catch (err) {
     const errorData = err.response?.data || err.message;
-    log.error('sendInteractive error:', { 
+    const errCode = err.response?.data?.error?.code;
+
+    if (!_retried && interactive?.header) {
+      log.warn(`[sendInteractive] Retrying without header for ${phone} (${errCode || err.message})`);
+      const stripped = { ...interactive };
+      delete stripped.header;
+      return sendWhatsAppInteractive(client, phone, stripped, bodyText, true);
+    }
+
+    log.error('sendInteractive error:', {
         clientId: client.clientId,
         phone,
         error: errorData,
         payload: payloadData ? JSON.stringify(payloadData, null, 2) : '[unavailable]'
     });
-    // Graceful fallback to plain text so user still gets a response.
+
+    if (isEngineRunAborted(client.clientId, phone) || wasOutboundSent(client.clientId, phone)) {
+      return false;
+    }
+
     try {
       let fallbackText = interactive?.body?.text || bodyText || 'Please choose:';
       const options = [];
@@ -5547,6 +5580,7 @@ async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = 
  * @param {string} channel  - 'whatsapp' | 'instagram'
  */
 async function saveOutboundMessage(phone, clientId, type, body, wamid, channel = 'whatsapp') {
+  markOutboundSent(clientId, phone);
   try {
     // Look up conversation for the conversationId foreign key
     const convo = await Conversation.findOne({ phone, clientId })
