@@ -88,7 +88,7 @@ router.get("/:clientId/products", verifyToken, async (req, res) => {
 });
 
 // ─── GET /api/catalog/:clientId/diagnose — token + catalog access check ─────
-router.get("/:clientId/diagnose", verifyToken, async (req, res) => {
+router.get("/:clientId/diagnose", verifyToken, apiCache(120), async (req, res) => {
   try {
     const report = await diagnoseMetaCatalogAccess(req.params.clientId);
     res.json({ success: true, ...report });

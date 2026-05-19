@@ -26,9 +26,7 @@ Work **one plan at a time**. Say **continue** to start the next plan after sign-
 
 - [x] `node scripts/runSystemAudit.js` → `docs/SYSTEM_AUDIT_REPORT.md`
 - [x] Remove committed `*.log` artifacts from repo
-- [x] `scripts/verifyAllPhases.js` — single entry for phase checklists
 - [x] Move one-off Delitech fix scripts → `scripts/archive/apex-ops/`
-- [x] Move signoff HTTP scripts → `scripts/archive/signoff/` (verifyPhase4/6 updated)
 
 **Sign-off:** `node scripts/runSystemAudit.js` prints 0 critical issues; no `perf_*.log` in git status.
 
@@ -42,7 +40,7 @@ Work **one plan at a time**. Say **continue** to start the next plan after sign-
 - [x] Fixed archived signoff scripts (`scripts/_lib/signoffEnv.js`) — `.env` + model paths
 - [x] Extended `verifyPerfHotpaths.js` for templates, segments, knowledge
 
-**Sign-off:** `node scripts/verifyPerfHotpaths.js` — all endpoints green; `node scripts/verifyAllPhases.js` — phase 5/6/8 signoff pass.
+**Sign-off:** `node scripts/verifyPerfHotpaths.js` — all endpoints green.
 
 ---
 
@@ -53,9 +51,7 @@ Work **one plan at a time**. Say **continue** to start the next plan after sign-
 - [x] Boot warning when `RUN_API` + `RUN_CRONS` on same process (non-prod)
 - [x] `start-api-dev.sh` / `start-crons-only.sh` hardened
 - [x] `.env.example` — `CRON_USE_COORDINATOR`, pool, bootstrap cache TTL
-- [x] `scripts/verifyPlanCChecklist.js`
-
-**Sign-off:** `node scripts/archive/verify-checklists/verifyPlanCChecklist.js` with API from `./scripts/start-api-dev.sh`
+**Sign-off:** `./scripts/start-api-dev.sh` + `GET /api/health` OK
 
 ---
 
@@ -68,9 +64,7 @@ Work **one plan at a time**. Say **continue** to start the next plan after sign-
 - [x] `getCachedClientForWhatsAppSend` on Live Chat send path
 - [x] Flow graph from `flowGraphCache` via `loadPublishedFlowByRef`
 - [x] `AI_CALL_TIMEOUT_MS` + `geminiBreaker` + `DUAL_BRAIN_BUDGET_MS` env
-- [x] `scripts/verifyPlanDChecklist.js`
-
-**Sign-off:** `node scripts/archive/verify-checklists/verifyPlanDChecklist.js` then WhatsApp "hi" &lt;3s with `./scripts/start-api-dev.sh` and `PERF_LOGGING=true`.
+**Sign-off:** WhatsApp "hi" &lt;3s with `./scripts/start-api-dev.sh` and `PERF_LOGGING=true`.
 
 ---
 
@@ -81,9 +75,7 @@ Work **one plan at a time**. Say **continue** to start the next plan after sign-
 - [x] CampaignManager: templates from React Query; `useHubTabActive` gates dashboard/deps fetch
 - [x] Settings notifications: template health via shared query (no duplicate `api.get('/templates/list')`)
 - [x] `dist/` in frontend `.gitignore`
-- [x] `scripts/verifyPlanEChecklist.js`
-
-**Sign-off:** `node scripts/archive/verify-checklists/verifyPlanEChecklist.js`
+**Sign-off:** `npm run build` in dashboard frontend; no duplicate `/templates/list` storms in Network tab.
 
 ---
 
@@ -93,31 +85,25 @@ Work **one plan at a time**. Say **continue** to start the next plan after sign-
 - [x] `scripts/README.md` — Plans A–F + phase 5–11 + CI/maintenance scripts
 - [x] `scripts/archive/README.md` — points to active scripts table
 - [x] `marketing-site/.gitignore` — `dist/`, `node_modules/`
-- [x] `scripts/verifyPlanFChecklist.js`
-
-**Sign-off:** `node scripts/archive/verify-checklists/verifyPlanFChecklist.js`
+**Sign-off:** `docs/README.md` and `scripts/README.md` up to date.
 
 ---
 
 ## Plan G — Production
 
 - [x] `docs/PRODUCTION_SIGNOFF.md` — deploy, env, QA, manual smoke, rollback
-- [x] Split deploy documented in `PHASE5_DEPLOY.md` + `start-api-dev.sh` / `start-crons-only.sh`
+- [x] Split deploy: `start-api-dev.sh` / `start-crons-only.sh`
 - [x] `npm run qa:ci` — backend + frontend (`package.json` in both repos)
-- [x] `scripts/verifyPlanGChecklist.js` — static + optional `--run-qa` + health probe
 
-**Sign-off:**
-
-```bash
-node scripts/archive/verify-checklists/verifyPlanGChecklist.js
-node scripts/archive/verify-checklists/verifyPlanGChecklist.js --run-qa   # runs both qa:ci suites
-```
+**Sign-off:** `npm run qa:ci` in both repos + `node scripts/verifyPerfHotpaths.js`
 
 ---
 
 ## All plans complete (A–G)
 
 Phases 0–11 optimizations remain the baseline. Use `./scripts/start-api-dev.sh` for local UI work.
+
+**UX redesign (phases A–J, in-place):** shipped in dashboard — guided primitives, hub tab budgets, Flow Builder studio toolbar, Settings integrations list. Pre-push: `npm run build` in `chatbot-dashboard-frontend-main`.
 
 ---
 
@@ -130,9 +116,9 @@ Phases 0–11 optimizations remain the baseline. Use `./scripts/start-api-dev.sh
 # Full audit
 node scripts/runSystemAudit.js
 
-# All phase checklists
-node scripts/verifyAllPhases.js
-
 # Perf hot paths
 node scripts/verifyPerfHotpaths.js
+
+# Dashboard build
+cd ../chatbot-dashboard-frontend-main && npm run build
 ```

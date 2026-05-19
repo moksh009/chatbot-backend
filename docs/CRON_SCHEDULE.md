@@ -95,4 +95,4 @@ When coordinator is on, per-file `node-cron` timers for those jobs are **skipped
 - `mongoCronBudget` — active + queued cron slots
 - `process` — `RUN_API`, `RUN_CRONS`, `RUN_WORKERS`, `CRON_USE_COORDINATOR`
 
-Sign-off: `node scripts/archive/verify-checklists/verifyPlanCChecklist.js`
+Sign-off: `./scripts/start-api-dev.sh` + `GET /api/health` shows mongo pool and cron budget.

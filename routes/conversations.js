@@ -457,7 +457,7 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
           if (!phone) return [];
           const Order = require('../models/Order');
           const select =
-            'orderId orderNumber customerName amount totalPrice status paymentMethod isCOD createdAt items';
+            'orderId orderNumber customerName amount totalPrice status paymentMethod isCOD createdAt items fulfillmentStatus financialStatus trackingNumber trackingUrl';
           const sort = { createdAt: -1 };
           const exact = await Order.find({
             clientId: tenantId,
@@ -585,6 +585,52 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
     res.status(status).json({
       message: status === 404 ? 'Conversation not found' : 'Server Error fetching full context',
     });
+  }
+});
+
+/** Full order document for Live Chat sidebar expand (line items + fulfillment). */
+router.get('/:id/orders/:orderKey', protect, logPersonalDataAccess, async (req, res) => {
+  try {
+    const tenantId = tenantClientId(req);
+    const { id, orderKey } = req.params;
+    if (!tenantId) return res.status(403).json({ message: 'Unauthorized' });
+
+    const conversation = await Conversation.findOne(
+      req.user.role === 'SUPER_ADMIN' ? { _id: id } : { _id: id, clientId: tenantId }
+    ).lean();
+    if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
+
+    const mongoose = require('mongoose');
+    const Order = require('../models/Order');
+    const key = decodeURIComponent(String(orderKey || '').trim());
+    const orConditions = [{ orderId: key }, { orderNumber: key }];
+    if (mongoose.Types.ObjectId.isValid(key)) {
+      orConditions.push({ _id: key });
+    }
+
+    const order = await Order.findOne({
+      clientId: tenantId,
+      $or: orConditions,
+    }).lean();
+
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    const phone = normalizePhone(conversation.phone);
+    const orderPhone = normalizePhone(order.phone || order.customerPhone || '');
+    const phoneSuffix = phone ? phone.slice(-10) : '';
+    const orderSuffix = orderPhone ? orderPhone.slice(-10) : '';
+    const phoneMatch =
+      phone &&
+      orderPhone &&
+      (phone === orderPhone || (phoneSuffix && orderSuffix && phoneSuffix === orderSuffix));
+    if (!phoneMatch) {
+      return res.status(403).json({ message: 'Order does not belong to this conversation' });
+    }
+
+    return res.json({ success: true, order });
+  } catch (err) {
+    console.error('[GET conversation order]', err);
+    return res.status(500).json({ message: 'Failed to load order details' });
   }
 });
 

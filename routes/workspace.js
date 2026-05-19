@@ -2,34 +2,19 @@
 
 const express = require('express');
 const router = express.Router();
-const Client = require('../models/Client');
 const { protect, verifyClientAccess } = require('../middleware/auth');
 const { buildConnectionStatusPayload } = require('../utils/connectionStatus');
+const { apiCache } = require('../middleware/apiCache');
+const { getCachedClient, CONNECTION_STATUS_SELECT } = require('../utils/clientCache');
 
 /**
  * GET /api/workspace/:clientId/connection-status
  * Never returns 400 for missing integrations — always 200 with booleans.
  */
-router.get('/:clientId/connection-status', protect, verifyClientAccess, async (req, res) => {
+router.get('/:clientId/connection-status', protect, verifyClientAccess, apiCache(90), async (req, res) => {
   try {
     const { clientId } = req.params;
-    const client = await Client.findOne({ clientId })
-      .select({
-        shopDomain: 1,
-        shopifyAccessToken: 1,
-        commerce: 1,
-        phoneNumberId: 1,
-        wabaId: 1,
-        whatsappToken: 1,
-        whatsapp: 1,
-        instagramAccessToken: 1,
-        instagramPageId: 1,
-        social: 1,
-        metaAdsConnected: 1,
-        metaAdsToken: 1,
-        metaAdAccountId: 1,
-      })
-      .lean();
+    const client = await getCachedClient(clientId, CONNECTION_STATUS_SELECT);
 
     const flags = buildConnectionStatusPayload(client);
     return res.json({

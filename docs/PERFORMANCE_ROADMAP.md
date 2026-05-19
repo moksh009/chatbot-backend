@@ -19,6 +19,52 @@
 | **10** | **Leads + Templates** — React Query, facet counts | **Done** |
 | **11** | **Settings + Campaign** — cache invalidation, lazy panels | **Done** |
 
+**Pre-release smoke:** `npm run build` in `chatbot-dashboard-frontend-main`, `node scripts/verifyPerfHotpaths.js` (API running).
+
+
+---
+
+## Phase 0 — Request hygiene (frontend)
+
+- [x] `isRequestCanceled` + no toast on aborted requests (`api/axios.js`)
+- [x] Debounced dashboard filters (`EcommerceDashboard.jsx`)
+- [x] `AbortController` on dashboard summary fetch
+
+
+---
+
+## Phase 1 — Client cache & indexes
+
+- [x] `utils/clientCache.js` + `invalidateClientCache` on writes
+- [x] `scripts/verifyIndexes.js` for critical Mongo indexes
+- [x] Flow cron batching (reduced per-tick `Client.findOne` load)
+
+
+---
+
+## Phase 2 — Dashboard summary API
+
+- [x] `GET /api/dashboard/summary` — single consolidated payload
+- [x] `EcommerceDashboard.jsx` — one `useQuery` for first paint
+
+
+---
+
+## Phase 3 — DailyStat rollup
+
+- [x] `getTimelineStatsFromRollup` when range ≥ `TIMELINE_ROLLUP_MIN_DAYS`
+- [x] Rollup crons + `backfillDailyStatRollup.js`
+
+
+---
+
+## Phase 4 — Live Chat backend + inbound
+
+- [x] `apiCache(30)` + `dedupeAsync` on conversation list & full-context
+- [x] `getCachedClient` on hot conversation paths
+- [x] `message_saved_early` before AI; greeting fast path (see 8B)
+
+
 ---
 
 ## Phase 4A — Live Chat (frontend)
@@ -35,11 +81,17 @@
 - [x] `apiCache(30)` on conversation list, `dedupeAsync` on list + full-context
 - [x] `getCachedClient` on full-context + smart-replies + send path
 
-### Sign-off
-```bash
-node scripts/verifyLiveChat4A.js --clientId=YOUR_CLIENT
-node scripts/verifyPhase4Checklist.js --clientId=YOUR_CLIENT --skipSend
-```
+
+---
+
+## Phase 5 — Production hardening
+
+- [x] Split deploy: `start-api-dev.sh` (`RUN_CRONS=false`) vs `start-crons-only.sh`
+- [x] `GET /api/health` — `mongoPool`, cron budget, split-deploy warnings
+- [x] Phase 5A: lazy order filter APIs; billing usage deferred 8s on Live Chat
+
+
+Split deploy: run `./scripts/start-api-dev.sh` (API, `RUN_CRONS=false`) and `./scripts/start-crons-only.sh` (workers) as separate processes in production.
 
 ---
 
@@ -58,11 +110,6 @@ node scripts/verifyPhase4Checklist.js --clientId=YOUR_CLIENT --skipSend
 - [x] `getClientOrders` — cap 150 + `dedupeAsync`
 - [x] Fix `GET /analytics/lead-intelligence` (`score` → `leadScore`)
 
-### Sign-off
-```bash
-node scripts/verifyPhase6Checklist.js --clientId=YOUR_CLIENT
-node scripts/verifyPhase6Checklist.js --clientId=YOUR_CLIENT --token=JWT   # optional HTTP
-```
 
 ---
 
@@ -79,10 +126,6 @@ node scripts/verifyPhase6Checklist.js --clientId=YOUR_CLIENT --token=JWT   # opt
 - [x] `GET /api/flow/` — lite metadata only + `X-Deprecated-Endpoint` (use `/flow/flows?lite=1` + `/graph`)
 - [x] `apiCache` + perf timers on `/:flowId/summary`, `/:flowId/versions`, `GET /flow-observability`
 
-### Sign-off
-```bash
-node scripts/verifyPhase7Checklist.js --clientId=YOUR_CLIENT [--token=JWT]
-```
 
 ---
 
@@ -108,10 +151,6 @@ node scripts/verifyPhase7Checklist.js --clientId=YOUR_CLIENT [--token=JWT]
 - [x] `INBOUND_QUEUE_FIRST_FLUSH_MS=0` for first message (Phase 4)
 
 **Manual sign-off:**
-```bash
-node scripts/archive/verify-checklists/verifyPhase8Checklist.js --clientId=YOUR_CLIENT
-# Send "hi" on WhatsApp → <3s reply, perf log: greeting_instant_fallback OR greeting_sent
-```
 
 ---
 
@@ -124,10 +163,6 @@ node scripts/archive/verify-checklists/verifyPhase8Checklist.js --clientId=YOUR_
 - [x] Tab-active fetch guards: `Leads`, `CartLeads`, `ReputationHub`, `LoyaltyHub`, `TemplateManager`, `MetaMessagesWorkspace`, `QualityAnalytics`, `TrainingInbox`, `IntentEngineTab`
 - [x] Meta Messages: debounced socket refresh (600ms); poll only when tab active + job generating
 
-### Sign-off
-```bash
-node scripts/archive/verify-checklists/verifyPhase9Checklist.js
-```
 
 ---
 
@@ -144,10 +179,6 @@ node scripts/archive/verify-checklists/verifyPhase9Checklist.js
 - [x] `GET /leads/high-intent` — total uses base query (not cursor page)
 - [x] `apiCache(45)` on high-intent
 
-### Sign-off
-```bash
-node scripts/archive/verify-checklists/verifyPhase10Checklist.js
-```
 
 ---
 
@@ -164,13 +195,9 @@ node scripts/archive/verify-checklists/verifyPhase10Checklist.js
 - [x] `clearClientCache` on `PATCH /client/:id/config` + commerce automations
 - [x] `apiCache(60)` campaign overview, `apiCache(30)` audience-estimate
 
-### Sign-off
-```bash
-node scripts/archive/verify-checklists/verifyPhase11Checklist.js
-```
 
 ---
 
 ## Deploy (all phases)
 
-See [PHASE5_DEPLOY.md](./PHASE5_DEPLOY.md) for split processes and env vars.
+Use `./scripts/start-api-dev.sh` and `./scripts/start-crons-only.sh`; see `CRON_SCHEDULE.md` for env vars.

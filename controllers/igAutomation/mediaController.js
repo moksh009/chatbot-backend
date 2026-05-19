@@ -11,19 +11,20 @@
 
 const express = require('express');
 const router = express.Router();
-const Client = require('../../models/Client');
 const log = require('../../utils/logger')('IGMedia');
+const { apiCache } = require('../../middleware/apiCache');
+const { getCachedClient, IG_CONNECTION_SELECT } = require('../../utils/clientCache');
 
 /**
  * GET /api/ig-automation/connection-status?clientId=X
  * Quick check: is Instagram connected for this clientId?
  */
-router.get('/connection-status', async (req, res) => {
+router.get('/connection-status', apiCache(60), async (req, res) => {
   try {
     const { clientId } = req.query;
     if (!clientId) return res.status(400).json({ connected: false });
 
-    const client = await Client.findOne({ clientId }).lean();
+    const client = await getCachedClient(clientId, IG_CONNECTION_SELECT);
     if (!client) return res.json({ connected: false });
 
     const token =

@@ -1,5 +1,11 @@
 const Client = require('../models/Client');
-const { getCachedClient, getCachedClientForWhatsAppInbound } = require('../utils/clientCache');
+const {
+  getCachedClient,
+  getCachedClientForWhatsAppInbound,
+  DEFAULT_SELECT,
+  COMMERCE_AUTOMATION_SELECT,
+  ORDERS_ROUTE_SELECT,
+} = require('../utils/clientCache');
 const { decrypt } = require('../utils/encryption');
 const { resolveClientGeminiKey } = require('../utils/clientGeminiKey');
 
@@ -25,11 +31,19 @@ const loadClientConfig = async (req, res, next) => {
       return res.status(400).json({ error: 'Client ID is required' });
     }
 
-    const isWebhookPath = String(req.originalUrl || '').includes('/webhook/');
-    // Webhooks: skip knowledgeBase blobs; dashboard routes keep default select.
+    const url = String(req.originalUrl || req.path || '');
+    const isWebhookPath = url.includes('/webhook/');
+    let select = DEFAULT_SELECT;
+    if (isWebhookPath) {
+      select = null;
+    } else if (url.includes('/commerce-automations')) {
+      select = COMMERCE_AUTOMATION_SELECT;
+    } else if (/\/orders(\?|$)/.test(url) && req.method === 'GET') {
+      select = ORDERS_ROUTE_SELECT;
+    }
     const client = isWebhookPath
       ? await getCachedClientForWhatsAppInbound(clientId)
-      : await getCachedClient(clientId);
+      : await getCachedClient(clientId, select);
 
     if (!client) {
       // Quietly acknowledge stale legacy webhook hits from deprecated client IDs.

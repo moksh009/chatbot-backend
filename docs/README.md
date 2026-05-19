@@ -7,8 +7,7 @@ Start here for performance work, deploy, and audits. Work through [MASTER_SYSTEM
 | Doc | Purpose |
 |-----|---------|
 | [MASTER_SYSTEM_PLAN.md](./MASTER_SYSTEM_PLAN.md) | Master checklist — audit, API cache, crons, WhatsApp speed, frontend, hygiene, prod sign-off |
-| [PERFORMANCE_ROADMAP.md](./PERFORMANCE_ROADMAP.md) | Phases 0–11 — what shipped and how to verify |
-| [PHASE5_DEPLOY.md](./PHASE5_DEPLOY.md) | Split deploy: API vs crons/workers (Render / VPS) |
+| [PERFORMANCE_ROADMAP.md](./PERFORMANCE_ROADMAP.md) | Phases 0–11 — what shipped (performance baseline) |
 | [PRODUCTION_SIGNOFF.md](./PRODUCTION_SIGNOFF.md) | Plan G — pre-release checklist + `qa:ci` |
 | [CRON_SCHEDULE.md](./CRON_SCHEDULE.md) | Cron tiers, coordinator bundles, env vars |
 | [SYSTEM_AUDIT_REPORT.md](./SYSTEM_AUDIT_REPORT.md) | Auto-generated inventory — `node scripts/runSystemAudit.js` |
@@ -35,7 +34,7 @@ Start here for performance work, deploy, and audits. Work through [MASTER_SYSTEM
 | Path | Doc |
 |------|-----|
 | `chatbot-dashboard-frontend-main/` | [../chatbot-dashboard-frontend-main/README.md](../chatbot-dashboard-frontend-main/README.md) |
-| `chatbot-backend-main/scripts/` | [../scripts/README.md](../scripts/README.md) — verify scripts & dev entrypoints |
+| `chatbot-backend-main/scripts/` | [../scripts/README.md](../scripts/README.md) — smoke scripts & dev entrypoints |
 
 ## Quick commands
 
@@ -46,9 +45,9 @@ Start here for performance work, deploy, and audits. Work through [MASTER_SYSTEM
 # Regenerate audit report
 node scripts/runSystemAudit.js
 
-# All plan + phase checklists
-node scripts/verifyAllPhases.js
-
 # HTTP hot-path timing (needs running API + .env)
 node scripts/verifyPerfHotpaths.js
+
+# Frontend production build
+cd ../chatbot-dashboard-frontend-main && npm run build
 ```

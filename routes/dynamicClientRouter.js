@@ -186,7 +186,7 @@ router.patch('/config', protect, async (req, res) => {
   }
 });
 
-router.get('/commerce-automations', protect, async (req, res) => {
+router.get('/commerce-automations', protect, apiCache(90), async (req, res) => {
   try {
     const { clientId } = req.params;
     const isAuthorized = req.user.role === 'SUPER_ADMIN' ||
@@ -474,7 +474,7 @@ router.post('/webhook/shopify/log-restore-event', async (req, res) => {
   }
 });
 
-router.get('/orders', apiCache(60), async (req, res) => {
+router.get('/orders', apiCache(120), async (req, res) => {
   try {
     const { businessType } = req.clientConfig;
     if (businessType === 'ecommerce') {

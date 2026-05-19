@@ -5,11 +5,34 @@ const Client = require('../models/Client');
 const Order = require('../models/Order');
 const { protect, verifyClientAccess } = require('../middleware/auth');
 const { addHours } = require('date-fns');
+const { apiCache } = require('../middleware/apiCache');
 
 const { getShopifyClient, withShopifyRetry } = require('../utils/shopifyHelper');
+const {
+  getCachedClient,
+  SHOPIFY_BOT_PRODUCTS_SELECT,
+  SHOPIFY_PULSE_META_SELECT,
+} = require('../utils/clientCache');
 
 const pulseCache = new Map();
 const PULSE_CACHE_TTL_MS = 120_000;
+const orderCountCache = new Map();
+const ORDER_COUNT_CACHE_TTL_MS = 300_000;
+
+async function getCachedOrderCount(clientId) {
+  const hit = orderCountCache.get(clientId);
+  if (hit && Date.now() - hit.at < ORDER_COUNT_CACHE_TTL_MS) return hit.count;
+  const count = await Order.countDocuments({ clientId }).maxTimeMS(2500);
+  orderCountCache.set(clientId, { count, at: Date.now() });
+  return count;
+}
+
+function isShopifyLocationsScopeError(err) {
+  const status = err?.response?.status;
+  if (status !== 403 && status !== 404) return false;
+  const blob = JSON.stringify(err?.response?.data || err?.message || '').toLowerCase();
+  return blob.includes('location') || blob.includes('read_locations') || blob.includes('scope');
+}
 
 /** New tenants / disconnected stores: avoid 500 spam when Shopify is not configured */
 function isDisconnectedShopifyConfig(err) {
@@ -34,7 +57,7 @@ router.get('/ping', (req, res) => res.json({ success: true, message: 'Shopify Hu
  * @route   GET /api/shopify-hub/:clientId/pulse
  * @desc    Get store overview (Revenue, Orders, Payouts)
  */
-router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => {
+router.get('/:clientId/pulse', protect, verifyClientAccess, apiCache(90), async (req, res) => {
   const { clientId } = req.params;
   try {
     const cached = pulseCache.get(clientId);
@@ -51,7 +74,7 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
         const orders = ordersRes.data?.orders || [];
 
         // AUTOMATIC SYNC: If no orders found in our DB but Shopify has some, trigger background sync
-        const internalOrderCount = await Order.countDocuments({ clientId });
+        const internalOrderCount = await getCachedOrderCount(clientId);
         if (internalOrderCount === 0 && orders.length > 0) {
             console.log(`[ShopifyHub] Auto-sync triggered for ${clientId} (0 local orders found)`);
             const protocol = req.secure ? 'https' : 'http';
@@ -90,7 +113,7 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
         };
     });
 
-    const client = await Client.findOne({ clientId });
+    const client = await getCachedClient(clientId, SHOPIFY_PULSE_META_SELECT);
     if (!client) {
       return res.status(404).json({ success: false, error: 'Client not found' });
     }
@@ -99,7 +122,7 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
         ...result,
         shopDomain: client.shopDomain || '',
         shopifyConnectionStatus: client.shopifyConnectionStatus || 'disconnected',
-        lastShopifyError: client.lastShopifyError || ''
+        lastShopifyError: client.lastShopifyError || '',
     };
     pulseCache.set(clientId, { at: Date.now(), payload });
 
@@ -145,20 +168,16 @@ router.get('/:clientId/pulse', protect, verifyClientAccess, async (req, res) => 
  * @route   GET /api/shopify-hub/:clientId/products
  * @desc    Get all Shopify products with "in bot" status
  */
-router.get('/:clientId/products', protect, verifyClientAccess, async (req, res) => {
+router.get('/:clientId/products', protect, verifyClientAccess, apiCache(120), async (req, res) => {
   const { clientId } = req.params;
   try {
+    const clientMeta = await getCachedClient(clientId, SHOPIFY_BOT_PRODUCTS_SELECT);
+    const botProducts = clientMeta?.nicheData?.products || [];
+    const botProductIds = new Set(botProducts.map((p) => String(p.id)));
 
     const products = await withShopifyRetry(clientId, async (shop) => {
         const response = await shop.get('/products.json?limit=250&fields=id,title,variants,images,status,handle');
         const shopifyProducts = response.data.products;
-        
-        const client = await Client.findOne({ clientId });
-        if (!client) throw new Error('Client context lost during fetch');
-
-        const botProducts = client.nicheData?.products || [];
-        const botProductIds = new Set(botProducts.map(p => String(p.id)));
-
         if (!Array.isArray(shopifyProducts)) return [];
 
         return shopifyProducts.map(p => ({
@@ -168,13 +187,10 @@ router.get('/:clientId/products', protect, verifyClientAccess, async (req, res) 
         }));
     });
 
-    const client = await Client.findOne({ clientId });
-    const shopDomain = client ? client.shopDomain : '';
-
-    res.json({ success: true, products: products || [], shopDomain });
+    res.json({ success: true, products: products || [], shopDomain: clientMeta?.shopDomain || '' });
   } catch (err) {
     if (isDisconnectedShopifyConfig(err)) {
-      const c = await Client.findOne({ clientId });
+      const c = await getCachedClient(clientId, SHOPIFY_BOT_PRODUCTS_SELECT);
       return res.json({
         success: true,
         products: [],
@@ -221,17 +237,22 @@ router.put('/:clientId/products/:productId/price', protect, verifyClientAccess, 
  * @route   GET /api/shopify-hub/:clientId/locations
  * @desc    Get Shopify store locations (needed for inventory updates)
  */
-router.get('/:clientId/locations', protect, verifyClientAccess, async (req, res) => {
+router.get('/:clientId/locations', protect, verifyClientAccess, apiCache(300), async (req, res) => {
   const { clientId } = req.params;
   try {
     const locations = await withShopifyRetry(clientId, async (shop) => {
         const response = await shop.get('/locations.json');
-        return response.data.locations;
+        return response.data.locations || [];
     });
-    res.json({ success: true, locations });
+    res.json({ success: true, locations: locations || [] });
   } catch (err) {
-    if (isDisconnectedShopifyConfig(err)) {
-      return res.json({ success: true, locations: [], isShopifyConnected: false });
+    if (isDisconnectedShopifyConfig(err) || isShopifyLocationsScopeError(err)) {
+      return res.json({
+        success: true,
+        locations: [],
+        isShopifyConnected: !isShopifyLocationsScopeError(err),
+        locationsScopeMissing: isShopifyLocationsScopeError(err),
+      });
     }
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
@@ -290,7 +311,7 @@ router.put('/:clientId/inventory/set', protect, verifyClientAccess, async (req, 
  * @route   GET /api/shopify-hub/:clientId/customers
  * @desc    Get top customers from Shopify ordered by total spend
  */
-router.get('/:clientId/customers', protect, verifyClientAccess, async (req, res) => {
+router.get('/:clientId/customers', protect, verifyClientAccess, apiCache(120), async (req, res) => {
   const { clientId } = req.params;
   try {
     const customers = await withShopifyRetry(clientId, async (shop) => {
@@ -322,9 +343,9 @@ router.get('/:clientId/customers', protect, verifyClientAccess, async (req, res)
  * @route   GET /api/shopify-hub/:clientId/discounts
  * @desc    Fetch history of all generated discount codes from DB
  */
-router.get('/:clientId/discounts', protect, verifyClientAccess, async (req, res) => {
+router.get('/:clientId/discounts', protect, verifyClientAccess, apiCache(60), async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
+    const client = await getCachedClient(req.params.clientId, 'generatedDiscounts aiUseGeneratedDiscounts');
     if (!client) return res.status(404).json({ error: 'Client not found' });
     // Return newest first
     const discounts = (client.generatedDiscounts || []).slice().reverse();

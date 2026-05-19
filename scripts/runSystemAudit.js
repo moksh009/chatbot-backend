@@ -139,7 +139,7 @@ function main() {
     '',
     '## Performance verify scripts',
     '',
-    '- `verifyAllPhases.js` — runs phase 5–11 checklists',
+    '- `verifyPerfHotpaths.js` — HTTP smoke on hot dashboard routes',
     '- `verifyPerfHotpaths.js` — bootstrap, catalog, wa-flows timing',
     '',
     '## Plan B gaps (manual follow-up)',

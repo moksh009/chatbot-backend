@@ -6,6 +6,8 @@ const express = require('express');
 const router  = express.Router();
 const { protect, verifyClientAccess } = require('../middleware/auth');
 const Client  = require('../models/Client');
+const { apiCache } = require('../middleware/apiCache');
+const { getCachedClient, VALIDATION_SELECT } = require('../utils/clientCache');
 const {
   validateTemplateForSend,
   validateEmailConfig,
@@ -104,9 +106,10 @@ router.post('/:clientId/flow', verifyClientAccess, async (req, res) => {
 });
 
 // ── Check automation flow health ─────────────────────────────────────────────
-router.get('/:clientId/automations', verifyClientAccess, async (req, res) => {
+router.get('/:clientId/automations', verifyClientAccess, apiCache(90), async (req, res) => {
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
+    const clientId = req.params.clientId;
+    const client = await getCachedClient(clientId, VALIDATION_SELECT);
     if (!client) return res.status(404).json({});
 
     const flowTypes = ['abandoned_cart', 'cod_to_prepaid', 'review_collection', 'birthday'];

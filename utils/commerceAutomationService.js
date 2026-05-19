@@ -262,8 +262,26 @@ async function ensureMigration(clientConfig = {}, { persist = true } = {}) {
 }
 
 async function listAutomations(clientConfig = {}) {
-  const automations = await ensureMigration(clientConfig, { persist: true });
-  return Array.isArray(automations) ? automations : [];
+  if (Array.isArray(clientConfig.commerceAutomations) && clientConfig.commerceAutomations.length > 0) {
+    return clientConfig.commerceAutomations;
+  }
+  const unified = buildUnifiedFromLegacy(clientConfig);
+  if (clientConfig.clientId && unified.length > 0) {
+    setImmediate(() => {
+      Client.findOneAndUpdate(
+        { clientId: clientConfig.clientId },
+        {
+          $set: {
+            commerceAutomations: unified,
+            commerceAutomationVersion: COMMERCE_AUTOMATION_VERSION,
+            commerceAutomationMigratedAt: new Date(),
+            commerceAutomationLegacySnapshot: buildLegacySnapshot(clientConfig),
+          },
+        }
+      ).catch(() => {});
+    });
+  }
+  return unified;
 }
 
 async function upsertAutomation(clientId, automation = {}) {

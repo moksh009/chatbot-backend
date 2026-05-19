@@ -14,7 +14,26 @@ const WHATSAPP_INBOUND_SELECT =
 /** Minimal fields for agent send + translation (avoids loading multi-MB client docs). */
 const WHATSAPP_SEND_SELECT =
   'clientId phoneNumberId whatsappToken premiumAccessToken premiumPhoneId whatsapp translationConfig geminiApiKey config';
+/** Connection flags for workspace + ConnectionContext */
+const CONNECTION_STATUS_SELECT =
+  'shopDomain shopifyAccessToken commerce phoneNumberId wabaId whatsappToken whatsapp instagramAccessToken instagramPageId social metaAdsConnected metaAdsToken metaAdAccountId';
+/** Settings validation / automation health */
+const VALIDATION_SELECT =
+  'automationFlows syncedMetaTemplates shopDomain shopifyAccessToken whatsappToken phoneNumberId wabaId commerce';
+/** Instagram connection chip */
+const IG_CONNECTION_SELECT =
+  'igAccessToken instagramAccessToken social igUserId igPageId instagramPageId igUsername instagramUsername';
+/** Dynamic client router — commerce automation rules (avoid multi-MB Client doc). */
+const COMMERCE_AUTOMATION_SELECT =
+  'clientId commerceAutomations commerceAutomationVersion commerceAutomationLegacySnapshot skuAutomations nicheData syncedMetaTemplates';
+/** Dynamic client router — order list only needs tenant id. */
+const ORDERS_ROUTE_SELECT = 'clientId businessType';
+/** Shopify hub — bot product IDs only (not full nicheData blob) */
+const SHOPIFY_BOT_PRODUCTS_SELECT = 'nicheData.products shopDomain shopifyConnectionStatus lastShopifyError';
+/** Pulse footer metadata */
+const SHOPIFY_PULSE_META_SELECT = 'shopDomain shopifyConnectionStatus lastShopifyError';
 const TTL_SEC = parseInt(process.env.CLIENT_CACHE_TTL_SEC || '30', 10) || 30;
+const FIND_MAX_MS = parseInt(process.env.CLIENT_FIND_MAX_MS || '8000', 10) || 8000;
 
 const clientCache = new NodeCache({
   stdTTL: Math.max(5, TTL_SEC),
@@ -41,7 +60,10 @@ async function getCachedClient(clientId, selectFields) {
   return dedupeAsync(key, async () => {
     const again = clientCache.get(key);
     if (again !== undefined) return again;
-    const client = await Client.findOne({ clientId }).select(select).lean();
+    const client = await Client.findOne({ clientId })
+      .select(select)
+      .maxTimeMS(FIND_MAX_MS)
+      .lean();
     if (client) clientCache.set(key, client);
     return client;
   });
@@ -72,4 +94,11 @@ module.exports = {
   DEFAULT_CLIENT_SELECT: DEFAULT_SELECT,
   WHATSAPP_INBOUND_SELECT,
   WHATSAPP_SEND_SELECT,
+  CONNECTION_STATUS_SELECT,
+  VALIDATION_SELECT,
+  IG_CONNECTION_SELECT,
+  COMMERCE_AUTOMATION_SELECT,
+  ORDERS_ROUTE_SELECT,
+  SHOPIFY_BOT_PRODUCTS_SELECT,
+  SHOPIFY_PULSE_META_SELECT,
 };

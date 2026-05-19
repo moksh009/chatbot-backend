@@ -253,6 +253,7 @@ app.use('/api/business', businessRoutes);
 app.use('/api/admin', adminRoutes); // Super Admin Route Registration
 app.use('/api/templates', templatesRoutes);
 app.use('/api/meta-templates', require('./routes/metaTemplates'));
+app.use('/api/custom-tags', require('./routes/customTags'));
 app.use('/api/auto-templates', require('./routes/autoTemplates'));
 app.use('/api/whatsapp', whatsappRoutes);
 const whatsappFlowsRoutes = require('./routes/whatsappFlows');
@@ -424,7 +425,7 @@ if (RUN_API && RUN_CRONS && process.env.SUPPRESS_SPLIT_DEPLOY_WARN !== 'true') {
     '[Boot] RUN_API=true and RUN_CRONS=true on the same process — Mongo pool contention likely. ' +
     'For local dev use ./scripts/start-api-dev.sh (API only) and ./scripts/start-crons-only.sh (crons) in a second terminal.';
   if (isProd) {
-    log.warn(msg + ' Prefer separate Render services (see docs/PHASE5_DEPLOY.md).');
+    log.warn(msg + ' Prefer separate Render services (API vs crons — see scripts/start-api-dev.sh).');
   } else {
     log.warn(msg);
   }

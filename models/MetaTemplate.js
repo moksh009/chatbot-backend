@@ -37,11 +37,14 @@ const FormDataSchema = new mongoose.Schema(
 const MetaTemplateSchema = new mongoose.Schema({
   clientId: { type: String, required: true, index: true },
   name: { type: String, required: true },
+  /** User-facing display name in TopEdge (not sent to Meta). */
+  internalName: { type: String, default: null, maxlength: 150 },
   category: { type: String, enum: ['MARKETING', 'UTILITY', 'AUTHENTICATION'], required: true, default: 'MARKETING' },
   language: { type: String, default: 'en' },
 
+  /** Workspace custom usage tag names (max 3 per template). */
   usageTags: {
-    type: [{ type: String, enum: ['Campaign', 'Sequence', 'Flow Builder', 'Utility'] }],
+    type: [{ type: String, trim: true, maxlength: 50 }],
     default: [],
   },
 

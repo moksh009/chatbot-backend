@@ -891,60 +891,61 @@ router.delete('/clients/:id', protect, isSuperAdmin, async (req, res) => {
 
 // --- CLIENT SELF-SERVICE: Update own nicheData/flowData ---
 // Any authenticated user can update their OWN client's editable fields
-router.get('/my-settings', protect, sanitizeMiddleware, async (req, res) => {
-  try {
-    await ensureClientForUser(req.user);
+const { apiCache } = require('../middleware/apiCache');
+const { getCachedClient } = require('../utils/clientCache');
 
+const MY_SETTINGS_MAIN_SELECT =
+  '-flowNodes -flowEdges -visualFlows -messageTemplates -automationFlows -nicheData';
+const MY_SETTINGS_WIDGET_SELECT = 'websiteChatWidgetConfig visualFlows';
+
+router.get('/my-settings', protect, sanitizeMiddleware, apiCache(90), async (req, res) => {
+  try {
     const { clientId } = req.query;
-    
-    // 1. Resolve Target Client ID with Fallback
-    // Priority: Query Param (SuperAdmin only) > User Object > "unknown"
-    let targetClientId = (req.user?.role === 'SUPER_ADMIN' && clientId) ? clientId : req.user?.clientId;
+
+    // Priority: Query Param (SuperAdmin only) > User Object
+    const targetClientId =
+      req.user?.role === 'SUPER_ADMIN' && clientId ? clientId : req.user?.clientId;
 
     if (!targetClientId) {
       log.warn('Settings access attempted without clientId', { user: req.user?.email });
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Identity mismatch: No target clientId established.' 
+      return res.status(400).json({
+        success: false,
+        message: 'Identity mismatch: No target clientId established.',
       });
     }
 
-    log.info('Fetching settings stream', { targetClientId, requester: req.user?.email });
+    setImmediate(() => {
+      ensureClientForUser(req.user).catch(() => {});
+    });
 
-    // 2. Fetch with simple retry logic (via await)
-    const client = await Client.findOne({ clientId: targetClientId })
-      .select('-flowNodes -flowEdges -visualFlows -messageTemplates -automationFlows -nicheData')
-      .maxTimeMS(5000); // 5s timeout
-    
-    if (!client) {
+    const [clientLean, widgetLean] = await Promise.all([
+      getCachedClient(targetClientId, MY_SETTINGS_MAIN_SELECT),
+      getCachedClient(targetClientId, MY_SETTINGS_WIDGET_SELECT),
+    ]);
+
+    if (!clientLean) {
       log.warn('Client registry missing', { targetClientId });
-      return res.status(404).json({ 
-        success: false, 
-        message: `No configuration payload found for id: ${targetClientId}` 
+      return res.status(404).json({
+        success: false,
+        message: `No configuration payload found for id: ${targetClientId}`,
       });
     }
 
     const { flattenClientForSettingsUI } = require('../utils/settingsSyncMapper');
     const { buildWebsiteWidgetSettingsBundle } = require('../utils/websiteWidgetDefaults');
-    const flat = flattenClientForSettingsUI(
-      client.toObject ? client.toObject() : client
+    const flat = flattenClientForSettingsUI(clientLean);
+
+    const origin = `${req.protocol}://${req.get('host')}`;
+    const websiteWidgetBundle = buildWebsiteWidgetSettingsBundle(
+      widgetLean || {},
+      { clientId: targetClientId, origin }
     );
 
-    const widgetDoc = await Client.findOne({ clientId: targetClientId })
-      .select('websiteChatWidgetConfig visualFlows')
-      .lean();
-    const origin = `${req.protocol}://${req.get('host')}`;
-    const websiteWidgetBundle = widgetDoc
-      ? buildWebsiteWidgetSettingsBundle(widgetDoc, { clientId: targetClientId, origin })
-      : buildWebsiteWidgetSettingsBundle({}, { clientId: targetClientId, origin });
-
-    // 3. Return payload (sanitized via middleware) + UI-friendly mirrors
     res.json({
-      ...(client.toObject ? client.toObject() : client),
+      ...clientLean,
       ...flat,
       websiteWidgetBundle,
     });
-
   } catch (err) {
     log.error('Critical Settings Failure (500)', { 
       error: err.message, 

@@ -152,6 +152,20 @@ async function getShopifyClient(clientId, forceRefresh = false) {
  * SELF-HEALING WRAPPER
  * Automatically detects 401s, rotates tokens, and retries the request up to 3 times.
  */
+function isShopifyScopeOrPermissionError(err) {
+  const data = err?.response?.data;
+  const blob = JSON.stringify(data || err?.message || '').toLowerCase();
+  return (
+    blob.includes('scope') ||
+    blob.includes('access denied') ||
+    blob.includes('merchant approval') ||
+    blob.includes('not approved') ||
+    blob.includes('required access') ||
+    blob.includes('read_locations') ||
+    blob.includes('read_inventory')
+  );
+}
+
 async function withShopifyRetry(clientId, operation, retryCount = 0) {
     return shopifyBreaker.call(async () => {
     const timer = createTimer('Shopify.withShopifyRetry', `${clientId} attempt=${retryCount}`);
@@ -163,6 +177,12 @@ async function withShopifyRetry(clientId, operation, retryCount = 0) {
     } catch (err) {
         const isAuthError = err.response?.status === 401;
         const isForbidden = err.response?.status === 403;
+
+        const scopeOrPermission403 = isForbidden && isShopifyScopeOrPermissionError(err);
+        if (scopeOrPermission403) {
+            timer.finish(`scope_403: ${err.message}`);
+            throw err;
+        }
 
         if ((isAuthError || isForbidden) && retryCount < 2) {
             const clientRecord = await getCachedClient(

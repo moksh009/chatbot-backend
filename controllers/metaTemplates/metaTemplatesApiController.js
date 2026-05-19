@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const MetaTemplate = require('../../models/MetaTemplate');
 const { tenantClientId } = require('../../utils/queryHelpers');
 const { extractVariablesRaw, resolveClientForTenant } = require('./templateSubmitController');
+const { validateUsageTagsForClient } = require('../../utils/templateUsageTags');
 
 const META_GRAPH_VERSION = 'v19.0';
 
@@ -11,6 +12,7 @@ async function saveDraft(req, res) {
     const tenantId = tenantClientId(req);
     const {
       clientId,
+      internalName = null,
       name = '',
       category = 'MARKETING',
       language = 'en',
@@ -25,6 +27,8 @@ async function saveDraft(req, res) {
       bodySamples = [],
       buttons = [],
       variableSamples = null,
+      upsertByName = false,
+      templateId = null,
     } = req.body;
 
     if (!tenantId || tenantId !== clientId) {
@@ -60,12 +64,21 @@ async function saveDraft(req, res) {
       .replace(/_+/g, '_')
       .slice(0, 512) || `draft_${Date.now()}`;
 
+    let usageTagsPersist = [];
+    if (Array.isArray(usageTags) && usageTags.length) {
+      const tagCheck = await validateUsageTagsForClient(clientId, usageTags);
+      if (!tagCheck.ok) return res.status(400).json({ error: tagCheck.error });
+      usageTagsPersist = tagCheck.tags;
+    }
+
+    const internalTrimmed = internalName != null ? String(internalName).trim() : '';
     const persist = {
       clientId,
       name: safeName,
+      internalName: internalTrimmed || null,
       category: ['MARKETING', 'UTILITY', 'AUTHENTICATION'].includes(category) ? category : 'MARKETING',
       language: language || 'en',
-      usageTags: Array.isArray(usageTags) ? usageTags : [],
+      usageTags: usageTagsPersist,
       formData,
       body: bodyText || ' ',
       footerText: footerText || null,
@@ -91,6 +104,28 @@ async function saveDraft(req, res) {
       source: 'manual',
       metaApiError: null,
     };
+
+    if (templateId && mongoose.Types.ObjectId.isValid(templateId)) {
+      const existing = await MetaTemplate.findOne({ _id: templateId, clientId });
+      if (!existing) return res.status(404).json({ error: 'Template not found.' });
+      await MetaTemplate.updateOne({ _id: existing._id }, { $set: persist });
+      return res.status(200).json({ success: true, templateId: existing._id, upserted: true });
+    }
+
+    if (upsertByName) {
+      const existingByName = await MetaTemplate.findOne({ clientId, name: safeName });
+      if (existingByName) {
+        const $set = {
+          updatedAt: new Date(),
+          usageTags: usageTagsPersist,
+        };
+        if (internalName != null) {
+          $set.internalName = internalTrimmed || null;
+        }
+        await MetaTemplate.updateOne({ _id: existingByName._id }, { $set });
+        return res.status(200).json({ success: true, templateId: existingByName._id, upserted: true });
+      }
+    }
 
     const created = await MetaTemplate.create({
       ...persist,
@@ -171,6 +206,7 @@ async function patchTemplate(req, res) {
 
     const updates = req.body || {};
     const flatKeys = [
+      'internalName',
       'name',
       'category',
       'language',
@@ -190,8 +226,24 @@ async function patchTemplate(req, res) {
 
     let $set = { updatedAt: new Date() };
 
+    if (updates.internalName !== undefined && !hasFlat) {
+      const trimmed = String(updates.internalName || '').trim();
+      if (!trimmed) return res.status(400).json({ error: 'Please give this template a name.' });
+      if (trimmed.length > 150) {
+        return res.status(400).json({ error: 'Internal name cannot exceed 150 characters.' });
+      }
+      $set.internalName = trimmed;
+    }
+
+    if (updates.usageTags !== undefined && !hasFlat) {
+      const tagCheck = await validateUsageTagsForClient(clientId, updates.usageTags);
+      if (!tagCheck.ok) return res.status(400).json({ error: tagCheck.error });
+      $set.usageTags = tagCheck.tags;
+    }
+
     if (hasFlat) {
       const {
+        internalName = doc.internalName,
         name = doc.name,
         category = doc.category,
         language = doc.language,
@@ -233,12 +285,32 @@ async function patchTemplate(req, res) {
         .replace(/_+/g, '_')
         .slice(0, 512) || doc.name;
 
+      let usageTagsPersist = Array.isArray(doc.usageTags) ? doc.usageTags : [];
+      if (updates.usageTags !== undefined) {
+        const tagCheck = await validateUsageTagsForClient(clientId, usageTags);
+        if (!tagCheck.ok) return res.status(400).json({ error: tagCheck.error });
+        usageTagsPersist = tagCheck.tags;
+      }
+
+      let internalNamePersist = doc.internalName;
+      if (updates.internalName !== undefined) {
+        const internalTrimmed = String(internalName || '').trim();
+        if (!internalTrimmed) {
+          return res.status(400).json({ error: 'Please give this template a name.' });
+        }
+        if (internalTrimmed.length > 150) {
+          return res.status(400).json({ error: 'Internal name cannot exceed 150 characters.' });
+        }
+        internalNamePersist = internalTrimmed;
+      }
+
       $set = {
         ...$set,
         name: safeName,
+        internalName: internalNamePersist,
         category: ['MARKETING', 'UTILITY', 'AUTHENTICATION'].includes(category) ? category : doc.category,
         language: language || 'en',
-        usageTags: Array.isArray(usageTags) ? usageTags : [],
+        usageTags: usageTagsPersist,
         formData,
         body: bodyText || ' ',
         footerText: footerText || null,
@@ -262,7 +334,7 @@ async function patchTemplate(req, res) {
         })),
       };
     } else {
-      const allowed = ['name', 'category', 'language', 'usageTags', 'formData', 'body', 'footerText', 'headerType', 'headerValue', 'buttons'];
+      const allowed = ['internalName', 'name', 'category', 'language', 'usageTags', 'formData', 'body', 'footerText', 'headerType', 'headerValue', 'buttons'];
       for (const k of allowed) {
         if (updates[k] !== undefined) $set[k] = updates[k];
       }

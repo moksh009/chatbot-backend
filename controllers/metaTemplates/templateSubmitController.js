@@ -1,6 +1,7 @@
 const axios = require('axios');
 const mongoose = require('mongoose');
 const MetaTemplate = require('../../models/MetaTemplate');
+const { validateUsageTagsForClient } = require('../../utils/templateUsageTags');
 const Client = require('../../models/Client');
 const User = require('../../models/User');
 const { decrypt } = require('../../utils/encryption');
@@ -167,10 +168,11 @@ async function submitTemplateToMeta(req, res) {
     const tenantId = tenantClientId(req);
     const {
       clientId,
+      internalName,
       name,
       category,
       language = 'en',
-      usageTags = [],
+      usageTags,
       variableType,
       mediaSample,
       headerImageUrl,
@@ -201,6 +203,36 @@ async function submitTemplateToMeta(req, res) {
       return res.status(400).json({ error: 'clientId, name, category, and bodyText are required.' });
     }
 
+    const internalTrimmed = String(internalName || '').trim();
+    if (!internalTrimmed) {
+      return res.status(400).json({ error: 'Please give this template a name.' });
+    }
+    if (internalTrimmed.length > 150) {
+      return res.status(400).json({ error: 'Internal name cannot exceed 150 characters.' });
+    }
+
+    let ownedTemplate = null;
+    if (existingTemplateId) {
+      if (!mongoose.Types.ObjectId.isValid(existingTemplateId)) {
+        return res.status(400).json({ error: 'Invalid existingTemplateId.' });
+      }
+      ownedTemplate = await MetaTemplate.findOne({ _id: existingTemplateId, clientId }).lean();
+      if (!ownedTemplate) {
+        return res.status(404).json({ error: 'Template not found for this workspace.' });
+      }
+    }
+
+    let usageTagsPersist = [];
+    if (usageTags !== undefined && usageTags !== null) {
+      if (Array.isArray(usageTags) && usageTags.length) {
+        const tagCheck = await validateUsageTagsForClient(clientId, usageTags);
+        if (!tagCheck.ok) return res.status(400).json({ error: tagCheck.error });
+        usageTagsPersist = tagCheck.tags;
+      }
+    } else if (ownedTemplate) {
+      usageTagsPersist = Array.isArray(ownedTemplate.usageTags) ? ownedTemplate.usageTags : [];
+    }
+
     if (!['MARKETING', 'UTILITY', 'AUTHENTICATION'].includes(category)) {
       return res.status(400).json({ error: 'Invalid category. Must be MARKETING, UTILITY, or AUTHENTICATION.' });
     }
@@ -214,16 +246,6 @@ async function submitTemplateToMeta(req, res) {
       return res.status(400).json({
         error: 'Template name must be lowercase letters, numbers, and underscores only. No spaces.',
       });
-    }
-
-    if (existingTemplateId) {
-      if (!mongoose.Types.ObjectId.isValid(existingTemplateId)) {
-        return res.status(400).json({ error: 'Invalid existingTemplateId.' });
-      }
-      const owned = await MetaTemplate.findOne({ _id: existingTemplateId, clientId }).lean();
-      if (!owned) {
-        return res.status(404).json({ error: 'Template not found for this workspace.' });
-      }
     }
 
     const duplicateQuery = {
@@ -380,9 +402,10 @@ async function submitTemplateToMeta(req, res) {
     const persistBase = {
       clientId,
       name,
+      internalName: internalTrimmed,
       category,
       language,
-      usageTags: Array.isArray(usageTags) ? usageTags : [],
+      usageTags: usageTagsPersist,
       formData: formDataDoc,
       body: bodyText,
       footerText: footerText || null,

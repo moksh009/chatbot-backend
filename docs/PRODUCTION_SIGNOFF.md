@@ -9,7 +9,7 @@ Use this checklist before promoting a release. Assumes Plans A–F are already m
 | **Web** | `true` | `false` | `false` |
 | **Worker** | `false` | `true` | `true` |
 
-See [PHASE5_DEPLOY.md](./PHASE5_DEPLOY.md) and [CRON_SCHEDULE.md](./CRON_SCHEDULE.md).
+See [CRON_SCHEDULE.md](./CRON_SCHEDULE.md) and `scripts/start-api-dev.sh` / `scripts/start-crons-only.sh`.
 
 Local smoke:
 
@@ -52,13 +52,12 @@ Backend `qa:ci` runs: module probe, flow regression smoke, preflight guards, uni
 
 Frontend `qa:ci` runs: duplicate route check + production `vite build`.
 
-## 4. Automated checklists
+## 4. Automated smoke
 
 ```bash
-node scripts/archive/verify-checklists/verifyPlanGChecklist.js
-node scripts/verifyAllPhases.js          # Plans F→B + phases 5–11
 node scripts/verifyPerfHotpaths.js       # needs API + auth in .env
 node scripts/runSystemAudit.js           # 0 critical issues
+cd ../chatbot-dashboard-frontend-main && npm run qa:ci
 ```
 
 ## 5. Manual smoke (15 min)

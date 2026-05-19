@@ -4,18 +4,21 @@ const AdLead = require('../models/AdLead');
 const Conversation = require('../models/Conversation');
 const Order = require('../models/Order');
 const { protect } = require('../middleware/auth');
+const { apiCache } = require('../middleware/apiCache');
+const { dedupeAsync } = require('../utils/requestDedupe');
 const { resolveClient, startOfDayIST, safeCount, safeAggregate } = require('../utils/queryHelpers');
 const logger = require('../utils/logger')('InsightsRoute');
 
-router.get("/:clientId", protect, async (req, res) => {
+router.get('/:clientId', protect, apiCache(90), async (req, res) => {
   try {
-    const { client, clientOid } = await resolveClient(req);
-    const today     = startOfDayIST();
+    const { client } = await resolveClient(req);
+    const today = startOfDayIST();
     const yesterday = new Date(today.getTime() - 86400000);
-    
-    const insights = [];
-    
-    // Run all checks in parallel
+    const dayKey = today.toISOString().slice(0, 10);
+
+    const insights = await dedupeAsync(`insights:smart:${client.clientId}:${dayKey}`, async () => {
+    const rows = [];
+
     const [
       leadsToday, leadsYesterday,
       abandons, unassigned,
@@ -38,7 +41,7 @@ router.get("/:clientId", protect, async (req, res) => {
       const lt  = get(leadsToday, 0);
       const ly  = get(leadsYesterday, 0);
       const dir = lt > ly ? "↑" : lt < ly ? "↓" : "→";
-      insights.push({
+      rows.push({
         id: "leads_today", type: "opportunity", icon: "👥",
         title: `${lt} new lead${lt > 1 ? "s" : ""} today`,
         detail: ly > 0 ? `${dir} ${Math.abs(lt - ly)} vs yesterday` : "Great start!",
@@ -47,7 +50,7 @@ router.get("/:clientId", protect, async (req, res) => {
     }
     
     if (get(abandons, 0) > 0) {
-      insights.push({
+      rows.push({
         id: "abandoned_carts", type: "alert", icon: "🛒",
         title: `${get(abandons, 0)} cart${get(abandons,0) > 1 ? "s" : ""} abandoned`,
         detail: "Recovery messages queued. Manual nudge can boost recovery 23%.",
@@ -56,7 +59,7 @@ router.get("/:clientId", protect, async (req, res) => {
     }
     
     if (get(unassigned, 0) > 0) {
-      insights.push({
+      rows.push({
         id: "unassigned", type: "alert", icon: "🙋",
         title: `${get(unassigned, 0)} chat${get(unassigned,0) > 1 ? "s" : ""} need attention`,
         detail: "Bot paused. Customers are waiting for a human agent.",
@@ -66,7 +69,7 @@ router.get("/:clientId", protect, async (req, res) => {
     
     const rev = get(todayRev, [])[0]?.total || 0;
     if (rev > 0) {
-      insights.push({
+      rows.push({
         id: "revenue", type: "opportunity", icon: "💰",
         title: `₹${rev.toLocaleString("en-IN")} revenue today`,
         detail: "Keep engaging leads to hit your daily target.",
@@ -75,7 +78,7 @@ router.get("/:clientId", protect, async (req, res) => {
     }
     
     if (get(codOrders, 0) > 0) {
-      insights.push({
+      rows.push({
         id: "cod_convert", type: "opportunity", icon: "💳",
         title: `${get(codOrders, 0)} COD order${get(codOrders,0) > 1 ? "s" : ""} to convert`,
         detail: "COD-to-Prepaid nudges sent automatically. Track conversions here.",
@@ -84,7 +87,7 @@ router.get("/:clientId", protect, async (req, res) => {
     }
     
     if (get(hotLeads, 0) > 0) {
-      insights.push({
+      rows.push({
         id: "hot_leads", type: "opportunity", icon: "🔥",
         title: `${get(hotLeads, 0)} high-intent lead${get(hotLeads,0) > 1 ? "s" : ""}`,
         detail: "Score ≥70. These are your best prospects right now.",
@@ -93,15 +96,18 @@ router.get("/:clientId", protect, async (req, res) => {
     }
     
     // Always guarantee minimum insights
-    if (insights.length === 0) {
-      insights.push({
+    if (rows.length === 0) {
+      rows.push({
         id: "ready", type: "opportunity", icon: "🚀",
         title: "Your AI system is running",
         detail: "Send your first campaign or start a conversation to see real-time insights here.",
         action: { label: "Create Campaign", path: "/marketing-hub" }
       });
     }
-    
+
+    return rows;
+    });
+
     return res.json({ success: true, insights });
     
   } catch (err) {

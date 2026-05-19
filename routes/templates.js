@@ -54,7 +54,8 @@ router.get('/sync', protect, async (req, res) => {
         
         try {
             const response = await axios.get(url, {
-                headers: { Authorization: `Bearer ${client.whatsappToken}` }
+                headers: { Authorization: `Bearer ${client.whatsappToken}` },
+                timeout: 12000,
             });
             let templates = response.data.data || [];
             
@@ -119,7 +120,24 @@ router.get('/sync', protect, async (req, res) => {
         } catch (metaErr) {
             const status = metaErr.response?.status;
             const isClientError = status >= 400 && status < 500;
+            const timedOut =
+              metaErr.code === 'ECONNABORTED' ||
+              String(metaErr.message || '').toLowerCase().includes('timeout');
             console.error('[Template API] Meta Sync Error:', metaErr.response?.data || metaErr.message);
+            if (timedOut) {
+              const cached = await Client.findOne({ clientId })
+                .select('syncedMetaTemplates templatesSyncedAt')
+                .lean();
+              const stale = Array.isArray(cached?.syncedMetaTemplates) ? cached.syncedMetaTemplates : [];
+              if (stale.length) {
+                return res.json({
+                  success: true,
+                  data: stale,
+                  stale: true,
+                  syncedAt: cached.templatesSyncedAt,
+                });
+              }
+            }
             res.status(isClientError ? 400 : 500).json({ 
                 success: false, 
                 message: 'Failed to sync templates from Meta', 
@@ -157,66 +175,32 @@ router.get('/list', protect, apiCache(60), async (req, res) => {
         if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
         const MetaTemplate = require('../models/MetaTemplate');
-        const metaDocs = await MetaTemplate.find({ clientId }).lean();
-
         const synced = Array.isArray(client.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
         const localTemplates = Array.isArray(client.messageTemplates) ? client.messageTemplates : [];
         const pendingMap = new Map((Array.isArray(client.pendingTemplates) ? client.pendingTemplates : []).map(t => [t.name, String(t.status || 'PENDING').toUpperCase()]));
+        const syncedStatusByName = new Map(
+          synced.filter((t) => t?.name).map((t) => [t.name, String(t.status || 'APPROVED').toUpperCase()])
+        );
 
-        // MetaTemplate is canonical; legacy messageTemplates fill gaps only.
         const mergedMap = new Map();
-        metaDocs.forEach((tpl) => {
-          if (!tpl?.name) return;
-          mergedMap.set(tpl.name, {
-            id: tpl._id,
-            name: tpl.name,
-            category: tpl.category,
-            language: tpl.language,
-            status: String(tpl.submissionStatus || 'draft').toUpperCase(),
-            source: 'meta_template',
-            autoTrigger: tpl.autoTrigger,
-            templateKey: tpl.templateKey,
-            isPrebuilt: tpl.isPrebuilt,
-            body: tpl.body,
-          });
-        });
         localTemplates.forEach((tpl) => {
-          if (!tpl?.name || mergedMap.has(tpl.name)) return;
+          if (!tpl?.name) return;
           const pendingStatus = pendingMap.get(tpl.name);
           const status = pendingStatus || String(tpl.status || 'PENDING').toUpperCase();
           mergedMap.set(tpl.name, { ...tpl, status, source: tpl.source || 'message_templates' });
-        });
-
-        synced.forEach((tpl) => {
-          if (!tpl?.name) return;
-          if (mergedMap.has(tpl.name)) {
-            const existing = mergedMap.get(tpl.name);
-            mergedMap.set(tpl.name, {
-              ...tpl,
-              ...existing,
-              status: String(tpl.status || existing.status || 'APPROVED').toUpperCase(),
-              source: existing.source || 'synced_meta'
-            });
-          } else {
-            mergedMap.set(tpl.name, {
-              ...tpl,
-              status: String(tpl.status || 'APPROVED').toUpperCase(),
-              source: tpl.source || 'synced_meta'
-            });
-          }
         });
 
         const canonical = await MetaTemplate.find({ clientId })
           .sort({ updatedAt: -1 })
           .lean();
         const usageTagToPurpose = (tag) => {
-          const m = {
+          const legacy = {
             Campaign: 'campaign',
             Sequence: 'sequence',
             'Flow Builder': 'flow',
             Utility: 'utility',
           };
-          return m[tag] || 'utility';
+          return legacy[tag] || 'utility';
         };
 
         canonical.forEach((tpl) => {
@@ -298,11 +282,20 @@ router.get('/list', protect, apiCache(60), async (req, res) => {
             ? usageTags.slice(1).map(usageTagToPurpose)
             : [];
 
+          const headerImageUrl =
+            (fd && fd.headerImageUrl) ||
+            (String(tpl.headerType || '').toUpperCase() === 'IMAGE' ? tpl.headerValue || tpl.productImageUrl || null : null);
+
+          const syncedStatus = syncedStatusByName.get(tpl.name);
+          const finalStatus =
+            syncedStatus === 'APPROVED' ? 'APPROVED' : status;
+
           mergedMap.set(tpl.name, {
             ...mergedMap.get(tpl.name),
             id: tpl.metaTemplateId || tpl._id?.toString?.() || tpl.name,
             name: tpl.name,
-            status,
+            internalName: tpl.internalName || null,
+            status: finalStatus,
             category: tpl.category,
             language: tpl.language || 'en',
             components,
@@ -315,6 +308,7 @@ router.get('/list', protect, apiCache(60), async (req, res) => {
             metaApiError: tpl.metaApiError,
             formData: fd || undefined,
             usageTags,
+            headerImageUrl,
             _canonicalId: tpl._id,
             variableMapping:
               tpl.variableMapping instanceof Map
