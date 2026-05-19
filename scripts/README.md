@@ -22,6 +22,7 @@ Individual Plan B–G and phase 5–11 checklists live under **`archive/verify-c
 |--------|--------|
 | `verifyPhase4Checklist.js` | Live chat + archived signoff HTTP |
 | `verifyPhase6Checklist.js` | Orders sign-off |
+| `verifyPhase7Checklist.js` | Flow Builder sign-off |
 | `verifyLiveChat4A.js` | Phase 4A conversation list bench |
 | `verifyIndexes.js` | Critical Mongo indexes |
 

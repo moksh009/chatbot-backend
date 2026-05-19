@@ -16,7 +16,7 @@ async function verifyViaHttp(clientId) {
   const jwt = require('jsonwebtoken');
   const uri = process.env.MONGODB_URI || process.env.MONGO_URI;
   await mongoose.connect(uri, { maxPoolSize: 2 });
-  const User = require('../models/User');
+  const User = require('../../../models/User');
   const user = await User.findOne({ clientId }).lean();
   await mongoose.disconnect();
   if (!user) throw new Error(`No user for ${clientId}`);
@@ -27,7 +27,7 @@ async function verifyViaHttp(clientId) {
     { expiresIn: '1h' }
   );
 
-  const { createTimer } = require('../utils/perfLogger');
+  const { createTimer } = require('../../../utils/perfLogger');
   const timer = createTimer('verifyPhase3Rollup HTTP', clientId);
   const t0 = Date.now();
   const res = await fetch(`${BASE}/dashboard/summary?days=30`, {
@@ -52,9 +52,9 @@ async function verifyViaHttp(clientId) {
 
 async function verifyViaDirect(clientId) {
   const mongoose = require('mongoose');
-  const { createTimer } = require('../utils/perfLogger');
-  const { getTimelineStats, TIMELINE_ROLLUP_MIN_DAYS } = require('../utils/analyticsHelper');
-  const { getCachedClient } = require('../utils/clientCache');
+  const { createTimer } = require('../../../utils/perfLogger');
+  const { getTimelineStats, TIMELINE_ROLLUP_MIN_DAYS } = require('../../../utils/analyticsHelper');
+  const { getCachedClient } = require('../../../utils/clientCache');
 
   const uri = process.env.MONGODB_URI || process.env.MONGO_URI;
   await mongoose.connect(uri, { maxPoolSize: 3, serverSelectionTimeoutMS: 10000 });

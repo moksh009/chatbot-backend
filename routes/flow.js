@@ -571,15 +571,21 @@ router.post('/publish', protect, async (req, res) => {
 
 // GET /api/flow/:flowId/versions
 // Returns history of published versions
-router.get('/:flowId/versions', protect, async (req, res) => {
+router.get('/:flowId/versions', protect, apiCache(30), async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const timer = createTimer('GET /api/flow/:flowId/versions', req.user?.clientId || '');
   try {
     const { flowId } = req.params;
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req) || req.user.clientId;
     const FlowHistory = require('../models/FlowHistory');
-    
-    const history = await FlowHistory.find({ clientId, flowId }).sort({ version: -1 }).limit(20).lean();
+
+    const history = await timer.time('FlowHistory.find', () =>
+      FlowHistory.find({ clientId, flowId }).sort({ version: -1 }).limit(20).lean()
+    );
     res.json({ success: true, history });
+    timer.finish(`200 ok | count=${history.length}`);
   } catch (error) {
+    timer.finish(`500 error=${error.message}`);
     res.status(500).json({ success: false, message: error.message });
   }
 });
@@ -612,40 +618,54 @@ router.post('/:flowId/rollback/:versionId', protect, async (req, res) => {
   }
 });
 
-// GET /api/flow/
-// Root handler for frontend compatibility
-// --- GET ALL FLOWS ---
-router.get('/', protect, async (req, res) => {
+// GET /api/flow/ — deprecated: use GET /api/flow/flows?lite=1 (no full node payloads)
+router.get('/', protect, apiCache(30), async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const { getCachedClient } = require('../utils/clientCache');
+  const timer = createTimer('GET /api/flow/ (deprecated)', req.user?.clientId || '');
   try {
     const clientId = tenantClientId(req);
-    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
+    if (!clientId) {
+      timer.finish('403');
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
 
     const WhatsAppFlow = require('../models/WhatsAppFlow');
-    const dbFlows = await WhatsAppFlow.find({ clientId }).lean();
+    const [client, dbFlows] = await Promise.all([
+      timer.time('getCachedClient', () => getCachedClient(clientId, 'flowFolders clientId')),
+      timer.time('WhatsAppFlow.find_lite', () =>
+        WhatsAppFlow.find({ clientId })
+          .select('flowId name platform folderId status version createdAt updatedAt nodes edges')
+          .lean()
+      ),
+    ]);
 
-    // Map and filter out any corrupted flows with missing IDs
     const flows = dbFlows
-      .filter(f => f.flowId) // Strict filter for ghost flows with null IDs
-      .map(f => ({
-        id:          f.flowId,
-        name:        f.name,
-        platform:    f.platform || 'whatsapp',
-        isActive:    f.status === 'PUBLISHED',
-        folderId:    f.folderId || '',
-        nodes:       f.nodes || [],
-        edges:       f.edges || [],
-        nodeCount:   f.nodes?.length || 0,
-        edgeCount:   f.edges?.length || 0,
-        createdAt:   f.createdAt,
-        updatedAt:   f.updatedAt,
-        status:      f.status || 'DRAFT'
+      .filter((f) => f.flowId)
+      .map((f) => ({
+        id: f.flowId,
+        name: f.name,
+        platform: f.platform || 'whatsapp',
+        isActive: f.status === 'PUBLISHED',
+        folderId: f.folderId || '',
+        nodeCount: Array.isArray(f.nodes) ? f.nodes.length : 0,
+        edgeCount: Array.isArray(f.edges) ? f.edges.length : 0,
+        createdAt: f.createdAt,
+        updatedAt: f.updatedAt,
+        status: f.status || 'DRAFT',
       }));
 
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.json({ success: true, flows });
+    res.setHeader('X-Deprecated-Endpoint', 'Use GET /api/flow/flows?lite=1 and GET /api/flow/flows/:flowId/graph');
+    res.json({
+      success: true,
+      flows,
+      flowFolders: client?.flowFolders || [],
+      deprecated: true,
+    });
+    timer.finish(`200 ok | lite count=${flows.length}`);
   } catch (err) {
     console.error('Error fetching flows:', err);
+    timer.finish(`500 error=${err.message}`);
     res.status(500).json({ error: 'Failed to fetch flows' });
   }
 });
@@ -832,34 +852,49 @@ router.get('/flows/:flowId/graph', protect, apiCache(30), async (req, res) => {
 
 // GET /api/flow/:flowId/summary
 // Brief stats card data: entry count, dropoff rate, last published
-router.get('/:flowId/summary', protect, async (req, res) => {
+router.get('/:flowId/summary', protect, apiCache(60), async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const { dedupeAsync } = require('../utils/requestDedupe');
+  const timer = createTimer('GET /api/flow/:flowId/summary', req.user?.clientId || '');
   try {
     const { flowId } = req.params;
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req) || req.user.clientId;
+    if (!clientId) {
+      timer.finish('403');
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
 
     const WhatsAppFlow = require('../models/WhatsAppFlow');
     const FlowHistory = require('../models/FlowHistory');
 
-    const [flow, history] = await Promise.all([
-      WhatsAppFlow.findOne({ clientId, flowId }, 'name version status lastSyncedAt nodes edges').lean(),
-      FlowHistory.countDocuments({ clientId, flowId })
-    ]);
-
-    if (!flow) return res.status(404).json({ success: false, message: 'Flow not found' });
-
-    res.json({
-      success: true,
-      summary: {
-        name:       flow.name,
-        version:    flow.version,
-        status:     flow.status,
-        nodeCount:  (flow.nodes || []).length,
-        edgeCount:  (flow.edges || []).length,
+    const payload = await dedupeAsync(`flow-summary:${clientId}:${flowId}`, async () => {
+      const [flow, history] = await Promise.all([
+        timer.time('WhatsAppFlow.findOne', () =>
+          WhatsAppFlow.findOne({ clientId, flowId }, 'name version status lastSyncedAt nodes edges').lean()
+        ),
+        timer.time('FlowHistory.countDocuments', () => FlowHistory.countDocuments({ clientId, flowId })),
+      ]);
+      if (!flow) return null;
+      return {
+        name: flow.name,
+        version: flow.version,
+        status: flow.status,
+        nodeCount: (flow.nodes || []).length,
+        edgeCount: (flow.edges || []).length,
         totalVersions: history,
         lastPublishedAt: flow.lastSyncedAt || null,
-      }
+      };
     });
+
+    if (!payload) {
+      timer.finish('404');
+      return res.status(404).json({ success: false, message: 'Flow not found' });
+    }
+
+    res.json({ success: true, summary: payload });
+    timer.finish('200 ok');
   } catch (error) {
+    timer.finish(`500 error=${error.message}`);
     res.status(500).json({ success: false, message: error.message });
   }
 });

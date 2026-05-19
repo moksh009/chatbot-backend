@@ -9,6 +9,7 @@
 | **2** | `GET /dashboard/summary`, single `useQuery` | Done |
 | **3** | `DailyStat` rollup read path + crons | Done |
 | **4** | Live Chat, Orders/Flow backend timers, inbound fast path | Done |
+| **4A** | Live Chat FE — React Query inbox, parallel WA+IG, abort full-context | Done |
 | **5** | Split deploy, pool budget, lazy filters, billing defer, health | Done |
 | **6** | **Orders** — FE budgets + BE list/states fix | **Done** |
 | **7** | **Flow Builder** — bootstrap, N+1 routes, polling | Done |
@@ -20,14 +21,36 @@
 
 ---
 
-## Phase 6 — Orders (current)
+## Phase 4A — Live Chat (frontend)
+
+### Frontend (`LiveChat.jsx`, `hooks/useLiveChatInbox.js`)
+- [x] `useLiveChatInboxQuery` — parallel `GET /conversations` + `GET /inbox/conversations` (Instagram)
+- [x] `keepPreviousData` on inbox list (no flash on refetch)
+- [x] `useLiveChatTeamQuery` / `useLiveChatFiltersQuery` — 5 min staleTime
+- [x] `AbortController` on `GET /conversations/:id/full-context` when switching leads
+- [x] Billing usage still deferred 8s (unchanged)
+- [x] DNA / catalog / smart-replies still on-demand (unchanged)
+
+### Backend (already in Phase 4)
+- [x] `apiCache(30)` on conversation list, `dedupeAsync` on list + full-context
+- [x] `getCachedClient` on full-context + smart-replies + send path
+
+### Sign-off
+```bash
+node scripts/verifyLiveChat4A.js --clientId=YOUR_CLIENT
+node scripts/verifyPhase4Checklist.js --clientId=YOUR_CLIENT --skipSend
+```
+
+---
+
+## Phase 6 — Orders
 
 ### Frontend (`Orders.jsx`)
 - [x] Lazy product/state filter APIs (Phase 5A)
 - [x] Debounce search 400ms
 - [x] Remove duplicate mount `fetchOrders()` (useQuery only)
-- [x] Defer `fetchLeadMetrics` until `viewMode === 'Signals'`
-- [x] `staleTime: 60s` on main orders query
+- [x] Defer lead metrics until `viewMode === 'Signals'` (`AbortController` + `isRequestCanceled`)
+- [x] `staleTime: 60s` on main orders query + `signal` on fetch
 - [x] Lazy-load `RTOAnalytics` / `RtoProtectionSuite` for Analytics view
 
 ### Backend
@@ -37,7 +60,8 @@
 
 ### Sign-off
 ```bash
-node scripts/archive/verify-checklists/verifyPhase6Checklist.js --clientId=YOUR_CLIENT
+node scripts/verifyPhase6Checklist.js --clientId=YOUR_CLIENT
+node scripts/verifyPhase6Checklist.js --clientId=YOUR_CLIENT --token=JWT   # optional HTTP
 ```
 
 ---
@@ -47,14 +71,18 @@ node scripts/archive/verify-checklists/verifyPhase6Checklist.js --clientId=YOUR_
 ### Frontend
 - [x] Parallel settings + lite flows when `clientId` known
 - [x] Template poll only when PENDING templates exist
-- [x] Heatmap: slower poll when socket connected (60s vs 15s)
-- [ ] Lazy `OnboardingWizard`
-- [ ] Observability: socket-only when connected (drop poll entirely)
+- [x] Lazy `OnboardingWizard` (`React.lazy` + `Suspense`)
+- [x] Heatmap: initial fetch; **no HTTP poll when socket connected**; 15s poll only when disconnected
 
 ### Backend
 - [x] N+1 fix: `unanswered-questions` + `intelligence/suggestions` (`flowIntelligenceAggregations.js`)
-- [ ] Deprecate `GET /api/flow/` full nodes list
-- [ ] `apiCache` + timers on summary/analytics/versions
+- [x] `GET /api/flow/` — lite metadata only + `X-Deprecated-Endpoint` (use `/flow/flows?lite=1` + `/graph`)
+- [x] `apiCache` + perf timers on `/:flowId/summary`, `/:flowId/versions`, `GET /flow-observability`
+
+### Sign-off
+```bash
+node scripts/verifyPhase7Checklist.js --clientId=YOUR_CLIENT [--token=JWT]
+```
 
 ---
 

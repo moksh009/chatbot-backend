@@ -23,7 +23,8 @@ node scripts/archive/verify-checklists/verifyPlanGChecklist.js --run-qa
 | `verifyAllPhases.js` | Runs every checklist in this folder |
 | `verifyPerfHotpaths.js` | HTTP timing on hot routes (needs API) |
 | `verifyPhase4Checklist.js` | Phase 4 — live chat + signoff HTTP |
-| `verifyPhase6Checklist.js` | Phase 6 — orders |
+| `verifyPhase6Checklist.js` | Phase 6 — orders (repo root `scripts/`) |
+| `verifyPhase7Checklist.js` | Phase 7 — flow builder (repo root `scripts/`) |
 | `verifyLiveChat4A.js` | Phase 4A bench |
 | `verifyIndexes.js` | Mongo index guard |
 | `runSystemAudit.js` | Repo inventory → `docs/SYSTEM_AUDIT_REPORT.md` |

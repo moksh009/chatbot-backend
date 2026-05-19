@@ -189,25 +189,35 @@ router.get('/flow-heatmap', protect, apiCache(60), async (req, res) => {
 // GET /api/analytics/flow-observability
 // @desc    Enterprise node-level observability (conversion, failures, latency, branch drop-offs)
 // @access  Private
-router.get('/flow-observability', protect, async (req, res) => {
+router.get('/flow-observability', protect, apiCache(30), async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const { dedupeAsync } = require('../utils/requestDedupe');
+  const timer = createTimer(
+    'GET /api/analytics/flow-observability',
+    tenantClientId(req) || ''
+  );
   try {
     const clientId = tenantClientId(req);
     if (!clientId) {
+      timer.finish('403');
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
     const { flowId, minutes = 60 } = req.query;
-    const FlowAnalytics = require('../models/FlowAnalytics');
     const windowMinutes = Math.max(5, Math.min(Number(minutes) || 60, 24 * 60));
-    const windowStart = new Date(Date.now() - windowMinutes * 60 * 1000);
+    const dedupeKey = `flow-observability:${clientId}:${flowId || 'all'}:${windowMinutes}`;
 
-    const matchQuery = {
-      clientId,
-      timestamp: { $gte: windowStart }
-    };
-    if (flowId) matchQuery.flowId = String(flowId);
+    const payload = await dedupeAsync(dedupeKey, async () => {
+      const FlowAnalytics = require('../models/FlowAnalytics');
+      const windowStart = new Date(Date.now() - windowMinutes * 60 * 1000);
 
-    const [nodeAgg, edgeAgg, recentFailures] = await Promise.all([
+      const matchQuery = {
+        clientId,
+        timestamp: { $gte: windowStart },
+      };
+      if (flowId) matchQuery.flowId = String(flowId);
+
+      const [nodeAgg, edgeAgg, recentFailures] = await Promise.all([
       FlowAnalytics.aggregate([
         { $match: matchQuery },
         {
@@ -249,14 +259,16 @@ router.get('/flow-observability', protect, async (req, res) => {
           }
         }
       ]),
-      FlowAnalytics.find({
-        ...matchQuery,
-        action: { $in: ['failure', 'timeout', 'dropoff'] }
-      })
-        .sort({ timestamp: -1 })
-        .limit(50)
-        .select('flowId nodeId nodeType action phone metadata timestamp')
-        .lean()
+      timer.time('FlowAnalytics.recentFailures', () =>
+        FlowAnalytics.find({
+          ...matchQuery,
+          action: { $in: ['failure', 'timeout', 'dropoff'] },
+        })
+          .sort({ timestamp: -1 })
+          .limit(50)
+          .select('flowId nodeId nodeType action phone metadata timestamp')
+          .lean()
+      ),
     ]);
 
     const nodeMap = {};
@@ -319,7 +331,7 @@ router.get('/flow-observability', protect, async (req, res) => {
       .sort((a, b) => (b.totalFailures + b.branchDropOff) - (a.totalFailures + a.branchDropOff))
       .slice(0, 12);
 
-    res.json({
+    return {
       success: true,
       windowMinutes,
       from: windowStart,
@@ -329,14 +341,19 @@ router.get('/flow-observability', protect, async (req, res) => {
         totalNodeEntries: nodeMetrics.reduce((acc, n) => acc + (n.entries || 0), 0),
         totalFailures: nodeMetrics.reduce((acc, n) => acc + (n.totalFailures || 0), 0),
         totalDropoffs: nodeMetrics.reduce((acc, n) => acc + (n.branchDropOff || 0), 0),
-        totalTransitions: edgeTransitions.reduce((acc, e) => acc + (e.count || 0), 0)
+        totalTransitions: edgeTransitions.reduce((acc, e) => acc + (e.count || 0), 0),
       },
       nodeMetrics,
       edgeTransitions,
       failingNodes,
-      recentFailures
+      recentFailures,
+    };
     });
+
+    timer.finish(`200 ok | nodes=${payload.nodeMetrics?.length ?? 0}`);
+    res.json(payload);
   } catch (error) {
+    timer.finish(`500 ${error.message}`);
     console.error('Flow Observability Error:', error);
     res.status(500).json({ success: false, message: 'Server Error' });
   }
