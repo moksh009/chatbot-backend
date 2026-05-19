@@ -34,10 +34,14 @@ async function incrementStat(clientId, increments) {
  */
 async function rebuildCache(clientId) {
   try {
+    const { timeParallel, createTimer } = require('./perfLogger');
+    const timer = createTimer('statCacheEngine.rebuildCache', clientId);
+    timer.checkpoint('START');
+
     const today = startOfDayIST();
     const query = { clientId };
 
-    const [
+    const {
       totalLeads,
       leadsToday,
       totalOrders,
@@ -54,63 +58,87 @@ async function rebuildCache(clientId) {
       cartStatsAgg,
       recoveryPurchasedAgg,
       adminFollowupsPurchased,
-      sentimentAgg
-    ] = await Promise.all([
-      AdLead.countDocuments(query),
-      AdLead.countDocuments({ ...query, createdAt: { $gte: today } }),
-      Order.countDocuments(query),
-      Order.countDocuments({ ...query, createdAt: { $gte: today } }),
-      Order.aggregate([
-        { $match: { ...query, createdAt: { $gte: today } } },
-        { $group: { _id: null, total: { $sum: '$amount' } } }
-      ]),
-      Appointment.countDocuments({ ...query, createdAt: { $gte: today } }),
-      Appointment.aggregate([
-        { $match: { ...query, createdAt: { $gte: today } } },
-        { $group: { _id: null, total: { $sum: '$revenue' } } }
-      ]),
-      AdLead.aggregate([
-        { $match: query },
-        { $group: { _id: null, total: { $sum: '$linkClicks' } } }
-      ]),
-      AdLead.aggregate([
-        { $match: query },
-        { $group: { _id: null, total: { $sum: '$addToCartCount' } } }
-      ]),
-      AdLead.aggregate([
-        { $match: query },
-        { $group: { _id: null, total: { $sum: '$checkoutInitiatedCount' } } }
-      ]),
-      AdLead.countDocuments({ ...query, cartStatus: 'abandoned' }),
-      AdLead.countDocuments({ ...query, cartStatus: 'recovered' }),
-      Conversation.countDocuments(query),
-      DailyStat.aggregate([
-        { $match: query },
-        { $group: { _id: null, totalSent: { $sum: '$abandonedCartSent' }, totalClicks: { $sum: '$abandonedCartClicks' } } }
-      ]),
-      AdLead.aggregate([
-        { $match: query },
-        {
-          $project: {
-            count: {
-              $size: {
-                $filter: {
-                  input: { $ifNull: ['$activityLog', []] },
-                  as: 'log',
-                  cond: { $eq: ['$$log.action', 'purchase_completed_after_recovery'] }
-                }
-              }
-            }
-          }
-        },
-        { $group: { _id: null, total: { $sum: '$count' } } }
-      ]),
-      AdLead.countDocuments({ ...query, adminFollowUpTriggered: true, isOrderPlaced: true }),
-      Conversation.aggregate([
-        { $match: query },
-        { $group: { _id: '$sentiment', count: { $sum: 1 } } }
-      ])
-    ]);
+      sentimentAgg,
+    } = await timeParallel(
+      timer,
+      {
+        totalLeads: () => AdLead.countDocuments(query),
+        leadsToday: () => AdLead.countDocuments({ ...query, createdAt: { $gte: today } }),
+        totalOrders: () => Order.countDocuments(query),
+        ordersToday: () => Order.countDocuments({ ...query, createdAt: { $gte: today } }),
+        orderRevenueTodayAgg: () =>
+          Order.aggregate([
+            { $match: { ...query, createdAt: { $gte: today } } },
+            { $group: { _id: null, total: { $sum: '$amount' } } },
+          ]),
+        appointmentsToday: () =>
+          Appointment.countDocuments({ ...query, createdAt: { $gte: today } }),
+        appointmentRevenueTodayAgg: () =>
+          Appointment.aggregate([
+            { $match: { ...query, createdAt: { $gte: today } } },
+            { $group: { _id: null, total: { $sum: '$revenue' } } },
+          ]),
+        linkClicksAgg: () =>
+          AdLead.aggregate([
+            { $match: query },
+            { $group: { _id: null, total: { $sum: '$linkClicks' } } },
+          ]),
+        cartAddsAgg: () =>
+          AdLead.aggregate([
+            { $match: query },
+            { $group: { _id: null, total: { $sum: '$addToCartCount' } } },
+          ]),
+        checkoutsAgg: () =>
+          AdLead.aggregate([
+            { $match: query },
+            { $group: { _id: null, total: { $sum: '$checkoutInitiatedCount' } } },
+          ]),
+        abandonedCarts: () => AdLead.countDocuments({ ...query, cartStatus: 'abandoned' }),
+        recoveredCarts: () => AdLead.countDocuments({ ...query, cartStatus: 'recovered' }),
+        totalConversations: () => Conversation.countDocuments(query),
+        cartStatsAgg: () =>
+          DailyStat.aggregate([
+            { $match: query },
+            {
+              $group: {
+                _id: null,
+                totalSent: { $sum: '$abandonedCartSent' },
+                totalClicks: { $sum: '$abandonedCartClicks' },
+              },
+            },
+          ]),
+        recoveryPurchasedAgg: () =>
+          AdLead.aggregate([
+            { $match: query },
+            {
+              $project: {
+                count: {
+                  $size: {
+                    $filter: {
+                      input: { $ifNull: ['$activityLog', []] },
+                      as: 'log',
+                      cond: { $eq: ['$$log.action', 'purchase_completed_after_recovery'] },
+                    },
+                  },
+                },
+              },
+            },
+            { $group: { _id: null, total: { $sum: '$count' } } },
+          ]),
+        adminFollowupsPurchased: () =>
+          AdLead.countDocuments({
+            ...query,
+            adminFollowUpTriggered: true,
+            isOrderPlaced: true,
+          }),
+        sentimentAgg: () =>
+          Conversation.aggregate([
+            { $match: query },
+            { $group: { _id: '$sentiment', count: { $sum: 1 } } },
+          ]),
+      },
+      'rebuild_parallel'
+    );
 
     // Build sentiment counts
     const sentimentCounts = {
@@ -149,12 +177,11 @@ async function rebuildCache(clientId) {
       todayResetAt: today
     };
 
-    await StatCache.findOneAndUpdate(
-      { clientId },
-      { $set: cacheData },
-      { upsert: true, new: true }
+    await timer.time('StatCache.findOneAndUpdate', () =>
+      StatCache.findOneAndUpdate({ clientId }, { $set: cacheData }, { upsert: true, new: true })
     );
 
+    timer.finish('rebuild complete');
     log.info(`[rebuildCache] Rebuilt StatCache for ${clientId}`);
     return cacheData;
   } catch (err) {
@@ -197,11 +224,19 @@ async function dailyReset(clientId) {
  * @returns {object} stats
  */
 async function getStats(clientId) {
-  let stats = await StatCache.findOne({ clientId }).lean();
+  const { createTimer } = require('./perfLogger');
+  const timer = createTimer('statCacheEngine.getStats', clientId);
+  let stats = await timer.time('StatCache.findOne', () => StatCache.findOne({ clientId }).lean());
+
   if (!stats) {
+    timer.log('cache=MISS — rebuilding');
     log.info(`[getStats] Cache miss for ${clientId}, rebuilding...`);
-    stats = await rebuildCache(clientId);
+    stats = await timer.time('rebuildCache', () => rebuildCache(clientId));
+    timer.finish(stats ? 'rebuilt' : 'rebuild_failed');
+    return stats;
   }
+
+  timer.finish('cache=HIT');
   return stats;
 }
 

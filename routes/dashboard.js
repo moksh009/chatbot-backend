@@ -14,6 +14,9 @@ const { apiCache } = require('../middleware/apiCache');
 // @access  Private
 router.post('/batch-data', protect, apiCache(60), dashboardController.getBatchData);
 
+// GET /api/dashboard/summary — consolidated ecommerce dashboard payload (Phase 2)
+router.get('/summary', protect, apiCache(60), dashboardController.getSummary);
+
 // Layout management
 router.get('/layout', protect, apiCache(30), dashboardController.getLayout);
 router.post('/layout', protect, dashboardController.saveLayout);

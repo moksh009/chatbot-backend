@@ -1,4 +1,5 @@
 const Client = require('../models/Client');
+const { getCachedClient, getCachedClientForWhatsAppInbound } = require('../utils/clientCache');
 const { decrypt } = require('../utils/encryption');
 const { resolveClientGeminiKey } = require('../utils/clientGeminiKey');
 
@@ -24,16 +25,13 @@ const loadClientConfig = async (req, res, next) => {
       return res.status(400).json({ error: 'Client ID is required' });
     }
 
-    // Exclude multi-MB flow blobs from webhook path — graphs load from WhatsAppFlow on demand.
-    const client = await Client.findOne({ clientId })
-      .select(
-        '-visualFlows -flowNodes -flowEdges'
-      )
-      .lean();
+    const isWebhookPath = String(req.originalUrl || '').includes('/webhook/');
+    // Webhooks: skip knowledgeBase blobs; dashboard routes keep default select.
+    const client = isWebhookPath
+      ? await getCachedClientForWhatsAppInbound(clientId)
+      : await getCachedClient(clientId);
 
     if (!client) {
-      const isWebhookPath =
-        String(req.originalUrl || '').includes('/webhook/');
       // Quietly acknowledge stale legacy webhook hits from deprecated client IDs.
       // This prevents noisy logs/retries while we are fully e-commerce-only.
       if (isWebhookPath) {

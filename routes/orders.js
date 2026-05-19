@@ -6,6 +6,7 @@ const Client = require('../models/Client');
 const { aggregateRtoProtectionStats } = require('../utils/rtoProtectionService');
 const { protect } = require('../middleware/auth');
 const { logAction } = require('../middleware/audit');
+const { apiCache } = require('../middleware/apiCache');
 
 const logPersonalDataAccess = logAction('PERSONAL_DATA_ACCESS');
 
@@ -44,31 +45,47 @@ router.get('/', protect, logPersonalDataAccess, async (req, res) => {
 });
 
 // GET /api/orders/products?clientId=X — distinct products from order line items
-router.get('/products', protect, logPersonalDataAccess, async (req, res) => {
+router.get('/products', protect, logPersonalDataAccess, apiCache(120), async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const { dedupeAsync } = require('../utils/requestDedupe');
+  const timer = createTimer('GET /api/orders/products', tenantClientId(req) || '');
   try {
     const clientId = tenantClientId(req);
     if (!clientId) {
+      timer.finish('403');
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     const { getAllCatalogProductsForFilter } = require('../utils/ordersFilterAggregations');
-    const products = await getAllCatalogProductsForFilter(clientId);
+    const products = await timer.time('getAllCatalogProductsForFilter', () =>
+      dedupeAsync(`orders:products:${clientId}`, () => getAllCatalogProductsForFilter(clientId))
+    );
     res.json({ success: true, products });
+    timer.finish(`200 ok | count=${products?.length ?? 0}`);
   } catch (error) {
+    timer.finish(`500 error=${error.message}`);
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
 // GET /api/orders/states?clientId=X — states extracted from shipping addresses
-router.get('/states', protect, logPersonalDataAccess, async (req, res) => {
+router.get('/states', protect, logPersonalDataAccess, apiCache(120), async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const { dedupeAsync } = require('../utils/requestDedupe');
+  const timer = createTimer('GET /api/orders/states', tenantClientId(req) || '');
   try {
     const clientId = tenantClientId(req);
     if (!clientId) {
+      timer.finish('403');
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     const { getDistinctOrderStates } = require('../utils/ordersFilterAggregations');
-    const states = await getDistinctOrderStates(clientId);
+    const states = await timer.time('getDistinctOrderStates', () =>
+      dedupeAsync(`orders:states:${clientId}`, () => getDistinctOrderStates(clientId))
+    );
     res.json({ success: true, states });
+    timer.finish(`200 ok | count=${states?.length ?? 0}`);
   } catch (error) {
+    timer.finish(`500 error=${error.message}`);
     res.status(500).json({ success: false, message: error.message });
   }
 });

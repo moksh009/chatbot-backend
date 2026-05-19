@@ -206,84 +206,39 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
 
 // ✅ Phase 2: The Global Bootstrap Endpoint
 // Collapses 5 separate network constraints into a single parallel payload
+const BOOTSTRAP_CLIENT_SELECT =
+  'clientId businessName name ai.persona adminPhone brand billing isPaidAccount isLifetimeAdmin trialActive trialEndsAt suspendedAt shopDomain phoneNumberId wabaId whatsappToken shopifyAccessToken shopifyConnectionStatus shopifyInstallLink instagramConnected instagramPageId instagramUsername instagramProfilePic instagramAccessToken instagramTokenExpiry metaAdsConnected commerce social whatsapp config metaAdsToken metaAdAccountId emailUser emailAppPassword metaAppId geminiApiKey openaiApiKey activePaymentGateway razorpayKeyId razorpaySecret cashfreeAppId cashfreeSecretKey faq googleConnected gmailAddress emailMethod onboardingCompleted onboardingSkipped onboardingSkippedAt onboardingStep onboardingData wizardCompleted plan tier';
+
 router.get('/bootstrap', protect, async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const { getBootstrapPayload } = require('../utils/bootstrapCache');
+  const { getCachedClient } = require('../utils/clientCache');
+  const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
+  const timer = createTimer('GET /auth/bootstrap', req.user?.clientId || '');
   try {
     const clientId = req.user.clientId;
     if (!clientId) {
-       return res.status(400).json({ message: 'User has no clientId. Invalid state.' });
+      timer.finish('400');
+      return res.status(400).json({ message: 'User has no clientId. Invalid state.' });
     }
 
-    let user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ message: 'User not found' });
-    await ensureClientForUser(user);
-
-    const { startOfDayIST } = require('../utils/queryHelpers');
-    const dayStart = startOfDayIST();
-    
-    // Import required models
-    const Message = require('../models/Message');
-    const AdLead = require('../models/AdLead');
-    const Order = require('../models/Order');
-    const Conversation = require('../models/Conversation');
-
-    // Run all database fetches in parallel
-    const [client, unreadCount, todayStats, recentConversations] = await Promise.all([
-      // 1. Client settings + User
-      Client.findOne({ clientId })
-        .select('clientId businessName name ai.persona adminPhone brand billing isPaidAccount isLifetimeAdmin trialActive trialEndsAt suspendedAt shopDomain phoneNumberId wabaId whatsappToken shopifyAccessToken shopifyConnectionStatus shopifyInstallLink instagramConnected instagramPageId instagramUsername instagramProfilePic instagramAccessToken instagramTokenExpiry metaAdsConnected commerce social whatsapp config visualFlows metaAdsToken metaAdAccountId emailUser emailAppPassword metaAppId geminiApiKey openaiApiKey activePaymentGateway razorpayKeyId razorpaySecret cashfreeAppId cashfreeSecretKey faq googleConnected gmailAddress emailMethod onboardingCompleted onboardingSkipped onboardingSkippedAt onboardingStep onboardingData wizardCompleted plan tier')
-        .lean()
-        .then(c => {
-          if (!c) return null;
-          try {
-            return {
-              ...c,
-              visualFlows: (c.visualFlows || []).map(f => ({
-                id: f.id, name: f.name, platform: f.platform, isActive: f.isActive, nodeCount: f.nodeCount
-              }))
-            };
-          } catch (transformErr) {
-            console.error('[Bootstrap] Client transform error:', transformErr.message);
-            return c; // Return raw client data if transform fails
-          }
-        }),
-      
-      // 2. Unread Count across all chats
-      Conversation.countDocuments({ clientId, unreadCount: { $gt: 0 } }),
-      
-      // 3. Today's Snapshot Stats (Messages, Leads, Rev, Active Bots)
-      (async () => {
-        try {
-          const [msg, leads, active] = await Promise.all([
-            Message.countDocuments({ clientId, timestamp: { $gte: dayStart } }),
-            AdLead.countDocuments({ clientId, createdAt: { $gte: dayStart } }),
-            Conversation.countDocuments({ clientId, status: 'BOT_ACTIVE' })
-          ]);
-          
-          const revResult = await Order.aggregate([
-            { $match: { clientId, createdAt: { $gte: dayStart } } },
-            { $group: { _id: null, total: { $sum: "$amount" } } }
-          ]);
-          const rev = revResult[0]?.total || 0;
-          return { msg, leads, rev, active };
-        } catch { return { msg: 0, leads: 0, rev: 0, active: 0 }; }
-      })(),
-      
-      // 4. Quick inbox summary
-      Conversation.find({ clientId })
-        .sort({ lastMessageAt: -1 })
-        .limit(25)
-        .select('phone customerName lastMessage lastMessageAt status unreadCount botPaused channel requiresAttention')
-        .lean()
-    ]);
-
-    // Admin/Delitech role syncing logic from /me
-    if (user.email === 'admin@topedgeai.com' && (!user.isLifetimeAdmin || user.role !== 'SUPER_ADMIN')) {
-      user.role = 'SUPER_ADMIN'; user.isLifetimeAdmin = true; await user.save();
+    const payload = await getBootstrapPayload(String(req.user.id), { refresh }, async () => {
+    timer.checkpoint('bootstrap_cache_miss');
+    let user = await User.findById(req.user.id).select(
+      'name email role clientId isLifetimeAdmin hasCompletedTour'
+    );
+    if (!user) {
+      const err = new Error('User not found');
+      err.statusCode = 404;
+      throw err;
     }
-    if (user.email === 'delitech2708@gmail.com') {
-      if (user.role === 'SUPER_ADMIN') user.role = 'CLIENT_ADMIN';
-      user.isLifetimeAdmin = true; await user.save();
+
+    let client = await getCachedClient(clientId, BOOTSTRAP_CLIENT_SELECT);
+    if (!client) {
+      await ensureClientForUser(user);
+      client = await getCachedClient(clientId, BOOTSTRAP_CLIENT_SELECT);
     }
+    timer.checkpoint('client_loaded');
 
     // Phase 32: Onboarding gate — SUPER_ADMIN + lifetime admins bypass.
     // For all other users, `onboardingCompleted === undefined` on an existing
@@ -293,7 +248,7 @@ router.get('/bootstrap', protect, async (req, res) => {
     const onboardingCompleted = computeClientOnboardingCompleted(isAdminBypass, client);
     const access = await workspaceAccessForResponse(user, client);
 
-    res.json({
+    return {
       user: {
         id: user._id,
         name: user.name,
@@ -307,7 +262,6 @@ router.get('/bootstrap', protect, async (req, res) => {
         trialWindowActive: access.trialWindowActive,
         hasPaidAccess: access.hasPaidAccess,
         dashboardLocked: access.dashboardLocked,
-        // Phase 32: surfaced at top-level user for quick guard checks
         onboardingCompleted,
         onboardingStep: client?.onboardingStep || 0,
         onboardingSkipped: !!(client && client.onboardingSkipped),
@@ -315,13 +269,20 @@ router.get('/bootstrap', protect, async (req, res) => {
       },
       workspaceAccess: access,
       client: client || {},
-      inbox: { unreadCount, recentConversations },
-      stats: todayStats
+      // Inbox + today stats moved to /api/dashboard/summary (bootstrap was 15–25s with counts)
+      inbox: { unreadCount: 0, recentConversations: [] },
+      stats: { msg: 0, leads: 0, rev: 0, active: 0 }
+    };
     });
+
+    timer.finish('200 ok');
+    res.json(payload);
 
   } catch (error) {
     console.error('[Bootstrap Error]:', error);
-    res.status(500).json({ message: 'Server Error during bootstrap' });
+    const code = error.statusCode || 500;
+    timer.finish(`${code} ${error.message}`);
+    res.status(code).json({ message: error.message || 'Server Error during bootstrap' });
   }
 });
 

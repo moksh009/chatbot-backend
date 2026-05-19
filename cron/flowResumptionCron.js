@@ -2,21 +2,23 @@
 
 const cron = require('node-cron');
 const Conversation = require('../models/Conversation');
-const Client = require('../models/Client');
 const AdLead = require('../models/AdLead');
 const { executeNode, loadPublishedFlowByRef } = require('../utils/dualBrainEngine');
+const { getCachedClient, DEFAULT_CLIENT_SELECT } = require('../utils/clientCache');
 const log = require('../utils/logger')('FlowResumption');
+const { wrapCron } = require('../utils/perfLogger');
 
 module.exports = function scheduleFlowResumption() {
-  // Run every minute
-  cron.schedule('* * * * *', async () => {
+  // Default */2 reduces Mongo load; set FLOW_RESUMPTION_EVERY_MINUTE=true for * * * * *
+  const expr =
+    process.env.FLOW_RESUMPTION_EVERY_MINUTE === 'true' ? '* * * * *' : '*/2 * * * *';
+  cron.schedule(expr, wrapCron('FlowResumption', async () => {
     const now = new Date();
-    
+
     try {
-      // Find all conversations where flow is paused/delayed and delay has expired
       const pausedConvos = await Conversation.find({
         flowPausedUntil: { $lte: now },
-        status: { $in: ['FLOW_PAUSED', 'DELAYED', 'BOT_ACTIVE'] }
+        status: { $in: ['FLOW_PAUSED', 'DELAYED', 'BOT_ACTIVE'] },
       })
         .select('_id clientId phone activeFlowId pausedAtNodeId flowPausedUntil status')
         .limit(50)
@@ -26,23 +28,58 @@ module.exports = function scheduleFlowResumption() {
 
       log.info(`⏰ Resuming ${pausedConvos.length} paused flow(s)...`);
 
-      for (const convo of pausedConvos) {
-        try {
-          const client = await Client.findOne({ clientId: convo.clientId })
-            .select('-visualFlows')
-            .lean();
-          if (!client) continue;
+      const uniqueClientIds = [...new Set(pausedConvos.map((c) => c.clientId).filter(Boolean))];
+      const clientMap = new Map();
+      await Promise.all(
+        uniqueClientIds.map(async (cid) => {
+          const doc = await getCachedClient(cid, DEFAULT_CLIENT_SELECT);
+          if (doc) clientMap.set(cid, doc);
+        })
+      );
 
-          const lead = await AdLead.findOne({ phoneNumber: convo.phone, clientId: convo.clientId })
+      const phonesByClient = {};
+      for (const convo of pausedConvos) {
+        if (!convo.clientId || !convo.phone) continue;
+        if (!phonesByClient[convo.clientId]) phonesByClient[convo.clientId] = new Set();
+        phonesByClient[convo.clientId].add(convo.phone);
+      }
+
+      const leadMap = new Map();
+      await Promise.all(
+        Object.entries(phonesByClient).map(async ([cid, phoneSet]) => {
+          const phones = [...phoneSet];
+          const leads = await AdLead.find({
+            clientId: cid,
+            phoneNumber: { $in: phones },
+          })
             .select('phoneNumber clientId name email tags customFields')
             .lean();
+          for (const lead of leads) {
+            leadMap.set(`${cid}:${lead.phoneNumber}`, lead);
+          }
+        })
+      );
+
+      for (const convo of pausedConvos) {
+        try {
+          const client = clientMap.get(convo.clientId);
+          if (!client) continue;
+
+          const lead =
+            leadMap.get(`${convo.clientId}:${convo.phone}`) ||
+            (await AdLead.findOne({
+              phoneNumber: convo.phone,
+              clientId: convo.clientId,
+            })
+              .select('phoneNumber clientId name email tags customFields')
+              .lean());
+
           const nodeId = convo.pausedAtNodeId;
-          
+
           if (!nodeId) {
-            // If no stored node ID, we can't resume safely. Clear delay anyway.
             await Conversation.findByIdAndUpdate(convo._id, {
               $unset: { flowPausedUntil: 1, pausedAtNodeId: 1 },
-              $set: { status: 'BOT_ACTIVE' }
+              $set: { status: 'BOT_ACTIVE' },
             });
             continue;
           }
@@ -56,30 +93,45 @@ module.exports = function scheduleFlowResumption() {
               flowEdges = flow.edges || [];
             }
           }
+
           if (!flowNodes.length) {
-            const legacy = await Client.findOne({ clientId: convo.clientId })
-              .select('flowNodes flowEdges')
-              .lean();
-            flowNodes = legacy?.flowNodes || [];
-            flowEdges = legacy?.flowEdges || [];
+            log.warn(`⚠️ No published flow for convo ${convo.phone} (flow ${convo.activeFlowId})`);
+            await Conversation.findByIdAndUpdate(convo._id, {
+              $unset: { flowPausedUntil: 1, pausedAtNodeId: 1 },
+              $set: { status: 'BOT_ACTIVE' },
+            });
+            continue;
           }
-          
-          // Clear delay before resuming to prevent re-triggering by cron
+
           await Conversation.findByIdAndUpdate(convo._id, {
             $unset: { flowPausedUntil: 1, pausedAtNodeId: 1 },
-            $set: { status: 'BOT_ACTIVE' }
+            $set: { status: 'BOT_ACTIVE' },
           });
 
-          // Find the NEXT node to execute (from the Delay/Wait exit)
-          const nextEdge = flowEdges.find(e => e.source === nodeId && (!e.sourceHandle || e.sourceHandle === 'a' || e.sourceHandle === 'bottom' || e.sourceHandle === 'out'));
-          
+          const nextEdge = flowEdges.find(
+            (e) =>
+              e.source === nodeId &&
+              (!e.sourceHandle ||
+                e.sourceHandle === 'a' ||
+                e.sourceHandle === 'bottom' ||
+                e.sourceHandle === 'out')
+          );
+
           if (nextEdge) {
             log.info(`🚀 Resuming ${convo.phone} at node ${nextEdge.target}`);
-            await executeNode(nextEdge.target, flowNodes, flowEdges, client, convo, lead, convo.phone, global.io);
+            await executeNode(
+              nextEdge.target,
+              flowNodes,
+              flowEdges,
+              client,
+              convo,
+              lead,
+              convo.phone,
+              global.io
+            );
           } else {
-             log.warn(`⚠️ No outgoing edge found for delay node ${nodeId} in convo ${convo.phone}`);
+            log.warn(`⚠️ No outgoing edge found for delay node ${nodeId} in convo ${convo.phone}`);
           }
-
         } catch (err) {
           log.error(`❌ Error resuming convo ${convo._id}:`, err.message);
         }
@@ -87,5 +139,5 @@ module.exports = function scheduleFlowResumption() {
     } catch (err) {
       log.error(`❌ Flow Resumption Cron Error:`, err.message);
     }
-  });
+  }));
 };

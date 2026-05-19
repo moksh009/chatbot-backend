@@ -24,10 +24,16 @@ const protect = async (req, res, next) => {
       }
 
       // Objective 1: Attach God Mode status
-      // PERF: Only select the single field we need — Client docs are huge (syncedMetaTemplates, nicheData, etc.)
-      const Client = require('../models/Client');
-      const client = await Client.findOne({ clientId: req.user.clientId }).select('isLifetimeAdmin').lean();
+      const { getCachedClient } = require('../utils/clientCache');
+      const client = await getCachedClient(req.user.clientId, 'isLifetimeAdmin');
       req.user.isLifetimeAdmin = req.user.role === 'SUPER_ADMIN' || (client && client.isLifetimeAdmin);
+
+      if (req.user.clientId) {
+        const { getCachedClientForWhatsAppSend } = require('../utils/clientCache');
+        setImmediate(() => {
+          getCachedClientForWhatsAppSend(req.user.clientId).catch(() => {});
+        });
+      }
 
       next();
     } catch (error) {

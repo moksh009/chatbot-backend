@@ -56,21 +56,48 @@ async function getDistinctOrderProducts(clientId) {
 }
 
 async function getDistinctOrderStates(clientId) {
-  const orders = await Order.find({ clientId })
-    .select('shippingAddress state address city')
-    .lean();
+  // Phase 6: one aggregation pass + in-memory normalize (not full Order.find per doc)
+  const buckets = await Order.aggregate([
+    { $match: { clientId } },
+    {
+      $project: {
+        shippingAddress: 1,
+        state: 1,
+        address: 1,
+        city: 1,
+      },
+    },
+    {
+      $group: {
+        _id: {
+          province: { $ifNull: ['$shippingAddress.province', ''] },
+          provinceCode: { $ifNull: ['$shippingAddress.province_code', ''] },
+          shipState: { $ifNull: ['$shippingAddress.state', ''] },
+          topState: { $ifNull: ['$state', ''] },
+          city: { $ifNull: ['$shippingAddress.city', '$city', ''] },
+          address1: { $ifNull: ['$shippingAddress.address1', '$address', ''] },
+        },
+        orderCount: { $sum: 1 },
+      },
+    },
+  ]);
 
   const stateMap = {};
-  for (const order of orders) {
+  for (const row of buckets) {
+    const id = row._id || {};
     const state =
-      extractStateFromAddress(order.shippingAddress) ||
-      extractStateFromAddress(order.state) ||
-      extractStateFromAddress(
-        [order.address, order.city, order.state].filter(Boolean).join(', ')
-      );
+      extractStateFromAddress({
+        province: id.province,
+        province_code: id.provinceCode,
+        state: id.shipState || id.topState,
+        city: id.city,
+        address1: id.address1,
+      }) ||
+      extractStateFromAddress(id.topState) ||
+      extractStateFromAddress([id.address1, id.city, id.topState].filter(Boolean).join(', '));
     if (!state) continue;
     if (!stateMap[state]) stateMap[state] = { state, orderCount: 0 };
-    stateMap[state].orderCount += 1;
+    stateMap[state].orderCount += row.orderCount || 0;
   }
 
   return Object.values(stateMap).sort((a, b) => b.orderCount - a.orderCount);

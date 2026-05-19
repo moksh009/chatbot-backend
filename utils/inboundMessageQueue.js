@@ -3,7 +3,8 @@ const log = require('./logger')('InboundQueue');
 /** @type {Map<string, { timer: NodeJS.Timeout | null, latest: object | null, client: object, run: Function }>} */
 const pendingBySession = new Map();
 
-const DEBOUNCE_MS = 500;
+const DEBOUNCE_MS = parseInt(process.env.INBOUND_QUEUE_DEBOUNCE_MS || '300', 10) || 300;
+const FIRST_MESSAGE_FLUSH_MS = parseInt(process.env.INBOUND_QUEUE_FIRST_FLUSH_MS || '0', 10) || 0;
 const MAX_RETRIES = 1;
 
 /**
@@ -20,7 +21,7 @@ function enqueueInboundProcessing({ clientId, phone, parsedMessage, clientConfig
     existing.client = clientConfig;
     existing.run = processor;
     existing.retries = existing.retries || 0;
-    scheduleFlush(key, existing);
+    scheduleFlush(key, existing, DEBOUNCE_MS);
     return;
   }
 
@@ -32,10 +33,10 @@ function enqueueInboundProcessing({ clientId, phone, parsedMessage, clientConfig
     retries: 0,
   };
   pendingBySession.set(key, entry);
-  scheduleFlush(key, entry);
+  scheduleFlush(key, entry, FIRST_MESSAGE_FLUSH_MS);
 }
 
-function scheduleFlush(key, entry) {
+function scheduleFlush(key, entry, delayMs = DEBOUNCE_MS) {
   entry.timer = setTimeout(async () => {
     entry.timer = null;
     const msg = entry.latest;
@@ -53,7 +54,7 @@ function scheduleFlush(key, entry) {
         entry.client = client;
         entry.run = run;
         pendingBySession.set(key, entry);
-        scheduleFlush(key, entry);
+        scheduleFlush(key, entry, DEBOUNCE_MS);
       }
     } catch (err) {
       log.error(`[InboundQueue] Processor failed for ${key}:`, err.message);
@@ -63,10 +64,10 @@ function scheduleFlush(key, entry) {
         entry.client = client;
         entry.run = run;
         pendingBySession.set(key, entry);
-        scheduleFlush(key, entry);
+        scheduleFlush(key, entry, DEBOUNCE_MS);
       }
     }
-  }, DEBOUNCE_MS);
+  }, delayMs);
 }
 
 module.exports = { enqueueInboundProcessing };

@@ -9,6 +9,7 @@ const mongoose = require("mongoose");
 const criticalIndexes = [
   { collection: "conversations", keys: { clientId: 1, phone: 1 } },
   { collection: "conversations", keys: { clientId: 1, status: 1, lastMessageAt: -1 } },
+  { collection: "conversations", keys: { clientId: 1, lastMessageAt: -1 } },
   { collection: "conversations", keys: { clientId: 1, flowPausedUntil: 1, status: 1 } },
   { collection: "conversations", keys: { activeFlowId: 1 } },
   { collection: "adleads", keys: { phoneNumber: 1, clientId: 1 }, unique: true },
@@ -23,6 +24,16 @@ const criticalIndexes = [
   { collection: "keywordtriggers", keys: { clientId: 1, isActive: 1 } },
   { collection: "inbounddeduplications", keys: { messageId: 1, clientId: 1 }, unique: true },
   { collection: "inbounddeduplications", keys: { processedAt: 1 }, ttl: 7200 },
+  // Dashboard / analytics hot paths (Phase 1)
+  { collection: "clients", keys: { clientId: 1 }, unique: true },
+  { collection: "pixelevents", keys: { clientId: 1, timestamp: -1 } },
+  { collection: "pixelevents", keys: { clientId: 1, eventName: 1, timestamp: -1 } },
+  { collection: "linkclickevents", keys: { clientId: 1, timestamp: -1 } },
+  { collection: "conversationassignments", keys: { clientId: 1, assignedAt: -1 } },
+  { collection: "messages", keys: { clientId: 1, timestamp: -1, direction: 1 } },
+  { collection: "orders", keys: { clientId: 1, createdAt: -1 } },
+  { collection: "dailystats", keys: { clientId: 1, date: 1 } },
+  { collection: "users", keys: { clientId: 1 } },
 ];
 
 async function run() {

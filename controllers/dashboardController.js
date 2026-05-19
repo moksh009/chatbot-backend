@@ -1,4 +1,16 @@
 const Client = require('../models/Client');
+const { getCachedClient } = require('../utils/clientCache');
+const {
+  getRealtimeStats,
+  getTopProducts,
+  getTimelineStats,
+  getOperatorsStats,
+  MAX_LIVE_ANALYTICS_DAYS,
+} = require('../utils/analyticsHelper');
+const { getConversationsList } = require('../routes/conversations');
+const { tenantClientId } = require('../utils/queryHelpers');
+const { createTimer } = require('../utils/perfLogger');
+const { dedupeAsync } = require('../utils/requestDedupe');
 const DashboardLayout = require('../models/DashboardLayout');
 const Conversation = require('../models/Conversation');
 const Order = require('../models/Order');
@@ -9,6 +21,89 @@ const PurchaseOrder = require('../models/PurchaseOrder');
 const logger = require('../utils/logger')('DashboardController');
 const Shopify = require('../utils/shopifyGraphQL');
 
+
+/**
+ * Phase 2: Single consolidated dashboard payload (replaces 4–5 parallel frontend calls).
+ */
+exports.getSummary = async (req, res) => {
+  const timer = createTimer('GET /api/dashboard/summary', req.user?.clientId || '');
+  timer.checkpoint('START');
+
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      timer.finish('403 unauthorized');
+      return res.status(403).json({ success: false, error: 'Unauthorized' });
+    }
+
+    const requestedDays = Math.min(
+      parseInt(req.query.days, 10) || 30,
+      MAX_LIVE_ANALYTICS_DAYS
+    );
+
+    const client = await timer.time('getCachedClient', () =>
+      getCachedClient(clientId, 'businessName name googleCalendarId config.calendars')
+    );
+    timer.checkpoint('client loaded');
+
+    if (!client) {
+      timer.finish('404');
+      return res.status(404).json({ success: false, error: 'Client not found' });
+    }
+
+    const includeOperators = ['CLIENT_ADMIN', 'SUPER_ADMIN'].includes(req.user.role);
+    const dedupeKey = `dashboard-summary:${clientId}:${requestedDays}:${includeOperators}`;
+
+    const payload = await dedupeAsync(dedupeKey, async () => {
+    const summaryTasks = [
+      { key: 'realtime', run: () => getRealtimeStats(clientId, client, requestedDays, { timer }) },
+      { key: 'topProducts', run: () => getTopProducts(clientId, { timer }) },
+      { key: 'timeline', run: () => getTimelineStats(clientId, client, { days: requestedDays }, { timer }) },
+      {
+        key: 'conversations',
+        run: () => getConversationsList(req.user, { ...req.query, clientId }, { timer }),
+      },
+    ];
+    if (includeOperators) {
+      summaryTasks.push({
+        key: 'operators',
+        run: () => getOperatorsStats(clientId, requestedDays, { timer }),
+      });
+    }
+
+    const settled = await Promise.allSettled(summaryTasks.map((t) => t.run()));
+    timer.checkpoint('summary_parallel_complete');
+
+    const byKey = {};
+    summaryTasks.forEach((task, i) => {
+      const result = settled[i];
+      if (result.status === 'rejected') {
+        logger.warn(`[Dashboard Summary] ${task.key} failed:`, result.reason?.message || result.reason);
+        byKey[task.key] = null;
+      } else {
+        byKey[task.key] = result.value;
+      }
+    });
+
+    return {
+      success: true,
+      realtime: byKey.realtime,
+      timeline: byKey.timeline,
+      conversations: byKey.conversations,
+      topProducts: byKey.topProducts,
+      operators: byKey.operators?.operators || [],
+      meta: { days: requestedDays, generatedAt: new Date().toISOString() },
+    };
+    });
+
+    timer.finish('200 ok');
+    res.json(payload);
+  } catch (err) {
+    timer.finish(`error: ${err.message}`);
+    logger.error('[Dashboard Summary] fatal', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
 
 /**
  * Handle batch data fetching for multiple widgets in one request

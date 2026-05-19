@@ -5,6 +5,7 @@ const { protect } = require('../middleware/auth');
 const Client = require('../models/Client');
 const InboundDeduplication = require('../models/InboundDeduplication');
 const { tenantClientId } = require('../utils/queryHelpers');
+const { apiCache } = require('../middleware/apiCache');
 
 // Legacy flow webhook handlers (per-client WhatsApp Flow callbacks)
 const choiceSalonController = require('./clientcodes/choice_salon_holi');
@@ -47,7 +48,9 @@ router.put('/integrations', protect, async (req, res) => {
     }
 
     await Client.findOneAndUpdate({ clientId }, { $set: updates }, { new: true });
-    
+    const { clearClientCache } = require('../middleware/apiCache');
+    await clearClientCache(clientId);
+
     res.status(200).json({ success: true, message: 'Integrations updated successfully.', updates });
   } catch (err) {
     console.error(`[Integrations] Error updating integrations for ${req.params.clientId}:`, err);
@@ -172,6 +175,10 @@ router.patch('/config', protect, async (req, res) => {
     }
 
     const updated = await Client.findOneAndUpdate({ clientId }, { $set: updates }, { new: true });
+    const { clearClientCache } = require('../middleware/apiCache');
+    const { invalidateBootstrapCache } = require('../utils/bootstrapCache');
+    await clearClientCache(clientId);
+    invalidateBootstrapCache(req.user?.id);
     res.json({ success: true, client: updated });
   } catch (err) {
     console.error(`[Config Patch] Error for ${req.params.clientId}:`, err);
@@ -203,6 +210,8 @@ router.post('/commerce-automations', protect, async (req, res) => {
     if (!isAuthorized) return res.status(403).json({ error: 'Unauthorized' });
 
     const automation = await commerceAutomationService.upsertAutomation(clientId, req.body || {});
+    const { clearClientCache } = require('../middleware/apiCache');
+    await clearClientCache(clientId);
     return res.json({ success: true, automation });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -221,6 +230,8 @@ router.put('/commerce-automations/:automationId', protect, async (req, res) => {
       ...(req.body || {}),
       id: automationId,
     });
+    const { clearClientCache } = require('../middleware/apiCache');
+    await clearClientCache(clientId);
     return res.json({ success: true, automation });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -236,6 +247,8 @@ router.delete('/commerce-automations/:automationId', protect, async (req, res) =
     if (!isAuthorized) return res.status(403).json({ error: 'Unauthorized' });
 
     const automations = await commerceAutomationService.deleteAutomation(clientId, automationId);
+    const { clearClientCache } = require('../middleware/apiCache');
+    await clearClientCache(clientId);
     return res.json({ success: true, automations });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -461,7 +474,7 @@ router.post('/webhook/shopify/log-restore-event', async (req, res) => {
   }
 });
 
-router.get('/orders', async (req, res) => {
+router.get('/orders', apiCache(60), async (req, res) => {
   try {
     const { businessType } = req.clientConfig;
     if (businessType === 'ecommerce') {

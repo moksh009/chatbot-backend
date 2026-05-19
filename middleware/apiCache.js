@@ -103,6 +103,8 @@ const apiCache = (ttlSeconds = 60) => {
  */
 const clearClientCache = async (clientId) => {
   try {
+    const { invalidateClientCache } = require('../utils/clientCache');
+    invalidateClientCache(clientId);
     const redisClient = getRedisForCache();
     if (redisClient) {
       await redisDeleteByPattern(redisClient, `api_cache:${clientId}:*`);

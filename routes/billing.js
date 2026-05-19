@@ -5,6 +5,8 @@ const Client = require('../models/Client');
 const { PLAN_LIMITS } = require('../utils/planLimits');
 const { protect } = require('../middleware/auth');
 const { ensureClientForUser } = require('../utils/ensureClientForUser');
+const { apiCache } = require('../middleware/apiCache');
+const { getCachedClient } = require('../utils/clientCache');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
 
@@ -16,13 +18,35 @@ const razorpay = new Razorpay({
 /**
  * GET /api/billing/usage
  */
-router.get('/usage', protect, async (req, res) => {
+router.get('/usage', protect, apiCache(300), async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const timer = createTimer('GET /api/billing/usage', req.user?.clientId || '');
   try {
-    await ensureClientForUser(req.user);
-    const client = await Client.findOne({ clientId: req.user.clientId });
-    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+    const ensureMs = 5000;
+    await Promise.race([
+      ensureClientForUser(req.user),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('ensureClientForUser timeout')), ensureMs)
+      ),
+    ]).catch((e) => {
+      if (String(e.message).includes('timeout')) {
+        timer.finish('ensureClient timeout — continuing');
+      } else {
+        throw e;
+      }
+    });
 
-    let sub = await Subscription.findOne({ clientId: client.clientId });
+    const client = await timer.time('getCachedClient', () =>
+      getCachedClient(req.user.clientId, 'clientId plan billing trialActive tier _id')
+    );
+    if (!client) {
+      timer.finish('404');
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    let sub = await timer.time('Subscription.findOne', () =>
+      Subscription.findOne({ clientId: client.clientId }).lean()
+    );
     if (!sub) {
       sub = await Subscription.findOne({ clientId: String(client._id) });
     }
@@ -44,7 +68,9 @@ router.get('/usage', protect, async (req, res) => {
       limits: planData,
       razorpayKeyId: process.env.RAZORPAY_KEY_ID
     });
+    timer.finish('200 ok');
   } catch (error) {
+    timer.finish(`500 error=${error.message}`);
     res.status(500).json({ success: false, message: 'Server Error' });
   }
 });

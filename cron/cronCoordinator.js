@@ -7,6 +7,7 @@
 
 const cron = require("node-cron");
 const log = require("../utils/logger")("CronCoordinator");
+const { wrapCron } = require("../utils/perfLogger");
 
 function registerCoordinatedCrons() {
   if (process.env.CRON_USE_COORDINATOR === "false") {
@@ -16,73 +17,57 @@ function registerCoordinatedCrons() {
 
   log.info("Registering coordinated cron bundles (2m / 5m / 10m / 15m)");
 
-  cron.schedule("*/2 * * * *", async () => {
-    const start = Date.now();
-    try {
+  cron.schedule(
+    "*/2 * * * *",
+    wrapCron("Coordinator/2min scheduled messages", async () => {
       const scheduleScheduled = require("./scheduledMessageCron");
       if (scheduleScheduled.runTick) await scheduleScheduled.runTick();
-    } catch (err) {
-      log.error("[Cron/2min] scheduled messages:", err.message);
-    }
-    log.info(`[Cron/2min] finished in ${Date.now() - start}ms`);
-  });
+    })
+  );
 
-  cron.schedule("*/5 * * * *", async () => {
-    const start = Date.now();
-    const abandoned = require("./abandonedCartScheduler");
-    const sequences = require("./followUpSequenceCron");
-    const campaigns = require("./campaignSchedulerCron");
+  cron.schedule(
+    "*/5 * * * *",
+    wrapCron("Coordinator/5min abandoned+sequences+campaigns", async () => {
+      const abandoned = require("./abandonedCartScheduler");
+      const sequences = require("./followUpSequenceCron");
+      const campaigns = require("./campaignSchedulerCron");
 
-    await Promise.allSettled([
-      abandoned.runTick?.(),
-      sequences.runTick?.(),
-      campaigns.runTick?.(),
-    ]);
+      // Sequential — avoids 3 heavy cron ticks grabbing the whole Mongo pool at :05
+      if (abandoned.runTick) await abandoned.runTick();
+      if (sequences.runTick) await sequences.runTick();
+      if (campaigns.runTick) await campaigns.runTick();
+    })
+  );
 
-    log.info(`[Cron/5min] finished in ${Date.now() - start}ms`);
-  });
-
-  cron.schedule("*/10 * * * *", async () => {
-    const start = Date.now();
-    const tasks = [];
-
-    try {
+  cron.schedule(
+    "*/10 * * * *",
+    wrapCron("Coordinator/10min CSAT primary", async () => {
       const scheduleCsat = require("./csatCron");
       if (scheduleCsat.runPrimaryTick) {
-        tasks.push(
-          scheduleCsat.runPrimaryTick().catch((err) => {
-            log.error("CSAT primary:", err.message);
-          })
-        );
+        await scheduleCsat.runPrimaryTick();
       }
-    } catch (_) {}
+    })
+  );
 
-    await Promise.allSettled(tasks);
-    log.info(`[Cron/10min] finished in ${Date.now() - start}ms`);
-  });
+  cron.schedule(
+    "*/15 * * * *",
+    wrapCron("Coordinator/15min COD+autoResume+CSAT secondary", async () => {
+      try {
+        const scheduleCod = require("./codConfirmationCron");
+        if (scheduleCod.runTick) await scheduleCod.runTick();
+      } catch (_) {}
 
-  cron.schedule("*/15 * * * *", async () => {
-    const start = Date.now();
-    const tasks = [];
+      try {
+        const scheduleAutoResume = require("./autoResumeBotCron");
+        if (scheduleAutoResume.runTick) await scheduleAutoResume.runTick();
+      } catch (_) {}
 
-    try {
-      const scheduleCod = require("./codConfirmationCron");
-      if (scheduleCod.runTick) tasks.push(scheduleCod.runTick());
-    } catch (_) {}
-
-    try {
-      const scheduleAutoResume = require("./autoResumeBotCron");
-      if (scheduleAutoResume.runTick) tasks.push(scheduleAutoResume.runTick());
-    } catch (_) {}
-
-    try {
-      const scheduleCsat = require("./csatCron");
-      if (scheduleCsat.runSecondaryTick) tasks.push(scheduleCsat.runSecondaryTick());
-    } catch (_) {}
-
-    await Promise.allSettled(tasks);
-    log.info(`[Cron/15min] finished in ${Date.now() - start}ms`);
-  });
+      try {
+        const scheduleCsat = require("./csatCron");
+        if (scheduleCsat.runSecondaryTick) await scheduleCsat.runSecondaryTick();
+      } catch (_) {}
+    })
+  );
 }
 
 module.exports = { registerCoordinatedCrons };

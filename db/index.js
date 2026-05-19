@@ -6,7 +6,11 @@ async function connectDB(){
         console.log("Attempting to connect to MongoDB...");
         const maxPool = Math.min(
             50,
-            Math.max(5, parseInt(process.env.MONGODB_MAX_POOL_SIZE || '20', 10) || 20)
+            Math.max(5, parseInt(process.env.MONGODB_MAX_POOL_SIZE || '25', 10) || 25)
+        );
+        const waitQueueTimeoutMS = Math.min(
+            30000,
+            Math.max(5000, parseInt(process.env.MONGODB_WAIT_QUEUE_TIMEOUT_MS || '12000', 10) || 12000)
         );
         const connectionInstance = await mongoose.connect(`${process.env.MONGODB_URI}`, {
             serverSelectionTimeoutMS: 5000,
@@ -14,10 +18,13 @@ async function connectDB(){
             maxPoolSize: maxPool,
             minPoolSize: Math.min(2, maxPool),
             maxIdleTimeMS: 30_000,
+            waitQueueTimeoutMS,
+            maxConnecting: Math.min(4, maxPool),
             retryWrites: true,
             family: 4, // Force IPv4 to resolve SSL/TLS handshake issues on local network
         })
         console.log(`\n MongoDB connected !! DB HOST: ${connectionInstance.connection.host}`);
+        console.log(`   pool maxPoolSize=${maxPool} waitQueueTimeoutMS=${waitQueueTimeoutMS}`);
 
         // --- AUTO-FIX: Drop conflicting legacy index on adleads ---
         try {

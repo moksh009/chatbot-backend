@@ -6,16 +6,25 @@ const { protect } = require('../middleware/auth');
 const axios = require('axios');
 const log = require('../utils/logger')('WhatsAppFlows');
 const { checkLimit } = require('../utils/planLimits');
+const { apiCache } = require('../middleware/apiCache');
 
 /**
  * GET /api/whatsapp-flows
- * Returns all synced flows for the client
+ * Returns all synced flows for the client (lite list — no nodes/edges)
  */
-router.get('/', protect, async (req, res) => {
+router.get('/', protect, apiCache(60), async (req, res) => {
+    const { createTimer } = require('../utils/perfLogger');
+    const timer = createTimer('GET /api/whatsapp-flows', req.user?.clientId || '');
     try {
-        const flows = await WhatsAppFlow.find({ clientId: req.user.clientId }).sort({ lastSyncedAt: -1 });
+        const flows = await WhatsAppFlow.find({ clientId: req.user.clientId })
+            .select('flowId name status categories lastSyncedAt validationErrors')
+            .sort({ lastSyncedAt: -1 })
+            .limit(100)
+            .lean();
+        timer.finish(`200 ok | count=${flows.length}`);
         res.json(flows);
     } catch (err) {
+        timer.finish(`500 ${err.message}`);
         log.error('Fetch Flows Error:', err.message);
         res.status(500).json({ error: 'Failed to fetch flows.' });
     }

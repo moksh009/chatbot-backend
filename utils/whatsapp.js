@@ -267,6 +267,32 @@ const WhatsApp = {
   },
 
   /**
+   * Mark inbound message as read (instant UX while bot prepares reply).
+   */
+  async markRead(client, messageId) {
+    if (!messageId) return null;
+    const { token, phoneNumberId } = this.getCredentials(client);
+    const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
+    try {
+      const res = await waGraphBreaker.exec(() =>
+        axios.post(
+          url,
+          {
+            messaging_product: 'whatsapp',
+            status: 'read',
+            message_id: String(messageId),
+          },
+          { headers: { Authorization: `Bearer ${token}` }, timeout: 5000 }
+        )
+      );
+      return res.data;
+    } catch (err) {
+      log.warn('[WhatsApp] markRead failed:', err.message);
+      return null;
+    }
+  },
+
+  /**
    * Sends a plain text message
    */
   async sendText(client, phone, body) {

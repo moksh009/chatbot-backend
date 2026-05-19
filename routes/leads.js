@@ -23,6 +23,7 @@ const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const SuppressionList = require('../models/SuppressionList');
 const logPersonalDataAccess = logAction('PERSONAL_DATA_ACCESS');
+const { apiCache } = require('../middleware/apiCache');
 
 // Multer setup for temporary CSV storage
 const upload = multer({ 
@@ -691,41 +692,50 @@ router.post('/bulk-recovery', protect, async (req, res) => {
 });
 
 // GET /api/leads/high-intent
-router.get('/high-intent', protect, logPersonalDataAccess, async (req, res) => {
+const HIGH_INTENT_BASE = (clientId) => ({
+  clientId,
+  $or: [
+    { cartStatus: 'abandoned' },
+    { addToCartCount: { $gt: 0 }, isOrderPlaced: { $ne: true } },
+    { checkoutInitiatedCount: { $gt: 0 }, isOrderPlaced: { $ne: true } },
+  ],
+});
+
+router.get('/high-intent', protect, logPersonalDataAccess, apiCache(45), async (req, res) => {
+    const { createTimer } = require('../utils/perfLogger');
+    const timer = createTimer('GET /api/leads/high-intent', req.user?.clientId || '');
     try {
         const clientId = req.user.clientId;
         const { limit = 50, next_cursor } = req.query;
+        const limitNum = Math.min(100, parseInt(limit, 10) || 50);
 
-        const query = { 
-            clientId,
-            $or: [
-                { cartStatus: 'abandoned' },
-                { addToCartCount: { $gt: 0 }, isOrderPlaced: { $ne: true } },
-                { checkoutInitiatedCount: { $gt: 0 }, isOrderPlaced: { $ne: true } }
-            ]
-        };
-
+        const baseQuery = HIGH_INTENT_BASE(clientId);
+        const pageQuery = { ...baseQuery };
         if (next_cursor) {
-            query._id = { $lt: next_cursor };
+            pageQuery._id = { $lt: next_cursor };
         }
 
-        const leads = await AdLead.find(query)
-            .sort({ lastInteraction: -1 })
-            .limit(parseInt(limit))
+        const [leads, total] = await Promise.all([
+          AdLead.find(pageQuery)
+            .sort({ lastInteraction: -1, _id: -1 })
+            .limit(limitNum)
             .select('phoneNumber name email leadScore cartStatus lastInteraction tags checkoutInitiatedCount addToCartCount source')
-            .lean();
+            .lean(),
+          AdLead.countDocuments(baseQuery),
+        ]);
 
-        const total = await AdLead.countDocuments(query);
         const new_cursor = leads.length > 0 ? leads[leads.length - 1]._id : null;
 
+        timer.finish(`200 ok | count=${leads.length} total=${total}`);
         res.json({
             success: true,
             leads,
             next_cursor: new_cursor,
-            total
+            total,
         });
     } catch (err) {
         console.error('[HighIntentLeads] Error:', err);
+        timer.finish(`500 ${err.message}`);
         res.status(500).json({ success: false, message: 'Failed to fetch high-intent leads' });
     }
 });

@@ -19,6 +19,7 @@ const crypto = require('crypto');
 const axios = require('axios');
 const Client = require('../models/Client');
 const User = require('../models/User');
+const { invalidateClientCache } = require('../utils/clientCache');
 const { sendAdminConfirmationEmail, deliverSystemEmail } = require('../utils/emailService');
 
 // ── Shared system mail — Nodemailer SMTP (same as OTP).
@@ -290,6 +291,7 @@ router.post('/request-link', async (req, res) => {
     if (!client) {
       return res.status(404).json({ success: false, error: 'Client not found' });
     }
+    invalidateClientCache(clientId);
 
     // Fetch the dynamic user email associated with this client
     const user = await User.findOne({ clientId }).lean();
@@ -390,6 +392,7 @@ router.post('/assign-link', async (req, res) => {
     if (!client) {
       return res.status(404).json({ success: false, error: 'Client not found' });
     }
+    invalidateClientCache(clientId);
 
     const user = await User.findOne({ clientId }).lean();
     if (!user || !user.email) {
@@ -754,6 +757,7 @@ router.get('/callback', async (req, res) => {
       { $set: updatePayload },
       { new: true }
     );
+    invalidateClientCache(clientId);
 
     console.log(`✅ [ShopifyOAuth] Credentials saved for ${clientId}`);
 

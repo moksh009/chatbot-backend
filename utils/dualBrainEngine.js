@@ -16,13 +16,13 @@ const log = require("./logger")('DualBrain');
 const { generateText, getGeminiModel } = require('./gemini');
 const { createMessage } = require("./createMessage");
 const { injectVariables, buildVariableContext, injectNodeVariables, injectVariablesLegacy } = require("./variableInjector");
-const { findMatchingFlow, findGreetingFlowFast, findFlowStartNode } = require("./triggerEngine");
+const { findMatchingFlow, findGreetingFlowFast, findFlowStartNode, isGreetingLikeText } = require("./triggerEngine");
 const {
   getCachedFlowGraph,
   getCachedFlowGraphAsync,
   setCachedFlowGraph,
 } = require("./flowGraphCache");
-const { createPerfTimer } = require("./enginePerf");
+const { createTimer } = require("./perfLogger");
 const { shouldAttemptAICall } = require("./aiGuards");
 const {
   beginEngineRun,
@@ -80,7 +80,8 @@ function getClientCatalogIdString(client) {
 
 const SESSION_LOCK_TIMEOUT = 10000; // 10 seconds (Fallback for TTL)
 /** Hard cap for one inbound WhatsApp turn (Render free tier must stay well under this) */
-const DUAL_BRAIN_BUDGET_MS = 22000;
+const DUAL_BRAIN_BUDGET_MS =
+  parseInt(process.env.DUAL_BRAIN_BUDGET_MS || '22000', 10) || 22000;
 const REDIS_SESSION_LOCK_TTL_SEC = 60;
 
 /**
@@ -574,6 +575,8 @@ async function runDualBrainEngine(parsedMessage, client) {
   const phone    = channel === 'whatsapp' ? normalizePhone(rawPhone) : rawPhone;
   const io       = global.io;
   const messageId = parsedMessage.messageId;
+  const engineTimer = createTimer('DualBrain.runEngine', `${client?.clientId}:${phone}`);
+  engineTimer.checkpoint('engine_invoked', { messageId, channel });
 
   // 1. SESSION LOCK — Atomic upsert with ownership ID
   // Uses findOneAndUpdate with $setOnInsert to atomically claim the lock.
@@ -589,9 +592,11 @@ async function runDualBrainEngine(parsedMessage, client) {
           const acquired = await redisClient.set(lockKey, _lockOwnerId, 'NX', 'EX', REDIS_SESSION_LOCK_TTL_SEC);
           if (!acquired) {
               log.warn(`[Lock] Session locked for ${phone} — will retry via inbound queue.`);
+              engineTimer.finish('lock_busy_redis');
               endEngineRun(client.clientId, phone);
               return false;
           }
+          engineTimer.checkpoint('lock acquired (redis)');
       } else {
           // Fallback to MongoDB if Redis is unavailable
           const existingLock = await ProcessingLock.findOneAndUpdate(
@@ -601,9 +606,11 @@ async function runDualBrainEngine(parsedMessage, client) {
           );
           if (existingLock._lockOwnerId !== _lockOwnerId) {
             log.warn(`[Lock] Session locked for ${phone} — will retry via inbound queue.`);
+            engineTimer.finish('lock_busy_mongo');
             endEngineRun(client.clientId, phone);
             return false;
           }
+          engineTimer.checkpoint('lock acquired (mongo)');
       }
   } catch (lockErr) {
       if (lockErr.code === 11000) {
@@ -616,7 +623,8 @@ async function runDualBrainEngine(parsedMessage, client) {
   }
 
   const runEngineBody = async () => {
-    const perf = createPerfTimer(client.clientId, phone);
+    const perf = createTimer('DualBrain.runEngineBody', `${client.clientId}:${phone}`);
+    perf.checkpoint('runEngineBody_start');
     const profileName = parsedMessage.profileName || '';
     const inboundText = parsedMessage.text?.body || parsedMessage.interactive?.button_reply?.title || parsedMessage.interactive?.list_reply?.title || '';
     const txtLower = inboundText.toLowerCase().trim();
@@ -694,19 +702,36 @@ async function runDualBrainEngine(parsedMessage, client) {
     }
     perf.checkpoint("session_upserted");
 
+    // ── LIVE CHAT FAST PATH: persist + socket emit before language/AI/rules ──
+    try {
+      await saveInboundMessage(phone, client.clientId, parsedMessage, io, channel, convo._id, convo);
+      parsedMessage._liveChatPersisted = true;
+      perf.checkpoint("message_saved_early");
+    } catch (earlySaveErr) {
+      log.error("[InboundSave] Early persist failed:", { error: earlySaveErr.message });
+    }
+
     // ── EARLY GREETING FAST PATH (before translation, rules, heavy flow loads) ──
     const isEarlyGreeting =
       inboundText &&
       !convo.botPaused &&
       !parsedMessage.interactive?.button_reply &&
       !parsedMessage.interactive?.list_reply &&
-      isGreeting(txtLower) &&
-      txtLower.length <= 24 &&
+      (isGreeting(txtLower) || isGreetingLikeText(inboundText)) &&
+      txtLower.length <= 48 &&
       convo.status !== "HUMAN_SUPPORT" &&
       convo.status !== "HUMAN_TAKEOVER";
 
     if (isEarlyGreeting) {
       try {
+        const waMsgId = parsedMessage?.id || parsedMessage?.messageId;
+        if (waMsgId && channel === "whatsapp") {
+          setImmediate(() => {
+            const whatsapp = require("./whatsapp");
+            whatsapp.markRead(client, waMsgId).catch(() => {});
+          });
+        }
+
         const match = await findGreetingFlowFast(client, convo, inboundText, channel);
         perf.checkpoint("flow_match_greeting");
 
@@ -717,17 +742,20 @@ async function runDualBrainEngine(parsedMessage, client) {
             const flowEdges = loaded.edges || [];
             const resolvedActiveFlowId = loaded.id || match.flowId;
 
-            try {
-              await saveInboundMessage(
-                phone,
-                client.clientId,
-                parsedMessage,
-                io,
-                channel,
-                convo._id
-              );
-            } catch (err) {
-              log.error("[InboundSave] Failed:", { error: err.message });
+            if (!parsedMessage._liveChatPersisted) {
+              try {
+                await saveInboundMessage(
+                  phone,
+                  client.clientId,
+                  parsedMessage,
+                  io,
+                  channel,
+                  convo._id,
+                  convo
+                );
+              } catch (err) {
+                log.error("[InboundSave] Failed:", { error: err.message });
+              }
             }
 
             await Conversation.findByIdAndUpdate(convo._id, {
@@ -764,6 +792,24 @@ async function runDualBrainEngine(parsedMessage, client) {
             log.warn(
               `[DualBrain] Greeting flow ${match.flowId} missing published graph — falling through`
             );
+          }
+        } else {
+          const isNewConvo =
+            !convo?.lastStepId ||
+            !convo?.lastMessageAt ||
+            convo.status === "new";
+          if (isNewConvo) {
+            const quickWelcome =
+              client?.nicheData?.welcomeMessage ||
+              client?.growthWidgetConfig?.welcomeMessage ||
+              `Hi! 👋 Thanks for messaging ${client.businessName || "us"}. How can we help you today?`;
+            await sendWhatsAppText(client, phone, quickWelcome, "whatsapp", {
+              skipTranslation: true,
+              skipConvoLookup: true,
+            });
+            perf.checkpoint("greeting_instant_fallback");
+            perf.finish();
+            return true;
           }
         }
       } catch (fpErr) {
@@ -830,11 +876,16 @@ async function runDualBrainEngine(parsedMessage, client) {
 
     if (inboundText && inboundText.length > 2 && tenantAiEnabled) {
         try {
-            detectedLanguage = await detectLanguage(inboundText, inboundGeminiKey);
+            detectedLanguage = await perf.time('language detection', () =>
+              detectLanguage(inboundText, inboundGeminiKey)
+            );
             parsedMessage.detectedLanguage = detectedLanguage;
+            perf.checkpoint('language detected', { lang: detectedLanguage });
         } catch (err) {
-            log.warn('[Language] Detection skipped (Invalid Key/Timeout)');
+            perf.log(`language detection skipped: ${err.message}`);
         }
+    } else {
+        perf.log(`language detection skipped (ai=${tenantAiEnabled}, len=${inboundText?.length || 0})`);
     }
 
   // ── PHASE 23: Track 5 — WhatsApp Flow Responses ──────────────────────────
@@ -948,18 +999,19 @@ async function runDualBrainEngine(parsedMessage, client) {
       }
   }
 
-  // STEP 3: Save inbound message to DB + emit to dashboard
-  // Must finish before automation rules: "first_message" triggers use inbound counts
-  // from the Message collection; a deferred save left counts at 0 so rules mis-fired.
-  try {
-    await saveInboundMessage(phone, client.clientId, parsedMessage, io, channel, convo._id);
-  } catch (err) {
-    log.error('[InboundSave] Failed:', { error: err.message });
+  // STEP 3: Ensure inbound row exists for automation rules (early save may have run above).
+  if (!parsedMessage._liveChatPersisted) {
+    try {
+      await saveInboundMessage(phone, client.clientId, parsedMessage, io, channel, convo._id, convo);
+    } catch (err) {
+      log.error('[InboundSave] Failed:', { error: err.message });
+    }
   }
   perf.checkpoint("message_saved");
 
   // STEP 3.5: SUBSCRIPTION LIMIT CHECK (Phase 23)
-  const limits = await checkLimit(client._id, 'messages');
+  const limits = await perf.time('plan limit check', () => checkLimit(client._id, 'messages'));
+  perf.checkpoint('plan limit checked', { allowed: limits.allowed });
   if (!limits.allowed) {
       log.warn(`Limit Reached for ${client.clientId}. Halting DualBrain Engine processing.`);
       try {
@@ -2122,7 +2174,13 @@ async function runDualBrainEngine(parsedMessage, client) {
     }
 
     try {
-      const match = await findMatchingFlow(parsedMessage, client, convo);
+      const match = await perf.time('trigger engine: findMatchingFlow', () =>
+        findMatchingFlow(parsedMessage, client, convo)
+      );
+      perf.checkpoint('trigger engine: flow matched', {
+        flowId: match?.flowId,
+        triggerType: match?.triggerType,
+      });
       if (match && !match.isLegacy && match.flow) {
         const flowRef =
           match.flowId || match.flow.flowId || (match.flow._id != null ? String(match.flow._id) : match.flow.id);
@@ -2226,14 +2284,17 @@ async function runDualBrainEngine(parsedMessage, client) {
 
   try {
     const result = await withTimeout(runEngineBody(), DUAL_BRAIN_BUDGET_MS, 'DualBrain');
+    engineTimer.finish(result ? 'handled' : 'not_handled');
     return result;
   } catch (err) {
     if (String(err.message || '').includes('timed out')) {
       abortEngineRun(client.clientId, phone);
       log.error(`[DualBrain] Hard timeout (${DUAL_BRAIN_BUDGET_MS}ms) for ${phone} on ${client.clientId}`);
+      engineTimer.finish('timeout');
       return true;
     }
     log.error(`[DualBrain] Critical Engine Error for ${phone}:`, err.message);
+    engineTimer.finish(`error: ${err.message}`);
     return false;
   } finally {
       endEngineRun(client.clientId, phone);
@@ -2742,6 +2803,10 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
   }
   const execStartedAt = Date.now();
   const rawNode = flowNodes.find(n => n.id === nodeId);
+  const nodeTimer = createTimer(`executeNode:${rawNode?.type || 'unknown'}`, `node=${nodeId}`);
+  if (rawNode?.data?.isAiResponse) {
+    nodeTimer.log('isAiResponse=true — may call Gemini');
+  }
   if (!rawNode) {
     log.warn(`[Exec] Node ${nodeId} not found in ${flowNodes.length} nodes — recovering to hub`);
     const hubId =
@@ -4307,6 +4372,11 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     }
   }
 
+  nodeTimer.checkpoint('node_exec_complete', {
+    type: node?.type,
+    latencyMs: Date.now() - execStartedAt,
+  });
+  nodeTimer.finish('success');
   return true;
 }
 
@@ -5371,15 +5441,24 @@ REPLY:
   }
 }
 
-async function sendWhatsAppText(client, phone, body, channel = 'whatsapp') {
+async function sendWhatsAppText(client, phone, body, channel = 'whatsapp', opts = {}) {
   if (isEngineRunAborted(client.clientId, phone, getEngineRunId(client.clientId, phone))) return;
 
   const token = getEffectiveWhatsAppAccessToken(client);
   const phoneNumberId = getEffectiveWhatsAppPhoneNumberId(client);
   if (!token || !phoneNumberId) return;
   try {
-    const convo = await Conversation.findOne({ phone, clientId: client.clientId });
-    const translated = await translateToUserLanguage(body, convo?.detectedLanguage, client);
+    let detectedLang = opts.detectedLanguage || 'en';
+    if (!opts.skipConvoLookup) {
+      const convo = await Conversation.findOne(
+        { phone, clientId: client.clientId },
+        { detectedLanguage: 1 }
+      ).lean();
+      detectedLang = convo?.detectedLanguage || detectedLang;
+    }
+    const translated = opts.skipTranslation
+      ? body
+      : await translateToUserLanguage(body, detectedLang, client);
     let bodyContent = String(translated || body || '').trim();
     if (!bodyContent || bodyContent === 'null' || bodyContent === 'undefined' || bodyContent === '[object Object]') {
       bodyContent = 'Thanks for your message — tap *menu* anytime to see options.';
@@ -5639,19 +5718,63 @@ async function sendWhatsAppFlow(client, phone, header, body, flowId, flowCta, sc
  * @param {string} channel      - 'whatsapp' | 'instagram'
  * @param {string} conversationId - Mongoose ObjectId of the Conversation document
  */
-async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = 'whatsapp', conversationId) {
+function buildInboundBody(parsedMessage) {
+  return (
+    parsedMessage.text?.body ||
+    parsedMessage.interactive?.button_reply?.title ||
+    parsedMessage.interactive?.list_reply?.title ||
+    parsedMessage.caption ||
+    (parsedMessage.type === 'image' ? '[Image]' : '') ||
+    (parsedMessage.type === 'audio' || parsedMessage.type === 'voice' ? '[Voice Note]' : '') ||
+    (parsedMessage.type === 'video' ? '[Video]' : '') ||
+    (parsedMessage.type === 'document' ? '[Document]' : '') ||
+    (parsedMessage.type === 'sticker' ? '[Sticker]' : '') ||
+    ''
+  );
+}
+
+function emitLiveChatInboundEvents(io, clientId, conversationId, savedMessage, convoLean) {
+  if (!io || !clientId) return;
+  io.to(`client_${clientId}`).emit('new_message', savedMessage);
+  const preview = (savedMessage.content || savedMessage.body || '').substring(0, 100);
+  const ts = savedMessage.timestamp || new Date();
+  const patch = {
+    _id: conversationId,
+    clientId,
+    phone: convoLean?.phone,
+    customerName: convoLean?.customerName,
+    lastMessage: preview,
+    lastMessageAt: ts,
+    lastInteraction: ts,
+    unreadCount: convoLean?.unreadCount,
+    status: convoLean?.status,
+    botPaused: convoLean?.botPaused,
+  };
+  io.to(`client_${clientId}`).emit('conversation_update', patch);
+}
+
+async function saveInboundMessage(
+  phone,
+  clientId,
+  parsedMessage,
+  io,
+  channel = 'whatsapp',
+  conversationId,
+  convoLean = null
+) {
   try {
-    // Extract text content from various message types
-    const body = parsedMessage.text?.body
-      || parsedMessage.interactive?.button_reply?.title
-      || parsedMessage.interactive?.list_reply?.title
-      || parsedMessage.caption
-      || (parsedMessage.type === 'image' ? '[Image]' : '')
-      || (parsedMessage.type === 'audio' || parsedMessage.type === 'voice' ? '[Voice Note]' : '')
-      || (parsedMessage.type === 'video' ? '[Video]' : '')
-      || (parsedMessage.type === 'document' ? '[Document]' : '')
-      || (parsedMessage.type === 'sticker' ? '[Sticker]' : '')
-      || '';
+    const body = buildInboundBody(parsedMessage);
+    const waMsgId = String(parsedMessage.messageId || parsedMessage.id || '').trim();
+
+    if (waMsgId) {
+      const existing = await Message.findOne({ messageId: waMsgId })
+        .select('_id conversationId clientId content body timestamp direction type channel messageId')
+        .lean();
+      if (existing) {
+        emitLiveChatInboundEvents(io, clientId, conversationId, existing, convoLean);
+        return existing;
+      }
+    }
 
     const savedMessage = await createMessage({
       clientId,
@@ -5662,27 +5785,16 @@ async function saveInboundMessage(phone, clientId, parsedMessage, io, channel = 
       direction: 'inbound',
       type: parsedMessage.type || 'text',
       body,
-      messageId: parsedMessage.messageId || parsedMessage.id || '',
+      messageId: waMsgId,
       mediaUrl: parsedMessage.mediaUrl || null,
       channel,
       translatedContent: parsedMessage.translatedContent || '',
       detectedLanguage: parsedMessage.detectedLanguage || 'en',
       originalText: parsedMessage.originalText || '',
-      voiceTranscript: parsedMessage.voiceTranscript || ''
+      voiceTranscript: parsedMessage.voiceTranscript || '',
     });
 
-    // Emit real-time events to dashboard
-    if (io && clientId) {
-      const updatedConvo = await Conversation.findById(conversationId)
-        .populate('assignedTo', 'name')
-        .lean();
-
-      io.to(`client_${clientId}`).emit('new_message', savedMessage);
-      if (updatedConvo) {
-        io.to(`client_${clientId}`).emit('conversation_update', updatedConvo);
-      }
-    }
-
+    emitLiveChatInboundEvents(io, clientId, conversationId, savedMessage, convoLean);
     return savedMessage;
   } catch (err) {
     log.error('[saveInboundMessage] Failed:', { phone, clientId, error: err.message });

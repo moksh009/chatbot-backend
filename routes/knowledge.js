@@ -6,22 +6,41 @@ const { ensureClientForUser } = require('../utils/ensureClientForUser');
 const log = require('../utils/logger')('KnowledgeRoute');
 const { tenantClientId } = require('../utils/queryHelpers');
 const { clearKnowledgeContextCache } = require('../utils/personaEngine');
+const { apiCache } = require('../middleware/apiCache');
+const { getCachedClient } = require('../utils/clientCache');
+
+async function invalidateKnowledgeCaches(clientId) {
+  const { clearClientCache } = require('../middleware/apiCache');
+  const { invalidateClientCache } = require('../utils/clientCache');
+  await clearClientCache(clientId);
+  invalidateClientCache(clientId);
+  clearKnowledgeContextCache(clientId);
+}
 
 /**
  * @route   GET /api/knowledge
  * @desc    Get the full knowledge base of a client
  */
-router.get('/', protect, async (req, res) => {
+router.get('/', protect, apiCache(60), async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const timer = createTimer('GET /api/knowledge', tenantClientId(req) || '');
   try {
     const clientId = tenantClientId(req);
-    if (!clientId) return res.status(403).json({ message: 'Unauthorized' });
+    if (!clientId) {
+      timer.finish('403');
+      return res.status(403).json({ message: 'Unauthorized' });
+    }
 
-    await ensureClientForUser(req.user);
-    const client = await Client.findOne({ clientId }).select('knowledgeBase');
-    if (!client) return res.status(404).json({ message: 'Client not found' });
+    const client = await getCachedClient(clientId, 'knowledgeBase clientId');
+    if (!client) {
+      timer.finish('404');
+      return res.status(404).json({ message: 'Client not found' });
+    }
 
+    timer.finish('200 ok');
     res.json(client.knowledgeBase || {});
   } catch (err) {
+    timer.finish(`500 ${err.message}`);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -30,18 +49,27 @@ router.get('/', protect, async (req, res) => {
  * @route   GET /api/knowledge/pending
  * @desc    Get all pending knowledge proposals for a client
  */
-router.get('/pending', protect, async (req, res) => {
+router.get('/pending', protect, apiCache(30), async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const timer = createTimer('GET /api/knowledge/pending', tenantClientId(req) || '');
   try {
     const clientId = tenantClientId(req);
-    if (!clientId) return res.status(403).json({ message: 'Unauthorized' });
+    if (!clientId) {
+      timer.finish('403');
+      return res.status(403).json({ message: 'Unauthorized' });
+    }
 
-    await ensureClientForUser(req.user);
-    const client = await Client.findOne({ clientId });
-    if (!client) return res.status(404).json({ message: 'Client not found' });
+    const client = await getCachedClient(clientId, 'pendingKnowledge clientId');
+    if (!client) {
+      timer.finish('404');
+      return res.status(404).json({ message: 'Client not found' });
+    }
 
     const pending = (client.pendingKnowledge || []).filter((k) => k.status === 'pending');
+    timer.finish(`200 ok | count=${pending.length}`);
     res.json(pending);
   } catch (err) {
+    timer.finish(`500 ${err.message}`);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -84,6 +112,7 @@ router.post('/action', protect, async (req, res) => {
 
     // Mark as processed
     await client.save();
+    await invalidateKnowledgeCaches(clientId);
     res.json({ message: `Proposal ${action} successfully`, client });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

@@ -13,8 +13,12 @@ yarn-error.log*
 .env.production.local
 
 # Logs
-logs
+logs/
 *.log
+perf_*.log
+
+# NLP auto-save at repo root (per-client models live under nlp_models/)
+/model.nlp
 
 # Runtime data
 pids

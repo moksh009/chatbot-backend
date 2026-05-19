@@ -1,8 +1,12 @@
 'use strict';
 
+const NodeCache = require('node-cache');
 const Order = require('../models/Order');
 const ScoreTierConfig = require('../models/ScoreTierConfig');
 const { normalizePhone } = require('./helpers');
+
+/** Per-client score tiers — safe to cache 2 min (Live Chat full-context hot path). */
+const scoreTierCache = new NodeCache({ stdTTL: 120, checkperiod: 60, maxKeys: 200 });
 
 const SUCCESS_FINANCIAL_STATUSES = ['paid', 'fulfilled', 'delivered', 'partially_fulfilled'];
 const EXCLUDE_ORDER_STATUSES = ['cancelled', 'refunded', 'returned', 'voided'];
@@ -171,10 +175,14 @@ function resolveScoreStageName(leadScore, tiers) {
 }
 
 async function resolveScoreStageNameForClient(clientId, leadScore) {
-  const config = await ScoreTierConfig.findOne({ clientId }).lean();
-  const tiers = config?.tiers?.length
-    ? config.tiers
-    : ScoreTierConfig.getDefaultConfig(clientId).tiers;
+  let tiers = scoreTierCache.get(clientId);
+  if (!tiers) {
+    const config = await ScoreTierConfig.findOne({ clientId }).select('tiers').lean();
+    tiers = config?.tiers?.length
+      ? config.tiers
+      : ScoreTierConfig.getDefaultConfig(clientId).tiers;
+    scoreTierCache.set(clientId, tiers);
+  }
   return resolveScoreStageName(leadScore, tiers);
 }
 

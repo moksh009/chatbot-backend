@@ -38,6 +38,11 @@ class CircuitBreaker {
       throw err;
     }
   }
+
+  /** Alias used by WhatsApp Graph API paths (whatsapp.js). */
+  exec(fn) {
+    return this.call(fn);
+  }
 }
 
 const shopifyBreaker = new CircuitBreaker("Shopify", 5, 30000);
@@ -56,9 +61,31 @@ function getBreaker(name, opts = {}) {
   return namedBreakers.get(key);
 }
 
+function breakerSnapshot(b) {
+  return {
+    state: b.state,
+    failures: b.failures,
+    threshold: b.threshold,
+  };
+}
+
+/** Health / metrics: snapshot of built-in and dynamic breakers. */
+function allStatuses() {
+  const dynamic = {};
+  for (const [name, b] of namedBreakers.entries()) {
+    dynamic[name] = breakerSnapshot(b);
+  }
+  return {
+    shopify: breakerSnapshot(shopifyBreaker),
+    gemini: breakerSnapshot(geminiBreaker),
+    ...dynamic,
+  };
+}
+
 module.exports = {
   CircuitBreaker,
   shopifyBreaker,
   geminiBreaker,
   getBreaker,
+  allStatuses,
 };

@@ -3,7 +3,13 @@ const router = express.Router();
 const Client = require('../models/Client');
 const { tenantClientId } = require('../utils/queryHelpers');
 const { protect } = require('../middleware/auth');
-const { clearClientCache } = require('../middleware/apiCache');
+const { clearClientCache, apiCache } = require('../middleware/apiCache');
+const { invalidateClientCache } = require('../utils/clientCache');
+const {
+  getCachedFlowGraphAsync,
+  setCachedFlowGraph,
+  invalidateFlowGraphCache,
+} = require('../utils/flowGraphCache');
 const { fixFlowWithAI } = require('../controllers/flowFixController');
 const { clearTriggerCache } = require('../utils/triggerEngine');
 
@@ -554,6 +560,8 @@ router.post('/publish', protect, async (req, res) => {
     const { clearTriggerCache } = require('../utils/triggerEngine');
     clearTriggerCache(clientId);
     await clearClientCache(clientId);
+    invalidateClientCache(clientId);
+    invalidateFlowGraphCache(clientId, flowId);
 
     res.json({ success: true, message: `Flow published successfully (v${flow.version})`, version: flow.version });
   } catch (error) {
@@ -644,22 +652,36 @@ router.get('/', protect, async (req, res) => {
 
 
 // GET /api/flow/flows
-router.get('/flows', protect, async (req, res) => {
+router.get('/flows', protect, apiCache(30), async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const { getCachedClient } = require('../utils/clientCache');
+  const timer = createTimer('GET /api/flow/flows', req.user?.clientId || '');
   try {
     const clientId = tenantClientId(req);
     if (!clientId) {
+      timer.finish('403');
       return res.status(403).json({ success: false, message: 'Unauthorized access to flows' });
     }
 
     const WhatsAppFlow = require('../models/WhatsAppFlow');
-    const [client, dbFlows] = await Promise.all([
-      Client.findOne({ clientId }).select('flowFolders flowNodes flowEdges').lean(),
-      WhatsAppFlow.find({ clientId }).lean()
-    ]);
-    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
-
     const lite = req.query.lite === '1' || req.query.lite === 'true';
-    const formattedFlows = dbFlows.map(f => ({
+    const flowFind = WhatsAppFlow.find({ clientId });
+    if (lite) {
+      flowFind.select(
+        'flowId name platform folderId status version createdAt updatedAt lastSyncedAt'
+      );
+    }
+    const clientSelect = lite ? 'flowFolders clientId' : 'flowFolders flowNodes flowEdges clientId';
+    const [client, dbFlows] = await Promise.all([
+      timer.time('getCachedClient', () => getCachedClient(clientId, clientSelect)),
+      timer.time('WhatsAppFlow.find', () => flowFind.lean()),
+    ]);
+    if (!client) {
+      timer.finish('404');
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const formattedFlows = dbFlows.map((f) => ({
       id: f.flowId,
       name: f.name,
       platform: f.platform || 'whatsapp',
@@ -667,29 +689,29 @@ router.get('/flows', protect, async (req, res) => {
       isActive: f.status === 'PUBLISHED',
       status: f.status || 'DRAFT',
       version: f.version || 1,
-      ...(lite
-        ? {}
-        : { nodes: f.nodes || [], edges: f.edges || [] }),
-      nodeCount: (f.nodes || []).length,
-      edgeCount: (f.edges || []).length,
+      ...(lite ? {} : { nodes: f.nodes || [], edges: f.edges || [] }),
+      nodeCount: Array.isArray(f.nodes) ? f.nodes.length : 0,
+      edgeCount: Array.isArray(f.edges) ? f.edges.length : 0,
       createdAt: f.createdAt,
       updatedAt: f.updatedAt,
-      lastSyncedAt: f.lastSyncedAt
+      lastSyncedAt: f.lastSyncedAt,
     }));
 
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-    res.setHeader('Pragma', 'no-cache');
     res.json({
       success: true,
       flows: formattedFlows,
       flowFolders: client.flowFolders || [],
-      legacy: {
-        nodes: client.flowNodes || [],
-        edges: client.flowEdges || []
-      }
+      legacy: lite
+        ? { nodes: [], edges: [] }
+        : {
+            nodes: client.flowNodes || [],
+            edges: client.flowEdges || [],
+          },
     });
+    timer.finish(`200 ok | lite=${lite} count=${formattedFlows.length}`);
   } catch (error) {
     console.error('[Flow API] List error:', error);
+    timer.finish(`500 error=${error.message}`);
     res.status(500).json({ success: false, message: error.message });
   }
 });
@@ -742,37 +764,66 @@ router.post('/:flowId/duplicate', protect, async (req, res) => {
 });
 
 // GET /api/flow/flows/:flowId/graph — full nodes/edges for one flow (Flow Builder canvas)
-router.get('/flows/:flowId/graph', protect, async (req, res) => {
+router.get('/flows/:flowId/graph', protect, apiCache(30), async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const timer = createTimer('GET /api/flow/flows/:flowId/graph', req.user?.clientId || '');
   try {
     const clientId = tenantClientId(req);
     if (!clientId) {
+      timer.finish('403');
       return res.status(403).json({ success: false, message: 'Unauthorized access to flows' });
     }
     const { flowId } = req.params;
-    const WhatsAppFlow = require('../models/WhatsAppFlow');
-    const flow = await WhatsAppFlow.findOne({ clientId, flowId }).lean();
-    if (!flow) {
-      return res.status(404).json({ success: false, message: 'Flow not found' });
-    }
-    res.json({
-      success: true,
-      flow: {
-        id: flow.flowId,
+
+    let flowPayload = await timer.time('flow_graph_cache', () =>
+      getCachedFlowGraphAsync(clientId, flowId)
+    );
+
+    if (!flowPayload) {
+      const WhatsAppFlow = require('../models/WhatsAppFlow');
+      const flow = await timer.time('WhatsAppFlow.findOne', () =>
+        WhatsAppFlow.findOne({ clientId, flowId }).lean()
+      );
+      if (!flow) {
+        timer.finish('404');
+        return res.status(404).json({ success: false, message: 'Flow not found' });
+      }
+      flowPayload = {
+        flowId: flow.flowId,
         name: flow.name,
         platform: flow.platform || 'whatsapp',
         folderId: flow.folderId || '',
-        isActive: flow.status === 'PUBLISHED',
         status: flow.status || 'DRAFT',
         version: flow.version || 1,
         nodes: flow.nodes || [],
         edges: flow.edges || [],
-        nodeCount: (flow.nodes || []).length,
-        edgeCount: (flow.edges || []).length,
         createdAt: flow.createdAt,
         updatedAt: flow.updatedAt,
         lastSyncedAt: flow.lastSyncedAt,
+      };
+      setCachedFlowGraph(clientId, flowId, flowPayload);
+    }
+
+    res.json({
+      success: true,
+      flow: {
+        id: flowPayload.flowId,
+        name: flowPayload.name,
+        platform: flowPayload.platform || 'whatsapp',
+        folderId: flowPayload.folderId || '',
+        isActive: flowPayload.status === 'PUBLISHED',
+        status: flowPayload.status || 'DRAFT',
+        version: flowPayload.version || 1,
+        nodes: flowPayload.nodes || [],
+        edges: flowPayload.edges || [],
+        nodeCount: (flowPayload.nodes || []).length,
+        edgeCount: (flowPayload.edges || []).length,
+        createdAt: flowPayload.createdAt,
+        updatedAt: flowPayload.updatedAt,
+        lastSyncedAt: flowPayload.lastSyncedAt,
       },
     });
+    timer.finish('200 ok');
   } catch (error) {
     console.error('[Flow API] Graph load error:', error);
     res.status(500).json({ success: false, message: error.message });
@@ -845,55 +896,50 @@ router.get('/:clientId/analytics', protect, async (req, res) => {
 });
 
 router.get('/:clientId/unanswered-questions', protect, async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const { dedupeAsync } = require('../utils/requestDedupe');
+  const { collectQuestionsBeforeFallbacks } = require('../utils/flowIntelligenceAggregations');
+  const timer = createTimer('GET /api/flow/unanswered-questions', req.params.clientId || '');
   try {
     const clientId = tenantClientId(req);
     if (!clientId || clientId !== req.params.clientId) {
+      timer.finish('403');
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
     const TrainingCase = require('../models/TrainingCase');
-    const Message = require('../models/Message');
 
-    // 1. Get Agent Corrections (Manual Bot Tuning)
-    const correctionsRaw = await TrainingCase.find({ clientId, status: 'pending' }).limit(50).sort({ createdAt: -1 });
-    const agentCorrections = correctionsRaw.map(c => ({
-      id: c._id,
-      query: c.userMessage,
-      wrongAnswer: c.botResponse,
-      correction: c.agentCorrection,
-      date: c.createdAt
-    }));
+    const payload = await dedupeAsync(`flow:unanswered:${clientId}`, async () => {
+      const correctionsRaw = await TrainingCase.find({ clientId, status: 'pending' })
+        .limit(50)
+        .sort({ createdAt: -1 })
+        .lean();
+      const agentCorrections = correctionsRaw.map((c) => ({
+        id: c._id,
+        query: c.userMessage,
+        wrongAnswer: c.botResponse,
+        correction: c.agentCorrection,
+        date: c.createdAt,
+      }));
 
-    // 2. Identify "Unanswered Questions" via Fallback Detection
-    // We look for bot messages where the bot admitted it didn't know the answer
-    const fallbackMessages = await Message.find({ 
-       clientId, 
-       direction: 'outgoing', 
-       content: { $regex: /I'm not sure|I don't understand|fallback|connect you to an agent|sorry, I didn't get that/i }
-    }).sort({ timestamp: -1 }).limit(20);
-    
-    const unansweredQuestions = [];
-    const seenQueries = new Set();
-
-    for (const msg of fallbackMessages) {
-       // Find the user message immediately preceding the fallback
-       const incomingMsg = await Message.findOne({ 
-           clientId, 
-           direction: 'incoming', 
-           conversationId: msg.conversationId,
-           timestamp: { $lt: msg.timestamp }
-       }).sort({ timestamp: -1 });
-       
-       if (incomingMsg && incomingMsg.content && !seenQueries.has(incomingMsg.content.toLowerCase())) {
-           seenQueries.add(incomingMsg.content.toLowerCase());
-           unansweredQuestions.push({ 
-               id: incomingMsg._id, 
-               query: incomingMsg.content, 
-               count: 1, 
-               date: msg.timestamp 
-           });
-       }
-    }
+      const rows = await collectQuestionsBeforeFallbacks(clientId, { limit: 20 });
+      const seenQueries = new Set();
+      const unansweredQuestions = [];
+      for (const row of rows) {
+        const q = String(row.query || '').trim();
+        if (!q) continue;
+        const key = q.toLowerCase();
+        if (seenQueries.has(key)) continue;
+        seenQueries.add(key);
+        unansweredQuestions.push({
+          id: row.queryId,
+          query: q,
+          count: 1,
+          date: row.date,
+        });
+      }
+      return { unansweredQuestions, agentCorrections };
+    });
 
     // 3. Generate AI Suggested Fixes
     // In a real scenario, we'd pipe the unansweredQuestions to Gemini here.
@@ -917,10 +963,11 @@ router.get('/:clientId/unanswered-questions', protect, async (req, res) => {
 
     res.json({
       success: true,
-      unansweredQuestions,
-      agentCorrections,
+      unansweredQuestions: payload.unansweredQuestions,
+      agentCorrections: payload.agentCorrections,
       aiSuggestions
     });
+    timer.finish(`200 ok | unanswered=${payload.unansweredQuestions?.length ?? 0}`);
 
   } catch (error) {
     console.error('Bot Intelligence API error:', error);
@@ -1096,41 +1143,22 @@ router.post('/:clientId/intelligence/reject-correction', protect, async (req, re
 // GET /api/flow/:clientId/intelligence/suggestions
 // Clusters unanswered questions by keyword frequency to suggest new flows
 router.get('/:clientId/intelligence/suggestions', protect, async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const { dedupeAsync } = require('../utils/requestDedupe');
+  const { collectQuestionsBeforeFallbacks } = require('../utils/flowIntelligenceAggregations');
+  const timer = createTimer('GET /api/flow/intelligence/suggestions', req.params.clientId || '');
   try {
     const clientId = tenantClientId(req);
     if (!clientId || clientId !== req.params.clientId) {
+      timer.finish('403');
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
-    const Message = require('../models/Message');
 
-    const FALLBACK_PHRASES = [
-      "I'm having trouble", "I don't understand", "I'm not sure",
-      "couldn't understand", "connect you to an agent", "please try again"
-    ];
-    const fallbackRegex = new RegExp(
-      FALLBACK_PHRASES.map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'i'
-    );
-
-    // Get fallback messages from last 30 days
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000);
-    const fallbacks = await Message.find({
-      clientId,
-      direction: 'outgoing',
-      content: { $regex: fallbackRegex },
-      timestamp: { $gte: thirtyDaysAgo }
-    }).sort({ timestamp: -1 }).limit(200).lean();
-
-    // Find the user question that preceded each fallback
-    const questions = [];
-    for (const f of fallbacks) {
-      const q = await Message.findOne({
-        clientId,
-        conversationId: f.conversationId,
-        direction: 'incoming',
-        timestamp: { $lt: f.timestamp }
-      }).sort({ timestamp: -1 }).select('content').lean();
-      if (q?.content) questions.push(q.content);
-    }
+    const rows = await dedupeAsync(`flow:intelligence:${clientId}`, () =>
+      collectQuestionsBeforeFallbacks(clientId, { limit: 200, since: thirtyDaysAgo })
+    );
+    const questions = rows.map((r) => String(r.query || '').trim()).filter(Boolean);
 
     // Cluster by keyword frequency (stop-words filtered)
     const stopWords = new Set(['what','when','where','how','does','your','this','that','have',
@@ -1158,8 +1186,10 @@ router.get('/:clientId/intelligence/suggestions', protect, async (req, res) => {
       }));
 
     res.json({ success: true, suggestions, totalUnanswered: questions.length });
+    timer.finish(`200 ok | suggestions=${suggestions.length}`);
   } catch (err) {
     console.error('[Intelligence] Suggestions error:', err);
+    timer.finish(`500 ${err.message}`);
     res.status(500).json({ success: false, error: err.message });
   }
 });

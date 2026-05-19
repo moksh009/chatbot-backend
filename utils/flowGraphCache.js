@@ -2,6 +2,7 @@
 
 const NodeCache = require("node-cache");
 const { getAppRedis } = require("./redisFactory");
+const { createTimer } = require("./perfLogger");
 
 const TTL_SEC = Number(process.env.FLOW_GRAPH_CACHE_TTL_SEC || 300);
 
@@ -46,22 +47,50 @@ function setCachedFlowGraph(clientId, flowRef, payload) {
 
 /** L2 Redis + L1 — use on hot path when L1 may be cold after deploy */
 async function getCachedFlowGraphAsync(clientId, flowRef) {
+  const timer = createTimer("FlowGraphCache.getCachedFlowGraphAsync", `${clientId}:${flowRef}`);
+  timer.checkpoint("START");
+
   const hit = getCachedFlowGraph(clientId, flowRef);
-  if (hit) return hit;
+  if (hit) {
+    timer.checkpoint("L1 CACHE HIT", {
+      nodeCount: hit?.nodes?.length,
+      edgeCount: hit?.edges?.length,
+    });
+    timer.finish("l1_cache_hit");
+    return hit;
+  }
+  timer.checkpoint("L1 CACHE MISS");
 
   const redis = getAppRedis();
-  if (!redis || redis.status !== "ready") return null;
+  if (!redis || redis.status !== "ready") {
+    timer.log("Redis not available — caller will load from MongoDB");
+    timer.finish("redis_unavailable");
+    return null;
+  }
 
   try {
-    let raw = await redis.get(redisKey(clientId, flowRef));
+    let raw = await timer.time("Redis GET flow_graph key", () =>
+      redis.get(redisKey(clientId, flowRef))
+    );
     if (!raw && flowRef) {
-      raw = await redis.get(redisKey(clientId, String(flowRef)));
+      raw = await timer.time("Redis GET alternate flowRef key", () =>
+        redis.get(redisKey(clientId, String(flowRef)))
+      );
     }
-    if (!raw) return null;
+    if (!raw) {
+      timer.finish("redis_cache_miss");
+      return null;
+    }
     const payload = JSON.parse(raw);
     setCachedFlowGraph(clientId, flowRef, payload);
+    timer.checkpoint("parsed + stored in L1", {
+      nodeCount: payload?.nodes?.length,
+      edgeCount: payload?.edges?.length,
+    });
+    timer.finish("redis_cache_hit");
     return payload;
-  } catch (_) {
+  } catch (err) {
+    timer.finish(`error: ${err.message}`);
     return null;
   }
 }

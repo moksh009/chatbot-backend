@@ -10,6 +10,9 @@ const DailyStatSchema = new mongoose.Schema({
   appointmentRemindersSent: { type: Number, default: 0 },
   totalMessagesExchanged: { type: Number, default: 0 },
   agentRequests: { type: Number, default: 0 },
+  /** Rollup-computed (Phase 3) — distinct human / AI handled conversations per day */
+  humanHandled: { type: Number, default: 0 },
+  aiHandled: { type: Number, default: 0 },
   linkClicks: { type: Number, default: 0 },
   addToCarts: { type: Number, default: 0 },
   checkouts: { type: Number, default: 0 },
@@ -38,6 +41,8 @@ const DailyStatSchema = new mongoose.Schema({
   bookingRevenue:        { type: Number, default: 0 },
   appointmentsCancelled: { type: Number, default: 0 },
   orders:                { type: Number, default: 0 },
+  /** Order-only revenue for the day (rollup); total revenue may include bookingRevenue */
+  orderRevenue:          { type: Number, default: 0 },
   revenue:               { type: Number, default: 0 },
   
   // Phase 11: Hyper-Ecommerce KPIs
@@ -52,7 +57,10 @@ const DailyStatSchema = new mongoose.Schema({
   flowsCompleted:         { type: Number, default: 0 },
 
   // Phase 26: Flow Analytics Heatmap
-  flowHeatmap: { type: Map, of: Number, default: {} } // { "node_id": visitCount }
+  flowHeatmap: { type: Map, of: Number, default: {} }, // { "node_id": visitCount }
+
+  /** When aggregateDayMetrics last wrote rollup fields for this row */
+  rollupComputedAt: { type: Date },
 });
 
 // Ensure unique stats per client per day

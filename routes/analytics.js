@@ -1,3 +1,10 @@
+/**
+ * Dashboard analytics routes (EcommerceDashboard.jsx):
+ * - GET /realtime — StatCache + PixelEvent/LinkClick/DailyStat/Order/Conversation aggregations
+ * - GET / — timeline: GCal listEvents + Message/Appointment/Order/PixelEvent parallel aggregations
+ * - GET /top-products — Order.aggregate (+ Appointment fallback)
+ * - GET /operators — ConversationAssignment + Conversation + User aggregations
+ */
 const express = require('express');
 const router = express.Router();
 const { resolveClient, startOfDayIST, tenantClientId } = require('../utils/queryHelpers');
@@ -14,6 +21,14 @@ const { protect } = require('../middleware/auth');
 const ActivityLog = require('../models/ActivityLog');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { apiCache } = require('../middleware/apiCache');
+const { getCachedClient } = require('../utils/clientCache');
+const {
+  MAX_LIVE_ANALYTICS_DAYS,
+  getRealtimeStats,
+  getTopProducts,
+  getTimelineStats,
+  getOperatorsStats,
+} = require('../utils/analyticsHelper');
 
 // Platform-funded analytics routes always use the platform API key
 const getGeminiClient = () => {
@@ -105,7 +120,7 @@ router.get('/import-sessions', protect, apiCache(30), async (req, res) => {
 // GET /api/analytics/flow-heatmap
 // @desc    Get node visit distribution for visual heatmap overlay (Phase R4: Uses FlowAnalytics)
 // @access  Private
-router.get('/flow-heatmap', protect, async (req, res) => {
+router.get('/flow-heatmap', protect, apiCache(60), async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) {
@@ -330,7 +345,7 @@ router.get('/flow-observability', protect, async (req, res) => {
 // GET /api/analytics/bot-health
 // @desc    Get real-time health status of the bot (mocked/calculated)
 // @access  Private
-router.get('/bot-health', protect, async (req, res) => {
+router.get('/bot-health', protect, apiCache(30), async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) {
@@ -355,321 +370,66 @@ router.get('/bot-health', protect, async (req, res) => {
 });
 
 router.get('/realtime', protect, apiCache(60), async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const timer = createTimer(
+    'GET /api/analytics/realtime',
+    req.query.clientId || req.user?.clientId || ''
+  );
+  timer.checkpoint('START');
+
   try {
     const clientId = tenantClientId(req);
     if (!clientId) {
+      timer.finish('403 unauthorized');
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
-    // Performance Overhaul: Single document lookup replaces 17 aggregation queries
-    const { getStats } = require('../utils/statCacheEngine');
-    const stats = await getStats(clientId);
+    const client = await timer.time('getCachedClient', () =>
+      getCachedClient(clientId, 'businessName name')
+    );
+    const rawRealtimeDays = parseInt(req.query.days, 10) || 1;
+    const days = Math.min(Math.max(rawRealtimeDays, 1), MAX_LIVE_ANALYTICS_DAYS);
 
-    if (!stats) {
-      return res.status(404).json({ message: 'Client not found or stats unavailable' });
-    }
-
-    // Fetch client name (lightweight — indexed unique lookup)
-    const client = await Client.findOne({ clientId }).select('businessName name').lean();
-
-    // Phase 28: Timeline Selector Integration
-    const days = parseInt(req.query.days) || 1;
-    const startDate = new Date();
-    if (days > 1) {
-      startDate.setDate(startDate.getDate() - (days - 1));
-    }
-    startDate.setHours(0, 0, 0, 0);
-
-    const [realtimeCarts, realtimeClicks, flowPerfAgg, optStatusAgg, pixelFunnelAgg, rtoRiskAgg] = await Promise.all([
-      require('../models/PixelEvent').countDocuments({ clientId, eventName: { $in: ['product_added_to_cart', 'add_to_cart', 'checkout_started'] }, timestamp: { $gte: startDate } }),
-      require('../models/LinkClickEvent').countDocuments({ clientId, timestamp: { $gte: startDate } }),
-      DailyStat.aggregate([
-        {
-          $match: {
-            clientId,
-            date: {
-              $gte: startDate.toISOString().split('T')[0],
-              $lte: new Date().toISOString().split('T')[0]
-            }
-          }
-        },
-        {
-          $group: {
-            _id: null,
-            flowsSent: { $sum: { $ifNull: ['$flowsSent', 0] } },
-            flowsCompleted: { $sum: { $ifNull: ['$flowsCompleted', 0] } }
-          }
-        }
-      ]),
-      AdLead.aggregate([
-        { $match: { clientId } },
-        { $group: { _id: { $ifNull: ['$optStatus', 'unknown'] }, count: { $sum: 1 } } }
-      ]),
-      require('../models/PixelEvent').aggregate([
-        {
-          $match: {
-            clientId,
-            timestamp: { $gte: startDate },
-            eventName: { $in: ['product_added_to_cart', 'add_to_cart', 'checkout_started', 'checkout_completed'] }
-          }
-        },
-        { $group: { _id: '$eventName', count: { $sum: 1 } } }
-      ]),
-      Order.aggregate([
-        { $match: { clientId, createdAt: { $gte: startDate } } },
-        {
-          $group: {
-            _id: { $ifNull: ['$rtoRiskLevel', 'unknown'] },
-            count: { $sum: 1 },
-            gmv: { $sum: { $ifNull: ['$amount', 0] } }
-          }
-        }
-      ])
-    ]);
-
-    // Task 1.2: Human Handled & AI Handled
-    const ConversationAssignment = require('../models/ConversationAssignment');
-    const humanHandledAgg = await ConversationAssignment.aggregate([
-      { $match: { clientId, assignedAt: { $gte: startDate } } },
-      { $group: { _id: "$conversationId" } },
-      { $count: "count" }
-    ]);
-    const humanHandled = humanHandledAgg[0]?.count || 0;
-
-    const Message = require('../models/Message');
-    const aiHandledAgg = await Message.aggregate([
-      { $match: { clientId, timestamp: { $gte: startDate }, direction: 'outgoing' } },
-      { $group: { _id: "$conversationId" } },
-      {
-        $lookup: {
-          from: 'conversationassignments',
-          localField: '_id',
-          foreignField: 'conversationId',
-          pipeline: [
-            { $match: { assignedAt: { $gte: startDate } } }
-          ],
-          as: 'assignments'
-        }
-      },
-      { $match: { assignments: { $size: 0 } } },
-      { $count: "count" }
-    ]);
-    const aiHandled = aiHandledAgg[0]?.count || 0;
-    const totalHandled = aiHandled + humanHandled;
-    
-    // Task 1.2 Update: Accurate AI Resolution Rate
-    const aiResRateAgg = await require('../models/Conversation').aggregate([
-      { $match: { clientId, resolvedAt: { $gte: startDate } } },
-      { $group: {
-          _id: null,
-          totalResolved: { $sum: 1 },
-          aiResolved: { $sum: { $cond: [{ $not: ["$assignedTo"] }, 1, 0] } }
-      }}
-    ]);
-    const resStats = aiResRateAgg[0] || { totalResolved: 0, aiResolved: 0 };
-    const aiResolutionRate = resStats.totalResolved > 0 ? (resStats.aiResolved / resStats.totalResolved) * 100 : 0;
-
-    const flowPerf = flowPerfAgg[0] || { flowsSent: 0, flowsCompleted: 0 };
-    const flowCompletionRate = flowPerf.flowsSent > 0 ? (flowPerf.flowsCompleted / flowPerf.flowsSent) * 100 : 0;
-
-    const optMap = Object.fromEntries(optStatusAgg.map(r => [String(r._id || 'unknown'), r.count || 0]));
-    const totalOptLeads = Object.values(optMap).reduce((acc, n) => acc + n, 0);
-    const optedInCount = optMap.opted_in || 0;
-    const optedOutCount = optMap.opted_out || 0;
-    const optInRate = totalOptLeads > 0 ? (optedInCount / totalOptLeads) * 100 : 0;
-
-    const funnelMap = Object.fromEntries(pixelFunnelAgg.map(r => [r._id, r.count || 0]));
-    const addToCartCount = (funnelMap.add_to_cart || 0) + (funnelMap.product_added_to_cart || 0);
-    const checkoutCompletedCount = funnelMap.checkout_completed || 0;
-    const checkoutConversionRate = addToCartCount > 0 ? (checkoutCompletedCount / addToCartCount) * 100 : 0;
-
-    const totalRiskOrders = rtoRiskAgg.reduce((acc, row) => acc + (row.count || 0), 0);
-    const highRiskRow = rtoRiskAgg.find(row => String(row._id || '').toLowerCase() === 'high');
-    const highRiskOrders = highRiskRow?.count || 0;
-    const highRiskGmv = highRiskRow?.gmv || 0;
-    const highRiskShare = totalRiskOrders > 0 ? (highRiskOrders / totalRiskOrders) * 100 : 0;
-
-    const attributionAgg = await require('../models/PixelEvent').aggregate([
-      { $match: { clientId, timestamp: { $gte: startDate } } },
-      {
-        $group: {
-          _id: {
-            session: { $ifNull: ["$sessionId", "$ip"] },
-            source: {
-              $switch: {
-                branches: [
-                  { case: { $regexMatch: { input: { $ifNull: ["$url", ""] }, regex: /utm_source=(meta|facebook|ig|fb|instagram)/i } }, then: "Meta Ads" },
-                  { case: { $regexMatch: { input: { $ifNull: ["$url", ""] }, regex: /utm_source=(google|gads)/i } }, then: "Google Ads" },
-                ],
-                default: "Direct/Organic"
-              }
-            }
-          }
-        }
-      },
-      { $group: { _id: "$_id.source", count: { $sum: 1 } } },
-      { $project: { source: "$_id", count: 1, _id: 0 } }
-    ]);
-
-    // Map StatCache to the existing /realtime response shape (backward-compatible)
-    res.json({
-      businessName: client?.businessName || client?.name || clientId,
-      leads: { total: stats.totalLeads, newToday: stats.leadsToday },
-      orders: { count: stats.ordersToday, revenue: stats.revenueToday },
-      linkClicks: realtimeClicks || stats.totalLinkClicks,
-      agentRequests: humanHandled, // Overriding the dailyStat placeholder
-      aiHandled: aiHandled,
-      humanHandled: humanHandled,
-      addToCarts: realtimeCarts || stats.totalAddToCarts,
-      checkouts: stats.totalCheckouts,
-      abandonedCarts: stats.abandonedCarts,
-      recoveredCarts: stats.recoveredCarts,
-      abandonedCartSent: stats.abandonedCartSent,
-      abandonedCartClicks: stats.abandonedCartClicks,
-      funnel: {
-        totalOrdersAllTime: stats.totalOrders,
-        whatsappRecoveriesPurchased: stats.whatsappRecoveriesPurchased,
-        adminFollowupsPurchased: stats.adminFollowupsPurchased
-      },
-      attribution: attributionAgg.length > 0 ? attributionAgg : [{ source: 'Direct/Organic', count: 1 }],
-      sentiment: stats.sentimentCounts || { Positive: 0, Neutral: 0, Negative: 0, Frustrated: 0, Urgent: 0, Unknown: 0 },
-      enterprise: {
-        aiResolutionRate,
-        flowCompletionRate,
-        checkoutConversionRate,
-        optInRate,
-        highRiskShare,
-        highRiskGmv,
-        counts: {
-          aiHandled,
-          humanHandled,
-          flowsSent: flowPerf.flowsSent || 0,
-          flowsCompleted: flowPerf.flowsCompleted || 0,
-          addToCartCount,
-          checkoutCompletedCount,
-          optedInCount,
-          optedOutCount,
-          highRiskOrders,
-          totalRiskOrders
-        }
-      }
-    });
-
+    const payload = await getRealtimeStats(clientId, client, days, { timer });
+    timer.finish('200 ok');
+    res.json(payload);
   } catch (error) {
+    timer.finish(`500 error=${error.message}`);
+    if (error.statusCode === 404) {
+      return res.status(404).json({ message: error.message });
+    }
     console.error('Realtime Analytics Error:', error);
     res.status(500).json({ message: 'Server Error' });
   }
 });
 
 router.get('/leads', protect, apiCache(30), async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const { fetchLeadsAnalyticsBundle } = require('../utils/leadsAnalyticsFacet');
+  const timer = createTimer('GET /api/analytics/leads', tenantClientId(req) || '');
   try {
     const clientId = tenantClientId(req);
     if (!clientId) {
+      timer.finish('403');
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
-    const query = { clientId };
-
     const { limit = 20, search = '', page = 1, tag, segmentScore, lastSeen, sortBy } = req.query;
-    const pageNum = parseInt(page) || 1;
-    /** Cap raised so segment builder / exports can request deeper pages without a separate endpoint. */
-    const limitNum = Math.min(parseInt(limit) || 20, 500);
-
-    if (search) {
-      const searchRegex = new RegExp(search, 'i');
-      query.$or = [
-        { name: searchRegex },
-        { phoneNumber: searchRegex }
-      ];
-    }
-    
-    // Server-side Filtering
-    if (tag) {
-      query.tags = tag;
-    }
-    
-    if (segmentScore) {
-      const [min, max] = segmentScore.split('-').map(Number);
-      if (!isNaN(min) && !isNaN(max)) query.leadScore = { $gte: min, $lte: max };
-    }
-    
-    if (lastSeen) {
-      const days = lastSeen === '24h' ? 1 : lastSeen === '7d' ? 7 : lastSeen === '14d' ? 14 : lastSeen === '1m' ? 30 : lastSeen === '6m' ? 180 : 0;
-      if (days > 0) {
-        const date = new Date();
-        date.setDate(date.getDate() - days);
-        query.lastInteraction = { $gte: date };
-      }
-    }
-
-    const skip = (pageNum - 1) * limitNum;
-
-    const leadListProjection =
-      'name phoneNumber leadScore tags lastInteraction chatSummary cartStatus lastMessageContent lastInboundAt linkClicks email ordersCount totalSpent intentState addToCartCount meta createdAt pendingSupport lastPurchaseDate source adAttribution cartValue lifetimeValue checkoutInitiatedCount optInSource inboundMessageCount';
-
-    let sortObj = { lastInteraction: -1 };
-    if (sortBy === 'score') sortObj = { leadScore: -1 };
-    else if (sortBy === 'ltv') sortObj = { totalSpent: -1 };
-    else if (sortBy === 'name') sortObj = { name: 1 };
-    else if (sortBy === 'clicks') sortObj = { linkClicks: -1 };
-    else if (sortBy === 'lastPurchase') sortObj = { lastPurchaseDate: -1 };
-    else if (sortBy === 'orders') sortObj = { ordersCount: -1 };
-    else if (sortBy === 'cartValue') sortObj = { cartValue: -1 };
-
-    const fetchLeadsPage = async () => {
-      if (sortBy === 'aov') {
-        return AdLead.aggregate([
-          { $match: query },
-          {
-            $addFields: {
-              __aovSort: {
-                $cond: {
-                  if: { $gt: ['$ordersCount', 0] },
-                  then: { $divide: [{ $ifNull: ['$totalSpent', 0] }, '$ordersCount'] },
-                  else: 0
-                }
-              }
-            }
-          },
-          { $sort: { __aovSort: -1, _id: -1 } },
-          { $skip: skip },
-          { $limit: limitNum },
-          { $project: { __aovSort: 0 } }
-        ]);
-      }
-      return AdLead.find(query)
-        .sort(sortObj)
-        .skip(skip)
-        .limit(limitNum)
-        .select(leadListProjection)
-        .lean();
-    };
-
-    const [leads, total, activeToday, withConversation, highEngagement] = await Promise.all([
-      fetchLeadsPage(),
-      AdLead.countDocuments(query),
-      AdLead.countDocuments({ clientId, lastInboundAt: { $gte: new Date(new Date().setHours(0,0,0,0)) } }),
-      AdLead.countDocuments({ clientId, $or: [{ chatSummary: { $exists: true, $ne: "" } }, { lastMessageContent: { $exists: true, $ne: "" } }] }),
-      AdLead.countDocuments({ clientId, linkClicks: { $gt: 5 } })
-    ]);
-
-    const totalPages = Math.ceil(total / limitNum);
-
-    res.json({
-      leads,
-      currentPage: pageNum,
-      totalPages,
-      totalLeads: total,
-      summary: {
-        activeToday,
-        withConversation,
-        highEngagement
-      },
-      pagination: { page: pageNum, limit: limitNum, total, totalPages }
+    const payload = await fetchLeadsAnalyticsBundle(clientId, {
+      search,
+      tag,
+      segmentScore,
+      lastSeen,
+      sortBy,
+      page,
+      limit,
     });
 
+    timer.finish(`200 ok | page=${payload.currentPage} count=${payload.leads.length}`);
+    res.json(payload);
   } catch (error) {
     console.error('Leads Fetch Error:', error);
+    timer.finish(`500 ${error.message}`);
     res.status(500).json({ message: 'Server Error' });
   }
 });
@@ -994,71 +754,25 @@ router.get('/top-leads', protect, apiCache(60), async (req, res) => {
 
 // GET /api/analytics/top-products
 router.get('/top-products', protect, apiCache(60), async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const timer = createTimer(
+    'GET /api/analytics/top-products',
+    req.query.clientId || req.user?.clientId || ''
+  );
+  timer.checkpoint('START');
+
   try {
     const clientId = tenantClientId(req);
     if (!clientId) {
+      timer.finish('403 unauthorized');
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
-    const query = { clientId };
 
-    const topProducts = await Order.aggregate([
-      { $match: query },
-      { $unwind: "$items" },
-      {
-        $group: {
-          _id: "$items.name",
-          totalRevenue: { $sum: { $multiply: ["$items.price", "$items.quantity"] } },
-          totalSold: { $sum: "$items.quantity" }
-        }
-      },
-      { $sort: { totalRevenue: -1 } },
-      { $limit: 10 },
-      {
-        $project: {
-          name: "$_id",
-          revenue: "$totalRevenue",
-          sold: "$totalSold",
-          _id: 0
-        }
-      }
-    ]);
-
-    if (topProducts.length > 0) {
-      return res.json(topProducts);
-    }
-
-    // Fallback for Service-based businesses (Clinic, Salon, Turf)
-    // Directly aggregate revenue from valid Appointments regardless of pre-defined Service models
-    // This allows dynamically mapped/upselled services (like "Haircut + Mirror Shine Boto Smooth") to natively track revenue.
-    const topServices = await Appointment.aggregate([
-      {
-        $match: {
-          ...query,
-          status: { $ne: 'cancelled' },
-          revenue: { $gt: 0 } // Only group appointments that actually generated revenue
-        }
-      },
-      {
-        $group: {
-          _id: "$service",
-          totalRevenue: { $sum: "$revenue" },
-          totalSold: { $sum: 1 }
-        }
-      },
-      { $sort: { totalRevenue: -1 } }, // Always sort by highest revenue, not just quantity
-      { $limit: 10 },
-      {
-        $project: {
-          name: "$_id",
-          revenue: "$totalRevenue",
-          sold: "$totalSold",
-          _id: 0
-        }
-      }
-    ]);
-
-    res.json(topServices);
+    const topProducts = await getTopProducts(clientId, { timer });
+    timer.finish(`200 ok count=${topProducts.length}`);
+    res.json(topProducts);
   } catch (error) {
+    timer.finish(`500 error=${error.message}`);
     console.error('Top Products Error:', error);
     res.status(500).json({ message: 'Server Error' });
   }
@@ -1129,10 +843,16 @@ router.get('/receptionist-overview', protect, apiCache(60), async (req, res) => 
     const query = { clientId };
 
     // Fetch DB appointments created/for this client
+    const apptSince = new Date(today);
+    apptSince.setDate(apptSince.getDate() - Math.max(daysToFetch, 1));
     const dbAppointments = await Appointment.find({
       ...query,
-      status: { $ne: 'cancelled' }
-    }).select('eventId name phone service status createdAt').lean();
+      status: { $ne: 'cancelled' },
+      createdAt: { $gte: apptSince },
+    })
+      .select('eventId name phone service status createdAt')
+      .limit(2000)
+      .lean();
 
     // 3. Merge Events - O(1) Hash Map approach to fix N+1 Loop
     const appointmentMap = {};
@@ -1232,244 +952,70 @@ router.get('/receptionist-overview', protect, apiCache(60), async (req, res) => 
   }
 });
 
-router.get('/', protect, async (req, res) => {
+// GET /api/analytics/overview-bundle — Phase 8: one call for Analytics first paint
+router.get('/overview-bundle', protect, apiCache(60), async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const { dedupeAsync } = require('../utils/requestDedupe');
+  const { getAnalyticsOverviewBundle } = require('../utils/analyticsOverviewBundle');
+  const timer = createTimer(
+    'GET /api/analytics/overview-bundle',
+    req.query.clientId || req.user?.clientId || ''
+  );
   try {
     const clientId = tenantClientId(req);
     if (!clientId) {
+      timer.finish('403');
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    const key = `analytics:overview:${clientId}:${JSON.stringify({
+      days: req.query.days,
+      start: req.query.start,
+      end: req.query.end,
+      phoneNumberId: req.query.phoneNumberId,
+    })}`;
+    const payload = await dedupeAsync(key, () =>
+      getAnalyticsOverviewBundle(clientId, req.query, { timer })
+    );
+    timer.finish(`200 ok | stats=${payload.stats?.length ?? 0}`);
+    res.json({ success: true, ...payload });
+  } catch (error) {
+    timer.finish(`500 ${error.message}`);
+    console.error('[Analytics] overview-bundle error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+router.get('/', protect, apiCache(120), async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const timer = createTimer(
+    'GET /api/analytics',
+    req.query.clientId || req.user?.clientId || ''
+  );
+  timer.checkpoint('START');
+
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      timer.finish('403 unauthorized');
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
-    const clientIdQuery = { clientId };
+    const { start, end, days } = req.query;
+    const client = await timer.time('getCachedClient', () =>
+      getCachedClient(clientId, 'googleCalendarId config.calendars businessName name')
+    );
 
-    // Date Range Prioritization
-    let { start, end, days } = req.query;
-    const endDate = end ? new Date(end) : new Date();
-    const startDate = start ? new Date(start) : new Date();
-    
-    if (!start) {
-      const dayCount = parseInt(days) || 7;
-      startDate.setDate(endDate.getDate() - dayCount);
-    }
-    
-    startDate.setHours(0, 0, 0, 0);
-    endDate.setHours(23, 59, 59, 999);
+    const stats = await getTimelineStats(
+      clientId,
+      client,
+      { start, end, days },
+      { timer }
+    );
 
-    // Helper to generate date range (YYYY-MM-DD)
-    const dates = [];
-    for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
-      dates.push(d.toISOString().split('T')[0]);
-    }
-
-    // --- FETCH GCAL EVENTS FOR APPOINTMENTS ---
-    const client = await Client.findOne({ clientId });
-    const calendarIds = new Set();
-    if (client?.googleCalendarId) calendarIds.add(client.googleCalendarId);
-    if (client?.config?.calendars) {
-      Object.values(client.config.calendars).forEach(id => calendarIds.add(id));
-    }
-    if (calendarIds.size === 0) calendarIds.add('primary');
-
-    // --- FETCH GCAL EVENTS & AGGREGATIONS IN PARALLEL ---
-    const [
-      gcalResults,
-      conversationActivity,
-      appointments,
-      messages,
-      reminderStats,
-      orders,
-      cartEvents,
-      linkClickEvents,
-      humanHandledAgg,
-      aiHandledAgg,
-      attributionAgg
-    ] = await Promise.all([
-      // GCal
-      Promise.all(Array.from(calendarIds).map(calId =>
-        listEvents(startDate.toISOString(), endDate.toISOString(), calId).catch(() => [])
-      )),
-      // 1. Conversations
-      Message.aggregate([
-        { $match: { ...clientIdQuery, timestamp: { $gte: startDate, $lte: endDate } } },
-        { $group: { _id: { date: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } }, conversationId: '$conversationId' } } },
-        { $group: { _id: '$_id.date', count: { $sum: 1 } } }
-      ]),
-      // 3. Appointments
-      Appointment.aggregate([
-        { $match: { ...clientIdQuery, createdAt: { $gte: startDate, $lte: endDate } } },
-        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } }, count: { $sum: 1 }, revenue: { $sum: { $ifNull: ["$revenue", 0] } } } }
-      ]),
-      // 4. Messages
-      Message.aggregate([
-        { $match: { ...clientIdQuery, timestamp: { $gte: startDate, $lte: endDate } } },
-        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } }, count: { $sum: 1 } } }
-      ]),
-      // 5. DailyStat
-      DailyStat.find({ ...clientIdQuery, date: { $gte: dates[0], $lte: dates[dates.length - 1] } }),
-      // 6. Orders
-      Order.aggregate([
-        { $match: { ...clientIdQuery, createdAt: { $gte: startDate, $lte: endDate } } },
-        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } }, count: { $sum: 1 }, revenue: { $sum: "$amount" } } }
-      ]),
-      // 7. Cart Events (Atomic)
-      require('../models/PixelEvent').aggregate([
-        { $match: { ...clientIdQuery, eventName: { $in: ['product_added_to_cart', 'add_to_cart', 'checkout_started'] }, timestamp: { $gte: startDate, $lte: endDate } } },
-        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } }, count: { $sum: 1 } } }
-      ]),
-      // 8. Link Clicks (Atomic)
-      require('../models/LinkClickEvent').aggregate([
-        { $match: { ...clientIdQuery, timestamp: { $gte: startDate, $lte: endDate } } },
-        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } }, count: { $sum: 1 } } }
-      ]),
-      // 9. Human Handled (Task 1.2)
-      require('../models/ConversationAssignment').aggregate([
-        { $match: { ...clientIdQuery, assignedAt: { $gte: startDate, $lte: endDate } } },
-        { $group: { _id: { date: { $dateToString: { format: "%Y-%m-%d", date: "$assignedAt" } }, conversationId: "$conversationId" } } },
-        { $group: { _id: "$_id.date", count: { $sum: 1 } } }
-      ]),
-      // 10. AI Handled (Task 1.2)
-      Message.aggregate([
-        { $match: { ...clientIdQuery, timestamp: { $gte: startDate, $lte: endDate }, direction: 'outgoing' } },
-        { $group: { _id: { date: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } }, conversationId: "$conversationId" } } },
-        {
-          $lookup: {
-            from: 'conversationassignments',
-            let: { cId: "$_id.conversationId", d: "$_id.date" },
-            pipeline: [
-              { $match: { $expr: { $and: [
-                { $eq: ["$conversationId", "$$cId"] },
-                { $eq: [{ $dateToString: { format: "%Y-%m-%d", date: "$assignedAt" } }, "$$d"] }
-              ] } } }
-            ],
-            as: 'assignments'
-          }
-        },
-        { $match: { assignments: { $size: 0 } } },
-        { $group: { _id: "$_id.date", count: { $sum: 1 } } }
-      ]),
-      // 11. Attribution (Task 1.3)
-      require('../models/PixelEvent').aggregate([
-        { $match: { ...clientIdQuery, timestamp: { $gte: startDate, $lte: endDate } } },
-        {
-          $group: {
-            _id: {
-              session: { $ifNull: ["$sessionId", "$ip"] },
-              source: {
-                $switch: {
-                  branches: [
-                    { case: { $regexMatch: { input: { $ifNull: ["$url", ""] }, regex: /utm_source=(meta|facebook|ig|fb|instagram)/i } }, then: "Meta Ads" },
-                    { case: { $regexMatch: { input: { $ifNull: ["$url", ""] }, regex: /utm_source=(google|gads)/i } }, then: "Google Ads" },
-                  ],
-                  default: "Direct/Organic"
-                }
-              }
-            }
-          }
-        },
-        { $group: { _id: "$_id.source", count: { $sum: 1 } } },
-        { $project: { source: "$_id", count: 1, _id: 0 } }
-      ])
-    ]);
-
-    // Process GCal results into same flat map
-    let gcalCounts = {};
-    const allEvents = gcalResults.flat();
-    allEvents.forEach(event => {
-      const start = event.start.dateTime || event.start.date;
-      if (start) {
-        const dateStr = start.split('T')[0];
-        gcalCounts[dateStr] = (gcalCounts[dateStr] || 0) + 1;
-      }
-    });
-
-    // ------------------------------------------
-
-    // Merge Data
-    const stats = dates.map(date => {
-      const convActivityForDay = conversationActivity.find(c => c._id === date)?.count || 0;
-      const chatCount = convActivityForDay;
-      const userCount = convActivityForDay;
-      // Use GCal count instead of DB aggregation
-      const apptCount = gcalCounts[date] || 0;
-      const msgCount = messages.find(c => c._id === date)?.count || 0;
-      const dayReminder = reminderStats.find(r => r.date === date);
-      const bdayCount = dayReminder?.birthdayRemindersSent || 0;
-      const apptRemCount = dayReminder?.appointmentRemindersSent || 0;
-      const dayOrder = orders.find(c => c._id === date);
-      const orderCount = dayOrder?.count || 0;
-      const orderRevenue = dayOrder?.revenue || 0;
-      const cartCount = cartEvents.find(c => c._id === date)?.count || 0;
-      const linkClickCount = linkClickEvents.find(c => c._id === date)?.count || 0;
-      const humanHandled = humanHandledAgg.find(c => c._id === date)?.count || 0;
-      const aiHandled = aiHandledAgg.find(c => c._id === date)?.count || 0;
-      const checkoutCount = dayReminder?.checkouts || 0;
-      const abandonedCartSent = dayReminder?.abandonedCartSent || 0;
-      const abandonedCartClicks = dayReminder?.abandonedCartClicks || 0;
-      const recoveredViaStep1 = dayReminder?.recoveredViaStep1 || 0;
-      const recoveredViaStep2 = dayReminder?.recoveredViaStep2 || 0;
-      const recoveredViaStep3 = dayReminder?.recoveredViaStep3 || 0;
-      const codNudgesSent = dayReminder?.codNudgesSent || 0;
-      const rtoCostSaved = dayReminder?.rtoCostSaved || 0;
-      const codConvertedRevenue = dayReminder?.codConvertedRevenue || 0;
-      const codConvertedCount = dayReminder?.codConvertedCount || 0;
-      const cartRevenueRecovered = dayReminder?.cartRevenueRecovered || 0;
-      const flowsSent = dayReminder?.flowsSent || 0;
-      const flowsCompleted = dayReminder?.flowsCompleted || 0;
-      const browseAbandonedCount = dayReminder?.browseAbandonedCount || 0;
-      const upsellSentCount = dayReminder?.upsellSentCount || 0;
-      const upsellConvertedCount = dayReminder?.upsellConvertedCount || 0;
-      const upsellRevenue = dayReminder?.upsellRevenue || 0;
-      const marketingMessagesSent = dayReminder?.marketingMessagesSent || 0;
-      const aiResolutionRateDay = (humanHandled + aiHandled) > 0 ? ((aiHandled / (humanHandled + aiHandled)) * 100) : 0;
-      const flowCompletionRateDay = flowsSent > 0 ? ((flowsCompleted / flowsSent) * 100) : 0;
-
-      const dayAppointment = appointments.find(c => c._id === date);
-      const apptRevenue = dayAppointment?.revenue || 0;
-
-      // Unify revenue logically. If it's a salon, orderRevenue is probably 0, and apptRevenue has the value. This ensures generic tracking.
-      const totalRevenue = orderRevenue + apptRevenue;
-
-      return {
-        date,
-        totalChats: chatCount,
-        uniqueUsers: userCount,
-        appointmentsBooked: apptCount,
-        totalMessagesExchanged: msgCount,
-        birthdayRemindersSent: bdayCount,
-        appointmentRemindersSent: apptRemCount,
-        orders: orderCount,
-        revenue: totalRevenue,
-        apptRevenue: apptRevenue,
-        orderRevenue: orderRevenue,
-        addToCarts: cartCount,
-        linkClicks: linkClickCount,
-        humanHandled: humanHandled,
-        aiHandled: aiHandled,
-        agentRequests: humanHandled, // For backwards compatibility if frontend uses this
-        checkouts: checkoutCount,
-        abandonedCartSent,
-        abandonedCartClicks,
-        recoveredViaStep1,
-        recoveredViaStep2,
-        recoveredViaStep3,
-        codNudgesSent,
-        rtoCostSaved,
-        codConvertedRevenue,
-        codConvertedCount,
-        cartRevenueRecovered,
-        flowsSent,
-        flowsCompleted,
-        browseAbandonedCount,
-        upsellSentCount,
-        upsellConvertedCount,
-        upsellRevenue,
-        marketingMessagesSent,
-        aiResolutionRate: Number(aiResolutionRateDay.toFixed(2)),
-        flowCompletionRate: Number(flowCompletionRateDay.toFixed(2))
-      };
-    });
-
+    timer.finish(`200 ok | rows=${stats.length}`);
     res.json(stats);
   } catch (error) {
+    timer.finish(`500 error=${error.message}`);
     console.error('Analytics Aggregation Error:', error);
     res.status(500).json({ message: 'Server Error' });
   }
@@ -1477,13 +1023,17 @@ router.get('/', protect, async (req, res) => {
 
 
 // GET /api/analytics/insights (Advanced USP Features)
-router.get('/insights', protect, async (req, res) => {
+router.get('/insights', protect, apiCache(120), async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const { dedupeAsync } = require('../utils/requestDedupe');
+  const { getBoundedInsights } = require('../utils/analyticsOverviewBundle');
+  const timer = createTimer('GET /api/analytics/insights', req.query.clientId || '');
   try {
     const clientId = tenantClientId(req);
     if (!clientId) {
+      timer.finish('403');
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
-    const query = { clientId };
 
     const days = parseInt(req.query.days, 10);
     let startDate = req.query.startDate ? new Date(req.query.startDate) : null;
@@ -1493,63 +1043,13 @@ router.get('/insights', protect, async (req, res) => {
       endDate = new Date();
     }
 
-    const {
-      calculateAverageLTV,
-      calculateAverageOrderValue,
-    } = require('../utils/customerOrderMetrics');
-
-    const [appts, orders, leads, avgLTV, avgOrderValue] = await Promise.all([
-      Appointment.find(query).select('createdAt phone revenue').lean(),
-      Order.find(query).select('createdAt amount').lean(),
-      AdLead.find(query).select('createdAt lastSeen ordersCount addToCartCount phoneNumber checkoutInitiatedCount cartStatus').lean(),
-      calculateAverageLTV(clientId, startDate, endDate),
-      calculateAverageOrderValue(clientId, startDate, endDate),
-    ]);
-
-    // 1. Peak Hours Heatmap (Aggregate Checkouts, Orders, and Appointments)
-    const heatmap = {}; 
-    const addToMap = (dateStr) => {
-      const d = new Date(dateStr);
-      if (isNaN(d.getTime())) return;
-      const key = `${d.getDay()}_${d.getHours()}`;
-      heatmap[key] = (heatmap[key] || 0) + 1;
-    };
-
-    appts.forEach(a => addToMap(a.createdAt));
-    orders.forEach(o => addToMap(o.createdAt));
-    leads.forEach(l => {
-        if (l.lastSeen) addToMap(l.lastSeen);
-    });
-
-    // 2. Retention (Returning vs New)
-    let returning = 0;
-    let newLeads = 0;
-    leads.forEach(l => {
-      if ((l.ordersCount || 0) > 1 || (l.addToCartCount || 0) > 1) { returning++; } else { newLeads++; }
-    });
-
-    // Extract appointment frequencies to boost retention metric for Service businesses
-    const phoneCounts = {};
-    appts.forEach(a => {
-      phoneCounts[a.phone] = (phoneCounts[a.phone] || 0) + 1;
-    });
-    Object.values(phoneCounts).forEach(count => {
-      if (count > 1) { returning++; } else { newLeads++; }
-    });
-
-    let totalRev = 0;
-    appts.forEach(a => { if (a.revenue > 0) totalRev += a.revenue; });
-    orders.forEach(o => { if (o.amount > 0) totalRev += o.amount; });
-
-    res.json({
-      heatmap,
-      returningLeads: returning,
-      newLeads: newLeads,
-      avgOrderValue: Math.round(avgOrderValue * 100) / 100,
-      avgLTV: Math.round(avgLTV * 100) / 100,
-      totalRevenueGlobally: totalRev
-    });
+    const payload = await dedupeAsync(`analytics:insights:${clientId}:${days}`, () =>
+      getBoundedInsights(clientId, { startDate, endDate })
+    );
+    timer.finish('200 ok');
+    res.json(payload);
   } catch (e) {
+    timer.finish(`500 ${e.message}`);
     console.error('Insights API Error:', e);
     res.status(500).json({ error: 'Server Error' });
   }
@@ -1928,7 +1428,7 @@ router.get('/lead-intelligence', protect, async (req, res) => {
 
     const [totalLeads, highIntent, RTO] = await Promise.all([
       AdLead.countDocuments(query),
-      AdLead.countDocuments({ ...query, score: { $gte: 100 } }),
+      AdLead.countDocuments({ ...query, leadScore: { $gte: 100 } }),
       AdLead.countDocuments({ ...query, isRTO: true })
     ]);
 
@@ -2018,7 +1518,7 @@ router.get('/usage-stats', protect, async (req, res) => {
  * Phase 23: Track 6 - Agent Performance Metrics
  * GET /api/analytics/agent-performance
  */
-router.get('/agent-performance', protect, async (req, res) => {
+router.get('/agent-performance', protect, apiCache(60), async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) {
@@ -2220,141 +1720,27 @@ router.get("/:clientId/home", protect, async (req, res) => {
 // @access Private
 // STRICT MANDATE: No dummy data. Every field derived exclusively from the
 // Conversation collection aggregation. Frontend table maps directly to this shape.
-router.get('/operators', protect, async (req, res) => {
+router.get('/operators', protect, apiCache(60), async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const timer = createTimer(
+    'GET /api/analytics/operators',
+    req.query.clientId || req.user?.clientId || ''
+  );
+  timer.checkpoint('START');
+
   try {
     const clientId = tenantClientId(req);
     if (!clientId) {
+      timer.finish('403 unauthorized');
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
-    
+
     const { days } = req.query;
-    const dateLimit = new Date();
-    if (days && days !== 'all') {
-      dateLimit.setDate(dateLimit.getDate() - parseInt(days));
-    } else {
-      dateLimit.setFullYear(2000);
-    }
-
-    const User = require('../models/User');
-    const ConversationAssignment = require('../models/ConversationAssignment');
-
-    // 1. Human agents aggregation via ConversationAssignment
-    const humanAgg = await ConversationAssignment.aggregate([
-      { $match: { clientId, assignedAt: { $gte: dateLimit } } },
-      {
-        $lookup: {
-          from: 'conversations',
-          localField: 'conversationId',
-          foreignField: '_id',
-          as: 'conv'
-        }
-      },
-      { $unwind: "$conv" },
-      {
-        $group: {
-          _id: "$assignedAgentId",
-          currentOpenTickets: { $sum: { $cond: [{ $in: ['$conv.status', ['HUMAN_TAKEOVER', 'HUMAN_SUPPORT']] }, 1, 0] } },
-          ticketsSolved: { $sum: { $cond: [{ $eq: ['$conv.status', 'CLOSED'] }, 1, 0] } },
-          pendingTickets: { $sum: { $cond: [{ $eq: ['$conv.status', 'WAITING_FOR_INPUT'] }, 1, 0] } },
-          totalHandled: { $sum: 1 },
-          totalResponseTime: {
-            $sum: {
-              $cond: [
-                { $and: [{ $ne: ['$conv.firstResponseAt', null] }, { $ne: ['$conv.firstInboundAt', null] }] },
-                { $subtract: ['$conv.firstResponseAt', '$conv.firstInboundAt'] },
-                0
-              ]
-            }
-          },
-          countWithResponseTime: {
-            $sum: {
-              $cond: [
-                { $and: [{ $ne: ['$conv.firstResponseAt', null] }, { $ne: ['$conv.firstInboundAt', null] }] },
-                1,
-                0
-              ]
-            }
-          }
-        }
-      }
-    ]);
-
-    // 2. AI Bot aggregation (unassigned conversations active in timeline)
-    const aiAgg = await Conversation.aggregate([
-      { $match: { clientId, updatedAt: { $gte: dateLimit }, assignedTo: null } },
-      {
-        $group: {
-          _id: '__AI_BOT__',
-          currentOpenTickets: { $sum: { $cond: [{ $in: ['$status', ['HUMAN_TAKEOVER', 'HUMAN_SUPPORT']] }, 1, 0] } },
-          ticketsSolved: { $sum: { $cond: [{ $eq: ['$status', 'CLOSED'] }, 1, 0] } },
-          pendingTickets: { $sum: { $cond: [{ $eq: ['$status', 'WAITING_FOR_INPUT'] }, 1, 0] } },
-          totalHandled: { $sum: 1 },
-          avgResponseTimeMs: { $avg: { $subtract: ['$firstResponseAt', '$firstInboundAt'] } }
-        }
-      }
-    ]);
-
-    // 3. Fetch ALL users for this client to ensure everyone is displayed
-    const allUsers = await User.find({ clientId }).select('name email').lean();
-
-    const agentMap = {};
-    humanAgg.forEach(g => {
-        agentMap[String(g._id)] = {
-            currentOpenTickets: g.currentOpenTickets,
-            pendingTickets: g.pendingTickets,
-            ticketsSolved: g.ticketsSolved,
-            totalHandled: g.totalHandled,
-            avgResponseTimeMs: g.countWithResponseTime > 0 ? g.totalResponseTime / g.countWithResponseTime : 0
-        };
-    });
-
-    let operators = allUsers.map(u => {
-        const stats = agentMap[String(u._id)] || {
-            currentOpenTickets: 0,
-            pendingTickets: 0,
-            ticketsSolved: 0,
-            totalHandled: 0,
-            avgResponseTimeMs: 0
-        };
-        
-        return {
-            agentId: String(u._id),
-            agentName: u.name || 'Unknown Agent',
-            agentEmail: u.email || '-',
-            isBot: false,
-            currentOpenTickets: stats.currentOpenTickets,
-            pendingTickets: stats.pendingTickets,
-            ticketsSolved: stats.ticketsSolved,
-            totalHandled: stats.totalHandled,
-            avgResponseTimeMs: Math.max(0, stats.avgResponseTimeMs)
-        };
-    });
-
-    // 4. Add AI Bot
-    if (aiAgg.length > 0 || true) { // Always show bot
-      const ai = aiAgg[0] || { currentOpenTickets: 0, pendingTickets: 0, ticketsSolved: 0, totalHandled: 0, avgResponseTimeMs: 0 };
-      operators.push({
-        agentId: 'ai-bot',
-        agentName: 'AI Bot',
-        agentEmail: 'system@ai-bot',
-        isBot: true,
-        currentOpenTickets: ai.currentOpenTickets,
-        pendingTickets: ai.pendingTickets,
-        ticketsSolved: ai.ticketsSolved,
-        totalHandled: ai.totalHandled,
-        avgResponseTimeMs: Math.max(0, ai.avgResponseTimeMs || 0)
-      });
-    }
-
-    operators.sort((a, b) => {
-      if (a.isBot && !b.isBot) return -1;
-      if (!a.isBot && b.isBot) return 1;
-      return b.ticketsSolved - a.ticketsSolved;
-    });
-
-    res.json({ success: true, operators });
-
+    const payload = await getOperatorsStats(clientId, days, { timer });
+    timer.finish('200 ok');
+    res.json(payload);
   } catch (err) {
+    timer.finish(`500 error=${err.message}`);
     console.error('[Analytics] /operators aggregation error:', err);
     res.status(500).json({ success: false, error: err.message });
   }

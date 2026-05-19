@@ -1,3 +1,7 @@
+/**
+ * Conversations API (dashboard human-requests panel):
+ * - GET / — Conversation.find + countDocuments + AdLead bulk enrichment
+ */
 const express = require('express');
 const { resolveClient, tenantClientId } = require('../utils/queryHelpers');
 const router = express.Router();
@@ -5,6 +9,8 @@ const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
+const { apiCache } = require('../middleware/apiCache');
+const { getCachedClient } = require('../utils/clientCache');
 const WhatsApp = require('../utils/whatsapp');
 const { createMessage } = require('../utils/createMessage');
 const ExportJob = require('../models/ExportJob');
@@ -27,102 +33,200 @@ router.post('/correct-ai', protect, correctAIResponse);
 
 const upload = multer({ storage: multer.memoryStorage() });
 
+/**
+ * Shared conversation list loader (GET /api/conversations + dashboard summary).
+ */
+async function getConversationsList(user, queryParams = {}, options = {}) {
+  const { createTimer, timeParallel } = require('../utils/perfLogger');
+  const timer =
+    options.timer ||
+    createTimer('getConversationsList', queryParams.clientId || user?.clientId || '');
+
+  const { days, clientId, phone, isImported, page: pageRaw, limit: limitRaw } = queryParams;
+  let query = {};
+  if (phone) {
+    query.phone = phone;
+  }
+
+  const qClient = clientId && String(clientId).trim() ? String(clientId).trim() : null;
+  const activeClientId = user.role === 'SUPER_ADMIN' ? qClient : user.clientId || null;
+  const scopeToTenant = user.role !== 'SUPER_ADMIN' || !!qClient;
+
+  if (scopeToTenant) {
+    if (!activeClientId) {
+      const err = new Error('Unauthorized');
+      err.statusCode = 403;
+      throw err;
+    }
+    query.clientId = activeClientId;
+  }
+
+  if (days) {
+    const date = new Date();
+    date.setDate(date.getDate() - parseInt(days, 10));
+    query.lastMessageAt = { $gte: date };
+  }
+  timer.checkpoint('query_built');
+
+  if (isImported === 'true') {
+    if (!activeClientId) {
+      const err = new Error('clientId is required when filtering imported leads');
+      err.statusCode = 400;
+      throw err;
+    }
+    const AdLead = require('../models/AdLead');
+    const importedLeads = await timer.time('AdLead.imported_phones', () =>
+      AdLead.find({ clientId: activeClientId, source: 'imported' }).select('phoneNumber').lean()
+    );
+    const importedPhones = importedLeads.map((l) => l.phoneNumber);
+    if (query.phone) {
+      if (!importedPhones.includes(query.phone)) {
+        query.phone = '___UNMATCHABLE___';
+      }
+    } else {
+      query.phone = { $in: importedPhones };
+    }
+    timer.checkpoint('imported_filter_applied', { phones: importedPhones.length });
+  }
+
+  const page = parseInt(pageRaw, 10) || 1;
+  const limit = parseInt(limitRaw, 10) || 100;
+  const skip = (page - 1) * limit;
+
+  const { conversations, total } = await timeParallel(
+    timer,
+    {
+      conversations: () => {
+        const q = Conversation.find(query)
+          .sort({ lastMessageAt: -1 })
+          .skip(skip)
+          .limit(limit)
+          .select(
+            '_id phone customerName lastMessage lastMessageAt channel status unreadCount assignedTo isBotPaused botPaused requiresAttention attentionReason lastDetectedIntent summary clientId'
+          )
+          .lean();
+        if (query.clientId) {
+          q.hint({ clientId: 1, lastMessageAt: -1 });
+        }
+        return q;
+      },
+      total: () => Conversation.countDocuments(query),
+    },
+    'conversations_parallel'
+  );
+
+  const User = require('../models/User');
+  const agentIds = [
+    ...new Set(
+      conversations.map((c) => c.assignedTo).filter(Boolean).map((id) => String(id))
+    ),
+  ];
+  const agents =
+    agentIds.length > 0
+      ? await timer.time('User.assignees_bulk', () =>
+          User.find({ _id: { $in: agentIds } })
+            .select('name')
+            .lean()
+        )
+      : [];
+  const agentMap = new Map(agents.map((a) => [String(a._id), a]));
+
+  const AdLead = require('../models/AdLead');
+  const phones = conversations.map((c) => c.phone).filter(Boolean);
+  const leads =
+    phones.length > 0
+      ? await timer.time('AdLead.bulk_enrichment', () =>
+          AdLead.find({
+            clientId: conversations[0]?.clientId,
+            phoneNumber: { $in: phones },
+          })
+            .select(
+              'phoneNumber leadScore cartStatus checkoutInitiatedCount addToCartCount isOrderPlaced tags'
+            )
+            .lean()
+        )
+      : [];
+  timer.checkpoint('lead_fetch_done', { leads: leads.length });
+
+  const leadMap = new Map(leads.map((l) => [l.phoneNumber, l]));
+
+  const enrichedConversations = conversations.map((conv) => {
+    const assignee = conv.assignedTo ? agentMap.get(String(conv.assignedTo)) : null;
+    const base = {
+      ...conv,
+      assignedTo: assignee ? { _id: assignee._id, name: assignee.name } : conv.assignedTo,
+    };
+    const lead = leadMap.get(conv.phone);
+    if (lead) {
+      let derivedIntent = 'Browsing';
+      if (lead.cartStatus === 'abandoned') derivedIntent = 'Cart Abandoned';
+      else if (lead.checkoutInitiatedCount > 0 && !lead.isOrderPlaced) derivedIntent = 'High Intent';
+      else if (lead.addToCartCount > 0) derivedIntent = 'Browsing with Intent';
+      else if (lead.cartStatus === 'recovered') derivedIntent = 'Recovered Cart';
+      return {
+        ...base,
+        leadScore: lead.leadScore,
+        derivedLeadState: derivedIntent,
+        leadTags: lead.tags,
+      };
+    }
+    return base;
+  });
+  timer.checkpoint('enrichment_map_done', { rows: enrichedConversations.length });
+
+  return {
+    success: true,
+    data: enrichedConversations,
+    pagination: {
+      total,
+      page,
+      pages: Math.ceil(total / limit),
+    },
+  };
+}
+
 // @route   GET /api/conversations
 // @desc    Get all conversations for the client
 // @access  Private
-router.get('/', protect, logPersonalDataAccess, async (req, res) => {
+router.get('/', protect, logPersonalDataAccess, apiCache(30), async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const timer = createTimer(
+    'GET /api/conversations',
+    req.query.clientId || req.user?.clientId || ''
+  );
+  timer.checkpoint('START');
+
+  const warmClientId = req.query.clientId || req.user?.clientId;
+  if (warmClientId) {
+    const { getCachedClientForWhatsAppSend } = require('../utils/clientCache');
+    getCachedClientForWhatsAppSend(warmClientId).catch(() => {});
+  }
+
   try {
-    const { days, clientId, phone, isImported } = req.query;
-    let query = {};
-    if (phone) {
-      query.phone = phone;
-    }
-
-    // Non–super-admins: always JWT tenant. Super-admins: optional `clientId` in query; if omitted, unscoped (all tenants).
-    const qClient = clientId && String(clientId).trim() ? String(clientId).trim() : null;
-    const activeClientId =
-      req.user.role === 'SUPER_ADMIN' ? qClient : req.user.clientId || null;
-    const scopeToTenant = req.user.role !== 'SUPER_ADMIN' || !!qClient;
-
-    if (scopeToTenant) {
-      if (!activeClientId) {
-        return res.status(403).json({ success: false, message: 'Unauthorized' });
-      }
-      query.clientId = activeClientId;
-    }
-
-    if (days) {
-      const date = new Date();
-      date.setDate(date.getDate() - parseInt(days));
-      query.lastMessageAt = { $gte: date };
-    }
-
-    // Filter for imported lists only
-    if (isImported === 'true') {
-      if (!activeClientId) {
-        return res.status(400).json({ success: false, message: 'clientId is required when filtering imported leads' });
-      }
-      const AdLead = require('../models/AdLead');
-      const importedLeads = await AdLead.find({ clientId: activeClientId, source: 'imported' }).select('phoneNumber').lean();
-      const importedPhones = importedLeads.map(l => l.phoneNumber);
-      if (query.phone) {
-        if (!importedPhones.includes(query.phone)) {
-           // Provide an unmatchable phone if the specific phone requested isn't imported
-           query.phone = '___UNMATCHABLE___';
-        }
-      } else {
-        query.phone = { $in: importedPhones };
-      }
-    }
-
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 100;
-    const skip = (page - 1) * limit;
-
-    const [conversations, total] = await Promise.all([
-      Conversation.find(query)
-        .sort({ lastMessageAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .select('_id phone customerName lastMessage lastMessageAt channel status unreadCount assignedTo isBotPaused botPaused requiresAttention attentionReason lastDetectedIntent summary')
-        .populate('assignedTo', 'name')
-        .lean(),
-      Conversation.countDocuments(query)
-    ]);
-
-    // Enterprise Enrichment: Bulk fetch all leads in one query instead of N+1
-    const AdLead = require('../models/AdLead');
-    const phones = conversations.map(c => c.phone).filter(Boolean);
-    const leads = phones.length > 0
-      ? await AdLead.find({ clientId: conversations[0]?.clientId, phoneNumber: { $in: phones } })
-          .select('phoneNumber leadScore cartStatus checkoutInitiatedCount addToCartCount isOrderPlaced tags')
-          .lean()
-      : [];
-    const leadMap = new Map(leads.map(l => [l.phoneNumber, l]));
-
-    const enrichedConversations = conversations.map(conv => {
-      const lead = leadMap.get(conv.phone);
-      if (lead) {
-        let derivedIntent = 'Browsing';
-        if (lead.cartStatus === 'abandoned') derivedIntent = 'Cart Abandoned';
-        else if (lead.checkoutInitiatedCount > 0 && !lead.isOrderPlaced) derivedIntent = 'High Intent';
-        else if (lead.addToCartCount > 0) derivedIntent = 'Browsing with Intent';
-        else if (lead.cartStatus === 'recovered') derivedIntent = 'Recovered Cart';
-        return { ...conv, leadScore: lead.leadScore, derivedLeadState: derivedIntent, leadTags: lead.tags };
-      }
-      return conv;
-    });
-
-    res.json({
-      success: true,
-      data: enrichedConversations,
-      pagination: {
-        total,
-        page,
-        pages: Math.ceil(total / limit)
-      }
-    });
+    const { dedupeAsync } = require('../utils/requestDedupe');
+    const dedupeKey = [
+      'conv-list',
+      req.query.clientId || req.user?.clientId || '',
+      req.query.page || '1',
+      req.query.limit || '50',
+      req.query.days || '',
+      req.query.phone || '',
+    ].join(':');
+    const payload = await dedupeAsync(dedupeKey, () =>
+      getConversationsList(req.user, req.query, { timer })
+    );
+    res.json(payload);
+    timer.finish(
+      `200 ok | page=${payload.pagination.page} limit=100 total=${payload.pagination.total}`
+    );
   } catch (error) {
+    timer.finish(`500 error=${error.message}`);
+    if (error.statusCode === 403) {
+      return res.status(403).json({ success: false, message: error.message });
+    }
+    if (error.statusCode === 400) {
+      return res.status(400).json({ success: false, message: error.message });
+    }
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
 });
@@ -185,14 +289,19 @@ router.get('/:id', protect, logPersonalDataAccess, async (req, res) => {
 // @desc    Get messages for a conversation
 // @access  Private
 router.get('/:id/messages', protect, logPersonalDataAccess, async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const timer = createTimer('GET /api/conversations/:id/messages', req.user?.clientId || '');
   try {
     const query = { _id: req.params.id };
     if (req.user.role !== 'SUPER_ADMIN') {
       query.clientId = req.user.clientId;
     }
-    const conversation = await Conversation.findOne(query);
+    const conversation = await timer.time('Conversation.findOne', () =>
+      Conversation.findOne(query).select('_id phone customerName botStatus clientId').lean()
+    );
 
     if (!conversation) {
+      timer.finish('404');
       return res.status(404).json({ message: 'Conversation not found' });
     }
 
@@ -204,10 +313,12 @@ router.get('/:id/messages', protect, logPersonalDataAccess, async (req, res) => 
       queryPayload.timestamp = { $lt: new Date(before) };
     }
 
-    const messages = await Message.find(queryPayload)
-      .sort({ timestamp: -1 }) // Get newest first for pagination
-      .limit(limit)
-      .lean();
+    const messages = await timer.time('Message.find', () =>
+      Message.find(queryPayload)
+        .sort({ timestamp: -1 })
+        .limit(limit)
+        .lean()
+    );
 
     const chronological = messages.reverse();
     const oldestWithTs = chronological.find((m) => m.timestamp);
@@ -224,7 +335,9 @@ router.get('/:id/messages', protect, logPersonalDataAccess, async (req, res) => 
         botStatus: conversation.botStatus || 'active'
       }
     });
+    timer.finish(`200 ok | count=${chronological.length}`);
   } catch (error) {
+    timer.finish(`500 error=${error.message}`);
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
 });
@@ -261,151 +374,180 @@ router.delete('/:id/messages', protect, logPersonalDataAccess, async (req, res) 
 // ✅ Phase 2: Live Chat Mega-Payload (Full Context)
 // Fetches conversation, 50 messages, lead intent, orders, and wallet in 1 round trip
 router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res) => {
+  const { createTimer, timeParallel } = require('../utils/perfLogger');
+  const { dedupeAsync } = require('../utils/requestDedupe');
+  const timer = createTimer('GET /api/conversations/:id/full-context', req.user?.clientId || '');
+  const { id } = req.params;
+  const dedupeKey = `full-ctx:${req.user?.clientId || ''}:${id}`;
+
   try {
-    const { id } = req.params;
+    const payload = await dedupeAsync(dedupeKey, async () => {
     const clientId = req.user.clientId;
-    
-    // 1. Fetch main conversation
-    let conversation = await Conversation.findOne({ _id: id, clientId })
-      .select(
-        'phone customerName status botPaused botStatus unreadCount channel assignedTo summary lastDetectedIntent requiresAttention attentionReason clientId ' +
-          'pendingCart lastBrowsedCollectionId lastBrowsedCollectionAt lastCheckoutUrl lastCheckoutShortCode lastCheckoutValue lastCheckoutAt checkoutLinkClicked'
-      )
-      .lean();
-      
+    const scopedClientId = clientId;
+
+    let conversation = await timer.time('Conversation.findOne', () =>
+      Conversation.findOne({ _id: id, clientId: scopedClientId })
+        .select(
+          'phone customerName status botPaused botStatus unreadCount channel assignedTo summary lastDetectedIntent requiresAttention attentionReason clientId ' +
+            'pendingCart lastBrowsedCollectionId lastBrowsedCollectionAt lastCheckoutUrl lastCheckoutShortCode lastCheckoutValue lastCheckoutAt checkoutLinkClicked'
+        )
+        .lean()
+    );
+
     if (!conversation) {
-      // Allow super admins to view via direct ID if needed
       if (req.user.role === 'SUPER_ADMIN') {
-         const saConv = await Conversation.findOne({ _id: id }).lean();
-         if (!saConv) return res.status(404).json({ message: 'Conversation not found' });
-         conversation = saConv;
+        conversation = await timer.time('Conversation.findOne_superadmin', () =>
+          Conversation.findOne({ _id: id }).lean()
+        );
+        if (!conversation) {
+          const err = new Error('Conversation not found');
+          err.statusCode = 404;
+          throw err;
+        }
       } else {
-         return res.status(404).json({ message: 'Conversation not found' });
+        const err = new Error('Conversation not found');
+        err.statusCode = 404;
+        throw err;
       }
     }
-    
+
     const phone = conversation.phone;
+    const tenantId = conversation.clientId || clientId;
     const cleanPhone = phone ? phone.replace(/\D/g, '') : '';
     const phoneSuffix = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
-    
-    // 2. Load all secondary data concurrently
+
     const {
       calculateCustomerLTV,
       resolveScoreStageNameForClient,
     } = require('../utils/customerOrderMetrics');
 
-    const [messages, lead, orders, wallet, activeSequence, notes, latestCheckoutLink, ltv] = await Promise.all([
-      // Messages
-      Message.find({ conversationId: id })
-        .sort({ timestamp: -1 })
-        .limit(50)
-        .select('content type direction status timestamp mediaUrl metadata from to voiceTranscript originalText')
-        .lean()
-        .then(msgs => ({
-          messages: msgs.reverse(),
-          nextCursor: msgs.length === 50 ? msgs[0].timestamp.toISOString() : null,
-          hasMore: msgs.length === 50
-        })),
-        
-      // Lead Data
-      (async () => {
-         const AdLead = require('../models/AdLead');
-         const l = await AdLead.findOne({ clientId: conversation.clientId || clientId, phoneNumber: phone })
-           .select('name email leadScore scoreLabel cartStatus tags intentState source totalSpent lifetimeValue ordersCount lastInteraction isOrderPlaced cartSnapshot addToCartCount checkoutInitiatedCount importBatchId meta warrantyRecords')
-           .lean();
-         
-         if (l) {
-            if (l.importBatchId) {
-                const ImportSession = require('../models/ImportSession');
-                const batch = await ImportSession.findById(l.importBatchId).select('batchName').lean();
-                if (batch) l.importSource = batch.batchName;
-            } 
-            if (!l.importSource && l.meta?.importListName) {
-                l.importSource = l.meta.importListName;
-            }
-         }
-         return l;
-      })(),
-      
-      // Orders
-      (async () => {
-         if (!phoneSuffix) return [];
-         const Order = require('../models/Order');
-         return Order.find({
-           clientId: conversation.clientId || clientId,
-           $or: [
-             { phone: { $regex: phoneSuffix + '$' } },
-             { customerPhone: { $regex: phoneSuffix + '$' } },
-             { phone: phone }
-           ]
-         })
-           .sort({ createdAt: -1 })
-           .limit(3)
-           .select('orderId orderNumber customerName amount totalPrice status paymentMethod isCOD createdAt items')
-           .lean()
-           .catch(() => []);
-      })(),
-      
-      // Loyalty Wallet
-      (async () => {
-         try {
-           const Wallet = require('../models/CustomerWallet');
-           return await Wallet.findOne({ clientId: conversation.clientId || clientId, phone })
-             .select('balance tier lifetimePoints')
-             .lean();
-         } catch { return null; }
-      })(),
-      
-      // FollowUp Active sequence
-      (async () => {
-         if (!phoneSuffix) return null;
-         try {
-           const FollowUpSequence = require('../models/FollowUpSequence');
-           return await FollowUpSequence.findOne({
-             clientId: conversation.clientId || clientId, 
-             $or: [
-               { phone: { $regex: phoneSuffix + '$' } },
-               { phone: phone }
-             ],
-             status: { $regex: /^(active|pending)$/i }
-           })
-           .select('name status steps')
-           .lean();
-         } catch { return null; }
-      })(),
-      
-      // Notes
-      (async () => {
-         try {
-           const ConversationNote = require('../models/ConversationNote');
-           return await ConversationNote.find({ conversationId: id }).sort({ createdAt: 1 }).lean();
-         } catch { return []; }
-      })(),
-      (async () => {
-        try {
-          const pn = normalizePhone(phone);
-          if (!pn) return null;
-          const cid = conversation.clientId || clientId;
-          return CheckoutLinkModel.findOne({
-            clientId: cid,
-            converted: false,
-            phone: pn
-          })
-            .sort({ createdAt: -1 })
-            .select('shortCode fullUrl cartRecoverySent createdAt totalValue currency')
+    const parallel = await timeParallel(
+      timer,
+      {
+        messages: () =>
+          Message.find({ conversationId: id })
+            .sort({ timestamp: -1 })
+            .limit(50)
+            .select(
+              'content type direction status timestamp mediaUrl metadata from to voiceTranscript originalText'
+            )
+            .lean()
+            .then((msgs) => ({
+              messages: msgs.reverse(),
+              nextCursor: msgs.length === 50 ? msgs[0].timestamp.toISOString() : null,
+              hasMore: msgs.length === 50,
+            })),
+        lead: async () => {
+          const AdLead = require('../models/AdLead');
+          const l = await AdLead.findOne({ clientId: tenantId, phoneNumber: phone })
+            .select(
+              'name email leadScore scoreLabel cartStatus tags intentState source totalSpent lifetimeValue ordersCount lastInteraction isOrderPlaced cartSnapshot addToCartCount checkoutInitiatedCount importBatchId meta warrantyRecords'
+            )
             .lean();
-        } catch {
-          return null;
-        }
-      })(),
+          if (l?.importBatchId) {
+            const ImportSession = require('../models/ImportSession');
+            const batch = await ImportSession.findById(l.importBatchId).select('batchName').lean();
+            if (batch) l.importSource = batch.batchName;
+          } else if (l && !l.importSource && l.meta?.importListName) {
+            l.importSource = l.meta.importListName;
+          }
+          return l;
+        },
+        orders: async () => {
+          if (!phone) return [];
+          const Order = require('../models/Order');
+          const select =
+            'orderId orderNumber customerName amount totalPrice status paymentMethod isCOD createdAt items';
+          const sort = { createdAt: -1 };
+          const exact = await Order.find({
+            clientId: tenantId,
+            $or: [{ phone }, { customerPhone: phone }],
+          })
+            .sort(sort)
+            .limit(3)
+            .select(select)
+            .lean();
+          if (exact.length > 0) return exact;
+          if (!phoneSuffix) return [];
+          return Order.find({
+            clientId: tenantId,
+            $or: [
+              { phone: { $regex: phoneSuffix + '$' } },
+              { customerPhone: { $regex: phoneSuffix + '$' } },
+            ],
+          })
+            .sort(sort)
+            .limit(3)
+            .select(select)
+            .lean()
+            .catch(() => []);
+        },
+        wallet: async () => {
+          try {
+            const Wallet = require('../models/CustomerWallet');
+            return Wallet.findOne({ clientId: tenantId, phone })
+              .select('balance tier lifetimePoints')
+              .lean();
+          } catch {
+            return null;
+          }
+        },
+        activeSequence: async () => {
+          if (!phoneSuffix) return null;
+          try {
+            const FollowUpSequence = require('../models/FollowUpSequence');
+            return FollowUpSequence.findOne({
+              clientId: tenantId,
+              $or: [{ phone: { $regex: phoneSuffix + '$' } }, { phone }],
+              status: { $regex: /^(active|pending)$/i },
+            })
+              .select('name status steps')
+              .lean();
+          } catch {
+            return null;
+          }
+        },
+        notes: async () => {
+          try {
+            const ConversationNote = require('../models/ConversationNote');
+            return ConversationNote.find({ conversationId: id }).sort({ createdAt: 1 }).lean();
+          } catch {
+            return [];
+          }
+        },
+        latestCheckoutLink: async () => {
+          try {
+            const pn = normalizePhone(phone);
+            if (!pn) return null;
+            return CheckoutLinkModel.findOne({
+              clientId: tenantId,
+              converted: false,
+              phone: pn,
+            })
+              .sort({ createdAt: -1 })
+              .select('shortCode fullUrl cartRecoverySent createdAt totalValue currency')
+              .lean();
+          } catch {
+            return null;
+          }
+        },
+        ltv: () => calculateCustomerLTV(tenantId, phone),
+      },
+      'full_context_parallel'
+    );
 
-      calculateCustomerLTV(conversation.clientId || clientId, phone),
-    ]);
+    const messages = parallel.messages;
+    const lead = parallel.lead;
+    const orders = parallel.orders;
+    const wallet = parallel.wallet;
+    const activeSequence = parallel.activeSequence;
+    const notes = parallel.notes;
+    const latestCheckoutLink = parallel.latestCheckoutLink;
+    const ltv = parallel.ltv;
 
     const leadScore = lead?.leadScore ?? 0;
-    const stageName = await resolveScoreStageNameForClient(
-      conversation.clientId || clientId,
-      leadScore
+    const stageName = await timer.time('resolveScoreStageName', () =>
+      resolveScoreStageNameForClient(tenantId, leadScore)
     );
 
     // Attach notes for UI backwards compatibility
@@ -418,23 +560,31 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
       lead.stageName = stageName;
     }
     
-    res.json({ 
-      conversation, 
-      messages: messages.messages, 
-      nextCursor: messages.nextCursor, 
-      hasMore: messages.hasMore, 
-      lead, 
+    return {
+      conversation,
+      messages: messages.messages,
+      nextCursor: messages.nextCursor,
+      hasMore: messages.hasMore,
+      lead,
       leadScore,
       stageName,
       ltv,
-      orders, 
-      wallet, 
+      orders,
+      wallet,
       activeSequence,
-      latestCheckoutLink 
+      latestCheckoutLink,
+    };
     });
+
+    res.json(payload);
+    timer.finish('200 ok');
   } catch (error) {
     console.error('[FullContext Error]:', error);
-    res.status(500).json({ message: 'Server Error fetching full context' });
+    timer.finish(`${error.statusCode || 500} error=${error.message}`);
+    const status = error.statusCode || 500;
+    res.status(status).json({
+      message: status === 404 ? 'Conversation not found' : 'Server Error fetching full context',
+    });
   }
 });
 
@@ -449,7 +599,7 @@ router.post('/:id/resend-checkout', protect, logPersonalDataAccess, async (req, 
     const conversation = await Conversation.findOne(query);
     if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
 
-    const client = await Client.findOne({ clientId: conversation.clientId });
+    const client = await getCachedClient(conversation.clientId);
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
     const normalizedPhone = normalizePhone(conversation.phone);
@@ -552,6 +702,8 @@ router.post('/:id/resend-checkout', protect, logPersonalDataAccess, async (req, 
 // @desc    Send a message (Agent reply)
 // @access  Private
 router.post('/:id/messages', protect, async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const timer = createTimer('POST /api/conversations/:id/messages', req.user?.clientId || '');
   const { content, mediaUrl, mediaType } = req.body;
 
   try {
@@ -559,29 +711,46 @@ router.post('/:id/messages', protect, async (req, res) => {
     if (req.user.role !== 'SUPER_ADMIN') {
       query.clientId = req.user.clientId;
     }
-    const conversation = await Conversation.findOne(query);
+    const conversation = await timer.time('Conversation.findOne', () =>
+      Conversation.findOne(query)
+        .select(
+          'clientId phone detectedLanguage botPaused status firstResponseAt firstInboundAt requiresAttention attentionReason'
+        )
+        .lean()
+    );
 
     if (!conversation) {
+      timer.finish('404');
       return res.status(404).json({ message: 'Conversation not found' });
     }
 
-    // Resolve client credentials
-    const client = await Client.findOne({ clientId: conversation.clientId });
-    if (!client) return res.status(404).json({ message: 'Client not found' });
+    const { getCachedClientForWhatsAppSend } = require('../utils/clientCache');
+    const client = await timer.time('getCachedClientForWhatsAppSend', () =>
+      getCachedClientForWhatsAppSend(conversation.clientId)
+    );
+    if (!client) {
+      timer.finish('404 client');
+      return res.status(404).json({ message: 'Client not found' });
+    }
 
-    // --- Phase 28: Bidirectional Translation (Outgoing) ---
     const { translateText } = require('../utils/translationEngine');
     let finalContent = content;
     let translatedContent = '';
     const translationConfig = client.translationConfig || {};
 
     if (
-      translationConfig.enabled && 
-      conversation.detectedLanguage && 
-      conversation.detectedLanguage !== 'en' && 
+      translationConfig.enabled &&
+      conversation.detectedLanguage &&
+      conversation.detectedLanguage !== 'en' &&
       conversation.detectedLanguage !== (translationConfig.agentLanguage || 'en')
     ) {
-      translatedContent = await translateText(content, conversation.detectedLanguage, client?.geminiApiKey || process.env.GEMINI_API_KEY);
+      translatedContent = await timer.time('translateText', () =>
+        translateText(
+          content,
+          conversation.detectedLanguage,
+          client?.geminiApiKey || process.env.GEMINI_API_KEY
+        )
+      );
       if (translatedContent && translatedContent !== content) {
         finalContent = translatedContent;
       }
@@ -590,133 +759,177 @@ router.post('/:id/messages', protect, async (req, res) => {
     let newMessage;
     if (mediaUrl) {
       const type = mediaType?.toLowerCase() || 'image';
-      
-      if (type === 'image') {
-        await WhatsApp.sendImage(client, conversation.phone, mediaUrl, finalContent);
-      } else if (type === 'video') {
-        if (WhatsApp.sendVideo) await WhatsApp.sendVideo(client, conversation.phone, mediaUrl, finalContent);
-        else await WhatsApp.sendText(client, conversation.phone, `${finalContent}\n\nVideo: ${mediaUrl}`);
-      } else if (type === 'document' || type === 'file') {
-        if (WhatsApp.sendDocument) await WhatsApp.sendDocument(client, conversation.phone, mediaUrl, finalContent);
-        else await WhatsApp.sendText(client, conversation.phone, `${finalContent}\n\nDocument: ${mediaUrl}`);
-      } else {
-        await WhatsApp.sendText(client, conversation.phone, `${finalContent}\n\nWait: ${mediaUrl}`);
-      }
 
-      newMessage = await createMessage({
-        clientId: conversation.clientId,
-        conversationId: conversation._id, // CRITICAL FIX
-        phone: conversation.phone,
-        direction: 'outbound',
-        type: type === 'file' ? 'document' : type,
-        body: content,
-        translatedContent: translatedContent,
-        detectedLanguage: conversation.detectedLanguage,
-        mediaUrl
+      await timer.time('WhatsApp.send_media', async () => {
+        if (type === 'image') {
+          await WhatsApp.sendImage(client, conversation.phone, mediaUrl, finalContent);
+        } else if (type === 'video') {
+          if (WhatsApp.sendVideo) await WhatsApp.sendVideo(client, conversation.phone, mediaUrl, finalContent);
+          else await WhatsApp.sendText(client, conversation.phone, `${finalContent}\n\nVideo: ${mediaUrl}`);
+        } else if (type === 'document' || type === 'file') {
+          if (WhatsApp.sendDocument) {
+            await WhatsApp.sendDocument(client, conversation.phone, mediaUrl, finalContent);
+          } else {
+            await WhatsApp.sendText(client, conversation.phone, `${finalContent}\n\nDocument: ${mediaUrl}`);
+          }
+        } else {
+          await WhatsApp.sendText(client, conversation.phone, `${finalContent}\n\nWait: ${mediaUrl}`);
+        }
       });
+
+      newMessage = await timer.time('createMessage', () =>
+        createMessage({
+          clientId: conversation.clientId,
+          conversationId: conversation._id,
+          phone: conversation.phone,
+          direction: 'outbound',
+          type: type === 'file' ? 'document' : type,
+          body: content,
+          translatedContent,
+          detectedLanguage: conversation.detectedLanguage,
+          mediaUrl,
+        })
+      );
     } else {
-      await WhatsApp.sendText(client, conversation.phone, finalContent);
-      newMessage = await createMessage({
-        clientId: conversation.clientId,
-        conversationId: conversation._id, // CRITICAL FIX
-        phone: conversation.phone,
-        direction: 'outbound',
-        type: 'text',
-        body: content,
-        translatedContent: translatedContent,
-        detectedLanguage: conversation.detectedLanguage
-      });
+      await timer.time('WhatsApp.sendText', () =>
+        WhatsApp.sendText(client, conversation.phone, finalContent)
+      );
+      newMessage = await timer.time('createMessage', () =>
+        createMessage({
+          clientId: conversation.clientId,
+          conversationId: conversation._id,
+          phone: conversation.phone,
+          direction: 'outbound',
+          type: 'text',
+          body: content,
+          translatedContent,
+          detectedLanguage: conversation.detectedLanguage,
+        })
+      );
     }
 
-    // Update Conversation
-    conversation.lastMessage = content.substring(0, 100);
-    conversation.lastMessageAt = Date.now();
-    
-    // Phase 23: Track Agent Metrics (FRT)
+    const now = new Date();
+    const convPatch = {
+      lastMessage: (content || '').substring(0, 100),
+      lastMessageAt: now,
+      requiresAttention: false,
+      attentionReason: '',
+    };
     if (!conversation.firstResponseAt && conversation.firstInboundAt) {
-      conversation.firstResponseAt = new Date();
+      convPatch.firstResponseAt = now;
     }
-    
-    conversation.requiresAttention = false; // Reset attention flag on manual reply
-    if (conversation.attentionReason) conversation.attentionReason = '';
-    await conversation.save();
 
-    // Update AdLead for CRM consistency
+    await timer.time('Conversation.updateOne', () =>
+      Conversation.updateOne({ _id: conversation._id }, { $set: convPatch })
+    );
+
     const AdLead = require('../models/AdLead');
-    await AdLead.updateOne(
+    AdLead.updateOne(
       { phoneNumber: conversation.phone, clientId: conversation.clientId },
-      { 
-        $set: { 
-          lastMessageContent: content.substring(0, 500),
-          lastInteraction: new Date()
-        } 
+      {
+        $set: {
+          lastMessageContent: (content || '').substring(0, 500),
+          lastInteraction: now,
+        },
       }
     ).catch(() => {});
 
-    // ═══ Bot Intelligence: Auto-capture agent corrections ═══
-    // When a human agent is replying (bot paused/takeover), record as a training case
-    // so it appears in Bot Intelligence → Corrections tab
-    if (conversation.botPaused || conversation.status === 'HUMAN_TAKEOVER' || conversation.status === 'HUMAN_SUPPORT') {
-      try {
-        // Find the last BOT outgoing message in this conversation
-        const botLastMsg = await Message.findOne({
-          conversationId: conversation._id,
-          direction: 'outgoing',
-          _id: { $ne: newMessage._id } // not the message we just created
-        }).sort({ timestamp: -1 }).lean();
+    const shouldCaptureTraining =
+      conversation.botPaused ||
+      conversation.status === 'HUMAN_TAKEOVER' ||
+      conversation.status === 'HUMAN_SUPPORT';
 
-        // Find the last user incoming message
-        const userLastMsg = await Message.findOne({
-          conversationId: conversation._id,
-          direction: 'incoming'
-        }).sort({ timestamp: -1 }).lean();
-
-        // Only create training case if both exist and the bot message was recent (within last 10 min)
-        if (botLastMsg && userLastMsg && botLastMsg.body) {
-          const botMsgAge = Date.now() - new Date(botLastMsg.timestamp || botLastMsg.createdAt).getTime();
-          if (botMsgAge < 10 * 60 * 1000) { // 10 minutes
-            const TrainingCase = require('../models/TrainingCase');
-            await TrainingCase.create({
-              clientId: conversation.clientId,
-              conversationId: conversation._id,
-              userMessage: (userLastMsg.body || userLastMsg.content || '').substring(0, 500),
-              botResponse: (botLastMsg.body || botLastMsg.content || '').substring(0, 500),
-              agentCorrection: content.substring(0, 500),
-              phone: conversation.phone,
-              status: 'pending'
-            }).catch(tcErr => console.error('[TrainingCase] Creation failed:', tcErr.message));
-          }
-        }
-      } catch (tcErr) {
-        // Non-critical — don't block the agent reply if this fails
-        console.error('[TrainingCase] Auto-capture error:', tcErr.message);
-      }
+    if (shouldCaptureTraining) {
+      const convId = conversation._id;
+      const msgId = newMessage._id;
+      const agentText = (content || '').substring(0, 500);
+      setImmediate(() => {
+        captureAgentTrainingCase({
+          clientId: conversation.clientId,
+          conversationId: convId,
+          newMessageId: msgId,
+          agentCorrection: agentText,
+          phone: conversation.phone,
+        }).catch((tcErr) =>
+          console.error('[TrainingCase] Auto-capture error:', tcErr.message)
+        );
+      });
     }
 
     const io = req.app.get('socketio');
     if (io) {
       io.to(`client_${conversation.clientId}`).emit('new_message', newMessage);
-      io.to(`client_${conversation.clientId}`).emit('conversation_update', conversation);
+      io.to(`client_${conversation.clientId}`).emit('conversation_update', {
+        ...conversation,
+        ...convPatch,
+        _id: conversation._id,
+      });
     }
 
     res.json(newMessage);
+    timer.finish('200 ok');
   } catch (error) {
     const errorData = error.response?.data?.error || error.data || error.message;
     const statusCode = error.status || error.response?.status || 500;
 
     console.error('Error sending message:', errorData);
+    timer.finish(`500 error=${error.message || errorData}`);
 
-    // Map 401/403 to 400 to prevent frontend Interceptor from logging out the user
-    // if it's just a WhatsApp configuration issue.
     const finalStatus = [401, 403].includes(statusCode) ? 400 : statusCode;
+    const friendly =
+      error.friendlyMessage ||
+      (typeof errorData === 'string' ? errorData : error.message) ||
+      'Failed to send message';
 
     res.status(finalStatus).json({
       success: false,
-      message: error.friendlyMessage || 'Failed to send message',
-      error: errorData
+      message: friendly,
+      error: errorData,
     });
   }
 });
+
+/** Non-blocking training capture after agent send (does not delay HTTP response). */
+async function captureAgentTrainingCase({
+  clientId,
+  conversationId,
+  newMessageId,
+  agentCorrection,
+  phone,
+}) {
+  const [botLastMsg, userLastMsg] = await Promise.all([
+    Message.findOne({
+      conversationId,
+      direction: 'outgoing',
+      _id: { $ne: newMessageId },
+    })
+      .sort({ timestamp: -1 })
+      .select('body content timestamp createdAt')
+      .lean(),
+    Message.findOne({ conversationId, direction: 'incoming' })
+      .sort({ timestamp: -1 })
+      .select('body content timestamp')
+      .lean(),
+  ]);
+
+  if (!botLastMsg || !userLastMsg) return;
+  const botBody = botLastMsg.body || botLastMsg.content;
+  if (!botBody) return;
+
+  const botMsgAge = Date.now() - new Date(botLastMsg.timestamp || botLastMsg.createdAt).getTime();
+  if (botMsgAge >= 10 * 60 * 1000) return;
+
+  const TrainingCase = require('../models/TrainingCase');
+  await TrainingCase.create({
+    clientId,
+    conversationId,
+    userMessage: (userLastMsg.body || userLastMsg.content || '').substring(0, 500),
+    botResponse: String(botBody).substring(0, 500),
+    agentCorrection,
+    phone,
+    status: 'pending',
+  });
+}
 
 // @route   PATCH /api/conversations/:id/bot-status
 // @desc    Update bot status (active or paused)
@@ -1773,34 +1986,49 @@ router.get('/export-jobs/:id', protect, async (req, res) => {
 
 // ─── GET /api/conversations/:id/smart-replies — AI Contextual Suggestions ──
 router.get('/:id/smart-replies', protect, async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const timer = createTimer('GET /api/conversations/:id/smart-replies', req.user?.clientId || '');
   try {
     const convoId = req.params.id;
-    const conversation = await Conversation.findById(convoId);
-    if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found' });
+    const conversation = await timer.time('Conversation.findById', () =>
+      Conversation.findById(convoId).select('clientId phone').lean()
+    );
+    if (!conversation) {
+      timer.finish('404');
+      return res.status(404).json({ success: false, message: 'Conversation not found' });
+    }
 
-    // Validate access
     const clientId = tenantClientId(req);
     if (!clientId) {
+      timer.finish('403');
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     if (conversation.clientId !== clientId) {
-        return res.status(403).json({ success: false, message: 'Unauthorized' });
+      timer.finish('403');
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
-    const client = await Client.findOne({ clientId });
-    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+    const client = await timer.time('getCachedClient', () =>
+      getCachedClient(clientId, 'businessName geminiApiKey')
+    );
+    if (!client) {
+      timer.finish('404 client');
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
 
-    // Fetch last 10 messages for context
-    const messages = await Message.find({ conversationId: convoId })
-      .sort({ createdAt: -1 })
-      .limit(10)
-      .lean();
+    const messages = await timer.time('Message.find', () =>
+      Message.find({ conversationId: convoId })
+        .sort({ timestamp: -1 })
+        .limit(10)
+        .select('content direction')
+        .lean()
+    );
     
     if (messages.length === 0) {
       return res.json({ success: true, replies: ['Hello! How can I help you today?', 'Hi there!', 'Welcome!'] });
     }
 
-    const contextArr = messages.reverse().map(m => `${m.direction === 'inbound' ? 'Customer' : 'Agent'}: ${m.content || '(Media)'}`);
+    const contextArr = messages.reverse().map(m => `${m.direction === 'incoming' ? 'Customer' : 'Agent'}: ${m.content || '(Media)'}`);
     const contextStr = contextArr.join('\n');
 
     const prompt = `
@@ -1817,7 +2045,9 @@ router.get('/:id/smart-replies', protect, async (req, res) => {
     `;
 
     const { generateText } = require('../utils/gemini');
-    const aiResponseRaw = await generateText(prompt, client.geminiApiKey || process.env.GEMINI_API_KEY);
+    const aiResponseRaw = await timer.time('gemini.generateText', () =>
+      generateText(prompt, client.geminiApiKey || process.env.GEMINI_API_KEY)
+    );
     
     let replies = [];
     if (aiResponseRaw) {
@@ -1839,8 +2069,10 @@ router.get('/:id/smart-replies', protect, async (req, res) => {
     }
 
     res.json({ success: true, replies: replies.slice(0, 3) });
+    timer.finish('200 ok');
   } catch (err) {
     console.error('SmartReplies Error:', err);
+    timer.finish(`500 error=${err.message}`);
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -2023,4 +2255,5 @@ router.post('/:id/clear-intent', protect, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.getConversationsList = getConversationsList;
 

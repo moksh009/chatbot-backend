@@ -3,9 +3,6 @@ const dotenv = require('dotenv');
 const log = require('./utils/logger')('Server');
 const connectDB = require('./db');
 const Client = require('./models/Client');
-const scheduleAbandonedCartCron = require('./cron/abandonedCartScheduler');
-const scheduleBirthdayCron = require('./cron/birthdayCron');
-const cron = require('node-cron');
 const { apiGeneralLimiter } = require('./middleware/enterpriseLimits');
 // Load environment variables
 // dotenv.config();
@@ -79,10 +76,12 @@ app.use(helmet({
 // ✅ Phase R3: Rate Limiters — brute-force and API flood protection
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 20, // 20 attempts per window
+  max: 20, // login/register brute-force only
   standardHeaders: true,
   legacyHeaders: false,
-  message: { success: false, message: 'Too many login attempts. Please try again in 15 minutes.' }
+  message: { success: false, message: 'Too many login attempts. Please try again in 15 minutes.' },
+  // Bootstrap is JWT-protected session refresh — not a brute-force surface
+  skip: (req) => req.method === 'GET' && (req.path === '/bootstrap' || req.path === '/me'),
 });
 
 const aiLimiter = rateLimit({
@@ -412,135 +411,39 @@ const RUN_API = process.env.RUN_API !== 'false';
 const RUN_WORKERS = process.env.RUN_WORKERS !== 'false';
 const RUN_CRONS = process.env.RUN_CRONS !== 'false';
 
-if (RUN_CRONS) {
-if (process.env.CRON_USE_COORDINATOR !== 'false') {
-  process.env.CRON_USE_COORDINATOR = 'true';
+if (!RUN_CRONS) {
+  log.info('[Boot] RUN_CRONS=false — cron jobs not started');
 } else {
-  log.info('[Cron] CRON_USE_COORDINATOR=false — legacy per-file timers enabled');
+  const { registerAllCrons } = require('./cron/cronBootstrap');
+  registerAllCrons();
 }
-const { registerCoordinatedCrons } = require('./cron/cronCoordinator');
-registerCoordinatedCrons();
 
-const scheduleFlowResumption = require('./cron/flowResumptionCron');
-scheduleFlowResumption();
-const scheduleLoyaltyUrgency = require('./cron/loyaltyCron');
-scheduleLoyaltyUrgency();
-
-cron.schedule('*/14 * * * *', () => {
-  const url = process.env.SERVER_URL || `https://chatbot-backend-lg5y.onrender.com`;
-  log.info(`[Self-Ping] Pinging ${url}/keepalive-ping to prevent sleep...`);
-  const https = require('https');
-  https.get(`${url}/keepalive-ping`, (resp) => {
-    let data = '';
-    resp.on('data', (chunk) => data += chunk);
-    resp.on('end', () => log.info('[Self-Ping] awake!', { data }));
-  }).on('error', (err) => {
-    log.error('[Self-Ping] Error:', { message: err.message });
-  });
-});
-
-// Initialize Abandoned Cart Cron Job
-scheduleAbandonedCartCron();
-
-const scheduleCodConfirmationCron = require('./cron/codConfirmationCron');
-scheduleCodConfirmationCron();
-
-const scheduleCheckoutLinkRecoveryCron = require('./cron/checkoutLinkRecoveryCron');
-scheduleCheckoutLinkRecoveryCron();
-
-// Initialize Review Collection Cron Job
-const scheduleReviewCron = require('./cron/reviewCollection');
-scheduleReviewCron();
-
-// Initialize Birthday Messages Cron Job
-scheduleBirthdayCron();
-
-// Initialize Product Sync Cron Job
-const scheduleProductSyncCron = require('./cron/productSyncCron');
-scheduleProductSyncCron();
-
-// Template approval status sync (pending -> syncedMetaTemplates)
-const scheduleTemplateStatusSyncCron = require('./cron/templateStatusSyncCron');
-scheduleTemplateStatusSyncCron();
-
-// Initialize Amazon SP-API Sync (Phase 2)
-const scheduleAmazonSync = require('./cron/amazonSync');
-scheduleAmazonSync();
-
-const scheduleStatCacheCron = require('./cron/statCacheCron');
-scheduleStatCacheCron();
-
-// Initialize Flow Resumption Cron Job (Phase 17) - ALREADY INITIALIZED ABOVE AT LINE 156
-
-// Initialize Auto-Resume Bot Cron Job (Task 2.2)
-const scheduleAutoResumeBotCron = require('./cron/autoResumeBotCron');
-scheduleAutoResumeBotCron();
-
-// Initialize Intelligence Crons (Phase 28 Track 2)
-
-
-// Initialize Auto-Healing Reset (Phase 28 Track 8)
-const { resetDailyErrorCounts } = require('./utils/autoHealer');
-cron.schedule('0 0 * * *', resetDailyErrorCounts);
-
-
-// Phase 20: Instagram Token Refresh Cron (daily at 8AM IST)
-const { refreshExpiringInstagramTokens } = require('./routes/oauth');
-cron.schedule('0 8 * * *', async () => {
-  log.info('[Cron] Running Instagram token refresh check...');
-  try { await refreshExpiringInstagramTokens(); }
-  catch (err) { log.error('[Cron] Instagram token refresh error:', { error: err.message }); }
-}, { timezone: 'Asia/Kolkata' });
-
-// Phase 24: Meta Ads Daily Sync (6AM IST — before business hours)
-const { syncMetaAds } = require('./utils/metaAdsAPI');
-cron.schedule('0 6 * * *', async () => {
-  log.info('[Cron] Running Meta Ads sync for all connected clients...');
-  try {
-    const connectedClients = await Client.find({ metaAdsConnected: true, isActive: true }).lean();
-    for (const c of connectedClients) {
-      syncMetaAds(c.clientId).catch(err => log.error(`[MetaAds] Cron sync error for ${c.clientId}:`, { error: err.message }));
-    }
-  } catch (err) { log.error('[Cron] MetaAds sync error:', { error: err.message }); }
-}, { timezone: 'Asia/Kolkata' });
-
-// Phase 11 Cron Jobs
-require('./cron/followUpSequenceCron')();
-require('./cron/campaignSchedulerCron')();
-require('./cron/abTestCron')();
-require('./cron/abTestWinner');
-require('./cron/insightsCron')();
-require('./cron/csatCron')();
-require('./cron/leadScoringCron');
-require('./cron/igTokenRefresher');
-require('./cron/autoResolutionCron');
-if (process.env.CRON_USE_COORDINATOR === 'false') {
-  require('./cron/scheduledMessageCron')();
+if (RUN_API && RUN_CRONS && process.env.SUPPRESS_SPLIT_DEPLOY_WARN !== 'true') {
+  const isProd = process.env.NODE_ENV === 'production';
+  const msg =
+    '[Boot] RUN_API=true and RUN_CRONS=true on the same process — Mongo pool contention likely. ' +
+    'For local dev use ./scripts/start-api-dev.sh (API only) and ./scripts/start-crons-only.sh (crons) in a second terminal.';
+  if (isProd) {
+    log.warn(msg + ' Prefer separate Render services (see docs/PHASE5_DEPLOY.md).');
+  } else {
+    log.warn(msg);
+  }
 }
-} // RUN_CRONS
 
 const http = require('http');
-const socketIo = require('socket.io');
+const server = RUN_API ? http.createServer(app) : null;
 
-log.info(`Starting server on port ${PORT}...`);
-
-const server = http.createServer(app);
-
-const { init: initSocket } = require('./utils/socket');
-const io = initSocket(server);
-app.set('socketio', io);
+if (RUN_API) {
+  log.info(`Starting HTTP server on port ${PORT}...`);
+} else {
+  log.info('[Boot] RUN_API=false — HTTP server will not bind');
+}
 
 connectDB()
   .then(async () => {
     const { logRedisHealth } = require('./utils/redisFactory');
     await logRedisHealth().catch(() => {});
 
-    const { prewarmFlowCacheForActiveClients } = require('./utils/flowPrewarm');
-    prewarmFlowCacheForActiveClients().catch((err) => {
-      log.warn('[FlowPrewarm] skipped:', err.message);
-    });
-
-    const { bootIntentEngine } = require('./services/EngineInitializer');
     if (RUN_WORKERS) {
       require('./services/NlpWorker');
       require('./services/TaskWorker');
@@ -553,19 +456,39 @@ connectDB()
     // IG Automation: Validate environment variables (non-fatal warnings)
     validateIGEnvironment();
 
-    // IG Automation: One-shot startup heal that re-subscribes existing tenants
-    // to the canonical webhook field set (comments, mentions, messages, …).
-    // The previous build only subscribed to messaging_* fields, so existing
-    // Comment-to-DM automations never triggered. This heals them on deploy
-    // without requiring any user interaction. Self-throttled and non-fatal.
-    require('./services/igWebhookHealer').scheduleStartup();
+    if (RUN_CRONS) {
+      // IG webhook heal — only when crons enabled (Graph API + Mongo burst off API-only dev)
+      require('./services/igWebhookHealer').scheduleStartup();
+    } else {
+      log.info('[Boot] RUN_CRONS=false — IG webhook healer skipped');
+    }
 
-    bootIntentEngine().catch(err => {
-      log.error("[NLP_BOOT] Engine priming failed:", err.message);
-    });
+    if (!RUN_API || !server) {
+      log.info('[Boot] RUN_API=false — workers/crons only mode (no HTTP listener)');
+      return;
+    }
+
+    const { init: initSocket } = require('./utils/socket');
+    const io = initSocket(server);
+    app.set('socketio', io);
 
     server.listen(PORT, () => {
       log.success(`Server is running on port ${PORT}`);
+
+      const deferMs = parseInt(process.env.DEFER_STARTUP_HEAVY_MS || '45000', 10) || 45000;
+      setTimeout(() => {
+        const { prewarmFlowCacheForActiveClients } = require('./utils/flowPrewarm');
+        prewarmFlowCacheForActiveClients().catch((err) => {
+          log.warn('[FlowPrewarm] deferred skipped:', err.message);
+        });
+        if (process.env.NLP_BOOT_DEFER !== 'false') {
+          const { bootIntentEngine } = require('./services/EngineInitializer');
+          bootIntentEngine().catch((err) => {
+            log.error('[NLP_BOOT] deferred priming failed:', err.message);
+          });
+        }
+      }, deferMs);
+      log.info(`[Boot] Flow prewarm + NLP deferred ${deferMs}ms (API pool priority)`);
       // #region agent log
       try {
         const { agentDebug } = require('./utils/agentDebugLog');

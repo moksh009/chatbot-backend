@@ -56,7 +56,16 @@ function middleware() {
     const start = Date.now();
     res.on('finish', () => {
       try {
-        record(Date.now() - start, res.statusCode);
+        const durationMs = Date.now() - start;
+        record(durationMs, res.statusCode);
+        const slowMs = Number(process.env.SLOW_REQUEST_MS || 5000);
+        if (durationMs >= slowMs) {
+          const clientId =
+            req.user?.clientId || req.params?.clientId || req.query?.clientId || 'unknown';
+          log.warn(
+            `[SlowRequest] ${req.method} ${path} ${durationMs}ms status=${res.statusCode} clientId=${clientId}`
+          );
+        }
       } catch (e) {
         log.warn('requestMetrics finish error', e.message);
       }

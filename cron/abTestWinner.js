@@ -2,14 +2,14 @@ const cron = require('node-cron');
 const Campaign = require('../models/Campaign');
 const CampaignMessage = require('../models/CampaignMessage');
 const Client = require('../models/Client');
-const WhatsApp = require('../utils/whatsapp'); // Use unified helper
+const WhatsApp = require('../utils/whatsapp');
+const { wrapCron } = require('../utils/perfLogger');
+const log = require('../utils/logger')('ABTestWinner');
 
-/**
- * Runs every 30 minutes to check if any A/B tests have reached their holdback timer.
- * If yes, it calculates the winner and sends the winning variant to the 80% holdout queue.
- */
-cron.schedule('*/30 * * * *', async () => {
-  console.log('[Cron] Running A/B Test winner evaluation...');
+function scheduleAbTestWinnerCron() {
+  cron.schedule(
+    '*/30 * * * *',
+    wrapCron('A/B test winner evaluation', async () => {
   try {
     // Find active campaigns that are AB tests, have not processed holdouts, and are older than their holdback Hours
     const campaigns = await Campaign.find({
@@ -115,6 +115,10 @@ cron.schedule('*/30 * * * *', async () => {
     }
 
   } catch (error) {
-    console.error('[Cron] AB Test Evaluation Error:', error.message);
+    log.error('AB Test Evaluation Error:', error.message);
   }
-});
+    })
+  );
+}
+
+module.exports = scheduleAbTestWinnerCron;

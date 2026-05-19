@@ -19,6 +19,7 @@ const WhatsAppFlow = require("../models/WhatsAppFlow");
 const NodeCache = require("node-cache");
 const { invalidateFlowGraphCache, invalidateTriggerListCache } = require("./flowGraphCache");
 const { getAppRedis } = require("./redisFactory");
+const { createTimer } = require("./perfLogger");
 const triggerCache = new NodeCache({ stdTTL: 300, checkperiod: 60 }); // 5 min L1
 const TRIGGER_CACHE_TTL_SEC = 300;
 const TRIGGER_REDIS_KEY_PREFIX = "triggers:v2:";
@@ -59,53 +60,81 @@ function buildSlimRoutingBundles(flows) {
 }
 
 async function loadSlimFlowsForClient(client) {
+  const timer = createTimer("TriggerEngine.loadSlimFlowsForClient", client.clientId);
   const cacheKey = `flows_${client.clientId}`;
   let flows = triggerCache.get(cacheKey);
   if (flows?.[0]?.publishedNodes?.length > 0) {
     triggerCache.del(cacheKey);
     flows = null;
   }
+  if (flows) {
+    timer.checkpoint("L1 trigger cache HIT", { count: flows.length });
+    timer.finish("l1_hit");
+    return flows;
+  }
+  timer.checkpoint("L1 trigger cache MISS");
 
   if (!flows) {
     const redis = getAppRedis();
     const redisKey = `${TRIGGER_REDIS_KEY_PREFIX}${client.clientId}`;
     if (redis && redis.status === "ready") {
       try {
-        const raw = await redis.get(redisKey);
+        const raw = await timer.time("Redis GET triggers:v2", () => redis.get(redisKey));
         if (raw) {
           flows = JSON.parse(raw);
           if (flows?.[0]?.publishedNodes?.length > 0) {
             flows = null;
+            timer.log("Redis payload had full publishedNodes — invalidating");
           } else {
             triggerCache.set(cacheKey, flows);
+            timer.checkpoint("Redis trigger cache HIT", { count: flows?.length });
+            timer.finish("redis_hit");
+            return flows;
           }
+        } else {
+          timer.checkpoint("Redis trigger cache MISS");
         }
-      } catch (_) {}
+      } catch (err) {
+        timer.log(`Redis read failed: ${err.message}`);
+      }
+    } else {
+      timer.log("Redis not available");
     }
   }
 
   if (!flows) {
-    const docs = await WhatsAppFlow.find({
-      clientId: client.clientId,
-      status: "PUBLISHED",
-    })
-      .select(FLOW_SELECT)
-      .lean();
+    const docs = await timer.time("MongoDB WhatsAppFlow.find PUBLISHED", () =>
+      WhatsAppFlow.find({
+        clientId: client.clientId,
+        status: "PUBLISHED",
+      })
+        .select(FLOW_SELECT)
+        .lean()
+    );
 
     flows =
       docs.length > 0
         ? buildSlimRoutingBundles(docs)
         : buildSlimRoutingBundles(client.visualFlows || []);
 
+    timer.checkpoint("buildSlimRoutingBundles done", { count: flows?.length });
+
     triggerCache.set(cacheKey, flows);
     const redis = getAppRedis();
     if (redis && redis.status === "ready") {
-      redis
-        .setex(`${TRIGGER_REDIS_KEY_PREFIX}${client.clientId}`, TRIGGER_CACHE_TTL_SEC, JSON.stringify(flows))
-        .catch(() => {});
+      await timer.time("Redis SET triggers:v2", () =>
+        redis.setex(
+          `${TRIGGER_REDIS_KEY_PREFIX}${client.clientId}`,
+          TRIGGER_CACHE_TTL_SEC,
+          JSON.stringify(flows)
+        )
+      ).catch(() => {});
     }
+    timer.finish("mongodb_load");
+    return flows;
   }
 
+  timer.finish("done");
   return flows;
 }
 
@@ -121,7 +150,11 @@ const GREETING_WORDS = new Set([
 ]);
 
 function isGreetingLikeText(text) {
-  return GREETING_WORDS.has(String(text || "").toLowerCase().trim());
+  const raw = String(text || "").toLowerCase().trim();
+  if (!raw) return false;
+  if (GREETING_WORDS.has(raw)) return true;
+  const first = raw.split(/\s+/)[0]?.replace(/[^\p{L}\p{N}]/gu, "") || "";
+  return GREETING_WORDS.has(first);
 }
 
 /**
@@ -129,10 +162,17 @@ function isGreetingLikeText(text) {
  * returns which flow (if any) should be activated.
  */
 async function findMatchingFlow(parsedMessage, client, convo) {
+  const timer = createTimer("TriggerEngine.findMatchingFlow", client.clientId);
   const text    = (parsedMessage.text?.body || "").trim();
   const channel = parsedMessage.channel || "whatsapp";
+  timer.checkpoint("params parsed", {
+    textLen: text.length,
+    channel,
+    hasReferral: !!parsedMessage.referral,
+  });
 
   let flows = await loadSlimFlowsForClient(client);
+  timer.checkpoint("flows loaded", { count: flows?.length });
 
   // Shopify / wizard automations must never steal keyword or first_message routing.
   flows = flows.filter((f) => !f.isAutomation);
@@ -185,6 +225,8 @@ async function findMatchingFlow(parsedMessage, client, convo) {
   }
 
   if (keywordHit) {
+    timer.checkpoint("trigger matched: keyword", { flowId: keywordHit.flowId });
+    timer.finish("keyword_match");
     return keywordHit;
   }
 
@@ -196,7 +238,10 @@ async function findMatchingFlow(parsedMessage, client, convo) {
        if (!trigger || (trigger.type !== "meta_ad" && trigger.type !== "META_AD")) return false;
        return trigger.adId === adId || trigger.adId === "any";
     });
-    if (adFlow) return { flow: adFlow, triggerType: "meta_ad" };
+    if (adFlow) {
+      timer.finish("meta_ad_match");
+      return { flow: adFlow, triggerType: "meta_ad" };
+    }
   }
 
   // ── PRIORITY 1.5: Check event triggers (story_mention, intent_match) ─────────
@@ -205,7 +250,10 @@ async function findMatchingFlow(parsedMessage, client, convo) {
       const trigger = flow.triggerConfig || flow.trigger || getTriggerFromNodes(getFlowNodes(flow));
       return trigger?.type === "story_mention" || trigger?.type === "STORY_MENTION";
     });
-    if (eventFlow) return { flow: eventFlow, triggerType: "story_mention" };
+    if (eventFlow) {
+      timer.finish("story_mention_match");
+      return { flow: eventFlow, triggerType: "story_mention" };
+    }
   }
 
   // ── PRIORITY 1.6: Check AI intent_match triggers ────────────────────────────
@@ -218,7 +266,10 @@ async function findMatchingFlow(parsedMessage, client, convo) {
         // If intentId is blank on the node → matches any detected intent
         return !trigger.intentId || trigger.intentId === parsedMessage.detectedIntentId;
       });
-      if (intentFlow) return { flow: intentFlow, triggerType: "intent_match" };
+      if (intentFlow) {
+        timer.finish("intent_match");
+        return { flow: intentFlow, triggerType: "intent_match" };
+      }
     } catch (intentErr) {
       console.warn(`[TriggerEngine] Intent match skipped (NLP error): ${intentErr.message}`);
       // Fall through to next priority tier
@@ -244,6 +295,7 @@ async function findMatchingFlow(parsedMessage, client, convo) {
     if (welcomeFlow) {
       const nodes = getFlowNodes(welcomeFlow);
       const edges = getFlowEdges(welcomeFlow);
+      timer.finish("first_message_match");
       return {
         flow: welcomeFlow,
         triggerType: "first_message",
@@ -254,6 +306,7 @@ async function findMatchingFlow(parsedMessage, client, convo) {
 
     // legacy fallback
     if (client.flowNodes?.length > 0) {
+      timer.finish("first_message_legacy");
       return {
         flow: { nodes: client.flowNodes, edges: client.flowEdges, isLegacy: true },
         triggerType: "first_message",
@@ -263,6 +316,8 @@ async function findMatchingFlow(parsedMessage, client, convo) {
     }
   }
 
+  timer.log("no trigger matched");
+  timer.finish("no_match");
   return null;
 }
 
@@ -661,6 +716,7 @@ function clearTriggerCache(clientId) {
 }
 
 module.exports = {
+  isGreetingLikeText,
   findMatchingFlow,
   findGreetingFlowFast,
   loadSlimFlowsForClient,

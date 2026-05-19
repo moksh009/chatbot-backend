@@ -1031,18 +1031,35 @@ const handleShopifyLinkOpenedWebhook = async (req, res) => {
 };
 
 const getClientOrders = async (req, res) => {
+    const { createTimer } = require('../../utils/perfLogger');
+    const { dedupeAsync } = require('../../utils/requestDedupe');
+    const timer = createTimer('GET /api/client/:clientId/orders', req.clientConfig?.clientId || '');
     try {
         const clientConfig = req.clientConfig;
         const { buildOrderListQuery, filterOrdersByStatusTab } = require('../../utils/orderListQuery');
         const { mongoQuery, statusTab } = buildOrderListQuery(clientConfig.clientId, req.query);
+        timer.checkpoint('query_built');
 
-        const raw = await Order.find(mongoQuery).sort({ createdAt: -1 }).limit(500).lean();
-        let orders = dedupeOrdersByShopifyKey(raw);
-        orders = filterOrdersByStatusTab(orders, statusTab || req.query.statusTab || 'All');
-        orders = orders.slice(0, 100);
+        const dedupeKey = `orders:list:${clientConfig.clientId}:${JSON.stringify(req.query || {})}`;
+        const orders = await dedupeAsync(dedupeKey, async () => {
+            const fetchLimit = 150;
+            const raw = await timer.time('Order.find', () => {
+                const q = Order.find(mongoQuery).sort({ createdAt: -1 }).limit(fetchLimit).lean();
+                if (mongoQuery.clientId) {
+                    q.hint({ clientId: 1, createdAt: -1 });
+                }
+                return q;
+            });
+            let list = dedupeOrdersByShopifyKey(raw);
+            list = filterOrdersByStatusTab(list, statusTab || req.query.statusTab || 'All');
+            return list.slice(0, 100);
+        });
+
         res.json({ success: true, orders });
+        timer.finish(`200 ok | count=${orders.length}`);
     } catch (error) {
         console.error('[getClientOrders] Error:', error);
+        timer.finish(`500 error=${error.message}`);
         res.status(500).json({ error: 'Server configuration error' });
     }
 };
@@ -1328,13 +1345,15 @@ function dedupeOrdersByShopifyKey(orders) {
 }
 
 const updateOrderStatus = async (req, res) => {
+    const { createTimer } = require('../../utils/perfLogger');
+    const timer = createTimer('PATCH /api/client/:clientId/orders/:orderId/status', req.clientConfig?.clientId || '');
     try {
         const { orderId } = req.params;
         const { status, trackingNumber, trackingUrl } = req.body;
         const { clientId, shopDomain, shopifyAccessToken, nicheData } = req.clientConfig;
         const io = req.app.get('socketio');
 
-        const order = await Order.findOne({ _id: orderId, clientId });
+        const order = await timer.time('Order.findOne', () => Order.findOne({ _id: orderId, clientId }));
         if (!order) return res.status(404).json({ error: 'Order not found' });
 
         const oldStatus = order.status;
@@ -1396,13 +1415,17 @@ const updateOrderStatus = async (req, res) => {
             whatsapp: dispatchResult.whatsapp || {},
             dispatch: dispatchResult,
         });
+        timer.finish('200 ok');
     } catch (error) {
         console.error('[UpdateOrderStatus] Error:', error);
+        timer.finish(`500 error=${error.message}`);
         res.status(500).json({ error: 'Failed to update order status' });
     }
 };
 
 const updateOrderAddress = async (req, res) => {
+    const { createTimer } = require('../../utils/perfLogger');
+    const timer = createTimer('PATCH /api/client/:clientId/orders/:orderId/address', req.clientConfig?.clientId || '');
     try {
         const { orderId } = req.params;
         const { shippingAddress } = req.body;
@@ -1414,7 +1437,10 @@ const updateOrderAddress = async (req, res) => {
             { new: true }
         );
 
-        if (!order) return res.status(404).json({ error: 'Order not found' });
+        if (!order) {
+            timer.finish('404');
+            return res.status(404).json({ error: 'Order not found' });
+        }
 
         const io = req.app.get('socketio');
         if (io) {
@@ -1424,8 +1450,10 @@ const updateOrderAddress = async (req, res) => {
         }
 
         res.json({ success: true, order });
+        timer.finish('200 ok');
     } catch (error) {
         console.error('[UpdateOrderAddress] Error:', error);
+        timer.finish(`500 error=${error.message}`);
         res.status(500).json({ error: 'Failed to update order address' });
     }
 };

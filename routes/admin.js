@@ -1504,6 +1504,15 @@ router.patch('/my-settings', protect, async (req, res) => {
     }
 
     try {
+      const { clearClientCache } = require('../middleware/apiCache');
+      const { invalidateBootstrapCache } = require('../utils/bootstrapCache');
+      await clearClientCache(targetClientId);
+      invalidateBootstrapCache(req.user?.id);
+    } catch (cacheErr) {
+      log.warn(`[Settings] Cache invalidation skipped: ${cacheErr.message}`);
+    }
+
+    try {
       const { emitToClient } = require('../utils/socket');
       const draftOnlyKeys = new Set(['flowDraft', 'clientId']);
       const bodyKeys = Object.keys(req.body || {}).filter((k) => req.body[k] !== undefined);

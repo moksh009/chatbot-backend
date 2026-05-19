@@ -3,13 +3,22 @@ const Client = require('../models/Client');
 const { encrypt, decrypt } = require('./encryption');
 const shopifyAdminApiVersion = require('./shopifyAdminApiVersion');
 const { shopifyBreaker } = require('./circuitBreaker');
+const { createTimer } = require('./perfLogger');
+const { getCachedClient, invalidateClientCache } = require('./clientCache');
+
+const SHOPIFY_CLIENT_SELECT =
+  'shopDomain shopifyAccessToken shopifyRefreshToken shopifyClientId shopifyClientSecret shopifyApiVersion shopifyTokenExpiresAt commerce shopifyConnectionStatus lastShopifyError';
 
 /**
  * Robust Shopify Client Generator with Auto-Refresh & Self-Healing
  * Standardizes API communication and handles OAuth token rotation automatically.
  */
 async function getShopifyClient(clientId, forceRefresh = false) {
-    const client = await Client.findOne({ clientId });
+    const timer = createTimer('Shopify.getShopifyClient', clientId);
+    timer.checkpoint('START', { forceRefresh });
+    let client = await timer.time('getCachedClient', () =>
+      getCachedClient(clientId, SHOPIFY_CLIENT_SELECT)
+    );
     if (!client) throw new Error('Client not found');
 
     let token = decrypt(client.shopifyAccessToken);
@@ -74,19 +83,32 @@ async function getShopifyClient(clientId, forceRefresh = false) {
 
 
         if (success) {
-            client.shopifyConnectionStatus = 'connected';
-            client.lastShopifyError = '';
-            await client.save();
+            const tokenSet = {
+              shopifyAccessToken: token,
+              shopifyRefreshToken: client.shopifyRefreshToken,
+              shopifyTokenExpiresAt: client.shopifyTokenExpiresAt,
+              shopifyConnectionStatus: 'connected',
+              lastShopifyError: '',
+              'commerce.shopify.accessToken': token,
+            };
+            if (client.commerce?.shopify?.refreshToken) {
+              tokenSet['commerce.shopify.refreshToken'] = client.commerce.shopify.refreshToken;
+            }
+            await Client.updateOne({ clientId }, { $set: tokenSet });
+            invalidateClientCache(clientId);
+            client = await getCachedClient(clientId, SHOPIFY_CLIENT_SELECT);
+            token = decrypt(client.shopifyAccessToken);
         } else if (forceRefresh || isNextToExpiry) {
             const errorReason = lastError ? JSON.stringify(lastError) : (hasCredentials && !client.shopifyRefreshToken ? 'Custom App (No Refresh Token)' : 'Unknown');
             const errorMsg = `Self-Healing Failed for ${clientId}: ${errorReason}`;
             console.error(`❌ [ShopifyRotation] ${errorMsg}`);
-            await Client.updateOne({ clientId }, { 
-                $set: { 
-                    shopifyConnectionStatus: 'error', 
-                    lastShopifyError: errorMsg 
-                } 
+            await Client.updateOne({ clientId }, {
+                $set: {
+                    shopifyConnectionStatus: 'error',
+                    lastShopifyError: errorMsg
+                }
             });
+            invalidateClientCache(clientId);
             if (forceRefresh) throw new Error(`Shopify rotation failed: ${errorReason}`);
         }
     }
@@ -113,14 +135,16 @@ async function getShopifyClient(clientId, forceRefresh = false) {
             if (error.response?.status === 401) {
                 console.warn(`[ShopifyAuth] 401 Unauthorized detected for ${clientId}. Flagging for recovery.`);
                 await Client.updateOne(
-                    { clientId }, 
+                    { clientId },
                     { $set: { shopifyConnectionStatus: 'error', lastShopifyError: 'Session Expired (401)' } }
                 );
+                invalidateClientCache(clientId);
             }
             return Promise.reject(error);
         }
     );
 
+    timer.finish('client_ready');
     return instance;
 }
 
@@ -130,15 +154,21 @@ async function getShopifyClient(clientId, forceRefresh = false) {
  */
 async function withShopifyRetry(clientId, operation, retryCount = 0) {
     return shopifyBreaker.call(async () => {
+    const timer = createTimer('Shopify.withShopifyRetry', `${clientId} attempt=${retryCount}`);
     try {
-        const shop = await getShopifyClient(clientId);
-        return await operation(shop);
+        const shop = await timer.time('getShopifyClient', () => getShopifyClient(clientId));
+        const result = await timer.time('shopify_operation', () => operation(shop));
+        timer.finish('success');
+        return result;
     } catch (err) {
         const isAuthError = err.response?.status === 401;
         const isForbidden = err.response?.status === 403;
 
         if ((isAuthError || isForbidden) && retryCount < 2) {
-            const clientRecord = await Client.findOne({ clientId }).select('shopifyRefreshToken shopifyClientId');
+            const clientRecord = await getCachedClient(
+              clientId,
+              'shopifyRefreshToken shopifyClientId'
+            );
             const cannotAutoRotate =
                 clientRecord?.shopifyClientId && !clientRecord?.shopifyRefreshToken;
             if (cannotAutoRotate) {
@@ -168,6 +198,7 @@ async function withShopifyRetry(clientId, operation, retryCount = 0) {
             const errorMsg = isForbidden ? 'Access Denied (403): Check App Scopes' : 'Max Retry Failure';
             await Client.updateOne({ clientId }, { $set: { shopifyConnectionStatus: 'error', lastShopifyError: errorMsg } });
         }
+        timer.finish(`error: ${err.message}`);
         throw err;
     }
     });
@@ -215,7 +246,9 @@ async function exchangeShopifyToken(clientId, shopDomain, shopifyClientId, shopi
         update.shopifyTokenExpiresAt = null; 
     }
 
-    return await Client.findOneAndUpdate({ clientId }, { $set: update }, { new: true });
+    const updated = await Client.findOneAndUpdate({ clientId }, { $set: update }, { new: true });
+    invalidateClientCache(clientId);
+    return updated;
 }
 
 async function refreshShopifyToken(client) {

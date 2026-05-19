@@ -4,15 +4,23 @@ const Segment = require('../models/Segment');
 const AdLead = require('../models/AdLead');
 const { protect } = require('../middleware/auth');
 const { translateConditionsToQuery } = require('../services/SegmentQueryBuilder');
+const { apiCache } = require('../middleware/apiCache');
 
 /**
  * GET /api/segments
  */
-router.get('/', protect, async (req, res) => {
+router.get('/', protect, apiCache(60), async (req, res) => {
+    const { createTimer } = require('../utils/perfLogger');
+    const timer = createTimer('GET /api/segments', req.user?.clientId || '');
     try {
-        const segments = await Segment.find({ clientId: req.user.clientId }).sort({ createdAt: -1 });
+        const segments = await Segment.find({ clientId: req.user.clientId })
+            .select('name description conditions lastCount lastCountAt createdAt updatedAt')
+            .sort({ createdAt: -1 })
+            .lean();
+        timer.finish(`200 ok | count=${segments.length}`);
         res.json(segments);
     } catch (err) {
+        timer.finish(`500 ${err.message}`);
         res.status(500).json({ success: false, error: 'Failed to fetch segments.' });
     }
 });
@@ -66,18 +74,34 @@ router.post('/', protect, async (req, res) => {
  * GET /api/segments/:id/leads
  * Fetches leads matching the segment query for preview/processing
  */
-router.get('/:id/leads', protect, async (req, res) => {
+router.get('/:id/leads', protect, apiCache(45), async (req, res) => {
+    const { createTimer } = require('../utils/perfLogger');
+    const timer = createTimer('GET /api/segments/:id/leads', req.user?.clientId || '');
     try {
-        const segment = await Segment.findOne({ _id: req.params.id, clientId: req.user.clientId });
-        if (!segment) return res.status(404).json({ error: 'Segment not found' });
+        const clientId = req.user.clientId;
+        const segment = await Segment.findOne({ _id: req.params.id, clientId })
+            .select('query name')
+            .lean();
+        if (!segment) {
+            timer.finish('404');
+            return res.status(404).json({ error: 'Segment not found' });
+        }
 
-        const count = await AdLead.countDocuments({ ...segment.query, clientId: req.user.clientId });
-        const leads = await AdLead.find({ ...segment.query, clientId: req.user.clientId })
-            .limit(500)
-            .select('name phoneNumber email lastInteraction ordersCount leadScore cartStatus totalSpent');
+        const match = { ...segment.query, clientId };
+        const limit = Math.min(200, parseInt(req.query.limit, 10) || 100);
+        const [count, leads] = await Promise.all([
+            AdLead.countDocuments(match),
+            AdLead.find(match)
+                .sort({ lastInteraction: -1, _id: -1 })
+                .limit(limit)
+                .select('name phoneNumber email lastInteraction ordersCount leadScore cartStatus totalSpent')
+                .lean(),
+        ]);
 
+        timer.finish(`200 ok | count=${count} page=${leads.length}`);
         res.json({ success: true, count, leads });
     } catch (err) {
+        timer.finish(`500 ${err.message}`);
         res.status(500).json({ success: false, error: 'Failed to process segment leads.' });
     }
 });

@@ -139,12 +139,21 @@ router.get('/sync', protect, async (req, res) => {
 });
 
 // 1b. Fetch Templates from Local DB Cache (Lightweight)
-router.get('/list', protect, async (req, res) => {
+router.get('/list', protect, apiCache(60), async (req, res) => {
+    const { createTimer } = require('../utils/perfLogger');
+    const { getCachedClient } = require('../utils/clientCache');
+    const timer = createTimer('GET /api/templates/list', tenantClientId(req) || '');
     try {
         const clientId = tenantClientId(req);
-        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+        if (!clientId) {
+            timer.finish('403');
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
 
-        const client = await Client.findOne({ clientId }, 'syncedMetaTemplates templatesSyncedAt messageTemplates pendingTemplates');
+        const client = await getCachedClient(
+            clientId,
+            'syncedMetaTemplates templatesSyncedAt messageTemplates pendingTemplates clientId'
+        );
         if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
         const MetaTemplate = require('../models/MetaTemplate');
@@ -335,12 +344,14 @@ router.get('/list', protect, async (req, res) => {
             return primary === contextPurpose || secondary.includes(contextPurpose) || primary === 'utility';
           });
         }
+        timer.finish(`200 ok | count=${merged.length}`);
         res.json({
           success: true,
           data: merged,
           syncedAt: client.templatesSyncedAt
         });
     } catch (error) {
+        timer.finish(`500 ${error.message}`);
         res.status(500).json({ success: false, message: error.message });
     }
 });
@@ -482,25 +493,37 @@ router.put('/product-template/:clientId/:templateName', protect, async (req, res
 });
 
 // 2. Get Template Statistics (Read Rate and Revenue)
-router.get('/:clientId/stats', protect, apiCache(30), async (req, res) => {
+router.get('/:clientId/stats', protect, apiCache(60), async (req, res) => {
+    const { createTimer } = require('../utils/perfLogger');
+    const { getCachedClient } = require('../utils/clientCache');
+    const timer = createTimer('GET /api/templates/:clientId/stats', req.params.clientId || '');
     try {
         const { clientId } = req.params;
         const Message = require('../models/Message');
         const Order = require('../models/Order');
 
-        // Verify access
         await getClientCredentials(clientId, req.user.id);
+
+        const since = new Date();
+        since.setDate(since.getDate() - 90);
 
         const [statusBreakdown, stats, client] = await Promise.all([
           Message.aggregate([
-            { $match: { clientId, direction: 'outgoing', type: 'template' } },
-            { $group: { _id: '$status', n: { $sum: 1 } } }
-          ]),
+            {
+              $match: {
+                clientId,
+                direction: 'outgoing',
+                type: 'template',
+                createdAt: { $gte: since },
+              },
+            },
+            { $group: { _id: '$status', n: { $sum: 1 } } },
+          ]).option({ maxTimeMS: 8000 }),
           Order.aggregate([
-            { $match: { clientId } },
-            { $group: { _id: null, totalRevenue: { $sum: '$totalPrice' } } }
-          ]),
-          Client.findOne({ clientId }).select('syncedMetaTemplates').lean()
+            { $match: { clientId, createdAt: { $gte: since } } },
+            { $group: { _id: null, totalRevenue: { $sum: '$totalPrice' } } },
+          ]).option({ maxTimeMS: 8000 }),
+          getCachedClient(clientId, 'syncedMetaTemplates clientId'),
         ]);
 
         let totalSent = 0;
@@ -518,6 +541,7 @@ router.get('/:clientId/stats', protect, apiCache(30), async (req, res) => {
 
         const revenue = stats.length > 0 ? stats[0].totalRevenue : 0;
         
+        timer.finish('ok');
         res.json({
             success: true,
             globalReadRate: readRate || 32, // Weighted fallback
@@ -533,6 +557,7 @@ router.get('/:clientId/stats', protect, apiCache(30), async (req, res) => {
         });
 
     } catch (error) {
+        timer.finish(`error: ${error.message}`);
         console.error('[Template Stats API] Error:', error.message);
         res.status(500).json({ success: false, message: error.message });
     }

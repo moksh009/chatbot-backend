@@ -95,6 +95,8 @@ router.post('/:clientId/sync-products', internalOrProtect, async (req, res) => {
       { clientId },
       { $set: { "nicheData.products": products } }
     );
+    const { clearClientCache } = require('../middleware/apiCache');
+    await clearClientCache(clientId);
 
     res.json({ success: true, count: products.length });
   } catch (err) {
@@ -187,18 +189,20 @@ router.post('/:clientId/reconnect-store', internalOrProtect, async (req, res) =>
 
 // GET /api/shopify/:clientId/recent-orders
 router.get('/:clientId/recent-orders', protect, verifyClientAccess, async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const timer = createTimer('GET /api/shopify/:clientId/recent-orders', req.params.clientId || '');
+  timer.checkpoint('START');
+
   try {
     const { clientId } = req.params;
-    const client = await Client.findOne({ clientId })
-      .select({
-        shopDomain: 1,
-        shopifyAccessToken: 1,
-        commerce: 1,
-      })
-      .lean();
+    const { getCachedClient } = require('../utils/clientCache');
+    const client = await timer.time('getCachedClient', () =>
+      getCachedClient(clientId, 'shopDomain shopifyAccessToken commerce')
+    );
 
     const { shopify_connected: connected } = buildConnectionStatusPayload(client);
     if (!connected) {
+      timer.finish('200 not_connected');
       return res.status(200).json({
         success: true,
         connected: false,
@@ -209,28 +213,39 @@ router.get('/:clientId/recent-orders', protect, verifyClientAccess, async (req, 
     const cacheKey = clientId;
     const cached = recentOrdersCache.get(cacheKey);
     if (cached && Date.now() - cached.at < RECENT_ORDERS_TTL_MS) {
+      timer.finish(`200 memory_cache_hit | orders=${cached.orders?.length || 0}`);
       return res.json({ success: true, connected: true, orders: cached.orders, cached: true });
     }
 
-    const result = await withShopifyRetry(clientId, async (shop) => {
-      const response = await shop.get('/orders.json?limit=10&status=any');
-      const orders = response.data.orders || [];
+    const result = await timer.time('shopify_api.orders_fetch', () =>
+      withShopifyRetry(clientId, async (shop) => {
+        const response = await shop.get('/orders.json?limit=10&status=any');
+        const orders = response.data.orders || [];
 
-      return orders.map(order => ({
-        orderId: order.id ? order.id.toString() : 'N/A',
-        orderNumber: order.name || order.order_number || 'Unknown',
-        createdAt: order.created_at,
-        customerName: order.customer ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim() || 'Shopify Customer' : 'Guest',
-        totalPrice: parseFloat(order.total_price || 0),
-        financialStatus: order.financial_status || 'unknown',
-        fulfillmentStatus: order.fulfillment_status || 'unfulfilled',
-        itemsCount: (order.line_items || []).reduce((acc, item) => acc + (item.quantity || 0), 0)
-      }));
-    });
+        return orders.map((order) => ({
+          orderId: order.id ? order.id.toString() : 'N/A',
+          orderNumber: order.name || order.order_number || 'Unknown',
+          createdAt: order.created_at,
+          customerName: order.customer
+            ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim() ||
+              'Shopify Customer'
+            : 'Guest',
+          totalPrice: parseFloat(order.total_price || 0),
+          financialStatus: order.financial_status || 'unknown',
+          fulfillmentStatus: order.fulfillment_status || 'unfulfilled',
+          itemsCount: (order.line_items || []).reduce(
+            (acc, item) => acc + (item.quantity || 0),
+            0
+          ),
+        }));
+      })
+    );
 
     recentOrdersCache.set(cacheKey, { at: Date.now(), orders: result });
     res.json({ success: true, connected: true, orders: result });
+    timer.finish(`200 ok | orders=${result.length}`);
   } catch (err) {
+    timer.finish(`error=${err.message}`);
     console.warn(`[Shopify Recent Orders] soft-fail for ${req.params.clientId}:`, err.message);
     const stale = recentOrdersCache.get(req.params.clientId);
     if (stale?.orders?.length) {

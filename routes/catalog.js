@@ -14,28 +14,41 @@ const {
 } = require("../utils/metaCatalogSync");
 const { autoPatchMpmFlowNodes } = require("../utils/flowMpmPatch");
 const log = require("../utils/logger")("CatalogRoutes");
+const { apiCache } = require("../middleware/apiCache");
+const { getCachedClient } = require("../utils/clientCache");
 
 // ─── GET /api/catalog/:clientId — status + product count ────────────────────
-router.get("/:clientId", verifyToken, async (req, res) => {
+router.get("/:clientId", verifyToken, apiCache(30), async (req, res) => {
+  const { createTimer } = require("../utils/perfLogger");
+  const timer = createTimer("GET /api/catalog/:clientId", req.params.clientId || "");
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
-    if (!client) return res.status(404).json({ success: false, message: "Client not found" });
+    const cid = req.params.clientId;
+    const client = await getCachedClient(
+      cid,
+      "waCatalogId facebookCatalogId catalogEnabled catalogProductCount shopifyProductCount catalogSyncedAt shopifyLastProductSync shopDomain shopifyAccessToken"
+    );
+    if (!client) {
+      timer.finish("404");
+      return res.status(404).json({ success: false, message: "Client not found" });
+    }
 
-    const cachedCount = await ShopifyProduct.countDocuments({ clientId: req.params.clientId });
-
-    const waOrdersToday = await AdLead.countDocuments({
-      clientId: client._id,
-      cartStatus: "whatsapp_order_placed",
-      lastInteraction: { $gte: new Date(Date.now() - 86400000) },
-    });
-
-    const waRevenueAgg = await AdLead.aggregate([
-      { $match: { clientId: client._id, cartStatus: "whatsapp_order_placed" } },
-      { $group: { _id: null, total: { $sum: "$cartSnapshot.total_price" } } },
+    const since = new Date(Date.now() - 86400000);
+    const [cachedCount, waOrdersToday, waRevenueAgg] = await Promise.all([
+      ShopifyProduct.countDocuments({ clientId: cid }),
+      AdLead.countDocuments({
+        clientId: cid,
+        cartStatus: "whatsapp_order_placed",
+        lastInteraction: { $gte: since },
+      }),
+      AdLead.aggregate([
+        { $match: { clientId: cid, cartStatus: "whatsapp_order_placed" } },
+        { $group: { _id: null, total: { $sum: "$cartSnapshot.total_price" } } },
+      ]),
     ]);
 
     const catalogId = resolveCatalogId(client);
 
+    timer.finish("200 ok");
     res.json({
       success: true,
       catalogId: catalogId || null,
@@ -47,6 +60,7 @@ router.get("/:clientId", verifyToken, async (req, res) => {
       waRevenue: waRevenueAgg[0]?.total || 0,
     });
   } catch (err) {
+    timer.finish(`500 ${err.message}`);
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -228,26 +242,29 @@ router.post("/:clientId/sync", verifyToken, async (req, res) => {
 });
 
 // ─── GET /api/catalog/:clientId/orders — list WA catalog orders ─────────────
-router.get("/:clientId/orders", verifyToken, async (req, res) => {
+router.get("/:clientId/orders", verifyToken, apiCache(60), async (req, res) => {
+  const { createTimer } = require("../utils/perfLogger");
+  const timer = createTimer("GET /api/catalog/:clientId/orders", req.params.clientId || "");
   try {
-    const client = await Client.findOne({ clientId: req.params.clientId });
-    if (!client) return res.status(404).json({ success: false, message: "Client not found" });
-
+    const cid = req.params.clientId;
     const page = parseInt(req.query.page, 10) || 1;
-    const limit = parseInt(req.query.limit, 10) || 20;
+    const limit = Math.min(50, parseInt(req.query.limit, 10) || 20);
 
     const orders = await AdLead.find({
-      clientId: client._id,
+      clientId: cid,
       cartStatus: "whatsapp_order_placed",
     })
       .select("phoneNumber name cartSnapshot lastInteraction leadScore")
       .sort({ lastInteraction: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
+      .hint({ clientId: 1, cartStatus: 1 })
       .lean();
 
+    timer.finish(`200 ok | count=${orders.length}`);
     res.json({ success: true, orders });
   } catch (err) {
+    timer.finish(`500 ${err.message}`);
     res.status(500).json({ success: false, message: err.message });
   }
 });

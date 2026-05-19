@@ -20,6 +20,7 @@ const WhatsApp = require('../utils/whatsapp');
 const { createMessage } = require('../utils/createMessage');
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
 const log = require('../utils/logger')('Campaigns');
+const { apiCache } = require('../middleware/apiCache');
 const { incrementStat } = require('../utils/statCacheEngine');
 const { resolveImportBatchObjectId } = require('../utils/importBatchResolver');
 const {
@@ -822,7 +823,7 @@ router.post('/:clientId/ab-test', protect, async (req, res) => {
 // @route   GET /api/campaigns/:clientId/overview
 // @desc    Get aggregate campaign metrics and Meta health
 // @access  Private
-router.get('/:clientId/overview', protect, async (req, res) => {
+router.get('/:clientId/overview', protect, apiCache(60), async (req, res) => {
   try {
     const { client } = await resolveClient(req);
     const clientId = client.clientId;
@@ -1126,7 +1127,7 @@ router.get('/templates', protect, async (req, res) => {
 
 // @route   GET /api/campaigns/audience-estimate
 // @desc    Get estimated reach for a segment or source
-router.get('/audience-estimate', protect, async (req, res) => {
+router.get('/audience-estimate', protect, apiCache(30), async (req, res) => {
     const { source, segmentId, importBatchId, campaignId } = req.query;
     const cid = req.user.clientId;
     let count = 0;

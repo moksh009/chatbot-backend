@@ -20,9 +20,14 @@ const log = require('../../utils/logger')('UnifiedInbox');
  *  - skip: number (default: 0)
  */
 async function listConversations(req, res) {
+  const { createTimer } = require('../../utils/perfLogger');
+  const timer = createTimer('GET /api/inbox/conversations', tenantClientId(req) || '');
   try {
     const clientId = tenantClientId(req);
-    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
+    if (!clientId) {
+      timer.finish('403');
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
 
     const channel = req.query.channel || 'all';
     const search = req.query.search || '';
@@ -60,12 +65,16 @@ async function listConversations(req, res) {
         waQuery.assignedTo = agentId;
       }
 
-      const rawWA = await Conversation.find(waQuery)
-        .sort({ lastMessageAt: -1 })
-        .limit(limit)
-        .skip(channel === 'whatsapp' ? skip : 0)
-        .select('phone customerName lastMessage lastMessageAt unreadCount status channel sentiment assignedTo botStatus')
-        .lean();
+      const rawWA = await timer.time('Conversation.find_whatsapp', () =>
+        Conversation.find(waQuery)
+          .sort({ lastMessageAt: -1 })
+          .limit(limit)
+          .skip(channel === 'whatsapp' ? skip : 0)
+          .select(
+            'phone customerName lastMessage lastMessageAt unreadCount status channel sentiment assignedTo botStatus'
+          )
+          .lean()
+      );
 
       whatsappConvos = rawWA.map(c => ({
         _id: c._id.toString(),
@@ -92,12 +101,14 @@ async function listConversations(req, res) {
         ];
       }
 
-      const rawIG = await IGConversation.find(igQuery)
-        .sort({ lastMessageAt: -1 })
-        .limit(limit)
-        .skip(channel === 'instagram' ? skip : 0)
-        .select('igsid igUsername igProfilePic lastMessageText lastMessageAt isRead channel')
-        .lean();
+      const rawIG = await timer.time('IGConversation.find', () =>
+        IGConversation.find(igQuery)
+          .sort({ lastMessageAt: -1 })
+          .limit(limit)
+          .skip(channel === 'instagram' ? skip : 0)
+          .select('igsid igUsername igProfilePic lastMessageText lastMessageAt isRead channel')
+          .lean()
+      );
 
       igConvos = rawIG.map(c => ({
         _id: c._id.toString(),
@@ -122,15 +133,16 @@ async function listConversations(req, res) {
       merged = merged.slice(skip, skip + limit);
     }
 
+    timer.finish(`200 ok | count=${merged.length}`);
     return res.json({
       success: true,
       conversations: merged,
       total: merged.length,
-      hasMore: merged.length === limit
+      hasMore: merged.length === limit,
     });
-
   } catch (err) {
     log.error('[listConversations] Error:', err.message, { stack: err.stack });
+    timer.finish(`500 error=${err.message}`);
     return res.status(500).json({ error: 'Failed to fetch conversations' });
   }
 }
@@ -140,16 +152,25 @@ async function listConversations(req, res) {
  * Returns available static and dynamic (per-agent) filters.
  */
 async function getFilters(req, res) {
+  const { createTimer } = require('../../utils/perfLogger');
+  const timer = createTimer('GET /api/inbox/filters', tenantClientId(req) || '');
   try {
     const clientId = tenantClientId(req);
-    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
+    if (!clientId) {
+      timer.finish('403');
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
 
     const User = require('../../models/User');
-    const teamMembers = await User.find({
-      clientId,
-      role: { $in: ['agent', 'admin', 'SUPER_ADMIN'] },
-      isActive: true
-    }).select('_id name email').lean();
+    const teamMembers = await timer.time('User.find', () =>
+      User.find({
+        clientId,
+        role: { $in: ['agent', 'admin', 'SUPER_ADMIN'] },
+        isActive: true,
+      })
+        .select('_id name email')
+        .lean()
+    );
 
     const filters = [
       { id: 'all', label: 'All', type: 'static' },
@@ -168,8 +189,10 @@ async function getFilters(req, res) {
     }
 
     res.json({ filters });
+    timer.finish(`200 ok | filters=${filters.length}`);
   } catch (err) {
     log.error('[getFilters] Error:', err.message);
+    timer.finish(`500 error=${err.message}`);
     res.status(500).json({ error: 'Failed to fetch filters.' });
   }
 }

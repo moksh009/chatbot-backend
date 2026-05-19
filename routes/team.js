@@ -9,16 +9,23 @@ const crypto = require('crypto');
 const { sendTeamInviteEmail, sendAdminConfirmationEmail } = require('../utils/emailService');
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
 const { tenantClientId } = require('../utils/queryHelpers');
+const { apiCache } = require('../middleware/apiCache');
 
 // @route   GET /api/team
 // @route   GET /api/users/team
 // @desc    Get all team members for a client (root handler)
-router.get('/', protect, async (req, res) => {
+router.get('/', protect, apiCache(60), async (req, res) => {
+    const { createTimer } = require('../utils/perfLogger');
+    const timer = createTimer('GET /api/team', req.user?.clientId || '');
     try {
         const clientId = req.user.clientId;
-        const users = await User.find({ clientId }).select('-password').lean();
+        const users = await timer.time('User.find', () =>
+            User.find({ clientId }).select('-password').lean()
+        );
         res.json({ success: true, team: users });
+        timer.finish(`200 ok | count=${users.length}`);
     } catch (error) {
+        timer.finish(`500 error=${error.message}`);
         res.status(500).json({ success: false, message: error.message });
     }
 });

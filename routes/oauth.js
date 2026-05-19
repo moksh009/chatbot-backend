@@ -12,6 +12,7 @@ const {
   subscribeFacebookPageToWebhooks,
   subscribeInstagramUserToWebhooks
 } = require("../utils/igGraphApi");
+const { invalidateClientCache } = require("../utils/clientCache");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STEP 1: Initiate OAuth Flow
@@ -184,6 +185,7 @@ router.get("/instagram/callback", async (req, res) => {
 
       // Register webhook subscription (Facebook Page + Instagram Business Account — different hosts)
       await registerInstagramWebhook(page.id, page.access_token, igDetails.id);
+      invalidateClientCache(clientId);
 
       console.log(`[Instagram OAuth] Connected @${igDetails.username} for client ${clientId}`);
       return res.redirect(`${frontendUrl}/settings?tab=channels&instagram_connected=true`);
@@ -247,6 +249,7 @@ router.post("/instagram/select-page/:clientId", protect, async (req, res) => {
     });
 
     await registerInstagramWebhook(page.pageId, page.pageToken, page.igAccountId);
+    invalidateClientCache(clientId);
 
     res.json({
       success:  true,
@@ -282,6 +285,7 @@ router.post("/instagram/disconnect/:clientId", protect, async (req, res) => {
       'social.instagram.accessToken': "",
       'social.instagram.pageId': ""
     });
+    invalidateClientCache(clientId);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -385,6 +389,7 @@ async function refreshExpiringInstagramTokens() {
       }
 
       await Client.findByIdAndUpdate(client._id, updateFields);
+      invalidateClientCache(client.clientId);
       console.log(`[Instagram Cron] Token refreshed for @${client.instagramUsername} (${client.clientId})`);
     } catch (err) {
       console.error(`[Instagram Cron] Token refresh failed for ${client.clientId}:`, err.response?.data || err.message);
@@ -587,6 +592,7 @@ router.get("/google/callback", async (req, res) => {
         emailMethod: "gmail_oauth" // Mark that we're using OAuth, not SMTP
       }
     );
+    invalidateClientCache(clientId);
 
     console.log(`[Google OAuth] Gmail connected for ${clientId}: ${gmailAddress}`);
     return res.redirect(`${frontendUrl}/settings?tab=integrations&google_connected=true`);
@@ -611,6 +617,7 @@ router.post("/google/disconnect/:clientId", protect, async (req, res) => {
         emailMethod: ""
       }
     );
+    invalidateClientCache(clientId);
 
     return res.json({ success: true });
   } catch (err) {
