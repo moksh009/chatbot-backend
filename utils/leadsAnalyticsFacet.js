@@ -28,14 +28,18 @@ const LEAD_LIST_PROJECTION = {
   lifetimeValue: 1,
   checkoutInitiatedCount: 1,
   optInSource: 1,
+  optStatus: 1,
   inboundMessageCount: 1,
 };
 
-function buildLeadsListQuery(clientId, { search, tag, segmentScore, lastSeen }) {
+function buildLeadsListQuery(clientId, { search, tag, segmentScore, lastSeen, importBatchId }) {
   const query = { clientId };
+  if (importBatchId) {
+    query.importBatchId = importBatchId;
+  }
   if (search) {
     const searchRegex = new RegExp(search, 'i');
-    query.$or = [{ name: searchRegex }, { phoneNumber: searchRegex }];
+    query.$or = [{ name: searchRegex }, { phoneNumber: searchRegex }, { email: searchRegex }];
   }
   if (tag) query.tags = tag;
   if (segmentScore) {
@@ -107,12 +111,19 @@ async function fetchLeadsAnalyticsBundle(clientId, opts = {}) {
     sortBy,
     page = 1,
     limit = 20,
+    importBatchId = null,
   } = opts;
 
   const pageNum = parseInt(page, 10) || 1;
   const limitNum = Math.min(parseInt(limit, 10) || 20, 500);
   const skip = (pageNum - 1) * limitNum;
-  const query = buildLeadsListQuery(clientId, { search, tag, segmentScore, lastSeen });
+  const query = buildLeadsListQuery(clientId, {
+    search,
+    tag,
+    segmentScore,
+    lastSeen,
+    importBatchId,
+  });
 
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);

@@ -173,12 +173,17 @@ async function handleFulfillmentWebhookForAdmin(client, fulfillment, topic, io) 
     const urls = fulfillment.tracking_urls;
     const trackingUrl = (Array.isArray(urls) && urls[0]) || fulfillment.tracking_url || prev.trackingUrl || '';
     const trackingNumber = fulfillment.tracking_number || prev.trackingNumber || '';
+    const isDelivered =
+        shipmentStatus === 'delivered' ||
+        shipmentStatus === 'delivery' ||
+        String(fulfillment.status || '').toLowerCase() === 'success';
+    const platformStatus = isDelivered ? 'delivered' : 'shipped';
     const doc = await Order.findOneAndUpdate(
         { clientId: client.clientId, shopifyOrderId: oidStr },
         {
             $set: {
-                status: 'shipped',
-                fulfillmentStatus: 'fulfilled',
+                status: platformStatus,
+                fulfillmentStatus: isDelivered ? 'delivered' : 'fulfilled',
                 trackingUrl,
                 trackingNumber,
                 fulfilledAt: new Date(),
@@ -189,10 +194,11 @@ async function handleFulfillmentWebhookForAdmin(client, fulfillment, topic, io) 
     if (doc) emitOrderUpdatedToDashboard(io, client.clientId, doc);
     if (!doc) return;
 
-    const prevShipped = String(prevStatus || '').toLowerCase() === 'shipped';
+    const prevNorm = String(prevStatus || '').toLowerCase();
+    const prevShipped = prevNorm === 'shipped' || prevNorm === 'delivered';
     const prevTrackSig = `${prev.trackingUrl || ''}|${prev.trackingNumber || ''}`;
     const newTrackSig = `${doc.trackingUrl || ''}|${doc.trackingNumber || ''}`;
-    if (prevShipped && newTrackSig === prevTrackSig) {
+    if (prevShipped && prevNorm === platformStatus && newTrackSig === prevTrackSig) {
         return;
     }
     const trackingOnlyRefresh =
@@ -202,7 +208,7 @@ async function handleFulfillmentWebhookForAdmin(client, fulfillment, topic, io) 
         clientConfig: client,
         order: doc.toObject(),
         previousStatus: prevStatus,
-        newStatus: 'shipped',
+        newStatus: platformStatus,
         trackingNumber,
         trackingUrl,
         io: null,
@@ -695,38 +701,17 @@ async function handleOrder(client, data) {
       log.warn(`[CheckoutLink] attribution skipped: ${clErr.message}`);
     }
 
-    // 3. Create internal Order record
-    const pgw = Array.isArray(data.payment_gateway_names) ? data.payment_gateway_names : [];
-    const isCODOrder =
-        String(data.gateway || '').toLowerCase().includes('cash on delivery') ||
-        pgw.some((g) => String(g).toLowerCase().includes('cod')) ||
-        pgw.map(String).includes('Cash on Delivery') ||
-        pgw.map(String).includes('manual');
-
-    const newOrder = await Order.create({
-        clientId: client.clientId,
-        orderId: data.name || `#${data.id}`,
-        orderNumber: data.name || `#${data.id}`,
-        shopifyOrderId: String(data.id || ''),
-        customerName: data.customer ? `${data.customer.first_name} ${data.customer.last_name || ''}` : 'Shopify Customer',
-        customerPhone: cleanPhone,
-        customerEmail: data.email || data.customer?.email || '',
-        amount: parseFloat(data.total_price),
-        totalPrice: parseFloat(data.total_price),
-        financialStatus: data.financial_status || '',
-        fulfillmentStatus: data.fulfillment_status || '',
-        status: data.financial_status === 'paid' ? 'Paid' : 'Pending',
-        isCOD: isCODOrder,
-        items: data.line_items.map(item => ({
-            name: item.title,
-            quantity: item.quantity,
-            price: parseFloat(item.price),
-            sku: item.sku || '',
-            image: item.image_url || ''
-        })),
-        address: data.shipping_address ? `${data.shipping_address.address1}, ${data.shipping_address.city}` : '',
-        createdAt: data.created_at
-    });
+    // 3. Upsert internal Order record (same mapper as sync / orders/updated — COD + logistics status)
+    const { buildShopifyOrderSet, shopifyOrderFilter, detectCodFromShopify } = require('../utils/shopifyOrderMapper');
+    const $set = buildShopifyOrderSet(client.clientId, data, { preferLogisticsStatus: true });
+    $set.customerPhone = cleanPhone;
+    const filter = shopifyOrderFilter(client.clientId, data);
+    const newOrder = await Order.findOneAndUpdate(
+        filter,
+        { $set },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    const isCODOrder = !!newOrder.isCOD || detectCodFromShopify(data);
 
     // Auto-assign warranty records on order_placed (wizard enableWarranty)
     const { isWarrantyEnabled } = require('../utils/featureFlags');
@@ -758,7 +743,7 @@ async function handleOrder(client, data) {
     // Eco order-status templates (paid / confirmed) — same pipeline as shipped/fulfilled webhooks
     try {
       const fin = String(data.financial_status || '').toLowerCase();
-      if (fin === 'paid' || fin === 'partially_paid') {
+      if (!isCODOrder && (fin === 'paid' || fin === 'partially_paid')) {
         const { dispatchOrderStatusAutomation } = require('../utils/orderEventDispatcher');
         const orderPlain = typeof newOrder.toObject === 'function' ? newOrder.toObject() : newOrder;
         await dispatchOrderStatusAutomation({

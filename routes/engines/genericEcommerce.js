@@ -885,7 +885,7 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
         const totalPrice = orderData.total_price;
         const items = orderData.line_items?.map(i => `${i.name} (x${i.quantity})`).join(', ') || 'Your items';
 
-        const $set = buildShopifyOrderSet(clientId, orderData);
+        const $set = buildShopifyOrderSet(clientId, orderData, { preferLogisticsStatus: true });
         $set.customerPhone = phone;
         const savedOrder = await Order.findOneAndUpdate(shopifyOrderFilter(clientId, orderData), { $set }, { upsert: true, new: true, setDefaultsOnInsert: true });
         const isCOD = !!(savedOrder && savedOrder.isCOD) || detectCodFromShopify(orderData);

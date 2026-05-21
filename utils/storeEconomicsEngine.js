@@ -1,6 +1,12 @@
 const StoreEconomicsConfig = require('../models/StoreEconomicsConfig');
 const StoreEconomicsProduct = require('../models/StoreEconomicsProduct');
+const Order = require('../models/Order');
 const { withShopifyRetry } = require('./shopifyHelper');
+const {
+  getOrdersByStateInRange,
+  getPaymentMethodSplitInRange,
+} = require('./ordersFilterAggregations');
+const { detectCodFromShopify } = require('./shopifyOrderMapper');
 
 /**
  * Calculates net profit for a single product based on configured costs.
@@ -59,16 +65,58 @@ async function calculateAndStoreAllProducts(clientId) {
  * Dashboard primary metrics builder.
  * Processes real orders against stored unit economics.
  */
+async function fetchMongoOrdersInRange(clientId, startDate, endDate) {
+  const query = { clientId };
+  if (startDate || endDate) {
+    query.createdAt = {};
+    if (startDate) query.createdAt.$gte = new Date(startDate);
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      query.createdAt.$lte = end;
+    }
+  }
+  return Order.find(query)
+    .select('totalPrice amount isCOD paymentMethod items createdAt financialStatus')
+    .lean();
+}
+
+function orderLineItems(order) {
+  return Array.isArray(order.items) ? order.items : [];
+}
+
 async function buildDashboardMetrics(clientId, startDate, endDate) {
-  const [config, products, orders] = await Promise.all([
+  const [config, products, mongoOrders, paymentMethodSplit] = await Promise.all([
     StoreEconomicsConfig.findOne({ clientId }).lean(),
     StoreEconomicsProduct.find({ clientId }).lean(),
-    fetchShopifyOrdersInRange(clientId, startDate, endDate)
+    fetchMongoOrdersInRange(clientId, startDate, endDate),
+    getPaymentMethodSplitInRange(clientId, startDate, endDate),
   ]);
 
   if (!config || !config.setupCompleted) throw new Error('Store Economics not configured');
 
   const productMap = new Map(products.map(p => [p.shopifyProductId, p]));
+
+  let orders = mongoOrders;
+  if (!orders.length) {
+    try {
+      const shopifyOrders = await fetchShopifyOrdersInRange(clientId, startDate, endDate);
+      orders = shopifyOrders.map((o) => ({
+        totalPrice: parseFloat(o.total_price || 0),
+        amount: parseFloat(o.total_price || 0),
+        isCOD: detectCodFromShopify(o),
+        paymentMethod: (o.payment_gateway_names || []).join(', ') || o.gateway || '',
+        items: (o.line_items || []).map((li) => ({
+          productId: li.product_id != null ? String(li.product_id) : '',
+          quantity: li.quantity,
+          price: parseFloat(li.price || 0),
+        })),
+      }));
+    } catch (err) {
+      console.warn('[StoreEconomics] Shopify order fetch failed, using empty set:', err.message);
+      orders = [];
+    }
+  }
 
   let totalGrossRevenue = 0;
   let totalCogs = 0;
@@ -78,27 +126,20 @@ async function buildDashboardMetrics(clientId, startDate, endDate) {
   let totalGatewayAndShopifyFees = 0;
   let totalCac = 0;
   let totalOrderCount = 0;
-  let codOrderCount = 0;
-  let prepaidOrderCount = 0;
+  const codOrderCount = paymentMethodSplit?.codOrders ?? 0;
+  const prepaidOrderCount = paymentMethodSplit?.prepaidOrders ?? 0;
 
   for (const order of orders) {
-    const isCod = order.paymentGateway?.toLowerCase().includes('cod') ||
-                  order.paymentMethod?.toLowerCase().includes('cash_on_delivery') ||
-                  (order.gateway || '').toLowerCase().includes('cash');
-
-    totalGrossRevenue += parseFloat(order.total_price || 0);
+    totalGrossRevenue += Number(order.totalPrice ?? order.amount ?? 0);
     totalOrderCount++;
     totalShippingCost += (config.deliveryCostPerOrder || 0);
     totalCac += (config.cacPerCustomer || 0);
 
-    if (isCod) codOrderCount++;
-    else prepaidOrderCount++;
-
-    for (const lineItem of order.line_items) {
-      const product = productMap.get(String(lineItem.product_id));
+    for (const lineItem of orderLineItems(order)) {
+      const product = productMap.get(String(lineItem.productId));
       if (!product) continue;
 
-      const qty = lineItem.quantity;
+      const qty = Number(lineItem.quantity) || 1;
 
       const effectivePackagingCost = config.packagingMode === 'uniform'
         ? (config.uniformPackagingCost || 0)
@@ -108,7 +149,7 @@ async function buildDashboardMetrics(clientId, startDate, endDate) {
       totalCogs += (product.cogs || 0) * qty;
       totalNetProfit += (product.netProfit || 0) * qty;
 
-      const itemRevenue = parseFloat(lineItem.price || 0) * qty;
+      const itemRevenue = Number(lineItem.price || 0) * qty;
       totalGatewayAndShopifyFees += itemRevenue * ((config.gatewayFeeRate || 0) + (config.shopifyTransactionFeeRate || 0));
     }
   }
@@ -193,9 +234,6 @@ async function buildDashboardMetrics(clientId, startDate, endDate) {
     { name: 'Fixed Overheads', value: Math.round((totalFixedOverheads / totalCosts) * 10000) / 100 }
   ] : [];
 
-  const codPct = totalOrderCount > 0 ? Math.round((codOrderCount / totalOrderCount) * 1000) / 10 : 0;
-  const prepaidPct = totalOrderCount > 0 ? Math.round((prepaidOrderCount / totalOrderCount) * 1000) / 10 : 0;
-
   return {
     heroMetrics: {
       trueNetProfit,
@@ -203,11 +241,12 @@ async function buildDashboardMetrics(clientId, startDate, endDate) {
       liveRtoRate: actualRtoRate,
       liveRtoRateIsConfigured: actualRtoRate.isConfigured
     },
-    paymentMethodSplit: {
-      codOrders: codOrderCount,
-      prepaidOrders: prepaidOrderCount,
-      codPercent: codPct,
-      prepaidPercent: prepaidPct,
+    paymentMethodSplit: paymentMethodSplit || {
+      codOrders: 0,
+      prepaidOrders: 0,
+      codPercent: 0,
+      prepaidPercent: 0,
+      totalOrders: 0,
     },
     waterfall,
     totalOrderCount,
@@ -222,47 +261,7 @@ async function buildDashboardMetrics(clientId, startDate, endDate) {
  * Geographic order distribution from Mongo order shipping addresses.
  */
 async function getOrdersByState(clientId, startDate, endDate) {
-  const Order = require('../models/Order');
-  const { extractStateFromAddress } = require('./extractStateFromAddress');
-
-  const query = { clientId };
-  if (startDate || endDate) {
-    query.createdAt = {};
-    if (startDate) query.createdAt.$gte = new Date(startDate);
-    if (endDate) {
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
-      query.createdAt.$lte = end;
-    }
-  }
-
-  const orders = await Order.find(query)
-    .select('shippingAddress state address city totalPrice amount')
-    .lean();
-
-  const stateMap = {};
-  for (const order of orders) {
-    const ship = order.shippingAddress;
-    const state =
-      extractStateFromAddress(ship) ||
-      extractStateFromAddress({
-        province: ship?.province || order.state,
-        province_code: ship?.province_code,
-        state: ship?.state || order.state,
-        city: ship?.city || order.city,
-        address1: ship?.address1 || order.address,
-      }) ||
-      extractStateFromAddress(order.state) ||
-      extractStateFromAddress([order.address, order.city, order.state].filter(Boolean).join(', '));
-    if (!state) continue;
-    if (!stateMap[state]) stateMap[state] = { orderCount: 0, totalRevenue: 0 };
-    stateMap[state].orderCount += 1;
-    stateMap[state].totalRevenue += Number(order.totalPrice ?? order.amount ?? 0);
-  }
-
-  return Object.entries(stateMap)
-    .map(([state, data]) => ({ state, ...data }))
-    .sort((a, b) => b.orderCount - a.orderCount);
+  return getOrdersByStateInRange(clientId, startDate, endDate);
 }
 
 /**
@@ -292,20 +291,35 @@ async function computeActualRtoRate(clientId, startDate, endDate, totalOrderCoun
  * Computes product performance data.
  */
 async function buildProductIntelligence(clientId, startDate, endDate) {
-  const [products, orders, config] = await Promise.all([
+  const [products, mongoOrders, config] = await Promise.all([
     StoreEconomicsProduct.find({ clientId }).lean(),
-    fetchShopifyOrdersInRange(clientId, startDate, endDate),
+    fetchMongoOrdersInRange(clientId, startDate, endDate),
     StoreEconomicsConfig.findOne({ clientId }).lean()
   ]);
 
   if (!config) throw new Error('Store Economics not configured');
 
+  let orders = mongoOrders;
+  if (!orders.length) {
+    try {
+      const shopifyOrders = await fetchShopifyOrdersInRange(clientId, startDate, endDate);
+      orders = shopifyOrders.map((o) => ({
+        items: (o.line_items || []).map((li) => ({
+          productId: li.product_id != null ? String(li.product_id) : '',
+          quantity: li.quantity,
+        })),
+      }));
+    } catch {
+      orders = [];
+    }
+  }
+
   const productMap = new Map(products.map(p => [p.shopifyProductId, p]));
   const productStats = new Map();
 
   for (const order of orders) {
-    for (const lineItem of order.line_items) {
-      const product = productMap.get(String(lineItem.product_id));
+    for (const lineItem of orderLineItems(order)) {
+      const product = productMap.get(String(lineItem.productId));
       if (!product) continue;
 
       const existing = productStats.get(product.shopifyProductId) || {
@@ -370,7 +384,7 @@ async function fetchShopifyOrdersInRange(clientId, startDate, endDate) {
       created_at_min: startDate,
       created_at_max: endDate,
       limit: 250,
-      fields: 'id,total_price,payment_gateway,financial_status,fulfillment_status,line_items'
+      fields: 'id,total_price,payment_gateway_names,gateway,financial_status,fulfillment_status,line_items,tags,note_attributes'
     };
 
     let hasNext = true;

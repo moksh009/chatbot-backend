@@ -95,7 +95,7 @@ router.get('/:id/leads', protect, apiCache(45), async (req, res) => {
             AdLead.find(match)
                 .sort({ lastInteraction: -1, _id: -1 })
                 .limit(limit)
-                .select('name phoneNumber email lastInteraction ordersCount leadScore cartStatus totalSpent')
+                .select('name phoneNumber email lastInteraction ordersCount leadScore cartStatus totalSpent optStatus optInSource')
                 .lean(),
         ]);
 

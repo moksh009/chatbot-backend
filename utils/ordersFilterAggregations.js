@@ -103,6 +103,123 @@ async function getDistinctOrderStates(clientId) {
   return Object.values(stateMap).sort((a, b) => b.orderCount - a.orderCount);
 }
 
+/**
+ * State distribution for a date window — same normalization as order filters, with revenue.
+ */
+async function getOrdersByStateInRange(clientId, startDate, endDate) {
+  const match = { clientId };
+  if (startDate || endDate) {
+    match.createdAt = {};
+    if (startDate) match.createdAt.$gte = new Date(startDate);
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      match.createdAt.$lte = end;
+    }
+  }
+
+  const buckets = await Order.aggregate([
+    { $match: match },
+    {
+      $project: {
+        shippingAddress: 1,
+        state: 1,
+        address: 1,
+        city: 1,
+        totalPrice: { $ifNull: ['$totalPrice', '$amount', 0] },
+      },
+    },
+    {
+      $group: {
+        _id: {
+          province: { $ifNull: ['$shippingAddress.province', ''] },
+          provinceCode: { $ifNull: ['$shippingAddress.province_code', ''] },
+          shipState: { $ifNull: ['$shippingAddress.state', ''] },
+          topState: { $ifNull: ['$state', ''] },
+          city: { $ifNull: ['$shippingAddress.city', '$city', ''] },
+          address1: { $ifNull: ['$shippingAddress.address1', '$address', ''] },
+        },
+        orderCount: { $sum: 1 },
+        totalRevenue: { $sum: '$totalPrice' },
+      },
+    },
+  ]);
+
+  const stateMap = {};
+  for (const row of buckets) {
+    const id = row._id || {};
+    const state =
+      extractStateFromAddress({
+        province: id.province,
+        province_code: id.provinceCode,
+        state: id.shipState || id.topState,
+        city: id.city,
+        address1: id.address1,
+      }) ||
+      extractStateFromAddress(id.topState) ||
+      extractStateFromAddress([id.address1, id.city, id.topState].filter(Boolean).join(', '));
+    if (!state) continue;
+    if (!stateMap[state]) stateMap[state] = { state, orderCount: 0, totalRevenue: 0 };
+    stateMap[state].orderCount += row.orderCount || 0;
+    stateMap[state].totalRevenue += Number(row.totalRevenue) || 0;
+  }
+
+  return Object.values(stateMap).sort((a, b) => b.orderCount - a.orderCount);
+}
+
+/** COD vs prepaid from synced Mongo orders (matches Orders list). */
+async function getPaymentMethodSplitInRange(clientId, startDate, endDate) {
+  const match = { clientId };
+  if (startDate || endDate) {
+    match.createdAt = {};
+    if (startDate) match.createdAt.$gte = new Date(startDate);
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      match.createdAt.$lte = end;
+    }
+  }
+
+  const rows = await Order.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: null,
+        total: { $sum: 1 },
+        codOrders: {
+          $sum: {
+            $cond: [
+              {
+                $or: [
+                  { $eq: ['$isCOD', true] },
+                  { $regexMatch: { input: { $toLower: { $ifNull: ['$paymentMethod', ''] } }, regex: /cod|cash on delivery/ } },
+                ],
+              },
+              1,
+              0,
+            ],
+          },
+        },
+      },
+    },
+  ]);
+
+  const raw = rows[0] || { total: 0, codOrders: 0 };
+  const total = Number(raw.total) || 0;
+  const codOrders = Number(raw.codOrders) || 0;
+  const prepaidOrders = Math.max(0, total - codOrders);
+  const codPercent = total > 0 ? Math.round((codOrders / total) * 1000) / 10 : 0;
+  const prepaidPercent = total > 0 ? Math.round((prepaidOrders / total) * 1000) / 10 : 0;
+
+  return {
+    codOrders,
+    prepaidOrders,
+    codPercent,
+    prepaidPercent,
+    totalOrders: total,
+  };
+}
+
 /** All synced Shopify catalog products (not limited to products that appear on orders). */
 async function getAllCatalogProductsForFilter(clientId) {
   const rows = await ShopifyProduct.find({ clientId })
@@ -129,5 +246,7 @@ async function getAllCatalogProductsForFilter(clientId) {
 module.exports = {
   getDistinctOrderProducts,
   getDistinctOrderStates,
+  getOrdersByStateInRange,
+  getPaymentMethodSplitInRange,
   getAllCatalogProductsForFilter,
 };

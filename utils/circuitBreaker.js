@@ -82,10 +82,24 @@ function allStatuses() {
   };
 }
 
+function resetShopifyBreaker() {
+  shopifyBreaker.state = "CLOSED";
+  shopifyBreaker.failures = 0;
+  shopifyBreaker.lastFailureTime = null;
+  log.info("[CircuitBreaker] Shopify manually reset to CLOSED");
+}
+
+function isCircuitOpenError(err) {
+  const msg = String(err?.message || err || "");
+  return msg.includes("[CircuitBreaker]") && msg.includes("OPEN");
+}
+
 module.exports = {
   CircuitBreaker,
   shopifyBreaker,
   geminiBreaker,
   getBreaker,
   allStatuses,
+  resetShopifyBreaker,
+  isCircuitOpenError,
 };

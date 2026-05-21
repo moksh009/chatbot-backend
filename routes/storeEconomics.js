@@ -139,12 +139,15 @@ router.post('/wizard/finish', async (req, res) => {
 router.get('/dashboard', async (req, res) => {
   try {
     const { clientId, startDate, endDate } = req.query;
-    if (!clientId || !startDate || !endDate) return res.status(400).json({ success: false, error: 'Missing required parameters' });
+    if (!clientId) return res.status(400).json({ success: false, error: 'clientId required' });
+
+    const rangeStart = startDate && String(startDate) !== 'null' ? startDate : null;
+    const rangeEnd = endDate && String(endDate) !== 'null' ? endDate : null;
 
     const [metrics, productIntelligence, ordersByState] = await Promise.all([
-      buildDashboardMetrics(clientId, startDate, endDate),
-      buildProductIntelligence(clientId, startDate, endDate),
-      getOrdersByState(clientId, startDate, endDate),
+      buildDashboardMetrics(clientId, rangeStart, rangeEnd),
+      buildProductIntelligence(clientId, rangeStart, rangeEnd),
+      getOrdersByState(clientId, rangeStart, rangeEnd),
     ]);
 
     res.json({
@@ -218,30 +221,65 @@ router.post('/shopify/fetch-products', async (req, res) => {
 router.get('/cart-recovery', async (req, res) => {
   try {
     const { clientId, startDate, endDate } = req.query;
-    if (!clientId || !startDate || !endDate) return res.status(400).json({ success: false, error: 'Missing required parameters' });
+    if (!clientId) return res.status(400).json({ success: false, error: 'clientId required' });
 
-    const start = new Date(startDate);
-    const end = new Date(endDate);
+    const start = startDate ? new Date(startDate) : new Date(0);
+    const end = endDate ? new Date(endDate) : new Date();
+    end.setHours(23, 59, 59, 999);
 
-    const metrics = await CartRecoveryAttempt.aggregate([
-      { $match: { clientId, attemptTimestamp: { $gte: start, $lte: end } } },
-      {
-        $group: {
-          _id: null,
-          abandonedCarts: { $sum: 1 },
-          recoveredCarts: { $sum: { $cond: [{ $eq: ['$status', 'recovered'] }, 1, 0] } },
-          didNotBuy: { $sum: { $cond: [{ $in: ['$status', ['pending', 'expired']] }, 1, 0] } },
-          revenueRecovered: { $sum: '$recoveredOrderAmount' }
-        }
-      }
+    const AdLead = require('../models/AdLead');
+
+    const [automationRows, leadRows] = await Promise.all([
+      CartRecoveryAttempt.aggregate([
+        { $match: { clientId, attemptTimestamp: { $gte: start, $lte: end } } },
+        {
+          $group: {
+            _id: null,
+            automationAttempts: { $sum: 1 },
+            automationRecovered: { $sum: { $cond: [{ $eq: ['$status', 'recovered'] }, 1, 0] } },
+            revenueRecovered: { $sum: { $ifNull: ['$recoveredOrderAmount', 0] } },
+          },
+        },
+      ]),
+      AdLead.aggregate([
+        {
+          $match: {
+            clientId,
+            lastInteraction: { $gte: start, $lte: end },
+            cartStatus: { $in: ['abandoned', 'recovered', 'active', 'cart_added'] },
+          },
+        },
+        { $group: { _id: '$cartStatus', count: { $sum: 1 } } },
+      ]),
     ]);
 
-    const raw = metrics[0] || { abandonedCarts: 0, recoveredCarts: 0, didNotBuy: 0, revenueRecovered: 0 };
-    const recoveryRate = raw.abandonedCarts > 0
-      ? Math.round((raw.recoveredCarts / raw.abandonedCarts) * 10000) / 100
-      : 0;
-    
-    res.json({ success: true, data: { ...raw, recoveryRate } });
+    const auto = automationRows[0] || { automationAttempts: 0, automationRecovered: 0, revenueRecovered: 0 };
+    const leadByStatus = Object.fromEntries((leadRows || []).map((r) => [r._id, r.count]));
+
+    const abandonedCarts = Number(leadByStatus.abandoned) || 0;
+    const recoveredCarts = Number(leadByStatus.recovered) || 0;
+    const activeCarts = (Number(leadByStatus.active) || 0) + (Number(leadByStatus.cart_added) || 0);
+    const didNotBuy = Math.max(0, abandonedCarts - recoveredCarts);
+
+    const recoveryRate = abandonedCarts > 0
+      ? Math.round((recoveredCarts / abandonedCarts) * 10000) / 100
+      : auto.automationAttempts > 0
+        ? Math.round((auto.automationRecovered / auto.automationAttempts) * 10000) / 100
+        : 0;
+
+    res.json({
+      success: true,
+      data: {
+        abandonedCarts,
+        recoveredCarts,
+        didNotBuy,
+        activeCarts,
+        revenueRecovered: Number(auto.revenueRecovered) || 0,
+        recoveryRate,
+        automationAttempts: auto.automationAttempts,
+        automationRecovered: auto.automationRecovered,
+      },
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

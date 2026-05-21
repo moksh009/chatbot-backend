@@ -110,10 +110,77 @@ router.get('/import-sessions', protect, apiCache(30), async (req, res) => {
         }
         
         const ImportSession = require('../models/ImportSession');
-        const sessions = await ImportSession.find({ clientId }).sort({ createdAt: -1 }).limit(20).lean();
-        res.json(sessions);
+        const AdLead = require('../models/AdLead');
+        const sessions = await ImportSession.find({ clientId }).sort({ createdAt: -1 }).limit(50).lean();
+        const withCounts = await Promise.all(
+            sessions.map(async (s) => {
+                const leadCount = await AdLead.countDocuments({
+                    clientId,
+                    importBatchId: s._id,
+                });
+                return {
+                    ...s,
+                    leadCount,
+                    processedTotal: (s.successCount || 0) + (s.duplicateCount || 0),
+                };
+            })
+        );
+        res.json(withCounts);
     } catch (error) {
         res.status(500).json({ message: 'History fetch failed' });
+    }
+});
+
+// GET /api/analytics/import-sessions/:sessionId/leads
+router.get('/import-sessions/:sessionId/leads', protect, async (req, res) => {
+    try {
+        const clientId = tenantClientId(req);
+        if (!clientId) {
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
+        const { resolveImportBatchObjectId } = require('../utils/importBatchResolver');
+        const { fetchLeadsAnalyticsBundle } = require('../utils/leadsAnalyticsFacet');
+        const ImportSession = require('../models/ImportSession');
+
+        const resolvedId = await resolveImportBatchObjectId(req.params.sessionId, clientId);
+        if (!resolvedId) {
+            return res.status(404).json({ success: false, message: 'Import batch not found' });
+        }
+
+        const session = await ImportSession.findOne({ _id: resolvedId, clientId }).lean();
+        if (!session) {
+            return res.status(404).json({ success: false, message: 'Import batch not found' });
+        }
+
+        const { page = 1, limit = 20, search = '', sortBy = 'recent' } = req.query;
+        const payload = await fetchLeadsAnalyticsBundle(clientId, {
+            search,
+            page,
+            limit,
+            sortBy,
+            importBatchId: resolvedId,
+        });
+
+        res.json({
+            success: true,
+            session: {
+                _id: session._id,
+                batchId: session.batchId,
+                filename: session.filename,
+                batchName: session.batchName,
+                status: session.status,
+                successCount: session.successCount,
+                duplicateCount: session.duplicateCount,
+                errorCount: session.errorCount,
+                totalRows: session.totalRows,
+                createdAt: session.createdAt,
+                importConsentType: session.importConsentType,
+            },
+            ...payload,
+        });
+    } catch (error) {
+        console.error('[ImportSessionLeads] Error:', error);
+        res.status(500).json({ success: false, message: 'Failed to load import contacts' });
     }
 });
 
@@ -431,16 +498,25 @@ router.get('/leads', protect, apiCache(30), async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
-    const { limit = 20, search = '', page = 1, tag, segmentScore, lastSeen, sortBy } = req.query;
-    const payload = await fetchLeadsAnalyticsBundle(clientId, {
-      search,
-      tag,
-      segmentScore,
-      lastSeen,
-      sortBy,
-      page,
-      limit,
-    });
+        const { limit = 20, search = '', page = 1, tag, segmentScore, lastSeen, sortBy, importBatchId } = req.query;
+        const { resolveImportBatchObjectId } = require('../utils/importBatchResolver');
+        let resolvedImportBatch = null;
+        if (importBatchId) {
+            resolvedImportBatch = await resolveImportBatchObjectId(importBatchId, clientId);
+            if (!resolvedImportBatch) {
+                return res.status(404).json({ success: false, message: 'Import batch not found' });
+            }
+        }
+        const payload = await fetchLeadsAnalyticsBundle(clientId, {
+            search,
+            tag,
+            segmentScore,
+            lastSeen,
+            sortBy,
+            page,
+            limit,
+            importBatchId: resolvedImportBatch,
+        });
 
     timer.finish(`200 ok | page=${payload.currentPage} count=${payload.leads.length}`);
     res.json(payload);

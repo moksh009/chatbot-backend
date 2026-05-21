@@ -125,6 +125,62 @@ async function getLoyaltyStats(req, res) {
     }
 }
 
+function parseReviewRating(response, status) {
+    const raw = String(response || '').trim();
+    const star = raw.match(/star_(\d)/i);
+    if (star) return Math.min(5, Math.max(1, parseInt(star[1], 10)));
+    if (raw === 'positive') return 5;
+    if (raw === 'neutral') return 3;
+    if (status === 'responded_positive') return 5;
+    if (status === 'responded_negative') return 2;
+    if (status === 'responded_neutral') return 3;
+    return null;
+}
+
+function formatReviewComment(doc) {
+    if (doc.status === 'sent') return 'Review request sent — awaiting customer reply';
+    if (doc.status === 'scheduled') return 'Scheduled after delivery';
+    if (doc.status === 'skipped') return 'Skipped (opt-out or guardrail)';
+    const raw = String(doc.response || '').trim();
+    if (!raw) return 'Customer responded';
+    if (/^star_\d$/i.test(raw)) return `Rated ${raw.replace('star_', '')} out of 5`;
+    if (raw === 'positive') return 'Positive feedback';
+    if (raw === 'neutral') return 'Neutral feedback';
+    return raw;
+}
+
+async function mapRecentReviewActivity(clientId, requests) {
+    const { normalizePhone } = require('../utils/helpers');
+    const phones = [...new Set((requests || []).map((r) => normalizePhone(r.phone)).filter(Boolean))];
+    const leads = phones.length
+        ? await AdLead.find({ clientId, phoneNumber: { $in: phones } })
+            .select('phoneNumber name')
+            .lean()
+        : [];
+    const nameByPhone = new Map();
+    for (const lead of leads) {
+        const p = normalizePhone(lead.phoneNumber);
+        if (p && lead.name) nameByPhone.set(p, lead.name);
+    }
+
+    return (requests || []).map((doc) => {
+        const phone = doc.phone || '';
+        const p = normalizePhone(phone);
+        return {
+            _id: doc._id,
+            customerName: (p && nameByPhone.get(p)) || phone || 'Customer',
+            customerPhone: phone,
+            rating: parseReviewRating(doc.response, doc.status),
+            comment: formatReviewComment(doc),
+            platform: 'WhatsApp',
+            createdAt: doc.sentAt || doc.updatedAt || doc.createdAt,
+            status: doc.status,
+            productName: doc.productName || null,
+            orderNumber: doc.orderNumber || doc.orderId || null,
+        };
+    });
+}
+
 /**
  * GET /api/loyalty/reputation-stats
  * Returns sentiment-based review funnel data.
@@ -137,12 +193,13 @@ async function getReputationStats(req, res) {
                 summary: { scheduled: 0, sent: 0, positive: 0, negative: 0, skipped: 0 },
                 totalRequests: 0,
                 sentimentRatio: 100,
-                recentReviews: []
+                ratingStats: { avgRating: null, totalReviews: 0, responseRate: 0 },
+                recentReviews: [],
             });
         }
         const clientId = client.clientId;
 
-        const [counts, recentReviews] = await Promise.all([
+        const [counts, recentRaw] = await Promise.all([
             ReviewRequest.aggregate([
                 { $match: { clientId } },
                 { $group: {
@@ -150,36 +207,65 @@ async function getReputationStats(req, res) {
                     count: { $sum: 1 }
                 }}
             ]),
-            ReviewRequest.find({ clientId, status: { $regex: /responded/ } })
+            ReviewRequest.find({
+                clientId,
+                status: { $in: ['scheduled', 'sent', 'responded_positive', 'responded_negative', 'responded_neutral'] },
+            })
                 .sort({ updatedAt: -1 })
-                .limit(10)
-                .lean()
+                .limit(25)
+                .lean(),
         ]);
 
-        // Format counts into a usable object
         const stats = {
             scheduled: 0,
             sent: 0,
             positive: 0,
             negative: 0,
-            skipped: 0
+            neutral: 0,
+            skipped: 0,
         };
 
-        counts.forEach(c => {
+        counts.forEach((c) => {
             if (c._id === 'scheduled') stats.scheduled = c.count;
             if (c._id === 'sent') stats.sent = c.count;
             if (c._id === 'responded_positive') stats.positive = c.count;
             if (c._id === 'responded_negative') stats.negative = c.count;
+            if (c._id === 'responded_neutral') stats.neutral = c.count;
             if (c._id === 'skipped') stats.skipped = c.count;
         });
 
+        const totalResponses = stats.positive + stats.negative + stats.neutral;
+        const sentimentRatio =
+            totalResponses > 0
+                ? Math.round((stats.positive / totalResponses) * 1000) / 10
+                : 100;
+
+        const respondedDocs = recentRaw.filter((r) => String(r.status || '').includes('responded'));
+        const ratings = respondedDocs
+            .map((r) => parseReviewRating(r.response, r.status))
+            .filter((n) => Number.isFinite(n));
+        const avgRating =
+            ratings.length > 0
+                ? Math.round((ratings.reduce((a, b) => a + b, 0) / ratings.length) * 10) / 10
+                : null;
+        const responseRate =
+            stats.sent + totalResponses > 0
+                ? Math.round((totalResponses / (stats.sent + totalResponses)) * 1000) / 1000
+                : 0;
+
+        const recentReviews = await mapRecentReviewActivity(clientId, recentRaw);
+
         res.json({
             summary: stats,
-            totalRequests: stats.scheduled + stats.sent + stats.positive + stats.negative,
-            sentimentRatio: stats.positive + stats.negative > 0 
-                ? ((stats.positive / (stats.positive + stats.negative)) * 100).toFixed(1)
-                : 100,
-            recentReviews
+            totalRequests: stats.scheduled + stats.sent + stats.positive + stats.negative + stats.neutral + stats.skipped,
+            sentimentRatio,
+            ratingStats: {
+                avgRating,
+                totalReviews: totalResponses,
+                responseRate,
+                last30: totalResponses,
+            },
+            recentReviews,
         });
     } catch (err) {
         log.error('Reputation stats error:', err.message);

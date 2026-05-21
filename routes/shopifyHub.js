@@ -8,6 +8,7 @@ const { addHours } = require('date-fns');
 const { apiCache } = require('../middleware/apiCache');
 
 const { getShopifyClient, withShopifyRetry } = require('../utils/shopifyHelper');
+const { resetShopifyBreaker, isCircuitOpenError } = require('../utils/circuitBreaker');
 const { enrichShopifyCustomers } = require('../utils/shopifyCustomerEnrichment');
 const {
   getCachedClient,
@@ -190,6 +191,14 @@ router.get('/:clientId/products', protect, verifyClientAccess, apiCache(120), as
 
     res.json({ success: true, products: products || [], shopDomain: clientMeta?.shopDomain || '' });
   } catch (err) {
+    if (isCircuitOpenError(err)) {
+      return res.status(503).json({
+        success: false,
+        code: 'CIRCUIT_OPEN',
+        error: err.message,
+        retryAfterMs: 30_000,
+      });
+    }
     if (isDisconnectedShopifyConfig(err)) {
       const c = await getCachedClient(clientId, SHOPIFY_BOT_PRODUCTS_SELECT);
       return res.json({
@@ -235,6 +244,15 @@ router.put('/:clientId/products/:productId/price', protect, verifyClientAccess, 
 });
 
 /**
+ * @route   POST /api/shopify-hub/:clientId/circuit-reset
+ * @desc    Clear Shopify circuit breaker after transient failures (UI Retry)
+ */
+router.post('/:clientId/circuit-reset', protect, verifyClientAccess, async (req, res) => {
+  resetShopifyBreaker();
+  res.json({ success: true, message: 'Shopify circuit reset' });
+});
+
+/**
  * @route   GET /api/shopify-hub/:clientId/locations
  * @desc    Get Shopify store locations (needed for inventory updates)
  */
@@ -247,6 +265,14 @@ router.get('/:clientId/locations', protect, verifyClientAccess, apiCache(300), a
     });
     res.json({ success: true, locations: locations || [] });
   } catch (err) {
+    if (isCircuitOpenError(err)) {
+      return res.status(503).json({
+        success: false,
+        code: 'CIRCUIT_OPEN',
+        error: err.message,
+        retryAfterMs: 30_000,
+      });
+    }
     if (isDisconnectedShopifyConfig(err) || isShopifyLocationsScopeError(err)) {
       return res.json({
         success: true,

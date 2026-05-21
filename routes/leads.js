@@ -388,10 +388,14 @@ router.post('/export', protect, logAction('EXPORT_LEADS'), async (req, res) => {
     }
 });
 
-// GET /api/leads/export/batch/:batchId
+// GET /api/leads/export/batch/:batchId  (accepts ImportSession.batchId or _id)
 router.get('/export/batch/:batchId', protect, logPersonalDataAccess, async (req, res) => {
     try {
-        const batch = await ImportSession.findOne({ batchId: req.params.batchId }).lean();
+        const { resolveImportBatchObjectId } = require('../utils/importBatchResolver');
+        const clientId = tenantClientId(req) || req.query.clientId;
+        const resolvedId = await resolveImportBatchObjectId(req.params.batchId, clientId);
+        if (!resolvedId) return res.status(404).json({ error: 'Batch not found' });
+        const batch = await ImportSession.findById(resolvedId).lean();
         if (!batch) return res.status(404).json({ error: 'Batch not found' });
         
         if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== batch.clientId) {
@@ -937,41 +941,83 @@ router.post('/:contactId/reset', protect, async (req, res) => {
 });
 
 // GET /api/leads/ai-tasks
-// Returns tasks where CustomerIntelligence or sequence jobs are running
+// Running follow-up sequence enrollments (active + paused) for Audience → AI Tasks tab
 router.get('/ai-tasks', protect, async (req, res) => {
     try {
-        const { clientId } = req.query;
-        if (!clientId) return res.status(400).json({ success: false, message: 'clientId is required' });
+        const clientId = tenantClientId(req) || req.query.clientId;
+        if (!clientId) {
+            return res.status(400).json({ success: false, message: 'clientId is required' });
+        }
         if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
-             return res.status(403).json({ success: false, message: 'Unauthorized' });
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
 
         const FollowUpSequence = require('../models/FollowUpSequence');
-        
-        // Find active AI sequences or intelligence tasks
-        const activeTasks = await FollowUpSequence.find({ 
-            clientId, 
-            status: 'active' 
-        })
-        .sort({ createdAt: -1 })
-        .limit(50)
-        .select('phone name type status createdAt steps')
-        .lean();
 
-        const formattedTasks = activeTasks.map(t => ({
-            id: t._id,
-            leadId: t.leadId,
-            phone: t.phone,
-            name: t.name || 'Unknown',
-            taskType: t.type || 'follow_up',
-            status: t.status,
-            steps: t.steps || [],
-            startedAt: t.createdAt,
-            completedAt: null,
-            result: t.steps?.length ? `${t.steps.length} steps scheduled` : 'Processing'
-        }));
+        const [runningTasks, recentCompleted] = await Promise.all([
+            FollowUpSequence.find({
+                clientId,
+                status: { $in: ['active', 'paused'] },
+            })
+                .populate('leadId', 'name phoneNumber email')
+                .sort({ updatedAt: -1 })
+                .limit(100)
+                .lean(),
+            FollowUpSequence.find({
+                clientId,
+                status: 'completed',
+            })
+                .populate('leadId', 'name phoneNumber email')
+                .sort({ updatedAt: -1 })
+                .limit(15)
+                .lean(),
+        ]);
 
-        res.json({ success: true, tasks: formattedTasks });
+        const mapTask = (t) => {
+            const lead = t.leadId && typeof t.leadId === 'object' ? t.leadId : null;
+            const contactName = lead?.name || t.name || 'Unknown contact';
+            const phone = t.phone || lead?.phoneNumber || '';
+            const email = t.email || lead?.email || '';
+            const pendingSteps = (t.steps || []).filter((s) => s.status === 'pending').length;
+            const sentSteps = (t.steps || []).filter((s) => s.status === 'sent').length;
+            return {
+                _id: t._id,
+                id: String(t._id),
+                leadId: lead?._id || t.leadId,
+                phone,
+                email,
+                name: t.name || contactName,
+                contactName,
+                taskType: t.type || 'custom',
+                status: t.status,
+                steps: t.steps || [],
+                createdAt: t.createdAt,
+                updatedAt: t.updatedAt,
+                pendingSteps,
+                sentSteps,
+                totalSteps: (t.steps || []).length,
+                result:
+                    pendingSteps > 0
+                        ? `${pendingSteps} step${pendingSteps === 1 ? '' : 's'} queued`
+                        : sentSteps > 0
+                          ? `${sentSteps} step${sentSteps === 1 ? '' : 's'} sent`
+                          : 'Scheduled',
+            };
+        };
+
+        const tasks = runningTasks.map(mapTask);
+        const completed = recentCompleted.map(mapTask);
+
+        res.json({
+            success: true,
+            tasks,
+            completed,
+            summary: {
+                active: tasks.filter((t) => t.status === 'active').length,
+                paused: tasks.filter((t) => t.status === 'paused').length,
+                completedRecent: completed.length,
+            },
+        });
     } catch (err) {
         console.error('[AITasks] Error:', err);
         res.status(500).json({ success: false, message: 'Failed to fetch AI tasks' });

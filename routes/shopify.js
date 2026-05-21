@@ -5,7 +5,7 @@ const Client = require('../models/Client');
 const { protect, verifyClientAccess } = require('../middleware/auth');
 const { getShopifyClient, withShopifyRetry, exchangeShopifyToken } = require('../utils/shopifyHelper');
 const { buildConnectionStatusPayload } = require('../utils/connectionStatus');
-const { buildShopifyOrderSet, shopifyOrderFilter } = require('../utils/shopifyOrderMapper');
+const { syncShopifyOrdersToMongo } = require('../utils/shopifyOrderSync');
 const shopifyAdminApiVersion = require('../utils/shopifyAdminApiVersion');
 const { SHOPIFY_APP_WEBHOOK_TOPICS } = require('../constants/shopifyWebhookTopics');
 
@@ -117,35 +117,9 @@ router.post('/:clientId/sync-products', internalOrProtect, async (req, res) => {
 router.post('/:clientId/sync-orders', internalOrProtect, async (req, res) => {
   try {
     const { clientId } = req.params;
-    let syncedCount = 0;
-    let failedCount = 0;
 
     const result = await withShopifyRetry(clientId, async (shop) => {
-        const response = await shop.get('/orders.json?limit=100&status=any');
-        const orders = response.data.orders || [];
-        const Order = require('../models/Order');
-
-        const financialSeen = new Set();
-        const fulfillmentSeen = new Set();
-
-        for (const data of orders) {
-          try {
-            financialSeen.add(data.financial_status != null ? String(data.financial_status) : '(null)');
-            fulfillmentSeen.add(data.fulfillment_status != null ? String(data.fulfillment_status) : '(null)');
-
-            const $set = buildShopifyOrderSet(clientId, data);
-            await Order.findOneAndUpdate(shopifyOrderFilter(clientId, data), { $set }, { upsert: true, new: true, setDefaultsOnInsert: true });
-            syncedCount++;
-          } catch (individualErr) {
-            console.error(`[Sync] Failed to process order ${data.name} for ${clientId}:`, individualErr.message);
-            failedCount++;
-          }
-        }
-
-        console.log(`[Shopify sync ${clientId}] financial_status values seen:`, [...financialSeen].sort().join(', '));
-        console.log(`[Shopify sync ${clientId}] fulfillment_status values seen:`, [...fulfillmentSeen].sort().join(', '));
-
-        return { synced: syncedCount, failed: failedCount, total: orders.length };
+        return syncShopifyOrdersToMongo(clientId, shop);
     });
 
     res.json({ success: true, message: 'Sync complete', ...result });

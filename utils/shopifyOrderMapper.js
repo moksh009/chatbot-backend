@@ -60,27 +60,64 @@ function derivePlatformStatus(data) {
   return 'pending';
 }
 
+const DELIVERED_SHIPMENT = new Set(['delivered', 'delivery']);
+const SHIPPED_SHIPMENT = new Set([
+  'in_transit',
+  'out_for_delivery',
+  'confirmed',
+  'ready_for_pickup',
+  'label_printed',
+  'shipped',
+  'picked_up',
+]);
+
+/** Best shipment_status from fulfillments array (Shiprocket / Delhivery write here). */
+function resolveFulfillmentShipmentStatus(data) {
+  const list = Array.isArray(data?.fulfillments) ? data.fulfillments : [];
+  let hasShipped = false;
+  for (const f of list) {
+    const shipSt = String(f.shipment_status || f.status || '').toLowerCase();
+    if (DELIVERED_SHIPMENT.has(shipSt)) return 'delivered';
+    if (SHIPPED_SHIPMENT.has(shipSt)) hasShipped = true;
+  }
+  return hasShipped ? 'shipped' : null;
+}
+
 /** Primary carrier tracking from Shopify order payload (3PL writes here). */
 function extractPrimaryFulfillment(data) {
   const list = Array.isArray(data?.fulfillments) ? data.fulfillments : [];
-  const f = list[0] || {};
+  const sorted = [...list].sort((a, b) => {
+    const ta = new Date(a.updated_at || a.created_at || 0).getTime();
+    const tb = new Date(b.updated_at || b.created_at || 0).getTime();
+    return tb - ta;
+  });
+  const f =
+    sorted.find((x) => x.tracking_number || x.tracking_url || (x.tracking_urls || []).length) ||
+    sorted[0] ||
+    {};
   const urls = f.tracking_urls;
   const url = (Array.isArray(urls) && urls[0]) || f.tracking_url || '';
   return {
     trackingNumber: f.tracking_number != null ? String(f.tracking_number) : '',
     trackingUrl: url ? String(url) : '',
+    shipmentStatus: String(f.shipment_status || f.status || '').toLowerCase(),
   };
 }
 
 /**
  * Platform status when reconciling from Shopify Admin order JSON (webhooks / sync).
- * Fulfillment from Shiprocket/Delhivery updates Shopify first; we mirror shipped here.
+ * Fulfillment from Shiprocket/Delhivery updates Shopify first; we mirror shipped/delivered here.
  */
 function deriveLogisticsAwareStatus(data) {
   if (data?.cancelled_at) return 'cancelled';
   const fs = String(data?.financial_status || '').toLowerCase();
   const ful = String(data?.fulfillment_status || '').toLowerCase();
   if (fs === 'refunded' || fs === 'partially_refunded' || fs === 'voided') return 'cancelled';
+
+  const fromShipments = resolveFulfillmentShipmentStatus(data);
+  if (fromShipments === 'delivered') return 'delivered';
+  if (fromShipments === 'shipped') return 'shipped';
+
   if (ful === 'fulfilled') return 'shipped';
   if (ful === 'partial') return 'processing';
   return derivePlatformStatus(data);
@@ -161,4 +198,5 @@ module.exports = {
   detectCodFromShopify,
   extractPrimaryFulfillment,
   deriveLogisticsAwareStatus,
+  resolveFulfillmentShipmentStatus,
 };
