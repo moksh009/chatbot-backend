@@ -29,8 +29,10 @@ const evaluateCondition = (condition, context) => {
 const evaluateRouting = (rules, context) => {
     if (!rules || !Array.isArray(rules) || rules.length === 0) return null;
 
-    // Sort by priority (lowest number = highest priority)
-    const activeRules = rules.sort((a, b) => (a.priority || 10) - (b.priority || 10));
+    // Sort by priority (lowest number = highest priority); skip explicitly paused rules
+    const activeRules = rules
+        .filter((r) => r.isActive !== false)
+        .sort((a, b) => (a.priority || 10) - (b.priority || 10));
 
     for (const rule of activeRules) {
         let conditionsMatch = true;

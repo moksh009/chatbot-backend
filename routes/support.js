@@ -7,54 +7,86 @@ const { protect } = require('../middleware/auth');
 const { generateText } = require('../utils/gemini');
 const { sendEmail } = require('../utils/emailService');
 
+const { buildDocsContextForPrompt, appendDocLinks } = require('../constants/docsKnowledgeBase');
+
 const SUPPORT_PROMPT = `
-You are the TopEdge AI Expert Support Assistant. Your goal is to help dashboard users (Indian Ecommerce shop owners) resolve technical issues and understand features.
+You are Oli — TopEdge AI success coach for Indian ecommerce teams using our WhatsApp automation dashboard.
 
-DASHBOARD KNOWLEDGE:
-1. Overview: Real-time insights into orders, revenue, and customer sentiment.
-2. Live Chats: Manage WhatsApp/Instagram/Email conversations. "Action Needed" indicates a bot couldn't answer.
-3. Analytics: ROI tracking, RTO (Return to Origin) reduction metrics, and lead conversion rates.
-4. Shopify Hub: Connect your store to sync products, orders, and recover abandoned carts.
-5. Campaigns: Send bulk WhatsApp marketing messages to segments.
-6. Flow Builder: Drag-and-drop builder to create automated chat journeys.
-7. Templates: Official Meta-approved templates for WhatsApp.
+TONE:
+- Warm, human, confident. Like a helpful colleague—not a manual.
+- Be concise but always finish what you start—never stop mid-sentence or after "1." without the steps.
+- Use plain language. No jargon unless the user used it first.
 
-COMMON ERRORS & SOLUTIONS:
-- "Shopify Token Expired": Go to Settings > Shopify and re-authenticate.
-- "WhatsApp Template Rejected": Ensure no marketing jargon in service templates. Try a different category.
-- "Bot not responding": Ensure the conversation status is "BOT_ACTIVE" and not "HUMAN_TAKEOVER".
-- "That information is not available yet...": Usually onboarding or missing setup data. Ask user to verify selected workspace/client, complete onboarding, then hard refresh.
+STRUCTURE (when explaining how-to):
+1. One-line answer to what they asked.
+2. Numbered steps (2–5 complete steps) with exact UI paths (e.g. Settings → Integrations).
+3. Optional: "📖 Title: /docs/..." on its own last line when a doc page fits.
 
-INSTRUCTIONS:
-- Act like a friendly, helpful, human support agent.
-- Keep your answers highly conversational and concise. NEVER output long paragraphs.
-- If a response requires multiple steps, break them into short sentences or very brief bullet points.
-- Always give at least one concrete next action (exact page path or button).
-- If you cannot solve a complex problem after 2 attempts, tell the user: "I've logged this for our technical team. Would you like to talk to a human expert?"
-- Always ask if they need further help.
+PRODUCT MAP:
+- Dashboard (/): metrics and onboarding checklist.
+- Live Chat (/conversations): inbox, human takeover, release bot.
+- Flow Builder (/flow-builder): visual WhatsApp automations.
+- Meta Manager (/meta-manager): templates, AI drafts, catalogue, Meta flows.
+- Order messages (/shopify-automation-center): COD, cart recovery, shipped—needs Shopify + approved templates.
+- Campaigns (/marketing-hub): broadcasts to segments.
+- Settings (/settings): Integrations (WhatsApp, Shopify), Features toggles, brand, team.
+- Plans & billing (/billing): trial and plan tiers.
 
-RESPONSE FORMAT:
-Return your response in a supportive, premium, human-like tone, optimized for quick reading in a chat interface.
+DOCUMENTATION INDEX (link when relevant—path only, no domain):
+${buildDocsContextForPrompt()}
+
+COMMON FIXES:
+- Shopify token expired → Settings → Integrations → reconnect Shopify.
+- Template rejected → Meta Manager; fix category/copy; sync again.
+- Bot silent → Live Chat: check human takeover; release to bot.
+- Automation not sending → approved template + Shopify connected + feature ON in Settings → Features.
+
+RULES:
+- Never invent features. If unsure, say what to check and link /docs/troubleshooting.
+- After 2 failed attempts, offer human: "Want me to connect you with our team?"
+- Do not use markdown headers or bold—plain text only for chat.
 `;
+
+function looksIncompleteSupportReply(text) {
+  const t = String(text || '').trim();
+  if (!t || t.length < 12) return true;
+  if (/:\s*1\.\s*$/.test(t)) return true;
+  if (/here(?:'s| is) how[^.]*:\s*1\.\s*$/i.test(t)) return true;
+  if (/(?:^|\n)\d+\.\s*$/.test(t)) return true;
+  return false;
+}
 
 function formatSupportReply(raw) {
   const fallback = 'I can help with that.\nPlease share one more detail so I can guide you correctly.';
   const text = String(raw || '').replace(/\r/g, '').trim();
   if (!text) return fallback;
 
-  // Keep reply short and scannable: max 4 short lines.
-  const normalized = text.replace(/\n{2,}/g, '\n');
-  const parts = normalized
-    .split(/\n|(?<=[.!?])\s+/)
-    .map((p) => p.trim())
-    .filter(Boolean)
-    .slice(0, 4);
+  const MAX_BODY_CHARS = 1400;
+  const normalized = text.replace(/\n{3,}/g, '\n\n').trim();
+  let lines = normalized.split('\n').map((p) => p.trim()).filter(Boolean);
 
-  const concise = parts
-    .map((p) => (p.length > 170 ? `${p.slice(0, 167).trimEnd()}...` : p))
-    .join('\n');
+  const docLines = lines.filter((l) => /\/docs[\w\-/#?=.]*/.test(l) || l.startsWith('📖'));
+  let bodyLines = lines.filter((l) => !/\/docs[\w\-/#?=.]*/.test(l) && !l.startsWith('📖'));
 
-  return concise || fallback;
+  // Single long paragraph → split numbered steps so nothing is dropped mid-list
+  if (bodyLines.length === 1 && /\d+\.\s/.test(bodyLines[0])) {
+    const split = bodyLines[0]
+      .split(/(?:(?<=\S)\s+)(?=\d+\.\s)/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (split.length > 1) bodyLines = split;
+  }
+
+  let body = bodyLines.join('\n');
+  if (body.length > MAX_BODY_CHARS) {
+    const cut = body.slice(0, MAX_BODY_CHARS);
+    const lastBreak = Math.max(cut.lastIndexOf('\n'), cut.lastIndexOf('. '));
+    body = (lastBreak > 200 ? cut.slice(0, lastBreak) : cut).trimEnd() + '…';
+  }
+
+  const footer = docLines.slice(0, 2).join('\n');
+  const out = footer ? `${body}\n\n${footer}` : body;
+  return out || fallback;
 }
 
 // Get current support chat for a client
@@ -208,8 +240,15 @@ BUSINESS CONTEXT:
         : '';
       const prompt = `${SUPPORT_PROMPT}\n${bizCtx}${imageHint}\n\nCONVERSATION HISTORY:\n${history}\n\nAI:`;
       
-      const aiResponse = await generateText(prompt);
-      chat.messages.push({ sender: 'ai', text: formatSupportReply(aiResponse) });
+      const genOpts = { isPlatform: true, maxTokens: 768, temperature: 0.55 };
+      let aiResponse = await generateText(prompt, null, genOpts);
+      if (looksIncompleteSupportReply(aiResponse)) {
+        const retryPrompt = `${prompt}\n\nYour previous reply was cut off before finishing the steps. Reply again with the FULL answer — complete every numbered step.`;
+        const retry = await generateText(retryPrompt, null, genOpts);
+        if (retry && !looksIncompleteSupportReply(retry)) aiResponse = retry;
+      }
+      const replyText = appendDocLinks(formatSupportReply(aiResponse), userText);
+      chat.messages.push({ sender: 'ai', text: replyText });
     }
     
     await chat.save();

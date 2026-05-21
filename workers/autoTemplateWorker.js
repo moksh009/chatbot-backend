@@ -35,6 +35,12 @@ const SubmissionLog = require('../models/SubmissionLog');
 const { platformGenerateText } = require('../utils/gemini');
 const { decrypt } = require('../utils/encryption');
 const { PREBUILT_REQUIRED_TEMPLATES } = require('../constants/templateLifecycle');
+const { getPrebuiltByKey } = require('../constants/prebuiltTemplateLibrary');
+const {
+  sanitizeMetaTemplateBodyForSubmission,
+  validateMetaTemplateForSubmission,
+} = require('../utils/metaTemplateCompliance');
+const { buildFormDataFromLibraryEntry } = require('../utils/metaTemplateFormHydration');
 
 function normalizeMetaLanguage(raw) {
   const v = String(raw || "").trim().toLowerCase().replace("-", "_");
@@ -85,10 +91,12 @@ const FIXED_TEMPLATES = {
   },
   review_request: {
     category: 'MARKETING',
-    purpose: 'Ask for a review post-delivery.',
-    variables: { '1': 'Customer Name', '2': 'Review Link' },
-    bodyText: 'Hi {{1}}, we hope you are loving your recent purchase! Could you take a minute to leave a review? It helps us a lot. Review link: {{2}} Thank you!',
-    buttons: [{ type: 'QUICK_REPLY', text: 'Leave Review' }]
+    purpose: 'Ask for a review post-delivery with product image and order context.',
+    variables: { '1': 'Customer Name', '2': 'Product Name', '3': 'Order Number', '4': 'Brand Name' },
+    bodyText:
+      'Hi {{1}}! 🌟 How was your *{{2}}*? Order *{{3}}* from {{4}}. Tap below to rate or leave a Google review!',
+    headerType: 'IMAGE',
+    buttons: [{ type: 'URL', text: 'Leave Google Review' }],
   },
   cod_to_prepaid: {
     category: 'MARKETING',
@@ -152,13 +160,23 @@ async function getUniqueTemplateName(clientId, baseName) {
   if (onMeta) return baseName;
 
   const existing = await MetaTemplate.findOne({ clientId, name: baseName }).lean();
-  if (existing && ["approved", "pending_meta_review"].includes(existing.submissionStatus)) {
+  if (!existing) return baseName;
+  if (["approved", "pending_meta_review"].includes(existing.submissionStatus)) {
+    return baseName;
+  }
+  // Reuse stable name for failed/draft retries — avoid cart_recovery_1_2 spam on Meta
+  if (["submission_failed", "rejected", "draft", "generation_failed", "queued"].includes(existing.submissionStatus)) {
     return baseName;
   }
 
   let name = baseName;
   let suffix = 1;
-  while (await MetaTemplate.findOne({ clientId, name, submissionStatus: { $nin: ["approved", "pending_meta_review"] } })) {
+  while (await MetaTemplate.findOne({
+    clientId,
+    name,
+    _id: { $ne: existing._id },
+    submissionStatus: { $nin: ["approved", "pending_meta_review"] },
+  })) {
     suffix++;
     name = `${baseName.slice(0, 47)}_${suffix}`;
   }
@@ -234,91 +252,118 @@ function cleanShortText(value, max = 100) {
   return String(value || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
 }
 
-/** Meta rejects BODY text where a {{n}} variable is the first or last token (subcode 2388299). */
-function sanitizeMetaTemplateBodyForSubmission(text) {
-  let s = String(text || "").replace(/\r\n/g, "\n").trim();
-  if (!s) return "Thanks for choosing us — we will keep you posted here.";
-  if (/^\{\{\s*\d+\s*\}\}/.test(s)) {
-    s = `Thanks — ${s}`;
-  }
-  if (/\{\{\s*\d+\s*\}\}\s*$/s.test(s)) {
-    s = `${s}\n\n— Team`;
-  }
-  return s;
+function isRequiredPrebuiltDraft(draft) {
+  if (!draft) return false;
+  if (draft.isPrebuilt) return true;
+  const key = draft.templateKey || draft.autoGenProductId || "";
+  if (PREBUILT_REQUIRED_TEMPLATES.includes(key)) return true;
+  const lib = getPrebuiltByKey(key);
+  return !!(lib && PREBUILT_REQUIRED_TEMPLATES.includes(lib.metaName));
+}
+
+/** Stop queued Meta submissions and return drafts to review state. */
+async function cancelClientSubmissions(clientId) {
+  await SubmissionQueueItem.deleteMany({ clientId, status: { $in: ["queued", "submitting"] } });
+  await MetaTemplate.updateMany(
+    { clientId, source: "auto_generated", submissionStatus: { $in: ["queued", "submitting"] } },
+    { $set: { submissionStatus: "draft", queuePosition: null, updatedAt: new Date() } }
+  );
+  await TemplateGenerationJob.findOneAndUpdate(
+    { clientId },
+    {
+      $set: {
+        status: "drafts_ready",
+        userSubmissionActive: false,
+        pausedByUser: false,
+        nextBatchCheckAt: null,
+        updatedAt: new Date(),
+      },
+    }
+  );
+  log.info(`[AutoTemplate] Cancelled submission queue for ${clientId}`);
 }
 
 // ─── BUILD SUBMISSION QUEUE ────────────────────────────────────────────────
 async function buildSubmissionQueue(clientId) {
+  await SubmissionQueueItem.deleteMany({ clientId, status: { $in: ["queued", "submitting"] } });
+
   const drafts = await MetaTemplate.find({
-    clientId, source: 'auto_generated', submissionStatus: 'draft'
+    clientId,
+    source: "auto_generated",
+    submissionStatus: { $in: ["draft", "generation_failed"] },
   }).lean();
 
-  // Separate fixed and product templates
-  const AUTO_SUBMIT_FIXED = PREBUILT_REQUIRED_TEMPLATES;
-  const fixed = [];
-  const products = [];
-
-  for (const d of drafts) {
-    if (Object.keys(FIXED_TEMPLATES).includes(d.autoGenProductId)) {
-      // ONLY push core utility templates into the auto-submission queue
-      if (AUTO_SUBMIT_FIXED.includes(d.autoGenProductId)) {
-        fixed.push(d);
-      }
-      // Sequence templates remain in 'draft' and are not queued
-    } else {
-      products.push(d);
-    }
-  }
-
-  // Sort fixed templates in submission order
-  fixed.sort((a, b) => AUTO_SUBMIT_FIXED.indexOf(a.autoGenProductId) - AUTO_SUBMIT_FIXED.indexOf(b.autoGenProductId));
+  const eligible = drafts.filter((d) => isRequiredPrebuiltDraft(d) && d.templateKind !== "product");
+  eligible.sort((a, b) => {
+    const aKey = getPrebuiltByKey(a.templateKey || a.autoGenProductId)?.metaName || a.name;
+    const bKey = getPrebuiltByKey(b.templateKey || b.autoGenProductId)?.metaName || b.name;
+    return PREBUILT_REQUIRED_TEMPLATES.indexOf(aKey) - PREBUILT_REQUIRED_TEMPLATES.indexOf(bKey);
+  });
 
   const ordered = [];
-  // Batch 1: required prebuilt templates in configured order
-  const batch1 = fixed;
-  batch1.forEach((t, i) => ordered.push({ ...t, batchNumber: 1, queuePosition: i + 1 }));
+  const skipped = [];
 
-  // Batch 2: first 5 product templates
-  const batch2Products = products.slice(0, 5);
-  batch2Products.forEach((t, i) => ordered.push({ ...t, batchNumber: 2, queuePosition: ordered.length + i + 1 }));
-
-  // Batch 3+: remaining product templates in groups of 5
-  const remaining = products.slice(5);
-  let batchNum = 3;
-  for (let i = 0; i < remaining.length; i += 5) {
-    const chunk = remaining.slice(i, i + 5);
-    chunk.forEach((t, j) => ordered.push({ ...t, batchNumber: batchNum, queuePosition: ordered.length + j + 1 }));
-    batchNum++;
+  for (let i = 0; i < eligible.length; i++) {
+    const t = eligible[i];
+    const full = await MetaTemplate.findById(t._id).lean();
+    const check = validateMetaTemplateForSubmission(full);
+    if (!check.valid) {
+      skipped.push({ name: t.name, errors: check.errors });
+      await MetaTemplate.findByIdAndUpdate(t._id, {
+        $set: {
+          submissionStatus: "draft",
+          rejectionReason: `Not ready for Meta: ${check.errors.join(" ")}`,
+          updatedAt: new Date(),
+        },
+      });
+      continue;
+    }
+    if (check.sanitizedBody && check.sanitizedBody !== full.body) {
+      await MetaTemplate.findByIdAndUpdate(t._id, { $set: { body: check.sanitizedBody, updatedAt: new Date() } });
+    }
+    ordered.push({ ...t, batchNumber: 1, queuePosition: ordered.length + 1 });
   }
 
-  // Create SubmissionQueueItem documents
-  const bulkOps = ordered.map(t => ({
+  if (ordered.length === 0) {
+    const err = new Error(
+      skipped.length
+        ? `No templates passed compliance checks. Fix drafts first (${skipped.length} blocked).`
+        : "No eligible prebuilt drafts to submit."
+    );
+    err.skipped = skipped;
+    throw err;
+  }
+
+  const bulkOps = ordered.map((t) => ({
     clientId,
     templateId: t._id,
     queuePosition: t.queuePosition,
     batchNumber: t.batchNumber,
-    status: 'queued'
+    status: "queued",
   }));
+  await SubmissionQueueItem.insertMany(bulkOps);
 
-  if (bulkOps.length > 0) {
-    await SubmissionQueueItem.insertMany(bulkOps);
-  }
-
-  // Update queue positions on templates
   for (const t of ordered) {
     await MetaTemplate.findByIdAndUpdate(t._id, {
-      $set: { submissionStatus: 'queued', queuePosition: t.queuePosition, updatedAt: new Date() }
+      $set: { submissionStatus: "queued", queuePosition: t.queuePosition, updatedAt: new Date() },
     });
   }
 
-  // Transition job to submitting and trigger first batch
   await TemplateGenerationJob.findOneAndUpdate(
     { clientId },
-    { $set: { status: 'submitting', updatedAt: new Date() } }
+    {
+      $set: {
+        status: "submitting",
+        userSubmissionActive: true,
+        pausedByUser: false,
+        updatedAt: new Date(),
+      },
+    }
   );
 
-  await rescheduleSubmissionCheck(clientId, 0.1); // Check in ~6 seconds
-  log.info(`[AutoTemplate] Submission queue built for ${clientId}: ${ordered.length} templates in ${batchNum - 1} batches`);
+  await rescheduleSubmissionCheck(clientId, 0.1);
+  log.info(`[AutoTemplate] User-initiated queue for ${clientId}: ${ordered.length} template(s)${skipped.length ? `, ${skipped.length} skipped` : ""}`);
+  return { queued: ordered.length, skipped };
 }
 
 // ─── SUBMIT SINGLE TEMPLATE TO META ────────────────────────────────────────
@@ -380,6 +425,25 @@ async function submitSingleTemplate(client, templateId, clientId) {
     if (buttonComponents.length > 0) {
       components.push({ type: 'BUTTONS', buttons: buttonComponents });
     }
+  }
+
+  const compliance = validateMetaTemplateForSubmission(template);
+  if (!compliance.valid) {
+    template.submissionStatus = "submission_failed";
+    template.rejectionReason = compliance.errors.join(" ");
+    await template.save();
+    await SubmissionQueueItem.findOneAndUpdate(
+      { clientId, templateId },
+      { $set: { status: "failed", failureReason: template.rejectionReason } }
+    );
+    await SubmissionLog.create({
+      clientId,
+      templateId: template._id,
+      templateName: template.name,
+      action: "blocked_validation",
+      metaResponse: { errors: compliance.errors },
+    });
+    return;
   }
 
   const payload = {
@@ -594,6 +658,27 @@ async function handleGenerationJob(data) {
 
     templateName = await getUniqueTemplateName(clientId, templateName);
 
+    const libEntry = templateType === 'fixed' ? getPrebuiltByKey(fixedTemplateId) : null;
+    const hydrated =
+      libEntry && templateType === 'fixed'
+        ? buildFormDataFromLibraryEntry(libEntry, client)
+        : null;
+    const formData = hydrated?.formData || {
+      variableType: 'Number',
+      mediaSample: headerType === 'IMAGE' ? 'Image' : headerType === 'TEXT' ? 'None' : 'None',
+      headerImageUrl: headerType === 'IMAGE' ? headerValue : null,
+      headerText: headerType === 'TEXT' ? headerValue : null,
+      bodyText: generatedBody,
+      footerText,
+      headerSamples: [],
+      bodySamples: [],
+      buttons: [],
+    };
+    if (!hydrated && variableMapping && typeof variableMapping === 'object') {
+      const indices = [...String(generatedBody).matchAll(/\{\{\s*(\d+)\s*\}\}/g)].map((m) => m[1]);
+      formData.bodySamples = indices.map((_, i) => Object.values(variableMapping)[i] || 'Sample');
+    }
+
     const template = await MetaTemplate.findOneAndUpdate(
       { clientId, source: 'auto_generated', autoGenProductId: productId || fixedTemplateId },
       {
@@ -601,6 +686,7 @@ async function handleGenerationJob(data) {
           clientId, name: templateName, category, language,
           headerType, headerValue, body: generatedBody,
           footerText, buttons, variableMapping,
+          formData,
           source: 'auto_generated', autoGenProductId: productId || fixedTemplateId,
           templateKey: templateKey || fixedTemplateId || templateName,
           templateKind: templateType === 'product' ? 'product' : 'prebuilt',
@@ -673,6 +759,12 @@ async function handleSchedulerJob(data) {
   const { clientId } = data;
   const genJob = await TemplateGenerationJob.findOne({ clientId }).lean();
   if (!genJob) return;
+
+  if (!genJob.userSubmissionActive) {
+    log.warn(`[Scheduler] Blocked orphan run for ${clientId} — no user submit flag`);
+    await cancelClientSubmissions(clientId);
+    return;
+  }
 
   if (genJob.pausedByUser) {
     log.info(`[Scheduler] Paused by user for ${clientId}. Rechecking in 30 min.`);
@@ -789,19 +881,63 @@ if (redisConnection) {
 
   (async function recoverAutoTemplateJobs() {
     try {
-      const inProgressJobs = await TemplateGenerationJob.find({ status: { $in: ['generating', 'submitting'] } }).lean();
-      for (const job of inProgressJobs) {
-        if (job.status === 'submitting') {
-          log.info(`[Startup Recovery] Restarting submission scheduler for ${job.clientId}`);
-          await rescheduleSubmissionCheck(job.clientId, 1);
+      const orphanSubmitting = await TemplateGenerationJob.find({
+        status: "submitting",
+        userSubmissionActive: { $ne: true },
+      }).lean();
+      for (const job of orphanSubmitting) {
+        log.warn(`[Startup Recovery] Stopping orphan submission for ${job.clientId}`);
+        await cancelClientSubmissions(job.clientId);
+      }
+
+      const activeSubmit = await TemplateGenerationJob.find({
+        status: "submitting",
+        userSubmissionActive: true,
+        pausedByUser: { $ne: true },
+      }).lean();
+      for (const job of activeSubmit) {
+        const queued = await SubmissionQueueItem.countDocuments({ clientId: job.clientId, status: "queued" });
+        if (queued > 0) {
+          log.info(`[Startup Recovery] Resuming user-initiated submission for ${job.clientId}`);
+          await rescheduleSubmissionCheck(job.clientId, 2);
+        } else {
+          await TemplateGenerationJob.updateOne(
+            { clientId: job.clientId },
+            { $set: { status: "completed", userSubmissionActive: false, completedAt: new Date(), updatedAt: new Date() } }
+          );
         }
       }
     } catch (err) {
-      log.error('[Startup Recovery] Error:', err.message);
+      log.error("[Startup Recovery] Error:", err.message);
     }
   })();
 
   log.info('[AutoTemplate] ✅ All 4 workers initialized');
 }
 
-module.exports = { buildSubmissionQueue, handleGenerationJob, handleSchedulerJob, handleBatchJob, handlePollerJob };
+// Always stop orphan auto-submissions on process start (even without Redis workers).
+(async function stopOrphanSubmissionsOnBoot() {
+  try {
+    if (mongoose.connection.readyState === 0) {
+      await mongoose.connect(process.env.MONGODB_URI);
+    }
+    const orphanSubmitting = await TemplateGenerationJob.find({
+      status: "submitting",
+      userSubmissionActive: { $ne: true },
+    }).lean();
+    for (const job of orphanSubmitting) {
+      await cancelClientSubmissions(job.clientId);
+    }
+  } catch (err) {
+    log.error("[Boot] Orphan submission cleanup error:", err.message);
+  }
+})();
+
+module.exports = {
+  buildSubmissionQueue,
+  cancelClientSubmissions,
+  handleGenerationJob,
+  handleSchedulerJob,
+  handleBatchJob,
+  handlePollerJob,
+};

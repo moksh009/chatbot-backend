@@ -4,7 +4,7 @@ const Segment = require('../models/Segment');
 const AdLead = require('../models/AdLead');
 const { protect } = require('../middleware/auth');
 const { translateConditionsToQuery } = require('../services/SegmentQueryBuilder');
-const { apiCache } = require('../middleware/apiCache');
+const { apiCache, clearClientCache } = require('../middleware/apiCache');
 
 /**
  * GET /api/segments
@@ -59,6 +59,7 @@ router.post('/', protect, async (req, res) => {
         });
         
         await segment.save();
+        await clearClientCache(clientId);
         res.status(201).json(segment);
 
     } catch (err) {
@@ -111,7 +112,9 @@ router.get('/:id/leads', protect, apiCache(45), async (req, res) => {
  */
 router.delete('/:id', protect, async (req, res) => {
     try {
-        await Segment.findOneAndDelete({ _id: req.params.id, clientId: req.user.clientId });
+        const clientId = req.user.clientId;
+        await Segment.findOneAndDelete({ _id: req.params.id, clientId });
+        await clearClientCache(clientId);
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ success: false, error: 'Failed to delete segment.' });

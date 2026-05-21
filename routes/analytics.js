@@ -484,7 +484,7 @@ router.get('/lead/:id', protect, async (req, res) => {
     const pSuf = phoneDigits.slice(-10);
 
     const CustomerIntelligence = require('../models/CustomerIntelligence');
-    const LoyaltyWallet = require('../models/LoyaltyWallet');
+    const CustomerWallet = require('../models/CustomerWallet');
     const LoyaltyTransaction = require('../models/LoyaltyTransaction');
     const CampaignMessage = require('../models/CampaignMessage');
     const FollowUpSequence = require('../models/FollowUpSequence');
@@ -511,7 +511,7 @@ router.get('/lead/:id', protect, async (req, res) => {
       Appointment.find({ phone: lead.phoneNumber, clientId: lead.clientId }).lean(),
       Conversation.findOne({ phone: lead.phoneNumber, clientId: lead.clientId }).lean(),
       CustomerIntelligence.findOne({ clientId: lead.clientId, phone: lead.phoneNumber }).lean().catch(() => null),
-      LoyaltyWallet.findOne({ clientId: lead.clientId, phone: new RegExp(pSuf + '$') }).lean().catch(() => null),
+      CustomerWallet.findOne({ clientId: lead.clientId, phone: new RegExp(pSuf + '$') }).lean().catch(() => null),
       LoyaltyTransaction.find({ clientId: lead.clientId, phone: new RegExp(pSuf + '$') }).sort({ timestamp: -1 }).limit(5).lean().catch(() => []),
       CampaignMessage.find({ clientId: lead.clientId, phone: lead.phoneNumber }).populate('campaignId', 'name type').sort({ sentAt: -1 }).limit(20).lean().catch(() => []),
       FollowUpSequence.find({ clientId: lead.clientId, phone: lead.phoneNumber }).sort({ createdAt: -1 }).limit(10).lean().catch(() => [])
@@ -1544,131 +1544,15 @@ router.get('/agent-performance', protect, apiCache(60), async (req, res) => {
     const days = Math.max(1, Math.min(parseInt(req.query.days, 10) || 30, 365));
     const since = new Date();
     since.setDate(since.getDate() - days);
-    const query = { clientId, updatedAt: { $gte: since } };
 
-    // 1. Fetch Conversations with FRT metrics (lean + select only needed fields)
-    const convos = await Conversation.find({
-        ...query,
-        firstInboundAt: { $exists: true, $ne: null },
-        firstResponseAt: { $exists: true, $ne: null },
-    }).select('firstInboundAt firstResponseAt').lean();
-
-    // 2. Avg first response (seconds) — ignore bad rows (inverted timestamps, absurd gaps)
-    const MAX_FRT_SEC = 48 * 3600; // 48h cap; outliers / legacy bad data excluded
-    const frtSamples = [];
-    for (const c of convos) {
-      const t0 = new Date(c.firstInboundAt).getTime();
-      const t1 = new Date(c.firstResponseAt).getTime();
-      if (!Number.isFinite(t0) || !Number.isFinite(t1)) continue;
-      const diffSec = (t1 - t0) / 1000;
-      if (diffSec < 0 || diffSec > MAX_FRT_SEC) continue;
-      frtSamples.push(diffSec);
-    }
-    const avgFRT =
-      frtSamples.length > 0 ? frtSamples.reduce((a, b) => a + b, 0) / frtSamples.length : null;
-
-    // 3. Resolution Rate & Avg Resolution Time (parallel queries)
-    const [totalConvos, resolvedConvos, csatConvos, pipelineAgg] = await Promise.all([
-      Conversation.countDocuments(query),
-      Conversation.find({ ...query, resolvedAt: { $exists: true, $ne: null } })
-        .select('resolvedAt firstInboundAt')
-        .lean(),
-      Conversation.find({ ...query, "csatScore.rating": { $exists: true } }).select('csatScore').lean(),
-      Conversation.aggregate([
-        { $match: query },
-        { $group: { _id: { $ifNull: ['$status', 'UNKNOWN'] }, count: { $sum: 1 } } }
-      ])
-    ]);
-    const resolutionRate = totalConvos > 0 ? (resolvedConvos.length / totalConvos * 100).toFixed(1) : "0";
-    
-    const MAX_RES_H = 24 * 30; // 30 days max; drop corrupt rows
-    const resSamples = [];
-    for (const c of resolvedConvos) {
-      const t0 = new Date(c.firstInboundAt).getTime();
-      const t1 = new Date(c.resolvedAt).getTime();
-      if (!Number.isFinite(t0) || !Number.isFinite(t1)) continue;
-      const hrs = (t1 - t0) / (1000 * 60 * 60);
-      if (hrs < 0 || hrs > MAX_RES_H) continue;
-      resSamples.push(hrs);
-    }
-    const avgResolutionTime =
-      resSamples.length > 0
-        ? (resSamples.reduce((a, b) => a + b, 0) / resSamples.length).toFixed(1)
-        : null;
-
-    // 4. CSAT Calculation (already fetched above)
-    const totalScore = csatConvos.reduce((sum, c) => sum + (c.csatScore?.rating ?? 0), 0);
-    const avgCSAT = csatConvos.length > 0 ? (totalScore / csatConvos.length).toFixed(1) : "0";
-
-    // 5. Agent Leaderboard (Aggregate by assignedTo)
-
-    const agentStats = await Conversation.aggregate([
-        { $match: { ...query, assignedTo: { $exists: true } } },
-        { $group: {
-            _id: "$assignedTo",
-            resolutions: { $sum: { $cond: [{ $gt: ["$resolvedAt", null] }, 1, 0] } },
-            totalHandled: { $sum: 1 }
-        }},
-        { $lookup: {
-            from: 'users',
-            localField: '_id',
-            foreignField: '_id',
-            as: 'agentInfo'
-        }},
-        { $unwind: "$agentInfo" },
-        { $project: {
-            name: "$agentInfo.name",
-            email: "$agentInfo.email",
-            role: "$agentInfo.role",
-            resolutions: 1,
-            totalHandled: 1
-        }}
-    ]);
-
-    const resolvedCount = resolvedConvos.length;
-    const agentsOut = (agentStats || []).map((a) => ({
-      name: a.name,
-      email: a.email,
-      role: a.role,
-      resolutions: a.resolutions || 0,
-      totalHandled: a.totalHandled || 0,
-      resolutionPct:
-        a.totalHandled > 0 ? ((a.resolutions / a.totalHandled) * 100).toFixed(0) : '0',
-    }));
-
-    const avgFRTOut =
-      avgFRT == null
-        ? '—'
-        : avgFRT > 60
-          ? `${(avgFRT / 60).toFixed(1)}m`
-          : `${avgFRT.toFixed(0)}s`;
-    const avgResOut = avgResolutionTime == null ? '—' : `${avgResolutionTime}h`;
-    const pipelineMap = Object.fromEntries((pipelineAgg || []).map((row) => [String(row._id || 'UNKNOWN'), row.count || 0]));
-    const resolvedFromStatus = pipelineMap.CLOSED || 0;
-    const awaitingInput = pipelineMap.WAITING_FOR_INPUT || 0;
-    const humanTakeover = (pipelineMap.HUMAN_TAKEOVER || 0) + (pipelineMap.HUMAN_SUPPORT || 0);
-    const openTotal = Math.max(0, totalConvos - resolvedFromStatus);
+    const { getAgentPerformanceMetrics } = require('../utils/agentPerformanceMetrics');
+    const metrics = await getAgentPerformanceMetrics(clientId, since);
 
     res.json({
-        success: true,
-        windowDays: days,
-        avgFRT: avgFRTOut,
-        resolutionRate: `${resolutionRate}%`,
-        avgResolutionTime: avgResOut,
-        activeAgents: agentStats.length,
-        avgCSAT: `${avgCSAT}/5`,
-        totalConversations: totalConvos,
-        resolvedConversations: resolvedCount,
-        agents: agentsOut,
-        pipeline: {
-          total: totalConvos,
-          resolved: resolvedFromStatus || resolvedCount,
-          open: openTotal,
-          awaitingInput,
-          humanTakeover
-        }
+      success: true,
+      windowDays: days,
+      ...metrics,
     });
-
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

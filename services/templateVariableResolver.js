@@ -24,10 +24,18 @@ async function buildSendContext({ client, phone, convo = null, lead = null, orde
     if (line0) {
       merged.product_name = line0.title || line0.name || merged.product_name || "";
       merged.first_product_title = merged.product_name;
+      merged.order_items = merged.product_name;
       if (line0.image?.src) merged.first_product_image = line0.image.src;
     }
-    if (order.name || order.orderNumber) merged.order_id = order.name || `#${order.orderNumber}`;
+    const cust = order.customer || {};
+    merged.first_name = cust.first_name || (order.customerName || "").split(" ")[0] || merged.first_name;
+    merged.customer_name = order.customerName || cust.name || merged.customer_name;
+    if (order.name || order.orderNumber || order.orderId) {
+      merged.order_id = order.name || order.orderNumber || `#${order.orderId}`;
+      merged.order_number = merged.order_id;
+    }
     if (order.total_price != null) merged.order_total = `₹${Number(order.total_price).toLocaleString("en-IN")}`;
+    if (order.payment_method) merged.payment_method = order.payment_method;
     if (order.shipping_address) {
       const a = order.shipping_address;
       merged.shipping_address = [a.address1, a.address2, a.city, a.province, a.zip].filter(Boolean).join(", ");
@@ -53,6 +61,14 @@ function buildPositionalBodyParams(variableMappings = {}, context = {}) {
 
   return keys.map((pos) => {
     const regName = bodyMap[String(pos)] || bodyMap[pos];
+    if (regName === "customText") {
+      const custom =
+        context.extra?.customVariableValues ||
+        context._customVariableValues ||
+        {};
+      const text = custom[String(pos)] ?? custom[pos] ?? "";
+      return { type: "text", text: String(text || "-").slice(0, 1024) };
+    }
     const def = VARIABLE_REGISTRY.find((v) => v.name === regName);
     let val = context[regName];
     if ((val == null || val === "") && def) {

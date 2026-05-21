@@ -104,34 +104,8 @@ async function dispatchReviewRequest(req) {
         }
     } catch { productImage = client.logoUrl || null; }
 
-    try {
-        await WhatsApp.sendSmartTemplate(
-            client,
-            req.phone,
-            'review_request',
-            [customerName, req.productName],
-            productImage
-        );
-    } catch (waErr) {
-        log.warn(`Meta template review_request failed for ${req.phone}, falling back to text`);
-        const message = `Hi ${customerName}! 👋 \n\nHow was your experience with *${req.productName}*? \n\nReply with a number:\n5 - Perfect! ⭐\n4 - Great\n3 - Okay\n2 - Poor\n1 - Terrible 😡`;
-        await WhatsApp.sendText(client, req.phone, message);
-    }
-
-    if (customerEmail) {
-        await EmailService.sendReviewRequestEmail(client, {
-            customerEmail,
-            customerName,
-            productName: req.productName,
-            productImage,
-            reviewUrl: req.reviewUrl
-        });
-    }
-
-    req.status = 'sent';
-    req.sentAt = new Date();
-    await req.save();
-
+    const { dispatchExistingReviewRequest } = require('./reviewSendService');
+    await dispatchExistingReviewRequest(client, req);
     log.info(`Review request sent to ${req.phone} (${customerEmail || 'no email'}) for order ${req.orderId}`);
 }
 

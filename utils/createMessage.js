@@ -56,15 +56,29 @@ async function createMessage(data) {
 
   const createdMessage = await Message.create(normalized);
 
-  // Sync Conversation Sorting Fields
+  // Sync conversation list + SLA timestamps (first customer msg / first reply)
   if (data.conversationId) {
-    await Conversation.findByIdAndUpdate(data.conversationId, {
-      $set: {
-        lastMessage: body.substring(0, 100),
-        lastMessageAt: messageTimestamp,
-        lastInteraction: messageTimestamp
-      }
-    });
+    const convoPatch = {
+      lastMessage: body.substring(0, 100),
+      lastMessageAt: messageTimestamp,
+      lastInteraction: messageTimestamp,
+    };
+    await Conversation.findByIdAndUpdate(data.conversationId, { $set: convoPatch });
+    if (normalized.direction === 'incoming') {
+      await Conversation.updateOne(
+        { _id: data.conversationId, firstInboundAt: { $exists: false } },
+        { $set: { firstInboundAt: messageTimestamp } }
+      );
+    } else {
+      await Conversation.updateOne(
+        {
+          _id: data.conversationId,
+          firstInboundAt: { $exists: true, $ne: null },
+          firstResponseAt: { $exists: false },
+        },
+        { $set: { firstResponseAt: messageTimestamp } }
+      );
+    }
   }
 
   return createdMessage;

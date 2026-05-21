@@ -36,18 +36,26 @@ const TEMPLATE_BLUEPRINTS = {
     language: 'en',
     components: [
       {
+        type: 'HEADER',
+        format: 'IMAGE',
+        example: {
+          header_handle: [
+            'https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-product-1_large.png',
+          ],
+        },
+      },
+      {
         type: 'BODY',
-        text: 'Hi {{1}}! 🌟\nWe hope you loved your recent purchase of *{{2}}*.\nWould you mind sharing your experience?\nYour feedback means a lot to us!',
-        example: { body_text: [['John', 'Premium Earbuds']] }
+        text: 'Hi {{1}}! 🌟\n\nHow was your *{{2}}*?\nOrder *{{3}}* from {{4}}\n\nTap below to rate your experience, or leave us a Google review!',
+        example: { body_text: [['Kavya', 'Smart LED Panel', '#1042', 'Delitech']] },
       },
       {
         type: 'BUTTONS',
         buttons: [
-          { type: 'QUICK_REPLY', text: '⭐ Leave Review' },
-          { type: 'QUICK_REPLY', text: 'Not Now' }
-        ]
-      }
-    ]
+          { type: 'URL', text: 'Leave Google Review', url: 'https://g.page/r/example/review' },
+        ],
+      },
+    ],
   },
   cart_recovery: {
     category: 'MARKETING',

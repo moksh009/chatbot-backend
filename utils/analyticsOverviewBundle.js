@@ -14,6 +14,7 @@ async function getBoundedInsights(clientId, { startDate, endDate } = {}) {
   const {
     calculateAverageLTV,
     calculateAverageOrderValue,
+    calculateAnalyticsPeriodMetrics,
   } = require('./customerOrderMetrics');
 
   const dateMatch = {};
@@ -27,16 +28,21 @@ async function getBoundedInsights(clientId, { startDate, endDate } = {}) {
     leadQuery.$or = [{ createdAt: dateMatch }, { lastSeen: dateMatch }];
   }
 
-  const [appts, orders, leads, avgLTV, avgOrderValue] = await Promise.all([
+  const [appts, orders, leads, avgLTVStrict, avgOrderValueStrict, periodCommerce] = await Promise.all([
     Appointment.find(apptQuery).select('createdAt phone revenue').limit(5000).lean(),
-    Order.find(orderQuery).select('createdAt amount').limit(5000).lean(),
+    Order.find(orderQuery).select('createdAt amount totalPrice phone customerPhone').limit(5000).lean(),
     AdLead.find(leadQuery)
       .select('createdAt lastSeen ordersCount addToCartCount phoneNumber checkoutInitiatedCount cartStatus')
       .limit(5000)
       .lean(),
     calculateAverageLTV(clientId, startDate, endDate),
     calculateAverageOrderValue(clientId, startDate, endDate),
+    calculateAnalyticsPeriodMetrics(clientId, startDate, endDate),
   ]);
+
+  const avgLTV = periodCommerce.avgLTV > 0 ? periodCommerce.avgLTV : avgLTVStrict;
+  const avgOrderValue =
+    periodCommerce.avgOrderValue > 0 ? periodCommerce.avgOrderValue : avgOrderValueStrict;
 
   const heatmap = {};
   const addToMap = (dateStr) => {
@@ -55,16 +61,7 @@ async function getBoundedInsights(clientId, { startDate, endDate } = {}) {
   let returning = 0;
   let newLeads = 0;
   leads.forEach((l) => {
-    if ((l.ordersCount || 0) > 1 || (l.addToCartCount || 0) > 1) returning++;
-    else newLeads++;
-  });
-
-  const phoneCounts = {};
-  appts.forEach((a) => {
-    if (a.phone) phoneCounts[a.phone] = (phoneCounts[a.phone] || 0) + 1;
-  });
-  Object.values(phoneCounts).forEach((count) => {
-    if (count > 1) returning++;
+    if ((l.ordersCount || 0) > 1) returning++;
     else newLeads++;
   });
 
@@ -73,7 +70,8 @@ async function getBoundedInsights(clientId, { startDate, endDate } = {}) {
     if (a.revenue > 0) totalRev += a.revenue;
   });
   orders.forEach((o) => {
-    if (o.amount > 0) totalRev += o.amount;
+    const rev = Number(o.totalPrice ?? o.amount ?? 0) || 0;
+    if (rev > 0) totalRev += rev;
   });
 
   return {
@@ -82,6 +80,8 @@ async function getBoundedInsights(clientId, { startDate, endDate } = {}) {
     newLeads,
     avgOrderValue: Math.round(avgOrderValue * 100) / 100,
     avgLTV: Math.round(avgLTV * 100) / 100,
+    periodOrderCount: periodCommerce.orderCount || 0,
+    periodRevenue: periodCommerce.totalRevenue || 0,
     totalRevenueGlobally: totalRev,
   };
 }

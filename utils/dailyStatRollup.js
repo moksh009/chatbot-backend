@@ -95,7 +95,9 @@ async function aggregateDayMetrics(clientId, dateStr, options = {}) {
             $group: {
               _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
               count: { $sum: 1 },
-              revenue: { $sum: '$amount' },
+              revenue: {
+                $sum: { $ifNull: ['$totalPrice', { $ifNull: ['$amount', 0] }] },
+              },
             },
           },
         ]),
@@ -305,7 +307,12 @@ async function rollupDaysForClient(clientId, dateStrings, options = {}) {
 function needsRollup(doc, dateStr, today) {
   if (!doc) return true;
   if (dateStr === today) return false;
-  return !doc.rollupComputedAt;
+  if (!doc.rollupComputedAt) return true;
+  // Recompute rollups that recorded orders but missed revenue (legacy amount-only rollup)
+  if ((doc.orders || 0) > 0 && (doc.orderRevenue || 0) <= 0 && (doc.revenue || 0) <= 0) {
+    return true;
+  }
+  return false;
 }
 
 /**

@@ -289,104 +289,11 @@ exports.resetLayout = async (req, res) => {
  */
 exports.getForecast = async (req, res) => {
   try {
-    const clientId = req.user.clientId;
-    const days = 30;
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
-
-    // 1. Fetch Real Orders (Including Source)
-    const orders = await Order.find({ clientId, createdAt: { $gte: startDate } })
-      .select('totalPrice items createdAt source')
-      .lean();
-    
-    // 2. Calculate Channel Split
-    const shopifyCount = orders.filter(o => o.source === 'shopify' || !o.source).length;
-    const amazonCount = orders.filter(o => o.source === 'amazon').length;
-    const channelSplit = {
-      shopify: orders.length > 0 ? Math.round((shopifyCount / orders.length) * 100) : 100,
-      amazon: orders.length > 0 ? Math.round((amazonCount / orders.length) * 100) : 0
-    };
-
-    // 3. Calculate Global Velocity
-    const totalUnits = orders.reduce((acc, o) => acc + (o.items?.reduce((ia, ii) => ia + (ii.quantity || 1), 0) || 1), 0);
-    const globalSalesVelocity = (totalUnits / days).toFixed(1);
-    
-    // 4. Growth Metric
-    const midPoint = new Date();
-    midPoint.setDate(midPoint.getDate() - 15);
-    const recentUnits = orders.filter(o => o.createdAt >= midPoint).reduce((acc, o) => acc + (o.items?.length || 1), 0);
-    const olderUnits = orders.filter(o => o.createdAt < midPoint).reduce((acc, o) => acc + (o.items?.length || 1), 0);
-    const growth = olderUnits > 0 ? ((recentUnits - olderUnits) / olderUnits * 100).toFixed(1) : 14.2;
-
-    // 5. Inventory Value (Combined)
-    const totalInventoryValue = orders.reduce((acc, o) => acc + (o.totalPrice || 0), 0) * 1.5;
-
-    // 6. Forecast Chart (10 Day)
-    const forecastData = [];
-    for (let i = 0; i < 10; i++) {
-        const d = new Date();
-        d.setDate(d.getDate() - (7 - i));
-        const dateStr = d.toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
-        
-        const dayUnits = orders.filter(o => o.createdAt.toDateString() === d.toDateString()).length;
-        forecastData.push({
-            date: dateStr,
-            sales: i < 7 ? dayUnits : null,
-            forecast: Math.round(parseFloat(globalSalesVelocity) * (1 + (i * 0.05)))
-        });
-    }
-
-    // 7. Inventory Health (Real SKU mapping + Omni-Sync)
-    const skuMap = {};
-    orders.forEach(o => {
-        o.items?.forEach(item => {
-            const skuKey = item.sku || item.name;
-            if (!skuMap[skuKey]) skuMap[skuKey] = { name: item.name, sku: item.sku, count: 0 };
-            skuMap[skuKey].count += (item.quantity || 1);
-        });
-    });
-
-    const topSkus = Object.values(skuMap).sort((a,b) => b.count - a.count).slice(0, 5);
-    
-    // Attempt real stock enrichment if Shopify is connected
-    let realStockMap = {};
-    try {
-      const client = await Client.findOne({ clientId }).select('shopifyAccessToken shopDomain').lean();
-      if (client?.shopifyAccessToken) {
-        // Find shopify products to get variant IDs for stock query
-        // Normally we'd use a Product model, but we can also infer from Order metadata if stored
-        // For now, we'll use fallback logic if Product model sync is pending
-      }
-    } catch (e) {
-      logger.error("Enrichment failed", e.message);
-    }
-
-    const inventoryHealth = topSkus.map(sku => {
-        const dailyDemand = (sku.count / days).toFixed(1);
-        const stock = realStockMap[sku.sku] || Math.floor(sku.count * 2.5); // Fallback to estimated stock
-        return {
-            name: sku.name,
-            sku: sku.sku,
-            stock: stock,
-            dailyDemand: dailyDemand,
-            depletionDays: Math.ceil(stock / dailyDemand)
-        };
-    });
-
-    const data = {
-      globalSalesVelocity,
-      growth,
-      totalInventoryValue,
-      channelSplit,
-      criticalSkus: inventoryHealth.filter(i => i.depletionDays < 7).length,
-      forecastData,
-      inventoryHealth: inventoryHealth.length > 0 ? inventoryHealth : [],
-      isBaselining: orders.length < 5
-    };
-
+    const { buildDemandForecast } = require('../utils/demandForecastBuilder');
+    const data = await buildDemandForecast(req.user.clientId);
     res.json({ success: true, forecast: data });
   } catch (error) {
-    logger.error("Forecast Error", error);
+    logger.error('Forecast Error', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -894,63 +801,60 @@ exports.getOperationsSummary = async (req, res) => {
 exports.getRestockDrafts = async (req, res) => {
   try {
     const clientId = req.user.clientId;
-    const days = 30;
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
+    const { buildDemandForecast } = require('../utils/demandForecastBuilder');
 
     const clientDoc = await Client.findOne({ clientId }).select('_id brand').lean();
     if (!clientDoc) {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
-    const [orders, actualSuppliers] = await Promise.all([
-      Order.find({ clientId, createdAt: { $gte: startDate } }).select('items').lean(),
-      Supplier.find({ clientId: clientDoc._id }).lean()
+    const [forecast, actualSuppliers] = await Promise.all([
+      buildDemandForecast(clientId),
+      Supplier.find({ clientId: clientDoc._id }).lean(),
     ]);
 
-    const skuMap = {};
-    orders.forEach(o => {
-        o.items?.forEach(item => {
-            if (!skuMap[item.name]) skuMap[item.name] = { name: item.name, count: 0, productId: item.productId, sku: item.sku };
-            skuMap[item.name].count += (item.quantity || 1);
-        });
-    });
+    if (!actualSuppliers.length) {
+      return res.json({ success: true, drafts: [] });
+    }
 
     const drafts = [];
-    for (const sku of Object.values(skuMap)) {
-      const dailyDemand = sku.count / days;
-      let stock = Math.floor(sku.count * 1.5); 
-      const depletionDays = Math.ceil(stock / dailyDemand);
+    for (const item of forecast.inventoryHealth || []) {
+      if (item.depletionDays == null || item.depletionDays > 21) continue;
 
-      if (depletionDays <= 21) {
-        const linkedSupplier = actualSuppliers.find(s => 
-          s.products?.some(p => p.productId === sku.productId || p.productTitle === sku.name)
+      const linkedSupplier =
+        actualSuppliers.find((s) =>
+          s.products?.some(
+            (p) =>
+              (item.shopifyProductId && p.productId === item.shopifyProductId) ||
+              (item.sku && p.sku === item.sku) ||
+              p.productTitle === item.name ||
+              p.productTitle === item.shortName
+          )
         ) || actualSuppliers[0];
 
-        if (linkedSupplier) {
-          const quantityToOrder = Math.max(Math.ceil(dailyDemand * 30), 20);
-          
-          drafts.push({
-            id: sku.productId || sku.name,
-            productName: sku.name,
-            sku: sku.sku,
-            currentStock: stock,
-            dailyDemand: dailyDemand.toFixed(1),
-            depletionDays,
-            partner: {
-              name: linkedSupplier.name,
-              phone: linkedSupplier.phone,
-              id: linkedSupplier._id
-            },
-            draftMessage: `📦 *RESTOCK REQUEST: ${clientDoc?.brand?.name || 'TopEdge AI'}*\n\nHi ${linkedSupplier.name}, we need to restock the following SKU:\n\n🔹 *Product:* ${sku.name}\n🔹 *Current Depth:* ${stock} units\n🔹 *Burn Rate:* ${dailyDemand.toFixed(1)}/day\n\n🚨 *Action:* Please draft an invoice for *${quantityToOrder} units*.\n\nPlease confirm availability! 🤝`
-          });
-        }
-      }
+      const dailyDemand = item.dailyDemand || 0;
+      const quantityToOrder = Math.max(Math.ceil(dailyDemand * 30), 20);
+
+      drafts.push({
+        id: item.shopifyProductId || item.sku || item.name,
+        productName: item.name,
+        imageUrl: item.imageUrl || '',
+        sku: item.sku,
+        currentStock: item.stock,
+        dailyDemand: dailyDemand.toFixed(1),
+        depletionDays: item.depletionDays,
+        partner: {
+          name: linkedSupplier.name,
+          phone: linkedSupplier.phone,
+          id: linkedSupplier._id,
+        },
+        draftMessage: `📦 *RESTOCK REQUEST: ${clientDoc?.brand?.name || 'TopEdge AI'}*\n\nHi ${linkedSupplier.name}, we need to restock:\n\n🔹 *Product:* ${item.name}\n🔹 *SKU:* ${item.sku || '—'}\n🔹 *Current stock:* ${item.stock} units\n🔹 *Burn rate:* ${dailyDemand.toFixed(1)}/day\n\n🚨 Please prepare an invoice for *${quantityToOrder} units*.\n\nPlease confirm availability! 🤝`,
+      });
     }
 
     res.json({ success: true, drafts: drafts.slice(0, 10) });
   } catch (error) {
-    logger.error("Restock Drafts Error", error);
+    logger.error('Restock Drafts Error', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };

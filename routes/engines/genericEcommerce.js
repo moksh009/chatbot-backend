@@ -622,6 +622,56 @@ async function processEcommerceInbound(parsedMessage, clientConfig, { helperPara
                 return;
             }
 
+            const starReviewMatch = interactiveId.match(/^rv_star_(\d)_(.+)$/);
+            if (starReviewMatch) {
+                const stars = parseInt(starReviewMatch[1], 10);
+                const reviewId = starReviewMatch[2];
+                const review = await ReviewRequest.findById(reviewId);
+                const { startOfDay } = require("date-fns");
+                const reviewUrl = review?.reviewUrl || nicheData.googleReviewUrl || clientConfig.googleReviewUrl || "";
+
+                if (stars >= 4) {
+                    await ReviewRequest.findByIdAndUpdate(reviewId, { status: "responded_positive", response: `star_${stars}` });
+                    await DailyStat.findOneAndUpdate(
+                        { clientId: clientConfig.clientId, date: startOfDay(new Date()) },
+                        { $inc: { reviewsCollected: 1, reviewsPositive: 1 } },
+                        { upsert: true }
+                    );
+                    const replyText = reviewUrl
+                        ? `Thank you for the ${stars}-star rating! 🙏\n\nWould you leave a quick Google review? It takes 30 seconds:\n\n⭐ ${reviewUrl}`
+                        : `Thank you for the ${stars}-star rating! 🙏 Your feedback means everything to us!`;
+                    await sendWhatsAppText({ ...helperParams, to: from, body: replyText });
+                } else if (stars === 3) {
+                    await ReviewRequest.findByIdAndUpdate(reviewId, { status: "responded_positive", response: "star_3" });
+                    await DailyStat.findOneAndUpdate(
+                        { clientId: clientConfig.clientId, date: startOfDay(new Date()) },
+                        { $inc: { reviewsCollected: 1 } },
+                        { upsert: true }
+                    );
+                    const replyText = reviewUrl
+                        ? `Thanks for your ${stars}-star feedback! 😊 A Google review would help us improve:\n\n${reviewUrl}`
+                        : "Thanks for your feedback! 😊 We'll keep improving!";
+                    await sendWhatsAppText({ ...helperParams, to: from, body: replyText });
+                } else {
+                    await ReviewRequest.findByIdAndUpdate(reviewId, { status: "responded_negative", response: `star_${stars}` });
+                    await DailyStat.findOneAndUpdate(
+                        { clientId: clientConfig.clientId, date: startOfDay(new Date()) },
+                        { $inc: { reviewsCollected: 1, reviewsNegative: 1 } },
+                        { upsert: true }
+                    );
+                    conversation.status = 'HUMAN_TAKEOVER';
+                    conversation.requiresAttention = true;
+                    conversation.attentionReason = `Low review (${stars} stars) — needs follow-up`;
+                    await conversation.save();
+                    await sendWhatsAppText({
+                        ...helperParams,
+                        to: from,
+                        body: "We're sorry your experience wasn't great 😔 Our team will reach out shortly to make it right.",
+                    });
+                }
+                return;
+            }
+
             if (interactiveId.startsWith('rv_good_')) {
                 const reviewId = interactiveId.replace("rv_good_", "");
                 const review = await ReviewRequest.findById(reviewId);
@@ -1174,19 +1224,54 @@ async function sendMappedOrderStatusWhatsApp({ clientConfig, order, status, trac
     const phone = normalizePhone(rawPhone);
     const { phoneNumberId, whatsappToken, clientId } = clientConfig;
 
-    const tplDef = (clientConfig.syncedMetaTemplates || []).find((t) => t.name === templateName);
-    let requiredParams = null;
-    if (tplDef) {
-        const bodyComp = (tplDef.components || []).find((c) => c.type === 'BODY');
-        if (bodyComp && bodyComp.text) {
-            const matches = bodyComp.text.match(/\{\{\d+\}\}/g);
-            requiredParams = matches ? new Set(matches).size : 0;
-        } else {
-            requiredParams = 0;
-        }
-    } else {
-        console.warn(`[OrderStatusWA] Template ${templateName} not in syncedMetaTemplates for ${clientId}`);
-        if (clientConfig.wabaId) {
+    const {
+        getEcoPreset,
+        buildOrderContextForTemplate,
+        isEcoTemplateName,
+    } = require('../../utils/orderStatusTemplatePolicy');
+
+    const ecoPreset = getEcoPreset(mapKey);
+
+    if (ecoPreset && templateName !== ecoPreset.templateName) {
+        console.warn(
+            `[OrderStatusWA] ${clientId}: status ${mapKey} uses non-eco template ${templateName}; send may fail`
+        );
+    }
+
+    let ok = false;
+    try {
+        const { resolveTemplateForSend } = require('../../services/templateResolver');
+        const resolved = await resolveTemplateForSend(clientId, { name: templateName });
+        const tpl = resolved?.template || {};
+        const mergedMappings = ecoPreset?.variableMappings || tpl.variableMappings || tpl.variableMapping;
+
+        const contextOrder = buildOrderContextForTemplate(order, {
+            trackingUrl,
+            trackingNumber,
+            nicheData,
+        });
+
+        const templatePayload = {
+            ...tpl,
+            name: templateName,
+            metaTemplateName: tpl.metaTemplateName || tpl.name || templateName,
+            variableMappings: mergedMappings,
+        };
+
+        const result = await require('../../services/templateSender').sendTemplatedMessage({
+            template: templatePayload,
+            recipient: { clientId, phone },
+            channel: 'whatsapp',
+            contextData: { order: contextOrder },
+        });
+        ok = !!result?.whatsapp?.sent;
+    } catch (senderErr) {
+        console.warn(`[OrderStatusWA] templateSender failed: ${senderErr.message}`);
+    }
+
+    if (!ok && isEcoTemplateName(templateName)) {
+        const tplDef = (clientConfig.syncedMetaTemplates || []).find((t) => t.name === templateName);
+        if (!tplDef && clientConfig.wabaId) {
             syncWhatsAppTemplates({ wabaId: clientConfig.wabaId, token: whatsappToken })
                 .then((res) => {
                     if (res.success) {
@@ -1197,57 +1282,32 @@ async function sendMappedOrderStatusWhatsApp({ clientConfig, order, status, trac
         }
     }
 
-    let headerImageUrl = null;
-    const ecoImageStatuses = ['paid', 'shipped', 'fulfilled', 'delivered', 'processing'];
-    const stLower = String(status || '').toLowerCase();
-    if (templateName.startsWith('eco_') && ecoImageStatuses.includes(stLower)) {
-        if (order.items && order.items.length > 0) {
-            headerImageUrl = order.items[0].image || order.items[0].imageUrl;
+    if (!ok && !isEcoTemplateName(templateName)) {
+        let bodyParams = [order.customerName || 'Customer', order.orderNumber || order.orderId];
+        const tplDef = (clientConfig.syncedMetaTemplates || []).find((t) => t.name === templateName);
+        let requiredParams = null;
+        if (tplDef?.components) {
+            const bodyComp = tplDef.components.find((c) => c.type === 'BODY');
+            const matches = bodyComp?.text?.match(/\{\{\d+\}\}/g);
+            requiredParams = matches ? new Set(matches).size : 0;
         }
-        if (!headerImageUrl) headerImageUrl = nicheData.bannerImage;
-    }
-
-    let bodyParams = [order.customerName || 'Customer', order.orderNumber || order.orderId];
-
-    if (stLower === 'shipped' || stLower === 'fulfilled') {
-        let finalTrackingUrl = trackingUrl || order.trackingUrl;
-        if (!finalTrackingUrl && (trackingNumber || order.trackingNumber) && nicheData?.trackingLinkPattern) {
-            finalTrackingUrl = nicheData.trackingLinkPattern.replace(
-                '{{tracking_number}}',
-                trackingNumber || order.trackingNumber || ''
-            );
-        }
-        bodyParams.push(finalTrackingUrl || 'Check your dashboard');
-    } else if (stLower === 'delivered') {
-        // Name + order# only
-    } else if (stLower === 'paid' || stLower === 'processing') {
-        bodyParams.push(`₹${order.totalPrice || '0'}`);
-        bodyParams.push(order.isCOD ? 'Cash on Delivery' : order.paymentMethod || 'Prepaid');
-    } else {
-        bodyParams.push(status.charAt(0).toUpperCase() + status.slice(1));
-        bodyParams.push(`₹${order.totalPrice || '0'}`);
-        bodyParams.push(trackingNumber || order.trackingNumber || 'N/A');
-        bodyParams.push(trackingUrl || order.trackingUrl || 'N/A');
-    }
-
-    if (requiredParams !== null) {
-        if (bodyParams.length > requiredParams) {
-            bodyParams = bodyParams.slice(0, requiredParams);
-        } else {
+        if (requiredParams !== null) {
             while (bodyParams.length < requiredParams) bodyParams.push('---');
+            if (bodyParams.length > requiredParams) bodyParams = bodyParams.slice(0, requiredParams);
         }
+        let headerImageUrl = null;
+        if (order.items?.length) headerImageUrl = order.items[0].image || order.items[0].imageUrl;
+        ok = await sendWhatsAppTemplate({
+            phoneNumberId,
+            to: phone,
+            templateName,
+            bodyParams,
+            headerImageUrl,
+            buttonUrlParam: trackingUrl || order.trackingUrl || null,
+            io,
+            clientConfig,
+        });
     }
-
-    const ok = await sendWhatsAppTemplate({
-        phoneNumberId,
-        to: phone,
-        templateName,
-        bodyParams,
-        headerImageUrl,
-        buttonUrlParam: trackingUrl || order.trackingUrl || null,
-        io,
-        clientConfig,
-    });
 
     try {
         const { appendOrderWhatsAppActivity, resolveOrderMongoId } = require('../../utils/orderWhatsAppActivity');

@@ -8,6 +8,19 @@ const log = require('../utils/logger')('WhatsAppFlows');
 const { checkLimit } = require('../utils/planLimits');
 const { apiCache } = require('../middleware/apiCache');
 
+function formatFlowForClient(doc) {
+    const flowId = String(doc.flowId || doc.id || '');
+    return {
+        flowId,
+        id: flowId,
+        name: doc.name || 'Untitled flow',
+        status: String(doc.status || 'DRAFT').toUpperCase(),
+        categories: Array.isArray(doc.categories) ? doc.categories : [],
+        validationErrors: doc.validationErrors || [],
+        lastSyncedAt: doc.lastSyncedAt || null,
+    };
+}
+
 /**
  * GET /api/whatsapp-flows
  * Returns all synced flows for the client (lite list — no nodes/edges)
@@ -18,11 +31,11 @@ router.get('/', protect, apiCache(60), async (req, res) => {
     try {
         const flows = await WhatsAppFlow.find({ clientId: req.user.clientId })
             .select('flowId name status categories lastSyncedAt validationErrors')
-            .sort({ lastSyncedAt: -1 })
+            .sort({ status: 1, lastSyncedAt: -1 })
             .limit(100)
             .lean();
         timer.finish(`200 ok | count=${flows.length}`);
-        res.json(flows);
+        res.json(flows.map(formatFlowForClient));
     } catch (err) {
         timer.finish(`500 ${err.message}`);
         log.error('Fetch Flows Error:', err.message);
@@ -72,7 +85,13 @@ router.post('/sync', protect, async (req, res) => {
             syncedFlows.push(flow);
         }
 
-        res.json({ success: true, count: syncedFlows.length, flows: syncedFlows });
+        const formatted = syncedFlows.map((f) => formatFlowForClient(f.toObject ? f.toObject() : f));
+        await Client.findOneAndUpdate(
+            { clientId },
+            { $set: { syncedMetaFlows: formatted } }
+        );
+
+        res.json({ success: true, count: formatted.length, flows: formatted });
     } catch (err) {
         log.error('Sync Error:', err.response?.data || err.message);
         res.status(500).json({ error: 'Failed to sync flows from Meta.' });

@@ -705,9 +705,12 @@ router.get('/high-intent', protect, logPersonalDataAccess, apiCache(45), async (
     const { createTimer } = require('../utils/perfLogger');
     const timer = createTimer('GET /api/leads/high-intent', req.user?.clientId || '');
     try {
-        const clientId = req.user.clientId;
-        const { limit = 50, next_cursor } = req.query;
-        const limitNum = Math.min(100, parseInt(limit, 10) || 50);
+        const clientId = tenantClientId(req);
+        if (!clientId) {
+            return res.status(400).json({ success: false, message: 'clientId required' });
+        }
+        const { limit = 200, next_cursor } = req.query;
+        const limitNum = Math.min(500, Math.max(1, parseInt(limit, 10) || 200));
 
         const baseQuery = HIGH_INTENT_BASE(clientId);
         const pageQuery = { ...baseQuery };
@@ -715,11 +718,14 @@ router.get('/high-intent', protect, logPersonalDataAccess, apiCache(45), async (
             pageQuery._id = { $lt: next_cursor };
         }
 
+        const leadSelect =
+          'phoneNumber name email leadScore scoreLabel cartStatus lastInteraction tags checkoutInitiatedCount addToCartCount source cartSnapshot createdAt updatedAt isOrderPlaced recoveryStep';
+
         const [leads, total] = await Promise.all([
           AdLead.find(pageQuery)
             .sort({ lastInteraction: -1, _id: -1 })
             .limit(limitNum)
-            .select('phoneNumber name email leadScore cartStatus lastInteraction tags checkoutInitiatedCount addToCartCount source')
+            .select(leadSelect)
             .lean(),
           AdLead.countDocuments(baseQuery),
         ]);

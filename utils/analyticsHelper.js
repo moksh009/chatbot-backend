@@ -353,6 +353,49 @@ async function getRealtimeStats(clientId, client, daysInput, options = {}) {
   };
 }
 
+function resolveProductImage(name, productId, catalogById, catalogByTitle) {
+  if (productId && catalogById.has(String(productId))) {
+    return catalogById.get(String(productId));
+  }
+  const key = (name || '').toLowerCase().trim();
+  if (!key) return null;
+  if (catalogByTitle.has(key)) return catalogByTitle.get(key);
+  for (const [title, url] of catalogByTitle) {
+    if (title.includes(key) || key.includes(title)) return url;
+  }
+  return null;
+}
+
+async function enrichTopProductsWithShopifyImages(clientId, products, timer) {
+  if (!products?.length) return products;
+  const ShopifyProduct = require('../models/ShopifyProduct');
+  const catalog = await (timer || noopTimer()).time('ShopifyProduct.find_catalog', () =>
+    ShopifyProduct.find({ clientId })
+      .select('shopifyProductId title imageUrl')
+      .limit(2000)
+      .lean()
+  );
+  const catalogById = new Map();
+  const catalogByTitle = new Map();
+  catalog.forEach((p) => {
+    if (p.shopifyProductId && p.imageUrl) {
+      catalogById.set(String(p.shopifyProductId), p.imageUrl);
+    }
+    if (p.title && p.imageUrl) {
+      catalogByTitle.set(p.title.toLowerCase().trim(), p.imageUrl);
+    }
+  });
+
+  return products.map((p) => {
+    const fromOrder = p.image && String(p.image).trim() ? p.image : null;
+    const image =
+      fromOrder ||
+      resolveProductImage(p.name, p.productId, catalogById, catalogByTitle) ||
+      null;
+    return { ...p, image };
+  });
+}
+
 /**
  * @returns {Promise<Array>} Top products array (same shape as GET /api/analytics/top-products)
  */
@@ -366,18 +409,24 @@ async function getTopProducts(clientId, options = {}) {
       { $unwind: '$items' },
       {
         $group: {
-          _id: '$items.name',
+          _id: {
+            name: '$items.name',
+            productId: { $ifNull: ['$items.productId', ''] },
+          },
           totalRevenue: { $sum: { $multiply: ['$items.price', '$items.quantity'] } },
           totalSold: { $sum: '$items.quantity' },
+          image: { $first: { $ifNull: ['$items.image', ''] } },
         },
       },
       { $sort: { totalRevenue: -1 } },
       { $limit: 10 },
       {
         $project: {
-          name: '$_id',
+          name: '$_id.name',
+          productId: '$_id.productId',
           revenue: '$totalRevenue',
           sold: '$totalSold',
+          image: 1,
           _id: 0,
         },
       },
@@ -385,10 +434,10 @@ async function getTopProducts(clientId, options = {}) {
   );
 
   if (topProducts.length > 0) {
-    return topProducts;
+    return enrichTopProductsWithShopifyImages(clientId, topProducts, timer);
   }
 
-  return timer.time('Appointment.aggregate_top_services', () =>
+  const apptProducts = await timer.time('Appointment.aggregate_top_services', () =>
     Appointment.aggregate([
       {
         $match: {
@@ -416,6 +465,7 @@ async function getTopProducts(clientId, options = {}) {
       },
     ])
   );
+  return enrichTopProductsWithShopifyImages(clientId, apptProducts, timer);
 }
 
 function resolveTimelineRange(range = {}) {
@@ -590,7 +640,9 @@ async function getTimelineStatsLive(clientId, client, ctx, options = {}) {
             $group: {
               _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
               count: { $sum: 1 },
-              revenue: { $sum: '$amount' },
+              revenue: {
+                $sum: { $ifNull: ['$totalPrice', { $ifNull: ['$amount', 0] }] },
+              },
             },
           },
         ]),

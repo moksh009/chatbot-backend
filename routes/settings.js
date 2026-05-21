@@ -3,22 +3,7 @@ const crypto = require('crypto');
 const router = express.Router();
 const Client = require('../models/Client');
 const { protect, verifyClientAccess } = require('../middleware/auth');
-
-async function ensureGrowthEmbedDoc(clientId) {
-  let doc = await Client.findOne({ clientId }).select(
-    'growthEmbedPublicKey growthEmbedEnabled growthCompliance growthWidgetConfig clientId'
-  );
-  if (!doc) return null;
-  if (!doc.growthEmbedPublicKey || String(doc.growthEmbedPublicKey).length < 16) {
-    const key = crypto.randomBytes(24).toString('hex');
-    doc = await Client.findOneAndUpdate(
-      { clientId },
-      { $set: { growthEmbedPublicKey: key } },
-      { new: true }
-    ).select('growthEmbedPublicKey growthEmbedEnabled growthCompliance growthWidgetConfig clientId');
-  }
-  return doc;
-}
+const { ensureGrowthEmbedDoc, buildGrowthEmbedOverview } = require('../utils/growthEmbedOverview');
 
 
 router.put('/:clientId/working-hours', protect, verifyClientAccess, async (req, res) => {
@@ -262,6 +247,19 @@ router.put('/:clientId/growth-widget-config', protect, verifyClientAccess, async
     ).select('growthWidgetConfig');
     if (!doc) return res.status(404).json({ success: false, message: 'Client not found' });
     res.json({ success: true, growthWidgetConfig: doc.growthWidgetConfig || {} });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+/** Website opt-in dashboard KPIs — scoped per clientId (multi-tenant safe via verifyClientAccess). */
+router.get('/:clientId/growth-embed-overview', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const period = String(req.query.period || '30d').toLowerCase();
+    const payload = await buildGrowthEmbedOverview(clientId, period);
+    if (!payload) return res.status(404).json({ success: false, message: 'Client not found' });
+    res.json(payload);
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

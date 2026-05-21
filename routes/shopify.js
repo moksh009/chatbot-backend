@@ -77,31 +77,39 @@ router.post('/:clientId/connect', protect, verifyClientAccess, async (req, res) 
 router.post('/:clientId/sync-products', internalOrProtect, async (req, res) => {
   try {
     const { clientId } = req.params;
-    const products = await withShopifyRetry(clientId, async (shop) => {
-        const client = await Client.findOne({ clientId });
-        const response = await shop.get('/products.json?limit=50');
-        
-        return response.data.products.map(p => ({
-          id: p.id,
-          title: p.title,
-          handle: p.handle,
-          price: p.variants[0]?.price,
-          image: p.image?.src,
-          url: `https://${client.shopDomain}/products/${p.handle}`
-        }));
+    const { syncNicheDataProducts } = require('../utils/shopifyNicheProductSync');
+    const result = await syncNicheDataProducts(clientId);
+
+    const queueCatalog = req.body?.catalog !== false;
+    if (queueCatalog) {
+      const { runShopifyCatalogSync } = require('./shopifyCatalog');
+      setImmediate(() => {
+        runShopifyCatalogSync(clientId).catch((err) => {
+          console.error(`[Shopify] Catalog sync failed for ${clientId}:`, err.message);
+        });
+      });
+    }
+
+    res.json({
+      success: true,
+      count: result.count,
+      catalogQueued: queueCatalog,
+      message: queueCatalog
+        ? 'Products synced; full catalog sync running in background'
+        : 'Products synced',
     });
-
-    await Client.findOneAndUpdate(
-      { clientId },
-      { $set: { "nicheData.products": products } }
-    );
-    const { clearClientCache } = require('../middleware/apiCache');
-    await clearClientCache(clientId);
-
-    res.json({ success: true, count: products.length });
   } catch (err) {
-    const isAuthError = err.response?.status === 401 || err.response?.status === 403 || err.message?.includes('incomplete') || err.message?.includes('invalid');
-    res.status(isAuthError ? 400 : 500).json({ success: false, error: err.message, isShopifyAuthError: isAuthError });
+    console.error(`[Shopify sync-products] ${req.params.clientId}:`, err.message);
+    const statusCode = err.response?.status;
+    const isAuthError =
+      statusCode === 401 ||
+      statusCode === 403 ||
+      /incomplete|invalid|not connected|credentials/i.test(String(err.message || ''));
+    res.status(isAuthError ? 400 : 500).json({
+      success: false,
+      error: err.message || 'Product sync failed',
+      isShopifyAuthError: isAuthError,
+    });
   }
 });
 

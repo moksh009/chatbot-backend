@@ -60,6 +60,7 @@ async function runShopifyCatalogSync(clientId) {
                   collectionIds: [],
                   collectionTitles: [],
                   inStock: v.inventory_management !== "shopify" || (Number(v.inventory_quantity) || 0) > 0,
+                  inventoryQuantity: Math.max(0, Number(v.inventory_quantity) || 0),
                   compareAtPrice: v.compare_at_price ? parseFloat(v.compare_at_price) : undefined,
                   vendor: p.vendor || "",
                   productType: p.product_type || "",

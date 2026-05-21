@@ -296,7 +296,7 @@ router.get('/clients', protect, isSuperAdmin, sanitizeMiddleware, async (req, re
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .select('clientId businessName name wabaId phoneNumberId whatsappToken shopifyAccessToken shopDomain storeType instagramConnected adminAlertEmail adminAlertWhatsapp emailUser emailAppPassword emailMethod googleConnected gmailAddress isActive createdAt config.wabaId config.phoneNumberId config.whatsappToken config.shopifyAccessToken config.shopDomain config.storeType')
+      .select('clientId businessName name wabaId phoneNumberId whatsappToken shopifyAccessToken shopDomain storeType instagramConnected adminAlertEmail adminAlertWhatsapp emailUser emailAppPassword emailMethod googleConnected gmailAddress isActive createdAt wizardFeatures loyaltyConfig config.wabaId config.phoneNumberId config.whatsappToken config.shopifyAccessToken config.shopDomain config.storeType platformVars')
       .lean();
     
     const total = await Client.countDocuments(filter);

@@ -16,6 +16,7 @@ const ShopifyProductSchema = new mongoose.Schema({
   collectionIds: [{ type: String }],
   collectionTitles: [{ type: String }],
   inStock: { type: Boolean, default: true },
+  inventoryQuantity: { type: Number, default: 0 },
   compareAtPrice: { type: Number },
   vendor: { type: String, default: "" },
   productType: { type: String, default: "" },
@@ -26,5 +27,7 @@ const ShopifyProductSchema = new mongoose.Schema({
 ShopifyProductSchema.index({ clientId: 1, shopifyVariantId: 1 }, { unique: true });
 ShopifyProductSchema.index({ clientId: 1, collectionIds: 1 });
 ShopifyProductSchema.index({ clientId: 1, inStock: 1 });
+/** Speeds GET /catalog/:clientId/products (sort by title). */
+ShopifyProductSchema.index({ clientId: 1, title: 1 });
 
 module.exports = mongoose.model("ShopifyProduct", ShopifyProductSchema);

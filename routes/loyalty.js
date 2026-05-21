@@ -12,6 +12,8 @@ const {
     getLoyaltyStatus,
     getReputationStats,
     sendReviewRequest,
+    getReviewContext,
+    getAudienceContext,
     getLoyaltyTransactions
 } = require('../controllers/loyaltyController');
 const { protect } = require('../middleware/auth');
@@ -42,6 +44,8 @@ router.post('/:clientId/send-reminder', protect, requireFeature('loyalty'), send
 
 // Reputation & Review Stats
 router.get('/reputation-stats', protect, requireFeature('reviews'), getReputationStats);
+router.get('/review-context', protect, requireFeature('reviews'), getReviewContext);
+router.get('/audience-context', protect, getAudienceContext);
 router.post('/send-review-request', protect, requireFeature('reviews'), sendReviewRequest);
 
 /**

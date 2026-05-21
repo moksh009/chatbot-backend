@@ -66,21 +66,30 @@ router.get("/:clientId", verifyToken, apiCache(30), async (req, res) => {
 });
 
 // ─── GET /api/catalog/:clientId/products — cached products (Meta or Shopify) ─
-router.get("/:clientId/products", verifyToken, async (req, res) => {
+const CATALOG_PRODUCTS_MAX_MS = parseInt(process.env.CATALOG_PRODUCTS_MAX_MS || "8000", 10) || 8000;
+
+router.get("/:clientId/products", verifyToken, apiCache(25), async (req, res) => {
   try {
     const { clientId } = req.params;
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 60));
     const search = String(req.query.search || "").trim();
 
-    const q = { clientId };
+    const queryFilter = { clientId };
     if (search) {
-      q.$or = [
+      queryFilter.$or = [
         { title: new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") },
         { shopifyVariantId: new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") },
       ];
     }
 
-    const products = await ShopifyProduct.find(q).sort({ title: 1 }).limit(limit).lean();
+    const products = await ShopifyProduct.find(queryFilter)
+      .select(
+        "shopifyProductId shopifyVariantId title price currency imageUrl productUrl inStock collectionTitles clientId"
+      )
+      .sort({ title: 1 })
+      .limit(limit)
+      .maxTimeMS(CATALOG_PRODUCTS_MAX_MS)
+      .lean();
     res.json({ success: true, products, source: "cache" });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

@@ -57,7 +57,17 @@ const apiCache = (ttlSeconds = 60) => {
 
     try {
       if (redisClient) {
-        const cachedData = await redisClient.get(cacheKey);
+        let cachedData = null;
+        try {
+          cachedData = await Promise.race([
+            redisClient.get(cacheKey),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error('redis_cache_timeout')), 400)
+            ),
+          ]);
+        } catch (redisReadErr) {
+          log.error(`[ApiCache] Cache read timeout/error for ${cacheKey}:`, redisReadErr.message);
+        }
         if (cachedData) {
           return res.setHeader('X-Cache', 'HIT-REDIS').json(JSON.parse(cachedData));
         }

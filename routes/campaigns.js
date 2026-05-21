@@ -333,13 +333,42 @@ router.post('/quick-send', protect, async (req, res) => {
   }
 
   try {
-    const client = await Client.findOne({ clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
+    const client = await Client.findOne({ clientId })
+      .select('clientId whatsappToken phoneNumberId wabaId syncedMetaTemplates messageTemplates')
+      .lean();
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
-    const template = (client.syncedMetaTemplates || []).find((t) => t?.name === templateName);
+    if (!client.phoneNumberId || !client.whatsappToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'WhatsApp is not connected. Connect Cloud API in Settings → Integrations.',
+      });
+    }
+
+    const { resolveTemplateForSend } = require('../services/templateResolver');
+    const { sendByName } = require('../services/templateSender');
+    const resolved = await resolveTemplateForSend(clientId, { name: templateName });
+    if (!resolved?.template) {
+      return res.status(400).json({
+        success: false,
+        message: `Template "${templateName}" was not found. Open Meta Manager and sync approved templates.`,
+      });
+    }
+
+    const syncedTpl = (client.syncedMetaTemplates || []).find((t) => t?.name === templateName);
+    const eligibilityTpl = syncedTpl || {
+      name: templateName,
+      status: resolved.template.submissionStatus === 'approved' ? 'APPROVED' : 'APPROVED',
+      components: resolved.template.components,
+      primaryPurpose: resolved.template.primaryPurpose || 'campaign',
+      secondaryPurposes: Array.isArray(resolved.template.secondaryPurposes)
+        ? resolved.template.secondaryPurposes
+        : ['campaign', 'utility'],
+    };
+
     const preflight = validateTemplateEligibility({
-      template,
+      template: eligibilityTpl,
       contextPurpose: 'campaign',
-      strict: strictValidation !== false
+      strict: strictValidation !== false,
     });
     if (!preflight.ok) {
       log.warn('[QuickSend][TemplatePreflightFailed]', {
@@ -348,7 +377,7 @@ router.post('/quick-send', protect, async (req, res) => {
         contextPurpose: 'campaign',
         missingVariables: preflight.missingVariables,
         requiredVariableCount: preflight.requiredVariableCount,
-        reasons: preflight.reasons
+        reasons: preflight.reasons,
       });
       return res.status(400).json({
         success: false,
@@ -361,57 +390,82 @@ router.post('/quick-send', protect, async (req, res) => {
     const leads = await AdLead.find({ _id: { $in: finalLeadIds }, clientId });
     if (leads.length === 0) return res.status(404).json({ success: false, message: 'No valid leads found' });
 
-    const { sendWhatsAppTemplate } = require('../utils/whatsappHelpers');
-
     let successCount = 0;
     let failCount = 0;
     let skippedOptIn = 0;
 
-    // Process with small stagger to avoid burst limits
     for (const lead of leads) {
-      const eligibility = await canSendToContact(clientId, lead, quickCampaign.templateCategory);
-      if (!eligibility.canSend) {
-        skippedOptIn++;
-        continue;
+      if (!quickCampaign.skipMarketingOptInFilter) {
+        const eligibility = await canSendToContact(clientId, lead, quickCampaign.templateCategory);
+        if (!eligibility.canSend) {
+          skippedOptIn++;
+          continue;
+        }
       }
+
       try {
-        await sendWhatsAppTemplate({
-          phoneNumberId: client.phoneNumberId,
-          to: lead.phoneNumber,
+        const sendResult = await sendByName({
+          clientId,
+          phone: lead.phoneNumber,
           templateName,
-          languageCode: 'en',
-          components: [],
-          token: client.whatsappToken,
-          clientId: client.clientId
+          channel: 'whatsapp',
+          contextData: { extra: { leadName: lead.name || '' } },
         });
 
-        // Update Lead activity log
-        await AdLead.findByIdAndUpdate(lead._id, {
-          $push: {
-            activityLog: {
-              action: 'quick_message_sent',
-              details: `Sent template: ${templateName}`,
-              timestamp: new Date()
-            }
-          }
-        });
-        successCount++;
+        if (sendResult?.whatsapp?.sent) {
+          await AdLead.findByIdAndUpdate(lead._id, {
+            $push: {
+              activityLog: {
+                action: 'quick_message_sent',
+                details: `Sent template: ${templateName}`,
+                timestamp: new Date(),
+              },
+            },
+          });
+          successCount++;
+        } else {
+          const reason =
+            sendResult?.whatsapp?.reason ||
+            sendResult?.whatsapp?.error ||
+            'send_failed';
+          log.warn(`[QuickSend] Skipped ${lead.phoneNumber}: ${reason}`);
+          failCount++;
+        }
       } catch (err) {
         log.error(`[QuickSend] Failed for ${lead.phoneNumber}:`, err.message);
         failCount++;
       }
-      
-      // Stagger
+
       if (finalLeadIds.length > 1) {
-        await new Promise(r => setTimeout(r, 200)); 
+        await new Promise((r) => setTimeout(r, 200));
       }
     }
 
-    // Enterprise Fix: Update StatCache atomically
+    if (successCount === 0 && failCount === 0 && skippedOptIn > 0) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'No messages sent — selected contacts are not opted in for marketing. Collect opt-in via Website opt-in or chat flows.',
+        successCount: 0,
+        failCount: 0,
+        skippedMarketingOptIn: skippedOptIn,
+      });
+    }
+
+    if (successCount === 0 && failCount > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Broadcast failed for all recipients. Check template variables, media header, or WhatsApp connection.',
+        successCount,
+        failCount,
+        skippedMarketingOptIn: skippedOptIn,
+      });
+    }
+
     await incrementStat(clientId, { totalConversations: successCount });
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: `Broadcast complete. Success: ${successCount}, Failed: ${failCount}${skippedOptIn ? `, Skipped (not opted_in): ${skippedOptIn}` : ''}`,
       successCount,
       failCount,

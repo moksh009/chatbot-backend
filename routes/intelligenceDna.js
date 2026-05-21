@@ -3,14 +3,16 @@ const router = express.Router();
 const { protect } = require('../middleware/auth');
 const AdLead = require('../models/AdLead');
 const Conversation = require('../models/Conversation');
-const CustomerIntelligence = require('../models/CustomerIntelligence');
 const { tenantClientId } = require('../utils/queryHelpers');
+const { apiCache } = require('../middleware/apiCache');
+
+const LEAD_FIND_MAX_MS = parseInt(process.env.DNA_LEAD_FIND_MAX_MS || '8000', 10) || 8000;
 
 /**
  * GET /api/intelligence/dna/:phone
- * Returns the CustomerIntelligence document for a given phone number.
+ * Lead + conversation row for the contact details panel (cached briefly — was ~15–20s wall time under DB contention when uncached).
  */
-router.get('/dna/:phone', protect, async (req, res) => {
+router.get('/dna/:phone', protect, apiCache(45), async (req, res) => {
     try {
         const { phone } = req.params;
         const clientId = tenantClientId(req);
@@ -19,24 +21,35 @@ router.get('/dna/:phone', protect, async (req, res) => {
             return res.status(403).json({ error: 'Unauthorized' });
         }
 
-        // Normalize phone — strip non-digits
         const cleanPhone = phone.replace(/\D/g, '');
 
-        // Find the AdLead for this phone
-        const lead = await AdLead.findOne({ clientId, $or: [{ phone: cleanPhone }, { phoneNumber: cleanPhone }] }).lean();
+        const [leadPrimary, conversation] = await Promise.all([
+            AdLead.findOne({ clientId, phoneNumber: cleanPhone })
+                .maxTimeMS(LEAD_FIND_MAX_MS)
+                .lean(),
+            Conversation.findOne({ clientId, phone: cleanPhone })
+                .select('aiDna lastDetectedIntent')
+                .maxTimeMS(LEAD_FIND_MAX_MS)
+                .lean(),
+        ]);
+
+        let lead = leadPrimary;
+        if (!lead && cleanPhone.length > 10) {
+            const tail = cleanPhone.slice(-10);
+            lead = await AdLead.findOne({ clientId, phoneNumber: tail })
+                .maxTimeMS(4000)
+                .lean();
+        }
+
         if (!lead) return res.status(404).json({ error: 'Lead not found' });
 
-        // Populate Import Batch Name for UI Pill
         if (lead.importBatchId) {
             const ImportSession = require('../models/ImportSession');
-            const session = await ImportSession.findById(lead.importBatchId).select('listName').lean();
+            const session = await ImportSession.findById(lead.importBatchId).select('listName').maxTimeMS(3000).lean();
             if (session) {
                 lead.importBatchName = session.listName;
             }
         }
-
-        // Find the Conversation for this phone
-        const conversation = await Conversation.findOne({ clientId, phone: cleanPhone }).select('aiDna customerIntelligence metadata lastDetectedIntent').lean();
 
         res.json({ 
             lead,

@@ -565,8 +565,94 @@ async function getLoyaltyStatus(req, res) {
     }
 }
 
+async function getReviewContext(req, res) {
+    try {
+        const { client } = await resolveClient(req);
+        const { phone, orderId } = req.query;
+        if (!phone) return res.status(400).json({ success: false, message: 'Phone required' });
+
+        const { getReviewContext: buildCtx } = require('../utils/reviewSendService');
+        const data = await buildCtx(client, phone, orderId);
+        if (!data.success) return res.status(400).json(data);
+        res.json(data);
+    } catch (err) {
+        log.error('getReviewContext:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+}
+
+/**
+ * Unified customer context for Audience modals (orders, loyalty, warranty).
+ */
+async function getAudienceContext(req, res) {
+    try {
+        const { client } = await resolveClient(req);
+        const { phone } = req.query;
+        if (!phone) return res.status(400).json({ success: false, message: 'Phone required' });
+
+        const { normalizePhone } = require('../utils/helpers');
+        const cleanPhone = normalizePhone(phone);
+        if (!cleanPhone) return res.status(400).json({ success: false, message: 'Invalid phone' });
+
+        const { getReviewContext: buildReviewCtx } = require('../utils/reviewSendService');
+        const reviewCtx = await buildReviewCtx(client, cleanPhone);
+
+        let loyalty = null;
+        try {
+            const wallet = await getWallet(client.clientId, cleanPhone);
+            if (wallet) {
+                const ppc = client.loyaltyConfig?.pointsPerCurrency || 100;
+                loyalty = {
+                    balance: wallet.balance || 0,
+                    tier: wallet.tier || 'Bronze',
+                    cashValue: Math.floor((wallet.balance || 0) / ppc),
+                };
+            }
+        } catch {
+            loyalty = null;
+        }
+
+        let warranty = null;
+        try {
+            const WarrantyRecord = require('../models/WarrantyRecord');
+            const latestOrder = reviewCtx.orders?.[0];
+            if (latestOrder?.orderId) {
+                const rec = await WarrantyRecord.findOne({
+                    clientId: client.clientId,
+                    shopifyOrderId: String(latestOrder.orderId),
+                })
+                    .sort({ createdAt: -1 })
+                    .lean();
+                if (rec) {
+                    warranty = {
+                        productName: rec.productName,
+                        orderId: rec.shopifyOrderId,
+                        expiryDate: rec.expiryDate,
+                        status: rec.status,
+                    };
+                }
+            }
+        } catch {
+            warranty = null;
+        }
+
+        res.json({
+            success: true,
+            phone: cleanPhone,
+            customerName: reviewCtx.customerName,
+            orders: reviewCtx.orders,
+            preview: reviewCtx.preview,
+            loyalty,
+            warranty,
+        });
+    } catch (err) {
+        log.error('getAudienceContext:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+}
+
 async function sendReviewRequest(req, res) {
-    const { phone, orderId } = req.body;
+    const { phone, orderId, orderMongoId } = req.body;
     try {
         const { client } = await resolveClient(req);
 
@@ -577,61 +663,22 @@ async function sendReviewRequest(req, res) {
                 message: 'Review requests are turned off for this workspace. Enable them under Audience → Reviews.',
             });
         }
-        
+
         if (!phone) return res.status(400).json({ message: 'Phone number required' });
 
-        const { normalizePhone } = require('../utils/helpers');
-        const cleanPhone = normalizePhone(phone);
-        if (!cleanPhone) return res.status(400).json({ message: 'Invalid phone number format' });
-
-        // Fetch Lead to get email and name
-        const AdLead = require('../models/AdLead');
-        const lead = await AdLead.findOne({ phoneNumber: cleanPhone, clientId: client.clientId }).lean();
-        const customerName = lead?.firstName || lead?.name || 'Customer';
-        const customerEmail = lead?.email;
-
-        // Create review request record
-        const reviewReq = await ReviewRequest.create({
-            clientId: client.clientId,
-            phone: cleanPhone,
-            orderId: orderId || 'MANUAL',
-            orderNumber: orderId ? `#${orderId}` : 'Manual Request',
-            productName: 'Your Recent Purchase',
-            reviewUrl: client.googleReviewUrl || '',
-            status: 'sent',
-            sentAt: new Date(),
-            scheduledFor: new Date()
+        const { sendRichReviewRequest } = require('../utils/reviewSendService');
+        const result = await sendRichReviewRequest(client, {
+            phone,
+            orderId,
+            orderMongoId: orderMongoId || orderId,
         });
 
-        const EmailService = require('../utils/emailService');
-        let successMessage = 'Review request sent successfully via WhatsApp';
-
-        // Try WhatsApp Template
-        try {
-            await WhatsApp.sendSmartTemplate(
-                client, 
-                cleanPhone, 
-                'review_request', 
-                [customerName, reviewReq.productName], 
-                client.logoUrl || null
-            );
-        } catch (waErr) {
-            log.warn(`Manual send failed on WhatsApp for ${cleanPhone}, attempting Email fallback. Error: ${waErr.message}`);
-            // Fallback to Email
-            if (customerEmail) {
-                await EmailService.sendReviewRequestEmail(client, {
-                    customerEmail,
-                    customerName,
-                    productName: reviewReq.productName,
-                    reviewUrl: reviewReq.reviewUrl
-                });
-                successMessage = 'Review request sent successfully via Email (WhatsApp fallback)';
-            } else {
-                throw new Error('WhatsApp failed and no email address available for fallback');
-            }
-        }
-
-        res.json({ success: true, message: successMessage });
+        res.json({
+            success: true,
+            message: 'Review request sent with product details and rating options',
+            productName: result.reviewReq?.productName,
+            orderNumber: result.reviewReq?.orderNumber,
+        });
     } catch (err) {
         log.error('Send review request error:', err.message);
         res.status(500).json({ error: err.message });
@@ -649,5 +696,7 @@ module.exports = {
     getLoyaltyStatus,
     getReputationStats,
     sendReviewRequest,
+    getReviewContext,
+    getAudienceContext,
     getLoyaltyTransactions
 };

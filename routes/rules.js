@@ -3,6 +3,43 @@ const router = express.Router();
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
 const { tenantClientId } = require('../utils/queryHelpers');
+const { findMatchingRule } = require('../utils/rulesEngine');
+
+async function runRuleTest(req, res, clientId) {
+    const message = String(req.body.message || '').trim();
+    const simulateFirstMessage = req.body.simulateFirstMessage === true;
+    const client = await Client.findOne({ clientId }).select('automationRules').lean();
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    const evalContext = {
+        _inboundCountPostSave: simulateFirstMessage ? 1 : 2,
+    };
+    const matched = findMatchingRule(client.automationRules || [], message, evalContext);
+    return res.json({
+        success: true,
+        matched: matched
+            ? {
+                  id: matched.id,
+                  name: matched.name,
+                  priority: matched.priority,
+                  trigger: matched.trigger,
+                  actions: matched.actions,
+                  continueToFlowAfterActions: matched.continueToFlowAfterActions === true,
+              }
+            : null,
+    });
+}
+
+/** POST /api/rules/test — body: { clientId, message, simulateFirstMessage? } */
+router.post('/test', protect, async (req, res) => {
+    try {
+        const clientId = tenantClientId(req) || req.body.clientId;
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+        return await runRuleTest(req, res, clientId);
+    } catch (error) {
+        return res.status(500).json({ success: false, message: error.message });
+    }
+});
 
 // Get all rules for a client
 router.get('/:clientId', protect, async (req, res) => {
@@ -78,6 +115,19 @@ router.patch('/:clientId/:ruleId/toggle', protect, async (req, res) => {
         res.json({ success: true, rules: client.automationRules });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+/** POST /api/rules/:clientId/test — legacy path (same evaluator) */
+router.post('/:clientId/test', protect, async (req, res) => {
+    try {
+        const clientId = tenantClientId(req);
+        if (!clientId || clientId !== req.params.clientId) {
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
+        return await runRuleTest(req, res, clientId);
+    } catch (error) {
+        return res.status(500).json({ success: false, message: error.message });
     }
 });
 

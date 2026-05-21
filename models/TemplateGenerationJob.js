@@ -12,6 +12,8 @@ const TemplateGenerationJobSchema = new mongoose.Schema({
     default: 'idle'
   },
   pausedByUser: { type: Boolean, default: false },
+  /** True only after POST /submit-to-meta — blocks orphan scheduler runs on restart */
+  userSubmissionActive: { type: Boolean, default: false },
   startedAt: { type: Date, default: null },
   completedAt: { type: Date, default: null },
 

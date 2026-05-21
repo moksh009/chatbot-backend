@@ -22,23 +22,17 @@ router.get('/usage', protect, apiCache(300), async (req, res) => {
   const { createTimer } = require('../utils/perfLogger');
   const timer = createTimer('GET /api/billing/usage', req.user?.clientId || '');
   try {
-    const ensureMs = 5000;
-    await Promise.race([
-      ensureClientForUser(req.user),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('ensureClientForUser timeout')), ensureMs)
-      ),
-    ]).catch((e) => {
-      if (String(e.message).includes('timeout')) {
-        timer.finish('ensureClient timeout — continuing');
-      } else {
-        throw e;
-      }
-    });
-
-    const client = await timer.time('getCachedClient', () =>
+    let client = await timer.time('getCachedClient', () =>
       getCachedClient(req.user.clientId, 'clientId plan billing trialActive tier _id')
     );
+    // Only repair missing Client documents when the cache/DB truly has no row — avoids
+    // a redundant Client.findOne + 5s race that was dominating slow /billing/usage traces.
+    if (!client) {
+      await timer.time('ensureClientForUser', () => ensureClientForUser(req.user));
+      client = await timer.time('getCachedClient_retry', () =>
+        getCachedClient(req.user.clientId, 'clientId plan billing trialActive tier _id')
+      );
+    }
     if (!client) {
       timer.finish('404');
       return res.status(404).json({ success: false, message: 'Client not found' });

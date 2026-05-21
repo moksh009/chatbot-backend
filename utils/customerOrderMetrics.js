@@ -53,13 +53,25 @@ function phoneMatchQuery(phone) {
  */
 async function calculateCustomerLTV(clientId, customerPhone) {
   if (!clientId || !customerPhone) return 0;
-  const orders = await Order.find({
-    ...buildSuccessfulOrderMatch(clientId),
-    ...phoneMatchQuery(customerPhone),
-  })
-    .select('totalPrice amount')
-    .lean();
-  return orders.reduce((sum, o) => sum + orderRevenue(o), 0);
+  const rows = await Order.aggregate([
+    {
+      $match: {
+        ...buildSuccessfulOrderMatch(clientId),
+        ...phoneMatchQuery(customerPhone),
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        total: {
+          $sum: {
+            $ifNull: ['$totalPrice', { $ifNull: ['$amount', 0] }],
+          },
+        },
+      },
+    },
+  ]);
+  return Number(rows[0]?.total) || 0;
 }
 
 /**
@@ -186,6 +198,73 @@ async function resolveScoreStageNameForClient(clientId, leadScore) {
   return resolveScoreStageName(leadScore, tiers);
 }
 
+/**
+ * Period metrics for Analytics retention panel — aligns with dashboard revenue
+ * (includes COD / pending paid orders with totalPrice, not only strict "paid" status).
+ */
+async function calculateAnalyticsPeriodMetrics(clientId, startDate, endDate) {
+  if (!clientId) {
+    return { avgOrderValue: 0, avgLTV: 0, orderCount: 0, totalRevenue: 0 };
+  }
+
+  const match = {
+    clientId,
+    status: { $nin: EXCLUDE_ORDER_STATUSES },
+    financialStatus: { $nin: ['cancelled', 'refunded', 'voided', 'partially_refunded'] },
+  };
+  if (startDate || endDate) {
+    match.createdAt = {};
+    if (startDate) match.createdAt.$gte = new Date(startDate);
+    if (endDate) match.createdAt.$lte = new Date(endDate);
+  }
+
+  const rows = await Order.aggregate([
+    { $match: match },
+    {
+      $addFields: {
+        revenue: { $ifNull: ['$totalPrice', { $ifNull: ['$amount', 0] }] },
+        customerKey: { $ifNull: ['$phone', '$customerPhone'] },
+      },
+    },
+    { $match: { revenue: { $gt: 0 } } },
+    {
+      $facet: {
+        totals: [
+          {
+            $group: {
+              _id: null,
+              totalRevenue: { $sum: '$revenue' },
+              orderCount: { $sum: 1 },
+            },
+          },
+        ],
+        byCustomer: [
+          { $match: { customerKey: { $nin: [null, ''] } } },
+          { $group: { _id: '$customerKey', customerLTV: { $sum: '$revenue' } } },
+        ],
+      },
+    },
+  ]);
+
+  const facet = rows[0] || {};
+  const totals = facet.totals?.[0] || { totalRevenue: 0, orderCount: 0 };
+  const byCustomer = facet.byCustomer || [];
+  const orderCount = totals.orderCount || 0;
+  const totalRevenue = totals.totalRevenue || 0;
+  const avgOrderValue = orderCount > 0 ? totalRevenue / orderCount : 0;
+  const avgLTV =
+    byCustomer.length > 0
+      ? byCustomer.reduce((sum, c) => sum + (c.customerLTV || 0), 0) / byCustomer.length
+      : 0;
+
+  return {
+    avgOrderValue: Math.round(avgOrderValue * 100) / 100,
+    avgLTV: Math.round(avgLTV * 100) / 100,
+    orderCount,
+    totalRevenue,
+  };
+}
+
 module.exports = {
   SUCCESS_FINANCIAL_STATUSES,
   EXCLUDE_ORDER_STATUSES,
@@ -193,6 +272,7 @@ module.exports = {
   calculateCustomerLTV,
   calculateAverageLTV,
   calculateAverageOrderValue,
+  calculateAnalyticsPeriodMetrics,
   resolveScoreStageName,
   resolveScoreStageNameForClient,
 };

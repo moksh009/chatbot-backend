@@ -1590,6 +1590,15 @@ router.patch("/:clientId/features", protect, async (req, res) => {
     );
     if (!client) return res.status(404).json({ error: "Client not found" });
 
+    try {
+      const { invalidateClientCache } = require("../utils/clientCache");
+      invalidateClientCache(clientId);
+    } catch (_) {}
+    try {
+      const { invalidateBootstrapCache } = require("../utils/bootstrapCache");
+      invalidateBootstrapCache(req.user?.id);
+    } catch (_) {}
+
     const syncedFlows = syncAutomationFlowsFromFeatures(client, features);
     if (syncedFlows) {
       client = await Client.findOneAndUpdate(

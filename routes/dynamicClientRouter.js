@@ -150,7 +150,34 @@ router.patch('/config', protect, async (req, res) => {
     
     // Surgical update for nicheData to prevent overwriting other keys
     if (nicheData && typeof nicheData === 'object') {
-      Object.keys(nicheData).forEach(key => {
+      if (nicheData.orderStatusTemplates) {
+        const {
+          validateOrderStatusTemplates,
+          sanitizeOrderStatusTemplates,
+        } = require('../utils/orderStatusTemplatePolicy');
+        const commerceAutomationService = require('../utils/commerceAutomationService');
+        const clientRow = await Client.findOne({ clientId }).select('syncedMetaTemplates').lean();
+        const validation = validateOrderStatusTemplates(
+          nicheData.orderStatusTemplates,
+          clientRow?.syncedMetaTemplates || []
+        );
+        if (!validation.valid) {
+          return res.status(400).json({
+            success: false,
+            error: validation.errors[0]?.message || 'Invalid order status template mapping',
+            errors: validation.errors,
+            warnings: validation.warnings,
+          });
+        }
+        const syncResult = await commerceAutomationService.syncOrderStatusFromNicheMap(
+          clientId,
+          validation.sanitized
+        );
+        updates['nicheData.orderStatusTemplates'] = syncResult.sanitized;
+      }
+
+      Object.keys(nicheData).forEach((key) => {
+        if (key === 'orderStatusTemplates') return;
         updates[`nicheData.${key}`] = nicheData[key];
       });
     }

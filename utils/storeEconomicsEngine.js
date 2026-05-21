@@ -242,8 +242,16 @@ async function getOrdersByState(clientId, startDate, endDate) {
 
   const stateMap = {};
   for (const order of orders) {
+    const ship = order.shippingAddress;
     const state =
-      extractStateFromAddress(order.shippingAddress) ||
+      extractStateFromAddress(ship) ||
+      extractStateFromAddress({
+        province: ship?.province || order.state,
+        province_code: ship?.province_code,
+        state: ship?.state || order.state,
+        city: ship?.city || order.city,
+        address1: ship?.address1 || order.address,
+      }) ||
       extractStateFromAddress(order.state) ||
       extractStateFromAddress([order.address, order.city, order.state].filter(Boolean).join(', '));
     if (!state) continue;

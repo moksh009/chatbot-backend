@@ -8,6 +8,7 @@ const { addHours } = require('date-fns');
 const { apiCache } = require('../middleware/apiCache');
 
 const { getShopifyClient, withShopifyRetry } = require('../utils/shopifyHelper');
+const { enrichShopifyCustomers } = require('../utils/shopifyCustomerEnrichment');
 const {
   getCachedClient,
   SHOPIFY_BOT_PRODUCTS_SELECT,
@@ -314,10 +315,11 @@ router.put('/:clientId/inventory/set', protect, verifyClientAccess, async (req, 
 router.get('/:clientId/customers', protect, verifyClientAccess, apiCache(120), async (req, res) => {
   const { clientId } = req.params;
   try {
-    const customers = await withShopifyRetry(clientId, async (shop) => {
+    const raw = await withShopifyRetry(clientId, async (shop) => {
         const response = await shop.get('/customers.json?limit=50&order=total_spent+DESC');
         return response.data.customers;
     });
+    const customers = await enrichShopifyCustomers(clientId, raw || []);
     res.json({ success: true, customers });
   } catch (err) {
     if (isDisconnectedShopifyConfig(err)) {

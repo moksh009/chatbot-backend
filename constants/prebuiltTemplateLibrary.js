@@ -131,21 +131,26 @@ const PREBUILT_TEMPLATE_LIBRARY = [
     metaName: "review_request",
     displayName: "Review request",
     category: "MARKETING",
-    headerType: "NONE",
+    headerType: "IMAGE",
+    headerVariable: "first_product_image",
     bodyText:
-      "Hi {{1}}! We hope you're loving your purchase from {{2}}.\n\nCould you spare a minute to leave a review? {{3}}\n\nThank you!",
-    variableMappings: { body: { 1: "first_name", 2: "brand_name", 3: "google_review_url" } },
+      "Hi {{1}}! 🌟\n\nHow was your *{{2}}*?\nOrder *{{3}}* from {{4}}\n\nTap below to rate your experience, or leave us a Google review — it helps a lot!",
+    variableMappings: {
+      body: { 1: "first_name", 2: "order_items", 3: "order_id", 4: "brand_name" },
+    },
+    buttons: [{ type: "URL", text: "Leave Google Review", urlVariable: "google_review_url" }],
     autoTrigger: "order_delivered",
-    requiredContext: ["customer", "client"],
+    requiredContext: ["order", "customer", "client"],
   },
 ];
 
 /** Maps legacy auto-worker keys → library entries */
 const LEGACY_KEY_ALIASES = {
   order_confirmed: "order_confirmation_v1",
+  order_confirmation_v1: "order_confirmation_v1",
   cart_recovery_1: "abandoned_cart_r1_v1",
   cart_recovery_2: "abandoned_cart_r2_v1",
-  admin_human_alert: null,
+  review_request: "review_request",
 };
 
 function getPrebuiltByKey(key) {

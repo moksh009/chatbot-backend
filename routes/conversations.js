@@ -29,9 +29,44 @@ const { logAction } = require('../middleware/audit');
 
 const logPersonalDataAccess = logAction('PERSONAL_DATA_ACCESS');
 
+/** Same access scope as GET /api/conversations/:id (avoids sidebar/full-context 404s). */
+function conversationAccessQuery(conversationId, user) {
+  const query = { _id: conversationId };
+  if (user.role !== 'SUPER_ADMIN') {
+    query.clientId = user.clientId;
+  }
+  return query;
+}
+
 router.post('/correct-ai', protect, correctAIResponse);
 
 const upload = multer({ storage: multer.memoryStorage() });
+
+/** Last 10 digits — matches conversation.phone to AdLead.phoneNumber across formats. */
+function phoneSuffixKey(phone) {
+  const clean = String(phone || '').replace(/\D/g, '');
+  if (!clean) return '';
+  return clean.length >= 10 ? clean.slice(-10) : clean;
+}
+
+/** All likely stored variants for bulk AdLead lookup (avoids N× findOne). */
+function collectPhoneVariantsForInbox(phones) {
+  const variants = new Set();
+  for (const raw of phones) {
+    if (!raw) continue;
+    const s = String(raw).trim();
+    if (s) variants.add(s);
+    const clean = s.replace(/\D/g, '');
+    if (clean) {
+      variants.add(clean);
+      const suffix = clean.length >= 10 ? clean.slice(-10) : clean;
+      if (suffix) variants.add(suffix);
+      if (clean.length >= 12 && clean.startsWith('91')) variants.add(clean.slice(2));
+    }
+  }
+  variants.delete('');
+  return [...variants];
+}
 
 /**
  * Shared conversation list loader (GET /api/conversations + dashboard summary).
@@ -90,30 +125,31 @@ async function getConversationsList(user, queryParams = {}, options = {}) {
   }
 
   const page = parseInt(pageRaw, 10) || 1;
-  const limit = parseInt(limitRaw, 10) || 100;
+  const limit = Math.min(Math.max(parseInt(limitRaw, 10) || 50, 1), 50);
   const skip = (page - 1) * limit;
+  const includeTotal = queryParams.includeTotal === '1' || queryParams.includeTotal === 'true';
 
-  const { conversations, total } = await timeParallel(
-    timer,
-    {
-      conversations: () => {
-        const q = Conversation.find(query)
-          .sort({ lastMessageAt: -1 })
-          .skip(skip)
-          .limit(limit)
-          .select(
-            '_id phone customerName lastMessage lastMessageAt channel status unreadCount assignedTo isBotPaused botPaused requiresAttention attentionReason lastDetectedIntent summary clientId'
-          )
-          .lean();
-        if (query.clientId) {
-          q.hint({ clientId: 1, lastMessageAt: -1 });
-        }
-        return q;
-      },
-      total: () => Conversation.countDocuments(query),
-    },
-    'conversations_parallel'
-  );
+  const conversations = await timer.time('conversations_find', () => {
+    const q = Conversation.find(query)
+      .sort({ lastMessageAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .select(
+        '_id phone customerName lastMessage lastMessageAt channel status unreadCount assignedTo isBotPaused botPaused requiresAttention attentionReason lastDetectedIntent summary clientId'
+      )
+      .lean();
+    if (query.clientId) {
+      q.hint({ clientId: 1, lastMessageAt: -1 });
+    }
+    return q;
+  });
+
+  let total = null;
+  if (includeTotal) {
+    total = await timer.time('conversations_count', () => Conversation.countDocuments(query));
+  } else if (conversations.length < limit) {
+    total = skip + conversations.length;
+  }
 
   const User = require('../models/User');
   const agentIds = [
@@ -133,22 +169,29 @@ async function getConversationsList(user, queryParams = {}, options = {}) {
 
   const AdLead = require('../models/AdLead');
   const phones = conversations.map((c) => c.phone).filter(Boolean);
+  const enrichClientId = activeClientId || conversations[0]?.clientId;
+  const lookupVariants =
+    phones.length > 0 && enrichClientId ? collectPhoneVariantsForInbox(phones) : [];
   const leads =
-    phones.length > 0
+    lookupVariants.length > 0 && enrichClientId
       ? await timer.time('AdLead.bulk_enrichment', () =>
           AdLead.find({
-            clientId: conversations[0]?.clientId,
-            phoneNumber: { $in: phones },
+            clientId: enrichClientId,
+            phoneNumber: { $in: lookupVariants },
           })
             .select(
-              'phoneNumber leadScore cartStatus checkoutInitiatedCount addToCartCount isOrderPlaced tags'
+              'phoneNumber leadScore scoreLabel cartStatus checkoutInitiatedCount addToCartCount isOrderPlaced tags'
             )
             .lean()
         )
       : [];
   timer.checkpoint('lead_fetch_done', { leads: leads.length });
 
-  const leadMap = new Map(leads.map((l) => [l.phoneNumber, l]));
+  const leadBySuffix = new Map();
+  for (const l of leads) {
+    const key = phoneSuffixKey(l.phoneNumber);
+    if (key && !leadBySuffix.has(key)) leadBySuffix.set(key, l);
+  }
 
   const enrichedConversations = conversations.map((conv) => {
     const assignee = conv.assignedTo ? agentMap.get(String(conv.assignedTo)) : null;
@@ -156,7 +199,7 @@ async function getConversationsList(user, queryParams = {}, options = {}) {
       ...conv,
       assignedTo: assignee ? { _id: assignee._id, name: assignee.name } : conv.assignedTo,
     };
-    const lead = leadMap.get(conv.phone);
+    const lead = conv.phone ? leadBySuffix.get(phoneSuffixKey(conv.phone)) : null;
     if (lead) {
       let derivedIntent = 'Browsing';
       if (lead.cartStatus === 'abandoned') derivedIntent = 'Cart Abandoned';
@@ -166,6 +209,7 @@ async function getConversationsList(user, queryParams = {}, options = {}) {
       return {
         ...base,
         leadScore: lead.leadScore,
+        scoreLabel: lead.scoreLabel,
         derivedLeadState: derivedIntent,
         leadTags: lead.tags,
       };
@@ -180,7 +224,8 @@ async function getConversationsList(user, queryParams = {}, options = {}) {
     pagination: {
       total,
       page,
-      pages: Math.ceil(total / limit),
+      pages: total != null ? Math.ceil(total / limit) : null,
+      hasMore: conversations.length === limit,
     },
   };
 }
@@ -211,6 +256,8 @@ router.get('/', protect, logPersonalDataAccess, apiCache(30), async (req, res) =
       req.query.limit || '50',
       req.query.days || '',
       req.query.phone || '',
+      req.query.isImported || '',
+      req.query.includeTotal || '',
     ].join(':');
     const payload = await dedupeAsync(dedupeKey, () =>
       getConversationsList(req.user, req.query, { timer })
@@ -371,6 +418,280 @@ router.delete('/:id/messages', protect, logPersonalDataAccess, async (req, res) 
   }
 });
 
+/**
+ * Conversation.phone is often "9193…" while AdLead.phoneNumber may be "93…" or 10-digit local.
+ * Try several normalizations so LTV/score/tags resolve reliably.
+ */
+async function findLeadForConversationPhone(tenantId, phone, selectFields) {
+  const AdLead = require('../models/AdLead');
+  const clean = String(phone || '').replace(/\D/g, '');
+  const suffix = clean.length >= 10 ? clean.slice(-10) : clean;
+  const select =
+    selectFields ||
+    'name email leadScore scoreLabel cartStatus tags intentState source totalSpent lifetimeValue ordersCount lastInteraction isOrderPlaced cartSnapshot addToCartCount checkoutInitiatedCount importBatchId meta warrantyRecords';
+  const base = { clientId: tenantId };
+
+  const tryOne = async (pn) => {
+    if (!pn) return null;
+    return AdLead.findOne({ ...base, phoneNumber: pn }).select(select).maxTimeMS(8000).lean();
+  };
+
+  let l = await tryOne(phone);
+  if (!l && clean && clean !== String(phone)) l = await tryOne(clean);
+  if (!l && suffix) l = await tryOne(suffix);
+  if (!l && clean.length >= 12 && clean.startsWith('91')) l = await tryOne(clean.slice(2));
+  return l;
+}
+
+/** Fast path: messages + lead only (Live Chat first paint). */
+async function loadConversationLiteContext({ id, user, timer }) {
+  const conversation = await timer.time('Conversation.findOne', () =>
+    Conversation.findOne(conversationAccessQuery(id, user))
+      .select(
+        'phone customerName status botPaused botStatus unreadCount channel assignedTo summary lastDetectedIntent requiresAttention attentionReason clientId ' +
+          'pendingCart lastBrowsedCollectionId lastBrowsedCollectionAt lastCheckoutUrl lastCheckoutShortCode lastCheckoutValue lastCheckoutAt checkoutLinkClicked'
+      )
+      .lean()
+  );
+
+  if (!conversation) {
+    const err = new Error('Conversation not found');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const phone = conversation.phone;
+  const tenantId = conversation.clientId || user.clientId;
+  const {
+    resolveScoreStageNameForClient,
+    calculateCustomerLTV,
+  } = require('../utils/customerOrderMetrics');
+
+  const cleanPhone = phone ? phone.replace(/\D/g, '') : '';
+  const phoneSuffix = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
+
+  const parallel = await timer.time('lite_context_parallel', () =>
+    Promise.all([
+      Message.find({ conversationId: id })
+        .sort({ timestamp: -1 })
+        .limit(50)
+        .select(
+          'content type direction status timestamp mediaUrl metadata from to voiceTranscript originalText'
+        )
+        .lean()
+        .then((msgs) => ({
+          messages: msgs.reverse(),
+          nextCursor: msgs.length === 50 ? msgs[0].timestamp.toISOString() : null,
+          hasMore: msgs.length === 50,
+        })),
+      (async () => {
+        let l = await findLeadForConversationPhone(tenantId, phone);
+        if (l?.importBatchId) {
+          const ImportSession = require('../models/ImportSession');
+          const batch = await ImportSession.findById(l.importBatchId).select('batchName').lean();
+          if (batch) l.importSource = batch.batchName;
+        } else if (l && !l.importSource && l.meta?.importListName) {
+          l.importSource = l.meta.importListName;
+        }
+        return l;
+      })(),
+      (async () => {
+        if (!phone) return [];
+        const Order = require('../models/Order');
+        const select =
+          'orderId orderNumber customerName amount totalPrice status paymentMethod isCOD createdAt items fulfillmentStatus financialStatus trackingNumber trackingUrl phone customerPhone';
+        const sort = { createdAt: -1 };
+        const exact = await Order.find({
+          clientId: tenantId,
+          $or: [{ phone }, { customerPhone: phone }],
+        })
+          .sort(sort)
+          .limit(5)
+          .select(select)
+          .lean();
+        if (exact.length > 0) return exact;
+        if (!phoneSuffix) return [];
+        return Order.find({
+          clientId: tenantId,
+          $or: [
+            { phone: { $regex: `${phoneSuffix}$` } },
+            { customerPhone: { $regex: `${phoneSuffix}$` } },
+          ],
+        })
+          .sort(sort)
+          .limit(5)
+          .select(select)
+          .lean()
+          .catch(() => []);
+      })(),
+    ])
+  );
+
+  const messages = parallel[0];
+  const lead = parallel[1];
+  const orders = parallel[2];
+  const leadScore = lead?.leadScore ?? 0;
+  let ltv = Number(lead?.lifetimeValue ?? lead?.totalSpent ?? 0) || 0;
+  if (!ltv && phone) {
+    ltv =
+      (await timer.time('calculateCustomerLTV', () => calculateCustomerLTV(tenantId, phone))) || 0;
+  }
+  const stageName = await timer.time('resolveScoreStageName', () =>
+    resolveScoreStageNameForClient(tenantId, leadScore)
+  );
+
+  if (lead) {
+    lead.ltv = ltv;
+    lead.stageName = stageName;
+  }
+
+  return {
+    conversation,
+    messages: messages.messages,
+    nextCursor: messages.nextCursor,
+    hasMore: messages.hasMore,
+    lead,
+    leadScore,
+    stageName,
+    ltv,
+    orders,
+  };
+}
+
+/** Sidebar payload — orders, wallet, notes, sequences (deferred after lite paint). */
+async function loadConversationSidebarContext({ id, user, timer }) {
+  const conversation = await Conversation.findOne(conversationAccessQuery(id, user))
+    .select('phone clientId')
+    .lean();
+  if (!conversation) {
+    const err = new Error('Conversation not found');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const phone = conversation.phone;
+  const tenantId = conversation.clientId || user.clientId;
+  const cleanPhone = phone ? phone.replace(/\D/g, '') : '';
+  const phoneSuffix = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
+
+  const parallel = await timer.time('sidebar_context_parallel', () =>
+    Promise.all([
+      (async () => {
+        if (!phone) return [];
+        const Order = require('../models/Order');
+        const select =
+          'orderId orderNumber customerName amount totalPrice status paymentMethod isCOD createdAt items fulfillmentStatus financialStatus trackingNumber trackingUrl';
+        const sort = { createdAt: -1 };
+        const exact = await Order.find({
+          clientId: tenantId,
+          $or: [{ phone }, { customerPhone: phone }],
+        })
+          .sort(sort)
+          .limit(5)
+          .select(select)
+          .lean();
+        if (exact.length > 0) return exact;
+        if (!phoneSuffix) return [];
+        return Order.find({
+          clientId: tenantId,
+          $or: [
+            { phone: { $regex: `${phoneSuffix}$` } },
+            { customerPhone: { $regex: `${phoneSuffix}$` } },
+          ],
+        })
+          .sort(sort)
+          .limit(5)
+          .select(select)
+          .lean()
+          .catch(() => []);
+      })(),
+      (async () => {
+        try {
+          const Wallet = require('../models/CustomerWallet');
+          return Wallet.findOne({ clientId: tenantId, phone })
+            .select('balance tier lifetimePoints')
+            .lean();
+        } catch {
+          return null;
+        }
+      })(),
+      (async () => {
+        if (!phoneSuffix) return null;
+        try {
+          const FollowUpSequence = require('../models/FollowUpSequence');
+          return FollowUpSequence.findOne({
+            clientId: tenantId,
+            phone,
+            status: { $in: ['active', 'pending', 'ACTIVE', 'PENDING'] },
+          })
+            .select('name status steps')
+            .lean();
+        } catch {
+          return null;
+        }
+      })(),
+      (async () => {
+        try {
+          const ConversationNote = require('../models/ConversationNote');
+          const rows = await ConversationNote.find({ conversationId: id })
+            .sort({ createdAt: -1 })
+            .limit(40)
+            .lean();
+          return rows.reverse();
+        } catch {
+          return [];
+        }
+      })(),
+      (async () => {
+        try {
+          const pn = normalizePhone(phone);
+          if (!pn) return null;
+          return CheckoutLinkModel.findOne({
+            clientId: tenantId,
+            converted: false,
+            phone: pn,
+          })
+            .sort({ createdAt: -1 })
+            .select('shortCode fullUrl cartRecoverySent createdAt totalValue currency')
+            .lean();
+        } catch {
+          return null;
+        }
+      })(),
+    ])
+  );
+
+  return {
+    orders: parallel[0],
+    wallet: parallel[1],
+    activeSequence: parallel[2],
+    notes: parallel[3],
+    latestCheckoutLink: parallel[4],
+  };
+}
+
+router.get('/:id/sidebar-context', protect, logPersonalDataAccess, async (req, res) => {
+  const { createTimer } = require('../utils/perfLogger');
+  const { dedupeAsync } = require('../utils/requestDedupe');
+  const timer = createTimer('GET /api/conversations/:id/sidebar-context', req.user?.clientId || '');
+  const { id } = req.params;
+  const dedupeKey = `sidebar-ctx:${req.user?.clientId || ''}:${id}`;
+
+  try {
+    const payload = await dedupeAsync(dedupeKey, () =>
+      loadConversationSidebarContext({ id, user: req.user, timer })
+    );
+    res.json(payload);
+    timer.finish('200 ok');
+  } catch (error) {
+    timer.finish(`${error.statusCode || 500} error=${error.message}`);
+    const status = error.statusCode || 500;
+    res.status(status).json({
+      message: status === 404 ? 'Conversation not found' : 'Server Error fetching sidebar context',
+    });
+  }
+});
+
 // ✅ Phase 2: Live Chat Mega-Payload (Full Context)
 // Fetches conversation, 50 messages, lead intent, orders, and wallet in 1 round trip
 router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res) => {
@@ -381,6 +702,15 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
   const dedupeKey = `full-ctx:${req.user?.clientId || ''}:${id}`;
 
   try {
+    if (req.query.lite === '1' || req.query.lite === 'true') {
+      const litePayload = await dedupeAsync(`lite-ctx:${req.user?.clientId || ''}:${id}`, () =>
+        loadConversationLiteContext({ id, user: req.user, timer })
+      );
+      res.json(litePayload);
+      timer.finish('200 ok lite');
+      return;
+    }
+
     const payload = await dedupeAsync(dedupeKey, async () => {
     const clientId = req.user.clientId;
     const scopedClientId = clientId;
@@ -438,12 +768,7 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
               hasMore: msgs.length === 50,
             })),
         lead: async () => {
-          const AdLead = require('../models/AdLead');
-          const l = await AdLead.findOne({ clientId: tenantId, phoneNumber: phone })
-            .select(
-              'name email leadScore scoreLabel cartStatus tags intentState source totalSpent lifetimeValue ordersCount lastInteraction isOrderPlaced cartSnapshot addToCartCount checkoutInitiatedCount importBatchId meta warrantyRecords'
-            )
-            .lean();
+          const l = await findLeadForConversationPhone(tenantId, phone);
           if (l?.importBatchId) {
             const ImportSession = require('../models/ImportSession');
             const batch = await ImportSession.findById(l.importBatchId).select('batchName').lean();
@@ -510,7 +835,11 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
         notes: async () => {
           try {
             const ConversationNote = require('../models/ConversationNote');
-            return ConversationNote.find({ conversationId: id }).sort({ createdAt: 1 }).lean();
+            const rows = await ConversationNote.find({ conversationId: id })
+              .sort({ createdAt: -1 })
+              .limit(40)
+              .lean();
+            return rows.reverse();
           } catch {
             return [];
           }
@@ -531,7 +860,6 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
             return null;
           }
         },
-        ltv: () => calculateCustomerLTV(tenantId, phone),
       },
       'full_context_parallel'
     );
@@ -543,9 +871,12 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
     const activeSequence = parallel.activeSequence;
     const notes = parallel.notes;
     const latestCheckoutLink = parallel.latestCheckoutLink;
-    const ltv = parallel.ltv;
 
     const leadScore = lead?.leadScore ?? 0;
+    let ltv = Number(lead?.lifetimeValue ?? lead?.totalSpent ?? 0) || 0;
+    if (!ltv && phone) {
+      ltv = await timer.time('calculateCustomerLTV', () => calculateCustomerLTV(tenantId, phone));
+    }
     const stageName = await timer.time('resolveScoreStageName', () =>
       resolveScoreStageNameForClient(tenantId, leadScore)
     );
@@ -627,7 +958,35 @@ router.get('/:id/orders/:orderKey', protect, logPersonalDataAccess, async (req, 
       return res.status(403).json({ message: 'Order does not belong to this conversation' });
     }
 
-    return res.json({ success: true, order });
+    let payload = order;
+    const refreshShopify = String(req.query.refreshShopify || '') === '1';
+    if (refreshShopify && order.shopifyOrderId) {
+      try {
+        const { withShopifyRetry } = require('../utils/shopifyHelper');
+        const { buildShopifyOrderSet } = require('../utils/shopifyOrderMapper');
+        const fresh = await withShopifyRetry(tenantId, async (shop) => {
+          const r = await shop.get(`/orders/${order.shopifyOrderId}.json`);
+          return r.data?.order;
+        });
+        if (fresh) {
+          const mapped = buildShopifyOrderSet(tenantId, fresh, { preferLogisticsStatus: true });
+          payload = {
+            ...order,
+            fulfillmentStatus: mapped.fulfillmentStatus || order.fulfillmentStatus,
+            financialStatus: mapped.financialStatus || order.financialStatus,
+            status: mapped.status || order.status,
+            trackingNumber: mapped.trackingNumber || order.trackingNumber,
+            trackingUrl: mapped.trackingUrl || order.trackingUrl,
+            items: Array.isArray(mapped.items) && mapped.items.length ? mapped.items : order.items,
+            totalPrice: mapped.totalPrice ?? order.totalPrice,
+          };
+        }
+      } catch (shopErr) {
+        console.warn('[GET conversation order] Shopify refresh skipped:', shopErr.message);
+      }
+    }
+
+    return res.json({ success: true, order: payload });
   } catch (err) {
     console.error('[GET conversation order]', err);
     return res.status(500).json({ message: 'Failed to load order details' });
@@ -1026,55 +1385,81 @@ router.patch('/:id/bot-status', protect, async (req, res) => {
 // @desc    Agent takes over conversation (pauses bot)
 // @access  Private
 router.put('/:id/takeover', protect, async (req, res) => {
+  const CONV_TAKEOVER_MAX_MS = parseInt(process.env.CONV_TAKEOVER_MAX_MS || '12000', 10) || 12000;
   try {
     const query = { _id: req.params.id };
     if (req.user.role !== 'SUPER_ADMIN') {
       query.clientId = req.user.clientId;
     }
-    const conversation = await Conversation.findOne(query);
-    if (!conversation) return res.status(404).json({ message: 'Not found' });
 
-    // Check plan using conversation.clientId
-    const client = await Client.findOne({ clientId: conversation.clientId });
+    const existing = await Conversation.findOne(query)
+      .select('clientId')
+      .maxTimeMS(5000)
+      .lean();
+    if (!existing) return res.status(404).json({ message: 'Not found' });
+
+    const client = await Client.findOne({ clientId: existing.clientId })
+      .select('plan')
+      .lean()
+      .maxTimeMS(4000);
     if (client && client.plan === 'CX Agent (V1)') {
-      return res.status(403).json({ message: 'Human Handoff is locked for CX Agent (v1). Please upgrade to v2.' });
+      return res.status(403).json({
+        message: 'Human Handoff is locked for CX Agent (v1). Please upgrade to v2.',
+      });
     }
 
-    conversation.status = 'HUMAN_TAKEOVER';
-    conversation.botPaused = true;
-    conversation.isBotPaused = true;
-    conversation.botStatus = 'paused';
-    conversation.assignedTo = req.user._id;
-    conversation.assignedAt = new Date(); // Ensure assignedAt is set
-    conversation.requiresAttention = false; // Reset attention flag on manual takeover
-    if (conversation.attentionReason) conversation.attentionReason = '';
-    await conversation.save();
+    const assignedAt = new Date();
+    const conversation = await Conversation.findOneAndUpdate(
+      query,
+      {
+        $set: {
+          status: 'HUMAN_TAKEOVER',
+          botPaused: true,
+          isBotPaused: true,
+          botStatus: 'paused',
+          assignedTo: req.user._id,
+          assignedAt,
+          requiresAttention: false,
+          attentionReason: '',
+          updatedAt: assignedAt,
+        },
+      },
+      { new: true, maxTimeMS: CONV_TAKEOVER_MAX_MS }
+    );
 
-    // Task 1.2: Record assignment for historical analytics
-    const ConversationAssignment = require('../models/ConversationAssignment');
-    await ConversationAssignment.create({
-      conversationId: conversation._id,
-      clientId: conversation.clientId,
-      assignedAgentId: req.user._id,
-      assignedAt: conversation.assignedAt
-    }).catch(err => console.error('[Analytics] Failed to record takeover assignment:', err.message));
+    if (!conversation) return res.status(404).json({ message: 'Not found' });
 
-    // Phase R4: Emit bot status change to all connected dashboard tabs
+    setImmediate(() => {
+      const ConversationAssignment = require('../models/ConversationAssignment');
+      ConversationAssignment.create({
+        conversationId: conversation._id,
+        clientId: conversation.clientId,
+        assignedAgentId: req.user._id,
+        assignedAt,
+      }).catch((err) => console.error('[Analytics] Failed to record takeover assignment:', err.message));
+    });
+
     const io = req.app.get('socketio');
     if (io) {
       io.to(`client_${conversation.clientId}`).emit('conversation_update', conversation);
       io.to(`client_${conversation.clientId}`).emit('bot_status_changed', {
         conversationId: conversation._id,
         status: 'HUMAN_TAKEOVER',
-        botPaused: true
+        botPaused: true,
       });
     }
 
     const AdLead = require('../models/AdLead');
-    AdLead.pushJourneyEvent(conversation.clientId, conversation.phone, 'human_takeover', { agentId: req.user._id, agentName: req.user.name }).catch(() => {});
+    AdLead.pushJourneyEvent(
+      conversation.clientId,
+      conversation.phone,
+      'human_takeover',
+      { agentId: req.user._id, agentName: req.user.name }
+    ).catch(() => {});
 
     res.json(conversation);
   } catch (error) {
+    console.error('[PUT /conversations/:id/takeover]', error.message);
     res.status(500).json({ message: 'Server Error' });
   }
 });

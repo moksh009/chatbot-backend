@@ -68,6 +68,24 @@ function buildLegacySnapshot(client = {}) {
   };
 }
 
+function normalizeAutomationMappings(raw) {
+  if (!raw || typeof raw !== 'object') return { body: {} };
+  const body = raw.body && typeof raw.body === 'object' ? raw.body : raw;
+  const out = {};
+  Object.entries(body || {}).forEach(([k, v]) => {
+    if (v != null && v !== '') out[String(k)] = String(v);
+  });
+  return { body: out };
+}
+
+function mergeTemplateMappings(templateMappings = {}, automationMappings = {}) {
+  const tplBody = templateMappings?.body || templateMappings || {};
+  const autoBody = automationMappings?.body || automationMappings || {};
+  return {
+    body: { ...tplBody, ...autoBody },
+  };
+}
+
 function inferBodyVariables(automation, order, item) {
   const customerName = order.customerName || 'Customer';
   const orderNumber = order.orderNumber || order.orderId || '';
@@ -96,6 +114,8 @@ async function scheduleAutomationMessage({ clientConfig, order, automation, item
       automationId: automation.id,
       event: automation.event,
       sku: automation.sku || '',
+      variableMappings: automation.variableMappings || { body: {} },
+      customVariableValues: automation.customVariableValues || {},
     },
   });
 }
@@ -149,20 +169,57 @@ async function sendAutomationTemplate({ clientConfig, order, automation, item })
 
   try {
     const { sendByName, sendByTrigger } = require('../services/templateSender');
+    const { resolveTemplateForSend } = require('../services/templateResolver');
+    const resolved = await resolveTemplateForSend(clientConfig.clientId, { name: automation.templateName });
+    const tpl = resolved?.template || {};
+    const mergedMappings = mergeTemplateMappings(
+      tpl.variableMappings || tpl.variableMapping,
+      automation.variableMappings
+    );
+
     const contextData = {
       order: {
         name: order.orderNumber || order.orderId,
-        orderNumber: order.orderNumber,
-        customer: { first_name: order.customerName },
-        line_items: (order.items || []).map((i) => ({ title: i.name, sku: i.sku })),
+        orderNumber: order.orderNumber || order.orderId,
+        orderId: order.orderId,
+        customer: { first_name: (order.customerName || 'Customer').split(' ')[0], name: order.customerName },
+        customerName: order.customerName,
+        line_items: (order.items || []).map((i) => ({
+          title: i.name,
+          name: i.name,
+          sku: i.sku,
+          image: i.image ? { src: i.image } : undefined,
+        })),
         total_price: order.amount || order.totalPrice,
+        totalPrice: order.totalPrice,
+        payment_method: order.paymentMethod || (order.isCOD ? 'Cash on Delivery' : 'Prepaid'),
+        isCOD: order.isCOD,
+        shipping_address: order.shippingAddress,
+        fulfillments: order.trackingUrl ? [{ tracking_url: order.trackingUrl }] : [],
         phone: order.customerPhone,
       },
-      extra: { item },
+      extra: {
+        item,
+        customVariableValues: automation.customVariableValues || {},
+      },
     };
 
-    let result;
-    if (trigger) {
+    const templatePayload = {
+      ...tpl,
+      name: automation.templateName,
+      metaTemplateName: tpl.metaTemplateName || tpl.name || automation.templateName,
+      variableMappings: mergedMappings,
+    };
+
+    const { sendTemplatedMessage } = require('../services/templateSender');
+    let result = await sendTemplatedMessage({
+      template: templatePayload,
+      recipient: { clientId: clientConfig.clientId, phone },
+      channel: 'whatsapp',
+      contextData,
+    });
+
+    if (!result?.whatsapp?.sent && trigger) {
       result = await sendByTrigger({
         clientId: clientConfig.clientId,
         phone,
@@ -307,6 +364,8 @@ async function upsertAutomation(clientId, automation = {}) {
     delayMinutes: Number(automation.delayMinutes || 0),
     imageUrl: automation.imageUrl || '',
     isActive: automation.isActive !== false,
+    variableMappings: normalizeAutomationMappings(automation.variableMappings),
+    customVariableValues: automation.customVariableValues || {},
     meta: automation.meta || {},
   };
 
@@ -346,6 +405,74 @@ function getOrderStatusTemplateMap(automations = []) {
     }
   }
   return map;
+}
+
+/**
+ * Keep commerceAutomations in sync when nicheData.orderStatusTemplates changes.
+ */
+async function syncOrderStatusFromNicheMap(clientId, templatesMap = {}) {
+  const {
+    sanitizeOrderStatusTemplates,
+    ORDER_STATUS_ECO_REGISTRY,
+  } = require('./orderStatusTemplatePolicy');
+
+  const client = await Client.findOne({ clientId });
+  if (!client) throw new Error('Client not found');
+
+  const sanitized = sanitizeOrderStatusTemplates(templatesMap);
+  let automations = await ensureMigration(client, { persist: false });
+
+  const statusKeys = ['paid', 'shipped', 'delivered', 'cancelled'];
+
+  for (const status of statusKeys) {
+    const templateName = sanitized[status];
+    const preset = ORDER_STATUS_ECO_REGISTRY[status];
+    const idx = automations.findIndex(
+      (a) => a.triggerType === 'order_status' && normalizeEvent(a.event) === status
+    );
+
+    if (!templateName) {
+      if (idx >= 0) {
+        automations[idx] = { ...automations[idx], isActive: false, templateName: '' };
+      }
+      continue;
+    }
+
+    const row = {
+      id: idx >= 0 ? automations[idx].id : `status_${status}`,
+      name: preset?.label || `Order ${status} message`,
+      triggerType: 'order_status',
+      event: status,
+      matchType: 'exact',
+      sku: '',
+      actionType: 'send_template',
+      templateName,
+      sequenceId: '',
+      language: 'en',
+      delayMinutes: 0,
+      imageUrl: '',
+      isActive: true,
+      variableMappings: preset?.variableMappings || { body: {} },
+      customVariableValues: {},
+      meta: { source: 'order_status_templates_sync' },
+    };
+
+    if (idx >= 0) automations[idx] = { ...automations[idx], ...row };
+    else automations.push(row);
+  }
+
+  await Client.findOneAndUpdate(
+    { clientId },
+    {
+      $set: {
+        'nicheData.orderStatusTemplates': sanitized,
+        commerceAutomations: automations,
+        commerceAutomationVersion: COMMERCE_AUTOMATION_VERSION,
+      },
+    }
+  );
+
+  return { sanitized, automations };
 }
 
 async function runAutomationsForEvent({ clientConfig, eventType, order, options = {} }) {
@@ -403,6 +530,7 @@ module.exports = {
   upsertAutomation,
   deleteAutomation,
   getOrderStatusTemplateMap,
+  syncOrderStatusFromNicheMap,
   runAutomationsForEvent,
   simulateAutomation,
 };

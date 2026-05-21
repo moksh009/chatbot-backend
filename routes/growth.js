@@ -3,6 +3,7 @@ const QRCode = require('qrcode');
 const Client = require('../models/Client');
 const GrowthQrScan = require('../models/GrowthQrScan');
 const { protect } = require('../middleware/auth');
+const { tenantClientId } = require('../utils/queryHelpers');
 
 const router = express.Router();
 
@@ -23,7 +24,8 @@ router.get('/qr-code', protect, async (req, res) => {
   try {
     const source = String(req.query.source || 'qr').trim().slice(0, 40);
     const size = Math.max(120, Math.min(800, parseInt(req.query.size || '300', 10)));
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, error: 'Unauthorized' });
     const client = await Client.findOne({ clientId })
       .select('clientId businessName phoneNumber platformVars.adminWhatsappNumber wabaAccounts.phoneNumber')
       .lean();
@@ -60,7 +62,8 @@ router.get('/qr-code', protect, async (req, res) => {
 
 router.get('/qr-stats', protect, async (req, res) => {
   try {
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, error: 'Unauthorized' });
     const source = String(req.query.source || '').trim();
     const match = source ? { clientId, source } : { clientId };
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -80,6 +83,21 @@ router.get('/qr-stats', protect, async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/** Website opt-in KPIs — also mounted here so older backends pick up the route without restart quirks */
+router.get('/embed-overview', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req) || req.query.clientId;
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+    const { buildGrowthEmbedOverview } = require('../utils/growthEmbedOverview');
+    const period = String(req.query.period || '30d').toLowerCase();
+    const payload = await buildGrowthEmbedOverview(clientId, period);
+    if (!payload) return res.status(404).json({ success: false, message: 'Client not found' });
+    return res.json(payload);
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
   }
 });
 

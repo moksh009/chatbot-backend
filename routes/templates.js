@@ -19,6 +19,25 @@ const { normalizeTemplateStatus } = require('../constants/templateLifecycle');
 const { normalizePurpose } = require('../utils/templateEligibility');
 const { apiCache } = require('../middleware/apiCache');
 
+/** In-process list cache — avoids 40s+ stalls when Redis/Mongo is contended. */
+const templateListMemCache = new Map();
+const TEMPLATE_LIST_MEM_TTL_MS = 45_000;
+
+function templateListMemKey(clientId, contextPurpose) {
+  return `${clientId || ''}:${contextPurpose || '*'}`;
+}
+
+function readTemplateListMemCache(key) {
+  const row = templateListMemCache.get(key);
+  if (!row || row.exp < Date.now()) return null;
+  return row.body;
+}
+
+function writeTemplateListMemCache(key, body, ttlMs) {
+  const ttl = Number(ttlMs) > 0 ? ttlMs : TEMPLATE_LIST_MEM_TTL_MS;
+  templateListMemCache.set(key, { exp: Date.now() + ttl, body });
+}
+
 // --- Helper Functions ---
 async function getClientCredentials(clientId, userId) {
     const user = await User.findById(userId);
@@ -168,13 +187,25 @@ router.get('/list', protect, apiCache(60), async (req, res) => {
             return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
 
-        const client = await getCachedClient(
+        const contextPurpose = req.query.contextPurpose
+          ? normalizePurpose(req.query.contextPurpose, 'utility')
+          : null;
+        const skipCanonical = req.query.skipCanonical === '1' || req.query.liveChat === '1';
+        const memKey = templateListMemKey(clientId, `${contextPurpose || ''}:${skipCanonical ? 'fast' : 'full'}`);
+        const memHit = readTemplateListMemCache(memKey);
+        if (memHit) {
+          timer.finish(`200 ok mem-cache | count=${memHit.data?.length || 0}`);
+          return res.setHeader('X-Cache', 'HIT-MEMORY').json(memHit);
+        }
+
+        const client = await timer.time('getCachedClient', () =>
+          getCachedClient(
             clientId,
             'syncedMetaTemplates templatesSyncedAt messageTemplates pendingTemplates clientId'
+          )
         );
         if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
-        const MetaTemplate = require('../models/MetaTemplate');
         const synced = Array.isArray(client.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
         const localTemplates = Array.isArray(client.messageTemplates) ? client.messageTemplates : [];
         const pendingMap = new Map((Array.isArray(client.pendingTemplates) ? client.pendingTemplates : []).map(t => [t.name, String(t.status || 'PENDING').toUpperCase()]));
@@ -190,9 +221,23 @@ router.get('/list', protect, apiCache(60), async (req, res) => {
           mergedMap.set(tpl.name, { ...tpl, status, source: tpl.source || 'message_templates' });
         });
 
-        const canonical = await MetaTemplate.find({ clientId })
+        let canonical = [];
+        const META_LIST_MAX_MS = parseInt(process.env.META_TEMPLATE_LIST_MAX_MS || '8000', 10) || 8000;
+        if (!skipCanonical) {
+        timer.checkpoint('before_meta_find');
+        canonical = await timer.time('meta_template_find', () =>
+          MetaTemplate.find({ clientId })
+          .select(
+            'name internalName status category language components formData body footerText buttons headerType headerValue productImageUrl bodySamples usageTags templateKind readinessRequired submissionStatus primaryPurpose secondaryPurposes metaApiError variableMapping metaTemplateId source updatedAt'
+          )
           .sort({ updatedAt: -1 })
-          .lean();
+          .maxTimeMS(META_LIST_MAX_MS)
+          .lean()
+        );
+        timer.checkpoint(`meta_find_done | count=${canonical.length}`);
+        } else {
+          timer.checkpoint('skip_canonical_meta_find');
+        }
         const usageTagToPurpose = (tag) => {
           const legacy = {
             Campaign: 'campaign',
@@ -203,6 +248,7 @@ router.get('/list', protect, apiCache(60), async (req, res) => {
           return legacy[tag] || 'utility';
         };
 
+        if (!skipCanonical) {
         canonical.forEach((tpl) => {
           if (!tpl?.name) return;
           const mappedStatus = normalizeTemplateStatus(tpl.submissionStatus);
@@ -290,11 +336,12 @@ router.get('/list', protect, apiCache(60), async (req, res) => {
           const finalStatus =
             syncedStatus === 'APPROVED' ? 'APPROVED' : status;
 
+          const prior = mergedMap.get(tpl.name) || {};
           mergedMap.set(tpl.name, {
-            ...mergedMap.get(tpl.name),
-            id: tpl.metaTemplateId || tpl._id?.toString?.() || tpl.name,
+            ...prior,
+            id: tpl.metaTemplateId || tpl._id?.toString?.() || prior.id || tpl.name,
             name: tpl.name,
-            internalName: tpl.internalName || null,
+            internalName: tpl.internalName || prior.internalName || null,
             status: finalStatus,
             category: tpl.category,
             language: tpl.language || 'en',
@@ -307,14 +354,42 @@ router.get('/list', protect, apiCache(60), async (req, res) => {
             secondaryPurposes: usageTags.length ? secondaryFromUsage : (Array.isArray(tpl.secondaryPurposes) ? tpl.secondaryPurposes : []),
             metaApiError: tpl.metaApiError,
             formData: fd || undefined,
-            usageTags,
-            headerImageUrl,
-            _canonicalId: tpl._id,
+            usageTags: usageTags.length ? usageTags : (Array.isArray(prior.usageTags) ? prior.usageTags : []),
+            headerImageUrl: headerImageUrl || prior.headerImageUrl,
+            _canonicalId: tpl._id || prior._canonicalId,
             variableMapping:
               tpl.variableMapping instanceof Map
                 ? Object.fromEntries(tpl.variableMapping)
                 : tpl.variableMapping || {},
             bodySamples: tpl.bodySamples || fd?.bodySamples,
+          });
+        });
+
+        } /* end if (!skipCanonical) */
+
+        const canonicalByName = new Map(canonical.filter((t) => t?.name).map((t) => [t.name, t]));
+        synced.forEach((tpl) => {
+          if (!tpl?.name || mergedMap.has(tpl.name)) return;
+          const meta = canonicalByName.get(tpl.name);
+          const headerComp = Array.isArray(tpl.components)
+            ? tpl.components.find((c) => String(c.type || '').toUpperCase() === 'HEADER')
+            : null;
+          const headerImageUrl =
+            headerComp && String(headerComp.format || '').toUpperCase() === 'IMAGE'
+              ? headerComp.example?.header_handle?.[0] || headerComp.example?.header_url?.[0] || null
+              : null;
+          mergedMap.set(tpl.name, {
+            id: tpl.id || tpl.name,
+            name: tpl.name,
+            internalName: meta?.internalName || null,
+            usageTags: Array.isArray(meta?.usageTags) ? meta.usageTags : [],
+            status: String(tpl.status || 'APPROVED').toUpperCase(),
+            category: tpl.category,
+            language: tpl.language || 'en',
+            components: tpl.components || [],
+            source: 'synced_meta',
+            _canonicalId: meta?._id,
+            headerImageUrl,
           });
         });
 
@@ -326,9 +401,6 @@ router.get('/list', protect, apiCache(60), async (req, res) => {
             ? tpl.secondaryPurposes.map((p) => normalizePurpose(p))
             : [],
         }));
-        const contextPurpose = req.query.contextPurpose
-          ? normalizePurpose(req.query.contextPurpose, 'utility')
-          : null;
         if (contextPurpose) {
           merged = merged.filter((tpl) => {
             const primary = normalizePurpose(tpl.primaryPurpose || 'utility');
@@ -338,12 +410,19 @@ router.get('/list', protect, apiCache(60), async (req, res) => {
             return primary === contextPurpose || secondary.includes(contextPurpose) || primary === 'utility';
           });
         }
-        timer.finish(`200 ok | count=${merged.length}`);
-        res.json({
+        if (contextPurpose === 'manager') {
+          const { filterTemplatesForManagerList } = require('../utils/templateListPolicy');
+          merged = filterTemplatesForManagerList(merged);
+        }
+        const payload = {
           success: true,
           data: merged,
-          syncedAt: client.templatesSyncedAt
-        });
+          syncedAt: client.templatesSyncedAt,
+        };
+        const memTtlMs = skipCanonical ? 120_000 : TEMPLATE_LIST_MEM_TTL_MS;
+        writeTemplateListMemCache(memKey, payload, memTtlMs);
+        timer.finish(`200 ok | count=${merged.length}`);
+        res.json(payload);
     } catch (error) {
         timer.finish(`500 ${error.message}`);
         res.status(500).json({ success: false, message: error.message });

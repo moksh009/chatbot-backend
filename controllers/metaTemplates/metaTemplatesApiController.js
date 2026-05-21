@@ -178,7 +178,9 @@ async function getOne(req, res) {
 
     const doc = await MetaTemplate.findOne({ _id: id, clientId }).lean();
     if (!doc) return res.status(404).json({ error: 'Not found' });
-    return res.json({ success: true, data: doc });
+    const client = await require('../../models/Client').findOne({ clientId }).select('businessName brandName businessLogo nicheData').lean();
+    const { hydrateTemplateDocForEditor } = require('../../utils/metaTemplateFormHydration');
+    return res.json({ success: true, data: hydrateTemplateDocForEditor(doc, client || {}) });
   } catch (err) {
     console.error('[meta-templates get]', err);
     return res.status(500).json({ error: 'Failed to load template.' });

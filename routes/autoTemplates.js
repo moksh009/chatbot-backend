@@ -21,10 +21,22 @@ function resolveClientId(req) {
 
 function isStuckInProgressJob(job) {
   if (!job) return false;
-  if (!['generating', 'submitting', 'generation_complete'].includes(job.status)) return false; // drafts_ready is intentional idle
+  if (!['generating', 'submitting', 'generation_complete'].includes(job.status)) return false;
   const updatedAt = new Date(job.updatedAt || job.startedAt || Date.now()).getTime();
   const ageMs = Date.now() - updatedAt;
-  return ageMs > 5 * 60 * 1000; // 5 minutes without progress
+  return ageMs > 5 * 60 * 1000;
+}
+
+async function resetStuckJob(clientId, job) {
+  const { cancelClientSubmissions } = require('../workers/autoTemplateWorker');
+  if (job.status === 'submitting') {
+    await cancelClientSubmissions(clientId);
+  } else {
+    await TemplateGenerationJob.updateOne(
+      { clientId },
+      { $set: { status: 'idle', pausedByUser: false, userSubmissionActive: false, updatedAt: new Date() } }
+    );
+  }
 }
 
 // ─── GET /api/auto-templates/status ───────────────────────────────────────
@@ -38,16 +50,14 @@ router.get('/status', protect, async (req, res) => {
 
     const stuck = isStuckInProgressJob(job);
     if (stuck) {
-      await TemplateGenerationJob.updateOne(
-        { _id: job._id },
-        { $set: { status: 'idle', pausedByUser: false, updatedAt: new Date() } }
-      );
+      await resetStuckJob(clientId, job);
+      const fresh = await TemplateGenerationJob.findOne({ clientId }).lean();
       return res.json({
         success: true,
-        job: { ...job, status: 'idle' },
+        job: fresh || { ...job, status: 'drafts_ready', userSubmissionActive: false },
         counts: {},
         staleDetected: true,
-        message: 'Detected stale generation/submission job and reset it to idle.'
+        message: 'Stale job stopped. Drafts are ready — submit to Meta only when you choose.',
       });
     }
 
@@ -149,6 +159,7 @@ router.post('/start', protect, async (req, res) => {
           rejectedCount: 0,
           failedGenerationCount: 0,
           pausedByUser: false,
+          userSubmissionActive: false,
           startedAt: new Date(),
           completedAt: null,
           nextBatchCheckAt: null,
@@ -160,9 +171,10 @@ router.post('/start', protect, async (req, res) => {
       { upsert: true, new: true }
     );
 
-    // Clear old drafts for this client (regeneration support)
+    const { cancelClientSubmissions } = require('../workers/autoTemplateWorker');
+    await cancelClientSubmissions(clientId);
+
     await MetaTemplate.deleteMany({ clientId, source: 'auto_generated', submissionStatus: { $in: ['draft', 'generation_failed'] } });
-    await SubmissionQueueItem.deleteMany({ clientId, status: 'queued' });
 
     // Enqueue required prebuilt template generation jobs
     const fixedIds = PREBUILT_REQUIRED_TEMPLATES;
@@ -311,14 +323,14 @@ router.post('/regenerate', protect, async (req, res) => {
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
 
-    // Delete unsubmitted drafts and queue items
-    await MetaTemplate.deleteMany({ clientId, source: 'auto_generated', submissionStatus: { $in: ['draft', 'generation_failed', 'queued'] } });
-    await SubmissionQueueItem.deleteMany({ clientId, status: 'queued' });
+    const { cancelClientSubmissions } = require('../workers/autoTemplateWorker');
+    await cancelClientSubmissions(clientId);
 
-    // Reset the job tracker to idle so /start can re-trigger
+    await MetaTemplate.deleteMany({ clientId, source: 'auto_generated', submissionStatus: { $in: ['draft', 'generation_failed', 'queued'] } });
+
     await TemplateGenerationJob.findOneAndUpdate(
       { clientId },
-      { $set: { status: 'idle', updatedAt: new Date() } }
+      { $set: { status: 'idle', userSubmissionActive: false, updatedAt: new Date() } }
     );
 
     res.json({ success: true, message: 'Old drafts cleared. Call /start to regenerate.' });
@@ -353,12 +365,37 @@ router.post('/submit-to-meta', protect, async (req, res) => {
     }
 
     const { buildSubmissionQueue } = require('../workers/autoTemplateWorker');
-    await buildSubmissionQueue(clientId);
+    const result = await buildSubmissionQueue(clientId);
 
     res.json({
       success: true,
-      message: `Submitting ${draftCount} template(s) to Meta for approval. Review can take 24–48 hours.`,
+      message: `Submitting ${result.queued} template(s) to Meta for approval. Review can take 24–48 hours.`,
+      queued: result.queued,
+      skipped: result.skipped || [],
       draftCount,
+    });
+  } catch (err) {
+    const status = err.skipped?.length ? 422 : 500;
+    res.status(status).json({
+      success: false,
+      message: err.message,
+      skipped: err.skipped || [],
+    });
+  }
+});
+
+// ─── POST /api/auto-templates/cancel-submissions ───────────────────────────
+router.post('/cancel-submissions', protect, async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
+
+    const { cancelClientSubmissions } = require('../workers/autoTemplateWorker');
+    await cancelClientSubmissions(clientId);
+
+    res.json({
+      success: true,
+      message: 'Stopped all queued Meta submissions. Your drafts are safe — submit again only when you are ready.',
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -379,11 +416,132 @@ router.get('/library', protect, async (req, res) => {
   }
 });
 
+// ─── POST /api/auto-templates/library/seed ───────────────────────────────
+// Create or refresh one library template as an editable draft (no Meta submit).
+router.post('/library/seed', protect, async (req, res) => {
+  try {
+    const { PREBUILT_TEMPLATE_LIBRARY, getPrebuiltByKey } = require('../constants/prebuiltTemplateLibrary');
+    const { buildFormDataFromLibraryEntry } = require('../utils/metaTemplateFormHydration');
+    const { handleGenerationJob } = require('../workers/autoTemplateWorker');
+    const { PREBUILT_REQUIRED_TEMPLATES } = require('../constants/templateLifecycle');
+
+    const clientId = resolveClientId(req);
+    const { key } = req.body || {};
+    if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
+    if (!key) return res.status(400).json({ success: false, message: 'Missing template key' });
+
+    const entry =
+      PREBUILT_TEMPLATE_LIBRARY.find((t) => t.key === key || t.metaName === key) || getPrebuiltByKey(key);
+    if (!entry) return res.status(404).json({ success: false, message: 'Template not in library' });
+
+    const client = await Client.findOne({ clientId }).lean();
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    const existing = await MetaTemplate.findOne({
+      clientId,
+      $or: [{ templateKey: entry.key }, { name: entry.metaName }, { autoGenProductId: entry.key }],
+    }).lean();
+
+    if (existing && !['generation_failed'].includes(existing.submissionStatus)) {
+      return res.json({
+        success: true,
+        message: 'Template already set up',
+        templateId: String(existing._id),
+        template: existing,
+      });
+    }
+
+    const requiredKey = entry.metaName || entry.key;
+    const useWorker =
+      PREBUILT_REQUIRED_TEMPLATES.includes(requiredKey) ||
+      PREBUILT_REQUIRED_TEMPLATES.includes(entry.key);
+
+    if (useWorker) {
+      const jobPayload = {
+        clientId,
+        templateType: 'fixed',
+        fixedTemplateId: entry.key,
+        productId: entry.key,
+      };
+      if (generationQueue) {
+        await generationQueue.add('generate', jobPayload, {
+          attempts: 2,
+          backoff: { type: 'exponential', delay: 2000 },
+        });
+      } else {
+        const { handleGenerationJob } = require('../workers/autoTemplateWorker');
+        await handleGenerationJob(jobPayload);
+        const created = await MetaTemplate.findOne({
+          clientId,
+          templateKey: entry.key,
+        }).lean();
+        if (created) {
+          return res.json({
+            success: true,
+            message: 'Message copy ready',
+            templateId: String(created._id),
+            template: created,
+          });
+        }
+      }
+      return res.json({
+        success: true,
+        message: 'Generating your message copy…',
+        pending: true,
+        key: entry.key,
+      });
+    }
+
+    const built = buildFormDataFromLibraryEntry(entry, client);
+    const template = await MetaTemplate.findOneAndUpdate(
+      {
+        clientId,
+        $or: [{ templateKey: entry.key }, { name: built.name }],
+      },
+      {
+        $set: {
+          clientId,
+          name: built.name,
+          category: built.category,
+          language: built.language,
+          formData: built.formData,
+          headerType: built.headerType,
+          headerValue: built.headerValue,
+          body: built.formData.bodyText,
+          footerText: built.footerText,
+          buttons: built.formData.buttons,
+          variableMappings: built.variableMappings,
+          source: 'auto_generated',
+          autoGenProductId: entry.key,
+          templateKey: built.templateKey,
+          templateKind: 'prebuilt',
+          isPrebuilt: true,
+          autoTrigger: built.autoTrigger,
+          readinessRequired: PREBUILT_REQUIRED_TEMPLATES.includes(built.name),
+          submissionStatus: 'draft',
+          updatedAt: new Date(),
+        },
+        $setOnInsert: { createdAt: new Date() },
+      },
+      { upsert: true, new: true }
+    );
+
+    res.json({
+      success: true,
+      message: 'Message copy ready — review and edit before sending to Meta',
+      templateId: String(template._id),
+      template,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // ─── POST /api/auto-templates/library/preview ────────────────────────────
 router.post('/library/preview', protect, async (req, res) => {
   try {
     const { PREBUILT_TEMPLATE_LIBRARY } = require('../constants/prebuiltTemplateLibrary');
-    const { resolveTemplateVariables } = require('../services/templateVariableResolver');
+    const { resolvePositionalPreviewBody } = require('../utils/metaTemplateFormHydration');
     const { key } = req.body || {};
     const clientId = resolveClientId(req);
     if (!key) return res.status(400).json({ success: false, message: 'Missing template key' });
@@ -392,7 +550,7 @@ router.post('/library/preview', protect, async (req, res) => {
     if (!entry) return res.status(404).json({ success: false, message: 'Template not in library' });
 
     const client = clientId
-      ? await Client.findOne({ clientId }).select('businessName brandName nicheData').lean()
+      ? await Client.findOne({ clientId }).select('businessName brandName nicheData businessLogo').lean()
       : null;
     const brand = client?.businessName || client?.brandName || 'Your Store';
 
@@ -413,10 +571,17 @@ router.post('/library/preview', protect, async (req, res) => {
       google_review_url: 'https://g.page/r/example/review',
       warranty_duration: '12 months',
       order_date: '16 May 2026',
-      first_product_image: client?.nicheData?.businessLogo || 'https://via.placeholder.com/400x200?text=Product',
+      first_product_image: client?.nicheData?.businessLogo || client?.businessLogo || 'https://via.placeholder.com/400x200?text=Product',
     };
 
-    const resolvedBody = await resolveTemplateVariables(entry.bodyText, sampleContext);
+    const resolvedBody = resolvePositionalPreviewBody(entry.bodyText, entry.variableMappings, sampleContext, brand);
+    const variableExamples = {};
+    const bodyMap = entry.variableMappings?.body || {};
+    Object.keys(bodyMap).forEach((n) => {
+      const regKey = bodyMap[n];
+      variableExamples[n] = sampleContext[regKey] || regKey;
+      variableExamples[`body_${n}`] = variableExamples[n];
+    });
     let clientStatus = null;
     if (clientId) {
       const doc = await MetaTemplate.findOne({
@@ -437,8 +602,13 @@ router.post('/library/preview', protect, async (req, res) => {
         body: resolvedBody,
         headerText: entry.headerText || null,
         headerType: entry.headerType,
+        headerImageUrl: sampleContext.first_product_image,
+        footerText:
+          entry.footerText ||
+          (String(entry.category || '').toUpperCase() === 'MARKETING' ? 'Reply STOP to unsubscribe' : null),
         buttons: entry.buttons || [],
         sampleContext,
+        variableExamples,
       },
       clientStatus,
     });
@@ -463,7 +633,15 @@ router.post('/trigger-next-batch', protect, async (req, res) => {
       });
     }
 
-    await rescheduleSubmissionCheck(clientId, 0.1); // Trigger immediately
+    const job = await TemplateGenerationJob.findOne({ clientId }).lean();
+    if (!job?.userSubmissionActive) {
+      return res.status(403).json({
+        success: false,
+        message: 'Use Submit to Meta first — batch submission only runs after you explicitly start it.',
+      });
+    }
+
+    await rescheduleSubmissionCheck(clientId, 0.1);
     res.json({ success: true, message: 'Next batch triggered' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -516,6 +694,16 @@ router.post('/retry/:templateId', protect, async (req, res) => {
       await template.save();
 
       // Create a new queue item at the front
+      const { validateMetaTemplateForSubmission } = require('../utils/metaTemplateCompliance');
+      const check = validateMetaTemplateForSubmission(template);
+      if (!check.valid) {
+        return res.status(422).json({
+          success: false,
+          message: 'Template failed compliance checks',
+          errors: check.errors,
+        });
+      }
+
       await SubmissionQueueItem.create({
         clientId,
         templateId: template._id,
@@ -523,6 +711,11 @@ router.post('/retry/:templateId', protect, async (req, res) => {
         batchNumber: 0,
         status: 'queued'
       });
+
+      await TemplateGenerationJob.findOneAndUpdate(
+        { clientId },
+        { $set: { status: 'submitting', userSubmissionActive: true, updatedAt: new Date() } }
+      );
 
       await rescheduleSubmissionCheck(clientId, 0.5);
     }
@@ -541,8 +734,18 @@ router.get('/submission-log', protect, async (req, res) => {
     const limit = parseInt(req.query.limit) || 20;
     if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
 
-    const total = await SubmissionLog.countDocuments({ clientId });
-    const logs = await SubmissionLog.find({ clientId })
+    const action = String(req.query.action || '').trim().toLowerCase();
+    const query = { clientId };
+    if (action && action !== 'all') {
+      if (action === 'failed') {
+        query.action = { $in: ['failed', 'blocked_validation', 'rate_limited'] };
+      } else {
+        query.action = action;
+      }
+    }
+
+    const total = await SubmissionLog.countDocuments(query);
+    const logs = await SubmissionLog.find(query)
       .sort({ timestamp: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
