@@ -4,6 +4,7 @@
  */
 const Client = require('../models/Client');
 const crypto = require('crypto');
+const { provisionNewClientTrial } = require('./accessFlags');
 
 async function ensureClientForUser(user) {
   if (!user || !user.clientId) return null;
@@ -42,8 +43,7 @@ async function ensureClientForUser(user) {
       onboardingStep: 0,
       onboardingData: { brandName: displayName }
     });
-    console.warn('[ensureClientForUser] Created missing Client for user', user.email, clientId);
-    return client;
+    return provisionNewClientTrial(client);
   } catch (e) {
     console.error('[ensureClientForUser] Failed to create Client:', e.message);
     return null;

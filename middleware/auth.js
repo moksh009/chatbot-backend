@@ -1,6 +1,8 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-const { tenantClientId } = require('../utils/queryHelpers');
+const { assertTenantAccess, tenantClientId } = require('../utils/queryHelpers');
+const { hasMasterTesterBypass } = require('./productionSecurity');
+const { auditSecurity } = require('./securityAudit');
 
 const protect = async (req, res, next) => {
   let token;
@@ -35,12 +37,31 @@ const protect = async (req, res, next) => {
         });
       }
 
+      if (req.user.role !== 'SUPER_ADMIN') {
+        const tenantId = req.user.clientId;
+        for (const supplied of [req.body?.clientId, req.query?.clientId]) {
+          if (supplied && String(supplied).trim() && String(supplied).trim() !== String(tenantId)) {
+            auditSecurity('TENANT_BODY_SPOOF_BLOCKED', {
+              req,
+              tenantId,
+              targetClientId: supplied,
+              reason: 'clientId in body/query does not match session',
+            });
+            return res.status(403).json({
+              success: false,
+              message: 'Cannot access another workspace from this account',
+            });
+          }
+        }
+      }
+
       next();
     } catch (error) {
       console.error('[Auth Middleware] Error validating token or fetching user:', error);
       
       // If it's a genuine JWT error (expired, malformed, signature mismatch), it's a 401
       if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+        auditSecurity('AUTH_TOKEN_INVALID', { req, reason: error.name });
         return res.status(401).json({ message: 'Not authorized, token failed' });
       }
 
@@ -51,14 +72,35 @@ const protect = async (req, res, next) => {
   }
 
   if (!token) {
+    auditSecurity('AUTH_NO_TOKEN', { req });
     return res.status(401).json({ message: 'Not authorized, no token' });
   }
 };
 
+/** After protect — blocks IDOR when route includes :clientId */
+const requireTenantMatch = (req, res, next) => {
+  const clientId = req.params?.clientId;
+  if (!clientId || !req.user) return next();
+
+  const gate = assertTenantAccess(req, clientId);
+  if (!gate.ok) {
+    auditSecurity('TENANT_ACCESS_DENIED', {
+      req,
+      userId: req.user._id,
+      userEmail: req.user.email,
+      tenantId: req.user.clientId,
+      targetClientId: clientId,
+      reason: gate.message,
+    });
+    return res.status(gate.status).json({ success: false, message: gate.message });
+  }
+  req.tenantId = gate.tenantId;
+  next();
+};
+
 const authorize = (...roles) => {
   return (req, res, next) => {
-    // Master Tester Override: delitech2708@gmail.com gets past all role checks
-    if (req.user?.email === 'delitech2708@gmail.com') {
+    if (hasMasterTesterBypass(req.user)) {
       return next();
     }
 
@@ -71,26 +113,12 @@ const authorize = (...roles) => {
   };
 };
 
-const verifyClientAccess = (req, res, next) => {
-  const { clientId } = req.params;
-  if (!clientId) {
-    return res.status(400).json({ success: false, message: 'Missing clientId' });
-  }
+const verifyClientAccess = (req, res, next) => requireTenantMatch(req, res, next);
 
-  // Master Tester Override
-  if (req.user?.email === 'delitech2708@gmail.com') {
-    return next();
-  }
-
-  if (req.user.role === 'SUPER_ADMIN') {
-    return next();
-  }
-
-  const tenantId = tenantClientId(req);
-  if (!tenantId || tenantId !== clientId) {
-    return res.status(403).json({ success: false, message: 'Unauthorized' });
-  }
-  next();
+module.exports = {
+  protect,
+  verifyToken: protect,
+  authorize,
+  verifyClientAccess,
+  requireTenantMatch,
 };
-
-module.exports = { protect, verifyToken: protect, authorize, verifyClientAccess };

@@ -122,8 +122,12 @@ async function getAccessForUserClient(user, client) {
 }
 
 /** Ensures a Subscription row exists (string clientId) so usage counters and plan checks work. */
-async function ensureTrialSubscriptionRecord(clientIdString) {
+async function ensureTrialSubscriptionRecord(clientIdString, trialEndsAt) {
   if (!clientIdString) return;
+  const ends =
+    trialEndsAt instanceof Date && !Number.isNaN(+trialEndsAt)
+      ? trialEndsAt
+      : new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
   await Subscription.findOneAndUpdate(
     { clientId: clientIdString },
     {
@@ -133,11 +137,62 @@ async function ensureTrialSubscriptionRecord(clientIdString) {
         status: 'trial',
         billingCycle: 'none',
         amount: 0,
+        trialStartedAt: new Date(),
+        trialEndsAt: ends,
+        currentPeriodEnd: ends,
         usageThisPeriod: { contacts: 0, messages: 0, campaigns: 0, aiCallsMade: 0 }
       }
     },
     { upsert: true }
   );
+}
+
+const TRIAL_MS = 14 * 24 * 60 * 60 * 1000;
+
+/** New workspace: 14-day trial on Client + Subscription (signup, OAuth, repaired orphan user). */
+async function provisionNewClientTrial(client) {
+  if (!client?.clientId) return client;
+  const cid = String(client.clientId);
+  const ends = new Date(Date.now() + TRIAL_MS);
+  await Client.updateOne(
+    { clientId: cid },
+    {
+      $set: {
+        trialActive: true,
+        trialEndsAt: ends,
+        'billing.trialActive': true,
+        'billing.trialEndsAt': ends,
+        isPaidAccount: false,
+        'billing.isPaidAccount': false
+      },
+      $unset: { suspendedAt: '' }
+    }
+  );
+  await ensureTrialSubscriptionRecord(cid, ends);
+  return Client.findOne({ clientId: cid }).lean();
+}
+
+/** Existing workspace still inside trial window — fix stale trialActive:false without extending expiry. */
+async function repairActiveTrialFlags(client) {
+  if (!client?.clientId) return client;
+  const cid = String(client.clientId);
+  const ends = client.trialEndsAt ? new Date(client.trialEndsAt) : null;
+  if (!ends || Number.isNaN(+ends) || ends <= new Date()) {
+    return Client.findOne({ clientId: cid }).lean();
+  }
+  await Client.updateOne(
+    { clientId: cid },
+    {
+      $set: {
+        trialActive: true,
+        'billing.trialActive': true,
+        trialEndsAt: ends,
+        'billing.trialEndsAt': ends
+      }
+    }
+  );
+  await ensureTrialSubscriptionRecord(cid, ends);
+  return Client.findOne({ clientId: cid }).lean();
 }
 
 module.exports = {
@@ -151,5 +206,7 @@ module.exports = {
   resolveSubscriptionForClient,
   computeAccessPayload,
   getAccessForUserClient,
-  ensureTrialSubscriptionRecord
+  ensureTrialSubscriptionRecord,
+  provisionNewClientTrial,
+  repairActiveTrialFlags
 };

@@ -103,19 +103,11 @@ async function loadSlimFlowsForClient(client) {
   }
 
   if (!flows) {
-    const docs = await timer.time("MongoDB WhatsAppFlow.find PUBLISHED", () =>
-      WhatsAppFlow.find({
-        clientId: client.clientId,
-        status: "PUBLISHED",
-      })
-        .select(FLOW_SELECT)
-        .lean()
+    const { loadRoutingIndexForClient } = require("./flowGraphResolver");
+    const { bundles } = await timer.time("loadRoutingIndexForClient", () =>
+      loadRoutingIndexForClient(client.clientId)
     );
-
-    flows =
-      docs.length > 0
-        ? buildSlimRoutingBundles(docs)
-        : buildSlimRoutingBundles(client.visualFlows || []);
+    flows = bundles;
 
     timer.checkpoint("buildSlimRoutingBundles done", { count: flows?.length });
 
@@ -463,10 +455,14 @@ function getTriggerConfigFromNode(node) {
     return { type: "intent_match", intentId: d.intentId || "", channel: d.channel || "both" };
   }
 
-  const legacyKeyword = d.keyword || d.keywords || "";
-  const keywords = Array.isArray(d.keywords)
-    ? d.keywords
-    : legacyKeyword.split(",").map((k) => k.trim()).filter(Boolean);
+  let keywords = [];
+  if (Array.isArray(d.keywords)) {
+    keywords = d.keywords.map((k) => String(k).trim()).filter(Boolean);
+  } else if (typeof d.keywords === "string" && d.keywords.trim()) {
+    keywords = d.keywords.split(",").map((k) => k.trim()).filter(Boolean);
+  } else if (typeof d.keyword === "string" && d.keyword.trim()) {
+    keywords = d.keyword.split(",").map((k) => k.trim()).filter(Boolean);
+  }
 
   return {
     type: "keyword",

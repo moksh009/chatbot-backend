@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router({ mergeParams: true }); // mergeParams to access :clientId
 const loadClientConfig = require('../middleware/clientConfig');
-const { protect } = require('../middleware/auth');
+const { protect, requireTenantMatch } = require('../middleware/auth');
+const secure = [protect, requireTenantMatch];
 const Client = require('../models/Client');
 const InboundDeduplication = require('../models/InboundDeduplication');
 const { tenantClientId } = require('../utils/queryHelpers');
@@ -24,7 +25,7 @@ const { getMetaWebhookVerifyQuery } = require('../utils/metaHubQuery');
 router.use(loadClientConfig);
 
 // Integration Setup Endpoint (PUT)
-router.put('/integrations', protect, async (req, res) => {
+router.put('/integrations', ...secure, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId || clientId !== req.params.clientId) {
@@ -115,7 +116,7 @@ router.post('/webhook', async (req, res) => {
 
 // Configuration Sync Endpoints (GET/PATCH)
 // Used for Order Trigger Mappings & Niche Data
-router.get('/config', protect, async (req, res) => {
+router.get('/config', ...secure, async (req, res) => {
   try {
     const { clientId } = req.params;
     const isAuthorized = req.user.role === 'SUPER_ADMIN' || 
@@ -133,7 +134,7 @@ router.get('/config', protect, async (req, res) => {
   }
 });
 
-router.patch('/config', protect, async (req, res) => {
+router.patch('/config', ...secure, async (req, res) => {
   try {
     const { clientId } = req.params;
     const isAuthorized = req.user.role === 'SUPER_ADMIN' || 
@@ -213,7 +214,7 @@ router.patch('/config', protect, async (req, res) => {
   }
 });
 
-router.get('/commerce-automations', protect, apiCache(90), async (req, res) => {
+router.get('/commerce-automations', ...secure, apiCache(90), async (req, res) => {
   try {
     const { clientId } = req.params;
     const isAuthorized = req.user.role === 'SUPER_ADMIN' ||
@@ -228,7 +229,7 @@ router.get('/commerce-automations', protect, apiCache(90), async (req, res) => {
   }
 });
 
-router.post('/commerce-automations', protect, async (req, res) => {
+router.post('/commerce-automations', ...secure, async (req, res) => {
   try {
     const { clientId } = req.params;
     const isAuthorized = req.user.role === 'SUPER_ADMIN' ||
@@ -245,7 +246,7 @@ router.post('/commerce-automations', protect, async (req, res) => {
   }
 });
 
-router.put('/commerce-automations/:automationId', protect, async (req, res) => {
+router.put('/commerce-automations/:automationId', ...secure, async (req, res) => {
   try {
     const { clientId, automationId } = req.params;
     const isAuthorized = req.user.role === 'SUPER_ADMIN' ||
@@ -265,7 +266,7 @@ router.put('/commerce-automations/:automationId', protect, async (req, res) => {
   }
 });
 
-router.delete('/commerce-automations/:automationId', protect, async (req, res) => {
+router.delete('/commerce-automations/:automationId', ...secure, async (req, res) => {
   try {
     const { clientId, automationId } = req.params;
     const isAuthorized = req.user.role === 'SUPER_ADMIN' ||
@@ -282,7 +283,7 @@ router.delete('/commerce-automations/:automationId', protect, async (req, res) =
   }
 });
 
-router.post('/commerce-automations/simulate', protect, async (req, res) => {
+router.post('/commerce-automations/simulate', ...secure, async (req, res) => {
   try {
     const { clientId } = req.params;
     const isAuthorized = req.user.role === 'SUPER_ADMIN' ||
@@ -300,7 +301,7 @@ router.post('/commerce-automations/simulate', protect, async (req, res) => {
   }
 });
 
-router.get('/commerce-automations/diagnostics', protect, async (req, res) => {
+router.get('/commerce-automations/diagnostics', ...secure, async (req, res) => {
   try {
     const { clientId } = req.params;
     const isAuthorized = req.user.role === 'SUPER_ADMIN' ||
@@ -572,7 +573,7 @@ router.get('/restore-cart', async (req, res) => {
 });
 
 // POST /orders/:orderId/send-review-request — Manual review trigger (Block 13)
-router.post('/orders/:orderId/send-review-request', protect, async (req, res) => {
+router.post('/orders/:orderId/send-review-request', ...secure, async (req, res) => {
   try {
     const { clientId, orderId } = req.params;
     const scopedClientId = tenantClientId(req);

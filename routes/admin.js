@@ -296,7 +296,9 @@ router.get('/clients', protect, isSuperAdmin, sanitizeMiddleware, async (req, re
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .select('clientId businessName name wabaId phoneNumberId whatsappToken shopifyAccessToken shopDomain storeType instagramConnected adminAlertEmail adminAlertWhatsapp emailUser emailAppPassword emailMethod googleConnected gmailAddress isActive createdAt wizardFeatures loyaltyConfig config.wabaId config.phoneNumberId config.whatsappToken config.shopifyAccessToken config.shopDomain config.storeType platformVars')
+      .select(
+        'clientId businessName name plan tier wabaId phoneNumberId whatsappToken shopifyAccessToken shopDomain storeType instagramConnected adminAlertEmail adminAlertWhatsapp emailUser emailAppPassword emailMethod googleConnected gmailAddress isActive createdAt wizardFeatures loyaltyConfig geminiApiKey openaiApiKey trialActive trialEndsAt isLifetimeAdmin isPaidAccount suspendedAt billing.isPaidAccount billing.paymentSource billing.offlinePaymentNote wizardCompleted onboardingCompleted config.wabaId config.phoneNumberId config.whatsappToken config.shopifyAccessToken config.shopDomain config.storeType platformVars'
+      )
       .lean();
     
     const total = await Client.countDocuments(filter);
@@ -502,16 +504,127 @@ router.get('/folderize-clients', async (req, res) => {
 });
 
 // --- GET CLIENT BY ID ---
+function resolveAdminClientQuery(idParam) {
+  const mongoose = require('mongoose');
+  const raw = String(idParam || '').trim();
+  if (!raw) return null;
+  if (mongoose.Types.ObjectId.isValid(raw)) return { _id: raw };
+  return { clientId: raw };
+}
+
 router.get('/clients/:id', protect, isSuperAdmin, sanitizeMiddleware, async (req, res) => {
   try {
-    const client = await Client.findById(req.params.id);
+    const query = resolveAdminClientQuery(req.params.id);
+    if (!query) return res.status(400).json({ message: 'Invalid client id' });
+
+    const client = await Client.findOne(query).lean();
     if (!client) {
       return res.status(404).json({ message: 'Client not found' });
     }
-    res.json(client);
+
+    const { getAccessForUserClient } = require('../utils/accessFlags');
+    const access = await getAccessForUserClient(req.user, client);
+
+    res.json({
+      ...client,
+      workspaceAccess: access,
+    });
   } catch (err) {
     console.error('Error fetching client details:', err);
     res.status(500).json({ message: 'Server error fetching client details' });
+  }
+});
+
+/**
+ * POST /api/admin/clients/:id/entitlements
+ * Secure VIP grant / revoke — mirrors scripts/grantLifetimeAccess.js with audit trail.
+ * Body: { action: 'grant'|'revoke', note?, grantUserLifetime?, suspend? }
+ */
+router.post('/clients/:id/entitlements', protect, isSuperAdmin, async (req, res) => {
+  try {
+    const query = resolveAdminClientQuery(req.params.id);
+    if (!query) return res.status(400).json({ success: false, message: 'Invalid client id' });
+
+    const existing = await Client.findOne(query).select('clientId name').lean();
+    if (!existing) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    const action = String(req.body?.action || 'grant').toLowerCase();
+    const { grantFullWorkspaceAccess, revokeFullWorkspaceAccess } = require('../utils/entitlements');
+    const { auditSecurity } = require('../middleware/securityAudit');
+    const { getAccessForUserClient } = require('../utils/accessFlags');
+
+    let client;
+    if (action === 'revoke') {
+      client = await revokeFullWorkspaceAccess(existing.clientId, {
+        suspend: req.body?.suspend === true,
+      });
+      auditSecurity('ADMIN_ENTITLEMENT_REVOKE', {
+        req,
+        tenantId: existing.clientId,
+        targetClientId: existing.clientId,
+        reason: req.body?.note || 'admin_revoke',
+      });
+    } else if (action === 'grant') {
+      client = await grantFullWorkspaceAccess(existing.clientId, {
+        note: req.body?.note || 'Granted via Admin Dashboard',
+        paymentSource: req.body?.paymentSource || 'paytm_offline',
+        grantUserLifetime: req.body?.grantUserLifetime === true,
+        plan: req.body?.plan,
+        tier: req.body?.tier,
+      });
+      auditSecurity('ADMIN_ENTITLEMENT_GRANT', {
+        req,
+        tenantId: existing.clientId,
+        targetClientId: existing.clientId,
+        reason: req.body?.note || 'admin_grant',
+      });
+    } else if (action === 'suspend') {
+      client = await Client.findOneAndUpdate(
+        { clientId: existing.clientId },
+        { $set: { suspendedAt: new Date() } },
+        { new: true }
+      );
+      auditSecurity('ADMIN_CLIENT_SUSPENDED', { req, targetClientId: existing.clientId });
+    } else if (action === 'unsuspend') {
+      client = await Client.findOneAndUpdate(
+        { clientId: existing.clientId },
+        { $unset: { suspendedAt: '' } },
+        { new: true }
+      );
+      auditSecurity('ADMIN_CLIENT_UNSUSPENDED', { req, targetClientId: existing.clientId });
+    } else {
+      return res.status(400).json({ success: false, message: 'action must be grant, revoke, suspend, or unsuspend' });
+    }
+
+    await AuditLog.create({
+      action: `ENTITLEMENT_${action.toUpperCase()}`,
+      performedBy: req.user._id,
+      targetClientId: existing.clientId,
+      details: {
+        note: req.body?.note,
+        grantUserLifetime: req.body?.grantUserLifetime,
+        ip: req.ip,
+      },
+    }).catch(() => {});
+
+    const access = await getAccessForUserClient(req.user, client);
+    const { clearClientCache } = require('../middleware/apiCache');
+    await clearClientCache(existing.clientId).catch(() => {});
+
+    res.json({
+      success: true,
+      client,
+      workspaceAccess: access,
+      message:
+        action === 'grant'
+          ? `Full access granted for ${existing.clientId}`
+          : action === 'revoke'
+            ? `Access revoked for ${existing.clientId}`
+            : `Client ${action} applied`,
+    });
+  } catch (err) {
+    log.error('Entitlements action failed', { error: err.message });
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
@@ -752,6 +865,9 @@ router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
       phonepeMerchantId, phonepeSaltKey, phonepeSaltIndex,
       shopDomain, shopifyAccessToken, shopifyWebhookSecret, googleReviewUrl,
       trialActive, trialEndsAt,
+      isLifetimeAdmin, isPaidAccount, paymentSource, offlinePaymentNote,
+      suspendedAt, unsuspend,
+      geminiApiKey, systemPrompt,
       wizardCompleted, onboardingCompleted, onboardingStep
     } = req.body;
 
@@ -831,6 +947,30 @@ router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
       updateData.trialEndsAt = new Date(trialEndsAt);
       updateData['billing.trialEndsAt'] = new Date(trialEndsAt);
     }
+    if (isLifetimeAdmin !== undefined) {
+      updateData.isLifetimeAdmin = !!isLifetimeAdmin;
+    }
+    if (isPaidAccount !== undefined) {
+      updateData.isPaidAccount = !!isPaidAccount;
+      updateData['billing.isPaidAccount'] = !!isPaidAccount;
+      if (isPaidAccount) updateData['billing.paymentSource'] = paymentSource || 'offline';
+    }
+    if (offlinePaymentNote !== undefined) {
+      updateData['billing.offlinePaymentNote'] = String(offlinePaymentNote || '');
+    }
+    if (geminiApiKey !== undefined) {
+      updateData.geminiApiKey = geminiApiKey;
+      updateData['ai.geminiKey'] = geminiApiKey;
+    }
+    if (systemPrompt !== undefined) {
+      updateData.systemPrompt = systemPrompt;
+      updateData['ai.persona.systemPrompt'] = systemPrompt;
+    }
+    if (unsuspend === true) {
+      updateData.suspendedAt = null;
+    } else if (suspendedAt !== undefined) {
+      updateData.suspendedAt = suspendedAt ? new Date(suspendedAt) : null;
+    }
 
     if (wizardCompleted !== undefined) {
       updateData.wizardCompleted = !!wizardCompleted;
@@ -844,17 +984,17 @@ router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
       updateData.onboardingStep = Number(onboardingStep);
     }
 
-    let query = {};
-    const mongoose = require('mongoose');
-    if (mongoose.Types.ObjectId.isValid(req.params.id)) {
-      query = { _id: req.params.id };
-    } else {
-      query = { clientId: req.params.id };
+    const query = resolveAdminClientQuery(req.params.id);
+    if (!query) return res.status(400).json({ message: 'Invalid client id' });
+
+    const $unset = {};
+    if (unsuspend === true || suspendedAt === null) {
+      $unset.suspendedAt = '';
     }
 
     const updatedClient = await Client.findOneAndUpdate(
       query,
-      { $set: updateData },
+      Object.keys($unset).length ? { $set: updateData, $unset } : { $set: updateData },
       { new: true, runValidators: false }
     );
 
@@ -862,6 +1002,16 @@ router.put('/clients/:id', protect, isSuperAdmin, async (req, res) => {
       log.warn(`Update client not found: ${req.params.id}`);
       return res.status(404).json({ message: 'Client not found' });
     }
+
+    const { clearClientCache } = require('../middleware/apiCache');
+    await clearClientCache(updatedClient.clientId).catch(() => {});
+
+    await AuditLog.create({
+      action: 'ADMIN_CLIENT_UPDATE',
+      performedBy: req.user._id,
+      targetClientId: updatedClient.clientId,
+      details: { fields: Object.keys(req.body || {}) },
+    }).catch(() => {});
 
     log.success(`Client updated: ${updatedClient.clientId}`);
     res.json(updatedClient);
@@ -1022,10 +1172,19 @@ router.patch('/my-settings', protect, async (req, res) => {
       websiteChatWidgetConfig,
     } = req.body;
     
-    // If Super Admin and clientId provided, use that. Otherwise use user's own.
+    // Tenant isolation: regular users always save to their JWT clientId only.
     let targetClientId = req.user.clientId;
     if (req.user.role === 'SUPER_ADMIN' && clientId) {
       targetClientId = clientId;
+    } else if (
+      clientId &&
+      String(clientId).trim() &&
+      String(clientId).trim() !== String(req.user.clientId || '')
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: 'Cannot modify another workspace from this account',
+      });
     }
 
     if (!targetClientId) {
@@ -2362,6 +2521,8 @@ router.get('/phase13-migration', async (req, res) => {
 router.post('/flow/publish/:clientId', protect, async (req, res) => {
   try {
     const { clientId } = req.params;
+    const { denyUnlessTenant } = require('../utils/queryHelpers');
+    if (!denyUnlessTenant(req, res, clientId)) return;
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ error: 'Client not found' });
 

@@ -170,6 +170,7 @@ async function buildVariableContext(client, phone, convo, lead) {
     }
   };
 
+  const pv = clientLean.platformVars || {};
   const ctx = {};
   for (const def of VARIABLE_REGISTRY) {
     let v = null;
@@ -183,6 +184,17 @@ async function buildVariableContext(client, phone, convo, lead) {
       v = def.fallback;
     }
     ctx[def.name] = v != null ? String(v) : "";
+  }
+
+  // Customer-facing support line (wizard Brand step) — not admin alert number
+  const supportLine = String(
+    pv.supportWhatsapp || pv.supportPhone || clientLean.supportPhone || clientLean.adminPhone || ""
+  ).trim();
+  if (supportLine) ctx.support_phone = supportLine;
+  if (!ctx.google_review_url?.trim()) {
+    ctx.google_review_url = String(
+      pv.googleReviewUrl || clientLean.googleReviewUrl || clientLean.brand?.googleReviewUrl || ""
+    ).trim();
   }
 
   // Enrich from Order model when metadata empty
@@ -252,8 +264,10 @@ async function buildVariableContext(client, phone, convo, lead) {
     agent_name: ctx.bot_name,
     bot_name: ctx.bot_name,
     brand_name: ctx.brand_name,
-    admin_whatsapp: ctx.support_phone || clientLean.adminPhone || "",
+    admin_whatsapp: clientLean.adminPhone || pv.adminWhatsappNumber || "",
     support_phone: ctx.support_phone,
+    supportPhone: ctx.support_phone,
+    googleReviewUrl: ctx.google_review_url,
     business_hours: ctx.open_hours,
     open_hours: ctx.open_hours,
     base_currency: ctx.currency,

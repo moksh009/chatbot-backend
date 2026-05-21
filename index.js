@@ -64,6 +64,14 @@ function resolveWhatsAppConfig() {
 
 const path = require('path');
 const { protect } = require('./middleware/auth');
+const { requireJwtSecret } = require('./middleware/productionSecurity');
+
+try {
+  requireJwtSecret();
+} catch (e) {
+  log.error(e.message);
+  if (process.env.NODE_ENV === 'production') process.exit(1);
+}
 
 // ✅ Phase R3: Security Middleware Stack — helmet + mongoSanitize applied globally
 app.use(helmet({
@@ -107,16 +115,36 @@ const allowedOrigins = [
   'http://localhost:3000',
   'https://chatbot-backend-lg5y.onrender.com',
   'https://chatbot-dashboard-frontend-main.onrender.com',
-  /\.onrender\.com$/  // Allow all onrender subdomains
+  /\.onrender\.com$/,
 ];
+
+const envAllowedOrigins = String(process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+const corsStrict =
+  process.env.CORS_STRICT === 'true' ||
+  (process.env.NODE_ENV === 'production' &&
+    envAllowedOrigins.length > 0 &&
+    process.env.CORS_ALLOW_ALL !== 'true');
+
+function isOriginAllowed(origin) {
+  if (!origin) return true;
+  const all = [...allowedOrigins, ...envAllowedOrigins];
+  return all.some((entry) => {
+    if (entry instanceof RegExp) return entry.test(origin);
+    return entry === origin;
+  });
+}
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl)
     if (!origin) return callback(null, true);
-
-    // Always allow the origin to support widgets and pixels on client sites
-    callback(null, true);
+    if (!corsStrict) return callback(null, true);
+    if (isOriginAllowed(origin)) return callback(null, true);
+    log.warn(`[CORS] Blocked origin: ${origin}`);
+    return callback(new Error('CORS policy: origin not allowed'));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],

@@ -19,6 +19,15 @@ const path = require('path');
 const multer = require('multer');
 const { uploadToCloud } = require('../utils/cloudinary');
 const { normalizePhone } = require('../utils/helpers');
+
+/** IDOR guard — always scope conversation by tenant unless super-admin. */
+function conversationQueryForTenant(req, conversationId) {
+  const query = { _id: conversationId };
+  if (req.user?.role !== 'SUPER_ADMIN') {
+    query.clientId = req.user.clientId;
+  }
+  return query;
+}
 const { injectVariables } = require('../utils/variableInjector');
 const { generateCheckoutForOrder, publicApiBase } = require('../utils/commerceCheckoutService');
 const CheckoutLinkModel = require('../models/CheckoutLink');
@@ -285,10 +294,13 @@ const { sendEmailMessage } = require('../utils/emailIntegration');
 router.post('/:id/email', protect, async (req, res) => {
   try {
     const { subject, text, html } = req.body;
-    const conversation = await Conversation.findById(req.params.id);
+    const conversation = await Conversation.findOne(conversationQueryForTenant(req, req.params.id));
     if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
+    if (req.user.role !== 'SUPER_ADMIN' && conversation.clientId !== req.user.clientId) {
+      return res.status(403).json({ message: 'Unauthorized' });
+    }
 
-    const client = await Client.findOne({ clientId: req.user.clientId });
+    const client = await Client.findOne({ clientId: conversation.clientId || req.user.clientId });
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
     const toEmail = conversation.email || conversation.phone; // Fallback if email not set but phone is an email address
@@ -2045,7 +2057,7 @@ router.post('/:id/send-email', protect, async (req, res) => {
 router.post('/:id/csat', protect, async (req, res) => {
   try {
     const { rating } = req.body;
-    const conversation = await Conversation.findOne({ _id: req.params.id });
+    const conversation = await Conversation.findOne(conversationQueryForTenant(req, req.params.id));
     if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
 
     conversation.csatScore = { rating, respondedAt: new Date() };
@@ -2060,7 +2072,7 @@ router.post('/:id/csat', protect, async (req, res) => {
 router.post('/:id/assign', protect, async (req, res) => {
   try {
     const { agentId, priority } = req.body;
-    const conversation = await Conversation.findOne({ _id: req.params.id });
+    const conversation = await Conversation.findOne(conversationQueryForTenant(req, req.params.id));
     if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
 
     if (agentId) conversation.assignedTo = agentId;

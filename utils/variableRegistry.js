@@ -18,7 +18,7 @@ const VARIABLE_REGISTRY = [
     source: "client.brand.businessLogo", wizardField: "businessLogo",
     fallback: "", preview: "https://cdn.example.com/logo.png" },
   { name: "support_phone", label: "Support phone", category: "Brand",
-    source: "client.platformVars.adminWhatsappNumber", wizardField: "adminPhone",
+    source: "client.platformVars.supportWhatsapp", wizardField: "supportPhone",
     fallback: "", preview: "+91 98765 43210" },
   { name: "store_url", label: "Store URL", category: "Brand",
     source: "client.platformVars.checkoutUrl", wizardField: "checkoutUrl",

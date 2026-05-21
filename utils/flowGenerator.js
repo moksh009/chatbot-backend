@@ -74,8 +74,10 @@ function stripPlaceholders(text) {
     .trim();
 }
 
+const { normalizeFlowNodes: normalizeFlowVariableTokens } = require("./normalizeFlowVariables");
+
 function cleanNodeText(nodes) {
-  return nodes.map(n => {
+  const stripped = nodes.map(n => {
     if (!n.data) return n;
     if (typeof n.data.text === "string")     n.data.text = stripPlaceholders(n.data.text);
     if (typeof n.data.body === "string")     n.data.body = stripPlaceholders(n.data.body);
@@ -88,6 +90,7 @@ function cleanNodeText(nodes) {
     }
     return n;
   });
+  return normalizeFlowVariableTokens(stripped);
 }
 
 function verifyAllEdgesMatchButtonIds(nodes, edges) {
@@ -1361,7 +1364,7 @@ function buildCancelOrderBranch(ctx, IDS, content) {
       data: {
         label: "Cancel request received",
         text:
-          "✅ *Your cancellation request has been received.*\n\nOur team will review it within *2–4 hours* and confirm on WhatsApp. For urgent help, call *{{supportPhone|our support line}}*.",
+          "✅ *Your cancellation request has been received.*\n\nOur team will review it within *2–4 hours* and confirm on WhatsApp. For urgent help, call *{{support_phone|our support line}}*.",
         heatmapCount: 0,
       },
     },
@@ -1424,7 +1427,7 @@ function buildCancelOrderBranch(ctx, IDS, content) {
       data: {
         label: "Modify request received",
         text:
-          "✅ *Your modification request has been received.*\n\nOur team will update order *{{order_number|your order}}* and confirm on WhatsApp within *2–4 hours*.\n\nFor urgent help, call *{{supportPhone|our support line}}*.",
+          "✅ *Your modification request has been received.*\n\nOur team will update order *{{order_number|your order}}* and confirm on WhatsApp within *2–4 hours*.\n\nFor urgent help, call *{{support_phone|our support line}}*.",
         heatmapCount: 0,
       },
     }
@@ -1837,7 +1840,7 @@ function buildWarrantyBranch(ctx, IDS, content) {
         label: "Warranty expired",
         text:
           content.warranty_expired_msg ||
-          "⚠️ *Warranty expired* for {{_warranty_product_name|your product}}.\n\nExpiry: {{_warranty_expires_display|N/A}}\n\nOur team may still help — contact *{{supportPhone}}*.",
+          "⚠️ *Warranty expired* for {{_warranty_product_name|your product}}.\n\nExpiry: {{_warranty_expires_display|N/A}}\n\nOur team may still help — contact *{{support_phone|our support line}}*.",
         heatmapCount: 0,
       },
     },
@@ -1849,7 +1852,7 @@ function buildWarrantyBranch(ctx, IDS, content) {
         label: "No warranty",
         text: withMenuHint(
           content.warranty_none_msg ||
-            "🔍 *No warranty found* for this number.\n\nTry your *Order ID* or contact *{{supportPhone}}* and we'll link your purchase."
+            "🔍 *No warranty found* for this number.\n\nTry your *Order ID* or contact *{{support_phone|our support line}}* and we'll link your purchase."
         ),
         heatmapCount: 0,
       },
@@ -1955,7 +1958,7 @@ function buildLoyaltyBranch(ctx, IDS, content) {
       data: {
         label: "Redeem failed",
         text:
-          "We couldn't generate a code right now. Contact *{{supportPhone}}* and we'll apply your points manually.",
+          "We couldn't generate a code right now. Contact *{{support_phone|our support line}}* and we'll apply your points manually.",
         heatmapCount: 0,
       },
     }
@@ -2061,7 +2064,7 @@ function buildInstallSupportBranch(ctx, IDS, content) {
         label: "Install guide",
         text:
           String(F.installSupportPrompt || "").trim() ||
-          "🔧 For setup help, share your *product name* and a short video/photo of the issue. Our team will guide you step by step on *{{supportPhone}}*.",
+          "🔧 For setup help, share your *product name* and a short video/photo of the issue. Our team will guide you step by step on *{{support_phone|our support line}}*.",
         heatmapCount: 0,
       },
     },
@@ -2099,7 +2102,7 @@ function buildInstallSupportBranch(ctx, IDS, content) {
       data: {
         label: "Help request received",
         text:
-          "✅ *We've received your request.*\n\nOur team will reply on this chat within *2–4 hours*. For urgent issues, call *{{supportPhone}}*.",
+          "✅ *We've received your request.*\n\nOur team will reply on this chat within *2–4 hours*. For urgent issues, call *{{support_phone|our support line}}*.",
         heatmapCount: 0,
       },
     }

@@ -13,7 +13,12 @@ const { sendSystemOTPEmail } = require('../utils/emailService');
 const { ensureClientForUser } = require('../utils/ensureClientForUser');
 const { LEGAL_DOCS_VERSION } = require('../config/legalDocs');
 const { validateStrongPassword } = require('../utils/passwordPolicy');
-const { getAccessForUserClient } = require('../utils/accessFlags');
+const {
+  getAccessForUserClient,
+  provisionNewClientTrial,
+  repairActiveTrialFlags,
+} = require('../utils/accessFlags');
+const { auditSecurity } = require('../middleware/securityAudit');
 
 /** Canonical dashboard gates — must match TrialGate / workspaceAccess on the SPA. */
 async function workspaceAccessForResponse(reqUser, clientDocOrNull) {
@@ -29,6 +34,55 @@ async function workspaceAccessForResponse(reqUser, clientDocOrNull) {
     ? clientDocOrNull.toObject()
     : clientDocOrNull;
   return getAccessForUserClient(reqUser, lean);
+}
+
+/** Full session payload for login / register / OAuth — keeps SPA gates in sync with backend. */
+async function buildAuthSessionPayload(user, client) {
+  const lean = client
+    ? typeof client.toObject === 'function'
+      ? client.toObject()
+      : client
+    : null;
+  if (lean && !user?.isLifetimeAdmin && user?.role !== 'SUPER_ADMIN') {
+    const repaired = await repairActiveTrialFlags(lean);
+    if (repaired) {
+      client = repaired;
+      lean.trialActive = repaired.trialActive ?? true;
+      lean.trialEndsAt = repaired.trialEndsAt;
+    }
+  }
+  const isAdminBypass = user?.role === 'SUPER_ADMIN' || user?.isLifetimeAdmin === true;
+  const onboardingCompleted = computeClientOnboardingCompleted(isAdminBypass, client || lean);
+  const access = await workspaceAccessForResponse(user, client || lean);
+
+  return {
+    _id: user._id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    isLifetimeAdmin: user.isLifetimeAdmin,
+    business_type: user.business_type || 'ecommerce',
+    clientId: user.clientId,
+    clientName: client?.name || lean?.name || null,
+    subscriptionPlan: user.isLifetimeAdmin ? 'enterprise' : (client?.tier || lean?.tier || 'v1'),
+    plan: user.isLifetimeAdmin ? 'Enterprise AI' : (client?.plan || lean?.plan || 'CX Agent (V1)'),
+    hasCompletedTour: user.hasCompletedTour,
+    trialActive: client?.trialActive ?? lean?.trialActive ?? true,
+    trialEndsAt: client?.trialEndsAt ?? lean?.trialEndsAt ?? null,
+    manuallySuspended: access.manuallySuspended,
+    trialWindowActive: access.trialWindowActive,
+    hasPaidAccess: access.hasPaidAccess,
+    dashboardLocked: access.dashboardLocked,
+    workspaceAccess: access,
+    onboardingCompleted,
+    onboardingStep: client?.onboardingStep ?? lean?.onboardingStep ?? 0,
+    onboardingSkipped: !!(client?.onboardingSkipped ?? lean?.onboardingSkipped),
+    onboardingSkippedAt: client?.onboardingSkippedAt ?? lean?.onboardingSkippedAt ?? null,
+    onboardingData: client?.onboardingData || lean?.onboardingData || {},
+    clientConfig: lean || {},
+    clientTemplates: lean?.config?.templates || client?.config?.templates || null,
+    isNewUser: onboardingCompleted === false
+  };
 }
 
 /** Grandfathered clients may omit onboardingCompleted; missing Client doc means not onboarded. */
@@ -61,10 +115,11 @@ function checkOtpRateLimit(email) {
 
 const generateToken = (id, clientId, role) => {
   if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET environment variable is not configured');
+  const expiresIn = process.env.JWT_EXPIRES_IN || '7d';
   return jwt.sign(
-    { id, clientId, role }, // ✅ Phase R4: Include clientId + role in token payload
+    { id, clientId, role },
     process.env.JWT_SECRET,
-    { expiresIn: '30d' }
+    { expiresIn }
   );
 };
 
@@ -238,6 +293,11 @@ router.get('/bootstrap', protect, async (req, res) => {
       await ensureClientForUser(user);
       client = await getCachedClient(clientId, BOOTSTRAP_CLIENT_SELECT);
     }
+    const isAdminBypassEarly =
+      user.role === 'SUPER_ADMIN' || user.isLifetimeAdmin === true;
+    if (client && !isAdminBypassEarly) {
+      client = await repairActiveTrialFlags(client);
+    }
     timer.checkpoint('client_loaded');
 
     // Phase 32: Onboarding gate — SUPER_ADMIN + lifetime admins bypass.
@@ -349,6 +409,7 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
     }
 
     if (!user) {
+      auditSecurity('AUTH_LOGIN_FAILED', { req, email, reason: 'user_not_found' });
       return res.status(401).json({
         message: 'Invalid email or password.',
         code: 'INVALID_CREDENTIALS'
@@ -367,42 +428,13 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
     if (await user.matchPassword(password)) {
       await ensureClientForUser(user);
       const client = await Client.findOne({ clientId: user.clientId });
-
-      const isAdminBypass =
-        user.role === 'SUPER_ADMIN' || user.isLifetimeAdmin === true;
-      const onboardingCompleted = computeClientOnboardingCompleted(isAdminBypass, client);
-      const access = await workspaceAccessForResponse(user, client);
-
+      const session = await buildAuthSessionPayload(user, client);
       res.json({
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        isLifetimeAdmin: user.isLifetimeAdmin,
-        business_type: 'ecommerce',
-        clientId: user.clientId,
-        token: generateToken(user._id, user.clientId, user.role), // ✅ Phase R4: clientId+role in JWT
-        clientName: client ? client.name : null,
-        subscriptionPlan: user.isLifetimeAdmin ? 'enterprise' : (client ? client.tier || 'v1' : 'v1'),
-        plan: user.isLifetimeAdmin ? 'Enterprise AI' : (client ? client.plan || 'CX Agent (V1)' : 'CX Agent (V1)'),
-        hasCompletedTour: user.hasCompletedTour,
-        trialActive: client ? client.trialActive : null,
-        trialEndsAt: client ? client.trialEndsAt : null,
-        manuallySuspended: access.manuallySuspended,
-        trialWindowActive: access.trialWindowActive,
-        hasPaidAccess: access.hasPaidAccess,
-        dashboardLocked: access.dashboardLocked,
-        workspaceAccess: access,
-        // Phase 32
-        onboardingCompleted,
-        onboardingStep: client?.onboardingStep || 0,
-        onboardingSkipped: !!(client && client.onboardingSkipped),
-        onboardingSkippedAt: client?.onboardingSkippedAt ?? null,
-        onboardingData: client?.onboardingData || {},
-        clientConfig: client ? client.toObject() : {},
-        clientTemplates: client && client.config && client.config.templates ? client.config.templates : null
+        ...session,
+        token: generateToken(user._id, user.clientId, user.role),
       });
     } else {
+      auditSecurity('AUTH_LOGIN_FAILED', { req, email, reason: 'wrong_password' });
       res.status(401).json({
         message: 'Invalid email or password.',
         code: 'INVALID_CREDENTIALS'
@@ -508,18 +540,16 @@ router.post('/register', async (req, res) => {
     session.endSession();
 
     if (user && newClient) {
+      const createdUser = user[0];
+      let createdClient = await Client.findOne({ clientId: newClientId });
+      if (createdClient) {
+        createdClient = await provisionNewClientTrial(createdClient);
+      }
+      const session = await buildAuthSessionPayload(createdUser, createdClient);
       res.status(201).json({
-        _id: user[0]._id,
-        name: user[0].name,
-        email: user[0].email,
-        role: user[0].role,
-        business_type: user[0].business_type,
-        clientId: user[0].clientId,
-        token: generateToken(user[0]._id, user[0].clientId, user[0].role),
-        // Phase 32: signal the frontend to route straight to /onboarding
-        onboardingCompleted: false,
-        onboardingStep: 0,
-        isNewUser: true
+        ...session,
+        token: generateToken(createdUser._id, createdUser.clientId, createdUser.role),
+        isNewUser: true,
       });
     } else {
       res.status(400).json({ message: 'Failed to create user or client' });
@@ -818,22 +848,23 @@ router.get('/google/callback', async (req, res) => {
       const newClientId = `${safeName}_${uniqueId}`;
 
       // Create Client
-      await Client.create({
+      const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+      const googleClient = await Client.create({
         clientId: newClientId,
         businessName,
         name: businessName,
         isActive: true,
         trialActive: true,
-        trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+        trialEndsAt,
         plan: 'CX Agent (V1)',
         businessType,
         flowNodes: [],
         flowEdges: [],
-        // Phase 32: force new Google users through full-screen onboarding
         onboardingCompleted: false,
         onboardingStep: 0,
         onboardingData: { brandName: businessName }
       });
+      await provisionNewClientTrial(googleClient);
 
       // Create User (no password — Google-only auth)
       user = await User.create({

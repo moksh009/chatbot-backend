@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { isStrictSecurity } = require('./productionSecurity');
 
 /**
  * MetaAuthMiddleware
@@ -8,12 +9,12 @@ exports.verifyMetaSignature = (req, res, next) => {
   const signature = req.headers['x-hub-signature-256'];
   const appSecret = process.env.META_APP_SECRET;
 
-  /**
-   * DEVELOPMENT BYPASS: 
-   * Allows the test-simulator.js to work locally without a valid Meta HMAC.
-   * Requires NODE_ENV=development and a specific bypass header.
-   */
-  if (process.env.NODE_ENV === 'development' || !appSecret) {
+  const devBypassAllowed =
+    !isStrictSecurity() &&
+    process.env.ALLOW_META_SIGNATURE_BYPASS === 'true' &&
+    (process.env.NODE_ENV === 'development' || !appSecret);
+
+  if (devBypassAllowed) {
     if (!signature || signature === 'sha256=test-signature-bypass') {
       console.log('[Security] Dev bypass active: Skipping Meta signature verification');
       return next();

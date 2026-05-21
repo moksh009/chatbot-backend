@@ -182,87 +182,38 @@ function incrementNodeVisit(nodes, nodeId) {
 }
 
 async function getFlowGraphForConversation(client, convo) {
-  const fallbackNodes = flattenFlowNodes(client.flowNodes || []);
-  const fallbackEdges = client.flowEdges || [];
-  if (!convo?.activeFlowId) {
-    return { nodes: fallbackNodes, edges: fallbackEdges };
+  const { resolveFlowGraphByRef, resolvePrimaryFlowGraph } = require("./flowGraphResolver");
+
+  if (convo?.activeFlowId) {
+    const activeFlowId = String(convo.activeFlowId);
+    const cached =
+      (await getCachedFlowGraphAsync(client.clientId, activeFlowId)) ||
+      getCachedFlowGraph(client.clientId, activeFlowId);
+    if (cached?.nodes?.length) {
+      return { nodes: cached.nodes, edges: cached.edges || [] };
+    }
+
+    const loaded = await resolveFlowGraphByRef(client.clientId, activeFlowId);
+    if (loaded?.nodes?.length) {
+      const graph = { nodes: loaded.nodes, edges: loaded.edges || [] };
+      setCachedFlowGraph(client.clientId, activeFlowId, {
+        ...graph,
+        flowId: loaded.id,
+        name: loaded.name,
+      });
+      return graph;
+    }
   }
 
-  const activeFlowId = String(convo.activeFlowId);
-  const cached =
-    (await getCachedFlowGraphAsync(client.clientId, activeFlowId)) ||
-    getCachedFlowGraph(client.clientId, activeFlowId);
-  if (cached?.nodes?.length) {
-    return { nodes: cached.nodes, edges: cached.edges || [] };
+  const primary = await resolvePrimaryFlowGraph(client.clientId);
+  if (primary.nodes?.length) {
+    return { nodes: primary.nodes, edges: primary.edges || [] };
   }
 
-  // 1) Prefer WhatsAppFlow collection — read PUBLISHED state only
-  try {
-    const WhatsAppFlow = require("../models/WhatsAppFlow");
-    let flowDoc = null;
-    if (/^[a-f\d]{24}$/i.test(activeFlowId)) {
-      flowDoc = await WhatsAppFlow.findById(activeFlowId)
-        .select("clientId flowId publishedNodes publishedEdges nodes edges")
-        .lean();
-    }
-    if (!flowDoc) {
-      flowDoc = await WhatsAppFlow.findOne({
-        clientId: client.clientId,
-        $or: [{ flowId: activeFlowId }, { _id: activeFlowId }],
-      })
-        .select("clientId flowId publishedNodes publishedEdges nodes edges")
-        .lean();
-    }
-    if (flowDoc) {
-      if (flowDoc.clientId && flowDoc.clientId !== client.clientId) {
-        log.warn(
-          `[FlowGraph] Flow ${activeFlowId} belongs to ${flowDoc.clientId}, not ${client.clientId} — ignoring`
-        );
-        flowDoc = null;
-      }
-    }
-    if (flowDoc) {
-      const pubNodes = flowDoc.publishedNodes || [];
-      const pubEdges = flowDoc.publishedEdges || [];
-      if (pubNodes.length > 0) {
-        const graph = { nodes: flattenFlowNodes(pubNodes), edges: pubEdges };
-        setCachedFlowGraph(client.clientId, activeFlowId, {
-          ...graph,
-          flowId: flowDoc.flowId,
-          mongoId: String(flowDoc._id),
-        });
-        return graph;
-      }
-      if (flowDoc.nodes?.length) {
-        log.warn(`[FlowGraph] Flow ${activeFlowId} has no publishedNodes — using draft nodes as fallback. Please re-publish.`);
-        const graph = { nodes: flattenFlowNodes(flowDoc.nodes), edges: flowDoc.edges || [] };
-        setCachedFlowGraph(client.clientId, activeFlowId, {
-          ...graph,
-          flowId: flowDoc.flowId,
-          mongoId: String(flowDoc._id),
-        });
-        return graph;
-      }
-    }
-  } catch (_) {
-    // non-fatal, continue to in-memory flow lookup
-  }
-
-  // 2) Fallback to visualFlows held on client settings
-  const visualFlow = (client.visualFlows || []).find((f) => String(f.id) === activeFlowId);
-  if (visualFlow?.nodes?.length) {
-    const graph = {
-      nodes: flattenFlowNodes(visualFlow.nodes || []),
-      edges: visualFlow.edges || [],
-    };
-    setCachedFlowGraph(client.clientId, activeFlowId, graph);
-    return graph;
-  }
-
-  return { nodes: fallbackNodes, edges: fallbackEdges };
+  return { nodes: [], edges: [] };
 }
 
-/** Load a published flow by flowId or Mongo _id (webhook path has no visualFlows on client). */
+/** Load flow graph by flowId (published preferred; falls back to draft / visualFlows / legacy). */
 async function loadPublishedFlowByRef(clientId, flowRef) {
   if (!clientId || !flowRef) return null;
   const cached =
@@ -276,33 +227,23 @@ async function loadPublishedFlowByRef(clientId, flowRef) {
       edges: cached.edges || [],
     };
   }
-  const WhatsAppFlow = require("../models/WhatsAppFlow");
-  const doc = await WhatsAppFlow.findOne({
-    clientId,
-    status: "PUBLISHED",
-    $or: [{ flowId: String(flowRef) }, { _id: String(flowRef) }],
-  })
-    .select("flowId name publishedNodes publishedEdges nodes edges")
-    .lean();
-  if (!doc) return null;
-  const rawNodes =
-    doc.publishedNodes?.length > 0 ? doc.publishedNodes : doc.nodes || [];
-  const rawEdges =
-    doc.publishedEdges?.length > 0 ? doc.publishedEdges : doc.edges || [];
-  const { sanitizeFlowNodesMedia } = require("./sanitizeFlowMedia");
-  const graph = {
-    nodes: flattenFlowNodes(sanitizeFlowNodesMedia(rawNodes)),
-    edges: rawEdges,
-    flowId: doc.flowId,
-    mongoId: String(doc._id),
-    name: doc.name,
-  };
-  setCachedFlowGraph(clientId, flowRef, graph);
+
+  const { resolveFlowGraphByRef } = require("./flowGraphResolver");
+  const loaded = await resolveFlowGraphByRef(clientId, flowRef);
+  if (!loaded?.nodes?.length) return null;
+
+  setCachedFlowGraph(clientId, flowRef, {
+    nodes: loaded.nodes,
+    edges: loaded.edges,
+    flowId: loaded.id,
+    name: loaded.name,
+  });
+
   return {
-    id: doc.flowId || String(doc._id),
-    name: doc.name || "",
-    nodes: graph.nodes,
-    edges: graph.edges,
+    id: loaded.id,
+    name: loaded.name || "",
+    nodes: loaded.nodes,
+    edges: loaded.edges || [],
   };
 }
 
@@ -2181,10 +2122,38 @@ async function runDualBrainEngine(parsedMessage, client) {
         flowId: match?.flowId,
         triggerType: match?.triggerType,
       });
+      if (match && match.isLegacy && match.flow?.nodes?.length) {
+        const flowNodes = flattenFlowNodes(match.flow.nodes);
+        const flowEdges = match.flow.edges || [];
+        const startNodeId = match.startNodeId || findFlowStartNode(flowNodes, flowEdges);
+        if (startNodeId && flowNodes.length) {
+          await Conversation.findByIdAndUpdate(convo._id, {
+            activeFlowId: "legacy_main",
+            lastMessageAt: new Date(),
+          });
+          const freshConvo = await Conversation.findById(convo._id);
+          return await executeNode(
+            startNodeId,
+            flowNodes,
+            flowEdges,
+            client,
+            freshConvo,
+            lead,
+            phone,
+            io,
+            channel
+          );
+        }
+      }
+
       if (match && !match.isLegacy && match.flow) {
         const flowRef =
           match.flowId || match.flow.flowId || (match.flow._id != null ? String(match.flow._id) : match.flow.id);
-        const loaded = flowRef ? await loadPublishedFlowByRef(client.clientId, flowRef) : null;
+        let loaded = flowRef ? await loadPublishedFlowByRef(client.clientId, flowRef) : null;
+        if (!loaded?.nodes?.length && flowRef) {
+          const { resolveFlowGraphByRef } = require("./flowGraphResolver");
+          loaded = await resolveFlowGraphByRef(client.clientId, flowRef);
+        }
         const flowNodes = loaded?.nodes?.length
           ? loaded.nodes
           : flattenFlowNodes(

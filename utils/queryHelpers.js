@@ -1,6 +1,8 @@
 const mongoose = require("mongoose");
 const Client   = require("../models/Client");
 const logger   = require("./logger")("QueryHelpers");
+const { hasMasterTesterBypass } = require("../middleware/productionSecurity");
+const { auditSecurity } = require("../middleware/securityAudit");
 
 /**
  * Tenant isolation: non–super-admins MUST only ever use `req.user.clientId`.
@@ -18,6 +20,53 @@ function tenantClientId(req) {
     );
   }
   return req.user.clientId || null;
+}
+
+/**
+ * Ensure the authenticated user may access `targetClientId`.
+ * Regular users are locked to JWT `clientId`; super-admins may impersonate via params/query/body.
+ */
+function assertTenantAccess(req, targetClientId) {
+  const target = targetClientId != null ? String(targetClientId).trim() : "";
+  if (!target) {
+    return {
+      ok: false,
+      status: 403,
+      message: "Unauthorized access to this workspace",
+    };
+  }
+
+  if (hasMasterTesterBypass(req.user)) {
+    return { ok: true, tenantId: target };
+  }
+
+  const tenantId = tenantClientId(req);
+  if (!tenantId || tenantId !== target) {
+    return {
+      ok: false,
+      status: 403,
+      message: "Unauthorized access to this workspace",
+    };
+  }
+  return { ok: true, tenantId };
+}
+
+/** Send 403 and return false when access is denied; otherwise return tenantId string. */
+function denyUnlessTenant(req, res, targetClientId) {
+  const gate = assertTenantAccess(req, targetClientId);
+  if (!gate.ok) {
+    auditSecurity("TENANT_ACCESS_DENIED", {
+      req,
+      userId: req.user?._id,
+      userEmail: req.user?.email,
+      tenantId: req.user?.clientId,
+      targetClientId,
+      reason: gate.message,
+    });
+    res.status(gate.status).json({ success: false, message: gate.message });
+    return null;
+  }
+  return gate.tenantId;
 }
 
 /**
@@ -120,6 +169,8 @@ async function safeFindOne(Model, query, select = null) {
 
 module.exports = {
   tenantClientId,
+  assertTenantAccess,
+  denyUnlessTenant,
   resolveClient,
   resolveClientOrNull,
   startOfDayIST,

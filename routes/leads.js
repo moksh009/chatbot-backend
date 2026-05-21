@@ -1,6 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const { resolveClient, tenantClientId } = require('../utils/queryHelpers');
+const { resolveClient, tenantClientId, denyUnlessTenant } = require('../utils/queryHelpers');
 const router = express.Router();
 const multer = require('multer');
 const csv = require('csv-parser');
@@ -84,9 +84,9 @@ router.post('/:clientId/import', protect, logAction('IMPORT_LEADS'), uploadMiddl
     const batchId = `BATCH_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
     
     try {
-        if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
+        if (!denyUnlessTenant(req, res, clientId)) {
              if (req.file) fs.unlinkSync(req.file.path);
-             return res.status(403).json({ success: false, message: 'Unauthorized' });
+             return;
         }
 
         if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });

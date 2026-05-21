@@ -1,6 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const { resolveClient, tenantClientId } = require('../utils/queryHelpers');
+const { resolveClient, tenantClientId, denyUnlessTenant } = require('../utils/queryHelpers');
 const router = express.Router();
 const TaskQueueService = require('../services/TaskQueueService');
 const Campaign = require('../models/Campaign');
@@ -811,9 +811,7 @@ router.post('/start', protect, async (req, res) => {
 router.get('/:clientId/:campaignId/analytics', protect, async (req, res) => {
   try {
     const { clientId, campaignId } = req.params;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
+    if (!denyUnlessTenant(req, res, clientId)) return;
     const campaign = await Campaign.findOne({ _id: campaignId, clientId });
     if (!campaign) return res.status(404).json({ success: false, message: 'Not found' });
     res.json({ success: true, analytics: campaign });
@@ -853,9 +851,7 @@ router.get('/:campaignId/repermission-funnel', protect, async (req, res) => {
 router.post('/:clientId/ab-test', protect, async (req, res) => {
   try {
     const { clientId } = req.params;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
+    if (!denyUnlessTenant(req, res, clientId)) return;
     // Dummy stub that just creates a campaign marked as AB Test
     // Wait, the client will send variants in body
     const { name, variants } = req.body;

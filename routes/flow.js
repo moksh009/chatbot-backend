@@ -320,7 +320,10 @@ router.post('/ai-build', protect, async (req, res) => {
 router.post('/simulate', protect, async (req, res) => {
   try {
     const { flowId, currentNodeId, userInput, variables, nodes, edges } = req.body;
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
     
     // Fallback simple traversal logic mirroring frontend if not using full engine
     const safeNodes = Array.isArray(nodes) ? nodes : [];
@@ -463,7 +466,10 @@ router.post('/simulate', protect, async (req, res) => {
 router.post('/save', protect, async (req, res) => {
   try {
     const { flowId, nodes, edges } = req.body;
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
 
     const WhatsAppFlow = require('../models/WhatsAppFlow');
     let flow = await WhatsAppFlow.findOne({ clientId, flowId });
@@ -499,7 +505,10 @@ router.post('/save', protect, async (req, res) => {
 router.post('/publish', protect, async (req, res) => {
   try {
     const { flowId } = req.body;
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
 
     const WhatsAppFlow = require('../models/WhatsAppFlow');
     const FlowHistory = require('../models/FlowHistory');
@@ -595,7 +604,10 @@ router.get('/:flowId/versions', protect, apiCache(30), async (req, res) => {
 router.post('/:flowId/rollback/:versionId', protect, async (req, res) => {
   try {
     const { flowId, versionId } = req.params;
-    const clientId = req.user.clientId;
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
 
     const FlowHistory = require('../models/FlowHistory');
     const WhatsAppFlow = require('../models/WhatsAppFlow');
@@ -684,14 +696,17 @@ router.get('/flows', protect, apiCache(30), async (req, res) => {
     }
 
     const WhatsAppFlow = require('../models/WhatsAppFlow');
+    const { mergeFlowsListForDashboard } = require('../utils/flowGraphResolver');
     const lite = req.query.lite === '1' || req.query.lite === 'true';
     const flowFind = WhatsAppFlow.find({ clientId });
     if (lite) {
       flowFind.select(
-        'flowId name platform folderId status version createdAt updatedAt lastSyncedAt'
+        'flowId name platform folderId status version createdAt updatedAt lastSyncedAt nodes edges publishedNodes publishedEdges'
       );
     }
-    const clientSelect = lite ? 'flowFolders clientId' : 'flowFolders flowNodes flowEdges clientId';
+    const clientSelect = lite
+      ? 'flowFolders visualFlows clientId flowNodes flowEdges'
+      : 'flowFolders flowNodes flowEdges visualFlows clientId';
     const [client, dbFlows] = await Promise.all([
       timer.time('getCachedClient', () => getCachedClient(clientId, clientSelect)),
       timer.time('WhatsAppFlow.find', () => flowFind.lean()),
@@ -701,26 +716,22 @@ router.get('/flows', protect, apiCache(30), async (req, res) => {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
-    const formattedFlows = dbFlows.map((f) => ({
-      id: f.flowId,
-      name: f.name,
-      platform: f.platform || 'whatsapp',
-      folderId: f.folderId || '',
-      isActive: f.status === 'PUBLISHED',
-      status: f.status || 'DRAFT',
-      version: f.version || 1,
-      ...(lite ? {} : { nodes: f.nodes || [], edges: f.edges || [] }),
-      nodeCount: Array.isArray(f.nodes) ? f.nodes.length : 0,
-      edgeCount: Array.isArray(f.edges) ? f.edges.length : 0,
-      createdAt: f.createdAt,
-      updatedAt: f.updatedAt,
-      lastSyncedAt: f.lastSyncedAt,
+    const merged = mergeFlowsListForDashboard(dbFlows, client.visualFlows || [], client.flowFolders || []);
+    const formattedFlows = merged.flows.map((f) => ({
+      ...f,
+      ...(lite ? {} : (() => {
+        const doc = dbFlows.find((d) => d.flowId === f.id);
+        const vf = (client.visualFlows || []).find((v) => v.id === f.id);
+        const nodes = doc?.nodes?.length ? doc.nodes : vf?.nodes || [];
+        const edges = doc?.edges?.length ? doc.edges : vf?.edges || [];
+        return { nodes, edges };
+      })()),
     }));
 
     res.json({
       success: true,
       flows: formattedFlows,
-      flowFolders: client.flowFolders || [],
+      flowFolders: merged.flowFolders,
       legacy: lite
         ? { nodes: [], edges: [] }
         : {
@@ -800,26 +811,27 @@ router.get('/flows/:flowId/graph', protect, apiCache(30), async (req, res) => {
     );
 
     if (!flowPayload) {
-      const WhatsAppFlow = require('../models/WhatsAppFlow');
-      const flow = await timer.time('WhatsAppFlow.findOne', () =>
-        WhatsAppFlow.findOne({ clientId, flowId }).lean()
-      );
-      if (!flow) {
+      const { resolveFlowGraphByRef, loadClientFlowSources } = require('../utils/flowGraphResolver');
+      const sources = await loadClientFlowSources(clientId);
+      const resolved = await resolveFlowGraphByRef(clientId, flowId, { sources });
+      if (!resolved?.nodes?.length) {
         timer.finish('404');
         return res.status(404).json({ success: false, message: 'Flow not found' });
       }
+      const waDoc = sources.whatsappFlows.find((d) => d.flowId === flowId);
+      const vf = sources.visualFlows.find((v) => v.id === flowId);
       flowPayload = {
-        flowId: flow.flowId,
-        name: flow.name,
-        platform: flow.platform || 'whatsapp',
-        folderId: flow.folderId || '',
-        status: flow.status || 'DRAFT',
-        version: flow.version || 1,
-        nodes: flow.nodes || [],
-        edges: flow.edges || [],
-        createdAt: flow.createdAt,
-        updatedAt: flow.updatedAt,
-        lastSyncedAt: flow.lastSyncedAt,
+        flowId: resolved.id || flowId,
+        name: resolved.name || waDoc?.name || vf?.name || 'Flow',
+        platform: waDoc?.platform || vf?.platform || 'whatsapp',
+        folderId: waDoc?.folderId || vf?.folderId || '',
+        status: resolved.status || waDoc?.status || (vf?.isActive ? 'PUBLISHED' : 'DRAFT'),
+        version: waDoc?.version || vf?.version || 1,
+        nodes: waDoc?.nodes?.length ? waDoc.nodes : vf?.nodes || resolved.nodes,
+        edges: waDoc?.edges?.length ? waDoc.edges : vf?.edges || resolved.edges,
+        createdAt: waDoc?.createdAt || vf?.createdAt,
+        updatedAt: waDoc?.updatedAt || vf?.updatedAt,
+        lastSyncedAt: waDoc?.lastSyncedAt,
       };
       setCachedFlowGraph(clientId, flowId, flowPayload);
     }

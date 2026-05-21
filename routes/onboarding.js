@@ -4,6 +4,7 @@ const OnboardingWizard = require('../models/OnboardingWizard');
 const Client = require('../models/Client');
 const log = require('../utils/logger')('OnboardingRoutes');
 const { protect } = require('../middleware/auth');
+const { denyUnlessTenant } = require('../utils/queryHelpers');
 const { mapFeatureToggle } = require('../utils/wizardMapper');
 const { syncPersonaAcrossSystem } = require('../utils/personaEngine');
 
@@ -107,6 +108,7 @@ function wizardStepFieldChanged(prev, next, key) {
 router.get('/:clientId', protect, async (req, res) => {
   try {
     const { clientId } = req.params;
+    if (!denyUnlessTenant(req, res, clientId)) return;
     const wizardDoc = await OnboardingWizard.findOne({ clientId });
     
     if (!wizardDoc) {
@@ -148,6 +150,7 @@ router.patch('/step/:stepNumber', protect, async (req, res) => {
     if (!clientId) {
       return res.status(400).json({ success: false, error: 'clientId is required in body' });
     }
+    if (!denyUnlessTenant(req, res, clientId)) return;
 
     const stepNum = parseInt(stepNumber, 10);
     if (isNaN(stepNum) || stepNum < 0 || stepNum > 6) {
@@ -332,6 +335,7 @@ router.patch('/step/:stepNumber', protect, async (req, res) => {
 router.delete('/:clientId', protect, async (req, res) => {
   try {
     const { clientId } = req.params;
+    if (!denyUnlessTenant(req, res, clientId)) return;
     await OnboardingWizard.deleteOne({ clientId });
     res.json({ success: true, message: 'Wizard state reset successfully' });
   } catch (error) {
