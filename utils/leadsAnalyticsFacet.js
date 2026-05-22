@@ -32,10 +32,19 @@ const LEAD_LIST_PROJECTION = {
   inboundMessageCount: 1,
 };
 
-function buildLeadsListQuery(clientId, { search, tag, segmentScore, lastSeen, importBatchId }) {
+function buildLeadsListQuery(clientId, { search, tag, segmentScore, lastSeen, importBatchId, optStatus, hasPhone }) {
   const query = { clientId };
   if (importBatchId) {
     query.importBatchId = importBatchId;
+  }
+  if (optStatus) {
+    const status = String(optStatus).trim().toLowerCase();
+    if (['opted_in', 'opted_out', 'unknown', 'pending'].includes(status)) {
+      query.optStatus = status;
+    }
+  }
+  if (hasPhone === true || String(hasPhone).toLowerCase() === 'true') {
+    query.phoneNumber = { $exists: true, $type: 'string', $regex: /\S/ };
   }
   if (search) {
     const searchRegex = new RegExp(search, 'i');
@@ -112,6 +121,8 @@ async function fetchLeadsAnalyticsBundle(clientId, opts = {}) {
     page = 1,
     limit = 20,
     importBatchId = null,
+    optStatus,
+    hasPhone,
   } = opts;
 
   const pageNum = parseInt(page, 10) || 1;
@@ -123,6 +134,8 @@ async function fetchLeadsAnalyticsBundle(clientId, opts = {}) {
     segmentScore,
     lastSeen,
     importBatchId,
+    optStatus,
+    hasPhone,
   });
 
   const dayStart = new Date();

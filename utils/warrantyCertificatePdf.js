@@ -11,8 +11,11 @@ if (!fs.existsSync(WARRANTY_DIR)) {
 
 const VIOLET = "#7c3aed";
 const VIOLET_DARK = "#4c1d95";
+const VIOLET_LIGHT = "#c4b5fd";
 const INK = "#0f172a";
 const MUTED = "#64748b";
+const PAGE_W = 595.28;
+const PAGE_H = 841.89;
 
 function publicBaseUrl() {
   return String(
@@ -32,8 +35,16 @@ function formatDate(d) {
   return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+function drawGradientFrame(doc, x, y, w, h) {
+  doc.save();
+  doc.lineWidth(4);
+  doc.roundedRect(x, y, w, h, 8).strokeColor(VIOLET_LIGHT).stroke();
+  doc.roundedRect(x + 3, y + 3, w - 6, h - 6, 6).strokeColor(VIOLET).stroke();
+  doc.restore();
+}
+
 /**
- * Premium A4 warranty certificate PDF — aligned with dashboard HTML export.
+ * Premium A4 portrait warranty certificate PDF — aligned with dashboard HTML export.
  */
 async function generateWarrantyCertificatePdf(client, record = {}) {
   const clientId = String(client?.clientId || "tenant").replace(/[^a-z0-9_-]/gi, "_");
@@ -56,100 +67,115 @@ async function generateWarrantyCertificatePdf(client, record = {}) {
   const phone = record.customerPhone || record.phone || "";
   const serial = record.serialNumber || record.serial || "";
 
-  const pageW = 595.28;
-  const pageH = 841.89;
-  const margin = 48;
-  const innerX = margin + 14;
-  const innerY = margin + 14;
-  const innerW = pageW - (margin + 14) * 2;
-  const innerH = pageH - (margin + 14) * 2;
+  const margin = 36;
+  const frameX = margin;
+  const frameY = margin;
+  const frameW = PAGE_W - margin * 2;
+  const frameH = PAGE_H - margin * 2;
+  const pad = 28;
+  const innerX = frameX + pad;
+  const innerY = frameY + pad;
+  const innerW = frameW - pad * 2;
 
   await new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: "A4", margin: 0 });
     const stream = fs.createWriteStream(filePath);
     doc.pipe(stream);
 
-    doc.rect(0, 0, pageW, pageH).fill("#faf5ff");
-    doc.roundedRect(margin, margin, pageW - margin * 2, pageH - margin * 2, 16).lineWidth(3).strokeColor("#c4b5fd").stroke();
-    doc.roundedRect(innerX, innerY, innerW, innerH, 12).fill("#ffffff");
+    doc.rect(0, 0, PAGE_W, PAGE_H).fill("#f5f3ff");
+    drawGradientFrame(doc, frameX, frameY, frameW, frameH);
+    doc.roundedRect(frameX + 6, frameY + 6, frameW - 12, frameH - 12, 6).fill("#ffffff");
 
     doc.save();
-    doc.rect(innerX, innerY, innerW, 6).fill(VIOLET);
+    doc.rect(innerX, innerY, innerW, 5).fill(VIOLET);
     doc.restore();
 
-    let y = innerY + 28;
-    doc.fillColor(VIOLET_DARK).fontSize(10).font("Helvetica-Bold").text(brand.toUpperCase(), innerX + innerW - 200, y, {
-      width: 190,
+    let y = innerY + 22;
+
+    doc.fillColor(VIOLET_DARK).fontSize(9).font("Helvetica-Bold").text(brand.toUpperCase(), innerX, y, {
+      width: innerW,
       align: "right",
     });
-    doc.fillColor(VIOLET).fontSize(9).font("Helvetica").text(`CERT-REF: ${orderRef}`, innerX + innerW - 200, y + 14, {
-      width: 190,
+    doc.fillColor(VIOLET).fontSize(8).font("Helvetica").text(`Certificate № ${orderRef}`, innerX, y + 12, {
+      width: innerW,
       align: "right",
     });
 
-    doc.roundedRect(innerX + 20, y + 32, 72, 22, 11).fill("#ecfdf5");
-    doc.fillColor("#047857").fontSize(8).font("Helvetica-Bold").text("ACTIVE PROTECTION", innerX + 28, y + 39);
+    const badgeY = y + 26;
+    doc.roundedRect(innerX + innerW - 118, badgeY, 108, 18, 9).fill("#ecfdf5");
+    doc.fillColor("#047857").fontSize(7).font("Helvetica-Bold").text("ACTIVE PROTECTION", innerX + innerW - 110, badgeY + 5, {
+      width: 92,
+      align: "center",
+    });
 
-    y = innerY + 100;
-    doc.fillColor(VIOLET_DARK).fontSize(32).font("Helvetica-BoldOblique").text("Certificate of Warranty", innerX, y, {
+    y = innerY + 78;
+    doc.circle(innerX + innerW / 2, y + 18, 22).fill("#faf5ff").strokeColor(VIOLET_LIGHT).lineWidth(1);
+    doc.circle(innerX + innerW / 2, y + 18, 14).strokeColor(VIOLET).lineWidth(0.8);
+    doc.fillColor(VIOLET).fontSize(10).font("Helvetica-Bold").text("W", innerX + innerW / 2 - 5, y + 12);
+
+    y += 52;
+    doc.fillColor(VIOLET_DARK).fontSize(28).font("Helvetica-BoldOblique").text("Certificate of Warranty", innerX, y, {
       width: innerW,
       align: "center",
     });
-    y += 44;
-    doc.moveTo(innerX + innerW / 2 - 40, y).lineTo(innerX + innerW / 2 + 40, y).lineWidth(3).strokeColor(VIOLET).stroke();
-    y += 18;
-    doc.fillColor(MUTED).fontSize(11).font("Helvetica").text(
-      "This document certifies that the product identified below is registered under our official digital warranty program.",
-      innerX + 40,
+    y += 34;
+    doc.fillColor(VIOLET).fontSize(7).font("Helvetica-Bold").text("OFFICIAL PROTECTION DOCUMENT", innerX, y, {
+      width: innerW,
+      align: "center",
+      characterSpacing: 1.2,
+    });
+    y += 16;
+    doc.moveTo(innerX + innerW / 2 - 50, y).lineTo(innerX + innerW / 2 + 50, y).lineWidth(2).strokeColor(VIOLET).stroke();
+    y += 14;
+    doc.fillColor(MUTED).fontSize(10).font("Helvetica").text(
+      "This certifies that the product below is registered in our digital warranty program and remains eligible for support under your purchase terms.",
+      innerX + 32,
       y,
-      { width: innerW - 80, align: "center", lineGap: 4 }
+      { width: innerW - 64, align: "center", lineGap: 3 }
     );
 
-    y += 52;
-    doc.moveTo(innerX + 24, y).lineTo(innerX + innerW - 24, y).lineWidth(1).strokeColor("#ede9fe").stroke();
-    y += 20;
-
-    doc.fillColor(VIOLET).fontSize(8).font("Helvetica-Bold").text("PROTECTED ITEM", innerX + 28, y);
-    doc.fillColor(INK).fontSize(13).font("Helvetica-Bold").text(product, innerX + 28, y + 14, { width: innerW / 2 - 40 });
-    doc.fillColor(MUTED).fontSize(9).font("Helvetica").text(`Order: ${orderRef}`, innerX + 28, y + 34);
-    if (serial) doc.text(`Serial: ${serial}`, innerX + 28, y + 48);
-
-    doc.fillColor(VIOLET).fontSize(8).font("Helvetica-Bold").text("CERTIFICATE HOLDER", innerX + innerW / 2 + 12, y, {
-      width: innerW / 2 - 40,
-      align: "right",
+    y += 48;
+    doc.roundedRect(innerX + 8, y, innerW - 16, 52, 6).fill("#faf5ff").strokeColor("#ede9fe").lineWidth(0.8);
+    doc.fillColor(VIOLET).fontSize(7).font("Helvetica-Bold").text("PROTECTED PRODUCT", innerX + 18, y + 10);
+    doc.fillColor(INK).fontSize(12).font("Helvetica-Bold").text(product, innerX + 18, y + 22, {
+      width: innerW - 36,
     });
-    doc.fillColor(INK).fontSize(13).font("Helvetica-Bold").text(customer, innerX + innerW / 2 + 12, y + 14, {
-      width: innerW / 2 - 40,
-      align: "right",
-    });
-    if (phone) {
-      doc.fillColor(MUTED).fontSize(9).font("Helvetica").text(phone, innerX + innerW / 2 + 12, y + 34, {
-        width: innerW / 2 - 40,
-        align: "right",
-      });
-    }
+    doc.fillColor(MUTED).fontSize(8).font("Helvetica").text(`Order: ${orderRef}${serial ? `  ·  Serial: ${serial}` : ""}`, innerX + 18, y + 40);
 
-    y += 78;
-    doc.moveTo(innerX + 24, y).lineTo(innerX + innerW - 24, y).lineWidth(1).strokeColor("#ede9fe").stroke();
-    y += 22;
+    y += 64;
+    const colW = (innerW - 24) / 2;
+    doc.roundedRect(innerX + 8, y, colW, 48, 5).fill("#ffffff").strokeColor("#ede9fe").lineWidth(0.8);
+    doc.fillColor(VIOLET).fontSize(7).font("Helvetica-Bold").text("CERTIFICATE HOLDER", innerX + 16, y + 8);
+    doc.fillColor(INK).fontSize(11).font("Helvetica-Bold").text(customer, innerX + 16, y + 20, { width: colW - 16 });
+    if (phone) doc.fillColor(MUTED).fontSize(8).font("Helvetica").text(phone, innerX + 16, y + 36, { width: colW - 16 });
 
-    doc.fillColor("#059669").fontSize(8).font("Helvetica-Bold").text("ISSUE DATE", innerX + 28, y);
-    doc.fillColor(INK).fontSize(14).font("Helvetica-Bold").text(purchase, innerX + 28, y + 12);
+    doc.roundedRect(innerX + 16 + colW, y, colW, 48, 5).fill("#ffffff").strokeColor("#ede9fe").lineWidth(0.8);
+    doc.fillColor(VIOLET).fontSize(7).font("Helvetica-Bold").text("ISSUED BY", innerX + 24 + colW, y + 8);
+    doc.fillColor(INK).fontSize(11).font("Helvetica-Bold").text(brand, innerX + 24 + colW, y + 20, { width: colW - 16 });
+    doc.fillColor(MUTED).fontSize(8).font("Helvetica").text("Digital warranty registry", innerX + 24 + colW, y + 36);
 
-    doc.fillColor("#be123c").fontSize(8).font("Helvetica-Bold").text("VALID UNTIL", innerX + 28, y + 44);
-    doc.fillColor(INK).fontSize(14).font("Helvetica-Bold").text(expires, innerX + 28, y + 56);
+    y += 60;
+    const thirdW = (innerW - 32) / 3;
+    doc.roundedRect(innerX + 8, y, thirdW, 42, 5).fill("#f0fdf4").strokeColor("#a7f3d0").lineWidth(0.6);
+    doc.fillColor("#059669").fontSize(7).font("Helvetica-Bold").text("COVERAGE STARTS", innerX + 14, y + 8);
+    doc.fillColor(INK).fontSize(13).font("Helvetica-Bold").text(purchase, innerX + 14, y + 22);
 
-    doc.fillColor(MUTED).fontSize(8).font("Helvetica").text("Authorized signature", innerX + innerW - 180, y + 52, {
-      width: 160,
+    doc.roundedRect(innerX + 12 + thirdW, y, thirdW, 42, 5).fill("#fff1f2").strokeColor("#fecdd3").lineWidth(0.6);
+    doc.fillColor("#be123c").fontSize(7).font("Helvetica-Bold").text("VALID UNTIL", innerX + 18 + thirdW, y + 8);
+    doc.fillColor(INK).fontSize(13).font("Helvetica-Bold").text(expires, innerX + 18 + thirdW, y + 22);
+
+    doc.fillColor(MUTED).fontSize(7).font("Helvetica").text("Authorized signature", innerX + 20 + thirdW * 2, y + 28, {
+      width: thirdW - 8,
       align: "center",
     });
-    doc.moveTo(innerX + innerW - 170, y + 48).lineTo(innerX + innerW - 30, y + 48).lineWidth(1).strokeColor("#c4b5fd").stroke();
+    doc.moveTo(innerX + 24 + thirdW * 2, y + 24).lineTo(innerX + 16 + thirdW * 3, y + 24).lineWidth(0.8).strokeColor(VIOLET_LIGHT).stroke();
 
-    y = innerY + innerH - 36;
-    doc.fillColor("#94a3b8").fontSize(8).font("Helvetica").text(
-      `Digitally issued · ${brand} · Retain for warranty claims`,
+    const footY = frameY + frameH - 42;
+    doc.moveTo(innerX, footY).lineTo(innerX + innerW, footY).lineWidth(0.5).strokeColor("#ede9fe").stroke();
+    doc.fillColor("#94a3b8").fontSize(7.5).font("Helvetica").text(
+      `Digitally issued · Retain for warranty claims · ${brand}`,
       innerX,
-      y,
+      footY + 12,
       { width: innerW, align: "center" }
     );
 

@@ -498,7 +498,18 @@ router.get('/leads', protect, apiCache(30), async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
-        const { limit = 20, search = '', page = 1, tag, segmentScore, lastSeen, sortBy, importBatchId } = req.query;
+        const {
+          limit = 20,
+          search = '',
+          page = 1,
+          tag,
+          segmentScore,
+          lastSeen,
+          sortBy,
+          importBatchId,
+          optStatus,
+          hasPhone,
+        } = req.query;
         const { resolveImportBatchObjectId } = require('../utils/importBatchResolver');
         let resolvedImportBatch = null;
         if (importBatchId) {
@@ -516,6 +527,8 @@ router.get('/leads', protect, apiCache(30), async (req, res) => {
             page,
             limit,
             importBatchId: resolvedImportBatch,
+            optStatus,
+            hasPhone,
         });
 
     timer.finish(`200 ok | page=${payload.currentPage} count=${payload.leads.length}`);
@@ -1746,8 +1759,25 @@ router.get('/optin-overview', protect, async (req, res) => {
         { $group: { _id: '$optStatus', count: { $sum: 1 } } },
       ]),
       AdLead.aggregate([
-        { $match: { clientId } },
-        { $group: { _id: '$optInSource', count: { $sum: 1 } } },
+        { $match: { clientId, optStatus: 'opted_in' } },
+        {
+          $group: {
+            _id: {
+              $cond: [
+                {
+                  $or: [
+                    { $eq: ['$optInSource', null] },
+                    { $eq: ['$optInSource', ''] },
+                    { $eq: ['$optInSource', 'unknown'] },
+                  ],
+                },
+                'unknown',
+                '$optInSource',
+              ],
+            },
+            count: { $sum: 1 },
+          },
+        },
         { $sort: { count: -1 } },
         { $limit: 20 },
       ]),

@@ -319,8 +319,16 @@ function mergeFlowsListForDashboard(dbFlows, visualFlows = [], flowFolders = [])
       isActive: f.status === "PUBLISHED",
       status: f.status || "DRAFT",
       version: f.version || 1,
-      nodeCount: Array.isArray(f.nodes) ? f.nodes.length : f.publishedNodes?.length || 0,
-      edgeCount: Array.isArray(f.edges) ? f.edges.length : f.publishedEdges?.length || 0,
+      nodeCount: Array.isArray(f.nodes) && f.nodes.length
+        ? f.nodes.length
+        : Array.isArray(f.publishedNodes)
+          ? f.publishedNodes.length
+          : 0,
+      edgeCount: Array.isArray(f.edges) && f.edges.length
+        ? f.edges.length
+        : Array.isArray(f.publishedEdges)
+          ? f.publishedEdges.length
+          : 0,
       createdAt: f.createdAt,
       updatedAt: f.updatedAt,
       lastSyncedAt: f.lastSyncedAt,
