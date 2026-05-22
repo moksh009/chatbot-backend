@@ -30,7 +30,7 @@ const intentRuleSchema = new mongoose.Schema({
   actions: [{
     actionType: {
       type: String,
-      enum: ['TAG_CHAT', 'ASSIGN_AGENT', 'SEND_TEMPLATE', 'PAUSE_BOT', 'NOTIFY_TEAM', 'TRIGGER_FLOW', 'ENROLL_SEQUENCE'],
+      enum: ['TAG_CHAT', 'ASSIGN_AGENT', 'SEND_MESSAGE', 'SEND_TEMPLATE', 'PAUSE_BOT', 'NOTIFY_TEAM', 'TRIGGER_FLOW', 'ENROLL_SEQUENCE'],
       required: true
     },
     payload: {

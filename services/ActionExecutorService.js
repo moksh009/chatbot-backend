@@ -91,6 +91,42 @@ class ActionExecutorService {
         console.log(`[ActionExecutor] PAUSE_BOT: Automation suspended for ${phoneNumber}`);
         break;
 
+      case 'SEND_MESSAGE': {
+        const body = String(payload?.message || '').trim();
+        if (!body) {
+          console.warn(`[ActionExecutor] SEND_MESSAGE: Empty message for ${phoneNumber}`);
+          break;
+        }
+        const { getCachedClientForWhatsAppSend } = require('../utils/clientCache');
+        const { createMessage } = require('../utils/createMessage');
+        const client = await getCachedClientForWhatsAppSend(clientId.toString());
+        if (!client) {
+          console.warn(`[ActionExecutor] SEND_MESSAGE: Client not found ${clientId}`);
+          break;
+        }
+        const conv = await Conversation.findOne({
+          clientId: clientId.toString(),
+          phone: phoneNumber,
+        })
+          .select('_id phone')
+          .lean();
+        const WhatsApp = require('../utils/whatsapp');
+        await WhatsApp.sendText(client, phoneNumber, body);
+        if (conv?._id) {
+          await createMessage({
+            clientId: clientId.toString(),
+            conversationId: conv._id,
+            phone: phoneNumber,
+            direction: 'outgoing',
+            type: 'text',
+            body,
+            metadata: { intent_action: 'SEND_MESSAGE' },
+          });
+        }
+        console.log(`[ActionExecutor] SEND_MESSAGE: Sent to ${phoneNumber}`);
+        break;
+      }
+
       case 'SEND_TEMPLATE':
         // Placeholder for WhatsApp API call
         console.log(`[ActionExecutor] SEND_TEMPLATE: Sending ${payload.templateId} to ${phoneNumber}`);
