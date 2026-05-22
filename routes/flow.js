@@ -716,17 +716,68 @@ router.get('/flows', protect, apiCache(30), async (req, res) => {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
-    const merged = mergeFlowsListForDashboard(dbFlows, client.visualFlows || [], client.flowFolders || []);
-    const formattedFlows = merged.flows.map((f) => ({
-      ...f,
-      ...(lite ? {} : (() => {
-        const doc = dbFlows.find((d) => d.flowId === f.id);
-        const vf = (client.visualFlows || []).find((v) => v.id === f.id);
-        const nodes = doc?.nodes?.length ? doc.nodes : vf?.nodes || [];
-        const edges = doc?.edges?.length ? doc.edges : vf?.edges || [];
-        return { nodes, edges };
-      })()),
-    }));
+    const { resolveFlowGraphByRef } = require('../utils/flowGraphResolver');
+    const sources = {
+      whatsappFlows: dbFlows,
+      visualFlows: client.visualFlows || [],
+      legacyNodes: client.flowNodes || [],
+      legacyEdges: client.flowEdges || [],
+      flowFolders: client.flowFolders || [],
+    };
+
+    const merged = mergeFlowsListForDashboard(
+      dbFlows,
+      client.visualFlows || [],
+      client.flowFolders || [],
+      client.flowNodes || [],
+      client.flowEdges || []
+    );
+
+    const formattedFlows = [];
+    for (const f of merged.flows) {
+      let row = {
+        ...f,
+        ...(lite
+          ? {}
+          : (() => {
+              const doc = dbFlows.find((d) => d.flowId === f.id);
+              const vf = (client.visualFlows || []).find((v) => v.id === f.id);
+              const nodes = doc?.nodes?.length
+                ? doc.nodes
+                : doc?.publishedNodes?.length
+                  ? doc.publishedNodes
+                  : vf?.nodes || [];
+              const edges = doc?.edges?.length
+                ? doc.edges
+                : doc?.publishedEdges?.length
+                  ? doc.publishedEdges
+                  : vf?.edges || [];
+              return { nodes, edges };
+            })()),
+      };
+
+      if (!row.nodeCount || !row.edgeCount) {
+        try {
+          const resolved = await resolveFlowGraphByRef(clientId, f.id, { sources });
+          if (resolved?.nodes?.length) {
+            const { resolveFlowListCounts: countPair } = require('../utils/flowGraphResolver');
+            const c = countPair(resolved.nodes, null, resolved.edges || [], null, row);
+            if (c.nodeCount > 0 || c.edgeCount > 0) {
+              row = {
+                ...row,
+                nodeCount: Math.max(row.nodeCount || 0, c.nodeCount),
+                edgeCount: Math.max(row.edgeCount || 0, c.edgeCount),
+                graphSource: 'resolved',
+              };
+            }
+          }
+        } catch (resolveErr) {
+          console.warn(`[Flow API] List count resolve failed for ${f.id}:`, resolveErr.message);
+        }
+      }
+
+      formattedFlows.push(row);
+    }
 
     res.json({
       success: true,
@@ -794,6 +845,90 @@ router.post('/:flowId/duplicate', protect, async (req, res) => {
   }
 });
 
+async function runFlowOrganizeForClient(clientId, flowId) {
+  const { applyCanvasLayout, countOrphanLayoutNodes } = require('../utils/flowLayoutOrganize');
+  const { loadClientFlowSources, resolveFlowGraphByRef } = require('../utils/flowGraphResolver');
+  const { persistFlowCanvasGraph } = require('../utils/flowLayoutPersist');
+  const { autoPatchMpmFlowNodes } = require('../utils/flowMpmPatch');
+  const sources = await loadClientFlowSources(clientId);
+  let resolved = await resolveFlowGraphByRef(clientId, flowId, { sources });
+  if (!resolved?.nodes?.length) {
+    const { getCachedFlowGraphAsync } = require('../utils/flowGraphCache');
+    const cached = await getCachedFlowGraphAsync(clientId, flowId);
+    if (cached?.nodes?.length) {
+      resolved = {
+        id: flowId,
+        name: cached.name,
+        nodes: cached.nodes,
+        edges: cached.edges || [],
+        status: cached.status,
+        platform: cached.platform,
+      };
+    }
+  }
+  if (!resolved?.nodes?.length) {
+    return { error: { status: 404, message: 'Flow not found' } };
+  }
+
+  const layout = applyCanvasLayout(resolved.nodes, resolved.edges || [], {
+    keepPositions: true,
+    addEntryEdges: true,
+    stampSections: true,
+    force: true,
+  });
+
+  let nodes = layout.nodes;
+  let edges = layout.edges;
+
+  const mpmResult = await autoPatchMpmFlowNodes(clientId, { flowId });
+  if (mpmResult?.nodes?.length) {
+    nodes = mpmResult.nodes;
+  }
+
+  await persistFlowCanvasGraph(clientId, flowId, nodes, edges, {
+    name: resolved.name,
+    platform: resolved.platform,
+    status: resolved.status,
+    layoutSpecVersion: layout.layoutSpecVersion,
+  });
+  await clearClientCache(clientId);
+
+  return {
+    success: true,
+    flow: { id: flowId, nodes, edges },
+    layoutSpecVersion: layout.layoutSpecVersion,
+    orphansBefore: layout.orphansBefore,
+    orphansAfter: countOrphanLayoutNodes(nodes),
+    folderCount: nodes.filter((n) => n.type === 'folder').length,
+    mpmPatched: mpmResult?.patched || 0,
+    mpmNodesTotal: mpmResult?.mpmNodesTotal,
+    mpmNodesWithIds: mpmResult?.mpmNodesWithIds,
+    mpmNodeIdsMissing: mpmResult?.mpmNodeIdsMissing || [],
+  };
+}
+
+// POST /api/flow/flows/:flowId/organize — folderize orphan nodes + optional MPM product fill
+async function handleFlowOrganize(req, res) {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized access to flows' });
+    }
+    const { flowId } = req.params;
+    const result = await runFlowOrganizeForClient(clientId, flowId);
+    if (result.error) {
+      return res.status(result.error.status).json({ success: false, message: result.error.message });
+    }
+    res.json(result);
+  } catch (error) {
+    console.error('[Flow API] Organize error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+router.post('/flows/:flowId/organize', protect, handleFlowOrganize);
+router.post('/:flowId/organize', protect, handleFlowOrganize);
+
 // GET /api/flow/flows/:flowId/graph — full nodes/edges for one flow (Flow Builder canvas)
 router.get('/flows/:flowId/graph', protect, apiCache(30), async (req, res) => {
   const { createTimer } = require('../utils/perfLogger');
@@ -806,12 +941,13 @@ router.get('/flows/:flowId/graph', protect, apiCache(30), async (req, res) => {
     }
     const { flowId } = req.params;
 
+    const { flattenFlowNodes, resolveFlowGraphByRef, loadClientFlowSources } = require('../utils/flowGraphResolver');
+
     let flowPayload = await timer.time('flow_graph_cache', () =>
       getCachedFlowGraphAsync(clientId, flowId)
     );
 
-    if (!flowPayload) {
-      const { resolveFlowGraphByRef, loadClientFlowSources } = require('../utils/flowGraphResolver');
+    if (!flowPayload?.nodes?.length) {
       const sources = await loadClientFlowSources(clientId);
       const resolved = await resolveFlowGraphByRef(clientId, flowId, { sources });
       if (!resolved?.nodes?.length) {
@@ -820,6 +956,7 @@ router.get('/flows/:flowId/graph', protect, apiCache(30), async (req, res) => {
       }
       const waDoc = sources.whatsappFlows.find((d) => d.flowId === flowId);
       const vf = sources.visualFlows.find((v) => v.id === flowId);
+      const flatNodes = resolved.nodes;
       flowPayload = {
         flowId: resolved.id || flowId,
         name: resolved.name || waDoc?.name || vf?.name || 'Flow',
@@ -827,13 +964,35 @@ router.get('/flows/:flowId/graph', protect, apiCache(30), async (req, res) => {
         folderId: waDoc?.folderId || vf?.folderId || '',
         status: resolved.status || waDoc?.status || (vf?.isActive ? 'PUBLISHED' : 'DRAFT'),
         version: waDoc?.version || vf?.version || 1,
-        nodes: waDoc?.nodes?.length ? waDoc.nodes : vf?.nodes || resolved.nodes,
-        edges: waDoc?.edges?.length ? waDoc.edges : vf?.edges || resolved.edges,
+        nodes: flatNodes,
+        edges: resolved.edges || [],
         createdAt: waDoc?.createdAt || vf?.createdAt,
         updatedAt: waDoc?.updatedAt || vf?.updatedAt,
         lastSyncedAt: waDoc?.lastSyncedAt,
       };
       setCachedFlowGraph(clientId, flowId, flowPayload);
+    }
+
+    const { applyCanvasLayout } = require('../utils/flowLayoutOrganize');
+    const { persistFlowCanvasGraph } = require('../utils/flowLayoutPersist');
+    const layout = applyCanvasLayout(flowPayload.nodes || [], flowPayload.edges || [], {
+      keepPositions: true,
+      addEntryEdges: true,
+      stampSections: true,
+    });
+    const displayNodes = layout.nodes;
+    const displayEdges = layout.edges;
+    const flatCount = flattenFlowNodes(displayNodes).length;
+
+    if (layout.layoutApplied && layout.orphansBefore > 0) {
+      persistFlowCanvasGraph(clientId, flowId, displayNodes, displayEdges, {
+        name: flowPayload.name,
+        platform: flowPayload.platform,
+        status: flowPayload.status,
+        layoutSpecVersion: layout.layoutSpecVersion,
+      })
+        .then(() => clearClientCache(clientId))
+        .catch((err) => console.warn('[Flow API] layout persist:', err?.message));
     }
 
     res.json({
@@ -846,10 +1005,13 @@ router.get('/flows/:flowId/graph', protect, apiCache(30), async (req, res) => {
         isActive: flowPayload.status === 'PUBLISHED',
         status: flowPayload.status || 'DRAFT',
         version: flowPayload.version || 1,
-        nodes: flowPayload.nodes || [],
-        edges: flowPayload.edges || [],
-        nodeCount: (flowPayload.nodes || []).length,
-        edgeCount: (flowPayload.edges || []).length,
+        nodes: displayNodes,
+        edges: displayEdges,
+        nodeCount: flatCount || displayNodes.length,
+        edgeCount: displayEdges.length,
+        layoutSpecVersion: layout.layoutSpecVersion,
+        layoutOrganized: layout.layoutApplied,
+        orphansBeforeLayout: layout.orphansBefore,
         createdAt: flowPayload.createdAt,
         updatedAt: flowPayload.updatedAt,
         lastSyncedAt: flowPayload.lastSyncedAt,

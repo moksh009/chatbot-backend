@@ -72,6 +72,8 @@ const WhatsAppFlowSchema = new mongoose.Schema({
   isAutomation: { type: Boolean, default: false },
   automationTrigger: { type: String, default: '' },
   generatedBy: { type: String, default: '' },
+  /** Unified canvas folder taxonomy version (editor-only layout). */
+  layoutSpecVersion: { type: String, default: '' },
   createdAt: {
     type: Date,
     default: Date.now

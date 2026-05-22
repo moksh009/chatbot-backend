@@ -1298,7 +1298,10 @@ router.patch('/my-settings', protect, async (req, res) => {
     // Partial flow graph merge (autosave) — avoids sending full visualFlows payloads
     if (flowDraft && flowDraft.flowId) {
       const WhatsAppFlow = require('../models/WhatsAppFlow');
+      const { flattenFlowNodes } = require('../utils/flowGraphResolver');
       const { flowId, nodes = [], edges = [], syncLiveGraph } = flowDraft;
+      const flatSteps = flattenFlowNodes(nodes).length;
+      const linkCount = Array.isArray(edges) ? edges.length : 0;
       const wfExisting = await WhatsAppFlow.findOne({ clientId: targetClientId, flowId }).lean();
       const flowName = wfExisting?.name || 'Automation';
 
@@ -1336,6 +1339,8 @@ router.patch('/my-settings', protect, async (req, res) => {
         isActive: ix >= 0 ? !!vf[ix].isActive : false,
         nodes,
         edges,
+        nodeCount: flatSteps,
+        edgeCount: linkCount,
         updatedAt: new Date(),
       };
       if (ix >= 0) vf[ix] = patchFlow;
@@ -1619,18 +1624,50 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (visualFlows !== undefined && Array.isArray(visualFlows)) {
       const WhatsAppFlow = require('../models/WhatsAppFlow');
       for (const f of visualFlows) {
+        if (!f?.id) continue;
+        const existing = await WhatsAppFlow.findOne({
+          flowId: f.id,
+          clientId: targetClientId,
+        })
+          .select('nodes edges publishedNodes publishedEdges')
+          .lean();
+
+        const incomingNodes = Array.isArray(f.nodes) ? f.nodes : [];
+        const incomingEdges = Array.isArray(f.edges) ? f.edges : [];
+        const metaCount = Number(f.nodeCount) || 0;
+
+        let nodes = incomingNodes;
+        let edges = incomingEdges;
+        if (!nodes.length) {
+          if (existing?.nodes?.length) nodes = existing.nodes;
+          else if (existing?.publishedNodes?.length) nodes = existing.publishedNodes;
+        }
+        if (!edges.length) {
+          if (existing?.edges?.length) edges = existing.edges;
+          else if (existing?.publishedEdges?.length) edges = existing.publishedEdges;
+        }
+        if (!nodes.length && metaCount > 0) {
+          continue;
+        }
+
+        const setPayload = {
+          name: f.name || 'Untitled Flow',
+          platform: f.platform || 'whatsapp',
+          folderId: f.folderId || null,
+          status: f.isActive ? 'PUBLISHED' : 'DRAFT',
+        };
+        if (nodes.length) {
+          setPayload.nodes = nodes;
+          setPayload.edges = edges;
+          if (f.isActive) {
+            setPayload.publishedNodes = nodes;
+            setPayload.publishedEdges = edges;
+          }
+        }
+
         await WhatsAppFlow.findOneAndUpdate(
           { flowId: f.id, clientId: targetClientId },
-          {
-            $set: {
-              name: f.name || 'Untitled Flow',
-              platform: f.platform || 'whatsapp',
-              folderId: f.folderId || null,
-              status: f.isActive ? 'PUBLISHED' : 'DRAFT',
-              nodes: f.nodes || [],
-              edges: f.edges || []
-            }
-          },
+          { $set: setPayload },
           { upsert: true }
         );
       }
@@ -2775,16 +2812,42 @@ router.get('/audit-logs', protect, authorize('SUPER_ADMIN', 'CLIENT_ADMIN'), asy
 // POST /admin/test-whatsapp — Validates Meta Graph API credentials (phone + optional WABA ownership)
 router.post('/test-whatsapp', protect, async (req, res) => {
   try {
-    const { phoneNumberId, whatsappToken, wabaId } = req.body;
-    if (!phoneNumberId || !whatsappToken) {
-      return res.status(400).json({ success: false, message: 'Phone Number ID and Access Token are required.' });
+    let { phoneNumberId, whatsappToken, wabaId, clientId: bodyClientId } = req.body;
+    const targetClientId =
+      req.user.role === 'SUPER_ADMIN' && bodyClientId ? String(bodyClientId).trim() : req.user.clientId;
+
+    let effPid = String(phoneNumberId || '').trim();
+    let effTok = String(whatsappToken || '').trim();
+    let effWaba = String(wabaId || '').trim();
+
+    if ((!effTok || effTok === '••••••••') && targetClientId) {
+      const existing = await Client.findOne({ clientId: targetClientId })
+        .select('phoneNumberId wabaId whatsappToken')
+        .lean();
+      if (existing) {
+        if (!effPid) effPid = String(existing.phoneNumberId || '').trim();
+        if (!effWaba) effWaba = String(existing.wabaId || '').trim();
+        try {
+          const { decrypt } = require('../utils/encryption');
+          effTok = decrypt(existing.whatsappToken || '') || '';
+        } catch (_) {
+          effTok = '';
+        }
+      }
+    }
+
+    if (!effPid || !effTok) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone Number ID and Access Token are required. Paste your permanent token if updating an existing connection.',
+      });
     }
 
     const { validateWhatsAppCloudCredentials } = require('../utils/whatsappMetaValidate');
     const v = await validateWhatsAppCloudCredentials({
-      phoneNumberId,
-      whatsappToken,
-      wabaId: wabaId || '',
+      phoneNumberId: effPid,
+      whatsappToken: effTok,
+      wabaId: effWaba || '',
     });
 
     if (!v.ok) {

@@ -5,6 +5,13 @@ const { normalizePhone } = require('./helpers');
 const { sendNotifications } = require('./warrantyService');
 const log = require('./logger')('WarrantyEngine');
 
+function durationMonthsForProduct(batch, productId) {
+    const id = String(productId);
+    const rule = (batch.productRules || []).find((r) => String(r.shopifyProductId) === id);
+    if (rule?.durationMonths) return Number(rule.durationMonths);
+    return Number(batch.durationMonths) || 12;
+}
+
 /**
  * Enterprise Warranty Auto-Assign Engine
  * Automatically processes fulfilled orders to generate warranty certificates based on active batches.
@@ -70,8 +77,9 @@ async function processWarrantyAutoAssignment(client, data) {
                     continue;
                 }
 
+                const months = durationMonthsForProduct(batch, productId);
                 const expiryDate = new Date(orderDate);
-                expiryDate.setMonth(expiryDate.getMonth() + batch.durationMonths);
+                expiryDate.setMonth(expiryDate.getMonth() + months);
 
                 const record = await WarrantyRecord.create({
                     clientId: client.clientId,

@@ -270,11 +270,13 @@ function buildAiUpdate(wizardData = {}, generatedSystemPrompt = "") {
     out.systemPrompt       = generatedSystemPrompt;
   }
 
-  // Gemini key — canonical at ai.geminiKey; legacy mirrors for older code paths.
   if (wizardData.geminiApiKey) {
     out["ai.geminiKey"] = wizardData.geminiApiKey;
-    out.geminiApiKey    = wizardData.geminiApiKey;
-    out.openaiApiKey    = wizardData.geminiApiKey;
+    out.geminiApiKey = wizardData.geminiApiKey;
+  }
+  if (wizardData.openaiApiKey) {
+    out["ai.openaiKey"] = wizardData.openaiApiKey;
+    out.openaiApiKey = wizardData.openaiApiKey;
   }
 
   setBool(out, "ai.fallbackEnabled", wizardData.enableAIFallback);

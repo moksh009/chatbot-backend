@@ -1,7 +1,10 @@
 "use strict";
 
+const { buildIndustryWelcomeA } = require("./industryWelcome");
+
 function buildEcommerceDefaults(ctx) {
   const { F, riskPosture = "balanced" } = ctx || {};
+  const industryWelcome = buildIndustryWelcomeA(ctx);
 
   const cart2 =
     riskPosture === "conservative"
@@ -30,8 +33,7 @@ function buildEcommerceDefaults(ctx) {
     livechat_queue_body:
       "You’re queued for a live agent at *{{brand_name}}*. When you’re finished with them, send *menu* and I’ll take the wheel again.",
 
-    welcome_a:
-      `Hi {{first_name}} 👋 *{{brand_name}}* here — I’m *{{bot_name}}*, your WhatsApp concierge.\n\n⚡ *Attention:* everything you need is one tap away.\n\n*Interest:* browse, track, or talk to a human — no forms, no hold music.\n\nPick below and I’ll route you instantly.`,
+    welcome_a: industryWelcome,
     welcome_b: `🛍️ *{{brand_name}}* — curated picks, fast support, zero fluff. Tap *menu* when you’re ready to shop.`,
     product_menu_text: `*{{brand_name}}* hub — what should we tackle first?`,
     order_status_msg:

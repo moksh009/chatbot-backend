@@ -12,7 +12,12 @@ const warrantyBatchSchema = new mongoose.Schema({
     trim: true
   },
   shopifyProductIds: [{
-    type: String // or Number if preferred, but Shopify IDs are often handled as strings in JS
+    type: String
+  }],
+  /** Per-SKU warranty length — each product in this batch has its own duration. */
+  productRules: [{
+    shopifyProductId: { type: String, required: true },
+    durationMonths: { type: Number, required: true, min: 1, max: 120 },
   }],
   durationMonths: {
     type: Number,

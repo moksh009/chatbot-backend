@@ -10,7 +10,7 @@ const FLOW_DESCRIPTION = "Keyword + first_message welcome (3-button hub), Meta M
 
 const apexLightOwnerFlowInstallPack = require("./apexLightOwnerFlowInstallPack");
 const { injectApexCatalogGraph } = require("./apexCatalogSlots");
-const { folderizeApexFlowGraph } = require("../utils/apexFlowFolderize");
+const { organizeFlowGraph } = require("../utils/flowLayoutOrganize");
 const {
   stripEditorOnlyNodes,
   pruneFlowGraphToReachable,
@@ -2445,7 +2445,10 @@ function buildFlow() {
       b.id === "f_start" ? { id: "f_explore", title: "Explore products" } : b
     );
   }
-  const folderized = folderizeApexFlowGraph(strippedNodes, strippedEdges);
+  const folderized = organizeFlowGraph(strippedNodes, strippedEdges, {
+    keepPositions: true,
+    addEntryEdges: true,
+  });
   const withoutStickies = stripEditorOnlyNodes(
     folderized.nodes,
     folderized.edges

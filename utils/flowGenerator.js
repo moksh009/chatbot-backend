@@ -431,6 +431,7 @@ function buildIDs(client, wizardData) {
     trig_fulfill:     `trig_fulfill_${ts}`,
     // Welcome / menu
     welcome:          `welcome_${ts}`,
+    welcome_msg:      `welcome_msg_${ts}`,
     ad_welcome:       `ad_welcome_${ts}`,
     ig_welcome:       `ig_welcome_${ts}`,
     main_menu:        `main_menu_${ts}`,
@@ -582,7 +583,12 @@ function normalizeWelcomeCopy(raw, ctx) {
   const text = String(raw || "").trim();
   const hasAidaJargon = /\battention:|\binterest:|\bdesire:|\baction:/i.test(text);
   if (!text || hasAidaJargon) {
-    return `Hi {{first_name}} 👋 Welcome to ${brand}.\nI am ${bot}. I can help you browse products, track an order, or connect you to support.\nTap an option below to continue.`;
+    try {
+      const { buildIndustryWelcomeA } = require("./copyPacks/industryWelcome");
+      return buildIndustryWelcomeA(ctx);
+    } catch (_) {
+      return `Hi {{first_name}} 👋 Welcome to ${brand}.\nI am ${bot}. I can help you browse products, track an order, or connect you to support.\nTap an option below to continue.`;
+    }
   }
   return text;
 }
@@ -723,6 +729,13 @@ function buildEntry(ctx, IDS, content, welcomeTemplate) {
       client.businessLogo ||
       ""
   );
+  const welcomeText = normalizeWelcomeCopy(content.welcome_a, ctx);
+  const welcomeCaption = String(welcomeText || "")
+    .split("\n")
+    .slice(0, 2)
+    .join("\n")
+    .substring(0, 900);
+
   if (wTpl) {
     nodes.push({
       id: IDS.welcome, type: "template", position: flowPos(2, 5),
@@ -734,13 +747,25 @@ function buildEntry(ctx, IDS, content, welcomeTemplate) {
         heatmapCount: 0
       }
     });
-  } else {
-    // No separate "Open menu" tap — main hub list is the first message (built in buildMainMenu).
-    edges.push({ id: `e_${IDS.trig_main}_mm`, source: IDS.trig_main, target: IDS.main_menu });
-  }
-  if (wTpl) {
     edges.push({ id: `e_${IDS.trig_main}_w`, source: IDS.trig_main, target: IDS.welcome });
     edges.push({ id: `e_${IDS.welcome}_mm_tpl`, source: IDS.welcome, target: IDS.main_menu });
+  } else if (safeWelcomeImage) {
+    ctx.hasWelcomeBrandImage = true;
+    nodes.push({
+      id: IDS.welcome_msg,
+      type: "message",
+      position: flowPos(2, 5),
+      data: {
+        label: "Welcome (brand image)",
+        text: welcomeCaption || `Hi {{first_name}} 👋 Welcome to {{brand_name}}.`,
+        imageUrl: safeWelcomeImage,
+        heatmapCount: 0,
+      },
+    });
+    edges.push({ id: `e_${IDS.trig_main}_wm`, source: IDS.trig_main, target: IDS.welcome_msg });
+    edges.push({ id: `e_${IDS.welcome_msg}_mm`, source: IDS.welcome_msg, target: IDS.main_menu });
+  } else {
+    edges.push({ id: `e_${IDS.trig_main}_mm`, source: IDS.trig_main, target: IDS.main_menu });
   }
 
   return { nodes, edges, label: "Welcome → {{brand_name}}", hasWelcomeTemplate: !!wTpl };
@@ -757,7 +782,9 @@ function buildMainMenu(ctx, IDS, menuRows, content = {}) {
       client.businessLogo ||
       ""
   );
-  const welcomeText = normalizeWelcomeCopy(content.welcome_a, ctx);
+  const welcomeText = ctx.hasWelcomeBrandImage
+    ? String(content.product_menu_text || `*${ctx.businessName || "our store"}* — what would you like to do?`).trim()
+    : normalizeWelcomeCopy(content.welcome_a, ctx);
   const node = {
     id: IDS.main_menu,
     type: "interactive",
@@ -2594,8 +2621,9 @@ async function generateEcommerceFlow(client, wizardData = {}) {
   const cleanNodes = dedupNodes.filter(n => connected.has(n.id) || n.type === "trigger" || n.id === IDS.ai_fallback);
   const cleanEdges = dedupEdges.filter(e => connected.has(e.source) && connected.has(e.target));
 
+  const { stampLayoutSections } = require("./flowLayoutOrganize");
   return {
-    nodes: cleanNodeText(cleanNodes),
+    nodes: stampLayoutSections(cleanNodeText(cleanNodes)),
     edges: cleanEdges,
     automationFlows: [],
   };
@@ -2609,13 +2637,18 @@ async function generateEcommerceFlow(client, wizardData = {}) {
 
 async function generateCommerceWizardPack(client, body = {}) {
   const { buildWizardDataFromUniversal } = require("./universalCommerceMapper");
-  const { folderizeWizardFlowGraph } = require("./wizardFlowFolderize");
+  const { organizeFlowGraph, stampLayoutSections } = require("./flowLayoutOrganize");
   const merged = buildWizardDataFromUniversal(client, body);
 
   // Keep all commerce slices in one graph — do NOT split into separate WhatsAppFlow docs.
   const mainWizard = { ...merged, _splitAutomations: false };
   const main = await generateEcommerceFlow(client, mainWizard);
-  const folderized = folderizeWizardFlowGraph(main.nodes, main.edges);
+  const stamped = stampLayoutSections(main.nodes);
+  const folderized = organizeFlowGraph(stamped, main.edges, {
+    keepPositions: true,
+    addEntryEdges: true,
+    stampSections: false,
+  });
 
   verifyAllEdgesMatchButtonIds(folderized.nodes, folderized.edges);
   if (!verifyFlowIntegrity(folderized.nodes, folderized.edges)) {

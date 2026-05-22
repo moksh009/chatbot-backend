@@ -308,8 +308,14 @@ router.patch('/step/:stepKey', protect, async (req, res) => {
           personaSystemPrompt = nextSp;
         }
       }
-      if (stepData.geminiApiKey) { pvUpdate.geminiApiKey = stepData.geminiApiKey; pvUpdate['ai.geminiKey'] = stepData.geminiApiKey; }
-      if (stepData.openaiApiKey) { pvUpdate.openaiApiKey = stepData.openaiApiKey; }
+      if (stepData.geminiApiKey) {
+        pvUpdate.geminiApiKey = stepData.geminiApiKey;
+        pvUpdate['ai.geminiKey'] = stepData.geminiApiKey;
+      }
+      if (stepData.openaiApiKey) {
+        pvUpdate.openaiApiKey = stepData.openaiApiKey;
+        pvUpdate['ai.openaiKey'] = stepData.openaiApiKey;
+      }
     }
 
     if (stepData?.faqs && Array.isArray(stepData.faqs)) {

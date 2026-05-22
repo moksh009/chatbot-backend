@@ -51,13 +51,16 @@ async function getCachedFlowGraphAsync(clientId, flowRef) {
   timer.checkpoint("START");
 
   const hit = getCachedFlowGraph(clientId, flowRef);
-  if (hit) {
+  if (hit?.nodes?.length) {
     timer.checkpoint("L1 CACHE HIT", {
       nodeCount: hit?.nodes?.length,
       edgeCount: hit?.edges?.length,
     });
     timer.finish("l1_cache_hit");
     return hit;
+  }
+  if (hit) {
+    timer.checkpoint("L1 CACHE SKIP (empty graph)");
   }
   timer.checkpoint("L1 CACHE MISS");
 
@@ -82,13 +85,17 @@ async function getCachedFlowGraphAsync(clientId, flowRef) {
       return null;
     }
     const payload = JSON.parse(raw);
-    setCachedFlowGraph(clientId, flowRef, payload);
-    timer.checkpoint("parsed + stored in L1", {
-      nodeCount: payload?.nodes?.length,
-      edgeCount: payload?.edges?.length,
-    });
-    timer.finish("redis_cache_hit");
-    return payload;
+    if (payload?.nodes?.length) {
+      setCachedFlowGraph(clientId, flowRef, payload);
+      timer.checkpoint("parsed + stored in L1", {
+        nodeCount: payload?.nodes?.length,
+        edgeCount: payload?.edges?.length,
+      });
+      timer.finish("redis_cache_hit");
+      return payload;
+    }
+    timer.finish("redis_cache_skip_empty");
+    return null;
   } catch (err) {
     timer.finish(`error: ${err.message}`);
     return null;

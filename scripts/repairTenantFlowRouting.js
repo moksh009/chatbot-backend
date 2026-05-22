@@ -31,57 +31,65 @@ function resolveClientId() {
   return positional || process.env.REPAIR_CLIENT_ID || "delitech_smarthomes";
 }
 
-function pickBestGraph(sources) {
-  const published = sources.whatsappFlows.find(
-    (f) => f.status === "PUBLISHED" && (f.publishedNodes?.length || f.nodes?.length)
-  );
-  if (published) {
-    return {
-      flowId: published.flowId,
-      name: published.name,
-      nodes: published.publishedNodes?.length ? published.publishedNodes : published.nodes,
-      edges: published.publishedEdges?.length ? published.publishedEdges : published.edges,
-      from: "whatsapp_published",
-    };
-  }
+function graphFromWaDoc(doc) {
+  if (!doc) return null;
+  const nodes = doc.publishedNodes?.length
+    ? doc.publishedNodes
+    : doc.nodes?.length
+      ? doc.nodes
+      : null;
+  if (!nodes?.length) return null;
+  return {
+    flowId: doc.flowId,
+    name: doc.name,
+    nodes,
+    edges: doc.publishedEdges?.length ? doc.publishedEdges : doc.edges || [],
+  };
+}
 
-  const activeVf = sources.visualFlows.find((f) => f.isActive && f.nodes?.length);
-  if (activeVf) {
-    return {
-      flowId: activeVf.id,
-      name: activeVf.name,
-      nodes: activeVf.nodes,
-      edges: activeVf.edges,
-      from: "visual_active",
-    };
-  }
-
-  const vf = sources.visualFlows.find((f) => f.nodes?.length);
-  if (vf) {
+function graphFromVf(vf) {
+  if (!vf) return null;
+  if (vf.nodes?.length) {
     return {
       flowId: vf.id,
       name: vf.name,
       nodes: vf.nodes,
-      edges: vf.edges,
-      from: "visual_any",
+      edges: vf.edges || [],
     };
   }
+  const metaN = Number(vf.nodeCount) || 0;
+  if (metaN > 0) return null;
+  return null;
+}
 
-  const draft = sources.whatsappFlows.find((f) => f.nodes?.length);
-  if (draft) {
-    return {
-      flowId: draft.flowId,
-      name: draft.name,
-      nodes: draft.nodes,
-      edges: draft.edges,
-      from: "whatsapp_draft",
-    };
+function pickBestGraph(sources) {
+  const published = sources.whatsappFlows.find((f) => f.status === "PUBLISHED");
+  const fromPub = graphFromWaDoc(published);
+  if (fromPub) return { ...fromPub, from: "whatsapp_published" };
+
+  const activeVf = sources.visualFlows.find((f) => f.isActive);
+  const fromActiveVf = graphFromVf(activeVf);
+  if (fromActiveVf) return { ...fromActiveVf, from: "visual_active" };
+
+  for (const doc of sources.whatsappFlows) {
+    const g = graphFromWaDoc(doc);
+    if (g) return { ...g, from: "whatsapp_any" };
+  }
+
+  for (const vf of sources.visualFlows) {
+    const g = graphFromVf(vf);
+    if (g) return { ...g, from: "visual_any" };
   }
 
   if (sources.legacyNodes.length) {
+    const activeId =
+      activeVf?.id ||
+      published?.flowId ||
+      sources.whatsappFlows[0]?.flowId ||
+      `flow_${sources.legacyNodes.length}_main`;
     return {
-      flowId: "legacy_main",
-      name: "Main automation",
+      flowId: activeId === "legacy_main" ? `flow_main_${Date.now()}` : activeId,
+      name: activeVf?.name || published?.name || "Main automation",
       nodes: sources.legacyNodes,
       edges: sources.legacyEdges,
       from: "legacy_flowNodes",

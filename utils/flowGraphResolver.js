@@ -66,6 +66,30 @@ function pickGraphFromVisualEntry(vf) {
   };
 }
 
+/** Count steps/links for list cards — best of draft, published, and stored metadata. */
+function resolveFlowListCounts(nodes, publishedNodes, edges, publishedEdges, meta = {}) {
+  const countFlatNodes = (arr) =>
+    Array.isArray(arr) && arr.length ? flattenFlowNodes(arr).length : 0;
+  const countEdges = (arr) => (Array.isArray(arr) && arr.length ? arr.length : 0);
+
+  const metaN = Number(meta.nodeCount);
+  const metaE = Number(meta.edgeCount);
+
+  const nodeCount = Math.max(
+    countFlatNodes(nodes),
+    countFlatNodes(publishedNodes),
+    Number.isFinite(metaN) && metaN > 0 ? metaN : 0
+  );
+
+  const edgeCount = Math.max(
+    countEdges(edges),
+    countEdges(publishedEdges),
+    Number.isFinite(metaE) && metaE > 0 ? metaE : 0
+  );
+
+  return { nodeCount, edgeCount };
+}
+
 /**
  * Load all flow sources for a tenant (always hits Mongo).
  */
@@ -184,8 +208,11 @@ async function resolveFlowGraphByRef(clientId, flowRef, options = {}) {
   const ref = String(flowRef);
   const sources = options.sources || (await loadClientFlowSources(clientId));
 
+  let matchedWaDoc = null;
+
   for (const doc of sources.whatsappFlows) {
     if (String(doc.flowId) !== ref && String(doc._id) !== ref) continue;
+    matchedWaDoc = doc;
     const graph = pickGraphFromFlowDoc(doc);
     if (graph) {
       return {
@@ -197,6 +224,7 @@ async function resolveFlowGraphByRef(clientId, flowRef, options = {}) {
         status: graph.status,
       };
     }
+    break;
   }
 
   const vf = sources.visualFlows.find(
@@ -211,6 +239,34 @@ async function resolveFlowGraphByRef(clientId, flowRef, options = {}) {
         nodes: flattenFlowNodes(graph.nodes),
         edges: graph.edges,
         status: graph.status,
+      };
+    }
+  }
+
+  const isActiveRef =
+    !!vf?.isActive || matchedWaDoc?.status === "PUBLISHED";
+
+  if (isActiveRef && sources.legacyNodes.length) {
+    return {
+      id: ref,
+      name: vf?.name || matchedWaDoc?.name || "Main automation",
+      nodes: flattenFlowNodes(sources.legacyNodes),
+      edges: sources.legacyEdges || [],
+      status: "PUBLISHED",
+      isLegacy: true,
+    };
+  }
+
+  if (!matchedWaDoc && !vf) {
+    const primary = await resolvePrimaryFlowGraph(clientId, { sources });
+    if (primary?.nodes?.length) {
+      return {
+        id: ref,
+        name: primary.name || "",
+        nodes: primary.nodes,
+        edges: primary.edges || [],
+        status: "PUBLISHED",
+        fromPrimary: true,
       };
     }
   }
@@ -230,8 +286,8 @@ async function resolveFlowGraphByRef(clientId, flowRef, options = {}) {
 }
 
 /** Primary live graph when conversation has no activeFlowId. */
-async function resolvePrimaryFlowGraph(clientId) {
-  const sources = await loadClientFlowSources(clientId);
+async function resolvePrimaryFlowGraph(clientId, options = {}) {
+  const sources = options.sources || (await loadClientFlowSources(clientId));
 
   const activeVf = sources.visualFlows.find((f) => f.isActive && f.nodes?.length);
   if (activeVf) {
@@ -305,12 +361,31 @@ async function resolvePrimaryFlowGraph(clientId) {
 /**
  * Merge WhatsAppFlow rows + visualFlows-only entries for Flow Builder list API.
  */
-function mergeFlowsListForDashboard(dbFlows, visualFlows = [], flowFolders = []) {
+function mergeFlowsListForDashboard(
+  dbFlows,
+  visualFlows = [],
+  flowFolders = [],
+  legacyNodes = [],
+  legacyEdges = []
+) {
   const byId = new Map();
+  const vfById = new Map(
+    (visualFlows || [])
+      .filter((v) => v?.id)
+      .map((v) => [String(v.id), v])
+  );
 
   for (const f of dbFlows || []) {
     const id = f.flowId || f.id;
     if (!id) continue;
+    const vf = vfById.get(String(id));
+    const counts = resolveFlowListCounts(
+      f.nodes,
+      f.publishedNodes,
+      f.edges,
+      f.publishedEdges,
+      vf || {}
+    );
     byId.set(String(id), {
       id,
       name: f.name,
@@ -319,16 +394,7 @@ function mergeFlowsListForDashboard(dbFlows, visualFlows = [], flowFolders = [])
       isActive: f.status === "PUBLISHED",
       status: f.status || "DRAFT",
       version: f.version || 1,
-      nodeCount: Array.isArray(f.nodes) && f.nodes.length
-        ? f.nodes.length
-        : Array.isArray(f.publishedNodes)
-          ? f.publishedNodes.length
-          : 0,
-      edgeCount: Array.isArray(f.edges) && f.edges.length
-        ? f.edges.length
-        : Array.isArray(f.publishedEdges)
-          ? f.publishedEdges.length
-          : 0,
+      ...counts,
       createdAt: f.createdAt,
       updatedAt: f.updatedAt,
       lastSyncedAt: f.lastSyncedAt,
@@ -338,7 +404,15 @@ function mergeFlowsListForDashboard(dbFlows, visualFlows = [], flowFolders = [])
 
   for (const vf of visualFlows || []) {
     const id = vf.id;
-    if (!id || byId.has(String(id))) continue;
+    if (!id) continue;
+    const counts = resolveFlowListCounts(vf.nodes, null, vf.edges, null, vf);
+    if (byId.has(String(id))) {
+      const row = byId.get(String(id));
+      row.nodeCount = Math.max(row.nodeCount || 0, counts.nodeCount);
+      row.edgeCount = Math.max(row.edgeCount || 0, counts.edgeCount);
+      if (!row.isActive && vf.isActive) row.isActive = true;
+      continue;
+    }
     byId.set(String(id), {
       id,
       name: vf.name || "Untitled flow",
@@ -347,12 +421,25 @@ function mergeFlowsListForDashboard(dbFlows, visualFlows = [], flowFolders = [])
       isActive: !!vf.isActive,
       status: vf.isActive ? "PUBLISHED" : "DRAFT",
       version: vf.version || 1,
-      nodeCount: Array.isArray(vf.nodes) ? vf.nodes.length : 0,
-      edgeCount: Array.isArray(vf.edges) ? vf.edges.length : 0,
+      ...counts,
       createdAt: vf.createdAt,
       updatedAt: vf.updatedAt,
       source: "visual_flow",
     });
+  }
+
+  const legacyFlat = legacyNodes?.length ? flattenFlowNodes(legacyNodes) : [];
+  if (legacyFlat.length > 0) {
+    const active =
+      [...byId.values()].find((f) => f.isActive) ||
+      [...byId.values()].sort(
+        (a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0)
+      )[0];
+    if (active && active.nodeCount === 0) {
+      active.nodeCount = legacyFlat.length;
+      active.edgeCount = legacyEdges?.length || 0;
+      active.graphSource = "legacy_flowNodes";
+    }
   }
 
   return {
@@ -363,6 +450,7 @@ function mergeFlowsListForDashboard(dbFlows, visualFlows = [], flowFolders = [])
 
 module.exports = {
   flattenFlowNodes,
+  resolveFlowListCounts,
   loadClientFlowSources,
   buildSlimRoutingBundles,
   loadRoutingIndexForClient,

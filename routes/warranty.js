@@ -11,6 +11,46 @@ const Client = require('../models/Client');
 const { withShopifyRetry } = require('../utils/shopifyHelper');
 
 const { normalizePhone } = require('../utils/helpers');
+const AdLead = require('../models/AdLead');
+const Order = require('../models/Order');
+
+function normalizeProductRules(body = {}) {
+    const { productRules, shopifyProductIds, durationMonths } = body;
+    if (Array.isArray(productRules) && productRules.length) {
+        return productRules
+            .map((r) => ({
+                shopifyProductId: String(r.shopifyProductId || '').trim(),
+                durationMonths: Math.max(1, Math.min(120, Number(r.durationMonths) || 12)),
+            }))
+            .filter((r) => r.shopifyProductId);
+    }
+    const ids = Array.isArray(shopifyProductIds) ? shopifyProductIds.map((id) => String(id).trim()).filter(Boolean) : [];
+    const months = Math.max(1, Math.min(120, Number(durationMonths) || 12));
+    return ids.map((shopifyProductId) => ({ shopifyProductId, durationMonths: months }));
+}
+
+async function requireShopifyConnected(clientId) {
+    const client = await Client.findOne({ clientId })
+        .select('shopifyAccessToken shopifyConnectionStatus')
+        .lean();
+    const connected =
+        String(client?.shopifyConnectionStatus || '').toLowerCase() === 'connected' &&
+        !!String(client?.shopifyAccessToken || '').trim();
+    if (!connected) {
+        const err = new Error('Connect Shopify in Channels before creating warranty batches.');
+        err.statusCode = 400;
+        throw err;
+    }
+    return client;
+}
+
+function durationMonthsForProduct(batch, productId) {
+    const id = String(productId);
+    const rule = (batch.productRules || []).find((r) => String(r.shopifyProductId) === id);
+    if (rule?.durationMonths) return Number(rule.durationMonths);
+    return Number(batch.durationMonths) || 12;
+}
+
 const parseDurationMonths = (raw) => {
     if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
     const text = String(raw || '').toLowerCase();
@@ -42,22 +82,35 @@ router.get('/batches', protect, featureWarranty, async (req, res) => {
  */
 router.post('/batches', protect, featureWarranty, async (req, res) => {
     try {
-        const { batchName, shopifyProductIds, durationMonths, validFrom, validUntil } = req.body;
+        const { batchName, validFrom, validUntil } = req.body;
         const clientId = req.user.clientId;
+        await requireShopifyConnected(clientId);
+
+        const productRules = normalizeProductRules(req.body);
+        if (!batchName || !productRules.length) {
+            return res.status(400).json({
+                success: false,
+                message: 'Batch name and at least one product with warranty duration are required.',
+            });
+        }
+
+        const maxMonths = Math.max(...productRules.map((r) => r.durationMonths));
 
         const newBatch = await WarrantyBatch.create({
             clientId,
-            batchName,
-            shopifyProductIds,
-            durationMonths,
-            validFrom: validFrom || new Date(),
-            validUntil,
-            status: 'active'
+            batchName: String(batchName).trim(),
+            shopifyProductIds: productRules.map((r) => r.shopifyProductId),
+            productRules,
+            durationMonths: maxMonths,
+            validFrom: validFrom ? new Date(validFrom) : new Date(),
+            validUntil: validUntil ? new Date(validUntil) : null,
+            status: 'active',
         });
 
         res.status(201).json({ success: true, batch: newBatch });
     } catch (err) {
-        res.status(500).json({ success: false, message: err.message });
+        const code = err.statusCode || 500;
+        res.status(code).json({ success: false, message: err.message });
     }
 });
 
@@ -89,6 +142,12 @@ router.patch('/batches/:id', protect, featureWarranty, async (req, res) => {
         if (batchName) batch.batchName = String(batchName).trim();
         if (Array.isArray(shopifyProductIds)) {
             batch.shopifyProductIds = shopifyProductIds.map((v) => String(v));
+        }
+        if (Array.isArray(req.body.productRules) && req.body.productRules.length) {
+            const rules = normalizeProductRules(req.body);
+            batch.productRules = rules;
+            batch.shopifyProductIds = rules.map((r) => r.shopifyProductId);
+            batch.durationMonths = Math.max(...rules.map((r) => r.durationMonths));
         }
         if (validFrom) batch.validFrom = new Date(validFrom);
         if (typeof validUntil !== 'undefined') {
@@ -140,10 +199,105 @@ router.get('/records', protect, featureWarranty, async (req, res) => {
         const clientId = req.user.clientId;
         const records = await WarrantyRecord.find({ clientId })
             .populate('customerId', 'name phoneNumber email')
-            .populate('batchId', 'batchName')
-            .sort({ createdAt: -1 });
-        
-        res.json({ success: true, records });
+            .populate('batchId', 'batchName productRules durationMonths')
+            .sort({ createdAt: -1 })
+            .lean();
+
+        const orderKeys = [
+            ...new Set(
+                records
+                    .map((r) => String(r.shopifyOrderId || '').trim())
+                    .filter(Boolean)
+            ),
+        ];
+        const phones = [
+            ...new Set(
+                records
+                    .map((r) => normalizePhone(r.customerId?.phoneNumber || ''))
+                    .filter(Boolean)
+            ),
+        ];
+
+        const [orders, leads] = await Promise.all([
+            orderKeys.length
+                ? Order.find({
+                      clientId,
+                      $or: [
+                          { shopifyOrderId: { $in: orderKeys } },
+                          { orderId: { $in: orderKeys } },
+                          { name: { $in: orderKeys } },
+                      ],
+                  })
+                      .select(
+                          'shopifyOrderId orderId name createdAt financialStatus fulfillmentStatus totalPrice currency lineItems customerName customerPhone customerEmail'
+                      )
+                      .lean()
+                : [],
+            phones.length
+                ? AdLead.find({ clientId, phoneNumber: { $in: phones } })
+                      .select('_id phoneNumber name')
+                      .lean()
+                : [],
+        ]);
+
+        const orderByKey = new Map();
+        for (const o of orders) {
+            for (const k of [o.shopifyOrderId, o.orderId, o.name].filter(Boolean)) {
+                orderByKey.set(String(k).trim(), o);
+            }
+        }
+        const leadByPhone = new Map(leads.map((l) => [l.phoneNumber, l]));
+
+        const enriched = records.map((r) => {
+            const phone = normalizePhone(r.customerId?.phoneNumber || '');
+            const order = orderByKey.get(String(r.shopifyOrderId || '').trim()) || null;
+            const lead = phone ? leadByPhone.get(phone) : null;
+            const lineItems = (order?.lineItems || []).map((li) => ({
+                title: li.title || li.name,
+                quantity: li.quantity,
+                price: li.price,
+                sku: li.sku,
+                productId: li.product_id || li.productId,
+            }));
+            return {
+                ...r,
+                customerName: r.customerId?.name || order?.customerName || 'Customer',
+                customerPhone: r.customerId?.phoneNumber || order?.customerPhone || '',
+                customerEmail: r.customerId?.email || order?.customerEmail || '',
+                leadId: lead?._id || null,
+                orderDetails: order
+                    ? {
+                          shopifyOrderId: order.shopifyOrderId || order.orderId || order.name,
+                          orderName: order.name || order.shopifyOrderId,
+                          placedAt: order.createdAt,
+                          financialStatus: order.financialStatus,
+                          fulfillmentStatus: order.fulfillmentStatus,
+                          totalPrice: order.totalPrice,
+                          currency: order.currency,
+                          lineItemCount: lineItems.length,
+                          lineItems,
+                      }
+                    : { shopifyOrderId: r.shopifyOrderId, lineItems: [] },
+            };
+        });
+
+        res.json({ success: true, records: enriched });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+/**
+ * @route GET /api/warranty/resolve-lead?phone=
+ * @desc Resolve CRM lead id for warranty customer profile deep-link
+ */
+router.get('/resolve-lead', protect, featureWarranty, async (req, res) => {
+    try {
+        const clientId = req.user.clientId;
+        const phone = normalizePhone(req.query.phone || '');
+        if (!phone) return res.json({ success: true, leadId: null });
+        const lead = await AdLead.findOne({ clientId, phoneNumber: phone }).select('_id').lean();
+        res.json({ success: true, leadId: lead?._id || null });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }
@@ -177,8 +331,6 @@ router.patch('/records/:id', protect, featureWarranty, async (req, res) => {
  * We keep some old endpoint names but point them to the new logic if appropriate
  */
 router.get('/unassigned-orders', protect, featureWarranty, async (req, res) => {
-    // For now, return mock empty or actual pending orders from Order model
-    const Order = require('../models/Order');
     try {
         const clientId = req.user.clientId;
         const records = await WarrantyRecord.find({ clientId }).select('shopifyOrderId').lean();

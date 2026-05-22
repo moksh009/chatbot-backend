@@ -204,18 +204,37 @@ function buildPatchesForNodes(mpmNodes, products, templateName = "") {
  */
 async function autoPatchMpmFlowNodes(clientId, opts = {}) {
   const flowId = opts.flowId;
-  const flowQuery = { clientId, status: "PUBLISHED" };
-  if (flowId) flowQuery.flowId = flowId;
-
-  const flowDoc = await WhatsAppFlow.findOne(flowQuery).sort({ updatedAt: -1 }).lean();
-  if (!flowDoc?.nodes?.length) {
-    log.warn(`[FlowMpmPatch] No published flow for ${clientId}`);
-    return { patched: 0, flowId: null };
-  }
-
   const clientDoc = await Client.findOne({ clientId })
     .select("syncedMetaTemplates messageTemplates visualFlows")
     .lean();
+
+  let flowDoc = null;
+  if (flowId) {
+    flowDoc = await WhatsAppFlow.findOne({ clientId, flowId }).sort({ updatedAt: -1 }).lean();
+  } else {
+    flowDoc = await WhatsAppFlow.findOne({ clientId, status: "PUBLISHED" }).sort({ updatedAt: -1 }).lean();
+  }
+
+  const vfIndex =
+    flowId && clientDoc?.visualFlows
+      ? clientDoc.visualFlows.findIndex((f) => String(f.id) === String(flowId))
+      : -1;
+  const vfNodes =
+    vfIndex >= 0 && Array.isArray(clientDoc.visualFlows[vfIndex]?.nodes)
+      ? clientDoc.visualFlows[vfIndex].nodes
+      : null;
+
+  const workingNodes =
+    vfNodes?.length ? vfNodes : flowDoc?.nodes?.length ? flowDoc.nodes : null;
+
+  if (!workingNodes?.length) {
+    log.warn(`[FlowMpmPatch] No flow graph for ${clientId}${flowId ? ` flow=${flowId}` : ""}`);
+    return { patched: 0, flowId: flowId || null, mpmNodesTotal: 0, mpmNodesWithIds: 0 };
+  }
+
+  if (!flowDoc && flowId) {
+    flowDoc = { flowId, nodes: workingNodes, publishedNodes: workingNodes };
+  }
   const mpmTemplateName = resolveMpmTemplateNameForClient(clientDoc);
 
   const products = await ShopifyProduct.find({ clientId, inStock: true })
@@ -227,17 +246,45 @@ async function autoPatchMpmFlowNodes(clientId, opts = {}) {
     return { patched: 0, flowId: flowDoc.flowId };
   }
 
-  const mpmNodes = flowDoc.nodes.filter(
+  const mpmNodes = workingNodes.filter(
     (n) => n.type === "catalog" && n.data?.catalogType === "mpm_template"
   );
   if (!mpmNodes.length) {
-    return { patched: 0, flowId: flowDoc.flowId, message: "No mpm_template nodes" };
+    return {
+      patched: 0,
+      flowId: flowDoc.flowId,
+      message: "No mpm_template nodes",
+      mpmNodesTotal: 0,
+      mpmNodesWithIds: 0,
+    };
   }
 
   let patches = buildPatchesForNodes(mpmNodes, products, mpmTemplateName);
-  patches = fillMissingMpmNodePatches(flowDoc.nodes, products, mpmTemplateName, patches);
+  patches = fillMissingMpmNodePatches(workingNodes, products, mpmTemplateName, patches);
+
+  const countWithIds = (nodes) =>
+    nodes.filter((n) => {
+      if (n.type !== "catalog" || n.data?.catalogType !== "mpm_template") return false;
+      const ids = String(n.data?.productIds || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .filter((id) => !/^SHOPIFY_/i.test(id));
+      return ids.length > 0;
+    }).length;
+
   if (!Object.keys(patches).length) {
-    return { patched: 0, flowId: flowDoc.flowId, message: "No keyword matches", mpmTemplateName };
+    return {
+      patched: 0,
+      flowId: flowDoc.flowId,
+      message: "No keyword matches",
+      mpmTemplateName,
+      mpmNodesTotal: mpmNodes.length,
+      mpmNodesWithIds: countWithIds(workingNodes),
+      mpmNodeIdsMissing: mpmNodes
+        .filter((n) => !countWithIds([n]))
+        .map((n) => n.id),
+    };
   }
 
   const patchNodes = (nodes) =>
@@ -258,21 +305,28 @@ async function autoPatchMpmFlowNodes(clientId, opts = {}) {
       };
     });
 
-  const newNodes = patchNodes(flowDoc.nodes);
-  const newPublished = patchNodes(flowDoc.publishedNodes || flowDoc.nodes);
+  const newNodes = patchNodes(workingNodes);
 
-  await WhatsAppFlow.updateOne(
-    { _id: flowDoc._id },
-    { $set: { nodes: newNodes, publishedNodes: newPublished, updatedAt: new Date() } }
-  );
+  if (flowDoc._id) {
+    const newPublished = patchNodes(flowDoc.publishedNodes || flowDoc.nodes || workingNodes);
+    await WhatsAppFlow.updateOne(
+      { _id: flowDoc._id },
+      { $set: { nodes: newNodes, publishedNodes: newPublished, updatedAt: new Date() } }
+    );
+  } else if (flowId) {
+    await WhatsAppFlow.updateOne(
+      { clientId, flowId },
+      { $set: { nodes: newNodes, updatedAt: new Date() } },
+      { upsert: false }
+    );
+  }
 
-  const vfIndex = (clientDoc?.visualFlows || []).findIndex((f) => f.id === flowDoc.flowId);
   if (vfIndex !== -1) {
     await Client.updateOne(
       { clientId, "visualFlows.id": flowDoc.flowId },
       {
         $set: {
-          [`visualFlows.${vfIndex}.nodes`]: patchNodes(clientDoc.visualFlows[vfIndex].nodes),
+          [`visualFlows.${vfIndex}.nodes`]: newNodes,
           [`visualFlows.${vfIndex}.updatedAt`]: new Date(),
         },
       }
@@ -280,12 +334,34 @@ async function autoPatchMpmFlowNodes(clientId, opts = {}) {
   }
 
   const patched = Object.keys(patches).length;
+  const mpmNodesWithIds = countWithIds(newNodes);
+  const mpmNodeIdsMissing = newNodes
+    .filter((n) => n.type === "catalog" && n.data?.catalogType === "mpm_template")
+    .filter((n) => {
+      const ids = String(n.data?.productIds || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .filter((id) => !/^SHOPIFY_/i.test(id));
+      return ids.length === 0;
+    })
+    .map((n) => n.id);
+
   log.info(
-    `[FlowMpmPatch] ${clientId} flow=${flowDoc.flowId} patched ${patched} MPM nodes` +
+    `[FlowMpmPatch] ${clientId} flow=${flowDoc.flowId} patched ${patched} MPM nodes (${mpmNodesWithIds}/${mpmNodes.length} with IDs)` +
       (mpmTemplateName ? ` template=${mpmTemplateName}` : " (no approved MPM template on client)")
   );
 
-  return { patched, flowId: flowDoc.flowId, patches, mpmTemplateName };
+  return {
+    patched,
+    flowId: flowDoc.flowId,
+    patches,
+    mpmTemplateName,
+    mpmNodesTotal: mpmNodes.length,
+    mpmNodesWithIds,
+    mpmNodeIdsMissing,
+    nodes: newNodes,
+  };
 }
 
 /** Wizard-generated flows: category list node id / label hints */

@@ -636,8 +636,11 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     } else {
       // Single-graph legacy path (main + embedded automations)
       const generated = await generateEcommerceFlow(client, { ...launchWizardData, templates });
-      const { folderizeWizardFlowGraph } = require("../utils/wizardFlowFolderize");
-      const folderized = folderizeWizardFlowGraph(generated.nodes, generated.edges);
+      const { organizeFlowGraph } = require("../utils/flowLayoutOrganize");
+      const folderized = organizeFlowGraph(generated.nodes, generated.edges, {
+        keepPositions: true,
+        addEntryEdges: true,
+      });
       nodes = folderized.nodes;
       edges = folderized.edges;
       automationFlows = generated.automationFlows || [];
@@ -1521,33 +1524,82 @@ router.post("/:clientId/upload-logo", protect, logoUpload.single("logo"), async 
   }
 });
 
+function resolveSubmittedApiKey(apiKey) {
+  let finalKey = String(apiKey || "").trim();
+  if (!finalKey || finalKey === "••••••••") return "";
+  try {
+    const { decrypt } = require("../utils/encryption");
+    finalKey = decrypt(apiKey) || finalKey;
+  } catch (_) {}
+  return finalKey;
+}
+
+async function loadStoredProviderKey(clientId, provider) {
+  const client = await Client.findOne({ clientId })
+    .select("geminiApiKey openaiApiKey ai.geminiKey ai.openaiKey")
+    .lean();
+  if (!client) return "";
+  if (provider === "openai") {
+    return resolveSubmittedApiKey(client.ai?.openaiKey || client.openaiApiKey || "");
+  }
+  return resolveSubmittedApiKey(client.ai?.geminiKey || client.geminiApiKey || "");
+}
+
 router.post("/:clientId/verify-gemini", protect, async (req, res) => {
   const { clientId } = req.params;
-  const { apiKey } = req.body;
-  if (!apiKey) return res.status(400).json({ success: false, error: "API Key is required" });
+  const { apiKey, useStored } = req.body;
   if (!assertWizardTenant(req, clientId).ok) {
     return res.status(403).json({ success: false, error: "Unauthorized" });
   }
 
   try {
-    // Phase 30: Use Fast wrapper with decrypt support
-    let finalKey = apiKey;
-    try {
-        const { decrypt } = require('../utils/encryption');
-        finalKey = decrypt(apiKey) || apiKey;
-    } catch (_) {}
+    let finalKey = resolveSubmittedApiKey(apiKey);
+    if (!finalKey && useStored) {
+      finalKey = await loadStoredProviderKey(clientId, "gemini");
+    }
+    if (!finalKey) {
+      return res.status(400).json({ success: false, error: "Paste your Gemini API key to verify." });
+    }
 
     log.info(`[Wizard] Verifying Gemini Key: ${finalKey.substring(0, 6)}...`);
     const result = await generateTextFast("Reply with 'OK'", finalKey, { maxTokens: 5, timeout: 3500 });
-    
+
     if (result) {
-      res.json({ success: true, message: "API Key is valid!" });
+      res.json({ success: true, message: "Gemini API key is valid." });
     } else {
-      res.status(400).json({ success: false, error: "API Key check failed. Gemini returned no response (Check permissions/quota)." });
+      res.status(400).json({ success: false, error: "Gemini returned no response. Check permissions or quota." });
     }
   } catch (err) {
     log.error("[Wizard] Gemini Verification Error:", err.message);
     res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+router.post("/:clientId/verify-openai", protect, async (req, res) => {
+  const { clientId } = req.params;
+  const { apiKey, useStored } = req.body;
+  if (!assertWizardTenant(req, clientId).ok) {
+    return res.status(403).json({ success: false, error: "Unauthorized" });
+  }
+
+  try {
+    let finalKey = resolveSubmittedApiKey(apiKey);
+    if (!finalKey && useStored) {
+      finalKey = await loadStoredProviderKey(clientId, "openai");
+    }
+    if (!finalKey) {
+      return res.status(400).json({ success: false, error: "Paste your OpenAI API key to verify." });
+    }
+
+    const OpenAI = require("openai");
+    const client = new OpenAI({ apiKey: finalKey, timeout: 8000 });
+    await client.models.list({ limit: 1 });
+
+    res.json({ success: true, message: "OpenAI API key is valid." });
+  } catch (err) {
+    const msg = err?.message || "OpenAI key verification failed";
+    log.error("[Wizard] OpenAI Verification Error:", msg);
+    res.status(400).json({ success: false, error: msg });
   }
 });
 
