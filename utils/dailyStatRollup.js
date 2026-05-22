@@ -379,6 +379,8 @@ function dailyStatToTimelineRow(date, doc, gcalCount = 0, liveOverlay = null) {
     checkouts: m.checkouts || 0,
     abandonedCartSent: m.abandonedCartSent || 0,
     abandonedCartClicks: m.abandonedCartClicks || 0,
+    cartRecoveryMessagesSent: m.cartRecoveryMessagesSent || 0,
+    cartsRecovered: m.cartsRecovered || 0,
     recoveredViaStep1: m.recoveredViaStep1 || 0,
     recoveredViaStep2: m.recoveredViaStep2 || 0,
     recoveredViaStep3: m.recoveredViaStep3 || 0,
