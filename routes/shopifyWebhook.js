@@ -713,6 +713,28 @@ async function handleOrder(client, data) {
     );
     const isCODOrder = !!newOrder.isCOD || detectCodFromShopify(data);
 
+    try {
+      const fin = String(data.financial_status || newOrder.financialStatus || '').toLowerCase();
+      const successStatuses = ['paid', 'fulfilled', 'delivered', 'partially_fulfilled'];
+      if (successStatuses.includes(fin)) {
+        const units = (newOrder.items || data.line_items || []).reduce(
+          (sum, it) => sum + (Number(it.quantity) || 0),
+          0
+        );
+        const revenue = parseFloat(data.total_price) || newOrder.totalPrice || newOrder.amount || 0;
+        const { incrementStat } = require('../utils/statCacheEngine');
+        await incrementStat(client.clientId, {
+          totalOrders: 1,
+          ordersToday: 1,
+          totalUnitsSold: units,
+          unitsSoldToday: units,
+          revenueToday: revenue,
+        });
+      }
+    } catch (statErr) {
+      log.warn(`[ShopifyWebhook] StatCache increment skipped: ${statErr.message}`);
+    }
+
     // Auto-assign warranty records on order_placed (wizard enableWarranty)
     const { isWarrantyEnabled } = require('../utils/featureFlags');
     if (isWarrantyEnabled(client)) {

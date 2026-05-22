@@ -5,8 +5,13 @@ const {
   getTopProducts,
   getTimelineStats,
   getOperatorsStats,
+  getHumanQueueConversations,
   MAX_LIVE_ANALYTICS_DAYS,
 } = require('../utils/analyticsHelper');
+const {
+  getAnalyticsChart,
+  getCartRecoveryChart,
+} = require('../utils/dashboardChartAnalytics');
 const { getConversationsList } = require('../routes/conversations');
 const { tenantClientId } = require('../utils/queryHelpers');
 const { createTimer } = require('../utils/perfLogger');
@@ -57,7 +62,8 @@ exports.getSummary = async (req, res) => {
     const payload = await dedupeAsync(dedupeKey, async () => {
     const summaryTasks = [
       { key: 'realtime', run: () => getRealtimeStats(clientId, client, requestedDays, { timer }) },
-      { key: 'topProducts', run: () => getTopProducts(clientId, { timer }) },
+      { key: 'topProducts', run: () => getTopProducts(clientId, { timer, days: requestedDays }) },
+      { key: 'humanQueue', run: () => getHumanQueueConversations(clientId, { timer }) },
       { key: 'timeline', run: () => getTimelineStats(clientId, client, { days: requestedDays }, { timer }) },
       {
         key: 'conversations',
@@ -91,7 +97,9 @@ exports.getSummary = async (req, res) => {
       timeline: byKey.timeline,
       conversations: byKey.conversations,
       topProducts: byKey.topProducts,
+      humanQueue: byKey.humanQueue || [],
       operators: byKey.operators?.operators || [],
+      teamAvgResponseTimeMs: byKey.operators?.teamAvgResponseTimeMs ?? null,
       meta: { days: requestedDays, generatedAt: new Date().toISOString() },
     };
     });
@@ -101,6 +109,32 @@ exports.getSummary = async (req, res) => {
   } catch (err) {
     timer.finish(`error: ${err.message}`);
     logger.error('[Dashboard Summary] fatal', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+exports.getAnalyticsChart = async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, error: 'Unauthorized' });
+    const field = String(req.query.field || 'customers').toLowerCase();
+    const period = String(req.query.period || '30d').toLowerCase();
+    const data = await getAnalyticsChart(clientId, field, period);
+    res.json({ success: true, ...data });
+  } catch (err) {
+    const code = err.statusCode || 500;
+    res.status(code).json({ success: false, error: err.message });
+  }
+};
+
+exports.getCartRecoveryChart = async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, error: 'Unauthorized' });
+    const period = String(req.query.period || '30d').toLowerCase();
+    const data = await getCartRecoveryChart(clientId, period);
+    res.json({ success: true, ...data });
+  } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 };

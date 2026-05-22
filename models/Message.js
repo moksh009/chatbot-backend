@@ -8,6 +8,8 @@ const MessageSchema = new mongoose.Schema({
   content: { type: String, required: false },
   type: { type: String, required: true },
   direction: { type: String, enum: ['incoming', 'outgoing'], required: true },
+  /** Agent who sent this message (outgoing human replies). */
+  agentId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   timestamp: { type: Date, default: Date.now },
   messageId: { type: String },
   status: { type: String, default: 'sent' },

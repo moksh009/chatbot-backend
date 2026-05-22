@@ -92,12 +92,26 @@ async function aggregateDayMetrics(clientId, dateStr, options = {}) {
         Order.aggregate([
           { $match: { ...clientIdQuery, createdAt: { $gte: start, $lte: end } } },
           {
+            $addFields: {
+              orderUnits: {
+                $sum: {
+                  $map: {
+                    input: { $ifNull: ['$items', []] },
+                    as: 'it',
+                    in: { $ifNull: ['$$it.quantity', 0] },
+                  },
+                },
+              },
+            },
+          },
+          {
             $group: {
               _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
               count: { $sum: 1 },
               revenue: {
                 $sum: { $ifNull: ['$totalPrice', { $ifNull: ['$amount', 0] }] },
               },
+              units: { $sum: '$orderUnits' },
             },
           },
         ]),
@@ -226,6 +240,7 @@ async function aggregateDayMetrics(clientId, dateStr, options = {}) {
     totalChats: convActivity,
     uniqueUsers: convActivity,
     orders: orderCount,
+    unitsSold: ord?.units || 0,
     revenue: orderRevenue + apptRevenue,
     orderRevenue,
     bookingRevenue: apptRevenue,
@@ -352,6 +367,7 @@ function dailyStatToTimelineRow(date, doc, gcalCount = 0, liveOverlay = null) {
     birthdayRemindersSent: m.birthdayRemindersSent || 0,
     appointmentRemindersSent: m.appointmentRemindersSent || 0,
     orders: orderCount,
+    unitsSold: m.unitsSold || 0,
     revenue: totalRevenue,
     apptRevenue,
     orderRevenue: liveOverlay?.orderRevenue != null ? liveOverlay.orderRevenue : orderRevenue,

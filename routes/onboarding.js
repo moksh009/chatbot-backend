@@ -66,6 +66,31 @@ function migrateWizardSchema(wizard) {
     touched = true;
   }
 
+  if (wizard.wizardSchemaVersion < 4) {
+    const bump = (n) => (typeof n === 'number' && n >= 5 ? Math.min(7, n + 1) : n);
+    if (typeof wizard.currentStep === 'number') {
+      wizard.currentStep = bump(wizard.currentStep);
+    }
+    if (Array.isArray(wizard.completedSteps)) {
+      wizard.completedSteps = [...new Set(
+        wizard.completedSteps
+          .filter((s) => typeof s === 'number' && s >= 0)
+          .map((s) => bump(s))
+          .filter((s) => s >= 0 && s <= 7)
+      )];
+    }
+    const idx = typeof wizard.currentStep === 'number' ? wizard.currentStep : 0;
+    wizard.currentStepId = OnboardingWizard.STEP_IDS[Math.min(7, Math.max(0, idx))] || 'business';
+    wizard.wizardSchemaVersion = 4;
+    touched = true;
+  }
+
+  if (!wizard.currentStepId || !OnboardingWizard.STEP_IDS.includes(wizard.currentStepId)) {
+    const idx = typeof wizard.currentStep === 'number' ? wizard.currentStep : 0;
+    wizard.currentStepId = OnboardingWizard.STEP_IDS[Math.min(7, Math.max(0, idx))] || 'business';
+    touched = true;
+  }
+
   if (touched) {
     wizard.stepData = sd;
     wizard.markModified('stepData');
@@ -123,13 +148,20 @@ router.get('/:clientId', protect, async (req, res) => {
     }
 
     let wizard = wizardDoc.toObject ? wizardDoc.toObject() : wizardDoc;
-    if (typeof wizard.currentStep === 'number' && wizard.currentStep > 6) {
-      wizard = { ...wizard, currentStep: 6 };
+    if (typeof wizard.currentStep === 'number' && wizard.currentStep > 7) {
+      wizard = { ...wizard, currentStep: 7 };
     }
     if (Array.isArray(wizard.completedSteps)) {
       wizard = {
         ...wizard,
-        completedSteps: [...new Set(wizard.completedSteps.filter((s) => s >= 0 && s <= 6))],
+        completedSteps: [...new Set(wizard.completedSteps.filter((s) => s >= 0 && s <= 7))],
+      };
+    }
+    if (!wizard.currentStepId) {
+      const idx = typeof wizard.currentStep === 'number' ? wizard.currentStep : 0;
+      wizard = {
+        ...wizard,
+        currentStepId: OnboardingWizard.STEP_IDS[Math.min(7, Math.max(0, idx))] || 'business',
       };
     }
 
@@ -140,24 +172,44 @@ router.get('/:clientId', protect, async (req, res) => {
   }
 });
 
-// Save step data
-router.patch('/step/:stepNumber', protect, async (req, res) => {
+function resolveWizardStepKey(stepKey) {
+  const ids = OnboardingWizard.STEP_IDS;
+  if (stepKey == null || stepKey === '') return null;
+
+  const raw = String(stepKey).trim().toLowerCase();
+  if (ids.includes(raw)) {
+    return { stepId: raw, stepNum: ids.indexOf(raw) };
+  }
+
+  const stepNum = parseInt(raw, 10);
+  if (!Number.isNaN(stepNum) && stepNum >= 0 && stepNum < ids.length) {
+    return { stepId: ids[stepNum], stepNum };
+  }
+  return null;
+}
+
+// Save step data — :stepKey is step id (e.g. "templates") or legacy numeric index
+router.patch('/step/:stepKey', protect, async (req, res) => {
   try {
     const { clientId } = req.body;
-    const { stepNumber } = req.params;
-    const { stepData } = req.body;
+    const { stepKey } = req.params;
+    const { stepData, stepId: bodyStepId } = req.body;
     
     if (!clientId) {
       return res.status(400).json({ success: false, error: 'clientId is required in body' });
     }
     if (!denyUnlessTenant(req, res, clientId)) return;
 
-    const stepNum = parseInt(stepNumber, 10);
-    if (isNaN(stepNum) || stepNum < 0 || stepNum > 6) {
-      return res.status(400).json({ success: false, error: 'Invalid step number' });
+    const resolved = resolveWizardStepKey(bodyStepId || stepKey);
+    if (!resolved) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid step id or number',
+        message: 'Invalid step id or number',
+        allowedStepIds: OnboardingWizard.STEP_IDS,
+      });
     }
-
-    const stepId = OnboardingWizard.STEP_IDS[stepNum];
+    const { stepId, stepNum } = resolved;
 
     let wizard = await OnboardingWizard.findOne({ clientId });
     
@@ -178,6 +230,7 @@ router.patch('/step/:stepNumber', protect, async (req, res) => {
 
     wizard.stepData[stepId] = stepData;
     wizard.currentStep = stepNum;
+    wizard.currentStepId = stepId;
     
     if (!wizard.completedSteps.includes(stepNum)) {
       wizard.completedSteps.push(stepNum);

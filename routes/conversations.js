@@ -86,7 +86,7 @@ async function getConversationsList(user, queryParams = {}, options = {}) {
     options.timer ||
     createTimer('getConversationsList', queryParams.clientId || user?.clientId || '');
 
-  const { days, clientId, phone, isImported, page: pageRaw, limit: limitRaw } = queryParams;
+  const { days, clientId, phone, isImported, importBatchId: importBatchIdRaw, page: pageRaw, limit: limitRaw } = queryParams;
   let query = {};
   if (phone) {
     query.phone = phone;
@@ -112,25 +112,43 @@ async function getConversationsList(user, queryParams = {}, options = {}) {
   }
   timer.checkpoint('query_built');
 
-  if (isImported === 'true') {
+  const importBatchId =
+    importBatchIdRaw && String(importBatchIdRaw).trim() ? String(importBatchIdRaw).trim() : null;
+
+  if (isImported === 'true' || importBatchId) {
     if (!activeClientId) {
       const err = new Error('clientId is required when filtering imported leads');
       err.statusCode = 400;
       throw err;
     }
     const AdLead = require('../models/AdLead');
-    const importedLeads = await timer.time('AdLead.imported_phones', () =>
-      AdLead.find({ clientId: activeClientId, source: 'imported' }).select('phoneNumber').lean()
-    );
-    const importedPhones = importedLeads.map((l) => l.phoneNumber);
-    if (query.phone) {
-      if (!importedPhones.includes(query.phone)) {
+    const leadQuery = { clientId: activeClientId, source: 'imported' };
+    if (importBatchId) {
+      const mongoose = require('mongoose');
+      if (mongoose.Types.ObjectId.isValid(importBatchId)) {
+        leadQuery.importBatchId = importBatchId;
+      } else {
         query.phone = '___UNMATCHABLE___';
+        timer.checkpoint('imported_filter_invalid_batch', { importBatchId });
       }
-    } else {
-      query.phone = { $in: importedPhones };
     }
-    timer.checkpoint('imported_filter_applied', { phones: importedPhones.length });
+    if (query.phone !== '___UNMATCHABLE___') {
+      const importedLeads = await timer.time('AdLead.imported_phones', () =>
+        AdLead.find(leadQuery).select('phoneNumber').lean()
+      );
+      const importedPhones = importedLeads.map((l) => l.phoneNumber);
+      if (query.phone) {
+        if (!importedPhones.includes(query.phone)) {
+          query.phone = '___UNMATCHABLE___';
+        }
+      } else {
+        query.phone = importedPhones.length ? { $in: importedPhones } : '___UNMATCHABLE___';
+      }
+      timer.checkpoint('imported_filter_applied', {
+        phones: importedPhones.length,
+        importBatchId: importBatchId || 'all',
+      });
+    }
   }
 
   const page = parseInt(pageRaw, 10) || 1;
@@ -1199,12 +1217,13 @@ router.post('/:id/messages', protect, async (req, res) => {
           clientId: conversation.clientId,
           conversationId: conversation._id,
           phone: conversation.phone,
-          direction: 'outbound',
+          direction: 'outgoing',
           type: type === 'file' ? 'document' : type,
           body: content,
           translatedContent,
           detectedLanguage: conversation.detectedLanguage,
           mediaUrl,
+          agentId: req.user._id,
         })
       );
     } else {
@@ -1216,11 +1235,12 @@ router.post('/:id/messages', protect, async (req, res) => {
           clientId: conversation.clientId,
           conversationId: conversation._id,
           phone: conversation.phone,
-          direction: 'outbound',
+          direction: 'outgoing',
           type: 'text',
           body: content,
           translatedContent,
           detectedLanguage: conversation.detectedLanguage,
+          agentId: req.user._id,
         })
       );
     }
@@ -1360,6 +1380,14 @@ router.patch('/:id/bot-status', protect, async (req, res) => {
       return res.status(400).json({ error: 'botStatus must be "active" or "paused".' });
     }
 
+    const existingConv = await Conversation.findOne({ _id: id, clientId })
+      .select('escalationRequestedAt')
+      .lean();
+    const pausePatch =
+      botStatus === 'paused' && !existingConv?.escalationRequestedAt
+        ? { escalationRequestedAt: new Date() }
+        : {};
+
     const conversation = await Conversation.findOneAndUpdate(
       { _id: id, clientId },
       {
@@ -1367,11 +1395,12 @@ router.patch('/:id/bot-status', protect, async (req, res) => {
           botStatus,
           botPaused: botStatus === 'paused',
           isBotPaused: botStatus === 'paused',
-          updatedAt: new Date()
-        }
+          updatedAt: new Date(),
+          ...pausePatch,
+        },
       },
       { new: true }
-    ).select('botStatus phone customerName').lean();
+    ).select('botStatus phone customerName escalationRequestedAt').lean();
 
     if (!conversation) {
       return res.status(404).json({ error: 'Conversation not found.' });
@@ -1421,6 +1450,12 @@ router.put('/:id/takeover', protect, async (req, res) => {
     }
 
     const assignedAt = new Date();
+    const takeoverExisting = await Conversation.findOne(query)
+      .select('escalationRequestedAt')
+      .lean();
+    const escalationPatch =
+      !takeoverExisting?.escalationRequestedAt ? { escalationRequestedAt: assignedAt } : {};
+
     const conversation = await Conversation.findOneAndUpdate(
       query,
       {
@@ -1434,6 +1469,7 @@ router.put('/:id/takeover', protect, async (req, res) => {
           requiresAttention: false,
           attentionReason: '',
           updatedAt: assignedAt,
+          ...escalationPatch,
         },
       },
       { new: true, maxTimeMS: CONV_TAKEOVER_MAX_MS }
@@ -2071,17 +2107,72 @@ router.post('/:id/csat', protect, async (req, res) => {
 // @route   POST /api/conversations/:id/assign
 router.post('/:id/assign', protect, async (req, res) => {
   try {
-    const { agentId, priority } = req.body;
-    const conversation = await Conversation.findOne(conversationQueryForTenant(req, req.params.id));
+    const { agentId, agentName, clientId: bodyClientId } = req.body;
+    const activeClientId =
+      req.user.role === 'SUPER_ADMIN' ? bodyClientId || req.user.clientId : req.user.clientId;
+
+    let query = {};
+    const mongoose = require('mongoose');
+    if (mongoose.Types.ObjectId.isValid(req.params.id)) {
+      query._id = req.params.id;
+    } else {
+      return res.status(400).json({ success: false, message: 'Invalid conversation id' });
+    }
+    if (req.user.role !== 'SUPER_ADMIN') query.clientId = activeClientId;
+    else if (activeClientId) query.clientId = activeClientId;
+
+    if (!agentId) {
+      return res.status(400).json({ success: false, message: 'agentId is required' });
+    }
+
+    const assignedAt = new Date();
+    const conversation = await Conversation.findOneAndUpdate(
+      query,
+      {
+        $set: {
+          assignedTo: agentId,
+          assignedAt,
+          assignedBy: agentName || req.user.name,
+          status: 'HUMAN_TAKEOVER',
+          botPaused: true,
+          isBotPaused: true,
+          botStatus: 'paused',
+          requiresAttention: false,
+          attentionReason: '',
+          updatedAt: assignedAt,
+        },
+      },
+      { new: true }
+    ).populate('assignedTo', 'name email');
+
     if (!conversation) return res.status(404).json({ message: 'Conversation not found' });
 
-    if (agentId) conversation.assignedTo = agentId;
-    if (priority) conversation.priority = priority;
+    const ConversationAssignment = require('../models/ConversationAssignment');
+    await ConversationAssignment.create({
+      conversationId: conversation._id,
+      clientId: conversation.clientId,
+      assignedAgentId: agentId,
+      assignedAt,
+    }).catch((err) => console.error('[Analytics] assignment record failed:', err.message));
 
-    await conversation.save();
-    res.json(conversation);
+    const io = req.app.get('socketio');
+    if (io) {
+      io.to(`agent_${agentId}`).emit('task_assigned', {
+        agentId,
+        message: 'A conversation was assigned to you.',
+        conversationId: conversation._id,
+      });
+      io.to(`client_${conversation.clientId}`).emit('conversation_update', conversation);
+      io.to(`client_${conversation.clientId}`).emit('conversation_assigned', {
+        conversationId: conversation._id,
+        agentId,
+        agentName: conversation.assignedTo?.name || agentName || null,
+      });
+    }
+
+    res.json({ success: true, conversation });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 

@@ -22,6 +22,12 @@ router.get('/:uid/:productId', async (req, res) => {
     try {
         const now = new Date();
         const existingLead = await AdLead.findById(uid);
+        console.log('[Tracking] GET /r link click', {
+            uid,
+            productId,
+            leadFound: !!existingLead,
+            resolvedClientId: existingLead?.clientId || null,
+        });
         let lead = null;
         if (existingLead) {
             const { updateLeadWithScoring } = require('../utils/leadScoring');
@@ -37,6 +43,10 @@ router.get('/:uid/:productId', async (req, res) => {
             // Phase 3: Increment StatCache
             const { incrementStat } = require('../utils/statCacheEngine');
             await incrementStat(lead.clientId, { totalLinkClicks: 1 });
+            console.log('[Tracking] StatCache totalLinkClicks increment succeeded', {
+                clientId: lead.clientId,
+                uid,
+            });
 
             // Write atomic event for dashboard aggregations
             try {

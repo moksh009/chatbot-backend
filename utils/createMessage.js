@@ -35,6 +35,7 @@ async function createMessage(data) {
     from:       from,
     to:         to,
     direction:  normalizeDirection(data.direction, data.type),
+    agentId:    data.agentId || null,
     type:       data.messageType || data.type || "text",
     content:    body,
     channel:    data.channel || "whatsapp",

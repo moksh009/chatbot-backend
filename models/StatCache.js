@@ -15,6 +15,7 @@ const StatCacheSchema = new mongoose.Schema({
   // === All-Time Counters ===
   totalLeads:         { type: Number, default: 0 },
   totalOrders:        { type: Number, default: 0 },
+  totalUnitsSold:     { type: Number, default: 0 },
   totalLinkClicks:    { type: Number, default: 0 },
   totalAddToCarts:    { type: Number, default: 0 },
   totalCheckouts:     { type: Number, default: 0 },
@@ -25,6 +26,7 @@ const StatCacheSchema = new mongoose.Schema({
   // === Today Counters (reset at IST midnight via cron) ===
   leadsToday:         { type: Number, default: 0 },
   ordersToday:        { type: Number, default: 0 },
+  unitsSoldToday:     { type: Number, default: 0 },
   revenueToday:       { type: Number, default: 0 },
   appointmentsToday:  { type: Number, default: 0 },
   appointmentRevenueToday: { type: Number, default: 0 },

@@ -42,6 +42,8 @@ const ConversationSchema = new mongoose.Schema({
   // Phase 23: Enterprise Metrics
   firstInboundAt:  { type: Date },
   firstResponseAt: { type: Date },
+  /** When human support was requested (bot paused / handover). */
+  escalationRequestedAt: { type: Date, default: null },
   resolvedAt:      { type: Date },
 
   afterHours: { type: Boolean, default: false },

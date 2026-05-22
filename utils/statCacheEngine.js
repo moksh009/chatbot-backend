@@ -45,7 +45,9 @@ async function rebuildCache(clientId) {
       totalLeads,
       leadsToday,
       totalOrders,
+      totalUnitsSoldAgg,
       ordersToday,
+      unitsSoldTodayAgg,
       orderRevenueTodayAgg,
       appointmentsToday,
       appointmentRevenueTodayAgg,
@@ -65,7 +67,19 @@ async function rebuildCache(clientId) {
         totalLeads: () => AdLead.countDocuments(query),
         leadsToday: () => AdLead.countDocuments({ ...query, createdAt: { $gte: today } }),
         totalOrders: () => Order.countDocuments(query),
+        totalUnitsSoldAgg: () =>
+          Order.aggregate([
+            { $match: query },
+            { $unwind: { path: '$items', preserveNullAndEmptyArrays: true } },
+            { $group: { _id: null, total: { $sum: { $ifNull: ['$items.quantity', 0] } } } },
+          ]),
         ordersToday: () => Order.countDocuments({ ...query, createdAt: { $gte: today } }),
+        unitsSoldTodayAgg: () =>
+          Order.aggregate([
+            { $match: { ...query, createdAt: { $gte: today } } },
+            { $unwind: { path: '$items', preserveNullAndEmptyArrays: true } },
+            { $group: { _id: null, total: { $sum: { $ifNull: ['$items.quantity', 0] } } } },
+          ]),
         orderRevenueTodayAgg: () =>
           Order.aggregate([
             { $match: { ...query, createdAt: { $gte: today } } },
@@ -158,7 +172,9 @@ async function rebuildCache(clientId) {
       totalLeads,
       leadsToday,
       totalOrders,
+      totalUnitsSold: totalUnitsSoldAgg[0]?.total || 0,
       ordersToday,
+      unitsSoldToday: unitsSoldTodayAgg[0]?.total || 0,
       revenueToday: (orderRevenueTodayAgg[0]?.total || 0) + (appointmentRevenueTodayAgg[0]?.total || 0),
       appointmentsToday,
       appointmentRevenueToday: appointmentRevenueTodayAgg[0]?.total || 0,
@@ -203,6 +219,7 @@ async function dailyReset(clientId) {
         $set: {
           leadsToday: 0,
           ordersToday: 0,
+          unitsSoldToday: 0,
           revenueToday: 0,
           appointmentsToday: 0,
           appointmentRevenueToday: 0,

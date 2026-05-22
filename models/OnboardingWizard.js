@@ -5,9 +5,9 @@ const mongoose = require("mongoose");
 /**
  * OnboardingWizard — Persistent step-by-step wizard state.
  *
- * Step IDs — MUST match STEPS array in OnboardingWizard.jsx (7 steps, schema v3):
+ * Step IDs — MUST match STEPS in dashboard wizard/constants.js (8 steps, schema v4):
  *   0: business | 1: connections | 2: features | 3: products | 4: escalation
- *   5: ai | 6: architecture
+ *   5: templates | 6: ai | 7: architecture
  *
  * `cart_timing` remains as optional legacy bucket; cart ladder lives in features step UI.
  */
@@ -18,6 +18,7 @@ const STEP_IDS = [
   "features",
   "products",
   "escalation",
+  "templates",
   "ai",
   "architecture",
 ];
@@ -34,16 +35,23 @@ const OnboardingWizardSchema = new mongoose.Schema(
 
     wizardSchemaVersion: {
       type: Number,
-      default: 3,
+      default: 4,
       min: 1,
       max: 10,
+    },
+
+    /** Canonical step id — preferred over numeric currentStep for UI sync */
+    currentStepId: {
+      type: String,
+      default: "business",
+      enum: STEP_IDS,
     },
 
     currentStep: {
       type: Number,
       default: 0,
       min: 0,
-      max: 6,
+      max: 7,
     },
 
     completedSteps: {
