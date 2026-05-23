@@ -383,7 +383,11 @@ function buildContext(client = {}, wizardData = {}) {
     currency:            wizardData.currency            || pv.baseCurrency           || "₹",
     warrantyDuration:    F.warrantyDuration             || pv.warrantyDuration       || "1 Year",
     warrantyGeneratePdf: F.warrantyGeneratePdf !== false,
-    faqText:             wizardData.faqText             || persona.knowledgeBase     || "",
+    faqText:
+      wizardData.faqText ||
+      wizardData.aiKnowledgeBase ||
+      persona.knowledgeBase ||
+      "",
     returnsInfo:         wizardData.returnsInfo         || policies.returnPolicy     || "",
     fallbackMessage:     wizardData.fallbackMessage     || "I can help with that. Let me route you to the right place.",
     products:            (wizardData.products || []).slice(0, 20).map((p, i) => buildProductContext(p, i)),
@@ -402,7 +406,9 @@ function buildContext(client = {}, wizardData = {}) {
     storeUrl:            wizardData.shopDomain
       ? `https://${String(wizardData.shopDomain).replace(/^https?:\/\//, "")}`
       : (wizardData.checkoutUrl || pv.checkoutUrl || "").replace(/\/checkout$/, ""),
-    activePersona:       wizardData.activePersona || "sidekick",
+    activePersona:       wizardData.activePersona || persona.role || "sidekick",
+    formality:           wizardData.formality || persona.formality || "semi-formal",
+    emojiLevel:          wizardData.emojiLevel || persona.emojiLevel || "moderate",
     cartTiming: {
       msg1: F.cartNudgeMinutes1,
       msg2: F.cartNudgeHours2,
@@ -2686,7 +2692,7 @@ async function generateSystemPrompt(client, wizardData = {}) {
 Description: ${ctx.businessDescription}
 Bot Name: ${ctx.botName}
 Tone: ${ctx.tone}
-Persona: ${persona.role || "customer support specialist"} | Formality: ${persona.formality || "semi-formal"}
+Persona: ${wizardData.activePersona || persona.role || "customer support specialist"} | Formality: ${wizardData.formality || persona.formality || "semi-formal"}
 Language: ${ctx.botLanguage}
 Business Hours: ${ctx.openTime}–${ctx.closeTime}
 Currency: ${ctx.currency}

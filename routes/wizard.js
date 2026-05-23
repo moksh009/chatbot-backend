@@ -680,8 +680,9 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       }
     }
 
-    // Generate system prompt
-    const systemPrompt = await generateSystemPrompt(client, launchWizardData);
+    // Prefer merchant-edited prompt from the AI step; otherwise generate from brand context.
+    const userSystemPrompt = String(launchWizardData.systemPrompt || "").trim();
+    const systemPrompt = userSystemPrompt || (await generateSystemPrompt(client, launchWizardData));
 
     // ─── Build the canonical wizard → DB update via the central mapper ───────
     // All field-mapping rules live in utils/wizardMapper.js so we have ONE

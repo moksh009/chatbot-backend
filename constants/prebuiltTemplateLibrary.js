@@ -15,6 +15,7 @@ const PREBUILT_TEMPLATE_LIBRARY = [
     bodyText:
       "Hi {{1}}! 🎉 Your order is confirmed!\n\nOrder ID: {{2}}\nProduct: {{3}}\nTotal: {{4}}\nDelivery to: {{5}}\n\nWe'll notify you when your order ships. Thank you for shopping with us!",
     variableMappings: { body: { 1: "first_name", 2: "order_id", 3: "order_items", 4: "order_total", 5: "shipping_address" } },
+    buttons: [{ type: "QUICK_REPLY", text: "Track order" }],
     autoTrigger: "order_placed",
     requiredContext: ["order", "customer", "client"],
   },
@@ -86,6 +87,10 @@ const PREBUILT_TEMPLATE_LIBRARY = [
     bodyText:
       "Hi {{1}}! We received your Cash on Delivery order! 🛍️\n\nOrder: *{{2}}*\nProduct: {{3}}\nAmount due at delivery: *{{4}}*\nDelivering to: {{5}}\n\nPlease confirm to dispatch your order.",
     variableMappings: { body: { 1: "first_name", 2: "order_id", 3: "order_items", 4: "order_total", 5: "shipping_address" } },
+    buttons: [
+      { type: "QUICK_REPLY", text: "Confirm order" },
+      { type: "QUICK_REPLY", text: "Need help" },
+    ],
     autoTrigger: "cod_order_placed",
     requiredContext: ["order", "customer", "client"],
   },

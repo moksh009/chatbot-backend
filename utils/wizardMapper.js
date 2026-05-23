@@ -262,7 +262,11 @@ function buildAiUpdate(wizardData = {}, generatedSystemPrompt = "") {
   if (Array.isArray(wizardData.avoidTopics))      out["ai.persona.avoidTopics"]      = wizardData.avoidTopics;
 
   // Knowledge base (FAQs / policies sent into prompts)
-  setIfTruthy(out, "ai.persona.knowledgeBase", wizardData.knowledgeBase || wizardData.faqText);
+  setIfTruthy(
+    out,
+    "ai.persona.knowledgeBase",
+    wizardData.knowledgeBase || wizardData.aiKnowledgeBase || wizardData.faqText
+  );
 
   // System prompt — canonical at ai.systemPrompt; legacy mirror at top-level.
   if (generatedSystemPrompt) {

@@ -7,6 +7,7 @@ const { protect } = require('../middleware/auth');
 const { denyUnlessTenant } = require('../utils/queryHelpers');
 const { mapFeatureToggle } = require('../utils/wizardMapper');
 const { syncPersonaAcrossSystem } = require('../utils/personaEngine');
+const { sanitizeWizardStepData } = require('../utils/wizardStepSanitize');
 
 /** v2 (8 steps) → v3 (7 steps): features before products; cart_timing merged into features. */
 const V2_TO_V3_INDEX = { 0: 0, 1: 1, 2: 4, 3: 3, 4: 5, 5: 2, 6: 2, 7: 6 };
@@ -220,6 +221,8 @@ router.patch('/step/:stepKey', protect, async (req, res) => {
     repairLegacyWizardBuckets(wizard);
     migrateWizardSchema(wizard);
 
+    const safeStepData = sanitizeWizardStepData(stepId, stepData);
+
     const prevStepBlob =
       wizard.stepData &&
       wizard.stepData[stepId] &&
@@ -228,7 +231,7 @@ router.patch('/step/:stepKey', protect, async (req, res) => {
         ? { ...wizard.stepData[stepId].toObject?.() || wizard.stepData[stepId] }
         : {};
 
-    wizard.stepData[stepId] = stepData;
+    wizard.stepData[stepId] = safeStepData;
     wizard.currentStep = stepNum;
     wizard.currentStepId = stepId;
     
@@ -250,85 +253,95 @@ router.patch('/step/:stepKey', protect, async (req, res) => {
     };
 
     // business — persona socket only when persona-facing fields actually change
-    if (stepId === 'business' && stepData) {
-      if (stepData.businessName)        { pvUpdate.businessName = stepData.businessName; pvUpdate['platformVars.brandName'] = stepData.businessName; }
-      if (stepData.industry)            pvUpdate.industry = stepData.industry;
-      if (stepData.supportPhone) {
-        pvUpdate['platformVars.supportWhatsapp'] = stepData.supportPhone;
-        pvUpdate.supportPhone = stepData.supportPhone;
+    if (stepId === 'business' && safeStepData) {
+      if (safeStepData.businessName)        { pvUpdate.businessName = safeStepData.businessName; pvUpdate['platformVars.brandName'] = safeStepData.businessName; }
+      if (safeStepData.industry)            pvUpdate.industry = safeStepData.industry;
+      if (safeStepData.supportPhone) {
+        pvUpdate['platformVars.supportWhatsapp'] = safeStepData.supportPhone;
+        pvUpdate.supportPhone = safeStepData.supportPhone;
       }
-      if (stepData.googleReviewUrl && String(stepData.googleReviewUrl).trim()) {
-        pvUpdate.googleReviewUrl = String(stepData.googleReviewUrl).trim();
-        pvUpdate['platformVars.googleReviewUrl'] = String(stepData.googleReviewUrl).trim();
+      if (safeStepData.googleReviewUrl && String(safeStepData.googleReviewUrl).trim()) {
+        pvUpdate.googleReviewUrl = String(safeStepData.googleReviewUrl).trim();
+        pvUpdate['platformVars.googleReviewUrl'] = String(safeStepData.googleReviewUrl).trim();
       }
-      if (stepData.botName !== undefined && wizardStepFieldChanged(prevStepBlob, stepData, 'botName')) {
-        queuePersona({ name: stepData.botName });
+      if (safeStepData.botName !== undefined && wizardStepFieldChanged(prevStepBlob, safeStepData, 'botName')) {
+        queuePersona({ name: safeStepData.botName });
       }
-      if (wizardStepFieldChanged(prevStepBlob, stepData, 'businessDescription') && stepData.businessDescription) {
-        queuePersona({ description: stepData.businessDescription });
+      if (wizardStepFieldChanged(prevStepBlob, safeStepData, 'businessDescription') && safeStepData.businessDescription) {
+        queuePersona({ description: safeStepData.businessDescription });
       }
-      if (stepData.botLanguage && wizardStepFieldChanged(prevStepBlob, stepData, 'botLanguage')) {
-        queuePersona({ language: stepData.botLanguage });
+      if (safeStepData.botLanguage && wizardStepFieldChanged(prevStepBlob, safeStepData, 'botLanguage')) {
+        queuePersona({ language: safeStepData.botLanguage });
       }
-      if (stepData.tone && wizardStepFieldChanged(prevStepBlob, stepData, 'tone')) {
-        queuePersona({ tone: stepData.tone });
+      if (safeStepData.tone && wizardStepFieldChanged(prevStepBlob, safeStepData, 'tone')) {
+        queuePersona({ tone: safeStepData.tone });
       }
-      if (stepData.adminPhone)          { pvUpdate['platformVars.adminWhatsappNumber'] = stepData.adminPhone; pvUpdate.adminPhone = stepData.adminPhone; }
-      if (stepData.currency)            pvUpdate['platformVars.baseCurrency'] = stepData.currency;
-      if (stepData.shippingTime)        pvUpdate['platformVars.shippingTime'] = stepData.shippingTime;
-      if (stepData.websiteUrl)          pvUpdate.websiteUrl = stepData.websiteUrl;
-      if (stepData.activePersona && wizardStepFieldChanged(prevStepBlob, stepData, 'activePersona')) {
-        queuePersona({ role: stepData.activePersona });
+      if (safeStepData.adminPhone)          { pvUpdate['platformVars.adminWhatsappNumber'] = safeStepData.adminPhone; pvUpdate.adminPhone = safeStepData.adminPhone; }
+      if (safeStepData.currency)            pvUpdate['platformVars.baseCurrency'] = safeStepData.currency;
+      if (safeStepData.shippingTime)        pvUpdate['platformVars.shippingTime'] = safeStepData.shippingTime;
+      if (safeStepData.websiteUrl)          pvUpdate.websiteUrl = safeStepData.websiteUrl;
+      if (safeStepData.activePersona && wizardStepFieldChanged(prevStepBlob, safeStepData, 'activePersona')) {
+        queuePersona({ role: safeStepData.activePersona });
       }
     }
 
     // intelligence (tone / language / keys / prompt live on shared flat `data`)
-    if (stepId === 'ai' && stepData) {
-      if (stepData.faqUrl && String(stepData.faqUrl).trim()) {
-        pvUpdate.faqUrl = String(stepData.faqUrl).trim();
+    if (stepId === 'ai' && safeStepData) {
+      if (safeStepData.faqUrl && String(safeStepData.faqUrl).trim()) {
+        pvUpdate.faqUrl = String(safeStepData.faqUrl).trim();
       }
-      if (stepData.aiKnowledgeBase && String(stepData.aiKnowledgeBase).trim()) {
-        pvUpdate['ai.persona.knowledgeBase'] = String(stepData.aiKnowledgeBase).trim().slice(0, 5000);
+      const kbRaw =
+        safeStepData.aiKnowledgeBase || safeStepData.faqText || safeStepData.knowledgeBase;
+      if (kbRaw && String(kbRaw).trim()) {
+        const kb = String(kbRaw).trim().slice(0, 5000);
+        pvUpdate['ai.persona.knowledgeBase'] = kb;
       }
-      const nextName = stepData.botName || stepData.activePersona;
-      const prevName = prevStepBlob.botName || prevStepBlob.activePersona;
-      if (nextName !== undefined && String(nextName ?? '') !== String(prevName ?? '')) {
-        queuePersona({ name: nextName });
+      if (safeStepData.activePersona && wizardStepFieldChanged(prevStepBlob, safeStepData, 'activePersona')) {
+        queuePersona({ role: safeStepData.activePersona });
       }
-      if (stepData.tone && wizardStepFieldChanged(prevStepBlob, stepData, 'tone')) {
-        queuePersona({ tone: stepData.tone });
+      if (safeStepData.formality && wizardStepFieldChanged(prevStepBlob, safeStepData, 'formality')) {
+        queuePersona({ formality: safeStepData.formality });
       }
-      if (stepData.botLanguage && wizardStepFieldChanged(prevStepBlob, stepData, 'botLanguage')) {
-        queuePersona({ language: stepData.botLanguage });
+      if (safeStepData.emojiLevel && wizardStepFieldChanged(prevStepBlob, safeStepData, 'emojiLevel')) {
+        queuePersona({ emojiLevel: safeStepData.emojiLevel });
       }
-      if (stepData.systemPrompt !== undefined) {
-        const nextSp = String(stepData.systemPrompt || '').trim();
+      if (safeStepData.botName && wizardStepFieldChanged(prevStepBlob, safeStepData, 'botName')) {
+        queuePersona({ name: safeStepData.botName });
+      }
+      if (safeStepData.tone && wizardStepFieldChanged(prevStepBlob, safeStepData, 'tone')) {
+        queuePersona({ tone: safeStepData.tone });
+      }
+      if (safeStepData.botLanguage && wizardStepFieldChanged(prevStepBlob, safeStepData, 'botLanguage')) {
+        queuePersona({ language: safeStepData.botLanguage });
+      }
+      if (safeStepData.systemPrompt !== undefined) {
+        const nextSp = String(safeStepData.systemPrompt || '').trim();
         const prevSp = String(prevStepBlob.systemPrompt || '').trim();
         if (nextSp !== prevSp && nextSp) {
           personaSystemPrompt = nextSp;
         }
       }
-      if (stepData.geminiApiKey) {
-        pvUpdate.geminiApiKey = stepData.geminiApiKey;
-        pvUpdate['ai.geminiKey'] = stepData.geminiApiKey;
+      if (safeStepData.geminiApiKey) {
+        pvUpdate.geminiApiKey = safeStepData.geminiApiKey;
+        pvUpdate['ai.geminiKey'] = safeStepData.geminiApiKey;
       }
-      if (stepData.openaiApiKey) {
-        pvUpdate.openaiApiKey = stepData.openaiApiKey;
-        pvUpdate['ai.openaiKey'] = stepData.openaiApiKey;
+      if (safeStepData.openaiApiKey) {
+        pvUpdate.openaiApiKey = safeStepData.openaiApiKey;
+        pvUpdate['ai.openaiKey'] = safeStepData.openaiApiKey;
       }
     }
 
-    if (stepData?.faqs && Array.isArray(stepData.faqs)) {
-      const faqDocs = stepData.faqs
+    if (safeStepData?.faqs && Array.isArray(safeStepData.faqs)) {
+      const faqDocs = safeStepData.faqs
         .filter(f => f.question?.trim() && f.answer?.trim())
         .map((f, i) => ({ question: f.question.trim(), answer: f.answer.trim(), order: i }));
       if (faqDocs.length > 0) pvUpdate.faq = faqDocs;
     }
 
-    if (stepData?.is247 !== undefined)   pvUpdate['config.businessHours.is247'] = stepData.is247;
-    if (stepData?.openTime)              pvUpdate['config.businessHours.openTime'] = stepData.openTime;
-    if (stepData?.closeTime)             pvUpdate['config.businessHours.closeTime'] = stepData.closeTime;
-    if (stepData?.workingDays?.length)  pvUpdate['config.businessHours.workingDays'] = stepData.workingDays;
+    if (safeStepData?.is247 !== undefined)   pvUpdate['config.businessHours.is247'] = safeStepData.is247;
+    if (safeStepData?.openTime)              pvUpdate['config.businessHours.openTime'] = safeStepData.openTime;
+    if (safeStepData?.closeTime)             pvUpdate['config.businessHours.closeTime'] = safeStepData.closeTime;
+    if (safeStepData?.workingDays?.length)  pvUpdate['config.businessHours.workingDays'] = safeStepData.workingDays;
 
     const syncCartTimingToFeatures = (t) => {
       if (!t) return;
@@ -336,57 +349,69 @@ router.patch('/step/:stepKey', protect, async (req, res) => {
       pvUpdate['wizardFeatures.cartNudgeHours2'] = Number(t.msg2 ?? 2) || 2;
       pvUpdate['wizardFeatures.cartNudgeHours3'] = Number(t.msg3 ?? 24) || 24;
     };
-    if (stepId === 'cart_timing' && stepData?.cartTiming) {
-      syncCartTimingToFeatures(stepData.cartTiming);
+    if (stepId === 'cart_timing' && safeStepData?.cartTiming) {
+      syncCartTimingToFeatures(safeStepData.cartTiming);
     }
-    if (stepId === 'features' && stepData?.cartTiming) {
-      syncCartTimingToFeatures(stepData.cartTiming);
+    if (stepId === 'features' && safeStepData?.cartTiming) {
+      syncCartTimingToFeatures(safeStepData.cartTiming);
     }
 
-    if (stepId === 'escalation' && stepData) {
-      if (stepData.adminPhone) {
-        pvUpdate['platformVars.adminWhatsappNumber'] = stepData.adminPhone;
-        pvUpdate.adminPhone = stepData.adminPhone;
-        pvUpdate.adminAlertWhatsapp = stepData.adminPhone;
+    if (stepId === 'escalation' && safeStepData) {
+      if (safeStepData.adminPhone) {
+        pvUpdate['platformVars.adminWhatsappNumber'] = safeStepData.adminPhone;
+        pvUpdate.adminPhone = safeStepData.adminPhone;
+        pvUpdate.adminAlertWhatsapp = safeStepData.adminPhone;
       }
-      if (stepData.adminEmail && String(stepData.adminEmail).trim()) {
-        const em = String(stepData.adminEmail).trim();
+      if (safeStepData.adminEmail && String(safeStepData.adminEmail).trim()) {
+        const em = String(safeStepData.adminEmail).trim();
         pvUpdate.adminEmail = em;
         pvUpdate.adminAlertEmail = em;
       }
-      if (['whatsapp', 'email', 'both'].includes(stepData.adminAlertPreferences)) {
-        pvUpdate.adminAlertPreferences = stepData.adminAlertPreferences;
+      if (['whatsapp', 'email', 'both'].includes(safeStepData.adminAlertPreferences)) {
+        pvUpdate.adminAlertPreferences = safeStepData.adminAlertPreferences;
       }
     }
 
-    if (stepData?.features && typeof stepData.features === 'object') {
-      Object.assign(pvUpdate, mapFeatureToggle(stepData.features));
+    if (stepId === 'features' && safeStepData?.features && typeof safeStepData.features === 'object') {
+      Object.assign(pvUpdate, mapFeatureToggle(safeStepData.features));
     }
 
-    if (stepId === 'architecture' && stepData) {
-      if (stepData.activePaymentGateway)  pvUpdate.activePaymentGateway = stepData.activePaymentGateway;
-      if (stepData.razorpayKeyId)         pvUpdate.razorpayKeyId = stepData.razorpayKeyId;
-      if (stepData.razorpaySecret)        pvUpdate.razorpaySecret = stepData.razorpaySecret;
-      if (stepData.cashfreeAppId)         pvUpdate.cashfreeAppId = stepData.cashfreeAppId;
-      if (stepData.cashfreeSecretKey)     pvUpdate.cashfreeSecretKey = stepData.cashfreeSecretKey;
+    if (stepId === 'architecture' && safeStepData) {
+      if (safeStepData.activePaymentGateway)  pvUpdate.activePaymentGateway = safeStepData.activePaymentGateway;
+      if (safeStepData.razorpayKeyId)         pvUpdate.razorpayKeyId = safeStepData.razorpayKeyId;
+      if (safeStepData.razorpaySecret)        pvUpdate.razorpaySecret = safeStepData.razorpaySecret;
+      if (safeStepData.cashfreeAppId)         pvUpdate.cashfreeAppId = safeStepData.cashfreeAppId;
+      if (safeStepData.cashfreeSecretKey)     pvUpdate.cashfreeSecretKey = safeStepData.cashfreeSecretKey;
     }
 
     if (Object.keys(pvUpdate).length > 0) {
-      await Client.updateOne({ clientId }, { $set: pvUpdate });
+      try {
+        await Client.updateOne({ clientId }, { $set: pvUpdate });
+      } catch (syncErr) {
+        log.error(`Client sync failed for wizard step ${stepId} (${clientId})`, syncErr);
+      }
     }
 
-    if (personaSync && Object.keys(personaSync).length > 0) {
-      await syncPersonaAcrossSystem(clientId, personaSync, {
-        systemPrompt: personaSystemPrompt,
-      });
-    } else if (personaSystemPrompt !== undefined) {
-      await syncPersonaAcrossSystem(clientId, {}, { systemPrompt: personaSystemPrompt });
+    try {
+      if (personaSync && Object.keys(personaSync).length > 0) {
+        await syncPersonaAcrossSystem(clientId, personaSync, {
+          systemPrompt: personaSystemPrompt,
+        });
+      } else if (personaSystemPrompt !== undefined) {
+        await syncPersonaAcrossSystem(clientId, {}, { systemPrompt: personaSystemPrompt });
+      }
+    } catch (personaErr) {
+      log.error(`Persona sync failed for wizard step ${stepId} (${clientId})`, personaErr);
     }
 
     res.json({ success: true, wizard });
   } catch (error) {
-    log.error(`Error saving wizard step ${req.params.stepNumber}`, error);
-    res.status(500).json({ success: false, error: 'Failed to save wizard step' });
+    log.error(`Error saving wizard step ${req.params.stepKey}`, error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to save wizard step',
+      message: error.message || 'Failed to save wizard step',
+    });
   }
 });
 

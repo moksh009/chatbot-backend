@@ -5,14 +5,12 @@ const { requireFeature } = require('../utils/featureFlags');
 const featureWarranty = requireFeature('warranty');
 const AdLead = require('../models/AdLead');
 const Contact = require('../models/Contact');
+const Order = require('../models/Order');
 const WarrantyBatch = require('../models/WarrantyBatch');
 const WarrantyRecord = require('../models/WarrantyRecord');
 const Client = require('../models/Client');
 const { withShopifyRetry } = require('../utils/shopifyHelper');
-
 const { normalizePhone } = require('../utils/helpers');
-const AdLead = require('../models/AdLead');
-const Order = require('../models/Order');
 
 function normalizeProductRules(body = {}) {
     const { productRules, shopifyProductIds, durationMonths } = body;
