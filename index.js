@@ -337,6 +337,7 @@ const rulesRoutes = require('./routes/rules');
 app.use('/api/rules', rulesRoutes);
 const leadsRoutes = require('./routes/leads');
 app.use('/api/leads', leadsRoutes);
+app.use('/api/abandoned-carts', require('./routes/abandonedCarts'));
 const audienceRoutes = require('./routes/audience');
 app.use('/api/audience', audienceRoutes);
 const routingRoutes = require('./routes/routingRules');
