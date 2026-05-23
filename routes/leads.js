@@ -744,7 +744,7 @@ router.get('/high-intent', protect, logPersonalDataAccess, apiCache(45), async (
         }
 
         const leadSelect =
-          'phoneNumber name email leadScore scoreLabel cartStatus lastInteraction tags checkoutInitiatedCount addToCartCount source cartSnapshot createdAt updatedAt isOrderPlaced recoveryStep';
+          'phoneNumber name email leadScore scoreLabel cartStatus cartAbandonedAt lastCartEventAt cartValue lastInteraction tags checkoutInitiatedCount addToCartCount source cartSnapshot createdAt updatedAt isOrderPlaced recoveryStep recoveryStartedAt activityLog';
 
         const [leads, total] = await Promise.all([
           AdLead.find(pageQuery)
