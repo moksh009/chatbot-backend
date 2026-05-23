@@ -15,11 +15,22 @@ function envFlag(name, defaultOn = false) {
   return v === "true" || v === "1";
 }
 
+async function purgeLegacySequencesOnBoot() {
+  try {
+    const { cancelLegacyFollowUpSequences } = require("../config/ecommerceOnlyPolicy");
+    await cancelLegacyFollowUpSequences({ reason: "ecommerce_only_boot" });
+  } catch (err) {
+    log.warn("Legacy sequence purge skipped", { message: err.message });
+  }
+}
+
 function registerAllCrons() {
   if (process.env.RUN_CRONS === "false") {
     log.info("RUN_CRONS=false — skipping all cron registration");
     return;
   }
+
+  purgeLegacySequencesOnBoot();
 
   if (process.env.CRON_USE_COORDINATOR !== "false") {
     process.env.CRON_USE_COORDINATOR = "true";
@@ -49,11 +60,19 @@ function registerAllCrons() {
   require("./statCacheCron")();
   require("./checkoutLinkRecoveryCron")();
   require("./reviewCollection")();
-  require("./birthdayCron")();
+  if (envFlag("CRON_ENABLE_BIRTHDAY", false)) {
+    require("./birthdayCron")();
+    log.info("Birthday cron enabled (CRON_ENABLE_BIRTHDAY=true)");
+  } else {
+    log.info("Birthday cron disabled — set CRON_ENABLE_BIRTHDAY=true to enable");
+  }
   require("./productSyncCron")();
   require("./templateStatusSyncCron")();
   require("./insightsCron")();
-  require("./abTestCron")();
+  if (envFlag("CRON_ENABLE_AB_TEST_LEGACY", false)) {
+    require("./abTestCron")();
+    log.info("Legacy hourly A/B evaluator enabled (CRON_ENABLE_AB_TEST_LEGACY=true)");
+  }
 
   const scheduleLeadScoringCron = require("./leadScoringCron");
   if (typeof scheduleLeadScoringCron === "function") scheduleLeadScoringCron();

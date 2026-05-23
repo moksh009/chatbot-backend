@@ -7,6 +7,12 @@ const AdLead = require('../models/AdLead');
 const { protect } = require('../middleware/auth');
 const moment = require('moment');
 const SEQUENCE_TEMPLATES = require('../data/sequenceTemplates');
+const {
+  filterSequenceTemplates,
+  isDeprecatedSequenceTemplateId,
+  isLegacyFollowUpSequence,
+  isLegacyNicheAutomationBlocked,
+} = require('../config/ecommerceOnlyPolicy');
 const Campaign = require('../models/Campaign');
 const Client = require('../models/Client');
 const { checkLimit, incrementUsage } = require('../utils/planLimits');
@@ -92,6 +98,14 @@ router.post('/:clientId', protect, async (req, res) => {
     }
 
     const { leads, name, steps, type } = req.body; // leads is [{ leadId, phone, email }]
+
+    if (isLegacyNicheAutomationBlocked() && isLegacyFollowUpSequence({ name, steps })) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'Appointment reminder sequences are disabled by default. Set BLOCK_LEGACY_NICHE_AUTOMATION=false to enroll.',
+      });
+    }
     
     if (!Array.isArray(leads) || leads.length === 0) {
       return res.status(400).json({ success: false, message: 'No leads provided' });
@@ -221,7 +235,7 @@ router.get('/:clientId/templates', protect, async (req, res) => {
     if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
-    res.json({ success: true, templates: SEQUENCE_TEMPLATES });
+    res.json({ success: true, templates: filterSequenceTemplates(SEQUENCE_TEMPLATES) });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -249,6 +263,14 @@ router.post('/:clientId/enroll-from-campaign', protect, async (req, res) => {
     const limitCheck = await checkLimit(client?._id, 'sequences');
     if (!limitCheck.allowed) {
       return res.status(403).json({ success: false, message: limitCheck.reason });
+    }
+
+    if (isLegacyNicheAutomationBlocked() && isDeprecatedSequenceTemplateId(templateId)) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'This template is deprecated for e-commerce by default. Set BLOCK_LEGACY_NICHE_AUTOMATION=false to enroll.',
+      });
     }
 
     const template = SEQUENCE_TEMPLATES.find(t => t.id === templateId);
@@ -373,6 +395,14 @@ router.post('/:clientId/from-imported-list', protect, async (req, res) => {
     const resolvedBatchId = await resolveImportBatchObjectId(importBatchId, clientId);
     if (!resolvedBatchId) {
       return res.status(404).json({ success: false, message: 'Import batch not found' });
+    }
+
+    if (isLegacyNicheAutomationBlocked() && isDeprecatedSequenceTemplateId(templateId)) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'This template is deprecated for e-commerce by default. Set BLOCK_LEGACY_NICHE_AUTOMATION=false to enroll.',
+      });
     }
 
     const template = SEQUENCE_TEMPLATES.find(t => t.id === templateId);

@@ -1,7 +1,6 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const log = require('./logger')('UpsellEngine');
 const { withShopifyRetry } = require('./shopifyHelper');
-const ScheduledMessage = require('../models/ScheduledMessage');
 
 /**
  * Triggered by Shopify orders/fulfilled webhook.
@@ -76,19 +75,21 @@ Return a JSON object:
         // Schedule it 7 days from now (to account for shipping time to delivery + a few days)
         const sendAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 Days
         
-        await ScheduledMessage.create({
+        const { scheduleOutboundMessage } = require('./scheduleOutboundMessage');
+        await scheduleOutboundMessage({
             clientId: client.clientId,
-            phone: phone,
-            type: 'whatsapp_text',
+            phone,
+            messageType: 'text',
             content: { text: aiResponse.recommendedMessage },
-            sendAt: sendAt,
-            status: 'pending',
-            metadata: { 
-                type: 'post_purchase_upsell', 
-                orderId: orderData.id, 
-                orderNumber: orderData.order_number, 
-                recommendedProduct: aiResponse.selectedProduct 
-            }
+            sendAt,
+            sourceType: 'post_purchase_upsell',
+            sourceId: `upsell_${orderData.id}`,
+            metadata: {
+                type: 'post_purchase_upsell',
+                orderId: orderData.id,
+                orderNumber: orderData.order_number,
+                recommendedProduct: aiResponse.selectedProduct,
+            },
         });
 
         log.info(`✅ Upsell Scheduled for ${phone} in 7 days. Suggested product: *${aiResponse.selectedProduct}*.`);

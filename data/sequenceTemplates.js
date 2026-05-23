@@ -112,18 +112,19 @@ const SEQUENCE_TEMPLATES = [
   {
     id:          "tmpl_appointment_reminder",
     name:        "Appointment Reminder Sequence",
-    description: "Reduce no-shows with timely reminders.",
+    description: "Reduce no-shows with timely reminders. Legacy service-industry playbook (gated by env).",
     category:    "Service",
     channel:     "whatsapp",
+    deprecated:  true,
     steps: [
       {
-        order: 1, delayValue: 1440, delayUnit: "m",  // 24 hours before
+        order: 1, delayValue: 1440, delayUnit: "m",
         label: "24-hour reminder",
         type: "whatsapp", messageType: "text",
         content: "Hi {{name}}! 📅 Reminder: You have an appointment tomorrow.\n\nDate: *{{appointment_date}}*\nTime: *{{appointment_time}}*\nService: *{{service_name}}*\n\nNeed to reschedule? Reply here."
       },
       {
-        order: 2, delayValue: 60,   delayUnit: "m",  // 1 hour before
+        order: 2, delayValue: 60, delayUnit: "m",
         label: "1-hour reminder",
         type: "whatsapp", messageType: "text",
         content: "⏰ Your appointment is in 1 hour, {{name}}!\n\nService: *{{service_name}}*\nTime: *{{appointment_time}}*\n\nSee you soon! 😊"

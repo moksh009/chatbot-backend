@@ -1,5 +1,5 @@
 const Client = require('../models/Client');
-const ScheduledMessage = require('../models/ScheduledMessage');
+const { scheduleOutboundMessage } = require('./scheduleOutboundMessage');
 const FollowUpSequence = require('../models/FollowUpSequence');
 const sequenceTemplates = require('../data/sequenceTemplates');
 const WhatsApp = require('./whatsapp');
@@ -99,16 +99,17 @@ function inferBodyVariables(automation, order, item) {
 async function scheduleAutomationMessage({ clientConfig, order, automation, item }) {
   const phone = order.customerPhone || order.phone;
   if (!phone) return;
-  const scheduledFor = new Date(Date.now() + (Number(automation.delayMinutes || 0) * 60 * 1000));
-  await ScheduledMessage.create({
+  const sendAt = new Date(Date.now() + (Number(automation.delayMinutes || 0) * 60 * 1000));
+  await scheduleOutboundMessage({
     clientId: clientConfig.clientId,
     phone,
-    type: 'template',
     templateName: automation.templateName,
     variables: inferBodyVariables(automation, order, item),
     headerImage: automation.imageUrl || '',
-    scheduledFor,
-    status: 'pending',
+    languageCode: automation.language || 'en_US',
+    sendAt,
+    sourceType: 'commerce_automation',
+    sourceId: automation.id || `commerce_${automation.event}`,
     metadata: {
       source: 'commerce_automation',
       automationId: automation.id,

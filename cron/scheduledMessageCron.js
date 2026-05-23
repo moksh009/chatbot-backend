@@ -15,14 +15,18 @@ async function runScheduledMessageTick() {
             const pendingMessages = await ScheduledMessage.find({
                 status: 'pending',
                 sendAt: { $lte: now }
-            }).populate('clientId');
+            }).limit(500).lean();
 
             if (pendingMessages.length === 0) return;
 
             console.log(`[ScheduledMessageCron] Found ${pendingMessages.length} messages to process.`);
 
+            const clientIds = [...new Set(pendingMessages.map((m) => m.clientId).filter(Boolean))];
+            const clientDocs = await Client.find({ clientId: { $in: clientIds } }).lean();
+            const clientMap = new Map(clientDocs.map((c) => [c.clientId, c]));
+
             for (const msg of pendingMessages) {
-                const client = msg.clientId;
+                const client = clientMap.get(msg.clientId);
                 if (!client) {
                     await ScheduledMessage.findByIdAndUpdate(msg._id, { status: 'failed', content: { ...msg.content, error: 'Client not found' } });
                     continue;

@@ -127,6 +127,12 @@ async function processBroadcast(data) {
                     const resp = await sendBirthdayWishWithImage(recipientPhone, null, null, clientId, actualTemplateName);
                     if (resp?.success) sent++; else failed++;
                 } else if (templateType === 'appointment') {
+                    const { isLegacyAppointmentSendingEnabled } = require('../config/ecommerceOnlyPolicy');
+                    if (!isLegacyAppointmentSendingEnabled()) {
+                      console.warn('[Broadcast] Skipped appointment template', { clientId });
+                      failed++;
+                      continue;
+                    }
                     const appointmentDetails = {
                         summary: `Appointment: ${lead.name || 'Patient'} - Service`,
                         doctor: '', date: '', time: ''

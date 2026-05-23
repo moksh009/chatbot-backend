@@ -1164,6 +1164,17 @@ async function runDualBrainEngine(parsedMessage, client) {
           case 'enroll_sequence':
             if (action.sequenceId) {
               try {
+                const {
+                  isDeprecatedSequenceTemplateId,
+                  isLegacyNicheAutomationBlocked,
+                } = require('../config/ecommerceOnlyPolicy');
+                if (
+                  isLegacyNicheAutomationBlocked() &&
+                  isDeprecatedSequenceTemplateId(action.sequenceId)
+                ) {
+                  log.warn('[RulesEngine] Skipped deprecated sequence', { sequenceId: action.sequenceId });
+                  break;
+                }
                 const seqData = SEQUENCE_TEMPLATES.find((t) => t.id === action.sequenceId);
                 if (seqData) {
                   const mappedSteps = mapTemplateToSteps(seqData);

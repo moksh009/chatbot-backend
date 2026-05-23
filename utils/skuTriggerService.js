@@ -1,7 +1,7 @@
 "use strict";
 
 const WhatsApp = require('./whatsapp');
-const ScheduledMessage = require('../models/ScheduledMessage');
+const { scheduleOutboundMessage } = require('./scheduleOutboundMessage');
 const Client = require('../models/Client');
 const log = require('./logger')('SKUTrigger');
 const commerceAutomationService = require('./commerceAutomationService');
@@ -108,24 +108,24 @@ const SkuTriggerService = {
       const scheduledTime = new Date(Date.now() + automation.delayMinutes * 60 * 1000);
       const phone = order.customerPhone || order.phone;
 
-      await ScheduledMessage.create({
+      await scheduleOutboundMessage({
         clientId: clientConfig.clientId,
         phone,
-        type: 'template',
         templateName: automation.templateName,
         variables: [
           order.customerName || 'Customer',
           automation.sku,
-          order.orderNumber || order.orderId || ''
+          order.orderNumber || order.orderId || '',
         ],
         headerImage: automation.imageUrl,
-        scheduledFor: scheduledTime,
-        status: 'pending',
+        sendAt: scheduledTime,
+        sourceType: 'sku_trigger',
+        sourceId: `sku_${automation.sku}_${automation.triggerEvent}`,
         metadata: {
           source: 'sku_trigger',
           sku: automation.sku,
-          triggerEvent: automation.triggerEvent
-        }
+          triggerEvent: automation.triggerEvent,
+        },
       });
 
       log.info(`Scheduled SKU trigger for ${phone} at ${scheduledTime.toISOString()}`);

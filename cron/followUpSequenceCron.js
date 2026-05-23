@@ -6,6 +6,10 @@ const { sendEmail } = require('../utils/emailService');
 const Client = require('../models/Client');
 
 const { buildVariableContext, injectVariables } = require('../utils/variableInjector');
+const {
+  isLegacyFollowUpSequence,
+  isLegacyNicheAutomationBlocked,
+} = require('../config/ecommerceOnlyPolicy');
 
 // Helper to evaluate step conditions (strings must match FollowUpSequenceModal options)
 const evaluateStepCondition = (conditionStr, lead) => {
@@ -181,6 +185,19 @@ async function runFollowUpSequenceTick() {
             const leadMap = new Map(leadDocs.map((l) => [String(l._id), l]));
 
             for (const seq of sequences) {
+                if (isLegacyNicheAutomationBlocked() && isLegacyFollowUpSequence(seq)) {
+                    seq.status = 'cancelled';
+                    seq.steps.forEach((s) => {
+                        if (s.status === 'pending') {
+                            s.status = 'skipped';
+                            s.errorLog = 'Legacy appointment sequence disabled (e-commerce only)';
+                        }
+                    });
+                    await seq.save();
+                    console.log(`[SequenceCron] Cancelled legacy sequence ${seq._id} for ${seq.phone}`);
+                    continue;
+                }
+
                 const dueEntries = seq.steps
                     .map((s, idx) => ({ s, idx }))
                     .filter(({ s }) => s.status === 'pending' && s.sendAt <= now)

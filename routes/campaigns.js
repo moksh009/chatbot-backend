@@ -592,6 +592,13 @@ router.post('/start', protect, async (req, res) => {
     if (templateType === 'birthday') {
         actualTemplateName = client.config?.templates?.birthday || 'happy_birthday_wish_1';
     } else if (templateType === 'appointment') {
+        const { isLegacyAppointmentSendingEnabled } = require('../config/ecommerceOnlyPolicy');
+        if (!isLegacyAppointmentSendingEnabled()) {
+          return res.status(400).json({
+            message:
+              'Appointment campaigns are disabled by default. Set ENABLE_LEGACY_APPOINTMENT_REMINDERS=true to use.',
+          });
+        }
         actualTemplateName = client.config?.templates?.appointment || 'appointment_reminder_1';
     }
 

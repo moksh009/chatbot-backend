@@ -14,6 +14,12 @@ const TIMEZONE = 'Asia/Kolkata';
  * Sends a WhatsApp reminder for an upcoming appointment
  */
 async function sendAppointmentReminder(unused_phoneId, unused_token, recipientPhone, appointmentDetails, clientId, templateNameOverride = null) {
+  const { isLegacyAppointmentSendingEnabled } = require('../config/ecommerceOnlyPolicy');
+  if (!isLegacyAppointmentSendingEnabled()) {
+    console.warn('[sendAppointmentReminder] Skipped — set ENABLE_LEGACY_APPOINTMENT_REMINDERS=true', { clientId });
+    return { success: false, skipped: true, reason: 'appointment_reminders_disabled_by_default' };
+  }
+
   try {
     const client = await Client.findOne({ clientId });
     if (!client) throw new Error('Client not found');
@@ -73,6 +79,11 @@ async function sendAppointmentReminder(unused_phoneId, unused_token, recipientPh
  * Processes all upcoming appointments and sends reminders
  */
 async function processUpcomingAppointments(phoneNumberId, accessToken) {
+  const { isLegacyAppointmentSendingEnabled } = require('../config/ecommerceOnlyPolicy');
+  if (!isLegacyAppointmentSendingEnabled()) {
+    return { success: true, remindersSent: 0, skipped: true };
+  }
+
   try {
     const now = DateTime.now().setZone(TIMEZONE);
     const startOfDay = now.startOf('day').toISO();

@@ -44,6 +44,9 @@ const ScheduledMessageSchema = new mongoose.Schema({
       'csat_survey',
       'csat_resolved',
       'csat_idle',
+      'commerce_automation',
+      'sku_trigger',
+      'post_purchase_upsell',
     ],
     required: true
   },
