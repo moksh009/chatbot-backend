@@ -78,6 +78,27 @@ const findBestMatch = (headers, target) => {
     });
 };
 
+const { buildAbandonedCartWorkspace } = require('../utils/abandonedCartWorkspace');
+
+/**
+ * GET /api/leads/cart-workspace
+ * Same payload as GET /api/abandoned-carts/workspace (Audience → Abandoned carts).
+ * Mounted here so older API deployments that lack abandonedCarts.js still work.
+ */
+router.get('/cart-workspace', protect, logPersonalDataAccess, async (req, res) => {
+    try {
+        const clientId = tenantClientId(req);
+        if (!clientId) {
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
+        const data = await buildAbandonedCartWorkspace(clientId, req.query);
+        res.json(data);
+    } catch (err) {
+        console.error('[Leads] cart-workspace error:', err);
+        res.status(500).json({ success: false, message: 'Failed to load abandoned cart workspace' });
+    }
+});
+
 // POST /api/leads/:clientId/import
 router.post('/:clientId/import', protect, logAction('IMPORT_LEADS'), uploadMiddleware, async (req, res) => {
     const { clientId } = req.params;
