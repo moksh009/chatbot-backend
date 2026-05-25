@@ -8,7 +8,7 @@ const IntentAnalytics = require('../models/IntentAnalytics');
 const Conversation = require('../models/Conversation');
 const path = require('path');
 const fs = require('fs');
-const { CONFIDENCE_THRESHOLD, MAX_CACHED_MODELS } = require('../utils/nlpConfig');
+const { CONFIDENCE_THRESHOLD, MAX_CACHED_MODELS } = require('../utils/core/nlpConfig');
 
 /**
  * NlpEngineService

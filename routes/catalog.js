@@ -6,20 +6,20 @@ const Client = require("../models/Client");
 const AdLead = require("../models/AdLead");
 const ShopifyProduct = require("../models/ShopifyProduct");
 const { protect: verifyToken } = require("../middleware/auth");
-const { sendCatalogMessage, sendSingleProduct, sendMultiProduct } = require("../utils/whatsappCatalog");
+const { sendCatalogMessage, sendSingleProduct, sendMultiProduct } = require('../utils/meta/whatsappCatalog');
 const {
   runMetaCatalogImport,
   resolveCatalogId,
   diagnoseMetaCatalogAccess,
-} = require("../utils/metaCatalogSync");
-const { autoPatchMpmFlowNodes } = require("../utils/flowMpmPatch");
-const log = require("../utils/logger")("CatalogRoutes");
+} = require('../utils/meta/metaCatalogSync');
+const { autoPatchMpmFlowNodes } = require('../utils/flow/flowMpmPatch');
+const log = require('../utils/core/logger')("CatalogRoutes");
 const { apiCache } = require("../middleware/apiCache");
-const { getCachedClient } = require("../utils/clientCache");
+const { getCachedClient } = require('../utils/core/clientCache');
 
 // ─── GET /api/catalog/:clientId — status + product count ────────────────────
 router.get("/:clientId", verifyToken, apiCache(30), async (req, res) => {
-  const { createTimer } = require("../utils/perfLogger");
+  const { createTimer } = require('../utils/core/perfLogger');
   const timer = createTimer("GET /api/catalog/:clientId", req.params.clientId || "");
   try {
     const cid = req.params.clientId;
@@ -126,7 +126,7 @@ router.post("/:clientId/link", verifyToken, async (req, res) => {
         .then(async (result) => {
           let patch = { mpmPatched: 0 };
           try {
-            const { syncApexCatalogFlowFromMeta } = require("../utils/apexCatalogFlowSync");
+            const { syncApexCatalogFlowFromMeta } = require('../utils/shopify/apexCatalogFlowSync');
             const apexSync = await syncApexCatalogFlowFromMeta(clientId);
             if (apexSync.ok) patch = apexSync;
             else patch = await autoPatchMpmFlowNodes(clientId);
@@ -176,7 +176,7 @@ router.post("/:clientId/patch-flow-mpm", verifyToken, async (req, res) => {
 
     let result = { ok: false };
     try {
-      const { syncApexCatalogFlowFromMeta } = require("../utils/apexCatalogFlowSync");
+      const { syncApexCatalogFlowFromMeta } = require('../utils/shopify/apexCatalogFlowSync');
       result = await syncApexCatalogFlowFromMeta(clientId, { flowId: req.body?.flowId });
     } catch (apexErr) {
       log.warn(`[Catalog] patch-flow-mpm apex sync: ${apexErr.message}`);
@@ -220,7 +220,7 @@ router.post("/:clientId/sync", verifyToken, async (req, res) => {
     let patch = { patched: 0 };
     let categoryMenuSynced = false;
     try {
-      const { syncApexCatalogFlowFromMeta } = require("../utils/apexCatalogFlowSync");
+      const { syncApexCatalogFlowFromMeta } = require('../utils/shopify/apexCatalogFlowSync');
       const apexSync = await syncApexCatalogFlowFromMeta(clientId);
       if (apexSync.ok) {
         patch = { patched: apexSync.mpmPatched || 0, flowId: apexSync.flowId };
@@ -252,7 +252,7 @@ router.post("/:clientId/sync", verifyToken, async (req, res) => {
 
 // ─── GET /api/catalog/:clientId/orders — list WA catalog orders ─────────────
 router.get("/:clientId/orders", verifyToken, apiCache(60), async (req, res) => {
-  const { createTimer } = require("../utils/perfLogger");
+  const { createTimer } = require('../utils/core/perfLogger');
   const timer = createTimer("GET /api/catalog/:clientId/orders", req.params.clientId || "");
   try {
     const cid = req.params.clientId;

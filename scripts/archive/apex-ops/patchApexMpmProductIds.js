@@ -37,9 +37,9 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const mongoose = require('mongoose');
-const { runMetaCatalogImport } = require('../utils/metaCatalogSync');
-const { syncApexCatalogFlowFromMeta } = require('../utils/apexCatalogFlowSync');
-const { clearTriggerCache } = require('../utils/triggerEngine');
+const { runMetaCatalogImport } = require('../../../utils/meta/metaCatalogSync');
+const { syncApexCatalogFlowFromMeta } = require('../../../utils/shopify/apexCatalogFlowSync');
+const { clearTriggerCache } = require('../../../utils/flow/triggerEngine');
 const { clearClientCache } = require('../middleware/apiCache');
 
 const FLOW_ID = 'flow_apex_owner_support_hub_v2';

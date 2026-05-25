@@ -3,7 +3,7 @@ const router = express.Router();
 const multer = require('multer');
 const path = require('path');
 const { protect } = require('../middleware/auth');
-const log = require('../utils/logger')('MediaRoute');
+const log = require('../utils/core/logger')('MediaRoute');
 
 // Configure storage
 const storage = multer.diskStorage({

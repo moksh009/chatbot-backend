@@ -10,9 +10,6 @@ const Contact = require("../models/Contact");
 const WarrantyRecord = require("../models/WarrantyRecord");
 const CustomerWallet = require("../models/CustomerWallet");
 const LoyaltyTransaction = require("../models/LoyaltyTransaction");
-const ReviewRequest = require("../models/ReviewRequest");
-const { processPendingReviewRequests } = require("../utils/reputationService");
-
 function resultLine(status, label, details = "") {
   const icon = status === "PASS" ? "PASS" : status === "WARN" ? "WARN" : "FAIL";
   console.log(`${icon} | ${label}${details ? ` | ${details}` : ""}`);
@@ -69,41 +66,8 @@ async function checkLoyalty(clientId) {
   }
 }
 
-async function checkReview(clientId, runDryDispatch = false) {
-  const requests = await ReviewRequest.find({ clientId })
-    .sort({ createdAt: -1 })
-    .limit(80)
-    .select("orderId productId productName productImage status scheduledFor sentAt")
-    .lean();
-
-  if (!requests.length) {
-    resultLine("WARN", "Review activity", "No review requests found");
-    return;
-  }
-
-  const missingProductIdentity = requests.filter((r) => !r.productId && !r.productImage).length;
-  const missingProductName = requests.filter((r) => !r.productName).length;
-  if (missingProductIdentity > 0 || missingProductName > 0) {
-    resultLine(
-      "WARN",
-      "Review product mapping",
-      `missing identity: ${missingProductIdentity}, missing name: ${missingProductName} (sample=${requests.length})`
-    );
-  } else {
-    resultLine("PASS", "Review product mapping", `${requests.length} recent requests have product mapping`);
-  }
-
-  if (!runDryDispatch) return;
-  const beforeSent = await ReviewRequest.countDocuments({ clientId, status: "sent" });
-  await processPendingReviewRequests();
-  const afterSent = await ReviewRequest.countDocuments({ clientId, status: "sent" });
-  const delta = afterSent - beforeSent;
-  resultLine("PASS", "Review dispatch dry-run", `processed sent delta=${delta} (safe no-op if none scheduled)`);
-}
-
 async function main() {
   const clientId = process.argv[2];
-  const runDryDispatch = process.argv.includes("--dispatch");
   if (!clientId) {
     console.error("Usage: node scripts/runtimeCommerceReliabilityCheck.js <clientId> [--dispatch]");
     process.exit(1);
@@ -124,7 +88,6 @@ async function main() {
   console.log(`Running reliability checks for client=${clientId}`);
   await checkWarranty(clientId);
   await checkLoyalty(clientId);
-  await checkReview(clientId, runDryDispatch);
 
   await mongoose.disconnect();
 }

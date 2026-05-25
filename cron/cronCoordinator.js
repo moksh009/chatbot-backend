@@ -6,8 +6,8 @@
  */
 
 const cron = require("node-cron");
-const log = require("../utils/logger")("CronCoordinator");
-const { wrapCron } = require("../utils/perfLogger");
+const log = require('../utils/core/logger')("CronCoordinator");
+const { wrapCron } = require('../utils/core/perfLogger');
 
 function registerCoordinatedCrons() {
   if (process.env.CRON_USE_COORDINATOR === "false") {

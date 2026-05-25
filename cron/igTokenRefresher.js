@@ -1,9 +1,9 @@
 const cron = require("node-cron");
 const axios = require("axios");
 const Client = require("../models/Client");
-const { encrypt, decrypt } = require("../utils/encryption");
-const { wrapCron } = require("../utils/perfLogger");
-const log = require("../utils/logger")("IGTokenRefresher");
+const { encrypt, decrypt } = require('../utils/core/encryption');
+const { wrapCron } = require('../utils/core/perfLogger');
+const log = require('../utils/core/logger')("IGTokenRefresher");
 
 function scheduleIgTokenRefresher() {
   cron.schedule(

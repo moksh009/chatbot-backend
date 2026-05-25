@@ -2,8 +2,8 @@ const express = require('express');
 const router = express.Router();
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
-const { tenantClientId } = require('../utils/queryHelpers');
-const { findMatchingRule } = require('../utils/rulesEngine');
+const { tenantClientId } = require('../utils/core/queryHelpers');
+const { findMatchingRule } = require('../utils/core/rulesEngine');
 
 async function runRuleTest(req, res, clientId) {
     const message = String(req.body.message || '').trim();

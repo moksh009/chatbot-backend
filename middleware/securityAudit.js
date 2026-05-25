@@ -5,7 +5,7 @@
  * Use for auth failures, tenant isolation denials, privilege attempts, and admin actions.
  */
 
-const log = require("../utils/logger")("SecurityAudit");
+const log = require('../utils/core/logger')("SecurityAudit");
 
 function redact(value) {
   if (value == null) return value;

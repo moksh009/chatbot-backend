@@ -21,7 +21,7 @@ function percentile(sorted, p) {
 }
 
 async function benchGetCachedClient() {
-  const { getCachedClient, invalidateClientCache } = require('../utils/clientCache');
+  const { getCachedClient, invalidateClientCache } = require('../utils/core/clientCache');
   invalidateClientCache(clientId);
   const times = [];
   for (let i = 0; i < SAMPLES; i++) {
@@ -79,7 +79,7 @@ async function run() {
     console.log('\nHTTP bench skipped (server not up?):', e.message);
   }
 
-  const { getMongoCronBudgetStats } = require('../utils/mongoCronBudget');
+  const { getMongoCronBudgetStats } = require('../utils/core/mongoCronBudget');
   console.log('\nCron mongo budget:', getMongoCronBudgetStats());
 
   await mongoose.disconnect();

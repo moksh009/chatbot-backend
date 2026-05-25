@@ -5,7 +5,7 @@ const {
   splitCollectionsForWhatsAppMenu,
   MORE_ROW_ID,
   MAX_EXPLORE_MENU_ROWS,
-} = require("../utils/catalogMenuBuilder");
+} = require('../utils/commerce/catalogMenuBuilder');
 
 function makeCols(n) {
   return Array.from({ length: n }, (_, i) => ({

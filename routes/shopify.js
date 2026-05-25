@@ -3,10 +3,10 @@ const router = express.Router();
 const axios = require('axios');
 const Client = require('../models/Client');
 const { protect, verifyClientAccess } = require('../middleware/auth');
-const { getShopifyClient, withShopifyRetry, exchangeShopifyToken } = require('../utils/shopifyHelper');
-const { buildConnectionStatusPayload } = require('../utils/connectionStatus');
-const { syncShopifyOrdersToMongo } = require('../utils/shopifyOrderSync');
-const shopifyAdminApiVersion = require('../utils/shopifyAdminApiVersion');
+const { getShopifyClient, withShopifyRetry, exchangeShopifyToken } = require('../utils/shopify/shopifyHelper');
+const { buildConnectionStatusPayload } = require('../utils/core/connectionStatus');
+const { syncShopifyOrdersToMongo } = require('../utils/shopify/shopifyOrderSync');
+const shopifyAdminApiVersion = require('../utils/shopify/shopifyAdminApiVersion');
 const { SHOPIFY_APP_WEBHOOK_TOPICS } = require('../constants/shopifyWebhookTopics');
 
 /** In-process cache so dashboard polls do not block the event loop on slow Shopify APIs */
@@ -77,7 +77,7 @@ router.post('/:clientId/connect', protect, verifyClientAccess, async (req, res) 
 router.post('/:clientId/sync-products', internalOrProtect, async (req, res) => {
   try {
     const { clientId } = req.params;
-    const { syncNicheDataProducts } = require('../utils/shopifyNicheProductSync');
+    const { syncNicheDataProducts } = require('../utils/shopify/shopifyNicheProductSync');
     const result = await syncNicheDataProducts(clientId);
 
     const queueCatalog = req.body?.catalog !== false;
@@ -171,13 +171,13 @@ router.post('/:clientId/reconnect-store', internalOrProtect, async (req, res) =>
 
 // GET /api/shopify/:clientId/recent-orders
 router.get('/:clientId/recent-orders', protect, verifyClientAccess, async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
+  const { createTimer } = require('../utils/core/perfLogger');
   const timer = createTimer('GET /api/shopify/:clientId/recent-orders', req.params.clientId || '');
   timer.checkpoint('START');
 
   try {
     const { clientId } = req.params;
-    const { getCachedClient } = require('../utils/clientCache');
+    const { getCachedClient } = require('../utils/core/clientCache');
     const client = await timer.time('getCachedClient', () =>
       getCachedClient(clientId, 'shopDomain shopifyAccessToken commerce')
     );

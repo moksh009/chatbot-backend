@@ -15,7 +15,9 @@ const knowledgeDocumentSchema = new mongoose.Schema({
     /** When false, excluded from bot / test retrieval (Draft in UI). */
     isActive: { type: Boolean, default: true },
     /** Async ingest pipeline (scrapers); manual docs stay `processed`. */
-    status: { type: String, enum: ['pending', 'processed', 'failed'], default: 'processed' }
+    status: { type: String, enum: ['pending', 'processed', 'failed'], default: 'processed' },
+    chunks: [{ index: Number, text: String, embedding: [Number] }],
+    lastUsedAt: { type: Date },
 }, { timestamps: true });
 
 module.exports = mongoose.model('KnowledgeDocument', knowledgeDocumentSchema);

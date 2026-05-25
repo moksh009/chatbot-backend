@@ -7,14 +7,23 @@ const { protect, verifyClientAccess } = require('../middleware/auth');
 const { addHours } = require('date-fns');
 const { apiCache } = require('../middleware/apiCache');
 
-const { getShopifyClient, withShopifyRetry } = require('../utils/shopifyHelper');
-const { resetShopifyBreaker, isCircuitOpenError } = require('../utils/circuitBreaker');
-const { enrichShopifyCustomers } = require('../utils/shopifyCustomerEnrichment');
+const { getShopifyClient, withShopifyRetry } = require('../utils/shopify/shopifyHelper');
+const { resetShopifyBreaker, isCircuitOpenError } = require('../utils/core/circuitBreaker');
+const { enrichShopifyCustomers } = require('../utils/shopify/shopifyCustomerEnrichment');
 const {
   getCachedClient,
   SHOPIFY_BOT_PRODUCTS_SELECT,
   SHOPIFY_PULSE_META_SELECT,
-} = require('../utils/clientCache');
+} = require('../utils/core/clientCache');
+const {
+  resolveUsageLimit,
+  enrichDiscountsList,
+  buildShopifyAdminDiscountUrl,
+} = require('../utils/commerce/discountCodes');
+const {
+  syncShopifyCustomersForClient,
+  listShopifyCustomersForClient,
+} = require('../utils/shopify/shopifyCustomersHub');
 
 const pulseCache = new Map();
 const PULSE_CACHE_TTL_MS = 120_000;
@@ -237,6 +246,21 @@ router.put('/:clientId/products/:productId/price', protect, verifyClientAccess, 
         });
     });
 
+    try {
+      const { writeAuditLog } = require('../utils/messaging/writeAuditLog');
+      await writeAuditLog({
+        clientId,
+        action_type: 'commerce_price_changed',
+        target_resource: `product:${req.params.productId}`,
+        actor: {
+          type: 'user',
+          userId: req.user?._id || req.user?.id,
+          source: 'dashboard',
+        },
+        payload: { variantId, price, category: 'commerce' },
+      });
+    } catch (_) {}
+
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -335,21 +359,63 @@ router.put('/:clientId/inventory/set', protect, verifyClientAccess, async (req, 
 });
 
 /**
- * @route   GET /api/shopify-hub/:clientId/customers
- * @desc    Get top customers from Shopify ordered by total spend
+ * @route   POST /api/shopify-hub/:clientId/sync-customers
+ * @desc    Pull customers from Shopify, enrich, cache for paginated hub UI
  */
-router.get('/:clientId/customers', protect, verifyClientAccess, apiCache(120), async (req, res) => {
+router.post('/:clientId/sync-customers', protect, verifyClientAccess, async (req, res) => {
   const { clientId } = req.params;
   try {
-    const raw = await withShopifyRetry(clientId, async (shop) => {
-        const response = await shop.get('/customers.json?limit=50&order=total_spent+DESC');
-        return response.data.customers;
+    const result = await syncShopifyCustomersForClient(clientId);
+    res.json({
+      success: true,
+      count: result.count,
+      syncedAt: result.syncedAt,
     });
-    const customers = await enrichShopifyCustomers(clientId, raw || []);
-    res.json({ success: true, customers });
   } catch (err) {
     if (isDisconnectedShopifyConfig(err)) {
-      return res.json({ success: true, customers: [], isShopifyConnected: false });
+      return res.status(400).json({ success: false, error: 'Shopify is not connected' });
+    }
+    console.error(`[SyncCustomers Error] Client: ${clientId}:`, err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * @route   GET /api/shopify-hub/:clientId/customers
+ * @desc    Paginated, filterable customer list (from sync cache)
+ * @query   cursor, limit, sort (spend|orders|last_order|lead_score), tier, topedge, search
+ */
+router.get('/:clientId/customers', protect, verifyClientAccess, async (req, res) => {
+  const { clientId } = req.params;
+  try {
+    const result = await listShopifyCustomersForClient(clientId, {
+      cursor: req.query.cursor,
+      limit: req.query.limit,
+      sort: req.query.sort,
+      tier: req.query.tier,
+      topedge: req.query.topedge,
+      search: req.query.search,
+    });
+
+    res.json({
+      success: true,
+      customers: result.customers,
+      total: result.total,
+      hasMore: result.hasMore,
+      nextCursor: result.nextCursor,
+      syncedAt: result.syncedAt,
+      cacheCount: result.cacheCount,
+      needsSync: result.needsSync,
+    });
+  } catch (err) {
+    if (isDisconnectedShopifyConfig(err)) {
+      return res.json({
+        success: true,
+        customers: [],
+        total: 0,
+        hasMore: false,
+        isShopifyConnected: false,
+      });
     }
     const shopifyError = err.response?.data?.errors || err.response?.data?.error || err.message;
     const errorString = typeof shopifyError === 'string' ? shopifyError : JSON.stringify(shopifyError);
@@ -357,10 +423,10 @@ router.get('/:clientId/customers', protect, verifyClientAccess, apiCache(120), a
     const isAuthError = status === 401 || status === 403 || err.message?.includes('incomplete') || err.message?.includes('invalid');
     const isClientError = status >= 400 && status < 500;
     console.error(`[Customers Error] Client: ${clientId}:`, errorString);
-    res.status(isClientError ? 400 : 500).json({ 
-      success: false, 
-      error: errorString, 
-      isShopifyAuthError: isAuthError 
+    res.status(isClientError ? 400 : 500).json({
+      success: false,
+      error: errorString,
+      isShopifyAuthError: isAuthError,
     });
   }
 });
@@ -373,11 +439,26 @@ router.get('/:clientId/customers', protect, verifyClientAccess, apiCache(120), a
  */
 router.get('/:clientId/discounts', protect, verifyClientAccess, apiCache(60), async (req, res) => {
   try {
-    const client = await getCachedClient(req.params.clientId, 'generatedDiscounts aiUseGeneratedDiscounts');
+    const { clientId } = req.params;
+    const client = await getCachedClient(clientId, 'generatedDiscounts aiUseGeneratedDiscounts shopDomain');
     if (!client) return res.status(404).json({ error: 'Client not found' });
-    // Return newest first
-    const discounts = (client.generatedDiscounts || []).slice().reverse();
-    res.json({ success: true, discounts, aiUseGeneratedDiscounts: client.aiUseGeneratedDiscounts ?? false });
+
+    const raw = (client.generatedDiscounts || []).slice().reverse();
+    const discounts = await enrichDiscountsList(clientId, raw, async () => {
+      const shop = await getShopifyClient(clientId);
+      return shop;
+    });
+
+    res.json({
+      success: true,
+      discounts: discounts.map((d) => ({
+        ...d,
+        shopifyAdminUrl:
+          d.shopifyAdminUrl || buildShopifyAdminDiscountUrl(client.shopDomain, d.priceRuleId),
+      })),
+      shopDomain: client.shopDomain || null,
+      aiUseGeneratedDiscounts: client.aiUseGeneratedDiscounts ?? false,
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -390,7 +471,15 @@ router.get('/:clientId/discounts', protect, verifyClientAccess, apiCache(60), as
 router.post('/:clientId/discounts', protect, verifyClientAccess, async (req, res) => {
   const { clientId } = req.params;
   try {
-    const { title, type, value, expiryHours = 24, prefix = 'TOPAI' } = req.body;
+    const {
+      title,
+      type,
+      value,
+      expiryHours = 24,
+      prefix = 'TOPAI',
+      usageLimitMode = 'single',
+      usageLimitCount,
+    } = req.body;
     const numericValue = Number(value);
     const normalizedType = type === 'fixed' ? 'fixed' : 'percentage';
     if (!Number.isFinite(numericValue) || numericValue <= 0) {
@@ -400,54 +489,140 @@ router.post('/:clientId/discounts', protect, verifyClientAccess, async (req, res
       return res.status(400).json({ success: false, error: 'Expiry must be a positive number of hours' });
     }
 
+    const { usageLimit, usageLimitLabel } = resolveUsageLimit(usageLimitMode, usageLimitCount);
+    const endsAt = addHours(new Date(), Number(expiryHours));
+
+    const clientMeta = await Client.findOne({ clientId }).select('shopDomain').lean();
+
     const discount = await withShopifyRetry(clientId, async (shop) => {
+        const priceRulePayload = {
+          title: title || `${prefix}-${Date.now()}`,
+          target_type: 'line_item',
+          target_selection: 'all',
+          allocation_method: 'across',
+          value_type: normalizedType === 'percentage' ? 'percentage' : 'fixed_amount',
+          value: `-${numericValue}`,
+          customer_selection: 'all',
+          starts_at: new Date().toISOString(),
+          ends_at: endsAt.toISOString(),
+        };
+        if (usageLimit != null) {
+          priceRulePayload.usage_limit = usageLimit;
+        }
+
         const priceRuleRes = await shop.post('/price_rules.json', {
-          price_rule: {
-            title: title || `${prefix}-${Date.now()}`,
-            target_type: 'line_item',
-            target_selection: 'all',
-            allocation_method: 'across',
-            value_type: normalizedType === 'percentage' ? 'percentage' : 'fixed_amount',
-            value: `-${numericValue}`,
-            customer_selection: 'all',
-            starts_at: new Date().toISOString(),
-            ends_at: addHours(new Date(), Number(expiryHours)).toISOString(),
-            usage_limit: 1
-          }
+          price_rule: priceRulePayload,
         });
 
         const priceRuleId = priceRuleRes.data.price_rule.id;
         const code = `${prefix}-${Math.random().toString(36).substring(7).toUpperCase()}`;
 
         const discountRes = await shop.post(`/price_rules/${priceRuleId}/discount_codes.json`, {
-          discount_code: { code }
+          discount_code: { code },
         });
 
-        return discountRes.data.discount_code;
+        return { ...discountRes.data.discount_code, priceRuleId };
     });
 
-    // ── Persist to DB ──────────────────────────────────────────────────────────
     const savedEntry = {
       code: discount.code,
       title: title || discount.code,
       type: normalizedType === 'percentage' ? 'percentage' : 'fixed_amount',
       value: numericValue,
       expiryHours: Number(expiryHours),
-      priceRuleId: discount.price_rule_id,
+      usageLimitMode: usageLimitMode || 'single',
+      usageLimit,
+      usageLimitLabel,
+      usageCount: 0,
+      endsAt: endsAt.toISOString(),
+      disabledAt: null,
+      priceRuleId: discount.priceRuleId || discount.price_rule_id,
       shopifyId: discount.id,
-      createdAt: new Date()
+      shopifyAdminUrl: buildShopifyAdminDiscountUrl(clientMeta?.shopDomain, discount.priceRuleId),
+      createdAt: new Date(),
+      status: 'active',
     };
 
     await Client.findOneAndUpdate(
       { clientId },
       { $push: { generatedDiscounts: savedEntry } }
     );
-    // ──────────────────────────────────────────────────────────────────────────
 
-    res.json({ success: true, discount: { ...discount, ...savedEntry } });
+    res.json({ success: true, discount: savedEntry });
   } catch (err) {
-    const { clientId } = req.params;
     console.error(`[Discounts Error] Client: ${clientId}:`, err.response?.data || err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * @route   POST /api/shopify-hub/:clientId/discounts/:code/disable
+ */
+router.post('/:clientId/discounts/:code/disable', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const { clientId, code } = req.params;
+    const client = await Client.findOne({ clientId }).select('generatedDiscounts shopDomain');
+    if (!client) return res.status(404).json({ success: false, error: 'Client not found' });
+
+    const entry = (client.generatedDiscounts || []).find((d) => d.code === code);
+    if (!entry) return res.status(404).json({ success: false, error: 'Discount not found' });
+    if (!entry.priceRuleId) {
+      return res.status(400).json({ success: false, error: 'Missing Shopify price rule' });
+    }
+
+    const now = new Date().toISOString();
+    await withShopifyRetry(clientId, async (shop) => {
+      await shop.put(`/price_rules/${entry.priceRuleId}.json`, {
+        price_rule: { id: entry.priceRuleId, ends_at: now },
+      });
+    });
+
+    await Client.updateOne(
+      { clientId, 'generatedDiscounts.code': code },
+      {
+        $set: {
+          'generatedDiscounts.$.disabledAt': now,
+          'generatedDiscounts.$.endsAt': now,
+          'generatedDiscounts.$.status': 'disabled',
+        },
+      }
+    );
+
+    res.json({ success: true, code, status: 'disabled' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * @route   DELETE /api/shopify-hub/:clientId/discounts/:code
+ */
+router.delete('/:clientId/discounts/:code', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const { clientId, code } = req.params;
+    const client = await Client.findOne({ clientId }).select('generatedDiscounts');
+    if (!client) return res.status(404).json({ success: false, error: 'Client not found' });
+
+    const entry = (client.generatedDiscounts || []).find((d) => d.code === code);
+    if (!entry) return res.status(404).json({ success: false, error: 'Discount not found' });
+
+    if (entry.priceRuleId) {
+      try {
+        await withShopifyRetry(clientId, async (shop) => {
+          await shop.delete(`/price_rules/${entry.priceRuleId}.json`);
+        });
+      } catch (err) {
+        console.warn('[Discounts] Shopify delete failed:', err.message);
+      }
+    }
+
+    await Client.updateOne(
+      { clientId },
+      { $pull: { generatedDiscounts: { code } } }
+    );
+
+    res.json({ success: true, code });
+  } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });

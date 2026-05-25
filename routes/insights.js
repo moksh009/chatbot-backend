@@ -5,9 +5,9 @@ const Conversation = require('../models/Conversation');
 const Order = require('../models/Order');
 const { protect } = require('../middleware/auth');
 const { apiCache } = require('../middleware/apiCache');
-const { dedupeAsync } = require('../utils/requestDedupe');
-const { resolveClient, startOfDayIST, safeCount, safeAggregate } = require('../utils/queryHelpers');
-const logger = require('../utils/logger')('InsightsRoute');
+const { dedupeAsync } = require('../utils/core/requestDedupe');
+const { resolveClient, startOfDayIST, safeCount, safeAggregate } = require('../utils/core/queryHelpers');
+const logger = require('../utils/core/logger')('InsightsRoute');
 
 router.get('/:clientId', protect, apiCache(90), async (req, res) => {
   try {

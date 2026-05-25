@@ -19,8 +19,8 @@ const crypto = require('crypto');
 const axios = require('axios');
 const Client = require('../models/Client');
 const User = require('../models/User');
-const { invalidateClientCache } = require('../utils/clientCache');
-const { sendAdminConfirmationEmail, deliverSystemEmail } = require('../utils/emailService');
+const { invalidateClientCache } = require('../utils/core/clientCache');
+const { sendAdminConfirmationEmail, deliverSystemEmail } = require('../utils/core/emailService');
 
 // ── Shared system mail — Nodemailer SMTP (same as OTP).
 async function sendShopifyEmail({ to, subject, html }) {
@@ -36,8 +36,8 @@ async function sendShopifyEmail({ to, subject, html }) {
   return ok;
 }
 
-const { encrypt } = require('../utils/encryption');
-const shopifyAdminApiVersion = require('../utils/shopifyAdminApiVersion');
+const { encrypt } = require('../utils/core/encryption');
+const shopifyAdminApiVersion = require('../utils/shopify/shopifyAdminApiVersion');
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 const SHOPIFY_CLIENT_ID = () => process.env.SHOPIFY_CLIENT_ID;
@@ -45,7 +45,7 @@ const SHOPIFY_CLIENT_SECRET = () => process.env.SHOPIFY_CLIENT_SECRET;
 const SHOPIFY_SCOPES = () =>
   (
     process.env.SHOPIFY_SCOPES ||
-    'read_products,write_products,read_orders,write_orders,read_customers,write_customers,read_checkouts,write_checkouts,read_themes,write_themes,read_price_rules,write_price_rules,read_discounts,write_discounts,read_shopify_payments_payouts'
+    'read_products,write_products,read_orders,write_orders,read_customers,write_customers,read_checkouts,write_checkouts,read_themes,write_themes,read_price_rules,write_price_rules,read_discounts,write_discounts,read_shopify_payments_payouts,write_pixels,read_customer_events'
   ).replace(/\s+/g, '');
 
 /**
@@ -439,7 +439,7 @@ router.post('/assign-link', async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 router.post('/auth', async (req, res) => {
   try {
-    const { shopDomain, clientId } = req.body;
+    const { shopDomain, clientId, additionalStore } = req.body;
 
     if (!shopDomain || !clientId) {
       return res.status(400).json({ success: false, error: 'Missing shopDomain or clientId' });
@@ -466,7 +466,12 @@ router.post('/auth', async (req, res) => {
     }
 
     const nonce = crypto.randomBytes(24).toString('hex');
-    nonceStore.set(nonce, { clientId, shop: cleanShop, createdAt: Date.now() });
+    nonceStore.set(nonce, {
+      clientId,
+      shop: cleanShop,
+      additionalStore: !!additionalStore,
+      createdAt: Date.now(),
+    });
 
     const cookieSecret = appSecret || process.env.SHOPIFY_API_SECRET || 'fallback_cookie_secret';
     const signedClientId = signCookieValue(clientId, cookieSecret);
@@ -623,6 +628,7 @@ router.get('/callback', async (req, res) => {
 
     // ── 2b. Resolve workspace from OAuth `state` (preferred for public apps) ───
     let client = null;
+    let oauthPending = null;
     if (state && typeof state === 'string') {
       if (state.endsWith(':SHOPIFY_INSTALL')) {
         const noncePart = state.slice(0, -(':SHOPIFY_INSTALL'.length));
@@ -641,6 +647,7 @@ router.get('/callback', async (req, res) => {
       } else {
         const pending = nonceStore.get(state);
         if (pending) {
+          oauthPending = pending;
           nonceStore.delete(state);
           if (pending.clientId) {
             client = await Client.findOne({ clientId: pending.clientId });
@@ -735,9 +742,58 @@ router.get('/callback', async (req, res) => {
     console.log(`✅ [ShopifyOAuth] Access token received for ${clientId}. Scopes: ${scope}`);
     console.log(`✅ [ShopifyOAuth] Note: Shopify Billing API skipped. Client billed via Razorpay.`);
 
-    // ── 6. Save to Database ──────────────────────────────────────────────────────
+    // ── 6. Save to Database (multi-store MVP) ───────────────────────────────────
+    const {
+      ensureStoresFromLegacy,
+      normalizeShopDomain,
+      syncLegacyShopifyFields,
+    } = require('../utils/shopify/shopifyStoreHelpers');
+
+    const pendingMeta = oauthPending;
+
+    const clientDoc = await Client.findOne({ clientId });
+    ensureStoresFromLegacy(clientDoc);
+    const normShop = normalizeShopDomain(shop);
+    let stores = [...(clientDoc.shopifyStores || [])];
+    const idx = stores.findIndex((s) => normalizeShopDomain(s.shopDomain) === normShop);
+    const isAdditional =
+      pendingMeta?.additionalStore ||
+      (stores.length > 0 && idx < 0 && normalizeShopDomain(stores.find((s) => s.isPrimary)?.shopDomain) !== normShop);
+
+    const storeEntry = {
+      shopDomain: shop,
+      accessToken: access_token,
+      scopes: scope || '',
+      connectedAt: new Date(),
+      isPrimary: !isAdditional && (idx < 0 ? stores.length === 0 : stores[idx]?.isPrimary),
+      label: idx >= 0 ? stores[idx].label : isAdditional ? `Store ${stores.length + 1}` : 'Primary store',
+      status: 'connected',
+    };
+
+    if (idx >= 0) {
+      stores[idx] = { ...stores[idx].toObject?.() || stores[idx], ...storeEntry };
+    } else if (isAdditional) {
+      storeEntry.isPrimary = false;
+      stores.push(storeEntry);
+    } else {
+      stores = [storeEntry];
+      storeEntry.isPrimary = true;
+    }
+
+    if (!isAdditional && stores.length > 1) {
+      stores = stores.map((s) => ({
+        ...s,
+        isPrimary: normalizeShopDomain(s.shopDomain) === normShop,
+      }));
+    }
+
+    clientDoc.shopifyStores = stores;
+    syncLegacyShopifyFields(clientDoc);
+
     const updatePayload = {
-      shopifyAccessToken: access_token,
+      shopifyStores: stores,
+      shopifyAccessToken: clientDoc.shopifyAccessToken,
+      shopDomain: clientDoc.shopDomain,
       shopifyScopes: scope || '',
       shopifyClientId: SHOPIFY_CLIENT_ID(),
       shopifyClientSecret: clientSecret,
@@ -745,19 +801,20 @@ router.get('/callback', async (req, res) => {
       lastShopifyError: '',
       shopifyTokenExpiresAt: null,
       storeType: 'shopify',
-      'commerce.shopify.domain': shop,
-      'commerce.shopify.accessToken': access_token,
+      'commerce.shopify.domain': clientDoc.shopDomain || shop,
+      'commerce.shopify.accessToken': clientDoc.shopifyAccessToken,
       'commerce.shopify.clientId': SHOPIFY_CLIENT_ID(),
       'commerce.shopify.clientSecret': clientSecret,
-      'commerce.storeType': 'shopify'
+      'commerce.storeType': 'shopify',
     };
 
-    await Client.findOneAndUpdate(
-      { clientId },
-      { $set: updatePayload },
-      { new: true }
-    );
+    await Client.findOneAndUpdate({ clientId }, { $set: updatePayload }, { new: true });
     invalidateClientCache(clientId);
+
+    const { seedPlaybooksForClient } = require('../services/postPurchaseJourneys/seedPlaybooks');
+    seedPlaybooksForClient(clientId).catch((e) =>
+      console.warn(`[ShopifyOAuth] Playbook seed: ${e.message}`)
+    );
 
     console.log(`✅ [ShopifyOAuth] Credentials saved for ${clientId}`);
 

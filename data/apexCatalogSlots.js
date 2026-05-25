@@ -2,7 +2,7 @@
 
 /**
  * Apex Light — 10 explore categories (WhatsApp list max 10 rows).
- * Synced from Meta product sets via utils/apexCatalogFlowSync.js
+ * Synced from Meta product sets via utils/shopify/apexCatalogFlowSync.js
  */
 
 const APEX_MPM_TEMPLATE = Object.freeze({

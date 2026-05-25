@@ -33,6 +33,17 @@ function normalizePlanSlug(raw) {
   return 'diy_lite';
 }
 
+/** B10: map legacy slugs (e.g. starter) and unknown plans to real PLAN_LIMITS rows. */
+function resolvePlanLimits(planInput) {
+  const raw = String(planInput || '').toLowerCase().trim();
+  if (LEGACY_PLAN_MAP[raw] && PLAN_LIMITS[LEGACY_PLAN_MAP[raw]]) {
+    return PLAN_LIMITS[LEGACY_PLAN_MAP[raw]];
+  }
+  if (PLAN_LIMITS[raw]) return PLAN_LIMITS[raw];
+  const slug = normalizePlanSlug(raw);
+  return PLAN_LIMITS[slug] || PLAN_LIMITS.diy_lite;
+}
+
 /**
  * Numeric / boolean limits for planLimits.checkLimit(limitType).
  * booleans: feature disabled for this tier.
@@ -335,7 +346,7 @@ function buildPlanAccessBundle(client, sub) {
     isTrialWindowActive,
     hasPaidEntitlements,
     hasPaidActiveSubscription
-  } = require('../utils/accessFlags');
+  } = require('../utils/core/accessFlags');
 
   if (isHardSuspended(client)) {
     return {
@@ -379,6 +390,7 @@ module.exports = {
   PLAN_CHECKOUT,
   PLAN_ACCESS,
   normalizePlanSlug,
+  resolvePlanLimits,
   resolveRequestedPlan,
   getCheckoutMeta,
   getRazorpayPlanIdFromEnv,

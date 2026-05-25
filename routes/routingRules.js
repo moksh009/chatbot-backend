@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const router = express.Router();
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
-const { tenantClientId } = require('../utils/queryHelpers');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 
 const newRuleId = () => crypto.randomUUID();
 

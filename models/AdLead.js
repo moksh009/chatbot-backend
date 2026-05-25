@@ -1,5 +1,31 @@
 const mongoose = require('mongoose');
 
+const CONSENT_STATUS = ['opted_in', 'opted_out', 'unknown', 'pending'];
+const CONSENT_SOURCE = [
+  'shopify_checkout',
+  'web_widget',
+  'qr_scan',
+  'inbound_message',
+  'csv_import',
+  'agent_manual',
+  'meta_ad',
+  'stop_keyword',
+  'unsubscribe_link',
+  'admin_override',
+];
+
+const consentChannelSchema = new mongoose.Schema(
+  {
+    status: { type: String, enum: CONSENT_STATUS, default: 'unknown' },
+    source: { type: String, enum: CONSENT_SOURCE, default: 'agent_manual' },
+    timestamp: { type: Date, default: null },
+    lastUpdated: { type: Date, default: Date.now },
+    unsubscribeAt: { type: Date, default: null },
+    unsubscribeToken: { type: String, default: null },
+  },
+  { _id: false }
+);
+
 const adLeadSchema = new mongoose.Schema({
   clientId: {
     type: String,
@@ -138,6 +164,14 @@ const adLeadSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  /** Phase 8 heuristic prediction (0-23 hour, tenant TZ) */
+  optimalSendHour: { type: Number, default: null },
+  /** Phase 8 heuristic conversion probability 0-100 */
+  conversionProbability: { type: Number, default: null },
+  scoreBreakdown: { type: mongoose.Schema.Types.Mixed, default: null },
+  recentSentimentTrend: { type: Number, default: 50 },
+  sentimentScore: { type: Number, default: 50 },
+  lastActivityAt: { type: Date, default: Date.now },
   scoreLabel: {
     type: String,
     default: 'Cold Lead'
@@ -175,6 +209,9 @@ const adLeadSchema = new mongoose.Schema({
   cartValue:  { type: Number, default: 0 },
   cartUrl:    { type: String, default: '' },
   cartAbandonedAt:   { type: Date },
+  checkoutInitiatedAt: { type: Date },
+  checkoutToken:     { type: String, default: '' },
+  checkoutUrl:       { type: String, default: '' },
   recoveryStep:      { type: Number },
   recoveryStartedAt: { type: Date },
   spinWheelPrize:    { type: String, default: '' },
@@ -203,6 +240,11 @@ const adLeadSchema = new mongoose.Schema({
 
   // Phase 21+: Opt Management & Attribution (compliance-grade)
   optStatus:        { type: String, enum: ["opted_in","opted_out","unknown","pending"], default: "unknown" },
+  channelConsent: {
+    whatsapp: { type: consentChannelSchema, default: () => ({}) },
+    instagram: { type: consentChannelSchema, default: () => ({}) },
+    email: { type: consentChannelSchema, default: () => ({}) },
+  },
   optInDate:        { type: Date, default: null },
   optInSource:      { type: String, default: "" },  // website_widget | spin_wheel | keyword | csv_import | checkout | thank_you_page | qr_code | admin_manual | api
   optInMethod:      { type: String, enum: ['single', 'double'], default: 'single' },
@@ -329,6 +371,8 @@ adLeadSchema.index({ clientId: 1, cartStatus: 1 });        // Abandoned cart rec
 adLeadSchema.index({ clientId: 1, leadScore: -1 });        // Lead scoring leaderboard queries
 adLeadSchema.index({ clientId: 1, optStatus: 1 });         // Opt-in/out management queries
 adLeadSchema.index({ clientId: 1, optStatus: 1, updatedAt: -1 });
+adLeadSchema.index({ clientId: 1, _id: 1 });
+adLeadSchema.index({ 'channelConsent.email.unsubscribeToken': 1 }, { unique: true, sparse: true });
 
 // Static Helper for Phase 25 Customer Journey Map
 adLeadSchema.statics.pushJourneyEvent = async function(clientId, phoneNumber, eventName, metadata = {}) {
@@ -357,10 +401,22 @@ adLeadSchema.index({ clientId: 1, adminFollowUpTriggered: 1, isOrderPlaced: 1 })
 
 // Keep derived eligibility in sync for fast campaign filters.
 adLeadSchema.pre('save', function(next) {
+  const statuses = [
+    this.channelConsent?.whatsapp?.status,
+    this.channelConsent?.instagram?.status,
+    this.channelConsent?.email?.status,
+  ].filter(Boolean);
+  if (statuses.includes('opted_out')) this.optStatus = 'opted_out';
+  else if (statuses.every((s) => s === 'opted_in') && statuses.length > 0) this.optStatus = 'opted_in';
+  else if (statuses.includes('pending')) this.optStatus = 'pending';
+  else if (statuses.length > 0) this.optStatus = 'unknown';
   this.whatsappMarketingEligible = this.optStatus === 'opted_in';
   this.updatedAt = new Date();
   next();
 });
+
+const { enforceClientScope } = require('../mongoose/plugins/enforceClientScope');
+adLeadSchema.plugin(enforceClientScope);
 
 const AdLead = mongoose.model('AdLead', adLeadSchema);
 

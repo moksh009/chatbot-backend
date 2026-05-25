@@ -9,9 +9,9 @@ const TemplateGenerationJob = require('../models/TemplateGenerationJob');
 const SubmissionQueueItem = require('../models/SubmissionQueueItem');
 const SubmissionLog = require('../models/SubmissionLog');
 const { generationQueue, rescheduleSubmissionCheck } = require('../workers/autoTemplateQueues');
-const { withShopifyRetry } = require('../utils/shopifyHelper');
-const { decrypt } = require('../utils/encryption');
-const { tenantClientId } = require('../utils/queryHelpers');
+const { withShopifyRetry } = require('../utils/shopify/shopifyHelper');
+const { decrypt } = require('../utils/core/encryption');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 const { PREBUILT_REQUIRED_TEMPLATES } = require('../constants/templateLifecycle');
 const { getTemplateReadiness, migrateLegacyClientTemplatesToMeta } = require('../services/templateLifecycleService');
 
@@ -421,7 +421,7 @@ router.get('/library', protect, async (req, res) => {
 router.post('/library/seed', protect, async (req, res) => {
   try {
     const { PREBUILT_TEMPLATE_LIBRARY, getPrebuiltByKey } = require('../constants/prebuiltTemplateLibrary');
-    const { buildFormDataFromLibraryEntry } = require('../utils/metaTemplateFormHydration');
+    const { buildFormDataFromLibraryEntry } = require('../utils/meta/metaTemplateFormHydration');
     const { handleGenerationJob } = require('../workers/autoTemplateWorker');
     const { PREBUILT_REQUIRED_TEMPLATES } = require('../constants/templateLifecycle');
 
@@ -493,6 +493,8 @@ router.post('/library/seed', protect, async (req, res) => {
     }
 
     const built = buildFormDataFromLibraryEntry(entry, client);
+    const { getSlotByMetaName } = require('../constants/templateCatalog/catalog');
+    const catalogSlot = getSlotByMetaName(built.name);
     const template = await MetaTemplate.findOneAndUpdate(
       {
         clientId,
@@ -517,6 +519,7 @@ router.post('/library/seed', protect, async (req, res) => {
           templateKind: 'prebuilt',
           isPrebuilt: true,
           autoTrigger: built.autoTrigger,
+          catalogSlotId: catalogSlot?.id || null,
           readinessRequired: PREBUILT_REQUIRED_TEMPLATES.includes(built.name),
           submissionStatus: 'draft',
           updatedAt: new Date(),
@@ -541,7 +544,7 @@ router.post('/library/seed', protect, async (req, res) => {
 router.post('/library/preview', protect, async (req, res) => {
   try {
     const { PREBUILT_TEMPLATE_LIBRARY } = require('../constants/prebuiltTemplateLibrary');
-    const { resolvePositionalPreviewBody } = require('../utils/metaTemplateFormHydration');
+    const { resolvePositionalPreviewBody } = require('../utils/meta/metaTemplateFormHydration');
     const { key } = req.body || {};
     const clientId = resolveClientId(req);
     if (!key) return res.status(400).json({ success: false, message: 'Missing template key' });
@@ -694,7 +697,7 @@ router.post('/retry/:templateId', protect, async (req, res) => {
       await template.save();
 
       // Create a new queue item at the front
-      const { validateMetaTemplateForSubmission } = require('../utils/metaTemplateCompliance');
+      const { validateMetaTemplateForSubmission } = require('../utils/meta/metaTemplateCompliance');
       const check = validateMetaTemplateForSubmission(template);
       if (!check.valid) {
         return res.status(422).json({

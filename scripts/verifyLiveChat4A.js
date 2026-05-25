@@ -5,7 +5,7 @@
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const mongoose = require('mongoose');
-const { getBreaker } = require('../utils/circuitBreaker');
+const { getBreaker } = require('../utils/core/circuitBreaker');
 
 async function benchConversations(clientId) {
   const Conversation = require('../models/Conversation');

@@ -25,10 +25,21 @@ const CampaignMessageSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['queued', 'sent', 'delivered', 'read', 'replied', 'failed'],
+    enum: ['queued', 'processing', 'retrying', 'sent', 'delivered', 'read', 'replied', 'failed', 'cancelled'],
     default: 'queued',
     index: true
   },
+  variantId: { type: String, index: true },
+  lockedBy: { type: String, default: null },
+  lockedAt: { type: Date, default: null },
+  attempts: { type: Number, default: 0 },
+  lastAttemptAt: { type: Date, default: null },
+  nextAttemptAt: { type: Date, default: null },
+  scheduledSendAt: { type: Date, default: null },
+  failureReason: { type: String, default: null },
+  recoveredFromDuplicate: { type: Boolean, default: false },
+  cancelledReason: String,
+  cancelledAt: Date,
   errorMessage: String,
   sentAt: Date,
   deliveredAt: Date,
@@ -41,5 +52,8 @@ const CampaignMessageSchema = new mongoose.Schema({
     default: {}
   }
 });
+
+CampaignMessageSchema.index({ clientId: 1, status: 1, lockedAt: 1 });
+CampaignMessageSchema.index({ campaignId: 1, status: 1 });
 
 module.exports = mongoose.model('CampaignMessage', CampaignMessageSchema);

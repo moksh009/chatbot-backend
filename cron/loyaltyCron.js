@@ -2,8 +2,8 @@ const cron = require('node-cron');
 const CustomerWallet = require('../models/CustomerWallet');
 const Client = require('../models/Client');
 const AdLead = require('../models/AdLead');
-const log = require('../utils/logger')('LoyaltyCron');
-const WhatsApp = require('../utils/whatsapp');
+const log = require('../utils/core/logger')('LoyaltyCron');
+const WhatsApp = require('../utils/meta/whatsapp');
 
 /**
  * Daily Cron Task (Runs at 10 AM)

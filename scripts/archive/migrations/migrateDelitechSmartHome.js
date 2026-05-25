@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 const Client   = require("../models/Client");
-const log      = require("../utils/logger")("MigrationDelitech");
+const log      = require('../../../utils/core/logger')("MigrationDelitech");
 require("dotenv").config();
 
 // --- 1. COORDINATES & ASSETS ---

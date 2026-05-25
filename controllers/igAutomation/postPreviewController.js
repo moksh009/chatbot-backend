@@ -18,8 +18,8 @@
 
 const axios = require('axios');
 const Client = require('../../models/Client');
-const { decrypt } = require('../../utils/encryption');
-const { GRAPH_BASE_URL } = require('../../utils/igGraphApi');
+const { decrypt } = require('../../utils/core/encryption');
+const { GRAPH_BASE_URL } = require('../../utils/meta/igGraphApi');
 
 const INSTAGRAM_URL_REGEX = /instagram\.com\/(p|reel|tv)\/([A-Za-z0-9_-]+)/;
 const PREVIEW_TTL_MS = 30 * 60 * 1000; // 30 minutes

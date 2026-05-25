@@ -11,9 +11,9 @@
 
 const express = require('express');
 const router = express.Router();
-const log = require('../../utils/logger')('IGMedia');
+const log = require('../../utils/core/logger')('IGMedia');
 const { apiCache } = require('../../middleware/apiCache');
-const { getCachedClient, IG_CONNECTION_SELECT } = require('../../utils/clientCache');
+const { getCachedClient, IG_CONNECTION_SELECT } = require('../../utils/core/clientCache');
 
 /**
  * GET /api/ig-automation/connection-status?clientId=X

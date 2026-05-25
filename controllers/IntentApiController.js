@@ -5,10 +5,10 @@ const UnrecognizedPhrase = require('../models/UnrecognizedPhrase');
 const IntentAnalytics = require('../models/IntentAnalytics');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
-const { CONFIDENCE_THRESHOLD } = require('../utils/nlpConfig');
+const { CONFIDENCE_THRESHOLD } = require('../utils/core/nlpConfig');
 const ClientModel = require('../models/Client');
-const { botGenerateJSON } = require('../utils/gemini');
-const { tenantClientId } = require('../utils/queryHelpers');
+const { botGenerateJSON } = require('../utils/core/gemini');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 
 /**
  * IntentApiController

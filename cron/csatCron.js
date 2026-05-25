@@ -1,7 +1,9 @@
 const cron = require('node-cron');
 const Conversation = require('../models/Conversation');
-const { triggerCSAT, triggerIdleCSAT } = require('../utils/csatService');
-const log = require('../utils/logger')('CsatCron');
+const { triggerCSAT, triggerIdleCSAT } = require('../utils/core/csatService');
+const log = require('../utils/core/logger')('CsatCron');
+
+/** CSAT delivery runs via scheduledMessageCron (ScheduledMessage rows, intent=utility). */
 
 async function runPrimaryCsatTick() {
   const resolved = await Conversation.find({

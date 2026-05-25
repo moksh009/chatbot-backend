@@ -1,13 +1,19 @@
 const express = require('express');
 const router = express.Router({ mergeParams: true });
-const OnboardingWizard = require('../models/OnboardingWizard');
+const { STEP_IDS } = require('../constants/onboardingWizardSteps');
+const {
+  findWizard,
+  findOrCreateWizard,
+  deleteWizard,
+  createMutableWizard,
+} = require('../utils/onboarding/wizardState');
 const Client = require('../models/Client');
-const log = require('../utils/logger')('OnboardingRoutes');
+const log = require('../utils/core/logger')('OnboardingRoutes');
 const { protect } = require('../middleware/auth');
-const { denyUnlessTenant } = require('../utils/queryHelpers');
-const { mapFeatureToggle } = require('../utils/wizardMapper');
-const { syncPersonaAcrossSystem } = require('../utils/personaEngine');
-const { sanitizeWizardStepData } = require('../utils/wizardStepSanitize');
+const { denyUnlessTenant } = require('../utils/core/queryHelpers');
+const { mapFeatureToggle } = require('../utils/flow/wizardMapper');
+const { syncPersonaAcrossSystem } = require('../utils/core/personaEngine');
+const { sanitizeWizardStepData } = require('../utils/flow/wizardStepSanitize');
 
 /** v2 (8 steps) → v3 (7 steps): features before products; cart_timing merged into features. */
 const V2_TO_V3_INDEX = { 0: 0, 1: 1, 2: 4, 3: 3, 4: 5, 5: 2, 6: 2, 7: 6 };
@@ -81,14 +87,14 @@ function migrateWizardSchema(wizard) {
       )];
     }
     const idx = typeof wizard.currentStep === 'number' ? wizard.currentStep : 0;
-    wizard.currentStepId = OnboardingWizard.STEP_IDS[Math.min(7, Math.max(0, idx))] || 'business';
+    wizard.currentStepId = STEP_IDS[Math.min(7, Math.max(0, idx))] || 'business';
     wizard.wizardSchemaVersion = 4;
     touched = true;
   }
 
-  if (!wizard.currentStepId || !OnboardingWizard.STEP_IDS.includes(wizard.currentStepId)) {
+  if (!wizard.currentStepId || !STEP_IDS.includes(wizard.currentStepId)) {
     const idx = typeof wizard.currentStep === 'number' ? wizard.currentStep : 0;
-    wizard.currentStepId = OnboardingWizard.STEP_IDS[Math.min(7, Math.max(0, idx))] || 'business';
+    wizard.currentStepId = STEP_IDS[Math.min(7, Math.max(0, idx))] || 'business';
     touched = true;
   }
 
@@ -135,11 +141,11 @@ router.get('/:clientId', protect, async (req, res) => {
   try {
     const { clientId } = req.params;
     if (!denyUnlessTenant(req, res, clientId)) return;
-    const wizardDoc = await OnboardingWizard.findOne({ clientId });
-    
-    if (!wizardDoc) {
+    const existing = await findWizard(clientId);
+    if (!existing) {
       return res.status(404).json({ success: true, wizard: null });
     }
+    const wizardDoc = createMutableWizard(clientId, existing);
 
     repairLegacyWizardBuckets(wizardDoc);
     migrateWizardSchema(wizardDoc);
@@ -162,7 +168,7 @@ router.get('/:clientId', protect, async (req, res) => {
       const idx = typeof wizard.currentStep === 'number' ? wizard.currentStep : 0;
       wizard = {
         ...wizard,
-        currentStepId: OnboardingWizard.STEP_IDS[Math.min(7, Math.max(0, idx))] || 'business',
+        currentStepId: STEP_IDS[Math.min(7, Math.max(0, idx))] || 'business',
       };
     }
 
@@ -174,7 +180,7 @@ router.get('/:clientId', protect, async (req, res) => {
 });
 
 function resolveWizardStepKey(stepKey) {
-  const ids = OnboardingWizard.STEP_IDS;
+  const ids = STEP_IDS;
   if (stepKey == null || stepKey === '') return null;
 
   const raw = String(stepKey).trim().toLowerCase();
@@ -207,16 +213,12 @@ router.patch('/step/:stepKey', protect, async (req, res) => {
         success: false,
         error: 'Invalid step id or number',
         message: 'Invalid step id or number',
-        allowedStepIds: OnboardingWizard.STEP_IDS,
+        allowedStepIds: STEP_IDS,
       });
     }
     const { stepId, stepNum } = resolved;
 
-    let wizard = await OnboardingWizard.findOne({ clientId });
-    
-    if (!wizard) {
-      wizard = new OnboardingWizard({ clientId, status: 'in_progress' });
-    }
+    let wizard = await findOrCreateWizard(clientId);
 
     repairLegacyWizardBuckets(wizard);
     migrateWizardSchema(wizard);
@@ -420,7 +422,7 @@ router.delete('/:clientId', protect, async (req, res) => {
   try {
     const { clientId } = req.params;
     if (!denyUnlessTenant(req, res, clientId)) return;
-    await OnboardingWizard.deleteOne({ clientId });
+    await deleteWizard(clientId);
     res.json({ success: true, message: 'Wizard state reset successfully' });
   } catch (error) {
     log.error(`Error resetting wizard state for ${req.params.clientId}`, error);

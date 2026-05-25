@@ -28,6 +28,9 @@ const webhookConfigSchema = new mongoose.Schema({
   totalFired:  { type: Number, default: 0 },
   lastStatus:  { type: Number }, // HTTP status of last delivery
   lastError:   { type: String },
+  consecutiveFailures: { type: Number, default: 0 },
+  pausedReason: { type: String, default: null },
+  pausedAt: { type: Date },
 
   createdAt: { type: Date, default: Date.now }
 });

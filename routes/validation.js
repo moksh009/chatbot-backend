@@ -7,7 +7,7 @@ const router  = express.Router();
 const { protect, verifyClientAccess } = require('../middleware/auth');
 const Client  = require('../models/Client');
 const { apiCache } = require('../middleware/apiCache');
-const { getCachedClient, VALIDATION_SELECT } = require('../utils/clientCache');
+const { getCachedClient, VALIDATION_SELECT } = require('../utils/core/clientCache');
 const {
   validateTemplateForSend,
   validateEmailConfig,
@@ -15,7 +15,7 @@ const {
   validateAutomationFlow,
   validateFlowNode,
   getSystemHealth
-} = require('../utils/validator');
+} = require('../utils/core/validator');
 
 // All routes require authentication
 router.use(protect);
@@ -112,7 +112,7 @@ router.get('/:clientId/automations', verifyClientAccess, apiCache(90), async (re
     const client = await getCachedClient(clientId, VALIDATION_SELECT);
     if (!client) return res.status(404).json({});
 
-    const flowTypes = ['abandoned_cart', 'cod_to_prepaid', 'review_collection', 'birthday'];
+    const flowTypes = ['abandoned_cart', 'cod_to_prepaid', 'birthday'];
     const results   = {};
 
     for (const flowType of flowTypes) {

@@ -1,7 +1,7 @@
 "use strict";
 
-const { VARIABLE_REGISTRY, resolveSourcePath } = require("../utils/variableRegistry");
-const { buildVariableContext, injectVariables } = require("../utils/variableInjector");
+const { VARIABLE_REGISTRY, resolveSourcePath } = require('../utils/core/variableRegistry');
+const { buildVariableContext, injectVariables } = require('../utils/core/variableInjector');
 
 /**
  * Resolve {{variable_name}} placeholders using the master registry + live context.

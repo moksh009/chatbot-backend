@@ -1,10 +1,11 @@
 const express = require('express');
-const { resolveClient, tenantClientId } = require('../utils/queryHelpers');
+const { resolveClient, tenantClientId } = require('../utils/core/queryHelpers');
 const router = express.Router();
 const Order = require('../models/Order');
 const Client = require('../models/Client');
-const { aggregateRtoProtectionStats } = require('../utils/rtoProtectionService');
+const { aggregateRtoProtectionStats } = require('../utils/commerce/rtoProtectionService');
 const { protect } = require('../middleware/auth');
+const { verifyTenantScope } = require('../middleware/verifyTenantScope');
 const { logAction } = require('../middleware/audit');
 const { apiCache } = require('../middleware/apiCache');
 
@@ -46,8 +47,8 @@ router.get('/', protect, logPersonalDataAccess, async (req, res) => {
 
 // GET /api/orders/products?clientId=X — distinct products from order line items
 router.get('/products', protect, logPersonalDataAccess, apiCache(120), async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
-  const { dedupeAsync } = require('../utils/requestDedupe');
+  const { createTimer } = require('../utils/core/perfLogger');
+  const { dedupeAsync } = require('../utils/core/requestDedupe');
   const timer = createTimer('GET /api/orders/products', tenantClientId(req) || '');
   try {
     const clientId = tenantClientId(req);
@@ -55,7 +56,7 @@ router.get('/products', protect, logPersonalDataAccess, apiCache(120), async (re
       timer.finish('403');
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
-    const { getAllCatalogProductsForFilter } = require('../utils/ordersFilterAggregations');
+    const { getAllCatalogProductsForFilter } = require('../utils/commerce/ordersFilterAggregations');
     const products = await timer.time('getAllCatalogProductsForFilter', () =>
       dedupeAsync(`orders:products:${clientId}`, () => getAllCatalogProductsForFilter(clientId))
     );
@@ -69,8 +70,8 @@ router.get('/products', protect, logPersonalDataAccess, apiCache(120), async (re
 
 // GET /api/orders/states?clientId=X — states extracted from shipping addresses
 router.get('/states', protect, logPersonalDataAccess, apiCache(120), async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
-  const { dedupeAsync } = require('../utils/requestDedupe');
+  const { createTimer } = require('../utils/core/perfLogger');
+  const { dedupeAsync } = require('../utils/core/requestDedupe');
   const timer = createTimer('GET /api/orders/states', tenantClientId(req) || '');
   try {
     const clientId = tenantClientId(req);
@@ -78,7 +79,7 @@ router.get('/states', protect, logPersonalDataAccess, apiCache(120), async (req,
       timer.finish('403');
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
-    const { getDistinctOrderStates } = require('../utils/ordersFilterAggregations');
+    const { getDistinctOrderStates } = require('../utils/commerce/ordersFilterAggregations');
     const states = await timer.time('getDistinctOrderStates', () =>
       dedupeAsync(`orders:states:${clientId}`, () => getDistinctOrderStates(clientId))
     );
@@ -90,7 +91,7 @@ router.get('/states', protect, logPersonalDataAccess, apiCache(120), async (req,
   }
 });
 
-router.get('/:clientId/cod-pipeline', protect, logPersonalDataAccess, async (req, res) => {
+router.get('/:clientId/cod-pipeline', protect, verifyTenantScope(), logPersonalDataAccess, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId || clientId !== req.params.clientId) {
@@ -123,14 +124,14 @@ router.get('/:clientId/cod-pipeline', protect, logPersonalDataAccess, async (req
   }
 });
 
-router.get('/:clientId/commerce-insights', protect, logPersonalDataAccess, async (req, res) => {
+router.get('/:clientId/commerce-insights', protect, verifyTenantScope(), logPersonalDataAccess, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId || clientId !== req.params.clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     const range = ['7d', '30d', 'all'].includes(String(req.query.range)) ? req.query.range : '30d';
-    const { getOrdersCommerceInsights } = require('../utils/ordersCommerceInsights');
+    const { getOrdersCommerceInsights } = require('../utils/commerce/ordersCommerceInsights');
     const payload = await getOrdersCommerceInsights(clientId, range);
     res.json(payload);
   } catch (error) {
@@ -138,7 +139,7 @@ router.get('/:clientId/commerce-insights', protect, logPersonalDataAccess, async
   }
 });
 
-router.get('/:clientId/rto-analytics', protect, logPersonalDataAccess, async (req, res) => {
+router.get('/:clientId/rto-analytics', protect, verifyTenantScope(), logPersonalDataAccess, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId || clientId !== req.params.clientId) {
@@ -153,7 +154,7 @@ router.get('/:clientId/rto-analytics', protect, logPersonalDataAccess, async (re
   }
 });
 
-router.post('/:clientId/bulk-action', protect, async (req, res) => {
+router.post('/:clientId/bulk-action', protect, verifyTenantScope(), async (req, res) => {
   try {
     const { clientId } = req.params;
     if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
@@ -167,7 +168,7 @@ router.post('/:clientId/bulk-action', protect, async (req, res) => {
     } else if (action_type === 'cod_verify') {
       const client = await Client.findOne({ clientId });
       if (client) {
-        const { sendTemplateMessage } = require('../utils/whatsappAPI');
+        const { sendForAutomation } = require('../services/templateSender');
         const orders = await Order.find({ _id: { $in: targetOrderIds }, clientId });
         
         for (const order of orders) {
@@ -178,10 +179,23 @@ router.post('/:clientId/bulk-action', protect, async (req, res) => {
             const phone = order.customerPhone || order.phone;
             if (phone && client.whatsappToken) {
               try {
-                await sendTemplateMessage(clientId, phone, 'cod_verification_request', [
-                  { type: 'text', text: order.customerName || 'Customer' },
-                  { type: 'text', text: order.orderId || order.orderNumber }
-                ]);
+                await sendForAutomation({
+                  clientId,
+                  phone,
+                  metaName: 'cod_verification_request',
+                  contextType: 'order',
+                  contextData: {
+                    order: {
+                      customerName: order.customerName || 'Customer',
+                      orderId: order.orderId || order.orderNumber,
+                      orderNumber: order.orderNumber || order.orderId,
+                    },
+                    extra: {
+                      first_name: (order.customerName || 'Customer').split(' ')[0],
+                      order_id: order.orderId || order.orderNumber,
+                    },
+                  },
+                });
               } catch (e) {
                 console.error('Failed to send COD verification WhatsApp', e.message);
               }
@@ -194,46 +208,6 @@ router.post('/:clientId/bulk-action', protect, async (req, res) => {
     // In a real scenario we'd integrate Shopify updates and WhatsApp sending here
 
     res.json({ success: true, message: `Bulk ${action_type} executed on ${targetOrderIds.length} orders.` });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// POST /api/client/:clientId/orders/:orderId/send-review-request
-// Manually triggers a WhatsApp review request for a fulfilled order
-router.post('/:clientId/orders/:orderId/send-review-request', protect, async (req, res) => {
-  try {
-    const { clientId, orderId } = req.params;
-    if (req.user.role !== 'SUPER_ADMIN' && req.user.clientId !== clientId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-
-    const order = await Order.findOne({ _id: orderId, clientId });
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-    const phone = order.customerPhone || order.phone;
-    if (!phone) return res.status(400).json({ success: false, message: 'Order has no customer phone' });
-
-    const ReviewRequest = require('../models/ReviewRequest');
-    const client = await Client.findOne({ clientId });
-    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
-
-    // Schedule immediately (scheduledFor = now)
-    await ReviewRequest.findOneAndUpdate(
-      { clientId, phone, orderNumber: order.orderNumber || order.orderId },
-      {
-        clientId,
-        phone,
-        orderNumber: order.orderNumber || order.orderId,
-        productName: order.items?.[0]?.name || 'your order',
-        reviewUrl: client.googleReviewUrl || '',
-        scheduledFor: new Date(), // Immediate
-        status: 'scheduled'
-      },
-      { upsert: true }
-    );
-
-    res.json({ success: true, message: 'Review request scheduled for immediate dispatch' });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

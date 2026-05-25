@@ -20,7 +20,7 @@ dotenv.config();
 const Client = require("../models/Client");
 const WhatsAppFlow = require("../models/WhatsAppFlow");
 const FlowHistory = require("../models/FlowHistory");
-const { generateEcommerceFlow } = require("../utils/flowGenerator");
+const { generateEcommerceFlow } = require('../../../utils/flow/flowGenerator');
 
 function argValue(flag, fallback = "") {
   const idx = process.argv.indexOf(flag);

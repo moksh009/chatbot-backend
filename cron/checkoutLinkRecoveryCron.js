@@ -5,11 +5,11 @@ const CheckoutLink = require("../models/CheckoutLink");
 const Client = require("../models/Client");
 const Conversation = require("../models/Conversation");
 const AdLead = require("../models/AdLead");
-const WhatsApp = require("../utils/whatsapp");
-const { normalizePhone } = require("../utils/helpers");
-const { createMessage } = require("../utils/createMessage");
-const { publicApiBase } = require("../utils/commerceCheckoutService");
-const log = require("../utils/logger")("CheckoutLinkRecovery");
+const WhatsApp = require('../utils/meta/whatsapp');
+const { normalizePhone } = require('../utils/core/helpers');
+const { createMessage } = require('../utils/core/createMessage');
+const { publicApiBase } = require('../utils/commerce/commerceCheckoutService');
+const log = require('../utils/core/logger')("CheckoutLinkRecovery");
 
 const DELAY_MIN = Math.max(5, Number(process.env.CHECKOUT_LINK_RECOVERY_MIN || 25));
 const BATCH = Number(process.env.CHECKOUT_LINK_RECOVERY_BATCH || 40);

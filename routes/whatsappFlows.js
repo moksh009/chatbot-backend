@@ -4,8 +4,8 @@ const WhatsAppFlow = require('../models/WhatsAppFlow');
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
 const axios = require('axios');
-const log = require('../utils/logger')('WhatsAppFlows');
-const { checkLimit } = require('../utils/planLimits');
+const log = require('../utils/core/logger')('WhatsAppFlows');
+const { checkLimit } = require('../utils/core/planLimits');
 const { apiCache } = require('../middleware/apiCache');
 
 function formatFlowForClient(doc) {
@@ -26,7 +26,7 @@ function formatFlowForClient(doc) {
  * Returns all synced flows for the client (lite list — no nodes/edges)
  */
 router.get('/', protect, apiCache(60), async (req, res) => {
-    const { createTimer } = require('../utils/perfLogger');
+    const { createTimer } = require('../utils/core/perfLogger');
     const timer = createTimer('GET /api/whatsapp-flows', req.user?.clientId || '');
     try {
         const flows = await WhatsAppFlow.find({ clientId: req.user.clientId })
@@ -118,7 +118,7 @@ router.post('/send', protect, async (req, res) => {
             return res.status(403).json({ success: false, message: limitCheck.reason });
         }
 
-        const { sendWhatsAppFlow } = require('../utils/dualBrainEngine');
+        const { sendWhatsAppFlow } = require('../utils/commerce/dualBrainEngine');
         
         await sendWhatsAppFlow(client, phone, header, body, flowId, cta, screen);
         res.json({ success: true, message: 'Flow sent successfully.' });

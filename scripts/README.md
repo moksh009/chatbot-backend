@@ -26,7 +26,7 @@
 | `flowRegressionSmoke.js` | Flow regression (`npm run flow-regression`) |
 | `templateEligibilitySmokePass.js` | Template eligibility smoke |
 | `flowPreflightNodeGuardsSmoke.js` | Flow preflight guards |
-| `auditUnusedFiles.js` | Orphan file scan (dev only) |
+| `auditUnusedFiles.js` | Recursive orphan scan via import graph (~250ms; scans `utils/{meta,shopify,flow,commerce,core}/`) |
 | `auditClientSchema.js` | Client schema audit |
 
 ## One-time / manual

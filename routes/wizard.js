@@ -8,16 +8,16 @@ const router  = express.Router();
 const Client  = require("../models/Client");
 const { protect } = require("../middleware/auth");
 const WhatsAppFlow = require("../models/WhatsAppFlow");
-const { generateEcommerceFlow, generateSystemPrompt, getPrebuiltTemplates } = require("../utils/flowGenerator");
-const { clearTriggerCache } = require("../utils/triggerEngine");
-const { syncPlatformVarsToFlows } = require("../utils/platformVarsSync");
-const { withShopifyRetry } = require("../utils/shopifyHelper");
-const { generateText, generateTextFast } = require("../utils/gemini");
-const { mapWizardToClient, mapFeatureToggle, pullPersonaBundleFromSet, syncAutomationFlowsFromFeatures } = require("../utils/wizardMapper");
-const { emitToClient } = require("../utils/socket");
-const log = require("../utils/logger")("Wizard");
-const { tenantClientId } = require("../utils/queryHelpers");
-const { hydrateProductTemplateRecord } = require("../utils/templateImageHydrate");
+const { generateEcommerceFlow, generateSystemPrompt, getPrebuiltTemplates } = require('../utils/flow/flowGenerator');
+const { clearTriggerCache } = require('../utils/flow/triggerEngine');
+const { syncPlatformVarsToFlows } = require('../utils/core/platformVarsSync');
+const { withShopifyRetry } = require('../utils/shopify/shopifyHelper');
+const { generateText, generateTextFast } = require('../utils/core/gemini');
+const { mapWizardToClient, mapFeatureToggle, pullPersonaBundleFromSet, syncAutomationFlowsFromFeatures } = require('../utils/flow/wizardMapper');
+const { emitToClient } = require('../utils/core/socket');
+const log = require('../utils/core/logger')("Wizard");
+const { tenantClientId } = require('../utils/core/queryHelpers');
+const { hydrateProductTemplateRecord } = require('../utils/meta/templateImageHydrate');
 const MetaTemplate = require("../models/MetaTemplate");
 const { PREBUILT_REQUIRED_TEMPLATES } = require("../constants/templateLifecycle");
 
@@ -62,13 +62,13 @@ function publicLogoUrl(req, filename) {
 
 /** Regenerate main + automation flows after settings feature toggles. */
 async function regenerateClientFlowsFromFeatures(client, source = "settings_features") {
-  const { generateCommerceWizardPack } = require("../utils/flowGenerator");
+  const { generateCommerceWizardPack } = require('../utils/flow/flowGenerator');
   const {
     createFlowsFromCommercePack,
     deletePriorWizardFlows,
     ensureWizardFlowFolders,
-  } = require("../utils/wizardCommercePackPersist");
-  const { buildWizardDataFromUniversal } = require("../utils/universalCommerceMapper");
+  } = require('../utils/flow/wizardCommercePackPersist');
+  const { buildWizardDataFromUniversal } = require('../utils/commerce/universalCommerceMapper');
 
   const wf =
     client.wizardFeatures && typeof client.wizardFeatures.toObject === "function"
@@ -163,7 +163,7 @@ async function regenerateClientFlowsFromFeatures(client, source = "settings_feat
 
 async function syncPendingTemplatesForClient(client) {
   const axios = require("axios");
-  const { decrypt } = require("../utils/encryption");
+  const { decrypt } = require('../utils/core/encryption');
 
   const wabaId = client.wabaId || client.whatsapp?.wabaId;
   let token = client.whatsappToken || client.whatsapp?.accessToken;
@@ -456,7 +456,7 @@ router.post("/:clientId/flow-graph-preview", protect, async (req, res) => {
       return res.status(403).json({ success: false, error: "Unauthorized" });
     }
 
-    const { generateCommerceWizardPack } = require("../utils/flowGenerator");
+    const { generateCommerceWizardPack } = require('../utils/flow/flowGenerator');
     const templates = getPrebuiltTemplates(wizardData || {});
     const previewData = {
       ...(wizardData || {}),
@@ -539,12 +539,12 @@ router.post("/:clientId/complete", protect, async (req, res) => {
       })}`
     );
 
-    const { generateCommerceWizardPack } = require("../utils/flowGenerator");
+    const { generateCommerceWizardPack } = require('../utils/flow/flowGenerator');
     const {
       createFlowsFromCommercePack,
       deletePriorWizardFlows,
       ensureWizardFlowFolders,
-    } = require("../utils/wizardCommercePackPersist");
+    } = require('../utils/flow/wizardCommercePackPersist');
 
     // Meta catalog import (no Shopify required — products already in Commerce Manager)
     const catalogId = String(
@@ -558,7 +558,7 @@ router.post("/:clientId/complete", protect, async (req, res) => {
           catalogSet.metaCatalogAccessToken = wizardCatalogToken;
         }
         await Client.updateOne({ clientId }, { $set: catalogSet });
-        const { runMetaCatalogImport } = require("../utils/metaCatalogSync");
+        const { runMetaCatalogImport } = require('../utils/meta/metaCatalogSync');
         const imp = await runMetaCatalogImport(clientId);
         log.info(`[Wizard] Meta catalog import: ${imp.synced} products, ${imp.collections} collections`);
       } catch (metaErr) {
@@ -618,7 +618,7 @@ router.post("/:clientId/complete", protect, async (req, res) => {
         };
 
       try {
-        const { autoPatchMpmFlowNodes, syncExploreMenuFromCollections } = require("../utils/flowMpmPatch");
+        const { autoPatchMpmFlowNodes, syncExploreMenuFromCollections } = require('../utils/flow/flowMpmPatch');
         for (const entry of persistedPack.visualEntries || []) {
           if (!entry?.id) continue;
           const patch = await autoPatchMpmFlowNodes(clientId, { flowId: entry.id });
@@ -636,7 +636,7 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     } else {
       // Single-graph legacy path (main + embedded automations)
       const generated = await generateEcommerceFlow(client, { ...launchWizardData, templates });
-      const { organizeFlowGraph } = require("../utils/flowLayoutOrganize");
+      const { organizeFlowGraph } = require('../utils/flow/flowLayoutOrganize');
       const folderized = organizeFlowGraph(generated.nodes, generated.edges, {
         keepPositions: true,
         addEntryEdges: true,
@@ -685,7 +685,7 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     const systemPrompt = userSystemPrompt || (await generateSystemPrompt(client, launchWizardData));
 
     // ─── Build the canonical wizard → DB update via the central mapper ───────
-    // All field-mapping rules live in utils/wizardMapper.js so we have ONE
+    // All field-mapping rules live in utils/flow/wizardMapper.js so we have ONE
     // source of truth instead of 150 lines of brittle inline spreads.
     const mapped = mapWizardToClient(launchWizardData, client, { systemPrompt });
     const $set = mapped.$set;
@@ -699,7 +699,7 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     }
 
     if (useCommercePack && persistedPack) {
-      const { ensureWizardFlowFolders } = require("../utils/wizardCommercePackPersist");
+      const { ensureWizardFlowFolders } = require('../utils/flow/wizardCommercePackPersist');
       $set.flowFolders = ensureWizardFlowFolders(client.flowFolders || []);
     }
 
@@ -767,7 +767,7 @@ router.post("/:clientId/complete", protect, async (req, res) => {
     clearClientCache(clientId);
     await syncPlatformVarsToFlows(clientId);
 
-    const { syncPersonaAcrossSystem } = require("../utils/personaEngine");
+    const { syncPersonaAcrossSystem } = require('../utils/core/personaEngine');
     await syncPersonaAcrossSystem(clientId, personaPatch, {
       systemPrompt: personaSystemPrompt,
     });
@@ -920,7 +920,7 @@ Respond ONLY with a JSON object in this exact format:
 router.get("/:clientId/shopify-products", protect, async (req, res) => {
   const { clientId } = req.params;
   const axios = require("axios");
-  const { decrypt } = require("../utils/encryption");
+  const { decrypt } = require('../utils/core/encryption');
 
   if (!assertWizardTenant(req, clientId).ok) {
     return res.status(403).json({ error: "Unauthorized" });
@@ -1030,7 +1030,7 @@ router.get("/:clientId/shopify-products", protect, async (req, res) => {
 router.get("/:clientId/debug-shopify", protect, async (req, res) => {
   if (req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ error: 'SUPER_ADMIN only' });
   const { clientId } = req.params;
-  const { decrypt } = require("../utils/encryption");
+  const { decrypt } = require('../utils/core/encryption');
   try {
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ error: "Client not found" });
@@ -1387,7 +1387,7 @@ router.post("/:clientId/submit-automation-templates", protect, async (req, res) 
       try {
         let accessToken = token;
         try {
-          const { decrypt } = require('../utils/encryption');
+          const { decrypt } = require('../utils/core/encryption');
           accessToken = decrypt(token) || token;
         } catch (_) {}
 
@@ -1529,7 +1529,7 @@ function resolveSubmittedApiKey(apiKey) {
   let finalKey = String(apiKey || "").trim();
   if (!finalKey || finalKey === "••••••••") return "";
   try {
-    const { decrypt } = require("../utils/encryption");
+    const { decrypt } = require('../utils/core/encryption');
     finalKey = decrypt(apiKey) || finalKey;
   } catch (_) {}
   return finalKey;
@@ -1644,11 +1644,11 @@ router.patch("/:clientId/features", protect, async (req, res) => {
     if (!client) return res.status(404).json({ error: "Client not found" });
 
     try {
-      const { invalidateClientCache } = require("../utils/clientCache");
+      const { invalidateClientCache } = require('../utils/core/clientCache');
       invalidateClientCache(clientId);
     } catch (_) {}
     try {
-      const { invalidateBootstrapCache } = require("../utils/bootstrapCache");
+      const { invalidateBootstrapCache } = require('../utils/core/bootstrapCache');
       invalidateBootstrapCache(req.user?.id);
     } catch (_) {}
 

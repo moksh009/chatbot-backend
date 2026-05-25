@@ -25,9 +25,9 @@ async function main() {
 
   const Client = require("../models/Client");
   const WhatsAppFlow = require("../models/WhatsAppFlow");
-  const { applyCanvasLayout, countOrphanLayoutNodes } = require("../utils/flowLayoutOrganize");
-  const { persistFlowCanvasGraph } = require("../utils/flowLayoutPersist");
-  const { resolveFlowListCounts } = require("../utils/flowGraphResolver");
+  const { applyCanvasLayout, countOrphanLayoutNodes } = require('../utils/flow/flowLayoutOrganize');
+  const { persistFlowCanvasGraph } = require('../utils/flow/flowLayoutPersist');
+  const { resolveFlowListCounts } = require('../utils/flow/flowGraphResolver');
 
   const clientQuery = onlyClientId ? { clientId: onlyClientId } : {};
   const clients = await Client.find(clientQuery).select("clientId visualFlows").lean();

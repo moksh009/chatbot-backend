@@ -4,7 +4,7 @@ const { protect } = require('../middleware/auth');
 const Conversation = require('../models/Conversation');
 const BotAnalytics = require('../models/BotAnalytics');
 const TrainingCase = require('../models/TrainingCase');
-const { tenantClientId } = require('../utils/queryHelpers');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 
 /**
  * @route   GET /api/bot-quality/footprint

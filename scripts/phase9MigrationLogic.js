@@ -1,6 +1,6 @@
 const Client = require('../models/Client');
-const { getDefaultFlowForNiche } = require('../utils/defaultFlowNodes');
-const log = require('../utils/logger')('MigrationLogic');
+const { getDefaultFlowForNiche } = require('../utils/flow/defaultFlowNodes');
+const log = require('../utils/core/logger')('MigrationLogic');
 
 /**
  * Reusable migration logic that can be called via CLI or Browser API
@@ -47,7 +47,6 @@ async function runFullMigration() {
         client.automationFlows = [
           { id: 'abandoned_cart', isActive: true, config: { delayHours: 2 } },
           { id: 'cod_to_prepaid', isActive: false, config: { delayMinutes: 3, discountAmount: 50, gateway: 'razorpay' } },
-          { id: 'review_collection', isActive: false, config: { delayDays: 4 } }
         ];
         isModified = true;
       }

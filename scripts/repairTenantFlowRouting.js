@@ -19,10 +19,10 @@ require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 const mongoose = require("mongoose");
 const Client = require("../models/Client");
 const WhatsAppFlow = require("../models/WhatsAppFlow");
-const { clearTriggerCache } = require("../utils/triggerEngine");
-const { invalidateFlowGraphCache } = require("../utils/flowGraphCache");
-const { invalidateClientCache } = require("../utils/clientCache");
-const { loadClientFlowSources } = require("../utils/flowGraphResolver");
+const { clearTriggerCache } = require('../utils/flow/triggerEngine');
+const { invalidateFlowGraphCache } = require('../utils/flow/flowGraphCache');
+const { invalidateClientCache } = require('../utils/core/clientCache');
+const { loadClientFlowSources } = require('../utils/flow/flowGraphResolver');
 
 function resolveClientId() {
   const arg = process.argv.find((a) => a.startsWith("--clientId="));

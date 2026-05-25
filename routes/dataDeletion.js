@@ -23,8 +23,6 @@ const OTP            = require("../models/OTP");
 const AuditLog       = require("../models/AuditLog");
 
 // Onboarding wizard state — must also be cleaned up
-let OnboardingWizard;
-try { OnboardingWizard = require("../models/OnboardingWizard"); } catch (_) {}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // META DATA DELETION CALLBACK
@@ -158,7 +156,7 @@ router.post("/account/delete", protect, async (req, res) => {
         Notification.deleteMany({ clientId: { $in: [clientId, clientMongoId] } }),
         AuditLog.deleteMany({ clientId: { $in: [clientId, clientMongoId] } }),
         // Clean up wizard state
-        ...(OnboardingWizard ? [OnboardingWizard.deleteMany({ clientId })] : [])
+        Client.updateOne({ clientId }, { $unset: { wizardState: '' } })
       );
     }
 

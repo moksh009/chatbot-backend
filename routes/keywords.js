@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const KeywordTrigger = require('../models/KeywordTrigger');
 const { protect } = require('../middleware/auth');
-const { tenantClientId } = require('../utils/queryHelpers');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 
 // Get all keywords for a client
 router.get('/:clientId', protect, async (req, res) => {

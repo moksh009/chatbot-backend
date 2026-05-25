@@ -2,9 +2,9 @@ const cron = require('node-cron');
 const Campaign = require('../models/Campaign');
 const CampaignMessage = require('../models/CampaignMessage');
 const Client = require('../models/Client');
-const WhatsApp = require('../utils/whatsapp');
-const { wrapCron } = require('../utils/perfLogger');
-const log = require('../utils/logger')('ABTestWinner');
+const { sendForAutomation } = require('../services/templateSender');
+const { wrapCron } = require('../utils/core/perfLogger');
+const log = require('../utils/core/logger')('ABTestWinner');
 
 function scheduleAbTestWinnerCron() {
   cron.schedule(
@@ -75,18 +75,18 @@ function scheduleAbTestWinnerCron() {
           for (const msg of holdouts) {
             try {
               const customerName = msg.metadata?.name || 'Customer';
-              const respData = await WhatsApp.sendSmartTemplate(
-                client, 
-                msg.phone, 
-                winnerTemplate, 
-                [customerName], // Re-inject name variable
-                null, // Header image if any (could extract from metadata if saved)
-                'en' 
-              );
-              
-              if (respData?.messages?.[0]?.id) {
+              const sendResult = await sendForAutomation({
+                clientId: campaign.clientId,
+                phone: msg.phone,
+                metaName: winnerTemplate,
+                contextType: 'flow',
+                contextData: { extra: { first_name: customerName, leadName: customerName } },
+              });
+
+              const metaMsgId = sendResult?.whatsapp?.messageId;
+              if (sendResult?.whatsapp?.sent) {
                 msg.status = 'sent';
-                msg.messageId = respData.messages[0].id;
+                msg.messageId = metaMsgId || null;
                 msg.sentAt = new Date();
                 sent++;
               } else {

@@ -1,5 +1,5 @@
 const { Queue } = require('bullmq');
-const { getQueueRedis } = require('../utils/redisFactory');
+const { getQueueRedis } = require('../utils/core/redisFactory');
 
 const redisConnection = getQueueRedis();
 

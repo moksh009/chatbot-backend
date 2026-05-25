@@ -1,57 +1,54 @@
 const crypto = require('crypto');
-const { isStrictSecurity } = require('./productionSecurity');
+const { auditLog } = require('../services/audit/auditWriter');
 
 /**
- * MetaAuthMiddleware
- * Verifies that incoming webhooks are signed by Meta using the App Secret.
+ * Meta webhook signature verification — no environment bypass in production.
  */
 exports.verifyMetaSignature = (req, res, next) => {
   const signature = req.headers['x-hub-signature-256'];
   const appSecret = process.env.META_APP_SECRET;
 
-  const devBypassAllowed =
-    !isStrictSecurity() &&
-    process.env.ALLOW_META_SIGNATURE_BYPASS === 'true' &&
-    (process.env.NODE_ENV === 'development' || !appSecret);
-
-  if (devBypassAllowed) {
-    if (!signature || signature === 'sha256=test-signature-bypass') {
-      console.log('[Security] Dev bypass active: Skipping Meta signature verification');
-      return next();
-    }
-  }
-
   if (!signature) {
-    console.warn('[Security] Missing x-hub-signature-256 header');
-    return res.status(403).json({ success: false, message: 'Missing signature' });
+    auditLog({
+      category: 'security',
+      action: 'webhook_signature_failed',
+      severity: 'high',
+      clientId: 'system',
+      actor: { type: 'system', source: 'meta_webhook' },
+      details: { reason: 'missing_signature' },
+      blocking: true,
+    });
+    return res.status(401).end();
   }
 
   if (!appSecret) {
-    console.error('[Security] META_APP_SECRET is not defined in environment');
+    console.error('[Security] META_APP_SECRET is not defined');
     return res.status(500).json({ success: false, message: 'Security misconfiguration' });
   }
 
   try {
     const elements = signature.split('=');
     const signatureHash = elements[1];
-    
-    /**
-     * CRITICAL: Using the rawBody buffer captured in index.js for HMAC calculation.
-     * This ensures the signature remains valid even if express.json() modified the body.
-     */
     const expectedHash = crypto
       .createHmac('sha256', appSecret)
       .update(req.rawBody)
       .digest('hex');
 
     if (crypto.timingSafeEqual(Buffer.from(signatureHash), Buffer.from(expectedHash))) {
-      next();
-    } else {
-      console.error('[Security] Signature mismatch detected');
-      res.status(401).json({ success: false, message: 'Invalid signature' });
+      return next();
     }
+    auditLog({
+      category: 'security',
+      action: 'webhook_signature_failed',
+      severity: 'high',
+      clientId: 'system',
+      actor: { type: 'system', source: 'meta_webhook' },
+      details: { reason: 'signature_mismatch' },
+      blocking: true,
+    });
+    return res.status(401).end();
   } catch (error) {
     console.error('[Security] Verification error:', error.message);
-    res.status(500).json({ success: false, message: 'Signature verification failed' });
+    return res.status(401).end();
   }
 };

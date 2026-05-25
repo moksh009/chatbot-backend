@@ -3,7 +3,7 @@ const router = express.Router();
 const { protect } = require('../middleware/auth');
 const AdLead = require('../models/AdLead');
 const Conversation = require('../models/Conversation');
-const { tenantClientId } = require('../utils/queryHelpers');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 const { apiCache } = require('../middleware/apiCache');
 
 const LEAD_FIND_MAX_MS = parseInt(process.env.DNA_LEAD_FIND_MAX_MS || '8000', 10) || 8000;

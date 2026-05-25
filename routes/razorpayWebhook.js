@@ -9,12 +9,20 @@ const Invoice = require('../models/Invoice');
  * POST /api/billing/webhook
  * Razorpay Webhook Handler
  */
-router.post('/webhook', async (req, res) => {
+const { replayGuard } = require('../middleware/webhookReplayGuard');
+const razorpayReplay = replayGuard({
+  header: 'x-razorpay-event-id',
+  keyPrefix: 'razorpay_replay',
+  ttlSec: 3600,
+});
+
+router.post('/webhook', razorpayReplay, async (req, res) => {
+  if (req.webhookReplayDuplicate) return res.status(200).json({ ok: true, duplicate: true });
   const signature = req.headers['x-razorpay-signature'];
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
 
   if (!signature || !secret) {
-    return res.status(400).send('No signature or secret');
+    return res.status(401).end();
   }
 
   const body = JSON.stringify(req.body);
@@ -24,7 +32,16 @@ router.post('/webhook', async (req, res) => {
     .digest('hex');
 
   if (signature !== expectedSignature) {
-    return res.status(400).send('Invalid signature');
+    const { auditLog } = require('../services/audit/auditWriter');
+    auditLog({
+      category: 'security',
+      action: 'webhook_signature_failed',
+      severity: 'high',
+      clientId: 'system',
+      actor: { type: 'system', source: 'razorpay_webhook', ip: req.ip },
+      details: { event: req.body?.event },
+    });
+    return res.status(401).end();
   }
 
   const { event, payload } = req.body;
@@ -68,6 +85,23 @@ async function handleSubscriptionCharged(subEntity, paymentEntity) {
   
   await sub.save();
 
+  await Client.updateOne(
+    { clientId: sub.clientId },
+    {
+      $set: {
+        plan: sub.plan,
+        subscriptionPlan: sub.plan,
+        isPaidAccount: true,
+      },
+    }
+  );
+  const io = global.io;
+  if (io) {
+    io.to(`client_${sub.clientId}`).emit('billing_status_changed', { status: 'active', plan: sub.plan });
+    const { emitDual } = require('../utils/core/socketEmit');
+    emitDual(io, `client_${sub.clientId}`, 'billing_status_changed', { status: 'active', plan: sub.plan });
+  }
+
   // Create Invoice record
   if (paymentEntity) {
     await Invoice.create({
@@ -89,7 +123,19 @@ async function handleSubscriptionCharged(subEntity, paymentEntity) {
 
 async function handleSubscriptionStatusChange(subEntity, newStatus) {
   const razorpaySubId = subEntity.id;
-  await Subscription.findOneAndUpdate({ razorpaySubId }, { status: newStatus });
+  const sub = await Subscription.findOneAndUpdate({ razorpaySubId }, { status: newStatus }, { new: true });
+  if (sub?.clientId) {
+    const graceUntil = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
+    await Client.updateOne(
+      { clientId: sub.clientId },
+      { $set: { billingGraceUntil: graceUntil } }
+    );
+    const io = global.io;
+    if (io) {
+      const { emitDual } = require('../utils/core/socketEmit');
+      emitDual(io, `client_${sub.clientId}`, 'billing_status_changed', { status: newStatus, graceUntil });
+    }
+  }
   console.log(`[RazorpayWebhook] Subscription ${razorpaySubId} status changed to ${newStatus}.`);
 }
 

@@ -1,6 +1,6 @@
 const NodeCache = require('node-cache');
-const log = require('../utils/logger')('ApiCache');
-const { getAppRedis } = require('../utils/redisFactory');
+const log = require('../utils/core/logger')('ApiCache');
+const { getAppRedis } = require('../utils/core/redisFactory');
 
 const memoryCache = new NodeCache({ stdTTL: 60, checkperiod: 120 });
 
@@ -113,7 +113,7 @@ const apiCache = (ttlSeconds = 60) => {
  */
 const clearClientCache = async (clientId) => {
   try {
-    const { invalidateClientCache } = require('../utils/clientCache');
+    const { invalidateClientCache } = require('../utils/core/clientCache');
     invalidateClientCache(clientId);
     const redisClient = getRedisForCache();
     if (redisClient) {

@@ -3,10 +3,11 @@ const router = express.Router();
 const axios = require('axios');
 const { protect } = require('../middleware/auth');
 const Client = require('../models/Client');
-const log = require('../utils/logger')('WhatsAppAPI');
-const WhatsApp = require('../utils/whatsapp');
-const { translateWhatsAppError } = require('../utils/whatsappErrors');
-const { tenantClientId } = require('../utils/queryHelpers');
+const log = require('../utils/core/logger')('WhatsAppAPI');
+const WhatsApp = require('../utils/meta/whatsapp');
+const { translateWhatsAppError } = require('../utils/meta/whatsappErrors');
+const { tenantClientId } = require('../utils/core/queryHelpers');
+const { sendEnvelope } = require('../utils/messaging/sendEnvelope');
 
 // @route   POST /api/whatsapp/send-template
 // @desc    Send an individual WhatsApp template message
@@ -30,20 +31,46 @@ router.post('/send-template', protect, async (req, res) => {
       return res.status(404).json({ success: false, message: 'Client configuration not found' });
     }
 
-    const responseData = await WhatsApp.sendTemplate(
-        client, 
-        phoneNumber, 
-        templateName, 
-        languageCode || 'en', 
-        components || []
-    );
+    const result = await sendEnvelope({
+      clientId: targetClientId,
+      channel: 'whatsapp',
+      intent: 'marketing',
+      contact: { phone: phoneNumber },
+      payload: {
+        templateName,
+        templateLanguage: languageCode || 'en',
+        components: components || [],
+      },
+      context: {
+        source: 'routes/whatsapp:send-template',
+        campaignId: req.body.campaignId || null,
+        actorRole: req.user?.role,
+        actorUserId: req.user?._id,
+      },
+    });
+    const sendResult = {
+      whatsapp: {
+        sent: result.status === 'sent',
+        reason: result.reason,
+        messageId: result.messageId || null,
+      },
+      compliance: result,
+    };
+    if (!sendResult?.whatsapp?.sent) {
+      const reason = sendResult?.whatsapp?.reason || sendResult?.whatsapp?.error || 'send_failed';
+      return res.status(400).json({
+        success: false,
+        message: reason,
+        compliance: sendResult?.compliance || null,
+      });
+    }
 
     log.info(`Individual template sent: ${templateName} to ${phoneNumber} (clientId: ${targetClientId})`);
     
     // Create Message record for tracking
     try {
         const Message = require('../models/Message');
-        const metaMessageId = responseData?.messages?.[0]?.id;
+        const metaMessageId = sendResult?.whatsapp?.messageId || null;
         const phoneNumberId = client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID;
         
         // --- FIX: Sanitize campaignId to ensure it's a valid ObjectId or null ---
@@ -96,7 +123,11 @@ router.post('/send-template', protect, async (req, res) => {
         log.error('Failed to create message record for tracking', msgErr.message);
     }
 
-    res.json({ success: true, data: responseData, messageId: responseData?.messages?.[0]?.id });
+    res.json({
+      success: true,
+      messageId: sendResult?.whatsapp?.messageId || null,
+      compliance: sendResult?.compliance || null,
+    });
 
   } catch (error) {
     const errorData = error.response?.data || error.data || error.message;
@@ -127,7 +158,7 @@ router.post('/verify', protect, async (req, res) => {
   }
 
   try {
-    const { validateWhatsAppCloudCredentials } = require('../utils/whatsappMetaValidate');
+    const { validateWhatsAppCloudCredentials } = require('../utils/meta/whatsappMetaValidate');
     const v = await validateWhatsAppCloudCredentials({
       phoneNumberId,
       whatsappToken: tok,

@@ -19,8 +19,8 @@
 const cron = require("node-cron");
 const axios = require("axios");
 const Client = require("../models/Client");
-const log = require("../utils/logger")("TemplateStatusSync");
-const { decrypt } = require("../utils/encryption");
+const log = require('../utils/core/logger')("TemplateStatusSync");
+const { decrypt } = require('../utils/core/encryption');
 
 const META_GRAPH_VERSION = "v21.0";
 const STAGGER_MS = 400; // delay between clients to avoid rate-limits

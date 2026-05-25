@@ -1,6 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const { resolveClient, tenantClientId } = require('../utils/queryHelpers');
+const { resolveClient, tenantClientId } = require('../utils/core/queryHelpers');
 const router = express.Router();
 const FollowUpSequence = require('../models/FollowUpSequence');
 const AdLead = require('../models/AdLead');
@@ -15,9 +15,9 @@ const {
 } = require('../config/ecommerceOnlyPolicy');
 const Campaign = require('../models/Campaign');
 const Client = require('../models/Client');
-const { checkLimit, incrementUsage } = require('../utils/planLimits');
-const { resolveImportBatchObjectId } = require('../utils/importBatchResolver');
-const { validateTemplateEligibility } = require('../utils/templateEligibility');
+const { checkLimit, incrementUsage } = require('../utils/core/planLimits');
+const { resolveImportBatchObjectId } = require('../utils/core/importBatchResolver');
+const { validateTemplateEligibility } = require('../utils/meta/templateEligibility');
 
 // Max active sequences per lead
 const MAX_ACTIVE_SEQUENCES = 2;
@@ -138,11 +138,29 @@ router.post('/:clientId', protect, async (req, res) => {
     const leadOidList = leads.map((l) => l.leadId).filter(Boolean);
     let countMap = await activeSequenceCountMap(clientId, leadOidList);
 
-    for (const lead of leads) {
-      const { leadId, phone, email } = lead;
+    const { ensureLeadForSequence } = require('../utils/messaging/ensureLeadForSequence');
 
-      const lid = leadId ? String(leadId) : '';
-      let activeCount = lid ? countMap.get(lid) || 0 : 0;
+    for (const leadInput of leads) {
+      let { leadId, phone, email } = leadInput;
+      if (!leadId && phone) {
+        const ensured = await ensureLeadForSequence({
+          clientId,
+          phone,
+          email,
+          source: 'sequence_bulk_enroll',
+        });
+        leadId = ensured._id;
+        phone = ensured.phoneNumber;
+        email = ensured.email;
+      }
+
+      if (!leadId) {
+        errors.push({ phone, message: 'Could not resolve lead for enrollment' });
+        continue;
+      }
+
+      const lid = String(leadId);
+      let activeCount = countMap.get(lid) || 0;
 
       if (activeCount >= MAX_ACTIVE_SEQUENCES) {
         errors.push({ leadId, message: 'Active sequence limit reached' });
@@ -218,7 +236,7 @@ router.get('/:clientId', protect, async (req, res) => {
     if (leadId) query.leadId = leadId;
 
     const sequences = await FollowUpSequence.find(query)
-      .populate('leadId', 'name')
+      .populate('leadId', 'name phoneNumber')
       .sort({ createdAt: -1 })
       .lean();
     res.json({ success: true, sequences });
@@ -228,7 +246,7 @@ router.get('/:clientId', protect, async (req, res) => {
   }
 });
 
-// GET Pre-built templates
+// STATIC PATHS BEFORE /:sequenceId — do not reorder below this block
 router.get('/:clientId/templates', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
@@ -237,6 +255,65 @@ router.get('/:clientId/templates', protect, async (req, res) => {
     }
     res.json({ success: true, templates: filterSequenceTemplates(SEQUENCE_TEMPLATES) });
   } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+router.get('/:clientId/:sequenceId', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId || clientId !== req.params.clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    const { sequenceId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(sequenceId)) {
+      return res.status(400).json({ success: false, message: 'Invalid sequence id' });
+    }
+    const sequence = await FollowUpSequence.findOne({
+      _id: sequenceId,
+      clientId,
+    })
+      .populate('leadId', 'name phoneNumber email leadScore intentState')
+      .lean();
+    if (!sequence) {
+      return res.status(404).json({ success: false, message: 'Sequence not found' });
+    }
+
+    const steps = (sequence.steps || []).map((s, idx) => {
+      const status = String(s.status || 'pending').toLowerCase();
+      return {
+        index: idx + 1,
+        type: s.type || 'whatsapp',
+        templateName: s.templateName,
+        content: s.content,
+        delayValue: s.delayValue,
+        delayUnit: s.delayUnit,
+        sendAt: s.sendAt,
+        status,
+        isCurrent: sequence.currentStepIndex === idx,
+      };
+    });
+
+    const completed = steps.filter((s) => ['sent', 'delivered', 'completed'].includes(s.status)).length;
+    const failed = steps.filter((s) => s.status === 'failed').length;
+    const cancelled = steps.filter((s) => s.status === 'cancelled').length;
+    const total = steps.length || 1;
+
+    res.json({
+      success: true,
+      sequence,
+      stats: {
+        enrolled: 1,
+        completed: sequence.status === 'completed' ? 1 : 0,
+        cancelled: sequence.status === 'cancelled' ? 1 : 0,
+        failed,
+        completionRate: Math.round((completed / total) * 100),
+        stepCounts: { completed, failed, cancelled, total },
+      },
+      steps,
+    });
+  } catch (error) {
+    console.error('Sequence detail error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
@@ -292,22 +369,33 @@ router.post('/:clientId/enroll-from-campaign', protect, async (req, res) => {
       return res.status(404).json({ success: false, message: 'Template not found' });
     }
 
-    // Determine target leads based on condition
-    let targetPhones = [];
-    if (condition === "no_reply") {
-      targetPhones = campaign.stats.delivered.filter(p => !campaign.metrics?.replied?.includes(p));
-    } else if (condition === "no_read") {
-      targetPhones = campaign.stats.delivered.filter(p => !campaign.stats.read.includes(p));
-    } else if (condition === "no_click") {
-      targetPhones = campaign.stats.read.filter(p => !campaign.metrics?.clicked?.includes(p));
-    }
+    const { resolveCampaignEnrollTargets } = require('../utils/messaging/campaignEnrollTargets');
+    const { ensureLeadForSequence } = require('../utils/messaging/ensureLeadForSequence');
 
-    if (targetPhones.length === 0) {
+    const targets = await resolveCampaignEnrollTargets({
+      clientId,
+      campaignId: campaign._id,
+      condition,
+    });
+
+    if (targets.length === 0) {
       return res.json({ success: true, message: 'No leads matched this condition', count: 0 });
     }
 
-    // Find the actual leads
-    const leads = await AdLead.find({ clientId, phoneNumber: { $in: targetPhones } }).lean();
+    const leads = [];
+    for (const t of targets) {
+      try {
+        const lead = await ensureLeadForSequence({
+          clientId,
+          phone: t.phone,
+          source: 'campaign_enroll',
+        });
+        leads.push(lead);
+      } catch (e) {
+        console.warn(`[Sequences] enroll skip ${t.phone}: ${e.message}`);
+      }
+    }
+
     if (!leads.length) {
       return res.json({ success: true, message: 'No valid leads found', count: 0 });
     }

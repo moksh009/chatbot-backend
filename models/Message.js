@@ -38,7 +38,10 @@ const MessageSchema = new mongoose.Schema({
   translatedContent: { type: String, default: '' },
   detectedLanguage: { type: String, default: 'en' },
   translations: { type: Map, of: String, default: {} }, // e.g., { 'es': 'Hola', 'hi': 'नमस्ते' }
-  originalText: { type: String, default: '' } // Stores agent raw input before translation
+  originalText: { type: String, default: '' }, // Stores agent raw input before translation
+  sentimentScore: { type: Number, min: 0, max: 100 },
+  sentimentLabel: { type: String, enum: ['negative', 'neutral', 'positive'] },
+  trainingContext: [{ type: mongoose.Schema.Types.ObjectId, ref: 'TrainingCase' }],
 });
 
 // ✅ Phase R3: Performance indexes — conversationId+timestamp was missing, causing full-collection scans on Live Chat load

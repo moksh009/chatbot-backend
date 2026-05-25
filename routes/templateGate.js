@@ -2,9 +2,11 @@ const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
 const Client = require('../models/Client');
-const { tenantClientId } = require('../utils/queryHelpers');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 const axios = require('axios');
-const { decrypt } = require('../utils/encryption');
+const { decrypt } = require('../utils/core/encryption');
+const { recordTemplateSubmission } = require('../services/templateLifecycleBridge');
+const { getSlotByMetaName } = require('../constants/templateCatalog/catalog');
 
 /**
  * Generalized Template Gate — Replaces per-module template-checking logic.
@@ -30,32 +32,6 @@ const TEMPLATE_BLUEPRINTS = {
         ]
       }
     ]
-  },
-  review_request: {
-    category: 'MARKETING',
-    language: 'en',
-    components: [
-      {
-        type: 'HEADER',
-        format: 'IMAGE',
-        example: {
-          header_handle: [
-            'https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-product-1_large.png',
-          ],
-        },
-      },
-      {
-        type: 'BODY',
-        text: 'Hi {{1}}! 🌟\n\nHow was your *{{2}}*?\nOrder *{{3}}* from {{4}}\n\nTap below to rate your experience, or leave us a Google review!',
-        example: { body_text: [['Kavya', 'Smart LED Panel', '#1042', 'Delitech']] },
-      },
-      {
-        type: 'BUTTONS',
-        buttons: [
-          { type: 'URL', text: 'Leave Google Review', url: 'https://g.page/r/example/review' },
-        ],
-      },
-    ],
   },
   cart_recovery: {
     category: 'MARKETING',
@@ -168,8 +144,7 @@ router.get('/status', protect, async (req, res) => {
 
   } catch (err) {
     console.error('[TemplateGate] Status check failed:', err.message);
-    // Graceful fallback — don't block the UI
-    res.json({ status: 'APPROVED' });
+    res.json({ status: 'UNKNOWN', reason: 'check_failed' });
   }
 });
 
@@ -222,22 +197,22 @@ router.post('/submit', protect, async (req, res) => {
 
     const result = metaRes.data;
 
-    // Cache the template in the client's synced templates
-    if (!client.syncedMetaTemplates) client.syncedMetaTemplates = [];
-    const existingIdx = client.syncedMetaTemplates.findIndex(t => t.name === name);
-    const syncEntry = {
-      id: result.id,
-      name,
-      status: result.status || 'PENDING',
-      updatedAt: new Date()
-    };
-
-    if (existingIdx >= 0) {
-      client.syncedMetaTemplates[existingIdx] = syncEntry;
-    } else {
-      client.syncedMetaTemplates.push(syncEntry);
+    const slot = getSlotByMetaName(name);
+    try {
+      await recordTemplateSubmission({
+        clientId,
+        metaName: name,
+        metaTemplateId: result.id || null,
+        metaStatus: result.status || 'PENDING',
+        components: templatePayload.components,
+        category: templatePayload.category,
+        language: templatePayload.language,
+        source: 'gate_submit',
+        catalogSlotId: slot?.id || null,
+      });
+    } catch (lifeErr) {
+      console.warn('[TemplateGate] lifecycle:', lifeErr.message);
     }
-    await client.save();
 
     res.json({
       success: true,

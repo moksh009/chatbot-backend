@@ -1,6 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-const { assertTenantAccess, tenantClientId } = require('../utils/queryHelpers');
+const { assertTenantAccess, tenantClientId } = require('../utils/core/queryHelpers');
 const { hasMasterTesterBypass } = require('./productionSecurity');
 const { auditSecurity } = require('./securityAudit');
 
@@ -26,12 +26,12 @@ const protect = async (req, res, next) => {
       }
 
       // Objective 1: Attach God Mode status
-      const { getCachedClient } = require('../utils/clientCache');
+      const { getCachedClient } = require('../utils/core/clientCache');
       const client = await getCachedClient(req.user.clientId, 'isLifetimeAdmin');
       req.user.isLifetimeAdmin = req.user.role === 'SUPER_ADMIN' || (client && client.isLifetimeAdmin);
 
       if (req.user.clientId) {
-        const { getCachedClientForWhatsAppSend } = require('../utils/clientCache');
+        const { getCachedClientForWhatsAppSend } = require('../utils/core/clientCache');
         setImmediate(() => {
           getCachedClientForWhatsAppSend(req.user.clientId).catch(() => {});
         });
@@ -55,7 +55,9 @@ const protect = async (req, res, next) => {
         }
       }
 
-      next();
+      const { autoTenantScope } = require('./autoTenantScope');
+      const { roleForMethod } = require('./roleForMethod');
+      return autoTenantScope()(req, res, () => roleForMethod()(req, res, next));
     } catch (error) {
       console.error('[Auth Middleware] Error validating token or fetching user:', error);
       

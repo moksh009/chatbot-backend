@@ -4,8 +4,8 @@ const SupportChat = require('../models/SupportChat');
 const Notification = require('../models/Notification');
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
-const { generateText } = require('../utils/gemini');
-const { sendEmail } = require('../utils/emailService');
+const { generateText } = require('../utils/core/gemini');
+const { sendEmail } = require('../utils/core/emailService');
 
 const { buildDocsContextForPrompt, appendDocLinks } = require('../constants/docsKnowledgeBase');
 
@@ -500,7 +500,7 @@ router.post('/:id/resolve', protect, async (req, res) => {
 const {
   pickWebsiteWidgetForPublic,
   mergeWebsiteWidgetConfig,
-} = require('../utils/websiteWidgetDefaults');
+} = require('../utils/core/websiteWidgetDefaults');
 
 function resolveClientBranding(client) {
   const pv = client.platformVars || {};
@@ -610,7 +610,7 @@ router.get('/widget-config/:clientId', async (req, res) => {
 // @desc    Capture a lead from the website chat widget form
 // @access  Public
 const AdLead = require('../models/AdLead');
-const NotificationService = require('../utils/notificationService');
+const NotificationService = require('../utils/core/notificationService');
 router.post('/widget-lead', async (req, res) => {
   try {
     const { clientId, name, phone, email, message, source, pageUrl } = req.body;

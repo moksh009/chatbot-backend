@@ -10,7 +10,7 @@ const { apiCache, clearClientCache } = require('../middleware/apiCache');
  * GET /api/segments
  */
 router.get('/', protect, apiCache(60), async (req, res) => {
-    const { createTimer } = require('../utils/perfLogger');
+    const { createTimer } = require('../utils/core/perfLogger');
     const timer = createTimer('GET /api/segments', req.user?.clientId || '');
     try {
         const segments = await Segment.find({ clientId: req.user.clientId })
@@ -76,7 +76,7 @@ router.post('/', protect, async (req, res) => {
  * Fetches leads matching the segment query for preview/processing
  */
 router.get('/:id/leads', protect, apiCache(45), async (req, res) => {
-    const { createTimer } = require('../utils/perfLogger');
+    const { createTimer } = require('../utils/core/perfLogger');
     const timer = createTimer('GET /api/segments/:id/leads', req.user?.clientId || '');
     try {
         const clientId = req.user.clientId;

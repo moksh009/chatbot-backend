@@ -54,7 +54,7 @@ function assertNoDeprecatedAutomationPath() {
 
 function run() {
   assertContains(
-    path.join(backendRoot, 'utils/templateEligibility.js'),
+    path.join(backendRoot, 'utils/meta/templateEligibility.js'),
     ['validateTemplateEligibility', 'normalizePurpose', 'requiredVariableCount'],
     'Shared template eligibility utility exists'
   );
@@ -69,7 +69,7 @@ function run() {
     'Sequence routes use strict preflight checks'
   );
   assertContains(
-    path.join(backendRoot, 'utils/validator.js'),
+    path.join(backendRoot, 'utils/core/validator.js'),
     ['contextPurpose: \'flow\'', 'validateTemplateEligibility'],
     'Flow node validator enforces template eligibility'
   );

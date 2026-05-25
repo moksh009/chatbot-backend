@@ -1,13 +1,25 @@
 const express = require('express');
 const dotenv = require('dotenv');
-const log = require('./utils/logger')('Server');
+const dotenvResult = dotenv.config();
+if (process.env.SENTRY_DSN) {
+  try {
+    const Sentry = require('@sentry/node');
+    Sentry.init({
+      dsn: process.env.SENTRY_DSN,
+      environment: process.env.SENTRY_ENVIRONMENT || process.env.NODE_ENV || 'development',
+      tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE || 0.1),
+    });
+  } catch (e) {
+    console.warn('[Sentry] init skipped:', e.message);
+  }
+}
+const log = require('./utils/core/logger')('Server');
 const connectDB = require('./db');
 const Client = require('./models/Client');
 const { apiGeneralLimiter } = require('./middleware/enterpriseLimits');
 // Load environment variables
 // dotenv.config();
 // Silence .env missing warning
-const dotenvResult = dotenv.config();
 if (dotenvResult.error && dotenvResult.error.code !== 'ENOENT') {
   log.error("Dotenv Error:", dotenvResult.error);
 }
@@ -197,6 +209,9 @@ app.use(requestMetrics.middleware());
 // Multi-tenant API flood guard (webhooks excluded — see enterpriseLimits.js)
 app.use('/api', apiGeneralLimiter);
 
+const { apiSecurityLayer } = require('./middleware/apiSecurityLayer');
+app.use('/api', apiSecurityLayer);
+
 // Debug: set REQUEST_LOG=true to trace every request (avoid default prod noise + CPU)
 app.use((req, res, next) => {
   if (process.env.REQUEST_LOG === 'true') {
@@ -206,6 +221,11 @@ app.use((req, res, next) => {
 });
 
 // API Routes
+if (process.env.LOCAL_DEV_WEBHOOK_TEST === 'true' && process.env.NODE_ENV !== 'production') {
+  app.use('/api/_dev/webhook-test', require('./routes/_devWebhookTest'));
+  log.warn('[Dev] LOCAL_DEV_WEBHOOK_TEST webhook mount enabled');
+}
+
 app.use('/api/auth', authLimiter, authRoutes); // ✅ Phase R3: Brute-force protection on auth
 app.use('/api/conversations', conversationRoutes);
 app.use('/api/analytics', analyticsRoutes);
@@ -238,11 +258,15 @@ app.use('/api/ai', aiRoutes);
 const publicWarrantyRoutes = require('./routes/publicWarranty');
 app.use('/api/public/warranty', publicWarrantyRoutes);
 app.use('/api/public/growth', require('./routes/publicGrowth'));
+app.use('/api/public/checkout-consent', require('./routes/checkoutConsent'));
+app.use('/api/public', require('./routes/publicUnsubscribe'));
 app.use('/api/growth', require('./routes/growth'));
 
 const biRoutes = require('./routes/bi'); // Phase 28 Track 4
 app.use('/api/bi', biRoutes);
 
+app.use('/api/persona-evolution', require('./routes/personaEvolution'));
+app.use('/api/post-purchase-journeys', require('./routes/postPurchaseJourneys'));
 
 
 const ordersRoutes = require('./routes/orders');
@@ -257,6 +281,10 @@ app.use('/api/shopify', shopifyRoutes);       // Then param-based /:clientId/* r
 
 const shopifyHubRoutes = require('./routes/shopifyHub');
 app.use('/api/shopify-hub', shopifyHubRoutes);
+const commerceHealthRoutes = require('./routes/commerceHealth');
+app.use('/api/commerce', commerceHealthRoutes);
+app.use('/api/hub-health', require('./routes/hubHealth'));
+app.use('/api/merchant-playbook', require('./routes/merchantPlaybook'));
 const workspaceRoutes = require('./routes/workspace');
 app.use('/api/workspace', workspaceRoutes);
 const shopifyWebhookRoutes = require('./routes/shopifyWebhook');
@@ -324,6 +352,8 @@ app.use('/api/variables', variablesRoutes);
 // ─── Onboarding V2 (full-screen new-user flow) — mounted FIRST so its
 // distinct paths (/analyze, /progress, /flow/generate, /complete, /track)
 // take priority. Legacy /api/onboarding/:clientId handlers stay intact.
+const onboardingStateRoutes = require('./routes/onboardingState');
+app.use('/api/onboarding', onboardingStateRoutes);
 const onboardingV2Routes = require('./routes/onboardingV2');
 app.use('/api/onboarding', onboardingV2Routes);
 
@@ -348,7 +378,7 @@ const intentRoutes = require('./routes/intents');
 const intentWebhookRoutes = require('./routes/intentWebhooks');
 app.use('/api/intents', intentRoutes);
 app.use('/api/webhooks', intentWebhookRoutes); // POST /api/webhooks/meta
-app.use('/api/webhooks', require('./routes/webhooks')); // Outbound webhook CRUD for dashboard
+app.use('/api/webhooks', require('./routes/webhooks')); // Resend inbound only
 
 app.use('/api/razorpay', require('./routes/razorpayWebhook'));
 const shopifyPixelRoutes = require('./routes/shopifyPixel');
@@ -392,8 +422,7 @@ app.use('/api/users', teamRoutes);                   // Frontend: /api/users/tea
 // Phase 30: Auto-Keywords
 app.use('/api/keywords', require('./routes/keywords'));
 
-const instagramAutomationRoutes = require('./routes/instagramAutomation');
-app.use('/api/instagram-automations', instagramAutomationRoutes);
+// Phase 4: /api/instagram-automations removed (orphaned). Use /api/ig-automation.
 
 // IG Automation Module — Enterprise Comment-to-DM & Story-to-DM
 const igAutomationRoutes = require('./routes/igAutomationRoutes');
@@ -439,7 +468,9 @@ app.get('/api/REMOVED_TEMP_ROUTES', (req, res) => res.status(410).json({ message
 
 const RUN_API = process.env.RUN_API !== 'false';
 const RUN_WORKERS = process.env.RUN_WORKERS !== 'false';
-const RUN_CRONS = process.env.RUN_CRONS !== 'false';
+const RUN_CRONS =
+  process.env.CRON_WORKER === 'true' ||
+  (process.env.CRON_WORKER !== 'false' && process.env.RUN_CRONS !== 'false');
 
 if (!RUN_CRONS) {
   log.info('[Boot] RUN_CRONS=false — cron jobs not started');
@@ -471,7 +502,17 @@ if (RUN_API) {
 
 connectDB()
   .then(async () => {
-    const { logRedisHealth } = require('./utils/redisFactory');
+    try {
+      const { validateSecretsAtBoot } = require('./services/secrets');
+      validateSecretsAtBoot();
+    } catch (e) {
+      if (process.env.NODE_ENV === 'production') throw e;
+      log.warn(e.message);
+    }
+    const { registerClientScopeModels } = require('./mongoose/registerClientScopeModels');
+    registerClientScopeModels();
+
+    const { logRedisHealth } = require('./utils/core/redisFactory');
     await logRedisHealth().catch(() => {});
 
     if (RUN_WORKERS) {
@@ -479,6 +520,7 @@ connectDB()
       require('./services/TaskWorker');
       require('./workers/igAutomationWorker');
       require('./workers/autoTemplateWorker');
+      require('./workers/startPhase3Workers').startPhase3Workers();
     } else {
       log.info('[Boot] RUN_WORKERS=false — BullMQ workers not started');
     }
@@ -498,7 +540,7 @@ connectDB()
       return;
     }
 
-    const { init: initSocket } = require('./utils/socket');
+    const { init: initSocket } = require('./utils/core/socket');
     const io = initSocket(server);
     app.set('socketio', io);
 
@@ -507,7 +549,7 @@ connectDB()
 
       const deferMs = parseInt(process.env.DEFER_STARTUP_HEAVY_MS || '45000', 10) || 45000;
       setTimeout(() => {
-        const { prewarmFlowCacheForActiveClients } = require('./utils/flowPrewarm');
+        const { prewarmFlowCacheForActiveClients } = require('./utils/flow/flowPrewarm');
         prewarmFlowCacheForActiveClients().catch((err) => {
           log.warn('[FlowPrewarm] deferred skipped:', err.message);
         });
@@ -521,7 +563,7 @@ connectDB()
       log.info(`[Boot] Flow prewarm + NLP deferred ${deferMs}ms (API pool priority)`);
       // #region agent log
       try {
-        const { agentDebug } = require('./utils/agentDebugLog');
+        const { agentDebug } = require('./utils/core/agentDebugLog');
         agentDebug({
           hypothesisId: 'H2',
           runId: 'boot',

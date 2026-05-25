@@ -1,13 +1,13 @@
 "use strict";
 
 const express           = require("express");
-const { resolveClient } = require('../utils/queryHelpers');
+const { resolveClient } = require('../utils/core/queryHelpers');
 const router            = express.Router();
 const QRCode            = require("../models/QRCode");
 const QRScan            = require("../models/QRScan");
 const Client            = require("../models/Client");
 const { verifyToken }   = require("../middleware/auth");
-const { createQRCode }  = require("../utils/qrGenerator");
+const { createQRCode }  = require('../utils/core/qrGenerator');
 
 // ─── GET /api/qrcodes/:clientId ─────────────────────────────────────────────
 router.get("/:clientId", verifyToken, async (req, res) => {

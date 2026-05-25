@@ -19,8 +19,10 @@ const StoreEconomicsConfigSchema = new mongoose.Schema({
   cacPerCustomer: { type: Number, default: null },
   gatewayFeeRate: { type: Number, default: null },     // stored as decimal e.g. 0.02 for 2%
   shopifyTransactionFeeRate: { type: Number, default: null }, // stored as decimal
-  gstRate: { type: Number, default: null },            // stored as decimal — used separately, NOT in net profit formula
+  gstEnabled: { type: Boolean, default: false },
+  gstRate: { type: Number, default: null },            // stored as decimal — reporting only, NOT in net profit formula
   fixedOverheadsPerOrder: { type: Number, default: null },
+  lastRecomputedAt: { type: Date, default: null },
 
   // Step 1 — Packaging mode
   packagingMode: { type: String, enum: ['uniform', 'per_product'], default: null },

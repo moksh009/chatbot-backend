@@ -28,14 +28,14 @@ const Client = require("../models/Client");
 const User = require("../models/User");
 const WhatsAppFlow = require("../models/WhatsAppFlow");
 const { protect } = require("../middleware/auth");
-const { platformGenerateJSON } = require("../utils/gemini");
+const { platformGenerateJSON } = require('../utils/core/gemini');
 const { generateEcommerceFlow, generateSystemPrompt } =
-  require("../utils/flowGenerator");
-const { mapWizardToClient, pullPersonaBundleFromSet } = require("../utils/wizardMapper");
-const { emitToClient } = require("../utils/socket");
-const { syncPersonaAcrossSystem } = require("../utils/personaEngine");
-const { clearTriggerCache } = require("../utils/triggerEngine");
-const log = require("../utils/logger")("OnboardingV2");
+  require('../utils/flow/flowGenerator');
+const { mapWizardToClient, pullPersonaBundleFromSet } = require('../utils/flow/wizardMapper');
+const { emitToClient } = require('../utils/core/socket');
+const { syncPersonaAcrossSystem } = require('../utils/core/personaEngine');
+const { clearTriggerCache } = require('../utils/flow/triggerEngine');
+const log = require('../utils/core/logger')("OnboardingV2");
 
 // ───────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -367,7 +367,6 @@ router.post("/flow/generate", protect, async (req, res) => {
       if (g === "campaign_broadcasts") acc.enableMetaAdsTrigger = false; // broadcast outside flow
       if (g === "post_purchase") acc.enableOrderConfirmTpl = true;
       if (g === "coupons") acc.enableCodToPrepaid = true;
-      if (g === "review_collection") acc.enableReviewCollection = true;
       return acc;
     }, {});
 

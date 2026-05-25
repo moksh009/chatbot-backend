@@ -20,6 +20,8 @@ const OrderSchema = new mongoose.Schema({
   status: { type: String, default: 'pending' },
   paymentMethod: { type: String },
   storeString: { type: String },
+  /** Shopify shop domain for multi-store portfolio (Phase 8) */
+  storeKey: { type: String, default: '' },
   isCOD: { type: Boolean, default: false },
   /** RTO Protection — COD WhatsApp confirmation */
   isCodConfirmed: { type: Boolean, default: false },
@@ -69,6 +71,8 @@ const OrderSchema = new mongoose.Schema({
     name: String,
     quantity: Number,
     price: Number,
+    /** Original list price per unit (Shopify compare_at_price) when higher than paid price */
+    compareAtPrice: Number,
     sku: String,
     image: String,
     productId: String,

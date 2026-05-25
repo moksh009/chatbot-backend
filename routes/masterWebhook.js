@@ -1,18 +1,20 @@
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
-const log = require('../utils/logger')('MasterWebhook');
+const log = require('../utils/core/logger')('MasterWebhook');
 const Conversation = require('../models/Conversation');
 const Campaign = require('../models/Campaign');
 const CampaignMessage = require('../models/CampaignMessage');
-const { handleWhatsAppMessage, saveInboundMessage, handleWhatsAppCatalogOrder } = require('../utils/dualBrainEngine');
-const { processOrderForLoyalty } = require('../utils/walletService');
-const { logActivity } = require('../utils/activityLogger');
-const { recalculateLeadScore } = require('../utils/scoringHelper');
-const { buildEventEnvelope } = require('../utils/eventEnvelope');
-const { emitToClient } = require('../utils/socket');
-const { phoneNumberIdMatchFilter } = require('../utils/clientWhatsAppCreds');
-const { getMetaWebhookVerifyQuery } = require('../utils/metaHubQuery');
+const { handleWhatsAppMessage, saveInboundMessage, handleWhatsAppCatalogOrder } = require('../utils/commerce/dualBrainEngine');
+const { processOrderForLoyalty } = require('../utils/commerce/walletService');
+const { logActivity } = require('../utils/core/activityLogger');
+const { recalculateLeadScore } = require('../utils/core/scoringHelper');
+const { buildEventEnvelope } = require('../utils/flow/eventEnvelope');
+const { emitToClient } = require('../utils/core/socket');
+const { phoneNumberIdMatchFilter } = require('../utils/meta/clientWhatsAppCreds');
+const { getMetaWebhookVerifyQuery } = require('../utils/meta/metaHubQuery');
+const { handleMessageTemplateStatusWebhook } = require('../services/templateLifecycleBridge');
+const Client = require('../models/Client');
 
 /**
  * Middleware to verify Meta X-Hub-Signature-256
@@ -63,8 +65,11 @@ router.get('/', (req, res) => {
     res.status(403).end();
 });
 
+const { metaPayloadReplayGuard } = require('../middleware/webhookReplayGuard');
+
 // 2. Master Webhook Handling (POST)
-router.post('/', verifyMetaSignature, async (req, res) => {
+router.post('/', verifyMetaSignature, metaPayloadReplayGuard(), async (req, res) => {
+  if (req.webhookReplayDuplicate) return;
   const body = req.body;
 
   // Send 200 OK immediately as required by Meta to avoid retries
@@ -80,18 +85,50 @@ router.post('/', verifyMetaSignature, async (req, res) => {
  * High-performance async processor for webhook entries.
  * Decouples HTTP response from business logic.
  */
+async function resolveClientIdFromWabaEntry(entry) {
+  const wabaId = String(entry?.id || '').trim();
+  if (!wabaId) return null;
+  const row = await Client.findOne({
+    $or: [{ wabaId }, { 'whatsapp.wabaId': wabaId }],
+  })
+    .select('clientId')
+    .lean();
+  return row?.clientId || null;
+}
+
+async function processTemplateStatusUpdates(entry, change) {
+  const value = change?.value;
+  if (!value?.event || !value?.message_template_name) return;
+
+  const clientId = await resolveClientIdFromWabaEntry(entry);
+  if (!clientId) {
+    log.warn('[MasterWebhook] template status: unknown WABA', { wabaId: entry?.id });
+    return;
+  }
+
+  await handleMessageTemplateStatusWebhook(clientId, value);
+}
+
 async function processWebhookEntries(entries) {
   for (const entry of entries) {
-    for (const change of entry.changes) {
+    for (const change of entry.changes || []) {
       const value = change.value;
       if (!value) continue;
 
-      // A. Handle Status Updates (delivered, read, failed)
+      // A. Meta template review outcome (APPROVED / REJECTED / …)
+      if (change.field === 'message_template_status_update') {
+        processTemplateStatusUpdates(entry, change).catch((e) =>
+          log.error('Template status webhook failure', { error: e.message })
+        );
+        continue;
+      }
+
+      // B. Message delivery status (delivered, read, failed)
       if (value.statuses) {
         processStatuses(value.statuses).catch(e => log.error('Status processing failure', { error: e.message }));
       }
 
-      // B. Handle Incoming Messages
+      // C. Incoming customer messages
       if (value.messages) {
         processMessages(value.messages, value.metadata, value.contacts).catch(e => log.error('Message processing failure', { error: e.message }));
       }
@@ -115,7 +152,7 @@ async function processStatuses(statuses) {
         
         // Phase 28: Auto-Healing
         if (msg?.clientId) {
-            const { reportApiFailure } = require('../utils/autoHealer');
+            const { reportApiFailure } = require('../utils/core/autoHealer');
             reportApiFailure(msg.clientId, { response: { data: { error: errors?.[0] } } }).catch(() => {});
         }
       }
@@ -174,7 +211,7 @@ async function processStatuses(statuses) {
 }
 
 async function processMessages(messages, metadata, contacts) {
-  const { isDuplicateInbound } = require('../utils/webhookDedup');
+  const { isDuplicateInbound } = require('../utils/meta/webhookDedup');
 
   for (const message of messages) {
     const from = message.from; 
@@ -221,7 +258,7 @@ async function processMessages(messages, metadata, contacts) {
           meta: { source: 'master_webhook' }
         });
         emitToClient(clientDocForEnvelope.clientId, 'orchestration:event', envelope);
-        const { touchInboundWebhook } = require('../utils/whatsappWebhookLifecycle');
+        const { touchInboundWebhook } = require('../utils/meta/whatsappWebhookLifecycle');
         touchInboundWebhook(clientDocForEnvelope.clientId).catch(() => {});
       }
 
@@ -285,6 +322,7 @@ async function processMessages(messages, metadata, contacts) {
                 checkoutUrl: coResult.shortUrl || '',
                 cartUrl: coResult.checkoutUrl || '',
                 'cartSnapshot.items': orderItems,
+                'cartSnapshot.totalPrice': coResult.totalPrice,
                 'cartSnapshot.total_price': coResult.totalPrice,
                 'cartSnapshot.updatedAt': new Date()
               },
@@ -309,7 +347,7 @@ async function processMessages(messages, metadata, contacts) {
           // Fire external webhook
           if (clientDoc && lead) {
             try {
-              require('../utils/webhookDelivery').fireWebhookEvent(clientDoc._id, 'order.created', {
+              require('../utils/core/webhookDelivery').fireWebhookEvent(clientDoc._id, 'order.created', {
                 phone: from,
                 items: orderItems,
                 checkoutUrl: coResult.shortUrl || '',
@@ -318,7 +356,7 @@ async function processMessages(messages, metadata, contacts) {
             } catch (_) {}
 
             // Create Dashboard Notification
-            require('../utils/notificationService').createNotification(clientDoc.clientId, {
+            require('../utils/core/notificationService').createNotification(clientDoc.clientId, {
               type: 'system',
               title: 'New WhatsApp Order 🛒',
               message: `Order received from ${from} for ${orderItems.length} item(s)`,
@@ -327,7 +365,7 @@ async function processMessages(messages, metadata, contacts) {
             }).catch(() => {});
 
             // Phase 25: Referral & Journey
-            const ReferralEngine = require('../utils/referralEngine');
+            const ReferralEngine = require('../utils/commerce/referralEngine');
             await ReferralEngine.markConverted(lead);
             AdLead.pushJourneyEvent(lead.clientId, from, 'order_placed', { itemsCount: orderItems.length }).catch(() => {});
 
@@ -386,7 +424,7 @@ async function processMessages(messages, metadata, contacts) {
             { upsert: true }
           );
           
-          const NotificationService = require('../utils/notificationService');
+          const NotificationService = require('../utils/core/notificationService');
           NotificationService.notifyAgent(client.clientId, {
             type: 'alert',
             title: 'Vendor Message 📦',
@@ -395,18 +433,18 @@ async function processMessages(messages, metadata, contacts) {
           }).catch(() => {});
           
           // Still save message but skip dualBrainEngine
-          const { saveInboundMessage } = require('../utils/dualBrainEngine');
+          const { saveInboundMessage } = require('../utils/commerce/dualBrainEngine');
           await saveInboundMessage(from, client.clientId, message, global.io, 'whatsapp');
           return;
         }
       }
 
       if (message.type === 'audio' || message.type === 'voice') {
-        const { discoverClientByPhoneId } = require('../utils/clientDiscovery');
+        const { discoverClientByPhoneId } = require('../utils/core/clientDiscovery');
         const client = await discoverClientByPhoneId(phone_number_id);
         if (client) {
           const convo = await Conversation.findOneAndUpdate({ phone: from, clientId: client.clientId }, { $setOnInsert: { phone: from, clientId: client.clientId, botPaused: false, status: 'BOT_ACTIVE' } }, { upsert: true, new: true, lean: true });
-          require('../utils/voiceNoteHandler').processVoiceNote(message, client, from, convo._id, global.io, phone_number_id, profileName).catch(e => log.error('VoiceNote error', { error: e.message }));
+          require('../utils/meta/voiceNoteHandler').processVoiceNote(message, client, from, convo._id, global.io, phone_number_id, profileName).catch(e => log.error('VoiceNote error', { error: e.message }));
         }
         continue;
       }

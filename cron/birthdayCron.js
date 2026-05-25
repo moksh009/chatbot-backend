@@ -4,7 +4,7 @@ const Client = require('../models/Client');
 const AdLead = require('../models/AdLead');
 const BirthdayUser = require('../models/BirthdayUser');
 const DailyStat = require('../models/DailyStat');
-const { sendBirthdayWishWithImage } = require('../utils/sendBirthdayMessage');
+const { sendBirthdayWishWithImage } = require('../utils/commerce/sendBirthdayMessage');
 
 const scheduleBirthdayCron = () => {
   // Run daily at 6:00 AM IST

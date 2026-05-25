@@ -5,9 +5,9 @@ const {
   DEFAULT_SELECT,
   COMMERCE_AUTOMATION_SELECT,
   ORDERS_ROUTE_SELECT,
-} = require('../utils/clientCache');
-const { decrypt } = require('../utils/encryption');
-const { resolveClientGeminiKey } = require('../utils/clientGeminiKey');
+} = require('../utils/core/clientCache');
+const { decrypt } = require('../utils/core/encryption');
+const { resolveClientGeminiKey } = require('../utils/core/clientGeminiKey');
 
 /** Throttle noisy per-webhook config warnings (one line per client / 10 min) */
 const configWarnAt = new Map();

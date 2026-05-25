@@ -1,9 +1,9 @@
 "use strict";
 
 const { Worker, Queue } = require('bullmq');
-const log = require('../utils/logger')('IGAutoWorker');
-const { registerQueues } = require('../utils/igWebhookProcessor');
-const { getQueueRedis } = require('../utils/redisFactory');
+const log = require('../utils/core/logger')('IGAutoWorker');
+const { registerQueues } = require('../utils/meta/igWebhookProcessor');
+const { getQueueRedis } = require('../utils/core/redisFactory');
 
 let redisConnection = null;
 let commentDmQueue = null;
@@ -46,7 +46,7 @@ if (redisConnection) {
   }, workerOpts);
 
   const commentReplyWorker = new Worker('ig-comment-reply', async (job) => {
-    const { canSendCommentReply } = require('../utils/igRateLimiter');
+    const { canSendCommentReply } = require('../utils/meta/igRateLimiter');
     const { automationId, commentId, clientId, mediaId } = job.data;
 
     // Pre-check rate limit at worker level — skip job early if blown

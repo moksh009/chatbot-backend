@@ -1,8 +1,8 @@
 const mongoose = require('mongoose');
 const NlpEngineService = require('../services/NlpEngineService');
 const { summarize, verifyMetricsSecret } = require('../middleware/requestMetrics');
-const { allStatuses } = require('../utils/circuitBreaker');
-const { alertDegraded } = require('../utils/alerting');
+const { allStatuses } = require('../utils/core/circuitBreaker');
+const { alertDegraded } = require('../utils/core/alerting');
 
 /**
  * HealthController
@@ -48,11 +48,11 @@ exports.checkHealth = async (req, res) => {
       CRON_USE_COORDINATOR: process.env.CRON_USE_COORDINATOR !== 'false',
     };
     try {
-      const { getMongoCronBudgetStats } = require('../utils/mongoCronBudget');
+      const { getMongoCronBudgetStats } = require('../utils/core/mongoCronBudget');
       healthStatus.mongoCronBudget = getMongoCronBudgetStats();
     } catch (_) {}
     try {
-      const { getMongoPoolStats } = require('../utils/mongoPoolStats');
+      const { getMongoPoolStats } = require('../utils/core/mongoPoolStats');
       healthStatus.mongoPool = getMongoPoolStats();
     } catch (_) {}
 

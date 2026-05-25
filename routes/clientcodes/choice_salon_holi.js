@@ -5,12 +5,10 @@ const axios = require('axios');
 const { DoctorScheduleOverride } = require('../../models/DoctorScheduleOverride');
 const fs = require('fs');
 const crypto = require('crypto');
-const { getAvailableTimeSlots, createEvent, deleteEvent, findEventsByPhoneNumber } = require('../../utils/googleCalendar');
-const { getAvailableDates } = require('../../utils/getAvailableDates');
-const { getAvailableSlots } = require('../../utils/getAvailableSlots');
-const { sendLeaveConfirmationAndMenu, sendPromptForTimeSlots, sendPartialConfirmationAndMenu } = require('../../utils/step2');
-const { sendAdminInitialButtons, sendAdminLeaveDateList } = require('../../utils/Step1');
-const { parseDateFromId } = require('../../utils/helpers');
+const { getAvailableTimeSlots, createEvent, deleteEvent, findEventsByPhoneNumber } = require('../../utils/core/googleCalendar');
+const { sendLeaveConfirmationAndMenu, sendPromptForTimeSlots, sendPartialConfirmationAndMenu } = require('../../utils/core/step2');
+const { sendAdminInitialButtons, sendAdminLeaveDateList } = require('../../utils/core/Step1');
+const { parseDateFromId } = require('../../utils/core/helpers');
 const Conversation = require('../../models/Conversation');
 const Message = require('../../models/Message');
 const path = require('path');
@@ -19,9 +17,9 @@ const ServiceModel = require('../../models/Service');
 const DailyStat = require('../../models/DailyStat');
 const Client = require('../../models/Client');
 const AdLead = require('../../models/AdLead');
-const { updateLeadWithScoring } = require('../../utils/leadScoring');
+const { updateLeadWithScoring } = require('../../utils/commerce/leadScoring');
 const { DateTime } = require('luxon');
-const { generateText } = require('../../utils/gemini');
+const { generateText } = require('../../utils/core/gemini');
 
 
 // Detect greeting words (Standard + Gujinglish)
@@ -481,48 +479,9 @@ async function sendSmartButtonsOrList({ phoneNumberId, to, header, body, buttons
   }
 }
 
-// Helper: get available booking days (dynamic, based on Google Calendar availability)
-async function getAvailableBookingDays(stylist, calendars) {
-  try {
-    // Normalize stylist name to match config keys (e.g., "Stylist Hetal" -> "stylist_hetal")
-    const stylistKey = stylist.toLowerCase().replace(/\s+/g, '_');
-    const calendarId = calendars[stylistKey] || calendars[stylist];
-    console.log(`🔍 Fetching dynamic available dates from Google Calendar for ${stylist} (key: ${stylistKey})...`, calendarId);
-
-    if (!calendarId) {
-      console.log('❌ No calendar ID found for stylist:', stylist);
-      return [];
-    }
-
-    const availableDates = await getAvailableDates(8, calendarId);
-
-    if (availableDates.length === 0) {
-      console.log('❌ No available dates found, returning empty array');
-      return [];
-    }
-
-    console.log(`✅ Found ${availableDates.length} available dates for booking`);
-    return availableDates;
-  } catch (error) {
-    console.error('❌ Error getting available dates:', error);
-    // Fallback to static dates if dynamic fetch fails
-    const days = [];
-    const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-    const businessStart = new Date(now);
-    businessStart.setHours(10, 0, 0, 0); // 10:00 AM
-    const businessEnd = new Date(now);
-    businessEnd.setHours(21, 0, 0, 0); // 9:00 PM
-    let startOffset = 0;
-    if (now < businessStart || now >= businessEnd) {
-      startOffset = 1;
-    }
-    for (let i = startOffset; days.length < 7; i++) {
-      const d = new Date(now.getTime() + i * 24 * 60 * 60 * 1000);
-      const label = d.toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'short', year: 'numeric' });
-      days.push({ id: `calendar_day_${days.length}`, title: label });
-    }
-    return days;
-  }
+// Legacy salon date picker — disabled (e-commerce platform; slot utils removed).
+async function getAvailableBookingDays() {
+  return [];
 }
 
 // Helper function to get paginated services
@@ -545,45 +504,15 @@ function getPaginatedServices(page = 0) {
   };
 }
 
-// Helper: get available time slots for a given date with pagination
-async function fetchRealTimeSlots(dateStr, page = 0, stylist, calendars) {
-  try {
-    // Normalize stylist name
-    const stylistKey = stylist.toLowerCase().replace(/\s+/g, '_');
-    const calendarId = calendars[stylistKey] || calendars[stylist];
-    console.log(`🔍 Fetching available slots for ${dateStr} (page ${page}) with stylist ${stylist} (key: ${stylistKey})...`);
-
-    if (!calendarId) {
-      console.error(`No calendar ID configured for stylist: ${stylist} (key: ${stylistKey})`);
-      return { slots: [], totalSlots: 0, currentPage: 0, totalPages: 0, hasMore: false };
-    }
-
-    const result = await getAvailableSlots(dateStr, page, calendarId);
-
-    if (result.totalSlots === 0) {
-      console.log(`❌ No available slots found for ${dateStr}`);
-      return {
-        slots: [],
-        totalSlots: 0,
-        currentPage: 0,
-        totalPages: 0,
-        hasMore: false
-      };
-    }
-
-    console.log(`✅ Found ${result.totalSlots} available slots for ${dateStr} (page ${result.currentPage + 1}/${result.totalPages})`);
-
-    return result;
-  } catch (err) {
-    console.error('Error fetching real time slots:', err);
-    return {
-      slots: [],
-      totalSlots: 0,
-      currentPage: 0,
-      totalPages: 0,
-      hasMore: false
-    };
-  }
+// Legacy salon time slots — disabled (e-commerce platform; slot utils removed).
+async function fetchRealTimeSlots() {
+  return {
+    slots: [],
+    totalSlots: 0,
+    currentPage: 0,
+    totalPages: 0,
+    hasMore: false,
+  };
 }
 
 // Helper: Notify admins (dynamic)

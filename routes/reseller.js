@@ -140,7 +140,7 @@ router.post("/clients", verifyToken, requireReseller, async (req, res) => {
     // Send welcome email if requested
     if (sendWelcomeEmail) {
       try {
-        const { deliverSystemEmail } = require("../utils/emailService");
+        const { deliverSystemEmail } = require('../utils/core/emailService');
         await deliverSystemEmail({
           to: adminEmail,
           subject: `Welcome to ${req.headers["x-product-name"] || "TopEdge AI"}!`,

@@ -2,12 +2,12 @@ const express = require('express');
 const router = express.Router();
 const CustomUsageTag = require('../models/CustomUsageTag');
 const { protect, verifyClientAccess } = require('../middleware/auth');
-const { tenantClientId } = require('../utils/queryHelpers');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 const { apiCache } = require('../middleware/apiCache');
 const {
   MAX_TAGS_PER_WORKSPACE,
   removeTagFromAllTemplates,
-} = require('../utils/templateUsageTags');
+} = require('../utils/meta/templateUsageTags');
 
 router.get('/', protect, apiCache(60), async (req, res) => {
   try {

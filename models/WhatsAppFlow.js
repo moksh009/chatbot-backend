@@ -68,6 +68,28 @@ const WhatsAppFlowSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   },
+  /** Phase 9: post-purchase journey playbooks */
+  flowType: {
+    type: String,
+    enum: ['standard', 'post_purchase_journey'],
+    default: 'standard',
+  },
+  playbookKey: { type: String, default: '' },
+  journeyTrigger: {
+    type: String,
+    enum: ['order_placed', 'order_fulfilled', 'order_delivered', 'win_back_inactive', ''],
+    default: '',
+  },
+  journeyPolicies: {
+    repeatPerCustomer: {
+      type: String,
+      enum: ['never', 'once_per_month', 'once_per_year'],
+      default: 'never',
+    },
+    minOrderValue: { type: Number, default: null },
+    productInclusions: { type: [String], default: null },
+    windowDays: { type: Number, default: 1 },
+  },
   /** Wizard / commerce: isolated automation graphs (do not mix with main keyword flow). */
   isAutomation: { type: Boolean, default: false },
   automationTrigger: { type: String, default: '' },

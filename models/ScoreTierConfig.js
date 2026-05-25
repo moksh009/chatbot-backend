@@ -18,6 +18,15 @@ const ScoreTierConfigSchema = new mongoose.Schema({
   clientId: { type: String, required: true, unique: true },
   isActive: { type: Boolean, default: true },
   tiers: [TierSchema],
+  weights: {
+    inbound_message: { type: Number, default: 2 },
+    link_click: { type: Number, default: 5 },
+    add_to_cart: { type: Number, default: 15 },
+    checkout_initiated: { type: Number, default: 35 },
+    appointment: { type: Number, default: 40 },
+    sentiment_bonus: { type: Number, default: 10 },
+    vip_bonus: { type: Number, default: 50 },
+  },
   updatedAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 

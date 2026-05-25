@@ -1,22 +1,46 @@
 const express = require('express');
-const { resolveClient, tenantClientId } = require('../utils/queryHelpers');
+const { resolveClient, tenantClientId } = require('../utils/core/queryHelpers');
 const router = express.Router();
 const axios = require('axios');
 const { protect } = require('../middleware/auth');
-const log = require('../utils/logger')('TemplateAPI');
-const { decrypt } = require('../utils/encryption');
+const log = require('../utils/core/logger')('TemplateAPI');
+const { decrypt } = require('../utils/core/encryption');
 const Client = require('../models/Client');
 const User = require('../models/User');
 const { STANDARD_TEMPLATES } = require('../constants/standardTemplates');
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
-const { uploadToCloud } = require('../utils/cloudinary');
-const { getFastScore, analyzeWithGeminiAndRewrite } = require('../utils/templateScorer');
-const { getPrebuiltTemplates } = require('../utils/flowGenerator');
-const { hydrateApprovedProductTemplatesForClient } = require('../utils/templateImageHydrate');
+const { uploadToCloud } = require('../utils/core/cloudinary');
+const { getFastScore, analyzeWithGeminiAndRewrite } = require('../utils/meta/templateScorer');
+const { getPrebuiltTemplates } = require('../utils/flow/flowGenerator');
+const { hydrateApprovedProductTemplatesForClient } = require('../utils/meta/templateImageHydrate');
 const MetaTemplate = require('../models/MetaTemplate');
 const { normalizeTemplateStatus } = require('../constants/templateLifecycle');
-const { normalizePurpose } = require('../utils/templateEligibility');
+const {
+  resolveSlotsForClient,
+  getCatalogVersion,
+  loadCatalog,
+  validateEcoStandardPack,
+} = require('../constants/templateCatalog');
+const { getUnifiedTemplateReadiness } = require('../constants/templateCatalog/readiness');
+const {
+  listOverridesForClient,
+  patchOverrideForSlot,
+  applyOverridesToStandardTemplate,
+  MULTI_STORE_MODEL,
+} = require('../services/templateBrandOverrides');
+const {
+  assertSuperAdmin,
+  bulkPushEcoPack,
+  getApprovalBoard,
+} = require('../services/templateAdminOps');
+const { getLatestAudits, runCatalogValidationJob } = require('../constants/templateCatalog/validation');
+const {
+  recordTemplateSubmission,
+  reconcileSyncedTemplatesWithCatalog,
+  pollPendingMetaTemplatesForClient,
+} = require('../services/templateLifecycleBridge');
+const { normalizePurpose } = require('../utils/meta/templateEligibility');
 const { apiCache } = require('../middleware/apiCache');
 
 /** In-process list cache — avoids 40s+ stalls when Redis/Mongo is contended. */
@@ -127,6 +151,13 @@ router.get('/sync', protect, async (req, res) => {
             );
 
             try {
+              await reconcileSyncedTemplatesWithCatalog(clientId, templates);
+              await pollPendingMetaTemplatesForClient(clientId);
+            } catch (lifeErr) {
+              console.warn('[Template API] Post-sync lifecycle:', lifeErr.message);
+            }
+
+            try {
                 const fresh = await Client.findOne({ clientId }).lean();
                 if (fresh) {
                     await hydrateApprovedProductTemplatesForClient(fresh, { force: false, maxAgeMs: 7 * 24 * 60 * 60 * 1000 });
@@ -176,9 +207,9 @@ router.get('/sync', protect, async (req, res) => {
 });
 
 // 1b. Fetch Templates from Local DB Cache (Lightweight)
-router.get('/list', protect, apiCache(60), async (req, res) => {
-    const { createTimer } = require('../utils/perfLogger');
-    const { getCachedClient } = require('../utils/clientCache');
+async function handleGetTemplateList(req, res) {
+    const { createTimer } = require('../utils/core/perfLogger');
+    const { getCachedClient } = require('../utils/core/clientCache');
     const timer = createTimer('GET /api/templates/list', tenantClientId(req) || '');
     try {
         const clientId = tenantClientId(req);
@@ -191,7 +222,11 @@ router.get('/list', protect, apiCache(60), async (req, res) => {
           ? normalizePurpose(req.query.contextPurpose, 'utility')
           : null;
         const skipCanonical = req.query.skipCanonical === '1' || req.query.liveChat === '1';
-        const memKey = templateListMemKey(clientId, `${contextPurpose || ''}:${skipCanonical ? 'fast' : 'full'}`);
+        const isUnifiedQuery = req.query.unified === '1' || req.query.unified === 'true';
+        const memKey = templateListMemKey(
+          clientId,
+          `${contextPurpose || ''}:${skipCanonical ? 'fast' : 'full'}:${isUnifiedQuery ? 'unified' : 'plain'}`
+        );
         const memHit = readTemplateListMemCache(memKey);
         if (memHit) {
           timer.finish(`200 ok mem-cache | count=${memHit.data?.length || 0}`);
@@ -410,21 +445,112 @@ router.get('/list', protect, apiCache(60), async (req, res) => {
             return primary === contextPurpose || secondary.includes(contextPurpose) || primary === 'utility';
           });
         }
-        if (contextPurpose === 'manager') {
-          const { filterTemplatesForManagerList } = require('../utils/templateListPolicy');
-          merged = filterTemplatesForManagerList(merged);
+        const isUnified = req.query.unified === '1' || req.query.unified === 'true';
+        let responseData = merged;
+        let meta = null;
+
+        if (isUnified) {
+          const {
+            buildUnifiedLibraryResponse,
+            buildUnifiedContextResponse,
+          } = require('../utils/meta/unifiedTemplateList');
+          const ctx = req.query.contextPurpose
+            ? normalizePurpose(req.query.contextPurpose, 'utility')
+            : null;
+          if (ctx && ctx !== 'manager') {
+            const u = buildUnifiedContextResponse(merged, ctx);
+            responseData = u.data;
+            meta = u.meta;
+          } else {
+            const u = buildUnifiedLibraryResponse(merged);
+            responseData = u.data;
+            meta = u.meta;
+          }
+        } else if (contextPurpose === 'manager') {
+          const { filterTemplatesForManagerList } = require('../utils/meta/templateListPolicy');
+          responseData = filterTemplatesForManagerList(merged);
         }
+
         const payload = {
           success: true,
-          data: merged,
+          data: responseData,
           syncedAt: client.templatesSyncedAt,
+          ...(meta ? { meta } : {}),
         };
         const memTtlMs = skipCanonical ? 120_000 : TEMPLATE_LIST_MEM_TTL_MS;
         writeTemplateListMemCache(memKey, payload, memTtlMs);
-        timer.finish(`200 ok | count=${merged.length}`);
+        timer.finish(`200 ok | count=${responseData.length}`);
         res.json(payload);
     } catch (error) {
         timer.finish(`500 ${error.message}`);
+        res.status(500).json({ success: false, message: error.message });
+    }
+}
+
+router.get('/list', protect, apiCache(60), handleGetTemplateList);
+
+/** Unified template library — merged sources + eligibility meta (Module 12). */
+router.get('/unified', protect, apiCache(60), (req, res) => {
+  req.query.unified = '1';
+  if (!req.query.contextPurpose) req.query.contextPurpose = 'manager';
+  return handleGetTemplateList(req, res);
+});
+
+/** Per-feature readiness (order messages, flows, commerce) — Phase 2 unified API. */
+router.get('/readiness', protect, apiCache(20), async (req, res) => {
+    try {
+        const clientId = tenantClientId(req) || req.query.clientId;
+        if (!clientId) {
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
+        await getClientCredentials(clientId, req.user.id);
+        const { getCachedClient } = require('../utils/core/clientCache');
+        const client = await getCachedClient(clientId, 'syncedMetaTemplates');
+        const synced = Array.isArray(client?.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
+        const data = await getUnifiedTemplateReadiness(clientId, { syncedTemplates: synced });
+        return res.json({ success: true, data });
+    } catch (error) {
+        return res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+/** Automation slots merged with per-tenant sync + MetaTemplate resolution (Phase 1 catalog). */
+router.get('/slots', protect, apiCache(30), async (req, res) => {
+    try {
+        const clientId = tenantClientId(req) || req.query.clientId;
+        if (!clientId) {
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
+
+        await getClientCredentials(clientId, req.user.id);
+
+        const { getCachedClient } = require('../utils/core/clientCache');
+        const client = await getCachedClient(clientId, 'syncedMetaTemplates');
+        const synced = Array.isArray(client?.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
+
+        const resolved = await resolveSlotsForClient(clientId, { syncedTemplates: synced });
+        const catalog = loadCatalog();
+        const ecoValidation = validateEcoStandardPack(STANDARD_TEMPLATES);
+
+        res.json({
+            success: true,
+            data: {
+                version: getCatalogVersion(),
+                clientId,
+                summary: resolved.summary,
+                groups: resolved.groups,
+                nameAliases: catalog.nameAliases || {},
+                prebuiltRequiredMetaNames: catalog.prebuiltRequiredMetaNames || [],
+                featureAutomations: catalog.featureAutomations || [],
+                multiStoreModel: MULTI_STORE_MODEL,
+            },
+            meta: {
+                catalogVersion: getCatalogVersion(),
+                multiStoreModel: MULTI_STORE_MODEL,
+                ecoPackValid: ecoValidation.ok,
+            },
+        });
+    } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
 });
@@ -567,8 +693,8 @@ router.put('/product-template/:clientId/:templateName', protect, async (req, res
 
 // 2. Get Template Statistics (Read Rate and Revenue)
 router.get('/:clientId/stats', protect, apiCache(60), async (req, res) => {
-    const { createTimer } = require('../utils/perfLogger');
-    const { getCachedClient } = require('../utils/clientCache');
+    const { createTimer } = require('../utils/core/perfLogger');
+    const { getCachedClient } = require('../utils/core/clientCache');
     const timer = createTimer('GET /api/templates/:clientId/stats', req.params.clientId || '');
     try {
         const { clientId } = req.params;
@@ -719,11 +845,41 @@ router.post('/push-local', protect, async (req, res) => {
         const client = await getClientCredentials(clientId, req.user.id);
         const templates = Array.isArray(client.messageTemplates) ? client.messageTemplates : [];
         let local = templates.find((t) => t && t.name === templateName);
+        let source = 'message_templates';
+
+        if (!local) {
+            const metaDoc = await MetaTemplate.findOne({ clientId, name: templateName })
+                .sort({ updatedAt: -1 })
+                .lean();
+            if (metaDoc) {
+                local = {
+                    name: metaDoc.name,
+                    category: metaDoc.category,
+                    language: metaDoc.language,
+                    components: [],
+                    body: metaDoc.body,
+                    headerType: metaDoc.headerType,
+                    headerValue: metaDoc.headerValue,
+                    footerText: metaDoc.footerText,
+                    buttons: metaDoc.buttons,
+                    variableMapping: metaDoc.variableMapping,
+                    primaryPurpose: metaDoc.primaryPurpose,
+                    secondaryPurposes: metaDoc.secondaryPurposes,
+                    source: metaDoc.source || 'meta_template',
+                };
+                source = 'meta_template';
+            }
+        }
+
         if (!local) {
             return res.status(404).json({ success: false, message: 'Template not found in workspace. Sync from Meta or generate from the wizard first.' });
         }
 
-        let rawComponents = Array.isArray(local.components) ? local.components : [];
+        const { buildComponentsForMetaSubmit } = require('../utils/meta/templateSubmitComponents');
+        let rawComponents = buildComponentsForMetaSubmit(local);
+        if (!rawComponents.length && Array.isArray(local.components)) {
+            rawComponents = local.components;
+        }
         if (rawComponents.length === 0) {
             const wd = {
                 businessName: client.businessName || client.name || 'Your brand',
@@ -797,7 +953,7 @@ router.post('/push-local', protect, async (req, res) => {
                 status: 'PENDING',
                 category,
                 components: rawComponents,
-                source: local.source || 'push_local',
+                source: local.source || source || 'push_local',
                 primaryPurpose: normalizePurpose(local.primaryPurpose || 'utility'),
                 secondaryPurposes: Array.isArray(local.secondaryPurposes)
                   ? local.secondaryPurposes.map((p) => normalizePurpose(p))
@@ -954,6 +1110,87 @@ router.get('/standard', protect, async (req, res) => {
     res.json({ success: true, data: STANDARD_TEMPLATES });
 });
 
+/** Phase 4 — per-client brand overrides for catalog slots. */
+router.get('/overrides', protect, async (req, res) => {
+    try {
+        const clientId = tenantClientId(req) || req.query.clientId;
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+        await getClientCredentials(clientId, req.user.id);
+        const data = await listOverridesForClient(clientId);
+        if (!data) return res.status(404).json({ success: false, message: 'Client not found' });
+        return res.json({ success: true, data });
+    } catch (error) {
+        return res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+router.patch('/overrides/:slotId', protect, async (req, res) => {
+    try {
+        const clientId = tenantClientId(req) || req.body?.clientId;
+        if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+        await getClientCredentials(clientId, req.user.id);
+        const result = await patchOverrideForSlot(clientId, req.params.slotId, req.body || {});
+        return res.json({ success: true, data: result });
+    } catch (error) {
+        const status = error.status || 500;
+        return res.status(status).json({ success: false, message: error.message });
+    }
+});
+
+/** SUPER_ADMIN — approval board across clients. */
+router.get('/admin/board', protect, async (req, res) => {
+    try {
+        await assertSuperAdmin(req.user.id);
+        const needsActionOnly = req.query.needsAction === 'true';
+        const limit = Math.min(parseInt(req.query.limit, 10) || 80, 200);
+        const data = await getApprovalBoard({ limit, needsActionOnly });
+        return res.json({ success: true, data });
+    } catch (error) {
+        const status = error.status || 500;
+        return res.status(status).json({ success: false, message: error.message });
+    }
+});
+
+/** SUPER_ADMIN — bulk push eco pack. */
+router.post('/admin/bulk-push-eco', protect, async (req, res) => {
+    try {
+        await assertSuperAdmin(req.user.id);
+        const { clientIds = [], skipExisting = true } = req.body || {};
+        const data = await bulkPushEcoPack({ clientIds, skipExisting });
+        return res.json({ success: true, data });
+    } catch (error) {
+        const status = error.status || 500;
+        return res.status(status).json({ success: false, message: error.message });
+    }
+});
+
+/** SUPER_ADMIN — latest catalog drift audits. */
+router.get('/admin/audits', protect, async (req, res) => {
+    try {
+        await assertSuperAdmin(req.user.id);
+        const needsActionOnly = req.query.needsAction === 'true';
+        const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+        const audits = await getLatestAudits({ limit, needsActionOnly });
+        return res.json({ success: true, data: { audits, multiStoreModel: MULTI_STORE_MODEL } });
+    } catch (error) {
+        const status = error.status || 500;
+        return res.status(status).json({ success: false, message: error.message });
+    }
+});
+
+/** SUPER_ADMIN — run validation now (same as nightly cron). */
+router.post('/admin/validate-catalog', protect, async (req, res) => {
+    try {
+        await assertSuperAdmin(req.user.id);
+        const limit = Math.min(parseInt(req.body?.limit, 10) || 200, 500);
+        const data = await runCatalogValidationJob({ limit });
+        return res.json({ success: true, data });
+    } catch (error) {
+        const status = error.status || 500;
+        return res.status(status).json({ success: false, message: error.message });
+    }
+});
+
 // 7. Push Standard Template to Meta
 router.post('/push-standard', protect, async (req, res) => {
     try {
@@ -962,14 +1199,29 @@ router.post('/push-standard', protect, async (req, res) => {
             return res.status(400).json({ success: false, message: 'clientId and templateId are required' });
         }
 
-        const standardTemplate = JSON.parse(JSON.stringify(STANDARD_TEMPLATES.find(t => t.id === templateId)));
-        if (!standardTemplate) {
+        const baseTemplate = STANDARD_TEMPLATES.find(t => t.id === templateId);
+        if (!baseTemplate) {
             return res.status(404).json({ success: false, message: 'Standard template not found' });
         }
 
         const client = await getClientCredentials(clientId, req.user.id);
+        const clientDoc = await Client.findOne({ clientId }).select('templateBrandOverrides').lean();
 
-        // Inject Custom Header Handle if provided
+        const { template: standardTemplate, applied: overridesApplied, skipped } =
+            applyOverridesToStandardTemplate(
+                JSON.parse(JSON.stringify(baseTemplate)),
+                templateId,
+                clientDoc
+            );
+
+        if (skipped) {
+            return res.status(400).json({
+                success: false,
+                message: 'This automation slot is disabled via brand overrides.',
+            });
+        }
+
+        // Request header handle wins over stored override
         if (headerHandle) {
             const headerComp = standardTemplate.components.find(c => c.type === 'HEADER' && c.format === 'IMAGE');
             if (headerComp) {
@@ -993,7 +1245,24 @@ router.post('/push-standard', protect, async (req, res) => {
                     'Content-Type': 'application/json'
                 }
             });
-            res.json({ success: true, data: response.data });
+            const metaResult = response.data || {};
+            try {
+              await recordTemplateSubmission({
+                clientId,
+                metaName: standardTemplate.name,
+                metaTemplateId: metaResult.id || null,
+                metaStatus: metaResult.status || 'PENDING',
+                components: standardTemplate.components,
+                category: standardTemplate.category,
+                language: standardTemplate.language,
+                source: 'eco_push',
+                catalogSlotId: standardTemplate.id,
+                body: standardTemplate.components?.find((c) => c.type === 'BODY')?.text,
+              });
+            } catch (lifeErr) {
+              console.warn('[Template API] push-standard lifecycle:', lifeErr.message);
+            }
+            res.json({ success: true, data: metaResult, overridesApplied: !!overridesApplied });
         } catch (metaErr) {
             const errData = metaErr.response?.data || metaErr.message;
             const status = metaErr.response?.status;

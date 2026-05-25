@@ -4,18 +4,21 @@ const User = require('../models/User');
 const Client = require('../models/Client');
 const Conversation = require('../models/Conversation');
 const { protect } = require('../middleware/auth');
-const { logActivity } = require('../utils/activityLogger');
+const { verifyTenantScope } = require('../middleware/verifyTenantScope');
+const { requireRoleCategory } = require('../middleware/requireRole');
+const teamAdmin = [protect, verifyTenantScope(), requireRoleCategory('team')];
+const { logActivity } = require('../utils/core/activityLogger');
 const crypto = require('crypto');
-const { sendTeamInviteEmail, sendAdminConfirmationEmail } = require('../utils/emailService');
-const { checkLimit, incrementUsage } = require('../utils/planLimits');
-const { tenantClientId } = require('../utils/queryHelpers');
+const { sendTeamInviteEmail, sendAdminConfirmationEmail } = require('../utils/core/emailService');
+const { checkLimit, incrementUsage } = require('../utils/core/planLimits');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 const { apiCache } = require('../middleware/apiCache');
 
 // @route   GET /api/team
 // @route   GET /api/users/team
 // @desc    Get all team members for a client (root handler)
 router.get('/', protect, apiCache(60), async (req, res) => {
-    const { createTimer } = require('../utils/perfLogger');
+    const { createTimer } = require('../utils/core/perfLogger');
     const timer = createTimer('GET /api/team', req.user?.clientId || '');
     try {
         const clientId = req.user.clientId;
@@ -75,7 +78,7 @@ router.get('/team', protect, async (req, res) => {
         res.status(500).json({ message: 'Server Error', error: error.message });
     }
 });
-router.get('/:clientId', protect, async (req, res) => {
+router.get('/:clientId', protect, verifyTenantScope(), async (req, res) => {
     try {
         const clientId = tenantClientId(req);
         if (!clientId || clientId !== req.params.clientId) {
@@ -129,7 +132,7 @@ router.get('/:clientId', protect, async (req, res) => {
 // @route   POST /api/team/invite
 // @desc    Invite a new team member (Agent)
 // @access  Private (Admin only)
-router.post('/invite', protect, async (req, res) => {
+router.post('/invite', ...teamAdmin, async (req, res) => {
     const { name, email } = req.body;
 
     if (!name || !email) {
@@ -204,7 +207,7 @@ router.post('/invite', protect, async (req, res) => {
 // @route   DELETE /api/team/:id
 // @desc    Remove a team member
 // @access  Private (Admin only)
-router.delete('/:id', protect, async (req, res) => {
+router.delete('/:id', ...teamAdmin, async (req, res) => {
     try {
         const userToRemove = await User.findById(req.params.id);
         
@@ -241,7 +244,7 @@ router.delete('/:id', protect, async (req, res) => {
 // @route   PATCH /api/team/:id/role
 // @desc    Update a team member's role
 // @access  Private (Admin only)
-router.patch('/:id/role', protect, async (req, res) => {
+router.patch('/:id/role', ...teamAdmin, async (req, res) => {
     try {
         const { role } = req.body;
         

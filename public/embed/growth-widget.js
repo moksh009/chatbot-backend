@@ -19,10 +19,25 @@
   var subscribeUrl = apiOrigin + '/api/public/growth/subscribe';
   var configUrl = apiOrigin + '/api/public/growth/config?key=' + encodeURIComponent(embedKey);
 
+  function getOrCreateVisitorId() {
+    var existing = document.cookie.split('; ').find(function (row) {
+      return row.indexOf('te_visitor_id=') === 0;
+    });
+    if (existing) return decodeURIComponent(existing.split('=').slice(1).join('='));
+    var newId = 'te_' + Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
+    var expires = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toUTCString();
+    document.cookie = 'te_visitor_id=' + encodeURIComponent(newId) + '; expires=' + expires + '; path=/; SameSite=Lax';
+    return newId;
+  }
+
+  var VISITOR_ID = getOrCreateVisitorId();
+
   function postSubscribe(payload) {
+    payload.visitorId = VISITOR_ID;
     return fetch(subscribeUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(payload),
     }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); });
   }

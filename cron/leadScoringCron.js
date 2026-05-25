@@ -1,8 +1,8 @@
 const cron = require("node-cron");
-const { recomputeAllScores } = require("../utils/leadScoring");
+const { recomputeAllScores } = require('../utils/commerce/leadScoring');
 const Client = require("../models/Client");
-const logger = require("../utils/logger")("LeadScoringCron");
-const { wrapCron } = require("../utils/perfLogger");
+const logger = require('../utils/core/logger')("LeadScoringCron");
+const { wrapCron } = require('../utils/core/perfLogger');
 
 function scheduleLeadScoringCron() {
   cron.schedule(

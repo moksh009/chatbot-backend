@@ -3,9 +3,9 @@
 const IGAutomation = require('../../models/IGAutomation');
 const IGAutomationSession = require('../../models/IGAutomationSession');
 const Client = require('../../models/Client');
-const { decrypt } = require('../../utils/encryption');
+const { decrypt } = require('../../utils/core/encryption');
 const axios = require('axios');
-const redis = require('../../utils/redisClient'); // Ensure this points to a valid redis client instance
+const redis = require('../../utils/core/redisClient'); // Ensure this points to a valid redis client instance
 
 const igApiCallCounts = new Map(); // tracks calls per token per hour in memory
 
@@ -94,6 +94,50 @@ async function callInstagramAPI(method, path, data, accessToken) {
   throw lastError;
 }
 
+async function loadClientForIgEnvelope(clientId) {
+  return Client.findOne({ clientId })
+    .select('clientId flags instagramAccessToken igAccessToken igUserId instagramPageId')
+    .lean();
+}
+
+/** IG DM via sendEnvelope only (no direct Graph bypass). */
+async function postIgMessages(clientId, igsid, payload, accessToken, opts = {}) {
+  const client = await loadClientForIgEnvelope(clientId);
+  const { dispatchIgEnvelope } = require('../../utils/messaging/igEnvelopeDispatch');
+  const env = await dispatchIgEnvelope({
+    client,
+    clientId,
+    igsid,
+    payload: { igDm: payload },
+    jobType: opts.jobType || 'dm',
+    source: opts.source || 'messageDispatcher',
+  });
+  if (env.blocked && !env.sent && !env.duplicate) {
+    console.warn(
+      `[Dispatcher] IG envelope blocked (${opts.jobType || 'dm'}):`,
+      env.result?.reason || env.result?.blockedBy
+    );
+  }
+  return env;
+}
+
+/** Public comment reply via sendEnvelope only. */
+async function postIgCommentReply(clientId, commentId, message, accessToken) {
+  const client = await loadClientForIgEnvelope(clientId);
+  const { dispatchIgEnvelope } = require('../../utils/messaging/igEnvelopeDispatch');
+  const env = await dispatchIgEnvelope({
+    client,
+    clientId,
+    payload: { igCommentReply: { commentId, message } },
+    jobType: 'comment_reply',
+    source: 'messageDispatcher.commentReply',
+  });
+  if (env.blocked && !env.sent && !env.duplicate) {
+    console.warn('[Dispatcher] IG comment reply envelope blocked:', env.result?.reason || env.result?.blockedBy);
+  }
+  return env;
+}
+
 async function sendOpeningDM(automationId, igsid, clientId) {
   const automation = await IGAutomation.findById(automationId).lean();
   if (!automation) throw new Error(`Automation ${automationId} not found`);
@@ -151,7 +195,7 @@ async function sendOpeningDM(automationId, igsid, clientId) {
     }
   };
 
-  await callInstagramAPI('POST', '/me/messages', payload, accessToken);
+  await postIgMessages(clientId, igsid, payload, accessToken, { jobType: 'opening_dm' });
 
   // Create session
   await IGAutomationSession.create({
@@ -169,7 +213,7 @@ async function sendOpeningDM(automationId, igsid, clientId) {
 
   // Safe emit via socket (requires it's correctly injected or required inline)
   try {
-    const { getIO } = require('../../socket');
+    const { getIO } = require('../../utils/core/socket');
     getIO().to(`client_${clientId}`).emit('igDmSent', { automationId, igsid });
   } catch(e) {}
 
@@ -198,9 +242,7 @@ async function sendCommentReply(automationId, commentId, clientId) {
   const replyText = replies[index];
 
   // Post raw text directly — no transformation, no trim, no replace
-  await callInstagramAPI('POST', `/${commentId}/replies`, {
-    message: replyText
-  }, accessToken);
+  await postIgCommentReply(clientId, commentId, replyText, accessToken);
 
   await IGAutomation.findByIdAndUpdate(automationId, {
     $inc: { 'stats.totalCommentReplies': 1 }
@@ -249,7 +291,7 @@ async function handleViewContentPostback(automationId, igsid, clientId) {
     }
   };
 
-  await callInstagramAPI('POST', '/me/messages', payload, accessToken);
+  await postIgMessages(clientId, igsid, payload, accessToken, { jobType: 'view_content' });
 
   await IGAutomationSession.findByIdAndUpdate(session._id, {
     $set: { stage: 'link_sent' }
@@ -331,7 +373,7 @@ async function checkFollowStatus(automationId, igsid, clientId) {
       }
     };
 
-    await callInstagramAPI('POST', '/me/messages', successPayload, accessToken);
+    await postIgMessages(clientId, igsid, successPayload, accessToken, { jobType: 'follow_gate_success' });
 
     await IGAutomationSession.findByIdAndUpdate(session._id, { $set: { stage: 'gate_passed' } });
     await IGAutomation.findByIdAndUpdate(automationId, {
@@ -367,7 +409,7 @@ async function checkFollowStatus(automationId, igsid, clientId) {
         }
       };
 
-      await callInstagramAPI('POST', '/me/messages', failPayload, accessToken);
+      await postIgMessages(clientId, igsid, failPayload, accessToken, { jobType: 'follow_gate_fail' });
 
       await IGAutomationSession.findByIdAndUpdate(session._id, {
         $set: { stage: 'gate_check_1' },
@@ -385,7 +427,7 @@ async function checkFollowStatus(automationId, igsid, clientId) {
         message: { text: terminalText } // plain text, no template, no button
       };
 
-      await callInstagramAPI('POST', '/me/messages', terminalPayload, accessToken);
+      await postIgMessages(clientId, igsid, terminalPayload, accessToken, { jobType: 'follow_gate_terminal' });
 
       await IGAutomationSession.findByIdAndUpdate(session._id, {
         $set: { stage: 'gate_failed_terminal' }

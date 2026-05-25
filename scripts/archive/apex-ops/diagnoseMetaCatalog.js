@@ -8,7 +8,7 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const mongoose = require('mongoose');
-const { diagnoseMetaCatalogAccess } = require('../utils/metaCatalogSync');
+const { diagnoseMetaCatalogAccess } = require('../../../utils/meta/metaCatalogSync');
 
 function resolveClientId() {
   const fromEnv = process.env.APEX_SYNC_CLIENT_ID || process.env.SYNC_CLIENT_ID;

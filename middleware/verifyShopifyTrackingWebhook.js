@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const Client = require('../models/Client');
-const { decrypt } = require('../utils/encryption');
+const { decrypt } = require('../utils/core/encryption');
 
 /**
  * Shopify order/fulfillment webhooks hitting /api/tracking/* must prove authenticity.

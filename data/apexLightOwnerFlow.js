@@ -1,7 +1,7 @@
 /**
  * Apex Light — **reference / seed** WhatsApp flow (TopEdge Flow Builder).
  * Primary hub: 3 reply buttons (WA max 3). Full service list: n_service_menu (keywords: track, order, warranty, troubleshoot, model, shop… OR troubleshoot → Back to hub).
- * Each explore category: optional **MPM marketing template** (`catalogType: mpm_template`, per-node `metaTemplateName` / `productIds`) when catalog is configured, else text+link fallback via `no_catalog`. This JSON is one tenant’s story; other clients use their own flows with the same node types (`multi`, `full`, `mpm_template`, etc.) — all handled generically in dualBrainEngine + utils/whatsapp.
+ * Each explore category: optional **MPM marketing template** (`catalogType: mpm_template`, per-node `metaTemplateName` / `productIds`) when catalog is configured, else text+link fallback via `no_catalog`. This JSON is one tenant’s story; other clients use their own flows with the same node types (`multi`, `full`, `mpm_template`, etc.) — all handled generically in dualBrainEngine + utils/meta/whatsapp.
  */
 
 const FLOW_ID = "flow_apex_owner_support_hub_v2";
@@ -10,11 +10,11 @@ const FLOW_DESCRIPTION = "Keyword + first_message welcome (3-button hub), Meta M
 
 const apexLightOwnerFlowInstallPack = require("./apexLightOwnerFlowInstallPack");
 const { injectApexCatalogGraph } = require("./apexCatalogSlots");
-const { organizeFlowGraph } = require("../utils/flowLayoutOrganize");
+const { organizeFlowGraph } = require('../utils/flow/flowLayoutOrganize');
 const {
   stripEditorOnlyNodes,
   pruneFlowGraphToReachable,
-} = require("../utils/pruneFlowGraph");
+} = require('../utils/flow/pruneFlowGraph');
 
 const LOGO = "https://apexlight.in/cdn/shop/files/07708086-ccae-4d21-93e2-fe0ed52b33a2.jpg?v=1714210021";
 const HDMI21_WIRING = "https://apexlight.in/cdn/shop/files/hdmi21_wiring_diagram.jpg";

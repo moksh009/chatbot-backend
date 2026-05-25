@@ -1,12 +1,12 @@
 const cron = require('node-cron');
 const Client = require('../models/Client');
-const { rebuildCache, dailyReset } = require('../utils/statCacheEngine');
+const { rebuildCache, dailyReset } = require('../utils/core/statCacheEngine');
 const {
   rollupYesterdayForAllClients,
   rollupTodayForAllClients,
-} = require('../utils/dailyStatRollup');
-const log = require('../utils/logger')('StatCacheCron');
-const { wrapCron } = require('../utils/perfLogger');
+} = require('../utils/core/dailyStatRollup');
+const log = require('../utils/core/logger')('StatCacheCron');
+const { wrapCron } = require('../utils/core/perfLogger');
 
 /**
  * StatCache Cron Jobs

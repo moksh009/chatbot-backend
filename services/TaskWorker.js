@@ -1,14 +1,14 @@
 const { Worker } = require('bullmq');
-const log = require('../utils/logger')('TaskWorker');
-const { getQueueRedis } = require('../utils/redisFactory');
+const log = require('../utils/core/logger')('TaskWorker');
+const { getQueueRedis } = require('../utils/core/redisFactory');
 const fs = require('fs');
 const csv = require('csv-parser');
 const _ = require('lodash');
 const AdLead = require('../models/AdLead');
 const ImportSession = require('../models/ImportSession');
-const { normalizePhone, findBestMatch, resolveMappedHeader } = require('../utils/leadCleaner');
-const { checkLimit, incrementUsage } = require('../utils/planLimits');
-const { incrementStat } = require('../utils/statCacheEngine');
+const { normalizePhone, findBestMatch, resolveMappedHeader } = require('../utils/commerce/leadCleaner');
+const { checkLimit, incrementUsage } = require('../utils/core/planLimits');
+const { incrementStat } = require('../utils/core/statCacheEngine');
 
 const redisConnection = getQueueRedis();
 if (!redisConnection) {
@@ -24,21 +24,15 @@ const taskWorker = redisConnection ? new Worker('enterprise-tasks', async (job) 
 
     try {
         switch (job.name) {
-            case 'SHOPIFY_SYNC':
-                // Logic for background Shopify sync 
-                const { syncStoreData } = require('../utils/storeSyncService'); // Example hypothetical service
-                await syncStoreData(data.clientId, data.shopUrl);
+            case 'SHOPIFY_SYNC': {
+                const { syncNicheDataProducts } = require('../utils/shopify/shopifyNicheProductSync');
+                await syncNicheDataProducts(data.clientId);
                 break;
+            }
             
-            case 'BROADCAST_CAMPAIGN':
-                // Logic for mass campaign sending
-                const { processBroadcast } = require('../utils/broadcastEngine');
-                await processBroadcast(data);
-                break;
-
             case 'AI_PERSONA_SYNC':
                 // Logic for syncing persona across 100+ nodes in background
-                const { syncPersonaToNodes } = require('../utils/personaEngine');
+                const { syncPersonaToNodes } = require('../utils/core/personaEngine');
                 await syncPersonaToNodes(data.clientId, data.persona);
                 break;
 
@@ -289,51 +283,12 @@ function emitProgress(clientId, batchId, processed, total, percent) {
 
 async function handleRecomputeScores(data, job) {
     const { clientId } = data;
-    const ScoreTierConfig = require('../models/ScoreTierConfig');
-    const AdLead = require('../models/AdLead');
-    const { evaluateCustomerScore } = require('../services/ScoreEvaluationService');
+    const { recomputeAllWaterfallScores } = require('../utils/core/scoringHelper');
 
     try {
-        const config = await ScoreTierConfig.findOne({ clientId });
-        if (!config) return log.warn(`[Recompute] No config found for ${clientId}`);
-
-        // Fetch leads in batches to avoid memory overflow
-        const totalLeads = await AdLead.countDocuments({ clientId });
-        log.info(`[Recompute] Starting for ${clientId} (${totalLeads} leads)`);
-
-        let processed = 0;
-        const batchSize = 100;
-
-        for (let i = 0; i < totalLeads; i += batchSize) {
-            const leads = await AdLead.find({ clientId }).skip(i).limit(batchSize);
-            
-            const bulkOps = leads.map(lead => {
-                const score = evaluateCustomerScore(lead, config);
-                return {
-                    updateOne: {
-                        filter: { _id: lead._id },
-                        update: { $set: { leadScore: score } }
-                    }
-                };
-            });
-
-            if (bulkOps.length > 0) {
-                await AdLead.bulkWrite(bulkOps);
-            }
-
-            processed += leads.length;
-            const percent = Math.round((processed / totalLeads) * 100);
-            
-            if (global.io) {
-                global.io.to(`client_${clientId}`).emit('scoring_recompute_progress', { percent, processed, totalLeads });
-            }
-        }
-
-        log.info(`[Recompute] Successfully finished for ${clientId}`);
-
-        if (global.io) {
-            global.io.to(`client_${clientId}`).emit('scoring_recompute_complete', { totalLeads });
-        }
+        log.info(`[Recompute] Starting waterfall recompute for ${clientId}`);
+        const processed = await recomputeAllWaterfallScores(clientId);
+        log.info(`[Recompute] Successfully finished for ${clientId} (${processed} leads)`);
     } catch (err) {
         log.error(`[Recompute] Failed for ${clientId}:`, err.message);
         throw err;
@@ -344,7 +299,7 @@ async function handleBackfillLoyalty(data, job) {
     const { clientId } = data;
     const Client = require('../models/Client');
     const Order = require('../models/Order');
-    const { awardLoyaltyPoints } = require('../utils/loyaltyEngine');
+    const { awardLoyaltyPoints } = require('../utils/commerce/loyaltyEngine');
 
     try {
         const client = await Client.findOne({ clientId }).select('loyaltyConfig');

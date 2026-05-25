@@ -1,9 +1,9 @@
 const axios = require('axios');
 const mongoose = require('mongoose');
 const MetaTemplate = require('../../models/MetaTemplate');
-const { tenantClientId } = require('../../utils/queryHelpers');
+const { tenantClientId } = require('../../utils/core/queryHelpers');
 const { extractVariablesRaw, resolveClientForTenant } = require('./templateSubmitController');
-const { validateUsageTagsForClient } = require('../../utils/templateUsageTags');
+const { validateUsageTagsForClient } = require('../../utils/meta/templateUsageTags');
 
 const META_GRAPH_VERSION = 'v19.0';
 
@@ -179,7 +179,7 @@ async function getOne(req, res) {
     const doc = await MetaTemplate.findOne({ _id: id, clientId }).lean();
     if (!doc) return res.status(404).json({ error: 'Not found' });
     const client = await require('../../models/Client').findOne({ clientId }).select('businessName brandName businessLogo nicheData').lean();
-    const { hydrateTemplateDocForEditor } = require('../../utils/metaTemplateFormHydration');
+    const { hydrateTemplateDocForEditor } = require('../../utils/meta/metaTemplateFormHydration');
     return res.json({ success: true, data: hydrateTemplateDocForEditor(doc, client || {}) });
   } catch (err) {
     console.error('[meta-templates get]', err);

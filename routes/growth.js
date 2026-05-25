@@ -3,7 +3,7 @@ const QRCode = require('qrcode');
 const Client = require('../models/Client');
 const GrowthQrScan = require('../models/GrowthQrScan');
 const { protect } = require('../middleware/auth');
-const { tenantClientId } = require('../utils/queryHelpers');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 
 const router = express.Router();
 
@@ -91,7 +91,7 @@ router.get('/embed-overview', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req) || req.query.clientId;
     if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-    const { buildGrowthEmbedOverview } = require('../utils/growthEmbedOverview');
+    const { buildGrowthEmbedOverview } = require('../utils/core/growthEmbedOverview');
     const period = String(req.query.period || '30d').toLowerCase();
     const payload = await buildGrowthEmbedOverview(clientId, period);
     if (!payload) return res.status(404).json({ success: false, message: 'Client not found' });

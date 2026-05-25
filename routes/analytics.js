@@ -7,7 +7,7 @@
  */
 const express = require('express');
 const router = express.Router();
-const { resolveClient, startOfDayIST, tenantClientId } = require('../utils/queryHelpers');
+const { resolveClient, startOfDayIST, tenantClientId } = require('../utils/core/queryHelpers');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Appointment = require('../models/Appointment');
@@ -16,19 +16,21 @@ const AdLead = require('../models/AdLead');
 const Order = require('../models/Order');
 const Client = require('../models/Client');
 const Service = require('../models/Service');
-const { listEvents } = require('../utils/googleCalendar');
+const { listEvents } = require('../utils/core/googleCalendar');
 const { protect } = require('../middleware/auth');
+const { verifyTenantScope } = require('../middleware/verifyTenantScope');
+const leadByIdScope = verifyTenantScope({ lookupBy: 'lead', param: 'id' });
 const ActivityLog = require('../models/ActivityLog');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { apiCache } = require('../middleware/apiCache');
-const { getCachedClient } = require('../utils/clientCache');
+const { getCachedClient } = require('../utils/core/clientCache');
 const {
   MAX_LIVE_ANALYTICS_DAYS,
   getRealtimeStats,
   getTopProducts,
   getTimelineStats,
   getOperatorsStats,
-} = require('../utils/analyticsHelper');
+} = require('../utils/core/analyticsHelper');
 
 // Platform-funded analytics routes always use the platform API key
 const getGeminiClient = () => {
@@ -80,7 +82,7 @@ router.get('/notifications', protect, apiCache(15), async (req, res) => {
 // GET /api/analytics/:clientId/activities
 // @desc    Get real-time activity pulse history
 // @access  Private
-router.get('/:clientId/activities', protect, apiCache(20), async (req, res) => {
+router.get('/:clientId/activities', protect, verifyTenantScope(), apiCache(20), async (req, res) => {
     try {
         const clientId = tenantClientId(req);
         if (!clientId || clientId !== req.params.clientId) {
@@ -138,8 +140,8 @@ router.get('/import-sessions/:sessionId/leads', protect, async (req, res) => {
         if (!clientId) {
             return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
-        const { resolveImportBatchObjectId } = require('../utils/importBatchResolver');
-        const { fetchLeadsAnalyticsBundle } = require('../utils/leadsAnalyticsFacet');
+        const { resolveImportBatchObjectId } = require('../utils/core/importBatchResolver');
+        const { fetchLeadsAnalyticsBundle } = require('../utils/commerce/leadsAnalyticsFacet');
         const ImportSession = require('../models/ImportSession');
 
         const resolvedId = await resolveImportBatchObjectId(req.params.sessionId, clientId);
@@ -257,8 +259,8 @@ router.get('/flow-heatmap', protect, apiCache(60), async (req, res) => {
 // @desc    Enterprise node-level observability (conversion, failures, latency, branch drop-offs)
 // @access  Private
 router.get('/flow-observability', protect, apiCache(30), async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
-  const { dedupeAsync } = require('../utils/requestDedupe');
+  const { createTimer } = require('../utils/core/perfLogger');
+  const { dedupeAsync } = require('../utils/core/requestDedupe');
   const timer = createTimer(
     'GET /api/analytics/flow-observability',
     tenantClientId(req) || ''
@@ -454,7 +456,7 @@ router.get('/bot-health', protect, apiCache(30), async (req, res) => {
 });
 
 router.get('/realtime', protect, apiCache(60), async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
+  const { createTimer } = require('../utils/core/perfLogger');
   const timer = createTimer(
     'GET /api/analytics/realtime',
     req.query.clientId || req.user?.clientId || ''
@@ -488,8 +490,8 @@ router.get('/realtime', protect, apiCache(60), async (req, res) => {
 });
 
 router.get('/leads', protect, apiCache(30), async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
-  const { fetchLeadsAnalyticsBundle } = require('../utils/leadsAnalyticsFacet');
+  const { createTimer } = require('../utils/core/perfLogger');
+  const { fetchLeadsAnalyticsBundle } = require('../utils/commerce/leadsAnalyticsFacet');
   const timer = createTimer('GET /api/analytics/leads', tenantClientId(req) || '');
   try {
     const clientId = tenantClientId(req);
@@ -510,7 +512,7 @@ router.get('/leads', protect, apiCache(30), async (req, res) => {
           optStatus,
           hasPhone,
         } = req.query;
-        const { resolveImportBatchObjectId } = require('../utils/importBatchResolver');
+        const { resolveImportBatchObjectId } = require('../utils/core/importBatchResolver');
         let resolvedImportBatch = null;
         if (importBatchId) {
             resolvedImportBatch = await resolveImportBatchObjectId(importBatchId, clientId);
@@ -541,7 +543,7 @@ router.get('/leads', protect, apiCache(30), async (req, res) => {
 });
 
 // GET /api/analytics/lead/:id (Detailed Lead View)
-router.get('/lead/:id', protect, async (req, res) => {
+router.get('/lead/:id', protect, leadByIdScope, async (req, res) => {
   try {
     const lead = await AdLead.findById(req.params.id).lean();
     if (!lead) return res.status(404).json({ message: 'Lead not found' });
@@ -549,7 +551,7 @@ router.get('/lead/:id', protect, async (req, res) => {
     // BACKGROUND ENRICHMENT: If email or city is missing, fetch from Shopify
     if (!lead.email || !lead.city) {
       try {
-        const { searchCustomerByPhone } = require('../utils/shopifyGraphQL');
+        const { searchCustomerByPhone } = require('../utils/shopify/shopifyGraphQL');
         const shopifyCustomer = await searchCustomerByPhone(lead.clientId, lead.phoneNumber);
         
         if (shopifyCustomer) {
@@ -642,7 +644,7 @@ router.get('/lead/:id', protect, async (req, res) => {
     // --- Phase 25: Shopify Deep Search Fallback (If still missing) ---
     if (!lead.email || !lead.city) {
       try {
-        const { searchCustomerByPhone } = require('../utils/shopifyGraphQL');
+        const { searchCustomerByPhone } = require('../utils/shopify/shopifyGraphQL');
         const shopifyCustomer = await searchCustomerByPhone(lead.clientId, lead.phoneNumber);
         
         if (shopifyCustomer) {
@@ -668,28 +670,23 @@ router.get('/lead/:id', protect, async (req, res) => {
       }
     }
 
-    // --- PHASE 29: Journey Log Aggregation ---
-    const journeyLog = [];
-    if (lead.createdAt) {
-      journeyLog.push({ eventName: 'Lead Created', timestamp: lead.createdAt });
-    }
-    if (orders && orders.length > 0) {
-      orders.forEach(o => journeyLog.push({ 
-        eventName: 'Order Placed', 
-        timestamp: o.createdAt, 
-        metadata: { amount: o.totalPrice, status: o.financialStatus, name: o.name } 
-      }));
-    }
-    if (conversation && conversation.createdAt) {
-      journeyLog.push({ eventName: 'Conversation Started', timestamp: conversation.createdAt });
-    }
-    // Sort chronological
-    journeyLog.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    const { buildActivityTimeline } = require('../utils/customer360/buildActivityTimeline');
+    const journeyLog = buildActivityTimeline({
+      lead,
+      orders,
+      messages,
+      marketingLogs,
+      sequences,
+      conversation,
+    });
 
     // Perf: Background update to AdLead so next load is instant
     if (updatedNeeded) {
       AdLead.findByIdAndUpdate(lead._id, { $set: updateData }).catch(e => console.error("Enrichment Background Update Failed", e));
     }
+
+    const { buildLiveLeadPanels } = require('../services/customer360/liveLeadProfile');
+    const livePanels = await buildLiveLeadPanels(lead);
 
     res.json({
       lead,
@@ -701,7 +698,8 @@ router.get('/lead/:id', protect, async (req, res) => {
       wallet: wallet ? { ...wallet, transactions: walletTransactions } : null,
       marketingLogs,
       sequences,
-      journeyLog
+      journeyLog,
+      ...livePanels,
     });
   } catch (error) {
     console.error('Lead Detail Error:', error);
@@ -860,7 +858,7 @@ router.get('/top-leads', protect, apiCache(60), async (req, res) => {
 
 // GET /api/analytics/top-products
 router.get('/top-products', protect, apiCache(60), async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
+  const { createTimer } = require('../utils/core/perfLogger');
   const timer = createTimer(
     'GET /api/analytics/top-products',
     req.query.clientId || req.user?.clientId || ''
@@ -1060,9 +1058,9 @@ router.get('/receptionist-overview', protect, apiCache(60), async (req, res) => 
 
 // GET /api/analytics/overview-bundle — Phase 8: one call for Analytics first paint
 router.get('/overview-bundle', protect, apiCache(60), async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
-  const { dedupeAsync } = require('../utils/requestDedupe');
-  const { getAnalyticsOverviewBundle } = require('../utils/analyticsOverviewBundle');
+  const { createTimer } = require('../utils/core/perfLogger');
+  const { dedupeAsync } = require('../utils/core/requestDedupe');
+  const { getAnalyticsOverviewBundle } = require('../utils/core/analyticsOverviewBundle');
   const timer = createTimer(
     'GET /api/analytics/overview-bundle',
     req.query.clientId || req.user?.clientId || ''
@@ -1092,7 +1090,7 @@ router.get('/overview-bundle', protect, apiCache(60), async (req, res) => {
 });
 
 router.get('/', protect, apiCache(120), async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
+  const { createTimer } = require('../utils/core/perfLogger');
   const timer = createTimer(
     'GET /api/analytics',
     req.query.clientId || req.user?.clientId || ''
@@ -1130,9 +1128,9 @@ router.get('/', protect, apiCache(120), async (req, res) => {
 
 // GET /api/analytics/insights (Advanced USP Features)
 router.get('/insights', protect, apiCache(120), async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
-  const { dedupeAsync } = require('../utils/requestDedupe');
-  const { getBoundedInsights } = require('../utils/analyticsOverviewBundle');
+  const { createTimer } = require('../utils/core/perfLogger');
+  const { dedupeAsync } = require('../utils/core/requestDedupe');
+  const { getBoundedInsights } = require('../utils/core/analyticsOverviewBundle');
   const timer = createTimer('GET /api/analytics/insights', req.query.clientId || '');
   try {
     const clientId = tenantClientId(req);
@@ -1606,7 +1604,7 @@ router.get('/usage-stats', protect, async (req, res) => {
     if (!clientId) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
-    const stats = await require('../utils/billingService').getUsageReport(clientId);
+    const stats = await require('../utils/commerce/billingService').getUsageReport(clientId);
     
     if (!stats) return res.status(404).json({ success: false, message: 'Client not found' });
 
@@ -1634,7 +1632,7 @@ router.get('/agent-performance', protect, apiCache(60), async (req, res) => {
     const since = new Date();
     since.setDate(since.getDate() - days);
 
-    const { getAgentPerformanceMetrics } = require('../utils/agentPerformanceMetrics');
+    const { getAgentPerformanceMetrics } = require('../utils/core/agentPerformanceMetrics');
     const metrics = await getAgentPerformanceMetrics(clientId, since);
 
     res.json({
@@ -1654,7 +1652,7 @@ router.get("/:clientId/home", protect, async (req, res) => {
     const today = startOfDayIST();
     
     // BUILD COMPREHENSIVE PAYLOAD using StatCache
-    const { getStats } = require('../utils/statCacheEngine');
+    const { getStats } = require('../utils/core/statCacheEngine');
     const stats = await getStats(client.clientId);
 
     const [
@@ -1711,7 +1709,7 @@ router.get("/:clientId/home", protect, async (req, res) => {
 // STRICT MANDATE: No dummy data. Every field derived exclusively from the
 // Conversation collection aggregation. Frontend table maps directly to this shape.
 router.get('/operators', protect, apiCache(60), async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
+  const { createTimer } = require('../utils/core/perfLogger');
   const timer = createTimer(
     'GET /api/analytics/operators',
     req.query.clientId || req.user?.clientId || ''

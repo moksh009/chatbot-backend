@@ -2,8 +2,8 @@
 
 const express = require('express');
 const { protect } = require('../middleware/auth');
-const { tenantClientId } = require('../utils/queryHelpers');
-const { buildAbandonedCartWorkspace } = require('../utils/abandonedCartWorkspace');
+const { tenantClientId } = require('../utils/core/queryHelpers');
+const { buildAbandonedCartWorkspace } = require('../utils/commerce/abandonedCartWorkspace');
 const { logAction } = require('../middleware/audit');
 const logPersonalDataAccess = logAction('PERSONAL_DATA_ACCESS');
 

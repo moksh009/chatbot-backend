@@ -6,8 +6,8 @@ const MetaAd          = require("../models/MetaAd");
 const AdLead          = require("../models/AdLead");
 const Client          = require("../models/Client");
 const { verifyToken } = require("../middleware/auth");
-const { syncMetaAds, getAdAccounts } = require("../utils/metaAdsAPI");
-const { platformGenerateJSON } = require("../utils/gemini"); // ✅ Phase R4: Use platform key wrapper
+const { syncMetaAds, getAdAccounts } = require('../utils/meta/metaAdsAPI');
+const { platformGenerateJSON } = require('../utils/core/gemini'); // ✅ Phase R4: Use platform key wrapper
 
 // ─── GET /api/meta-ads/:clientId — list all imported ads ────────────────────
 router.get("/:clientId", verifyToken, async (req, res) => {
@@ -249,7 +249,7 @@ router.post("/test-template", verifyToken, async (req, res) => {
     const client = await Client.findOne({ clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
 
-    const { sendWhatsAppTemplate } = require("../utils/whatsapp");
+    const { sendWhatsAppTemplate } = require('../utils/meta/whatsapp');
     
     // We send a generic test with placeholder data
     const result = await sendWhatsAppTemplate(

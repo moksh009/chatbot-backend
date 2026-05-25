@@ -6,13 +6,13 @@ const router  = express.Router();
 const Client  = require("../models/Client");
 
 const { protect } = require("../middleware/auth");
-const { checkLimit } = require("../utils/planLimits");
-const { decrypt } = require("../utils/encryption");
+const { checkLimit } = require('../utils/core/planLimits');
+const { decrypt } = require('../utils/core/encryption');
 const {
   subscribeFacebookPageToWebhooks,
   subscribeInstagramUserToWebhooks
-} = require("../utils/igGraphApi");
-const { invalidateClientCache } = require("../utils/clientCache");
+} = require('../utils/meta/igGraphApi');
+const { invalidateClientCache } = require('../utils/core/clientCache');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STEP 1: Initiate OAuth Flow
@@ -79,11 +79,11 @@ router.get("/instagram/callback", async (req, res) => {
 
   if (error) {
     console.error("[Instagram OAuth] Auth denied:", error_description);
-    return res.redirect(`${frontendUrl}/settings?tab=channels&instagram_error=${encodeURIComponent(error_description || error)}`);
+    return res.redirect(`${frontendUrl}/settings?tab=integrations&instagram_error=${encodeURIComponent(error_description || error)}`);
   }
 
   if (!code || !state) {
-    return res.redirect(`${frontendUrl}/settings?tab=channels&instagram_error=missing_params`);
+    return res.redirect(`${frontendUrl}/settings?tab=integrations&instagram_error=missing_params`);
   }
 
   let clientId;
@@ -91,7 +91,7 @@ router.get("/instagram/callback", async (req, res) => {
     const decoded = JSON.parse(Buffer.from(state, "base64").toString());
     clientId = decoded.clientId;
   } catch (_) {
-    return res.redirect(`${frontendUrl}/settings?tab=channels&instagram_error=invalid_state`);
+    return res.redirect(`${frontendUrl}/settings?tab=integrations&instagram_error=invalid_state`);
   }
 
   try {
@@ -142,12 +142,12 @@ router.get("/instagram/callback", async (req, res) => {
 
     if (igPages.length === 0) {
       console.warn(`[Instagram OAuth] No Instagram Business account found for clientId: ${clientId}`);
-      return res.redirect(`${frontendUrl}/settings?tab=channels&instagram_error=no_instagram_account`);
+      return res.redirect(`${frontendUrl}/settings?tab=integrations&instagram_error=no_instagram_account`);
     }
 
     const client = await Client.findOne({ clientId });
     if (!client) {
-      return res.redirect(`${frontendUrl}/settings?tab=channels&instagram_error=client_not_found`);
+      return res.redirect(`${frontendUrl}/settings?tab=integrations&instagram_error=client_not_found`);
     }
 
     // ── Single Instagram account: auto-connect ───────────────────────────
@@ -188,7 +188,7 @@ router.get("/instagram/callback", async (req, res) => {
       invalidateClientCache(clientId);
 
       console.log(`[Instagram OAuth] Connected @${igDetails.username} for client ${clientId}`);
-      return res.redirect(`${frontendUrl}/settings?tab=channels&instagram_connected=true`);
+      return res.redirect(`${frontendUrl}/settings?tab=integrations&instagram_connected=true`);
     }
 
     // ── Multiple Instagram accounts: save pending, let user choose ────────
@@ -203,11 +203,11 @@ router.get("/instagram/callback", async (req, res) => {
       instagramTokenExpiry:  tokenExpiry
     });
 
-    return res.redirect(`${frontendUrl}/settings?tab=channels&instagram_select_page=true&clientId=${clientId}`);
+    return res.redirect(`${frontendUrl}/settings?tab=integrations&instagram_select_page=true&clientId=${clientId}`);
 
   } catch (err) {
     console.error("[Instagram OAuth] Callback error:", err.response?.data || err.message);
-    return res.redirect(`${frontendUrl}/settings?tab=channels&instagram_error=callback_failed`);
+    return res.redirect(`${frontendUrl}/settings?tab=integrations&instagram_error=callback_failed`);
   }
 });
 
@@ -466,7 +466,7 @@ router.get("/meta-ads/callback", async (req, res) => {
     });
 
     // 3. Fetch available ad accounts to see if we should auto-pick or show selector
-    const { getAdAccounts } = require("../utils/metaAdsAPI");
+    const { getAdAccounts } = require('../utils/meta/metaAdsAPI');
     const accounts = await getAdAccounts(accessToken);
 
     if (accounts.length === 1) {
@@ -476,7 +476,7 @@ router.get("/meta-ads/callback", async (req, res) => {
         metaAdsAccountName: accounts[0].name
       });
       
-      const { syncMetaAds } = require("../utils/metaAdsAPI");
+      const { syncMetaAds } = require('../utils/meta/metaAdsAPI');
       setImmediate(() => syncMetaAds(clientId).catch(console.error));
       
       return res.redirect(`${frontendUrl}/meta-manager?tab=ads&meta_ads_connected=true`);

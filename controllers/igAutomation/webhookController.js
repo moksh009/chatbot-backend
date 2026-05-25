@@ -3,9 +3,10 @@
 const express = require('express');
 const router = express.Router();
 const verifyMetaSignature = require('../../middleware/verifyMetaSignature');
-const { processIGWebhookPayload } = require('../../utils/igWebhookProcessor');
-const log = require('../../utils/logger')('IGWebhook');
-const { getMetaWebhookVerifyQuery } = require('../../utils/metaHubQuery');
+const { igWebhookReplayGuard } = require('../../middleware/webhookReplayGuard');
+const { processIGWebhookPayload } = require('../../utils/meta/igWebhookProcessor');
+const log = require('../../utils/core/logger')('IGWebhook');
+const { getMetaWebhookVerifyQuery } = require('../../utils/meta/metaHubQuery');
 
 /**
  * GET /api/ig-automation/webhook
@@ -30,7 +31,11 @@ router.get('/', (req, res) => {
  * then processes the payload asynchronously.
  * Meta retries if no 200 response within 5 seconds.
  */
-router.post('/', verifyMetaSignature, async (req, res) => {
+router.post('/', igWebhookReplayGuard(), verifyMetaSignature, async (req, res) => {
+  if (req.webhookReplayDuplicate) {
+    return res.status(200).json({ duplicate: true });
+  }
+
   // Acknowledge immediately — Meta requires 200 within 5 seconds
   res.sendStatus(200);
 

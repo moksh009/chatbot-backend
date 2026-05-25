@@ -29,7 +29,7 @@
 
 const Client = require('../models/Client');
 const IGAutomation = require('../models/IGAutomation');
-const log = require('../utils/logger')('IGWebhookHealer');
+const log = require('../utils/core/logger')('IGWebhookHealer');
 
 async function runOnce() {
   if (process.env.DISABLE_IG_WEBHOOK_HEAL === 'true') {

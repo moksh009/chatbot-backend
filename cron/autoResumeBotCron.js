@@ -1,8 +1,8 @@
 const cron = require('node-cron');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
-const log = require('../utils/logger');
-const { logActivity } = require('../utils/activityLogger');
+const log = require('../utils/core/logger');
+const { logActivity } = require('../utils/core/activityLogger');
 
 async function runAutoResumeBotTick() {
         try {

@@ -3,10 +3,10 @@
 const Conversation = require('../../models/Conversation');
 const IGConversation = require('../../models/IGConversation');
 const Client = require('../../models/Client');
-const { sendInstagramDMv2 } = require('../../utils/igGraphApi');
-const { decrypt } = require('../../utils/encryption');
-const { tenantClientId } = require('../../utils/queryHelpers');
-const log = require('../../utils/logger')('UnifiedInbox');
+const { sendInstagramDMv2 } = require('../../utils/meta/igGraphApi');
+const { decrypt } = require('../../utils/core/encryption');
+const { tenantClientId } = require('../../utils/core/queryHelpers');
+const log = require('../../utils/core/logger')('UnifiedInbox');
 
 /**
  * GET /api/inbox/conversations
@@ -20,7 +20,7 @@ const log = require('../../utils/logger')('UnifiedInbox');
  *  - skip: number (default: 0)
  */
 async function listConversations(req, res) {
-  const { createTimer } = require('../../utils/perfLogger');
+  const { createTimer } = require('../../utils/core/perfLogger');
   const timer = createTimer('GET /api/inbox/conversations', tenantClientId(req) || '');
   try {
     const clientId = tenantClientId(req);
@@ -152,7 +152,7 @@ async function listConversations(req, res) {
  * Returns available static and dynamic (per-agent) filters.
  */
 async function getFilters(req, res) {
-  const { createTimer } = require('../../utils/perfLogger');
+  const { createTimer } = require('../../utils/core/perfLogger');
   const timer = createTimer('GET /api/inbox/filters', tenantClientId(req) || '');
   try {
     const clientId = tenantClientId(req);

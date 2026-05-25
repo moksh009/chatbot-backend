@@ -4,7 +4,15 @@ const bcrypt = require('bcryptjs');
 const UserSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-  password: { type: String, required: true },
+  password: {
+    type: String,
+    required: function passwordRequired() {
+      return !this.ssoSubject;
+    },
+    default: '',
+  },
+  ssoSubject: { type: String, default: '', sparse: true },
+  lastLoginVia: { type: String, enum: ['password', 'sso', 'google'], default: 'password' },
   role: { 
     type: String, 
     enum: ['SUPER_ADMIN', 'CLIENT_ADMIN', 'AGENT', 'RECEPTIONIST', 'VIEWER'], 
@@ -29,7 +37,7 @@ const UserSchema = new mongoose.Schema({
   // ── Google OAuth ──────────────────────────────────────────────────────────────
   googleId: { type: String, default: '' },
   profilePicture: { type: String, default: '' },
-  authProvider: { type: String, enum: ['email', 'google'], default: 'email' },
+  authProvider: { type: String, enum: ['email', 'google', 'sso'], default: 'email' },
   // ── Tasks ─────────────────────────────────────────────────────────────────────
   tasks: [{
     title:       { type: String, required: true },
@@ -50,13 +58,21 @@ const UserSchema = new mongoose.Schema({
     acceptedAt: { type: Date },
     docsVersion: { type: String, default: '' }
   },
+  failedLoginAttempts: {
+    count: { type: Number, default: 0 },
+    firstAttemptAt: { type: Date, default: null },
+  },
+  lockedUntil: { type: Date, default: null },
+  twoFactorEnabled: { type: Boolean, default: false },
+  twoFactorSecret: { type: String, default: null },
+  twoFactorRecoveryCodes: { type: [String], default: [] },
   createdAt: { type: Date, default: Date.now }
 });
 
 // Hash password before saving
 UserSchema.pre('save', async function(next) {
-  if (!this.isModified('password')) return next();
-  const salt = await bcrypt.genSalt(10);
+  if (!this.isModified('password') || !this.password) return next();
+  const salt = await bcrypt.genSalt(12);
   this.password = await bcrypt.hash(this.password, salt);
   next();
 });

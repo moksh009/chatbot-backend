@@ -1,6 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const { resolveClient, tenantClientId, denyUnlessTenant } = require('../utils/queryHelpers');
+const { resolveClient, tenantClientId, denyUnlessTenant } = require('../utils/core/queryHelpers');
 const router = express.Router();
 const multer = require('multer');
 const csv = require('csv-parser');
@@ -10,18 +10,24 @@ const AdLead = require('../models/AdLead');
 const Client = require('../models/Client');
 const ImportSession = require('../models/ImportSession');
 const { protect } = require('../middleware/auth');
+const { verifyTenantScope } = require('../middleware/verifyTenantScope');
+const { requireRoleCategory } = require('../middleware/requireRole');
+const { exportLeadBundle, eraseLeadPii } = require('../services/gdpr/leadGdprService');
+const leadGdprScope = verifyTenantScope({ lookupBy: 'lead', param: 'id' });
+const gdprAdmin = [protect, leadGdprScope, requireRoleCategory('mutate_config')];
 const { logAction } = require('../middleware/audit');
-const { checkLimit, incrementUsage } = require('../utils/planLimits');
+const { checkLimit, incrementUsage } = require('../utils/core/planLimits');
 const TaskQueueService = require('../services/TaskQueueService');
 const path = require('path');
 const { stringify } = require('csv-stringify');
-const { sendEmail, isWorkspaceEmailReady } = require('../utils/emailService');
-const { mergeEmailForLead, KNOWN_EMAIL_TOKEN_KEYS } = require('../utils/emailMergeFields');
+const { sendEmail, isWorkspaceEmailReady } = require('../utils/core/emailService');
+const { mergeEmailForLead, KNOWN_EMAIL_TOKEN_KEYS } = require('../utils/core/emailMergeFields');
 const crypto = require('crypto');
 const archiver = require('archiver');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const SuppressionList = require('../models/SuppressionList');
+const { sendEnvelope } = require('../utils/messaging/sendEnvelope');
 const logPersonalDataAccess = logAction('PERSONAL_DATA_ACCESS');
 const { apiCache } = require('../middleware/apiCache');
 
@@ -78,7 +84,7 @@ const findBestMatch = (headers, target) => {
     });
 };
 
-const { buildAbandonedCartWorkspace } = require('../utils/abandonedCartWorkspace');
+const { buildAbandonedCartWorkspace } = require('../utils/commerce/abandonedCartWorkspace');
 
 /**
  * GET /api/leads/cart-workspace
@@ -412,7 +418,7 @@ router.post('/export', protect, logAction('EXPORT_LEADS'), async (req, res) => {
 // GET /api/leads/export/batch/:batchId  (accepts ImportSession.batchId or _id)
 router.get('/export/batch/:batchId', protect, logPersonalDataAccess, async (req, res) => {
     try {
-        const { resolveImportBatchObjectId } = require('../utils/importBatchResolver');
+        const { resolveImportBatchObjectId } = require('../utils/core/importBatchResolver');
         const clientId = tenantClientId(req) || req.query.clientId;
         const resolvedId = await resolveImportBatchObjectId(req.params.batchId, clientId);
         if (!resolvedId) return res.status(404).json({ error: 'Batch not found' });
@@ -470,8 +476,6 @@ router.post('/bulk-template', protect, async (req, res) => {
         const client = await Client.findOne({ clientId });
         if (!client) return res.status(404).json({ message: 'Client not found' });
 
-        const { sendWhatsAppTemplate } = require('../utils/whatsappHelpers');
-        
         const leads = await AdLead.find({ _id: { $in: leadIds }, clientId }).lean();
         
         let successCount = 0;
@@ -479,15 +483,24 @@ router.post('/bulk-template', protect, async (req, res) => {
 
         for (const lead of leads) {
             try {
-                await sendWhatsAppTemplate({
-                    phoneNumberId: client.phoneNumberId,
-                    to: lead.phoneNumber,
-                    templateName,
-                    languageCode: languageCode || 'en',
-                    components: components || [],
-                    token: client.whatsappToken
+                const envResult = await sendEnvelope({
+                    clientId,
+                    channel: 'whatsapp',
+                    intent: 'marketing',
+                    contactId: lead._id,
+                    payload: {
+                        templateName,
+                        templateLanguage: languageCode || 'en',
+                        components: components || [],
+                    },
+                    context: {
+                        source: 'routes/leads:bulk-template',
+                        actorRole: req.user?.role,
+                        actorUserId: req.user?._id,
+                    },
                 });
-                successCount++;
+                if (envResult.status === 'sent') successCount++;
+                else failCount++;
             } catch (err) {
                 console.error(`[BulkSend] Failed for ${lead.phoneNumber}:`, err.message);
                 failCount++;
@@ -583,7 +596,7 @@ router.post('/:leadId/send-recovery', protect, async (req, res) => {
         if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
         const client = await Client.findOne({ clientId })
-            .select('phoneNumberId whatsappToken syncedMetaTemplates nicheData businessName')
+            .select('phoneNumberId whatsappToken syncedMetaTemplates nicheData businessName flags')
             .lean();
         if (!client) return res.status(404).json({ message: 'Client not found' });
 
@@ -609,40 +622,47 @@ router.post('/:leadId/send-recovery', protect, async (req, res) => {
             t.status === 'APPROVED'
         );
 
-        const { sendWhatsAppTemplate } = require('../utils/whatsappHelpers');
-        
+        const storeUrl = client.nicheData?.storeUrl || '';
+        const recoveryText = `Hey ${lead.name || 'there'}! 🛒 You left ${cartTitles}${cartValue ? ` worth ${cartValue}` : ''} in your cart. Complete your order${storeUrl ? ` here: ${storeUrl}` : '!'}`;
+
         try {
             if (recoveryTemplate) {
-                await sendWhatsAppTemplate({
-                    phoneNumberId: client.phoneNumberId,
-                    to: lead.phoneNumber,
-                    templateName: recoveryTemplate.name,
-                    languageCode: 'en',
-                    components: [{
-                        type: 'body',
-                        parameters: [
-                            { type: 'text', text: lead.name || 'friend' },
-                            { type: 'text', text: cartTitles },
-                            { type: 'text', text: cartValue || 'a great deal' }
-                        ]
-                    }],
-                    token: client.whatsappToken
+                await sendEnvelope({
+                    clientId,
+                    channel: 'whatsapp',
+                    intent: 'marketing',
+                    contactId: lead._id,
+                    payload: {
+                        templateName: recoveryTemplate.name,
+                        templateLanguage: 'en',
+                        components: [{
+                            type: 'body',
+                            parameters: [
+                                { type: 'text', text: lead.name || 'friend' },
+                                { type: 'text', text: cartTitles },
+                                { type: 'text', text: cartValue || 'a great deal' }
+                            ]
+                        }],
+                    },
+                    context: {
+                        source: 'routes/leads:send-recovery',
+                        actorRole: req.user?.role,
+                        actorUserId: req.user?._id,
+                    },
                 });
             } else {
-                // Fallback to plain text if no approved template
-                const { sendWhatsAppText } = require('../utils/whatsapp');
-                const storeUrl = client.nicheData?.storeUrl || '';
-                await sendWhatsAppText
-                    ? await require('../utils/whatsapp').sendText(client, lead.phoneNumber, 
-                        `Hey ${lead.name || 'there'}! 🛒 You left ${cartTitles}${cartValue ? ` worth ${cartValue}` : ''} in your cart. Complete your order${storeUrl ? ` here: ${storeUrl}` : '!'}`)
-                    : await sendWhatsAppTemplate({
-                        phoneNumberId: client.phoneNumberId,
-                        to: lead.phoneNumber,
-                        templateName: 'abandoned_cart_recovery',
-                        languageCode: 'en',
-                        components: [],
-                        token: client.whatsappToken
-                    });
+                await sendEnvelope({
+                    clientId,
+                    channel: 'whatsapp',
+                    intent: 'service',
+                    contactId: lead._id,
+                    payload: { text: recoveryText },
+                    context: {
+                        source: 'routes/leads:send-recovery-text',
+                        actorRole: req.user?.role,
+                        actorUserId: req.user?._id,
+                    },
+                });
             }
 
             // Update lead with recovery tracking + activity log
@@ -685,20 +705,28 @@ router.post('/bulk-recovery', protect, async (req, res) => {
 
         if (!leads.length) return res.json({ success: true, message: 'No abandoned carts to recover' });
 
-        const { sendWhatsAppTemplate } = require('../utils/whatsappHelpers');
         let successCount = 0;
         let failCount = 0;
 
         for (const lead of leads) {
             try {
-                await sendWhatsAppTemplate({
-                    phoneNumberId: client.phoneNumberId,
-                    to: lead.phoneNumber,
-                    templateName: 'abandoned_cart_recovery',
-                    languageCode: 'en',
-                    components: [],
-                    token: client.whatsappToken
+                const envResult = await sendEnvelope({
+                    clientId,
+                    channel: 'whatsapp',
+                    intent: 'marketing',
+                    contactId: lead._id,
+                    payload: {
+                        templateName: 'abandoned_cart_recovery',
+                        templateLanguage: 'en',
+                        components: [],
+                    },
+                    context: {
+                        source: 'routes/leads:bulk-recovery',
+                        actorRole: req.user?.role,
+                        actorUserId: req.user?._id,
+                    },
                 });
+                if (envResult.status !== 'sent') throw new Error(envResult.reason || envResult.blockedBy || 'blocked');
                 lead.recoveryStep = (lead.recoveryStep || 0) + 1;
                 lead.recoveryStartedAt = new Date();
                 await lead.save();
@@ -727,7 +755,7 @@ const HIGH_INTENT_BASE = (clientId) => ({
 });
 
 router.get('/high-intent', protect, logPersonalDataAccess, apiCache(45), async (req, res) => {
-    const { createTimer } = require('../utils/perfLogger');
+    const { createTimer } = require('../utils/core/perfLogger');
     const timer = createTimer('GET /api/leads/high-intent', req.user?.clientId || '');
     try {
         const clientId = tenantClientId(req);
@@ -798,12 +826,12 @@ router.post('/:clientId/deploy-weights', protect, async (req, res) => {
         );
 
         // Immediately trigger score recomputation asynchronously
-        const { recomputeAllScores } = require('../utils/leadScoring');
-        recomputeAllScores(clientId).catch(err => {
+        const { recomputeAllWaterfallScores } = require('../utils/core/scoringHelper');
+        recomputeAllWaterfallScores(clientId).catch(err => {
             console.error(`[DeployWeights] Background recompute failed for ${clientId}:`, err)
         });
 
-        res.json({ success: true, message: 'Scoring weights deployed successfully. Recomputing standard scores...' });
+        res.json({ success: true, message: 'Scoring weights deployed. Recomputing lead scores with waterfall tiers…' });
     } catch (err) {
         console.error('[DeployWeights] Error:', err);
         res.status(500).json({ success: false, message: 'Failed to deploy weights' });
@@ -1067,6 +1095,26 @@ router.patch('/:id', protect, async (req, res) => {
 
         if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
+        const optedOut =
+          updates.optStatus === 'opted_out' ||
+          (Array.isArray(updates.tags) &&
+            updates.tags.some((t) => String(t).toLowerCase().includes('block')));
+        if (optedOut && lead.phoneNumber && !String(lead.phoneNumber).startsWith('ERASED_')) {
+          const { cancelAllAutomationsFor } = require('../utils/messaging/cancelAllAutomationsFor');
+          await cancelAllAutomationsFor({
+            clientId,
+            leadId: lead._id,
+            phone: lead.phoneNumber,
+            reason: 'agent_block',
+            channels: 'all',
+            actor: {
+              type: 'user',
+              userId: req.user?.id,
+              source: 'dashboard:lead_patch',
+            },
+          });
+        }
+
         // Sync name to conversation if it changed
         if (updates.name) {
              const Conversation = require('../models/Conversation');
@@ -1083,6 +1131,53 @@ router.patch('/:id', protect, async (req, res) => {
     }
 });
 
+router.get('/:id/score-breakdown', protect, leadGdprScope, async (req, res) => {
+  try {
+    const lead = await AdLead.findOne({ _id: req.params.id, clientId: req.user.clientId }).lean();
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+    const { recomputeLeadScoreDocument } = require('../utils/core/scoringHelper');
+    const updated = await recomputeLeadScoreDocument(lead);
+    res.json({
+      success: true,
+      breakdown: updated?.scoreBreakdown || lead.scoreBreakdown,
+      score: updated?.leadScore,
+      scoreLabel: updated?.scoreLabel,
+      engine: 'waterfall',
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.get('/:id/gdpr-export', ...gdprAdmin, async (req, res) => {
+  try {
+    const bundle = await exportLeadBundle({
+      leadId: req.params.id,
+      actor: { type: 'user', userId: req.user._id, source: 'api' },
+      clientId: req.user.clientId,
+    });
+    res.json(bundle);
+  } catch (e) {
+    res.status(e.message === 'lead_not_found' ? 404 : 500).json({ error: e.message });
+  }
+});
+
+router.post('/:id/gdpr-erase', ...gdprAdmin, async (req, res) => {
+  if (req.body?.confirm !== true) {
+    return res.status(400).json({ error: 'confirm:true required' });
+  }
+  try {
+    const result = await eraseLeadPii({
+      leadId: req.params.id,
+      dryRun: !!req.body.dryRun,
+      actor: { type: 'user', userId: req.user._id, source: 'api' },
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(e.message === 'lead_not_found' ? 404 : 500).json({ error: e.message });
+  }
+});
+
 // POST /api/leads/erasure-request
 router.post('/erasure-request', protect, async (req, res) => {
   try {
@@ -1092,6 +1187,21 @@ router.post('/erasure-request', protect, async (req, res) => {
 
     const lead = await AdLead.findOne({ clientId, phoneNumber: phone });
     if (!lead) return res.json({ success: false, reason: 'not_found' });
+
+    const { cancelAllAutomationsFor } = require('../utils/messaging/cancelAllAutomationsFor');
+    await cancelAllAutomationsFor({
+      clientId,
+      leadId: lead._id,
+      phone,
+      reason: 'erasure_request',
+      channels: 'all',
+      actor: {
+        type: 'user',
+        userId: req.user?.id,
+        source: 'dashboard:erasure_request',
+        ip: req.ip || req.headers['x-forwarded-for'] || '',
+      },
+    });
 
     const hash = crypto.createHash('sha256').update(`${phone}:${clientId}`).digest('hex').slice(0, 16);
     const erasedPhone = `ERASED_${hash}`;

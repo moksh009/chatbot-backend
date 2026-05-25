@@ -4,21 +4,51 @@ const User = require('../models/User');
 const Client = require('../models/Client');
 const OTP = require('../models/OTP'); // Added OTP Model
 const { protect } = require('../middleware/auth');
-const { sanitizeMiddleware } = require('../utils/sanitize');
+const { sanitizeMiddleware } = require('../utils/core/sanitize');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs'); // ✅ Phase R4: for authenticated change-password
 /** Node Crypto (HMAC state signing). Do not rely on global `crypto` — Node 19+ exposes Web Crypto globally without createHmac. */
 const crypto = require('crypto');
-const { sendSystemOTPEmail } = require('../utils/emailService');
-const { ensureClientForUser } = require('../utils/ensureClientForUser');
+const { sendSystemOTPEmail } = require('../utils/core/emailService');
+const { ensureClientForUser } = require('../utils/core/ensureClientForUser');
 const { LEGAL_DOCS_VERSION } = require('../config/legalDocs');
-const { validateStrongPassword } = require('../utils/passwordPolicy');
+const { validateStrongPassword } = require('../utils/core/passwordPolicy');
 const {
   getAccessForUserClient,
   provisionNewClientTrial,
   repairActiveTrialFlags,
-} = require('../utils/accessFlags');
+} = require('../utils/core/accessFlags');
 const { auditSecurity } = require('../middleware/securityAudit');
+const { auditLog } = require('../services/audit/auditWriter');
+const {
+  isLocked,
+  recordFailedAttempt,
+  clearFailedAttempts,
+} = require('../utils/auth/loginSecurity');
+
+function applyBootstrapSuperAdmin(user) {
+  const allow = process.env.ALLOW_BOOTSTRAP_SUPER_ADMIN === 'true';
+  const emails = String(process.env.BOOTSTRAP_SUPER_ADMIN_EMAILS || 'admin@topedgeai.com')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  if (!allow || !user?.email) return user;
+  if (!emails.includes(String(user.email).toLowerCase())) return user;
+  if (user.role !== 'SUPER_ADMIN') {
+    user.role = 'SUPER_ADMIN';
+    user.isLifetimeAdmin = true;
+    auditLog({
+      category: 'super_admin',
+      action: 'bootstrap_super_admin',
+      severity: 'high',
+      clientId: user.clientId,
+      actor: { type: 'user', userId: user._id, source: 'auth' },
+      details: { email: user.email },
+      blocking: true,
+    });
+  }
+  return user;
+}
 
 /** Canonical dashboard gates — must match TrialGate / workspaceAccess on the SPA. */
 async function workspaceAccessForResponse(reqUser, clientDocOrNull) {
@@ -191,33 +221,10 @@ router.get('/me', protect, sanitizeMiddleware, async (req, res) => {
 
     await ensureClientForUser(user);
 
-    // Admin Booster: Ensure admin@topedgeai.com is always Super Admin
-    if (user.email === 'admin@topedgeai.com') {
-      if (user.role !== 'SUPER_ADMIN' || !user.isLifetimeAdmin) {
-        user.role = 'SUPER_ADMIN';
-        user.isLifetimeAdmin = true;
-        await user.save();
-      }
-    }
+    user = applyBootstrapSuperAdmin(user);
+    if (user.isModified?.()) await user.save();
 
     let client = await Client.findOne({ clientId: user.clientId });
-
-    // Delitech demotion: Land on normal dashboard but keep best plan
-    if (user.email === 'delitech2708@gmail.com') {
-      if (user.role === 'SUPER_ADMIN') {
-        user.role = 'CLIENT_ADMIN';
-      }
-      user.isLifetimeAdmin = true;
-      await user.save();
-
-      // Ensure client is also lifetime admin
-      if (client && !client.isLifetimeAdmin) {
-        client.isLifetimeAdmin = true;
-        client.plan = 'CX Agent (V2)'; // Give the best plan
-        client.tier = 'v2';
-        await client.save();
-      }
-    }
 
     // --- PHASE 10 ROBUSTNESS: Ensure fallback for missing client ---
     const clientConfig = client ? client.toObject() : {};
@@ -265,9 +272,9 @@ const BOOTSTRAP_CLIENT_SELECT =
   'clientId businessName name ai.persona adminPhone brand billing isPaidAccount isLifetimeAdmin trialActive trialEndsAt suspendedAt shopDomain phoneNumberId wabaId whatsappToken shopifyAccessToken shopifyConnectionStatus shopifyInstallLink instagramConnected instagramPageId instagramUsername instagramProfilePic instagramAccessToken instagramTokenExpiry metaAdsConnected commerce social whatsapp config metaAdsToken metaAdAccountId emailUser emailAppPassword metaAppId geminiApiKey openaiApiKey activePaymentGateway razorpayKeyId razorpaySecret cashfreeAppId cashfreeSecretKey faq googleConnected gmailAddress emailMethod onboardingCompleted onboardingSkipped onboardingSkippedAt onboardingStep onboardingData wizardCompleted wizardFeatures loyaltyConfig plan tier platformVars';
 
 router.get('/bootstrap', protect, async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
-  const { getBootstrapPayload } = require('../utils/bootstrapCache');
-  const { getCachedClient } = require('../utils/clientCache');
+  const { createTimer } = require('../utils/core/perfLogger');
+  const { getBootstrapPayload } = require('../utils/core/bootstrapCache');
+  const { getCachedClient } = require('../utils/core/clientCache');
   const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
   const timer = createTimer('GET /auth/bootstrap', req.user?.clientId || '');
   try {
@@ -381,35 +388,16 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
   try {
     let user = await User.findOne({ email });
 
-    // Admin Booster
-    if (user && user.email === 'admin@topedgeai.com') {
-      if (user.role !== 'SUPER_ADMIN' || !user.isLifetimeAdmin) {
-        user.role = 'SUPER_ADMIN';
-        user.isLifetimeAdmin = true;
-        await user.save();
-      }
-    }
-
-    // Delitech demotion
-    if (user && user.email === 'delitech2708@gmail.com') {
-      if (user.role === 'SUPER_ADMIN') {
-        user.role = 'CLIENT_ADMIN';
-      }
-      user.isLifetimeAdmin = true;
-      await user.save();
-      
-      // Also sync client status
-      const client = await Client.findOne({ clientId: user.clientId });
-      if (client && !client.isLifetimeAdmin) {
-        client.isLifetimeAdmin = true;
-        client.plan = 'CX Agent (V2)';
-        client.tier = 'v2';
-        await client.save();
-      }
-    }
-
     if (!user) {
       auditSecurity('AUTH_LOGIN_FAILED', { req, email, reason: 'user_not_found' });
+      auditLog({
+        category: 'auth',
+        action: 'login_failed',
+        severity: 'warning',
+        clientId: 'unknown',
+        actor: { type: 'user', source: 'auth', ip: req.ip },
+        details: { email, reason: 'user_not_found' },
+      });
       return res.status(401).json({
         message: 'Invalid email or password.',
         code: 'INVALID_CREDENTIALS'
@@ -425,7 +413,45 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
       });
     }
 
+    if (isLocked(user)) {
+      return res.status(423).json({
+        message: 'Account temporarily locked. Try again later or reset your password.',
+        code: 'ACCOUNT_LOCKED',
+        lockedUntil: user.lockedUntil,
+      });
+    }
+
     if (await user.matchPassword(password)) {
+      user = clearFailedAttempts(user);
+      user = applyBootstrapSuperAdmin(user);
+      await user.save();
+
+      if (user.role === 'SUPER_ADMIN' && !user.twoFactorEnabled) {
+        return res.status(403).json({
+          code: '2FA_SETUP_REQUIRED',
+          message: 'SUPER_ADMIN accounts must enable two-factor authentication.',
+        });
+      }
+
+      if (
+        user.twoFactorEnabled &&
+        ['CLIENT_ADMIN', 'SUPER_ADMIN'].includes(user.role)
+      ) {
+        const challengeToken = jwt.sign(
+          { id: user._id, purpose: '2fa_challenge' },
+          process.env.JWT_SECRET,
+          { expiresIn: '5m' }
+        );
+        return res.json({ requiresTwoFactor: true, challengeToken });
+      }
+
+      auditLog({
+        category: 'auth',
+        action: 'login_success',
+        clientId: user.clientId,
+        actor: { type: 'user', userId: user._id, source: 'auth', ip: req.ip },
+        details: { email },
+      });
       await ensureClientForUser(user);
       const client = await Client.findOne({ clientId: user.clientId });
       const session = await buildAuthSessionPayload(user, client);
@@ -434,7 +460,17 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
         token: generateToken(user._id, user.clientId, user.role),
       });
     } else {
+      user = recordFailedAttempt(user);
+      await user.save();
       auditSecurity('AUTH_LOGIN_FAILED', { req, email, reason: 'wrong_password' });
+      auditLog({
+        category: 'auth',
+        action: 'login_failed',
+        severity: 'warning',
+        clientId: user.clientId,
+        actor: { type: 'user', userId: user._id, source: 'auth', ip: req.ip },
+        details: { email, reason: 'wrong_password' },
+      });
       res.status(401).json({
         message: 'Invalid email or password.',
         code: 'INVALID_CREDENTIALS'
@@ -892,6 +928,86 @@ router.get('/google/callback', async (req, res) => {
     console.error('[Google OAuth] Callback error:', error.response?.data || error.message);
     return res.redirect(googleOAuthFrontendPath(oauthMode, 'error=google_auth_failed'));
   }
+});
+
+const {
+  generateSecret,
+  verifyTotp,
+  otpauthUrl,
+  hashRecoveryCodes,
+  consumeRecoveryCode,
+  generateRecoveryCodes,
+} = require('../utils/auth/twoFactor');
+
+router.post('/2fa/setup', protect, async (req, res) => {
+  if (!['CLIENT_ADMIN', 'SUPER_ADMIN'].includes(req.user.role)) {
+    return res.status(403).json({ message: '2FA not available for this role' });
+  }
+  const secret = generateSecret();
+  req.user.twoFactorSecret = secret;
+  await req.user.save();
+  res.json({
+    secret,
+    otpauthUrl: otpauthUrl(req.user.email, secret),
+    qrHint: 'Scan with Google Authenticator or Authy',
+  });
+});
+
+router.post('/2fa/verify', protect, async (req, res) => {
+  const { code } = req.body;
+  if (!verifyTotp(req.user.twoFactorSecret, code)) {
+    return res.status(400).json({ message: 'Invalid code' });
+  }
+  const plainCodes = generateRecoveryCodes();
+  req.user.twoFactorEnabled = true;
+  req.user.twoFactorRecoveryCodes = await hashRecoveryCodes(plainCodes);
+  await req.user.save();
+  auditLog({
+    category: 'auth',
+    action: '2fa_enabled',
+    clientId: req.user.clientId,
+    actor: { type: 'user', userId: req.user._id, source: 'auth' },
+  });
+  res.json({ success: true, recoveryCodes: plainCodes });
+});
+
+router.post('/2fa/challenge', async (req, res) => {
+  const { challengeToken, code, recoveryCode } = req.body;
+  if (!challengeToken) return res.status(400).json({ message: 'challengeToken required' });
+  let decoded;
+  try {
+    decoded = jwt.verify(challengeToken, process.env.JWT_SECRET);
+    if (decoded.purpose !== '2fa_challenge') throw new Error('invalid');
+  } catch {
+    return res.status(401).json({ message: 'Invalid or expired challenge' });
+  }
+  const user = await User.findById(decoded.id);
+  if (!user?.twoFactorEnabled) return res.status(400).json({ message: '2FA not enabled' });
+  let ok = false;
+  if (recoveryCode) {
+    ok = await consumeRecoveryCode(user, recoveryCode);
+    if (ok) {
+      auditLog({
+        category: 'auth',
+        action: '2fa_recovery_used',
+        clientId: user.clientId,
+        actor: { type: 'user', userId: user._id, source: 'auth' },
+      });
+    }
+  } else {
+    ok = verifyTotp(user.twoFactorSecret, code);
+  }
+  if (!ok) return res.status(401).json({ message: 'Invalid 2FA code' });
+  await user.save();
+  auditLog({
+    category: 'auth',
+    action: 'login_success',
+    clientId: user.clientId,
+    actor: { type: 'user', userId: user._id, source: 'auth_2fa' },
+  });
+  const client = await Client.findOne({ clientId: user.clientId });
+  const session = await buildAuthSessionPayload(user, client);
+  res.json({ ...session, token: generateToken(user._id, user.clientId, user.role) });
 });
 
 module.exports = router;

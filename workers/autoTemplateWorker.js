@@ -16,7 +16,7 @@ if (mongoose.connection.readyState === 0) {
  */
 const { Worker } = require('bullmq');
 const axios = require('axios');
-const log = require('../utils/logger')('AutoTemplateWorker');
+const log = require('../utils/core/logger')('AutoTemplateWorker');
 const {
   redisConnection,
   generationQueue,
@@ -32,15 +32,15 @@ const MetaTemplate = require('../models/MetaTemplate');
 const TemplateGenerationJob = require('../models/TemplateGenerationJob');
 const SubmissionQueueItem = require('../models/SubmissionQueueItem');
 const SubmissionLog = require('../models/SubmissionLog');
-const { platformGenerateText } = require('../utils/gemini');
-const { decrypt } = require('../utils/encryption');
+const { platformGenerateText } = require('../utils/core/gemini');
+const { decrypt } = require('../utils/core/encryption');
 const { PREBUILT_REQUIRED_TEMPLATES } = require('../constants/templateLifecycle');
 const { getPrebuiltByKey } = require('../constants/prebuiltTemplateLibrary');
 const {
   sanitizeMetaTemplateBodyForSubmission,
   validateMetaTemplateForSubmission,
-} = require('../utils/metaTemplateCompliance');
-const { buildFormDataFromLibraryEntry } = require('../utils/metaTemplateFormHydration');
+} = require('../utils/meta/metaTemplateCompliance');
+const { buildFormDataFromLibraryEntry } = require('../utils/meta/metaTemplateFormHydration');
 
 function normalizeMetaLanguage(raw) {
   const v = String(raw || "").trim().toLowerCase().replace("-", "_");
@@ -88,15 +88,6 @@ const FIXED_TEMPLATES = {
     variables: { '1': 'Customer Name', '2': 'Order Number' },
     bodyText: 'Hi {{1}}, your order {{2}} has been cancelled as requested. Any applicable refunds will be processed within 5-7 business days.',
     buttons: [{ type: 'QUICK_REPLY', text: 'Contact Support' }]
-  },
-  review_request: {
-    category: 'MARKETING',
-    purpose: 'Ask for a review post-delivery with product image and order context.',
-    variables: { '1': 'Customer Name', '2': 'Product Name', '3': 'Order Number', '4': 'Brand Name' },
-    bodyText:
-      'Hi {{1}}! 🌟 How was your *{{2}}*? Order *{{3}}* from {{4}}. Tap below to rate or leave a Google review!',
-    headerType: 'IMAGE',
-    buttons: [{ type: 'URL', text: 'Leave Google Review' }],
   },
   cod_to_prepaid: {
     category: 'MARKETING',
@@ -186,7 +177,7 @@ async function getUniqueTemplateName(clientId, baseName) {
 // ─── HELPER: Emit to frontend via Socket.io ────────────────────────────────
 function emitToClient(clientId, event, data) {
   try {
-    const { getIO } = require('../utils/socket');
+    const { getIO } = require('../utils/core/socket');
     getIO().to(`client_${clientId}`).emit(event, data);
   } catch (e) { /* socket may not be initialized in worker context */ }
 }
@@ -550,49 +541,19 @@ async function submitSingleTemplate(client, templateId, clientId) {
 
 // ─── STATUS POLLING ────────────────────────────────────────────────────────
 async function pollWorkspaceTemplateStatuses(clientId) {
-  const client = await Client.findOne({ clientId }).select('whatsappToken wabaId whatsapp').lean();
-  const wabaId = client?.wabaId || client?.whatsapp?.wabaId;
-  const rawToken = client?.whatsappToken || client?.whatsapp?.accessToken;
-  if (!wabaId || !rawToken) return;
-
-  const token = decrypt(rawToken) || rawToken;
-  const pendingTemplates = await MetaTemplate.find({
-    clientId, submissionStatus: 'pending_meta_review', metaTemplateId: { $ne: null }
-  }).lean();
-
-  for (const template of pendingTemplates) {
-    try {
-      const response = await axios.get(
-        `https://graph.facebook.com/v19.0/${template.metaTemplateId}?fields=name,status,rejected_reason`,
-        { headers: { Authorization: `Bearer ${token}` }, timeout: 10000 }
-      );
-
-      const metaStatus = response.data.status;
-      let newStatus = template.submissionStatus;
-      let updateFields = { lastPolledAt: new Date() };
-
-      if (metaStatus === 'APPROVED') {
-        newStatus = 'approved';
-        updateFields.approvedAt = new Date();
-        await TemplateGenerationJob.findOneAndUpdate({ clientId }, { $inc: { approvedCount: 1 } });
-      } else if (metaStatus === 'REJECTED') {
-        newStatus = 'rejected';
-        updateFields.rejectedAt = new Date();
-        updateFields.rejectionReason = response.data.rejected_reason || 'No reason provided by Meta';
-        await TemplateGenerationJob.findOneAndUpdate({ clientId }, { $inc: { rejectedCount: 1 } });
-      }
-
-      if (newStatus !== template.submissionStatus) {
-        await MetaTemplate.findByIdAndUpdate(template._id, { $set: { submissionStatus: newStatus, ...updateFields } });
-        await SubmissionLog.create({ clientId, templateId: template._id, templateName: template.name, action: newStatus, metaResponse: response.data });
-        emitToClient(clientId, 'templateStatusUpdated', {
-          templateId: template._id.toString(), templateName: template.name,
-          newStatus, rejectionReason: updateFields.rejectionReason || null
-        });
-      }
-    } catch (err) {
-      log.error(`[Status Poller] Failed to poll ${template.name} for ${clientId}:`, err.message);
-    }
+  const { pollPendingMetaTemplatesForClient } = require('../services/templateLifecycleBridge');
+  const result = await pollPendingMetaTemplatesForClient(clientId);
+  if (result.approved > 0) {
+    await TemplateGenerationJob.findOneAndUpdate(
+      { clientId },
+      { $inc: { approvedCount: result.approved } }
+    );
+  }
+  if (result.rejected > 0) {
+    await TemplateGenerationJob.findOneAndUpdate(
+      { clientId },
+      { $inc: { rejectedCount: result.rejected } }
+    );
   }
 }
 
@@ -679,6 +640,8 @@ async function handleGenerationJob(data) {
       formData.bodySamples = indices.map((_, i) => Object.values(variableMapping)[i] || 'Sample');
     }
 
+    const { getSlotByMetaName } = require('../constants/templateCatalog/catalog');
+    const catalogSlot = getSlotByMetaName(templateName);
     const template = await MetaTemplate.findOneAndUpdate(
       { clientId, source: 'auto_generated', autoGenProductId: productId || fixedTemplateId },
       {
@@ -689,6 +652,7 @@ async function handleGenerationJob(data) {
           formData,
           source: 'auto_generated', autoGenProductId: productId || fixedTemplateId,
           templateKey: templateKey || fixedTemplateId || templateName,
+          catalogSlotId: catalogSlot?.id || null,
           templateKind: templateType === 'product' ? 'product' : 'prebuilt',
           variableMappings,
           isPrebuilt,

@@ -1,5 +1,5 @@
 const express = require('express');
-const { resolveClient } = require('../utils/queryHelpers');
+const { resolveClient } = require('../utils/core/queryHelpers');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
 const dashboardController = require('../controllers/dashboardController');
@@ -45,7 +45,7 @@ router.post('/suppliers', protect, dashboardController.createSupplier);
 router.get('/flows', protect, dashboardController.getFlows);
 router.post('/export-pdf', protect, async (req, res) => {
   try {
-    const { generateDashboardPDF } = require('../utils/pdfExporter');
+    const { generateDashboardPDF } = require('../utils/core/pdfExporter');
     const { widgetIds, period, data } = req.body;
     const client = await require('../models/Client').findOne({ clientId: req.user.clientId }).lean();
     

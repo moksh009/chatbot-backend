@@ -109,7 +109,92 @@ const evaluateCustomerScore = (lead, tierConfig) => {
     }
   }
 
-  return { score: 0, label: 'Cold Lead' }; 
+  return { score: 0, label: 'Cold Lead' };
 };
 
-module.exports = { evaluateCustomerScore };
+/**
+ * Waterfall evaluation with per-condition audit trail for CRM breakdown UI.
+ */
+const evaluateCustomerScoreDetailed = (lead, tierConfig) => {
+  if (!tierConfig || !tierConfig.tiers || tierConfig.tiers.length === 0) {
+    return {
+      score: 0,
+      label: 'Unprocessed',
+      matchedTier: null,
+      conditions: [],
+      engine: 'waterfall',
+    };
+  }
+
+  const sortedTiers = [...tierConfig.tiers].sort((a, b) => b.score - a.score);
+
+  for (const tier of sortedTiers) {
+    const conditionRows = [];
+    let passedAll = true;
+
+    for (const condition of tier.conditions || []) {
+      const assetConfig = TRACKABLE_ASSETS.ASSETS[condition.assetId];
+      if (!assetConfig) {
+        passedAll = false;
+        conditionRows.push({
+          assetId: condition.assetId,
+          label: condition.assetId,
+          operator: condition.operator,
+          targetValue: condition.targetValue,
+          actualValue: null,
+          passed: false,
+        });
+        break;
+      }
+
+      const actualValue = getAssetValue(lead, assetConfig);
+      const passed = evaluateCondition(actualValue, condition.operator, condition.targetValue);
+      conditionRows.push({
+        assetId: condition.assetId,
+        label: assetConfig.label || condition.assetId,
+        operator: condition.operator,
+        targetValue: condition.targetValue,
+        actualValue,
+        passed,
+      });
+      if (!passed) passedAll = false;
+    }
+
+    if (passedAll) {
+      return {
+        score: tier.score,
+        label: tier.tierLabel || tier.label || `Tier ${tier.score}`,
+        matchedTier: {
+          score: tier.score,
+          tierLabel: tier.tierLabel || tier.label,
+        },
+        conditions: conditionRows,
+        engine: 'waterfall',
+      };
+    }
+  }
+
+  return {
+    score: 0,
+    label: 'Cold Lead',
+    matchedTier: null,
+    conditions: [],
+    engine: 'waterfall',
+  };
+};
+
+function intentStateFromWaterfall(score, label) {
+  const l = String(label || '').toLowerCase();
+  if (l.includes('vip') || score >= 90) return 'HOT_VIP';
+  if (score >= 70 || l.includes('hot')) return 'HOT';
+  if (score >= 40 || l.includes('warm')) return 'WARM';
+  if (score >= 10) return 'ENGAGED';
+  return 'COLD';
+}
+
+module.exports = {
+  evaluateCustomerScore,
+  evaluateCustomerScoreDetailed,
+  intentStateFromWaterfall,
+  getAssetValue,
+};

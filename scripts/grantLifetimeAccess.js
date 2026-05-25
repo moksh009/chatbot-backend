@@ -9,7 +9,7 @@
  */
 require("dotenv").config();
 const mongoose = require("mongoose");
-const { grantFullWorkspaceAccess, revokeFullWorkspaceAccess } = require("../utils/entitlements");
+const { grantFullWorkspaceAccess, revokeFullWorkspaceAccess } = require('../utils/core/entitlements');
 
 async function main() {
   const args = process.argv.slice(2);

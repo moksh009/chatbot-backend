@@ -2,18 +2,83 @@ const AdLead = require('../models/AdLead');
 const Client = require('../models/Client');
 const DailyStat = require('../models/DailyStat');
 const Conversation = require('../models/Conversation');
-const { sendAbandonedCartEmail } = require('../utils/emailService');
-const { trackEcommerceEvent } = require('../utils/analyticsHelper');
-const log = require('../utils/logger')('AbandonedCart');
-const { generateText } = require('../utils/gemini');
-const WhatsApp = require('../utils/whatsapp');
-const { createMessage } = require('../utils/createMessage');
+const { trackEcommerceEvent } = require('../utils/core/analyticsHelper');
+const log = require('../utils/core/logger')('AbandonedCart');
+const { generateText } = require('../utils/core/gemini');
+const WhatsApp = require('../utils/meta/whatsapp');
+const { createMessage } = require('../utils/core/createMessage');
 const cron = require('node-cron');
 const axios = require('axios');
 const {
   mongoCartRecoveryFilter,
   mongoNotOptedOut,
-} = require('../utils/marketingConsent');
+} = require('../utils/commerce/marketingConsent');
+const { getAppRedis } = require('../utils/core/redisFactory');
+const {
+  cronEnvelopeSend,
+  handleCronEnvelopeOutcome,
+  hasRealPhone,
+} = require('../utils/messaging/cronEnvelopeSend');
+
+const CART_DEDUP_TTL_SEC = 48 * 3600;
+
+async function wasCartRecoverySentRecently(clientId, phone, stepNum) {
+  const redis = getAppRedis();
+  if (!redis || redis.status !== 'ready') return false;
+  const key = `cart_recovery:${clientId}:${phone}:step${stepNum}`;
+  try {
+    const hit = await redis.get(key);
+    return !!hit;
+  } catch {
+    return false;
+  }
+}
+
+async function markCartRecoverySent(clientId, phone, stepNum) {
+  const redis = getAppRedis();
+  if (!redis || redis.status !== 'ready') return;
+  const key = `cart_recovery:${clientId}:${phone}:step${stepNum}`;
+  try {
+    await redis.set(key, '1', 'EX', CART_DEDUP_TTL_SEC);
+  } catch (e) {
+    log.warn(`[CartRecovery] dedup cache failed: ${e.message}`);
+  }
+}
+
+function cartAbandonTimeFilter(now, delayMinutes, maxAgeHours = 168) {
+  const abandonBefore = new Date(now.getTime() - delayMinutes * 60 * 1000);
+  const abandonAfter = new Date(now.getTime() - maxAgeHours * 60 * 60 * 1000);
+  return {
+    $lte: abandonBefore,
+    $gte: abandonAfter,
+  };
+}
+
+const CART_NUDGE_DEFAULTS = {
+  minutes1: 15,
+  hours2: 2,
+  hours3: 24,
+};
+
+/** Use merchant timing only when set; default strictly on null/undefined. */
+function resolveCartNudgeDelay(value, fallback) {
+  if (value === null || value === undefined) return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) {
+    log.warn(`[AbandonedCart] Invalid cart nudge delay "${value}" — using default ${fallback}`);
+    return fallback;
+  }
+  return n;
+}
+
+function getCartRecoveryDelays(client) {
+  const wf = client.wizardFeatures || {};
+  return {
+    delay1Min: resolveCartNudgeDelay(wf.cartNudgeMinutes1, CART_NUDGE_DEFAULTS.minutes1),
+    delay2Hr: resolveCartNudgeDelay(wf.cartNudgeHours2, CART_NUDGE_DEFAULTS.hours2),
+    delay3Hr: resolveCartNudgeDelay(wf.cartNudgeHours3, CART_NUDGE_DEFAULTS.hours3),
+  };
+}
 
 // Helper to check if a specific node role was handled previously
 const wasRoleHandled = (lead, role) => lead.activityLog.some(l => l.action === 'automation_nudge' && l.details === role);
@@ -50,8 +115,11 @@ async function shouldSkipLead(lead) {
 // Universal Rich Nudge Helper
 async function sendRichNudge(client, lead, text, options = {}) {
     try {
-        const { includeImage, buttons = [], templateName } = options;
+        const { includeImage, buttons = [], templateName, stepNum = 1 } = options;
         const phone = lead.phoneNumber;
+        const checkoutToken = lead.checkoutToken || lead.cartSnapshot?.checkoutToken || String(lead._id);
+        const contactId = String(lead._id);
+        const idempotencyKey = `cart:${checkoutToken}:step${stepNum}:${contactId}`;
 
         // 1. Prepare Data
         let imageUrl = null;
@@ -73,73 +141,89 @@ async function sendRichNudge(client, lead, text, options = {}) {
 
         let successfullySent = false;
 
-        // 2. If Meta Template is configured, use unified templateSender
-        if (templateName) {
-            log.info(`[Nudge] Sending template ${templateName} to ${phone} via templateSender`);
-            try {
-                const { sendByName, sendByTrigger } = require('../services/templateSender');
-                const cartContext = {
-                    cart: {
-                        checkout_url: checkoutUrl,
-                        total_price: lead.cartSnapshot?.totalPrice,
-                        line_items: lead.cartSnapshot?.items || [],
-                    },
-                    extra: { name: lead.name },
-                };
-                let result = await sendByTrigger({
-                    clientId: client.clientId,
-                    phone,
-                    trigger: 'abandoned_cart',
-                    templateName,
-                    contextData: cartContext,
-                    email: lead.email,
-                });
-                if (!result?.whatsapp?.sent) {
-                    result = await sendByName({
-                        clientId: client.clientId,
-                        phone,
-                        templateName,
-                        contextData: cartContext,
-                        email: lead.email,
-                    });
-                }
-                if (result?.whatsapp?.sent) {
-                    await recordNudge(lead, `[Template: ${templateName}]`, 'template');
-                    successfullySent = true;
-                }
-            } catch (tplErr) {
-                log.warn(`[Nudge] templateSender failed, falling back to sendSmartTemplate: ${tplErr.message}`);
-                const variables = [lead.name || 'there', itemName, totalValue, checkoutUrl];
-                await WhatsApp.sendSmartTemplate(client, phone, templateName, variables, imageUrl);
-                await recordNudge(lead, `[Template: ${templateName}]`, 'template');
+        // Email-only checkout (B9): no real phone but has email
+        if (!hasRealPhone(phone) && lead.email) {
+            const emailOut = await cronEnvelopeSend({
+                client,
+                clientId: client.clientId,
+                channel: 'email',
+                intent: 'marketing',
+                email: lead.email,
+                contactId,
+                idempotencyKey,
+                payload: {
+                    subject: 'Complete your order',
+                    html: text,
+                },
+                context: { source: 'cron/abandonedCartScheduler', step: stepNum },
+            });
+            if (!emailOut.useLegacy && emailOut.action === 'sent') {
+                await recordNudge(lead, `[Email: abandoned cart recovery]`, 'email');
                 successfullySent = true;
             }
         }
-        if (!successfullySent) {
-            // 3. Fallback to Interactive/Image/Text
+
+        // 2. If Meta Template is configured, use envelope or sendForAutomation
+        if (!successfullySent && templateName) {
+            log.info(`[Nudge] Sending template ${templateName} to ${phone || lead.email}`);
+            const templateOut = await cronEnvelopeSend({
+                client,
+                clientId: client.clientId,
+                channel: 'whatsapp',
+                intent: 'marketing',
+                phone: hasRealPhone(phone) ? phone : null,
+                contactId,
+                idempotencyKey,
+                payload: {
+                    templateName,
+                    templateLanguage: 'en',
+                    components: [],
+                },
+                context: { source: 'cron/abandonedCartScheduler', step: stepNum },
+            });
+            if (!templateOut.useLegacy) {
+                const outcome = handleCronEnvelopeOutcome(templateOut);
+                if (outcome === 'sent' || outcome === 'duplicate') {
+                    await recordNudge(lead, `[Template: ${templateName}]`, 'template');
+                    successfullySent = outcome === 'sent';
+                }
+            }
+        }
+        if (!successfullySent && hasRealPhone(phone)) {
             const activeButtons = buttons.filter(b => b && b.trim()).slice(0, 3).map((b, i) => ({
                 type: 'reply',
                 reply: { id: `cart_btn_${i}_${lead._id}`, title: b.substring(0, 20) }
             }));
 
+            let payload;
             if (activeButtons.length > 0) {
-                const interactive = {
-                    type: 'button',
-                    header: imageUrl ? { type: 'image', image: { link: imageUrl } } : undefined,
-                    body: { text: text },
-                    action: { buttons: activeButtons }
+                payload = {
+                    interactive: {
+                        type: 'button',
+                        header: imageUrl ? { type: 'image', image: { link: imageUrl } } : undefined,
+                        body: { text },
+                        action: { buttons: activeButtons },
+                    },
+                    text,
                 };
-                await WhatsApp.sendInteractive(client, phone, interactive, text);
-                await recordNudge(lead, `[Interactive: ${text}]`, 'interactive');
-                successfullySent = true;
             } else if (imageUrl) {
-                await WhatsApp.sendImage(client, phone, imageUrl, text);
-                await recordNudge(lead, `[Image: ${text}]`, 'image');
-                successfullySent = true;
+                payload = { media: { type: 'image', url: imageUrl }, text };
             } else {
-                await WhatsApp.sendText(client, lead.phoneNumber, text);
-                await recordNudge(lead, text, 'text');
-                successfullySent = true;
+                payload = { text };
+            }
+            const freeOut = await cronEnvelopeSend({
+                client,
+                clientId: client.clientId,
+                intent: 'marketing',
+                phone,
+                contactId,
+                idempotencyKey,
+                payload,
+                context: { source: 'cron/abandonedCartScheduler', step: stepNum },
+            });
+            if (!freeOut.useLegacy && (freeOut.action === 'sent' || freeOut.action === 'duplicate')) {
+                await recordNudge(lead, text, activeButtons.length ? 'interactive' : 'text');
+                successfullySent = freeOut.action === 'sent';
             }
         }
         
@@ -178,16 +262,17 @@ async function runAbandonedCartTick() {
                 'automationFlows.id': 'abandoned_cart',
                 'automationFlows.isActive': true,
             })
-                .select('clientId nicheData automationFlows shopDomain storeType')
+                .select('clientId nicheData wizardFeatures automationFlows shopDomain storeType')
                 .lean();
 
             for (const client of clients) {
                 await new Promise((r) => setImmediate(r));
                 const niche = client.nicheData || {};
+                const { delay1Min, delay2Hr, delay3Hr } = getCartRecoveryDelays(client);
 
                 // ✅ Phase R3: GAP 2 — Respect the abandoned cart toggle setting
                 // Was sending recovery messages even when the feature was disabled in settings
-                const { isAbandonedCartEnabled } = require('../utils/featureFlags');
+                const { isAbandonedCartEnabled } = require('../utils/core/featureFlags');
                 if (!isAbandonedCartEnabled(client)) {
                     log.debug(`[AbandonedCart] Skipping client ${client.clientId} — feature disabled`);
                     continue;
@@ -220,27 +305,41 @@ async function runAbandonedCartTick() {
                     });
                 }
 
-                // --- Step 1: First Nudge (Dynamic Delay, Buttons, Image) ---
-                const delay1Min = parseInt(niche.abandonedDelay1) || 15;
+                // --- Step 1: First Nudge (cartAbandonedAt + phone required) ---
                 const batch1 = await AdLead.find({
                     clientId: client.clientId,
                     ...mongoCartRecoveryFilter(client),
                     isOrderPlaced: { $ne: true },
-                    addToCartCount: { $gt: 0 },
+                    cartStatus: 'abandoned',
+                    $or: [
+                      { phoneNumber: { $exists: true, $not: /^unknown_/ } },
+                      { email: { $exists: true, $nin: [null, ''] }, phoneNumber: /^unknown_/ },
+                    ],
                     recoveryStep: { $in: [null, 0] },
-                    updatedAt: { $lte: new Date(now - delay1Min * 60 * 1000), $gte: sevenDaysAgo }
+                    $or: [
+                      { cartAbandonedAt: cartAbandonTimeFilter(now, delay1Min) },
+                      {
+                        cartAbandonedAt: { $exists: false },
+                        lastCartEventAt: cartAbandonTimeFilter(now, delay1Min),
+                      },
+                    ],
                 }).limit(50);
 
                 for (const lead of batch1) {
-                    if (skipSet.has(lead.phoneNumber)) continue;
+                    const dedupePhone = hasRealPhone(lead.phoneNumber) ? lead.phoneNumber : lead.email;
+                    if (hasRealPhone(lead.phoneNumber) && skipSet.has(lead.phoneNumber)) continue;
+                    if (!hasRealPhone(lead.phoneNumber) && !lead.email) continue;
+                    if (await wasCartRecoverySentRecently(client.clientId, dedupePhone, 1)) continue;
                     const msg = (niche.abandonedMsg15m || niche.abandonedMsg1)?.replace(/{name}/g, lead.name || 'there') || `Hi! 👋 We noticed you left something in your cart. Check it out now!`;
                     
                     await sendRichNudge(client, lead, msg, {
+                        stepNum: 1,
                         templateName: niche.abandonedTpl15m,
                         includeImage: niche.abandonedIncludeImage1 || !!niche.abandonedTpl15m,
                         buttons: [niche.abandonedMsg15m_btn1, niche.abandonedMsg15m_btn2]
                     });
 
+                    await markCartRecoverySent(client.clientId, dedupePhone, 1);
                     await AdLead.findByIdAndUpdate(lead._id, { 
                         recoveryStep: 1, 
                         recoveryStartedAt: new Date(),
@@ -250,7 +349,6 @@ async function runAbandonedCartTick() {
                 }
 
                 // --- Step 2: Second Nudge (Dynamic Delay, Image) ---
-                const delay2Hr = parseInt(niche.abandonedDelay2) || 2;
                 const batch2 = await AdLead.find({
                     clientId: client.clientId,
                     ...mongoCartRecoveryFilter(client),
@@ -261,14 +359,17 @@ async function runAbandonedCartTick() {
 
                 for (const lead of batch2) {
                     if (skipSet.has(lead.phoneNumber)) continue;
+                    if (await wasCartRecoverySentRecently(client.clientId, lead.phoneNumber, 2)) continue;
                     const msg = (niche.abandonedMsg2h || niche.abandonedMsg2)?.replace(/{name}/g, lead.name || 'there') || `Hey! Your items are still waiting for you. 😊`;
                     
                     await sendRichNudge(client, lead, msg, {
+                        stepNum: 2,
                         templateName: niche.abandonedTpl2h,
                         includeImage: niche.abandonedIncludeImage2 || !!niche.abandonedTpl2h,
                         buttons: [niche.abandonedMsg2h_btn1, niche.abandonedMsg2h_btn2]
                     });
 
+                    await markCartRecoverySent(client.clientId, lead.phoneNumber, 2);
                     await AdLead.findByIdAndUpdate(lead._id, { 
                         recoveryStep: 2, 
                         recoveryStartedAt: new Date(),
@@ -278,7 +379,6 @@ async function runAbandonedCartTick() {
                 }
 
                 // --- Step 3: Final Nudge (Dynamic Delay, Image, Conditional Discount) ---
-                const delay3Hr = parseInt(niche.abandonedDelay3) || 24;
                 const batch3 = await AdLead.find({
                     clientId: client.clientId,
                     ...mongoCartRecoveryFilter(client),
@@ -289,6 +389,7 @@ async function runAbandonedCartTick() {
 
                 for (const lead of batch3) {
                     if (skipSet.has(lead.phoneNumber)) continue;
+                    if (await wasCartRecoverySentRecently(client.clientId, lead.phoneNumber, 3)) continue;
                     
                     // Phase 3: Conditional Discount Logic
                     const cartFlow = client.automationFlows?.find(f => f.id === 'abandoned_cart');
@@ -300,7 +401,7 @@ async function runAbandonedCartTick() {
 
                     if (flowConfig.discountEnabled && client.storeType === 'shopify') {
                         try {
-                            const { generatePriceRuleAndDiscount } = require('../utils/shopifyHelper');
+                            const { generatePriceRuleAndDiscount } = require('../utils/shopify/shopifyHelper');
                             const discount = await generatePriceRuleAndDiscount(client.clientId, flowConfig.discountPercent || 10);
                             discountCode = discount.code;
                             
@@ -316,11 +417,13 @@ async function runAbandonedCartTick() {
                     }
 
                     await sendRichNudge(client, lead, msg, {
+                        stepNum: 3,
                         templateName: templateName,
                         includeImage: niche.abandonedIncludeImage3 || !!templateName,
                         buttons: [niche.abandonedMsg24h_btn1, niche.abandonedMsg24h_btn2]
                     });
 
+                    await markCartRecoverySent(client.clientId, lead.phoneNumber, 3);
                     await AdLead.findByIdAndUpdate(lead._id, { 
                         recoveryStep: 3,
                         activeDiscountCode: discountCode, // Store for AI to reference in Smart Recovery

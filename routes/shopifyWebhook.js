@@ -5,17 +5,17 @@ const axios = require('axios');
 const Client = require('../models/Client');
 const AdLead = require('../models/AdLead');
 const Order = require('../models/Order');
-const { trackEcommerceEvent } = require('../utils/analyticsHelper');
-const { decrypt } = require('../utils/encryption');
+const { trackEcommerceEvent } = require('../utils/core/analyticsHelper');
+const { decrypt } = require('../utils/core/encryption');
 const Contact = require('../models/Contact');
 const WarrantyBatch = require('../models/WarrantyBatch');
 const WarrantyRecord = require('../models/WarrantyRecord');
-const { processOrderForLoyalty } = require('../utils/walletService');
-const { logActivity } = require('../utils/activityLogger');
-const { recalculateLeadScore } = require('../utils/scoringHelper');
-const log = require('../utils/logger')('ShopifyWebhook');
-const commerceAutomationService = require('../utils/commerceAutomationService');
-const shopifyAdminApiVersion = require('../utils/shopifyAdminApiVersion');
+const { processOrderForLoyalty } = require('../utils/commerce/walletService');
+const { logActivity } = require('../utils/core/activityLogger');
+const { recalculateLeadScore } = require('../utils/core/scoringHelper');
+const log = require('../utils/core/logger')('ShopifyWebhook');
+const commerceAutomationService = require('../utils/commerce/commerceAutomationService');
+const shopifyAdminApiVersion = require('../utils/shopify/shopifyAdminApiVersion');
 
 /** Push reconciled order to dashboard (Orders page) without manual refresh */
 function emitOrderUpdatedToDashboard(io, clientId, orderDoc) {
@@ -54,9 +54,9 @@ const verifyShopifyWebhook = async (req, res, next) => {
         return res.status(401).send('Missing headers');
     }
 
-    const verifyRow = await Client.findOne({ shopDomain: shop })
-      .select('commerce.shopify.webhookSecret shopifyWebhookSecret shopifyClientSecret')
-      .lean();
+    const { resolveClientForShop } = require('../utils/shopify/shopifyStoreHelpers');
+    const resolved = await resolveClientForShop(shop);
+    const verifyRow = resolved?.client;
     if (!verifyRow) {
         log.error(`Webhook verification failed: No client found for shop ${shop}`);
         return res.status(401).send('Client not found');
@@ -82,10 +82,14 @@ const verifyShopifyWebhook = async (req, res, next) => {
         .update(body, 'utf8')
         .digest('base64');
 
-    const loadFullClient = () => Client.findOne({ shopDomain: shop }).lean();
+    const loadFullClient = async () => {
+      const r = await resolveClientForShop(shop);
+      return r?.client || null;
+    };
 
     if (hash === hmac) {
         req.client = await loadFullClient();
+        req.shopifyStoreKey = shop;
         if (!req.client) {
           log.error(`Webhook: client disappeared for shop ${shop}`);
           return res.status(401).send('Client not found');
@@ -93,24 +97,29 @@ const verifyShopifyWebhook = async (req, res, next) => {
         req.topic = topic;
         next();
     } else {
-        log.error(`Invalid HMAC for shop ${shop}. Expected: ${hash}, Received: ${hmac}`);
-        // In local/test environments we might allow it, but for prod hardening we fail.
-        if (process.env.NODE_ENV === 'production') return res.status(401).send('Invalid signature');
-        req.client = await loadFullClient();
-        if (!req.client) {
-          log.error(`Webhook: client disappeared for shop ${shop}`);
-          return res.status(401).send('Client not found');
-        }
-        req.topic = topic;
-        next();
+        const { auditLog } = require('../services/audit/auditWriter');
+        auditLog({
+          category: 'security',
+          action: 'webhook_signature_failed',
+          severity: 'high',
+          clientId: verifyRow.clientId || 'unknown',
+          actor: { type: 'system', source: 'shopify_webhook', ip: req.ip },
+          details: { shop, topic },
+        });
+        return res.status(401).end();
     }
 };
 
-async function reconcileLocalOrderFromShopifyAdmin(client, orderPayload, topic, io) {
+async function reconcileLocalOrderFromShopifyAdmin(client, orderPayload, topic, io, storeKey = '') {
     if (!orderPayload || orderPayload.id == null) return;
-    const { buildShopifyOrderSet, shopifyOrderFilter } = require('../utils/shopifyOrderMapper');
-    const { dispatchOrderStatusAutomation } = require('../utils/orderEventDispatcher');
-    const $set = buildShopifyOrderSet(client.clientId, orderPayload, { preferLogisticsStatus: true });
+    const { buildShopifyOrderSet, shopifyOrderFilter } = require('../utils/shopify/shopifyOrderMapper');
+    const { dispatchOrderStatusAutomation } = require('../utils/commerce/orderEventDispatcher');
+    const key = storeKey || client.shopDomain || '';
+    const $set = buildShopifyOrderSet(client.clientId, orderPayload, {
+      preferLogisticsStatus: true,
+      storeKey: key,
+      shopDomain: key,
+    });
     const filter = shopifyOrderFilter(client.clientId, orderPayload);
     const prev = await Order.findOne(filter).lean();
     const prevStatus = prev?.status || '';
@@ -141,8 +150,8 @@ async function reconcileLocalOrderFromShopifyAdmin(client, orderPayload, topic, 
 async function handleFulfillmentWebhookForAdmin(client, fulfillment, topic, io) {
     const orderId = fulfillment?.order_id;
     if (!orderId) return;
-    const { dispatchOrderStatusAutomation } = require('../utils/orderEventDispatcher');
-    const { maybeSendNdrRescueFromFulfillment, NDR_SHIPMENT_TRIGGERS } = require('../utils/rtoProtectionService');
+    const { dispatchOrderStatusAutomation } = require('../utils/commerce/orderEventDispatcher');
+    const { maybeSendNdrRescueFromFulfillment, NDR_SHIPMENT_TRIGGERS } = require('../utils/commerce/rtoProtectionService');
     const oidStr = String(orderId);
     const prev = await Order.findOne({ clientId: client.clientId, shopifyOrderId: oidStr }).lean();
     if (!prev) {
@@ -218,10 +227,14 @@ async function handleFulfillmentWebhookForAdmin(client, fulfillment, topic, io) 
 }
 
 // POST /api/shopify/webhook
-router.post('/', verifyShopifyWebhook, async (req, res) => {
+const { replayGuard } = require('../middleware/webhookReplayGuard');
+const shopifyReplay = replayGuard({ header: 'X-Shopify-Webhook-Id', keyPrefix: 'shopify_replay', ttlSec: 3600 });
+
+router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
     const topic = req.topic;
     const client = req.client;
     const data = req.body;
+    const storeKey = req.shopifyStoreKey || client.shopDomain || '';
 
     log.info(`Received Shopify Webhook: ${topic} for ${client.clientId}`);
 
@@ -234,10 +247,6 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
             case 'checkouts/create':
             case 'checkouts/update':
                 await handleCheckout(client, data);
-                // Fire any flow with abandoned_cart trigger (checkout = potential abandon)
-                await fireEventFlow(client, 'abandoned_cart', data).catch(e =>
-                  log.warn(`[FlowTrigger] abandoned_cart flow fire failed: ${e.message}`)
-                );
                 break;
             case 'orders/create':
                 await handleOrder(client, data);
@@ -277,25 +286,30 @@ router.post('/', verifyShopifyWebhook, async (req, res) => {
                 }).catch(e => log.error('Commerce automations cancelled failed:', e.message));
                 break;
             case 'orders/updated':
-                await reconcileLocalOrderFromShopifyAdmin(client, data, topic, io);
+                await reconcileLocalOrderFromShopifyAdmin(client, data, topic, io, storeKey);
                 break;
             case 'fulfillments/create':
             case 'fulfillments/update':
                 await handleFulfillmentWebhookForAdmin(client, data, topic, io);
                 break;
             case 'orders/fulfilled': {
-                await reconcileLocalOrderFromShopifyAdmin(client, data, topic, io);
-                const { schedulePostDeliveryUpsell } = require('../utils/upsellEngine');
-                const { scheduleReviewRequest } = require('../utils/reputationService');
+                await reconcileLocalOrderFromShopifyAdmin(client, data, topic, io, storeKey);
+                const { schedulePostPurchaseEnrollment } = require('../services/postPurchaseJourneys/enroll');
+                schedulePostPurchaseEnrollment({
+                  client,
+                  orderPayload: data,
+                  shopifyTopic: 'orders/fulfilled',
+                  storeKey,
+                });
+                const { schedulePostDeliveryUpsell } = require('../utils/commerce/upsellEngine');
                 await schedulePostDeliveryUpsell(client, data);
-                await scheduleReviewRequest(client, data);
                 // Fire any flow with order_fulfilled trigger
                 await fireEventFlow(client, 'order_fulfilled', data).catch(e =>
                   log.warn(`[FlowTrigger] order_fulfilled flow fire failed: ${e.message}`)
                 );
 
                 // --- PHASE 30.5: Enterprise Warranty Auto-Assign (ENGINE) ---
-                const { processWarrantyAutoAssignment } = require('../utils/warrantyEngine');
+                const { processWarrantyAutoAssignment } = require('../utils/commerce/warrantyEngine');
                 await processWarrantyAutoAssignment(client, data).catch(e =>
                     log.error('[Warranty] Auto-assignment failed:', e.message)
                 );
@@ -425,8 +439,8 @@ async function buildCommerceMetadataPatch(client, eventName, data, status = null
  * Routes through the dualBrainEngine's flow executor so all node types are supported.
  */
 async function fireEventFlow(client, eventName, data, status = null) {
-  const { findEventTriggeredFlow } = require('../utils/triggerEngine');
-  const { normalizePhone } = require('../utils/helpers');
+  const { findEventTriggeredFlow } = require('../utils/flow/triggerEngine');
+  const { normalizePhone } = require('../utils/core/helpers');
 
   const phoneRaw = data.phone
     || data.customer?.phone
@@ -501,7 +515,7 @@ async function fireEventFlow(client, eventName, data, status = null) {
     AdLead.findOne({ phoneNumber: phone, clientId: client.clientId }).lean(),
   ]);
 
-  const { executeAutomationFlow } = require('../utils/dualBrainEngine');
+  const { executeAutomationFlow } = require('../utils/commerce/dualBrainEngine');
   await executeAutomationFlow({
     client,
     phone,
@@ -523,14 +537,22 @@ async function fireEventFlow(client, eventName, data, status = null) {
 
 
 async function handleCheckout(client, data) {
-    // Robust phone normalization
-    const phoneRaw = data.phone || data.customer?.phone || data.billing_address?.phone;
-    if (!phoneRaw) return;
-    const { normalizePhone } = require('../utils/helpers');
-    const cleanPhone = normalizePhone(phoneRaw);
+    const { normalizePhoneWithCountry } = require('../utils/core/helpers');
+    const { stitchCheckoutTokenToLead } = require('../utils/commerce/visitorIdentityService');
+
+    const phoneRaw =
+      data.phone ||
+      data.customer?.phone ||
+      data.billing_address?.phone ||
+      data.shipping_address?.phone;
+    const email = data.email || data.customer?.email;
+    const cleanPhone = phoneRaw ? normalizePhoneWithCountry(phoneRaw, client) : '';
+
+    if (!cleanPhone && !email) return;
 
     // Auto-fetch product images for the cart snapshot
-    const enrichedItems = await Promise.all(data.line_items.map(async item => {
+    const lineItems = data.line_items || [];
+    const enrichedItems = await Promise.all(lineItems.map(async item => {
         let imageUrl = item.image_url || null;
         if (!imageUrl && item.product_id && client.shopifyAccessToken) {
             try {
@@ -552,7 +574,7 @@ async function handleCheckout(client, data) {
         };
     }));
 
-    const cartItems = data.line_items.map(item => item.title).join(', ');
+    const cartItems = lineItems.map(item => item.title).join(', ');
     const firstItemImage = enrichedItems[0]?.image || client.logoUrl || null;
 
     const storeHost = client.shopDomain ? String(client.shopDomain).replace(/^https?:\/\//, '').split('/')[0] : '';
@@ -566,42 +588,75 @@ async function handleCheckout(client, data) {
       (data.token && storeHost ? `https://${storeHost}/checkouts/cn/${data.token}` : '') ||
       '';
 
-    const { updateLeadWithScoring } = require('../utils/leadScoring');
-    await updateLeadWithScoring(
-        cleanPhone, 
-        client.clientId, 
-        { addToCartCount: data.line_items.length }, // Increments
-        { 
-            name: data.customer?.first_name ? `${data.customer.first_name} ${data.customer.last_name || ''}` : undefined,
-            email: data.email || data.customer?.email,
-            lastSeen: new Date(),
+    const now = new Date();
+    const leadQuery = cleanPhone
+      ? { clientId: client.clientId, phoneNumber: cleanPhone }
+      : { clientId: client.clientId, email: String(email).toLowerCase() };
+
+    await AdLead.findOneAndUpdate(
+      leadQuery,
+      {
+        $set: {
+          cartStatus: 'abandoned',
+          cartAbandonedAt: now,
+          checkoutInitiatedAt: now,
+          name: data.customer?.first_name
+            ? `${data.customer.first_name} ${data.customer.last_name || ''}`.trim()
+            : undefined,
+          email: email || undefined,
+          lastSeen: now,
+          lastCartEventAt: now,
+          checkoutUrl,
+          checkoutToken: checkoutToken || '',
+          isOrderPlaced: false,
+          cartSnapshot: {
+            items: enrichedItems,
+            updatedAt: now,
             checkoutUrl,
-            checkoutToken: checkoutToken || undefined,
-            isOrderPlaced: false,
-            cartSnapshot: {
-                items: enrichedItems,
-                updatedAt: new Date(),
-                checkoutUrl,
-                checkoutToken: checkoutToken || '',
-                total_price: data.total_price,
-                currency: data.currency || 'INR',
-            }
-        }, // String/Value updates
-        {} // Boolean updates
+            checkoutToken: checkoutToken || '',
+            total_price: data.total_price,
+            currency: data.currency || 'INR',
+          },
+          ...(cleanPhone && { phoneNumber: cleanPhone }),
+        },
+        $inc: {
+          addToCartCount: data.line_items?.length || 1,
+          checkoutInitiatedCount: 1,
+        },
+        $setOnInsert: {
+          clientId: client.clientId,
+          phoneNumber: cleanPhone || `unknown_checkout_${checkoutToken || Date.now()}`,
+          source: 'Shopify Checkout',
+        },
+      },
+      { upsert: true, new: true }
     );
 
-    // Deep Pixel Hook: Register Backend Checkout Initiation natively
-    await AdLead.updateOne(
-        { phoneNumber: cleanPhone, clientId: client.clientId },
-        { $push: { 
-            commerceEvents: {
-                event: 'checkout_started',
-                amount: parseFloat(data.total_price) || 0,
-                currency: data.currency || 'INR',
-                timestamp: new Date()
-            }
-        }}
-    ).catch(e => log.error('Failed to log checkout_started event:', e.message));
+    if (checkoutToken) {
+      await stitchCheckoutTokenToLead(
+        client.clientId,
+        checkoutToken,
+        cleanPhone,
+        email,
+        client
+      ).catch((e) => log.warn(`[Checkout] visitor stitch: ${e.message}`));
+    }
+
+    if (cleanPhone) {
+      const { updateLeadWithScoring } = require('../utils/commerce/leadScoring');
+      await updateLeadWithScoring(cleanPhone, client.clientId, {}, {}, {});
+    }
+
+    await AdLead.updateOne(leadQuery, {
+      $push: {
+        commerceEvents: {
+          event: 'checkout_started',
+          amount: parseFloat(data.total_price) || 0,
+          currency: data.currency || 'INR',
+          timestamp: new Date(),
+        },
+      },
+    }).catch((e) => log.error('Failed to log checkout_started event:', e.message));
 
     // Track in DailyStat
     await trackEcommerceEvent(client.clientId, { checkoutInitiatedCount: 1 });
@@ -611,56 +666,66 @@ async function handleCheckout(client, data) {
         type: 'LEAD',
         status: 'info',
         title: 'Checkout Started',
-        message: `${data.customer?.first_name || 'A customer'} is at the checkout with ${data.line_items.length} items.`,
+        message: `${data.customer?.first_name || 'A customer'} is at the checkout with ${lineItems.length} items.`,
         icon: 'ShoppingCart',
-        url: `/leads/${cleanPhone}`,
+        url: cleanPhone ? `/leads/${cleanPhone}` : '/leads',
         metadata: {
-            phone: cleanPhone,
-            itemCount: data.line_items.length,
+            phone: cleanPhone || email,
+            itemCount: lineItems.length,
             amount: data.total_price
         }
     });
 
-    log.info(`Lead updated from checkout: ${cleanPhone}`);
+    log.info(`Lead updated from checkout: ${cleanPhone || email}`);
 
-    // --- PART 7: Cart Recovery Attempt Lifecycle - Trigger 1 ---
-    try {
+    if (cleanPhone) {
+      try {
         const CartRecoveryAttempt = require('../models/CartRecoveryAttempt');
         await CartRecoveryAttempt.create({
-            clientId: client.clientId,
-            contactPhone: cleanPhone,
-            attemptTimestamp: new Date(),
-            messaged: false,
-            recovered: false,
-            status: 'pending'
+          clientId: client.clientId,
+          contactPhone: cleanPhone,
+          attemptTimestamp: new Date(),
+          messaged: false,
+          recovered: false,
+          status: 'pending',
         });
-    } catch (craErr) {
+      } catch (craErr) {
         log.warn(`[CartRecovery] Failed to create attempt record: ${craErr.message}`);
+      }
+      await recalculateLeadScore(client.clientId, cleanPhone).catch((e) =>
+        log.error('Scoring recompute failed:', e.message)
+      );
     }
-
-    // TRRIGER WATERFALL ENGINE: Update score in real-time
-    await recalculateLeadScore(client.clientId, cleanPhone).catch(e => log.error('Scoring recompute failed:', e.message));
 }
 
 async function handleOrder(client, data) {
-    // Robust phone normalization
-    const phoneRaw = data.phone || data.customer?.phone || data.billing_address?.phone;
+    const phoneRaw =
+      data.phone ||
+      data.customer?.phone ||
+      data.billing_address?.phone ||
+      data.shipping_address?.phone;
     if (!phoneRaw) return;
-    const { normalizePhone } = require('../utils/helpers');
-    const cleanPhone = normalizePhone(phoneRaw);
+    const { normalizePhoneWithCountry } = require('../utils/core/helpers');
+    const cleanPhone = normalizePhoneWithCountry(phoneRaw, client);
 
-    // 1. Fetch Lead
-    const lead = await AdLead.findOne({ phoneNumber: cleanPhone, clientId: client.clientId });
+    const { handleOrderAtomic } = require('../utils/shopify/handleOrderAtomic');
+    let atomic;
+    try {
+      atomic = await handleOrderAtomic(client, data, cleanPhone);
+    } catch (atomicErr) {
+      log.error(`[ShopifyWebhook] handleOrderAtomic failed: ${atomicErr.message}`);
+      throw atomicErr;
+    }
+    if (atomic.duplicate) {
+      log.info(`[ShopifyWebhook] Order already processed — skipping side effects (${data.id || data.name})`);
+      return;
+    }
+    const lead = atomic.lead;
 
-    // 2. Update AdLead status to stop abandonment flows and score lead
-    const { updateLeadWithScoring } = require('../utils/leadScoring');
-    await updateLeadWithScoring(
-        cleanPhone, 
-        client.clientId, 
-        { ordersCount: 1 }, // Increments
-        { cartStatus: "purchased", lastOrderAt: new Date() }, // String/Date Updates
-        { isRtoRisk: false } // Reset RTO risk on new successful order
-    );
+    try {
+      const { recordOrderPositiveOutcome } = require('../services/training/trainingOutcomeTracker');
+      await recordOrderPositiveOutcome(client.clientId, cleanPhone);
+    } catch (_) {}
 
     // Deep Pixel Hook: Register Backend Order Completion natively to fix Attribution Grid
     await AdLead.updateOne(
@@ -676,7 +741,7 @@ async function handleOrder(client, data) {
     ).catch(e => log.error('Failed to log checkout_completed event:', e.message));
 
     // Track Journey Event
-    const { trackEvent } = require('../utils/journeyTracker');
+    const { trackEvent } = require('../utils/commerce/journeyTracker');
     await trackEvent(client.clientId, cleanPhone, 'order_placed', {
         orderId: data.name || `#${data.id}`,
         total: data.total_price,
@@ -702,8 +767,13 @@ async function handleOrder(client, data) {
     }
 
     // 3. Upsert internal Order record (same mapper as sync / orders/updated — COD + logistics status)
-    const { buildShopifyOrderSet, shopifyOrderFilter, detectCodFromShopify } = require('../utils/shopifyOrderMapper');
-    const $set = buildShopifyOrderSet(client.clientId, data, { preferLogisticsStatus: true });
+    const { buildShopifyOrderSet, shopifyOrderFilter, detectCodFromShopify } = require('../utils/shopify/shopifyOrderMapper');
+    const storeKey = req.shopifyStoreKey || client.shopDomain || '';
+    const $set = buildShopifyOrderSet(client.clientId, data, {
+      preferLogisticsStatus: true,
+      storeKey,
+      shopDomain: storeKey,
+    });
     $set.customerPhone = cleanPhone;
     const filter = shopifyOrderFilter(client.clientId, data);
     const newOrder = await Order.findOneAndUpdate(
@@ -722,7 +792,7 @@ async function handleOrder(client, data) {
           0
         );
         const revenue = parseFloat(data.total_price) || newOrder.totalPrice || newOrder.amount || 0;
-        const { incrementStat } = require('../utils/statCacheEngine');
+        const { incrementStat } = require('../utils/core/statCacheEngine');
         await incrementStat(client.clientId, {
           totalOrders: 1,
           ordersToday: 1,
@@ -733,15 +803,6 @@ async function handleOrder(client, data) {
       }
     } catch (statErr) {
       log.warn(`[ShopifyWebhook] StatCache increment skipped: ${statErr.message}`);
-    }
-
-    // Auto-assign warranty records on order_placed (wizard enableWarranty)
-    const { isWarrantyEnabled } = require('../utils/featureFlags');
-    if (isWarrantyEnabled(client)) {
-      const { assignWarranty } = require('../utils/warrantyService');
-      await assignWarranty(client, cleanPhone, data).catch((e) =>
-        log.warn(`[Warranty] order_placed assign failed: ${e.message}`)
-      );
     }
 
     // Order confirmation / COD confirmation via unified templateSender
@@ -766,7 +827,7 @@ async function handleOrder(client, data) {
     try {
       const fin = String(data.financial_status || '').toLowerCase();
       if (!isCODOrder && (fin === 'paid' || fin === 'partially_paid')) {
-        const { dispatchOrderStatusAutomation } = require('../utils/orderEventDispatcher');
+        const { dispatchOrderStatusAutomation } = require('../utils/commerce/orderEventDispatcher');
         const orderPlain = typeof newOrder.toObject === 'function' ? newOrder.toObject() : newOrder;
         await dispatchOrderStatusAutomation({
           clientConfig: client,
@@ -784,7 +845,7 @@ async function handleOrder(client, data) {
 
     // --- PHASE 27: Loyalty Points Award ---
     if (client.loyaltyConfig?.isEnabled && newOrder.amount > 0) {
-        const { awardLoyaltyPoints } = require('../utils/loyaltyEngine');
+        const { awardLoyaltyPoints } = require('../utils/commerce/loyaltyEngine');
         awardLoyaltyPoints({
             clientId: client.clientId,
             phone: cleanPhone,
@@ -797,25 +858,7 @@ async function handleOrder(client, data) {
 
     // Legacy productTriggers evaluator removed after unified commerce automation cutover.
 
-    // ✅ Phase R3: Cancel active cart recovery sequences on purchase — GAP 6
-    // Customer paid → stop all recovery messages so they don't get spammed post-purchase
-    try {
-        const FollowUpSequence = require('../models/FollowUpSequence');
-        await FollowUpSequence.updateMany(
-            { 
-                clientId: client.clientId, 
-                leadPhone: { $in: [cleanPhone, `+${cleanPhone}`, cleanPhone.replace(/^\+/, '')] },
-                status: 'active', 
-                type: { $in: ['cart_recovery', 'abandoned_cart', 'followup'] }
-            },
-            { $set: { status: 'cancelled', cancelledReason: 'customer_purchased', cancelledAt: new Date() } }
-        );
-        log.info(`[CartRecovery] Cancelled active sequences for ${cleanPhone} after purchase`);
-    } catch (seqErr) {
-        log.warn('[CartRecovery] Failed to cancel sequences after purchase:', seqErr.message);
-    }
-
-
+    // Sequence/campaign cancel handled atomically in handleOrderAtomic (Phase 2 — B1/B2)
 
     // --- SKU-to-Template Automation removed (replaced by SkuTriggerService in switch/case) ---
 
@@ -825,7 +868,7 @@ async function handleOrder(client, data) {
     if (codActive && isCODOrder) {
         log.info(`Converting COD order ${data.name} to Prepaid for ${client.clientId}`);
         const niche = client.nicheData || {};
-        const WhatsApp = require('../utils/whatsapp');
+        const WhatsApp = require('../utils/meta/whatsapp');
         
         try {
             // Determine the Payment Gateway Strategy
@@ -833,11 +876,11 @@ async function handleOrder(client, data) {
             let paymentGateway = client.activePaymentGateway || 'none';
 
             if (paymentGateway === 'razorpay' && client.razorpayKeyId) {
-                const { createCODPaymentLink } = require('../utils/razorpay');
+                const { createCODPaymentLink } = require('../utils/commerce/razorpay');
                 const link = await createCODPaymentLink(newOrder, client);
                 paymentLinkUrl = link.short_url;
             } else if (paymentGateway === 'cashfree' && client.cashfreeAppId) {
-                const { createCashfreePaymentLink } = require('../utils/cashfree');
+                const { createCashfreePaymentLink } = require('../utils/commerce/cashfree');
                 const link = await createCashfreePaymentLink(newOrder, client);
                 paymentLinkUrl = link.short_url;
             } else {
@@ -853,38 +896,31 @@ async function handleOrder(client, data) {
                 const total = data.total_price;
                 const customerName = data.customer?.first_name || 'Guest';
 
-                // Determine template name logic based on gateway (user requested distinct tracking/brands via templates)
-                let templateName = 'cod_to_prepaid_discount'; // DEFAULT FALLBACK
-                
-                if (paymentGateway === 'razorpay') templateName = 'razorpay_cod_converter';
-                else if (paymentGateway === 'cashfree') templateName = 'cashfree_cod_converter';
-                else templateName = 'shopify_cod_converter';
-
-                // We try to send smartly using predefined sync list
-                // If it fails, our smart sender gracefully falls back to sequential text params
                 try {
-                    const { sendByName } = require('../services/templateSender');
-                    const codResult = await sendByName({
+                    const { sendForAutomation } = require('../services/templateSender');
+                    const codResult = await sendForAutomation({
                         clientId: client.clientId,
                         phone: cleanPhone,
-                        templateName,
+                        slotId: 'eco_cod_prepaid',
+                        contextType: 'cod_prepaid',
                         contextData: {
                             order: data,
-                            extra: { payment_link: paymentLinkUrl, payment_gateway: paymentGateway },
+                            extra: {
+                                payment_link: paymentLinkUrl,
+                                payment_gateway: paymentGateway,
+                                name: customerName,
+                            },
                         },
                     });
-                    if (!codResult?.whatsapp?.sent) {
-                        await WhatsApp.sendSmartTemplate(
-                            client,
-                            cleanPhone,
-                            templateName,
-                            [customerName, orderId, total, paymentLinkUrl],
-                            firstItemImage
+                    if (codResult?.whatsapp?.sent) {
+                        log.info(
+                            `COD Payment link (${paymentGateway}) sent to ${cleanPhone} via ${codResult.metaName}`
                         );
+                    } else {
+                        throw new Error(codResult?.failureCode || codResult?.whatsapp?.reason || 'cod_send_skipped');
                     }
-                    log.info(`COD Payment link (${paymentGateway}) sent to ${cleanPhone}`);
                 } catch (metaErr) {
-                    log.warn(`[ShopifyWebhook] Meta Template ${templateName} failed or not synced. Falling back to simple interactive message.`);
+                    log.warn(`[ShopifyWebhook] COD prepaid template failed (${metaErr.message}). Falling back to interactive message.`);
                     
                     const fallbackBody = `Hi ${customerName}! 🎁 Want to save more on your order? Pay online securely now and get an extra discount!\n\n💳 Pay here: ${paymentLinkUrl}\n\n*Order:* #${orderId}\n*Amount:* ₹${total}`;
                     const interactive = {
@@ -907,7 +943,7 @@ async function handleOrder(client, data) {
     }
 
     // --- PHASE 25: Track 8 - RTO Predictor ---
-    const RTOPredictor = require('../utils/rtoPredictor');
+    const RTOPredictor = require('../utils/commerce/rtoPredictor');
     const rtoAssessment = await RTOPredictor.calculateRisk(data, data.customer, lead);
     newOrder.rtoRiskScore = rtoAssessment.score;
     newOrder.rtoRiskLevel = rtoAssessment.riskLevel;
@@ -915,7 +951,7 @@ async function handleOrder(client, data) {
 
     // Notify if high risk
     if (rtoAssessment.riskLevel === 'High') {
-        const { updateLeadWithScoring } = require('../utils/leadScoring');
+        const { updateLeadWithScoring } = require('../utils/commerce/leadScoring');
         await updateLeadWithScoring(
             cleanPhone, 
             client.clientId, 
@@ -924,7 +960,7 @@ async function handleOrder(client, data) {
             { isRtoRisk: true } // Boolean Update: Flags them as RTO Risk instantly
         );
 
-        const NotificationService = require('../utils/notificationService');
+        const NotificationService = require('../utils/core/notificationService');
         await NotificationService.createNotification(client.clientId, {
             type: 'system',
             title: '🚨 High RTO Risk Detected',
@@ -934,7 +970,7 @@ async function handleOrder(client, data) {
         });
     }
 
-    const { maybeSendCodConfirmationAfterOrderCreate } = require('../utils/rtoProtectionService');
+    const { maybeSendCodConfirmationAfterOrderCreate } = require('../utils/commerce/rtoProtectionService');
     await maybeSendCodConfirmationAfterOrderCreate(client, newOrder).catch((e) =>
         log.warn(`[RTOProtection] COD confirm hook: ${e.message}`)
     );
@@ -1041,7 +1077,7 @@ async function handleRefund(client, data) {
     log.info(`Processing refund/cancellation for order ${orderId}`, { clientId: client.clientId });
 
     try {
-        const { reverseOrderPoints } = require('../utils/walletService');
+        const { reverseOrderPoints } = require('../utils/commerce/walletService');
         const result = await reverseOrderPoints(client.clientId, orderId);
 
         if (result) {
@@ -1050,11 +1086,11 @@ async function handleRefund(client, data) {
             // Revert points in CustomerIntelligence if it tracks them
             const phoneRaw = data.phone || data.customer?.phone || data.billing_address?.phone;
             if (phoneRaw) {
-                const { normalizePhone } = require('../utils/helpers');
+                const { normalizePhone } = require('../utils/core/helpers');
                 const cleanPhone = normalizePhone(phoneRaw);
                 
                 // Flag as RTO Risk in AdLead
-                const { updateLeadWithScoring } = require('../utils/leadScoring');
+                const { updateLeadWithScoring } = require('../utils/commerce/leadScoring');
                 await updateLeadWithScoring(cleanPhone, client.clientId, {}, {}, { isRtoRisk: true });
 
                 const CustomerIntelligence = require('../models/CustomerIntelligence');
@@ -1119,32 +1155,14 @@ async function handleInventoryUpdate(client, data) {
 
         // If it's back in stock or has enough stock
         if (available > 0) {
-            const ProductWatch = require('../models/ProductWatch');
-            // Find anyone watching this item
-            const watches = await ProductWatch.find({ 
-                clientId: client.clientId, 
-                variantId: inventoryItemId.toString(), 
-                condition: { $in: ['back_in_stock', 'low_stock'] }, 
-                status: 'watching' 
+            const { triggerRestockNotifications } = require('../services/productWatch/triggerRestockNotifications');
+            await triggerRestockNotifications({
+                clientId: client.clientId,
+                sku: inventoryItemId.toString(),
+                productName: 'Your watched product',
+                productUrl: '',
+                currentStock: available,
             });
-
-            if (watches.length > 0) {
-                const WhatsApp = require('../utils/whatsapp');
-                for (const watch of watches) {
-                    try {
-                        const message = `Good news! 🎉 The item you were looking for (*${watch.productName}*) is back in stock! Grab it before it's gone.`;
-                        await WhatsApp.sendText(client, watch.phone, message);
-                        
-                        watch.status = 'notified';
-                        watch.notifiedAt = new Date();
-                        await watch.save();
-                        
-                        log.info(`Notified ${watch.phone} about inventory update for ${watch.productName}`);
-                    } catch (e) {
-                        log.error(`Failed to notify ${watch.phone} for inventory update`, e.message);
-                    }
-                }
-            }
         }
     } catch (err) {
         log.error(`Inventory update processing failed: ${err.message}`);

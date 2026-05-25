@@ -9,8 +9,8 @@ const path = require("path");
 
 // eslint-disable-next-line no-unused-vars
 const root = path.join(__dirname, "..");
-const { generateEcommerceFlow } = require(path.join(root, "utils", "flowGenerator"));
-const { findInteractiveEdgeForButtonAcrossGraph } = require(path.join(root, "utils", "graphButtonRouting"));
+const { generateEcommerceFlow } = require(path.join(root, "utils", "flow", "flowGenerator"));
+const { findInteractiveEdgeForButtonAcrossGraph } = require(path.join(root, "utils", "flow", "graphButtonRouting"));
 
 function assert(cond, msg) {
   if (!cond) {

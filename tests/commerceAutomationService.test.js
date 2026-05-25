@@ -1,5 +1,5 @@
 const assert = require('assert');
-const service = require('../utils/commerceAutomationService');
+const service = require('../utils/commerce/commerceAutomationService');
 
 function run() {
   assert.equal(service.normalizeEvent('fulfilled'), 'shipped');

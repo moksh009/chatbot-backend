@@ -1,12 +1,9 @@
 "use strict";
 
-/** Stable Meta template names — must match prebuiltTemplateLibrary.metaName */
-const PREBUILT_REQUIRED_TEMPLATES = [
-  "order_confirmation_v1",
-  "cart_recovery_1",
-  "cart_recovery_2",
-  "review_request",
-];
+const { getPrebuiltRequiredMetaNames } = require("./templateCatalog/catalog");
+
+/** Stable Meta template names — sourced from shared/template-catalog.json */
+const PREBUILT_REQUIRED_TEMPLATES = getPrebuiltRequiredMetaNames();
 
 const TEMPLATE_STATUS = {
   DRAFT: "draft",

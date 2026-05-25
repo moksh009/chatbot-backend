@@ -2,8 +2,8 @@ const express = require('express');
 const router = express.Router();
 const AdLead = require('../models/AdLead');
 const DailyStat = require('../models/DailyStat');
-const { trackEcommerceEvent } = require('../utils/analyticsHelper');
-const { sendCODToPrepaidNudge } = require('../utils/ecommerceHelpers');
+const { trackEcommerceEvent } = require('../utils/core/analyticsHelper');
+const { sendCODToPrepaidNudge } = require('../utils/commerce/ecommerceHelpers');
 const { verifyShopifyTrackingWebhook } = require('../middleware/verifyShopifyTrackingWebhook');
 
 // Legacy PRODUCTS mapping removed to support universal SaaS config in the database.
@@ -30,7 +30,7 @@ router.get('/:uid/:productId', async (req, res) => {
         });
         let lead = null;
         if (existingLead) {
-            const { updateLeadWithScoring } = require('../utils/leadScoring');
+            const { updateLeadWithScoring } = require('../utils/commerce/leadScoring');
             lead = await updateLeadWithScoring(existingLead.phoneNumber, existingLead.clientId, { linkClicks: 1 });
         }
 
@@ -41,7 +41,7 @@ router.get('/:uid/:productId', async (req, res) => {
             await trackEcommerceEvent(lead.clientId, { linkClicks: 1 });
             
             // Phase 3: Increment StatCache
-            const { incrementStat } = require('../utils/statCacheEngine');
+            const { incrementStat } = require('../utils/core/statCacheEngine');
             await incrementStat(lead.clientId, { totalLinkClicks: 1 });
             console.log('[Tracking] StatCache totalLinkClicks increment succeeded', {
                 clientId: lead.clientId,
@@ -103,7 +103,7 @@ router.post('/cart', async (req, res) => {
         }
 
         // If we have a phone, update the lead
-        const { updateLeadWithScoring } = require('../utils/leadScoring');
+        const { updateLeadWithScoring } = require('../utils/commerce/leadScoring');
         const lead = await updateLeadWithScoring(
             phone,
             clientId,
@@ -116,7 +116,7 @@ router.post('/cart', async (req, res) => {
             await trackEcommerceEvent(clientId, { addToCarts: 1 }, { [product]: 1 });
 
             // Phase 3: Increment StatCache
-            const { incrementStat } = require('../utils/statCacheEngine');
+            const { incrementStat } = require('../utils/core/statCacheEngine');
             await incrementStat(clientId, { totalAddToCarts: 1 });
 
             io.to(`client_${clientId}`).emit('stats_update', {
@@ -198,7 +198,7 @@ router.post('/order-webhook', verifyShopifyTrackingWebhook, async (req, res) => 
             if (phone) leadQuery.phoneNumber = phone;
             else leadQuery.email = orderData.email;
 
-            const { updateLeadWithScoring } = require('../utils/leadScoring');
+            const { updateLeadWithScoring } = require('../utils/commerce/leadScoring');
             const lead = await updateLeadWithScoring(
                 phone,
                 clientId,
@@ -208,11 +208,11 @@ router.post('/order-webhook', verifyShopifyTrackingWebhook, async (req, res) => 
 
             if (lead && io) {
                 // Attribution Logic: Check if this lead recently received a campaign message
-                const { attributeRevenueToCampaign } = require('../utils/campaignStatsHelper');
+                const { attributeRevenueToCampaign } = require('../utils/commerce/campaignStatsHelper');
                 await attributeRevenueToCampaign(order, lead);
                 
                 // Phase 3: Increment StatCache
-                const { incrementStat } = require('../utils/statCacheEngine');
+                const { incrementStat } = require('../utils/core/statCacheEngine');
                 await incrementStat(clientId, { 
                     totalOrders: 1, 
                     ordersToday: 1, 
@@ -334,7 +334,7 @@ router.get('/cashfree-callback/:orderId', async (req, res) => {
                 );
 
             // Update Lead Scoring: Upgrade to "Customer" if not already
-                const { updateLeadWithScoring } = require('../utils/leadScoring');
+                const { updateLeadWithScoring } = require('../utils/commerce/leadScoring');
                 await updateLeadWithScoring(order.phone, order.clientId, {}, { cartStatus: 'paid', lastInteraction: new Date() });
             }
         }
@@ -377,7 +377,7 @@ router.get('/razorpay-callback/:orderId', async (req, res) => {
             );
 
             if (order.phone) {
-                const { updateLeadWithScoring } = require('../utils/leadScoring');
+                const { updateLeadWithScoring } = require('../utils/commerce/leadScoring');
                 await updateLeadWithScoring(order.phone, order.clientId, {}, { cartStatus: 'paid', lastInteraction: new Date() });
             }
         }
@@ -411,7 +411,7 @@ router.get('/stripe-callback/:orderId', async (req, res) => {
         if (response.data.payment_status === 'paid') {
             await Order.findByIdAndUpdate(order._id, { isCOD: false, paidViaLink: true, status: 'paid', paidAt: new Date() });
             if (order.phone) {
-                const { updateLeadWithScoring } = require('../utils/leadScoring');
+                const { updateLeadWithScoring } = require('../utils/commerce/leadScoring');
                 await updateLeadWithScoring(order.phone, order.clientId, {}, { cartStatus: 'paid', lastInteraction: new Date() });
             }
         }
@@ -448,9 +448,8 @@ router.post('/fulfillment-webhook', verifyShopifyTrackingWebhook, async (req, re
         }
 
         const Order = require('../models/Order');
-        const ReviewRequest = require('../models/ReviewRequest');
         const Client = require('../models/Client');
-        const WhatsApp = require('../utils/whatsapp');
+        const WhatsApp = require('../utils/meta/whatsapp');
         
         const shopifyOrderId = String(payload.order_id || payload.id);
         const order = await Order.findOne({ shopifyOrderId, clientId });
@@ -480,27 +479,9 @@ router.post('/fulfillment-webhook', verifyShopifyTrackingWebhook, async (req, re
                 console.error("Failed to send shipping WhatsApp:", waErr.message);
             }
         }
-        
-        // 2. Schedule review for 4 days later
-        const scheduledDate = new Date();
-        scheduledDate.setDate(scheduledDate.getDate() + 4);
-
-        await ReviewRequest.findOneAndUpdate(
-            { orderId: order._id, clientId },
-            {
-                clientId,
-                phone: order.phone,
-                orderId: order._id,
-                orderNumber: order.orderNumber,
-                productName: order.items && order.items.length > 0 ? order.items[0].name : "your product",
-                status: "scheduled",
-                scheduledFor: scheduledDate
-            },
-            { upsert: true, new: true }
-        );
 
         // Update Lead Scoring: Mark as Fulfilled/Shipped
-        const { updateLeadWithScoring } = require('../utils/leadScoring');
+        const { updateLeadWithScoring } = require('../utils/commerce/leadScoring');
         await updateLeadWithScoring(order.phone, order.clientId, {}, { cartStatus: 'shipped', lastInteraction: new Date() });
 
         res.status(200).send("Fulfillment processed, notification sent & review scheduled");

@@ -5,21 +5,22 @@ const { protect, requireTenantMatch } = require('../middleware/auth');
 const secure = [protect, requireTenantMatch];
 const Client = require('../models/Client');
 const InboundDeduplication = require('../models/InboundDeduplication');
-const { tenantClientId } = require('../utils/queryHelpers');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 const { apiCache } = require('../middleware/apiCache');
 
 // Legacy flow webhook handlers (per-client WhatsApp Flow callbacks)
 const choiceSalonController = require('./clientcodes/choice_salon_holi');
 const topedgeController = require('./clientcodes/topedgeai');
 const genericEcommerceEngine = require('./engines/genericEcommerce');
-const commerceAutomationService = require('../utils/commerceAutomationService');
+const commerceAutomationService = require('../utils/commerce/commerceAutomationService');
 const {
   hasWhatsAppWebhookPayload,
   touchInboundWebhook,
   touchMetaWebhookVerified,
-} = require('../utils/whatsappWebhookLifecycle');
-const { isDuplicateInbound } = require('../utils/webhookDedup');
-const { getMetaWebhookVerifyQuery } = require('../utils/metaHubQuery');
+} = require('../utils/meta/whatsappWebhookLifecycle');
+const { isDuplicateInbound } = require('../utils/meta/webhookDedup');
+const { getMetaWebhookVerifyQuery } = require('../utils/meta/metaHubQuery');
+const { metaPayloadReplayGuard } = require('../middleware/webhookReplayGuard');
 
 // Middleware to load client config
 router.use(loadClientConfig);
@@ -84,9 +85,12 @@ router.get('/webhook', (req, res) => {
   return res.sendStatus(400);
 });
 
-// Webhook Event Handling (POST)
-router.post('/webhook', async (req, res) => {
+// Webhook Event Handling (POST) — replay guard before signature / HMAC work
+router.post('/webhook', metaPayloadReplayGuard(), async (req, res) => {
   try {
+    if (req.webhookReplayDuplicate) {
+      return res.status(200).json({ ok: true, duplicate: true });
+    }
     const { businessType, clientId } = req.clientConfig;
 
     const entry = req.body?.entry?.[0];
@@ -155,8 +159,8 @@ router.patch('/config', ...secure, async (req, res) => {
         const {
           validateOrderStatusTemplates,
           sanitizeOrderStatusTemplates,
-        } = require('../utils/orderStatusTemplatePolicy');
-        const commerceAutomationService = require('../utils/commerceAutomationService');
+        } = require('../utils/commerce/orderStatusTemplatePolicy');
+        const commerceAutomationService = require('../utils/commerce/commerceAutomationService');
         const clientRow = await Client.findOne({ clientId }).select('syncedMetaTemplates').lean();
         const validation = validateOrderStatusTemplates(
           nicheData.orderStatusTemplates,
@@ -204,7 +208,7 @@ router.patch('/config', ...secure, async (req, res) => {
 
     const updated = await Client.findOneAndUpdate({ clientId }, { $set: updates }, { new: true });
     const { clearClientCache } = require('../middleware/apiCache');
-    const { invalidateBootstrapCache } = require('../utils/bootstrapCache');
+    const { invalidateBootstrapCache } = require('../utils/core/bootstrapCache');
     await clearClientCache(clientId);
     invalidateBootstrapCache(req.user?.id);
     res.json({ success: true, client: updated });
@@ -329,7 +333,7 @@ router.get('/commerce-automations/diagnostics', ...secure, async (req, res) => {
  */
 
 const crypto = require("crypto");
-const { runDualBrainEngine } = require("../utils/dualBrainEngine");
+const { runDualBrainEngine } = require('../utils/commerce/dualBrainEngine');
 
 // Verification handshake for Instagram Messenger API
 router.get("/webhook/instagram", async (req, res) => {
@@ -530,6 +534,34 @@ router.patch('/orders/:orderId/status', async (req, res) => {
   }
 });
 
+router.post('/orders/:orderId/send-status-whatsapp', ...secure, async (req, res) => {
+  try {
+    const { businessType } = req.clientConfig;
+    if (businessType === 'ecommerce') {
+      await genericEcommerceEngine.sendOrderStatusWhatsAppManual(req, res);
+    } else {
+      res.status(400).json({ error: 'Orders not supported for this business type' });
+    }
+  } catch (error) {
+    console.error('Error sending order status WhatsApp:', error);
+    res.status(500).json({ error: 'Failed to send' });
+  }
+});
+
+router.get('/order-messages/overview', ...secure, apiCache(60), async (req, res) => {
+  try {
+    const { businessType } = req.clientConfig;
+    if (businessType === 'ecommerce') {
+      await genericEcommerceEngine.getOrderMessagesOverview(req, res);
+    } else {
+      res.status(400).json({ error: 'Order messages not supported for this business type' });
+    }
+  } catch (error) {
+    console.error('Error loading order messages overview:', error);
+    res.status(500).json({ error: 'Failed' });
+  }
+});
+
 router.patch('/orders/:orderId/address', async (req, res) => {
   try {
     const { businessType } = req.clientConfig;
@@ -569,46 +601,6 @@ router.get('/restore-cart', async (req, res) => {
   } catch (error) {
     console.error('Error restoring cart:', error);
     res.status(500).send('Failed');
-  }
-});
-
-// POST /orders/:orderId/send-review-request — Manual review trigger (Block 13)
-router.post('/orders/:orderId/send-review-request', ...secure, async (req, res) => {
-  try {
-    const { clientId, orderId } = req.params;
-    const scopedClientId = tenantClientId(req);
-    if (!scopedClientId || scopedClientId !== clientId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-    const Order = require('../models/Order');
-    const ReviewRequest = require('../models/ReviewRequest');
-
-    const order = await Order.findOne({ _id: orderId, clientId: scopedClientId });
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-    const phone = order.customerPhone || order.phone;
-    if (!phone) return res.status(400).json({ success: false, message: 'No customer phone on order' });
-
-    const client = req.clientConfig;
-
-    await ReviewRequest.findOneAndUpdate(
-      { clientId: scopedClientId, phone, orderNumber: order.orderNumber || order.orderId },
-      {
-        clientId: scopedClientId,
-        phone,
-        orderNumber: order.orderNumber || order.orderId,
-        productName: order.items?.[0]?.name || 'your order',
-        reviewUrl: client.googleReviewUrl || '',
-        scheduledFor: new Date(), // Immediate dispatch
-        status: 'scheduled'
-      },
-      { upsert: true }
-    );
-
-    res.json({ success: true, message: 'Review request scheduled for dispatch via WhatsApp' });
-  } catch (error) {
-    console.error('[ReviewRequest] Error:', error.message);
-    res.status(500).json({ success: false, message: error.message });
   }
 });
 

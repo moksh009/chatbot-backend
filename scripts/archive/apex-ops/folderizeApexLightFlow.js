@@ -18,9 +18,9 @@ require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 const mongoose = require("mongoose");
 const Client = require("../models/Client");
 const WhatsAppFlow = require("../models/WhatsAppFlow");
-const { clearTriggerCache } = require("../utils/triggerEngine");
+const { clearTriggerCache } = require('../../../utils/flow/triggerEngine');
 const { clearClientCache } = require("../middleware/apiCache");
-const { folderizeApexFlowGraph } = require("../utils/apexFlowFolderize");
+const { organizeFlowGraph: folderizeApexFlowGraph } = require('../../../utils/flow/flowLayoutOrganize');
 const { buildFlow, FLOW_ID, FLOW_NAME } = require("../data/apexLightOwnerFlow");
 
 const DEFAULT_CLIENT_ID = "shubhampatelsbusiness_1cfb2b";

@@ -188,4 +188,15 @@ const STANDARD_TEMPLATES = [
   }
 ];
 
+const { validateEcoStandardPack } = require("./templateCatalog");
+
+const _ecoValidation = validateEcoStandardPack(STANDARD_TEMPLATES);
+if (!_ecoValidation.ok && process.env.NODE_ENV !== "production") {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[standardTemplates] drift vs template-catalog.json",
+    { missing: _ecoValidation.missing, extra: _ecoValidation.extra }
+  );
+}
+
 module.exports = { STANDARD_TEMPLATES };

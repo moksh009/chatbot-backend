@@ -29,10 +29,10 @@ const {
   REQUIRED_INSTAGRAM_GRAPH_WEBHOOK_FIELDS,
   REQUIRED_FACEBOOK_PAGE_WEBHOOK_FIELDS,
   REQUIRED_IG_WEBHOOK_FIELDS
-} = require('../../utils/igGraphApi');
-const { validateAutomationMessages } = require('../../utils/igTextValidation');
-const { decrypt } = require('../../utils/encryption');
-const log = require('../../utils/logger')('IGAutoCRUD');
+} = require('../../utils/meta/igGraphApi');
+const { validateAutomationMessages } = require('../../utils/meta/igTextValidation');
+const { decrypt } = require('../../utils/core/encryption');
+const log = require('../../utils/core/logger')('IGAutoCRUD');
 
 // Resolve Page Access Token + BOTH IDs Meta needs for webhooks:
 //   • fbPageId   → graph.facebook.com/{fbPageId}/subscribed_apps (Messenger/Page fields only)

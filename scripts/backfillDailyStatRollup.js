@@ -9,7 +9,7 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const mongoose = require('mongoose');
 const Client = require('../models/Client');
-const { rollupDaysForClient, todayDateStr } = require('../utils/dailyStatRollup');
+const { rollupDaysForClient, todayDateStr } = require('../utils/core/dailyStatRollup');
 
 function parseArgs() {
   const args = process.argv.slice(2);

@@ -3,7 +3,7 @@
 const express = require("express");
 const router = express.Router();
 const CheckoutLink = require("../models/CheckoutLink");
-const log = require("../utils/logger")("CheckoutShortLink");
+const log = require('../utils/core/logger')("CheckoutShortLink");
 
 router.get("/:shortCode", async (req, res) => {
   try {

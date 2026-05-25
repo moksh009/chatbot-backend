@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { handleIncomingEmail } = require('../utils/emailIntegration');
-const log = require('../utils/logger')('EmailWebhook');
+const { handleIncomingEmail } = require('../utils/core/emailIntegration');
+const log = require('../utils/core/logger')('EmailWebhook');
 
 /**
  * @route POST /api/email/webhook

@@ -2,16 +2,16 @@ const express = require('express');
 const router = express.Router();
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
-const { ensureClientForUser } = require('../utils/ensureClientForUser');
-const log = require('../utils/logger')('KnowledgeRoute');
-const { tenantClientId } = require('../utils/queryHelpers');
-const { clearKnowledgeContextCache } = require('../utils/personaEngine');
+const { ensureClientForUser } = require('../utils/core/ensureClientForUser');
+const log = require('../utils/core/logger')('KnowledgeRoute');
+const { tenantClientId } = require('../utils/core/queryHelpers');
+const { clearKnowledgeContextCache } = require('../utils/core/personaEngine');
 const { apiCache } = require('../middleware/apiCache');
-const { getCachedClient } = require('../utils/clientCache');
+const { getCachedClient } = require('../utils/core/clientCache');
 
 async function invalidateKnowledgeCaches(clientId) {
   const { clearClientCache } = require('../middleware/apiCache');
-  const { invalidateClientCache } = require('../utils/clientCache');
+  const { invalidateClientCache } = require('../utils/core/clientCache');
   await clearClientCache(clientId);
   invalidateClientCache(clientId);
   clearKnowledgeContextCache(clientId);
@@ -22,7 +22,7 @@ async function invalidateKnowledgeCaches(clientId) {
  * @desc    Get the full knowledge base of a client
  */
 router.get('/', protect, apiCache(60), async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
+  const { createTimer } = require('../utils/core/perfLogger');
   const timer = createTimer('GET /api/knowledge', tenantClientId(req) || '');
   try {
     const clientId = tenantClientId(req);
@@ -50,7 +50,7 @@ router.get('/', protect, apiCache(60), async (req, res) => {
  * @desc    Get all pending knowledge proposals for a client
  */
 router.get('/pending', protect, apiCache(30), async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
+  const { createTimer } = require('../utils/core/perfLogger');
   const timer = createTimer('GET /api/knowledge/pending', tenantClientId(req) || '');
   try {
     const clientId = tenantClientId(req);
@@ -230,7 +230,7 @@ router.get('/audit', protect, async (req, res) => {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ message: 'Unauthorized' });
 
-    const { auditClientSystem } = require('../utils/flowAuditor');
+    const { auditClientSystem } = require('../utils/flow/flowAuditor');
     const audit = await auditClientSystem(clientId);
     res.json(audit);
   } catch (err) {
@@ -464,8 +464,8 @@ router.post('/test', protect, async (req, res) => {
     if (!query || !String(query).trim()) return res.status(400).json({ success: false, message: 'Query required' });
 
     const KnowledgeDocument = require('../models/KnowledgeDocument');
-    const { buildKnowledgeContext } = require('../utils/personaEngine');
-    const { platformGenerateText } = require('../utils/gemini');
+    const { buildKnowledgeContext } = require('../utils/core/personaEngine');
+    const { platformGenerateText } = require('../utils/core/gemini');
 
     const activeDocs = await KnowledgeDocument.find({ clientId, isActive: true })
       .select('title')
@@ -502,6 +502,31 @@ router.post('/test', protect, async (req, res) => {
   } catch (err) {
     log.error('Knowledge Test Error:', err);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/knowledge/stale-docs — docs used recently but not updated in 90+ days (Phase 7)
+ */
+router.get('/stale-docs', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false });
+    const KnowledgeDocument = require('../models/KnowledgeDocument');
+    const usedSince = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const staleBefore = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+    const docs = await KnowledgeDocument.find({
+      clientId,
+      lastUsedAt: { $gte: usedSince },
+      updatedAt: { $lt: staleBefore },
+      status: 'active',
+    })
+      .select('title updatedAt lastUsedAt')
+      .limit(50)
+      .lean();
+    return res.json({ success: true, count: docs.length, documents: docs });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 

@@ -10,9 +10,9 @@ require("dotenv").config();
 const connectDB = require("../db");
 const WhatsAppFlow = require("../models/WhatsAppFlow");
 const Client = require("../models/Client");
-const { sanitizeFlowNodesMedia } = require("../utils/sanitizeFlowMedia");
-const { setCachedFlowGraph, invalidateFlowGraphCache } = require("../utils/flowGraphCache");
-const { clearTriggerCache } = require("../utils/triggerEngine");
+const { sanitizeFlowNodesMedia } = require('../../../utils/flow/sanitizeFlowMedia');
+const { setCachedFlowGraph, invalidateFlowGraphCache } = require('../../../utils/flow/flowGraphCache');
+const { clearTriggerCache } = require('../../../utils/flow/triggerEngine');
 
 async function main() {
   const clientId = process.argv[2] || "delitech_smarthomes";
@@ -44,7 +44,7 @@ async function main() {
 
   const logo = flows[0]?.publishedNodes?.find((n) => n.id?.includes("main_menu"))?.data?.imageUrl;
   const client = await Client.findOne({ clientId }).select("businessLogo brand").lean();
-  const { sanitizeInteractiveImageUrl } = require("../utils/sanitizeFlowMedia");
+  const { sanitizeInteractiveImageUrl } = require('../../../utils/flow/sanitizeFlowMedia');
   const safeLogo = sanitizeInteractiveImageUrl(
     client?.businessLogo || client?.brand?.logoUrl || ""
   );

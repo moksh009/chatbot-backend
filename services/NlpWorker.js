@@ -1,5 +1,5 @@
 const { Worker } = require('bullmq');
-const { getQueueRedis } = require('../utils/redisFactory');
+const { getQueueRedis } = require('../utils/core/redisFactory');
 const NlpEngineService = require('./NlpEngineService');
 
 const redisConnection = getQueueRedis();

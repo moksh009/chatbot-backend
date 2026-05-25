@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
 const Client = require('../models/Client');
-const log = require('../utils/logger')('AIRoutes');
+const log = require('../utils/core/logger')('AIRoutes');
 
 /**
  * POST /api/ai/generate-faq

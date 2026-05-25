@@ -6,10 +6,10 @@ const Client = require("../models/Client");
 const ShopifyProduct = require("../models/ShopifyProduct");
 const ShopifyCollection = require("../models/ShopifyCollection");
 const { protect, verifyClientAccess } = require("../middleware/auth");
-const shopifyAdminApiVersion = require("../utils/shopifyAdminApiVersion");
-const { withShopifyRetry } = require("../utils/shopifyHelper");
-const log = require("../utils/logger")("ShopifyCatalog");
-const { generateCheckoutForOrder } = require("../utils/commerceCheckoutService");
+const shopifyAdminApiVersion = require('../utils/shopify/shopifyAdminApiVersion');
+const { withShopifyRetry } = require('../utils/shopify/shopifyHelper');
+const log = require('../utils/core/logger')("ShopifyCatalog");
+const { generateCheckoutForOrder } = require('../utils/commerce/commerceCheckoutService');
 
 const SYNC_COOLDOWN_MS = 10 * 60 * 1000;
 

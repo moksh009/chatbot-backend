@@ -1,21 +1,20 @@
-const { createLoyaltyDiscount } = require('../utils/shopifyGraphQL');
-const { getWallet, redeemPoints, processOrderForLoyalty } = require('../utils/walletService');
-const { awardLoyaltyPoints, sendReminder } = require('../utils/loyaltyEngine');
+const { createLoyaltyDiscount } = require('../utils/shopify/shopifyGraphQL');
+const { getWallet, redeemPoints, processOrderForLoyalty } = require('../utils/commerce/walletService');
+const { awardLoyaltyPoints, sendReminder } = require('../utils/commerce/loyaltyEngine');
 const CustomerWallet = require('../models/CustomerWallet');
 const LoyaltyTransaction = require('../models/LoyaltyTransaction');
 const Client = require('../models/Client');
 const Order = require('../models/Order');
-const ReviewRequest = require('../models/ReviewRequest');
 const AdLead = require('../models/AdLead');
-const log = require('../utils/logger')('LoyaltyController');
-const WhatsApp = require('../utils/whatsapp');
+const log = require('../utils/core/logger')('LoyaltyController');
+const WhatsApp = require('../utils/meta/whatsapp');
 
 /**
  * GET /api/loyalty/stats
  * Real aggregate stats for the Loyalty Hub dashboard.
  */
 // ✅ Phase R2: Fixed clientId ObjectId mismatch in loyalty stats — 2026-04-10
-const { resolveClient, resolveClientOrNull, startOfDayIST, tenantClientId } = require('../utils/queryHelpers');
+const { resolveClient, resolveClientOrNull, startOfDayIST, tenantClientId } = require('../utils/core/queryHelpers');
 
 async function getLoyaltyStats(req, res) {
     try {
@@ -122,154 +121,6 @@ async function getLoyaltyStats(req, res) {
     } catch (err) {
         log.error('Stats error:', err.message);
         res.status(500).json({ success: false, message: 'Failed to aggregate loyalty stats' });
-    }
-}
-
-function parseReviewRating(response, status) {
-    const raw = String(response || '').trim();
-    const star = raw.match(/star_(\d)/i);
-    if (star) return Math.min(5, Math.max(1, parseInt(star[1], 10)));
-    if (raw === 'positive') return 5;
-    if (raw === 'neutral') return 3;
-    if (status === 'responded_positive') return 5;
-    if (status === 'responded_negative') return 2;
-    if (status === 'responded_neutral') return 3;
-    return null;
-}
-
-function formatReviewComment(doc) {
-    if (doc.status === 'sent') return 'Review request sent — awaiting customer reply';
-    if (doc.status === 'scheduled') return 'Scheduled after delivery';
-    if (doc.status === 'skipped') return 'Skipped (opt-out or guardrail)';
-    const raw = String(doc.response || '').trim();
-    if (!raw) return 'Customer responded';
-    if (/^star_\d$/i.test(raw)) return `Rated ${raw.replace('star_', '')} out of 5`;
-    if (raw === 'positive') return 'Positive feedback';
-    if (raw === 'neutral') return 'Neutral feedback';
-    return raw;
-}
-
-async function mapRecentReviewActivity(clientId, requests) {
-    const { normalizePhone } = require('../utils/helpers');
-    const phones = [...new Set((requests || []).map((r) => normalizePhone(r.phone)).filter(Boolean))];
-    const leads = phones.length
-        ? await AdLead.find({ clientId, phoneNumber: { $in: phones } })
-            .select('phoneNumber name')
-            .lean()
-        : [];
-    const nameByPhone = new Map();
-    for (const lead of leads) {
-        const p = normalizePhone(lead.phoneNumber);
-        if (p && lead.name) nameByPhone.set(p, lead.name);
-    }
-
-    return (requests || []).map((doc) => {
-        const phone = doc.phone || '';
-        const p = normalizePhone(phone);
-        return {
-            _id: doc._id,
-            customerName: (p && nameByPhone.get(p)) || phone || 'Customer',
-            customerPhone: phone,
-            rating: parseReviewRating(doc.response, doc.status),
-            comment: formatReviewComment(doc),
-            platform: 'WhatsApp',
-            createdAt: doc.sentAt || doc.updatedAt || doc.createdAt,
-            status: doc.status,
-            productName: doc.productName || null,
-            orderNumber: doc.orderNumber || doc.orderId || null,
-        };
-    });
-}
-
-/**
- * GET /api/loyalty/reputation-stats
- * Returns sentiment-based review funnel data.
- */
-async function getReputationStats(req, res) {
-    try {
-        const { client } = await resolveClientOrNull(req);
-        if (!client) {
-            return res.json({
-                summary: { scheduled: 0, sent: 0, positive: 0, negative: 0, skipped: 0 },
-                totalRequests: 0,
-                sentimentRatio: 100,
-                ratingStats: { avgRating: null, totalReviews: 0, responseRate: 0 },
-                recentReviews: [],
-            });
-        }
-        const clientId = client.clientId;
-
-        const [counts, recentRaw] = await Promise.all([
-            ReviewRequest.aggregate([
-                { $match: { clientId } },
-                { $group: {
-                    _id: "$status",
-                    count: { $sum: 1 }
-                }}
-            ]),
-            ReviewRequest.find({
-                clientId,
-                status: { $in: ['scheduled', 'sent', 'responded_positive', 'responded_negative', 'responded_neutral'] },
-            })
-                .sort({ updatedAt: -1 })
-                .limit(25)
-                .lean(),
-        ]);
-
-        const stats = {
-            scheduled: 0,
-            sent: 0,
-            positive: 0,
-            negative: 0,
-            neutral: 0,
-            skipped: 0,
-        };
-
-        counts.forEach((c) => {
-            if (c._id === 'scheduled') stats.scheduled = c.count;
-            if (c._id === 'sent') stats.sent = c.count;
-            if (c._id === 'responded_positive') stats.positive = c.count;
-            if (c._id === 'responded_negative') stats.negative = c.count;
-            if (c._id === 'responded_neutral') stats.neutral = c.count;
-            if (c._id === 'skipped') stats.skipped = c.count;
-        });
-
-        const totalResponses = stats.positive + stats.negative + stats.neutral;
-        const sentimentRatio =
-            totalResponses > 0
-                ? Math.round((stats.positive / totalResponses) * 1000) / 10
-                : 100;
-
-        const respondedDocs = recentRaw.filter((r) => String(r.status || '').includes('responded'));
-        const ratings = respondedDocs
-            .map((r) => parseReviewRating(r.response, r.status))
-            .filter((n) => Number.isFinite(n));
-        const avgRating =
-            ratings.length > 0
-                ? Math.round((ratings.reduce((a, b) => a + b, 0) / ratings.length) * 10) / 10
-                : null;
-        const responseRate =
-            stats.sent + totalResponses > 0
-                ? Math.round((totalResponses / (stats.sent + totalResponses)) * 1000) / 1000
-                : 0;
-
-        const recentReviews = await mapRecentReviewActivity(clientId, recentRaw);
-
-        res.json({
-            summary: stats,
-            totalRequests: stats.scheduled + stats.sent + stats.positive + stats.negative + stats.neutral + stats.skipped,
-            sentimentRatio,
-            ratingStats: {
-                avgRating,
-                totalReviews: totalResponses,
-                responseRate,
-                last30: totalResponses,
-            },
-            recentReviews,
-        });
-    } catch (err) {
-        log.error('Reputation stats error:', err.message);
-        res.status(500).json({ error: err.message });
     }
 }
 
@@ -400,16 +251,28 @@ async function sendLoyaltyReminderTemplate(req, res) {
 
         const daysLeft = Math.ceil((expiryDate - Date.now()) / (1000 * 60 * 60 * 24));
 
-        // Try to send via smart template engine (handles vars and media automatically)
         try {
-            await WhatsApp.sendSmartTemplate(
-                client, 
-                phone, 
-                'loyalty_points_reminder', 
-                [String(balance), `₹${cashValue}`, String(Math.max(daysLeft, 1)), tier]
-            );
+            const { sendForAutomation } = require('../services/templateSender');
+            const sendResult = await sendForAutomation({
+                clientId: resolvedClientId,
+                phone,
+                slotId: 'wizard_loyalty',
+                metaName: 'loyalty_points_reminder',
+                contextType: 'loyalty',
+                trigger: 'loyalty_expiring',
+                contextData: {
+                    extra: {
+                        loyalty_points: String(balance),
+                        loyalty_cash_value: `₹${cashValue}`,
+                        loyalty_tier: tier,
+                        loyalty_expiry_date: expiryDate.toISOString().slice(0, 10),
+                    },
+                },
+            });
+            if (!sendResult?.whatsapp?.sent) {
+                throw new Error(sendResult?.whatsapp?.reason || 'template_send_failed');
+            }
         } catch (templateErr) {
-            // Fallback if template not yet approved: send as text
             const msg = `🎁 *Loyalty Reminder* \n\nHi! You have *${balance} Points* worth *₹${cashValue}* in your rewards wallet. \n\n⏰ Your points expire in *${Math.max(daysLeft, 1)} days*. Don't let them go to waste!\n\nReply *REDEEM* to get your discount code now. 🛍️`;
             await WhatsApp.sendText(client, phone, msg);
         }
@@ -513,7 +376,7 @@ async function adjustWalletBalance(req, res) {
     }
 
     try {
-        const normalizedPhone = require('../utils/helpers').normalizePhone(phone);
+        const normalizedPhone = require('../utils/core/helpers').normalizePhone(phone);
         let wallet = await CustomerWallet.findOne({ clientId: resolvedClientId, phone: normalizedPhone });
         
         if (!wallet) {
@@ -576,7 +439,7 @@ async function generateAIRewardCode(req, res) {
         const client = await Client.findOne({ clientId: resolvedClientId });
         if (!client) return res.status(404).json({ message: 'Client not found' });
 
-        const { isLoyaltyEnabled } = require('../utils/featureFlags');
+        const { isLoyaltyEnabled } = require('../utils/core/featureFlags');
         if (!isLoyaltyEnabled(client)) {
             return res.status(403).json({
                 success: false,
@@ -651,22 +514,6 @@ async function getLoyaltyStatus(req, res) {
     }
 }
 
-async function getReviewContext(req, res) {
-    try {
-        const { client } = await resolveClient(req);
-        const { phone, orderId } = req.query;
-        if (!phone) return res.status(400).json({ success: false, message: 'Phone required' });
-
-        const { getReviewContext: buildCtx } = require('../utils/reviewSendService');
-        const data = await buildCtx(client, phone, orderId);
-        if (!data.success) return res.status(400).json(data);
-        res.json(data);
-    } catch (err) {
-        log.error('getReviewContext:', err.message);
-        res.status(500).json({ success: false, error: err.message });
-    }
-}
-
 /**
  * Unified customer context for Audience modals (orders, loyalty, warranty).
  */
@@ -676,12 +523,53 @@ async function getAudienceContext(req, res) {
         const { phone } = req.query;
         if (!phone) return res.status(400).json({ success: false, message: 'Phone required' });
 
-        const { normalizePhone } = require('../utils/helpers');
+        const { normalizePhone } = require('../utils/core/helpers');
         const cleanPhone = normalizePhone(phone);
         if (!cleanPhone) return res.status(400).json({ success: false, message: 'Invalid phone' });
 
-        const { getReviewContext: buildReviewCtx } = require('../utils/reviewSendService');
-        const reviewCtx = await buildReviewCtx(client, cleanPhone);
+        const suffix = cleanPhone.replace(/\D/g, '').slice(-10);
+        const phoneRegex = suffix ? new RegExp(`${suffix}$`) : null;
+        const orderQuery = phoneRegex
+            ? {
+                clientId: client.clientId,
+                $or: [{ customerPhone: phoneRegex }, { phone: phoneRegex }],
+            }
+            : { clientId: client.clientId, phone: cleanPhone };
+
+        const orders = await Order.find(orderQuery)
+            .sort({ createdAt: -1 })
+            .limit(8)
+            .select(
+                'orderId orderNumber customerName name customerPhone phone items totalPrice status createdAt shopifyOrderId'
+            )
+            .lean();
+
+        const lead = phoneRegex
+            ? await AdLead.findOne({
+                clientId: client.clientId,
+                $or: [{ phoneNumber: phoneRegex }, { phoneNumber: cleanPhone }],
+            })
+                .select('name firstName')
+                .lean()
+            : null;
+
+        const customerName =
+            lead?.firstName ||
+            lead?.name ||
+            orders[0]?.customerName ||
+            orders[0]?.name ||
+            'Customer';
+
+        const mappedOrders = orders.map((o) => ({
+            _id: o._id,
+            orderId: o.orderId,
+            orderNumber: o.orderNumber || o.orderId,
+            productName: o.items?.[0]?.name || 'Order',
+            productImage: o.items?.[0]?.image || null,
+            totalPrice: o.totalPrice,
+            status: o.status,
+            createdAt: o.createdAt,
+        }));
 
         let loyalty = null;
         try {
@@ -701,7 +589,7 @@ async function getAudienceContext(req, res) {
         let warranty = null;
         try {
             const WarrantyRecord = require('../models/WarrantyRecord');
-            const latestOrder = reviewCtx.orders?.[0];
+            const latestOrder = mappedOrders[0];
             if (latestOrder?.orderId) {
                 const rec = await WarrantyRecord.findOne({
                     clientId: client.clientId,
@@ -725,49 +613,14 @@ async function getAudienceContext(req, res) {
         res.json({
             success: true,
             phone: cleanPhone,
-            customerName: reviewCtx.customerName,
-            orders: reviewCtx.orders,
-            preview: reviewCtx.preview,
+            customerName,
+            orders: mappedOrders,
             loyalty,
             warranty,
         });
     } catch (err) {
         log.error('getAudienceContext:', err.message);
         res.status(500).json({ success: false, error: err.message });
-    }
-}
-
-async function sendReviewRequest(req, res) {
-    const { phone, orderId, orderMongoId } = req.body;
-    try {
-        const { client } = await resolveClient(req);
-
-        const { isReviewCollectionEnabled } = require('../utils/featureFlags');
-        if (!isReviewCollectionEnabled(client)) {
-            return res.status(403).json({
-                success: false,
-                message: 'Review requests are turned off for this workspace. Enable them under Audience → Reviews.',
-            });
-        }
-
-        if (!phone) return res.status(400).json({ message: 'Phone number required' });
-
-        const { sendRichReviewRequest } = require('../utils/reviewSendService');
-        const result = await sendRichReviewRequest(client, {
-            phone,
-            orderId,
-            orderMongoId: orderMongoId || orderId,
-        });
-
-        res.json({
-            success: true,
-            message: 'Review request sent with product details and rating options',
-            productName: result.reviewReq?.productName,
-            orderNumber: result.reviewReq?.orderNumber,
-        });
-    } catch (err) {
-        log.error('Send review request error:', err.message);
-        res.status(500).json({ error: err.message });
     }
 }
 
@@ -780,9 +633,6 @@ module.exports = {
     adjustWalletBalance,
     generateAIRewardCode,
     getLoyaltyStatus,
-    getReputationStats,
-    sendReviewRequest,
-    getReviewContext,
     getAudienceContext,
     getLoyaltyTransactions
 };

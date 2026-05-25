@@ -1,5 +1,5 @@
 const Client = require('../models/Client');
-const { getCachedClient } = require('../utils/clientCache');
+const { getCachedClient } = require('../utils/core/clientCache');
 const {
   getRealtimeStats,
   getTopProducts,
@@ -7,15 +7,15 @@ const {
   getOperatorsStats,
   getHumanQueueConversations,
   MAX_LIVE_ANALYTICS_DAYS,
-} = require('../utils/analyticsHelper');
+} = require('../utils/core/analyticsHelper');
 const {
   getAnalyticsChart,
   getCartRecoveryChart,
-} = require('../utils/dashboardChartAnalytics');
+} = require('../utils/core/dashboardChartAnalytics');
 const { getConversationsList } = require('../routes/conversations');
-const { tenantClientId } = require('../utils/queryHelpers');
-const { createTimer } = require('../utils/perfLogger');
-const { dedupeAsync } = require('../utils/requestDedupe');
+const { tenantClientId } = require('../utils/core/queryHelpers');
+const { createTimer } = require('../utils/core/perfLogger');
+const { dedupeAsync } = require('../utils/core/requestDedupe');
 const DashboardLayout = require('../models/DashboardLayout');
 const Conversation = require('../models/Conversation');
 const Order = require('../models/Order');
@@ -23,8 +23,8 @@ const AdLead = require('../models/AdLead');
 const Competitor = require('../models/Competitor');
 const Supplier = require('../models/Supplier');
 const PurchaseOrder = require('../models/PurchaseOrder');
-const logger = require('../utils/logger')('DashboardController');
-const Shopify = require('../utils/shopifyGraphQL');
+const logger = require('../utils/core/logger')('DashboardController');
+const Shopify = require('../utils/shopify/shopifyGraphQL');
 
 
 /**
@@ -323,8 +323,32 @@ exports.resetLayout = async (req, res) => {
  */
 exports.getForecast = async (req, res) => {
   try {
-    const { buildDemandForecast } = require('../utils/demandForecastBuilder');
-    const data = await buildDemandForecast(req.user.clientId);
+    const clientId = req.user.clientId;
+    const { buildDemandForecast } = require('../utils/core/demandForecastBuilder');
+    let data = await buildDemandForecast(clientId);
+
+    if (data.needsOrderSync && data.totalOrderCount === 0) {
+      try {
+        const Client = require('../models/Client');
+        const { buildConnectionStatusPayload } = require('../utils/core/connectionStatus');
+        const client = await Client.findOne({ clientId })
+          .select('shopDomain shopifyAccessToken shopifyStores commerce shopifyConnectionStatus')
+          .lean();
+        const { shopify_connected: shopifyConnected } = buildConnectionStatusPayload(client || {});
+
+        if (shopifyConnected) {
+          const { withShopifyRetry } = require('../utils/shopify/shopifyHelper');
+          const { syncShopifyOrdersToMongo } = require('../utils/shopify/shopifyOrderSync');
+          await withShopifyRetry(clientId, (shop) => syncShopifyOrdersToMongo(clientId, shop));
+          data = await buildDemandForecast(clientId);
+          data.syncTriggered = true;
+        }
+      } catch (syncErr) {
+        logger.warn(`Forecast order sync skipped for ${clientId}: ${syncErr.message}`);
+        data.syncError = syncErr.message;
+      }
+    }
+
     res.json({ success: true, forecast: data });
   } catch (error) {
     logger.error('Forecast Error', error);
@@ -418,7 +442,7 @@ exports.getQualityStats = async (req, res) => {
     const UnrecognizedPhrase = require('../models/UnrecognizedPhrase');
     const WhatsAppFlow = require('../models/WhatsAppFlow');
     const IntentRule = require('../models/IntentRule');
-    const { buildBotQualityRecommendations } = require('../utils/botQualityInsights');
+    const { buildBotQualityRecommendations } = require('../utils/core/botQualityInsights');
 
     const [
       qualityDocs,
@@ -628,8 +652,8 @@ exports.generateBattlePlan = async (req, res) => {
     const Competitor = require('../models/Competitor');
     const Order = require('../models/Order');
     const Client = require('../models/Client');
-    const { generateText } = require('../utils/gemini');
-    const { scrapeWebsiteText } = require('../utils/urlScraper');
+    const { generateText } = require('../utils/core/gemini');
+    const { scrapeWebsiteText } = require('../utils/core/urlScraper');
 
     const competitor = await Competitor.findById(id).lean();
     if (!competitor) return res.status(404).json({ success: false, message: "Competitor not found" });
@@ -835,7 +859,7 @@ exports.getOperationsSummary = async (req, res) => {
 exports.getRestockDrafts = async (req, res) => {
   try {
     const clientId = req.user.clientId;
-    const { buildDemandForecast } = require('../utils/demandForecastBuilder');
+    const { buildDemandForecast } = require('../utils/core/demandForecastBuilder');
 
     const clientDoc = await Client.findOne({ clientId }).select('_id brand').lean();
     if (!clientDoc) {

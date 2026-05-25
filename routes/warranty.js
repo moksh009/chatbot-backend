@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
-const { requireFeature } = require('../utils/featureFlags');
+const { requireFeature } = require('../utils/core/featureFlags');
 const featureWarranty = requireFeature('warranty');
 const AdLead = require('../models/AdLead');
 const Contact = require('../models/Contact');
@@ -9,8 +9,8 @@ const Order = require('../models/Order');
 const WarrantyBatch = require('../models/WarrantyBatch');
 const WarrantyRecord = require('../models/WarrantyRecord');
 const Client = require('../models/Client');
-const { withShopifyRetry } = require('../utils/shopifyHelper');
-const { normalizePhone } = require('../utils/helpers');
+const { withShopifyRetry } = require('../utils/shopify/shopifyHelper');
+const { normalizePhone } = require('../utils/core/helpers');
 
 function normalizeProductRules(body = {}) {
     const { productRules, shopifyProductIds, durationMonths } = body;
@@ -286,6 +286,140 @@ router.get('/records', protect, featureWarranty, async (req, res) => {
 });
 
 /**
+ * @route GET /api/warranty/customer-profile?phone=
+ * @desc Full warranty customer profile with order history and per-item warranty status
+ */
+router.get('/customer-profile', protect, featureWarranty, async (req, res) => {
+    try {
+        const clientId = req.user.clientId;
+        const phone = normalizePhone(req.query.phone || '');
+        if (!phone) {
+            return res.status(400).json({ success: false, message: 'Phone is required' });
+        }
+
+        const contact = await Contact.findOne({ clientId, phoneNumber: phone }).lean();
+        const lead = await AdLead.findOne({ clientId, phoneNumber: phone })
+            .select('_id name email phoneNumber')
+            .lean();
+
+        const warrantyRecords = contact
+            ? await WarrantyRecord.find({ clientId, customerId: contact._id })
+                  .sort({ purchaseDate: -1 })
+                  .lean()
+            : [];
+
+        const phoneVariants = [phone];
+        if (phone.startsWith('91') && phone.length === 12) {
+            phoneVariants.push(phone.slice(2));
+        }
+
+        const orders = await Order.find({
+            clientId,
+            $or: [
+                { customerPhone: { $in: phoneVariants } },
+                { phone: { $in: phoneVariants } },
+            ],
+        })
+            .sort({ createdAt: -1 })
+            .limit(100)
+            .lean();
+
+        const warrantyByOrderProduct = new Map();
+        for (const wr of warrantyRecords) {
+            const orderKey = String(wr.shopifyOrderId || '').trim();
+            const productKey = String(wr.productId || wr.productName || '').trim();
+            warrantyByOrderProduct.set(`${orderKey}::${productKey}`, wr);
+            warrantyByOrderProduct.set(`${orderKey}::${String(wr.productName || '').trim()}`, wr);
+        }
+
+        const now = new Date();
+        let totalCovered = 0;
+        let activeCount = 0;
+        let expiredCount = 0;
+
+        const enrichedOrders = orders.map((order) => {
+            const orderKey = String(order.shopifyOrderId || order.orderId || order.name || '').trim();
+            const rawItems = order.lineItems?.length ? order.lineItems : order.items || [];
+            const lineItems = rawItems.map((li) => {
+                const productId = String(li.product_id || li.productId || li.sku || '').trim();
+                const title = li.title || li.name || 'Item';
+                const wr =
+                    warrantyByOrderProduct.get(`${orderKey}::${productId}`) ||
+                    warrantyByOrderProduct.get(`${orderKey}::${title}`) ||
+                    null;
+
+                let warranty = { hasWarranty: false };
+                if (wr) {
+                    totalCovered += 1;
+                    const exp = wr.expiryDate ? new Date(wr.expiryDate) : null;
+                    const isActive = wr.status === 'active' && exp && exp > now;
+                    if (isActive) activeCount += 1;
+                    else if (exp && exp <= now) expiredCount += 1;
+                    warranty = {
+                        hasWarranty: true,
+                        recordId: wr._id,
+                        productName: wr.productName,
+                        purchaseDate: wr.purchaseDate,
+                        expiryDate: wr.expiryDate,
+                        status: wr.status,
+                    };
+                }
+
+                return {
+                    title,
+                    name: title,
+                    quantity: li.quantity || 1,
+                    price: li.price,
+                    sku: li.sku,
+                    productId,
+                    warranty,
+                };
+            });
+
+            return {
+                orderId: order.shopifyOrderId || order.orderId,
+                orderName: order.name || order.orderNumber || order.shopifyOrderId,
+                placedAt: order.createdAt,
+                financialStatus: order.financialStatus,
+                fulfillmentStatus: order.fulfillmentStatus,
+                totalPrice: order.totalPrice || order.amount,
+                currency: order.currency || 'INR',
+                lineItems,
+            };
+        });
+
+        const profileLineItems = warrantyRecords.map((wr) => ({
+            _id: wr._id,
+            productName: wr.productName,
+            shopifyOrderId: wr.shopifyOrderId,
+            purchaseDate: wr.purchaseDate,
+            expiryDate: wr.expiryDate,
+            status: wr.status,
+        }));
+
+        res.json({
+            success: true,
+            profile: {
+                customerName: contact?.name || lead?.name || orders[0]?.customerName || 'Customer',
+                customerPhone: contact?.phoneNumber || phone,
+                customerEmail: contact?.email || lead?.email || orders[0]?.customerEmail || '',
+                customerId: contact?._id || null,
+                leadId: lead?._id || null,
+                orders: enrichedOrders,
+                lineItems: profileLineItems,
+                warrantySummary: {
+                    totalCovered,
+                    active: activeCount,
+                    expired: expiredCount,
+                },
+            },
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+/**
  * @route GET /api/warranty/resolve-lead?phone=
  * @desc Resolve CRM lead id for warranty customer profile deep-link
  */
@@ -480,7 +614,7 @@ router.post('/resend-notification', protect, featureWarranty, async (req, res) =
         const client = await Client.findOne({ clientId });
         if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
-        const { sendWhatsAppTemplate } = require('../utils/whatsappHelpers');
+        const { sendWhatsAppTemplate } = require('../utils/meta/whatsappHelpers');
         
         try {
             await sendWhatsAppTemplate({

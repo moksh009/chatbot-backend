@@ -1,8 +1,8 @@
 const cron = require('node-cron');
 const axios = require('axios');
 const Client = require('../models/Client');
-const shopifyAdminApiVersion = require('../utils/shopifyAdminApiVersion');
-const log = require('../utils/logger')('ProductSyncCron');
+const shopifyAdminApiVersion = require('../utils/shopify/shopifyAdminApiVersion');
+const log = require('../utils/core/logger')('ProductSyncCron');
 
 /**
  * Daily Product Sync Cron
@@ -28,19 +28,64 @@ const scheduleProductSyncCron = () => {
                         { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
                     );
 
-                    const products = response.data.products.map(p => ({
-                        id: p.id,
-                        title: p.title,
-                        handle: p.handle,
-                        price: p.variants[0]?.price,
-                        image: p.image?.src,
-                        url: `https://${client.shopDomain}/products/${p.handle}`
-                    }));
+                    const products = response.data.products.map(p => {
+                        const v = p.variants?.[0] || {};
+                        const qty = v.inventory_quantity ?? 0;
+                        return {
+                            id: p.id,
+                            title: p.title,
+                            handle: p.handle,
+                            price: v.price,
+                            sku: v.sku || String(v.id || p.id),
+                            inventoryQuantity: qty,
+                            inStock: qty > 0,
+                            image: p.image?.src,
+                            url: `https://${client.shopDomain}/products/${p.handle}`,
+                        };
+                    });
+
+                    const prevSnap =
+                        (await Client.findOne({ clientId: client.clientId })
+                            .select('nicheData.productsInventorySnapshot')
+                            .lean())?.nicheData?.productsInventorySnapshot || {};
+
+                    const nextSnap = {};
+                    const restocked = [];
+                    for (const p of products) {
+                        const sku = String(p.sku || p.id);
+                        nextSnap[sku] = p.inventoryQuantity ?? 0;
+                        const prevQty = prevSnap[sku] ?? 0;
+                        if (prevQty <= 0 && nextSnap[sku] > 0) {
+                            restocked.push({
+                                sku,
+                                productName: p.title,
+                                productUrl: p.url,
+                                currentStock: nextSnap[sku],
+                            });
+                        }
+                    }
 
                     await Client.findOneAndUpdate(
                         { clientId: client.clientId },
-                        { $set: { "nicheData.products": products } }
+                        {
+                            $set: {
+                                'nicheData.products': products,
+                                'nicheData.productsInventorySnapshot': nextSnap,
+                            },
+                        }
                     );
+
+                    if (restocked.length) {
+                        const { triggerRestockNotifications } = require('../services/productWatch/triggerRestockNotifications');
+                        for (const r of restocked) {
+                            await triggerRestockNotifications({
+                                clientId: client.clientId,
+                                ...r,
+                            }).catch((e) =>
+                                log.warn(`Restock notify ${r.sku}: ${e.message}`)
+                            );
+                        }
+                    }
                     
                     log.success(`Successfully synced ${products.length} products for ${client.clientId}`);
                     

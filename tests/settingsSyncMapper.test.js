@@ -4,7 +4,7 @@ const assert = require("assert");
 const {
   applySettingsSyncMirrors,
   flattenClientForSettingsUI,
-} = require("../utils/settingsSyncMapper");
+} = require('../utils/core/settingsSyncMapper');
 
 function run() {
   const fields = {};

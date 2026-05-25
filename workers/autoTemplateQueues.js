@@ -6,8 +6,8 @@ require('dotenv').config();
  * Shared by autoTemplateWorker.js and routes/autoTemplates.js
  */
 const { Queue } = require('bullmq');
-const log = require('../utils/logger')('AutoTemplateQueues');
-const { getQueueRedis } = require('../utils/redisFactory');
+const log = require('../utils/core/logger')('AutoTemplateQueues');
+const { getQueueRedis } = require('../utils/core/redisFactory');
 
 let redisConnection = null;
 let generationQueue = null;

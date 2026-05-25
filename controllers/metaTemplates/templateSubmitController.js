@@ -1,11 +1,11 @@
 const axios = require('axios');
 const mongoose = require('mongoose');
 const MetaTemplate = require('../../models/MetaTemplate');
-const { validateUsageTagsForClient } = require('../../utils/templateUsageTags');
+const { validateUsageTagsForClient } = require('../../utils/meta/templateUsageTags');
 const Client = require('../../models/Client');
 const User = require('../../models/User');
-const { decrypt } = require('../../utils/encryption');
-const { tenantClientId } = require('../../utils/queryHelpers');
+const { decrypt } = require('../../utils/core/encryption');
+const { tenantClientId } = require('../../utils/core/queryHelpers');
 
 const META_GRAPH_VERSION = 'v19.0';
 

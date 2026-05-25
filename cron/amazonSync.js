@@ -1,10 +1,10 @@
 const cron = require('node-cron');
 const Client = require('../models/Client');
 const Order = require('../models/Order');
-const AmazonSPAPI = require('../utils/amazonSPAPI');
-const log = require('../utils/logger')('AmazonSync');
-const { trackEcommerceEvent } = require('../utils/analyticsHelper');
-const { processOrderForLoyalty } = require('../utils/walletService');
+const AmazonSPAPI = require('../utils/commerce/amazonSPAPI');
+const log = require('../utils/core/logger')('AmazonSync');
+const { trackEcommerceEvent } = require('../utils/core/analyticsHelper');
+const { processOrderForLoyalty } = require('../utils/commerce/walletService');
 
 
 /**
@@ -58,7 +58,7 @@ const scheduleAmazonSync = () => {
 
                     // Trigger SKU Automations (Unified Engine)
                     if (client.skuAutomations?.length > 0 && newOrder.customerPhone) {
-                        const SkuTriggerService = require('../utils/skuTriggerService');
+                        const SkuTriggerService = require('../utils/commerce/skuTriggerService');
                         await SkuTriggerService.processTriggers(
                           {
                             orderId: newOrder.orderId,

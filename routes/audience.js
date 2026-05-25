@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
 const ImportSession = require('../models/ImportSession');
-const { tenantClientId } = require('../utils/queryHelpers');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 
 // @route   GET /api/audience/import-batches
 // @desc    Get all completed import batches for a client

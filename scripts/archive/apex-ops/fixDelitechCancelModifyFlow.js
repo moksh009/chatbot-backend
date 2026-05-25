@@ -13,8 +13,8 @@
 require("dotenv").config();
 const connectDB = require("../db");
 const WhatsAppFlow = require("../models/WhatsAppFlow");
-const { setCachedFlowGraph, invalidateFlowGraphCache } = require("../utils/flowGraphCache");
-const { clearTriggerCache } = require("../utils/triggerEngine");
+const { setCachedFlowGraph, invalidateFlowGraphCache } = require('../../../utils/flow/flowGraphCache');
+const { clearTriggerCache } = require('../../../utils/flow/triggerEngine');
 
 function flowPos(x, y) {
   return { x: x * 280, y: y * 120 };

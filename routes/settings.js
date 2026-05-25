@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const router = express.Router();
 const Client = require('../models/Client');
 const { protect, verifyClientAccess } = require('../middleware/auth');
-const { ensureGrowthEmbedDoc, buildGrowthEmbedOverview } = require('../utils/growthEmbedOverview');
+const { ensureGrowthEmbedDoc, buildGrowthEmbedOverview } = require('../utils/core/growthEmbedOverview');
 
 
 router.put('/:clientId/working-hours', protect, verifyClientAccess, async (req, res) => {
@@ -257,7 +257,10 @@ router.get('/:clientId/growth-embed-overview', protect, verifyClientAccess, asyn
   try {
     const { clientId } = req.params;
     const period = String(req.query.period || '30d').toLowerCase();
-    const payload = await buildGrowthEmbedOverview(clientId, period);
+    const { buildTrackingHealth } = require('../utils/commerce/trackingHealth');
+    const days = period === '7d' ? 7 : period === '90d' ? 90 : 30;
+    const tracking = await buildTrackingHealth(clientId, days).catch(() => null);
+    const payload = await buildGrowthEmbedOverview(clientId, period, tracking);
     if (!payload) return res.status(404).json({ success: false, message: 'Client not found' });
     res.json(payload);
   } catch (error) {
@@ -269,7 +272,7 @@ router.get('/:clientId/growth-embed-overview', protect, verifyClientAccess, asyn
 const {
   mergeWebsiteWidgetConfig,
   buildWebsiteWidgetSettingsBundle,
-} = require('../utils/websiteWidgetDefaults');
+} = require('../utils/core/websiteWidgetDefaults');
 
 router.get('/:clientId/website-chat-widget', protect, verifyClientAccess, async (req, res) => {
   try {

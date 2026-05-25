@@ -14,6 +14,11 @@ const ScheduledMessageSchema = new mongoose.Schema({
     enum: ['whatsapp', 'instagram', 'email'],
     required: true
   },
+  intent: {
+    type: String,
+    enum: ['marketing', 'utility', 'authentication', 'service', 'transactional'],
+    default: 'service',
+  },
   messageType: {
     type: String,
     enum: ['text', 'interactive', 'template', 'image'],

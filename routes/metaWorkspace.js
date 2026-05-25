@@ -4,8 +4,8 @@ const express = require('express');
 const router = express.Router();
 const Client = require('../models/Client');
 const { protect, verifyClientAccess } = require('../middleware/auth');
-const { buildConnectionStatusPayload } = require('../utils/connectionStatus');
-const { decrypt } = require('../utils/encryption');
+const { buildConnectionStatusPayload } = require('../utils/core/connectionStatus');
+const { decrypt } = require('../utils/core/encryption');
 
 function maskSecret(val) {
   if (!val || val === '••••••••') return null;

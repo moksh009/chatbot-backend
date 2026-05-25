@@ -5,7 +5,7 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const mongoose = require('mongoose');
 const Client = require('../models/Client');
 const WhatsAppFlow = require('../models/WhatsAppFlow');
-const { clearTriggerCache } = require('../utils/triggerEngine');
+const { clearTriggerCache } = require('../utils/flow/triggerEngine');
 const { clearClientCache } = require('../middleware/apiCache');
 const {
   buildFlow,
@@ -161,7 +161,7 @@ async function run() {
 
   let mpmPatchSummary = null;
   try {
-    const { syncApexCatalogFlowFromMeta } = require('../utils/apexCatalogFlowSync');
+    const { syncApexCatalogFlowFromMeta } = require('../utils/shopify/apexCatalogFlowSync');
     mpmPatchSummary = await syncApexCatalogFlowFromMeta(CLIENT_ID, { flowId: FLOW_ID });
   } catch (patchErr) {
     console.warn('[setupApexOwnerSupportFlow] MPM auto-patch skipped:', patchErr.message);

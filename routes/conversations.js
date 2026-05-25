@@ -3,22 +3,22 @@
  * - GET / — Conversation.find + countDocuments + AdLead bulk enrichment
  */
 const express = require('express');
-const { resolveClient, tenantClientId } = require('../utils/queryHelpers');
+const { resolveClient, tenantClientId } = require('../utils/core/queryHelpers');
 const router = express.Router();
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Client = require('../models/Client');
 const { protect } = require('../middleware/auth');
 const { apiCache } = require('../middleware/apiCache');
-const { getCachedClient } = require('../utils/clientCache');
-const WhatsApp = require('../utils/whatsapp');
-const { createMessage } = require('../utils/createMessage');
+const { getCachedClient } = require('../utils/core/clientCache');
+const WhatsApp = require('../utils/meta/whatsapp');
+const { createMessage } = require('../utils/core/createMessage');
 const ExportJob = require('../models/ExportJob');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
-const { uploadToCloud } = require('../utils/cloudinary');
-const { normalizePhone } = require('../utils/helpers');
+const { uploadToCloud } = require('../utils/core/cloudinary');
+const { normalizePhone } = require('../utils/core/helpers');
 
 /** IDOR guard — always scope conversation by tenant unless super-admin. */
 function conversationQueryForTenant(req, conversationId) {
@@ -28,8 +28,8 @@ function conversationQueryForTenant(req, conversationId) {
   }
   return query;
 }
-const { injectVariables } = require('../utils/variableInjector');
-const { generateCheckoutForOrder, publicApiBase } = require('../utils/commerceCheckoutService');
+const { injectVariables } = require('../utils/core/variableInjector');
+const { generateCheckoutForOrder, publicApiBase } = require('../utils/commerce/commerceCheckoutService');
 const CheckoutLinkModel = require('../models/CheckoutLink');
 const AdLeadModel = require('../models/AdLead');
 const { correctAIResponse } = require('../controllers/flowFixController');
@@ -81,7 +81,7 @@ function collectPhoneVariantsForInbox(phones) {
  * Shared conversation list loader (GET /api/conversations + dashboard summary).
  */
 async function getConversationsList(user, queryParams = {}, options = {}) {
-  const { createTimer, timeParallel } = require('../utils/perfLogger');
+  const { createTimer, timeParallel } = require('../utils/core/perfLogger');
   const timer =
     options.timer ||
     createTimer('getConversationsList', queryParams.clientId || user?.clientId || '');
@@ -261,7 +261,7 @@ async function getConversationsList(user, queryParams = {}, options = {}) {
 // @desc    Get all conversations for the client
 // @access  Private
 router.get('/', protect, logPersonalDataAccess, apiCache(30), async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
+  const { createTimer } = require('../utils/core/perfLogger');
   const timer = createTimer(
     'GET /api/conversations',
     req.query.clientId || req.user?.clientId || ''
@@ -270,12 +270,12 @@ router.get('/', protect, logPersonalDataAccess, apiCache(30), async (req, res) =
 
   const warmClientId = req.query.clientId || req.user?.clientId;
   if (warmClientId) {
-    const { getCachedClientForWhatsAppSend } = require('../utils/clientCache');
+    const { getCachedClientForWhatsAppSend } = require('../utils/core/clientCache');
     getCachedClientForWhatsAppSend(warmClientId).catch(() => {});
   }
 
   try {
-    const { dedupeAsync } = require('../utils/requestDedupe');
+    const { dedupeAsync } = require('../utils/core/requestDedupe');
     const dedupeKey = [
       'conv-list',
       req.query.clientId || req.user?.clientId || '',
@@ -308,7 +308,7 @@ router.get('/', protect, logPersonalDataAccess, apiCache(30), async (req, res) =
 // @route   POST /api/conversations/:id/email
 // @desc    Send a manual email to the customer
 // @access  Private
-const { sendEmailMessage } = require('../utils/emailIntegration');
+const { sendEmailMessage } = require('../utils/core/emailIntegration');
 router.post('/:id/email', protect, async (req, res) => {
   try {
     const { subject, text, html } = req.body;
@@ -366,7 +366,7 @@ router.get('/:id', protect, logPersonalDataAccess, async (req, res) => {
 // @desc    Get messages for a conversation
 // @access  Private
 router.get('/:id/messages', protect, logPersonalDataAccess, async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
+  const { createTimer } = require('../utils/core/perfLogger');
   const timer = createTimer('GET /api/conversations/:id/messages', req.user?.clientId || '');
   try {
     const query = { _id: req.params.id };
@@ -429,7 +429,7 @@ router.delete('/:id/messages', protect, logPersonalDataAccess, async (req, res) 
       req.body?.clearScope || req.query?.clearScope || ''
     ).trim();
 
-    const { clearConversationMessages } = require('../utils/clearConversationMessages');
+    const { clearConversationMessages } = require('../utils/core/clearConversationMessages');
     const result = await clearConversationMessages({
       conversationId: req.params.id,
       clientId,
@@ -495,7 +495,7 @@ async function loadConversationLiteContext({ id, user, timer }) {
   const {
     resolveScoreStageNameForClient,
     calculateCustomerLTV,
-  } = require('../utils/customerOrderMetrics');
+  } = require('../utils/commerce/customerOrderMetrics');
 
   const cleanPhone = phone ? phone.replace(/\D/g, '') : '';
   const phoneSuffix = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
@@ -701,8 +701,8 @@ async function loadConversationSidebarContext({ id, user, timer }) {
 }
 
 router.get('/:id/sidebar-context', protect, logPersonalDataAccess, async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
-  const { dedupeAsync } = require('../utils/requestDedupe');
+  const { createTimer } = require('../utils/core/perfLogger');
+  const { dedupeAsync } = require('../utils/core/requestDedupe');
   const timer = createTimer('GET /api/conversations/:id/sidebar-context', req.user?.clientId || '');
   const { id } = req.params;
   const dedupeKey = `sidebar-ctx:${req.user?.clientId || ''}:${id}`;
@@ -725,8 +725,8 @@ router.get('/:id/sidebar-context', protect, logPersonalDataAccess, async (req, r
 // ✅ Phase 2: Live Chat Mega-Payload (Full Context)
 // Fetches conversation, 50 messages, lead intent, orders, and wallet in 1 round trip
 router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res) => {
-  const { createTimer, timeParallel } = require('../utils/perfLogger');
-  const { dedupeAsync } = require('../utils/requestDedupe');
+  const { createTimer, timeParallel } = require('../utils/core/perfLogger');
+  const { dedupeAsync } = require('../utils/core/requestDedupe');
   const timer = createTimer('GET /api/conversations/:id/full-context', req.user?.clientId || '');
   const { id } = req.params;
   const dedupeKey = `full-ctx:${req.user?.clientId || ''}:${id}`;
@@ -779,7 +779,7 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
     const {
       calculateCustomerLTV,
       resolveScoreStageNameForClient,
-    } = require('../utils/customerOrderMetrics');
+    } = require('../utils/commerce/customerOrderMetrics');
 
     const parallel = await timeParallel(
       timer,
@@ -992,8 +992,8 @@ router.get('/:id/orders/:orderKey', protect, logPersonalDataAccess, async (req, 
     const refreshShopify = String(req.query.refreshShopify || '') === '1';
     if (refreshShopify && order.shopifyOrderId) {
       try {
-        const { withShopifyRetry } = require('../utils/shopifyHelper');
-        const { buildShopifyOrderSet } = require('../utils/shopifyOrderMapper');
+        const { withShopifyRetry } = require('../utils/shopify/shopifyHelper');
+        const { buildShopifyOrderSet } = require('../utils/shopify/shopifyOrderMapper');
         const fresh = await withShopifyRetry(tenantId, async (shop) => {
           const r = await shop.get(`/orders/${order.shopifyOrderId}.json`);
           return r.data?.order;
@@ -1137,7 +1137,7 @@ router.post('/:id/resend-checkout', protect, logPersonalDataAccess, async (req, 
 // @desc    Send a message (Agent reply)
 // @access  Private
 router.post('/:id/messages', protect, async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
+  const { createTimer } = require('../utils/core/perfLogger');
   const timer = createTimer('POST /api/conversations/:id/messages', req.user?.clientId || '');
   const { content, mediaUrl, mediaType } = req.body;
 
@@ -1159,7 +1159,7 @@ router.post('/:id/messages', protect, async (req, res) => {
       return res.status(404).json({ message: 'Conversation not found' });
     }
 
-    const { getCachedClientForWhatsAppSend } = require('../utils/clientCache');
+    const { getCachedClientForWhatsAppSend } = require('../utils/core/clientCache');
     const client = await timer.time('getCachedClientForWhatsAppSend', () =>
       getCachedClientForWhatsAppSend(conversation.clientId)
     );
@@ -1168,7 +1168,7 @@ router.post('/:id/messages', protect, async (req, res) => {
       return res.status(404).json({ message: 'Client not found' });
     }
 
-    const { translateText } = require('../utils/translationEngine');
+    const { translateText } = require('../utils/core/translationEngine');
     let finalContent = content;
     let translatedContent = '';
     const translationConfig = client.translationConfig || {};
@@ -1191,24 +1191,37 @@ router.post('/:id/messages', protect, async (req, res) => {
       }
     }
 
+    const { dispatchAgentEnvelope } = require('../utils/messaging/botEnvelopeDispatch');
+    const agentMessageId = `agent_${req.user._id}_${Date.now()}`;
+
     let newMessage;
     if (mediaUrl) {
       const type = mediaType?.toLowerCase() || 'image';
 
       await timer.time('WhatsApp.send_media', async () => {
+        let payload;
         if (type === 'image') {
-          await WhatsApp.sendImage(client, conversation.phone, mediaUrl, finalContent);
-        } else if (type === 'video') {
-          if (WhatsApp.sendVideo) await WhatsApp.sendVideo(client, conversation.phone, mediaUrl, finalContent);
-          else await WhatsApp.sendText(client, conversation.phone, `${finalContent}\n\nVideo: ${mediaUrl}`);
-        } else if (type === 'document' || type === 'file') {
-          if (WhatsApp.sendDocument) {
-            await WhatsApp.sendDocument(client, conversation.phone, mediaUrl, finalContent);
-          } else {
-            await WhatsApp.sendText(client, conversation.phone, `${finalContent}\n\nDocument: ${mediaUrl}`);
-          }
+          payload = { media: { type: 'image', url: mediaUrl }, text: finalContent };
         } else {
-          await WhatsApp.sendText(client, conversation.phone, `${finalContent}\n\nWait: ${mediaUrl}`);
+          payload = { text: `${finalContent}\n\n${type}: ${mediaUrl}` };
+        }
+        const env = await dispatchAgentEnvelope({
+          client,
+          phone: conversation.phone,
+          payload,
+          userId: String(req.user._id),
+          conversationId: conversation._id,
+          messageId: agentMessageId,
+        });
+        if (env?.blocked && env.windowClosed) {
+          const err = new Error('WhatsApp 24-hour service window closed. Send an approved template instead.');
+          err.code = 'window_closed';
+          throw err;
+        }
+        if (env?.handled && !env.sent && !env.duplicate) {
+          const err = new Error(env.reason || 'Send blocked by compliance');
+          err.code = env.result?.blockedBy || 'blocked';
+          throw err;
         }
       });
 
@@ -1227,9 +1240,26 @@ router.post('/:id/messages', protect, async (req, res) => {
         })
       );
     } else {
-      await timer.time('WhatsApp.sendText', () =>
-        WhatsApp.sendText(client, conversation.phone, finalContent)
-      );
+      await timer.time('WhatsApp.sendText', async () => {
+        const env = await dispatchAgentEnvelope({
+          client,
+          phone: conversation.phone,
+          payload: { text: finalContent },
+          userId: String(req.user._id),
+          conversationId: conversation._id,
+          messageId: agentMessageId,
+        });
+        if (env?.blocked && env.windowClosed) {
+          const err = new Error('WhatsApp 24-hour service window closed. Send an approved template instead.');
+          err.code = 'window_closed';
+          throw err;
+        }
+        if (env?.handled && !env.sent && !env.duplicate) {
+          const err = new Error(env.reason || 'Send blocked by compliance');
+          err.code = env.result?.blockedBy || 'blocked';
+          throw err;
+        }
+      });
       newMessage = await timer.time('createMessage', () =>
         createMessage({
           clientId: conversation.clientId,
@@ -1271,28 +1301,6 @@ router.post('/:id/messages', protect, async (req, res) => {
       }
     ).catch(() => {});
 
-    const shouldCaptureTraining =
-      conversation.botPaused ||
-      conversation.status === 'HUMAN_TAKEOVER' ||
-      conversation.status === 'HUMAN_SUPPORT';
-
-    if (shouldCaptureTraining) {
-      const convId = conversation._id;
-      const msgId = newMessage._id;
-      const agentText = (content || '').substring(0, 500);
-      setImmediate(() => {
-        captureAgentTrainingCase({
-          clientId: conversation.clientId,
-          conversationId: convId,
-          newMessageId: msgId,
-          agentCorrection: agentText,
-          phone: conversation.phone,
-        }).catch((tcErr) =>
-          console.error('[TrainingCase] Auto-capture error:', tcErr.message)
-        );
-      });
-    }
-
     const io = req.app.get('socketio');
     if (io) {
       io.to(`client_${conversation.clientId}`).emit('new_message', newMessage);
@@ -1312,6 +1320,15 @@ router.post('/:id/messages', protect, async (req, res) => {
     console.error('Error sending message:', errorData);
     timer.finish(`500 error=${error.message || errorData}`);
 
+    if (error.code === 'window_closed') {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+        code: 'window_closed',
+        blockedBy: 'service_window',
+      });
+    }
+
     const finalStatus = [401, 403].includes(statusCode) ? 400 : statusCode;
     const friendly =
       error.friendlyMessage ||
@@ -1325,48 +1342,6 @@ router.post('/:id/messages', protect, async (req, res) => {
     });
   }
 });
-
-/** Non-blocking training capture after agent send (does not delay HTTP response). */
-async function captureAgentTrainingCase({
-  clientId,
-  conversationId,
-  newMessageId,
-  agentCorrection,
-  phone,
-}) {
-  const [botLastMsg, userLastMsg] = await Promise.all([
-    Message.findOne({
-      conversationId,
-      direction: 'outgoing',
-      _id: { $ne: newMessageId },
-    })
-      .sort({ timestamp: -1 })
-      .select('body content timestamp createdAt')
-      .lean(),
-    Message.findOne({ conversationId, direction: 'incoming' })
-      .sort({ timestamp: -1 })
-      .select('body content timestamp')
-      .lean(),
-  ]);
-
-  if (!botLastMsg || !userLastMsg) return;
-  const botBody = botLastMsg.body || botLastMsg.content;
-  if (!botBody) return;
-
-  const botMsgAge = Date.now() - new Date(botLastMsg.timestamp || botLastMsg.createdAt).getTime();
-  if (botMsgAge >= 10 * 60 * 1000) return;
-
-  const TrainingCase = require('../models/TrainingCase');
-  await TrainingCase.create({
-    clientId,
-    conversationId,
-    userMessage: (userLastMsg.body || userLastMsg.content || '').substring(0, 500),
-    botResponse: String(botBody).substring(0, 500),
-    agentCorrection,
-    phone,
-    status: 'pending',
-  });
-}
 
 // @route   PATCH /api/conversations/:id/bot-status
 // @desc    Update bot status (active or paused)
@@ -1732,8 +1707,6 @@ router.post('/:id/upload-media', protect, upload.single('file'), async (req, res
 // @route   POST /api/conversations/correct-ai
 // @desc    Log agent correction for AI training
 // @access  Private
-router.post('/correct-ai', protect, correctAIResponse);
-
 // @route   PATCH /api/conversations/:id/labels
 // @desc    Update conversation labels
 // @access  Private
@@ -1860,7 +1833,7 @@ router.post('/:id/summarize', protect, async (req, res) => {
 
     const chatLog = messages.map(m => `${m.from}: ${m.content}`).join('\n');
 
-    const { generateText } = require('../utils/gemini');
+    const { generateText } = require('../utils/core/gemini');
     const client = await Client.findOne({ clientId: conversation.clientId });
 
     const prompt = `
@@ -1913,7 +1886,53 @@ router.post('/:id/send-template', protect, async (req, res) => {
       return res.status(500).json({ message: 'WhatsApp credentials not configured' });
     }
 
-    await WhatsApp.sendTemplate(client, conversation.phone, templateName, languageCode, components);
+    const { sendEnvelope } = require('../utils/messaging/sendEnvelope');
+    const AdLead = require('../models/AdLead');
+    const lead = await AdLead.findOne({
+      clientId: conversation.clientId,
+      phoneNumber: conversation.phone,
+    })
+      .select('_id')
+      .lean();
+
+    const tplResult = await sendEnvelope({
+      clientId: conversation.clientId,
+      channel: 'whatsapp',
+      intent: 'utility',
+      contactId: lead?._id ? String(lead._id) : undefined,
+      contact: lead?._id ? undefined : { phone: conversation.phone },
+      payload: {
+        templateName,
+        templateLanguage: languageCode || 'en',
+        components: components || [],
+      },
+      idempotency: {
+        key: `agent:${req.user._id}:tpl_${Date.now()}`,
+      },
+      context: {
+        source: 'routes/conversations:send-template',
+        conversationId: String(conversation._id),
+      },
+    });
+    if (tplResult.status === 'blocked') {
+      const isWindow =
+        tplResult.blockedBy === 'service_window' ||
+        tplResult.reason === 'window_closed' ||
+        tplResult.reason === 'outside_service_window';
+      return res.status(400).json({
+        message: isWindow
+          ? 'WhatsApp 24-hour service window closed. Choose an approved template the customer can receive outside the window.'
+          : tplResult.reason || 'Send blocked by compliance',
+        code: isWindow ? 'window_closed' : tplResult.blockedBy || 'blocked',
+        blockedBy: tplResult.blockedBy,
+      });
+    }
+    if (tplResult.status !== 'sent' && tplResult.status !== 'queued') {
+      return res.status(400).json({
+        message: 'Failed to send template',
+        error: tplResult.reason || tplResult.status,
+      });
+    }
 
     // Save outbound message
     const newMessage = await createMessage({
@@ -1964,7 +1983,7 @@ router.post('/:id/generate-outreach', protect, async (req, res) => {
 
     const chatLog = messages.map(m => `${m.from}: ${m.content}`).join('\n');
     const client = await Client.findOne({ clientId: conversation.clientId });
-    const { generateText } = require('../utils/gemini');
+    const { generateText } = require('../utils/core/gemini');
 
     const prompt = `
       Act as an expert ecommerce conversion specialist.
@@ -2049,7 +2068,7 @@ router.post('/:id/send-email', protect, async (req, res) => {
       return res.json({ success: true, message: 'Email scheduled successfully', scheduledMessage: scheduledMsg });
     }
 
-    const emailService = require('../utils/emailService');
+    const emailService = require('../utils/core/emailService');
     const sent = await emailService.sendEmail(client, {
       to: toEmail,
       subject,
@@ -2200,7 +2219,7 @@ router.put('/:id/resolve', protect, async (req, res) => {
     // --- Phase 29: Track 2 AI Quality Scorer ---
     setImmediate(async () => {
       try {
-        const { scoreConversation } = require('../utils/qualityScorer');
+        const { scoreConversation } = require('../utils/core/qualityScorer');
         await scoreConversation(conversation._id, conversation.clientId);
       } catch (err) {
         console.error('[QualityScorer] Error:', err.message);
@@ -2208,7 +2227,7 @@ router.put('/:id/resolve', protect, async (req, res) => {
     });
 
     // --- Phase 23: Track 6 CSAT Trigger ---
-    const { triggerCSAT } = require('../utils/csatService');
+    const { triggerCSAT } = require('../utils/core/csatService');
     await triggerCSAT(conversation); 
 
     const io = req.app.get('socketio');
@@ -2368,7 +2387,7 @@ router.get('/smart-recovery/preview', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Forbidden' });
     }
 
-    const { generateSmartRecoveryMessage } = require('../utils/smartCartRecovery');
+    const { generateSmartRecoveryMessage } = require('../utils/commerce/smartCartRecovery');
     const [step1, step2, step3] = await Promise.all([
       generateSmartRecoveryMessage(client, lead, 1),
       generateSmartRecoveryMessage(client, lead, 2),
@@ -2520,7 +2539,7 @@ router.get('/export-jobs/:id', protect, async (req, res) => {
 
 // ─── GET /api/conversations/:id/smart-replies — AI Contextual Suggestions ──
 router.get('/:id/smart-replies', protect, async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
+  const { createTimer } = require('../utils/core/perfLogger');
   const timer = createTimer('GET /api/conversations/:id/smart-replies', req.user?.clientId || '');
   try {
     const convoId = req.params.id;
@@ -2578,7 +2597,7 @@ router.get('/:id/smart-replies', protect, async (req, res) => {
     Do not include any markdown, backticks, or explanation. Just the raw JSON array.
     `;
 
-    const { generateText } = require('../utils/gemini');
+    const { generateText } = require('../utils/core/gemini');
     const aiResponseRaw = await timer.time('gemini.generateText', () =>
       generateText(prompt, client.geminiApiKey || process.env.GEMINI_API_KEY)
     );
@@ -2650,7 +2669,7 @@ router.post('/:id/ghost-complete', protect, async (req, res) => {
     Keep the completion under 20 words.
     `;
 
-    const { generateText } = require('../utils/gemini');
+    const { generateText } = require('../utils/core/gemini');
     let aiResponseRaw = await generateText(prompt, client?.geminiApiKey || process.env.GEMINI_API_KEY, { temperature: 0.1, maxTokens: 40 });
     
     if (aiResponseRaw) {

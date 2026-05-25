@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 
-const { preflightValidateFlowGraph } = require("../utils/flowPublishPreflight");
+const { preflightValidateFlowGraph } = require('../utils/flow/flowPublishPreflight');
 
 function assert(condition, message) {
   if (!condition) {

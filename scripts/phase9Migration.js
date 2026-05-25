@@ -1,7 +1,7 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 const Client = require('../models/Client');
-const { getDefaultFlowForNiche } = require('../utils/defaultFlowNodes');
+const { getDefaultFlowForNiche } = require('../utils/flow/defaultFlowNodes');
 
 const { runFullMigration } = require('./phase9MigrationLogic');
 

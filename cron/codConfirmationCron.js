@@ -1,11 +1,13 @@
 'use strict';
 
 const cron = require('node-cron');
-const log = require('../utils/logger')('CodConfirmationCron');
-const { processCodConfirmationTimeouts } = require('../utils/rtoProtectionService');
+const log = require('../utils/core/logger')('CodConfirmationCron');
+const { processCodConfirmationTimeouts } = require('../utils/commerce/rtoProtectionService');
 
 /**
  * Every 15 minutes: flag COD orders where customer never confirmed before deadline.
+ * Outbound COD confirmation WhatsApp is sent from maybeSendCodConfirmationAfterOrderCreate
+ * (rtoProtectionService) at order create — not from this cron tick.
  */
 async function runCodConfirmationTick() {
   const io = global.io || null;

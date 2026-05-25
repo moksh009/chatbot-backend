@@ -3,7 +3,7 @@
  * Not a replacement for APM — enables cheap dashboards via /api/metrics/summary.
  */
 
-const log = require('../utils/logger')('RequestMetrics');
+const log = require('../utils/core/logger')('RequestMetrics');
 
 const MAX_SAMPLES = 5000;
 const durationsMs = [];

@@ -5,19 +5,18 @@ const Conversation = require('../../models/Conversation');
 const Message = require('../../models/Message');
 const Order = require('../../models/Order');
 const DailyStat = require('../../models/DailyStat');
-const ReviewRequest = require('../../models/ReviewRequest');
 const Client = require('../../models/Client');
-const { sendOrderConfirmationEmail, sendCODToPrepaidEmail } = require('../../utils/emailService');
-const { runDualBrainEngine } = require('../../utils/dualBrainEngine');
-const { enqueueInboundProcessing } = require('../../utils/inboundMessageQueue');
-const log = require('../../utils/logger')('EcommerceEngine');
-const { generateText } = require('../../utils/gemini');
-const { resolveClientGeminiKey } = require('../../utils/clientGeminiKey');
-const { normalizePhone } = require('../../utils/helpers');
-const { getShopifyClient } = require('../../utils/shopifyHelper');
-const { buildShopifyOrderSet, shopifyOrderFilter, detectCodFromShopify } = require('../../utils/shopifyOrderMapper');
-const { syncWhatsAppTemplates } = require('../../utils/whatsappHelpers');
-const commerceAutomationService = require('../../utils/commerceAutomationService');
+const { sendOrderConfirmationEmail, sendCODToPrepaidEmail } = require('../../utils/core/emailService');
+const { runDualBrainEngine } = require('../../utils/commerce/dualBrainEngine');
+const { enqueueInboundProcessing } = require('../../utils/core/inboundMessageQueue');
+const log = require('../../utils/core/logger')('EcommerceEngine');
+const { generateText } = require('../../utils/core/gemini');
+const { resolveClientGeminiKey } = require('../../utils/core/clientGeminiKey');
+const { normalizePhone } = require('../../utils/core/helpers');
+const { getShopifyClient } = require('../../utils/shopify/shopifyHelper');
+const { buildShopifyOrderSet, shopifyOrderFilter, detectCodFromShopify } = require('../../utils/shopify/shopifyOrderMapper');
+const { syncWhatsAppTemplates } = require('../../utils/meta/whatsappHelpers');
+const commerceAutomationService = require('../../utils/commerce/commerceAutomationService');
 const FlowAnalytics = require('../../models/FlowAnalytics');
 
 // --- 1. CORE API WRAPPERS ---
@@ -473,7 +472,7 @@ function extractProductUrl(product, clientConfig, to) {
 }
 
 async function sendCODToPrepaidNudge(order, clientConfig, phone) {
-    const { createCODPaymentLink } = require('../../utils/razorpay');
+    const { createCODPaymentLink } = require('../../utils/commerce/razorpay');
 
     let paymentUrl;
     try {
@@ -606,7 +605,7 @@ async function processEcommerceInbound(parsedMessage, clientConfig, { helperPara
                 return;
             }
 
-            // --- Phase 7 ROI & Review Actions ---
+            // --- Phase 7 ROI (COD) ---
             if (interactiveId.startsWith('cod_pay_')) {
                 const orderId = interactiveId.replace("cod_pay_", "");
                 const order = await Order.findById(orderId);
@@ -622,123 +621,6 @@ async function processEcommerceInbound(parsedMessage, clientConfig, { helperPara
                 return;
             }
 
-            const starReviewMatch = interactiveId.match(/^rv_star_(\d)_(.+)$/);
-            if (starReviewMatch) {
-                const stars = parseInt(starReviewMatch[1], 10);
-                const reviewId = starReviewMatch[2];
-                const review = await ReviewRequest.findById(reviewId);
-                const { startOfDay } = require("date-fns");
-                const reviewUrl = review?.reviewUrl || nicheData.googleReviewUrl || clientConfig.googleReviewUrl || "";
-
-                if (stars >= 4) {
-                    await ReviewRequest.findByIdAndUpdate(reviewId, { status: "responded_positive", response: `star_${stars}` });
-                    await DailyStat.findOneAndUpdate(
-                        { clientId: clientConfig.clientId, date: startOfDay(new Date()) },
-                        { $inc: { reviewsCollected: 1, reviewsPositive: 1 } },
-                        { upsert: true }
-                    );
-                    const replyText = reviewUrl
-                        ? `Thank you for the ${stars}-star rating! 🙏\n\nWould you leave a quick Google review? It takes 30 seconds:\n\n⭐ ${reviewUrl}`
-                        : `Thank you for the ${stars}-star rating! 🙏 Your feedback means everything to us!`;
-                    await sendWhatsAppText({ ...helperParams, to: from, body: replyText });
-                } else if (stars === 3) {
-                    await ReviewRequest.findByIdAndUpdate(reviewId, { status: "responded_positive", response: "star_3" });
-                    await DailyStat.findOneAndUpdate(
-                        { clientId: clientConfig.clientId, date: startOfDay(new Date()) },
-                        { $inc: { reviewsCollected: 1 } },
-                        { upsert: true }
-                    );
-                    const replyText = reviewUrl
-                        ? `Thanks for your ${stars}-star feedback! 😊 A Google review would help us improve:\n\n${reviewUrl}`
-                        : "Thanks for your feedback! 😊 We'll keep improving!";
-                    await sendWhatsAppText({ ...helperParams, to: from, body: replyText });
-                } else {
-                    await ReviewRequest.findByIdAndUpdate(reviewId, { status: "responded_negative", response: `star_${stars}` });
-                    await DailyStat.findOneAndUpdate(
-                        { clientId: clientConfig.clientId, date: startOfDay(new Date()) },
-                        { $inc: { reviewsCollected: 1, reviewsNegative: 1 } },
-                        { upsert: true }
-                    );
-                    conversation.status = 'HUMAN_TAKEOVER';
-                    conversation.requiresAttention = true;
-                    conversation.attentionReason = `Low review (${stars} stars) — needs follow-up`;
-                    await conversation.save();
-                    await sendWhatsAppText({
-                        ...helperParams,
-                        to: from,
-                        body: "We're sorry your experience wasn't great 😔 Our team will reach out shortly to make it right.",
-                    });
-                }
-                return;
-            }
-
-            if (interactiveId.startsWith('rv_good_')) {
-                const reviewId = interactiveId.replace("rv_good_", "");
-                const review = await ReviewRequest.findById(reviewId);
-                await ReviewRequest.findByIdAndUpdate(reviewId, { status: "responded_positive", response: "positive" });
-                const { startOfDay } = require("date-fns");
-                await DailyStat.findOneAndUpdate(
-                    { clientId: clientConfig.clientId, date: startOfDay(new Date()) },
-                    { $inc: { reviewsCollected: 1, reviewsPositive: 1 } },
-                    { upsert: true }
-                );
-                const reviewUrl = review?.reviewUrl || nicheData.googleReviewUrl || clientConfig.googleReviewUrl || "";
-                const replyText = reviewUrl
-                    ? `Thank you so much! 🙏 Could you leave a quick Google review? Takes 30 seconds!\n\n⭐ ${reviewUrl}\n\nMeans the world to us!`
-                    : `Thank you so much! 🙏 Your feedback means everything to us!`;
-                await sendWhatsAppText({ ...helperParams, to: from, body: replyText });
-                if (io) io.to(`client_${clientConfig.clientId}`).emit("stats_update", { type: "review_positive" });
-                return;
-            }
-
-            if (interactiveId.startsWith('rv_ok_')) {
-                const reviewId = interactiveId.replace("rv_ok_", "");
-                await ReviewRequest.findByIdAndUpdate(reviewId, { status: "responded_positive", response: "neutral" });
-                const { startOfDay } = require("date-fns");
-                await DailyStat.findOneAndUpdate(
-                    { clientId: clientConfig.clientId, date: startOfDay(new Date()) },
-                    { $inc: { reviewsCollected: 1 } },
-                    { upsert: true }
-                );
-                const reviewUrl = nicheData.googleReviewUrl || clientConfig.googleReviewUrl || "";
-                const replyText = reviewUrl
-                    ? `Thanks for the feedback! 😊 If you have a moment, a quick review would help a lot:\n\n${reviewUrl}`
-                    : "Thanks for your feedback! 😊 We'll keep improving!";
-                await sendWhatsAppText({ ...helperParams, to: from, body: replyText });
-                return;
-            }
-
-            if (interactiveId.startsWith('rv_bad_')) {
-                const reviewId = interactiveId.replace("rv_bad_", "");
-                await ReviewRequest.findByIdAndUpdate(reviewId, { status: "responded_negative", response: "negative" });
-                const { startOfDay } = require("date-fns");
-                await DailyStat.findOneAndUpdate(
-                    { clientId: clientConfig.clientId, date: startOfDay(new Date()) },
-                    { $inc: { reviewsCollected: 1, reviewsNegative: 1 } },
-                    { upsert: true }
-                );
-                conversation.status = 'HUMAN_TAKEOVER';
-                conversation.requiresAttention = true;
-                conversation.attentionReason = "Negative review — needs follow-up";
-                await conversation.save();
-
-                // Optimization Shield: Direct Admin Notification for Negative Review
-                const NotificationService = require('../../utils/notificationService');
-                await NotificationService.sendAdminAlert(clientConfig, {
-                    customerPhone: from,
-                    topic: `Negative Review (${review?.productName || 'General'})`,
-                    triggerSource: 'Review Hub Guardrail',
-                    channel: 'whatsapp'
-                }).catch(e => console.error("[ReviewGuard] Alert failed", e.message));
-
-                if (io) io.to(`client_${clientConfig.clientId}`).emit("attention_required", {
-                    phone: from,
-                    reason: "Customer unhappy with product",
-                    priority: "high"
-                });
-                await sendWhatsAppText({ ...helperParams, to: from, body: "We're really sorry to hear that 😔 Our team will reach out within a few hours to make it right. Your satisfaction is our priority! 蓝" });
-                return;
-            }
         }
 
         // --- Handle Text Input (Greeting & AI Fallback) ---
@@ -759,7 +641,7 @@ async function processEcommerceInbound(parsedMessage, clientConfig, { helperPara
                 const userMessage = userMsg;
 
                 try {
-                    const { generateTextFast } = require('../../utils/gemini');
+                    const { generateTextFast } = require('../../utils/core/gemini');
                     const aiText = await generateTextFast(`${prompt}\n\nUser: ${userMessage}`, tenantKey, {
                       noEnvFallback: true,
                     });
@@ -891,7 +773,7 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
         const isCOD = !!(savedOrder && savedOrder.isCOD) || detectCodFromShopify(orderData);
 
         // Mark Lead as Purchased via Unified Journey Tracker
-        const { trackEvent } = require('../../utils/journeyTracker');
+        const { trackEvent } = require('../../utils/commerce/journeyTracker');
         await trackEvent(clientId, phone, 'order_placed', {
             orderId: savedOrder?.orderId || orderData.name || String(orderData.id),
             total: totalPrice,
@@ -958,7 +840,7 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
         }
 
         // 📦 SKU Inventory Threshold Alerts (Phase 3)
-        const NotificationService = require('../../utils/notificationService');
+        const NotificationService = require('../../utils/core/notificationService');
         if (req.clientConfig.skuAutomations?.length > 0 && req.clientConfig.shopDomain) {
             try {
                 const shopifyApi = await getShopifyClient(clientId);
@@ -984,7 +866,7 @@ const handleShopifyOrderCompleteWebhook = async (req, res) => {
 
                             // 2. Notify Supplier if configured
                             if (automation.supplierPhone) {
-                                const WhatsApp = require('../../utils/whatsapp');
+                                const WhatsApp = require('../../utils/meta/whatsapp');
                                 await WhatsApp.sendText(req.clientConfig, automation.supplierPhone, alertMsg);
                             }
                         }
@@ -1031,7 +913,7 @@ const handleShopifyOrderFulfilledWebhook = async (req, res) => {
             { new: true }
         );
 
-        const { dispatchOrderStatusAutomation } = require('../../utils/orderEventDispatcher');
+        const { dispatchOrderStatusAutomation } = require('../../utils/commerce/orderEventDispatcher');
         if (orderDoc) {
             await dispatchOrderStatusAutomation({
                 clientConfig: req.clientConfig,
@@ -1046,20 +928,6 @@ const handleShopifyOrderFulfilledWebhook = async (req, res) => {
             });
         }
 
-        const reviewFlow = (req.clientConfig.automationFlows || []).find(f => f.id === 'review_collection');
-        if (reviewFlow?.isActive) {
-            const delayDays = reviewFlow?.config?.delayDays || 4;
-            const scheduledFor = new Date(Date.now() + delayDays * 24 * 60 * 60 * 1000);
-            await ReviewRequest.findOneAndUpdate(
-                { clientId: req.clientConfig._id, phone, orderNumber },
-                {
-                    clientId: req.clientConfig._id, phone, orderNumber, productName,
-                    reviewUrl: req.clientConfig.googleReviewUrl || '',
-                    scheduledFor, status: 'scheduled'
-                },
-                { upsert: true }
-            );
-        }
     } catch (err) {
         console.error('[EcommerceEngine] Order fulfilled error:', err);
     }
@@ -1081,18 +949,22 @@ const handleShopifyLinkOpenedWebhook = async (req, res) => {
 };
 
 const getClientOrders = async (req, res) => {
-    const { createTimer } = require('../../utils/perfLogger');
-    const { dedupeAsync } = require('../../utils/requestDedupe');
+    const { createTimer } = require('../../utils/core/perfLogger');
+    const { dedupeAsync } = require('../../utils/core/requestDedupe');
+    const { computeOrderCartValue } = require('../../utils/shopify/shopifyOrderMapper');
     const timer = createTimer('GET /api/client/:clientId/orders', req.clientConfig?.clientId || '');
     try {
         const clientConfig = req.clientConfig;
-        const { buildOrderListQuery, filterOrdersByStatusTab } = require('../../utils/orderListQuery');
+        const { buildOrderListQuery, filterOrdersByStatusTab } = require('../../utils/commerce/orderListQuery');
         const { mongoQuery, statusTab } = buildOrderListQuery(clientConfig.clientId, req.query);
         timer.checkpoint('query_built');
 
+        const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 100));
+
         const dedupeKey = `orders:list:${clientConfig.clientId}:${JSON.stringify(req.query || {})}`;
-        const orders = await dedupeAsync(dedupeKey, async () => {
-            const fetchLimit = 150;
+        const result = await dedupeAsync(dedupeKey, async () => {
+            const fetchLimit = 5000;
             const raw = await timer.time('Order.find', () => {
                 const q = Order.find(mongoQuery).sort({ createdAt: -1 }).limit(fetchLimit).lean();
                 if (mongoQuery.clientId) {
@@ -1102,11 +974,19 @@ const getClientOrders = async (req, res) => {
             });
             let list = dedupeOrdersByShopifyKey(raw);
             list = filterOrdersByStatusTab(list, statusTab || req.query.statusTab || 'All');
-            return list.slice(0, 100);
+            const total = list.length;
+            const totalPages = Math.max(1, Math.ceil(total / limit));
+            const safePage = Math.min(page, totalPages);
+            const start = (safePage - 1) * limit;
+            const orders = list.slice(start, start + limit).map((order) => ({
+                ...order,
+                cartValue: computeOrderCartValue(order),
+            }));
+            return { orders, total, page: safePage, limit, totalPages };
         });
 
-        res.json({ success: true, orders });
-        timer.finish(`200 ok | count=${orders.length}`);
+        res.json({ success: true, ...result });
+        timer.finish(`200 ok | count=${result.orders.length} total=${result.total} page=${result.page}`);
     } catch (error) {
         console.error('[getClientOrders] Error:', error);
         timer.finish(`500 error=${error.message}`);
@@ -1224,11 +1104,7 @@ async function sendMappedOrderStatusWhatsApp({ clientConfig, order, status, trac
     const phone = normalizePhone(rawPhone);
     const { phoneNumberId, whatsappToken, clientId } = clientConfig;
 
-    const {
-        getEcoPreset,
-        buildOrderContextForTemplate,
-        isEcoTemplateName,
-    } = require('../../utils/orderStatusTemplatePolicy');
+    const { getEcoPreset, isEcoTemplateName } = require('../../utils/commerce/orderStatusTemplatePolicy');
 
     const ecoPreset = getEcoPreset(mapKey);
 
@@ -1240,33 +1116,22 @@ async function sendMappedOrderStatusWhatsApp({ clientConfig, order, status, trac
 
     let ok = false;
     try {
-        const { resolveTemplateForSend } = require('../../services/templateResolver');
-        const resolved = await resolveTemplateForSend(clientId, { name: templateName });
-        const tpl = resolved?.template || {};
-        const mergedMappings = ecoPreset?.variableMappings || tpl.variableMappings || tpl.variableMapping;
-
-        const contextOrder = buildOrderContextForTemplate(order, {
+        const { sendOrderStatusAutomation } = require('../../services/templateSender');
+        const result = await sendOrderStatusAutomation({
+            clientId,
+            phone,
+            statusKey: mapKey,
+            order,
             trackingUrl,
             trackingNumber,
             nicheData,
         });
-
-        const templatePayload = {
-            ...tpl,
-            name: templateName,
-            metaTemplateName: tpl.metaTemplateName || tpl.name || templateName,
-            variableMappings: mergedMappings,
-        };
-
-        const result = await require('../../services/templateSender').sendTemplatedMessage({
-            template: templatePayload,
-            recipient: { clientId, phone },
-            channel: 'whatsapp',
-            contextData: { order: contextOrder },
-        });
         ok = !!result?.whatsapp?.sent;
+        if (!ok && result?.failureCode) {
+            console.warn(`[OrderStatusWA] sendOrderStatusAutomation: ${result.failureCode}`);
+        }
     } catch (senderErr) {
-        console.warn(`[OrderStatusWA] templateSender failed: ${senderErr.message}`);
+        console.warn(`[OrderStatusWA] sendOrderStatusAutomation failed: ${senderErr.message}`);
     }
 
     if (!ok && isEcoTemplateName(templateName)) {
@@ -1310,7 +1175,7 @@ async function sendMappedOrderStatusWhatsApp({ clientConfig, order, status, trac
     }
 
     try {
-        const { appendOrderWhatsAppActivity, resolveOrderMongoId } = require('../../utils/orderWhatsAppActivity');
+        const { appendOrderWhatsAppActivity, resolveOrderMongoId } = require('../../utils/commerce/orderWhatsAppActivity');
         const oid = await resolveOrderMongoId(order, clientId);
         if (oid) {
             await appendOrderWhatsAppActivity(oid, {
@@ -1405,7 +1270,7 @@ function dedupeOrdersByShopifyKey(orders) {
 }
 
 const updateOrderStatus = async (req, res) => {
-    const { createTimer } = require('../../utils/perfLogger');
+    const { createTimer } = require('../../utils/core/perfLogger');
     const timer = createTimer('PATCH /api/client/:clientId/orders/:orderId/status', req.clientConfig?.clientId || '');
     try {
         const { orderId } = req.params;
@@ -1454,7 +1319,7 @@ const updateOrderStatus = async (req, res) => {
             } catch (_) { /* non-fatal */ }
         }
 
-        const { dispatchOrderStatusAutomation } = require('../../utils/orderEventDispatcher');
+        const { dispatchOrderStatusAutomation } = require('../../utils/commerce/orderEventDispatcher');
         const dispatchResult = await dispatchOrderStatusAutomation({
             clientConfig: req.clientConfig,
             order: order.toObject ? order.toObject() : order,
@@ -1484,7 +1349,7 @@ const updateOrderStatus = async (req, res) => {
 };
 
 const updateOrderAddress = async (req, res) => {
-    const { createTimer } = require('../../utils/perfLogger');
+    const { createTimer } = require('../../utils/core/perfLogger');
     const timer = createTimer('PATCH /api/client/:clientId/orders/:orderId/address', req.clientConfig?.clientId || '');
     try {
         const { orderId } = req.params;
@@ -1518,6 +1383,54 @@ const updateOrderAddress = async (req, res) => {
     }
 };
 
+const sendOrderStatusWhatsAppManual = async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const status = String(req.body?.status || 'shipped').toLowerCase();
+        const { clientId } = req.clientConfig;
+        const io = req.app.get('socketio');
+
+        const order = await Order.findOne({ _id: orderId, clientId });
+        if (!order) return res.status(404).json({ error: 'Order not found' });
+
+        const rawPhone = order.customerPhone || order.phone;
+        if (!rawPhone) {
+            return res.status(400).json({ error: 'Order has no customer phone for WhatsApp' });
+        }
+
+        const wa = await sendMappedOrderStatusWhatsApp({
+            clientConfig: req.clientConfig,
+            order: order.toObject ? order.toObject() : order,
+            status,
+            trackingNumber: order.trackingNumber || '',
+            trackingUrl: order.trackingUrl || '',
+            io,
+        });
+
+        const refreshed = await Order.findById(order._id).lean();
+
+        res.json({
+            success: true,
+            whatsapp: wa,
+            order: refreshed || order,
+        });
+    } catch (error) {
+        console.error('[SendOrderStatusWhatsApp] Error:', error);
+        res.status(500).json({ error: 'Failed to send WhatsApp message' });
+    }
+};
+
+const getOrderMessagesOverview = async (req, res) => {
+    try {
+        const { buildOrderMessagesOverview } = require('../../utils/commerce/orderMessagesOverview');
+        const data = await buildOrderMessagesOverview(req.clientConfig);
+        res.json({ success: true, ...data });
+    } catch (error) {
+        console.error('[OrderMessagesOverview] Error:', error);
+        res.status(500).json({ error: 'Failed to load order messages overview' });
+    }
+};
+
 module.exports = {
     handleWebhook,
     handleShopifyLinkOpenedWebhook,
@@ -1532,5 +1445,7 @@ module.exports = {
     updateOrderStatus,
     updateOrderAddress,
     sendMappedOrderStatusWhatsApp,
+    sendOrderStatusWhatsAppManual,
+    getOrderMessagesOverview,
     syncOrderStatusToShopifyAPI,
 };

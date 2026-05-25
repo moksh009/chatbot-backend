@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { encrypt } = require('../utils/encryption');
+const { encrypt } = require('../utils/core/encryption');
 
 // --- TIER 2.5 SUB-DOCUMENT SCHEMAS ---
 
@@ -236,6 +236,72 @@ const ClientSchema = new mongoose.Schema({
   growthCompliance: {
     cartRecoveryRequiresOptIn: { type: Boolean, default: false }, // strict: cart nudges only opted_in
   },
+  complianceConfig: {
+    channels: {
+      whatsapp: {
+        enabled: { type: Boolean, default: true },
+      },
+      instagram: {
+        enabled: { type: Boolean, default: false },
+      },
+      email: {
+        enabled: { type: Boolean, default: true },
+      },
+    },
+    strictMode: { type: Boolean, default: true },
+    marketingWindowHours: { type: Number, default: 720 },
+    /** Per-channel send budgets — configured vs effective (Phase 3 A11). */
+    rateLimits: {
+      whatsapp: {
+        configured: {
+          sustainedPerSec: { type: Number, default: 10 },
+          burst: { type: Number, default: 30 },
+        },
+        effective: {
+          sustainedPerSec: { type: Number, default: 10 },
+          burst: { type: Number, default: 30 },
+        },
+        throttledUntil: { type: Date, default: null },
+        lastThrottleReason: { type: String, default: null },
+        lastThrottledAt: { type: Date, default: null },
+      },
+      email: {
+        configured: {
+          sustainedPerSec: { type: Number, default: 50 },
+          burst: { type: Number, default: 200 },
+        },
+        effective: {
+          sustainedPerSec: { type: Number, default: 50 },
+          burst: { type: Number, default: 200 },
+        },
+        throttledUntil: { type: Date, default: null },
+        lastThrottleReason: { type: String, default: null },
+        lastThrottledAt: { type: Date, default: null },
+      },
+      instagram: {
+        configured: {
+          sustainedPerSec: { type: Number, default: 5 },
+          burst: { type: Number, default: 15 },
+        },
+        effective: {
+          sustainedPerSec: { type: Number, default: 5 },
+          burst: { type: Number, default: 15 },
+        },
+        throttledUntil: { type: Date, default: null },
+        lastThrottleReason: { type: String, default: null },
+        lastThrottledAt: { type: Date, default: null },
+      },
+    },
+    concurrency: {
+      whatsapp: { maxParallel: { type: Number, default: 10 } },
+      email: { maxParallel: { type: Number, default: 20 } },
+      instagram: { maxParallel: { type: Number, default: 5 } },
+    },
+  },
+  flags: {
+    /** @deprecated Slice 7 — envelope is always on; kept for backward-compatible reads only. */
+    useSendEnvelope: { type: Boolean, default: true },
+  },
   /** Public key embedded in storefront widget script — NEVER use clientId alone in browser */
   growthEmbedPublicKey: { type: String, trim: true, default: '', index: true, sparse: true },
   growthEmbedEnabled: { type: Boolean, default: true },
@@ -408,6 +474,16 @@ const ClientSchema = new mongoose.Schema({
   googleReviewUrl: { type: String, default: "" },
   adminPhone: { type: String, default: "" },
   shopDomain: { type: String, default: "" },
+  /** Phase 8: multi-store portfolio (MVP). Legacy shopDomain mirrors primary entry. */
+  shopifyStores: [{
+    shopDomain: { type: String, required: true },
+    accessToken: { type: String, default: '' },
+    scopes: { type: String, default: '' },
+    connectedAt: { type: Date, default: Date.now },
+    isPrimary: { type: Boolean, default: false },
+    label: { type: String, default: 'Store' },
+    status: { type: String, enum: ['connected', 'disconnected', 'token_expired'], default: 'connected' },
+  }],
   shopifyAccessToken: { type: String, default: "" },
   shopifyRefreshToken: { type: String, default: "" },
   shopifyTokenExpiresAt: { type: Date },
@@ -418,10 +494,31 @@ const ClientSchema = new mongoose.Schema({
   shopifyApiVersion: { type: String, default: "2026-04" },
   shopifyInstallLink: { type: String, default: null }, // Added for Custom App Distribution
   shopifyConnectionStatus: { type: String, enum: ['connected', 'error', 'disconnected', 'pending_link'], default: 'connected' },
+  /** gid://shopify/WebPixel/… from webPixelCreate / webPixelUpdate */
+  shopifyWebPixelId: { type: String, default: "" },
+  shopifyWebPixelInstalledAt: { type: Date },
+  shopifyWebPixelSettings: { type: mongoose.Schema.Types.Mixed, default: null },
   lastShopifyError: { type: String, default: "" },
   generatedDiscounts: { type: [mongoose.Schema.Types.Mixed], default: [] },
   aiUseGeneratedDiscounts: { type: Boolean, default: false }, // AI uses latest generated discount code when true
   
+  /** Phase 9: Enterprise SSO (OIDC) */
+  ssoConfig: {
+    enabled: { type: Boolean, default: false },
+    provider: {
+      type: String,
+      enum: ['okta', 'azuread', 'google_workspace', 'generic_oidc', ''],
+      default: '',
+    },
+    issuerUrl: { type: String, default: '' },
+    clientId: { type: String, default: '' },
+    clientSecret: { type: String, default: '' },
+    domainsAllowlist: { type: [String], default: [] },
+    defaultRole: { type: String, enum: ['AGENT', 'CLIENT_ADMIN'], default: 'AGENT' },
+    provisionedUsers: { type: Boolean, default: true },
+    enforced: { type: Boolean, default: false },
+  },
+
   // Phase 3: Operational Admin Alerts
   adminAlertWhatsapp: { type: String, default: "" }, // comma separated numbers
   /** Primary business / billing contact email (also used as fallback for alert email). */
@@ -599,6 +696,8 @@ const ClientSchema = new mongoose.Schema({
   pendingTemplates: { type: mongoose.Schema.Types.Mixed, default: [] },
   syncedMetaTemplates: { type: mongoose.Schema.Types.Mixed, default: [] },
   syncedMetaFlows: { type: mongoose.Schema.Types.Mixed, default: [] },
+  /** Phase 4 — per-slot brand overrides (header/body for push, mappings for send). Key = catalog slot id. */
+  templateBrandOverrides: { type: mongoose.Schema.Types.Mixed, default: {} },
   
   // Phase 28: Auto-Healing & Status Tracking
   healthStatus: { 
@@ -706,15 +805,7 @@ const ClientSchema = new mongoose.Schema({
   isPaidAccount: { type: Boolean, default: false },
   suspendedAt:   { type: Date },
 
-  // Phase 17 Usage Tracking
-  usage: {
-    month:            { type: String, default: () => new Date().toISOString().slice(0, 7) }, // "2026-03"
-    messagesSent:     { type: Number, default: 0 },
-    aiCallsMade:      { type: Number, default: 0 },
-    campaignsSent:    { type: Number, default: 0 },
-    leadsCreated:     { type: Number, default: 0 },
-    lastResetAt:      { type: Date,   default: Date.now }
-  },
+  // Phase 17 Usage Tracking — removed Client.usage (Phase 6); use Subscription.usageThisPeriod only
   limits: {
     messagesPerMonth:  { type: Number, default: 1000 },
     campaignsPerMonth: { type: Number, default: 5 },
@@ -731,7 +822,11 @@ const ClientSchema = new mongoose.Schema({
   manualSwitchAlert: { type: Boolean, default: true },
 
   // Phase 22: Rules Engine
-  automationRules: { type: [mongoose.Schema.Types.Mixed], default: [] }, // { id, name, trigger, conditions, actions, priority, isActive }
+  automationRules: { type: [mongoose.Schema.Types.Mixed], default: [] }, // deprecated — use behaviorRules + KeywordTrigger
+  behaviorRules: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  onboarding: { type: mongoose.Schema.Types.Mixed, default: null },
+  /** Legacy setup wizard state (migrated from OnboardingWizard collection — Phase 6 closeout) */
+  wizardState: { type: mongoose.Schema.Types.Mixed, default: null },
   routingRules: { type: [mongoose.Schema.Types.Mixed], default: [] }, // { id, priority, conditions, fallbackAgentId, agentIds, routeType }
 
   // Phase 24: Meta Ads Manager
@@ -759,6 +854,9 @@ const ClientSchema = new mongoose.Schema({
   catalogSynced:       { type: Boolean, default: false },
   commerceAutoSyncDaily: { type: Boolean, default: false },
   catalogSyncedAt:     { type: Date },
+  customersSyncedAt: { type: Date, default: null },
+  shopifyCustomersCache: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  shopifyCustomersCacheCount: { type: Number, default: 0 },
   catalogProductCount: { type: Number, default: 0 },
   catalogEnabled:      { type: Boolean, default: false },
   commerceBotSettings: {

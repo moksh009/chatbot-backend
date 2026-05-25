@@ -3,10 +3,10 @@
 const cron = require('node-cron');
 const Conversation = require('../models/Conversation');
 const AdLead = require('../models/AdLead');
-const { executeNode, loadPublishedFlowByRef } = require('../utils/dualBrainEngine');
-const { getCachedClient, DEFAULT_CLIENT_SELECT } = require('../utils/clientCache');
-const log = require('../utils/logger')('FlowResumption');
-const { wrapCron } = require('../utils/perfLogger');
+const { executeNode, loadPublishedFlowByRef } = require('../utils/commerce/dualBrainEngine');
+const { getCachedClient, DEFAULT_CLIENT_SELECT } = require('../utils/core/clientCache');
+const log = require('../utils/core/logger')('FlowResumption');
+const { wrapCron } = require('../utils/core/perfLogger');
 
 module.exports = function scheduleFlowResumption() {
   // Default */2 reduces Mongo load; set FLOW_RESUMPTION_EVERY_MINUTE=true for * * * * *

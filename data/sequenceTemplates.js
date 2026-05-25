@@ -59,28 +59,6 @@ const SEQUENCE_TEMPLATES = [
     ]
   },
   {
-    id:          "tmpl_post_purchase_review",
-    name:        "Post-Purchase Review Collection",
-    description: "Collect reviews and build brand reputation automatically.",
-    category:    "E-commerce",
-    channel:     "whatsapp",
-    steps: [
-      {
-        order: 1, delayValue: 1, delayUnit: "d",
-        label: "Thank you + expectations",
-        type: "whatsapp", messageType: "text",
-        content: "Hi {{name}}! 🎉 Your order #{{order_id}} has been confirmed.\n\nWe're preparing it with care and will notify you when it ships! 🚚\n\nQuestions? Just reply here — we're always available."
-      },
-      {
-        order: 2, delayValue: 5, delayUnit: "d",
-        label: "Review request",
-        type: "whatsapp", messageType: "template",
-        templateName: "",
-        note: "Use a review request template with thumbs up/down buttons"
-      }
-    ]
-  },
-  {
     id:          "tmpl_new_lead_nurture",
     name:        "New Lead Nurture (5-day)",
     description: "Warm up new leads who haven't purchased yet.",

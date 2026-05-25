@@ -1,5 +1,5 @@
 const express = require('express');
-const { resolveClient } = require('../utils/queryHelpers');
+const { resolveClient } = require('../utils/core/queryHelpers');
 const router = express.Router();
 const { 
     getLoyaltyStats,
@@ -10,18 +10,15 @@ const {
     adjustWalletBalance,
     generateAIRewardCode,
     getLoyaltyStatus,
-    getReputationStats,
-    sendReviewRequest,
-    getReviewContext,
     getAudienceContext,
     getLoyaltyTransactions
 } = require('../controllers/loyaltyController');
 const { protect } = require('../middleware/auth');
-const { requireFeature } = require('../utils/featureFlags');
+const { requireFeature } = require('../utils/core/featureFlags');
 const Client = require('../models/Client');
-const WhatsApp = require('../utils/whatsapp');
+const WhatsApp = require('../utils/meta/whatsapp');
 const axios = require('axios');
-const { decrypt } = require('../utils/encryption');
+const { decrypt } = require('../utils/core/encryption');
 
 // Admin-authenticated routes (require JWT)
 router.get('/stats', protect, requireFeature('loyalty'), getLoyaltyStats);
@@ -42,11 +39,7 @@ router.post('/generate-reward', protect, requireFeature('loyalty'), generateAIRe
 router.post('/:clientId/manual-assign', protect, requireFeature('loyalty'), adjustWalletBalance);
 router.post('/:clientId/send-reminder', protect, requireFeature('loyalty'), sendLoyaltyReminderTemplate);
 
-// Reputation & Review Stats
-router.get('/reputation-stats', protect, requireFeature('reviews'), getReputationStats);
-router.get('/review-context', protect, requireFeature('reviews'), getReviewContext);
 router.get('/audience-context', protect, getAudienceContext);
-router.post('/send-review-request', protect, requireFeature('reviews'), sendReviewRequest);
 
 /**
  * GET /api/loyalty/template-status

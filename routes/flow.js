@@ -1,17 +1,17 @@
 const express = require('express');
 const router = express.Router();
 const Client = require('../models/Client');
-const { tenantClientId } = require('../utils/queryHelpers');
+const { tenantClientId } = require('../utils/core/queryHelpers');
 const { protect } = require('../middleware/auth');
 const { clearClientCache, apiCache } = require('../middleware/apiCache');
-const { invalidateClientCache } = require('../utils/clientCache');
+const { invalidateClientCache } = require('../utils/core/clientCache');
 const {
   getCachedFlowGraphAsync,
   setCachedFlowGraph,
   invalidateFlowGraphCache,
-} = require('../utils/flowGraphCache');
+} = require('../utils/flow/flowGraphCache');
 const { fixFlowWithAI } = require('../controllers/flowFixController');
-const { clearTriggerCache } = require('../utils/triggerEngine');
+const { clearTriggerCache } = require('../utils/flow/triggerEngine');
 
 router.post('/fix', protect, fixFlowWithAI);
 
@@ -29,7 +29,7 @@ router.post('/generate-from-wizard', protect, async (req, res) => {
     const persist = body.persist !== false;
 
     if (persist) {
-      const { universalFeaturesToWizardFeatures } = require('../utils/universalCommerceMapper');
+      const { universalFeaturesToWizardFeatures } = require('../utils/commerce/universalCommerceMapper');
       const featuresObj = body.features || body.onboardingData?.features;
       const wfSet = {};
       if (featuresObj && typeof featuresObj === 'object' && Object.keys(featuresObj).length > 0) {
@@ -99,8 +99,8 @@ router.post('/generate-from-wizard', protect, async (req, res) => {
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
-    const { generateCommerceWizardPack } = require('../utils/flowGenerator');
-    const { createFlowsFromCommercePack } = require('../utils/wizardCommercePackPersist');
+    const { generateCommerceWizardPack } = require('../utils/flow/flowGenerator');
+    const { createFlowsFromCommercePack } = require('../utils/flow/wizardCommercePackPersist');
     const pack = await generateCommerceWizardPack(client, body);
 
     const folderId = body.folderId || '';
@@ -210,109 +210,14 @@ router.post('/', protect, async (req, res) => {
   }
 });
 
-// POST /api/flow/ai-build
-// Phase 28: Generate multiple flow variants from a natural language prompt
-router.post('/ai-build', protect, async (req, res) => {
-  try {
-    const { prompt, yOffset, generateVariants, strategy, returnPlan } = req.body;
-    if (!prompt || !String(prompt).trim()) {
-      return res.status(400).json({ success: false, message: 'Prompt is required' });
-    }
-
-    const clientId = tenantClientId(req);
-    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
-
-    const client = await Client.findOne({ clientId });
-    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
-
-    const { buildFlowFromPrompt, generateFlowVariants, validateAndCleanFlow } = require('../utils/aiFlowBuilder');
-    
-    if (generateVariants) {
-      const variantsRaw = await generateFlowVariants(String(prompt).trim(), client);
-      const variants = variantsRaw.map((v) => {
-        const cleaned = validateAndCleanFlow({ nodes: v.nodes || [], edges: v.edges || [] }, yOffset ?? 0);
-        return { ...v, nodes: cleaned.nodes, edges: cleaned.edges };
-      });
-      return res.json({ success: true, variants });
-    }
-
-    // Bridge: deterministic ecommerce generator when preset is selected.
-    if (String(strategy?.preset || "").toLowerCase() === 'ecommerce') {
-      const { generateEcommerceFlow } = require('../utils/flowGenerator');
-      const ecommerceFeatures = {
-        enableCatalog: true,
-        enableCatalogCheckoutRecovery: true,
-        catalogCheckoutDelayMin: 20,
-        enableOrderTracking: true,
-        enableReturnsRefunds: true,
-        enableCancelOrder: true,
-        enableSupportEscalation: true,
-        enableAIFallback: true,
-        enableFAQ: true,
-        enableInstallSupport: strategy?.includeInstallHelp !== false,
-        enableWarranty: strategy?.includeWarrantyLookup !== false,
-        enableLoyalty: !!strategy?.includeLoyaltyPoints,
-      };
-      const wizardData = {
-        businessName: client.businessName || client.name || undefined,
-        shopDomain: client.platformVars?.shopDomain || client.platformVars?.shopifyDomain || undefined,
-        checkoutUrl: client.platformVars?.checkoutUrl || undefined,
-        googleReviewUrl: client.platformVars?.googleReviewUrl || client.googleReviewUrl || undefined,
-        currency: client.platformVars?.baseCurrency || undefined,
-        tone: strategy?.tone,
-        botLanguage: strategy?.language,
-        flowType: strategy?.flowType,
-        riskPosture: strategy?.riskPosture,
-        productMode: 'catalog',
-        features: ecommerceFeatures,
-        useAiCopy: false,
-      };
-      const det = await generateEcommerceFlow(client, wizardData);
-      const detClean = validateAndCleanFlow({ nodes: det.nodes || [], edges: det.edges || [] }, yOffset ?? 0);
-      return res.json({
-        success: true,
-        ...(returnPlan ? { plan: null } : {}),
-        nodes: detClean.nodes,
-        edges: detClean.edges,
-        mode: 'deterministic_ecommerce'
-      });
-    }
-
-    // Planner -> Compiler (enterprise path). If planner fails, fall back to legacy direct generator.
-    let plan = null;
-    try {
-      const { planFlow } = require('../utils/flowPlanner');
-      plan = await planFlow({ prompt: String(prompt).trim(), strategy: strategy || {}, client });
-    } catch (_) {
-      plan = null;
-    }
-
-    if (plan) {
-      const { compilePlanToGraph } = require('../utils/flowCompiler');
-      const compiled = compilePlanToGraph(plan, { yOffset: yOffset ?? 500 });
-      const compiledClean = validateAndCleanFlow({ nodes: compiled.nodes || [], edges: compiled.edges || [] }, 0);
-      return res.json({
-        success: true,
-        ...(returnPlan ? { plan } : {}),
-        nodes: compiledClean.nodes,
-        edges: compiledClean.edges,
-        mode: 'planner_compiler'
-      });
-    }
-
-    const result = await buildFlowFromPrompt(String(prompt).trim(), client, yOffset ?? 500);
-    const resultClean = validateAndCleanFlow({ nodes: result.nodes || [], edges: result.edges || [] }, 0);
-    res.json({
-      success: true,
-      ...(returnPlan ? { plan: null } : {}),
-      nodes: resultClean.nodes,
-      edges: resultClean.edges,
-      mode: 'legacy_direct'
-    });
-  } catch (error) {
-    console.error('[AI Flow Builder] Error:', error.message);
-    res.status(500).json({ success: false, message: error.message || 'AI generation failed' });
-  }
+// POST /api/flow/ai-build — removed Phase 6 (use POST /api/flow/generate)
+router.post('/ai-build', protect, (req, res) => {
+  return res.status(410).json({
+    success: false,
+    error: 'gone',
+    message: 'This endpoint was removed. Use POST /api/flow/generate instead.',
+    canonical: '/api/flow/generate',
+  });
 });
 
 // POST /api/flow/simulate
@@ -461,127 +366,76 @@ router.post('/simulate', protect, async (req, res) => {
   }
 });
 
-// POST /api/flow/save
-// Saves draft nodes/edges to the WhatsAppFlow model
-router.post('/save', protect, async (req, res) => {
+// POST /api/flow/publish/:clientId — canonical publish (Phase 4)
+router.post('/publish/:clientId', protect, async (req, res) => {
   try {
-    const { flowId, nodes, edges } = req.body;
-    const clientId = tenantClientId(req);
-    if (!clientId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-
-    const WhatsAppFlow = require('../models/WhatsAppFlow');
-    let flow = await WhatsAppFlow.findOne({ clientId, flowId });
-
-    if (!flow) {
-      flow = new WhatsAppFlow({
-        clientId,
-        flowId,
-        name: `Automated Flow ${Date.now()}`,
-        nodes,
-        edges
-      });
-    } else {
-      flow.nodes = nodes;
-      flow.edges = edges;
-    }
-
-    await flow.save();
-
-    // Legacy fallback: also save to Client model for compatibility
-    await Client.updateOne({ clientId }, { flowNodes: nodes, flowEdges: edges });
-
-    await clearClientCache(clientId);
-
-    res.json({ success: true, message: 'Draft saved successfully' });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    const { clientId } = req.params;
+    const { denyUnlessTenant } = require('../utils/core/queryHelpers');
+    if (!denyUnlessTenant(req, res, clientId)) return;
+    const { publishFlowForClient } = require('../services/flowPublishService');
+    const io = req.app.get('socketio');
+    const result = await publishFlowForClient({
+      clientId,
+      flowId: req.body.flowId,
+      nodes: req.body.nodes,
+      edges: req.body.edges,
+      publishedBy: req.user?.email || req.user?.name,
+      forcePublish: !!req.body.forcePublish,
+      io,
+    });
+    return res.json({ success: true, ...result });
+  } catch (e) {
+    const status = e.status || 500;
+    return res.status(status).json({
+      success: false,
+      message: e.message,
+      errors: e.errors,
+      warnings: e.warnings,
+    });
   }
 });
 
-// POST /api/flow/publish
-// Syncs draft to published state and increments version
+// POST /api/flow/generate — canonical AI flow generation (Phase 4)
+router.post('/generate', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+    const { generateFlow } = require('../services/flowGeneration');
+    const io = req.app.get('socketio');
+    const out = await generateFlow({ clientId, ...req.body, user: req.user, io });
+    return res.json({ success: true, ...out });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
 router.post('/publish', protect, async (req, res) => {
   try {
-    const { flowId } = req.body;
     const clientId = tenantClientId(req);
-    if (!clientId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-
-    const WhatsAppFlow = require('../models/WhatsAppFlow');
-    const FlowHistory = require('../models/FlowHistory');
-    const flow = await WhatsAppFlow.findOne({ clientId, flowId });
-
-    if (!flow) return res.status(404).json({ success: false, message: 'Flow not found' });
-
-    // Strict publish preflight: block bad graphs/templates before they go live.
-    const client = await Client.findOne({ clientId }).lean();
-    const { preflightValidateFlowGraph } = require('../utils/flowPublishPreflight');
-    const preflight = preflightValidateFlowGraph({
-      nodes: flow.nodes || [],
-      edges: flow.edges || [],
-      client: client || { syncedMetaTemplates: [] },
-    });
-    if (!preflight.valid) {
-      return res.status(400).json({
-        success: false,
-        message: 'Flow publish blocked: validation failed.',
-        errors: preflight.errors,
-        warnings: preflight.warnings,
-      });
-    }
-
-    // 1. Create a snapshot in FlowHistory
-    await FlowHistory.create({
+    if (!clientId) return res.status(403).json({ success: false, message: 'Unauthorized' });
+    const { publishFlowForClient } = require('../services/flowPublishService');
+    const io = req.app.get('socketio');
+    const result = await publishFlowForClient({
       clientId,
-      flowId,
-      version: flow.version,
-      nodes: flow.publishedNodes,
-      edges: flow.publishedEdges,
-      publishedBy: req.user.name || req.user.email
+      flowId: req.body.flowId,
+      publishedBy: req.user?.email || req.user?.name,
+      io,
     });
-
-    // 2. Deactivate other flows for the same platform
-    await WhatsAppFlow.updateMany(
-      { clientId, platform: flow.platform, flowId: { $ne: flowId } },
-      { $set: { status: 'DRAFT' } }
-    );
-
-    // 3. Sync draft to published (runtime graph: no stickies, no unreachable orphans)
-    const {
-      stripEditorOnlyNodes,
-      pruneFlowGraphToReachable,
-    } = require("../utils/pruneFlowGraph");
-    const stripped = stripEditorOnlyNodes(flow.nodes || [], flow.edges || []);
-    const pruned = pruneFlowGraphToReachable(stripped.nodes, stripped.edges);
-    const { sanitizeFlowNodesMedia } = require("../utils/sanitizeFlowMedia");
-    flow.publishedNodes = sanitizeFlowNodesMedia(pruned.nodes);
-    flow.publishedEdges = pruned.edges;
-    flow.status = 'PUBLISHED';
-    flow.version += 1;
-    flow.lastSyncedAt = Date.now();
-
-    await flow.save();
-    
-    // Clear trigger cache to load the fresh flows
-    const { clearTriggerCache } = require('../utils/triggerEngine');
-    clearTriggerCache(clientId);
-    await clearClientCache(clientId);
-    invalidateClientCache(clientId);
-    invalidateFlowGraphCache(clientId, flowId);
-
-    res.json({ success: true, message: `Flow published successfully (v${flow.version})`, version: flow.version });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    return res.json({ success: true, message: `Flow published (v${result.versionNumber})`, ...result });
+  } catch (e) {
+    return res.status(e.status || 500).json({
+      success: false,
+      message: e.message,
+      errors: e.errors,
+      warnings: e.warnings,
+    });
   }
 });
 
 // GET /api/flow/:flowId/versions
 // Returns history of published versions
 router.get('/:flowId/versions', protect, apiCache(30), async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
+  const { createTimer } = require('../utils/core/perfLogger');
   const timer = createTimer('GET /api/flow/:flowId/versions', req.user?.clientId || '');
   try {
     const { flowId } = req.params;
@@ -632,8 +486,8 @@ router.post('/:flowId/rollback/:versionId', protect, async (req, res) => {
 
 // GET /api/flow/ — deprecated: use GET /api/flow/flows?lite=1 (no full node payloads)
 router.get('/', protect, apiCache(30), async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
-  const { getCachedClient } = require('../utils/clientCache');
+  const { createTimer } = require('../utils/core/perfLogger');
+  const { getCachedClient } = require('../utils/core/clientCache');
   const timer = createTimer('GET /api/flow/ (deprecated)', req.user?.clientId || '');
   try {
     const clientId = tenantClientId(req);
@@ -685,8 +539,8 @@ router.get('/', protect, apiCache(30), async (req, res) => {
 
 // GET /api/flow/flows
 router.get('/flows', protect, apiCache(30), async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
-  const { getCachedClient } = require('../utils/clientCache');
+  const { createTimer } = require('../utils/core/perfLogger');
+  const { getCachedClient } = require('../utils/core/clientCache');
   const timer = createTimer('GET /api/flow/flows', req.user?.clientId || '');
   try {
     const clientId = tenantClientId(req);
@@ -696,7 +550,7 @@ router.get('/flows', protect, apiCache(30), async (req, res) => {
     }
 
     const WhatsAppFlow = require('../models/WhatsAppFlow');
-    const { mergeFlowsListForDashboard } = require('../utils/flowGraphResolver');
+    const { mergeFlowsListForDashboard } = require('../utils/flow/flowGraphResolver');
     const lite = req.query.lite === '1' || req.query.lite === 'true';
     const flowFind = WhatsAppFlow.find({ clientId });
     if (lite) {
@@ -716,7 +570,7 @@ router.get('/flows', protect, apiCache(30), async (req, res) => {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
-    const { resolveFlowGraphByRef } = require('../utils/flowGraphResolver');
+    const { resolveFlowGraphByRef } = require('../utils/flow/flowGraphResolver');
     const sources = {
       whatsappFlows: dbFlows,
       visualFlows: client.visualFlows || [],
@@ -760,7 +614,7 @@ router.get('/flows', protect, apiCache(30), async (req, res) => {
         try {
           const resolved = await resolveFlowGraphByRef(clientId, f.id, { sources });
           if (resolved?.nodes?.length) {
-            const { resolveFlowListCounts: countPair } = require('../utils/flowGraphResolver');
+            const { resolveFlowListCounts: countPair } = require('../utils/flow/flowGraphResolver');
             const c = countPair(resolved.nodes, null, resolved.edges || [], null, row);
             if (c.nodeCount > 0 || c.edgeCount > 0) {
               row = {
@@ -846,14 +700,14 @@ router.post('/:flowId/duplicate', protect, async (req, res) => {
 });
 
 async function runFlowOrganizeForClient(clientId, flowId) {
-  const { applyCanvasLayout, countOrphanLayoutNodes } = require('../utils/flowLayoutOrganize');
-  const { loadClientFlowSources, resolveFlowGraphByRef } = require('../utils/flowGraphResolver');
-  const { persistFlowCanvasGraph } = require('../utils/flowLayoutPersist');
-  const { autoPatchMpmFlowNodes } = require('../utils/flowMpmPatch');
+  const { applyCanvasLayout, countOrphanLayoutNodes } = require('../utils/flow/flowLayoutOrganize');
+  const { loadClientFlowSources, resolveFlowGraphByRef } = require('../utils/flow/flowGraphResolver');
+  const { persistFlowCanvasGraph } = require('../utils/flow/flowLayoutPersist');
+  const { autoPatchMpmFlowNodes } = require('../utils/flow/flowMpmPatch');
   const sources = await loadClientFlowSources(clientId);
   let resolved = await resolveFlowGraphByRef(clientId, flowId, { sources });
   if (!resolved?.nodes?.length) {
-    const { getCachedFlowGraphAsync } = require('../utils/flowGraphCache');
+    const { getCachedFlowGraphAsync } = require('../utils/flow/flowGraphCache');
     const cached = await getCachedFlowGraphAsync(clientId, flowId);
     if (cached?.nodes?.length) {
       resolved = {
@@ -931,7 +785,7 @@ router.post('/:flowId/organize', protect, handleFlowOrganize);
 
 // GET /api/flow/flows/:flowId/graph — full nodes/edges for one flow (Flow Builder canvas)
 router.get('/flows/:flowId/graph', protect, apiCache(30), async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
+  const { createTimer } = require('../utils/core/perfLogger');
   const timer = createTimer('GET /api/flow/flows/:flowId/graph', req.user?.clientId || '');
   try {
     const clientId = tenantClientId(req);
@@ -941,7 +795,7 @@ router.get('/flows/:flowId/graph', protect, apiCache(30), async (req, res) => {
     }
     const { flowId } = req.params;
 
-    const { flattenFlowNodes, resolveFlowGraphByRef, loadClientFlowSources } = require('../utils/flowGraphResolver');
+    const { flattenFlowNodes, resolveFlowGraphByRef, loadClientFlowSources } = require('../utils/flow/flowGraphResolver');
 
     let flowPayload = await timer.time('flow_graph_cache', () =>
       getCachedFlowGraphAsync(clientId, flowId)
@@ -973,8 +827,8 @@ router.get('/flows/:flowId/graph', protect, apiCache(30), async (req, res) => {
       setCachedFlowGraph(clientId, flowId, flowPayload);
     }
 
-    const { applyCanvasLayout } = require('../utils/flowLayoutOrganize');
-    const { persistFlowCanvasGraph } = require('../utils/flowLayoutPersist');
+    const { applyCanvasLayout } = require('../utils/flow/flowLayoutOrganize');
+    const { persistFlowCanvasGraph } = require('../utils/flow/flowLayoutPersist');
     const layout = applyCanvasLayout(flowPayload.nodes || [], flowPayload.edges || [], {
       keepPositions: true,
       addEntryEdges: true,
@@ -1027,8 +881,8 @@ router.get('/flows/:flowId/graph', protect, apiCache(30), async (req, res) => {
 // GET /api/flow/:flowId/summary
 // Brief stats card data: entry count, dropoff rate, last published
 router.get('/:flowId/summary', protect, apiCache(60), async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
-  const { dedupeAsync } = require('../utils/requestDedupe');
+  const { createTimer } = require('../utils/core/perfLogger');
+  const { dedupeAsync } = require('../utils/core/requestDedupe');
   const timer = createTimer('GET /api/flow/:flowId/summary', req.user?.clientId || '');
   try {
     const { flowId } = req.params;
@@ -1105,9 +959,9 @@ router.get('/:clientId/analytics', protect, async (req, res) => {
 });
 
 router.get('/:clientId/unanswered-questions', protect, async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
-  const { dedupeAsync } = require('../utils/requestDedupe');
-  const { collectQuestionsBeforeFallbacks } = require('../utils/flowIntelligenceAggregations');
+  const { createTimer } = require('../utils/core/perfLogger');
+  const { dedupeAsync } = require('../utils/core/requestDedupe');
+  const { collectQuestionsBeforeFallbacks } = require('../utils/flow/flowIntelligenceAggregations');
   const timer = createTimer('GET /api/flow/unanswered-questions', req.params.clientId || '');
   try {
     const clientId = tenantClientId(req);
@@ -1116,21 +970,7 @@ router.get('/:clientId/unanswered-questions', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
-    const TrainingCase = require('../models/TrainingCase');
-
     const payload = await dedupeAsync(`flow:unanswered:${clientId}`, async () => {
-      const correctionsRaw = await TrainingCase.find({ clientId, status: 'pending' })
-        .limit(50)
-        .sort({ createdAt: -1 })
-        .lean();
-      const agentCorrections = correctionsRaw.map((c) => ({
-        id: c._id,
-        query: c.userMessage,
-        wrongAnswer: c.botResponse,
-        correction: c.agentCorrection,
-        date: c.createdAt,
-      }));
-
       const rows = await collectQuestionsBeforeFallbacks(clientId, { limit: 20 });
       const seenQueries = new Set();
       const unansweredQuestions = [];
@@ -1147,7 +987,7 @@ router.get('/:clientId/unanswered-questions', protect, async (req, res) => {
           date: row.date,
         });
       }
-      return { unansweredQuestions, agentCorrections };
+      return { unansweredQuestions };
     });
 
     // 3. Generate AI Suggested Fixes
@@ -1173,7 +1013,7 @@ router.get('/:clientId/unanswered-questions', protect, async (req, res) => {
     res.json({
       success: true,
       unansweredQuestions: payload.unansweredQuestions,
-      agentCorrections: payload.agentCorrections,
+      agentCorrections: [],
       aiSuggestions
     });
     timer.finish(`200 ok | unanswered=${payload.unansweredQuestions?.length ?? 0}`);
@@ -1280,81 +1120,12 @@ router.post('/:clientId/intelligence/answer', protect, async (req, res) => {
   }
 });
 
-// POST /api/flow/:clientId/intelligence/approve-correction
-// Approves an agent correction — adds it to training data and marks case as approved
-router.post('/:clientId/intelligence/approve-correction', protect, async (req, res) => {
-  try {
-    const clientId = tenantClientId(req);
-    if (!clientId || clientId !== req.params.clientId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-    const { trainingCaseId } = req.body;
-
-    const TrainingCase = require('../models/TrainingCase');
-    const tc = await TrainingCase.findOne({ _id: trainingCaseId, clientId });
-    if (!tc) return res.status(404).json({ success: false, message: 'Training case not found' });
-
-    // Add correction as a FAQ to knowledge base
-    await Client.findOneAndUpdate(
-      { clientId },
-      {
-        $push: {
-          'knowledgeBase.faqs': {
-            question: tc.userMessage,
-            answer: tc.agentCorrection,
-            addedAt: new Date(),
-            source: 'agent_correction',
-            addedBy: req.user?._id
-          }
-        }
-      }
-    );
-
-    // Mark training case as approved
-    tc.status = 'approved';
-    tc.approvedAt = new Date();
-    tc.approvedBy = req.user?._id;
-    await tc.save();
-
-    res.json({ success: true, message: 'Correction approved and added to knowledge base' });
-  } catch (err) {
-    console.error('[Intelligence] Approve correction error:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// POST /api/flow/:clientId/intelligence/reject-correction
-// Rejects a training case (agent override not useful for training)
-router.post('/:clientId/intelligence/reject-correction', protect, async (req, res) => {
-  try {
-    const clientId = tenantClientId(req);
-    if (!clientId || clientId !== req.params.clientId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-    const { trainingCaseId } = req.body;
-
-    const TrainingCase = require('../models/TrainingCase');
-    const tc = await TrainingCase.findOne({ _id: trainingCaseId, clientId });
-    if (!tc) return res.status(404).json({ success: false, message: 'Training case not found' });
-
-    tc.status = 'rejected';
-    tc.rejectedAt = new Date();
-    tc.rejectedBy = req.user?._id;
-    await tc.save();
-
-    res.json({ success: true, message: 'Correction rejected' });
-  } catch (err) {
-    console.error('[Intelligence] Reject correction error:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
 // GET /api/flow/:clientId/intelligence/suggestions
 // Clusters unanswered questions by keyword frequency to suggest new flows
 router.get('/:clientId/intelligence/suggestions', protect, async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
-  const { dedupeAsync } = require('../utils/requestDedupe');
-  const { collectQuestionsBeforeFallbacks } = require('../utils/flowIntelligenceAggregations');
+  const { createTimer } = require('../utils/core/perfLogger');
+  const { dedupeAsync } = require('../utils/core/requestDedupe');
+  const { collectQuestionsBeforeFallbacks } = require('../utils/flow/flowIntelligenceAggregations');
   const timer = createTimer('GET /api/flow/intelligence/suggestions', req.params.clientId || '');
   try {
     const clientId = tenantClientId(req);

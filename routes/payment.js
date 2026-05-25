@@ -1,12 +1,12 @@
 const express = require('express');
 const router  = express.Router();
 const crypto  = require('crypto');
-const logger  = require('../utils/logger')('PaymentWebhook');
+const logger  = require('../utils/core/logger')('PaymentWebhook');
 const Order   = require('../models/Order');
 const Client  = require('../models/Client');
 const AdLead  = require('../models/AdLead');
-const { processOrderForLoyalty } = require('../utils/walletService');
-const { sendWhatsAppText }       = require('../utils/dualBrainEngine');
+const { processOrderForLoyalty } = require('../utils/commerce/walletService');
+const { sendWhatsAppText }       = require('../utils/commerce/dualBrainEngine');
 
 /**
  * POST /api/payment/razorpay/webhook

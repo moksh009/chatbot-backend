@@ -3,6 +3,7 @@
 const Client = require("../models/Client");
 const MetaTemplate = require("../models/MetaTemplate");
 const { getPrebuiltByKey, PREBUILT_TEMPLATE_LIBRARY } = require("../constants/prebuiltTemplateLibrary");
+const { resolveCanonicalTemplateName } = require("../constants/templateCatalog");
 
 const APPROVED_STATUSES = new Set(["approved"]);
 
@@ -20,6 +21,9 @@ function isSendableMeta(doc) {
  * Prefer MetaTemplate collection, then synced Meta list, then legacy messageTemplates.
  */
 async function findMetaTemplate(clientId, { trigger, name, templateKey, autoTrigger } = {}) {
+  const canonicalName = name ? resolveCanonicalTemplateName(name) : name;
+  const canonicalKey = templateKey ? resolveCanonicalTemplateName(templateKey) : templateKey;
+
   const trig = autoTrigger || trigger;
   if (trig) {
     const byTrigger = await MetaTemplate.findOne({
@@ -33,11 +37,16 @@ async function findMetaTemplate(clientId, { trigger, name, templateKey, autoTrig
     if (byTrigger) return { source: "meta_template", template: byTrigger };
   }
 
-  const key = templateKey || name;
+  const key = canonicalKey || canonicalName || templateKey || name;
   if (key) {
+    const nameCandidates = [...new Set([key, name, templateKey, canonicalName, canonicalKey].filter(Boolean))];
     const byKey = await MetaTemplate.findOne({
       clientId,
-      $or: [{ name: key }, { templateKey: key }, { metaTemplateId: key }],
+      $or: [
+        { name: { $in: nameCandidates } },
+        { templateKey: { $in: nameCandidates } },
+        { metaTemplateId: key },
+      ],
     })
       .sort({ updatedAt: -1 })
       .lean();
@@ -60,7 +69,10 @@ async function findMetaTemplate(clientId, { trigger, name, templateKey, autoTrig
 
 async function findLegacyTemplate(client, name) {
   if (!client || !name) return null;
-  const synced = (client.syncedMetaTemplates || []).find((t) => t.name === name);
+  const canonical = resolveCanonicalTemplateName(name);
+  const synced = (client.syncedMetaTemplates || []).find(
+    (t) => t.name === name || t.name === canonical
+  );
   if (synced) {
     return {
       source: "synced_meta",
@@ -75,7 +87,9 @@ async function findLegacyTemplate(client, name) {
     };
   }
 
-  const local = (client.messageTemplates || []).find((t) => t.name === name || t.id === name);
+  const local = (client.messageTemplates || []).find(
+    (t) => t.name === name || t.name === canonical || t.id === name || t.id === canonical
+  );
   if (local) {
     return {
       source: "message_templates",
@@ -105,7 +119,7 @@ async function resolveTemplateForSend(clientId, { trigger, name, templateKey } =
     return { client, ...metaHit };
   }
 
-  const lookupName = name || templateKey;
+  const lookupName = resolveCanonicalTemplateName(name || templateKey || "");
   if (lookupName) {
     const legacy = await findLegacyTemplate(client, lookupName);
     if (legacy?.template && legacy.template.submissionStatus !== "rejected") {
@@ -175,4 +189,5 @@ module.exports = {
   resolveTemplateForSend,
   listClientTemplateNames,
   isSendableMeta,
+  resolveCanonicalTemplateName,
 };

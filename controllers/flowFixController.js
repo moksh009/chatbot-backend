@@ -1,115 +1,110 @@
-const { generateText } = require('../utils/gemini');
-const Client = require('../models/Client');
-const log = require('../utils/logger')('FlowFixAI');
-const TrainingCase = require('../models/TrainingCase');
 const Conversation = require('../models/Conversation');
+const { getGeminiModel } = require('../utils/core/gemini');
+const { validateAndCleanFlow } = require('../utils/flow/aiFlowBuilder');
 
 /**
- * AI Flow Healer
- * Fixes specific issues in the flow nodes without regenerating the entire structure.
+ * AI smart-fix for ReactFlow graphs (same contract as POST /api/admin/flow/fix).
  */
 exports.fixFlowWithAI = async (req, res) => {
   try {
-    const { clientId, diagnostics, nodes, edges } = req.body;
+    const { diagnostics, nodes, edges } = req.body;
+    if (!diagnostics || !nodes || !edges) {
+      return res.status(400).json({ error: 'Missing diagnostic or graph data' });
+    }
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not configured on server' });
+
+    let model = getGeminiModel(apiKey);
+
+    const systemPrompt = `You are a WhatsApp chatbot flow engineer debugging a ReactFlow JSON graph.
+    You will receive the current graph (nodes and edges) and a list of diagnostic errors.
+    Your task is to fix the errors by intelligently modifying the "nodes" or "edges" array.
     
-    if (!diagnostics || !nodes) {
-      return res.status(400).json({ success: false, error: 'Diagnostics and nodes are required' });
-    }
-
-    const client = await Client.findOne({ clientId });
-    const businessContext = client ? `The business is a ${client.business_type || 'service-based'} store named "${client.name || 'TopEdge Client'}".` : '';
-
-    const systemPrompt = `
-You are a Chatbot Flow Architect. Your task is to FIX specific errors in a visual flow without changing its overall structure.
-${businessContext}
-
-DIAGNOSTIC ERRORS:
-${diagnostics.map(d => `- ${d}`).join('\n')}
-
-INSTRUCTIONS:
-1. Review the provided JSON for "flowNodes".
-2. Fix "empty text" errors by providing high-quality, professional chatbot copy that fits the node's label and purpose.
-3. If a node is "disconnected", look at its label and find a logical target or source for an edge.
-4. ONLY return a JSON object with two fields: "nodes" and "edges".
-5. Keep existing node IDs and positions. ONLY update the "data" fields to fix the errors.
-
-CURRENT NODES (JSON):
-${JSON.stringify(nodes)}
-
-CURRENT EDGES (JSON):
-${JSON.stringify(edges)}
-
-Return the EXACT fixed JSON structure (nodes and edges). Do not add any markdown formatting or explanations.
-`;
-
-    const aiResult = await generateText(systemPrompt, process.env.GEMINI_API_KEY);
+    Diagnostics:
+    ${JSON.stringify(diagnostics, null, 2)}
     
-    if (!aiResult) {
-      throw new Error("AI failed to generate a fix.");
+    Current Nodes:
+    ${JSON.stringify(nodes, null, 2)}
+    
+    Current Edges:
+    ${JSON.stringify(edges, null, 2)}
+    
+    Return ONLY valid JSON with exactly two properties: "nodes" and "edges".
+    DO NOT DELETE nodes unless absolutely necessary. Just fix the broken edges or properties.
+    The response MUST be a valid JSON object. Do not add markdown formatting or explanations.`;
+
+    let result;
+    try {
+      result = await model.generateContent(systemPrompt);
+    } catch (apiErr) {
+      model = getGeminiModel(apiKey);
+      result = await model.generateContent(systemPrompt);
     }
 
-    // Clean up AI response if it contains markdown
-    const cleanJson = aiResult.replace(/```json/g, '').replace(/```/g, '').trim();
-    const fixedGraph = JSON.parse(cleanJson);
+    const rawText = result.response.text().trim();
+    let cleaned = rawText
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
 
-    // ─── VALIDATION & NORMALIZATION ──────────────────────────────────
-    let finalNodes = Array.isArray(fixedGraph.nodes) ? fixedGraph.nodes : nodes;
-    let finalEdges = Array.isArray(fixedGraph.edges) ? fixedGraph.edges : edges;
-
-    // Fix common AI mistake: returning an object with numeric keys instead of an array
-    if (!Array.isArray(fixedGraph.nodes) && typeof fixedGraph.nodes === 'object' && fixedGraph.nodes !== null) {
-      finalNodes = Object.values(fixedGraph.nodes);
-    }
-    if (!Array.isArray(fixedGraph.edges) && typeof fixedGraph.edges === 'object' && fixedGraph.edges !== null) {
-      finalEdges = Object.values(fixedGraph.edges);
+    const startIdx = cleaned.indexOf('{');
+    const endIdx = cleaned.lastIndexOf('}');
+    if (startIdx !== -1 && endIdx !== -1) {
+      cleaned = cleaned.substring(startIdx, endIdx + 1);
     }
 
-    log.info(`✅ Flow fixed and validated with AI for client: ${clientId}`);
-    res.json({ 
-      success: true, 
-      nodes: finalNodes, 
-      edges: finalEdges 
-    });
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return res.status(500).json({ error: 'AI did not return valid JSON' });
+    }
 
+    let fixedGraph;
+    try {
+      fixedGraph = JSON.parse(jsonMatch[0]);
+    } catch (parseErr) {
+      return res.status(500).json({ error: 'Failed to parse AI JSON: ' + parseErr.message });
+    }
+
+    if (!fixedGraph.nodes || !fixedGraph.edges) {
+      return res.status(500).json({ error: 'AI output missing nodes/edges' });
+    }
+
+    const cleanedGraph = validateAndCleanFlow(
+      {
+        nodes: fixedGraph.nodes || nodes || [],
+        edges: fixedGraph.edges || edges || [],
+      },
+      0
+    );
+
+    res.json({ success: true, nodes: cleanedGraph.nodes, edges: cleanedGraph.edges });
   } catch (error) {
-    log.error('Flow Fix error:', error.message);
+    console.error('[FlowFix] fixFlowWithAI error:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 };
 
-/**
- * AI Auto-Correction Pipeline
- * Logs agent corrections for AI training.
- */
+/** Legacy live-chat correction endpoint — training cases disabled. */
 exports.correctAIResponse = async (req, res) => {
-    try {
-        const { userMessage, botResponse, agentCorrection, conversationId, phone } = req.body;
-        const clientId = req.user.clientId;
+  try {
+    const { conversationId } = req.body;
+    const clientId = req.user?.clientId;
 
-        if (!agentCorrection || !botResponse) {
-            return res.status(400).json({ success: false, message: "Missing correction data." });
-        }
-
-        // Save the correction as a pending training case for the AI to learn from
-        const trainingCase = await TrainingCase.create({
-            clientId,
-            conversationId,
-            phone,
-            userMessage: userMessage || "Unknown Context",
-            botResponse,
-            agentCorrection,
-            status: 'pending',
-            createdBy: req.user._id
-        });
-
-        // Optionally flag the conversation so the admin knows it was corrected
-        await Conversation.findByIdAndUpdate(conversationId, {
-            $set: { aiNeedsTuning: true }
-        });
-
-        res.status(200).json({ success: true, message: "Correction logged for AI training.", trainingCase });
-    } catch (error) {
-        console.error("[FlowFixController] Error logging correction:", error);
-        res.status(500).json({ success: false, message: "Internal server error" });
+    if (conversationId && clientId) {
+      await Conversation.findOneAndUpdate(
+        { _id: conversationId, clientId },
+        { $set: { aiNeedsTuning: true } }
+      ).catch(() => {});
     }
+
+    res.status(200).json({
+      success: true,
+      message: 'Correction noted. Agent training cases are disabled.',
+    });
+  } catch (error) {
+    console.error('[FlowFixController] correctAIResponse error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
 };

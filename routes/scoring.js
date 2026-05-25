@@ -3,8 +3,6 @@ const router = express.Router();
 const { protect } = require('../middleware/auth');
 const ScoreTierConfig = require('../models/ScoreTierConfig');
 const AdLead = require('../models/AdLead');
-const { evaluateCustomerScore } = require('../services/ScoreEvaluationService');
-
 const TaskQueueService = require('../services/TaskQueueService');
 
 /**
@@ -14,14 +12,14 @@ const TaskQueueService = require('../services/TaskQueueService');
 router.get('/config/:clientId', protect, async (req, res) => {
   try {
     const { clientId } = req.params;
-    let config = await ScoreTierConfig.findOne({ clientId });
-    
-    if (!config) {
-      // Return default config but don't save yet (until they edit/save)
-      config = ScoreTierConfig.getDefaultConfig(clientId);
-    }
-    
-    res.json({ success: true, config });
+    const doc = await ScoreTierConfig.findOne({ clientId });
+    const config = doc || ScoreTierConfig.getDefaultConfig(clientId);
+
+    res.json({
+      success: true,
+      config,
+      customized: Boolean(doc),
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to fetch config' });
   }

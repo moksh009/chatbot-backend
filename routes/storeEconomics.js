@@ -9,8 +9,8 @@ const {
   buildDashboardMetrics,
   buildProductIntelligence,
   getOrdersByState,
-} = require('../utils/storeEconomicsEngine');
-const { withShopifyRetry } = require('../utils/shopifyHelper');
+} = require('../utils/commerce/storeEconomicsEngine');
+const { withShopifyRetry } = require('../utils/shopify/shopifyHelper');
 
 // Apply auth middleware to all routes
 router.use(protect);
@@ -90,7 +90,9 @@ router.patch('/wizard/step/:stepNumber', async (req, res) => {
       config.cacPerCustomer = data.cacPerCustomer;
       config.gatewayFeeRate = data.gatewayFeeRate !== undefined ? data.gatewayFeeRate / 100 : null;
       config.shopifyTransactionFeeRate = data.shopifyTransactionFeeRate !== undefined ? data.shopifyTransactionFeeRate / 100 : null;
-      config.gstRate = data.gstRate !== undefined ? data.gstRate / 100 : null;
+      config.gstEnabled = !!data.gstEnabled;
+      config.gstRate =
+        data.gstEnabled && data.gstRate !== undefined ? data.gstRate / 100 : null;
       config.fixedOverheadsPerOrder = data.fixedOverheadsPerOrder;
     }
 
@@ -121,9 +123,10 @@ router.post('/wizard/finish', async (req, res) => {
 
     await calculateAndStoreAllProducts(clientId);
     
+    const finishedAt = new Date();
     await StoreEconomicsConfig.updateOne(
       { clientId },
-      { $set: { setupCompleted: true, setupCompletedAt: new Date() } }
+      { $set: { setupCompleted: true, setupCompletedAt: finishedAt, lastRecomputedAt: finishedAt } }
     );
 
     const products = await StoreEconomicsProduct.find({ clientId }).lean();
@@ -150,13 +153,24 @@ router.get('/dashboard', async (req, res) => {
       getOrdersByState(clientId, rangeStart, rangeEnd),
     ]);
 
+    const configDoc = await StoreEconomicsConfig.findOne({ clientId })
+      .select('gstEnabled gstRate lastRecomputedAt setupCompletedAt')
+      .lean();
+
     res.json({
       success: true,
       data: {
         ...metrics,
         ...productIntelligence,
         ordersByState,
-      }
+        configMeta: configDoc
+          ? {
+              gstEnabled: !!configDoc.gstEnabled,
+              gstRatePercent: configDoc.gstRate ? Math.round(configDoc.gstRate * 100) : null,
+              lastRecomputedAt: configDoc.lastRecomputedAt || configDoc.setupCompletedAt || null,
+            }
+          : null,
+      },
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -211,6 +225,31 @@ router.post('/shopify/fetch-products', async (req, res) => {
     res.json({ success: true, products: savedProducts });
   } catch (error) {
     console.error('[fetch-products error]', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/store-economics/recompute
+ * Recalculates per-product margins from stored COGS and config.
+ */
+router.post('/recompute', async (req, res) => {
+  try {
+    const { clientId } = req.body;
+    if (!clientId) return res.status(400).json({ success: false, error: 'clientId required' });
+
+    const config = await StoreEconomicsConfig.findOne({ clientId });
+    if (!config?.setupCompleted) {
+      return res.status(400).json({ success: false, error: 'Complete economics setup first' });
+    }
+
+    await calculateAndStoreAllProducts(clientId);
+    const recomputedAt = new Date();
+    await StoreEconomicsConfig.updateOne({ clientId }, { $set: { lastRecomputedAt: recomputedAt } });
+
+    const count = await StoreEconomicsProduct.countDocuments({ clientId });
+    res.json({ success: true, productCount: count, lastRecomputedAt: recomputedAt });
+  } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });

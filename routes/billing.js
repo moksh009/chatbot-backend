@@ -2,11 +2,12 @@ const express = require('express');
 const router = express.Router();
 const Subscription = require('../models/Subscription');
 const Client = require('../models/Client');
-const { PLAN_LIMITS } = require('../utils/planLimits');
-const { protect } = require('../middleware/auth');
-const { ensureClientForUser } = require('../utils/ensureClientForUser');
+const { resolvePlanLimits } = require('../config/planCatalog');
+const { protect, verifyClientAccess } = require('../middleware/auth');
+const { verifyTenantScope } = require('../middleware/verifyTenantScope');
+const { ensureClientForUser } = require('../utils/core/ensureClientForUser');
 const { apiCache } = require('../middleware/apiCache');
-const { getCachedClient } = require('../utils/clientCache');
+const { getCachedClient } = require('../utils/core/clientCache');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
 
@@ -19,7 +20,7 @@ const razorpay = new Razorpay({
  * GET /api/billing/usage
  */
 router.get('/usage', protect, apiCache(300), async (req, res) => {
-  const { createTimer } = require('../utils/perfLogger');
+  const { createTimer } = require('../utils/core/perfLogger');
   const timer = createTimer('GET /api/billing/usage', req.user?.clientId || '');
   try {
     let client = await timer.time('getCachedClient', () =>
@@ -54,12 +55,19 @@ router.get('/usage', protect, apiCache(300), async (req, res) => {
       };
     }
 
-    const planData = PLAN_LIMITS[sub.plan || 'trial'] || PLAN_LIMITS['trial'];
+    const planData = resolvePlanLimits(sub.plan || 'trial');
+
+    const { estimateTenantCost } = require('../services/billing/costEstimation');
+    const costEstimate = estimateTenantCost({
+      usage: sub.usageThisPeriod || {},
+      planPriceInr: planData?.priceInr || 0,
+    });
 
     res.json({
       success: true,
       subscription: sub,
       limits: planData,
+      costEstimate,
       razorpayKeyId: process.env.RAZORPAY_KEY_ID
     });
     timer.finish('200 ok');
@@ -73,7 +81,7 @@ router.get('/usage', protect, apiCache(300), async (req, res) => {
  * GET /api/billing/:clientId
  * Returns combined billing and usage data for the frontend Billing page
  */
-router.get('/:clientId', protect, async (req, res) => {
+router.get('/:clientId', protect, verifyTenantScope(), async (req, res) => {
   try {
     const { clientId } = req.params;
     const client = await Client.findOne({ clientId });
@@ -94,8 +102,7 @@ router.get('/:clientId', protect, async (req, res) => {
     const tier = client.tier || 'v1';
 
     // Calculate Usage based on Client's usage tracker
-    const normalizedPlan = masterPlan.toLowerCase().trim();
-    const planLimits = PLAN_LIMITS[normalizedPlan] || PLAN_LIMITS['starter'];
+    const planLimits = resolvePlanLimits(masterPlan);
     
     const usage = {
       contacts: {

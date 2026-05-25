@@ -3,25 +3,24 @@ const router = express.Router();
 const Client = require('../models/Client');
 const User = require('../models/User');
 const { protect, authorize } = require('../middleware/auth');
-const log = require('../utils/logger')('AdminAPI');
-const { getDefaultFlowForNiche } = require('../utils/defaultFlowNodes');
-const { generateFlowForClient } = require('../utils/flowAutogen');
-const { convertLegacyToVisual } = require('../utils/legacyConverter');
+const log = require('../utils/core/logger')('AdminAPI');
+const { getDefaultFlowForNiche } = require('../utils/flow/defaultFlowNodes');
+const { generateFlowForClient } = require('../utils/flow/flowAutogen');
 const { runFullMigration } = require('../scripts/phase9MigrationLogic');
-const { getGeminiModel } = require('../utils/gemini');
-const { validateAndCleanFlow } = require('../utils/aiFlowBuilder');
+const { getGeminiModel } = require('../utils/core/gemini');
+const { validateAndCleanFlow } = require('../utils/flow/aiFlowBuilder');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const axios = require('axios');
-const shopifyAdminApiVersion = require('../utils/shopifyAdminApiVersion');
-const { encrypt, decrypt } = require('../utils/encryption');
-const { sanitizeMiddleware } = require('../utils/sanitize');
-const { ensureClientForUser } = require('../utils/ensureClientForUser');
-const { syncPersonaToFlows } = require('../utils/personaEngine');
-const { getPrebuiltTemplates } = require('../utils/flowGenerator');
-const WhatsApp = require('../utils/whatsapp');
+const shopifyAdminApiVersion = require('../utils/shopify/shopifyAdminApiVersion');
+const { encrypt, decrypt } = require('../utils/core/encryption');
+const { sanitizeMiddleware } = require('../utils/core/sanitize');
+const { ensureClientForUser } = require('../utils/core/ensureClientForUser');
+const { syncPersonaToFlows } = require('../utils/core/personaEngine');
+const { getPrebuiltTemplates } = require('../utils/flow/flowGenerator');
+const WhatsApp = require('../utils/meta/whatsapp');
 const AuditLog = require('../models/AuditLog');
 const WhatsAppFlow = require('../models/WhatsAppFlow');
 
@@ -32,7 +31,7 @@ router.post('/shopify/force-sync', protect, async (req, res) => {
       return res.status(404).json({ message: 'Client not found' });
     }
 
-    const { refreshShopifyToken } = require('../utils/shopifyHelper');
+    const { refreshShopifyToken } = require('../utils/shopify/shopifyHelper');
     const result = await refreshShopifyToken(client);
 
     if (result.success) {
@@ -45,8 +44,6 @@ router.post('/shopify/force-sync', protect, async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
-
-const CLIENT_CODE_DIR = path.join(__dirname, 'clientcodes');
 
 // Middleware to check if user is a Super Admin
 const isSuperAdmin = async (req, res, next) => {
@@ -330,7 +327,6 @@ router.get('/run-migration', async (req, res) => {
     const defaultAutomationFlows = [
       { id: 'abandoned_cart', isActive: true, config: { delayHours: 2 } },
       { id: 'cod_to_prepaid', isActive: false, config: { delayMinutes: 3, discountAmount: 50, gateway: 'razorpay' } },
-      { id: 'review_collection', isActive: false, config: { delayDays: 4 } }
     ];
 
     const defaultMessageTemplates = [
@@ -339,11 +335,6 @@ router.get('/run-migration', async (req, res) => {
         body: "Your order #{{order_number}} for *{{product_name}}* is confirmed via COD.\n\n💳 Pay via UPI now and save ₹{{discount_amount}}!\n\nOffer expires in 2 hours.",
         buttons: [{ label: "💳 Pay via UPI" }, { label: "Keep COD" }]
       },
-      {
-        id: "review_request",
-        body: "Hi! How's your *{{product_name}}*? 😊\n\nYour feedback helps us improve and helps other customers!",
-        buttons: [{ label: "😍 Loved it!" }, { label: "😐 It's okay" }, { label: "😕 Not happy" }]
-      }
     ];
 
     const clients = await Client.find({});
@@ -522,7 +513,7 @@ router.get('/clients/:id', protect, isSuperAdmin, sanitizeMiddleware, async (req
       return res.status(404).json({ message: 'Client not found' });
     }
 
-    const { getAccessForUserClient } = require('../utils/accessFlags');
+    const { getAccessForUserClient } = require('../utils/core/accessFlags');
     const access = await getAccessForUserClient(req.user, client);
 
     res.json({
@@ -549,9 +540,9 @@ router.post('/clients/:id/entitlements', protect, isSuperAdmin, async (req, res)
     if (!existing) return res.status(404).json({ success: false, message: 'Client not found' });
 
     const action = String(req.body?.action || 'grant').toLowerCase();
-    const { grantFullWorkspaceAccess, revokeFullWorkspaceAccess } = require('../utils/entitlements');
+    const { grantFullWorkspaceAccess, revokeFullWorkspaceAccess } = require('../utils/core/entitlements');
     const { auditSecurity } = require('../middleware/securityAudit');
-    const { getAccessForUserClient } = require('../utils/accessFlags');
+    const { getAccessForUserClient } = require('../utils/core/accessFlags');
 
     let client;
     if (action === 'revoke') {
@@ -650,7 +641,7 @@ router.post('/clients', protect, isSuperAdmin, async (req, res) => {
     // 2. Auto-generate System Prompt if missing
     let systemPrompt = req.body.systemPrompt;
     if (!systemPrompt) {
-      const { generateText } = require('../utils/gemini');
+      const { generateText } = require('../utils/core/gemini');
       systemPrompt = await generateText(`Generate a professional personality system prompt for a WhatsApp business named "${businessName}". Business type is ${businessType || 'general'}. Keep it concise, helpful, and friendly.`);
     }
 
@@ -1042,7 +1033,7 @@ router.delete('/clients/:id', protect, isSuperAdmin, async (req, res) => {
 // --- CLIENT SELF-SERVICE: Update own nicheData/flowData ---
 // Any authenticated user can update their OWN client's editable fields
 const { apiCache } = require('../middleware/apiCache');
-const { getCachedClient } = require('../utils/clientCache');
+const { getCachedClient } = require('../utils/core/clientCache');
 
 const MY_SETTINGS_MAIN_SELECT =
   '-flowNodes -flowEdges -visualFlows -messageTemplates -automationFlows -nicheData';
@@ -1081,8 +1072,8 @@ router.get('/my-settings', protect, sanitizeMiddleware, apiCache(90), async (req
       });
     }
 
-    const { flattenClientForSettingsUI } = require('../utils/settingsSyncMapper');
-    const { buildWebsiteWidgetSettingsBundle } = require('../utils/websiteWidgetDefaults');
+    const { flattenClientForSettingsUI } = require('../utils/core/settingsSyncMapper');
+    const { buildWebsiteWidgetSettingsBundle } = require('../utils/core/websiteWidgetDefaults');
     const flat = flattenClientForSettingsUI(clientLean);
 
     const origin = `${req.protocol}://${req.get('host')}`;
@@ -1247,7 +1238,7 @@ router.patch('/my-settings', protect, async (req, res) => {
         });
       }
 
-      const { validateWhatsAppCloudCredentials } = require('../utils/whatsappMetaValidate');
+      const { validateWhatsAppCloudCredentials } = require('../utils/meta/whatsappMetaValidate');
       const v = await validateWhatsAppCloudCredentials({
         phoneNumberId: effPid,
         whatsappToken: effTok,
@@ -1291,14 +1282,14 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (flowFolders !== undefined) updateFields.flowFolders = flowFolders;
     if (visualFlows !== undefined) updateFields.visualFlows = visualFlows;
     if (websiteChatWidgetConfig !== undefined) {
-      const { mergeWebsiteWidgetConfig } = require('../utils/websiteWidgetDefaults');
+      const { mergeWebsiteWidgetConfig } = require('../utils/core/websiteWidgetDefaults');
       updateFields.websiteChatWidgetConfig = mergeWebsiteWidgetConfig(websiteChatWidgetConfig);
     }
 
     // Partial flow graph merge (autosave) — avoids sending full visualFlows payloads
     if (flowDraft && flowDraft.flowId) {
       const WhatsAppFlow = require('../models/WhatsAppFlow');
-      const { flattenFlowNodes } = require('../utils/flowGraphResolver');
+      const { flattenFlowNodes } = require('../utils/flow/flowGraphResolver');
       const { flowId, nodes = [], edges = [], syncLiveGraph } = flowDraft;
       const flatSteps = flattenFlowNodes(nodes).length;
       const linkCount = Array.isArray(edges) ? edges.length : 0;
@@ -1506,7 +1497,7 @@ router.patch('/my-settings', protect, async (req, res) => {
       updateFields['platformVars.supportPhone'] = String(supportPhone || '').trim();
     }
     if (tone !== undefined) {
-      const { normalizePersonaTone } = require('../utils/personaEngine');
+      const { normalizePersonaTone } = require('../utils/core/personaEngine');
       const nt = normalizePersonaTone(tone) || String(tone || '').trim();
       if (nt) {
         updateFields['platformVars.defaultTone'] = nt;
@@ -1596,7 +1587,7 @@ router.patch('/my-settings', protect, async (req, res) => {
       updateFields['ai.persona'] = ai.persona;
     }
 
-    const { applySettingsSyncMirrors } = require('../utils/settingsSyncMapper');
+    const { applySettingsSyncMirrors } = require('../utils/core/settingsSyncMapper');
     applySettingsSyncMirrors(updateFields, req.body);
 
     const updated = await Client.findOneAndUpdate(
@@ -1610,7 +1601,7 @@ router.patch('/my-settings', protect, async (req, res) => {
     // Auto Template: Emit metaConnected when wabaId is saved for the first time
     if (wabaId && wabaId.trim()) {
       try {
-        const { getIO } = require('../utils/socket');
+        const { getIO } = require('../utils/core/socket');
         const TemplateGenerationJob = require('../models/TemplateGenerationJob');
         const existingJob = await TemplateGenerationJob.findOne({ clientId: targetClientId }).lean();
         // Only emit if no generation job exists yet (first-time connection)
@@ -1650,19 +1641,16 @@ router.patch('/my-settings', protect, async (req, res) => {
           continue;
         }
 
+        // B8: settings save is draft-only — never promote to publishedNodes here.
         const setPayload = {
           name: f.name || 'Untitled Flow',
           platform: f.platform || 'whatsapp',
           folderId: f.folderId || null,
-          status: f.isActive ? 'PUBLISHED' : 'DRAFT',
+          status: 'DRAFT',
         };
         if (nodes.length) {
           setPayload.nodes = nodes;
           setPayload.edges = edges;
-          if (f.isActive) {
-            setPayload.publishedNodes = nodes;
-            setPayload.publishedEdges = edges;
-          }
         }
 
         await WhatsAppFlow.findOneAndUpdate(
@@ -1683,12 +1671,12 @@ router.patch('/my-settings', protect, async (req, res) => {
 
     if (personaNeedsSync) {
       try {
-        const { syncPersonaAcrossSystem } = require('../utils/personaEngine');
+        const { syncPersonaAcrossSystem } = require('../utils/core/personaEngine');
         const personaPatch = {
           ...(ai?.persona || {}),
           ...(botName !== undefined ? { name: String(botName || '').trim() } : {}),
           ...(tone !== undefined
-            ? { tone: require('../utils/personaEngine').normalizePersonaTone(tone) || tone }
+            ? { tone: require('../utils/core/personaEngine').normalizePersonaTone(tone) || tone }
             : {}),
           ...(botLanguage !== undefined ? { language: String(botLanguage || '').trim() } : {}),
         };
@@ -1702,7 +1690,7 @@ router.patch('/my-settings', protect, async (req, res) => {
 
     try {
       const { clearClientCache } = require('../middleware/apiCache');
-      const { invalidateBootstrapCache } = require('../utils/bootstrapCache');
+      const { invalidateBootstrapCache } = require('../utils/core/bootstrapCache');
       await clearClientCache(targetClientId);
       invalidateBootstrapCache(req.user?.id);
     } catch (cacheErr) {
@@ -1710,7 +1698,7 @@ router.patch('/my-settings', protect, async (req, res) => {
     }
 
     try {
-      const { emitToClient } = require('../utils/socket');
+      const { emitToClient } = require('../utils/core/socket');
       const draftOnlyKeys = new Set(['flowDraft', 'clientId']);
       const bodyKeys = Object.keys(req.body || {}).filter((k) => req.body[k] !== undefined);
       const isFlowDraftOnly =
@@ -1737,7 +1725,7 @@ router.patch('/my-settings', protect, async (req, res) => {
   }
 });
 // --- GET PRESET FLOW BY BUSINESS TYPE ---
-const flowPresets = require('../utils/flowPresets');
+const flowPresets = require('../utils/flow/flowPresets');
 
 router.get('/flow/preset/:type', protect, async (req, res) => {
   const { type } = req.params;
@@ -1795,7 +1783,7 @@ router.put('/client/settings', protect, async (req, res) => {
         aiBody.systemPrompt !== null &&
         String(aiBody.systemPrompt).trim() !== '';
       if (hasPersona || hasPrompt) {
-        const { syncPersonaAcrossSystem } = require('../utils/personaEngine');
+        const { syncPersonaAcrossSystem } = require('../utils/core/personaEngine');
         await syncPersonaAcrossSystem(targetClientId, hasPersona ? aiBody.persona : {}, {
           systemPrompt: hasPrompt ? aiBody.systemPrompt : undefined,
         });
@@ -1844,7 +1832,7 @@ router.post('/persona/sync', protect, async (req, res) => {
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ message: 'Client not found' });
 
-    const { syncPersonaToFlows } = require('../utils/personaEngine');
+    const { syncPersonaToFlows } = require('../utils/core/personaEngine');
     await syncPersonaToFlows(clientId, client.ai?.persona || {});
 
     res.json({ success: true, message: 'AI Persona pushed to all flows successfully.' });
@@ -1885,7 +1873,6 @@ router.get('/run-automation-migration', protect, isSuperAdmin, async (req, res) 
       const defaultAutomationFlows = [
         { id: 'abandoned_cart', isActive: true, config: { delayHours: 2 } },
         { id: 'cod_to_prepaid', isActive: false, config: { delayMinutes: 3, discountAmount: 50, gateway: 'razorpay' } },
-        { id: 'review_collection', isActive: false, config: { delayDays: 4 } }
       ];
 
       const defaultMessageTemplates = [
@@ -1894,11 +1881,6 @@ router.get('/run-automation-migration', protect, isSuperAdmin, async (req, res) 
           body: "Your order #{{order_number}} for *{{product_name}}* is confirmed via COD.\n\n💳 Pay via UPI now and save ₹{{discount_amount}}!\n\nOffer expires in 2 hours.",
           buttons: [{ label: "💳 Pay via UPI" }, { label: "Keep COD" }]
         },
-        {
-          id: "review_request",
-          body: "Hi! How's your *{{product_name}}*? 😊\n\nYour feedback helps us improve and helps other customers!",
-          buttons: [{ label: "😍 Loved it!" }, { label: "😐 It's okay" }, { label: "😕 Not happy" }]
-        }
       ];
 
       const clients = await Client.find({});
@@ -2365,7 +2347,6 @@ router.get('/run-full-migration', async (req, res) => {
         const defaultAutomationFlows = [
             { id: 'abandoned_cart', isActive: false },
             { id: 'cod_to_prepaid', isActive: false },
-            { id: 'review_collection', isActive: false }
         ];
 
         for (const client of clients) {
@@ -2420,37 +2401,11 @@ router.post('/flow/autogen/:clientId', protect, async (req, res) => {
     }
 });
 
-// --- CONVERT LEGACY JS FLOW TO VISUAL FLOW (AI) ---
+// --- CONVERT LEGACY JS FLOW TO VISUAL FLOW (removed) ---
 router.post('/flow/convert-legacy/:clientId', async (req, res) => {
-    try {
-        let { clientId } = req.params;
-        if (clientId.startsWith(':')) clientId = clientId.substring(1);
-        const client = await Client.findOne({ clientId });
-        if (!client) return res.status(404).json({ error: 'Client not found' });
-
-        // Map clientId to legacy file
-        let fileName = (clientId === 'ved') ? 'delitech_smarthomes.js' : `${clientId}.js`;
-
-        const filePath = path.join(CLIENT_CODE_DIR, fileName);
-        if (!fs.existsSync(filePath)) {
-            return res.status(400).json({ error: `Legacy file not found: ${fileName}` });
-        }
-
-        const fileCode = fs.readFileSync(filePath, 'utf8');
-        log.info(`Converting legacy flow for ${clientId}...`);
-
-        const flowJson = await convertLegacyToVisual(clientId, fileCode);
-        
-        client.flowNodes = flowJson.nodes || [];
-        client.flowEdges = flowJson.edges || [];
-        client.isGenericBot = true; // Switch to generic hub engine after conversion
-        await client.save();
-
-        res.json({ success: true, message: `Migrated ${flowJson.nodes.length} nodes from legacy file.` });
-    } catch (err) {
-        log.error('Conversion Error', err.message);
-        res.status(500).json({ error: 'Conversion failed: ' + err.message });
-    }
+    return res.status(410).json({
+        error: 'Legacy clientcode files were removed. Use Flow Builder or POST /api/admin/flow/autogen for this tenant.',
+    });
 });
 
 // --- PHASE 13: MASTER MIGRATION (URL RUNNABLE) ---
@@ -2554,213 +2509,14 @@ router.get('/phase13-migration', async (req, res) => {
     res.status(500).send(`<h1>❌ Migration Failed</h1><pre>${err.message}</pre>`);
   }
 });
-// --- PHASE 18: PUBLISH FLOW (Sync draft to live) ---
-router.post('/flow/publish/:clientId', protect, async (req, res) => {
-  try {
-    const { clientId } = req.params;
-    const { denyUnlessTenant } = require('../utils/queryHelpers');
-    if (!denyUnlessTenant(req, res, clientId)) return;
-    const client = await Client.findOne({ clientId });
-    if (!client) return res.status(404).json({ error: 'Client not found' });
-
-    const {
-      nodes = [],
-      edges = [],
-      note,
-      flowId,
-      forcePublish = false,
-      platform = 'whatsapp',
-    } = req.body;
-
-    // Strict publish preflight (same gate as canonical /api/flow/publish)
-    const { preflightValidateFlowGraph } = require('../utils/flowPublishPreflight');
-    const preflight = preflightValidateFlowGraph({
-      nodes,
-      edges,
-      client: client.toObject ? client.toObject() : client,
-    });
-    if (!preflight.valid && !forcePublish) {
-      return res.status(400).json({
-        success: false,
-        error: 'Flow publish blocked: validation failed.',
-        errors: preflight.errors,
-        warnings: preflight.warnings,
-      });
-    }
-    if (!preflight.valid && forcePublish) {
-      log.warn(`[Publish Override] ${clientId} forced publish with ${preflight.errors.length} error(s).`);
-    }
-
-    const targetFlowId =
-      flowId ||
-      client.visualFlows?.find((f) => f.platform === platform && f.isActive)?.id ||
-      client.visualFlows?.find((f) => f.id === flowId)?.id;
-
-    // Website widget: store published graph on visualFlows — no Meta template sync
-    if (platform === 'website') {
-      const flows = Array.isArray(client.visualFlows) ? [...client.visualFlows] : [];
-      const idx = flows.findIndex((f) => String(f.id) === String(targetFlowId));
-      if (idx < 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'Website flow not found. Save the flow in Flow Builder first.',
-        });
-      }
-      flows.forEach((f, i) => {
-        if (f.platform === 'website') {
-          flows[i] = { ...f, isActive: String(f.id) === String(targetFlowId) };
-        }
-      });
-      flows[idx] = {
-        ...flows[idx],
-        platform: 'website',
-        isActive: true,
-        nodes,
-        edges,
-        publishedNodes: nodes,
-        publishedEdges: edges,
-        publishedAt: new Date(),
-        updatedAt: new Date(),
-      };
-      client.visualFlows = flows;
-      client.markModified('visualFlows');
-      const cfg = client.websiteChatWidgetConfig || {};
-      client.websiteChatWidgetConfig = {
-        ...cfg,
-        experience: 'guided',
-        flowId: String(targetFlowId),
-        mode: cfg.mode && cfg.mode !== 'guided' ? cfg.mode : 'guided',
-      };
-      await client.save();
-
-      await AuditLog.create({
-        clientId,
-        user_id: req.user.id,
-        action_type: 'PUBLISH_WEBSITE_WIDGET_FLOW',
-        target_resource: targetFlowId,
-        payload: { nodeCount: nodes.length, edgeCount: edges.length, platform: 'website' },
-      });
-
-      return res.json({
-        success: true,
-        message: 'Website chat widget flow published.',
-        platform: 'website',
-        flowId: targetFlowId,
-        preflight,
-        publishOverride: !!forcePublish,
-      });
-    }
-    
-    // 1. Identify Templates used in the flow
-    const { normalizeNodeType } = require('../utils/flowNodeContract');
-    const templateNodes = nodes.filter(n => normalizeNodeType(n.type) === 'template');
-    const templateNames = [...new Set(templateNodes.map(n => n.data?.templateName).filter(Boolean))];
-
-    log.info(`[Publish] ${clientId} attempting to publish flow with ${templateNames.length} unique templates.`);
-
-    // 2. Generate Template Payloads using Enterprise localization logic
-    // We rebuild wizard-style data from modular client sub-docs
-    const wizardData = {
-      businessName: client.brand?.businessName || client.businessName,
-      shopDomain: client.commerce?.shopify?.domain || client.shopDomain,
-      businessLogo: client.businessLogo,
-      currency: client.brand?.currency || "₹",
-      products: client.products || []
-    };
-    
-    const allSystemTemplates = getPrebuiltTemplates(wizardData);
-    const templatesToSync = allSystemTemplates.filter(t => templateNames.includes(t.name));
-
-    // 3. Register used templates with Meta Cloud API
-    const syncResults = [];
-    for (const tpl of templatesToSync) {
-      try {
-        log.info(`[Publish] Syncing template ${tpl.name} for ${clientId}...`);
-        const syncRes = await WhatsApp.submitMetaTemplate(client, {
-          name: tpl.name,
-          category: tpl.category,
-          language: tpl.language,
-          components: tpl.components
-        });
-        syncResults.push({ name: tpl.name, status: syncRes.status || 'SYNCED', success: syncRes.success });
-      } catch (err) {
-        log.error(`[Publish] Failed to sync ${tpl.name}:`, err.message);
-        syncResults.push({ name: tpl.name, status: 'FAILED', error: err.message });
-      }
-    }
-
-    // 4. Update Client State & Versioning
-    if (!client.flowHistory) client.flowHistory = [];
-    client.flowHistory.push({
-      version: client.flowHistory.length + 1,
-      nodes: nodes,
-      edges: edges,
-      savedAt: new Date(),
-      note: note || 'Manual publish'
-    });
-
-    client.flowNodes = nodes;
-    client.flowEdges = edges;
-    await client.save();
-    
-    // 5. Sync to WhatsAppFlow Collection
-    const activeFlow =
-      client.visualFlows?.find((f) => f.isActive && f.platform !== 'website') ||
-      client.visualFlows?.find((f) => f.platform !== 'website') ||
-      client.visualFlows?.[0];
-    const waTargetFlowId = flowId || (activeFlow ? activeFlow.id : null);
-    
-    if (waTargetFlowId) {
-       // Mark all others DRAFT, make this one PUBLISHED
-       await WhatsAppFlow.updateMany({ clientId, platform: 'whatsapp' }, { $set: { status: 'DRAFT', isActive: false } });
-       await WhatsAppFlow.findOneAndUpdate(
-           { clientId, flowId: waTargetFlowId },
-           {
-               $set: {
-                   status: 'PUBLISHED',
-                   isActive: true,
-                   publishedNodes: nodes,
-                   publishedEdges: edges,
-                   nodes: nodes,
-                   edges: edges,
-               }
-           },
-           { upsert: true }
-       );
-    }
-
-    // 5b. Clear trigger cache so new keywords are immediately active
-    try {
-      const { clearTriggerCache } = require('../utils/triggerEngine');
-      clearTriggerCache(clientId);
-    } catch (_) {}
-
-    // 6. Detailed Audit Logging
-    await AuditLog.create({
-      clientId,
-      user_id: req.user.id,
-      action_type: 'PUBLISH_FLOW',
-      target_resource: waTargetFlowId || 'main',
-      payload: {
-        nodeCount: nodes.length,
-        edgeCount: edges.length,
-        templatesSynced: syncResults,
-        version: client.flowHistory.length
-      }
-    });
-
-    res.json({ 
-      success: true, 
-      message: 'Automation published successfully.', 
-      version: client.flowHistory.length,
-      syncResults,
-      preflight,
-      publishOverride: !!forcePublish
-    });
-  } catch (err) {
-    log.error('[Publish] Critical failure:', err.message);
-    res.status(500).json({ error: 'Failed to publish flow: ' + err.message });
-  }
+// --- PHASE 18: PUBLISH FLOW — alias removed Phase 6 ---
+router.post('/flow/publish/:clientId', protect, (req, res) => {
+  return res.status(410).json({
+    success: false,
+    error: 'gone',
+    message: 'Use POST /api/flow/publish/:clientId instead.',
+    canonical: `/api/flow/publish/${req.params.clientId}`,
+  });
 });
 
 // --- PHASE 18: UNANSWERED QUESTIONS ---
@@ -2772,6 +2528,65 @@ router.get('/unanswered-questions/:clientId', protect, async (req, res) => {
     res.json({ success: true, unansweredQuestions: client.unansweredQuestions || [] });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// --- GET AUDIT LOG (Super Admin viewer — Phase 5) ---
+router.get('/audit-log', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+  try {
+    const AuditLog = require('../models/AuditLog');
+    const {
+      clientId,
+      action,
+      category,
+      fromDate,
+      toDate,
+      page = 1,
+      limit = 100,
+    } = req.query;
+    const query = {};
+    if (clientId) query.clientId = clientId;
+    if (action) query.action_type = new RegExp(String(action), 'i');
+    if (category) query.category = category;
+    if (fromDate || toDate) {
+      query.createdAt = {};
+      if (fromDate) query.createdAt.$gte = new Date(fromDate);
+      if (toDate) query.createdAt.$lte = new Date(toDate);
+    }
+    const skip = (Math.max(1, Number(page)) - 1) * Math.min(500, Number(limit));
+    const lim = Math.min(500, Number(limit));
+    const [data, total] = await Promise.all([
+      AuditLog.find(query).sort({ createdAt: -1 }).skip(skip).limit(lim).lean(),
+      AuditLog.countDocuments(query),
+    ]);
+    res.json({ success: true, data, total, page: Number(page), limit: lim });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error fetching audit log' });
+  }
+});
+
+router.get('/audit-log/export', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+  try {
+    const AuditLog = require('../models/AuditLog');
+    const logs = await AuditLog.find({}).sort({ createdAt: -1 }).limit(5000).lean();
+    const header = 'createdAt,clientId,category,action_type,severity,user_id\n';
+    const rows = logs
+      .map((l) =>
+        [
+          l.createdAt?.toISOString(),
+          l.clientId,
+          l.category,
+          l.action_type,
+          l.severity,
+          l.user_id,
+        ].join(',')
+      )
+      .join('\n');
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename=audit-log.csv');
+    res.send(header + rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Export failed' });
   }
 });
 
@@ -2828,7 +2643,7 @@ router.post('/test-whatsapp', protect, async (req, res) => {
         if (!effPid) effPid = String(existing.phoneNumberId || '').trim();
         if (!effWaba) effWaba = String(existing.wabaId || '').trim();
         try {
-          const { decrypt } = require('../utils/encryption');
+          const { decrypt } = require('../utils/core/encryption');
           effTok = decrypt(existing.whatsappToken || '') || '';
         } catch (_) {
           effTok = '';
@@ -2843,7 +2658,7 @@ router.post('/test-whatsapp', protect, async (req, res) => {
       });
     }
 
-    const { validateWhatsAppCloudCredentials } = require('../utils/whatsappMetaValidate');
+    const { validateWhatsAppCloudCredentials } = require('../utils/meta/whatsappMetaValidate');
     const v = await validateWhatsAppCloudCredentials({
       phoneNumberId: effPid,
       whatsappToken: effTok,
@@ -2886,8 +2701,8 @@ router.get('/whatsapp-webhook-instructions', protect, async (req, res) => {
     const {
       getWhatsAppWebhookPublicConfig,
       getMasterVerifyToken,
-    } = require('../utils/whatsappWebhookPublic');
-    const { buildWebhookDashboardStatus } = require('../utils/whatsappWebhookLifecycle');
+    } = require('../utils/meta/whatsappWebhookPublic');
+    const { buildWebhookDashboardStatus } = require('../utils/meta/whatsappWebhookLifecycle');
 
     const clientId = req.user.clientId;
     if (!clientId) {
@@ -3060,6 +2875,94 @@ router.post('/test-email', protect, async (req, res) => {
     else if (err.code === 'ESOCKET') msg = 'Could not connect to the email server. Check your network and try again.';
 
     res.status(400).json({ success: false, message: msg });
+  }
+});
+
+router.get('/metrics/live', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+  try {
+    const requestMetrics = require('../middleware/requestMetrics');
+    const metricsCollector = require('../services/observability/metricsCollector');
+    const { getAppRedis } = require('../utils/core/redisFactory');
+    const redis = getAppRedis();
+    let queueDepth = {};
+    if (redis) {
+      for (const q of ['campaign-dispatch', 'sequence-dispatch', 'webhook-delivery']) {
+        try {
+          const n = await redis.llen(`bull:${q}:wait`);
+          queueDepth[q] = Number(n) || 0;
+        } catch {
+          queueDepth[q] = 0;
+        }
+      }
+    }
+    res.json({
+      success: true,
+      requestMetrics: typeof requestMetrics.summarize === 'function' ? requestMetrics.summarize() : {},
+      customMetrics: metricsCollector.snapshot(),
+      queueDepth,
+      at: new Date().toISOString(),
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.get('/dead-letters', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+  try {
+    const DeadLetterWebhook = require('../models/DeadLetterWebhook');
+    const rows = await DeadLetterWebhook.find({}).sort({ deadLetteredAt: -1 }).limit(100).lean();
+    res.json({ success: true, rows });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.post('/dead-letters/:id/retry', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+  try {
+    const DeadLetterWebhook = require('../models/DeadLetterWebhook');
+    const WebhookConfig = require('../models/WebhookConfig');
+    const { enqueueWebhookDelivery } = require('../utils/messaging/queues/webhookDeliveryQueue');
+    const row = await DeadLetterWebhook.findById(req.params.id);
+    if (!row) return res.status(404).json({ success: false, message: 'Not found' });
+    await WebhookConfig.findByIdAndUpdate(row.subscriptionId, {
+      isActive: true,
+      pausedReason: null,
+      consecutiveFailures: 0,
+    });
+    await enqueueWebhookDelivery({
+      configId: String(row.subscriptionId),
+      event: row.event,
+      payload: row.payload,
+      clientId: row.clientId,
+      deliveryId: `${row.deliveryId}-retry`,
+    });
+    await DeadLetterWebhook.deleteOne({ _id: row._id });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.delete('/dead-letters/:id', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+  try {
+    const DeadLetterWebhook = require('../models/DeadLetterWebhook');
+    await DeadLetterWebhook.deleteOne({ _id: req.params.id });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.get('/tenant-economics', protect, authorize('SUPER_ADMIN'), async (req, res) => {
+  try {
+    const DailyTenantUsageCost = require('../models/DailyTenantUsageCost');
+    const rows = await DailyTenantUsageCost.find({})
+      .sort({ date: -1 })
+      .limit(100)
+      .lean();
+    res.json({ success: true, rows, disclaimer: 'Revenue and costs are estimates.' });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
   }
 });
 

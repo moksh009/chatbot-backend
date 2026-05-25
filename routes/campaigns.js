@@ -1,6 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const { resolveClient, tenantClientId, denyUnlessTenant } = require('../utils/queryHelpers');
+const { resolveClient, tenantClientId, denyUnlessTenant } = require('../utils/core/queryHelpers');
 const router = express.Router();
 const TaskQueueService = require('../services/TaskQueueService');
 const Campaign = require('../models/Campaign');
@@ -8,31 +8,45 @@ const CampaignMessage = require('../models/CampaignMessage');
 const Segment = require('../models/Segment');
 const AdLead = require('../models/AdLead');
 const { protect } = require('../middleware/auth');
+const { verifyTenantScope } = require('../middleware/verifyTenantScope');
+const { requireRoleCategory } = require('../middleware/requireRole');
+const { requirePaidOrTrial } = require('../middleware/requirePaidOrTrial');
+const { tenantRateLimit } = require('../middleware/tenantRateLimit');
+
+const campaignByIdScope = verifyTenantScope({ lookupBy: 'campaign', param: 'id' });
+const campaignMutate = [
+  protect,
+  tenantRateLimit(),
+  requirePaidOrTrial(),
+  campaignByIdScope,
+  requireRoleCategory('mutate_config'),
+];
 const multer = require('multer');
 const upload = multer({ dest: 'uploads/' });
 const fs = require('fs');
 const csv = require('csv-parser');
 const Client = require('../models/Client');
-const { sendBirthdayWishWithImage } = require('../utils/sendBirthdayMessage');
-const { sendAppointmentReminder } = require('../utils/sendAppointmentReminder');
+const { sendBirthdayWishWithImage } = require('../utils/commerce/sendBirthdayMessage');
 const DailyStat = require('../models/DailyStat');
-const WhatsApp = require('../utils/whatsapp');
-const { createMessage } = require('../utils/createMessage');
-const { checkLimit, incrementUsage } = require('../utils/planLimits');
-const log = require('../utils/logger')('Campaigns');
+const WhatsApp = require('../utils/meta/whatsapp');
+const { createMessage } = require('../utils/core/createMessage');
+const { checkLimit, incrementUsage } = require('../utils/core/planLimits');
+const log = require('../utils/core/logger')('Campaigns');
 const { apiCache } = require('../middleware/apiCache');
-const { incrementStat } = require('../utils/statCacheEngine');
-const { resolveImportBatchObjectId } = require('../utils/importBatchResolver');
+const { incrementStat } = require('../utils/core/statCacheEngine');
+const { resolveImportBatchObjectId } = require('../utils/core/importBatchResolver');
 const {
   filterAudienceForMarketingOptIn,
   filterAudienceByOptStatus,
   mongoMarketingOptInOnly,
   mongoNotOptedOut,
+  audienceOptQueryForCampaign,
+  normalizeEmail,
   shouldRequireMarketingOptIn,
   canSendToContact,
   evaluateAudiencePolicySummary,
-} = require('../utils/marketingConsent');
-const { validateTemplateEligibility } = require('../utils/templateEligibility');
+} = require('../utils/commerce/marketingConsent');
+const { validateTemplateEligibility } = require('../utils/meta/templateEligibility');
 
 try {
   fs.mkdirSync('uploads', { recursive: true });
@@ -100,9 +114,10 @@ router.post('/', protect, upload.single('file'), async (req, res) => {
     const audience = [];
     rows.forEach(row => {
       const phone = normalizePhone(row.phone || row.number || row.mobile || row.recipient || '');
-      if (phone) {
+      if (phone || row.email) {
         audience.push({
            phone,
+           email: row.email || row.Email || '',
            name: row.name || '',
            ...row // store full row data for variable mapping
         });
@@ -286,13 +301,19 @@ router.post('/from-hot-leads', protect, async (req, res) => {
             return res.status(403).json({ error: limits.reason });
         }
 
+        const { resolvePlanLimits } = require('../config/planCatalog');
+        const planLimits = resolvePlanLimits(client.subscriptionPlan || client.plan);
+        const hotMax = Math.max(50, Number(planLimits.leads || 500));
+        const requested = Math.max(1, Number(count) || 50);
+        const cappedCount = Math.min(requested, hotMax);
+
         await incrementUsage(client._id, 'campaigns', 1);
 
         const campaign = await Campaign.create({
             clientId: req.user.clientId,
             name: name || `Hot Leads Targeting`,
             status: 'DRAFT',
-            audienceCount: count || 0,
+            audienceCount: cappedCount,
             isSmartSend: true,
             templateName: ""
         });
@@ -319,7 +340,6 @@ router.post('/quick-send', protect, async (req, res) => {
   const quickCampaign = {
     channel: channel || 'whatsapp',
     templateCategory: String(req.body.templateCategory || 'MARKETING').toUpperCase(),
-    skipMarketingOptInFilter: req.body.skipMarketingOptInFilter === true,
   };
 
   const finalLeadIds = leadIds || (leadId ? [leadId] : []);
@@ -345,7 +365,7 @@ router.post('/quick-send', protect, async (req, res) => {
     }
 
     const { resolveTemplateForSend } = require('../services/templateResolver');
-    const { sendByName } = require('../services/templateSender');
+    const { sendForAutomation } = require('../services/templateSender');
     const resolved = await resolveTemplateForSend(clientId, { name: templateName });
     if (!resolved?.template) {
       return res.status(400).json({
@@ -395,21 +415,24 @@ router.post('/quick-send', protect, async (req, res) => {
     let skippedOptIn = 0;
 
     for (const lead of leads) {
-      if (!quickCampaign.skipMarketingOptInFilter) {
-        const eligibility = await canSendToContact(clientId, lead, quickCampaign.templateCategory);
-        if (!eligibility.canSend) {
-          skippedOptIn++;
-          continue;
-        }
+      const eligibility = await canSendToContact(clientId, lead, quickCampaign.templateCategory);
+      if (!eligibility.canSend) {
+        skippedOptIn++;
+        continue;
       }
 
       try {
-        const sendResult = await sendByName({
+        const sendResult = await sendForAutomation({
           clientId,
           phone: lead.phoneNumber,
-          templateName,
-          channel: 'whatsapp',
-          contextData: { extra: { leadName: lead.name || '' } },
+          metaName: templateName,
+          contextType: 'flow',
+          contextData: {
+            extra: {
+              first_name: lead.name || 'Customer',
+              leadName: lead.name || '',
+            },
+          },
         });
 
         if (sendResult?.whatsapp?.sent) {
@@ -499,36 +522,50 @@ router.get('/', protect, async (req, res) => {
     // Map stats back to campaigns
     const statsMap = campaignStats.reduce((acc, curr) => {
       const cId = curr._id.campaignId.toString();
-      if (!acc[cId]) acc[cId] = { sent: 0, delivered: 0, read: 0, replied: 0 };
-      
+      if (!acc[cId]) {
+        acc[cId] = { sent: 0, delivered: 0, read: 0, replied: 0, failed: 0, cancelled: 0 };
+      }
+
       const status = curr._id.status;
       if (status === 'sent') acc[cId].sent += curr.count;
       if (status === 'delivered') acc[cId].delivered += curr.count;
       if (status === 'read') acc[cId].read += curr.count;
       if (status === 'replied') acc[cId].replied += curr.count;
-      
+      if (status === 'failed') acc[cId].failed += curr.count;
+      if (status === 'cancelled') acc[cId].cancelled += curr.count;
+
       return acc;
     }, {});
 
     const enrichedCampaigns = campaigns.map(c => {
-      const stats = statsMap[c._id.toString()] || { sent: 0, delivered: 0, read: 0, replied: 0 };
-      // Note: Delivered should include Read and Replied for funnel logic
+      const stats = statsMap[c._id.toString()] || {
+        sent: 0,
+        delivered: 0,
+        read: 0,
+        replied: 0,
+        failed: 0,
+        cancelled: 0,
+      };
       const totalDelivered = stats.delivered + stats.read + stats.replied;
       const totalRead = stats.read + stats.replied;
       const totalSent = stats.sent + totalDelivered;
-      
+
       return {
         ...c,
         sentCount: totalSent,
         deliveredCount: totalDelivered,
         readCount: totalRead,
         repliedCount: stats.replied,
+        failedCount: stats.failed,
+        cancelledCount: stats.cancelled,
         stats: {
           sent: totalSent,
           delivered: totalDelivered,
           read: totalRead,
-          replied: stats.replied
-        }
+          replied: stats.replied,
+          failed: stats.failed,
+          cancelled: stats.cancelled,
+        },
       };
     });
 
@@ -539,17 +576,466 @@ router.get('/', protect, async (req, res) => {
   }
 });
 
+// STATIC PATHS BEFORE /:id and /:campaignId — do not register literals below parameterized GETs
+router.get('/templates', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const client = await Client.findOne({ clientId }).select('syncedMetaTemplates').lean();
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    const { filterTemplatesForContext } = require('../utils/meta/templatePolicy');
+    const contextPurpose = String(req.query.contextPurpose || 'campaign').toLowerCase();
+    const synced = client.syncedMetaTemplates || [];
+    const { eligible, hidden, approvedTotal, syncedTotal } = filterTemplatesForContext(synced, contextPurpose);
+    res.json({
+      success: true,
+      templates: eligible,
+      meta: {
+        syncedTotal,
+        approvedTotal,
+        eligibleTotal: eligible.length,
+        hiddenSystem: hidden.systemExcluded,
+        hiddenNotApproved: hidden.notApproved,
+        hiddenWrongCategory: hidden.wrongCategory,
+        hiddenNonMarketing: contextPurpose === 'campaign' ? hidden.wrongCategory : 0,
+      },
+    });
+  } catch (err) {
+    console.error('[CampaignTemplates] Error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch templates' });
+  }
+});
+
+router.get('/audience-estimate', protect, apiCache(30), async (req, res) => {
+    const { source, segmentId, importBatchId, campaignId } = req.query;
+    const cid = req.user.clientId;
+    let count = 0;
+
+    try {
+        if (source === 'all') {
+            count = await AdLead.countDocuments({ clientId: cid });
+        } else if (source === 'segment' && segmentId) {
+            const segment = await Segment.findOne({ _id: segmentId, clientId: cid });
+            if (segment) {
+                count = await AdLead.countDocuments({ clientId: cid, ...segment.query });
+            }
+        } else if (source === 'imported' && importBatchId) {
+            const resolvedId = await resolveImportBatchObjectId(importBatchId, cid);
+            count = resolvedId
+                ? await AdLead.countDocuments({ clientId: cid, importBatchId: resolvedId })
+                : 0;
+        } else if (source === 'hot') {
+            count = await AdLead.countDocuments({ 
+                clientId: cid, 
+                $or: [
+                    { cartStatus: 'abandoned' },
+                    { addToCartCount: { $gt: 0 }, isOrderPlaced: { $ne: true } }
+                ]
+            });
+        } else if (source === 'manual' && campaignId && mongoose.Types.ObjectId.isValid(String(campaignId))) {
+            const campaign = await Campaign.findOne({ _id: campaignId, clientId: cid }).select('audience').lean();
+            count = Array.isArray(campaign?.audience) ? campaign.audience.length : 0;
+        }
+
+        res.json({ success: true, count });
+    } catch (err) {
+        console.error('[AudienceEstimate] Error:', err);
+        res.json({ success: true, count: 0, warning: 'estimate_failed' });
+    }
+});
+
+router.get('/audience-preview', protect, async (req, res) => {
+  try {
+    const cid = req.user.clientId;
+    const {
+      source: sourceRaw,
+      segmentId,
+      importBatchId,
+      campaignId,
+      templateCategory = 'MARKETING',
+    } = req.query;
+    let leads = [];
+
+    let source = String(sourceRaw || '').toLowerCase();
+    if (!source) {
+      if (segmentId) source = 'segment';
+      else if (importBatchId) source = 'imported';
+      else if (campaignId) source = 'manual';
+    }
+
+    if (source === 'segment' && segmentId) {
+      const segment = await Segment.findOne({ _id: segmentId, clientId: cid }).lean();
+      if (!segment) return res.status(404).json({ success: false, message: 'Segment not found' });
+      leads = await AdLead.find({ clientId: cid, ...segment.query })
+        .select('optStatus optInSource')
+        .lean();
+    } else if (source === 'imported' && importBatchId) {
+      const resolved = await resolveImportBatchObjectId(importBatchId, cid);
+      if (!resolved) return res.status(404).json({ success: false, message: 'Import batch not found' });
+      leads = await AdLead.find({ clientId: cid, importBatchId: resolved })
+        .select('optStatus optInSource')
+        .lean();
+    } else if (source === 'manual' && campaignId) {
+      if (!mongoose.Types.ObjectId.isValid(String(campaignId))) {
+        return res.status(400).json({ success: false, message: 'Invalid campaign id' });
+      }
+      const campaign = await Campaign.findOne({ _id: campaignId, clientId: cid }).select('audience').lean();
+      if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+      const phones = [
+        ...new Set(
+          (campaign.audience || [])
+            .map((row) => String(row?.phone || row?.phoneNumber || '').trim())
+            .filter(Boolean)
+        ),
+      ];
+      if (phones.length) {
+        leads = await AdLead.find({ clientId: cid, phoneNumber: { $in: phones } })
+          .select('optStatus optInSource')
+          .lean();
+      } else {
+        leads = [];
+      }
+    } else if (source === 'hot') {
+      leads = await AdLead.find({
+        clientId: cid,
+        $or: [
+          { cartStatus: 'abandoned' },
+          { addToCartCount: { $gt: 0 }, isOrderPlaced: { $ne: true } },
+        ],
+      })
+        .select('optStatus optInSource')
+        .lean();
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Specify a valid audience source (segment, imported, manual, or hot) with the required ids.',
+      });
+    }
+
+    const cat = String(templateCategory || 'MARKETING').toUpperCase();
+    const counts = evaluateAudiencePolicySummary(leads, cat);
+    const sourceMap = new Map();
+    for (const lead of leads) {
+      const src = lead.optInSource || 'unknown';
+      sourceMap.set(src, (sourceMap.get(src) || 0) + 1);
+    }
+
+    res.json({
+      success: true,
+      templateCategory: cat,
+      ...counts,
+      bySource: [...sourceMap.entries()].map(([source, count]) => ({ source, count })),
+      recommendedRepermission: counts.unknownBlocked > 0 ? counts.unknownBlocked : 0,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// @route   POST /api/campaigns/:id/pause
+router.post('/:id/pause', ...campaignMutate, async (req, res) => {
+  try {
+    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: req.user.clientId });
+    if (!campaign) return res.status(404).json({ success: false, message: 'Not found' });
+    campaign.status = 'PAUSED';
+    await campaign.save();
+    const { removeWaitingJobsForCampaign } = require('../utils/messaging/queues/campaignDispatchQueue');
+    await removeWaitingJobsForCampaign(String(campaign._id));
+    const io = req.app.get('socketio');
+    if (io) io.to(`client_${campaign.clientId}`).emit('campaign:paused', { campaignId: campaign._id });
+    return res.json({ success: true, status: 'PAUSED' });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// @route   POST /api/campaigns/:id/cancel
+router.post('/:id/cancel', ...campaignMutate, async (req, res) => {
+  try {
+    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: req.user.clientId });
+    if (!campaign) return res.status(404).json({ success: false, message: 'Not found' });
+    if (['CANCELLED', 'COMPLETED', 'FAILED'].includes(campaign.status)) {
+      return res.status(400).json({ success: false, message: `Campaign already ${campaign.status}` });
+    }
+
+    campaign.status = 'CANCELLED';
+    campaign.audienceRefreshable = false;
+    await campaign.save();
+
+    const { removeWaitingJobsForCampaign } = require('../utils/messaging/queues/campaignDispatchQueue');
+    await removeWaitingJobsForCampaign(String(campaign._id));
+
+    const cancelAt = new Date();
+    const msgRes = await CampaignMessage.updateMany(
+      {
+        campaignId: campaign._id,
+        status: { $in: ['queued', 'retrying', 'processing'] },
+      },
+      {
+        $set: {
+          status: 'cancelled',
+          cancelledReason: 'merchant_cancelled',
+          cancelledAt: cancelAt,
+          lockedBy: null,
+          lockedAt: null,
+        },
+      }
+    );
+
+    const { cancelAllAutomationsFor } = require('../utils/messaging/cancelAllAutomationsFor');
+    const FollowUpSequence = require('../models/FollowUpSequence');
+    const ScheduledMessage = require('../models/ScheduledMessage');
+    const leadRows = await CampaignMessage.find({ campaignId: campaign._id })
+      .select('phone metadata.leadId')
+      .lean();
+    const seen = new Set();
+    let automationsCancelled = 0;
+    for (const row of leadRows) {
+      const leadId = row.metadata?.leadId;
+      const key = leadId ? String(leadId) : String(row.phone || '');
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      const hasSeq = leadId
+        ? await FollowUpSequence.exists({
+            clientId: campaign.clientId,
+            leadId,
+            status: 'active',
+          })
+        : await FollowUpSequence.exists({
+            clientId: campaign.clientId,
+            phone: row.phone,
+            status: 'active',
+          });
+      const hasSched = leadId
+        ? await ScheduledMessage.exists({
+            clientId: campaign.clientId,
+            leadId,
+            status: { $in: ['pending', 'queued', 'scheduled'] },
+          })
+        : await ScheduledMessage.exists({
+            clientId: campaign.clientId,
+            phone: row.phone,
+            status: { $in: ['pending', 'queued', 'scheduled'] },
+          });
+      if (!hasSeq && !hasSched) continue;
+      await cancelAllAutomationsFor({
+        clientId: campaign.clientId,
+        leadId: leadId || undefined,
+        phone: row.phone,
+        reason: 'agent_block',
+        channels: 'all',
+        actor: {
+          type: 'user',
+          userId: req.user._id || req.user.id,
+          source: 'dashboard',
+        },
+      });
+      automationsCancelled += 1;
+    }
+
+    const { writeAuditLog } = require('../utils/messaging/writeAuditLog');
+    await writeAuditLog({
+      clientId: campaign.clientId,
+      action_type: 'campaign_cancelled',
+      target_resource: `campaign:${campaign._id}`,
+      actor: {
+        type: 'user',
+        userId: req.user._id || req.user.id,
+        source: 'dashboard',
+      },
+      payload: { messagesCancelled: msgRes.modifiedCount || 0, automationsCancelled },
+    });
+
+    const io = req.app.get('socketio');
+    if (io) {
+      io.to(`client_${campaign.clientId}`).emit('campaign:cancelled', {
+        campaignId: campaign._id,
+        messagesCancelled: msgRes.modifiedCount || 0,
+      });
+    }
+    return res.json({
+      success: true,
+      status: 'CANCELLED',
+      messagesCancelled: msgRes.modifiedCount || 0,
+      automationsCancelled,
+    });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// @route   DELETE /api/campaigns/:id
+router.delete('/:id', ...campaignMutate, async (req, res) => {
+  try {
+    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: req.user.clientId });
+    if (!campaign) return res.status(404).json({ success: false, message: 'Not found' });
+    if (['SENDING', 'QUEUED'].includes(campaign.status)) {
+      return res.status(400).json({
+        success: false,
+        message:
+          campaign.status === 'SENDING'
+            ? 'Cancel the campaign before deleting'
+            : 'Wait for launch to finish or cancel the campaign first',
+      });
+    }
+    await Campaign.deleteOne({ _id: campaign._id, clientId: req.user.clientId });
+    return res.json({ success: true, message: 'Campaign deleted' });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// @route   POST /api/campaigns/:id/refresh-audience
+router.post('/:id/refresh-audience', ...campaignMutate, async (req, res) => {
+  try {
+    const { refreshCampaignAudience } = require('../services/campaignRefreshAudience');
+    const result = await refreshCampaignAudience(req.params.id, req.user.clientId);
+    if (!result.ok) {
+      return res.status(result.status || 400).json({ success: false, message: result.message });
+    }
+    return res.json({
+      success: true,
+      added: result.added,
+      lastAudienceRefreshAt: result.lastAudienceRefreshAt,
+      audienceRefreshable: result.audienceRefreshable,
+    });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// @route   POST /api/campaigns/:id/resume
+router.post('/:id/resume', ...campaignMutate, async (req, res) => {
+  try {
+    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: req.user.clientId });
+    if (!campaign) return res.status(404).json({ success: false, message: 'Not found' });
+    campaign.status = 'SENDING';
+    await campaign.save();
+    const { reenqueueQueuedMessages } = require('../services/campaignLaunchService');
+    const n = await reenqueueQueuedMessages(campaign._id);
+    const io = req.app.get('socketio');
+    if (io) io.to(`client_${campaign.clientId}`).emit('campaign:resumed', { campaignId: campaign._id, requeued: n });
+    return res.json({ success: true, status: 'SENDING', requeued: n });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// @route   POST /api/campaigns/:id/send-winner
+router.post('/:id/send-winner', ...campaignMutate, async (req, res) => {
+  try {
+    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: req.user.clientId });
+    if (!campaign || !campaign.isAbTest) {
+      return res.status(400).json({ success: false, message: 'Not an A/B campaign' });
+    }
+    const winnerLabel = req.body.variantId || campaign.winnerVariant;
+    const winner = (campaign.abVariants || []).find((v) => v.label === winnerLabel);
+    if (!winner) return res.status(400).json({ success: false, message: 'Winner variant not found' });
+    campaign.winnerVariant = winner.label;
+    const holdback = await CampaignMessage.find({
+      campaignId: campaign._id,
+      abVariantLabel: 'holdout',
+      status: 'queued',
+    }).lean();
+    const rows = holdback.map((m) => ({
+      phone: m.phone,
+      _id: m.metadata?.leadId,
+      name: m.metadata?.name,
+      variantId: winner.label,
+    }));
+    for (const m of holdback) {
+      await CampaignMessage.updateOne(
+        { _id: m._id },
+        { $set: { variantId: winner.label, abVariantLabel: `holdout_${winner.label}` } }
+      );
+    }
+    const { bulkEnqueueCampaignJobs } = require('../utils/messaging/queues/campaignDispatchQueue');
+    await bulkEnqueueCampaignJobs(
+      holdback.map((m) => ({
+        campaignMessageId: String(m._id),
+        campaignId: String(campaign._id),
+        clientId: campaign.clientId,
+        channel: 'whatsapp',
+      }))
+    );
+    campaign.abTestConfig = { ...(campaign.abTestConfig || {}), holdbackProcessed: true };
+    await campaign.save();
+    return res.json({ success: true, holdbackEnqueued: rows.length, winner: winner.label });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// @route   POST /api/campaigns/estimate-cost
+// @desc    Rough per-campaign send cost (heuristic, INR)
+// @access  Private
+router.post('/estimate-cost', protect, async (req, res) => {
+  try {
+    const count = Math.max(0, Number(req.body.audienceCount) || 0);
+    const channel = String(req.body.channel || 'whatsapp').toLowerCase();
+    const { estimateTenantCost } = require('../services/billing/costEstimation');
+    const waCount = channel === 'email' ? 0 : count;
+    const emailCount = channel === 'email' ? count : 0;
+    const row = estimateTenantCost({
+      usage: { whatsappSent: waCount, emailSent: emailCount },
+      planPriceInr: 0,
+    });
+    const estimatedTotalInr = row.meta_messages + row.email;
+    return res.json({
+      success: true,
+      audienceCount: count,
+      channel,
+      whatsapp: {
+        count: waCount,
+        perMessageInr: 0.85,
+        subtotalInr: row.meta_messages,
+      },
+      email: {
+        count: emailCount,
+        perMessageInr: 0.1,
+        subtotalInr: row.email,
+      },
+      perMessageInr: count > 0 ? estimatedTotalInr / count : channel === 'email' ? 0.1 : 0.85,
+      estimatedTotalInr,
+      disclaimer: row.disclaimer,
+    });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
 // @route   POST /api/campaigns/start
 // @desc    Start a CSV campaign and send messages
 // @access  Private
 router.post('/start', protect, async (req, res) => {
   const { campaignId, templateType } = req.body;
-  if (!campaignId || !templateType) {
+  if (!campaignId) {
+    return res.status(400).json({ message: 'campaignId is required' });
+  }
+  const bodyChannel = String(req.body.channel || '').toLowerCase();
+  if (bodyChannel !== 'email' && !templateType) {
     return res.status(400).json({ message: 'campaignId and templateType are required' });
   }
   try {
     const campaign = await Campaign.findOne({ _id: campaignId, clientId: req.user.clientId });
     if (!campaign) return res.status(404).json({ message: 'Campaign not found' });
+
+    const startChannel = bodyChannel || String(campaign.channel || 'whatsapp').toLowerCase();
+    campaign.channel = startChannel === 'email' ? 'email' : 'whatsapp';
+    if (campaign.channel === 'email') {
+      campaign.emailSubject =
+        req.body.emailSubject || campaign.emailSubject || 'Update from your store';
+      campaign.emailHtml =
+        req.body.emailHtml ||
+        req.body.customTextValues?.body ||
+        campaign.emailHtml ||
+        '<p>Hello,</p>';
+      campaign.templateName = req.body.templateName || campaign.templateName || 'email_campaign';
+    }
     
     const hasInlineAudience = Array.isArray(campaign.audience) && campaign.audience.length > 0;
     // CSV / segment / import resolve audience at start; CRM-from-leads stores audience on the document;
@@ -592,14 +1078,9 @@ router.post('/start', protect, async (req, res) => {
     if (templateType === 'birthday') {
         actualTemplateName = client.config?.templates?.birthday || 'happy_birthday_wish_1';
     } else if (templateType === 'appointment') {
-        const { isLegacyAppointmentSendingEnabled } = require('../config/ecommerceOnlyPolicy');
-        if (!isLegacyAppointmentSendingEnabled()) {
-          return res.status(400).json({
-            message:
-              'Appointment campaigns are disabled by default. Set ENABLE_LEGACY_APPOINTMENT_REMINDERS=true to use.',
-          });
-        }
-        actualTemplateName = client.config?.templates?.appointment || 'appointment_reminder_1';
+        return res.status(400).json({
+          message: 'Appointment campaigns are no longer supported (e-commerce platform only).',
+        });
     }
 
     let total = 0;
@@ -626,10 +1107,8 @@ router.post('/start', protect, async (req, res) => {
     if (campaign.campaignType === 'RE_PERMISSION') {
       campaign.templateCategory = 'UTILITY';
     }
-    campaign.skipMarketingOptInFilter = req.body.skipMarketingOptInFilter === true;
-    const marketingOptQ = shouldRequireMarketingOptIn(campaign)
-      ? mongoMarketingOptInOnly()
-      : mongoNotOptedOut();
+    const marketingOptQ = audienceOptQueryForCampaign(campaign);
+    const isEmailChannel = campaign.channel === 'email';
     
     // Resolve audience for Segments and Import Lists if not already set
     if (!campaign.audience || campaign.audience.length === 0) {
@@ -641,7 +1120,12 @@ router.post('/start', protect, async (req, res) => {
                   clientId: req.user.clientId,
                   ...marketingOptQ,
                 }).lean();
-                campaign.audience = leads.map(l => ({ phone: l.phoneNumber, name: l.name || '', ...l }));
+                campaign.audience = leads.map((l) => ({
+                  phone: l.phoneNumber,
+                  email: l.email,
+                  name: l.name || '',
+                  _id: l._id,
+                }));
             }
         } else if (campaign.importBatchId) {
             // Normalize whatever was stored (legacy BATCH_* string or canonical ObjectId hex)
@@ -657,30 +1141,47 @@ router.post('/start', protect, async (req, res) => {
                   clientId: req.user.clientId,
                   ...marketingOptQ,
                 }).lean();
-                campaign.audience = leads.map(l => ({ phone: l.phoneNumber, name: l.name || '', ...l }));
+                campaign.audience = leads.map((l) => ({
+                  phone: l.phoneNumber,
+                  email: l.email,
+                  name: l.name || '',
+                  _id: l._id,
+                }));
         }
         campaign.audienceCount = campaign.audience.length;
     }
 
-    // Drop rows missing a phone number — they cannot receive a WhatsApp template.
-    // (Without this filter the cron will still log a noisy "Invalid phone" failure
-    // for every empty row, and audienceCount drifts away from real reach.)
     const rawAudience = campaign.audience || [];
-    const filteredAudience = rawAudience.filter(row => {
+    let filteredAudience;
+    if (isEmailChannel) {
+      filteredAudience = rawAudience.filter((row) => Boolean(normalizeEmail(row?.email)));
+      const droppedNoEmail = rawAudience.length - filteredAudience.length;
+      if (droppedNoEmail > 0) {
+        log.warn(`[Campaign ${campaign._id}] Dropped ${droppedNoEmail} contact(s) with missing email.`);
+        campaign.audience = filteredAudience;
+        campaign.audienceCount = filteredAudience.length;
+      }
+      if (filteredAudience.length === 0) {
+        campaign.status = 'FAILED';
+        await campaign.save();
+        return res.status(400).json({ message: 'No contacts with a valid email were found in this audience.' });
+      }
+    } else {
+      filteredAudience = rawAudience.filter((row) => {
         const raw = row?.phone || row?.phoneNumber || row?.number || row?.mobile || '';
         return Boolean(normalizePhone(raw));
-    });
-    const droppedNoPhone = rawAudience.length - filteredAudience.length;
-    if (droppedNoPhone > 0) {
+      });
+      const droppedNoPhone = rawAudience.length - filteredAudience.length;
+      if (droppedNoPhone > 0) {
         log.warn(`[Campaign ${campaign._id}] Dropped ${droppedNoPhone} contact(s) with missing/invalid phone numbers.`);
         campaign.audience = filteredAudience;
         campaign.audienceCount = filteredAudience.length;
-    }
-
-    if (filteredAudience.length === 0) {
+      }
+      if (filteredAudience.length === 0) {
         campaign.status = 'FAILED';
         await campaign.save();
         return res.status(400).json({ message: 'No contacts with a valid phone number were found in this audience.' });
+      }
     }
 
     if (campaign.campaignType === 'RE_PERMISSION') {
@@ -711,15 +1212,14 @@ router.post('/start', protect, async (req, res) => {
       campaign.status = 'FAILED';
       await campaign.save();
       return res.status(400).json({
-        message:
-          'No WhatsApp marketing–eligible contacts (opt_status must be opted_in). Collect opt-in via your website embed or chats, widen your segment, or use the advanced override only if you have provable consent.',
+        message: isEmailChannel
+          ? 'No email marketing–eligible contacts (channelConsent.email must be opted_in). Collect email opt-in via widgets or imports.'
+          : 'No WhatsApp marketing–eligible contacts (opt_status must be opted_in). Collect opt-in via your website embed or chats, widen your segment, or use the advanced override only if you have provable consent.',
       });
     }
 
-    // Validate the chosen template is actually APPROVED on Meta — otherwise every
-    // send will be rejected by the Meta API and the user just sees "FAILED".
     const candidateTemplateName = req.body.templateName || actualTemplateName || campaign.templateName;
-    if (candidateTemplateName) {
+    if (candidateTemplateName && !isEmailChannel) {
         const synced = client.syncedMetaTemplates || [];
         const tpl = synced.find(t => t?.name === candidateTemplateName);
         const mappedVariables = Object.keys(campaign.variableMapping || {})
@@ -768,36 +1268,61 @@ router.post('/start', protect, async (req, res) => {
 
      if (req.body.isAbTest) {
         campaign.isAbTest = true;
-        
-        // ENTERPRISE 10/10/80 SPLIT LOGIC
-        const testSizePct = 20; // 10% for A, 10% for B
-        const holdbackSizePct = 80;
-        
-        campaign.abTestConfig = { 
-          testSizePercentage: testSizePct, 
-          winnerMetric: req.body.abTestConfig?.winnerMetric || 'reply_rate', 
-          holdbackHours: req.body.abTestConfig?.holdbackHours || 2, 
-          autoSendWinner: true, 
-          holdbackProcessed: false 
+        const holdbackPercent = Math.min(50, Math.max(10, Number(req.body.abTestConfig?.holdbackPercent ?? 20)));
+        const holdbackHours = Number(req.body.abTestConfig?.holdbackHours ?? 4);
+        campaign.abTestConfig = {
+          holdbackPercent,
+          winnerMetric: req.body.abTestConfig?.winnerMetric || 'reply_rate',
+          holdbackHours,
+          autoSendWinner: false,
+          holdbackProcessed: false,
         };
-
         campaign.abVariants = [
-          { label: 'A', templateName: req.body.templateName || campaign.templateName, recipientCount: Math.floor(rows.length * 0.1) },
-          { label: 'B', templateName: req.body.templateTypeB, recipientCount: Math.floor(rows.length * 0.1) }
+          {
+            label: 'A',
+            templateName: req.body.templateName || campaign.templateName,
+            weight: 50,
+          },
+          {
+            label: 'B',
+            templateName: req.body.templateTypeB || campaign.templateName,
+            weight: 50,
+          },
         ];
-
-        // Set evaluation time
-        campaign.scheduledAt = new Date(Date.now() + (campaign.abTestConfig.holdbackHours * 60 * 60 * 1000));
-        
+        if (holdbackHours > 0) {
+          campaign.scheduledAt = new Date(Date.now() + holdbackHours * 60 * 60 * 1000);
+        }
         await campaign.save();
      }
 
+    campaign.audienceMode = req.body.audienceMode === 'live' ? 'live' : 'snapshot';
+    if (req.body.isPredictiveSend || req.body.scheduleStrategy === 'per_contact_optimal') {
+      campaign.scheduleStrategy = 'per_contact_optimal';
+      campaign.isPredictiveSend = true;
+    } else if (req.body.scheduleStrategy === 'fixed') {
+      campaign.scheduleStrategy = 'fixed';
+      campaign.isPredictiveSend = false;
+    }
     await campaign.save();
 
+    if (!campaign.scheduledAt || new Date(campaign.scheduledAt) <= new Date()) {
+      const { launchCampaignDispatch } = require('../services/campaignLaunchService');
+      const launch = await launchCampaignDispatch(campaign, rows);
+      const skipLabel = isEmailChannel ? 'not email opted_in' : 'not WhatsApp opted_in';
+      const extra =
+        optFiltered.excluded > 0 ? ` (${optFiltered.excluded} skipped — ${skipLabel})` : '';
+      return res.json({
+        success: true,
+        message: `Campaign launched for ${launch.inserted} contacts.${extra}`,
+        enqueued: launch.enqueued,
+        marketingOptInExcluded: optFiltered.excluded || 0,
+        campaignType: campaign.campaignType,
+      });
+    }
+
+    const skipLabel = isEmailChannel ? 'not email opted_in' : 'not WhatsApp opted_in';
     const extra =
-      optFiltered.excluded > 0
-        ? ` (${optFiltered.excluded} skipped — not WhatsApp opted_in)`
-        : '';
+      optFiltered.excluded > 0 ? ` (${optFiltered.excluded} skipped — ${skipLabel})` : '';
     return res.json({
       success: true,
       message: `Campaign targeting ${rows.length} contacts queued successfully.${extra}`,
@@ -884,6 +1409,7 @@ router.get('/:clientId/overview', protect, apiCache(60), async (req, res) => {
   try {
     const { client } = await resolveClient(req);
     const clientId = client.clientId;
+    const clientDoc = await Client.findOne({ clientId }).select('complianceConfig').lean();
     const campaigns = await Campaign.find({ clientId }).sort({ createdAt: -1 }).lean();
     const CampaignMessage = require('../models/CampaignMessage');
 
@@ -907,6 +1433,8 @@ router.get('/:clientId/overview', protect, apiCache(60), async (req, res) => {
     const totalSent = (statsMap['sent'] || 0) + totalDelivered;
     const totalRead = (statsMap['read'] || 0) + (statsMap['replied'] || 0);
     const totalReplied = statsMap['replied'] || 0;
+    const totalFailed = statsMap['failed'] || 0;
+    const totalCancelled = statsMap['cancelled'] || 0;
 
     const deliveryRate = totalSent > 0 ? Math.round((totalDelivered / totalSent) * 100) : 0;
     const readRate = totalDelivered > 0 ? Math.round((totalRead / totalDelivered) * 100) : 0;
@@ -945,11 +1473,18 @@ router.get('/:clientId/overview', protect, apiCache(60), async (req, res) => {
         totalDelivered,
         totalRead,
         totalReplied,
+        totalFailed,
+        totalCancelled,
         deliveryRate,
         readRate,
-        replyRate
+        replyRate,
       },
       metaHealth,
+      activeCampaigns: campaigns.filter((c) => c.status === 'SENDING').length,
+      throttledWhatsApp: !!(
+        clientDoc?.complianceConfig?.rateLimits?.whatsapp?.throttledUntil &&
+        new Date(clientDoc.complianceConfig.rateLimits.whatsapp.throttledUntil) > new Date()
+      ),
       recentCampaigns: campaigns.slice(0, 10)
 
     });
@@ -1102,13 +1637,14 @@ router.post('/predictive-send', protect, async (req, res) => {
     if (rows.length === 0) return res.status(400).json({ success: false, message: 'No recipients found' });
 
     // Enrich with predictive send windows
-    const { getOptimalSendTimes } = require('../utils/predictiveSend');
+    const { getOptimalSendTimes } = require('../utils/commerce/predictiveSend');
     const phones = rows.map(r => normalizePhone(r.phone || r.number || r.mobile || r.recipient || '')).filter(Boolean);
     const sendWindows = await getOptimalSendTimes(req.user.clientId, phones);
     const windowMap = {};
     sendWindows.forEach(w => { windowMap[w.phone] = w; });
 
     const FollowUpSequence = require('../models/FollowUpSequence');
+    const { ensureLeadForSequence } = require('../utils/messaging/ensureLeadForSequence');
     let queued = 0;
     const tName = campaign.templateName;
 
@@ -1116,12 +1652,20 @@ router.post('/predictive-send', protect, async (req, res) => {
       const phone = normalizePhone(row.phone || row.number || row.mobile || row.recipient || '');
       if (!phone || !tName) continue;
 
+      const lead = await ensureLeadForSequence({
+        clientId: req.user.clientId,
+        phone,
+        source: 'predictive_campaign',
+      });
+
       const window = windowMap[phone];
       const sendAt = window?.sendAt || new Date();
 
       await FollowUpSequence.create({
         clientId: req.user.clientId,
-        phone,
+        leadId: lead._id,
+        phone: lead.phoneNumber,
+        email: lead.email,
         name: `Predictive Broadcast: ${campaign.name}`,
         status: 'active',
         steps: [{
@@ -1149,171 +1693,6 @@ router.post('/predictive-send', protect, async (req, res) => {
 
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// @route   GET /api/campaigns/templates
-// @desc    Get synced Meta templates for the client
-// @access  Private
-router.get('/templates', protect, async (req, res) => {
-  try {
-    const clientId = tenantClientId(req);
-    if (!clientId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-
-    const client = await Client.findOne({ clientId }).select('syncedMetaTemplates').lean();
-    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
-
-    const contextPurpose = String(req.query.contextPurpose || 'campaign').toLowerCase();
-    const approvedTemplates = (client.syncedMetaTemplates || []).filter((t) => {
-      const statusOk = String(t?.status || '').toUpperCase() === 'APPROVED';
-      if (!statusOk) return false;
-      const primary = String(t?.primaryPurpose || 'utility').toLowerCase();
-      const secondary = Array.isArray(t?.secondaryPurposes)
-        ? t.secondaryPurposes.map((p) => String(p || '').toLowerCase())
-        : [];
-      return primary === contextPurpose || secondary.includes(contextPurpose) || primary === 'utility';
-    });
-    res.json({ success: true, templates: approvedTemplates });
-  } catch (err) {
-    console.error('[CampaignTemplates] Error:', err);
-    res.status(500).json({ success: false, message: 'Failed to fetch templates' });
-  }
-});
-
-// @route   GET /api/campaigns/audience-estimate
-// @desc    Get estimated reach for a segment or source
-router.get('/audience-estimate', protect, apiCache(30), async (req, res) => {
-    const { source, segmentId, importBatchId, campaignId } = req.query;
-    const cid = req.user.clientId;
-    let count = 0;
-
-    try {
-        if (source === 'all') {
-            count = await AdLead.countDocuments({ clientId: cid });
-        } else if (source === 'segment' && segmentId) {
-            const segment = await Segment.findOne({ _id: segmentId, clientId: cid });
-            if (segment) {
-                count = await AdLead.countDocuments({ clientId: cid, ...segment.query });
-            }
-        } else if (source === 'imported' && importBatchId) {
-            // Frontend may pass ImportSession.batchId (BATCH_*) OR ImportSession._id.
-            // Resolve to the actual ObjectId before querying AdLead — otherwise
-            // Mongoose throws CastError and the whole request 500s.
-            const resolvedId = await resolveImportBatchObjectId(importBatchId, cid);
-            count = resolvedId
-                ? await AdLead.countDocuments({ clientId: cid, importBatchId: resolvedId })
-                : 0;
-        } else if (source === 'hot') {
-            count = await AdLead.countDocuments({ 
-                clientId: cid, 
-                $or: [
-                    { cartStatus: 'abandoned' },
-                    { addToCartCount: { $gt: 0 }, isOrderPlaced: { $ne: true } }
-                ]
-            });
-        } else if (source === 'manual' && campaignId && mongoose.Types.ObjectId.isValid(String(campaignId))) {
-            const campaign = await Campaign.findOne({ _id: campaignId, clientId: cid }).select('audience').lean();
-            count = Array.isArray(campaign?.audience) ? campaign.audience.length : 0;
-        }
-
-        res.json({ success: true, count });
-    } catch (err) {
-        console.error('[AudienceEstimate] Error:', err);
-        // Don't crash the campaign builder UI just because the count failed —
-        // return zero so the frontend can still render and the user can retry.
-        res.json({ success: true, count: 0, warning: 'estimate_failed' });
-    }
-});
-
-// @route   GET /api/campaigns/audience-preview
-// @desc    Compliance preview for selected audience + template category
-router.get('/audience-preview', protect, async (req, res) => {
-  try {
-    const cid = req.user.clientId;
-    const {
-      source: sourceRaw,
-      segmentId,
-      importBatchId,
-      campaignId,
-      templateCategory = 'MARKETING',
-    } = req.query;
-    let leads = [];
-
-    let source = String(sourceRaw || '').toLowerCase();
-    if (!source) {
-      if (segmentId) source = 'segment';
-      else if (importBatchId) source = 'imported';
-      else if (campaignId) source = 'manual';
-    }
-
-    if (source === 'segment' && segmentId) {
-      const segment = await Segment.findOne({ _id: segmentId, clientId: cid }).lean();
-      if (!segment) return res.status(404).json({ success: false, message: 'Segment not found' });
-      leads = await AdLead.find({ clientId: cid, ...segment.query })
-        .select('optStatus optInSource')
-        .lean();
-    } else if (source === 'imported' && importBatchId) {
-      const resolved = await resolveImportBatchObjectId(importBatchId, cid);
-      if (!resolved) return res.status(404).json({ success: false, message: 'Import batch not found' });
-      leads = await AdLead.find({ clientId: cid, importBatchId: resolved })
-        .select('optStatus optInSource')
-        .lean();
-    } else if (source === 'manual' && campaignId) {
-      if (!mongoose.Types.ObjectId.isValid(String(campaignId))) {
-        return res.status(400).json({ success: false, message: 'Invalid campaign id' });
-      }
-      const campaign = await Campaign.findOne({ _id: campaignId, clientId: cid }).select('audience').lean();
-      if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
-      const phones = [
-        ...new Set(
-          (campaign.audience || [])
-            .map((row) => String(row?.phone || row?.phoneNumber || '').trim())
-            .filter(Boolean)
-        ),
-      ];
-      if (phones.length) {
-        leads = await AdLead.find({ clientId: cid, phoneNumber: { $in: phones } })
-          .select('optStatus optInSource')
-          .lean();
-      } else {
-        leads = [];
-      }
-    } else if (source === 'hot') {
-      leads = await AdLead.find({
-        clientId: cid,
-        $or: [
-          { cartStatus: 'abandoned' },
-          { addToCartCount: { $gt: 0 }, isOrderPlaced: { $ne: true } },
-        ],
-      })
-        .select('optStatus optInSource')
-        .lean();
-    } else {
-      return res.status(400).json({
-        success: false,
-        message: 'Specify a valid audience source (segment, imported, manual, or hot) with the required ids.',
-      });
-    }
-
-    const cat = String(templateCategory || 'MARKETING').toUpperCase();
-    const counts = evaluateAudiencePolicySummary(leads, cat);
-    const sourceMap = new Map();
-    for (const lead of leads) {
-      const src = lead.optInSource || 'unknown';
-      sourceMap.set(src, (sourceMap.get(src) || 0) + 1);
-    }
-
-    res.json({
-      success: true,
-      templateCategory: cat,
-      ...counts,
-      bySource: [...sourceMap.entries()].map(([source, count]) => ({ source, count })),
-      recommendedRepermission: counts.unknownBlocked > 0 ? counts.unknownBlocked : 0,
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
   }
 });
 

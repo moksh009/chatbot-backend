@@ -6,8 +6,21 @@ const CampaignSchema = new mongoose.Schema({
   templateName: { type: String, default: "" },
   status: { 
     type: String, 
-    enum: ['DRAFT', 'SCHEDULED', 'QUEUED', 'SENDING', 'COMPLETED', 'FAILED'], 
+    enum: ['DRAFT', 'SCHEDULED', 'QUEUED', 'SENDING', 'PAUSED', 'COMPLETED', 'FAILED', 'CANCELLED'], 
     default: 'DRAFT' 
+  },
+  audienceMode: { type: String, enum: ['snapshot', 'live'], default: 'snapshot' },
+  audienceRefreshable: { type: Boolean, default: false },
+  audienceRefreshHoursMax: { type: Number, default: 24 },
+  lastAudienceRefreshAt: { type: Date, default: null },
+  stats: {
+    queued: { type: Number, default: 0 },
+    processing: { type: Number, default: 0 },
+    sent: { type: Number, default: 0 },
+    delivered: { type: Number, default: 0 },
+    failed: { type: Number, default: 0 },
+    cancelled: { type: Number, default: 0 },
+    lastProgressAt: { type: Date, default: null },
   },
   scheduledAt: { type: Date },
   csvFile: { type: String }, // Path to uploaded CSV
@@ -23,6 +36,12 @@ const CampaignSchema = new mongoose.Schema({
   isSmartSend: { type: Boolean, default: false },
   smartSendConfig: { type: mongoose.Schema.Types.Mixed },
 
+  /** Phase 9: fixed broadcast time vs per-contact optimal hour */
+  scheduleStrategy: {
+    type: String,
+    enum: ['fixed', 'per_contact_optimal'],
+    default: 'fixed',
+  },
   // Phase 28: Predictive Send (AI-timed delivery)
   isPredictiveSend: { type: Boolean, default: false },
   predictiveSendConfig: {
@@ -42,11 +61,11 @@ const CampaignSchema = new mongoose.Schema({
   websiteClicks:   { type: Number, default: 0 },
   revenueAttributed: { type: Number, default: 0 },
   
-  channel:         { type: String, enum: ["whatsapp","sms"], default: "whatsapp" },
+  channel:         { type: String, enum: ['whatsapp', 'sms', 'email'], default: 'whatsapp' },
+  emailSubject:    { type: String, default: '' },
+  emailHtml:       { type: String, default: '' },
   campaignType:    { type: String, enum: ["STANDARD", "RE_PERMISSION"], default: "STANDARD" },
   templateCategory:{ type: String, default: "MARKETING" }, // UTILITY | MARKETING | AUTHENTICATION
-  /** If false (default): only opted_in contacts receive WhatsApp marketing sends — Meta-aligned */
-  skipMarketingOptInFilter: { type: Boolean, default: false },
   marketingOptInExcludedCount: { type: Number, default: 0 },
   autoPaused:      { type: Boolean, default: false },
   autoPausedReason:{ type: String, default: "" },
@@ -77,5 +96,8 @@ const CampaignSchema = new mongoose.Schema({
 });
 
 CampaignSchema.index({ clientId: 1, createdAt: -1 });
+
+const { enforceClientScope } = require('../mongoose/plugins/enforceClientScope');
+CampaignSchema.plugin(enforceClientScope);
 
 module.exports = mongoose.model('Campaign', CampaignSchema);

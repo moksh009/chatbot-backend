@@ -4,7 +4,7 @@
  * so production e-commerce tenants are protected without deleting files.
  *
  * BLOCK_LEGACY_NICHE_AUTOMATION=true (default) — stop sending legacy appointment sequences
- * ENABLE_LEGACY_APPOINTMENT_REMINDERS=true — allow sendAppointmentReminder + appointment campaigns
+ * ENABLE_LEGACY_APPOINTMENT_REMINDERS=true — reserved; appointment sends removed (e-commerce only)
  * HIDE_DEPRECATED_NICHE_TEMPLATES=true — hide deprecated templates in API lists (default: show with flag)
  */
 
@@ -99,7 +99,7 @@ async function cancelLegacyFollowUpSequences({ reason = 'legacy_niche_disabled' 
 
   const cancelled = (byName.modifiedCount || 0) + (byContent.modifiedCount || 0);
   if (cancelled > 0) {
-    const log = require('../utils/logger')('EcommerceOnly');
+    const log = require('../utils/core/logger')('EcommerceOnly');
     log.warn(`Cancelled ${cancelled} legacy follow-up sequence(s)`, { reason });
   }
   return cancelled;

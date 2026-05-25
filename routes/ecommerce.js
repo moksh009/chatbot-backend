@@ -3,7 +3,7 @@ const router = express.Router();
 const Client = require('../models/Client');
 const AdLead = require('../models/AdLead');
 const Order = require('../models/Order');
-const StoreAPI = require('../utils/storeAPI');
+const StoreAPI = require('../utils/commerce/storeAPI');
 const { protect } = require('../middleware/auth');
 
 /**
@@ -45,8 +45,8 @@ router.post('/sync', protect, async (req, res) => {
               name: o.customer.first_name,
               isOrderPlaced: true,
               totalSpent: o.total_price,
-              orderCount: 1 // Simple increment for sync
             },
+            $inc: { ordersCount: 1 },
             $addToSet: { tags: 'synced_from_store' }
           },
           { upsert: true }

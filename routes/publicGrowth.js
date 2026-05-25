@@ -6,7 +6,7 @@ const rateLimit = require('express-rate-limit');
 const Client = require('../models/Client');
 const AdLead = require('../models/AdLead');
 const GrowthQrScan = require('../models/GrowthQrScan');
-const { normalizePhoneDigits } = require('../utils/marketingConsent');
+const { normalizePhoneDigits } = require('../utils/commerce/marketingConsent');
 
 const router = express.Router();
 
@@ -135,6 +135,7 @@ router.post('/subscribe', subscribeLimiter, async (req, res) => {
     const pageUrl = String(req.body.pageUrl || req.body.page_url || '').trim().slice(0, 2000);
     const spinPrize = String(req.body.prize || '').trim().slice(0, 80);
     const spinCode = String(req.body.prizeCode || '').trim().slice(0, 40);
+    const visitorId = String(req.body.visitorId || '').trim().slice(0, 80);
     const ipAddress = String((req.headers['x-forwarded-for'] || '').split(',')[0] || req.ip || '').slice(0, 120);
     const userAgent = String(req.headers['user-agent'] || '').slice(0, 255);
 
@@ -190,6 +191,13 @@ router.post('/subscribe', subscribeLimiter, async (req, res) => {
       setDoc.pendingOptInExpiry = new Date(Date.now() + 15 * 60 * 1000);
     }
 
+    const { stitchVisitorIdentity } = require('../utils/commerce/visitorIdentityService');
+    await stitchVisitorIdentity(client.clientId, client, {
+      visitorId,
+      phone: phoneNorm,
+      email: null,
+    }).catch(() => {});
+
     await AdLead.findOneAndUpdate(
       { clientId: client.clientId, phoneNumber: phoneNorm },
       {
@@ -224,7 +232,7 @@ router.post('/subscribe', subscribeLimiter, async (req, res) => {
 
     if (doubleOptIn) {
       try {
-        const WhatsApp = require('../utils/whatsapp');
+        const WhatsApp = require('../utils/meta/whatsapp');
         const clientDoc = await Client.findOne({ clientId: client.clientId });
         if (clientDoc) {
           await WhatsApp.sendText(

@@ -132,35 +132,46 @@ const PREBUILT_TEMPLATE_LIBRARY = [
     requiredContext: ["order", "customer", "client"],
   },
   {
-    key: "review_request",
-    metaName: "review_request",
-    displayName: "Review request",
-    category: "MARKETING",
-    headerType: "IMAGE",
-    headerVariable: "first_product_image",
+    key: "product_back_in_stock",
+    metaName: "product_back_in_stock",
+    displayName: "Product back in stock",
+    category: "UTILITY",
+    headerType: "NONE",
     bodyText:
-      "Hi {{1}}! 🌟\n\nHow was your *{{2}}*?\nOrder *{{3}}* from {{4}}\n\nTap below to rate your experience, or leave us a Google review — it helps a lot!",
-    variableMappings: {
-      body: { 1: "first_name", 2: "order_items", 3: "order_id", 4: "brand_name" },
-    },
-    buttons: [{ type: "URL", text: "Leave Google Review", urlVariable: "google_review_url" }],
-    autoTrigger: "order_delivered",
-    requiredContext: ["order", "customer", "client"],
+      "Hi! Good news — *{{1}}* is back in stock.\n\nShop now: {{2}}",
+    variableMappings: { body: { 1: "product_name", 2: "product_url" } },
+    autoTrigger: null,
+    requiredContext: ["client"],
   },
 ];
 
-/** Maps legacy auto-worker keys → library entries */
+/** Maps legacy auto-worker keys → library entries (aligned with template-catalog.json) */
 const LEGACY_KEY_ALIASES = {
   order_confirmed: "order_confirmation_v1",
   order_confirmation_v1: "order_confirmation_v1",
   cart_recovery_1: "abandoned_cart_r1_v1",
   cart_recovery_2: "abandoned_cart_r2_v1",
-  review_request: "review_request",
+  abandoned_cart_r1_v1: "abandoned_cart_r1_v1",
+  abandoned_cart_r2_v1: "abandoned_cart_r2_v1",
 };
 
+let _catalogAliases = null;
+function catalogKeyAliases() {
+  if (_catalogAliases) return _catalogAliases;
+  try {
+    const { getNameAliases } = require("./templateCatalog/catalog");
+    _catalogAliases = getNameAliases();
+  } catch {
+    _catalogAliases = {};
+  }
+  return _catalogAliases;
+}
+
 function getPrebuiltByKey(key) {
-  const k = LEGACY_KEY_ALIASES[key] || key;
-  return PREBUILT_TEMPLATE_LIBRARY.find((t) => t.key === k || t.metaName === k) || null;
+  const aliases = catalogKeyAliases();
+  const canonical = aliases[key] || key;
+  const k = LEGACY_KEY_ALIASES[key] || LEGACY_KEY_ALIASES[canonical] || canonical;
+  return PREBUILT_TEMPLATE_LIBRARY.find((t) => t.key === k || t.metaName === k || t.metaName === canonical) || null;
 }
 
 module.exports = {

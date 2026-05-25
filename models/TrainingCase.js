@@ -25,9 +25,19 @@ const TrainingCaseSchema = new mongoose.Schema({
   phone: String,
   status: {
     type: String,
-    enum: ['pending', 'processed', 'ignored'],
-    default: 'pending'
+    enum: ['pending', 'active', 'processed', 'ignored', 'rejected', 'flagged_for_review', 'approved'],
+    default: 'pending',
   },
+  botReplyCorrection: { type: String, default: '' },
+  tags: { type: [String], default: [] },
+  rejectReason: { type: String, default: '' },
+  approvedAt: { type: Date },
+  approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  rejectedAt: { type: Date },
+  rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  embedding: { type: [Number], default: [] },
+  helpfulCount: { type: Number, default: 0 },
+  lessHelpfulCount: { type: Number, default: 0 },
   createdAt: {
     type: Date,
     default: Date.now

@@ -16,13 +16,14 @@ function isStrictSecurity() {
   );
 }
 
-/** Master tester email bypass — disabled in production unless explicitly allowed. */
+/** Optional env-gated bypass — no hardcoded emails (Phase 5). */
 function hasMasterTesterBypass(user) {
-  if (!user?.email) return false;
-  if (!isStrictSecurity()) {
-    return user.email === "delitech2708@gmail.com";
-  }
-  return process.env.ALLOW_MASTER_TESTER_BYPASS === "true" && user.email === "delitech2708@gmail.com";
+  if (!user?.email || process.env.ALLOW_MASTER_TESTER_BYPASS !== 'true') return false;
+  const allowed = String(process.env.MASTER_TESTER_EMAILS || '')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  return allowed.includes(String(user.email).toLowerCase());
 }
 
 function requireJwtSecret() {

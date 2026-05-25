@@ -4,7 +4,7 @@
  * Writes NDJSON to session debug log (same path as agentDebugLog).
  */
 const path = require('path');
-const { agentDebug } = require('../utils/agentDebugLog');
+const { agentDebug } = require('../utils/core/agentDebugLog');
 
 const ROOT = path.join(__dirname, '..');
 process.chdir(ROOT);

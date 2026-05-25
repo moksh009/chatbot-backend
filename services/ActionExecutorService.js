@@ -97,8 +97,8 @@ class ActionExecutorService {
           console.warn(`[ActionExecutor] SEND_MESSAGE: Empty message for ${phoneNumber}`);
           break;
         }
-        const { getCachedClientForWhatsAppSend } = require('../utils/clientCache');
-        const { createMessage } = require('../utils/createMessage');
+        const { getCachedClientForWhatsAppSend } = require('../utils/core/clientCache');
+        const { createMessage } = require('../utils/core/createMessage');
         const client = await getCachedClientForWhatsAppSend(clientId.toString());
         if (!client) {
           console.warn(`[ActionExecutor] SEND_MESSAGE: Client not found ${clientId}`);
@@ -110,7 +110,7 @@ class ActionExecutorService {
         })
           .select('_id phone')
           .lean();
-        const WhatsApp = require('../utils/whatsapp');
+        const WhatsApp = require('../utils/meta/whatsapp');
         await WhatsApp.sendText(client, phoneNumber, body);
         if (conv?._id) {
           await createMessage({

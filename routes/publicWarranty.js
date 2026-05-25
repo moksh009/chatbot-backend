@@ -2,8 +2,8 @@ const express = require('express');
 const router = express.Router();
 const AdLead = require('../models/AdLead');
 const Client = require('../models/Client');
-const { assignWarranty } = require('../utils/warrantyService');
-const log = require('../utils/logger')('PublicWarranty');
+const { assignWarranty } = require('../utils/commerce/warrantyService');
+const log = require('../utils/core/logger')('PublicWarranty');
 
 /**
  * @route   POST /api/public/warranty/register

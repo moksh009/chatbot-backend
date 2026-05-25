@@ -5,8 +5,8 @@
  * Set RUN_CRONS=false for API-only local dev (see scripts/start-api-dev.sh).
  */
 const cron = require("node-cron");
-const log = require("../utils/logger")("CronBootstrap");
-const { wrapCron } = require("../utils/perfLogger");
+const log = require('../utils/core/logger')("CronBootstrap");
+const { wrapCron } = require('../utils/core/perfLogger');
 const Client = require("../models/Client");
 
 function envFlag(name, defaultOn = false) {
@@ -25,12 +25,21 @@ async function purgeLegacySequencesOnBoot() {
 }
 
 function registerAllCrons() {
-  if (process.env.RUN_CRONS === "false") {
-    log.info("RUN_CRONS=false — skipping all cron registration");
+  const runCrons =
+    process.env.CRON_WORKER === "true" ||
+    (process.env.CRON_WORKER !== "false" && process.env.RUN_CRONS !== "false");
+  if (!runCrons) {
+    log.info("Cron worker disabled (CRON_WORKER / RUN_CRONS) — skipping all cron registration");
     return;
   }
 
   purgeLegacySequencesOnBoot();
+  const { recordCronTick } = require("./cronHealthMonitor");
+  cron.schedule("* * * * *", () => recordCronTick().catch(() => {}));
+  cron.schedule("*/5 * * * *", () => {
+    const { checkCronHealth } = require("./cronHealthMonitor");
+    checkCronHealth().catch(() => {});
+  });
 
   if (process.env.CRON_USE_COORDINATOR !== "false") {
     process.env.CRON_USE_COORDINATOR = "true";
@@ -49,7 +58,8 @@ function registerAllCrons() {
   require("./codConfirmationCron")();
   require("./autoResumeBotCron")();
   require("./followUpSequenceCron")();
-  require("./campaignSchedulerCron")();
+  require("./campaignProgressMonitorCron")();
+  require("./sequenceDispatchSchedulerCron")();
   require("./csatCron")();
   if (process.env.CRON_USE_COORDINATOR === "false") {
     require("./scheduledMessageCron")();
@@ -59,7 +69,6 @@ function registerAllCrons() {
   require("./loyaltyCron")();
   require("./statCacheCron")();
   require("./checkoutLinkRecoveryCron")();
-  require("./reviewCollection")();
   if (envFlag("CRON_ENABLE_BIRTHDAY", false)) {
     require("./birthdayCron")();
     log.info("Birthday cron enabled (CRON_ENABLE_BIRTHDAY=true)");
@@ -67,7 +76,12 @@ function registerAllCrons() {
     log.info("Birthday cron disabled — set CRON_ENABLE_BIRTHDAY=true to enable");
   }
   require("./productSyncCron")();
+  require('./productWatchMaintenanceCron')();
+  // Agent training case review disabled (feature removed from dashboard)
+  require('./phase8Cron').registerPhase8Crons();
+  require('./winBackEnrollmentCron').registerWinBackCron();
   require("./templateStatusSyncCron")();
+  require("./templateCatalogValidationCron")();
   require("./insightsCron")();
   if (envFlag("CRON_ENABLE_AB_TEST_LEGACY", false)) {
     require("./abTestCron")();
@@ -96,7 +110,7 @@ function registerAllCrons() {
   }
 
   // ── Daily IST jobs (index.js previously inline) ──
-  const { resetDailyErrorCounts } = require("../utils/autoHealer");
+  const { resetDailyErrorCounts } = require('../utils/core/autoHealer');
   cron.schedule("0 0 * * *", wrapCron("resetDailyErrorCounts", resetDailyErrorCounts));
 
   const { refreshExpiringInstagramTokens } = require("../routes/oauth");
@@ -109,7 +123,7 @@ function registerAllCrons() {
     { timezone: "Asia/Kolkata" }
   );
 
-  const { syncMetaAds } = require("../utils/metaAdsAPI");
+  const { syncMetaAds } = require('../utils/meta/metaAdsAPI');
   cron.schedule(
     "0 6 * * *",
     wrapCron("Meta Ads daily sync", async () => {

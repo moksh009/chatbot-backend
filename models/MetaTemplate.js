@@ -61,6 +61,8 @@ const MetaTemplateSchema = new mongoose.Schema({
   source: { type: String, enum: ['manual', 'auto_generated', 'wizard_automation', 'wizard_product', 'migrated_legacy'], default: 'manual' },
   autoGenProductId: { type: String, default: null },
   templateKey: { type: String, default: '' }, // canonical template key (ex: order_confirmed)
+  /** Links to shared/template-catalog.json slot id (Phase 2 lifecycle). */
+  catalogSlotId: { type: String, default: null, index: true },
   templateKind: { type: String, enum: ['prebuilt', 'product', 'custom'], default: 'custom' },
   readinessRequired: { type: Boolean, default: false },
   productHandle: { type: String, default: '' },
@@ -129,5 +131,6 @@ MetaTemplateSchema.index({ clientId: 1, templateKind: 1, readinessRequired: 1 })
 MetaTemplateSchema.index({ clientId: 1, primaryPurpose: 1 });
 MetaTemplateSchema.index({ clientId: 1, category: 1 });
 MetaTemplateSchema.index({ clientId: 1, name: 1 });
+MetaTemplateSchema.index({ clientId: 1, catalogSlotId: 1 });
 
 module.exports = mongoose.model('MetaTemplate', MetaTemplateSchema);

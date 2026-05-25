@@ -1,8 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
-const { resolveClient } = require('../utils/queryHelpers');
-const logger = require('../utils/logger')('BiRoute');
+const { resolveClient } = require('../utils/core/queryHelpers');
+const logger = require('../utils/core/logger')('BiRoute');
 
 /**
  * GET /api/bi/:clientId/suggestions
@@ -12,7 +12,7 @@ const logger = require('../utils/logger')('BiRoute');
 router.get('/:clientId/suggestions', protect, async (req, res) => {
   try {
     const { client, clientOid } = await resolveClient(req);
-    const { generateQuerySuggestions } = require('../utils/biEngine');
+    const { generateQuerySuggestions } = require('../utils/core/biEngine');
 
     // biEngine will use platformGenerateJSON, no need to pass apiKey
     let suggestions = await generateQuerySuggestions(clientOid.toString());
@@ -65,15 +65,38 @@ router.post('/:clientId/ask', protect, async (req, res) => {
         });
     }
 
-    // Standard BI Query processing
-    const { processBIQuery } = require('../utils/biEngine');
-    const result = await processBIQuery(clientOid.toString(), userQ, client);
-    
-    if (result?.error) {
-      return res.json({ success: false, error: result.error });
+    const clientId = client.clientId || req.params.clientId;
+    const { planQuery } = require('../services/bi/queryPlanner');
+    const { executeQueryPlan } = require('../services/bi/queryExecutor');
+    const { auditLog } = require('../services/audit/auditWriter');
+
+    let plan;
+    try {
+      plan = await planQuery(userQ, clientId);
+    } catch (planErr) {
+      return res.json({ success: false, error: planErr.message, rejected: true });
     }
-    
-    return res.json({ success: true, ...result });
+
+    const exec = await executeQueryPlan(plan, clientId);
+    auditLog({
+      category: 'bi',
+      action: 'bi.query_executed',
+      clientId,
+      actor: { type: 'user', userId: req.user._id, source: 'dashboard' },
+      details: { plan, executionMs: exec.executionMs },
+    });
+
+    const interpretation = `Found ${exec.totalCount} result(s) for ${plan.entity} (${plan.metric}).`;
+    return res.json({
+      success: true,
+      answer: interpretation,
+      interpretation,
+      queryPlan: plan,
+      data: exec.rows,
+      chartType: exec.chartTypeHint,
+      executionMs: exec.executionMs,
+      sourceLinks: [],
+    });
 
   } catch (error) {
     logger.error('[BI/Ask] failed:', error.message);

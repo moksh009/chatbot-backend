@@ -1,7 +1,7 @@
 const cron = require('node-cron');
 const Conversation = require('../models/Conversation');
-const { wrapCron } = require('../utils/perfLogger');
-const log = require('../utils/logger')('AutoResolutionCron');
+const { wrapCron } = require('../utils/core/perfLogger');
+const log = require('../utils/core/logger')('AutoResolutionCron');
 
 const AUTO_RESOLVE_HOURS = 24;
 

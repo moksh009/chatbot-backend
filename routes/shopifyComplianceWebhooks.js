@@ -14,8 +14,14 @@ const router = express.Router();
 const Client = require("../models/Client");
 const Order = require("../models/Order");
 const AdLead = require("../models/AdLead");
-const log = require("../utils/logger")("ShopifyCompliance");
-const { normalizePhone } = require("../utils/helpers");
+const log = require('../utils/core/logger')("ShopifyCompliance");
+const { replayGuard } = require('../middleware/webhookReplayGuard');
+const shopifyComplianceReplay = replayGuard({
+  header: 'X-Shopify-Webhook-Id',
+  keyPrefix: 'shopify_compliance_replay',
+  ttlSec: 3600,
+});
+const { normalizePhone } = require('../utils/core/helpers');
 
 function normalizeShopDomain(domain) {
   if (!domain || typeof domain !== "string") return "";
@@ -198,7 +204,8 @@ async function processComplianceTopic(req, res, forcedTopic = "") {
 }
 
 // Generic endpoint (single URI subscription).
-router.post("/", requireJsonBody, verifyComplianceHmac, async (req, res) => {
+router.post("/", requireJsonBody, verifyComplianceHmac, shopifyComplianceReplay, async (req, res) => {
+  if (req.webhookReplayDuplicate) return;
   return processComplianceTopic(req, res, "");
 });
 
