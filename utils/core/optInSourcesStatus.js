@@ -24,17 +24,21 @@ async function buildOptInSourcesStatus(clientId) {
 
   const client = await Client.findOne({ clientId })
     .select(
-      'growthEmbedEnabled growthEmbedPublicKey growthWidgetConfig shopifyDomain shopifyConnected phoneNumber wabaAccounts platformVars'
+      'growthEmbedEnabled growthEmbedPublicKey growthWidgetConfig shopifyDomain shopifyConnected shopifyAccessToken phoneNumber wabaAccounts platformVars audienceContext'
     )
     .lean();
   if (!client) return null;
 
-  const [tracking, overview, checkoutMonth, checkoutTotal, keywordMonth, keywordTotal, importMonth, importTotal, qrMonth, qrTotal, shopifyStats, recentCheckout, recentWidget, recentKeyword, importSessions, qrBySource] =
+  const thirdPartyMatch = { $regex: /^(gokwik|razorpay|shiprocket|third_party)/i };
+
+  const [tracking, overview, checkoutMonth, checkoutTotal, thirdPartyMonth, thirdPartyTotal, keywordMonth, keywordTotal, importMonth, importTotal, qrMonth, qrTotal, shopifyStats, recentCheckout, recentThirdParty, recentWidget, recentKeyword, importSessions, qrBySource] =
     await Promise.all([
       buildTrackingHealth(clientId, 30).catch(() => null),
       buildGrowthEmbedOverview(clientId, '30d').catch(() => null),
       countOptIns(clientId, { $regex: /^checkout/i }, monthStart),
       countOptIns(clientId, { $regex: /^checkout/i }),
+      countOptIns(clientId, thirdPartyMatch, monthStart),
+      countOptIns(clientId, thirdPartyMatch),
       countOptIns(clientId, 'keyword', monthStart),
       countOptIns(clientId, 'keyword'),
       countOptIns(clientId, /^csv_import/i, monthStart),
@@ -62,6 +66,11 @@ async function buildOptInSourcesStatus(clientId) {
         .sort({ optInDate: -1 })
         .limit(10)
         .select('name phoneNumber optInSource optStatus optInDate')
+        .lean(),
+      AdLead.find({ clientId, optInSource: thirdPartyMatch })
+        .sort({ optInDate: -1, updatedAt: -1 })
+        .limit(10)
+        .select('name phoneNumber optInSource optStatus optInDate updatedAt')
         .lean(),
       AdLead.find({ clientId, optInSource: { $regex: /^website_/i } })
         .sort({ optInDate: -1 })
@@ -98,16 +107,64 @@ async function buildOptInSourcesStatus(clientId) {
   const checkoutCapturing = checkoutMonth > 0 || webPixelActive;
 
   let checkoutStatus = 'not_configured';
-  if (checkoutCapturing && checkoutMonth > 0) checkoutStatus = 'live';
-  else if (webPixelActive || tracking?.webPixelInstalled) checkoutStatus = 'setup_needed';
+  let checkoutStatusReason = 'Install Custom Web Pixel + checkout consent extension';
+  if (checkoutCapturing && checkoutMonth > 0) {
+    checkoutStatus = 'live';
+    checkoutStatusReason = `Capturing ${checkoutMonth} this month`;
+  } else if (webPixelActive && !checkoutMonth) {
+    checkoutStatus = 'setup_needed';
+    checkoutStatusReason = 'Pixel installed but no checkout consents yet — enable checkout UI extension';
+  } else if (webPixelActive || tracking?.webPixelInstalled) {
+    checkoutStatus = 'setup_needed';
+    checkoutStatusReason = 'Finish checkout consent extension setup';
+  }
+
+  const ctx = client.audienceContext || {};
+  const provider =
+    ctx.manualOverrides?.thirdPartyCheckout ||
+    ctx.thirdPartyCheckout ||
+    'unknown';
+  const intKey =
+    provider === 'gokwik'
+      ? 'gokwik'
+      : provider === 'razorpay_magic'
+        ? 'razorpay_magic'
+        : provider === 'shiprocket'
+          ? 'shiprocket_checkout'
+          : 'generic';
+  const intCfg = ctx.integrations?.[intKey] || {};
+  const webhookConfigured = !!intCfg.webhookSecret;
+  const lastWebhook = intCfg.lastWebhookAt;
+
+  let thirdPartyStatus = 'not_configured';
+  let thirdPartyStatusReason = `Connect ${provider === 'unknown' ? 'third-party' : provider} webhook`;
+  if (thirdPartyMonth > 0 || thirdPartyTotal > 0) {
+    thirdPartyStatus = 'live';
+    thirdPartyStatusReason = `Webhook receiving · ${thirdPartyMonth} this month`;
+  } else if (webhookConfigured && lastWebhook) {
+    thirdPartyStatus = 'setup_needed';
+    thirdPartyStatusReason = 'Webhook configured but no recent events — send a test from your dashboard';
+  } else if (webhookConfigured) {
+    thirdPartyStatus = 'setup_needed';
+    thirdPartyStatusReason = 'Webhook URL saved — configure provider dashboard and send test event';
+  }
 
   let widgetStatus = 'not_configured';
-  if (embedLive && activeWidgets.length > 0 && (overview?.website?.newInPeriod || 0) > 0) {
+  let widgetStatusReason = 'Paste growth snippet on your Shopify theme';
+  const widgetMonthEarly = overview?.website?.newInPeriod || 0;
+  const lastImpression = client.growthWidgetConfig?.lastImpressionAt;
+  if (embedLive && activeWidgets.length > 0 && widgetMonthEarly > 0) {
     widgetStatus = 'live';
+    widgetStatusReason = `Live · ${widgetMonthEarly} sign-ups this period`;
+  } else if (embedLive && lastImpression) {
+    widgetStatus = 'setup_needed';
+    widgetStatusReason = 'Snippet detected but no opt-ins yet — verify consent checkbox on widgets';
   } else if (embedLive && activeWidgets.length > 0) {
     widgetStatus = 'setup_needed';
+    widgetStatusReason = 'No events in 24h — verify snippet on storefront';
   } else if (embedLive) {
     widgetStatus = 'setup_needed';
+    widgetStatusReason = 'Enable at least one widget surface';
   }
 
   const waConnected =
@@ -121,6 +178,7 @@ async function buildOptInSourcesStatus(clientId) {
   const sources = {
     shopify_checkout: {
       status: checkoutStatus,
+      statusReason: checkoutStatusReason,
       capturedThisMonth: checkoutMonth,
       totalCaptured: checkoutTotal,
       conversionHint: '30–50% of orders with phone when checkbox shown',
@@ -130,13 +188,29 @@ async function buildOptInSourcesStatus(clientId) {
         recent: recentCheckout,
       },
     },
+    third_party_checkout: {
+      status: thirdPartyStatus,
+      statusReason: thirdPartyStatusReason,
+      capturedThisMonth: thirdPartyMonth,
+      totalCaptured: thirdPartyTotal,
+      conversionHint: 'Depends on checkout volume and explicit opt-in rate',
+      meta: {
+        provider,
+        webhookConfigured,
+        lastWebhookAt: lastWebhook,
+        consentStrategy: intCfg.consentStrategy || 'explicit',
+        recent: recentThirdParty,
+      },
+    },
     website_widgets: {
       status: widgetStatus,
+      statusReason: widgetStatusReason,
       capturedThisMonth: widgetMonth,
       totalCaptured: widgetTotal,
       conversionHint: '1–5% of visitors who see a widget',
       meta: {
         snippetDetected: embedLive,
+        lastImpressionAt: lastImpression,
         activeWidgetCount: activeWidgets.length,
         activeWidgets,
         recent: recentWidget,
@@ -144,6 +218,11 @@ async function buildOptInSourcesStatus(clientId) {
     },
     whatsapp_keyword: {
       status: waConnected ? (keywordTotal > 0 ? 'live' : 'setup_needed') : 'not_configured',
+      statusReason: waConnected
+        ? keywordTotal > 0
+          ? 'Keyword capturing inbound opt-ins'
+          : 'WhatsApp connected — promote your keyword'
+        : 'Connect WhatsApp first',
       capturedThisMonth: keywordMonth,
       totalCaptured: keywordTotal,
       conversionHint: 'Depends on keyword promotion',

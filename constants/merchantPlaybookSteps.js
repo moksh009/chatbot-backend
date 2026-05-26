@@ -78,12 +78,20 @@ const MERCHANT_PLAYBOOK_STEPS = [
     cta: 'Score rules',
   },
   {
-    id: 'consent_rules',
+    id: 'detect_stack',
     order: 10,
-    title: 'Configure consent rules',
-    description: 'Set WhatsApp marketing consent and STOP keyword handling.',
-    href: '/audience-hub?tab=growth-consent',
-    cta: 'Consent settings',
+    title: 'Confirm your Shopify checkout',
+    description: 'Tell us if you use Shopify checkout or Gokwik / Razorpay Magic / Shiprocket so we show the right opt-in sources.',
+    href: '/audience-hub?tab=growth-sources&stack=1',
+    cta: 'Confirm checkout',
+  },
+  {
+    id: 'opt_in_policy',
+    order: 11,
+    title: 'Set your opt-in policy',
+    description: 'Choose single or double opt-in and STOP keywords for WhatsApp compliance.',
+    href: '/audience-hub?tab=growth-sources&policy=1',
+    cta: 'Opt-in policy',
   },
 ];
 

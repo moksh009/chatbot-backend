@@ -2,10 +2,25 @@
 
 const { withShopifyRetry } = require('./shopifyHelper');
 const { enrichShopifyCustomers } = require('./shopifyCustomerEnrichment');
+const { normalizePhone } = require('../core/helpers');
+
+function phoneMatchQuery(phone) {
+  const norm = normalizePhone(phone);
+  const digits = String(phone || '').replace(/\D/g, '');
+  const suffix = digits.length >= 10 ? digits.slice(-10) : digits;
+  const or = [{ phone: norm }, { customerPhone: norm }];
+  if (suffix) {
+    or.push({ phone: { $regex: `${suffix}$` } }, { customerPhone: { $regex: `${suffix}$` } });
+  }
+  if (phone && phone !== norm) {
+    or.push({ phone }, { customerPhone: phone });
+  }
+  return { $or: or };
+}
 
 const MAX_SYNC_CUSTOMERS = 500;
-const DEFAULT_PAGE_SIZE = 25;
-const MAX_PAGE_SIZE = 50;
+const DEFAULT_PAGE_SIZE = 100;
+const MAX_PAGE_SIZE = 100;
 
 const TIER_THRESHOLDS = {
   vip: 10000,
@@ -204,12 +219,75 @@ async function listShopifyCustomersForClient(clientId, query = {}) {
   };
 }
 
+function formatAddressLine(order) {
+  const sa = order.shippingAddress;
+  if (sa && typeof sa === 'object') {
+    const parts = [
+      sa.address1 || sa.line1,
+      sa.address2 || sa.line2,
+      sa.city,
+      sa.province || sa.state,
+      sa.zip || sa.postal_code,
+      sa.country,
+    ].filter(Boolean);
+    if (parts.length) return parts.join(', ');
+  }
+  const parts = [order.address, order.city, order.state, order.zip].filter(Boolean);
+  return parts.length ? parts.join(', ') : null;
+}
+
+async function getShopifyCustomerDetail(clientId, customerId) {
+  const Client = require('../../models/Client');
+  const Order = require('../../models/Order');
+
+  const client = await Client.findOne({ clientId })
+    .select('shopifyCustomersCache customersSyncedAt')
+    .lean();
+  if (!client) return null;
+
+  const idStr = String(customerId);
+  let customer = (client.shopifyCustomersCache || []).find((c) => String(c.id) === idStr);
+  if (!customer) return null;
+
+  const phone = normalizePhone(customer.phone || customer.workspacePhone);
+  let orders = [];
+  if (phone) {
+    orders = await Order.find({
+      clientId,
+      ...phoneMatchQuery(phone),
+    })
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .select(
+        'orderId orderNumber customerName name phone customerPhone email customerEmail totalPrice amount status financialStatus fulfillmentStatus paymentMethod items shippingAddress billingAddress address city state zip createdAt trackingNumber trackingUrl'
+      )
+      .lean();
+  }
+
+  return {
+    customer,
+    syncedAt: client.customersSyncedAt || null,
+    orders: orders.map((o) => ({
+      ...o,
+      formattedAddress: formatAddressLine(o),
+      lineItems: (o.items || []).map((it) => ({
+        name: it.name,
+        quantity: it.quantity,
+        price: it.price,
+        sku: it.sku,
+        image: it.image,
+      })),
+    })),
+  };
+}
+
 module.exports = {
   DEFAULT_PAGE_SIZE,
   MAX_SYNC_CUSTOMERS,
   getSpendTier,
   syncShopifyCustomersForClient,
   listShopifyCustomersForClient,
+  getShopifyCustomerDetail,
   sortCustomers,
   filterCustomers,
   paginateCustomers,

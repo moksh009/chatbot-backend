@@ -23,6 +23,7 @@ const {
 const {
   syncShopifyCustomersForClient,
   listShopifyCustomersForClient,
+  getShopifyCustomerDetail,
 } = require('../utils/shopify/shopifyCustomersHub');
 
 const pulseCache = new Map();
@@ -431,7 +432,23 @@ router.get('/:clientId/customers', protect, verifyClientAccess, async (req, res)
   }
 });
 
-
+/**
+ * @route   GET /api/shopify-hub/:clientId/customers/:customerId/detail
+ * @desc    Customer profile + order history for Store Engine slide-over
+ */
+router.get('/:clientId/customers/:customerId/detail', protect, verifyClientAccess, async (req, res) => {
+  const { clientId, customerId } = req.params;
+  try {
+    const detail = await getShopifyCustomerDetail(clientId, customerId);
+    if (!detail) {
+      return res.status(404).json({ success: false, error: 'Customer not found' });
+    }
+    res.json({ success: true, ...detail });
+  } catch (err) {
+    console.error(`[CustomerDetail] Client: ${clientId}:`, err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 /**
  * @route   GET /api/shopify-hub/:clientId/discounts

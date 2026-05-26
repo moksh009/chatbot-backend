@@ -90,13 +90,23 @@ async function detectStep(client, stepId, ctx) {
       return !!(cfg && Array.isArray(cfg.tiers) && cfg.tiers.length > 0);
     }
 
-    case 'consent_rules': {
-      const gw = client.growthWidgetConfig || {};
-      const text = String(gw.consentText || '').trim();
-      const defaultText = 'I agree to receive WhatsApp messages from this brand.';
-      const customized = text.length > 0 && text !== defaultText;
-      return !!(customized || gw.doubleOptInEnabled || client.growthEmbedPublicKey);
+    case 'detect_stack': {
+      const ac = client.audienceContext || {};
+      const checkout = ac.manualOverrides?.thirdPartyCheckout || ac.thirdPartyCheckout;
+      return !!(checkout && checkout !== 'unknown' && checkout !== 'not_sure');
     }
+
+    case 'opt_in_policy': {
+      const gc = client.growthCompliance || {};
+      const customizedStop =
+        Array.isArray(gc.stopKeywords) &&
+        gc.stopKeywords.length > 0 &&
+        !(gc.stopKeywords.length === 5 && gc.stopKeywords.includes('STOP'));
+      return !!(gc.defaultOptInPolicy || customizedStop || gc.cartRecoveryRequiresOptIn);
+    }
+
+    case 'consent_rules':
+      return false;
 
     default:
       return false;
@@ -111,7 +121,7 @@ async function buildMerchantPlaybookStatus(clientId) {
     .select(
       'clientId businessName shopDomain shopifyAccessToken whatsappToken phoneNumberId wabaId ' +
         'catalogSyncedAt templatesSyncedAt syncedMetaTemplates nicheData wizardFeatures ' +
-        'onboardingData onboarding growthWidgetConfig growthEmbedPublicKey growthEmbedEnabled'
+        'onboardingData onboarding growthWidgetConfig growthEmbedPublicKey growthEmbedEnabled growthCompliance audienceContext'
     )
     .lean();
 

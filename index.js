@@ -381,6 +381,7 @@ const intentWebhookRoutes = require('./routes/intentWebhooks');
 app.use('/api/intents', intentRoutes);
 app.use('/api/webhooks', intentWebhookRoutes); // POST /api/webhooks/meta
 app.use('/api/webhooks', require('./routes/webhooks')); // Resend inbound only
+app.use('/api/webhooks', require('./routes/thirdPartyCheckoutWebhooks'));
 
 app.use('/api/razorpay', require('./routes/razorpayWebhook'));
 const shopifyPixelRoutes = require('./routes/shopifyPixel');

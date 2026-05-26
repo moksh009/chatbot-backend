@@ -33,6 +33,14 @@ async function enrichShopifyCustomers(clientId, shopifyCustomers = []) {
   const phones = [...phoneSet];
   const emails = [...emailSet];
 
+  const ScoreTierConfig = require('../../models/ScoreTierConfig');
+  const { resolveScoreStageName } = require('../commerce/customerOrderMetrics');
+
+  const tierDoc = await ScoreTierConfig.findOne({ clientId }).select('tiers').lean();
+  const scoreTiers = tierDoc?.tiers?.length
+    ? tierDoc.tiers
+    : ScoreTierConfig.getDefaultConfig(clientId).tiers;
+
   const [wallets, leadsByPhone, leadsByEmail] = await Promise.all([
     loyaltyEnabled && phones.length
       ? CustomerWallet.find({ clientId, phone: { $in: phones } })
@@ -78,6 +86,7 @@ async function enrichShopifyCustomers(clientId, shopifyCustomers = []) {
       leadId: lead?._id ? String(lead._id) : null,
       leadName: lead?.name || null,
       leadScore: lead?.leadScore ?? null,
+      scoreStageName: resolveScoreStageName(lead?.leadScore ?? 0, scoreTiers),
       loyaltyPoints: loyaltyEnabled && wallet ? wallet.balance : null,
       loyaltyTier: loyaltyEnabled && wallet ? wallet.tier : null,
       loyaltyLifetime: loyaltyEnabled && wallet ? wallet.lifetimePoints : null,

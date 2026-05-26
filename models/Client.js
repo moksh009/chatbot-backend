@@ -242,6 +242,63 @@ const ClientSchema = new mongoose.Schema({
       default: () => ['STOP', 'UNSUBSCRIBE', 'OPT OUT', 'REMOVE', 'CANCEL'],
     },
   },
+  /** Shopify stack + third-party checkout (Gokwik, Razorpay Magic, Shiprocket) — merchant + auto-detect */
+  audienceContext: {
+    storePlatform: {
+      type: String,
+      enum: ['shopify', 'none'],
+      default: 'none',
+    },
+    thirdPartyCheckout: {
+      type: String,
+      enum: [
+        'shopify_native',
+        'gokwik',
+        'razorpay_magic',
+        'shiprocket',
+        'other_third_party',
+        'unknown',
+        'not_sure',
+      ],
+      default: 'unknown',
+    },
+    checkoutSignal: {
+      type: String,
+      enum: ['merchant_declared', 'shopify_app_list', 'webhook_history', null],
+      default: null,
+    },
+    integrations: {
+      gokwik: {
+        apiKeySet: { type: Boolean, default: false },
+        webhookSecret: { type: String, default: '' },
+        consentStrategy: { type: String, enum: ['implicit', 'explicit'], default: 'explicit' },
+        lastWebhookAt: { type: Date, default: null },
+        lastTestAt: { type: Date, default: null },
+      },
+      razorpay_magic: {
+        webhookSecret: { type: String, default: '' },
+        consentStrategy: { type: String, enum: ['implicit', 'explicit'], default: 'explicit' },
+        lastWebhookAt: { type: Date, default: null },
+        lastTestAt: { type: Date, default: null },
+      },
+      shiprocket_checkout: {
+        webhookSecret: { type: String, default: '' },
+        consentStrategy: { type: String, enum: ['implicit', 'explicit'], default: 'explicit' },
+        lastWebhookAt: { type: Date, default: null },
+        lastTestAt: { type: Date, default: null },
+      },
+      generic: {
+        webhookSecret: { type: String, default: '' },
+        consentStrategy: { type: String, enum: ['implicit', 'explicit'], default: 'explicit' },
+        lastWebhookAt: { type: Date, default: null },
+      },
+    },
+    manualOverrides: {
+      storePlatform: { type: String, default: null },
+      thirdPartyCheckout: { type: String, default: null },
+    },
+    updatedAt: { type: Date, default: null },
+  },
   complianceConfig: {
     channels: {
       whatsapp: {

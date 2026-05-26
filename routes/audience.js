@@ -1,6 +1,9 @@
 const express = require('express');
 const router = express.Router();
+const audienceStack = require('./audienceStack');
 const { protect } = require('../middleware/auth');
+
+router.use(audienceStack);
 const ImportSession = require('../models/ImportSession');
 const { tenantClientId } = require('../utils/core/queryHelpers');
 
