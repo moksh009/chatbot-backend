@@ -3,13 +3,27 @@
 const path = require("path");
 const fs = require("fs");
 
-const CATALOG_PATH = path.join(__dirname, "../../../shared/template-catalog.json");
+function resolveCatalogPath() {
+  const envPath = process.env.TEMPLATE_CATALOG_PATH;
+  if (envPath && fs.existsSync(envPath)) return envPath;
+
+  const candidates = [
+    path.join(__dirname, "../../data/template-catalog.json"),
+    path.join(__dirname, "../../../shared/template-catalog.json"),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  throw new Error(
+    `template-catalog.json not found. Set TEMPLATE_CATALOG_PATH or add data/template-catalog.json to the repo. Tried: ${candidates.join(", ")}`
+  );
+}
 
 let _cached = null;
 
 function loadCatalog() {
   if (_cached) return _cached;
-  const raw = fs.readFileSync(CATALOG_PATH, "utf8");
+  const raw = fs.readFileSync(resolveCatalogPath(), "utf8");
   _cached = JSON.parse(raw);
   return _cached;
 }
