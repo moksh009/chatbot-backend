@@ -23,20 +23,17 @@ function run() {
     client: { syncedMetaTemplates: [] },
   };
 
-  // Loyalty redeem must enforce success+fail and pointsRequired > 0
   const loyaltyBad = preflightValidateFlowGraph({
     ...base,
     nodes: [
       { id: "trigger_1", type: "trigger", data: {} },
-      { id: "loyalty_1", type: "loyalty_action", data: { actionType: "REDEEM_POINTS", pointsRequired: 0 } },
+      { id: "loyalty_1", type: "loyalty_action", data: { actionType: "REDEEM_POINTS", pointsRequired: 100 } },
       { id: "after", type: "message", data: { text: "after" } },
     ],
     edges: [{ id: "e1", source: "trigger_1", target: "loyalty_1" }],
   });
-  assert(hasErrorCode(loyaltyBad, "LOYALTY_REDEEM_POINTS_INVALID"), "Expected loyalty pointsRequired validation error");
-  assert(hasErrorCode(loyaltyBad, "LOYALTY_REDEEM_BRANCH_MISSING"), "Expected loyalty branch validation error");
+  assert(hasErrorCode(loyaltyBad, "LOYALTY_NODE_REMOVED"), "Expected loyalty node removed error");
 
-  // Review must have both positive+negative
   const reviewBad = preflightValidateFlowGraph({
     ...base,
     nodes: [
@@ -51,7 +48,6 @@ function run() {
   });
   assert(hasErrorCode(reviewBad, "REVIEW_BRANCH_MISSING"), "Expected review branch validation error");
 
-  // Warranty must have active+expired+none
   const warrantyBad = preflightValidateFlowGraph({
     ...base,
     nodes: [
@@ -66,12 +62,10 @@ function run() {
   });
   assert(hasErrorCode(warrantyBad, "WARRANTY_BRANCH_MISSING"), "Expected warranty branch validation error");
 
-  // Good graph should pass these guards
   const good = preflightValidateFlowGraph({
     ...base,
     nodes: [
       { id: "trigger_1", type: "trigger", data: {} },
-      { id: "loyalty_1", type: "loyalty_action", data: { actionType: "REDEEM_POINTS", pointsRequired: 100 } },
       { id: "review_1", type: "review", data: {} },
       { id: "w_1", type: "warranty_check", data: {} },
       { id: "a", type: "message", data: { text: "A" } },
@@ -79,9 +73,7 @@ function run() {
       { id: "c", type: "message", data: { text: "C" } },
     ],
     edges: [
-      { id: "e1", source: "trigger_1", target: "loyalty_1" },
-      { id: "e2", source: "loyalty_1", sourceHandle: "success", target: "review_1" },
-      { id: "e3", source: "loyalty_1", sourceHandle: "fail", target: "review_1" },
+      { id: "e1", source: "trigger_1", target: "review_1" },
       { id: "e4", source: "review_1", sourceHandle: "positive", target: "w_1" },
       { id: "e5", source: "review_1", sourceHandle: "negative", target: "w_1" },
       { id: "e6", source: "w_1", sourceHandle: "active", target: "a" },
@@ -89,11 +81,11 @@ function run() {
       { id: "e8", source: "w_1", sourceHandle: "none", target: "c" },
     ],
   });
-  assert(good.valid === true, "Expected valid graph for all node guards");
+  assert(good.valid === true, "Expected valid graph for review/warranty guards");
 
   console.log("Flow Preflight Node Guards Smoke Pass");
   console.log("--------------------------------");
-  console.log("PASS: Loyalty redeem node branch/points validation");
+  console.log("PASS: Loyalty nodes rejected");
   console.log("PASS: Review node branch validation");
   console.log("PASS: Warranty node branch validation");
   console.log("PASS: Valid graph passes preflight");
@@ -102,4 +94,3 @@ function run() {
 }
 
 run();
-

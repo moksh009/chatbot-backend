@@ -4,7 +4,6 @@ const Order = require('../models/Order');
 const AmazonSPAPI = require('../utils/commerce/amazonSPAPI');
 const log = require('../utils/core/logger')('AmazonSync');
 const { trackEcommerceEvent } = require('../utils/core/analyticsHelper');
-const { processOrderForLoyalty } = require('../utils/commerce/walletService');
 const { applyAdjustment, autoMatchSkuMapping } = require('../utils/inventory/ledger');
 
 const PENDING_STATUSES = new Set(['Pending', 'Unshipped']);
@@ -123,15 +122,6 @@ const scheduleAmazonSync = () => {
               'paid',
               client
             ).catch((e) => log.error('Amazon SKU trigger failed:', e.message));
-          }
-
-          if (newOrder.customerPhone && newOrder.amount > 0) {
-            processOrderForLoyalty(
-              client.clientId,
-              newOrder.customerPhone,
-              newOrder.amount,
-              newOrder.orderId
-            ).catch((e) => log.error('Amazon loyalty credit failed:', e.message));
           }
 
           await trackEcommerceEvent(client.clientId, { amazonOrdersSynced: 1 });

@@ -11,7 +11,7 @@ const { normalizePersonaTone } = require('../core/personaEngine');
  *      half-filled wizards don't blank existing values via `$set: { foo: undefined }`.
  *   2. Mirror canonical fields into both new (`platformVars.*`, `ai.persona.*`,
  *      `wizardFeatures.*`) AND legacy locations the dual-brain engine still
- *      reads (e.g. `geminiApiKey`, `businessName`, `loyaltyConfig.enabled`).
+ *      reads (e.g. `geminiApiKey`, `businessName`, `wizardFeatures.enableWarranty`).
  *      These mirrors get removed once Phase 24 migration is finished.
  *   3. wizardFeatures booleans accept `undefined` → defaults; explicit `false`
  *      is honored (used by Settings to turn things off).
@@ -79,24 +79,7 @@ function buildFeaturesUpdate(wizardData = {}) {
     if (t.msg3_template !== undefined) out["wizardFeatures.cartNudgeTemplate3"] = String(t.msg3_template || "").trim();
   }
 
-  // Loyalty & growth
-  setBool(out, "wizardFeatures.enableLoyalty",
-    typeof f.enableLoyalty === "boolean"
-      ? f.enableLoyalty
-      : (wizardData.signupPoints || wizardData.referralPoints ? true : undefined));
-  if (f.loyaltyPointsPerUnit !== undefined) {
-    out["wizardFeatures.loyaltyPointsPerUnit"] = clampNum(f.loyaltyPointsPerUnit, 1, 1000, 10);
-  }
-  if (wizardData.signupPoints !== undefined || f.loyaltySignupBonus !== undefined) {
-    out["wizardFeatures.loyaltySignupBonus"] = clampNum(
-      f.loyaltySignupBonus ?? wizardData.signupPoints, 0, 100000, 100);
-  }
-  if (f.loyaltySilverThreshold !== undefined) {
-    out["wizardFeatures.loyaltySilverThreshold"] = clampNum(f.loyaltySilverThreshold, 0, 1000000, 500);
-  }
-  if (f.loyaltyGoldThreshold !== undefined) {
-    out["wizardFeatures.loyaltyGoldThreshold"] = clampNum(f.loyaltyGoldThreshold, 0, 1000000, 1500);
-  }
+  // Growth
   setBool(out, "wizardFeatures.enableReferral", f.enableReferral);
   if (wizardData.referralPoints !== undefined || f.referralPointsBonus !== undefined) {
     out["wizardFeatures.referralPointsBonus"] = clampNum(
@@ -291,28 +274,17 @@ function buildPoliciesUpdate(wizardData = {}) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Legacy loyalty / warranty / payment integration mirrors. These are still
-// read by older engines (loyaltyEngine, warrantyEngine, payment workers) so
-// keeping them in sync prevents regressions while we migrate to wizardFeatures.
+// Legacy warranty / payment integration mirrors. These are still
+// Legacy mirrors for warranty/payment integration fields still read by older workers.
 // ────────────────────────────────────────────────────────────────────────────
 function buildLegacyMirrors(wizardData = {}) {
   const out = {};
 
   if (wizardData.referralPoints !== undefined) {
-    out["brand.referralPoints"]              = wizardData.referralPoints;
-    out["loyaltyConfig.referralBonus"]       = wizardData.referralPoints;
-    out["loyaltyConfig.pointsPerUnit"]       = wizardData.referralPoints;
-    out["loyaltyConfig.enabled"]             = true;
+    out["brand.referralPoints"] = wizardData.referralPoints;
   }
   if (wizardData.signupPoints !== undefined) {
-    out["brand.signupPoints"]                = wizardData.signupPoints;
-    out["loyaltyConfig.welcomeBonus"]        = wizardData.signupPoints;
-  }
-  if (wizardData.features?.loyaltySilverThreshold !== undefined) {
-    out["loyaltyConfig.tierThresholds.silver"] = wizardData.features.loyaltySilverThreshold;
-  }
-  if (wizardData.features?.loyaltyGoldThreshold !== undefined) {
-    out["loyaltyConfig.tierThresholds.gold"] = wizardData.features.loyaltyGoldThreshold;
+    out["brand.signupPoints"] = wizardData.signupPoints;
   }
 
   if (wizardData.is247 !== undefined)        out["config.businessHours.is247"]    = wizardData.is247;
@@ -491,12 +463,6 @@ function mapFeatureToggle(features = {}) {
   const $set = buildFeaturesUpdate({ features });
   // Mirror legacy where it matters
   if (typeof features.enable247 === "boolean")        $set["config.businessHours.is247"]      = features.enable247;
-  if (typeof features.enableLoyalty === "boolean")    $set["loyaltyConfig.enabled"]           = features.enableLoyalty;
-  if (typeof features.enableLoyalty === "boolean")    $set["loyaltyConfig.isEnabled"]         = features.enableLoyalty;
-  if (features.loyaltyPointsPerUnit !== undefined)    $set["loyaltyConfig.pointsPerUnit"]      = clampNum(features.loyaltyPointsPerUnit, 1, 100000, 10);
-  if (features.loyaltySignupBonus !== undefined)      $set["loyaltyConfig.welcomeBonus"]       = clampNum(features.loyaltySignupBonus, 0, 1000000, 100);
-  if (features.loyaltySilverThreshold !== undefined)  $set["loyaltyConfig.tierThresholds.silver"] = clampNum(features.loyaltySilverThreshold, 0, 1000000, 500);
-  if (features.loyaltyGoldThreshold !== undefined)    $set["loyaltyConfig.tierThresholds.gold"] = clampNum(features.loyaltyGoldThreshold, 0, 1000000, 1500);
   if (typeof features.enableB2BWholesale === "boolean") {
     $set["brand.b2bEnabled"]  = features.enableB2BWholesale;
     $set["config.b2bEnabled"] = features.enableB2BWholesale;

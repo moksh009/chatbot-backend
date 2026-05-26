@@ -588,7 +588,7 @@ async function loadConversationLiteContext({ id, user, timer }) {
   };
 }
 
-/** Sidebar payload — orders, wallet, notes, sequences (deferred after lite paint). */
+/** Sidebar payload — orders, notes, sequences (deferred after lite paint). */
 async function loadConversationSidebarContext({ id, user, timer }) {
   const conversation = await Conversation.findOne(conversationAccessQuery(id, user))
     .select('phone clientId')
@@ -634,16 +634,6 @@ async function loadConversationSidebarContext({ id, user, timer }) {
           .select(select)
           .lean()
           .catch(() => []);
-      })(),
-      (async () => {
-        try {
-          const Wallet = require('../models/CustomerWallet');
-          return Wallet.findOne({ clientId: tenantId, phone })
-            .select('balance tier lifetimePoints')
-            .lean();
-        } catch {
-          return null;
-        }
       })(),
       (async () => {
         if (!phoneSuffix) return null;
@@ -693,10 +683,9 @@ async function loadConversationSidebarContext({ id, user, timer }) {
 
   return {
     orders: parallel[0],
-    wallet: parallel[1],
-    activeSequence: parallel[2],
-    notes: parallel[3],
-    latestCheckoutLink: parallel[4],
+    activeSequence: parallel[1],
+    notes: parallel[2],
+    latestCheckoutLink: parallel[3],
   };
 }
 
@@ -837,16 +826,6 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
             .lean()
             .catch(() => []);
         },
-        wallet: async () => {
-          try {
-            const Wallet = require('../models/CustomerWallet');
-            return Wallet.findOne({ clientId: tenantId, phone })
-              .select('balance tier lifetimePoints')
-              .lean();
-          } catch {
-            return null;
-          }
-        },
         activeSequence: async () => {
           if (!phoneSuffix) return null;
           try {
@@ -897,7 +876,6 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
     const messages = parallel.messages;
     const lead = parallel.lead;
     const orders = parallel.orders;
-    const wallet = parallel.wallet;
     const activeSequence = parallel.activeSequence;
     const notes = parallel.notes;
     const latestCheckoutLink = parallel.latestCheckoutLink;
@@ -931,7 +909,6 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
       stageName,
       ltv,
       orders,
-      wallet,
       activeSequence,
       latestCheckoutLink,
     };

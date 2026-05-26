@@ -95,19 +95,6 @@ const PREBUILT_TEMPLATE_LIBRARY = [
     requiredContext: ["order", "customer", "client"],
   },
   {
-    key: "loyalty_reminder_v1",
-    metaName: "loyalty_reminder_v1",
-    displayName: "Loyalty points expiring",
-    category: "MARKETING",
-    headerType: "TEXT",
-    headerText: "Your reward points are expiring! ⭐",
-    bodyText:
-      "Hi {{1}}!\n\nYou have *{{2}} points* worth *{{3}}* expiring on *{{4}}*!\n\nRedeem them on your next purchase at {{5}}!",
-    variableMappings: { body: { 1: "first_name", 2: "loyalty_points", 3: "loyalty_cash_value", 4: "loyalty_expiry_date", 5: "brand_name" } },
-    autoTrigger: "loyalty_expiring",
-    requiredContext: ["lead", "customer", "client"],
-  },
-  {
     key: "order_cancellation_v1",
     metaName: "order_cancellation_v1",
     displayName: "Cancellation received",

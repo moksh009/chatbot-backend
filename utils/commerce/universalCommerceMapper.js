@@ -27,7 +27,6 @@ function isLegacyFlatWizardFeatures(u) {
     u.cancelOrder ||
     u.helpWithOrder ||
     u.warranty ||
-    u.loyalty ||
     u.aiHelpDesk ||
     u.talkToAgent ||
     u.abandonedCart ||
@@ -37,8 +36,7 @@ function isLegacyFlatWizardFeatures(u) {
   }
   return (
     Object.prototype.hasOwnProperty.call(u, "enableCatalog") ||
-    Object.prototype.hasOwnProperty.call(u, "enableOrderTracking") ||
-    Object.prototype.hasOwnProperty.call(u, "enableLoyalty")
+    Object.prototype.hasOwnProperty.call(u, "enableOrderTracking")
   );
 }
 
@@ -51,7 +49,6 @@ function nestedUniversalToWizardFeatures(universal = {}) {
   const cancel = u.cancelOrder || {};
   const help = u.helpWithOrder || {};
   const warranty = u.warranty || {};
-  const loyalty = u.loyalty || {};
   const aiDesk = u.aiHelpDesk || {};
   const agent = u.talkToAgent || {};
   const cart = u.abandonedCart || {};
@@ -77,13 +74,6 @@ function nestedUniversalToWizardFeatures(universal = {}) {
       help.installProductType
         ? `Need setup help for ${help.installProductType}? Share your product name and a photo — our team guides you step by step.`
         : undefined,
-    enableLoyalty: bool(loyalty.enabled, false),
-    loyaltySendReminders: loyalty.sendReminders !== false,
-    loyaltyReminderDaysBeforeExpiry: Math.max(
-      1,
-      Math.min(30, Number(loyalty.reminderDaysBeforeExpiry) || 7)
-    ),
-    loyaltyPointsPerUnit: Math.max(1, Math.round(100 * (Number(loyalty.pointsValue) > 0 ? Number(loyalty.pointsValue) : 1))),
     enableFAQ: bool(aiDesk.enabled, false),
     enableAIFallback: bool(aiDesk.enabled, false),
     enableSupportEscalation: bool(agent.enabled !== false, true),

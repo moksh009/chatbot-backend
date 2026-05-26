@@ -105,7 +105,7 @@ const MetaTemplateSchema = new mongoose.Schema({
   variableMapping: { type: Map, of: String, default: {} },
   /** Structured maps: { body: { "1": "first_name" }, header: { "1": "product_image_url" }, buttons: { "0": "checkout_url" } } */
   variableMappings: { type: mongoose.Schema.Types.Mixed, default: null },
-  /** order_placed | order_fulfilled | abandoned_cart | cod_order_placed | loyalty_expiring | null */
+  /** order_placed | order_fulfilled | abandoned_cart | cod_order_placed | null */
   autoTrigger: { type: String, default: null },
   isPrebuilt: { type: Boolean, default: false },
   isActive: { type: Boolean, default: false },

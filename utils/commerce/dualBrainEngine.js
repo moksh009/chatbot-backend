@@ -987,22 +987,6 @@ async function runDualBrainEngine(parsedMessage, client) {
         await AdLead.findByIdAndUpdate(lead._id, { $addToSet: { tags: { $each: tagsToAdd } } });
       }
 
-      // FIX THE DEAD END: Award Instant Scan Points (Loyalty Hub)
-      try {
-        const walletService = require('./walletService');
-        // Award 50 bonus points for stickiness
-        await walletService.awardPoints(
-          client.clientId, 
-          phone, 
-          'qr_scan_bonus', 
-          50, 
-          `Scanned Campaign QR: ${qrRefId}`
-        );
-        log.info(`[Loyalty] Awarded 50 points to ${phone} for scanning ${qrRefId}`);
-      } catch (loyaltyErr) {
-        log.error(`[Loyalty] Failed to award scan points:`, loyaltyErr.message);
-      }
-
       // Fire webhook
       const { fireWebhookEvent } = require('../core/webhookDelivery');
       fireWebhookEvent(client.clientId, 'qr.scanned', { phone: lead.phoneNumber, qrCode: scannedQr.name, shortCode: scannedQr.shortCode });
@@ -1358,65 +1342,6 @@ async function runDualBrainEngine(parsedMessage, client) {
   const userTextRaw   = (parsedMessage.text?.body || '').trim();
   const userTextLower = userTextRaw.toLowerCase();
   
-  // ── PHASE 29: Track 7 — WALLET & PAYMENT COMMANDS (Priority -0.5) ──────────
-  // ── PHASE 27 — LOYALTY & REWARDS COMMANDS (Priority -0.5) ──────────────────
-  const loyaltyKeywords = ['wallet', 'points', 'redeem', 'rewards', 'point'];
-  const isLoyaltyIntent = loyaltyKeywords.some(k => userTextLower.includes(k));
-  
-  if (isLoyaltyIntent || (parsedMessage.type === 'interactive' && parsedMessage.interactive?.button_reply?.id?.startsWith('loyalty_'))) {
-    const { getLoyaltyStatus, redeemLoyaltyPoints } = require('../../controllers/loyaltyController');
-    const walletService = require('./walletService');
-    const wallet = await walletService.getWallet(client.clientId, phone);
-
-    // Handle Button Clicks (Redemption)
-    if (parsedMessage.type === 'interactive' && parsedMessage.interactive?.button_reply?.id?.startsWith('loyalty_redeem_')) {
-        const amount = parseInt(parsedMessage.interactive.button_reply.id.split('_').pop());
-        log.info(`[Loyalty] User clicked redeem button for ₹${amount}`, { phone });
-        
-        // Wrap for express-like req/res compatibility if needed, or call controller logic directly
-        const mockReq = { body: { clientId: client.clientId, phone, amount } };
-        const mockRes = { 
-            json: (data) => sendWhatsAppText(client, phone, `✅ *Success!* Your code *${data.code}* is ready. Use it for ₹${data.amount || amount} OFF!`),
-            status: () => ({ json: (data) => sendWhatsAppText(client, phone, `❌ ${data.message}`) })
-        };
-        await require('../../controllers/loyaltyController').redeemLoyaltyPoints(mockReq, mockRes);
-        return true;
-    }
-
-    // Handle Balance Inquiry
-    const balance = wallet?.balance || 0;
-    const tier = wallet?.tier || 'Bronze';
-    const currencyUnit = client.loyaltyConfig?.currencyUnit || 100;
-    const pointsPerCurrency = client.loyaltyConfig?.pointsPerCurrency || 100;
-    const cashValue = (balance / pointsPerCurrency).toFixed(0);
-
-    let message = `🎁 *Your Loyalty Hub*\n\n`;
-    message += `💰 Balance: *${balance} Points*\n`;
-    message += `✨ Tier: *${tier}*\n`;
-    message += `🎫 Value: *₹${cashValue} Credits*\n\n`;
-
-    if (balance >= pointsPerCurrency * 10) { // Min ₹10 to show redeem
-        message += `Ready to treat yourself? Click a button below to redeem your points for an instant discount code! 👇`;
-        
-        const buttons = [
-            { id: 'loyalty_redeem_50', title: 'Redeem ₹50' },
-            { id: 'loyalty_redeem_100', title: 'Redeem ₹100' }
-        ];
-        // Only show ₹100 if they have enough
-        const finalButtons = balance >= pointsPerCurrency * 100 ? buttons : [buttons[0]];
-
-        await sendWhatsAppInteractive(client, phone, {
-            type: 'button',
-            body: { text: message },
-            action: { buttons: finalButtons.map(b => ({ type: 'reply', reply: b })) }
-        });
-    } else {
-        message += `Earn more points by shopping! For every ₹${currencyUnit} spent, you get 10 points. 🛍️`;
-        await sendWhatsAppText(client, phone, message);
-    }
-    return true;
-  }
-
   // ── RTO Protection Suite: COD confirm + NDR rescue (WhatsApp button taps) ──
   if (parsedMessage.type === 'interactive' && parsedMessage.interactive?.button_reply?.id) {
     const rtoBid = String(parsedMessage.interactive.button_reply.id);
@@ -3232,110 +3157,7 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
     await handleNodeAction('GENERATE_PAYMENT', node, client, phone, convo, lead);
   }
 
-  // 7. Loyalty Action Node
-  if (node.type === 'loyalty_action' || node.type === 'loyalty') {
-    const rawAct = String(
-      node.data?.actionType || node.data?.action || node.data?.loyaltyAction || 'GIVE_LOYALTY'
-    ).toUpperCase();
-    if (
-      rawAct === 'CHECK_LOYALTY' ||
-      rawAct === 'LOOKUP_POINTS' ||
-      rawAct === 'CHECK_BALANCE' ||
-      rawAct === 'FETCH_POINTS'
-    ) {
-      const walletService = require('./walletService');
-      const { normalizePhone } = require('../core/helpers');
-      const cleanPhone = normalizePhone(phone);
-      const balance = await walletService.getBalance(client.clientId, phone);
-      let leadPoints = 0;
-      let loyaltyExpiresAt = null;
-      try {
-        const row = await AdLead.findOne({ clientId: client.clientId, phoneNumber: cleanPhone })
-          .select('loyaltyPoints loyaltyExpiresAt')
-          .lean();
-        leadPoints = Number(row?.loyaltyPoints) || 0;
-        loyaltyExpiresAt = row?.loyaltyExpiresAt || null;
-      } catch (_) {}
-      const wf = client.wizardFeatures?.toObject ? client.wizardFeatures.toObject() : (client.wizardFeatures || {});
-      const pointsPerRupee = Math.max(
-        1,
-        Number(wf.loyaltyPointsPerUnit) > 0 ? Math.round(Number(wf.loyaltyPointsPerUnit) / 100) : 1
-      );
-      const combined = Math.max(balance, leadPoints);
-      const rupeeValue = Math.floor(combined / pointsPerRupee);
-      let expiryNote = '';
-      if (loyaltyExpiresAt && new Date(loyaltyExpiresAt) > new Date()) {
-        expiryNote = `⚠️ Points expire on *${new Date(loyaltyExpiresAt).toLocaleDateString('en-IN')}*`;
-      }
-      const prev = convo.metadata || {};
-      const nextMeta = {
-        ...prev,
-        loyalty_points_balance: String(balance),
-        loyalty_points: String(combined),
-        loyalty_rupee_value: String(rupeeValue),
-        loyalty_expiry_note: expiryNote,
-        loyalty_has_points: combined > 0 ? 'true' : 'false',
-      };
-      await Conversation.findByIdAndUpdate(convo._id, { $set: { metadata: nextMeta } });
-      convo.metadata = nextMeta;
-      const targetHandle = combined > 0 ? 'has_points' : 'none';
-      const nextEdge = flowEdges.find(
-        (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === targetHandle
-      );
-      if (nextEdge) {
-        return await executeNode(
-          nextEdge.target,
-          flowNodes,
-          flowEdges,
-          client,
-          convo,
-          lead,
-          phone,
-          io,
-          channel,
-          parsedMessage
-        );
-      }
-      return true;
-    }
-
-    const { handleNodeAction } = require('../flow/nodeActions');
-    const action = node.data?.actionType || 'GIVE_LOYALTY';
-
-    if (action === 'REDEEM_POINTS') {
-      const walletService = require('./walletService');
-      const { normalizePhone } = require('../core/helpers');
-      const cleanPhone = normalizePhone(phone);
-      const balance = await walletService.getBalance(client.clientId, cleanPhone);
-      const required = node.data?.pointsRequired || 100;
-      const targetHandle = balance >= required ? 'success' : 'fail';
-      if (balance >= required) {
-        await handleNodeAction(action, node, client, phone, convo, lead);
-      }
-      const nextEdge = flowEdges.find(
-        (e) => e.source === nodeId && normalizeHandleId(e.sourceHandle) === targetHandle
-      );
-      if (nextEdge) {
-        return await executeNode(
-          nextEdge.target,
-          flowNodes,
-          flowEdges,
-          client,
-          convo,
-          lead,
-          phone,
-          io,
-          channel,
-          parsedMessage
-        );
-      }
-      return true;
-    }
-
-    await handleNodeAction(action, node, client, phone, convo, lead);
-  }
-
-  // 8. Order Action Node — with context validation for returns
+  // 7. Order Action Node — with context validation for returns
   if (node.type === 'order_action') {
     const { handleNodeAction } = require('../flow/nodeActions');
     const action = node.data?.actionType || 'CHECK_ORDER_STATUS';
@@ -4375,7 +4197,7 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
     if (!s || s === "null" || s === "undefined" || s === "[object Object]") return fallback;
     return s;
   };
-  if (node.data?.action && !['shopify_call', 'http_request', 'logic', 'delay', 'trigger', 'cod_prepaid', 'loyalty_action', 'loyalty', 'warranty_check', 'warranty_lookup', 'order_action', 'segment', 'ab_test', 'abandoned_cart', 'review', 'tag_lead', 'TagNode', 'livechat'].includes(type)) {
+  if (node.data?.action && !['shopify_call', 'http_request', 'logic', 'delay', 'trigger', 'cod_prepaid', 'warranty_check', 'warranty_lookup', 'order_action', 'segment', 'ab_test', 'abandoned_cart', 'review', 'tag_lead', 'TagNode', 'livechat'].includes(type)) {
     const { handleNodeAction } = require('../flow/nodeActions');
     handleNodeAction(node.data.action, node, client, phone, convo, lead).catch((err) => {
       log.error(`Action Error (${node.data.action}):`, { error: err.message });
@@ -5326,7 +5148,6 @@ CUSTOMER CONTEXT:
 - Name: ${lead.name || 'Friend'}
 - Last Order: ${convo.metadata?.lastOrder?.orderNumber || 'None'}
 - Cart Status: ${lead.cartStatus || 'Empty'}
-- Loyalty Points: ${lead. LoyaltyPoints || 0}
 `.trim();
 
     const prompt = `${systemPrompt}

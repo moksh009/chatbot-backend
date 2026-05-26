@@ -326,8 +326,6 @@ router.post('/:clientId/bulk-email', protect, logAction('BULK_EMAIL'), async (re
             email: 'jane@example.com',
             phoneNumber: '+919999999999',
             cartSnapshot: { items: [{ title: 'Sample', quantity: 1, price: '99', image: '' }] },
-            loyaltyPoints: 0,
-            loyaltyTier: 'Bronze'
         };
         const probe = mergeEmailForLead(subject, content, probeLead, client);
         if (probe.unknownTokens.length) {

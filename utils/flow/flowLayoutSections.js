@@ -55,13 +55,6 @@ const FLOW_LAYOUT_SECTIONS = [
     position: { x: 80, y: 800 },
   },
   {
-    key: "loyalty",
-    label: "⭐ Loyalty",
-    color: "yellow",
-    childHint: "Points · redeem · refer",
-    position: { x: 720, y: 800 },
-  },
-  {
     key: "support",
     label: "🎧 Support & FAQ",
     color: "rose",

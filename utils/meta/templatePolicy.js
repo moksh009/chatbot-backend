@@ -3,7 +3,7 @@
 /** Meta sample / system templates — never offer in merchant pickers */
 const SYSTEM_EXCLUDED_NAMES = new Set(['hello_world', 'hello world']);
 
-const PURPOSES = ['campaign', 'sequence', 'order_status', 'cart_recovery', 'loyalty', 'bot_reply', 'flow', 'ig', 'utility'];
+const PURPOSES = ['campaign', 'sequence', 'order_status', 'cart_recovery', 'bot_reply', 'flow', 'ig', 'utility'];
 
 function normalizePurpose(input, fallback = 'utility') {
   const value = String(input || fallback).trim().toLowerCase();

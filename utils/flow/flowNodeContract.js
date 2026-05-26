@@ -31,7 +31,6 @@ const CANONICAL_NODE_TYPES = new Set([
   'escalate',
   'ab_test',
   'payment_link',
-  'loyalty_action',
   'order_action',
   'cod_prepaid',
   'abandoned_cart',

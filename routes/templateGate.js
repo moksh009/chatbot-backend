@@ -15,24 +15,6 @@ const { getSlotByMetaName } = require('../constants/templateCatalog/catalog');
 
 // Pre-defined template blueprints for each module
 const TEMPLATE_BLUEPRINTS = {
-  loyalty_points_reminder: {
-    category: 'MARKETING',
-    language: 'en',
-    components: [
-      {
-        type: 'BODY',
-        text: 'Hey there! 🎁\nYou have *{{1}} Points* worth *{{2}}* in your rewards wallet.\n⏰ Expires in *{{3}} days* · Tier: *{{4}}*\nReply REDEEM to claim your discount!',
-        example: { body_text: [['500', '₹50', '30', 'Gold']] }
-      },
-      {
-        type: 'BUTTONS',
-        buttons: [
-          { type: 'QUICK_REPLY', text: 'Redeem Now' },
-          { type: 'QUICK_REPLY', text: 'Check Balance' }
-        ]
-      }
-    ]
-  },
   cart_recovery: {
     category: 'MARKETING',
     language: 'en',

@@ -121,14 +121,7 @@ const WizardFeaturesSchema = new mongoose.Schema({
   cartNudgeTemplate2:      { type: String,  default: ""    },
   cartNudgeTemplate3:      { type: String,  default: ""    },
 
-  // Loyalty & growth
-  enableLoyalty:           { type: Boolean, default: false },
-  loyaltySendReminders:    { type: Boolean, default: true  },
-  loyaltyReminderDaysBeforeExpiry: { type: Number, default: 7 },
-  loyaltyPointsPerUnit:    { type: Number,  default: 10    }, // Points per ₹100
-  loyaltySignupBonus:      { type: Number,  default: 100   },
-  loyaltySilverThreshold:  { type: Number,  default: 500   },
-  loyaltyGoldThreshold:    { type: Number,  default: 1500  },
+  // Growth
   enableReferral:          { type: Boolean, default: false },
   referralPointsBonus:     { type: Number,  default: 500   },
   enableReviewCollection:  { type: Boolean, default: false }, // Post-delivery Google review request
@@ -992,23 +985,6 @@ const ClientSchema = new mongoose.Schema({
     qualityRating: String, // GREEN, YELLOW, RED
     verifiedName: String
   }],
-
-  // Phase 27: Loyalty Ecosystem Config
-  loyaltyConfig: {
-    enabled: { type: Boolean, default: false },
-    pointsPerUnit: { type: Number, default: 10 }, // e.g. 10 points per ₹100
-    welcomeBonus: { type: Number, default: 100 },
-    referralBonus: { type: Number, default: 500 },
-    currencyUnit: { type: Number, default: 100 },
-    tierThresholds: {
-      bronze: { type: Number, default: 0 },
-      silver: { type: Number, default: 5000 },
-      gold: { type: Number, default: 15000 },
-      platinum: { type: Number, default: 50000 }
-    },
-    redeemUrl: { type: String, default: "" }, // Phase 27: Loyalty UI redirect URL
-    autoApplyDiscount: { type: Boolean, default: false }
-  },
 
   // Phase 28: Bidirectional Translation
   translationConfig: {

@@ -47,7 +47,6 @@ function inferLayoutSection(node) {
 
   if (node.type === "catalog") return "catalog";
   if (node.type === "shopify_call") return "orders";
-  if (node.type === "loyalty_action") return "loyalty";
   if (node.type === "warranty_check") return "warranty";
   if (node.type === "schedule" || node.type === "admin_alert") return "support";
 
@@ -86,7 +85,6 @@ function inferLayoutSection(node) {
   if (/^ins_|^help_|^n_install_|^n_inst_|^n_have_|^n_hub21$|^n_hub20$|^n_m21_|^n_m20_|^n_other_products$|^n_govee_line$/.test(id)) {
     return "install";
   }
-  if (/^loy_/.test(id) || /loyalty|redeem|referral|points/i.test(label)) return "loyalty";
   if (/^sup_|^faq_|^n_faq_|^n_support_pre$|^n_tr_menu$|^n_human_handoff$|^n_admin_alert$/.test(id)) {
     return "support";
   }

@@ -575,8 +575,6 @@ router.get('/lead/:id', protect, leadByIdScope, async (req, res) => {
     const pSuf = phoneDigits.slice(-10);
 
     const CustomerIntelligence = require('../models/CustomerIntelligence');
-    const CustomerWallet = require('../models/CustomerWallet');
-    const LoyaltyTransaction = require('../models/LoyaltyTransaction');
     const CampaignMessage = require('../models/CampaignMessage');
     const FollowUpSequence = require('../models/FollowUpSequence');
 
@@ -585,8 +583,6 @@ router.get('/lead/:id', protect, leadByIdScope, async (req, res) => {
       appointments,
       conversation,
       dna,
-      wallet,
-      walletTransactions,
       marketingLogs,
       sequences
     ] = await Promise.all([
@@ -602,8 +598,6 @@ router.get('/lead/:id', protect, leadByIdScope, async (req, res) => {
       Appointment.find({ phone: lead.phoneNumber, clientId: lead.clientId }).lean(),
       Conversation.findOne({ phone: lead.phoneNumber, clientId: lead.clientId }).lean(),
       CustomerIntelligence.findOne({ clientId: lead.clientId, phone: lead.phoneNumber }).lean().catch(() => null),
-      CustomerWallet.findOne({ clientId: lead.clientId, phone: new RegExp(pSuf + '$') }).lean().catch(() => null),
-      LoyaltyTransaction.find({ clientId: lead.clientId, phone: new RegExp(pSuf + '$') }).sort({ timestamp: -1 }).limit(5).lean().catch(() => []),
       CampaignMessage.find({ clientId: lead.clientId, phone: lead.phoneNumber }).populate('campaignId', 'name type').sort({ sentAt: -1 }).limit(20).lean().catch(() => []),
       FollowUpSequence.find({ clientId: lead.clientId, phone: lead.phoneNumber }).sort({ createdAt: -1 }).limit(10).lean().catch(() => [])
     ]);
@@ -695,7 +689,6 @@ router.get('/lead/:id', protect, leadByIdScope, async (req, res) => {
       conversation,
       messages,
       intelligence: dna || null,
-      wallet: wallet ? { ...wallet, transactions: walletTransactions } : null,
       marketingLogs,
       sequences,
       journeyLog,

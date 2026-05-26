@@ -88,27 +88,6 @@ function preflightValidateFlowGraph({ nodes = [], edges = [], client }) {
     if (res?.warnings?.length) warnings.push(...res.warnings);
 
     const type = normalizeNodeType(node?.type);
-    if (type === 'loyalty_action') {
-      const actionType = String(node?.data?.actionType || 'GIVE_LOYALTY').toUpperCase();
-      const pointsRequired = Number(node?.data?.pointsRequired || 0);
-      if (actionType === 'REDEEM_POINTS') {
-        if (!(pointsRequired > 0)) {
-          errors.push({
-            code: 'LOYALTY_REDEEM_POINTS_INVALID',
-            message: `Loyalty node "${node?.id || ''}" must have pointsRequired > 0.`,
-            fix: 'Set a positive pointsRequired in node settings.'
-          });
-        }
-        if (!hasHandle(node.id, 'success') || !hasHandle(node.id, 'fail')) {
-          errors.push({
-            code: 'LOYALTY_REDEEM_BRANCH_MISSING',
-            message: `Loyalty redeem node "${node?.id || ''}" requires both success and fail branches.`,
-            fix: 'Connect both success and fail handles to downstream nodes.'
-          });
-        }
-      }
-    }
-
     if (type === 'review') {
       if (!hasHandle(node.id, 'positive') || !hasHandle(node.id, 'negative')) {
         errors.push({
@@ -117,6 +96,14 @@ function preflightValidateFlowGraph({ nodes = [], edges = [], client }) {
           fix: 'Connect both positive and negative handles to downstream nodes.'
         });
       }
+    }
+
+    if (type === 'loyalty_action' || type === 'loyalty') {
+      errors.push({
+        code: 'LOYALTY_NODE_REMOVED',
+        message: `Loyalty node "${node?.id || ''}" is no longer supported.`,
+        fix: 'Delete this node and reconnect the flow.',
+      });
     }
 
     if (type === 'warranty_check') {

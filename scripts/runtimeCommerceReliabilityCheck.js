@@ -8,8 +8,6 @@ require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 const Client = require("../models/Client");
 const Contact = require("../models/Contact");
 const WarrantyRecord = require("../models/WarrantyRecord");
-const CustomerWallet = require("../models/CustomerWallet");
-const LoyaltyTransaction = require("../models/LoyaltyTransaction");
 function resultLine(status, label, details = "") {
   const icon = status === "PASS" ? "PASS" : status === "WARN" ? "WARN" : "FAIL";
   console.log(`${icon} | ${label}${details ? ` | ${details}` : ""}`);
@@ -39,33 +37,6 @@ async function checkWarranty(clientId) {
   }
 }
 
-async function checkLoyalty(clientId) {
-  const wallets = await CustomerWallet.find({ clientId })
-    .select("phone balance lifetimePoints tier updatedAt")
-    .sort({ updatedAt: -1 })
-    .limit(50)
-    .lean();
-  if (!wallets.length) {
-    resultLine("WARN", "Loyalty activity", "No wallets found");
-    return;
-  }
-
-  let drift = 0;
-  for (const w of wallets) {
-    const lastTx = await LoyaltyTransaction.findOne({ clientId, phone: w.phone })
-      .sort({ timestamp: -1 })
-      .select("balanceAfter")
-      .lean();
-    if (lastTx && typeof lastTx.balanceAfter === "number" && lastTx.balanceAfter !== w.balance) drift += 1;
-  }
-
-  if (drift) {
-    resultLine("WARN", "Loyalty balance parity", `${drift}/${wallets.length} sampled wallets differ from latest ledger`);
-  } else {
-    resultLine("PASS", "Loyalty balance parity", `${wallets.length} sampled wallets aligned`);
-  }
-}
-
 async function main() {
   const clientId = process.argv[2];
   if (!clientId) {
@@ -87,7 +58,6 @@ async function main() {
 
   console.log(`Running reliability checks for client=${clientId}`);
   await checkWarranty(clientId);
-  await checkLoyalty(clientId);
 
   await mongoose.disconnect();
 }

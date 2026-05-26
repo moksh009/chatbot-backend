@@ -7,8 +7,8 @@
  * reads `client.wizardFeatures.*` (canonical) merged with `wizardData.features`
  * (live wizard payload) and conditionally calls the builders. The main menu
  * rows are assembled dynamically from whichever branches are enabled, so a
- * merchant who toggles loyalty OFF in Settings will instantly get a flow with
- * the loyalty row removed — no orphan nodes, no dead edges.
+ * merchant who toggles features OFF in Settings gets a flow with only enabled
+ * branches — no orphan nodes, no dead edges.
  *
  * GUARANTEES
  *   • Deterministic node IDs   — `${prefix}_${clientSeed}` (no Date.now)
@@ -19,8 +19,8 @@
  *
  * EXECUTION CONTRACT (consumed by `utils/commerce/dualBrainEngine.js`)
  *   node.type ∈ { message | interactive | template | trigger | logic |
- *                 capture_input | shopify_call | delay | loyalty_action |
- *                 admin_alert | schedule | review | cod_prepaid |
+ *                 capture_input | shopify_call | delay | admin_alert | schedule |
+ *                 review | cod_prepaid |
  *                 warranty_check | tag_lead | http_request }
  *   edge.{ id, source, target, sourceHandle? }
  *
@@ -237,9 +237,6 @@ function buildMainMenuRows(F) {
   if (F.enableWarranty) {
     rows.push({ id: "mnu_warranty", title: "🛡️ Warranty Details", description: "Coverage & certificate" });
   }
-  if (F.enableLoyalty) {
-    rows.push({ id: "mnu_loyalty", title: "⭐ My Loyalty Points", description: "Balance & redeem" });
-  }
   if (F.enableAIFallback) {
     rows.push({ id: "mnu_ai", title: "🆘 Need Help?", description: "Ask us anything" });
   }
@@ -303,11 +300,6 @@ function buildContext(client = {}, wizardData = {}) {
     cartNudgeMinutes1:       15,
     cartNudgeHours2:         2,
     cartNudgeHours3:         24,
-    enableLoyalty:           false,
-    loyaltyPointsPerUnit:    10,
-    loyaltySignupBonus:      100,
-    loyaltySilverThreshold:  500,
-    loyaltyGoldThreshold:    1500,
     enableReferral:          false,
     referralPointsBonus:     500,
     enableReviewCollection:  false,
@@ -535,17 +527,6 @@ function buildIDs(client, wizardData) {
     war_claim_cap:    `war_claim_cap_${ts}`,
     war_claim_alert:  `war_claim_alert_${ts}`,
     war_claim_done:   `war_claim_done_${ts}`,
-    loy_check:        `loy_check_${ts}`,
-    loy_show:         `loy_show_${ts}`,
-    loy_zero:         `loy_zero_${ts}`,
-    loy_code:         `loy_code_${ts}`,
-    // Loyalty
-    loy_menu:         `loy_menu_${ts}`,
-    loy_balance:      `loy_balance_${ts}`,
-    loy_redeem:       `loy_redeem_${ts}`,
-    loy_redeem_ok:    `loy_redeem_ok_${ts}`,
-    loy_redeem_fail:  `loy_redeem_fail_${ts}`,
-    loy_refer:        `loy_refer_${ts}`,
     // Support
     sup_sch:          `sup_sch_${ts}`,
     sup_capture:      `sup_capture_${ts}`,
@@ -669,7 +650,7 @@ TONE=${tone}
 LANGUAGE=${botLanguage}
 PRODUCTS:
 ${productsSummary}
-Return only JSON with keys: welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_policy_short,cancellation_confirm,cancellation_success,loyalty_welcome,loyalty_points_msg,referral_msg,sentiment_ask,review_positive,review_negative,cart_recovery_1,cart_recovery_2,cart_recovery_3,cod_nudge,order_confirmed_msg,agent_handoff_msg,faq_response,ad_welcome,ig_welcome,warranty_welcome,warranty_lookup_prompt,warranty_reg_success,warranty_active_msg,warranty_expired_msg,warranty_none_msg,support_hours_msg,return_photo_prompt`;
+Return only JSON with keys: welcome_a,welcome_b,product_menu_text,order_status_msg,fallback_msg,returns_policy_short,cancellation_confirm,cancellation_success,referral_msg,sentiment_ask,review_positive,review_negative,cart_recovery_1,cart_recovery_2,cart_recovery_3,cod_nudge,order_confirmed_msg,agent_handoff_msg,faq_response,ad_welcome,ig_welcome,warranty_welcome,warranty_lookup_prompt,warranty_reg_success,warranty_active_msg,warranty_expired_msg,warranty_none_msg,support_hours_msg,return_photo_prompt`;
 
   try {
     const apiKey = client.ai?.geminiKey || client.geminiApiKey || process.env.GEMINI_API_KEY;
@@ -1916,107 +1897,6 @@ function buildWarrantyBranch(ctx, IDS, content) {
   };
 }
 
-function buildLoyaltyBranch(ctx, IDS, content) {
-  const { F } = ctx;
-  const nodes = [];
-  const edges = [];
-  const minRedeem = Math.max(50, Number(F.loyaltyRedeemMinPoints) || 100);
-
-  nodes.push(
-    {
-      id: IDS.loy_check,
-      type: "loyalty_action",
-      position: flowPos(5, 14),
-      data: {
-        label: "Check loyalty balance",
-        actionType: "CHECK_BALANCE",
-        heatmapCount: 0,
-      },
-    },
-    {
-      id: IDS.loy_show,
-      type: "interactive",
-      position: flowPos(6, 14),
-      data: {
-        label: "Loyalty balance",
-        interactiveType: "button",
-        text:
-          "⭐ *Your loyalty points*\n\n💰 Balance: *{{loyalty_points|0}} points*\n💵 Worth: *₹{{loyalty_rupee_value|0}}*\n{{loyalty_expiry_note}}\n\nRedeem for a discount code on your next order?",
-        buttonsList: [
-          { id: "loy_redeem", title: "🎁 Redeem points" },
-          { id: "loy_menu", title: "🏠 Main menu" },
-        ],
-        heatmapCount: 0,
-      },
-    },
-    {
-      id: IDS.loy_zero,
-      type: "message",
-      position: flowPos(6, 15),
-      data: {
-        label: "No points yet",
-        text: withMenuHint(
-          "You don't have redeemable points yet 💎\n\nShop *{{brand_name}}* and earn rewards automatically on every order!"
-        ),
-        heatmapCount: 0,
-      },
-    },
-    {
-      id: IDS.loy_redeem,
-      type: "loyalty_action",
-      position: flowPos(7, 14),
-      data: {
-        label: "Redeem + discount code",
-        actionType: "REDEEM_POINTS",
-        pointsRequired: minRedeem,
-        createShopifyDiscount: true,
-        heatmapCount: 0,
-      },
-    },
-    {
-      id: IDS.loy_code,
-      type: "message",
-      position: flowPos(8, 14),
-      data: {
-        label: "Discount code issued",
-        text:
-          "🎁 *Here's your discount code!*\n\nCode: *{{generated_discount_code}}*\n💵 Value: ₹{{loyalty_rupee_value}} off\n⏰ Valid 48 hours — use at checkout on our store.\n\n🛒 {{storeUrl}}",
-        heatmapCount: 0,
-      },
-    },
-    {
-      id: IDS.loy_redeem_fail,
-      type: "message",
-      position: flowPos(8, 16),
-      data: {
-        label: "Redeem failed",
-        text:
-          "We couldn't generate a code right now. Contact *{{support_phone|our support line}}* and we'll apply your points manually.",
-        heatmapCount: 0,
-      },
-    }
-  );
-
-  edges.push(
-    { id: `e_${IDS.loy_check}_has`, source: IDS.loy_check, target: IDS.loy_show, sourceHandle: "has_points" },
-    { id: `e_${IDS.loy_check}_zero`, source: IDS.loy_check, target: IDS.loy_zero, sourceHandle: "none" },
-    { id: `e_${IDS.loy_show}_rd`, source: IDS.loy_show, target: IDS.loy_redeem, sourceHandle: "loy_redeem" },
-    { id: `e_${IDS.loy_show}_mm`, source: IDS.loy_show, target: IDS.main_menu, sourceHandle: "loy_menu" },
-    { id: `e_${IDS.loy_redeem}_ok`, source: IDS.loy_redeem, target: IDS.loy_code, sourceHandle: "success" },
-    { id: `e_${IDS.loy_redeem}_fail`, source: IDS.loy_redeem, target: IDS.loy_redeem_fail, sourceHandle: "fail" },
-    { id: `e_${IDS.loy_code}_mm`, source: IDS.loy_code, target: IDS.main_menu },
-    { id: `e_${IDS.loy_redeem_fail}_mm`, source: IDS.loy_redeem_fail, target: IDS.main_menu }
-  );
-
-  return {
-    nodes,
-    edges,
-    menuRow: { id: "mnu_loyalty", title: "⭐ My Loyalty Points" },
-    entryNodeId: IDS.loy_check,
-    sourceHandle: "mnu_loyalty",
-  };
-}
-
 /** Help with order — tracking issues, returns, optional install guide (wizard: enableInstallSupport). */
 function buildInstallSupportBranch(ctx, IDS, content) {
   const { F, adminPhone, client } = ctx;
@@ -2502,7 +2382,6 @@ async function generateEcommerceFlow(client, wizardData = {}) {
   if (F.enableReturnsRefunds)    branches.push(buildReturnsBranch(ctx, IDS, content));
   if (F.enableWarranty)          branches.push(buildWarrantyBranch(ctx, IDS, content));
   if (F.enableInstallSupport)    branches.push(buildInstallSupportBranch(ctx, IDS, content));
-  if (F.enableLoyalty)           branches.push(buildLoyaltyBranch(ctx, IDS, content));
   if (F.enableAIFallback)        branches.push(buildAiHelpDeskBranch(ctx, IDS));
   else if (F.enableFAQ)          branches.push(buildFAQBranch(ctx, IDS, content));
   if (F.enableSupportEscalation) branches.push(buildSupportBranch(ctx, IDS, content));
@@ -2557,7 +2436,7 @@ async function generateEcommerceFlow(client, wizardData = {}) {
   // Wire remaining dead-ends to main menu (keeps inbox flows resumable; AI fallback still exists for unwired taps)
   if (F.enableAIFallback) {
     const sources = new Set(dedupEdges.map(e => e.source));
-    const deadEndTypes = ["shopify_call", "loyalty_action", "tag_lead", "review", "warranty_check", "cod_prepaid", "admin_alert"];
+    const deadEndTypes = ["shopify_call", "tag_lead", "review", "warranty_check", "cod_prepaid", "admin_alert"];
     dedupNodes.forEach(node => {
       if (node.data?.suppressAIFallbackLink) return;
       if (deadEndTypes.includes(node.type) && !sources.has(node.id) && node.id !== IDS.ai_fallback && node.id !== IDS.main_menu) {
@@ -2658,7 +2537,6 @@ Warranty: ${ctx.warrantyDuration}
 Warranty Support Phone: ${ctx.F.warrantySupportPhone || ctx.adminPhone || "Not provided"}
 Warranty Support Email: ${ctx.F.warrantySupportEmail || ctx.client?.platformVars?.supportEmail || "Not provided"}
 Warranty Claim URL: ${ctx.F.warrantyClaimUrl || ctx.client?.brand?.warrantyClaimUrl || "Not provided"}
-Loyalty: ${ctx.F.enableLoyalty ? `Enabled | ${ctx.F.loyaltyPointsPerUnit} pts per unit | signup ${ctx.F.loyaltySignupBonus} | tiers ${ctx.F.loyaltySilverThreshold}/${ctx.F.loyaltyGoldThreshold}` : "Disabled"}
 Enabled Features:
 ${featureLines || "  • (default e-commerce flow)"}
 

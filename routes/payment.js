@@ -5,7 +5,6 @@ const logger  = require('../utils/core/logger')('PaymentWebhook');
 const Order   = require('../models/Order');
 const Client  = require('../models/Client');
 const AdLead  = require('../models/AdLead');
-const { processOrderForLoyalty } = require('../utils/commerce/walletService');
 const { sendWhatsAppText }       = require('../utils/commerce/dualBrainEngine');
 
 /**
@@ -53,12 +52,7 @@ router.post('/razorpay/webhook', async (req, res) => {
         const client = await Client.findById(clientId).lean();
         const lead   = await AdLead.findOne({ phoneNumber: order.customerPhone, clientId: client._id });
 
-        // 3. Award Loyalty Points
-        if (client?.loyaltyConfig?.isEnabled) {
-          await processOrderForLoyalty(client.clientId, order.customerPhone, order.totalPrice || order.amount, order.orderNumber || orderId);
-        }
-
-        // 4. Send WhatsApp Confirmation
+        // 3. Send WhatsApp Confirmation
         const confirmMsg = `✅ *Payment Confirmed!*\n\nThank you, we've received your payment of ₹${order.totalPrice || order.amount} for Order #${order.orderNumber || orderId}. We are now processing your shipment. 📦`;
         await sendWhatsAppText(client, order.customerPhone, confirmMsg);
         

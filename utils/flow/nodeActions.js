@@ -6,7 +6,6 @@ const WhatsApp = require('../meta/whatsapp');
 const Order = require("../../models/Order");
 const Client = require("../../models/Client");
 const { createPaymentLink } = require('../commerce/paymentService');
-const walletService = require('../commerce/walletService');
 const { injectVariablesLegacy: replaceVariables } = require('../core/variableInjector');
 
 function parseWarrantyMonthsLabel(label) {
@@ -75,90 +74,6 @@ async function handleNodeAction(action, node, client, phone, convo, lead) {
       break;
     }
     
-    case "GIVE_LOYALTY": {
-      try {
-        const points = node.data?.points || 10;
-        const reason = node.data?.reason || "Flow participation reward";
-        
-        await walletService.addPoints(client.clientId, phone, points, reason);
-        
-        const msg = node.data?.body 
-          ? replaceVariables(node.data.body, client, lead, convo)
-          : `🎁 *Reward!* You just earned *${points}* loyalty points! ✨`;
-        
-        await WhatsApp.sendText(client, phone, msg);
-      } catch (err) {
-        console.error("[NodeActions] GIVE_LOYALTY error:", err.message);
-      }
-      break;
-    }
-
-    case "REDEEM_POINTS": {
-      try {
-        const points = node.data?.pointsRequired || 100;
-        const balance = await walletService.getBalance(client.clientId, phone);
-
-        if (balance < points) {
-          break;
-        }
-
-        const wf = client.wizardFeatures?.toObject
-          ? client.wizardFeatures.toObject()
-          : client.wizardFeatures || {};
-        const pointsPerRupee = Math.max(
-          1,
-          Number(wf.loyaltyPointsPerUnit) > 0 ? Math.round(Number(wf.loyaltyPointsPerUnit) / 100) : 1
-        );
-        const rupeeValue = Math.floor(balance / pointsPerRupee);
-
-        if (node.data?.createShopifyDiscount && rupeeValue > 0) {
-          try {
-            const { withShopifyRetry } = require('../shopify/shopifyHelper');
-            const code = `LOYALTY${Date.now().toString(36).slice(-6).toUpperCase()}`;
-            await withShopifyRetry(client.clientId, async (shop) => {
-              const ruleRes = await shop.post("/price_rules.json", {
-                price_rule: {
-                  title: `Loyalty ${code}`,
-                  target_type: "line_item",
-                  target_selection: "all",
-                  allocation_method: "across",
-                  value_type: "fixed_amount",
-                  value: `-${rupeeValue}.0`,
-                  customer_selection: "all",
-                  starts_at: new Date().toISOString(),
-                  ends_at: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
-                  usage_limit: 1,
-                },
-              });
-              const ruleId = ruleRes.data.price_rule.id;
-              await shop.post(`/price_rules/${ruleId}/discount_codes.json`, {
-                discount_code: { code },
-              });
-            });
-            await Conversation.findByIdAndUpdate(convo._id, {
-              $set: {
-                "metadata.generated_discount_code": code,
-                "metadata.loyalty_rupee_value": String(rupeeValue),
-              },
-            }).catch(() => {});
-            if (lead?._id) {
-              await require("../../models/AdLead")
-                .updateOne({ _id: lead._id }, { $set: { activeDiscountCode: code } })
-                .catch(() => {});
-            }
-          } catch (discErr) {
-            console.error("[NodeActions] loyalty discount code:", discErr.message);
-          }
-        }
-
-        const toDeduct = Math.min(points, balance);
-        await walletService.deductPoints(client.clientId, phone, toDeduct, "Redeemed via Flow");
-      } catch (err) {
-        console.error("[NodeActions] REDEEM_POINTS error:", err.message);
-      }
-      break;
-    }
-
     case "SEND_WARRANTY_PDF": {
       try {
         const { generateWarrantyCertificatePdf } = require('../commerce/warrantyCertificatePdf');

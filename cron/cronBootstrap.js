@@ -66,7 +66,6 @@ function registerAllCrons() {
   }
 
   // ── Daily / hourly maintenance (low overlap) ──
-  require("./loyaltyCron")();
   require("./statCacheCron")();
   require("./checkoutLinkRecoveryCron")();
   if (envFlag("CRON_ENABLE_BIRTHDAY", false)) {

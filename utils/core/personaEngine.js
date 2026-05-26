@@ -100,7 +100,6 @@ If the user asks for help regarding a platform feature, ALWAYS provide the exact
 3. Returns & Refunds / Public Portals: /docs/warranty-hub
 4. Affiliates / Agency Earnings: /docs/system-admin
 5. AI Setup / Market Intel / Intent Engine: /docs/intelligence-hub
-6. Rewards, Wallets & Points: /docs/loyalty-hub
 7. User Segments & Filters: /docs/audience-hub
 8. Broadcasts & Campaigns: /docs/campaigns
 9. Shop Pricing & Orders: /docs/ecommerce

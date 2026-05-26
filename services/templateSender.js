@@ -471,7 +471,7 @@ async function sendByTrigger({ clientId, phone, trigger, templateName, contextDa
     phone,
     slotId: slot?.id || null,
     metaName: templateName || null,
-    contextType: slot?.autoTrigger === "loyalty_expiring" ? "loyalty" : "flow",
+    contextType: "flow",
     trigger,
     contextData,
     channel,

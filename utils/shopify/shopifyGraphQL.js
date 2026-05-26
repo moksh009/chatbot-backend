@@ -45,82 +45,6 @@ async function executeGraphQL(clientId, query, variables = {}) {
 }
 
 /**
- * Creates a unique, single-use, 3-month valid Shopify discount code.
- * Uses the modern GraphQL Admin API (future-proof).
- */
-async function createLoyaltyDiscount(clientId, { code, amount, customerId, daysValid = 90 }) {
-    const mutation = `
-    mutation discountCodeBasicCreate($basicCodeDiscount: DiscountCodeBasicInput!) {
-      discountCodeBasicCreate(basicCodeDiscount: $basicCodeDiscount) {
-        codeDiscountNode {
-          id
-          codeDiscount {
-            ... on DiscountCodeBasic {
-              title
-              codes(first: 1) {
-                nodes {
-                  code
-                }
-              }
-              startsAt
-              endsAt
-            }
-          }
-        }
-        userErrors {
-          field
-          message
-        }
-      }
-    }
-    `;
-
-    const startsAt = new Date().toISOString();
-    const endsAt = new Date(Date.now() + daysValid * 24 * 60 * 60 * 1000).toISOString();
-
-    const variables = {
-      basicCodeDiscount: {
-        title: `Loyalty Reward: ${amount} OFF`,
-        code: code,
-        startsAt: startsAt,
-        endsAt: endsAt,
-        customerSelection: {
-          all: true // For simplicity in V1, we allow anyone with the code to use it, fixed via uniqueness
-        },
-        customerGets: {
-          value: {
-            fixedAmountValue: amount
-          },
-          items: {
-            all: true
-          }
-        },
-        appliesOncePerCustomer: true,
-        usageLimit: 1
-      }
-    };
-
-    try {
-        const result = await executeGraphQL(clientId, mutation, variables);
-        const data = result.discountCodeBasicCreate;
-
-        if (data.userErrors && data.userErrors.length > 0) {
-            throw new Error(`UserErrors: ${data.userErrors.map(e => e.message).join(', ')}`);
-        }
-
-        return {
-            success: true,
-            id: data.codeDiscountNode.id,
-            code: code,
-            endsAt: endsAt
-        };
-    } catch (err) {
-        log.error(`Failed to create loyalty discount for ${clientId}:`, err.message);
-        throw err;
-    }
-}
-
-/**
  * Fetches all store locations for a client.
  */
 async function getLocations(clientId) {
@@ -179,7 +103,6 @@ async function getInventoryLevels(clientId, variantIds) {
 
 module.exports = {
     executeGraphQL,
-    createLoyaltyDiscount,
     getLocations,
     getInventoryLevels,
     /**

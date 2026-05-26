@@ -10,7 +10,6 @@ const { decrypt } = require('../utils/core/encryption');
 const Contact = require('../models/Contact');
 const WarrantyBatch = require('../models/WarrantyBatch');
 const WarrantyRecord = require('../models/WarrantyRecord');
-const { processOrderForLoyalty } = require('../utils/commerce/walletService');
 const { logActivity } = require('../utils/core/activityLogger');
 const { recalculateLeadScore } = require('../utils/core/scoringHelper');
 const log = require('../utils/core/logger')('ShopifyWebhook');
@@ -892,19 +891,6 @@ async function handleOrder(client, data, storeKey = '') {
       log.warn(`[ShopifyWebhook] paid order status dispatch skipped: ${dispatchErr.message}`);
     }
 
-    // --- PHASE 27: Loyalty Points Award ---
-    if (client.loyaltyConfig?.isEnabled && newOrder.amount > 0) {
-        const { awardLoyaltyPoints } = require('../utils/commerce/loyaltyEngine');
-        awardLoyaltyPoints({
-            clientId: client.clientId,
-            phone: cleanPhone,
-            orderId: newOrder.orderId,
-            orderAmount: newOrder.amount
-        }).then(res => {
-            if (res.success) log.info(`Awarded ${res.points} points to ${cleanPhone} for order ${newOrder.orderId}`);
-        }).catch(err => console.error("[Loyalty] Award failed:", err.message));
-    }
-
     // Legacy productTriggers evaluator removed after unified commerce automation cutover.
 
     // Sequence/campaign cancel handled atomically in handleOrderAtomic (Phase 2 — B1/B2)
@@ -1126,33 +1112,13 @@ async function handleRefund(client, data) {
     log.info(`Processing refund/cancellation for order ${orderId}`, { clientId: client.clientId });
 
     try {
-        const { reverseOrderPoints } = require('../utils/commerce/walletService');
-        const result = await reverseOrderPoints(client.clientId, orderId);
-
-        if (result) {
-            log.info(`Successfully reversed ${result.pointsDeducted} points for ${orderId}. New Balance: ${result.newBalance}`);
-            
-            // Revert points in CustomerIntelligence if it tracks them
-            const phoneRaw = data.phone || data.customer?.phone || data.billing_address?.phone;
-            if (phoneRaw) {
-                const { normalizePhone } = require('../utils/core/helpers');
-                const cleanPhone = normalizePhone(phoneRaw);
-                
-                // Flag as RTO Risk in AdLead
-                const { updateLeadWithScoring } = require('../utils/commerce/leadScoring');
-                await updateLeadWithScoring(cleanPhone, client.clientId, {}, {}, { isRtoRisk: true });
-
-                const CustomerIntelligence = require('../models/CustomerIntelligence');
-                await CustomerIntelligence.findOneAndUpdate(
-                    { clientId: client.clientId, phone: cleanPhone },
-                    { $inc: { totalPoints: -result.pointsDeducted } }
-                ).catch(() => {}); // Optional fail-safe
-                
-                // TRIGGER WATERFALL ENGINE: Update score in real-time
-                await recalculateLeadScore(client.clientId, cleanPhone).catch(e => log.error('Scoring recompute failed:', e.message));
-            }
-        } else {
-            log.warn(`Point reversal not needed or no loyalty points were awarded for order ${orderId}`);
+        const phoneRaw = data.phone || data.customer?.phone || data.billing_address?.phone;
+        if (phoneRaw) {
+            const { normalizePhone } = require('../utils/core/helpers');
+            const cleanPhone = normalizePhone(phoneRaw);
+            const { updateLeadWithScoring } = require('../utils/commerce/leadScoring');
+            await updateLeadWithScoring(cleanPhone, client.clientId, {}, {}, { isRtoRisk: true });
+            await recalculateLeadScore(client.clientId, cleanPhone).catch(e => log.error('Scoring recompute failed:', e.message));
         }
     } catch (err) {
         log.error(`Error processing refund for ${orderId}:`, err.message);

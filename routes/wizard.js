@@ -410,16 +410,6 @@ router.get("/:clientId/setup-checklist", protect, async (req, res) => {
       critical: false
     });
 
-    if (client.wizardFeatures?.enableLoyalty) {
-      checklist.push({
-        category: "Loyalty Program",
-        item: "Configure points earning rules",
-        status: client.loyaltyConfig?.enabled ? "done" : "pending",
-        action: "Settings → Loyalty Program → set points per purchase",
-        critical: false
-      });
-    }
-
     checklist.push({
       category: "Testing",
       item: "Send test message to your WhatsApp number",
@@ -1096,7 +1086,6 @@ function getExtendedWizardTemplates(wizardData = {}) {
     extras.push(libraryEntryToWizardTemplate(entry));
   };
 
-  if (feats.enableLoyalty) maybeAdd("loyalty_reminder_v1");
   if (feats.enableWarranty) maybeAdd("warranty_registration_v1");
   if (feats.enableOrderConfirmTpl !== false) maybeAdd("cod_confirmation_v1");
   maybeAdd("order_shipped_v1");
@@ -1629,9 +1618,6 @@ router.patch("/:clientId/features", protect, async (req, res) => {
     if (profile.warrantyClaimUrl !== undefined)      $set["brand.warrantyClaimUrl"] = profile.warrantyClaimUrl || "";
     if (profile.warrantyDuration !== undefined)      $set["brand.warrantyDefaultDuration"] = profile.warrantyDuration || "1 Year";
     if (profile.warrantyPolicy !== undefined)        $set["policies.warrantyPolicy"] = profile.warrantyPolicy || "";
-    if (profile.loyaltySilverThreshold !== undefined) $set["loyaltyConfig.tierThresholds.silver"] = Number(profile.loyaltySilverThreshold) || 0;
-    if (profile.loyaltyGoldThreshold !== undefined)   $set["loyaltyConfig.tierThresholds.gold"] = Number(profile.loyaltyGoldThreshold) || 0;
-
     if (Object.keys($set).length === 0) {
       return res.status(400).json({ error: "No valid feature/profile fields supplied" });
     }
@@ -1692,8 +1678,6 @@ router.patch("/:clientId/features", protect, async (req, res) => {
         warrantyClaimUrl: client.brand?.warrantyClaimUrl || "",
         warrantyDuration: client.brand?.warrantyDefaultDuration || client.wizardFeatures?.warrantyDuration || "1 Year",
         warrantyPolicy: client.policies?.warrantyPolicy || "",
-        loyaltySilverThreshold: client.loyaltyConfig?.tierThresholds?.silver || client.wizardFeatures?.loyaltySilverThreshold || 0,
-        loyaltyGoldThreshold: client.loyaltyConfig?.tierThresholds?.gold || client.wizardFeatures?.loyaltyGoldThreshold || 0
       },
       regen: regenSummary
     });
@@ -1713,7 +1697,7 @@ router.get("/:clientId/features", protect, async (req, res) => {
     if (!tenantId || tenantId !== clientId) {
       return res.status(403).json({ error: "Unauthorized" });
     }
-    const client = await Client.findOne({ clientId }).select('wizardFeatures policies platformVars brand loyaltyConfig wizardCompleted ai.persona').lean();
+    const client = await Client.findOne({ clientId }).select('wizardFeatures policies platformVars brand wizardCompleted ai.persona').lean();
     if (!client) return res.status(404).json({ error: "Client not found" });
     res.json({
       success: true,
@@ -1725,8 +1709,6 @@ router.get("/:clientId/features", protect, async (req, res) => {
         warrantyClaimUrl: client.brand?.warrantyClaimUrl || "",
         warrantyDuration: client.brand?.warrantyDefaultDuration || client.wizardFeatures?.warrantyDuration || "1 Year",
         warrantyPolicy: client.policies?.warrantyPolicy || "",
-        loyaltySilverThreshold: client.loyaltyConfig?.tierThresholds?.silver || client.wizardFeatures?.loyaltySilverThreshold || 0,
-        loyaltyGoldThreshold: client.loyaltyConfig?.tierThresholds?.gold || client.wizardFeatures?.loyaltyGoldThreshold || 0
       },
       policies: client.policies || {},
       platformVars: client.platformVars || {},

@@ -58,19 +58,6 @@ const VARIABLE_REGISTRY = [
   { name: "customer_city", label: "Customer city", category: "Customer",
     source: "lead.city", wizardField: null,
     fallback: "", preview: "Mumbai" },
-  { name: "loyalty_points", label: "Loyalty points balance", category: "Customer",
-    source: "computed.loyaltyPoints", wizardField: null,
-    fallback: "0", preview: "250" },
-  { name: "loyalty_tier", label: "Loyalty tier", category: "Customer",
-    source: "computed.loyaltyTier", wizardField: null,
-    fallback: "Bronze", preview: "Silver" },
-  { name: "loyalty_cash_value", label: "Loyalty cash value", category: "Customer",
-    source: "computed.loyaltyCashValue", wizardField: null,
-    fallback: "₹0", preview: "₹50" },
-  { name: "points_per_currency", label: "Points per currency unit", category: "Customer",
-    source: "client.loyaltyConfig.pointsPerUnit", wizardField: null,
-    fallback: "100", preview: "100" },
-
   // ── ORDER / COMMERCE (metadata.lastOrder + legacy flat keys) ───────────
   { name: "order_id", label: "Order ID", category: "Order",
     source: "computed.orderIdDisplay", wizardField: null,
@@ -123,10 +110,6 @@ const VARIABLE_REGISTRY = [
   { name: "order_date", label: "Order date", category: "Order",
     source: "computed.orderDate", wizardField: null,
     fallback: "", preview: "12 May 2026" },
-  { name: "loyalty_expiry_date", label: "Loyalty expiry date", category: "Customer",
-    source: "lead.loyaltyExpiresAt", wizardField: null,
-    fallback: "", preview: "31 May 2026" },
-
   // ── CAPTURED ────────────────────────────────────────────────────────────
   { name: "captured_email", label: "Captured email", category: "Captured",
     source: "convo.metadata.captured_email", wizardField: null, fallback: "", preview: "u@x.com" },

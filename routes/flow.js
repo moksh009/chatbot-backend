@@ -276,26 +276,6 @@ router.post('/simulate', protect, async (req, res) => {
           sourceHandle = 'negative';
         }
         edgeUsed = outgoingEdges.find(e => String(e.sourceHandle || '') === sourceHandle) || null;
-      } else if (currentNode?.type === 'loyalty_action') {
-        const actionType = String(currentNode?.data?.actionType || 'GIVE_LOYALTY').toUpperCase();
-        if (['CHECK_LOYALTY', 'LOOKUP_POINTS', 'CHECK_BALANCE', 'FETCH_POINTS'].includes(actionType)) {
-          const bal = Number(updatedVariables?.loyalty_points_balance ?? updatedVariables?.loyalty_points ?? 0);
-          const handle = bal > 0 ? 'has_points' : 'none';
-          edgeUsed = outgoingEdges.find(e => String(e.sourceHandle || '') === handle) || null;
-        } else if (actionType === 'REDEEM_POINTS') {
-          const required = Number(currentNode?.data?.pointsRequired || 0);
-          const current = Number(updatedVariables?.loyalty_points || 0);
-          const isSuccess = required > 0 ? current >= required : true;
-          if (isSuccess) updatedVariables.loyalty_points = Math.max(0, current - required);
-          edgeUsed = outgoingEdges.find(e => String(e.sourceHandle || '') === (isSuccess ? 'success' : 'fail')) || null;
-        } else {
-          const points = Number(currentNode?.data?.points || 0);
-          const current = Number(updatedVariables?.loyalty_points || 0);
-          updatedVariables.loyalty_points = current + Math.max(0, points);
-          updatedVariables.loyalty_points_balance =
-            Number(updatedVariables?.loyalty_points_balance ?? current) + Math.max(0, points);
-          edgeUsed = outgoingEdges[0];
-        }
       } else if (currentNode?.type === 'order_action') {
         const act = String(currentNode?.data?.actionType || currentNode?.data?.action || 'CHECK_ORDER_STATUS');
         if (act === 'CHECK_ORDER_STATUS') {

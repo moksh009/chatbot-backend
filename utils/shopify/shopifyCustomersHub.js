@@ -105,8 +105,6 @@ function filterCustomers(list, { tier, topedge, search }) {
   if (topedge && topedge !== 'all') {
     if (topedge === 'has_score') {
       out = out.filter((c) => c.leadScore != null && Number(c.leadScore) > 0);
-    } else if (topedge === 'has_loyalty') {
-      out = out.filter((c) => (c.loyaltyPoints || 0) > 0);
     } else if (topedge === 'has_warranty') {
       out = out.filter((c) => (c.warrantyTotal || 0) > 0);
     }

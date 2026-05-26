@@ -25,9 +25,7 @@ const KNOWN = new Set([
   'store_name',
   'cart_items_html',
   'cart_url',
-  'cart_total',
-  'loyalty_points',
-  'loyalty_tier'
+  'cart_total'
 ]);
 
 function normalizeKey(raw) {
@@ -96,10 +94,6 @@ function valueForNormKey(nk, lead, client) {
       return lead?.abandonedCheckoutUrl || lead?.checkoutUrl || '#';
     case 'cart_total':
       return cartTotalDisplay(lead) || '—';
-    case 'loyalty_points':
-      return String(lead?.loyaltyPoints ?? '');
-    case 'loyalty_tier':
-      return lead?.loyaltyTier || '';
     default:
       return null;
   }

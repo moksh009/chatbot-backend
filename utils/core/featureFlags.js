@@ -4,7 +4,6 @@ const Client = require('../../models/Client');
 
 /** Canonical feature keys used by requireFeature() middleware */
 const FEATURE_KEYS = {
-  loyalty: 'enableLoyalty',
   warranty: 'enableWarranty',
   abandonedCart: 'enableAbandonedCart',
   codToPrepaid: 'enableCodToPrepaid',
@@ -29,16 +28,7 @@ function readFeatureFromClient(client, featureName) {
   if (!client) return false;
   const wf = wizardFeatures(client);
   const od = onboardingFeatures(client);
-  const lc = client.loyaltyConfig || {};
-
   switch (featureName) {
-    case 'loyalty':
-      return (
-        lc.isEnabled === true ||
-        lc.enabled === true ||
-        wf.enableLoyalty === true ||
-        od.enableLoyalty === true
-      );
     case 'warranty':
       return (
         wf.enableWarranty === true ||
@@ -64,18 +54,17 @@ function readFeatureFromClient(client, featureName) {
 async function isFeatureEnabled(clientId, featureName) {
   if (!clientId || !featureName) return false;
   const client = await Client.findOne({ clientId })
-    .select('wizardFeatures onboardingData loyaltyConfig settings brand')
+    .select('wizardFeatures onboardingData settings brand')
     .lean();
   return readFeatureFromClient(client, featureName);
 }
 
 async function loadClientFeatureFlags(clientId) {
   const client = await Client.findOne({ clientId })
-    .select('wizardFeatures onboardingData loyaltyConfig settings')
+    .select('wizardFeatures onboardingData settings')
     .lean();
   if (!client) return null;
   return {
-    loyalty: readFeatureFromClient(client, 'loyalty'),
     warranty: readFeatureFromClient(client, 'warranty'),
     abandonedCart: readFeatureFromClient(client, 'abandonedCart'),
     codToPrepaid: readFeatureFromClient(client, 'codToPrepaid'),
@@ -121,10 +110,6 @@ function isWarrantyEnabled(client) {
   return readFeatureFromClient(client, 'warranty');
 }
 
-function isLoyaltyEnabled(client) {
-  return readFeatureFromClient(client, 'loyalty');
-}
-
 function isAbandonedCartEnabled(client) {
   return readFeatureFromClient(client, 'abandonedCart');
 }
@@ -137,6 +122,5 @@ module.exports = {
   loadClientFeatureFlags,
   requireFeature,
   isWarrantyEnabled,
-  isLoyaltyEnabled,
   isAbandonedCartEnabled,
 };

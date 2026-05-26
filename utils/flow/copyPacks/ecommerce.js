@@ -43,10 +43,6 @@ function buildEcommerceDefaults(ctx) {
     returns_policy_short: `*{{brand_name}}* keeps returns painless: unused items, clear photos, fast decisions. Tap *Start Return* and we’ll guide you.`,
     cancellation_confirm: `⚠️ *Decision point:* cancel *{{order_number}}* with *{{brand_name}}*? Once submitted, reversal may not be possible.`,
     cancellation_success: `✅ *{{order_number}}* is cancelled. We’re sorry it didn’t work out — when you’re ready again, *{{brand_name}}* will be one tap away (*menu*).`,
-    loyalty_welcome:
-      `💎 *{{brand_name}}* Rewards — you’re *in*. Welcome bonus: *${F?.loyaltySignupBonus ?? 0} pts* locked to this WhatsApp number.\n\nEarn on every order, redeem at checkout, and skip the generic support queue.`,
-    loyalty_points_msg:
-      `💎 *Live balance* for this WhatsApp:\n\n• Points: *{{loyalty_points}}*\n• Tier: *{{loyalty_tier}}*\n• Approx. value: *{{loyalty_cash_value}}*\n\n*Action:* tap *Redeem* when you’re ready — discounts apply instantly at checkout for *{{brand_name}}*.`,
     referral_msg:
       `📣 Love *{{brand_name}}*? Refer a friend from this chat — you both win *{{referral_points}} bonus points* when they first order. Limited slots each month.`,
     sentiment_ask: `Quick pulse check for *{{brand_name}}* — how are we doing today? (Your reply trains us to serve you better.)`,
@@ -79,7 +75,7 @@ function buildEcommerceDefaults(ctx) {
     warranty_active_msg:
       `✅ *Active coverage* — this order sits *inside* the *{{warranty_duration}}* window at *{{brand_name}}*.\n\nNext: reply with the issue (photo/video helps) or tap *menu* → human for RMA.`,
     warranty_expired_msg:
-      `⏳ *Coverage window closed* for this purchase under *{{warranty_duration}}*.\n\n*{{brand_name}}* can still help with paid repair, upgrade pricing, or loyalty routes — tap *menu* for a specialist.`,
+      `⏳ *Coverage window closed* for this purchase under *{{warranty_duration}}*.\n\n*{{brand_name}}* can still help with paid repair or upgrade pricing — tap *menu* for a specialist.`,
     warranty_none_msg:
       `🔍 *No match yet.* Double-check the order # / serial, or register via *Warranty → Register*.\n\nIf you paid under a different phone number, tell us the *order #* only — tap *menu* for a human lookup.`,
 

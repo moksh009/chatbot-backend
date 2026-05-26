@@ -10,7 +10,6 @@ const FollowUpSequence = require('../../models/FollowUpSequence');
 const VisitorIdentity = require('../../models/VisitorIdentity');
 const PixelEvent = require('../../models/PixelEvent');
 const LinkClickEvent = require('../../models/LinkClickEvent');
-const LoyaltyTransaction = require('../../models/LoyaltyTransaction');
 const WarrantyRecord = require('../../models/WarrantyRecord');
 const ConversationNote = require('../../models/ConversationNote');
 const { auditLog } = require('../audit/auditWriter');
@@ -25,7 +24,6 @@ const PII_MODELS = [
   { name: 'VisitorIdentity', model: VisitorIdentity },
   { name: 'PixelEvent', model: PixelEvent },
   { name: 'LinkClickEvent', model: LinkClickEvent },
-  { name: 'LoyaltyTransaction', model: LoyaltyTransaction },
   { name: 'WarrantyRecord', model: WarrantyRecord },
   { name: 'ConversationNote', model: ConversationNote },
 ];
@@ -60,7 +58,6 @@ async function exportLeadBundle({ leadId, phone, actor, clientId }) {
   bundle.records.VisitorIdentity = await VisitorIdentity.find({ clientId: cid, phone: lead.phoneNumber }).lean();
   bundle.records.PixelEvent = await PixelEvent.find({ clientId: cid, phone: lead.phoneNumber }).limit(500).lean();
   bundle.records.LinkClickEvent = await LinkClickEvent.find({ clientId: cid, phone: lead.phoneNumber }).limit(500).lean();
-  bundle.records.LoyaltyTransaction = await LoyaltyTransaction.find({ clientId: cid, leadId: lead._id }).lean();
   bundle.records.WarrantyRecord = await WarrantyRecord.find({ clientId: cid, phone: lead.phoneNumber }).lean();
   bundle.records.ConversationNote = await ConversationNote.find({ clientId: cid }).limit(200).lean();
 

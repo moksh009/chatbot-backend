@@ -37,7 +37,6 @@ const NODE_TYPES = {
   abandoned_cart: { handles: { in: ['top'], out: ['recovered'] }, desc: 'Cart recovery automation step.' },
   cod_prepaid:    { handles: { in: ['top'], out: ['paid','cod'] }, desc: 'COD conversion branch.' },
   review:         { handles: { in: ['top'], out: ['positive','negative'] }, desc: 'Review collection node.' },
-  loyalty_action: { handles: { in: ['top'], out: ['success','fail'] }, desc: 'Loyalty branch node.' },
   warranty_check: { handles: { in: ['top'], out: ['active','expired','none'] }, desc: 'Warranty lookup node.' },
   email:          { handles: { in: ['top'], out: ['bottom'] }, desc: 'Email node.' },
   tag_lead:       { handles: { in: ['top'], out: ['bottom'] }, desc: 'Tag lead. data: { tag, action }' },
@@ -149,7 +148,7 @@ function validateAndCleanFlow(parsed, yOffset = 0) {
         buttonNode: 'interactive', button: 'interactive',
         escalateNode: 'livechat', human_handoff: 'livechat',
         payment: 'message', payment_link: 'message',
-        loyalty: 'loyalty_action', order: 'order_action',
+        order: 'order_action',
         ab_test: 'logic',
         template: 'message', wa_template: 'message',
       };

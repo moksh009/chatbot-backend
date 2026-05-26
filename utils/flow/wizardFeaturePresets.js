@@ -21,7 +21,6 @@ const ECOMMERCE_BASE = {
   enableAIFallback: true,
   enableInstallSupport: false,
   enableWarranty: false,
-  enableLoyalty: false,
   enableReferral: false,
   enableB2BWholesale: false,
 };
@@ -31,12 +30,10 @@ const PRESETS = {
   fashion: {
     ...ECOMMERCE_BASE,
     enableReturnsRefunds: true,
-    enableLoyalty: true,
   },
   clothing: {
     ...ECOMMERCE_BASE,
     enableReturnsRefunds: true,
-    enableLoyalty: true,
   },
   electronics: {
     ...ECOMMERCE_BASE,
@@ -50,13 +47,11 @@ const PRESETS = {
   },
   beauty: {
     ...ECOMMERCE_BASE,
-    enableLoyalty: true,
   },
   food: {
     ...ECOMMERCE_BASE,
     enableAbandonedCart: true,
     enableWarranty: false,
-    enableLoyalty: true,
   },
   services: {
     enableCatalog: false,
@@ -74,7 +69,6 @@ const PRESETS = {
     enableAIFallback: true,
     enableInstallSupport: true,
     enableWarranty: false,
-    enableLoyalty: false,
   },
   local: {
     enableCatalog: false,
@@ -86,7 +80,6 @@ const PRESETS = {
     enableSupportEscalation: true,
     enableAIFallback: true,
     enableWarranty: false,
-    enableLoyalty: false,
   },
   "salon/spa": {
     enableCatalog: false,

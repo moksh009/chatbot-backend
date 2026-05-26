@@ -4,7 +4,6 @@ const Order = require('../../models/Order');
 const Message = require('../../models/Message');
 const FollowUpSequence = require('../../models/FollowUpSequence');
 const CampaignMessage = require('../../models/CampaignMessage');
-const CustomerWallet = require('../../models/CustomerWallet');
 const WarrantyRecord = require('../../models/WarrantyRecord');
 const Conversation = require('../../models/Conversation');
 const { getAppRedis } = require('../../utils/core/redisFactory');
@@ -50,7 +49,6 @@ async function buildLiveLeadPanels(lead) {
     messages,
     sequences,
     campaigns,
-    wallet,
     warranties,
   ] = await Promise.all([
     cachedShopifyOrders(clientId, phone),
@@ -69,7 +67,6 @@ async function buildLiveLeadPanels(lead) {
     })
       .limit(10)
       .lean(),
-    CustomerWallet.findOne({ clientId, phone }).lean(),
     WarrantyRecord.find({ clientId, phone }).limit(5).lean(),
   ]);
 
@@ -80,7 +77,6 @@ async function buildLiveLeadPanels(lead) {
       recentMessages: messages,
       activeSequences: sequences,
       activeCampaigns: campaigns,
-      loyaltyBalance: wallet?.balance ?? wallet?.points ?? null,
       warrantyRecords: warranties,
       recentSentimentTrend: lead.recentSentimentTrend,
       scoreBreakdown: lead.scoreBreakdown,

@@ -34,7 +34,7 @@ async function testTemplateApprovalRedisFailure() {
   const r = await checkTemplateApproval({
     redis,
     clientId: 'c1',
-    payload: { templateName: 'loyalty_points_reminder' },
+    payload: { templateName: 'cart_recovery' },
     intent: 'marketing',
   });
   assert.strictEqual(r.pass, false);

@@ -406,8 +406,6 @@ app.use('/api', require('./routes/dataDeletion')); // Meta compliance: data dele
 app.use('/api/media', mediaRoutes);
 app.use('/api/reseller', require('./routes/reseller'));
 
-// Phase 27: Loyalty Hub & Enterprise Rewards
-app.use('/api/loyalty', require('./routes/loyalty'));
 app.use('/api/warranty', require('./routes/warranty'));
 app.use('/api/template-gate', require('./routes/templateGate'));
 

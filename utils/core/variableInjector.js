@@ -46,18 +46,6 @@ async function buildVariableContext(client, phone, convo, lead) {
     dna = await CustomerIntelligence.findOne({ clientId: clientLean.clientId, phone }).lean();
   } catch (_) {}
 
-  let wallet = null;
-  try {
-    const CustomerWallet = require("../../models/CustomerWallet");
-    wallet = await CustomerWallet.findOne({
-      clientId: clientLean.clientId,
-      phone: normPhone,
-    }).lean();
-    if (!wallet && phone !== normPhone) {
-      wallet = await CustomerWallet.findOne({ clientId: clientLean.clientId, phone }).lean();
-    }
-  } catch (_) {}
-
   const meta = convoLean.metadata || {};
   const lastOrder = meta.lastOrder || {};
 
@@ -85,10 +73,6 @@ async function buildVariableContext(client, phone, convo, lead) {
   const codDiscount = wf.codDiscountAmount
     ?? clientLean.automationFlows?.find((f) => f.id === "cod_to_prepaid")?.config?.discountAmount
     ?? 50;
-
-  const pointsPerCur = clientLean.loyaltyConfig?.pointsPerCurrency || clientLean.loyaltyConfig?.currencyUnit || 100;
-  const loyaltyBal = wallet?.balance ?? 0;
-  const loyaltyCash = `₹${Math.floor(loyaltyBal / (pointsPerCur || 100))}`;
 
   const orderNumFlat = meta.order_number || lastOrder.orderNumber || "";
   const orderIdDisplay = orderNumFlat
@@ -144,9 +128,6 @@ async function buildVariableContext(client, phone, convo, lead) {
       currentDate: dateIN,
       currentTime: timeIN,
       firstName: firstNameComputed,
-      loyaltyPoints: String(loyaltyBal),
-      loyaltyTier: wallet?.tier || "Bronze",
-      loyaltyCashValue: loyaltyCash,
       warrantyDuration:
         clientLean.platformVars?.warrantyDuration
         || clientLean.brand?.warrantyDefaultDuration
@@ -158,10 +139,7 @@ async function buildVariableContext(client, phone, convo, lead) {
       orderItems: orderItemsStr,
       trackingUrl: trackingUrlStr,
       cartTotal: cartTotalFmt,
-      referralPoints:
-        clientLean.loyaltyConfig?.referralBonus
-        ?? wf.referralPointsBonus
-        ?? 500,
+      referralPoints: wf.referralPointsBonus ?? 500,
       estimatedDelivery: "3–5 business days",
       orderDate: orderNumFlat
         ? ""
@@ -284,7 +262,6 @@ async function buildVariableContext(client, phone, convo, lead) {
     discount_code: discountCode,
     discount_value: leadLean?.activeDiscountValue ? `${leadLean.activeDiscountValue}%` : "",
     discount_amount: String(codDiscount),
-    loyalty_balance: ctx.loyalty_points,
     review_url: ctx.google_review_url || clientLean.brand?.googleReviewUrl || "",
     ad_id: leadLean?.adAttribution?.adId || "",
     ad_name: leadLean?.adAttribution?.adHeadline || "",

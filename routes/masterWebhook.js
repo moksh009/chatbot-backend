@@ -6,7 +6,6 @@ const Conversation = require('../models/Conversation');
 const Campaign = require('../models/Campaign');
 const CampaignMessage = require('../models/CampaignMessage');
 const { handleWhatsAppMessage, saveInboundMessage, handleWhatsAppCatalogOrder } = require('../utils/commerce/dualBrainEngine');
-const { processOrderForLoyalty } = require('../utils/commerce/walletService');
 const { logActivity } = require('../utils/core/activityLogger');
 const { recalculateLeadScore } = require('../utils/core/scoringHelper');
 const { buildEventEnvelope } = require('../utils/flow/eventEnvelope');
@@ -368,17 +367,6 @@ async function processMessages(messages, metadata, contacts) {
             const ReferralEngine = require('../utils/commerce/referralEngine');
             await ReferralEngine.markConverted(lead);
             AdLead.pushJourneyEvent(lead.clientId, from, 'order_placed', { itemsCount: orderItems.length }).catch(() => {});
-
-            // Phase 27: Loyalty Points Award (WhatsApp Catalog Order)
-            const loyaltyEnabled = clientDoc.loyaltyConfig?.isEnabled || clientDoc.loyaltyConfig?.enabled;
-            if (loyaltyEnabled) {
-                const totalAmount = coResult.totalPrice || orderItems.reduce((sum, item) => sum + (Number(item?.price || 0) * Number(item?.quantity || 1)), 0);
-                if (totalAmount > 0) {
-                   processOrderForLoyalty(clientDoc.clientId, from, totalAmount, `WACAT_${message.id}`)
-                     .then(res => { if (res) log.info(`Awarded ${res.pointsAwarded} points (WA Catalog) to ${from}`); })
-                     .catch(() => {});
-                }
-            }
 
             // Enterprise Pulse Log: WhatsApp Order
             await logActivity(clientDoc.clientId, {

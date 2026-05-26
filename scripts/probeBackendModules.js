@@ -68,7 +68,6 @@ const modules = [
   './routes/whitelabel',
   './routes/dataDeletion',
   './routes/reseller',
-  './routes/loyalty',
   './routes/warranty',
   './routes/templateGate',
   './routes/botQuality',

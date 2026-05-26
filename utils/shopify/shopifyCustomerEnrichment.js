@@ -3,7 +3,7 @@
 const { normalizePhone } = require('../core/helpers');
 
 /**
- * Attach TopEdge workspace signals (loyalty, warranty, lead) to Shopify customers.
+ * Attach TopEdge workspace signals (warranty, lead) to Shopify customers.
  * @param {string} clientId
  * @param {object[]} shopifyCustomers
  */
@@ -13,13 +13,11 @@ async function enrichShopifyCustomers(clientId, shopifyCustomers = []) {
   }
 
   const AdLead = require('../../models/AdLead');
-  const CustomerWallet = require('../../models/CustomerWallet');
   const Client = require('../../models/Client');
 
   const client = await Client.findOne({ clientId })
-    .select('loyaltyConfig enableWarranty')
+    .select('enableWarranty')
     .lean();
-  const loyaltyEnabled = Boolean(client?.loyaltyConfig?.isEnabled);
   const warrantyEnabled = Boolean(client?.enableWarranty);
 
   const phoneSet = new Set();
@@ -41,12 +39,7 @@ async function enrichShopifyCustomers(clientId, shopifyCustomers = []) {
     ? tierDoc.tiers
     : ScoreTierConfig.getDefaultConfig(clientId).tiers;
 
-  const [wallets, leadsByPhone, leadsByEmail] = await Promise.all([
-    loyaltyEnabled && phones.length
-      ? CustomerWallet.find({ clientId, phone: { $in: phones } })
-          .select('phone balance tier lifetimePoints')
-          .lean()
-      : [],
+  const [leadsByPhone, leadsByEmail] = await Promise.all([
     phones.length
       ? AdLead.find({ clientId, phoneNumber: { $in: phones } })
           .select('phoneNumber email name leadScore warrantyRecords tags')
@@ -59,7 +52,6 @@ async function enrichShopifyCustomers(clientId, shopifyCustomers = []) {
       : [],
   ]);
 
-  const walletByPhone = new Map((wallets || []).map((w) => [w.phone, w]));
   const leadByPhone = new Map();
   for (const lead of leadsByPhone || []) {
     const p = normalizePhone(lead.phoneNumber);
@@ -75,7 +67,6 @@ async function enrichShopifyCustomers(clientId, shopifyCustomers = []) {
     const phone = normalizePhone(c.phone);
     const email = String(c.email || '').trim().toLowerCase();
     const lead = (phone && leadByPhone.get(phone)) || (email && leadByEmail.get(email)) || null;
-    const wallet = phone ? walletByPhone.get(phone) : null;
 
     const warrantyRecords = lead?.warrantyRecords || [];
     const activeWarranty = warrantyRecords.filter((w) => w.status === 'active').length;
@@ -87,10 +78,6 @@ async function enrichShopifyCustomers(clientId, shopifyCustomers = []) {
       leadName: lead?.name || null,
       leadScore: lead?.leadScore ?? null,
       scoreStageName: resolveScoreStageName(lead?.leadScore ?? 0, scoreTiers),
-      loyaltyPoints: loyaltyEnabled && wallet ? wallet.balance : null,
-      loyaltyTier: loyaltyEnabled && wallet ? wallet.tier : null,
-      loyaltyLifetime: loyaltyEnabled && wallet ? wallet.lifetimePoints : null,
-      loyaltyEnabled,
       warrantyActive: warrantyEnabled ? activeWarranty : null,
       warrantyTotal: warrantyEnabled ? warrantyRecords.length : null,
       warrantyEnabled,

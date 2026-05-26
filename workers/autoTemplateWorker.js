@@ -103,13 +103,6 @@ const FIXED_TEMPLATES = {
     bodyText: 'Hi {{1}}, protect your new purchase! Register your warranty for order {{2}} within the next 48 hours using this link: {{3}} Message us here with questions.',
     buttons: [{ type: 'QUICK_REPLY', text: 'Register Warranty' }]
   },
-  loyalty_points: {
-    category: 'MARKETING',
-    purpose: 'Update customer on points earned/balance.',
-    variables: { '1': 'Customer Name', '2': 'Points Earned', '3': 'Total Points' },
-    bodyText: 'Hi {{1}}, you have earned {{2}} loyalty points on your recent order! You now have a total of {{3}} points to redeem on your next purchase.',
-    buttons: [{ type: 'QUICK_REPLY', text: 'View Rewards' }]
-  },
   cart_recovery_1: {
     category: 'MARKETING',
     purpose: 'A polite first nudge sent 30 minutes after cart abandonment.',

@@ -294,7 +294,7 @@ router.get('/clients', protect, isSuperAdmin, sanitizeMiddleware, async (req, re
       .skip(skip)
       .limit(limit)
       .select(
-        'clientId businessName name plan tier wabaId phoneNumberId whatsappToken shopifyAccessToken shopDomain storeType instagramConnected adminAlertEmail adminAlertWhatsapp emailUser emailAppPassword emailMethod googleConnected gmailAddress isActive createdAt wizardFeatures loyaltyConfig geminiApiKey openaiApiKey trialActive trialEndsAt isLifetimeAdmin isPaidAccount suspendedAt billing.isPaidAccount billing.paymentSource billing.offlinePaymentNote wizardCompleted onboardingCompleted config.wabaId config.phoneNumberId config.whatsappToken config.shopifyAccessToken config.shopDomain config.storeType platformVars'
+        'clientId businessName name plan tier wabaId phoneNumberId whatsappToken shopifyAccessToken shopDomain storeType instagramConnected adminAlertEmail adminAlertWhatsapp emailUser emailAppPassword emailMethod googleConnected gmailAddress isActive createdAt wizardFeatures geminiApiKey openaiApiKey trialActive trialEndsAt isLifetimeAdmin isPaidAccount suspendedAt billing.isPaidAccount billing.paymentSource billing.offlinePaymentNote wizardCompleted onboardingCompleted config.wabaId config.phoneNumberId config.whatsappToken config.shopifyAccessToken config.shopDomain config.storeType platformVars'
       )
       .lean();
     
@@ -1132,7 +1132,6 @@ router.patch('/my-settings', protect, async (req, res) => {
       systemPrompt, geminiApiKey,
       // Phase 29: AI Persona
       ai,
-      loyaltyConfig,
       businessName,
       botName,
       supportPhone,
@@ -1539,22 +1538,6 @@ router.patch('/my-settings', protect, async (req, res) => {
       updateFields['brand.warrantyClaimUrl'] = val;
       updateFields['wizardFeatures.warrantyClaimUrl'] = val;
     }
-    if (loyaltyConfig !== undefined) {
-      updateFields.loyaltyConfig = loyaltyConfig;
-      if (loyaltyConfig?.isEnabled !== undefined || loyaltyConfig?.enabled !== undefined) {
-        const isEnabled = loyaltyConfig?.isEnabled ?? loyaltyConfig?.enabled;
-        updateFields['wizardFeatures.enableLoyalty'] = !!isEnabled;
-      }
-      const silverThreshold = Number(loyaltyConfig?.tierThresholds?.silver);
-      const goldThreshold = Number(loyaltyConfig?.tierThresholds?.gold);
-      if (Number.isFinite(silverThreshold)) {
-        updateFields['wizardFeatures.loyaltySilverThreshold'] = silverThreshold;
-      }
-      if (Number.isFinite(goldThreshold)) {
-        updateFields['wizardFeatures.loyaltyGoldThreshold'] = goldThreshold;
-      }
-    }
-
     if (emailUser !== undefined) updateFields.emailUser = emailUser;
     if (emailAppPassword !== undefined && emailAppPassword !== '••••••••' && emailAppPassword.trim() !== '') {
       updateFields.emailAppPassword = emailAppPassword;

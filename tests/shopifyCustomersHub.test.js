@@ -11,9 +11,9 @@ const {
 
 describe('shopifyCustomersHub', () => {
   const sample = [
-    { id: 1, total_spent: '500', orders_count: 2, leadScore: 40, loyaltyPoints: 0, warrantyTotal: 0 },
-    { id: 2, total_spent: '15000', orders_count: 8, leadScore: 90, loyaltyPoints: 100, warrantyTotal: 1 },
-    { id: 3, total_spent: '8000', orders_count: 4, leadScore: null, loyaltyPoints: 0, warrantyTotal: 0 },
+    { id: 1, total_spent: '500', orders_count: 2, leadScore: 40, warrantyTotal: 0 },
+    { id: 2, total_spent: '15000', orders_count: 8, leadScore: 90, warrantyTotal: 1 },
+    { id: 3, total_spent: '8000', orders_count: 4, leadScore: null, warrantyTotal: 0 },
   ];
 
   it('getSpendTier', () => {
@@ -30,8 +30,8 @@ describe('shopifyCustomersHub', () => {
   it('filterCustomers tier and topedge', () => {
     const vip = filterCustomers(sample, { tier: 'vip' });
     assert.equal(vip.length, 1);
-    const loyalty = filterCustomers(sample, { topedge: 'has_loyalty' });
-    assert.equal(loyalty.length, 1);
+    const warranty = filterCustomers(sample, { topedge: 'has_warranty' });
+    assert.equal(warranty.length, 1);
   });
 
   it('paginateCustomers cursor', () => {

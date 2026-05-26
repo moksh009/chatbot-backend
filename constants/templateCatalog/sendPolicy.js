@@ -24,7 +24,6 @@ const SLOT_SEND_META_FALLBACKS = {
   wizard_cart_2: ["cart_recovery_2", "abandoned_cart_r2_v1"],
   gate_cart_recovery: ["cart_recovery", "cart_recovery_1"],
   wizard_warranty: ["warranty_certificate", "warranty_registration_v1", "warranty_confirmation"],
-  wizard_loyalty: ["loyalty_points_reminder", "loyalty_reminder_v1"],
   gate_ndr: ["rto_ndr_rescue"],
 };
 
@@ -42,7 +41,6 @@ const CONTEXT_DEFAULT_TRIGGER = {
   order: null,
   abandoned_cart: "abandoned_cart",
   flow: null,
-  loyalty: "loyalty_expiring",
   warranty: "order_placed",
   cod_prepaid: null,
 };

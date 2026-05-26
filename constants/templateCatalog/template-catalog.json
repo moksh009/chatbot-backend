@@ -12,7 +12,6 @@
     "abandoned_cart_r2_v1": "cart_recovery_2",
     "abandoned_cart_recovery": "cart_recovery_1",
     "abandoned_cart_reminder": "cart_recovery_1",
-    "loyalty_reminder_v1": "loyalty_points_reminder",
     "warranty_registration_v1": "warranty_certificate",
     "admin_handoff": "admin_human_alert",
     "cod_to_prepaid": "eco_cod_prepaid_switch",
@@ -42,14 +41,6 @@
       "templateNames": ["eco_cod_prepaid_switch"],
       "pack": "eco-starters",
       "configureRoute": "/commerce-hub?tab=dash"
-    },
-    {
-      "id": "loyalty",
-      "title": "Loyalty reminders",
-      "description": "Points balance and expiry nudges.",
-      "templateNames": ["loyalty_points_reminder"],
-      "pack": "gate",
-      "configureRoute": "/audience-hub?tab=loyalty"
     },
     {
       "id": "reviews",
@@ -230,19 +221,6 @@
           "pushKind": "prebuilt",
           "prebuiltKey": "review_request",
           "autoTrigger": "order_delivered"
-        },
-        {
-          "id": "wizard_loyalty",
-          "title": "Loyalty points expiring",
-          "description": "Points expiry nudge for loyalty program.",
-          "canonicalMetaName": "loyalty_points_reminder",
-          "metaNames": ["loyalty_reminder_v1", "loyalty_points_reminder"],
-          "usedIn": ["AI Setup", "Loyalty"],
-          "configureRoute": "/audience-hub?tab=loyalty",
-          "pack": "wizard",
-          "pushKind": "gate",
-          "prebuiltKey": "loyalty_reminder_v1",
-          "autoTrigger": "loyalty_expiring"
         },
         {
           "id": "wizard_warranty",

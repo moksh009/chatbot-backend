@@ -137,21 +137,6 @@ function compilePlanToGraph(plan, { yOffset = 0 } = {}) {
       return;
     }
 
-    if (type === "loyalty_action") {
-      nodes.push({
-        id,
-        type: "loyalty_action",
-        position: pos(idx, yOffset),
-        data: {
-          label: s.step || "Loyalty action",
-          actionType: "REDEEM_POINTS",
-          pointsRequired: 100,
-          heatmapCount: 0,
-        },
-      });
-      return;
-    }
-
     if (type === "warranty_check") {
       nodes.push({
         id,

@@ -80,27 +80,9 @@ const adLeadSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
-  // Layer 2: Loyalty Hub $unwind Killer (Pre-computed fields)
-  loyaltyPoints: {
-    type: Number,
-    default: 0
-  },
   pendingSupport: {
     type: Boolean,
     default: false
-  },
-  loyaltyTier: {
-    type: String,
-    default: 'Bronze'
-  },
-  /** Optional expiry for loyalty points (used by reminder cron when set). */
-  loyaltyExpiresAt: {
-    type: Date,
-    default: null
-  },
-  loyaltyReminderSentAt: {
-    type: Date,
-    default: null
   },
   totalSpent: {
     type: Number,

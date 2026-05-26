@@ -10,7 +10,6 @@ const FollowUpSequenceSchema = new mongoose.Schema({
     type: String,
     enum: [
       'custom',
-      'loyalty_reminder',
       'review_request',
       'abandoned_cart',
       'warranty_resend',
@@ -33,7 +32,7 @@ const FollowUpSequenceSchema = new mongoose.Schema({
   steps: [{
     type: {
       type: String,
-      enum: ['whatsapp', 'email', 'loyalty_reminder', 'review_request', 'warranty_resend'],
+      enum: ['whatsapp', 'email', 'review_request', 'warranty_resend'],
       default: 'whatsapp',
     },
     templateId: String, // For Meta WhatsApp Templates

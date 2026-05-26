@@ -26,26 +26,6 @@ const PLAYBOOK_TEMPLATES = [
     ],
   },
   {
-    playbookKey: 'loyalty_enrollment',
-    name: 'Loyalty Enrollment',
-    journeyTrigger: 'order_fulfilled',
-    journeyPolicies: {
-      repeatPerCustomer: 'never',
-      minOrderValue: null,
-      productInclusions: null,
-      windowDays: 3,
-    },
-    steps: [
-      {
-        type: 'whatsapp',
-        templateName: 'loyalty_enroll_v1',
-        content: 'You earned loyalty points on your order! Tap to view your wallet.',
-        delayValue: 3,
-        delayUnit: 'd',
-      },
-    ],
-  },
-  {
     playbookKey: 'repurchase_nudge',
     name: 'Repurchase Nudge',
     journeyTrigger: 'order_delivered',
