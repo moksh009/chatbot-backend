@@ -8,6 +8,7 @@ function resolveCatalogPath() {
   if (envPath && fs.existsSync(envPath)) return envPath;
 
   const candidates = [
+    path.join(__dirname, "template-catalog.json"),
     path.join(__dirname, "../../data/template-catalog.json"),
     path.join(__dirname, "../../../shared/template-catalog.json"),
   ];
@@ -15,7 +16,7 @@ function resolveCatalogPath() {
     if (fs.existsSync(candidate)) return candidate;
   }
   throw new Error(
-    `template-catalog.json not found. Set TEMPLATE_CATALOG_PATH or add data/template-catalog.json to the repo. Tried: ${candidates.join(", ")}`
+    `template-catalog.json not found. Set TEMPLATE_CATALOG_PATH or commit constants/templateCatalog/template-catalog.json. Tried: ${candidates.join(", ")}`
   );
 }
 

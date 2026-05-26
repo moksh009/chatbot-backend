@@ -109,3 +109,4 @@ public.pem
 !birthdays_prod_steven.json
 !booked-slots.json
 !flowTemplates.js
+!constants/templateCatalog/template-catalog.json
