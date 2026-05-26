@@ -82,7 +82,7 @@ const MERCHANT_PLAYBOOK_STEPS = [
     order: 10,
     title: 'Confirm your Shopify checkout',
     description: 'Tell us if you use Shopify checkout or Gokwik / Razorpay Magic / Shiprocket so we show the right opt-in sources.',
-    href: '/audience-hub?tab=growth-sources&stack=1',
+    href: '/audience-hub?tab=growth&view=sources&stack=1',
     cta: 'Confirm checkout',
   },
   {
@@ -90,7 +90,7 @@ const MERCHANT_PLAYBOOK_STEPS = [
     order: 11,
     title: 'Set your opt-in policy',
     description: 'Choose single or double opt-in and STOP keywords for WhatsApp compliance.',
-    href: '/audience-hub?tab=growth-sources&policy=1',
+    href: '/audience-hub?tab=growth&view=sources&policy=1',
     cta: 'Opt-in policy',
   },
 ];

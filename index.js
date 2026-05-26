@@ -16,7 +16,7 @@ if (process.env.SENTRY_DSN) {
 const log = require('./utils/core/logger')('Server');
 const connectDB = require('./db');
 const Client = require('./models/Client');
-const { apiGeneralLimiter } = require('./middleware/enterpriseLimits');
+const { apiGeneralLimiter, IS_DEV_API_LIMITS_OFF } = require('./middleware/enterpriseLimits');
 // Load environment variables
 // dotenv.config();
 // Silence .env missing warning
@@ -207,6 +207,11 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads'), { maxAge: '1
 app.use(requestMetrics.middleware());
 
 // Multi-tenant API flood guard (webhooks excluded — see enterpriseLimits.js)
+if (IS_DEV_API_LIMITS_OFF) {
+  log.info(
+    '[RateLimit] Development — per-IP /api limiter off (set ENFORCE_API_RATE_LIMIT=true to test prod limits)'
+  );
+}
 app.use('/api', apiGeneralLimiter);
 
 const { apiSecurityLayer } = require('./middleware/apiSecurityLayer');

@@ -4,9 +4,16 @@ const FollowUpSequence = require('../../models/FollowUpSequence');
 const sequenceTemplates = require('../../data/sequenceTemplates');
 const WhatsApp = require('../meta/whatsapp');
 const log = require('../core/logger')('CommerceAutomation');
+const {
+  mergeSystemAutomations,
+  isSystemAutomation,
+  validateCartFollowupDelay,
+  cartFollowupSyncPatch,
+  CART_FOLLOWUP_MIN_MINUTES,
+} = require('./commerceAutomationPresets');
 
-const COMMERCE_AUTOMATION_VERSION = 1;
-const ORDER_STATUS_EVENTS = ['paid', 'shipped', 'delivered', 'cancelled'];
+const COMMERCE_AUTOMATION_VERSION = 2;
+const ORDER_STATUS_EVENTS = ['pending', 'paid', 'shipped', 'delivered', 'cancelled'];
 
 function normalizeEvent(eventName) {
   const e = String(eventName || '').toLowerCase();
@@ -162,6 +169,7 @@ async function sendAutomationTemplate({ clientConfig, order, automation, item })
   if (!phone || !automation.templateName) return false;
 
   const triggerMap = {
+    pending: 'order_placed',
     paid: 'order_placed',
     shipped: 'order_fulfilled',
     delivered: 'order_delivered',
@@ -235,6 +243,25 @@ async function runAutomationAction({ clientConfig, order, automation, item }) {
   await sendAutomationTemplate({ clientConfig, order, automation, item });
 }
 
+function normalizeProductId(id) {
+  const s = String(id || '').trim();
+  if (!s) return '';
+  const m = s.match(/(\d+)$/);
+  return m ? m[1] : s;
+}
+
+function matchesProductFilter(automation, order) {
+  const pid = normalizeProductId(automation.productId);
+  if (!pid) return true;
+  const items = order.items || [];
+  return items.some((item) => {
+    const itemPid = normalizeProductId(item.productId || item.shopifyProductId);
+    if (itemPid && itemPid === pid) return true;
+    if (automation.sku && item.sku) return matchesSkuRule({ ...automation, productId: '' }, item);
+    return false;
+  });
+}
+
 function matchesSkuRule(automation, item) {
   const target = String(automation.sku || '').trim().toLowerCase();
   const sku = String(item?.sku || '').trim().toLowerCase();
@@ -288,33 +315,93 @@ async function ensureMigration(clientConfig = {}, { persist = true } = {}) {
   return unified;
 }
 
+async function persistAutomations(clientId, automations) {
+  await Client.findOneAndUpdate(
+    { clientId },
+    {
+      $set: {
+        commerceAutomations: automations,
+        commerceAutomationVersion: COMMERCE_AUTOMATION_VERSION,
+      },
+    }
+  );
+}
+
+async function ensureSystemAutomationsPersisted(clientConfig = {}) {
+  const base = await ensureMigration(clientConfig, { persist: false });
+  const merged = mergeSystemAutomations(base);
+  const changed =
+    merged.length !== base.length ||
+    merged.some((r, i) => r.id !== base[i]?.id || r.meta?.system !== base[i]?.meta?.system);
+  if (clientConfig.clientId && changed) {
+    await persistAutomations(clientConfig.clientId, merged);
+  }
+  return merged;
+}
+
 async function listAutomations(clientConfig = {}) {
+  let list;
   if (Array.isArray(clientConfig.commerceAutomations) && clientConfig.commerceAutomations.length > 0) {
-    return clientConfig.commerceAutomations;
+    list = clientConfig.commerceAutomations;
+  } else {
+    list = buildUnifiedFromLegacy(clientConfig);
+    if (clientConfig.clientId && list.length > 0) {
+      setImmediate(() => {
+        Client.findOneAndUpdate(
+          { clientId: clientConfig.clientId },
+          {
+            $set: {
+              commerceAutomations: list,
+              commerceAutomationVersion: COMMERCE_AUTOMATION_VERSION,
+              commerceAutomationMigratedAt: new Date(),
+              commerceAutomationLegacySnapshot: buildLegacySnapshot(clientConfig),
+            },
+          }
+        ).catch(() => {});
+      });
+    }
   }
-  const unified = buildUnifiedFromLegacy(clientConfig);
-  if (clientConfig.clientId && unified.length > 0) {
-    setImmediate(() => {
-      Client.findOneAndUpdate(
-        { clientId: clientConfig.clientId },
-        {
-          $set: {
-            commerceAutomations: unified,
-            commerceAutomationVersion: COMMERCE_AUTOMATION_VERSION,
-            commerceAutomationMigratedAt: new Date(),
-            commerceAutomationLegacySnapshot: buildLegacySnapshot(clientConfig),
-          },
-        }
-      ).catch(() => {});
-    });
+  return ensureSystemAutomationsPersisted({ ...clientConfig, commerceAutomations: list });
+}
+
+async function syncAbandonedCartFlowFromRules(clientId, automations) {
+  const anyCartActive = (automations || []).some(
+    (a) => a.meta?.category === 'abandoned_cart' && a.isActive && a.templateName
+  );
+  const client = await Client.findOne({ clientId }).select('automationFlows wizardFeatures').lean();
+  if (!client) return;
+  const flows = Array.isArray(client.automationFlows) ? [...client.automationFlows] : [];
+  const idx = flows.findIndex((f) => f.id === 'abandoned_cart');
+  const patch = {
+  };
+  if (idx >= 0) {
+    flows[idx] = { ...flows[idx], isActive: anyCartActive };
+  } else if (anyCartActive) {
+    flows.push({ id: 'abandoned_cart', name: 'Abandoned Cart', isActive: true, config: {} });
   }
-  return unified;
+  await Client.findOneAndUpdate(
+    { clientId },
+    {
+      $set: {
+        automationFlows: flows,
+        'wizardFeatures.enableAbandonedCart': anyCartActive,
+      },
+    }
+  );
 }
 
 async function upsertAutomation(clientId, automation = {}) {
   const client = await Client.findOne({ clientId });
   if (!client) throw new Error('Client not found');
-  const current = await ensureMigration(client, { persist: false });
+  const current = await ensureSystemAutomationsPersisted(client);
+  const existing = current.find((a) => a.id === automation.id);
+  const system = isSystemAutomation(existing || automation);
+
+  if (system && automation.meta?.category === 'abandoned_cart') {
+    const delayErr = validateCartFollowupDelay({ ...existing, ...automation, meta: { ...existing?.meta, ...automation.meta } });
+    if (delayErr) throw new Error(delayErr);
+  }
+
   const normalized = {
     id: automation.id || `rule_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     name: automation.name || 'Automation rule',
@@ -327,54 +414,103 @@ async function upsertAutomation(clientId, automation = {}) {
           ? 'starts_with'
           : 'exact',
     sku: String(automation.sku || '').trim(),
+    productId: String(automation.productId || '').trim(),
+    productTitle: String(automation.productTitle || '').trim(),
+    variantId: String(automation.variantId || '').trim(),
     actionType: automation.actionType || 'send_template',
     templateName: automation.templateName || '',
     sequenceId: automation.sequenceId || '',
     language: automation.language || 'en',
     delayMinutes: Number(automation.delayMinutes || 0),
     imageUrl: automation.imageUrl || '',
-    isActive: automation.isActive !== false,
+    isActive:
+      automation.isActive === undefined
+        ? (existing?.isActive ?? !system)
+        : automation.isActive === true,
     variableMappings: normalizeAutomationMappings(automation.variableMappings),
     customVariableValues: automation.customVariableValues || {},
     meta: automation.meta || {},
   };
 
+  if (system && existing) {
+    normalized.id = existing.id;
+    normalized.meta = { ...existing.meta, ...(automation.meta || {}) };
+    if (existing.meta?.category === 'order_notification') {
+      normalized.name = existing.name;
+      normalized.triggerType = 'order_status';
+      normalized.event = existing.event;
+    }
+    if (existing.meta?.category === 'abandoned_cart') {
+      normalized.name = existing.name;
+      normalized.triggerType = 'abandoned_cart';
+      normalized.event = 'abandoned';
+      const min = CART_FOLLOWUP_MIN_MINUTES[existing.meta.systemSlot];
+      if (min && normalized.delayMinutes < min) {
+        throw new Error(validateCartFollowupDelay(normalized));
+      }
+    }
+  }
+
   const idx = current.findIndex((a) => a.id === normalized.id);
   if (idx >= 0) current[idx] = { ...current[idx], ...normalized };
   else current.push(normalized);
 
-  await Client.findOneAndUpdate(
-    { clientId },
-    {
-      $set: {
-        commerceAutomations: current,
-        commerceAutomationVersion: COMMERCE_AUTOMATION_VERSION,
-      },
-    }
-  );
-  return normalized;
+  const merged = mergeSystemAutomations(current);
+
+  const clientUpdate = {
+    commerceAutomations: merged,
+    commerceAutomationVersion: COMMERCE_AUTOMATION_VERSION,
+  };
+
+  const cartPatch = cartFollowupSyncPatch(normalized);
+  if (cartPatch.wizardFeatures && Object.keys(cartPatch.wizardFeatures).length) {
+    Object.assign(clientUpdate, Object.fromEntries(
+      Object.entries(cartPatch.wizardFeatures).map(([k, v]) => [`wizardFeatures.${k}`, v])
+    ));
+  }
+  if (cartPatch.nicheData && Object.keys(cartPatch.nicheData).length) {
+    Object.assign(clientUpdate, Object.fromEntries(
+      Object.entries(cartPatch.nicheData).map(([k, v]) => [`nicheData.${k}`, v])
+    ));
+  }
+
+  await Client.findOneAndUpdate({ clientId }, { $set: clientUpdate });
+  await syncAbandonedCartFlowFromRules(clientId, merged);
+  return merged.find((a) => a.id === normalized.id) || normalized;
 }
 
 async function deleteAutomation(clientId, automationId) {
   const client = await Client.findOne({ clientId });
   if (!client) throw new Error('Client not found');
-  const current = await ensureMigration(client, { persist: false });
-  const updated = current.filter((a) => a.id !== automationId);
-  await Client.findOneAndUpdate(
-    { clientId },
-    { $set: { commerceAutomations: updated, commerceAutomationVersion: COMMERCE_AUTOMATION_VERSION } }
-  );
+  const current = await ensureSystemAutomationsPersisted(client);
+  const target = current.find((a) => a.id === automationId);
+  if (isSystemAutomation(target)) {
+    throw new Error('System rules cannot be deleted. Turn the rule off instead.');
+  }
+  const updated = mergeSystemAutomations(current.filter((a) => a.id !== automationId));
+  await persistAutomations(clientId, updated);
   return updated;
 }
 
 function getOrderStatusTemplateMap(automations = []) {
   const map = {};
   for (const a of automations) {
-    if (a.triggerType === 'order_status' && a.isActive && a.templateName) {
+    if (
+      a.triggerType === 'order_status' &&
+      a.isActive &&
+      a.templateName &&
+      !normalizeProductId(a.productId)
+    ) {
       map[normalizeEvent(a.event)] = a.templateName;
     }
   }
   return map;
+}
+
+function getActiveCartFollowupRules(automations = []) {
+  return (automations || [])
+    .filter((a) => a.meta?.category === 'abandoned_cart' && a.isActive)
+    .sort((a, b) => (a.meta?.followupStep || 0) - (b.meta?.followupStep || 0));
 }
 
 /**
@@ -392,7 +528,7 @@ async function syncOrderStatusFromNicheMap(clientId, templatesMap = {}) {
   const sanitized = sanitizeOrderStatusTemplates(templatesMap);
   let automations = await ensureMigration(client, { persist: false });
 
-  const statusKeys = ['paid', 'shipped', 'delivered', 'cancelled'];
+  const statusKeys = ['pending', 'paid', 'shipped', 'delivered', 'cancelled'];
 
   for (const status of statusKeys) {
     const templateName = sanitized[status];
@@ -456,9 +592,13 @@ async function runAutomationsForEvent({ clientConfig, eventType, order, options 
   for (const automation of active) {
     try {
       if (automation.triggerType === 'order_status') {
-        if (skipOrderStatusRules) continue;
+        if (skipOrderStatusRules && !normalizeProductId(automation.productId)) continue;
+        if (!matchesProductFilter(automation, order)) continue;
         await runAutomationAction({ clientConfig, order, automation, item: null });
         matched += 1;
+        continue;
+      }
+      if (automation.triggerType === 'abandoned_cart') {
         continue;
       }
       if (automation.triggerType === 'sku_event') {
@@ -485,7 +625,15 @@ function simulateAutomation({ automation, order }) {
     sku: String(automation?.sku || ''),
   };
   if (normalized.triggerType === 'order_status') {
-    return { matched: normalizeEvent(normalized.event) === event, reason: 'order_status_event_check' };
+    const eventOk = normalizeEvent(normalized.event) === event;
+    const productOk = matchesProductFilter(normalized, order);
+    return {
+      matched: eventOk && productOk,
+      reason: eventOk ? (productOk ? 'order_status_event_check' : 'no_product_match') : 'event_mismatch',
+    };
+  }
+  if (normalized.triggerType === 'abandoned_cart') {
+    return { matched: true, reason: 'abandoned_cart_timing_check' };
   }
   const items = Array.isArray(order?.items) ? order.items : [];
   const item = items.find((i) => matchesSkuRule(normalized, i));
@@ -496,11 +644,15 @@ module.exports = {
   COMMERCE_AUTOMATION_VERSION,
   normalizeEvent,
   ensureMigration,
+  ensureSystemAutomationsPersisted,
   listAutomations,
   upsertAutomation,
   deleteAutomation,
   getOrderStatusTemplateMap,
+  getActiveCartFollowupRules,
   syncOrderStatusFromNicheMap,
   runAutomationsForEvent,
   simulateAutomation,
+  isSystemAutomation,
+  CART_FOLLOWUP_MIN_MINUTES,
 };

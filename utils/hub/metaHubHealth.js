@@ -3,6 +3,7 @@
 const moment = require('moment');
 const Client = require('../../models/Client');
 const MetaTemplate = require('../../models/MetaTemplate');
+const WhatsApp = require('../meta/whatsapp');
 const { buildOrderMessagesOverview } = require('../commerce/orderMessagesOverview');
 
 function relTime(date) {
@@ -53,10 +54,37 @@ async function buildMetaHubHealth(clientId, clientConfig) {
     (s) => orderMessages?.orderTriggers?.[s]
   ).length;
 
+  const qualityRaw = String(
+    client.whatsappQualityRating ||
+      client.wabaAccounts?.[0]?.qualityRating ||
+      client.config?.whatsappQualityRating ||
+      ''
+  ).toUpperCase();
+  let qualityRating = qualityRaw || 'UNKNOWN';
+  if (!qualityRaw && waConnected) {
+    try {
+      const qual = await WhatsApp.getPhoneNumberQuality(client);
+      qualityRating = String(qual?.qualityRating || 'UNKNOWN').toUpperCase();
+    } catch {
+      qualityRating = 'UNKNOWN';
+    }
+  }
+
+  const qualityLabel =
+    qualityRating === 'GREEN'
+      ? 'Good'
+      : qualityRating === 'YELLOW'
+        ? 'At risk'
+        : qualityRating === 'RED'
+          ? 'Low'
+          : 'Unknown';
+
   return {
     whatsapp: {
       connected: waConnected,
       wabaId: client.wabaId || null,
+      qualityRating,
+      qualityLabel,
     },
     templates: {
       syncedApproved: approvedSynced,

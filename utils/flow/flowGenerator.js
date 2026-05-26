@@ -355,9 +355,15 @@ function buildContext(client = {}, wizardData = {}) {
   const mpmTemplateName = resolveMpmTemplateName(client, wizardData);
   const useMpmCatalog = productMode === "catalog" && !!facebookCatalogId && !!mpmTemplateName;
 
+  const brandProfile =
+    wizardData.brandProfile ||
+    client.onboardingData?.brandProfile ||
+    null;
+
   return {
     client,
     wizardData,
+    brandProfile,
     F,
     flowType:            wizardData.flowType            || "ecommerce",
     riskPosture:         wizardData.riskPosture         || "balanced",

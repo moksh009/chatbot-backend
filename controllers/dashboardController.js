@@ -25,6 +25,7 @@ const Supplier = require('../models/Supplier');
 const PurchaseOrder = require('../models/PurchaseOrder');
 const logger = require('../utils/core/logger')('DashboardController');
 const Shopify = require('../utils/shopify/shopifyGraphQL');
+const { buildRecoveredRevenueSummary } = require('../utils/hub/recoveredRevenueSummary');
 
 
 /**
@@ -124,6 +125,21 @@ exports.getAnalyticsChart = async (req, res) => {
   } catch (err) {
     const code = err.statusCode || 500;
     res.status(code).json({ success: false, error: err.message });
+  }
+};
+
+/** GET /api/dashboard/recovered-summary — Phase 2 hero ₹ */
+exports.getRecoveredSummary = async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ success: false, error: 'Unauthorized' });
+    const days = Math.min(parseInt(req.query.days, 10) || 30, 90);
+    const data = await buildRecoveredRevenueSummary(clientId, { days });
+    if (!data) return res.status(404).json({ success: false, error: 'Client not found' });
+    res.json({ success: true, data });
+  } catch (err) {
+    logger.error('[Dashboard RecoveredSummary]', err);
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 

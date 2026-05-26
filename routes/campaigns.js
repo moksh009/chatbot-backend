@@ -970,6 +970,124 @@ router.post('/:id/send-winner', ...campaignMutate, async (req, res) => {
   }
 });
 
+// @route   POST /api/campaigns/preflight
+// @desc    Opt-in + template checks before launch (Phase 2)
+// @access  Private
+router.post('/preflight', protect, async (req, res) => {
+  try {
+    const clientId = req.user.clientId;
+    const { campaignId, audienceCount: rawCount, channel: rawChannel, templateName } = req.body || {};
+    const Campaign = require('../models/Campaign');
+    const Client = require('../models/Client');
+    let campaign = null;
+    let audienceRows = [];
+    if (campaignId) {
+      campaign = await Campaign.findOne({ _id: campaignId, clientId }).lean();
+      if (!campaign) {
+        return res.status(404).json({ success: false, blocked: true, message: 'Campaign not found' });
+      }
+      audienceRows = Array.isArray(campaign.audience) ? campaign.audience : [];
+    }
+
+    const channel = String(rawChannel || campaign?.channel || 'whatsapp').toLowerCase();
+    const isEmail = channel === 'email';
+    const audienceCount =
+      audienceRows.length ||
+      Math.max(0, Number(rawCount) || Number(campaign?.audienceCount) || 0);
+
+    const blockers = [];
+    let eligibleCount = audienceCount;
+
+    if (campaign && audienceRows.length > 0) {
+      const optFiltered = await filterAudienceForMarketingOptIn(
+        clientId,
+        audienceRows,
+        { ...campaign, channel }
+      );
+      eligibleCount = optFiltered.rows.length;
+      if (eligibleCount === 0) {
+        blockers.push({
+          code: 'no_opt_in',
+          message: isEmail
+            ? 'No email marketing–eligible contacts in this audience.'
+            : 'No WhatsApp opted-in contacts in this audience. Collect opt-in via your storefront widget or chats.',
+        });
+      } else if (optFiltered.excluded > 0) {
+        blockers.push({
+          code: 'partial_opt_in',
+          message: `${optFiltered.excluded} contact(s) will be skipped (not opted in). ${eligibleCount} eligible.`,
+          severity: 'warning',
+        });
+      }
+    } else if (!isEmail && audienceCount > 0) {
+      blockers.push({
+        code: 'opt_in_unverified',
+        message:
+          'Audience size is estimated. Only opted-in contacts receive MARKETING templates at send time.',
+        severity: 'warning',
+      });
+      eligibleCount = audienceCount;
+    }
+
+    if (!isEmail && templateName) {
+      const client = await Client.findOne({ clientId }).select('syncedMetaTemplates').lean();
+      const synced = client?.syncedMetaTemplates || [];
+      const tpl = synced.find((t) => t?.name === templateName);
+      if (!tpl) {
+        blockers.push({
+          code: 'template_missing',
+          message: `Template "${templateName}" is not synced from Meta. Open Meta Manager and sync templates.`,
+        });
+      } else {
+        const pre = validateTemplateEligibility({
+          template: tpl,
+          contextPurpose: 'campaign',
+        });
+        if (!pre.ok) {
+          blockers.push({
+            code: 'template_not_approved',
+            message: (pre.reasons && pre.reasons[0]) || 'Template is not approved for sending.',
+          });
+        }
+      }
+    }
+
+    const hardBlock = blockers.some((b) => b.severity !== 'warning' && b.code !== 'partial_opt_in' && b.code !== 'opt_in_unverified');
+    const blocked = blockers.some((b) => b.code === 'no_opt_in' || b.code === 'template_missing' || b.code === 'template_not_approved');
+
+    const {
+      estimateMetaBreakdown,
+      estimateTenantCost,
+      META_MARKETING_INR,
+    } = require('../services/billing/costEstimation');
+    const waCount = isEmail ? 0 : eligibleCount;
+    const emailCount = isEmail ? eligibleCount : 0;
+    const meta = estimateMetaBreakdown({ marketingCount: waCount, utilityCount: 0 });
+    const row = estimateTenantCost({
+      usage: { whatsappSent: waCount, emailSent: emailCount },
+      planPriceInr: 0,
+      marketingCount: waCount,
+      utilityCount: 0,
+    });
+
+    return res.json({
+      success: true,
+      blocked: blocked || hardBlock,
+      blockers,
+      eligibleCount,
+      audienceCount,
+      channel,
+      estimate: {
+        estimatedTotalInr: row.meta_messages + row.email,
+        perMessageInr: isEmail ? 0.1 : META_MARKETING_INR,
+        meta_breakdown: meta,
+      },
+    });
+  } catch (e) {
+    return res.status(500).json({ success: false, blocked: true, message: e.message });
+  }
+});
+
 // @route   POST /api/campaigns/estimate-cost
 // @desc    Rough per-campaign send cost (heuristic, INR)
 // @access  Private
@@ -977,12 +1095,19 @@ router.post('/estimate-cost', protect, async (req, res) => {
   try {
     const count = Math.max(0, Number(req.body.audienceCount) || 0);
     const channel = String(req.body.channel || 'whatsapp').toLowerCase();
-    const { estimateTenantCost } = require('../services/billing/costEstimation');
+    const {
+      estimateTenantCost,
+      estimateMetaBreakdown,
+      META_MARKETING_INR,
+    } = require('../services/billing/costEstimation');
     const waCount = channel === 'email' ? 0 : count;
     const emailCount = channel === 'email' ? count : 0;
+    const meta = estimateMetaBreakdown({ marketingCount: waCount, utilityCount: 0 });
     const row = estimateTenantCost({
       usage: { whatsappSent: waCount, emailSent: emailCount },
       planPriceInr: 0,
+      marketingCount: waCount,
+      utilityCount: 0,
     });
     const estimatedTotalInr = row.meta_messages + row.email;
     return res.json({
@@ -991,16 +1116,18 @@ router.post('/estimate-cost', protect, async (req, res) => {
       channel,
       whatsapp: {
         count: waCount,
-        perMessageInr: 0.85,
-        subtotalInr: row.meta_messages,
+        perMessageInr: META_MARKETING_INR,
+        category: 'marketing',
+        subtotalInr: meta.marketing_inr,
       },
       email: {
         count: emailCount,
         perMessageInr: 0.1,
         subtotalInr: row.email,
       },
-      perMessageInr: count > 0 ? estimatedTotalInr / count : channel === 'email' ? 0.1 : 0.85,
+      perMessageInr: count > 0 ? estimatedTotalInr / count : channel === 'email' ? 0.1 : META_MARKETING_INR,
       estimatedTotalInr,
+      meta_breakdown: meta,
       disclaimer: row.disclaimer,
     });
   } catch (e) {

@@ -247,24 +247,48 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
             case 'checkouts/update':
                 await handleCheckout(client, data);
                 break;
-            case 'orders/create':
+            case 'orders/create': {
                 await handleOrder(client, data, storeKey);
-                // Fire any flow with order_placed trigger
                 await fireEventFlow(client, 'order_placed', data).catch(e =>
                   log.warn(`[FlowTrigger] order_placed flow fire failed: ${e.message}`)
                 );
+                const { dispatchOrderStatusAutomation } = require('../utils/commerce/orderEventDispatcher');
+                const lineItems = (data.line_items || []).map((i) => ({
+                  sku: i.sku,
+                  name: i.title,
+                  productId: String(i.product_id || ''),
+                  variantId: String(i.variant_id || ''),
+                }));
+                const orderPayload = {
+                  orderId: data.name || data.id,
+                  orderNumber: data.name,
+                  customerPhone: data.phone || data.customer?.phone || data.billing_address?.phone,
+                  customerName: data.customer?.first_name || data.customer?.default_address?.first_name || 'Customer',
+                  items: lineItems,
+                  totalPrice: data.total_price,
+                  paymentMethod: data.gateway || data.payment_gateway_names?.[0],
+                  isCOD: (data.payment_gateway_names || []).some((g) => /cod|cash/i.test(String(g))),
+                };
+                const fin = String(data.financial_status || '').toLowerCase();
+                const isPaid = fin === 'paid' || fin === 'partially_paid';
+                const statusEvent = isPaid ? 'paid' : 'pending';
+
+                await dispatchOrderStatusAutomation({
+                  clientConfig: client,
+                  order: orderPayload,
+                  previousStatus: '',
+                  newStatus: statusEvent,
+                  io,
+                  source: 'shopify_webhook:orders/create',
+                }).catch((e) => log.error(`Commerce automations ${statusEvent} failed:`, e.message));
                 await commerceAutomationService.runAutomationsForEvent({
                   clientConfig: client,
-                  eventType: 'paid',
-                  order: {
-                    orderId: data.name || data.id,
-                    orderNumber: data.name,
-                    customerPhone: data.phone || data.customer?.phone || data.billing_address?.phone,
-                    customerName: data.customer?.first_name || 'Customer',
-                    items: data.line_items.map(i => ({ sku: i.sku, name: i.title })),
-                  },
-                }).catch(e => log.error('Commerce automations paid failed:', e.message));
+                  eventType: statusEvent,
+                  order: orderPayload,
+                  options: { skipOrderStatusRules: true },
+                }).catch((e) => log.error(`Commerce automations ${statusEvent} SKU failed:`, e.message));
                 break;
+            }
             case 'orders/cancelled':
             case 'orders/refunded':
                 await handleRefund(client, data);

@@ -122,6 +122,18 @@ router.get('/:clientId', protect, verifyTenantScope(), async (req, res) => {
       }
     };
 
+    const { estimateTenantCost } = require('../services/billing/costEstimation');
+    const messagesSent = client.usage?.messagesSent || sub?.usageThisPeriod?.messages || 0;
+    const costEstimate = estimateTenantCost({
+      usage: {
+        whatsappSent: messagesSent,
+        messagesSent,
+        emailSent: client.usage?.emailSent || 0,
+        aiTokens: client.usage?.aiTokens || 0,
+      },
+      planPriceInr: planLimits?.priceInr || 0,
+    });
+
     res.json({
       success: true,
       plan: masterPlan,
@@ -130,7 +142,9 @@ router.get('/:clientId', protect, verifyTenantScope(), async (req, res) => {
       daysLeft: client.trialEndsAt ? Math.ceil((new Date(client.trialEndsAt) - new Date()) / (1000 * 60 * 60 * 24)) : 0,
       usage,
       nextBillingAmount: sub?.nextAmount || 0,
-      subscriptionId: sub?.razorpaySubId
+      subscriptionId: sub?.razorpaySubId,
+      costEstimate,
+      metaPricing: costEstimate.meta_breakdown?.rates || null,
     });
 
   } catch (error) {

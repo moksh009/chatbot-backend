@@ -40,7 +40,40 @@ function resolveIndustryKey(ctx) {
   return "ecommerce";
 }
 
+function buildBrandProfileWelcome(ctx) {
+  const bp =
+    ctx?.brandProfile ||
+    ctx?.client?.onboardingData?.brandProfile ||
+    ctx?.wizardData?.brandProfile ||
+    null;
+  if (!bp || typeof bp !== "object") return null;
+
+  const brand = ctx?.businessName || ctx?.client?.businessName || "our store";
+  const tone = String(bp.brandTone || ctx?.tone || "").toLowerCase();
+  const points = Array.isArray(bp.keySellingPoints) ? bp.keySellingPoints : [];
+  const point = points[0] ? String(points[0]).trim() : "";
+
+  let greeting;
+  if (/friendly|casual|playful/.test(tone)) {
+    greeting = "Hi! How can I help you today? 😊";
+  } else if (/professional|authoritative/.test(tone)) {
+    greeting = "Hello, how may I assist you?";
+  } else if (tone) {
+    greeting = `Hi {{first_name}} 👋 Welcome to *${brand}*.`;
+  } else {
+    return null;
+  }
+
+  if (point) {
+    return `${greeting}\n\nWelcome to *${brand}*! Known for ${point}.\n\nTap *Menu* to continue.`;
+  }
+  return `${greeting}\n\nWelcome to *${brand}*.\n\nTap *Menu* to continue.`;
+}
+
 function buildIndustryWelcomeA(ctx) {
+  const branded = buildBrandProfileWelcome(ctx);
+  if (branded) return branded;
+
   const brand = ctx?.businessName || "our store";
   const bot = ctx?.botName || "our assistant";
   const key = resolveIndustryKey(ctx);

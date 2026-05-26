@@ -259,16 +259,32 @@ async function runAbandonedCartTick() {
 
             // Fetch all active clients with automation enabled
             const clients = await Client.find({
-                'automationFlows.id': 'abandoned_cart',
-                'automationFlows.isActive': true,
+                $or: [
+                    { 'automationFlows.id': 'abandoned_cart', 'automationFlows.isActive': true },
+                    { commerceAutomations: { $elemMatch: { 'meta.category': 'abandoned_cart', isActive: true } } },
+                ],
             })
-                .select('clientId nicheData wizardFeatures automationFlows shopDomain storeType')
+                .select('clientId nicheData wizardFeatures automationFlows shopDomain storeType commerceAutomations')
                 .lean();
 
             for (const client of clients) {
                 await new Promise((r) => setImmediate(r));
                 const niche = client.nicheData || {};
                 const { delay1Min, delay2Hr, delay3Hr } = getCartRecoveryDelays(client);
+                const delay2Min = delay2Hr * 60;
+                const delay3Min = delay3Hr * 60;
+
+                const cartRules = (client.commerceAutomations || []).filter(
+                    (a) => a.meta?.category === 'abandoned_cart'
+                );
+                const cartRuleActive = (slot) => {
+                    const r = cartRules.find((x) => x.meta?.systemSlot === slot);
+                    return r?.isActive === true && !!r?.templateName;
+                };
+                const tplForSlot = (slot, fallback) => {
+                    const r = cartRules.find((x) => x.meta?.systemSlot === slot);
+                    return (r?.isActive && r.templateName) ? r.templateName : fallback;
+                };
 
                 // ✅ Phase R3: GAP 2 — Respect the abandoned cart toggle setting
                 // Was sending recovery messages even when the feature was disabled in settings
@@ -306,6 +322,9 @@ async function runAbandonedCartTick() {
                 }
 
                 // --- Step 1: First Nudge (cartAbandonedAt + phone required) ---
+                if (!cartRuleActive('followup_1')) {
+                    log.debug(`[AbandonedCart] ${client.clientId} followup_1 paused — skip step 1`);
+                } else {
                 const batch1 = await AdLead.find({
                     clientId: client.clientId,
                     ...mongoCartRecoveryFilter(client),
@@ -334,7 +353,7 @@ async function runAbandonedCartTick() {
                     
                     await sendRichNudge(client, lead, msg, {
                         stepNum: 1,
-                        templateName: niche.abandonedTpl15m,
+                        templateName: tplForSlot('followup_1', niche.abandonedTpl15m),
                         includeImage: niche.abandonedIncludeImage1 || !!niche.abandonedTpl15m,
                         buttons: [niche.abandonedMsg15m_btn1, niche.abandonedMsg15m_btn2]
                     });
@@ -347,14 +366,25 @@ async function runAbandonedCartTick() {
                     });
                     await trackEcommerceEvent(client.clientId, { abandonedCartSent: 1, cartRecoveryMessagesSent: 1 });
                 }
+                }
 
-                // --- Step 2: Second Nudge (Dynamic Delay, Image) ---
+                // --- Step 2: Second Nudge (from cart abandon time, not chained) ---
+                if (!cartRuleActive('followup_2')) {
+                    log.debug(`[AbandonedCart] ${client.clientId} followup_2 paused — skip step 2`);
+                } else {
                 const batch2 = await AdLead.find({
                     clientId: client.clientId,
                     ...mongoCartRecoveryFilter(client),
-                    recoveryStep: 1,
-                    recoveryStartedAt: { $lte: new Date(now - delay2Hr * 60 * 60 * 1000) },
-                    isOrderPlaced: { $ne: true }
+                    isOrderPlaced: { $ne: true },
+                    cartStatus: 'abandoned',
+                    recoveryStep: { $in: [null, 0, 1] },
+                    $or: [
+                      { cartAbandonedAt: cartAbandonTimeFilter(now, delay2Min) },
+                      {
+                        cartAbandonedAt: { $exists: false },
+                        lastCartEventAt: cartAbandonTimeFilter(now, delay2Min),
+                      },
+                    ],
                 }).limit(50);
 
                 for (const lead of batch2) {
@@ -364,27 +394,38 @@ async function runAbandonedCartTick() {
                     
                     await sendRichNudge(client, lead, msg, {
                         stepNum: 2,
-                        templateName: niche.abandonedTpl2h,
+                        templateName: tplForSlot('followup_2', niche.abandonedTpl2h),
                         includeImage: niche.abandonedIncludeImage2 || !!niche.abandonedTpl2h,
                         buttons: [niche.abandonedMsg2h_btn1, niche.abandonedMsg2h_btn2]
                     });
 
                     await markCartRecoverySent(client.clientId, lead.phoneNumber, 2);
                     await AdLead.findByIdAndUpdate(lead._id, { 
-                        recoveryStep: 2, 
-                        recoveryStartedAt: new Date(),
+                        recoveryStep: Math.max(lead.recoveryStep || 0, 2), 
+                        recoveryStartedAt: lead.recoveryStartedAt || new Date(),
                         $push: { activityLog: { action: 'automation_nudge', details: 'cart_step_2', timestamp: new Date() } }
                     });
                     await trackEcommerceEvent(client.clientId, { cartRecoveryMessagesSent: 1 });
                 }
+                }
 
-                // --- Step 3: Final Nudge (Dynamic Delay, Image, Conditional Discount) ---
+                // --- Step 3: Final Nudge (from cart abandon time) ---
+                if (!cartRuleActive('followup_3')) {
+                    log.debug(`[AbandonedCart] ${client.clientId} followup_3 paused — skip step 3`);
+                } else {
                 const batch3 = await AdLead.find({
                     clientId: client.clientId,
                     ...mongoCartRecoveryFilter(client),
-                    recoveryStep: 2,
-                    recoveryStartedAt: { $lte: new Date(now - delay3Hr * 60 * 60 * 1000) },
-                    isOrderPlaced: { $ne: true }
+                    isOrderPlaced: { $ne: true },
+                    cartStatus: 'abandoned',
+                    recoveryStep: { $in: [null, 0, 1, 2] },
+                    $or: [
+                      { cartAbandonedAt: cartAbandonTimeFilter(now, delay3Min) },
+                      {
+                        cartAbandonedAt: { $exists: false },
+                        lastCartEventAt: cartAbandonTimeFilter(now, delay3Min),
+                      },
+                    ],
                 }).limit(50);
 
                 for (const lead of batch3) {
@@ -397,7 +438,7 @@ async function runAbandonedCartTick() {
                     
                     let discountCode = "";
                     let msg = (niche.abandonedMsg24h || niche.abandonedMsg3 || "Final call! Your cart is about to expire. 🛒").replace(/{name}/g, lead.name || 'there');
-                    let templateName = niche.abandonedTpl24h || niche.abandonedTplFinal;
+                    let templateName = tplForSlot('followup_3', niche.abandonedTpl24h || niche.abandonedTplFinal);
 
                     if (flowConfig.discountEnabled && client.storeType === 'shopify') {
                         try {
@@ -430,6 +471,7 @@ async function runAbandonedCartTick() {
                         $push: { activityLog: { action: 'automation_nudge', details: 'cart_step_3_discount', timestamp: new Date() } }
                     });
                     await trackEcommerceEvent(client.clientId, { cartRecoveryMessagesSent: 1 });
+                }
                 }
 
                 // --- Step 4: Post-Purchase Cross-sell (1 hour after order) ---

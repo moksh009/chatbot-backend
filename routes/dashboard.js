@@ -16,6 +16,7 @@ router.post('/batch-data', protect, apiCache(60), dashboardController.getBatchDa
 
 // GET /api/dashboard/summary — consolidated ecommerce dashboard payload (Phase 2)
 router.get('/summary', protect, apiCache(60), dashboardController.getSummary);
+router.get('/recovered-summary', protect, apiCache(45), dashboardController.getRecoveredSummary);
 router.get('/analytics-chart', protect, apiCache(45), dashboardController.getAnalyticsChart);
 router.get('/cart-recovery-chart', protect, apiCache(45), dashboardController.getCartRecoveryChart);
 

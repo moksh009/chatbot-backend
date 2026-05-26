@@ -143,7 +143,7 @@ router.get('/:clientId', protect, verifyClientAccess, async (req, res) => {
       quickLinks: {
         settingsIntegrations: '/settings?tab=integrations',
         settingsCommerce: '/settings?tab=commerce',
-        metaTemplates: '/meta-manager?tab=templates',
+        metaTemplates: '/meta-manager?tab=library',
         metaCatalog: '/meta-manager?tab=catalog',
         metaFlows: '/meta-manager?tab=flows',
       },

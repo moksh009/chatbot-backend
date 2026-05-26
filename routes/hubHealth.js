@@ -6,6 +6,7 @@ const { protect } = require('../middleware/auth');
 const loadClientConfig = require('../middleware/clientConfig');
 const { buildMarketingHubHealth } = require('../utils/hub/marketingHubHealth');
 const { buildMetaHubHealth } = require('../utils/hub/metaHubHealth');
+const { buildPlatformHealth } = require('../utils/hub/platformHealth');
 
 function assertClientAccess(req, res) {
   const { clientId } = req.params;
@@ -23,6 +24,17 @@ router.get('/marketing/:clientId/health', protect, async (req, res) => {
     res.json({ success: true, data });
   } catch (err) {
     console.error('[MarketingHealth]', err.message);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.get('/platform/:clientId/health', protect, async (req, res) => {
+  try {
+    if (!assertClientAccess(req, res)) return;
+    const data = await buildPlatformHealth();
+    res.json({ success: true, data });
+  } catch (err) {
+    console.error('[PlatformHealth]', err.message);
     res.status(500).json({ success: false, message: err.message });
   }
 });

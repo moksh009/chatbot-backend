@@ -226,10 +226,33 @@ router.get('/commerce-automations', ...secure, apiCache(90), async (req, res) =>
       (req.user.linkedClients && req.user.linkedClients.includes(clientId));
     if (!isAuthorized) return res.status(403).json({ error: 'Unauthorized' });
 
-    const automations = await commerceAutomationService.listAutomations(req.clientConfig);
-    return res.json({ success: true, automations, version: req.clientConfig.commerceAutomationVersion || 1 });
+    const automations = await commerceAutomationService.ensureSystemAutomationsPersisted(req.clientConfig);
+    return res.json({
+      success: true,
+      automations,
+      version: req.clientConfig.commerceAutomationVersion || commerceAutomationService.COMMERCE_AUTOMATION_VERSION || 2,
+    });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.get('/shopify-products-picker', ...secure, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const isAuthorized = req.user.role === 'SUPER_ADMIN' ||
+      req.user.clientId === clientId ||
+      (req.user.linkedClients && req.user.linkedClients.includes(clientId));
+    if (!isAuthorized) return res.status(403).json({ error: 'Unauthorized' });
+
+    const { fetchShopifyProductsForClient } = require('../utils/commerce/shopifyProductsPicker');
+    const result = await fetchShopifyProductsForClient(clientId, {
+      query: req.query.q || req.query.query || '',
+      limit: req.query.limit,
+    });
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message, products: [] });
   }
 });
 

@@ -36,6 +36,17 @@ const { emitToClient } = require('../utils/core/socket');
 const { syncPersonaAcrossSystem } = require('../utils/core/personaEngine');
 const { clearTriggerCache } = require('../utils/flow/triggerEngine');
 const log = require('../utils/core/logger')("OnboardingV2");
+const {
+  activationPackFromGoals,
+  filterActivationPackForPlan,
+  wizardFeatureUpdatesToMongoSet,
+} = require('../utils/onboarding/activationPackFromGoals');
+const { seedKnowledgeFromBrandProfile } = require('../utils/onboarding/seedKnowledgeFromBrandProfile');
+const {
+  resolveSubscriptionForClient,
+  hasPaidEntitlements,
+  isTrialWindowActive,
+} = require('../utils/core/accessFlags');
 
 // ───────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -543,28 +554,84 @@ router.patch("/complete", protect, async (req, res) => {
 
   try {
     const now = new Date();
+    const client = await Client.findOne({ clientId }).lean();
+    if (!client) {
+      return res.status(404).json({ success: false, error: "Client not found" });
+    }
+
+    const goals = Array.isArray(client.onboardingData?.goals)
+      ? client.onboardingData.goals
+      : [];
+    let updatedWizardFeatures = null;
+    let activationPlaybookSteps = [];
+    let trialActivationScoped = false;
+    let trialGoalActivation = false;
+
+    try {
+      const sub = await resolveSubscriptionForClient(client);
+      const paid = hasPaidEntitlements(client, sub);
+      trialGoalActivation = isTrialWindowActive(client, sub) && !paid;
+
+      const rawPack = activationPackFromGoals(goals);
+      const pack = filterActivationPackForPlan(rawPack, { client, subscription: sub });
+      activationPlaybookSteps = pack.playbookSteps || [];
+      const featureSet = wizardFeatureUpdatesToMongoSet(pack.wizardFeatureUpdates);
+      trialActivationScoped = trialGoalActivation && Object.keys(pack.wizardFeatureUpdates || {}).length > 0;
+
+      if (Object.keys(featureSet).length > 0) {
+        await Client.updateOne({ clientId }, { $set: featureSet });
+      }
+
+      if (goals.includes("support_bot") && client.onboardingData?.brandProfile) {
+        await seedKnowledgeFromBrandProfile(
+          clientId,
+          client.onboardingData.brandProfile
+        ).catch((err) => {
+          log.warn(`KB seed failed for ${clientId}: ${err.message}`);
+        });
+      }
+
+      const refreshed = await Client.findOne({ clientId })
+        .select("wizardFeatures")
+        .lean();
+      updatedWizardFeatures = refreshed?.wizardFeatures || null;
+    } catch (packErr) {
+      log.error(`activation pack failed for ${clientId}: ${packErr.message}`);
+    }
+
+    const completionSet = {
+      onboardingCompleted: true,
+      onboardingCompletedAt: now,
+      onboardingStep: 5,
+      onboardingSkipped: false,
+      onboardingSkippedAt: null,
+      wizardCompleted: false,
+      wizardCompletedAt: null,
+    };
+    if (activationPlaybookSteps.length) {
+      completionSet["onboardingData.activationPlaybookSteps"] = activationPlaybookSteps;
+      completionSet["onboardingData.activationAppliedAt"] = now;
+    }
+    if (trialGoalActivation) {
+      completionSet["onboardingData.trialGoalActivation"] = true;
+    }
+
     await Promise.all([
-      Client.updateOne(
-        { clientId },
-        {
-          $set: {
-            onboardingCompleted: true,
-            onboardingCompletedAt: now,
-            onboardingStep: 5,
-            onboardingSkipped: false,
-            onboardingSkippedAt: null,
-            wizardCompleted: false,
-            wizardCompletedAt: null,
-          },
-        }
-      ),
+      Client.updateOne({ clientId }, { $set: completionSet }),
       User.updateOne(
         { _id: userId },
         { $set: { hasCompletedTour: true, tourCompletedAt: now } }
       ),
     ]);
 
-    res.json({ success: true, onboardingCompleted: true });
+    res.json({
+      success: true,
+      onboardingCompleted: true,
+      updatedWizardFeatures,
+      activationPlaybookSteps,
+      trialActivationScoped,
+      trialGoalActivation,
+    });
   } catch (err) {
     log.error(`complete error: ${err.message}`);
     res.status(500).json({ success: false, error: err.message });
