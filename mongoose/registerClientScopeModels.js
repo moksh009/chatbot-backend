@@ -41,6 +41,20 @@ const TENANT_MODELS = [
   'CartRecoveryAttempt',
   'IGConversation',
   'IGAutomationSession',
+  'InventoryAdjustment',
+  'InventoryLedger',
+  'SkuMapping',
+  'ShopifyProduct',
+  'AmazonInventorySnapshot',
+  'RestockRule',
+  'StockoutEvent',
+  'ReturnEvent',
+  'InventoryLocation',
+  'BundleDefinition',
+  'BackorderRule',
+  'RestockSuggestionDismissal',
+  'PurchaseOrder',
+  'Supplier',
 ];
 
 function registerClientScopeModels() {

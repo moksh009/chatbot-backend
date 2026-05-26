@@ -249,7 +249,7 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                 await handleCheckout(client, data);
                 break;
             case 'orders/create':
-                await handleOrder(client, data);
+                await handleOrder(client, data, storeKey);
                 // Fire any flow with order_placed trigger
                 await fireEventFlow(client, 'order_placed', data).catch(e =>
                   log.warn(`[FlowTrigger] order_placed flow fire failed: ${e.message}`)
@@ -698,7 +698,7 @@ async function handleCheckout(client, data) {
     }
 }
 
-async function handleOrder(client, data) {
+async function handleOrder(client, data, storeKey = '') {
     const phoneRaw =
       data.phone ||
       data.customer?.phone ||
@@ -768,11 +768,11 @@ async function handleOrder(client, data) {
 
     // 3. Upsert internal Order record (same mapper as sync / orders/updated — COD + logistics status)
     const { buildShopifyOrderSet, shopifyOrderFilter, detectCodFromShopify } = require('../utils/shopify/shopifyOrderMapper');
-    const storeKey = req.shopifyStoreKey || client.shopDomain || '';
+    const resolvedStoreKey = storeKey || client.shopDomain || '';
     const $set = buildShopifyOrderSet(client.clientId, data, {
       preferLogisticsStatus: true,
-      storeKey,
-      shopDomain: storeKey,
+      storeKey: resolvedStoreKey,
+      shopDomain: resolvedStoreKey,
     });
     $set.customerPhone = cleanPhone;
     const filter = shopifyOrderFilter(client.clientId, data);
@@ -803,6 +803,55 @@ async function handleOrder(client, data) {
       }
     } catch (statErr) {
       log.warn(`[ShopifyWebhook] StatCache increment skipped: ${statErr.message}`);
+    }
+
+    try {
+      const { applyAdjustment } = require('../utils/inventory/ledger');
+      const { applyBundleOrderDecrement } = require('../utils/inventory/bundleHandler');
+      const { recordBackorder } = require('../utils/inventory/backorderHandler');
+      const lineItems = data.line_items || newOrder.items || [];
+      for (const item of lineItems) {
+        const sku = item.sku || item.variant_id;
+        if (!sku) continue;
+        const qty = Number(item.quantity) || 1;
+        const lineId = item.id || item.variant_id || sku;
+        const bundleResult = await applyBundleOrderDecrement({
+          clientId: client.clientId,
+          bundleSku: String(sku),
+          orderQty: qty,
+          orderId: String(data.id || newOrder.orderId),
+          lineItemId: String(lineId),
+        });
+        if (bundleResult.applied) continue;
+
+        const ledgerRow = await require('../models/InventoryLedger')
+          .findOne({ clientId: client.clientId, sku: String(sku), locationId: 'default' })
+          .lean();
+        const avail = ledgerRow ? Number(ledgerRow.available) : null;
+        if (avail != null && avail < qty) {
+          const bo = await recordBackorder({
+            clientId: client.clientId,
+            sku: String(sku),
+            qty,
+            orderId: String(data.id || newOrder.orderId),
+            lineItemId: String(lineId),
+          });
+          if (bo.allowed) continue;
+        }
+
+        await applyAdjustment({
+          clientId: client.clientId,
+          sku: String(sku),
+          delta: -qty,
+          reason: 'other',
+          source: 'shopify_order',
+          sourceRef: String(data.id || newOrder.orderId),
+          idempotencyKey: `shopify:${data.id}:${lineId}:create`,
+          skipShopifyPush: true,
+        });
+      }
+    } catch (ledgerErr) {
+      log.warn(`[ShopifyWebhook] ledger adjustment skipped: ${ledgerErr.message}`);
     }
 
     // Order confirmation / COD confirmation via unified templateSender
@@ -1147,20 +1196,70 @@ async function createDraftOrder(client, originalOrder, discountCode) {
 
 async function handleInventoryUpdate(client, data) {
     try {
-        // Handle inventory_levels/update
-        const inventoryItemId = data.inventory_item_id;
-        const available = data.available;
+        const inventoryItemId = String(data.inventory_item_id || '');
+        const locationId = String(data.location_id || 'default');
+        const available = Number(data.available);
+        const updatedAt = data.updated_at || new Date().toISOString();
 
-        if (!inventoryItemId || typeof available === 'undefined') return;
+        if (!inventoryItemId || Number.isNaN(available)) return;
 
-        // If it's back in stock or has enough stock
+        const { getAppRedis } = require('../utils/core/redisFactory');
+        const redis = getAppRedis();
+        const dedupeKey = `inv_webhook:${client.clientId}:${inventoryItemId}:${locationId}:${updatedAt}`;
+        if (redis) {
+            const seen = await redis.set(dedupeKey, '1', 'EX', 86400, 'NX');
+            if (seen !== 'OK') return;
+        }
+
+        const ShopifyProduct = require('../models/ShopifyProduct');
+        const Client = require('../models/Client');
+        const product = await ShopifyProduct.findOneAndUpdate(
+            { clientId: client.clientId, shopifyInventoryItemId: inventoryItemId },
+            {
+                $set: {
+                    inventoryQuantity: Math.max(0, available),
+                    inStock: available > 0,
+                    lastSyncedAt: new Date(),
+                },
+            },
+            { new: true }
+        ).lean();
+
+        if (product) {
+            const InventoryLedger = require('../models/InventoryLedger');
+            const sku = product.sku || product.shopifyVariantId;
+            await InventoryLedger.findOneAndUpdate(
+                { clientId: client.clientId, sku, locationId: locationId === 'default' ? 'default' : locationId },
+                {
+                    $set: {
+                        available: Math.max(0, available),
+                        lastShopifySync: { at: new Date(), qty: available },
+                    },
+                },
+                { upsert: true }
+            );
+        }
+
+        await Client.updateOne(
+            { clientId: client.clientId },
+            { $set: { catalogSyncedAt: new Date(), shopifyLastProductSync: new Date() } }
+        );
+
+        const { auditLog } = require('../services/audit/auditWriter');
+        auditLog({
+            category: 'inventory',
+            action: 'inventory.shopify_webhook_received',
+            clientId: client.clientId,
+            details: { inventoryItemId, locationId, available, sku: product?.sku },
+        }).catch(() => {});
+
         if (available > 0) {
             const { triggerRestockNotifications } = require('../services/productWatch/triggerRestockNotifications');
             await triggerRestockNotifications({
                 clientId: client.clientId,
-                sku: inventoryItemId.toString(),
-                productName: 'Your watched product',
-                productUrl: '',
+                sku: product?.sku || inventoryItemId,
+                productName: product?.title || 'Your watched product',
+                productUrl: product?.productUrl || '',
                 currentStock: available,
             });
         }

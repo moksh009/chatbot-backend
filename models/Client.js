@@ -235,6 +235,12 @@ const ClientSchema = new mongoose.Schema({
   // --- Growth + compliance (website embed, cart automations) ---
   growthCompliance: {
     cartRecoveryRequiresOptIn: { type: Boolean, default: false }, // strict: cart nudges only opted_in
+    defaultOptInPolicy: { type: String, enum: ['single', 'double'], default: 'single' },
+    applyPolicyToNewSignups: { type: Boolean, default: true },
+    stopKeywords: {
+      type: [String],
+      default: () => ['STOP', 'UNSUBSCRIBE', 'OPT OUT', 'REMOVE', 'CANCEL'],
+    },
   },
   complianceConfig: {
     channels: {
@@ -494,6 +500,42 @@ const ClientSchema = new mongoose.Schema({
   shopifyApiVersion: { type: String, default: "2026-04" },
   shopifyInstallLink: { type: String, default: null }, // Added for Custom App Distribution
   shopifyConnectionStatus: { type: String, enum: ['connected', 'error', 'disconnected', 'pending_link'], default: 'connected' },
+  /** Amazon SP-API (Login with Amazon + seller credentials) */
+  amazonConfig: {
+    sellerId: { type: String, default: '' },
+    marketplaceId: { type: String, default: 'A21TJ7DG3Y56XX' },
+    refreshToken: { type: String, default: '' },
+    lwaClientId: { type: String, default: '' },
+    lwaClientSecret: { type: String, default: '' },
+    region: { type: String, default: 'eu-west-1' },
+    connectedAt: { type: Date },
+    lastSyncAt: { type: Date },
+    lastTokenRefreshAt: { type: Date },
+    lastInventoryPullAt: { type: Date },
+    needsReauth: { type: Boolean, default: false },
+  },
+  inventoryTruthEmailSentAt: { type: Date },
+  inventoryConfig: {
+    defaultTruthSource: {
+      type: String,
+      enum: ['ledger', 'shopify', 'amazon_fba', 'amazon_combined'],
+      default: 'ledger',
+    },
+    amazonInventoryPullHours: { type: Number, default: 4 },
+    fbaPullEnabled: { type: Boolean, default: true },
+  },
+  meeshoConfig: {
+    accessToken: { type: String, default: '' },
+    apiKey: { type: String, default: '' },
+    connectedAt: { type: Date },
+    lastSyncAt: { type: Date },
+  },
+  flipkartConfig: {
+    apiKey: { type: String, default: '' },
+    apiSecret: { type: String, default: '' },
+    connectedAt: { type: Date },
+    lastSyncAt: { type: Date },
+  },
   /** gid://shopify/WebPixel/… from webPixelCreate / webPixelUpdate */
   shopifyWebPixelId: { type: String, default: "" },
   shopifyWebPixelInstalledAt: { type: Date },
@@ -854,6 +896,8 @@ const ClientSchema = new mongoose.Schema({
   catalogSynced:       { type: Boolean, default: false },
   commerceAutoSyncDaily: { type: Boolean, default: false },
   catalogSyncedAt:     { type: Date },
+  inventoryTruthPreNoticeAt: { type: Date },
+  inventoryTruthShippedAt: { type: Date },
   customersSyncedAt: { type: Date, default: null },
   shopifyCustomersCache: { type: [mongoose.Schema.Types.Mixed], default: [] },
   shopifyCustomersCacheCount: { type: Number, default: 0 },
@@ -1022,6 +1066,12 @@ function encryptSubDocs(doc) {
   if (doc.payuMerchantSalt) doc.payuMerchantSalt = enc(doc.payuMerchantSalt);
   if (doc.phonepeSaltKey) doc.phonepeSaltKey = enc(doc.phonepeSaltKey);
   if (doc.emailAppPassword) doc.emailAppPassword = enc(doc.emailAppPassword);
+  if (doc.amazonConfig?.refreshToken) {
+    doc.amazonConfig.refreshToken = enc(doc.amazonConfig.refreshToken);
+  }
+  if (doc.amazonConfig?.lwaClientSecret) {
+    doc.amazonConfig.lwaClientSecret = enc(doc.amazonConfig.lwaClientSecret);
+  }
 }
 
 function syncSocialFields(doc) {

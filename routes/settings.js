@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const router = express.Router();
 const Client = require('../models/Client');
 const { protect, verifyClientAccess } = require('../middleware/auth');
-const { ensureGrowthEmbedDoc, buildGrowthEmbedOverview } = require('../utils/core/growthEmbedOverview');
+const { ensureGrowthEmbedDoc } = require('../utils/core/growthEmbedOverview');
 
 
 router.put('/:clientId/working-hours', protect, verifyClientAccess, async (req, res) => {
@@ -220,21 +220,8 @@ router.put('/:clientId/growth-embed-enabled', protect, verifyClientAccess, async
   }
 });
 
-router.put('/:clientId/growth-compliance', protect, verifyClientAccess, async (req, res) => {
-  try {
-    const { clientId } = req.params;
-    const cartRecoveryRequiresOptIn = req.body.cartRecoveryRequiresOptIn === true;
-    const doc = await Client.findOneAndUpdate(
-      { clientId },
-      { $set: { 'growthCompliance.cartRecoveryRequiresOptIn': cartRecoveryRequiresOptIn } },
-      { new: true }
-    ).select('growthCompliance');
-    if (!doc) return res.status(404).json({ success: false, message: 'Client not found' });
-    res.json({ success: true, compliance: doc.growthCompliance || {} });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
+const { mountGrowthAudienceSettingsRoutes } = require('./growthAudienceSettings');
+mountGrowthAudienceSettingsRoutes(router);
 
 router.put('/:clientId/growth-widget-config', protect, verifyClientAccess, async (req, res) => {
   try {
@@ -247,22 +234,6 @@ router.put('/:clientId/growth-widget-config', protect, verifyClientAccess, async
     ).select('growthWidgetConfig');
     if (!doc) return res.status(404).json({ success: false, message: 'Client not found' });
     res.json({ success: true, growthWidgetConfig: doc.growthWidgetConfig || {} });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-/** Website opt-in dashboard KPIs — scoped per clientId (multi-tenant safe via verifyClientAccess). */
-router.get('/:clientId/growth-embed-overview', protect, verifyClientAccess, async (req, res) => {
-  try {
-    const { clientId } = req.params;
-    const period = String(req.query.period || '30d').toLowerCase();
-    const { buildTrackingHealth } = require('../utils/commerce/trackingHealth');
-    const days = period === '7d' ? 7 : period === '90d' ? 90 : 30;
-    const tracking = await buildTrackingHealth(clientId, days).catch(() => null);
-    const payload = await buildGrowthEmbedOverview(clientId, period, tracking);
-    if (!payload) return res.status(404).json({ success: false, message: 'Client not found' });
-    res.json(payload);
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

@@ -61,6 +61,7 @@ async function runShopifyCatalogSync(clientId) {
                   collectionTitles: [],
                   inStock: v.inventory_management !== "shopify" || (Number(v.inventory_quantity) || 0) > 0,
                   inventoryQuantity: Math.max(0, Number(v.inventory_quantity) || 0),
+                  shopifyInventoryItemId: v.inventory_item_id ? String(v.inventory_item_id) : "",
                   compareAtPrice: v.compare_at_price ? parseFloat(v.compare_at_price) : undefined,
                   vendor: p.vendor || "",
                   productType: p.product_type || "",
@@ -156,6 +157,7 @@ async function runShopifyCatalogSync(clientId) {
       {
         $set: {
           shopifyLastProductSync: new Date(),
+          catalogSyncedAt: new Date(),
           shopifyProductCount: syncedProducts,
           shopifyCollectionCount: syncedCollections,
           catalogSynced: true,

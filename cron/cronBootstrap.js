@@ -98,10 +98,8 @@ function registerAllCrons() {
   if (typeof scheduleAutoResolutionCron === "function") scheduleAutoResolutionCron();
 
   // ── Optional heavy / niche (off by default in dev) ──
-  if (envFlag("CRON_ENABLE_AMAZON_SYNC", false)) {
-    require("./amazonSync")();
-    log.info("Amazon SP-API sync cron enabled");
-  }
+  const { registerInventoryCrons } = require('./inventoryCrons');
+  registerInventoryCrons();
 
   if (envFlag("CRON_ENABLE_AB_WINNER", false)) {
     const scheduleAbTestWinner = require("./abTestWinner");

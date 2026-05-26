@@ -89,7 +89,7 @@
     var color = (settings && settings.color) || brandColor || '#25D366';
     var pos = (settings && settings.position) === 'left' ? 'left:20px;' : 'right:20px;';
     var label = (settings && settings.label) || 'WhatsApp';
-    var delay = Math.max(0, Number((settings && settings.delaySeconds) || 3)) * 1000;
+    var delay = previewWidgetIds() ? 0 : Math.max(0, Number((settings && settings.delaySeconds) || 3)) * 1000;
 
     var btn = document.createElement('button');
     btn.style.cssText = 'position:fixed;z-index:99999;bottom:20px;' + pos + 'border:none;border-radius:999px;padding:12px 16px;background:' + color + ';color:#fff;font:600 14px system-ui;cursor:pointer;box-shadow:0 8px 20px rgba(0,0,0,.2);';
@@ -104,10 +104,11 @@
   }
 
   function renderExitPopup(settings, consentText, brandColor, brandName) {
+    var previewMode = !!previewWidgetIds();
     var cooldownDays = Math.max(1, Number((settings && settings.cooldownDays) || 3));
     var key = 'te_exit_popup_last';
     var last = Number(localStorage.getItem(key) || 0);
-    if (Date.now() - last < cooldownDays * 86400000) return;
+    if (!previewMode && Date.now() - last < cooldownDays * 86400000) return;
     var shown = false;
     function show() {
       if (shown) return;
@@ -161,7 +162,7 @@
   }
 
   function renderSpinWheel(settings, consentText) {
-    var triggerDelay = Math.max(1, Number((settings && settings.triggerDelay) || 8)) * 1000;
+    var triggerDelay = previewWidgetIds() ? 500 : Math.max(1, Number((settings && settings.triggerDelay) || 8)) * 1000;
     var prizes = (settings && settings.prizes && settings.prizes.length) ? settings.prizes : [{ label: 'Flat 10% Off', code: 'WELCOME10', probability: 100 }];
     var primary = (settings && settings.primaryColor) || '#6D28D9';
     var secondary = (settings && settings.secondaryColor) || '#F59E0B';
@@ -211,11 +212,23 @@
     }, triggerDelay);
   }
 
+  function previewWidgetIds() {
+    try {
+      var p = new URLSearchParams(window.location.search).get('topedge_preview');
+      if (!p) return null;
+      return [String(p).toLowerCase().replace(/[^a-z0-9_]/g, '_')];
+    } catch (_) {
+      return null;
+    }
+  }
+
+  var previewOnly = previewWidgetIds();
+
   fetch(configUrl)
     .then(function (r) { return r.json(); })
     .then(function (res) {
       if (!res || !res.success) return;
-      var widgets = res.widgetTypes || ['floating_button'];
+      var widgets = previewOnly || res.widgetTypes || ['floating_button'];
       var settings = res.settings || {};
       var brandColor = (res.branding && res.branding.color) || '#25D366';
       var brandName = (res.branding && res.branding.name) || 'our brand';

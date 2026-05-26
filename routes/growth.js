@@ -3,6 +3,7 @@ const QRCode = require('qrcode');
 const Client = require('../models/Client');
 const GrowthQrScan = require('../models/GrowthQrScan');
 const { protect } = require('../middleware/auth');
+const { mountGrowthAudienceSettingsRoutes } = require('./growthAudienceSettings');
 const { tenantClientId } = require('../utils/core/queryHelpers');
 
 const router = express.Router();
@@ -100,5 +101,8 @@ router.get('/embed-overview', protect, async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 });
+
+/** Mirror Audience opt-in APIs at /api/growth/:clientId/... (same paths as /api/settings). */
+mountGrowthAudienceSettingsRoutes(router);
 
 module.exports = router;

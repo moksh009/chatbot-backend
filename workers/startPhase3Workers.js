@@ -3,6 +3,9 @@ const { startCampaignDispatchWorker } = require('./campaignDispatchWorker');
 const { startSequenceDispatchWorker } = require('./sequenceDispatchWorker');
 const { startDispatchMaintenanceWorker } = require('./dispatchMaintenanceWorker');
 const { startWebhookDeliveryWorker } = require('./webhookDeliveryWorker');
+const { startInventoryShopifyPushWorker } = require('./inventoryShopifyPushWorker');
+const { startInventoryAmazonPushWorker } = require('./inventoryAmazonPushWorker');
+const { startAmazonInventorySyncWorker } = require('./amazonInventorySyncWorker');
 const { ensureMaintenanceRepeatable } = require('../utils/messaging/queues/maintenanceQueue');
 
 function startPhase3Workers() {
@@ -15,7 +18,10 @@ function startPhase3Workers() {
   const sequence = startSequenceDispatchWorker();
   const maintenance = startDispatchMaintenanceWorker();
   const webhook = startWebhookDeliveryWorker();
-  return { campaign, sequence, maintenance, webhook };
+  const inventoryPush = startInventoryShopifyPushWorker();
+  const inventoryAmazonPush = startInventoryAmazonPushWorker();
+  const amazonInventoryPull = startAmazonInventorySyncWorker();
+  return { campaign, sequence, maintenance, webhook, inventoryPush, inventoryAmazonPush, amazonInventoryPull };
 }
 
 module.exports = { startPhase3Workers };

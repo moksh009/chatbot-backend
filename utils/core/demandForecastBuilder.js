@@ -1,7 +1,16 @@
 'use strict';
 
 const Order = require('../../models/Order');
+const Client = require('../../models/Client');
 const ShopifyProduct = require('../../models/ShopifyProduct');
+const InventoryLedger = require('../../models/InventoryLedger');
+const {
+  classifyStockHealth,
+  forecastConfidence,
+  statusSortRank,
+  computeChannelSplit,
+  ATTENTION_STATUSES,
+} = require('../inventory/stockClassification');
 
 function normalizeKey(s) {
   return String(s || '')
@@ -19,9 +28,6 @@ function displayProductTitle(catalog, fallbackName) {
   return base;
 }
 
-/**
- * Match order line item to synced Shopify catalog row.
- */
 function matchCatalogRow(catalogRows, { productId, variantId, sku, name }) {
   if (!catalogRows?.length) return null;
   const pid = productId != null ? String(productId) : '';
@@ -66,20 +72,28 @@ function aggregateProductSales(orders) {
           name: item.name,
           image: item.image,
           units: 0,
+          shopifyUnits: 0,
+          amazonUnits: 0,
         });
       }
       const row = map.get(key);
-      row.units += Number(item.quantity) || 1;
+      const q = Number(item.quantity) || 1;
+      row.units += q;
+      if (order.source === 'amazon') row.amazonUnits += q;
+      else row.shopifyUnits += q;
       if (!row.image && item.image) row.image = item.image;
     }
   }
   return [...map.values()].sort((a, b) => b.units - a.units);
 }
 
-function buildCatalogStockMap(catalogRows) {
+function buildCatalogStockMap(catalogRows, ledgerBySku) {
   const byProduct = new Map();
   for (const row of catalogRows) {
     const pid = String(row.shopifyProductId);
+    const ledger = row.sku ? ledgerBySku?.get(row.sku) : null;
+    const variantQty =
+      ledger != null ? Number(ledger.available) : Number(row.inventoryQuantity) || 0;
     if (!byProduct.has(pid)) {
       byProduct.set(pid, {
         shopifyProductId: pid,
@@ -88,10 +102,15 @@ function buildCatalogStockMap(catalogRows) {
         imageUrl: row.imageUrl,
         sku: row.sku,
         stock: 0,
+        lastSyncedAt: row.lastSyncedAt || null,
+        fromLedger: !!ledger,
       });
     }
     const agg = byProduct.get(pid);
-    agg.stock += Number(row.inventoryQuantity) || 0;
+    agg.stock += variantQty;
+    if (row.lastSyncedAt && (!agg.lastSyncedAt || row.lastSyncedAt > agg.lastSyncedAt)) {
+      agg.lastSyncedAt = row.lastSyncedAt;
+    }
     if (!agg.imageUrl && row.imageUrl) agg.imageUrl = row.imageUrl;
     if (!agg.sku && row.sku) agg.sku = row.sku;
   }
@@ -142,11 +161,6 @@ function buildForecastChart(orders, globalVelocity) {
   return points;
 }
 
-/**
- * Build demand forecast payload for dashboard.
- * @param {string} clientId
- * @param {{ days?: number }} opts
- */
 function windowStart(days) {
   const startDate = new Date();
   startDate.setDate(startDate.getDate() - days);
@@ -160,6 +174,58 @@ async function fetchOrdersInWindow(clientId, days) {
     .lean();
 }
 
+function buildHealthRow({ sale, catalog, stockAgg, days, orders }) {
+  const pid = catalog?.shopifyProductId || (sale?.productId && String(sale.productId));
+  const stock = stockAgg?.stock ?? (catalog ? Number(catalog.inventoryQuantity) || 0 : null);
+  const unitsSold = sale?.units ?? 0;
+  const dailyDemand = unitsSold / days;
+  const catalogSyncedAt = stockAgg?.lastSyncedAt || catalog?.lastSyncedAt || null;
+
+  const classified = classifyStockHealth({
+    qty: stock,
+    unitsSold30d: unitsSold,
+    dailyDemand,
+    catalogSyncedAt,
+    catalogMissing: !catalog && !stockAgg,
+  });
+
+  const amazonHeavy =
+    unitsSold > 0 && (sale?.amazonUnits || 0) > (sale?.shopifyUnits || 0);
+
+  const confidence = forecastConfidence({
+    orderCountInWindow: orders.length,
+    unitsSold,
+    analysisWindowDays: days,
+  });
+
+  const imageUrl = catalog?.imageUrl || sale?.image || stockAgg?.imageUrl || '';
+  const name = displayProductTitle(catalog || stockAgg, sale?.name);
+
+  return {
+    name,
+    shortName: (catalog?.title || sale?.name || 'Product').slice(0, 80),
+    sku: catalog?.sku || sale?.sku || '',
+    shopifyProductId: pid || null,
+    shopifyVariantId: catalog?.shopifyVariantId || sale?.variantId || null,
+    imageUrl,
+    stock: stock ?? 0,
+    stockStatus: classified.stockStatus,
+    dailyDemand: Number(dailyDemand.toFixed(2)),
+    depletionDays: classified.depletionDays,
+    unitsSold,
+    shopifyUnits30d: sale?.shopifyUnits ?? 0,
+    amazonUnits30d: sale?.amazonUnits ?? 0,
+    isLow: classified.isLow,
+    isCritical: classified.isCritical,
+    catalogStale: classified.catalogStale,
+    catalogVeryStale: classified.catalogVeryStale,
+    stockAsOf: classified.stockAsOf,
+    forecastConfidence: confidence,
+    amazonHeavy,
+    lastSoldAt: sale?.lastSoldAt || null,
+  };
+}
+
 async function buildDemandForecast(clientId, opts = {}) {
   const preferredDays = opts.days || 30;
   const totalOrderCount = await Order.countDocuments({ clientId });
@@ -167,24 +233,31 @@ async function buildDemandForecast(clientId, opts = {}) {
   let days = preferredDays;
   let orders = await fetchOrdersInWindow(clientId, days);
 
-  // Use a wider window when the store has history but few orders in the last 30 days.
   if (orders.length < 5 && totalOrderCount >= 5) {
     days = 90;
     orders = await fetchOrdersInWindow(clientId, days);
   }
 
-  const catalogRows = await ShopifyProduct.find({ clientId })
-    .select(
-      'shopifyProductId shopifyVariantId sku title variantTitle imageUrl inventoryQuantity inStock price'
-    )
-    .lean();
+  const [catalogRows, clientLean, ledgerRows] = await Promise.all([
+    ShopifyProduct.find({ clientId })
+      .select(
+        'shopifyProductId shopifyVariantId sku title variantTitle imageUrl inventoryQuantity inStock price lastSyncedAt shopifyInventoryItemId'
+      )
+      .lean(),
+    Client.findOne({ clientId }).select('catalogSyncedAt shopifyLastProductSync').lean(),
+    InventoryLedger.find({ clientId }).select('sku available locationId lastAdjustmentAt').lean(),
+  ]);
 
-  const shopifyCount = orders.filter((o) => o.source === 'shopify' || !o.source).length;
-  const amazonCount = orders.filter((o) => o.source === 'amazon').length;
-  const channelSplit = {
-    shopify: orders.length > 0 ? Math.round((shopifyCount / orders.length) * 100) : 100,
-    amazon: orders.length > 0 ? Math.round((amazonCount / orders.length) * 100) : 0,
-  };
+  const ledgerBySku = new Map();
+  for (const row of ledgerRows) {
+    if (row.locationId && row.locationId !== 'default') continue;
+    ledgerBySku.set(row.sku, row);
+  }
+
+  const catalogSyncedAt =
+    clientLean?.catalogSyncedAt || clientLean?.shopifyLastProductSync || null;
+
+  const channelSplit = computeChannelSplit(orders);
 
   const totalUnits = orders.reduce(
     (acc, o) =>
@@ -216,45 +289,68 @@ async function buildDemandForecast(clientId, opts = {}) {
         ? 100
         : 0;
 
-  const stockByProduct = buildCatalogStockMap(catalogRows);
-  const topSales = aggregateProductSales(orders).slice(0, 8);
+  const stockByProduct = buildCatalogStockMap(catalogRows, ledgerBySku);
+  const salesRows = aggregateProductSales(orders);
 
-  const inventoryHealth = topSales.map((sale) => {
+  const salesByProductId = new Map();
+  for (const sale of salesRows) {
     const catalog = matchCatalogRow(catalogRows, sale);
     const pid = catalog?.shopifyProductId || (sale.productId && String(sale.productId));
-    const stockAgg = pid ? stockByProduct.get(String(pid)) : null;
+    if (!pid) continue;
+    const prev = salesByProductId.get(pid);
+    if (!prev || sale.units > prev.units) {
+      salesByProductId.set(pid, { ...sale, catalog });
+    }
+  }
 
-    let stock = stockAgg?.stock ?? 0;
-    if (stock <= 0 && catalog?.inStock) stock = Math.max(sale.units * 2, 2);
-    if (stock <= 0 && sale.units > 0) stock = Math.max(Math.floor(sale.units * 2.5), sale.units);
+  const healthByProduct = new Map();
 
-    const dailyDemand = sale.units / days;
-    const depletionDays =
-      dailyDemand > 0.01 ? Math.max(1, Math.ceil(stock / dailyDemand)) : null;
+  for (const [pid, stockAgg] of stockByProduct.entries()) {
+    const sale = salesByProductId.get(pid) || null;
+    healthByProduct.set(
+      pid,
+      buildHealthRow({ sale, catalog: sale?.catalog || null, stockAgg, days, orders })
+    );
+  }
 
-    const imageUrl = catalog?.imageUrl || sale.image || stockAgg?.imageUrl || '';
-    const name = displayProductTitle(catalog || stockAgg, sale.name);
+  for (const sale of salesRows) {
+    const catalog = matchCatalogRow(catalogRows, sale);
+    const pid = catalog?.shopifyProductId || (sale.productId && String(sale.productId));
+    if (!pid || healthByProduct.has(String(pid))) continue;
+    healthByProduct.set(
+      String(pid),
+      buildHealthRow({ sale, catalog, stockAgg: stockByProduct.get(String(pid)), days, orders })
+    );
+  }
 
-    return {
-      name,
-      shortName: (catalog?.title || sale.name || 'Product').slice(0, 80),
-      sku: catalog?.sku || sale.sku || '',
-      shopifyProductId: pid || null,
-      imageUrl,
-      stock,
-      dailyDemand: Number(dailyDemand.toFixed(2)),
-      depletionDays,
-      unitsSold: sale.units,
-      isLow: depletionDays != null && depletionDays <= 7,
-      isCritical: depletionDays != null && depletionDays <= 3,
-    };
-  });
+  let inventoryHealth = [...healthByProduct.values()];
 
-  inventoryHealth.sort((a, b) => {
+  const attentionRows = inventoryHealth.filter((r) => ATTENTION_STATUSES.has(r.stockStatus));
+  attentionRows.sort((a, b) => {
+    const sr = statusSortRank(a.stockStatus) - statusSortRank(b.stockStatus);
+    if (sr !== 0) return sr;
     const da = a.depletionDays ?? 999;
     const db = b.depletionDays ?? 999;
     return da - db;
   });
+
+  const healthyExtras = inventoryHealth
+    .filter((r) => r.stockStatus === 'healthy')
+    .sort((a, b) => (a.depletionDays ?? 999) - (b.depletionDays ?? 999))
+    .slice(0, 8);
+
+  const seen = new Set();
+  inventoryHealth = [];
+  for (const r of [...attentionRows, ...healthyExtras]) {
+    const k = r.shopifyProductId || r.sku;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    inventoryHealth.push(r);
+  }
+
+  const criticalSkus = inventoryHealth.filter(
+    (i) => i.stockStatus === 'out_of_stock' || i.stockStatus === 'critical' || i.isCritical
+  ).length;
 
   const totalInventoryValue = catalogRows.reduce(
     (acc, r) => acc + (Number(r.price) || 0) * (Number(r.inventoryQuantity) || 0),
@@ -264,16 +360,26 @@ async function buildDemandForecast(clientId, opts = {}) {
   return {
     globalSalesVelocity: Number(globalSalesVelocity.toFixed(1)),
     growth,
-    totalInventoryValue: totalInventoryValue > 0 ? totalInventoryValue : orders.reduce((a, o) => a + (o.totalPrice || 0), 0),
+    totalInventoryValue:
+      totalInventoryValue > 0
+        ? totalInventoryValue
+        : orders.reduce((a, o) => a + (o.totalPrice || 0), 0),
     channelSplit,
-    criticalSkus: inventoryHealth.filter((i) => i.isLow).length,
+    channelSplitLegacy: {
+      shopify: channelSplit.orders.shopify,
+      amazon: channelSplit.orders.amazon,
+    },
+    criticalSkus,
     forecastData: buildForecastChart(orders, globalSalesVelocity),
     inventoryHealth,
+    attentionCount: attentionRows.length,
     isBaselining: totalOrderCount < 1,
     orderCount: orders.length,
     totalOrderCount,
     analysisWindowDays: days,
     needsOrderSync: totalOrderCount < 5,
+    catalogSyncedAt,
+    inventoryTruthVersion: 1,
   };
 }
 

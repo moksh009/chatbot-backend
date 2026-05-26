@@ -198,7 +198,7 @@ router.post('/subscribe', subscribeLimiter, async (req, res) => {
       email: null,
     }).catch(() => {});
 
-    await AdLead.findOneAndUpdate(
+    const lead = await AdLead.findOneAndUpdate(
       { clientId: client.clientId, phoneNumber: phoneNorm },
       {
         $set: setDoc,
@@ -229,6 +229,20 @@ router.post('/subscribe', subscribeLimiter, async (req, res) => {
       },
       { upsert: true, new: true }
     );
+
+    const io = global.io;
+    if (io && lead) {
+      const d = String(phoneNorm).replace(/\D/g, '');
+      io.to(`client_${client.clientId}`).emit('capture:new', {
+        id: String(lead._id),
+        source: sourceField,
+        canonicalSource: 'website_widgets',
+        status: setDoc.optStatus,
+        phoneMasked: d.length >= 4 ? `•••• ${d.slice(-4)}` : '••••',
+        name: name || 'Customer',
+        when: setDoc.optInDate,
+      });
+    }
 
     if (doubleOptIn) {
       try {

@@ -329,6 +329,8 @@ app.use('/api/notifications', notificationsRoutes);
 
 const dashboardRoutes = require('./routes/dashboard');
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/inventory', require('./routes/inventory'));
+app.use('/api/amazon', require('./routes/amazon'));
 
 const storeEconomicsRoutes = require('./routes/storeEconomics');
 app.use('/api/store-economics', storeEconomicsRoutes);

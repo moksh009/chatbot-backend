@@ -105,6 +105,42 @@ router.get('/cart-workspace', protect, logPersonalDataAccess, async (req, res) =
     }
 });
 
+// POST /api/leads/:clientId/request-reconsent — queue utility template for Shopify customers without marketing opt-in
+router.post('/:clientId/request-reconsent', protect, logAction('REQUEST_RECONSENT'), async (req, res) => {
+    const { clientId } = req.params;
+    try {
+        if (!denyUnlessTenant(req, res, clientId)) return;
+        const segment = String(req.body.segment || 'shopify_recent').trim();
+        const match = { clientId, shopifyCustomerId: { $exists: true, $ne: null, $ne: '' } };
+        if (segment === 'shopify_recent') {
+            const since = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000);
+            match.updatedAt = { $gte: since };
+        }
+        match.optStatus = { $nin: ['opted_in'] };
+        const count = await AdLead.countDocuments(match);
+        if (count === 0) {
+            return res.json({ success: true, queued: 0, message: 'No contacts need re-consent for this segment' });
+        }
+        try {
+            await TaskQueueService.addTask('RECONSENT_CAMPAIGN', {
+                clientId,
+                segment,
+                requestedBy: req.user?.id || req.user?._id,
+            });
+        } catch (queueErr) {
+            console.warn('[Leads] re-consent queue skipped:', queueErr.message);
+        }
+        return res.json({
+            success: true,
+            queued: count,
+            message: `Re-consent utility outreach queued for ${count} contact(s)`,
+        });
+    } catch (err) {
+        console.error('[Leads] request-reconsent error:', err);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
 // POST /api/leads/:clientId/import
 router.post('/:clientId/import', protect, logAction('IMPORT_LEADS'), uploadMiddleware, async (req, res) => {
     const { clientId } = req.params;
