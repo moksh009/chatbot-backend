@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const moment = require('moment');
+const Client = require('../models/Client');
 const PixelEvent = require('../models/PixelEvent');
 const { protect } = require('../middleware/auth');
 const { injectPixelScript } = require('../utils/shopify/shopifyHelper');
@@ -14,6 +15,10 @@ const {
   installWebPixel,
   getWebPixelInstallStatus,
 } = require('../utils/shopify/pixelInstaller');
+const {
+  syncCheckoutConsentConfig,
+  getCheckoutOptInInstallStatus,
+} = require('../utils/shopify/checkoutConsentExtension');
 
 function assertPixelClientAccess(req, res, clientId) {
   if (req.user.clientId !== clientId && req.user.role !== 'SUPER_ADMIN') {
@@ -21,6 +26,37 @@ function assertPixelClientAccess(req, res, clientId) {
     return false;
   }
   return true;
+}
+
+function resolveBackendUrl(req) {
+  return (
+    process.env.BACKEND_URL ||
+    process.env.SERVER_URL ||
+    `${req.protocol}://${req.get('host')}`
+  ).replace(/\/+$/, '');
+}
+
+/** Storefront + checkout scripts call the API from merchant domains — allow cross-origin posts */
+function pixelStorefrontCors(req, res, next) {
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  next();
+}
+
+async function markThemePixelInstalled(clientId) {
+  await Client.updateOne(
+    { clientId },
+    { $set: { shopifyThemePixelInstalledAt: new Date() } }
+  );
 }
 
 const VISITOR_COOKIE_MAX_AGE = 90 * 24 * 60 * 60;
@@ -35,7 +71,7 @@ function readCookie(req, name) {
  * First-party visitor id for identity stitching (storefront).
  * GET /api/shopify-pixel/pixel/:clientId/visitor-init
  */
-router.get('/pixel/:clientId/visitor-init', async (req, res) => {
+router.get('/pixel/:clientId/visitor-init', pixelStorefrontCors, async (req, res) => {
   let visitorId = readCookie(req, 'te_visitor_id');
   if (!visitorId || !String(visitorId).startsWith('te_')) {
     visitorId = `te_${crypto.randomBytes(12).toString('hex')}`;
@@ -47,7 +83,7 @@ router.get('/pixel/:clientId/visitor-init', async (req, res) => {
   res.json({ success: true, visitorId });
 });
 
-router.post('/pixel/:clientId', async (req, res) => {
+router.post('/pixel/:clientId', pixelStorefrontCors, async (req, res) => {
   try {
     const result = await processPixelEvent(req.params.clientId, {
       ...req.body,
@@ -64,7 +100,8 @@ router.post('/pixel/:clientId', async (req, res) => {
   }
 });
 
-router.post('/pixel/:clientId/event', async (req, res) => {
+router.options('/pixel/:clientId/event', pixelStorefrontCors);
+router.post('/pixel/:clientId/event', pixelStorefrontCors, async (req, res) => {
   try {
     const { eventName, url, sessionId, metadata, shopifyClientId, visitorId } = req.body;
     const result = await processPixelEvent(req.params.clientId, {
@@ -104,9 +141,17 @@ router.get('/pixel/:clientId/tracking-health', protect, async (req, res) => {
   res.json({ success: true, ...health });
 });
 
-router.get('/pixel/:clientId/script.js', async (req, res) => {
+router.get('/pixel/:clientId/script-tag', protect, async (req, res) => {
   const { clientId } = req.params;
-  const backendUrl = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
+  if (!assertPixelClientAccess(req, res, clientId)) return;
+  const backendUrl = resolveBackendUrl(req);
+  const scriptTag = `<script src="${backendUrl}/api/shopify-pixel/pixel/${clientId}/script.js" async></script>`;
+  res.json({ success: true, backendUrl, scriptTag });
+});
+
+router.get('/pixel/:clientId/script.js', pixelStorefrontCors, async (req, res) => {
+  const { clientId } = req.params;
+  const backendUrl = resolveBackendUrl(req);
 
   const script = `
 (function() {
@@ -147,6 +192,7 @@ router.get('/pixel/:clientId/script.js', async (req, res) => {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             credentials: "include",
+            keepalive: true,
             body: JSON.stringify(payload)
         }).catch(function() {});
     }
@@ -249,9 +295,15 @@ router.post('/pixel/:clientId/inject', protect, async (req, res) => {
     return res.status(403).json({ error: 'Unauthorized' });
   }
   try {
-    const backendUrl = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
+    const backendUrl = resolveBackendUrl(req);
     const result = await injectPixelScript(clientId, backendUrl);
-    res.json(result);
+    if (result?.success) await markThemePixelInstalled(clientId);
+    res.json({
+      ...result,
+      backendUrl,
+      scriptTag: `<script src="${backendUrl}/api/shopify-pixel/pixel/${clientId}/script.js" async></script>`,
+      nextStep: 'Visit your storefront once, then refresh status here.',
+    });
   } catch (err) {
     console.error('[PixelInject] Error:', err.message);
     const isForbidden = err.response?.status === 403;
@@ -284,15 +336,73 @@ router.post('/pixel/:clientId/install-web-pixel', protect, async (req, res) => {
   const { clientId } = req.params;
   if (!assertPixelClientAccess(req, res, clientId)) return;
   try {
-    const backendUrl =
-      process.env.BACKEND_URL ||
-      process.env.SERVER_URL ||
-      `${req.protocol}://${req.get('host')}`;
-    const result = await installWebPixel(clientId, { apiBaseUrl: backendUrl });
-    if (!result.success) {
-      return res.status(400).json(result);
+    const backendUrl = resolveBackendUrl(req);
+
+    let themeInject = { success: false, message: 'Theme inject not attempted' };
+    try {
+      themeInject = await injectPixelScript(clientId, backendUrl);
+      if (themeInject?.success) await markThemePixelInstalled(clientId);
+    } catch (themeErr) {
+      themeInject = { success: false, message: themeErr.message };
     }
-    res.json(result);
+
+    let webPixel = null;
+    try {
+      webPixel = await installWebPixel(clientId, { apiBaseUrl: backendUrl });
+    } catch (webErr) {
+      webPixel = {
+        success: false,
+        message: webErr.message,
+        code: webErr.code,
+        userErrors: webErr.userErrors,
+      };
+    }
+
+    let consentSync = { success: false };
+    try {
+      consentSync = await syncCheckoutConsentConfig(clientId, backendUrl);
+    } catch (syncErr) {
+      consentSync = { success: false, message: syncErr.message };
+    }
+
+    const checkoutStatus = await getCheckoutOptInInstallStatus(clientId);
+
+    const success = Boolean(themeInject?.success || webPixel?.success || consentSync?.success);
+    if (!success) {
+      return res.status(400).json({
+        success: false,
+        themeInjected: themeInject?.success === true,
+        webPixel,
+        consentSync,
+        checkoutStatus,
+        message:
+          themeInject?.message ||
+          webPixel?.message ||
+          'Install failed. Paste the theme script manually or reconnect Shopify with write_themes + write_pixels.',
+      });
+    }
+
+    const checkboxMessage = checkoutStatus.extensionDeployed
+      ? 'Next: open Checkout Editor and add the “TopEdge WhatsApp opt-in” app block on the Contact step, then publish.'
+      : 'Tracking registered. Deploy TopEdge app extensions (shopify app deploy) so the checkout checkbox can appear.';
+
+    res.json({
+      success: true,
+      action: webPixel?.action || (themeInject?.success ? 'theme_injected' : 'unknown'),
+      themeInjected: themeInject?.success === true,
+      webPixelRegistered: webPixel?.success === true,
+      webPixelId: webPixel?.webPixelId || null,
+      consentConfigSynced: consentSync?.success === true,
+      checkoutStatus,
+      checkoutEditorUrl: checkoutStatus.checkoutCustomizeUrl || checkoutStatus.checkoutEditorUrl,
+      scriptTag: `<script src="${backendUrl}/api/shopify-pixel/pixel/${clientId}/script.js" async></script>`,
+      backendUrl,
+      message: themeInject?.success
+        ? `Storefront script added. ${checkboxMessage}`
+        : webPixel?.pollHint || checkboxMessage,
+      pollHint: checkoutStatus.statusHint,
+      manualSnippet: webPixel?.manualSnippet,
+    });
   } catch (err) {
     const status = /not_connected|missing_pixel_scopes/i.test(err.message) ? 400 : 500;
     res.status(status).json({
@@ -304,10 +414,38 @@ router.post('/pixel/:clientId/install-web-pixel', protect, async (req, res) => {
   }
 });
 
+router.get('/pixel/:clientId/checkout-opt-in/status', protect, async (req, res) => {
+  const { clientId } = req.params;
+  if (!assertPixelClientAccess(req, res, clientId)) return;
+  try {
+    const checkoutStatus = await getCheckoutOptInInstallStatus(clientId);
+    res.json({ success: true, ...checkoutStatus });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/pixel/:clientId/checkout-opt-in/sync', protect, async (req, res) => {
+  const { clientId } = req.params;
+  if (!assertPixelClientAccess(req, res, clientId)) return;
+  try {
+    const backendUrl = resolveBackendUrl(req);
+    const result = await syncCheckoutConsentConfig(clientId, backendUrl);
+    const checkoutStatus = await getCheckoutOptInInstallStatus(clientId);
+    res.json({ success: true, ...result, checkoutStatus });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 router.get('/pixel/:clientId/status', protect, async (req, res) => {
   const { clientId } = req.params;
   if (!assertPixelClientAccess(req, res, clientId)) return;
   try {
+    const clientDoc = await Client.findOne({ clientId })
+      .select('shopifyThemePixelInstalledAt shopifyWebPixelId shopifyWebPixelInstalledAt shopDomain')
+      .lean();
+
     const fiveMinutesAgo = moment().subtract(5, 'minutes').toDate();
     const fifteenMinutesAgo = moment().subtract(15, 'minutes').toDate();
     const count = await PixelEvent.countDocuments({
@@ -316,27 +454,58 @@ router.get('/pixel/:clientId/status', protect, async (req, res) => {
     });
     const lastEvent = await PixelEvent.findOne({ clientId }).sort({ timestamp: -1 });
     const eventsPerMinute = (count / 5).toFixed(1);
-    const isActive =
+    const eventsLive =
       (lastEvent && moment(lastEvent.timestamp).isAfter(fifteenMinutesAgo)) || false;
-    const themeRecent =
-      lastEvent && moment(lastEvent.timestamp).isAfter(moment().subtract(24, 'hours'));
+    const themeMarkedInstalled = Boolean(clientDoc?.shopifyThemePixelInstalledAt);
+    const webPixelRegistered = Boolean(
+      clientDoc?.shopifyWebPixelId || clientDoc?.shopifyWebPixelInstalledAt
+    );
+
+    let webPixelApi = null;
+    try {
+      webPixelApi = await getWebPixelInstallStatus(clientId);
+    } catch {
+      webPixelApi = null;
+    }
+
     const { buildTrackingHealth } = require('../utils/commerce/trackingHealth');
     const health = await buildTrackingHealth(clientId, 1).catch(() => null);
-    const storefrontActive = !!health?.storefrontActive;
+
+    const backendUrl = resolveBackendUrl(req);
+    let checkoutStatus = null;
+    try {
+      checkoutStatus = await getCheckoutOptInInstallStatus(clientId);
+    } catch {
+      checkoutStatus = null;
+    }
+
     res.json({
       success: true,
-      isActive,
-      /** Theme-script pixel (single story — no Shopify Web Pixel Admin API) */
-      webPixelActive: isActive,
-      webPixelRegistered: storefrontActive || themeRecent,
-      webPixelScopeMissing: false,
-      webPixelScopeMessage: null,
-      webPixelId: null,
+      isActive: eventsLive,
+      eventsLive,
+      themeInjected: themeMarkedInstalled,
+      webPixelActive: eventsLive,
+      webPixelRegistered: webPixelRegistered || webPixelApi?.installed === true,
+      webPixelScopeMissing: webPixelApi?.reason === 'missing_pixel_scopes',
+      webPixelScopeMessage: webPixelApi?.message || null,
+      webPixelId: clientDoc?.shopifyWebPixelId || webPixelApi?.webPixelId || null,
       lastWebPixelEventAt: lastEvent?.timestamp || null,
       eventsPerMinute: parseFloat(eventsPerMinute),
       lastEventAt: lastEvent ? lastEvent.timestamp : null,
+      lastEventName: lastEvent?.eventName || null,
       totalEvents: count,
       captureSource: 'theme_script',
+      backendUrl,
+      scriptTag: `<script src="${backendUrl}/api/shopify-pixel/pixel/${clientId}/script.js" async></script>`,
+      shopDomain: clientDoc?.shopDomain || null,
+      trackingHealth: health,
+      checkoutStatus,
+      statusHint: eventsLive
+        ? 'Receiving storefront signals.'
+        : checkoutStatus?.statusHint ||
+          (themeMarkedInstalled
+            ? 'Script is in your theme — visit your store homepage to activate stats.'
+            : 'Install tracking, then add the checkout opt-in block in Shopify Checkout Editor.'),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

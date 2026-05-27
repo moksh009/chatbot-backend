@@ -5,11 +5,20 @@ const AdLead = require('../../models/AdLead');
 const Order = require('../../models/Order');
 const Client = require('../../models/Client');
 const log = require('../core/logger')('AbandonedCartWorkspace');
+const {
+  contactPhoneKey,
+  getCartFollowupConfig,
+  getWhatsappRecoveryMetrics,
+  getRecoveryTotalsFromAttempts,
+  loadLatestAttemptsByPhone,
+  buildWhatsappFollowupDisplay,
+  recoveryStatusFromAttempt,
+} = require('./cartRecoveryAttemptService');
 
 const CART_NUDGE_DEFAULTS = {
-  minutes1: 15,
-  hours2: 2,
-  hours3: 24,
+  minutes1: 45,
+  hours2: 8,
+  hours3: 36,
 };
 
 function resolveCartNudgeDelay(value, fallback) {
@@ -257,7 +266,21 @@ async function latestOrdersByPhone(clientId, phones = []) {
   return map;
 }
 
-function orderStatusLabel(order, lead) {
+function orderStatusLabel(order, lead, delay1Min = 45) {
+  if (!order && !lead.isOrderPlaced) {
+    const abandonedAt = abandonDate(lead);
+    const step = Number(lead.recoveryStep || 0);
+    if (
+      step === 0 &&
+      abandonedAt &&
+      (lead.cartStatus === 'abandoned' || lead.checkoutInitiatedCount > 0)
+    ) {
+      const minsAgo = (Date.now() - new Date(abandonedAt).getTime()) / 60000;
+      if (minsAgo < delay1Min) {
+        return { key: 'recent', label: 'Recently started' };
+      }
+    }
+  }
   if (!order && !lead.isOrderPlaced) return { key: 'abandoned', label: 'Abandoned' };
   if (!order && lead.isOrderPlaced) return { key: 'ordered', label: 'Ordered' };
 
@@ -310,7 +333,7 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
     ],
   })
     .select(
-      'phoneNumber name email cartStatus cartSnapshot cartValue cartAbandonedAt lastCartEventAt lastInteraction createdAt updatedAt isOrderPlaced recoveryStep recoveryStartedAt abandonedCartRecoveredAt activityLog addToCartCount checkoutInitiatedCount'
+      'phoneNumber name email cartStatus cartSnapshot cartValue cartAbandonedAt lastCartEventAt lastInteraction createdAt updatedAt isOrderPlaced recoveryStep recoveryStartedAt abandonedCartRecoveredAt recoveredViaWhatsApp activityLog addToCartCount checkoutInitiatedCount checkoutInitiatedAt'
     )
     .limit(8000)
     .lean();
@@ -318,6 +341,13 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
   const filtered = leads.filter((l) => isAbandonCandidate(l) && leadInAbandonWindow(l, from, to));
   const phones = filtered.map((l) => l.phoneNumber);
   const orderMap = await latestOrdersByPhone(clientId, phones);
+
+  const [followupConfig, whatsappMetrics, recoveryTotals, attemptByPhone] = await Promise.all([
+    getCartFollowupConfig(clientId),
+    getWhatsappRecoveryMetrics(clientId, from, to),
+    getRecoveryTotalsFromAttempts(clientId, from, to),
+    loadLatestAttemptsByPhone(clientId, phones),
+  ]);
 
   const rows = [];
   let metrics = {
@@ -332,12 +362,58 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
   };
 
   let valueSum = 0;
+  let unknownPhoneCount = 0;
+  const funnel = {
+    msg1Sent: 0,
+    msg2Sent: 0,
+    msg3Sent: 0,
+    recoveredAfterMsg1: 0,
+    recoveredAfterMsg2: 0,
+    recoveredAfterMsg3: 0,
+  };
+  const { delay1Min } = getCartRecoveryDelays(client || {});
 
   for (const lead of filtered) {
+    if (String(lead.phoneNumber || '').startsWith('unknown_checkout_')) {
+      unknownPhoneCount += 1;
+    }
+
+    const step = Number(lead.recoveryStep || 0);
+    const logs = Array.isArray(lead.activityLog) ? lead.activityLog : [];
+    const sentSteps = new Set();
+    if (step >= 1) sentSteps.add(1);
+    if (step >= 2) sentSteps.add(2);
+    if (step >= 3) sentSteps.add(3);
+    logs.forEach((l) => {
+      const d = String(l?.details || '');
+      if (d.includes('cart_step_1')) sentSteps.add(1);
+      if (d.includes('cart_step_2')) sentSteps.add(2);
+      if (d.includes('cart_step_3')) sentSteps.add(3);
+    });
+    if (sentSteps.has(1)) funnel.msg1Sent += 1;
+    if (sentSteps.has(2)) funnel.msg2Sent += 1;
+    if (sentSteps.has(3)) funnel.msg3Sent += 1;
+
+    const phoneKey = contactPhoneKey(lead.phoneNumber) || normalizePhoneKey(lead.phoneNumber);
+    const attempt = attemptByPhone.get(phoneKey) || null;
+
+    if (attempt?.recoveredViaWhatsapp) {
+      const sentNums = (attempt.whatsappTemplatesSent || []).map((t) => Number(t.followupNumber)).filter(Boolean);
+      const recoverStep = sentNums.length ? Math.max(...sentNums) : Number(lead.recoveryStep || 1);
+      if (recoverStep >= 3) funnel.recoveredAfterMsg3 += 1;
+      else if (recoverStep >= 2) funnel.recoveredAfterMsg2 += 1;
+      else funnel.recoveredAfterMsg1 += 1;
+    } else if (isWaRecoveredLead(lead)) {
+      const recoverStep = step || 1;
+      if (recoverStep >= 3) funnel.recoveredAfterMsg3 += 1;
+      else if (recoverStep >= 2) funnel.recoveredAfterMsg2 += 1;
+      else funnel.recoveredAfterMsg1 += 1;
+    }
+
     const items = normalizeItems(lead);
     const totals = cartTotals(items, lead.cartSnapshot || {});
-    const recovered = isRecoveredLead(lead);
-    const waRecovered = isWaRecoveredLead(lead);
+    const recovered =
+      attempt?.status === 'recovered' || isRecoveredLead(lead);
     const active = !recovered;
 
     metrics.totalAbandoned += 1;
@@ -347,19 +423,11 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
       metrics.activeAbandoned += 1;
       metrics.recoverableRevenue += totals.cartValue;
     }
-    if (recovered) {
-      metrics.recoveredCarts += 1;
-      metrics.revenueRecovered += totals.cartValue;
-    }
-    if (waRecovered) {
-      metrics.recoveredFromWhatsapp += 1;
-      metrics.revenueRecoveredFromWhatsapp += totals.cartValue;
-    }
 
-    const phoneKey = normalizePhoneKey(lead.phoneNumber);
-    const latestOrder = orderMap.get(phoneKey) || null;
-    const followup = buildFollowupStatus(lead, schedule);
-    const recovery = recoveryStatusLabel(lead);
+    const phoneKeyOrder = normalizePhoneKey(lead.phoneNumber);
+    const latestOrder = orderMap.get(phoneKeyOrder) || null;
+    const followup = buildWhatsappFollowupDisplay(attempt, followupConfig);
+    const recovery = recoveryStatusFromAttempt(attempt, lead);
 
     rows.push({
       id: String(lead._id),
@@ -375,10 +443,19 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
       },
       cartValue: totals.cartValue,
       compareAtValue: totals.compareAtValue,
-      currentStatus: orderStatusLabel(latestOrder, lead),
+      currentStatus: orderStatusLabel(latestOrder, lead, delay1Min),
       abandonedAt: abandonDate(lead),
       recoveryStatus: recovery,
       whatsappFollowup: followup,
+      cartRecoveryAttempt: attempt
+        ? {
+            status: attempt.status,
+            recoveredViaWhatsapp: attempt.recoveredViaWhatsapp,
+            organicRecovery: attempt.organicRecovery,
+            whatsappMessageSentAt: attempt.whatsappMessageSentAt,
+            whatsappTemplatesSent: attempt.whatsappTemplatesSent || [],
+          }
+        : null,
       recoveryStep: lead.recoveryStep || 0,
       timeline: buildCartTimeline(lead, followup),
       leadId: String(lead._id),
@@ -390,6 +467,39 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
     metrics.totalAbandoned > 0
       ? Math.round((valueSum / metrics.totalAbandoned) * 100) / 100
       : 0;
+
+  metrics.recoveredCarts = recoveryTotals.recoveredCarts;
+  metrics.revenueRecovered = recoveryTotals.revenueRecovered;
+  metrics.recoveredFromWhatsapp = whatsappMetrics.configured
+    ? whatsappMetrics.recoveredViaWhatsapp
+    : null;
+  metrics.revenueRecoveredFromWhatsapp = whatsappMetrics.configured
+    ? whatsappMetrics.waRevenueRecovered
+    : null;
+  metrics.whatsappRecovery = whatsappMetrics;
+
+  metrics.unknownPhoneCount = unknownPhoneCount;
+  metrics.unknownPhonePct =
+    metrics.totalAbandoned > 0
+      ? Math.round((unknownPhoneCount / metrics.totalAbandoned) * 10000) / 100
+      : 0;
+
+  const totalWaRecovered =
+    funnel.recoveredAfterMsg1 + funnel.recoveredAfterMsg2 + funnel.recoveredAfterMsg3;
+  funnel.effectiveness = {
+    msg1Pct:
+      totalWaRecovered > 0
+        ? Math.round((funnel.recoveredAfterMsg1 / totalWaRecovered) * 100)
+        : 0,
+    msg2Pct:
+      totalWaRecovered > 0
+        ? Math.round((funnel.recoveredAfterMsg2 / totalWaRecovered) * 100)
+        : 0,
+    msg3Pct:
+      totalWaRecovered > 0
+        ? Math.round((funnel.recoveredAfterMsg3 / totalWaRecovered) * 100)
+        : 0,
+  };
 
   metrics.recoveryRate =
     metrics.totalAbandoned > 0
@@ -403,6 +513,7 @@ async function buildAbandonedCartWorkspace(clientId, query = {}) {
     range: { from, to, preset },
     schedule,
     metrics,
+    funnel,
     rows,
     total: rows.length,
   };

@@ -310,8 +310,10 @@ module.exports = {
                 return { success: true, message: 'Pixel already injected' };
             }
 
-            // 3. Inject before </head>
-            if (liquid.includes('</head>')) {
+            // 3. Inject before </body> (preferred) or </head>
+            if (liquid.includes('</body>')) {
+                liquid = liquid.replace('</body>', `${scriptTag}</body>`);
+            } else if (liquid.includes('</head>')) {
                 liquid = liquid.replace('</head>', `${scriptTag}</head>`);
             } else {
                 liquid += scriptTag;

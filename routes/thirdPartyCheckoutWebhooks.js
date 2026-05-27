@@ -19,6 +19,9 @@ router.post('/gokwik/:clientId', (req, res) => dispatch(req.params.clientId, 'go
 router.post('/razorpay-magic/:clientId', (req, res) =>
   dispatch(req.params.clientId, 'razorpay_magic', req, res)
 );
+router.post('/razorpay/:clientId', (req, res) =>
+  dispatch(req.params.clientId, 'razorpay_magic', req, res)
+);
 router.post('/shiprocket-checkout/:clientId', (req, res) =>
   dispatch(req.params.clientId, 'shiprocket', req, res)
 );

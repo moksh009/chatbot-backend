@@ -34,6 +34,19 @@ function buildSuccessfulOrderMatch(clientId, extra = {}) {
   };
 }
 
+/**
+ * Orders that count toward per-customer LTV (Live Chat sidebar, lead enrichment).
+ * Includes COD / Shopify pending — same spirit as calculateAnalyticsPeriodMetrics.
+ */
+function buildCustomerLtvOrderMatch(clientId, extra = {}) {
+  return {
+    clientId,
+    ...extra,
+    status: { $nin: EXCLUDE_ORDER_STATUSES },
+    financialStatus: { $nin: ['cancelled', 'refunded', 'voided', 'partially_refunded'] },
+  };
+}
+
 function phoneMatchQuery(phone) {
   const norm = normalizePhone(phone);
   const digits = String(phone || '').replace(/\D/g, '');
@@ -56,7 +69,7 @@ async function calculateCustomerLTV(clientId, customerPhone) {
   const rows = await Order.aggregate([
     {
       $match: {
-        ...buildSuccessfulOrderMatch(clientId),
+        ...buildCustomerLtvOrderMatch(clientId),
         ...phoneMatchQuery(customerPhone),
       },
     },
@@ -269,6 +282,8 @@ module.exports = {
   SUCCESS_FINANCIAL_STATUSES,
   EXCLUDE_ORDER_STATUSES,
   buildSuccessfulOrderMatch,
+  buildCustomerLtvOrderMatch,
+  orderRevenue,
   calculateCustomerLTV,
   calculateAverageLTV,
   calculateAverageOrderValue,

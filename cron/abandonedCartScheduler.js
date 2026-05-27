@@ -19,6 +19,8 @@ const {
   handleCronEnvelopeOutcome,
   hasRealPhone,
 } = require('../utils/messaging/cronEnvelopeSend');
+const { buildCartRecoveryComponents } = require('../utils/commerce/buildCartRecoveryComponents');
+const { buildRecoveryUrl } = require('../utils/commerce/buildRecoveryUrl');
 
 const CART_DEDUP_TTL_SEC = 48 * 3600;
 
@@ -55,9 +57,9 @@ function cartAbandonTimeFilter(now, delayMinutes, maxAgeHours = 168) {
 }
 
 const CART_NUDGE_DEFAULTS = {
-  minutes1: 15,
-  hours2: 2,
-  hours3: 24,
+  minutes1: 45,
+  hours2: 8,
+  hours3: 36,
 };
 
 /** Use merchant timing only when set; default strictly on null/undefined. */
@@ -134,10 +136,13 @@ async function sendRichNudge(client, lead, text, options = {}) {
         const recoverFromToken =
           storeHost && token ? `https://${storeHost}/cart/recover/${token}` : '';
         const checkoutUrl =
-          lead.checkoutUrl ||
-          lead.cartSnapshot?.checkoutUrl ||
-          recoverFromToken ||
-          '';
+          buildRecoveryUrl(
+            lead.checkoutUrl ||
+            lead.cartSnapshot?.checkoutUrl ||
+            recoverFromToken ||
+            '',
+            stepNum
+          );
 
         let successfullySent = false;
 
@@ -166,6 +171,10 @@ async function sendRichNudge(client, lead, text, options = {}) {
         // 2. If Meta Template is configured, use envelope or sendForAutomation
         if (!successfullySent && templateName) {
             log.info(`[Nudge] Sending template ${templateName} to ${phone || lead.email}`);
+            const { components } = buildCartRecoveryComponents(lead, client, stepNum, {
+              includeHeaderImage: stepNum !== 2,
+              discountCode: lead.lastDiscountCode || lead.discountCode,
+            });
             const templateOut = await cronEnvelopeSend({
                 client,
                 clientId: client.clientId,
@@ -177,7 +186,7 @@ async function sendRichNudge(client, lead, text, options = {}) {
                 payload: {
                     templateName,
                     templateLanguage: 'en',
-                    components: [],
+                    components,
                 },
                 context: { source: 'cron/abandonedCartScheduler', step: stepNum },
             });
@@ -227,22 +236,17 @@ async function sendRichNudge(client, lead, text, options = {}) {
             }
         }
         
-        if (successfullySent) {
-            // --- PART 7: Cart Recovery Attempt Lifecycle - Trigger 2 ---
+        if (successfullySent && hasRealPhone(phone)) {
             try {
-                const CartRecoveryAttempt = require('../models/CartRecoveryAttempt');
-                await CartRecoveryAttempt.findOneAndUpdate(
-                    {
-                        clientId: client.clientId,
-                        contactPhone: phone,
-                        status: 'pending',
-                        messaged: false
-                    },
-                    { $set: { messaged: true, updatedAt: new Date() } },
-                    { sort: { attemptTimestamp: -1 } }
-                );
+                const { recordWhatsappTemplateSent } = require('../utils/commerce/cartRecoveryAttemptService');
+                await recordWhatsappTemplateSent({
+                    clientId: client.clientId,
+                    phone,
+                    templateName: templateName || 'cart_recovery_message',
+                    followupNumber: stepNum,
+                });
             } catch (craErr) {
-                log.warn(`[CartRecovery] Failed to mark messaged for ${phone}: ${craErr.message}`);
+                log.warn(`[CartRecovery] Failed to record WA send for ${phone}: ${craErr.message}`);
             }
         }
     } catch (err) {

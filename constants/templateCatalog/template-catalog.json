@@ -174,7 +174,10 @@
           "pack": "wizard",
           "pushKind": "prebuilt",
           "prebuiltKey": "abandoned_cart_r1_v1",
-          "autoTrigger": "abandoned_cart"
+          "autoTrigger": "abandoned_cart",
+          "step": 1,
+          "headerType": "IMAGE",
+          "category": "MARKETING"
         },
         {
           "id": "wizard_cart_2",
@@ -186,7 +189,23 @@
           "pack": "wizard",
           "pushKind": "prebuilt",
           "prebuiltKey": "abandoned_cart_r2_v1",
-          "autoTrigger": "abandoned_cart"
+          "autoTrigger": "abandoned_cart",
+          "step": 2,
+          "headerType": "TEXT"
+        },
+        {
+          "id": "wizard_cart_3",
+          "title": "Abandoned cart — final offer",
+          "description": "Third cart recovery step with optional discount.",
+          "canonicalMetaName": "cart_recovery_3",
+          "metaNames": ["cart_recovery_3", "abandoned_cart_r3_v1"],
+          "usedIn": ["AI Setup", "Flow Builder"],
+          "pack": "wizard",
+          "pushKind": "prebuilt",
+          "prebuiltKey": "abandoned_cart_r3_v1",
+          "autoTrigger": "abandoned_cart",
+          "step": 3,
+          "headerType": "IMAGE"
         },
         {
           "id": "wizard_admin_alert",

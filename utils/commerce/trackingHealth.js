@@ -1,6 +1,7 @@
 "use strict";
 
 const moment = require("moment");
+const Client = require("../../models/Client");
 const PixelEvent = require("../../models/PixelEvent");
 const AdLead = require("../../models/AdLead");
 
@@ -69,9 +70,16 @@ async function buildTrackingHealth(clientId, periodDays = 30) {
       .lean(),
   ]);
 
+  const clientDoc = await Client.findOne({ clientId })
+    .select("shopifyThemePixelInstalledAt shopifyWebPixelId")
+    .lean();
+  const themeScriptMarked = Boolean(clientDoc?.shopifyThemePixelInstalledAt);
+  const webPixelApiRegistered = Boolean(clientDoc?.shopifyWebPixelId);
+
   const checkoutSignals = Math.max(contactPixelEvents, checkoutWebhookLeads);
-  const webPixelInstalled = webPixelEvents > 0 || !!lastWebPixel;
-  const storefrontActive = storefrontEvents > 0 || !!lastStorefront;
+  const webPixelInstalled =
+    webPixelEvents > 0 || !!lastWebPixel || themeScriptMarked || webPixelApiRegistered;
+  const storefrontActive = storefrontEvents > 0 || !!lastStorefront || themeScriptMarked;
 
   let checkoutCaptureRate = 100;
   let missedPercent = 0;
@@ -97,6 +105,8 @@ async function buildTrackingHealth(clientId, periodDays = 30) {
     periodDays,
     storefrontActive,
     webPixelInstalled,
+    themeScriptInstalled: themeScriptMarked,
+    webPixelApiRegistered,
     checkoutCaptureRate,
     missedCheckoutPercent: missedPercent,
     counts: {

@@ -1,6 +1,7 @@
 "use strict";
 
 const { parsePhoneNumberFromString } = require("libphonenumber-js");
+const { normalizeIndianPhone } = require("./normalizeIndianPhone");
 
 /**
  * ISO country for phone parsing — Shopify stores often use IN; override per client.
@@ -27,6 +28,11 @@ function normalizePhone(phoneRaw, defaultCountry = "IN") {
   if (!raw) return "";
 
   const country = String(defaultCountry || "IN").toUpperCase();
+
+  if (country === "IN") {
+    const e164 = normalizeIndianPhone(raw);
+    if (e164) return e164.replace(/^\+/, "");
+  }
 
   try {
     if (raw.startsWith("+")) {

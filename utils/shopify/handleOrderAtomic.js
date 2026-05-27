@@ -1,10 +1,14 @@
+'use strict';
+
 const mongoose = require('mongoose');
 const AdLead = require('../../models/AdLead');
+const { attributeOrderToRecoveryAttempt } = require('../commerce/cartRecoveryAttemptService');
 const { getAppRedis } = require('../core/redisFactory');
 const {
   applyMongoCancellations,
   finishCancelSideEffects,
 } = require('../messaging/cancelAllAutomationsFor');
+const { indianPhoneLookupVariants } = require('../core/normalizeIndianPhone');
 const log = require('../core/logger')('HandleOrderAtomic');
 
 const ORDER_DEDUP_TTL_SEC = 7 * 24 * 3600;
@@ -40,6 +44,37 @@ async function releaseOrderClaim(clientId, orderId) {
   }
 }
 
+async function findRecoveryLead(clientId, data, cleanPhone) {
+  const checkoutToken = data.checkout_token || data.token || '';
+  const cartToken = data.cart_token || '';
+  const phoneLookup = cleanPhone ? indianPhoneLookupVariants(cleanPhone) : [];
+
+  if (checkoutToken) {
+    const byCheckout = await AdLead.findOne({ clientId, checkoutToken: String(checkoutToken) });
+    if (byCheckout) return byCheckout;
+  }
+
+  if (cartToken) {
+    const byCart = await AdLead.findOne({ clientId, cartToken: String(cartToken) });
+    if (byCart) return byCart;
+  }
+
+  if (phoneLookup.length) {
+    const byPhone = await AdLead.findOne({
+      clientId,
+      phoneNumber: { $in: phoneLookup },
+      cartStatus: { $in: ['abandoned', 'active', 'checkout_started'] },
+    });
+    if (byPhone) return byPhone;
+  }
+
+  if (phoneLookup.length) {
+    return AdLead.findOne({ clientId, phoneNumber: { $in: phoneLookup } });
+  }
+
+  return null;
+}
+
 /**
  * Atomic purchase side-effects: lead flags + automation cancel (Mongo transaction).
  */
@@ -52,6 +87,23 @@ async function handleOrderAtomic(client, data, cleanPhone) {
 
   const orderDate = data.created_at ? new Date(data.created_at) : new Date();
   const lastOrderId = data.name || String(data.id || '');
+  const orderValue = parseFloat(data.total_price) || 0;
+
+  const existingLead = await findRecoveryLead(client.clientId, data, cleanPhone);
+  const phoneLookup = cleanPhone ? indianPhoneLookupVariants(cleanPhone) : [];
+  const leadFilter = existingLead
+    ? { _id: existingLead._id, clientId: client.clientId }
+    : phoneLookup.length
+      ? { clientId: client.clientId, phoneNumber: { $in: phoneLookup } }
+      : null;
+
+  if (!leadFilter) {
+    if (orderId) await releaseOrderClaim(client.clientId, orderId);
+    return { duplicate: false, lead: null, cancelled: { sequences: 0, campaignMessages: 0, scheduledMessages: 0 } };
+  }
+
+  const recoveryStep = Number(existingLead?.recoveryStep || 0);
+  let recoveredViaWhatsApp = recoveryStep > 0;
 
   let lead = null;
   let cancelled = { sequences: 0, campaignMessages: 0, scheduledMessages: 0 };
@@ -59,8 +111,13 @@ async function handleOrderAtomic(client, data, cleanPhone) {
 
   try {
     await session.withTransaction(async () => {
+      if (existingLead?._id) {
+        const attempt = await attributeOrderToRecoveryAttempt(client.clientId, data, cleanPhone);
+        if (attempt?.recoveredViaWhatsapp) recoveredViaWhatsApp = true;
+      }
+
       lead = await AdLead.findOneAndUpdate(
-        { phoneNumber: cleanPhone, clientId: client.clientId },
+        leadFilter,
         {
           $set: {
             isOrderPlaced: true,
@@ -68,10 +125,16 @@ async function handleOrderAtomic(client, data, cleanPhone) {
             lastOrderAt: orderDate,
             lastOrderId,
             isRtoRisk: false,
+            recoveredAt: orderDate,
+            recoveredOrderId: String(data.id || data.name || ''),
+            recoveredViaWhatsApp,
+            ...(cleanPhone ? { phoneNumber: cleanPhone.startsWith('+') ? cleanPhone : `+${cleanPhone}` } : {}),
+            ...(data.cart_token ? { cartToken: String(data.cart_token) } : {}),
+            ...(data.checkout_token ? { checkoutToken: String(data.checkout_token) } : {}),
           },
           $inc: { ordersCount: 1 },
         },
-        { new: true, session, upsert: true }
+        { new: true, session, upsert: !existingLead }
       );
 
       cancelled = await applyMongoCancellations(
@@ -116,11 +179,12 @@ async function handleOrderAtomic(client, data, cleanPhone) {
     }
   });
 
-  return { duplicate: false, lead, cancelled };
+  return { duplicate: false, lead, cancelled, recoveryMatched: !!existingLead };
 }
 
 module.exports = {
   handleOrderAtomic,
+  findRecoveryLead,
   claimOrderProcessing,
   releaseOrderClaim,
   orderDedupKey,

@@ -90,21 +90,6 @@ async function detectStep(client, stepId, ctx) {
       return !!(cfg && Array.isArray(cfg.tiers) && cfg.tiers.length > 0);
     }
 
-    case 'detect_stack': {
-      const ac = client.audienceContext || {};
-      const checkout = ac.manualOverrides?.thirdPartyCheckout || ac.thirdPartyCheckout;
-      return !!(checkout && checkout !== 'unknown' && checkout !== 'not_sure');
-    }
-
-    case 'opt_in_policy': {
-      const gc = client.growthCompliance || {};
-      const customizedStop =
-        Array.isArray(gc.stopKeywords) &&
-        gc.stopKeywords.length > 0 &&
-        !(gc.stopKeywords.length === 5 && gc.stopKeywords.includes('STOP'));
-      return !!(gc.defaultOptInPolicy || customizedStop || gc.cartRecoveryRequiresOptIn);
-    }
-
     case 'consent_rules':
       return false;
 

@@ -12,10 +12,27 @@ const CART_FOLLOWUP_MIN_MINUTES = {
 };
 
 const CART_FOLLOWUP_DEFAULT_MINUTES = {
-  followup_1: 15,
-  followup_2: 2 * 60,
-  followup_3: 24 * 60,
+  followup_1: 45,
+  followup_2: 8 * 60,
+  followup_3: 36 * 60,
 };
+
+function cartRecoveryVariableMappings(stepNum) {
+  const step = Number(stepNum);
+  if (step === 2) {
+    return { body: { 1: 'first_name', 2: 'product_name' }, buttons: { 0: 'checkout_url' } };
+  }
+  if (step >= 3) {
+    return {
+      body: { 1: 'first_name', 2: 'product_name', 3: 'cart_total', 5: 'discount_code' },
+      buttons: { 0: 'checkout_url' },
+    };
+  }
+  return {
+    body: { 1: 'first_name', 2: 'product_name', 3: 'cart_total' },
+    buttons: { 0: 'checkout_url' },
+  };
+}
 
 function orderNotificationRule(slot) {
   const labels = {
@@ -77,7 +94,7 @@ function abandonedCartRule(slot, stepNum) {
     delayMinutes: delay,
     imageUrl: '',
     isActive: false,
-    variableMappings: { body: {} },
+    variableMappings: cartRecoveryVariableMappings(stepNum),
     customVariableValues: {},
     meta: {
       system: true,
@@ -112,12 +129,20 @@ function mergeSystemAutomations(existing = []) {
       merged.push(preset);
       continue;
     }
+    const curBody = cur.variableMappings?.body || {};
+    const presetBody = preset.variableMappings?.body || {};
+    const hasCurMappings = Object.values(curBody).some((v) => v != null && v !== '');
+    const variableMappings = hasCurMappings
+      ? cur.variableMappings
+      : preset.variableMappings;
+
     merged.push({
       ...preset,
       ...cur,
       name: preset.name,
       triggerType: preset.triggerType,
       event: preset.event,
+      variableMappings,
       meta: { ...preset.meta, ...(cur.meta || {}) },
     });
   }

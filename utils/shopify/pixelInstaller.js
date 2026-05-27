@@ -54,10 +54,24 @@ function throwOnUserErrors(payload, label) {
 }
 
 function buildSettings(clientId, apiBaseUrl) {
-  return {
+  const payload = {
     clientId: String(clientId),
     apiBaseUrl: String(apiBaseUrl).replace(/\/+$/, ''),
   };
+  /** GraphQL WebPixelInput.settings is a JSON scalar string on Shopify Admin API */
+  return JSON.stringify(payload);
+}
+
+function parseSettingsObject(raw) {
+  const parsed = parseSettings(raw);
+  if (typeof parsed === 'string') {
+    try {
+      return JSON.parse(parsed);
+    } catch {
+      return {};
+    }
+  }
+  return parsed;
 }
 
 function resolveApiBaseUrl(options = {}) {
@@ -99,7 +113,7 @@ async function getWebPixelInstallStatus(clientId) {
         storedWebPixelId: client.shopifyWebPixelId || null,
       };
     }
-    const settings = parseSettings(pixel.settings);
+    const settings = parseSettingsObject(pixel.settings);
     return {
       installed: true,
       webPixelId: pixel.id,
@@ -140,6 +154,7 @@ async function installWebPixel(clientId, options = {}) {
 
   const settings = buildSettings(clientId, apiBaseUrl);
   const variables = { webPixel: { settings } };
+  const settingsObj = parseSettingsObject(settings);
   const existing = await getWebPixelInstallStatus(clientId);
 
   if (existing.reason === 'missing_pixel_scopes') {
@@ -197,7 +212,7 @@ async function installWebPixel(clientId, options = {}) {
       $set: {
         shopifyWebPixelId: pixel.id,
         shopifyWebPixelInstalledAt: new Date(),
-        shopifyWebPixelSettings: settings,
+        shopifyWebPixelSettings: settingsObj,
       },
     }
   );
@@ -208,7 +223,7 @@ async function installWebPixel(clientId, options = {}) {
     success: true,
     action,
     webPixelId: pixel.id,
-    settings: parseSettings(pixel.settings),
+    settings: parseSettingsObject(pixel.settings),
     manualSnippet: generateWebPixelScript(clientId, apiBaseUrl),
     pollHint: 'Complete a test checkout contact step to confirm live events.',
   };
@@ -219,4 +234,5 @@ module.exports = {
   getWebPixelInstallStatus,
   buildSettings,
   parseSettings,
+  parseSettingsObject,
 };

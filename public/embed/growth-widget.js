@@ -222,6 +222,82 @@
     }
   }
 
+  function guessCustomerName() {
+    try {
+      if (window.Shopify && window.Shopify.checkout && window.Shopify.checkout.billing_address) {
+        var fn = window.Shopify.checkout.billing_address.first_name;
+        if (fn) return String(fn);
+      }
+    } catch (_) {}
+    return 'there';
+  }
+
+  function isThankYouPage() {
+    var path = String(window.location.pathname || '').toLowerCase();
+    var href = String(window.location.href || '').toLowerCase();
+    if (/thank_you|order-confirmed|checkout\/thank|post_purchase|orders\/[^/]+\/authenticate/i.test(path)) return true;
+    if (/thank_you|order.confirm|checkout.*thank/i.test(href)) return true;
+    try {
+      if (window.Shopify && window.Shopify.checkout) return true;
+    } catch (_) {}
+    return false;
+  }
+
+  function renderThankYouPage(ty, consentText, brandColor) {
+    if (!ty || ty.enabled === false) return;
+    if (!isThankYouPage()) return;
+
+    var previewMode = !!previewWidgetIds();
+    var delayMs = 0;
+    if (ty.timingMode === 'delay' || Number(ty.delaySeconds) > 0) {
+      delayMs = Math.max(1, Number(ty.delaySeconds) || 5) * 1000;
+    } else if (!previewMode) {
+      delayMs = 0;
+    }
+
+    setTimeout(function () {
+      var headline = String(ty.headline || 'Thank you for your order, {customer_name}!')
+        .replace(/\{customer_name\}/gi, guessCustomerName());
+      var body = String(ty.body || 'Get your shipping updates and exclusive offers on WhatsApp.');
+      var btnLabel = String(ty.buttonText || 'Join on WhatsApp');
+      var color = brandColor || '#7C3AED';
+
+      var back = document.createElement('div');
+      back.style.cssText =
+        'position:fixed;inset:0;z-index:99998;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center;padding:16px;';
+      var card = document.createElement('div');
+      card.style.cssText =
+        'max-width:400px;width:100%;background:#fff;border-radius:16px;padding:20px;box-shadow:0 24px 48px rgba(15,23,42,.18);font-family:system-ui,-apple-system,sans-serif;';
+      card.style.position = 'relative';
+      card.innerHTML =
+        '<button type="button" class="te-ty-close" style="position:absolute;top:10px;right:12px;border:none;background:transparent;font-size:22px;color:#94a3b8;cursor:pointer;line-height:1;">×</button>' +
+        '<h3 style="margin:0;padding-right:24px;font:700 18px/1.3 system-ui;color:#0f172a;">' +
+        headline +
+        '</h3><p style="margin:10px 0 0;font:500 13px/1.5 system-ui;color:#64748b;">' +
+        body +
+        '</p>';
+      var form = commonForm('thank_you_page', consentText, color, function () {
+        setTimeout(function () {
+          back.remove();
+        }, 1200);
+      });
+      var submit = form.querySelector('.te-submit');
+      if (submit) submit.textContent = btnLabel;
+      card.appendChild(form);
+      var closeBtn = card.querySelector('.te-ty-close');
+      if (closeBtn) {
+        closeBtn.onclick = function () {
+          back.remove();
+        };
+      }
+      back.appendChild(card);
+      back.addEventListener('click', function (e) {
+        if (e.target === back) back.remove();
+      });
+      document.body.appendChild(back);
+    }, previewMode ? 300 : delayMs);
+  }
+
   var previewOnly = previewWidgetIds();
 
   fetch(configUrl)
@@ -247,9 +323,7 @@
         }).catch(function () {});
       });
       if (widgets.indexOf('thank_you_page') >= 0) {
-        if (/thank_you|order-confirmed|checkout\/thank_you/i.test(window.location.pathname || '')) {
-          renderFloating({ position: 'right', label: 'Enable WhatsApp updates', delaySeconds: 2, color: brandColor }, consentText, brandColor);
-        }
+        renderThankYouPage(settings.thankYouPage || {}, consentText, brandColor);
       }
     })
     .catch(function () {});

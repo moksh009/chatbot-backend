@@ -582,6 +582,14 @@ router.patch("/complete", protect, async (req, res) => {
         await Client.updateOne({ clientId }, { $set: featureSet });
       }
 
+      if (goals.includes('abandoned_cart')) {
+        const { createCartRecoveryTemplateDrafts } = require('../utils/onboarding/createCartRecoveryTemplateDrafts');
+        await createCartRecoveryTemplateDrafts(
+          clientId,
+          client.onboardingData?.brandProfile?.name || client.businessName
+        ).catch((err) => log.warn(`Cart recovery drafts failed: ${err.message}`));
+      }
+
       if (goals.includes("support_bot") && client.onboardingData?.brandProfile) {
         await seedKnowledgeFromBrandProfile(
           clientId,

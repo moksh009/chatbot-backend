@@ -77,22 +77,6 @@ const MERCHANT_PLAYBOOK_STEPS = [
     href: '/audience-hub?tab=intent-simulator',
     cta: 'Score rules',
   },
-  {
-    id: 'detect_stack',
-    order: 10,
-    title: 'Confirm your Shopify checkout',
-    description: 'Tell us if you use Shopify checkout or Gokwik / Razorpay Magic / Shiprocket so we show the right opt-in sources.',
-    href: '/audience-hub?tab=growth&view=sources&stack=1',
-    cta: 'Confirm checkout',
-  },
-  {
-    id: 'opt_in_policy',
-    order: 11,
-    title: 'Set your opt-in policy',
-    description: 'Choose single or double opt-in and STOP keywords for WhatsApp compliance.',
-    href: '/audience-hub?tab=growth&view=sources&policy=1',
-    cta: 'Opt-in policy',
-  },
 ];
 
 const SOFT_COMPLETE_MIN = 7;

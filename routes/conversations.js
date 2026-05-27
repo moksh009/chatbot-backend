@@ -562,9 +562,10 @@ async function loadConversationLiteContext({ id, user, timer }) {
   const orders = parallel[2];
   const leadScore = lead?.leadScore ?? 0;
   let ltv = Number(lead?.lifetimeValue ?? lead?.totalSpent ?? 0) || 0;
-  if (!ltv && phone) {
-    ltv =
+  if (phone) {
+    const fromOrders =
       (await timer.time('calculateCustomerLTV', () => calculateCustomerLTV(tenantId, phone))) || 0;
+    ltv = Math.max(ltv, fromOrders);
   }
   const stageName = await timer.time('resolveScoreStageName', () =>
     resolveScoreStageNameForClient(tenantId, leadScore)
@@ -882,8 +883,11 @@ router.get('/:id/full-context', protect, logPersonalDataAccess, async (req, res)
 
     const leadScore = lead?.leadScore ?? 0;
     let ltv = Number(lead?.lifetimeValue ?? lead?.totalSpent ?? 0) || 0;
-    if (!ltv && phone) {
-      ltv = await timer.time('calculateCustomerLTV', () => calculateCustomerLTV(tenantId, phone));
+    if (phone) {
+      const fromOrders = await timer.time('calculateCustomerLTV', () =>
+        calculateCustomerLTV(tenantId, phone)
+      );
+      ltv = Math.max(ltv, Number(fromOrders) || 0);
     }
     const stageName = await timer.time('resolveScoreStageName', () =>
       resolveScoreStageNameForClient(tenantId, leadScore)

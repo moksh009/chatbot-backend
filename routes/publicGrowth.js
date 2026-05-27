@@ -6,8 +6,7 @@ const rateLimit = require('express-rate-limit');
 const Client = require('../models/Client');
 const AdLead = require('../models/AdLead');
 const GrowthQrScan = require('../models/GrowthQrScan');
-const { normalizePhoneDigits } = require('../utils/commerce/marketingConsent');
-const { normalizeIndianPhone } = require('../utils/core/normalizeIndianPhone');
+const { normalizeIndianPhone, indianPhoneLookupVariants } = require('../utils/core/normalizeIndianPhone');
 
 const router = express.Router();
 
@@ -128,15 +127,7 @@ router.get('/config', async (req, res) => {
 router.post('/subscribe', subscribeLimiter, async (req, res) => {
   try {
     const embedKey = String(req.body.embedKey || req.body.embed_key || '').trim();
-    const phoneE164 = normalizeIndianPhone(req.body.phone);
-    const legacyDigits = normalizePhoneDigits(req.body.phone);
-    const phoneStored =
-      phoneE164 ||
-      (legacyDigits && String(legacyDigits).length >= 10
-        ? String(legacyDigits).startsWith('+')
-          ? String(legacyDigits)
-          : `+${legacyDigits}`
-        : null);
+    const phoneStored = normalizeIndianPhone(req.body.phone);
     const consent = req.body.consent === true || req.body.consent === 'true' || req.body.consent === '1';
     const widgetTypeRaw = String(req.body.widgetType || req.body.widget_type || 'embedded_form').trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
     const widgetType = WIDGET_TYPES.has(widgetTypeRaw) ? widgetTypeRaw : 'embedded_form';
@@ -173,7 +164,8 @@ router.post('/subscribe', subscribeLimiter, async (req, res) => {
       return res.status(404).json({ success: false, message: 'Unknown or disabled embed key' });
     }
 
-    const sourceField = `website_${widgetType}`;
+    const sourceField =
+      widgetType === 'thank_you_page' ? 'thank_you_page' : `website_${widgetType}`;
 
     const doubleOptIn = client.growthWidgetConfig?.doubleOptInEnabled === true;
     const pendingCode = String(Math.floor(100000 + Math.random() * 900000));
@@ -207,7 +199,7 @@ router.post('/subscribe', subscribeLimiter, async (req, res) => {
       email: null,
     }).catch(() => {});
 
-    const phoneLookup = [phoneStored, phoneStored.replace(/^\+/, '')];
+    const phoneLookup = indianPhoneLookupVariants(phoneStored);
     const lead = await AdLead.findOneAndUpdate(
       { clientId: client.clientId, phoneNumber: { $in: phoneLookup } },
       {
@@ -242,7 +234,7 @@ router.post('/subscribe', subscribeLimiter, async (req, res) => {
 
     const io = global.io;
     if (io && lead) {
-      const d = String(phoneNorm).replace(/\D/g, '');
+      const d = String(phoneStored).replace(/\D/g, '');
       io.to(`client_${client.clientId}`).emit('capture:new', {
         id: String(lead._id),
         source: sourceField,
@@ -261,7 +253,7 @@ router.post('/subscribe', subscribeLimiter, async (req, res) => {
         if (clientDoc) {
           await WhatsApp.sendText(
             clientDoc,
-            phoneNorm,
+            phoneStored,
             `Please confirm your WhatsApp subscription. Reply YES within 15 minutes to confirm updates from ${client.businessName || 'our brand'}.`
           );
         }
@@ -308,10 +300,11 @@ router.post('/cart-event', cartEventLimiter, async (req, res) => {
       return res.status(404).json({ success: false, message: 'Unknown or disabled embed key' });
     }
 
-    const phoneNorm = normalizePhoneDigits(req.body.phone);
-    if (!phoneNorm) {
+    const phoneStored = normalizeIndianPhone(req.body.phone);
+    if (!phoneStored) {
       return res.status(400).json({ success: false, message: 'Valid phone required' });
     }
+    const phoneLookup = indianPhoneLookupVariants(phoneStored);
 
     const storeHost = String(client.shopDomain || '').replace(/^https?:\/\//, '').split('/')[0];
     const checkoutToken = String(req.body.checkoutToken || req.body.token || '').trim();
@@ -325,9 +318,10 @@ router.post('/cart-event', cartEventLimiter, async (req, res) => {
     const items = Array.isArray(req.body.cartItems) ? req.body.cartItems : [];
 
     await AdLead.findOneAndUpdate(
-      { clientId: client.clientId, phoneNumber: phoneNorm },
+      { clientId: client.clientId, phoneNumber: { $in: phoneLookup } },
       {
         $set: {
+          phoneNumber: phoneStored,
           cartUrl: recoverUrl,
           cartValue: Number.isFinite(cartTotal) ? cartTotal : 0,
           cartStatus: 'abandoned',
@@ -336,7 +330,7 @@ router.post('/cart-event', cartEventLimiter, async (req, res) => {
           cartItems: items.length ? items.slice(0, 40) : [],
         },
         $setOnInsert: {
-          phoneNumber: phoneNorm,
+          phoneNumber: phoneStored,
           clientId: client.clientId,
         },
         $inc: { addToCartCount: 1 },
@@ -358,10 +352,11 @@ router.post('/cart-event', cartEventLimiter, async (req, res) => {
     );
 
     const Conversation = require('../models/Conversation');
-    let convo = await Conversation.findOne({ phone: phoneNorm, clientId: client.clientId });
+    const convoPhone = phoneLookup[phoneLookup.length - 1] || phoneStored.replace(/^\+/, '');
+    let convo = await Conversation.findOne({ phone: convoPhone, clientId: client.clientId });
     if (!convo) {
       convo = await Conversation.create({
-        phone: phoneNorm,
+        phone: convoPhone,
         clientId: client.clientId,
         channel: 'whatsapp',
         status: 'active',

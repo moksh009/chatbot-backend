@@ -16,6 +16,6 @@ describe('email campaign consent', () => {
 
   it('audienceOptQueryForCampaign uses email consent fields', () => {
     const q = audienceOptQueryForCampaign({ channel: 'email', templateCategory: 'MARKETING' });
-    assert.deepEqual(q, { 'channelConsent.email.status': 'opted_in' });
+    assert.deepEqual(q, { 'channelConsent.email.status': { $ne: 'opted_out' } });
   });
 });

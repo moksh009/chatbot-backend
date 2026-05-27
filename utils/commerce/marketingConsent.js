@@ -16,15 +16,9 @@ function normalizeEmail(raw) {
   return e.includes('@') ? e : '';
 }
 
-/** Business-initiated marketing / promo templates → only explicitly opted-in numbers. */
-function shouldRequireMarketingOptIn(campaign) {
-  if (!campaign) return false;
-  const ch = (campaign.channel || 'whatsapp').toLowerCase();
-  const cat = String(campaign.templateCategory || '').toUpperCase();
-  if (cat === 'UTILITY' || cat === 'AUTHENTICATION') return false;
-  if (ch === 'email') return true;
-  if (ch !== 'whatsapp') return false;
-  return true;
+/** When false, marketing sends to all contacts except explicit opt-outs. */
+function shouldRequireMarketingOptIn() {
+  return false;
 }
 
 /** Mongo query fragment merged into AdLead queries for WhatsApp campaigns / broadcasts */
@@ -208,22 +202,13 @@ async function canSendToContact(clientId, leadLike, templateCategory) {
     .lean();
   if (!currentLead) return { canSend: false, reason: 'contact_not_found' };
   if (currentLead.optStatus === 'opted_out') return { canSend: false, reason: 'opted_out' };
-
-  const cat = String(templateCategory || 'MARKETING').toUpperCase();
-  if (cat === 'MARKETING' && currentLead.optStatus !== 'opted_in') {
-    return { canSend: false, reason: 'not_opted_in_for_marketing' };
-  }
   return { canSend: true, reason: null };
 }
 
-function evaluateLeadPolicy(optStatus, templateCategory = 'MARKETING') {
+function evaluateLeadPolicy(optStatus) {
   const status = String(optStatus || 'unknown').toLowerCase();
-  const cat = String(templateCategory || 'MARKETING').toUpperCase();
   if (status === 'opted_out') {
     return { canSend: false, reason: 'opted_out' };
-  }
-  if (cat === 'MARKETING' && status !== 'opted_in') {
-    return { canSend: false, reason: 'not_opted_in_for_marketing' };
   }
   return { canSend: true, reason: null };
 }
@@ -232,7 +217,7 @@ function evaluateAudiencePolicySummary(leads = [], templateCategory = 'MARKETING
   const summary = { total: leads.length, willSend: 0, optedOut: 0, unknownBlocked: 0 };
   for (const lead of leads) {
     const status = String(lead?.optStatus || 'unknown').toLowerCase();
-    const decision = evaluateLeadPolicy(status, templateCategory);
+    const decision = evaluateLeadPolicy(status);
     if (decision.canSend) {
       summary.willSend += 1;
     } else if (decision.reason === 'opted_out') {

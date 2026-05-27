@@ -468,7 +468,7 @@ router.post('/quick-send', protect, async (req, res) => {
       return res.status(400).json({
         success: false,
         message:
-          'No messages sent — selected contacts are not opted in for marketing. Collect opt-in via Website opt-in or chat flows.',
+          'No messages sent — selected contacts opted out of marketing or could not be reached.',
         successCount: 0,
         failCount: 0,
         skippedMarketingOptIn: skippedOptIn,
@@ -489,7 +489,7 @@ router.post('/quick-send', protect, async (req, res) => {
 
     res.json({
       success: true,
-      message: `Broadcast complete. Success: ${successCount}, Failed: ${failCount}${skippedOptIn ? `, Skipped (not opted_in): ${skippedOptIn}` : ''}`,
+      message: `Broadcast complete. Success: ${successCount}, Failed: ${failCount}${skippedOptIn ? `, Skipped (opted out): ${skippedOptIn}` : ''}`,
       successCount,
       failCount,
       skippedMarketingOptIn: skippedOptIn,
@@ -1010,12 +1010,12 @@ router.post('/preflight', protect, async (req, res) => {
           code: 'no_opt_in',
           message: isEmail
             ? 'No email marketing–eligible contacts in this audience.'
-            : 'No WhatsApp opted-in contacts in this audience. Collect opt-in via your storefront widget or chats.',
+            : 'No WhatsApp contacts in this audience (everyone may be opted out).',
         });
       } else if (optFiltered.excluded > 0) {
         blockers.push({
           code: 'partial_opt_in',
-          message: `${optFiltered.excluded} contact(s) will be skipped (not opted in). ${eligibleCount} eligible.`,
+          message: `${optFiltered.excluded} contact(s) will be skipped (opted out). ${eligibleCount} eligible.`,
           severity: 'warning',
         });
       }
@@ -1023,7 +1023,7 @@ router.post('/preflight', protect, async (req, res) => {
       blockers.push({
         code: 'opt_in_unverified',
         message:
-          'Audience size is estimated. Only opted-in contacts receive MARKETING templates at send time.',
+          'Audience size is estimated. Opted-out contacts are skipped at send time.',
         severity: 'warning',
       });
       eligibleCount = audienceCount;
@@ -1340,8 +1340,8 @@ router.post('/start', protect, async (req, res) => {
       await campaign.save();
       return res.status(400).json({
         message: isEmailChannel
-          ? 'No email marketing–eligible contacts (channelConsent.email must be opted_in). Collect email opt-in via widgets or imports.'
-          : 'No WhatsApp marketing–eligible contacts (opt_status must be opted_in). Collect opt-in via your website embed or chats, widen your segment, or use the advanced override only if you have provable consent.',
+          ? 'No email contacts in this audience after removing opted-out addresses.'
+          : 'No WhatsApp contacts in this audience after removing opted-out numbers.',
       });
     }
 
@@ -1435,7 +1435,7 @@ router.post('/start', protect, async (req, res) => {
     if (!campaign.scheduledAt || new Date(campaign.scheduledAt) <= new Date()) {
       const { launchCampaignDispatch } = require('../services/campaignLaunchService');
       const launch = await launchCampaignDispatch(campaign, rows);
-      const skipLabel = isEmailChannel ? 'not email opted_in' : 'not WhatsApp opted_in';
+      const skipLabel = isEmailChannel ? 'email opted out' : 'WhatsApp opted out';
       const extra =
         optFiltered.excluded > 0 ? ` (${optFiltered.excluded} skipped — ${skipLabel})` : '';
       return res.json({
@@ -1447,7 +1447,7 @@ router.post('/start', protect, async (req, res) => {
       });
     }
 
-    const skipLabel = isEmailChannel ? 'not email opted_in' : 'not WhatsApp opted_in';
+    const skipLabel = isEmailChannel ? 'email opted out' : 'WhatsApp opted out';
     const extra =
       optFiltered.excluded > 0 ? ` (${optFiltered.excluded} skipped — ${skipLabel})` : '';
     return res.json({
@@ -1798,7 +1798,7 @@ router.post('/predictive-send', protect, async (req, res) => {
         return res.status(400).json({
           success: false,
           message:
-            'No predictive recipients after WhatsApp marketing opt-in filter. Collect opted_in contacts via your storefront embed or chat, upload a list with documented consent, or use the compliance override only when legally appropriate.',
+            'No predictive recipients after removing opted-out contacts from this list.',
           marketingOptInExcluded: csvPredictiveFiltered.excluded,
         });
       }

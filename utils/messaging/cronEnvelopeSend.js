@@ -94,4 +94,6 @@ module.exports = {
   idempotencyCod,
   idempotencyCsat,
   idempotencyScheduled,
+  buildRecoveryUrl: require('../commerce/buildRecoveryUrl').buildRecoveryUrl,
+  buildCartRecoveryComponents: require('../commerce/buildCartRecoveryComponents').buildCartRecoveryComponents,
 };

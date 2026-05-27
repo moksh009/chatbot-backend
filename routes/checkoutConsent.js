@@ -4,8 +4,25 @@ const express = require('express');
 const rateLimit = require('express-rate-limit');
 const Client = require('../models/Client');
 const { recordCheckoutMarketingOptIn } = require('../utils/commerce/checkoutMarketingConsent');
+const { resolveClientByShop } = require('../utils/shopify/checkoutConsentExtension');
 
 const router = express.Router();
+
+function publicCors(req, res, next) {
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  next();
+}
+
+router.use(publicCors);
 
 const consentLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -23,6 +40,12 @@ router.post('/', consentLimiter, async (req, res) => {
   try {
     const embedKey = String(req.body.embedKey || req.body.key || '').trim();
     let clientId = String(req.body.clientId || '').trim();
+    const shop = String(req.body.shop || req.body.shopDomain || '').trim();
+
+    if (!clientId && shop) {
+      const byShop = await resolveClientByShop(shop);
+      if (byShop?.clientId) clientId = byShop.clientId;
+    }
 
     if (embedKey && !clientId) {
       const client = await Client.findOne({

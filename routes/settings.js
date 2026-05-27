@@ -3,9 +3,6 @@ const crypto = require('crypto');
 const router = express.Router();
 const Client = require('../models/Client');
 const { protect, verifyClientAccess } = require('../middleware/auth');
-const { ensureGrowthEmbedDoc } = require('../utils/core/growthEmbedOverview');
-
-
 router.put('/:clientId/working-hours', protect, verifyClientAccess, async (req, res) => {
   try {
     const { clientId } = req.params;
@@ -158,86 +155,8 @@ router.put('/:clientId/ai-persona', protect, verifyClientAccess, async (req, res
   }
 });
 
-// --- Storefront WhatsApp opt-in embed (Marketing compliance) ---
-router.get('/:clientId/growth-embed', protect, verifyClientAccess, async (req, res) => {
-  try {
-    const { clientId } = req.params;
-    const doc = await ensureGrowthEmbedDoc(clientId);
-    if (!doc) return res.status(404).json({ success: false, message: 'Client not found' });
-    const origin = `${req.protocol}://${req.get('host')}`;
-    res.json({
-      success: true,
-      embedKey: doc.growthEmbedPublicKey,
-      enabled: doc.growthEmbedEnabled !== false,
-      compliance: doc.growthCompliance || {},
-      widgetConfig: doc.growthWidgetConfig || {},
-      subscribeUrl: `${origin}/api/public/growth/subscribe`,
-      cartEventUrl: `${origin}/api/public/growth/cart-event`,
-      configUrl: `${origin}/api/public/growth/config?key=${doc.growthEmbedPublicKey}`,
-      scriptUrl: `${origin}/embed/growth-widget.js`,
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-router.post('/:clientId/growth-embed/regenerate', protect, verifyClientAccess, async (req, res) => {
-  try {
-    const { clientId } = req.params;
-    const key = crypto.randomBytes(24).toString('hex');
-    const doc = await Client.findOneAndUpdate(
-      { clientId },
-      { $set: { growthEmbedPublicKey: key } },
-      { new: true }
-    ).select('growthEmbedPublicKey growthEmbedEnabled growthCompliance');
-    if (!doc) return res.status(404).json({ success: false, message: 'Client not found' });
-    const origin = `${req.protocol}://${req.get('host')}`;
-    res.json({
-      success: true,
-      embedKey: doc.growthEmbedPublicKey,
-      subscribeUrl: `${origin}/api/public/growth/subscribe`,
-      cartEventUrl: `${origin}/api/public/growth/cart-event`,
-      scriptUrl: `${origin}/embed/growth-widget.js`,
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-router.put('/:clientId/growth-embed-enabled', protect, verifyClientAccess, async (req, res) => {
-  try {
-    const { clientId } = req.params;
-    const enabled = req.body.enabled !== false;
-    const doc = await Client.findOneAndUpdate(
-      { clientId },
-      { $set: { growthEmbedEnabled: enabled } },
-      { new: true }
-    ).select('growthEmbedEnabled');
-    if (!doc) return res.status(404).json({ success: false, message: 'Client not found' });
-    res.json({ success: true, enabled: doc.growthEmbedEnabled !== false });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
 const { mountGrowthAudienceSettingsRoutes } = require('./growthAudienceSettings');
 mountGrowthAudienceSettingsRoutes(router);
-
-router.put('/:clientId/growth-widget-config', protect, verifyClientAccess, async (req, res) => {
-  try {
-    const { clientId } = req.params;
-    const widgetConfig = req.body?.growthWidgetConfig || req.body || {};
-    const doc = await Client.findOneAndUpdate(
-      { clientId },
-      { $set: { growthWidgetConfig: widgetConfig } },
-      { new: true }
-    ).select('growthWidgetConfig');
-    if (!doc) return res.status(404).json({ success: false, message: 'Client not found' });
-    res.json({ success: true, growthWidgetConfig: doc.growthWidgetConfig || {} });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
 
 // --- Website chat widget (Settings → Chat Widget) ---
 const {

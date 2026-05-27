@@ -193,7 +193,11 @@ const adLeadSchema = new mongoose.Schema({
   cartAbandonedAt:   { type: Date },
   checkoutInitiatedAt: { type: Date },
   checkoutToken:     { type: String, default: '' },
+  cartToken:         { type: String, default: '' },
   checkoutUrl:       { type: String, default: '' },
+  recoveredAt:       { type: Date, default: null },
+  recoveredOrderId:  { type: String, default: '' },
+  recoveredViaWhatsApp: { type: Boolean, default: false },
   recoveryStep:      { type: Number },
   recoveryStartedAt: { type: Date },
   spinWheelPrize:    { type: String, default: '' },
@@ -350,6 +354,8 @@ adLeadSchema.index({ clientId: 1, phoneNumber: 1 }, { unique: true });
 adLeadSchema.index({ clientId: 1, lastInteraction: -1 }); // Dashboard "Recent Activity" sorts
 adLeadSchema.index({ clientId: 1, tags: 1 });              // Segment tag filtering queries
 adLeadSchema.index({ clientId: 1, cartStatus: 1 });        // Abandoned cart recovery queries
+adLeadSchema.index({ clientId: 1, checkoutToken: 1 }, { sparse: true });
+adLeadSchema.index({ clientId: 1, cartToken: 1 }, { sparse: true });
 adLeadSchema.index({ clientId: 1, leadScore: -1 });        // Lead scoring leaderboard queries
 adLeadSchema.index({ clientId: 1, optStatus: 1 });         // Opt-in/out management queries
 adLeadSchema.index({ clientId: 1, optStatus: 1, updatedAt: -1 });

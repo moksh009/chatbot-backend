@@ -2,8 +2,10 @@
 
 const Client = require('../../models/Client');
 const AdLead = require('../../models/AdLead');
-const { normalizeIndianPhone } = require('../core/normalizeIndianPhone');
-const { normalizePhoneWithCountry } = require('../core/helpers');
+const {
+  normalizeIndianPhone,
+  indianPhoneLookupVariants,
+} = require('../core/normalizeIndianPhone');
 const { stitchVisitorIdentity } = require('./visitorIdentityService');
 const log = require('../core/logger')('CheckoutMarketingConsent');
 
@@ -26,17 +28,8 @@ async function recordCheckoutMarketingOptIn({
   const client = await Client.findOne({ clientId }).select('clientId shopDomain').lean();
   if (!client) return { success: false, reason: 'client_not_found' };
 
-  const phoneStored = phoneRaw
-    ? normalizeIndianPhone(phoneRaw) ||
-      (() => {
-        const legacy = normalizePhoneWithCountry(phoneRaw, client);
-        if (!legacy) return null;
-        return String(legacy).startsWith('+') ? legacy : `+${legacy}`;
-      })()
-    : null;
-  const phoneLookup = phoneStored
-    ? [phoneStored, phoneStored.replace(/^\+/, '')]
-    : [];
+  const phoneStored = phoneRaw ? normalizeIndianPhone(phoneRaw) : null;
+  const phoneLookup = phoneStored ? indianPhoneLookupVariants(phoneStored) : [];
   const normalizedEmail = email ? String(email).trim().toLowerCase() : null;
   if (!phoneStored && !normalizedEmail) {
     return { success: false, reason: 'missing_contact' };
@@ -105,6 +98,9 @@ async function recordCheckoutMarketingOptIn({
     }
   }
 
+  if (phoneStored) {
+    log.info(`Checkout consent recorded for ${phoneStored}`);
+  }
   log.info(`[CheckoutOptIn] ${clientId} phone=${phoneStored || '—'} email=${normalizedEmail || '—'}`);
   return { success: true, leadId: lead?._id, phone: phoneStored, email: normalizedEmail };
 }

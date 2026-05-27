@@ -263,6 +263,7 @@ app.use('/api/ai', aiRoutes);
 const publicWarrantyRoutes = require('./routes/publicWarranty');
 app.use('/api/public/warranty', publicWarrantyRoutes);
 app.use('/api/public/growth', require('./routes/publicGrowth'));
+app.use('/api/public/checkout-consent', require('./routes/publicCheckoutConsent'));
 app.use('/api/public/checkout-consent', require('./routes/checkoutConsent'));
 app.use('/api/public', require('./routes/publicUnsubscribe'));
 app.use('/api/growth', require('./routes/growth'));

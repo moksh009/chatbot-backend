@@ -560,8 +560,8 @@ async function fireEventFlow(client, eventName, data, status = null) {
 
 
 async function handleCheckout(client, data) {
-    const { normalizePhoneWithCountry } = require('../utils/core/helpers');
-    const { stitchCheckoutTokenToLead } = require('../utils/commerce/visitorIdentityService');
+    const { upsertAbandonedCartLead } = require('../utils/commerce/upsertAbandonedCartLead');
+    const { normalizeIndianPhone } = require('../utils/core/normalizeIndianPhone');
 
     const phoneRaw =
       data.phone ||
@@ -569,39 +569,13 @@ async function handleCheckout(client, data) {
       data.billing_address?.phone ||
       data.shipping_address?.phone;
     const email = data.email || data.customer?.email;
-    const cleanPhone = phoneRaw ? normalizePhoneWithCountry(phoneRaw, client) : '';
+    const phoneE164 = phoneRaw ? normalizeIndianPhone(phoneRaw) : null;
 
-    if (!cleanPhone && !email) return;
+    if (!phoneE164 && !email) return;
 
-    // Auto-fetch product images for the cart snapshot
-    const lineItems = data.line_items || [];
-    const enrichedItems = await Promise.all(lineItems.map(async item => {
-        let imageUrl = item.image_url || null;
-        if (!imageUrl && item.product_id && client.shopifyAccessToken) {
-            try {
-                const res = await axios.get(
-                    `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}/products/${item.product_id}.json`,
-                    { headers: { "X-Shopify-Access-Token": client.shopifyAccessToken } }
-                );
-                imageUrl = res.data.product?.images?.[0]?.src || null;
-            } catch (err) {
-                // Silently omit missing image
-            }
-        }
-        return {
-            variant_id: item.variant_id,
-            quantity: item.quantity,
-            image: imageUrl,
-            title: item.title,
-            price: item.price
-        };
-    }));
-
-    const cartItems = lineItems.map(item => item.title).join(', ');
-    const firstItemImage = enrichedItems[0]?.image || client.logoUrl || null;
-
-    const storeHost = client.shopDomain ? String(client.shopDomain).replace(/^https?:\/\//, '').split('/')[0] : '';
     const checkoutToken = data.checkout_token || data.token || '';
+    const cartToken = data.cart_token || '';
+    const storeHost = client.shopDomain ? String(client.shopDomain).replace(/^https?:\/\//, '').split('/')[0] : '';
     const recoverUrl =
       storeHost && checkoutToken ? `https://${storeHost}/cart/recover/${checkoutToken}` : '';
     const checkoutUrl =
@@ -611,85 +585,36 @@ async function handleCheckout(client, data) {
       (data.token && storeHost ? `https://${storeHost}/checkouts/cn/${data.token}` : '') ||
       '';
 
-    const now = new Date();
-    const leadQuery = cleanPhone
-      ? { clientId: client.clientId, phoneNumber: cleanPhone }
-      : { clientId: client.clientId, email: String(email).toLowerCase() };
+    const customerName = data.customer?.first_name
+      ? `${data.customer.first_name} ${data.customer.last_name || ''}`.trim()
+      : undefined;
 
-    await AdLead.findOneAndUpdate(
-      leadQuery,
-      {
-        $set: {
-          cartStatus: 'abandoned',
-          cartAbandonedAt: now,
-          checkoutInitiatedAt: now,
-          name: data.customer?.first_name
-            ? `${data.customer.first_name} ${data.customer.last_name || ''}`.trim()
-            : undefined,
-          email: email || undefined,
-          lastSeen: now,
-          lastCartEventAt: now,
-          checkoutUrl,
-          checkoutToken: checkoutToken || '',
-          isOrderPlaced: false,
-          cartSnapshot: {
-            items: enrichedItems,
-            updatedAt: now,
-            checkoutUrl,
-            checkoutToken: checkoutToken || '',
-            total_price: data.total_price,
-            currency: data.currency || 'INR',
-          },
-          ...(cleanPhone && { phoneNumber: cleanPhone }),
-        },
-        $inc: {
-          addToCartCount: data.line_items?.length || 1,
-          checkoutInitiatedCount: 1,
-        },
-        $setOnInsert: {
-          clientId: client.clientId,
-          phoneNumber: cleanPhone || `unknown_checkout_${checkoutToken || Date.now()}`,
-          source: 'Shopify Checkout',
-        },
-      },
-      { upsert: true, new: true }
-    );
+    const result = await upsertAbandonedCartLead(client, {
+      clientId: client.clientId,
+      phone: phoneE164,
+      email,
+      customerName,
+      cartItems: data.line_items || [],
+      cartTotal: data.total_price,
+      checkoutUrl,
+      checkoutToken,
+      cartToken,
+      source: 'shopify_native',
+      currency: data.currency || 'INR',
+      cartStatus: 'abandoned',
+      logActivity: false,
+    });
 
-    if (checkoutToken) {
-      await stitchCheckoutTokenToLead(
-        client.clientId,
-        checkoutToken,
-        cleanPhone,
-        email,
-        client
-      ).catch((e) => log.warn(`[Checkout] visitor stitch: ${e.message}`));
-    }
+    if (!result.success) return;
 
-    if (cleanPhone) {
-      const { updateLeadWithScoring } = require('../utils/commerce/leadScoring');
-      await updateLeadWithScoring(cleanPhone, client.clientId, {}, {}, {});
-    }
+    const cleanPhone = result.phone || '';
+    const lineItems = data.line_items || [];
 
-    await AdLead.updateOne(leadQuery, {
-      $push: {
-        commerceEvents: {
-          event: 'checkout_started',
-          amount: parseFloat(data.total_price) || 0,
-          currency: data.currency || 'INR',
-          timestamp: new Date(),
-        },
-      },
-    }).catch((e) => log.error('Failed to log checkout_started event:', e.message));
-
-    // Track in DailyStat
-    await trackEcommerceEvent(client.clientId, { checkoutInitiatedCount: 1 });
-
-    // Enterprise Pulse Log: Checkout Initiated
     await logActivity(client.clientId, {
         type: 'LEAD',
         status: 'info',
         title: 'Checkout Started',
-        message: `${data.customer?.first_name || 'A customer'} is at the checkout with ${lineItems.length} items.`,
+        message: `${customerName || 'A customer'} is at the checkout with ${lineItems.length} items.`,
         icon: 'ShoppingCart',
         url: cleanPhone ? `/leads/${cleanPhone}` : '/leads',
         metadata: {
@@ -700,25 +625,6 @@ async function handleCheckout(client, data) {
     });
 
     log.info(`Lead updated from checkout: ${cleanPhone || email}`);
-
-    if (cleanPhone) {
-      try {
-        const CartRecoveryAttempt = require('../models/CartRecoveryAttempt');
-        await CartRecoveryAttempt.create({
-          clientId: client.clientId,
-          contactPhone: cleanPhone,
-          attemptTimestamp: new Date(),
-          messaged: false,
-          recovered: false,
-          status: 'pending',
-        });
-      } catch (craErr) {
-        log.warn(`[CartRecovery] Failed to create attempt record: ${craErr.message}`);
-      }
-      await recalculateLeadScore(client.clientId, cleanPhone).catch((e) =>
-        log.error('Scoring recompute failed:', e.message)
-      );
-    }
 }
 
 async function handleOrder(client, data, storeKey = '') {
@@ -730,6 +636,7 @@ async function handleOrder(client, data, storeKey = '') {
     if (!phoneRaw) return;
     const { normalizePhoneWithCountry } = require('../utils/core/helpers');
     const cleanPhone = normalizePhoneWithCountry(phoneRaw, client);
+    if (!cleanPhone) return;
 
     const { handleOrderAtomic } = require('../utils/shopify/handleOrderAtomic');
     let atomic;
@@ -1097,31 +1004,13 @@ async function handleOrder(client, data, storeKey = '') {
 
     log.info(`Order processed from Shopify: ${newOrder.orderId}`);
 
-    // --- PART 7: Cart Recovery Attempt Lifecycle - Trigger 3 ---
     try {
-        const CartRecoveryAttempt = require('../models/CartRecoveryAttempt');
-        const attempt = await CartRecoveryAttempt.findOneAndUpdate(
-            {
-                clientId: client.clientId,
-                contactPhone: cleanPhone,
-                messaged: true,
-                recovered: false,
-                status: 'pending'
-            },
-            {
-                $set: {
-                    recovered: true,
-                    status: 'recovered',
-                    recoveredOrderId: newOrder.orderId,
-                    recoveredOrderAmount: parseFloat(data.total_price),
-                    updatedAt: new Date()
-                }
-            },
-            { sort: { attemptTimestamp: -1 }, new: true }
-        );
-
+        const { attributeOrderToRecoveryAttempt } = require('../utils/commerce/cartRecoveryAttemptService');
+        const attempt = await attributeOrderToRecoveryAttempt(client.clientId, data, cleanPhone);
         if (attempt) {
-            console.log(`[CartRecovery] Marked attempt ${attempt._id} as recovered for phone ${cleanPhone}, order ${newOrder.orderId}`);
+            log.info(
+                `[CartRecovery] ${attempt.recoveredViaWhatsapp ? 'WhatsApp' : 'Organic'} recovery for ${cleanPhone}, order ${newOrder.orderId}`
+            );
         }
     } catch (craErr) {
         log.warn(`[CartRecovery] Failed to update attempt record: ${craErr.message}`);
