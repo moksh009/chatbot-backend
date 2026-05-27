@@ -3,8 +3,7 @@
   "prebuiltRequiredMetaNames": [
     "order_confirmation_v1",
     "cart_recovery_1",
-    "cart_recovery_2",
-    "review_request"
+    "cart_recovery_2"
   ],
   "nameAliases": {
     "order_confirmed": "order_confirmation_v1",
@@ -41,14 +40,6 @@
       "templateNames": ["eco_cod_prepaid_switch"],
       "pack": "eco-starters",
       "configureRoute": "/commerce-hub?tab=dash"
-    },
-    {
-      "id": "reviews",
-      "title": "Review collection",
-      "description": "Ask buyers for feedback after fulfilment.",
-      "templateNames": ["review_request"],
-      "pack": "gate",
-      "configureRoute": "/audience-hub?tab=reputation"
     },
     {
       "id": "cart_recovery",
@@ -208,19 +199,6 @@
           "pushKind": "prebuilt",
           "prebuiltKey": null,
           "autoTrigger": null
-        },
-        {
-          "id": "wizard_review",
-          "title": "Review request",
-          "description": "Post-delivery Google review ask.",
-          "canonicalMetaName": "review_request",
-          "metaNames": ["review_request"],
-          "usedIn": ["AI Setup", "Reputation"],
-          "configureRoute": "/audience-hub?tab=reputation",
-          "pack": "wizard",
-          "pushKind": "prebuilt",
-          "prebuiltKey": "review_request",
-          "autoTrigger": "order_delivered"
         },
         {
           "id": "wizard_warranty",
