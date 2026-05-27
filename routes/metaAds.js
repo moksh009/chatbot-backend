@@ -249,16 +249,27 @@ router.post("/test-template", verifyToken, async (req, res) => {
     const client = await Client.findOne({ clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
     if (!client) return res.status(404).json({ success: false, message: "Client not found" });
 
-    const { sendWhatsAppTemplate } = require('../utils/meta/whatsapp');
-    
-    // We send a generic test with placeholder data
-    const result = await sendWhatsAppTemplate(
-      client, 
-      phone, 
-      templateName, 
-      language || "en",
-      ["Test User", "ORDER-123", "Product Name"] // Sample variables
-    );
+    const { sendWhatsAppTemplate } = require('../utils/meta/whatsappHelpers');
+    const { getEffectiveWhatsAppAccessToken, getEffectiveWhatsAppPhoneNumberId } = require('../utils/meta/clientWhatsAppCreds');
+
+    const token = await getEffectiveWhatsAppAccessToken(client);
+    const phoneNumberId = await getEffectiveWhatsAppPhoneNumberId(client);
+
+    if (!token || !phoneNumberId) {
+      return res.status(400).json({ success: false, message: "WhatsApp credentials not configured" });
+    }
+
+    // Normalise language code (en → en_US)
+    const langCode = (language || 'en').includes('_') ? (language || 'en') : `${(language || 'en')}_US`;
+
+    const result = await sendWhatsAppTemplate({
+      phoneNumberId,
+      to: phone,
+      templateName,
+      languageCode: langCode,
+      components: [],
+      token,
+    });
 
     if (result.success) {
       res.json({ success: true, message: "Test template dispatched" });
