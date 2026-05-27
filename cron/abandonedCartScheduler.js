@@ -315,8 +315,21 @@ async function runAbandonedCartTick() {
 
                 for (const lead of browseBatch) {
                     if (skipSet.has(lead.phoneNumber)) continue;
+                    const { isLeadOptedOutForSend } = require('../utils/commerce/marketingConsent');
+                    if (await isLeadOptedOutForSend(client.clientId, lead.phoneNumber)) continue;
                     const msg = `Hi ${lead.name || 'there'}! 👋 We noticed you checking out some amazing items. Need any help? We're here! 😊`;
-                    await WhatsApp.sendText(client, lead.phoneNumber, msg);
+                    const { cronEnvelopeSend } = require('../utils/messaging/cronEnvelopeSend');
+                    const out = await cronEnvelopeSend({
+                      client,
+                      clientId: client.clientId,
+                      intent: 'marketing',
+                      phone: lead.phoneNumber,
+                      contactId: lead._id,
+                      idempotencyKey: `browse:${client.clientId}:${lead._id}:${Math.floor(Date.now() / 86400000)}`,
+                      payload: { text: msg },
+                      context: { source: 'cron/abandonedCartScheduler:browse' },
+                    });
+                    if (out.useLegacy || out.action !== 'sent') continue;
                     await recordNudge(lead, msg);
                     await trackEcommerceEvent(client.clientId, { browseAbandonedCount: 1 });
                     await AdLead.findByIdAndUpdate(lead._id, { 

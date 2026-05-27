@@ -51,6 +51,22 @@ async function connectDB(){
                 );
                 console.log("✅ Successfully reset failed leads.");
             }
+
+            const unknownOptInFix = await connectionInstance.connection.collection('adleads').updateMany(
+                { optStatus: { $in: ['unknown', null, ''] } },
+                {
+                    $set: {
+                        optStatus: 'opted_in',
+                        whatsappMarketingEligible: true,
+                        'channelConsent.whatsapp.status': 'opted_in',
+                        'channelConsent.whatsapp.source': 'csv_import',
+                        'channelConsent.whatsapp.lastUpdated': new Date(),
+                    },
+                }
+            );
+            if (unknownOptInFix.modifiedCount > 0) {
+                console.log(`✅ Migrated ${unknownOptInFix.modifiedCount} contacts to default WhatsApp Opt-In.`);
+            }
         } catch (idxErr) {
             console.log("ℹ️ Database auto-fix check passed/skipped:", idxErr.message);
         }

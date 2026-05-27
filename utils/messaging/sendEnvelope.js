@@ -99,6 +99,7 @@ async function sendEnvelope(input = {}) {
     channel: input.channel,
     intent: input.intent,
     strictMode: client?.complianceConfig?.strictMode !== false,
+    complianceExempt: input?.options?.complianceExempt === true,
   });
   mark('checkConsent', consentT);
   if (!consent.pass && !input?.options?.force) {

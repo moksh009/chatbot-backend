@@ -225,7 +225,7 @@ const adLeadSchema = new mongoose.Schema({
   }],
 
   // Phase 21+: Opt Management & Attribution (compliance-grade)
-  optStatus:        { type: String, enum: ["opted_in","opted_out","unknown","pending"], default: "unknown" },
+  optStatus:        { type: String, enum: ["opted_in","opted_out","unknown","pending"], default: "opted_in" },
   channelConsent: {
     whatsapp: { type: consentChannelSchema, default: () => ({}) },
     instagram: { type: consentChannelSchema, default: () => ({}) },
@@ -389,16 +389,32 @@ adLeadSchema.index({ clientId: 1, adminFollowUpTriggered: 1, isOrderPlaced: 1 })
 
 // Keep derived eligibility in sync for fast campaign filters.
 adLeadSchema.pre('save', function(next) {
-  const statuses = [
-    this.channelConsent?.whatsapp?.status,
-    this.channelConsent?.instagram?.status,
-    this.channelConsent?.email?.status,
-  ].filter(Boolean);
-  if (statuses.includes('opted_out')) this.optStatus = 'opted_out';
-  else if (statuses.every((s) => s === 'opted_in') && statuses.length > 0) this.optStatus = 'opted_in';
-  else if (statuses.includes('pending')) this.optStatus = 'pending';
-  else if (statuses.length > 0) this.optStatus = 'unknown';
-  this.whatsappMarketingEligible = this.optStatus === 'opted_in';
+  const waStatus = this.channelConsent?.whatsapp?.status;
+
+  if (waStatus === 'opted_out' || this.optStatus === 'opted_out') {
+    this.optStatus = 'opted_out';
+    this.whatsappMarketingEligible = false;
+    this.updatedAt = new Date();
+    return next();
+  }
+
+  if (this.optStatus === 'pending') {
+    this.whatsappMarketingEligible = false;
+    this.updatedAt = new Date();
+    return next();
+  }
+
+  this.optStatus = 'opted_in';
+  this.whatsappMarketingEligible = true;
+  if (!this.channelConsent) this.channelConsent = {};
+  if (!this.channelConsent.whatsapp) this.channelConsent.whatsapp = {};
+  if (waStatus !== 'opted_in') {
+    this.channelConsent.whatsapp.status = 'opted_in';
+    if (!this.channelConsent.whatsapp.source) {
+      this.channelConsent.whatsapp.source = 'inbound_message';
+    }
+    this.channelConsent.whatsapp.lastUpdated = new Date();
+  }
   this.updatedAt = new Date();
   next();
 });

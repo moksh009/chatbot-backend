@@ -81,6 +81,23 @@ const PREBUILT_TEMPLATE_LIBRARY = [
     requiredContext: ["cart", "customer", "client"],
   },
   {
+    key: "abandoned_cart_r3_v1",
+    metaName: "cart_recovery_3",
+    displayName: "Abandoned cart — last chance",
+    category: "MARKETING",
+    headerType: "IMAGE",
+    headerVariable: "first_product_image",
+    bodyText:
+      "Hi {{1}}, last chance to get {{2}} (₹{{3}})! Here's a special offer — use code {{5}} for 10% off.\n\nTap below to complete your order 👇",
+    variableMappings: {
+      body: { 1: "first_name", 2: "product_name", 3: "cart_total", 5: "discount_code" },
+      buttons: { 0: "checkout_url" },
+    },
+    buttons: [{ type: "URL", text: "Use Offer Now", urlVariable: "checkout_url" }],
+    autoTrigger: "abandoned_cart",
+    requiredContext: ["cart", "customer", "client"],
+  },
+  {
     key: "cod_confirmation_v1",
     metaName: "cod_confirmation_v1",
     displayName: "COD order confirmation",
@@ -122,6 +139,19 @@ const PREBUILT_TEMPLATE_LIBRARY = [
     requiredContext: ["order", "customer", "client"],
   },
   {
+    key: "admin_human_alert",
+    metaName: "admin_human_alert",
+    displayName: "Admin handoff alert",
+    category: "UTILITY",
+    headerType: "NONE",
+    bodyText:
+      "Admin alert: {{1}} ({{2}}) needs urgent support. Context: {{3}} Please open the inbox in the dashboard.",
+    variableMappings: { body: { 1: "first_name", 2: "phone_number", 3: "issue_summary" } },
+    buttons: [{ type: "QUICK_REPLY", text: "Open Inbox" }],
+    autoTrigger: null,
+    requiredContext: ["customer", "client"],
+  },
+  {
     key: "product_back_in_stock",
     metaName: "product_back_in_stock",
     displayName: "Product back in stock",
@@ -139,10 +169,14 @@ const PREBUILT_TEMPLATE_LIBRARY = [
 const LEGACY_KEY_ALIASES = {
   order_confirmed: "order_confirmation_v1",
   order_confirmation_v1: "order_confirmation_v1",
+  admin_handoff: "admin_human_alert",
+  admin_human_alert: "admin_human_alert",
   cart_recovery_1: "abandoned_cart_r1_v1",
   cart_recovery_2: "abandoned_cart_r2_v1",
+  cart_recovery_3: "abandoned_cart_r3_v1",
   abandoned_cart_r1_v1: "abandoned_cart_r1_v1",
   abandoned_cart_r2_v1: "abandoned_cart_r2_v1",
+  abandoned_cart_r3_v1: "abandoned_cart_r3_v1",
 };
 
 let _catalogAliases = null;

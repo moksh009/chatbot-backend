@@ -801,4 +801,74 @@ router.get('/readiness', protect, async (req, res) => {
   }
 });
 
+// ─── POST /api/auto-templates/library/cart-recovery-batch ─────────────────
+router.post('/library/cart-recovery-batch', protect, async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, message: 'Missing clientId' });
+
+    const { createCartRecoveryTemplateDrafts } = require('../utils/onboarding/createCartRecoveryTemplateDrafts');
+    const { CART_RECOVERY_META_NAMES } = require('../constants/cartRecoveryTemplates');
+    const { submitWorkspaceTemplateToMeta } = require('../utils/meta/submitWorkspaceTemplateToMeta');
+
+    const draftResult = await createCartRecoveryTemplateDrafts(clientId);
+    const client = await Client.findOne({ clientId }).select('syncedMetaTemplates').lean();
+    const synced = Array.isArray(client?.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
+
+    const submitted = [];
+    const skipped = [];
+    const errors = [];
+
+    for (const templateName of CART_RECOVERY_META_NAMES) {
+      const approved = synced.find(
+        (t) => t.name === templateName && String(t.status || '').toUpperCase() === 'APPROVED'
+      );
+      if (approved) {
+        skipped.push({ templateName, reason: 'already_approved' });
+        continue;
+      }
+
+      const pending = await MetaTemplate.findOne({
+        clientId,
+        name: templateName,
+        submissionStatus: { $in: ['pending_meta_review', 'queued', 'submitting'] },
+      }).lean();
+      if (pending) {
+        skipped.push({ templateName, reason: 'pending_review' });
+        continue;
+      }
+
+      const out = await submitWorkspaceTemplateToMeta({
+        clientId,
+        templateName,
+        userId: req.user?.id || req.user?._id,
+      });
+
+      if (out.success) {
+        submitted.push(templateName);
+      } else if (out.duplicate) {
+        skipped.push({ templateName, reason: 'duplicate_on_meta' });
+      } else {
+        errors.push({ templateName, reason: out.message });
+      }
+    }
+
+    res.json({
+      success: true,
+      message:
+        submitted.length > 0
+          ? `Submitted ${submitted.length} cart template(s) to Meta for review.`
+          : errors.length
+            ? 'Drafts are ready — review errors and submit individual templates if needed.'
+            : 'Cart templates are already submitted or approved.',
+      draftResult,
+      submitted,
+      skipped,
+      errors,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 module.exports = router;

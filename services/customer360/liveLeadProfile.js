@@ -1,12 +1,15 @@
 'use strict';
 
-const Order = require('../../models/Order');
 const Message = require('../../models/Message');
 const FollowUpSequence = require('../../models/FollowUpSequence');
 const CampaignMessage = require('../../models/CampaignMessage');
-const WarrantyRecord = require('../../models/WarrantyRecord');
 const Conversation = require('../../models/Conversation');
 const { getAppRedis } = require('../../utils/core/redisFactory');
+const { phoneVariants } = require('../../utils/messaging/cancelAllAutomationsFor');
+const {
+  findOrdersForLead,
+  findWarrantyRecordsForLead,
+} = require('../../utils/customer360/leadLookupHelpers');
 
 async function cachedShopifyOrders(clientId, phone) {
   const redis = getAppRedis();
@@ -29,10 +32,7 @@ async function cachedShopifyOrders(clientId, phone) {
     }
   } catch {
     shopifyDataStale = true;
-    orders = await Order.find({ clientId, phone })
-      .sort({ createdAt: -1 })
-      .limit(3)
-      .lean();
+    orders = await findOrdersForLead(clientId, phone, { limit: 5 });
   }
   const payload = { orders, shopifyDataStale };
   if (redis) await redis.set(key, JSON.stringify(payload), 'EX', 60);
@@ -42,14 +42,20 @@ async function cachedShopifyOrders(clientId, phone) {
 async function buildLiveLeadPanels(lead) {
   const phone = lead.phoneNumber;
   const clientId = lead.clientId;
-  const convo = await Conversation.findOne({ clientId, phone }).select('_id').lean();
+  const phoneIn = phoneVariants(phone);
+  const convo = await Conversation.findOne({
+    clientId,
+    phone: phoneIn.length ? { $in: phoneIn } : phone,
+  })
+    .select('_id')
+    .lean();
 
   const [
     shopifyPanel,
     messages,
     sequences,
     campaigns,
-    warranties,
+    warrantyPanel,
   ] = await Promise.all([
     cachedShopifyOrders(clientId, phone),
     convo
@@ -59,15 +65,19 @@ async function buildLiveLeadPanels(lead) {
           .select('sentimentScore sentimentLabel content timestamp direction')
           .lean()
       : [],
-    FollowUpSequence.find({ clientId, phone, status: 'active' }).lean(),
+    FollowUpSequence.find({
+      clientId,
+      phone: phoneIn.length ? { $in: phoneIn } : phone,
+      status: 'active',
+    }).lean(),
     CampaignMessage.find({
       clientId,
-      phone,
+      phone: phoneIn.length ? { $in: phoneIn } : phone,
       status: { $in: ['queued', 'processing', 'sent'] },
     })
       .limit(10)
       .lean(),
-    WarrantyRecord.find({ clientId, phone }).limit(5).lean(),
+    findWarrantyRecordsForLead(clientId, phone, lead),
   ]);
 
   return {
@@ -77,7 +87,7 @@ async function buildLiveLeadPanels(lead) {
       recentMessages: messages,
       activeSequences: sequences,
       activeCampaigns: campaigns,
-      warrantyRecords: warranties,
+      warrantyRecords: warrantyPanel.records,
       recentSentimentTrend: lead.recentSentimentTrend,
       scoreBreakdown: lead.scoreBreakdown,
     },

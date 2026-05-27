@@ -1,23 +1,28 @@
+'use strict';
+
+const { normalizeOptStatus } = require('../../commerce/marketingOptStatusRules');
+
 function getChannelConsent(contact, channel) {
-  return contact?.channelConsent?.[channel] || { status: contact?.optStatus || 'unknown' };
+  const cc = contact?.channelConsent?.[channel];
+  const raw = cc?.status || contact?.optStatus || 'opted_in';
+  const status = normalizeOptStatus(raw);
+  return { ...(cc || {}), status };
 }
 
-function checkConsent({ contact, channel, intent, strictMode = true }) {
+function checkConsent({ contact, channel, intent, strictMode = true, complianceExempt = false }) {
   const consent = getChannelConsent(contact, channel);
-  const status = String(consent?.status || 'unknown');
+  const status = String(consent?.status || 'opted_in');
   const blocked = { pass: false, blockedBy: 'consent', consentSnapshot: consent };
 
-  if (intent === 'marketing') {
-    if (status === 'opted_out') {
-      return { ...blocked, reason: 'recipient_opted_out' };
-    }
+  if (complianceExempt) {
     return { pass: true, consentSnapshot: consent };
   }
-  if (intent === 'service') {
-    return { pass: true, consentSnapshot: consent };
+
+  if (status === 'opted_out') {
+    return { ...blocked, reason: 'recipient_opted_out' };
   }
-  if (status === 'opted_out') return { ...blocked, reason: 'recipient_opted_out' };
+
   return { pass: true, consentSnapshot: consent };
 }
 
-module.exports = { checkConsent };
+module.exports = { checkConsent, getChannelConsent };

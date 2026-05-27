@@ -1,6 +1,7 @@
 'use strict';
 
 const { buildRecoveryUrl } = require('./buildRecoveryUrl');
+const { buildCartRecoveryBodyParameters } = require('../../constants/cartRecoverySlotPresets');
 
 function firstCartItem(lead = {}) {
   const snap = lead.cartSnapshot || {};
@@ -82,26 +83,11 @@ function buildCartRecoveryComponents(lead, client, stepNum = 1, opts = {}) {
 
   let bodyParams;
   if (stepNum === 2) {
-    // cart_recovery_2 — body {{1}} name, {{2}} product; URL is on the CTA button only
-    bodyParams = [
-      { type: 'text', text: ctx.customerName },
-      { type: 'text', text: ctx.productName },
-    ];
+    bodyParams = buildCartRecoveryBodyParameters(stepNum, ctx);
   } else if (stepNum === 3) {
-    // cart_recovery_3 — body {{1}}–{{3}} + {{5}} discount; {{4}} is the button URL
-    bodyParams = [
-      { type: 'text', text: ctx.customerName },
-      { type: 'text', text: ctx.productName },
-      { type: 'text', text: ctx.cartTotal || '—' },
-      { type: 'text', text: String(discountCode || 'SAVE10').slice(0, 64) },
-    ];
+    bodyParams = buildCartRecoveryBodyParameters(stepNum, ctx, { discountCode });
   } else {
-    // cart_recovery_1 — body {{1}}–{{3}}; {{4}} is the button URL
-    bodyParams = [
-      { type: 'text', text: ctx.customerName },
-      { type: 'text', text: ctx.productName },
-      { type: 'text', text: ctx.cartTotal || '—' },
-    ];
+    bodyParams = buildCartRecoveryBodyParameters(1, ctx);
   }
   components.push({ type: 'body', parameters: bodyParams });
 

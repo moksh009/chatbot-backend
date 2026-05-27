@@ -148,12 +148,6 @@ async function processStatuses(statuses) {
         updateData.failedAt = new Date();
         updateData.errorMessage = errors?.[0]?.message || 'Unknown error';
         log.warn(`Message failure for ${phone}`, { messageId, error: updateData.errorMessage });
-        
-        // Phase 28: Auto-Healing
-        if (msg?.clientId) {
-            const { reportApiFailure } = require('../utils/core/autoHealer');
-            reportApiFailure(msg.clientId, { response: { data: { error: errors?.[0] } } }).catch(() => {});
-        }
       }
 
       const msg = await CampaignMessage.findOneAndUpdate(
@@ -161,6 +155,26 @@ async function processStatuses(statuses) {
         { $set: updateData },
         { new: true }
       ).lean();
+
+      if (status === 'failed' && msg?.clientId) {
+        try {
+          const { reportApiFailure } = require('../utils/core/autoHealer');
+          reportApiFailure(msg.clientId, { response: { data: { error: errors?.[0] } } }).catch(() => {});
+        } catch (_) {}
+      }
+
+      if (status === 'failed' && phone && msg?.clientId) {
+        try {
+          const { markLeadOptOutFromSendFailure } = require('../utils/commerce/marketingOptStatusRules');
+          await markLeadOptOutFromSendFailure({
+            clientId: msg.clientId,
+            phone,
+            errorMessage: updateData.errorMessage,
+          });
+        } catch (optErr) {
+          log.warn(`Failed to mark opt-out after delivery failure for ${phone}`, { error: optErr.message });
+        }
+      }
 
       // ✅ Phase R3: Emit real-time status update to Live Chat UI — was missing, ticks never updated
       // Frontend LiveChat listens for 'message_status_update' to show ✓ / ✓✓ / blue ✓✓
@@ -176,6 +190,19 @@ async function processStatuses(statuses) {
             deliveredAt: updateData.deliveredAt,
             readAt: updateData.readAt
           });
+
+          if (status === 'failed' && phone && !msg?.clientId) {
+            try {
+              const { markLeadOptOutFromSendFailure } = require('../utils/commerce/marketingOptStatusRules');
+              await markLeadOptOutFromSendFailure({
+                clientId: liveMsg.clientId,
+                phone,
+                errorMessage: updateData.errorMessage,
+              });
+            } catch (optErr) {
+              log.warn(`Failed to mark opt-out after live message failure for ${phone}`, { error: optErr.message });
+            }
+          }
         }
       }
 

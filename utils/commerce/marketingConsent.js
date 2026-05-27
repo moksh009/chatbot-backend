@@ -197,12 +197,25 @@ async function canSendToContact(clientId, leadLike, templateCategory) {
   const phone = normalizePhoneDigits(phoneRaw);
   if (!phone) return { canSend: false, reason: 'invalid_phone' };
 
-  const currentLead = await AdLead.findOne({ clientId, phoneNumber: phone })
-    .select('optStatus')
+  const { phoneVariants } = require('../messaging/cancelAllAutomationsFor');
+  const variants = phoneVariants(phone);
+  const currentLead = await AdLead.findOne({
+    clientId,
+    phoneNumber: variants.length ? { $in: variants } : phone,
+  })
+    .select('optStatus channelConsent.whatsapp.status')
     .lean();
-  if (!currentLead) return { canSend: false, reason: 'contact_not_found' };
-  if (currentLead.optStatus === 'opted_out') return { canSend: false, reason: 'opted_out' };
+  if (!currentLead) return { canSend: true, reason: null };
+  const status = String(
+    currentLead.channelConsent?.whatsapp?.status || currentLead.optStatus || 'opted_in'
+  ).toLowerCase();
+  if (status === 'opted_out') return { canSend: false, reason: 'opted_out' };
   return { canSend: true, reason: null };
+}
+
+async function isLeadOptedOutForSend(clientId, phone) {
+  const gate = await canSendToContact(clientId, { phoneNumber: phone });
+  return gate.canSend === false && gate.reason === 'opted_out';
 }
 
 function evaluateLeadPolicy(optStatus) {
@@ -243,6 +256,7 @@ module.exports = {
   filterAudienceForEmailOptIn,
   filterAudienceByOptStatus,
   canSendToContact,
+  isLeadOptedOutForSend,
   evaluateLeadPolicy,
   evaluateAudiencePolicySummary,
 };

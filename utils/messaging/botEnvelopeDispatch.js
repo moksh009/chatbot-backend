@@ -55,6 +55,10 @@ async function dispatchBotEnvelope({
   if (ctx.contactId) envelope.contactId = String(ctx.contactId);
   else envelope.contact = { phone };
 
+  if (opts.complianceExempt === true) {
+    envelope.options = { ...(envelope.options || {}), complianceExempt: true };
+  }
+
   const result = await sendEnvelope(envelope);
 
   if (result.status === 'sent' || result.status === 'queued') {

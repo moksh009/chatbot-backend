@@ -1406,6 +1406,10 @@ async function runDualBrainEngine(parsedMessage, client) {
     : [];
   const optOutKeywords = [...new Set([...defaultOptOutKeywords, ...customStopKeywords])];
   const optInKeywords  = ['start', 'yes', 'subscribe', 'opt in', 'optin', 'resume', 'unpause'];
+  const {
+    buildKeywordOptInSetFields,
+    buildKeywordOptInHistoryEntry,
+  } = require('./marketingOptStatusRules');
 
   // Double opt-in confirmation gate (must run before routing/flows).
   if (userTextLower === 'yes' || parsedMessage?.buttonReplyId === 'confirm_optin') {
@@ -1459,7 +1463,7 @@ async function runDualBrainEngine(parsedMessage, client) {
         timestamp: new Date(),
       });
       await pendingLead.save();
-      await sendWhatsAppText(client, phone, "Understood. You won't receive marketing updates.");
+      await sendWhatsAppText(client, phone, "Understood. You won't receive marketing updates.", 'whatsapp', { complianceExempt: true });
       return true;
     }
   }
@@ -1491,28 +1495,25 @@ async function runDualBrainEngine(parsedMessage, client) {
   }
 
   if (rePermissionYes.includes(inboundButtonId) || userTextLower === 'yes sign me up') {
-    await AdLead.findOneAndUpdate(
-      { phoneNumber: phone, clientId: client.clientId, optStatus: { $in: ['unknown', 'pending', 'opted_out'] } },
+    const { buildKeywordOptInSetFields, buildKeywordOptInHistoryEntry } = require('./marketingOptStatusRules');
+    const updatedLead = await AdLead.findOneAndUpdate(
+      { phoneNumber: phone, clientId: client.clientId },
       {
-        $set: {
-          optStatus: 'opted_in',
-          optInDate: new Date(),
-          optInMethod: 'single',
-          optInSource: 're_permission_campaign',
-          whatsappMarketingEligible: true,
-        },
+        $set: buildKeywordOptInSetFields(),
         $push: {
           optInHistory: {
-            event: 'opted_in',
-            action: 'opted_in',
+            ...buildKeywordOptInHistoryEntry(),
             source: 're_permission_campaign',
-            method: 'single',
-            timestamp: new Date(),
           },
         },
-      }
+      },
+      { new: true }
     );
-    await sendWhatsAppText(client, phone, client?.growthWidgetConfig?.welcomeMessage || "You're subscribed to WhatsApp updates. Thank you!");
+    if (!updatedLead) {
+      log.warn(`[DualBrain] Re-permission opt-in: lead not found for ${phone}`);
+      return true;
+    }
+    await sendWhatsAppText(client, phone, client?.growthWidgetConfig?.welcomeMessage || "You're subscribed to WhatsApp updates. Thank you!", 'whatsapp', { complianceExempt: true });
     return true;
   }
   if (rePermissionNo.includes(inboundButtonId) || userTextLower === 'no thanks') {
@@ -1543,7 +1544,7 @@ async function runDualBrainEngine(parsedMessage, client) {
         { upsert: true }
       );
     } catch (_) {}
-    await sendWhatsAppText(client, phone, "Understood. We won't send marketing updates.");
+    await sendWhatsAppText(client, phone, "Understood. We won't send marketing updates.", 'whatsapp', { complianceExempt: true });
     return true;
   }
 
@@ -1572,35 +1573,29 @@ async function runDualBrainEngine(parsedMessage, client) {
   }
 
   if (optInKeywords.some(k => userTextLower === k)) {
-    log.info(`✅ Opt-in detected for ${phone}. Resuming bot.`);
-    
-    await Conversation.findByIdAndUpdate(convo._id, { 
-      botPaused: false, 
-      isBotPaused: false, 
-      status: 'BOT_ACTIVE' 
-    });
-
-    await AdLead.findOneAndUpdate(
+    const updatedLead = await AdLead.findOneAndUpdate(
       { phoneNumber: phone, clientId: client.clientId },
-      { 
-        $set: { 
-          optStatus: 'opted_in', 
-          optInDate: new Date(), 
-          optInSource: 'keyword',
-          optInMethod: 'single',
-        },
+      {
+        $set: buildKeywordOptInSetFields(),
         $pull: { tags: 'Opted Out' },
         $addToSet: { tags: 'Opted In' },
         $push: {
-          optInHistory: {
-            event: 'opted_in',
-            action: 're_opted_in',
-            timestamp: new Date(),
-            source: 'user_keyword'
-          }
-        }
-      }
+          optInHistory: buildKeywordOptInHistoryEntry(),
+        },
+      },
+      { new: true }
     );
+    if (!updatedLead) {
+      log.warn(`[DualBrain] Keyword opt-in could not find lead for ${phone}`);
+      return true;
+    }
+    log.info(`✅ Opt-in detected for ${phone}. Resuming bot.`);
+
+    await Conversation.findByIdAndUpdate(convo._id, {
+      botPaused: false,
+      isBotPaused: false,
+      status: 'BOT_ACTIVE'
+    });
     try {
       const SuppressionList = require('../../models/SuppressionList');
       await SuppressionList.deleteOne({ clientId: client.clientId, phone });
@@ -1609,7 +1604,7 @@ async function runDualBrainEngine(parsedMessage, client) {
     // Broadcast update
     if (io) io.to(`client_${client.clientId}`).emit('lead_opted_in', { phone });
 
-    await sendWhatsAppText(client, phone, "Welcome back! Automations have been resumed. How can I help you today?");
+    await sendWhatsAppText(client, phone, "Welcome back! Automations have been resumed. How can I help you today?", 'whatsapp', { complianceExempt: true });
     return true; // Stop execution
   }
 
@@ -1760,7 +1755,7 @@ async function runDualBrainEngine(parsedMessage, client) {
       await Conversation.findByIdAndUpdate(convo._id, {
         $set: { botPaused: true, isBotPaused: true, botStatus: 'paused', status: 'OPTED_OUT', lastStepId: null, waitingForVariable: null, captureResumeNodeId: null }
       });
-      await sendWhatsAppText(client, phone, "You've been unsubscribed. You will no longer receive automated messages. Reply START anytime to re-subscribe.");
+      await sendWhatsAppText(client, phone, "You've been unsubscribed. You will no longer receive automated messages. Reply START anytime to re-subscribe.", 'whatsapp', { complianceExempt: true });
       try {
         const { recordNegativeOutcome } = require('../../services/training/trainingOutcomeTracker');
         await recordNegativeOutcome(client.clientId, phone);
@@ -5339,7 +5334,7 @@ async function sendWhatsAppText(client, phone, body, channel = 'whatsapp', opts 
       client,
       phone,
       payload: { text: bodyContent },
-      opts: { ...opts, messageId: opts.inboundMessageId, source: 'dualBrainEngine:sendText' },
+      opts: { ...opts, messageId: opts.inboundMessageId, source: 'dualBrainEngine:sendText', complianceExempt: opts.complianceExempt === true },
     });
     if (env?.handled) {
       if (env.sent && env.messageId) {

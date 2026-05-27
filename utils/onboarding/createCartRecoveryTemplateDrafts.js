@@ -23,7 +23,7 @@ const CART_DRAFT_SPECS = [
     name: 'cart_recovery_3',
     catalogSlotId: 'wizard_cart_3',
     templateKey: 'cart_recovery_3',
-    prebuiltKey: null,
+    prebuiltKey: 'abandoned_cart_r3_v1',
     step: 3,
     bodyText:
       'Hi {{1}}, last chance to get {{2}} (₹{{3}})! Here\'s a special offer — use code {{5}} for 10% off.\n\nTap below to complete your order 👇',

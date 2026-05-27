@@ -11,38 +11,46 @@ const { stitchCheckoutTokenToLead } = require('./visitorIdentityService');
 const shopifyAdminApiVersion = require('../shopify/shopifyAdminApiVersion');
 const log = require('../core/logger')('UpsertAbandonedCart');
 
+async function fetchShopifyProductImage(client, productId) {
+  if (!productId || !client?.shopifyAccessToken || !client?.shopDomain) return null;
+  try {
+    const res = await axios.get(
+      `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}/products/${productId}.json`,
+      { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken }, timeout: 8000 }
+    );
+    return res.data?.product?.images?.[0]?.src || res.data?.product?.image?.src || null;
+  } catch {
+    return null;
+  }
+}
+
 async function enrichLineItemsWithImages(lineItems = [], client) {
   return Promise.all(
     lineItems.map(async (item) => {
-      let imageUrl = item.image || item.image_url || item.imageUrl || null;
+      let imageUrl =
+        item.image ||
+        item.image_url ||
+        item.imageUrl ||
+        item.featured_image?.src ||
+        item.variant_image?.src ||
+        null;
       const variantId = item.variant_id || item.productVariant || item.variantId;
       const productId = item.product_id || item.productId;
 
-      if (!imageUrl && productId && client?.shopifyAccessToken && client?.shopDomain) {
-        try {
-          const res = await axios.get(
-            `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}/products/${productId}.json`,
-            { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
-          );
-          imageUrl = res.data.product?.images?.[0]?.src || null;
-        } catch {
-          /* omit */
-        }
+      if (!imageUrl && productId) {
+        imageUrl = await fetchShopifyProductImage(client, productId);
       }
 
       if (!imageUrl && variantId && client?.shopifyAccessToken && client?.shopDomain) {
         try {
           const res = await axios.get(
             `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}/variants/${variantId}.json`,
-            { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
+            { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken }, timeout: 8000 }
           );
+          imageUrl = res.data?.variant?.image?.src || res.data?.variant?.image_url || null;
           const pid = res.data?.variant?.product_id;
-          if (pid) {
-            const pres = await axios.get(
-              `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}/products/${pid}.json`,
-              { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
-            );
-            imageUrl = pres.data.product?.images?.[0]?.src || null;
+          if (!imageUrl && pid) {
+            imageUrl = await fetchShopifyProductImage(client, pid);
           }
         } catch {
           /* omit */
@@ -51,8 +59,11 @@ async function enrichLineItemsWithImages(lineItems = [], client) {
 
       return {
         variant_id: variantId ? String(variantId) : undefined,
+        product_id: productId ? String(productId) : undefined,
         quantity: Number(item.quantity || item.productQuantity || item.qty || 1) || 1,
         image: imageUrl,
+        image_url: imageUrl,
+        imageUrl,
         title: item.title || item.name || item.productName || item.product_title || 'Item',
         name: item.name || item.productName || item.title,
         price: item.price ?? item.productPrice ?? item.line_price ?? '',
@@ -262,4 +273,5 @@ module.exports = {
   markCartLeadPurchased,
   enrichLineItemsWithImages,
   normalizeIncomingCartItems,
+  fetchShopifyProductImage,
 };

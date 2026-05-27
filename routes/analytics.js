@@ -573,18 +573,15 @@ router.get('/lead/:id', protect, leadByIdScope, async (req, res) => {
       }
     }
 
-    // Fetch related orders (handle stripped country code from Shopify)
-    const strippedPhone = lead.phoneNumber.length > 10 && lead.phoneNumber.startsWith('91')
-      ? lead.phoneNumber.substring(2)
-      : lead.phoneNumber;
-
-    const phoneDigits = Array.from(lead.phoneNumber || '').filter(c => c >= '0' && c <= '9').join('');
-    const pSuf = phoneDigits.slice(-10);
-
+    const { buildActivityTimeline } = require('../utils/customer360/buildActivityTimeline');
+    const { findOrdersForLead } = require('../utils/customer360/leadLookupHelpers');
+    const { phoneVariants } = require('../utils/messaging/cancelAllAutomationsFor');
     const CustomerIntelligence = require('../models/CustomerIntelligence');
     const CampaignMessage = require('../models/CampaignMessage');
     const FollowUpSequence = require('../models/FollowUpSequence');
+    const leadPhoneVariants = phoneVariants(lead.phoneNumber);
 
+    // Fetch related orders (phone + customerPhone variants)
     const [
       orders,
       appointments,
@@ -593,20 +590,30 @@ router.get('/lead/:id', protect, leadByIdScope, async (req, res) => {
       marketingLogs,
       sequences
     ] = await Promise.all([
-      Order.find({
-        clientId: lead.clientId,
-        $or: [
-          { phone: lead.phoneNumber },
-          { phone: strippedPhone },
-          { phone: `+91${strippedPhone}` },
-          { phone: `91${strippedPhone}` }
-        ]
-      }).lean(),
+      findOrdersForLead(lead.clientId, lead.phoneNumber, { limit: 50 }),
       Appointment.find({ phone: lead.phoneNumber, clientId: lead.clientId }).lean(),
-      Conversation.findOne({ phone: lead.phoneNumber, clientId: lead.clientId }).lean(),
+      Conversation.findOne({
+        clientId: lead.clientId,
+        phone: leadPhoneVariants.length ? { $in: leadPhoneVariants } : lead.phoneNumber,
+      }).lean(),
       CustomerIntelligence.findOne({ clientId: lead.clientId, phone: lead.phoneNumber }).lean().catch(() => null),
-      CampaignMessage.find({ clientId: lead.clientId, phone: lead.phoneNumber }).populate('campaignId', 'name type').sort({ sentAt: -1 }).limit(20).lean().catch(() => []),
-      FollowUpSequence.find({ clientId: lead.clientId, phone: lead.phoneNumber }).sort({ createdAt: -1 }).limit(10).lean().catch(() => [])
+      CampaignMessage.find({
+        clientId: lead.clientId,
+        phone: leadPhoneVariants.length ? { $in: leadPhoneVariants } : lead.phoneNumber,
+      })
+        .populate('campaignId', 'name type')
+        .sort({ sentAt: -1 })
+        .limit(20)
+        .lean()
+        .catch(() => []),
+      FollowUpSequence.find({
+        clientId: lead.clientId,
+        phone: leadPhoneVariants.length ? { $in: leadPhoneVariants } : lead.phoneNumber,
+      })
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .lean()
+        .catch(() => []),
     ]);
 
     // Fetch recent messages
@@ -671,7 +678,6 @@ router.get('/lead/:id', protect, leadByIdScope, async (req, res) => {
       }
     }
 
-    const { buildActivityTimeline } = require('../utils/customer360/buildActivityTimeline');
     const journeyLog = buildActivityTimeline({
       lead,
       orders,
@@ -760,50 +766,32 @@ router.put('/lead/:phone', protect, async (req, res) => {
     const existingLead = await AdLead.findOne({ phoneNumber: phoneRegex, clientId }).lean();
     if (!existingLead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
+    const {
+      isManualReOptInBlocked,
+      MANUAL_RE_OPT_IN_BLOCKED_MESSAGE,
+      buildManualOptStatusHistoryEntry,
+      buildManualOptStatusSetFields,
+    } = require('../utils/commerce/marketingOptStatusRules');
+
     const currentStatus = String(existingLead.optStatus || 'unknown').toLowerCase();
     const nextStatus = optStatus ? String(optStatus).toLowerCase() : null;
-    if (currentStatus === 'opted_out' && nextStatus === 'opted_in') {
+    if (isManualReOptInBlocked(currentStatus, nextStatus)) {
       return res.status(409).json({
         success: false,
-        message: 'Manual override blocked: opted-out contacts cannot be switched back to opted-in.',
+        message: MANUAL_RE_OPT_IN_BLOCKED_MESSAGE,
       });
     }
 
     let updateFields = { name, email, tags, lastInteraction: new Date() };
     if (isNameCustom !== undefined) updateFields.isNameCustom = isNameCustom;
     if (nextStatus) {
-      updateFields.optStatus = nextStatus;
-      if (nextStatus === 'opted_out') {
-        updateFields.optOutDate = new Date();
-        updateFields.optOutSource = 'admin_manual';
-        updateFields['channelConsent.whatsapp.status'] = 'opted_out';
-        updateFields['channelConsent.whatsapp.source'] = 'admin_manual';
-        updateFields['channelConsent.whatsapp.timestamp'] = new Date();
-        updateFields['channelConsent.whatsapp.lastUpdated'] = new Date();
-      }
-      if (nextStatus === 'opted_in') {
-        updateFields.optInDate = new Date();
-        updateFields.optInSource = 'admin_manual';
-        updateFields.optOutDate = null;
-        updateFields.optOutSource = '';
-        updateFields['channelConsent.whatsapp.status'] = 'opted_in';
-        updateFields['channelConsent.whatsapp.source'] = 'admin_manual';
-        updateFields['channelConsent.whatsapp.timestamp'] = updateFields.optInDate;
-        updateFields['channelConsent.whatsapp.lastUpdated'] = new Date();
-      }
+      Object.assign(updateFields, buildManualOptStatusSetFields(nextStatus, existingLead));
     }
 
     const updateDoc = { $set: updateFields };
-    if (nextStatus === 'opted_out' || nextStatus === 'opted_in') {
-      updateDoc.$push = {
-        optInHistory: {
-          event: nextStatus,
-          action: nextStatus,
-          source: 'admin_manual',
-          timestamp: new Date(),
-          note: 'Manual status override from dashboard',
-        },
-      };
+    const historyEntry = buildManualOptStatusHistoryEntry(nextStatus);
+    if (historyEntry) {
+      updateDoc.$push = { optInHistory: historyEntry };
     }
 
     const lead = await AdLead.findOneAndUpdate(
@@ -1803,7 +1791,20 @@ router.get('/optin-overview', protect, async (req, res) => {
     const [statusAgg, sourceAgg, trendAgg, recent] = await Promise.all([
       AdLead.aggregate([
         { $match: { clientId } },
-        { $group: { _id: '$optStatus', count: { $sum: 1 } } },
+        {
+          $addFields: {
+            normalizedOptStatus: {
+              $switch: {
+                branches: [
+                  { case: { $eq: ['$optStatus', 'opted_out'] }, then: 'opted_out' },
+                  { case: { $eq: ['$optStatus', 'pending'] }, then: 'pending' },
+                ],
+                default: 'opted_in',
+              },
+            },
+          },
+        },
+        { $group: { _id: '$normalizedOptStatus', count: { $sum: 1 } } },
       ]),
       AdLead.aggregate([
         { $match: { clientId, optStatus: 'opted_in' } },
@@ -1846,13 +1847,14 @@ router.get('/optin-overview', protect, async (req, res) => {
     ]);
 
     const map = {};
-    statusAgg.forEach((x) => { map[x._id || 'unknown'] = x.count; });
+    statusAgg.forEach((x) => { map[x._id || 'opted_in'] = x.count; });
     const totalLeads = Object.values(map).reduce((a, b) => a + b, 0);
-    const optedIn = map.opted_in || 0;
+    const optedIn = (map.opted_in || 0) + (map.unknown || 0);
     const unknown = map.unknown || 0;
     const optedOut = map.opted_out || 0;
     const pending = map.pending || 0;
-    const optInRate = totalLeads > 0 ? Number(((optedIn / totalLeads) * 100).toFixed(1)) : 0;
+    const effectiveTotal = totalLeads || optedIn + optedOut + pending;
+    const optInRate = effectiveTotal > 0 ? Number(((optedIn / effectiveTotal) * 100).toFixed(1)) : 0;
 
     const trendMap = {};
     trendAgg.forEach((x) => { trendMap[x._id] = x.newOptIns; });

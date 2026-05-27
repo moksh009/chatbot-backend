@@ -21,4 +21,5 @@ test('waterfall breakdown — tier match and persisted shape', () => {
   assert.ok(typeof breakdown.totalCapped === 'number');
   assert.ok(Array.isArray(breakdown.tier_conditions));
   assert.ok(breakdown.tier_label);
+  assert.ok(breakdown.stats);
 });

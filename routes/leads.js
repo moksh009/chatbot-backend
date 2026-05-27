@@ -1124,46 +1124,30 @@ router.patch('/:id', protect, async (req, res) => {
         const existingLead = await AdLead.findOne({ _id: id, clientId }).lean();
         if (!existingLead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
+        const {
+          isManualReOptInBlocked,
+          MANUAL_RE_OPT_IN_BLOCKED_MESSAGE,
+          buildManualOptStatusHistoryEntry,
+          buildManualOptStatusSetFields,
+        } = require('../utils/commerce/marketingOptStatusRules');
+
         const currentStatus = String(existingLead.optStatus || 'unknown').toLowerCase();
         const nextStatus = updates.optStatus ? String(updates.optStatus).toLowerCase() : null;
-        if (currentStatus === 'opted_out' && nextStatus === 'opted_in') {
+        if (isManualReOptInBlocked(currentStatus, nextStatus)) {
           return res.status(409).json({
             success: false,
-            message: 'Manual override blocked: opted-out contacts cannot be switched back to opted-in.',
+            message: MANUAL_RE_OPT_IN_BLOCKED_MESSAGE,
           });
         }
 
-        if (nextStatus === 'opted_out') {
-          updates.optOutDate = new Date();
-          updates.optOutSource = updates.optOutSource || 'admin_manual';
-          updates.whatsappMarketingEligible = false;
-          updates['channelConsent.whatsapp.status'] = 'opted_out';
-          updates['channelConsent.whatsapp.source'] = 'admin_manual';
-          updates['channelConsent.whatsapp.timestamp'] = new Date();
-          updates['channelConsent.whatsapp.lastUpdated'] = new Date();
-        }
-        if (nextStatus === 'opted_in') {
-          updates.optInDate = updates.optInDate || new Date();
-          updates.optInSource = updates.optInSource || 'admin_manual';
-          updates['channelConsent.whatsapp.status'] = 'opted_in';
-          updates['channelConsent.whatsapp.source'] = 'admin_manual';
-          updates['channelConsent.whatsapp.timestamp'] = updates.optInDate;
-          updates['channelConsent.whatsapp.lastUpdated'] = new Date();
-          updates.optOutDate = null;
-          updates.optOutSource = '';
+        if (nextStatus === 'opted_out' || nextStatus === 'opted_in') {
+          Object.assign(updates, buildManualOptStatusSetFields(nextStatus, existingLead));
         }
 
         const updateDoc = { $set: updates };
-        if (nextStatus === 'opted_out' || nextStatus === 'opted_in') {
-          updateDoc.$push = {
-            optInHistory: {
-              event: nextStatus,
-              action: nextStatus,
-              source: 'admin_manual',
-              timestamp: new Date(),
-              note: 'Manual status override from dashboard',
-            },
-          };
+        const historyEntry = buildManualOptStatusHistoryEntry(nextStatus);
+        if (historyEntry) {
+          updateDoc.$push = { optInHistory: historyEntry };
         }
 
         const lead = await AdLead.findOneAndUpdate(

@@ -3,7 +3,8 @@
   "prebuiltRequiredMetaNames": [
     "order_confirmation_v1",
     "cart_recovery_1",
-    "cart_recovery_2"
+    "cart_recovery_2",
+    "cart_recovery_3"
   ],
   "nameAliases": {
     "order_confirmed": "order_confirmation_v1",
@@ -216,7 +217,7 @@
           "usedIn": ["AI Setup", "Alerts step"],
           "pack": "wizard",
           "pushKind": "prebuilt",
-          "prebuiltKey": null,
+          "prebuiltKey": "admin_human_alert",
           "autoTrigger": null
         },
         {

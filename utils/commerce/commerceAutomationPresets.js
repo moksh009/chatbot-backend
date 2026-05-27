@@ -4,6 +4,8 @@ const ORDER_NOTIFICATION_SLOTS = ['pending', 'paid', 'shipped', 'delivered', 'ca
 
 const ABANDONED_CART_SLOTS = ['followup_1', 'followup_2', 'followup_3'];
 
+const { cartRecoveryVariableMappings } = require('../../constants/cartRecoverySlotPresets');
+
 /** Minimum delay after cart abandoned (minutes). User may increase, not decrease. */
 const CART_FOLLOWUP_MIN_MINUTES = {
   followup_1: 15,
@@ -16,23 +18,6 @@ const CART_FOLLOWUP_DEFAULT_MINUTES = {
   followup_2: 8 * 60,
   followup_3: 36 * 60,
 };
-
-function cartRecoveryVariableMappings(stepNum) {
-  const step = Number(stepNum);
-  if (step === 2) {
-    return { body: { 1: 'first_name', 2: 'product_name' }, buttons: { 0: 'checkout_url' } };
-  }
-  if (step >= 3) {
-    return {
-      body: { 1: 'first_name', 2: 'product_name', 3: 'cart_total', 5: 'discount_code' },
-      buttons: { 0: 'checkout_url' },
-    };
-  }
-  return {
-    body: { 1: 'first_name', 2: 'product_name', 3: 'cart_total' },
-    buttons: { 0: 'checkout_url' },
-  };
-}
 
 function orderNotificationRule(slot) {
   const labels = {
@@ -203,4 +188,5 @@ module.exports = {
   mergeSystemAutomations,
   validateCartFollowupDelay,
   cartFollowupSyncPatch,
+  cartRecoveryVariableMappings,
 };

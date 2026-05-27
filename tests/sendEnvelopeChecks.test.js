@@ -20,6 +20,20 @@ async function run() {
     checkConsent({ contact: contactOut, channel: 'whatsapp', intent: 'transactional', strictMode: true }).pass,
     false
   );
+  assert.strictEqual(
+    checkConsent({ contact: contactOut, channel: 'whatsapp', intent: 'service', strictMode: true }).pass,
+    false
+  );
+  assert.strictEqual(
+    checkConsent({
+      contact: contactOut,
+      channel: 'whatsapp',
+      intent: 'service',
+      strictMode: true,
+      complianceExempt: true,
+    }).pass,
+    true
+  );
 
   assert.strictEqual(
     checkServiceWindow({

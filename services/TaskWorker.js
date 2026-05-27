@@ -8,7 +8,7 @@ const AdLead = require('../models/AdLead');
 const ImportSession = require('../models/ImportSession');
 const { normalizePhone, findBestMatch, resolveMappedHeader } = require('../utils/commerce/leadCleaner');
 const { checkLimit, incrementUsage } = require('../utils/core/planLimits');
-const { incrementStat } = require('../utils/core/statCacheEngine');
+const { buildDefaultOptInSetFields } = require('../utils/commerce/marketingOptStatusRules');
 
 const redisConnection = getQueueRedis();
 if (!redisConnection) {
@@ -187,9 +187,7 @@ async function handleImportLeads(data, job) {
             
             const setOnInsertObj = {
                 source: 'CSV_Import',
-                optStatus: isDeclaredOptIn ? 'opted_in' : 'unknown',
-                optInSource: isDeclaredOptIn ? 'csv_import_declared' : '',
-                optInMethod: 'single',
+                ...buildDefaultOptInSetFields('csv_import'),
                 name: `Guest contact (from ${filename.split('.')[0]})`
             };
             
