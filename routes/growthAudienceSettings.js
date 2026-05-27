@@ -5,6 +5,8 @@ const { protect, verifyClientAccess } = require('../middleware/auth');
 
 /** Cart recovery / marketing consent settings (still used by cron and public flows). */
 function mountGrowthAudienceSettingsRoutes(router) {
+  const DEFAULT_STOP_KEYWORDS = ['STOP', 'UNSUBSCRIBE', 'REMOVE', 'CANCEL', 'HALT'];
+
   router.get('/:clientId/growth-compliance', protect, verifyClientAccess, async (req, res) => {
     try {
       const { clientId } = req.params;
@@ -19,7 +21,7 @@ function mountGrowthAudienceSettingsRoutes(router) {
           applyPolicyToNewSignups: compliance.applyPolicyToNewSignups !== false,
           stopKeywords: compliance.stopKeywords?.length
             ? compliance.stopKeywords
-            : ['STOP', 'UNSUBSCRIBE', 'OPT OUT', 'REMOVE', 'CANCEL'],
+            : DEFAULT_STOP_KEYWORDS,
           doubleOptInEnabled: doc.growthWidgetConfig?.doubleOptInEnabled === true,
         },
       });
@@ -43,9 +45,21 @@ function mountGrowthAudienceSettingsRoutes(router) {
         updates['growthCompliance.applyPolicyToNewSignups'] = req.body.applyPolicyToNewSignups !== false;
       }
       if (Array.isArray(req.body.stopKeywords)) {
-        updates['growthCompliance.stopKeywords'] = req.body.stopKeywords
+        const normalizedKeywords = req.body.stopKeywords
           .map((k) => String(k || '').trim().toUpperCase())
           .filter(Boolean);
+
+        const invalidKeyword = normalizedKeywords.find(
+          (k) => k.length > 20 || /\s/.test(k)
+        );
+        if (invalidKeyword) {
+          return res.status(400).json({
+            success: false,
+            message: 'Each opt-out keyword must be a single word with a maximum of 20 characters.',
+          });
+        }
+
+        updates['growthCompliance.stopKeywords'] = [...new Set(normalizedKeywords)];
       }
       const widgetUpdates = {};
       if (req.body.doubleOptInEnabled !== undefined) {

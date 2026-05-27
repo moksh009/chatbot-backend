@@ -750,23 +750,67 @@ router.put('/lead/:phone', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
     
-    const { name, email, tags, isNameCustom } = req.body;
+    const { name, email, tags, isNameCustom, optStatus } = req.body;
     
     // Robust phone matching: strip non-digits, use last 10 for suffix match
     const cleanPhone = req.params.phone.replace(/\D/g, '');
     const phoneSuffix = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
     const phoneRegex = new RegExp(`${phoneSuffix}$`);
     
+    const existingLead = await AdLead.findOne({ phoneNumber: phoneRegex, clientId }).lean();
+    if (!existingLead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    const currentStatus = String(existingLead.optStatus || 'unknown').toLowerCase();
+    const nextStatus = optStatus ? String(optStatus).toLowerCase() : null;
+    if (currentStatus === 'opted_out' && nextStatus === 'opted_in') {
+      return res.status(409).json({
+        success: false,
+        message: 'Manual override blocked: opted-out contacts cannot be switched back to opted-in.',
+      });
+    }
+
     let updateFields = { name, email, tags, lastInteraction: new Date() };
     if (isNameCustom !== undefined) updateFields.isNameCustom = isNameCustom;
+    if (nextStatus) {
+      updateFields.optStatus = nextStatus;
+      if (nextStatus === 'opted_out') {
+        updateFields.optOutDate = new Date();
+        updateFields.optOutSource = 'admin_manual';
+        updateFields['channelConsent.whatsapp.status'] = 'opted_out';
+        updateFields['channelConsent.whatsapp.source'] = 'admin_manual';
+        updateFields['channelConsent.whatsapp.timestamp'] = new Date();
+        updateFields['channelConsent.whatsapp.lastUpdated'] = new Date();
+      }
+      if (nextStatus === 'opted_in') {
+        updateFields.optInDate = new Date();
+        updateFields.optInSource = 'admin_manual';
+        updateFields.optOutDate = null;
+        updateFields.optOutSource = '';
+        updateFields['channelConsent.whatsapp.status'] = 'opted_in';
+        updateFields['channelConsent.whatsapp.source'] = 'admin_manual';
+        updateFields['channelConsent.whatsapp.timestamp'] = updateFields.optInDate;
+        updateFields['channelConsent.whatsapp.lastUpdated'] = new Date();
+      }
+    }
+
+    const updateDoc = { $set: updateFields };
+    if (nextStatus === 'opted_out' || nextStatus === 'opted_in') {
+      updateDoc.$push = {
+        optInHistory: {
+          event: nextStatus,
+          action: nextStatus,
+          source: 'admin_manual',
+          timestamp: new Date(),
+          note: 'Manual status override from dashboard',
+        },
+      };
+    }
 
     const lead = await AdLead.findOneAndUpdate(
       { phoneNumber: phoneRegex, clientId },
-      { $set: updateFields },
+      updateDoc,
       { new: true }
     );
-    
-    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
     // Also sync to Conversation if exists
     await Conversation.updateMany(

@@ -1382,7 +1382,7 @@ async function runDualBrainEngine(parsedMessage, client) {
     // Wallet/Redeem existing logic would go here
   }
   
-  const optOutKeywords = [
+  const defaultOptOutKeywords = [
     'stop',
     'unsubscribe',
     'opt out',
@@ -1399,6 +1399,12 @@ async function runDualBrainEngine(parsedMessage, client) {
     'band karo',
     'band karo.',
   ];
+  const customStopKeywords = Array.isArray(client?.growthCompliance?.stopKeywords)
+    ? client.growthCompliance.stopKeywords
+        .map((k) => String(k || '').trim().toLowerCase())
+        .filter(Boolean)
+    : [];
+  const optOutKeywords = [...new Set([...defaultOptOutKeywords, ...customStopKeywords])];
   const optInKeywords  = ['start', 'yes', 'subscribe', 'opt in', 'optin', 'resume', 'unpause'];
 
   // Double opt-in confirmation gate (must run before routing/flows).
