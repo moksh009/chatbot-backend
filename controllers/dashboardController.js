@@ -26,6 +26,10 @@ const PurchaseOrder = require('../models/PurchaseOrder');
 const logger = require('../utils/core/logger')('DashboardController');
 const Shopify = require('../utils/shopify/shopifyGraphQL');
 const { buildRecoveredRevenueSummary } = require('../utils/hub/recoveredRevenueSummary');
+const {
+  buildCommercePeriodKpis,
+  mergeRealtimeWithPeriodKpis,
+} = require('../utils/core/commercePeriodKpis');
 
 
 /**
@@ -92,10 +96,24 @@ exports.getSummary = async (req, res) => {
       }
     });
 
+    let periodKpis = null;
+    try {
+      periodKpis = await buildCommercePeriodKpis({
+        clientId,
+        days: requestedDays,
+        timeline: byKey.timeline || [],
+      });
+    } catch (kpiErr) {
+      logger.warn('[Dashboard Summary] periodKpis failed:', kpiErr.message);
+    }
+
+    const realtime = mergeRealtimeWithPeriodKpis(byKey.realtime, periodKpis);
+
     return {
       success: true,
-      realtime: byKey.realtime,
+      realtime,
       timeline: byKey.timeline,
+      periodKpis,
       conversations: byKey.conversations,
       topProducts: byKey.topProducts,
       humanQueue: byKey.humanQueue || [],

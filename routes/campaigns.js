@@ -1529,26 +1529,90 @@ router.post('/:clientId/ab-test', protect, async (req, res) => {
 });
 
 
+const META_HEALTH_TIMEOUT_MS = 4500;
+const OVERVIEW_AGG_MAX_MS = 12_000;
+
+function withTimeout(promise, ms, fallback) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
+
+function isThrottledWhatsApp(clientDoc) {
+  const until = clientDoc?.complianceConfig?.rateLimits?.whatsapp?.throttledUntil;
+  return !!(until && new Date(until) > new Date());
+}
+
+async function fetchMetaHealthForOverview(client) {
+  const fallback = {
+    status: 'HEALTHY',
+    tier: 'Tier 1 (1k/day)',
+    qualityRating: 'GREEN',
+    lastTemplateUpdate: new Date(),
+  };
+  if (!client?.whatsappToken || !(client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID)) {
+    return fallback;
+  }
+  try {
+    const [acc, qual] = await withTimeout(
+      Promise.all([WhatsApp.getAccountStatus(client), WhatsApp.getPhoneNumberQuality(client)]),
+      META_HEALTH_TIMEOUT_MS,
+      null
+    );
+    if (!acc || !qual) return { ...fallback, status: 'UNKNOWN', qualityRating: 'UNKNOWN' };
+    return {
+      status: acc.status === 'UNAVAILABLE' ? 'UNAVAILABLE' : qual.status || 'HEALTHY',
+      tier: qual.tier || 'Tier 1 (1k/day)',
+      qualityRating: qual.qualityRating || 'GREEN',
+      lastTemplateUpdate: new Date(),
+    };
+  } catch (healthErr) {
+    log.warn(`[Campaigns] Meta health timeout/error for ${client.clientId}: ${healthErr.message}`);
+    return { ...fallback, status: 'UNKNOWN' };
+  }
+}
+
 // @route   GET /api/campaigns/:clientId/overview
-// @desc    Get aggregate campaign metrics and Meta health
+// @desc    Get aggregate campaign metrics and Meta health (?pulse=1 for dashboard badge only)
 // @access  Private
 router.get('/:clientId/overview', protect, apiCache(60), async (req, res) => {
   try {
+    const tenantId = denyUnlessTenant(req, res, req.params.clientId);
+    if (!tenantId) return;
+
     const { client } = await resolveClient(req);
     const clientId = client.clientId;
-    const clientDoc = await Client.findOne({ clientId }).select('complianceConfig').lean();
-    const campaigns = await Campaign.find({ clientId }).sort({ createdAt: -1 }).lean();
-    const CampaignMessage = require('../models/CampaignMessage');
+    const pulseOnly =
+      req.query.pulse === '1' || req.query.pulse === 'true' || req.query.mode === 'pulse';
 
-    // Aggregate stats from CampaignMessage for ground-truth data
-    const statsArray = await CampaignMessage.aggregate([
-      { $match: { clientId } },
-      {
-        $group: {
-          _id: "$status",
-          count: { $sum: 1 }
-        }
-      }
+    const clientDoc = await Client.findOne({ clientId })
+      .select(
+        'complianceConfig whatsappToken phoneNumberId wabaId plan subscriptionPlan'
+      )
+      .lean();
+
+    const throttledWhatsApp = isThrottledWhatsApp(clientDoc);
+
+    if (pulseOnly) {
+      const activeCampaigns = await Campaign.countDocuments({ clientId, status: 'SENDING' }).maxTimeMS(
+        4000
+      );
+      return res.json({
+        success: true,
+        pulse: true,
+        activeCampaigns,
+        throttledWhatsApp,
+      });
+    }
+
+    const [campaigns, statsArray, activeCampaigns] = await Promise.all([
+      Campaign.find({ clientId }).sort({ createdAt: -1 }).limit(50).lean().maxTimeMS(8000),
+      CampaignMessage.aggregate([
+        { $match: { clientId } },
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+      ]).option({ maxTimeMS: OVERVIEW_AGG_MAX_MS }),
+      Campaign.countDocuments({ clientId, status: 'SENDING' }).maxTimeMS(4000),
     ]);
 
     const statsMap = statsArray.reduce((acc, curr) => {
@@ -1556,42 +1620,18 @@ router.get('/:clientId/overview', protect, apiCache(60), async (req, res) => {
       return acc;
     }, {});
 
-    const totalDelivered = (statsMap['delivered'] || 0) + (statsMap['read'] || 0) + (statsMap['replied'] || 0);
-    const totalSent = (statsMap['sent'] || 0) + totalDelivered;
-    const totalRead = (statsMap['read'] || 0) + (statsMap['replied'] || 0);
-    const totalReplied = statsMap['replied'] || 0;
-    const totalFailed = statsMap['failed'] || 0;
-    const totalCancelled = statsMap['cancelled'] || 0;
+    const totalDelivered = (statsMap.delivered || 0) + (statsMap.read || 0) + (statsMap.replied || 0);
+    const totalSent = (statsMap.sent || 0) + totalDelivered;
+    const totalRead = (statsMap.read || 0) + (statsMap.replied || 0);
+    const totalReplied = statsMap.replied || 0;
+    const totalFailed = statsMap.failed || 0;
+    const totalCancelled = statsMap.cancelled || 0;
 
     const deliveryRate = totalSent > 0 ? Math.round((totalDelivered / totalSent) * 100) : 0;
     const readRate = totalDelivered > 0 ? Math.round((totalRead / totalDelivered) * 100) : 0;
     const replyRate = totalSent > 0 ? Math.round((totalReplied / totalSent) * 100) : 0;
 
-    // Meta Health (Real Integration with Cloud API)
-    let metaHealth = {
-      status: 'HEALTHY',
-      tier: 'Tier 1 (1k/day)',
-      qualityRating: 'GREEN',
-      lastTemplateUpdate: new Date()
-    };
-
-    try {
-      const client = await Client.findOne({ clientId }).select('_id plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role').lean();
-      if (client?.whatsappToken && (client.phoneNumberId || process.env.WHATSAPP_PHONENUMBER_ID)) {
-        const [acc, qual] = await Promise.all([
-          WhatsApp.getAccountStatus(client),
-          WhatsApp.getPhoneNumberQuality(client)
-        ]);
-        metaHealth = {
-          status: acc.status === 'UNAVAILABLE' ? 'UNAVAILABLE' : (qual.status || 'HEALTHY'),
-          tier: qual.tier || 'Tier 1 (1k/day)',
-          qualityRating: qual.qualityRating || 'GREEN',
-          lastTemplateUpdate: new Date()
-        };
-      }
-    } catch (healthErr) {
-      console.warn(`[Campaigns] Could not fetch Meta health for ${clientId}:`, healthErr.message);
-    }
+    const metaHealth = await fetchMetaHealthForOverview(clientDoc || client);
 
     res.json({
       success: true,
@@ -1607,15 +1647,18 @@ router.get('/:clientId/overview', protect, apiCache(60), async (req, res) => {
         replyRate,
       },
       metaHealth,
-      activeCampaigns: campaigns.filter((c) => c.status === 'SENDING').length,
-      throttledWhatsApp: !!(
-        clientDoc?.complianceConfig?.rateLimits?.whatsapp?.throttledUntil &&
-        new Date(clientDoc.complianceConfig.rateLimits.whatsapp.throttledUntil) > new Date()
-      ),
-      recentCampaigns: campaigns.slice(0, 10)
-
+      activeCampaigns,
+      throttledWhatsApp,
+      recentCampaigns: campaigns.slice(0, 10),
     });
   } catch (error) {
+    if (error?.name === 'MongoTimeoutError' || /maxTimeMS/i.test(String(error.message))) {
+      return res.status(503).json({
+        success: false,
+        message: 'Campaign stats are still loading. Try again in a moment.',
+        code: 'OVERVIEW_TIMEOUT',
+      });
+    }
     res.status(500).json({ success: false, message: error.message });
   }
 });

@@ -123,6 +123,26 @@ function filterCustomers(list, { tier, topedge, search }) {
   return out;
 }
 
+function summarizeCustomers(list) {
+  let totalLtv = 0;
+  let whatsappLinked = 0;
+  let withLeadScore = 0;
+  let vipCount = 0;
+  for (const c of list) {
+    totalLtv += Number(c.total_spent) || 0;
+    if (c.workspacePhone) whatsappLinked += 1;
+    if (c.leadScore != null && Number(c.leadScore) > 0) withLeadScore += 1;
+    if (getSpendTier(c.total_spent) === 'vip') vipCount += 1;
+  }
+  return {
+    total: list.length,
+    totalLtv: Math.round(totalLtv),
+    whatsappLinked,
+    withLeadScore,
+    vipCount,
+  };
+}
+
 function encodeCursor(offset) {
   return Buffer.from(JSON.stringify({ o: offset }), 'utf8').toString('base64url');
 }
@@ -211,6 +231,7 @@ async function listShopifyCustomersForClient(clientId, query = {}) {
 
   return {
     ...page,
+    summary: summarizeCustomers(filtered),
     syncedAt: client?.customersSyncedAt || null,
     cacheCount: client?.shopifyCustomersCacheCount ?? source.length,
     needsSync: false,

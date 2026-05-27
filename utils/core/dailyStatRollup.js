@@ -262,6 +262,7 @@ async function upsertDailyStatRollup(clientId, dateStr, metrics) {
     totalChats: metrics.totalChats,
     uniqueUsers: metrics.uniqueUsers,
     orders: metrics.orders,
+    unitsSold: metrics.unitsSold ?? 0,
     revenue: metrics.revenue,
     orderRevenue: metrics.orderRevenue ?? 0,
     bookingRevenue: metrics.bookingRevenue,

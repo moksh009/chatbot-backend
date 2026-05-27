@@ -476,7 +476,14 @@ router.get('/realtime', protect, apiCache(60), async (req, res) => {
     const rawRealtimeDays = parseInt(req.query.days, 10) || 1;
     const days = Math.min(Math.max(rawRealtimeDays, 1), MAX_LIVE_ANALYTICS_DAYS);
 
-    const payload = await getRealtimeStats(clientId, client, days, { timer });
+    const { buildCommercePeriodKpis, mergeRealtimeWithPeriodKpis } = require('../utils/core/commercePeriodKpis');
+    let payload = await getRealtimeStats(clientId, client, days, { timer });
+    try {
+      const periodKpis = await buildCommercePeriodKpis({ clientId, days });
+      payload = mergeRealtimeWithPeriodKpis(payload, periodKpis);
+    } catch (kpiErr) {
+      console.warn('[Analytics Realtime] periodKpis:', kpiErr.message);
+    }
     timer.finish('200 ok');
     res.json(payload);
   } catch (error) {
@@ -865,7 +872,8 @@ router.get('/top-products', protect, apiCache(60), async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
 
-    const topProducts = await getTopProducts(clientId, { timer });
+    const days = parseInt(req.query.days, 10) || 30;
+    const topProducts = await getTopProducts(clientId, { timer, days });
     timer.finish(`200 ok count=${topProducts.length}`);
     res.json(topProducts);
   } catch (error) {
@@ -1326,10 +1334,14 @@ router.get('/abandoned-products', protect, async (req, res) => {
     // Aggregate product abandon counts
     const productMap = {};
     for (const stat of stats) {
-      if (stat.abandonedProducts) {
-        for (const [product, count] of stat.abandonedProducts.entries()) {
-          productMap[product] = (productMap[product] || 0) + count;
-        }
+      const abandoned = stat.abandonedProducts;
+      if (!abandoned) continue;
+      const entries =
+        abandoned instanceof Map
+          ? abandoned.entries()
+          : Object.entries(typeof abandoned === 'object' ? abandoned : {});
+      for (const [product, count] of entries) {
+        productMap[product] = (productMap[product] || 0) + Number(count) || 0;
       }
     }
 

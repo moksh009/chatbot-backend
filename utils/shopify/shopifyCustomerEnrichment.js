@@ -78,6 +78,7 @@ async function enrichShopifyCustomers(clientId, shopifyCustomers = []) {
       leadName: lead?.name || null,
       leadScore: lead?.leadScore ?? null,
       scoreStageName: resolveScoreStageName(lead?.leadScore ?? 0, scoreTiers),
+      tags: Array.isArray(lead?.tags) ? lead.tags : [],
       warrantyActive: warrantyEnabled ? activeWarranty : null,
       warrantyTotal: warrantyEnabled ? warrantyRecords.length : null,
       warrantyEnabled,

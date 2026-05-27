@@ -3,6 +3,9 @@
 const { verifyTenantScope } = require('./verifyTenantScope');
 const { isPublicApiPath } = require('./publicRoute');
 
+/** Client slug routes — must not treat slug as Campaign _id (e.g. /campaigns/acme/overview). */
+const CAMPAIGN_CLIENT_SCOPED = /^\/api\/campaigns\/[^/]+\/(overview|ab-test)(\/|$)/i;
+
 /** Path segment → resource lookup key for :id / :leadId / etc. */
 const PATH_RESOURCE_RULES = [
   { pattern: /^\/api\/campaigns\/[^/]+/i, lookupBy: 'campaign', param: 'id' },
@@ -19,6 +22,9 @@ const PATH_RESOURCE_RULES = [
 
 function inferScopeOpts(req) {
   const path = req.originalUrl || req.baseUrl + req.path || req.path || '';
+  if (CAMPAIGN_CLIENT_SCOPED.test(path.split('?')[0])) {
+    return {};
+  }
   for (const rule of PATH_RESOURCE_RULES) {
     if (rule.pattern.test(path)) {
       return { lookupBy: rule.lookupBy, param: rule.param };

@@ -6,6 +6,7 @@ const Appointment = require('../../models/Appointment');
 const Order = require('../../models/Order');
 const { getTimelineStats } = require('./analyticsHelper');
 const { getCachedClient } = require('./clientCache');
+const { buildCommercePeriodKpis } = require('./commercePeriodKpis');
 
 /**
  * Bounded insights for analytics page (Phase 8 — no full-collection scans).
@@ -118,23 +119,70 @@ async function getAnalyticsOverviewBundle(clientId, query = {}, options = {}) {
     if (endDate) convoQuery.lastMessageAt.$lte = endDate;
   }
 
-  const [stats, activeChats, audience, insights] = await Promise.all([
+  const audienceTotalQuery = { clientId };
+  const audiencePeriodQuery = { clientId };
+  if (startDate) {
+    audiencePeriodQuery.$or = [
+      { lastSeen: { $gte: startDate, ...(endDate ? { $lte: endDate } : {}) } },
+      { createdAt: { $gte: startDate, ...(endDate ? { $lte: endDate } : {}) } },
+    ];
+  }
+
+  const [stats, activeChats, audienceTotal, audienceInPeriod, insights] = await Promise.all([
     statsPromise,
     timer
       ? timer.time('Conversation.countDocuments', () => Conversation.countDocuments(convoQuery))
       : Conversation.countDocuments(convoQuery),
     timer
-      ? timer.time('AdLead.countDocuments', () => AdLead.countDocuments({ clientId }))
-      : AdLead.countDocuments({ clientId }),
+      ? timer.time('AdLead.countDocuments', () => AdLead.countDocuments(audienceTotalQuery))
+      : AdLead.countDocuments(audienceTotalQuery),
+    timer
+      ? timer.time('AdLead.period', () => AdLead.countDocuments(audiencePeriodQuery))
+      : AdLead.countDocuments(audiencePeriodQuery),
     timer
       ? timer.time('getBoundedInsights', () => getBoundedInsights(clientId, { startDate, endDate }))
       : getBoundedInsights(clientId, { startDate, endDate }),
   ]);
 
+  let periodKpis = null;
+  try {
+    periodKpis = await buildCommercePeriodKpis({
+      clientId,
+      days: query.days,
+      timeline: stats || [],
+      startDate,
+    });
+  } catch (_) {
+    periodKpis = null;
+  }
+
+  const reconciledInsights = insights
+    ? {
+        ...insights,
+        periodOrderCount: Math.max(
+          insights.periodOrderCount || 0,
+          periodKpis?.orders || 0
+        ),
+        periodRevenue: Math.max(
+          insights.periodRevenue || 0,
+          periodKpis?.orderRevenue || 0
+        ),
+        avgOrderValue:
+          periodKpis?.avgOrderValue > 0
+            ? periodKpis.avgOrderValue
+            : insights.avgOrderValue,
+      }
+    : insights;
+
   return {
     stats,
-    summary: { activeChats, audience },
-    insights,
+    periodKpis,
+    summary: {
+      activeChats,
+      audience: audienceInPeriod,
+      audienceTotal,
+    },
+    insights: reconciledInsights,
   };
 }
 

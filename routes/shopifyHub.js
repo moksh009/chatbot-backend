@@ -402,6 +402,7 @@ router.get('/:clientId/customers', protect, verifyClientAccess, async (req, res)
       success: true,
       customers: result.customers,
       total: result.total,
+      summary: result.summary,
       hasMore: result.hasMore,
       nextCursor: result.nextCursor,
       syncedAt: result.syncedAt,

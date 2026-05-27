@@ -395,6 +395,17 @@ const ClientSchema = new mongoose.Schema({
       buttonText: { type: String, default: 'Subscribe' },
       successMessage: { type: String, default: 'You are subscribed!' },
     },
+    thankYouPage: {
+      enabled: { type: Boolean, default: false },
+      headline: { type: String, default: 'Thank you for your order, {customer_name}!' },
+      body: {
+        type: String,
+        default: 'Get your shipping updates and exclusive offers on WhatsApp.',
+      },
+      buttonText: { type: String, default: 'Join on WhatsApp' },
+      delaySeconds: { type: Number, default: 0 },
+      timingMode: { type: String, enum: ['immediate', 'delay'], default: 'immediate' },
+    },
     consentText: { type: String, default: 'I agree to receive WhatsApp messages from this brand.' },
     doubleOptInEnabled: { type: Boolean, default: false },
     welcomeMessage: { type: String, default: 'Welcome to our WhatsApp updates!' },

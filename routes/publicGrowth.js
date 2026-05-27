@@ -7,6 +7,7 @@ const Client = require('../models/Client');
 const AdLead = require('../models/AdLead');
 const GrowthQrScan = require('../models/GrowthQrScan');
 const { normalizePhoneDigits } = require('../utils/commerce/marketingConsent');
+const { normalizeIndianPhone } = require('../utils/core/normalizeIndianPhone');
 
 const router = express.Router();
 
@@ -127,7 +128,15 @@ router.get('/config', async (req, res) => {
 router.post('/subscribe', subscribeLimiter, async (req, res) => {
   try {
     const embedKey = String(req.body.embedKey || req.body.embed_key || '').trim();
-    const phoneNorm = normalizePhoneDigits(req.body.phone);
+    const phoneE164 = normalizeIndianPhone(req.body.phone);
+    const legacyDigits = normalizePhoneDigits(req.body.phone);
+    const phoneStored =
+      phoneE164 ||
+      (legacyDigits && String(legacyDigits).length >= 10
+        ? String(legacyDigits).startsWith('+')
+          ? String(legacyDigits)
+          : `+${legacyDigits}`
+        : null);
     const consent = req.body.consent === true || req.body.consent === 'true' || req.body.consent === '1';
     const widgetTypeRaw = String(req.body.widgetType || req.body.widget_type || 'embedded_form').trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
     const widgetType = WIDGET_TYPES.has(widgetTypeRaw) ? widgetTypeRaw : 'embedded_form';
@@ -142,7 +151,7 @@ router.post('/subscribe', subscribeLimiter, async (req, res) => {
     if (!embedKey || embedKey.length < 16) {
       return res.status(400).json({ success: false, message: 'Invalid embed key' });
     }
-    if (!phoneNorm) {
+    if (!phoneStored) {
       return res.status(400).json({ success: false, message: 'Valid phone number required' });
     }
     if (!consent) {
@@ -194,16 +203,17 @@ router.post('/subscribe', subscribeLimiter, async (req, res) => {
     const { stitchVisitorIdentity } = require('../utils/commerce/visitorIdentityService');
     await stitchVisitorIdentity(client.clientId, client, {
       visitorId,
-      phone: phoneNorm,
+      phone: phoneStored,
       email: null,
     }).catch(() => {});
 
+    const phoneLookup = [phoneStored, phoneStored.replace(/^\+/, '')];
     const lead = await AdLead.findOneAndUpdate(
-      { clientId: client.clientId, phoneNumber: phoneNorm },
+      { clientId: client.clientId, phoneNumber: { $in: phoneLookup } },
       {
-        $set: setDoc,
+        $set: { ...setDoc, phoneNumber: phoneStored },
         $setOnInsert: {
-          phoneNumber: phoneNorm,
+          phoneNumber: phoneStored,
           clientId: client.clientId,
         },
         $push: {

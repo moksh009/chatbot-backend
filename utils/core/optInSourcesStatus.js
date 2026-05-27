@@ -31,7 +31,9 @@ async function buildOptInSourcesStatus(clientId) {
 
   const thirdPartyMatch = { $regex: /^(gokwik|razorpay|shiprocket|third_party)/i };
 
-  const [tracking, overview, checkoutMonth, checkoutTotal, thirdPartyMonth, thirdPartyTotal, keywordMonth, keywordTotal, importMonth, importTotal, qrMonth, qrTotal, shopifyStats, recentCheckout, recentThirdParty, recentWidget, recentKeyword, importSessions, qrBySource] =
+  const thankYouSourceMatch = { $regex: /thank_you/i };
+
+  const [tracking, overview, checkoutMonth, checkoutTotal, thirdPartyMonth, thirdPartyTotal, keywordMonth, keywordTotal, importMonth, importTotal, qrMonth, qrTotal, shopifyStats, recentCheckout, recentThirdParty, recentWidget, recentKeyword, importSessions, qrBySource, thankYouTotal, popupTotal] =
     await Promise.all([
       buildTrackingHealth(clientId, 30).catch(() => null),
       buildGrowthEmbedOverview(clientId, '30d').catch(() => null),
@@ -92,6 +94,15 @@ async function buildOptInSourcesStatus(clientId) {
         { $group: { _id: '$source', count: { $sum: 1 } } },
         { $sort: { count: -1 } },
       ]),
+      countOptIns(clientId, thankYouSourceMatch),
+      AdLead.countDocuments({
+        clientId,
+        optStatus: 'opted_in',
+        $and: [
+          { optInSource: { $regex: /^website_/i } },
+          { optInSource: { $not: { $regex: /thank_you/i } } },
+        ],
+      }),
     ]);
 
   const shopAgg = shopifyStats[0] || { total: 0, optedIn: 0, shopifyTagged: 0 };
@@ -184,6 +195,8 @@ async function buildOptInSourcesStatus(clientId) {
       conversionHint: '30–50% of orders with phone when checkbox shown',
       meta: {
         webPixelActive,
+        checkoutConsentDefaultChecked:
+          client.growthWidgetConfig?.checkoutConsentDefaultChecked !== false,
         lastConsentAt: recentCheckout[0]?.optInDate || null,
         recent: recentCheckout,
       },
@@ -214,6 +227,8 @@ async function buildOptInSourcesStatus(clientId) {
         activeWidgetCount: activeWidgets.length,
         activeWidgets,
         recent: recentWidget,
+        thankYouCaptured: thankYouTotal,
+        popupCaptured: popupTotal,
       },
     },
     whatsapp_keyword: {

@@ -2,6 +2,7 @@
 
 const Client = require('../../models/Client');
 const AdLead = require('../../models/AdLead');
+const { normalizeIndianPhone } = require('../core/normalizeIndianPhone');
 const { normalizePhoneWithCountry } = require('../core/helpers');
 const { stitchVisitorIdentity } = require('./visitorIdentityService');
 const log = require('../core/logger')('CheckoutMarketingConsent');
@@ -25,15 +26,25 @@ async function recordCheckoutMarketingOptIn({
   const client = await Client.findOne({ clientId }).select('clientId shopDomain').lean();
   if (!client) return { success: false, reason: 'client_not_found' };
 
-  const phone = phoneRaw ? normalizePhoneWithCountry(phoneRaw, client) : null;
+  const phoneStored = phoneRaw
+    ? normalizeIndianPhone(phoneRaw) ||
+      (() => {
+        const legacy = normalizePhoneWithCountry(phoneRaw, client);
+        if (!legacy) return null;
+        return String(legacy).startsWith('+') ? legacy : `+${legacy}`;
+      })()
+    : null;
+  const phoneLookup = phoneStored
+    ? [phoneStored, phoneStored.replace(/^\+/, '')]
+    : [];
   const normalizedEmail = email ? String(email).trim().toLowerCase() : null;
-  if (!phone && !normalizedEmail) {
+  if (!phoneStored && !normalizedEmail) {
     return { success: false, reason: 'missing_contact' };
   }
 
   const now = new Date();
-  const query = phone
-    ? { clientId, phoneNumber: phone }
+  const query = phoneStored
+    ? { clientId, phoneNumber: { $in: phoneLookup } }
     : { clientId, email: normalizedEmail };
 
   const lead = await AdLead.findOneAndUpdate(
@@ -43,7 +54,8 @@ async function recordCheckoutMarketingOptIn({
         optStatus: 'opted_in',
         optInDate: now,
         optInSource: source,
-        whatsappMarketingEligible: !!phone,
+        whatsappMarketingEligible: !!phoneStored,
+        ...(phoneStored ? { phoneNumber: phoneStored } : {}),
         ...(normalizedEmail ? { email: normalizedEmail } : {}),
         ...(checkoutToken ? { checkoutToken } : {}),
       },
@@ -65,16 +77,16 @@ async function recordCheckoutMarketingOptIn({
       },
       $setOnInsert: {
         clientId,
-        phoneNumber: phone || undefined,
+        phoneNumber: phoneStored || undefined,
         name: 'Checkout Customer',
         source: 'shopify_checkout',
         createdAt: now,
       },
     },
-    { upsert: !!phone, new: true }
+    { upsert: !!phoneStored, new: true }
   );
 
-  if (!lead && !phone) {
+  if (!lead && !phoneStored) {
     return { success: false, reason: 'email_only_no_lead' };
   }
 
@@ -84,7 +96,7 @@ async function recordCheckoutMarketingOptIn({
         visitorId,
         shopifyClientId,
         checkoutToken,
-        phone,
+        phone: phoneStored,
         email: normalizedEmail,
         leadId: lead?._id,
       });
@@ -93,8 +105,8 @@ async function recordCheckoutMarketingOptIn({
     }
   }
 
-  log.info(`[CheckoutOptIn] ${clientId} phone=${phone || '—'} email=${normalizedEmail || '—'}`);
-  return { success: true, leadId: lead?._id, phone, email: normalizedEmail };
+  log.info(`[CheckoutOptIn] ${clientId} phone=${phoneStored || '—'} email=${normalizedEmail || '—'}`);
+  return { success: true, leadId: lead?._id, phone: phoneStored, email: normalizedEmail };
 }
 
 module.exports = { recordCheckoutMarketingOptIn };

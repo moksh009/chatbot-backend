@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const Client = require('../../models/Client');
 const AdLead = require('../../models/AdLead');
+const { normalizeIndianPhone } = require('../core/normalizeIndianPhone');
 const { normalizePhoneWithCountry } = require('../core/helpers');
 const { invalidateStackContextCache } = require('./stackContext');
 const log = require('../core/logger')('ThirdPartyCheckout');
@@ -49,8 +50,14 @@ async function upsertCheckoutLead({ clientId, provider, phone, email, name, stra
   const client = await Client.findOne({ clientId }).lean();
   if (!client) return { success: false, reason: 'client_not_found' };
 
-  const normalizedPhone = phone ? normalizePhoneWithCountry(phone, client) : null;
+  const normalizedPhone = phone
+    ? normalizeIndianPhone(phone) || normalizePhoneWithCountry(phone, client)
+    : null;
   if (!normalizedPhone) return { success: false, reason: 'missing_phone' };
+  const phoneStored = String(normalizedPhone).startsWith('+')
+    ? normalizedPhone
+    : `+${normalizedPhone}`;
+  const phoneVariants = [phoneStored, phoneStored.replace(/^\+/, '')];
 
   const now = new Date();
   const sourceBase = `${provider}_checkout`;
@@ -60,10 +67,11 @@ async function upsertCheckoutLead({ clientId, provider, phone, email, name, stra
   const optInSource = explicit ? `${provider}_post_purchase_pending` : `${provider}_post_purchase`;
 
   const lead = await AdLead.findOneAndUpdate(
-    { clientId, phoneNumber: normalizedPhone },
+    { clientId, phoneNumber: { $in: phoneVariants } },
     {
       $set: {
         optStatus,
+        phoneNumber: phoneStored,
         ...(explicit ? {} : { optInDate: now, whatsappMarketingEligible: true }),
         optInSource,
         name: name || 'Checkout Customer',
@@ -85,18 +93,18 @@ async function upsertCheckoutLead({ clientId, provider, phone, email, name, stra
           $slice: 40,
         },
       },
-      $setOnInsert: { clientId, phoneNumber: normalizedPhone, source: sourceBase, createdAt: now },
+      $setOnInsert: { clientId, phoneNumber: phoneStored, source: sourceBase, createdAt: now },
     },
     { upsert: true, new: true }
   );
 
-  if (explicit && normalizedPhone) {
+  if (explicit && phoneStored) {
     try {
       const TaskQueueService = require('../messaging/taskQueueService');
       await TaskQueueService.addTask('THIRD_PARTY_OPTIN_FOLLOWUP', {
         clientId,
         leadId: lead._id,
-        phone: normalizedPhone,
+        phone: phoneStored,
         provider,
       });
     } catch (e) {

@@ -34,6 +34,15 @@ function lastConsentEntry(lead) {
   return optedIn || hist[hist.length - 1] || null;
 }
 
+/** Merchant-facing status — never expose raw `unknown`. */
+function publicCaptureStatus(optStatus) {
+  const s = String(optStatus || '').toLowerCase();
+  if (s === 'opted_in') return 'opted_in';
+  if (s === 'opted_out') return 'opted_out';
+  if (s === 'pending' || s === 'unknown') return 'pending_confirmation';
+  return 'pending_confirmation';
+}
+
 function buildMatch(clientId, query = {}) {
   const match = { clientId };
   const period = String(query.period || '30d').toLowerCase();
@@ -45,7 +54,11 @@ function buildMatch(clientId, query = {}) {
   match.$or = [{ optInDate: { $gte: since } }, { updatedAt: { $gte: since } }];
 
   const status = String(query.status || '').trim();
-  if (status) match.optStatus = status;
+  if (status === 'pending_confirmation') {
+    match.optStatus = { $in: ['pending', 'unknown'] };
+  } else if (status) {
+    match.optStatus = status;
+  }
 
   const sources = String(query.sources || '')
     .split(',')
@@ -153,7 +166,7 @@ async function buildCaptureActivity(clientId, query = {}) {
         source: canonicalSource(lead.optInSource),
         sourceRaw: lead.optInSource || 'unknown',
         channel: 'whatsapp',
-        status: lead.optStatus || 'unknown',
+        status: publicCaptureStatus(lead.optStatus),
         consentText: consent?.note || null,
         ipAddress: consent?.ipAddress || null,
         userAgent: consent?.userAgent || null,
@@ -178,7 +191,7 @@ async function buildCaptureExport(clientId, query = {}) {
       email: lead.email || '',
       source: lead.optInSource || '',
       canonicalSource: canonicalSource(lead.optInSource),
-      status: lead.optStatus || '',
+      status: publicCaptureStatus(lead.optStatus),
       timestamp: lead.optInDate || '',
       consentText: consent?.note || '',
       ip: consent?.ipAddress || '',
@@ -192,4 +205,5 @@ module.exports = {
   buildCaptureExport,
   canonicalSource,
   maskPhone,
+  publicCaptureStatus,
 };

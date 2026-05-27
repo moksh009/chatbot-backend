@@ -1092,7 +1092,10 @@ const WhatsApp = {
 
     const url = `https://graph.facebook.com/v21.0/${wabaId}`;
     try {
-      const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await axios.get(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 5000,
+      });
       return {
         status: res.data.account_review_status || 'APPROVED',
         id: res.data.id,
@@ -1111,7 +1114,10 @@ const WhatsApp = {
     const { token, phoneNumberId } = this.getCredentials(client);
     const url = `https://graph.facebook.com/v21.0/${phoneNumberId}`;
     try {
-      const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await axios.get(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 5000,
+      });
       return {
         qualityRating: res.data.quality_rating || 'GREEN',
         tier: res.data.messaging_limit_tier || 'Tier 1 (1k/day)',
