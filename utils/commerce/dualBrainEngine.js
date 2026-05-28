@@ -4305,8 +4305,8 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         };
         const ctaHdr = buildInteractiveHeaderFromNodeData(data);
         if (ctaHdr) interactive.header = ctaHdr;
-        await WhatsApp.sendInteractive(client, phone, interactive, String(body).substring(0, 1024));
-        return true;
+        const sent = await WhatsApp.sendInteractive(client, phone, interactive, String(body).substring(0, 1024));
+        return sent !== false;
       }
 
       const buttonsList = Array.isArray(data.buttonsList) && data.buttonsList.length > 0
@@ -4315,8 +4315,8 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
 
       // Fix: Don't fall back to text if we have sections (List mode)
       if (!buttonsList.length && (!data.sections || data.sections.length === 0)) {
-        await WhatsApp.sendText(client, phone, String(body).substring(0, 4096));
-        return true;
+        const sent = await WhatsApp.sendText(client, phone, String(body).substring(0, 4096));
+        return sent !== false;
       }
 
       if (data.interactiveType === 'list' || (data.sections && data.sections.length > 0)) {
@@ -4408,8 +4408,8 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
         };
         const listHdr = buildInteractiveHeaderFromNodeData(data);
         if (listHdr) interactive.header = listHdr;
-        await WhatsApp.sendInteractive(client, phone, interactive, String(body).substring(0, 1024));
-        return true;
+        const sent = await WhatsApp.sendInteractive(client, phone, interactive, String(body).substring(0, 1024));
+        return sent !== false;
       }
 
       let interactive = {
@@ -4426,8 +4426,8 @@ async function sendNodeContent(node, client, phone, lead = null, convo = null, c
       };
       const btnHdr = buildInteractiveHeaderFromNodeData(data);
       if (btnHdr) interactive.header = btnHdr;
-      await WhatsApp.sendInteractive(client, phone, interactive, String(body).substring(0, 1024));
-      return true;
+      const sent = await WhatsApp.sendInteractive(client, phone, interactive, String(body).substring(0, 1024));
+      return sent !== false;
     }
 
     case 'template':
@@ -5305,11 +5305,11 @@ REPLY:
 }
 
 async function sendWhatsAppText(client, phone, body, channel = 'whatsapp', opts = {}) {
-  if (isEngineRunAborted(client.clientId, phone, getEngineRunId(client.clientId, phone))) return;
+  if (isEngineRunAborted(client.clientId, phone, getEngineRunId(client.clientId, phone))) return false;
 
   const token = getEffectiveWhatsAppAccessToken(client);
   const phoneNumberId = getEffectiveWhatsAppPhoneNumberId(client);
-  if (!token || !phoneNumberId) return;
+  if (!token || !phoneNumberId) return false;
   try {
     let detectedLang = opts.detectedLanguage || 'en';
     if (!opts.skipConvoLookup) {
@@ -5342,10 +5342,13 @@ async function sendWhatsAppText(client, phone, body, channel = 'whatsapp', opts 
           trainingContext: opts.trainingContext,
         });
         markOutboundSent(client.clientId, phone);
+      } else if (env.blocked || env.reason) {
+        log.warn(`[sendText] Blocked/unsent for ${client.clientId}:${phone} (${env.reason || 'blocked'})`);
       }
-      return;
+      return !!env.sent;
     }
   } catch (err) { log.error('sendText error:', { error: err.response?.data?.error?.message || err.message }); }
+  return false;
 }
 
 async function sendWhatsAppImage(client, phone, imageUrl, caption) {
@@ -5447,6 +5450,8 @@ async function sendWhatsAppInteractive(client, phone, interactive, bodyText = ''
           env.messageId
         );
         markOutboundSent(client.clientId, phone);
+      } else if (env.blocked || env.reason) {
+        log.warn(`[sendInteractive] Blocked/unsent for ${client.clientId}:${phone} (${env.reason || 'blocked'})`);
       }
       return env.sent || env.duplicate;
     }
