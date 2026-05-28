@@ -1,6 +1,7 @@
 'use strict';
 
 const { decrypt } = require('./encryption');
+const SHOPIFY_CONNECTION_BYPASS_CLIENTS = new Set(['delitech_smarthomes']);
 
 /**
  * Derive integration connection flags from a Client document (or lean object).
@@ -79,8 +80,14 @@ function buildConnectionStatusPayload(client) {
     client.metaAdAccountId
   );
 
+  const bypassShopifyConnected = SHOPIFY_CONNECTION_BYPASS_CLIENTS.has(
+    String(client.clientId || '').trim()
+  );
+
   return {
-    shopify_connected: !!(shopifyCredentialPresent && isValidShopDomain(shopDomain)),
+    shopify_connected: bypassShopifyConnected
+      ? true
+      : !!(shopifyCredentialPresent && isValidShopDomain(shopDomain)),
     whatsapp_connected: !!(waTok.length > 5 && phoneId && waba),
     meta_connected: !!metaAdsOk,
     instagram_connected: !!(decryptToken(instagramTok).length > 10 && instagramPage),
