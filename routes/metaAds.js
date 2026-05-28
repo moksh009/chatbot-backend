@@ -5,11 +5,41 @@ const router          = express.Router();
 const MetaAd          = require("../models/MetaAd");
 const AdLead          = require("../models/AdLead");
 const Client          = require("../models/Client");
+const MetaTemplate    = require("../models/MetaTemplate");
 const { verifyToken } = require("../middleware/auth");
 const { syncMetaAds, getAdAccounts } = require('../utils/meta/metaAdsAPI');
 const { platformGenerateJSON } = require('../utils/core/gemini'); // ✅ Phase R4: Use platform key wrapper
 const CLIENT_META_ADS_SELECT =
-  '_id clientId name plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role premiumAccessToken premiumPhoneId whatsapp';
+  '_id clientId name plan subscriptionPlan whatsappToken phoneNumberId wabaId metaAdAccountId metaAdsToken role premiumAccessToken premiumPhoneId whatsapp syncedMetaTemplates';
+
+function normalizeTemplateLanguage(code) {
+  const raw = String(code || '').trim();
+  if (!raw) return '';
+  if (raw.includes('_')) return raw;
+  const lower = raw.toLowerCase();
+  if (lower === 'en') return 'en_US';
+  if (lower === 'pt') return 'pt_BR';
+  if (lower === 'zh') return 'zh_CN';
+  return lower;
+}
+
+async function resolveTemplateLanguage({ client, templateName, requestedLanguage }) {
+  const requested = normalizeTemplateLanguage(requestedLanguage || 'en');
+
+  const synced = Array.isArray(client?.syncedMetaTemplates)
+    ? client.syncedMetaTemplates
+    : [];
+  const syncedMatch = synced.find((tpl) => String(tpl?.name || '').toLowerCase() === String(templateName || '').toLowerCase());
+  const syncedLocale =
+    normalizeTemplateLanguage(syncedMatch?.language || syncedMatch?.languageCode || syncedMatch?.locale || '');
+
+  const draft = await MetaTemplate.findOne({ clientId: client.clientId, name: templateName })
+    .select('language')
+    .lean();
+  const draftLocale = normalizeTemplateLanguage(draft?.language || '');
+
+  return syncedLocale || draftLocale || requested || 'en_US';
+}
 
 function humanizeMetaError(errLike) {
   if (!errLike) return '';
@@ -270,25 +300,48 @@ router.post("/test-template", verifyToken, async (req, res) => {
       return res.status(400).json({ success: false, message: "WhatsApp credentials not configured" });
     }
 
-    // Normalise language code (en → en_US)
-    const langCode = (language || 'en').includes('_') ? (language || 'en') : `${(language || 'en')}_US`;
-
-    const result = await sendWhatsAppTemplate({
-      phoneNumberId,
-      to: phone,
+    const primaryLanguage = await resolveTemplateLanguage({
+      client,
       templateName,
-      languageCode: langCode,
-      components: [],
-      token,
-      clientId,
+      requestedLanguage: language,
     });
 
+    const attemptedLanguages = [];
+    const languageCandidates = [
+      primaryLanguage,
+      normalizeTemplateLanguage(language || ''),
+      'en_US',
+      'en',
+    ].filter(Boolean).filter((lang, idx, arr) => arr.indexOf(lang) === idx);
+
+    let result = null;
+    for (const langCode of languageCandidates) {
+      attemptedLanguages.push(langCode);
+      result = await sendWhatsAppTemplate({
+        phoneNumberId,
+        to: phone,
+        templateName,
+        languageCode: langCode,
+        components: [],
+        token,
+        clientId,
+      });
+      if (result?.success) break;
+      const errMessage = String(result?.error?.error?.message || result?.error?.message || '');
+      if (!errMessage.includes('Template name does not exist in the translation')) break;
+    }
+
     if (result.success) {
-      res.json({ success: true, message: "Test template dispatched" });
+      res.json({
+        success: true,
+        message: "Test template dispatched",
+        languageUsed: attemptedLanguages[attemptedLanguages.length - 1] || primaryLanguage,
+      });
     } else {
       res.status(400).json({
         success: false,
         message: humanizeMetaError(result.error) || "Meta API Error",
+        attemptedLanguages,
       });
     }
   } catch (err) {

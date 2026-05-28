@@ -293,6 +293,23 @@ function buildUnifiedFromLegacy(clientConfig = {}) {
   return deduped;
 }
 
+function syncSystemOrderRulesFromNicheMap(automations = [], nicheData = {}) {
+  const map = nicheData?.orderStatusTemplates || {};
+  if (!map || typeof map !== 'object') return automations;
+
+  return (automations || []).map((rule) => {
+    if (rule?.meta?.category !== 'order_notification') return rule;
+    const status = normalizeEvent(rule.event);
+    const mappedTemplate = String(map[status] || '').trim();
+    if (!mappedTemplate) return rule;
+    return {
+      ...rule,
+      templateName: mappedTemplate,
+      isActive: true,
+    };
+  });
+}
+
 async function ensureMigration(clientConfig = {}, { persist = true } = {}) {
   if (Array.isArray(clientConfig.commerceAutomations) && clientConfig.commerceAutomations.length > 0) {
     return clientConfig.commerceAutomations;
@@ -329,10 +346,21 @@ async function persistAutomations(clientId, automations) {
 
 async function ensureSystemAutomationsPersisted(clientConfig = {}) {
   const base = await ensureMigration(clientConfig, { persist: false });
-  const merged = mergeSystemAutomations(base);
+  const merged = syncSystemOrderRulesFromNicheMap(
+    mergeSystemAutomations(base),
+    clientConfig?.nicheData || {}
+  );
   const changed =
     merged.length !== base.length ||
-    merged.some((r, i) => r.id !== base[i]?.id || r.meta?.system !== base[i]?.meta?.system);
+    merged.some((r, i) => {
+      const b = base[i];
+      return (
+        r.id !== b?.id ||
+        r.meta?.system !== b?.meta?.system ||
+        String(r.templateName || '') !== String(b?.templateName || '') ||
+        !!r.isActive !== !!b?.isActive
+      );
+    });
   if (clientConfig.clientId && changed) {
     await persistAutomations(clientConfig.clientId, merged);
   }
@@ -472,6 +500,16 @@ async function upsertAutomation(clientId, automation = {}) {
     Object.assign(clientUpdate, Object.fromEntries(
       Object.entries(cartPatch.nicheData).map(([k, v]) => [`nicheData.${k}`, v])
     ));
+  }
+  if ((existing?.meta?.category || normalized?.meta?.category) === 'order_notification') {
+    const status = normalizeEvent(existing?.event || normalized?.event);
+    if (status && ORDER_STATUS_EVENTS.includes(status)) {
+      if (normalized.templateName) {
+        clientUpdate[`nicheData.orderStatusTemplates.${status}`] = normalized.templateName;
+      } else {
+        clientUpdate[`nicheData.orderStatusTemplates.${status}`] = '';
+      }
+    }
   }
 
   await Client.findOneAndUpdate({ clientId }, { $set: clientUpdate });
