@@ -20,6 +20,12 @@ const {
   getCheckoutOptInInstallStatus,
 } = require('../utils/shopify/checkoutConsentExtension');
 
+const PIXEL_STATUS_BYPASS_CLIENTS = new Set(['delitech_smarthomes']);
+
+function shouldBypassShopifyPixelChecks(clientId) {
+  return PIXEL_STATUS_BYPASS_CLIENTS.has(String(clientId || '').trim());
+}
+
 function assertPixelClientAccess(req, res, clientId) {
   if (req.user.clientId !== clientId && req.user.role !== 'SUPER_ADMIN') {
     res.status(403).json({ error: 'Unauthorized' });
@@ -324,6 +330,17 @@ router.post('/pixel/:clientId/inject', protect, async (req, res) => {
 router.get('/pixel/:clientId/install-web-pixel/status', protect, async (req, res) => {
   const { clientId } = req.params;
   if (!assertPixelClientAccess(req, res, clientId)) return;
+  if (shouldBypassShopifyPixelChecks(clientId)) {
+    return res.json({
+      success: true,
+      installed: true,
+      hasPixelScopes: true,
+      reason: 'bypass_for_review',
+      message:
+        'Shopify pixel scope checks bypassed temporarily for this workspace while app review is pending.',
+      webPixelId: null,
+    });
+  }
   try {
     const registration = await getWebPixelInstallStatus(clientId);
     res.json({ success: true, ...registration });
@@ -335,6 +352,33 @@ router.get('/pixel/:clientId/install-web-pixel/status', protect, async (req, res
 router.post('/pixel/:clientId/install-web-pixel', protect, async (req, res) => {
   const { clientId } = req.params;
   if (!assertPixelClientAccess(req, res, clientId)) return;
+  if (shouldBypassShopifyPixelChecks(clientId)) {
+    const backendUrl = resolveBackendUrl(req);
+    await markThemePixelInstalled(clientId);
+    await Client.updateOne(
+      { clientId },
+      {
+        $set: {
+          shopifyWebPixelInstalledAt: new Date(),
+        },
+      }
+    );
+    return res.json({
+      success: true,
+      action: 'bypass_connected',
+      themeInjected: true,
+      webPixelRegistered: true,
+      webPixelId: null,
+      consentConfigSynced: false,
+      checkoutStatus: null,
+      scriptTag: `<script src="${backendUrl}/api/shopify-pixel/pixel/${clientId}/script.js" async></script>`,
+      backendUrl,
+      message:
+        'Shopify pixel install is bypassed for this workspace while Shopify app review is pending. Theme tracking remains enabled for testing.',
+      pollHint: 'Bypass mode active for this client only.',
+      manualSnippet: null,
+    });
+  }
   try {
     const backendUrl = resolveBackendUrl(req);
 
@@ -475,10 +519,21 @@ async function buildPixelStatusPayload(clientId, req) {
   );
 
   let webPixelApi = null;
-  try {
-    webPixelApi = await getWebPixelInstallStatus(clientId);
-  } catch {
-    webPixelApi = null;
+  const bypassShopifyChecks = shouldBypassShopifyPixelChecks(clientId);
+  if (bypassShopifyChecks) {
+    webPixelApi = {
+      installed: true,
+      hasPixelScopes: true,
+      reason: 'bypass_for_review',
+      message:
+        'Shopify pixel API check bypassed for this workspace while app review is pending.',
+    };
+  } else {
+    try {
+      webPixelApi = await getWebPixelInstallStatus(clientId);
+    } catch {
+      webPixelApi = null;
+    }
   }
 
   const webPixelOnShopify = webPixelApi?.installed === true;
@@ -492,14 +547,18 @@ async function buildPixelStatusPayload(clientId, req) {
 
   const backendUrl = resolveBackendUrl(req);
   let checkoutStatus = null;
-  try {
-    checkoutStatus = await getCheckoutOptInInstallStatus(clientId);
-  } catch {
-    checkoutStatus = null;
+  if (!bypassShopifyChecks) {
+    try {
+      checkoutStatus = await getCheckoutOptInInstallStatus(clientId);
+    } catch {
+      checkoutStatus = null;
+    }
   }
 
   const storefrontHint = webPixelScopeMissing
     ? 'Store token is missing pixel scopes (read_pixels/write_pixels/read_customer_events). Reconnect Shopify from Settings before tracking can work.'
+    : bypassShopifyChecks
+    ? 'Bypass mode active for this workspace: Shopify pixel scope checks are temporarily skipped while app review is pending.'
     : eventsLive
     ? 'Receiving storefront signals.'
     : isInstalled
