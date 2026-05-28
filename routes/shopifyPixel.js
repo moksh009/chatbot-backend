@@ -109,6 +109,7 @@ router.post('/pixel/:clientId', pixelStorefrontCors, async (req, res) => {
 router.options('/pixel/:clientId/event', pixelStorefrontCors);
 router.post('/pixel/:clientId/event', pixelStorefrontCors, async (req, res) => {
   try {
+    const { clientId } = req.params;
     const { eventName, url, sessionId, metadata, shopifyClientId, visitorId } = req.body;
     const result = await processPixelEvent(req.params.clientId, {
       eventName,
@@ -120,6 +121,11 @@ router.post('/pixel/:clientId/event', pixelStorefrontCors, async (req, res) => {
       userAgent: req.headers['user-agent'],
       ip: req.ip,
     });
+    if (clientId === 'delitech_smarthomes') {
+      console.log(
+        `[PixelEvent:${clientId}] event=${String(eventName || 'unknown')} status=${result?.status || 'ok'} leadId=${result?.leadId || 'none'}`
+      );
+    }
     if (result.error) return res.status(404).json(result);
     res.status(200).json(result);
   } catch (err) {
