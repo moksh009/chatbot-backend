@@ -42,9 +42,23 @@ const loadClientConfig = async (req, res, next) => {
     } else if (/\/orders(\?|$)/.test(url) && req.method === 'GET') {
       select = ORDERS_ROUTE_SELECT;
     }
-    const client = isWebhookPath
-      ? await getCachedClientForWhatsAppInbound(clientId)
-      : await getCachedClient(clientId, select);
+    let resolvedClientId = clientId;
+    let client = isWebhookPath
+      ? await getCachedClientForWhatsAppInbound(resolvedClientId)
+      : await getCachedClient(resolvedClientId, select);
+
+    if (!client) {
+      // Backward-compatible alias support (e.g., historical webhook paths).
+      const aliasDoc = await Client.findOne({ clientAliases: clientId })
+        .select('clientId')
+        .lean();
+      if (aliasDoc?.clientId) {
+        resolvedClientId = aliasDoc.clientId;
+        client = isWebhookPath
+          ? await getCachedClientForWhatsAppInbound(resolvedClientId)
+          : await getCachedClient(resolvedClientId, select);
+      }
+    }
 
     if (!client) {
       // Quietly acknowledge stale legacy webhook hits from deprecated client IDs.
