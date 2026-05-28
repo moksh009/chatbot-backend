@@ -731,6 +731,8 @@ const ClientSchema = new mongoose.Schema({
     brandProfile: {
       brandColor: { type: String, default: "" },
       logoUrl: { type: String, default: "" },
+      siteName: { type: String, default: "" },
+      tagline: { type: String, default: "" },
       brandTone: { type: String, default: "" },
       productCategory: { type: String, default: "" },
       keySellingPoints: { type: [String], default: [] },

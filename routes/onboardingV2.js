@@ -72,6 +72,88 @@ function withTimeout(promise, ms, fallback) {
   ]);
 }
 
+function resolveAbsoluteUrl(href, base) {
+  if (!href || typeof href !== "string") return "";
+  const trimmed = href.trim();
+  if (!trimmed || trimmed.startsWith("data:")) return "";
+  try {
+    return new URL(trimmed, base).toString();
+  } catch (_) {
+    return "";
+  }
+}
+
+function isHexColor(value) {
+  return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(value || "").trim());
+}
+
+function normalizeBrandColor(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  if (isHexColor(s)) return s;
+  const rgb = s.match(/^rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/i);
+  if (rgb) {
+    const hex = [rgb[1], rgb[2], rgb[3]]
+      .map((n) => Number(n).toString(16).padStart(2, "0"))
+      .join("");
+    return `#${hex}`;
+  }
+  return "";
+}
+
+function pickBestLogo($, origin) {
+  const iconLinks = [];
+  $("link[rel]").each((_, el) => {
+    const rel = String($(el).attr("rel") || "").toLowerCase();
+    if (
+      !rel.includes("icon") &&
+      !rel.includes("apple-touch-icon") &&
+      !rel.includes("mask-icon")
+    ) {
+      return;
+    }
+    const href = $(el).attr("href");
+    if (!href) return;
+    const sizes = String($(el).attr("sizes") || "");
+    const type = String($(el).attr("type") || "").toLowerCase();
+    let score = 10;
+    if (rel.includes("apple-touch-icon")) score += 40;
+    if (sizes.includes("192") || sizes.includes("180")) score += 25;
+    if (type.includes("png") || type.includes("svg")) score += 10;
+    if (/logo/i.test(href)) score += 15;
+    iconLinks.push({ href, score });
+  });
+  iconLinks.sort((a, b) => b.score - a.score);
+
+  const candidates = [
+    $('meta[property="og:image:secure_url"]').attr("content"),
+    $('meta[property="og:image"]').attr("content"),
+    $('meta[name="twitter:image"]').attr("content"),
+    ...iconLinks.map((x) => x.href),
+    "/favicon.ico",
+  ].filter(Boolean);
+
+  for (const raw of candidates) {
+    const abs = resolveAbsoluteUrl(raw, origin);
+    if (abs) return abs;
+  }
+
+  try {
+    const host = new URL(origin).hostname;
+    return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=128`;
+  } catch (_) {
+    return "";
+  }
+}
+
+function cleanSiteTitle(title) {
+  if (!title) return "";
+  return String(title)
+    .replace(/\s*[|\-–—]\s*.+$/, "")
+    .trim()
+    .slice(0, 80);
+}
+
 async function scrapeWebsite(url) {
   const origin = normalizeUrl(url);
   if (!origin) return null;
@@ -90,19 +172,26 @@ async function scrapeWebsite(url) {
 
     const $ = cheerio.load(resp.data || "");
     const title = $("title").first().text().trim() || "";
+    const ogTitle =
+      $('meta[property="og:title"]').attr("content") ||
+      $('meta[name="twitter:title"]').attr("content") ||
+      "";
+    const siteName =
+      $('meta[property="og:site_name"]').attr("content") ||
+      cleanSiteTitle(ogTitle || title) ||
+      "";
     const metaDesc =
       $('meta[name="description"]').attr("content") ||
       $('meta[property="og:description"]').attr("content") ||
       "";
-    const ogImage = $('meta[property="og:image"]').attr("content") || "";
-    const favicon =
-      $('link[rel="icon"]').attr("href") ||
-      $('link[rel="shortcut icon"]').attr("href") ||
-      $('link[rel="apple-touch-icon"]').attr("href") ||
+    const themeColor =
+      normalizeBrandColor($('meta[name="theme-color"]').attr("content")) ||
+      normalizeBrandColor(
+        $('meta[name="msapplication-TileColor"]').attr("content")
+      ) ||
       "";
-    // Dominant color heuristic: look for theme-color meta
-    const themeColor = $('meta[name="theme-color"]').attr("content") || "";
     const htmlLang = $("html").attr("lang") || "";
+    const logoUrl = pickBestLogo($, origin);
 
     // Body text — strip scripts/styles, take first ~800 chars
     $("script, style, noscript").remove();
@@ -112,18 +201,9 @@ async function scrapeWebsite(url) {
       .trim()
       .slice(0, 800);
 
-    // Resolve relative logo URL
-    let logoUrl = ogImage || favicon;
-    if (logoUrl && !/^https?:\/\//i.test(logoUrl)) {
-      try {
-        logoUrl = new URL(logoUrl, origin).toString();
-      } catch (_) {
-        logoUrl = "";
-      }
-    }
-
     return {
       title,
+      siteName,
       metaDesc,
       logoUrl,
       themeColor,
@@ -186,8 +266,10 @@ router.post("/analyze", protect, async (req, res) => {
   const defaultsPayload = {
     success: true,
     scraped: false,
-    brandColor: "#4F46E5",
+    brandColor: "#7c3aed",
     logoUrl: "",
+    siteName: String(brandName || "").trim(),
+    tagline: "",
     brandTone: "professional",
     productCategory: industryHint || "general",
     keySellingPoints: [],
@@ -224,9 +306,21 @@ router.post("/analyze", protect, async (req, res) => {
       );
     }
 
+    const resolvedBrandName =
+      String(brandName || "").trim() ||
+      String(scraped?.siteName || "").trim() ||
+      cleanSiteTitle(scraped?.title || "") ||
+      "";
+    const brandColor =
+      normalizeBrandColor(scraped?.themeColor) || "#7c3aed";
+    const logoUrl = scraped?.logoUrl || "";
+    const tagline = String(scraped?.metaDesc || "").trim().slice(0, 240);
+
     const brandProfile = {
-      brandColor: scraped?.themeColor || "#4F46E5",
-      logoUrl: scraped?.logoUrl || "",
+      brandColor,
+      logoUrl,
+      siteName: String(scraped?.siteName || resolvedBrandName || "").trim(),
+      tagline,
       brandTone: aiResult?.brandTone || "professional",
       productCategory:
         aiResult?.productCategory || industryHint || "general",
@@ -236,19 +330,29 @@ router.post("/analyze", protect, async (req, res) => {
       scraped: !!scraped,
     };
 
-    // Persist into client.onboardingData.brandProfile + businessName/websiteUrl aliases
+    // Persist into client.onboardingData.brandProfile + workspace brand fields
     await Client.updateOne(
       { clientId },
       {
         $set: {
-          "onboardingData.brandName": String(brandName || "").trim(),
+          "onboardingData.brandName": resolvedBrandName,
           "onboardingData.websiteUrl": String(websiteUrl || "").trim(),
           "onboardingData.industry": industryHint || "",
           "onboardingData.ecommerceCategories": categories,
           "onboardingData.brandProfile": brandProfile,
-          // Mirror to canonical paths so downstream generators see them immediately
-          ...(brandName ? { "platformVars.brandName": String(brandName).trim() } : {}),
-          ...(brandName ? { businessName: String(brandName).trim() } : {}),
+          // Mirror to canonical paths so Settings, theme, and generators see them immediately
+          ...(resolvedBrandName
+            ? {
+                "platformVars.brandName": resolvedBrandName,
+                businessName: resolvedBrandName,
+              }
+            : {}),
+          ...(logoUrl ? { businessLogo: logoUrl } : {}),
+          ...(tagline ? { businessDescription: tagline } : {}),
+          ...(brandProfile.productCategory
+            ? { industry: brandProfile.productCategory }
+            : {}),
+          ...(brandColor ? { "platformVars.primaryColor": brandColor } : {}),
           ...(brandProfile.brandTone
             ? { "platformVars.defaultTone": brandProfile.brandTone }
             : {}),
@@ -305,6 +409,7 @@ router.patch("/progress", protect, async (req, res) => {
         "industry",
         "ecommerceCategories",
         "conversationVolume",
+        "brandProfile",
         "whatsappSkipped",
         "brandVoice",
         "primaryGoal",
@@ -325,6 +430,16 @@ router.patch("/progress", protect, async (req, res) => {
       }
       if (data.websiteUrl) {
         $set["onboardingData.websiteUrl"] = String(data.websiteUrl).trim();
+      }
+      if (data.brandProfile && typeof data.brandProfile === "object") {
+        $set["onboardingData.brandProfile"] = data.brandProfile;
+        const bp = data.brandProfile;
+        if (bp.logoUrl) $set.businessLogo = String(bp.logoUrl).trim();
+        if (bp.tagline) $set.businessDescription = String(bp.tagline).trim().slice(0, 500);
+        if (bp.brandColor && normalizeBrandColor(bp.brandColor)) {
+          $set["platformVars.primaryColor"] = normalizeBrandColor(bp.brandColor);
+        }
+        if (bp.productCategory) $set.industry = String(bp.productCategory).trim();
       }
     }
 

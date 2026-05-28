@@ -273,6 +273,25 @@ router.post('/commerce-automations', ...secure, async (req, res) => {
   }
 });
 
+router.patch('/order-messages/rules/:ruleId/toggle', ...secure, async (req, res) => {
+  try {
+    const { clientId, ruleId } = req.params;
+    const isAuthorized = req.user.role === 'SUPER_ADMIN' ||
+      req.user.clientId === clientId ||
+      (req.user.linkedClients && req.user.linkedClients.includes(clientId));
+    if (!isAuthorized) return res.status(403).json({ error: 'Unauthorized' });
+
+    const active = req.body?.active === true;
+    const automation = await commerceAutomationService.toggleAutomation(clientId, ruleId, { active });
+    const { clearClientCache } = require('../middleware/apiCache');
+    await clearClientCache(clientId);
+    return res.json({ success: true, automation });
+  } catch (err) {
+    const status = /not found/i.test(err.message) ? 404 : 400;
+    return res.status(status).json({ success: false, error: err.message });
+  }
+});
+
 router.put('/commerce-automations/:automationId', ...secure, async (req, res) => {
   try {
     const { clientId, automationId } = req.params;

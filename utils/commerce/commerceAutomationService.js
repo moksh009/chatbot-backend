@@ -250,16 +250,34 @@ function normalizeProductId(id) {
   return m ? m[1] : s;
 }
 
+function resolveTargetProductIds(automation = {}) {
+  const fromArray = Array.isArray(automation.targetProductIds)
+    ? automation.targetProductIds.map(normalizeProductId).filter(Boolean)
+    : [];
+  if (fromArray.length) return [...new Set(fromArray)];
+  const legacy = normalizeProductId(automation.productId);
+  return legacy ? [legacy] : [];
+}
+
+function hasSpecificProductScope(automation = {}) {
+  if (String(automation.triggerScope || '').toLowerCase() === 'specific_product') return true;
+  return resolveTargetProductIds(automation).length > 0;
+}
+
 function matchesProductFilter(automation, order) {
-  const pid = normalizeProductId(automation.productId);
-  if (!pid) return true;
+  const targetIds = resolveTargetProductIds(automation);
+  if (!targetIds.length) return true;
   const items = order.items || [];
-  return items.some((item) => {
-    const itemPid = normalizeProductId(item.productId || item.shopifyProductId);
-    if (itemPid && itemPid === pid) return true;
-    if (automation.sku && item.sku) return matchesSkuRule({ ...automation, productId: '' }, item);
-    return false;
-  });
+  const orderProductIds = new Set(
+    items
+      .map((item) => normalizeProductId(item.productId || item.shopifyProductId))
+      .filter(Boolean)
+  );
+  if (targetIds.some((tid) => orderProductIds.has(tid))) return true;
+  if (automation.sku) {
+    return items.some((item) => matchesSkuRule({ ...automation, productId: '' }, item));
+  }
+  return false;
 }
 
 function matchesSkuRule(automation, item) {
@@ -344,11 +362,65 @@ async function persistAutomations(clientId, automations) {
   );
 }
 
+function mergeDuplicateIntoSystemRule(systemRule, duplicate) {
+  const patch = {};
+  if (!systemRule.templateName && duplicate.templateName) patch.templateName = duplicate.templateName;
+  if (!systemRule.isActive && duplicate.isActive) patch.isActive = duplicate.isActive;
+  const sysBody = systemRule.variableMappings?.body || {};
+  const dupBody = duplicate.variableMappings?.body || {};
+  const sysHasMappings = Object.values(sysBody).some((v) => v != null && v !== '');
+  const dupHasMappings = Object.values(dupBody).some((v) => v != null && v !== '');
+  if (!sysHasMappings && dupHasMappings) {
+    patch.variableMappings = duplicate.variableMappings;
+    patch.customVariableValues = duplicate.customVariableValues || {};
+  }
+  const targetIds = resolveTargetProductIds(duplicate);
+  if (targetIds.length && !resolveTargetProductIds(systemRule).length) {
+    patch.targetProductIds = targetIds;
+    patch.triggerScope = 'specific_product';
+    patch.productId = duplicate.productId || targetIds[0] || '';
+    patch.productTitle = duplicate.productTitle || '';
+  }
+  return patch;
+}
+
+/**
+ * Remove legacy rows like "Order paid message" when sys_order_* exists for the same event.
+ */
+function pruneDuplicateOrderNotificationRules(automations = []) {
+  const systemByEvent = new Map();
+  for (const rule of automations) {
+    if (rule?.meta?.category === 'order_notification' && String(rule.id || '').startsWith('sys_order_')) {
+      systemByEvent.set(normalizeEvent(rule.event), rule);
+    }
+  }
+  if (!systemByEvent.size) return automations;
+
+  const removeIds = new Set();
+  const patches = new Map();
+
+  for (const rule of automations) {
+    if (String(rule.id || '').startsWith('sys_order_')) continue;
+    const event = normalizeEvent(rule.event);
+    const systemRule = systemByEvent.get(event);
+    if (!systemRule) continue;
+    if (rule.triggerType !== 'order_status' && rule.meta?.category !== 'order_notification') continue;
+    removeIds.add(rule.id);
+    const patch = mergeDuplicateIntoSystemRule(systemRule, rule);
+    if (Object.keys(patch).length) {
+      patches.set(systemRule.id, { ...(patches.get(systemRule.id) || {}), ...patch });
+    }
+  }
+
+  return automations
+    .filter((r) => !removeIds.has(r.id))
+    .map((r) => (patches.has(r.id) ? { ...r, ...patches.get(r.id) } : r));
+}
+
 async function ensureSystemAutomationsPersisted(clientConfig = {}) {
   const base = await ensureMigration(clientConfig, { persist: false });
-  const merged = syncSystemOrderRulesFromNicheMap(
-    mergeSystemAutomations(base),
-    clientConfig?.nicheData || {}
+  const merged = pruneDuplicateOrderNotificationRules(
+    syncSystemOrderRulesFromNicheMap(mergeSystemAutomations(base), clientConfig?.nicheData || {})
   );
   const changed =
     merged.length !== base.length ||
@@ -430,11 +502,27 @@ async function upsertAutomation(clientId, automation = {}) {
     if (delayErr) throw new Error(delayErr);
   }
 
+  const incomingTargetIds = Array.isArray(automation.targetProductIds)
+    ? automation.targetProductIds.map(normalizeProductId).filter(Boolean)
+    : [];
+  const legacyProductId = normalizeProductId(automation.productId);
+  const targetProductIds = incomingTargetIds.length
+    ? [...new Set(incomingTargetIds)]
+    : legacyProductId
+      ? [legacyProductId]
+      : [];
+  const triggerScope =
+    automation.triggerScope === 'specific_product' || targetProductIds.length
+      ? 'specific_product'
+      : 'every_order';
+
   const normalized = {
     id: automation.id || `rule_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     name: automation.name || 'Automation rule',
     triggerType: automation.triggerType || 'sku_event',
     event: normalizeEvent(automation.event || 'paid'),
+    triggerScope,
+    targetProductIds,
     matchType:
       automation.matchType === 'contains'
         ? 'contains'
@@ -442,7 +530,7 @@ async function upsertAutomation(clientId, automation = {}) {
           ? 'starts_with'
           : 'exact',
     sku: String(automation.sku || '').trim(),
-    productId: String(automation.productId || '').trim(),
+    productId: targetProductIds[0] || String(automation.productId || '').trim(),
     productTitle: String(automation.productTitle || '').trim(),
     variantId: String(automation.variantId || '').trim(),
     actionType: automation.actionType || 'send_template',
@@ -517,6 +605,18 @@ async function upsertAutomation(clientId, automation = {}) {
   return merged.find((a) => a.id === normalized.id) || normalized;
 }
 
+async function toggleAutomation(clientId, automationId, { active } = {}) {
+  const client = await Client.findOne({ clientId });
+  if (!client) throw new Error('Client not found');
+  const current = await ensureSystemAutomationsPersisted(client);
+  const existing = current.find((a) => a.id === automationId);
+  if (!existing) throw new Error('Rule not found');
+  if (active === true && existing.actionType !== 'enroll_sequence' && !existing.templateName) {
+    throw new Error('Choose a WhatsApp template before activating this rule.');
+  }
+  return upsertAutomation(clientId, { ...existing, isActive: active === true });
+}
+
 async function deleteAutomation(clientId, automationId) {
   const client = await Client.findOne({ clientId });
   if (!client) throw new Error('Client not found');
@@ -537,7 +637,7 @@ function getOrderStatusTemplateMap(automations = []) {
       a.triggerType === 'order_status' &&
       a.isActive &&
       a.templateName &&
-      !normalizeProductId(a.productId)
+      !hasSpecificProductScope(a)
     ) {
       map[normalizeEvent(a.event)] = a.templateName;
     }
@@ -630,7 +730,7 @@ async function runAutomationsForEvent({ clientConfig, eventType, order, options 
   for (const automation of active) {
     try {
       if (automation.triggerType === 'order_status') {
-        if (skipOrderStatusRules && !normalizeProductId(automation.productId)) continue;
+        if (skipOrderStatusRules && !hasSpecificProductScope(automation)) continue;
         if (!matchesProductFilter(automation, order)) continue;
         await runAutomationAction({ clientConfig, order, automation, item: null });
         matched += 1;
@@ -667,7 +767,13 @@ function simulateAutomation({ automation, order }) {
     const productOk = matchesProductFilter(normalized, order);
     return {
       matched: eventOk && productOk,
-      reason: eventOk ? (productOk ? 'order_status_event_check' : 'no_product_match') : 'event_mismatch',
+      reason: eventOk
+        ? productOk
+          ? hasSpecificProductScope(normalized)
+            ? 'product_scope_match'
+            : 'order_status_event_check'
+          : 'no_product_match'
+        : 'event_mismatch',
     };
   }
   if (normalized.triggerType === 'abandoned_cart') {
@@ -683,9 +789,14 @@ module.exports = {
   normalizeEvent,
   ensureMigration,
   ensureSystemAutomationsPersisted,
+  pruneDuplicateOrderNotificationRules,
   listAutomations,
   upsertAutomation,
+  toggleAutomation,
   deleteAutomation,
+  resolveTargetProductIds,
+  hasSpecificProductScope,
+  matchesProductFilter,
   getOrderStatusTemplateMap,
   getActiveCartFollowupRules,
   syncOrderStatusFromNicheMap,

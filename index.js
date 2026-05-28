@@ -315,7 +315,6 @@ app.use('/api/client/:clientId', dynamicClientRouter);
 // Specific channel webhooks
 // (Instagram now handled inside dynamicClientRouter)
 
-app.use('/api/business', businessRoutes);
 app.use('/api/admin', adminRoutes); // Super Admin Route Registration
 app.use('/api/templates', templatesRoutes);
 app.use('/api/meta-templates', require('./routes/metaTemplates'));

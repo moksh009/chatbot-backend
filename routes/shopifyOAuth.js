@@ -98,6 +98,28 @@ function buildShopifyAuthorizeURL(shopHostname, { appClientId, scopes, state }) 
 
 const FRONTEND_URL = () => process.env.FRONTEND_URL || 'https://dash.topedgeai.com';
 
+/** Relative frontend path only — prevents open redirects after OAuth. */
+function sanitizeOAuthReturnTo(raw) {
+  if (!raw || typeof raw !== 'string') return '';
+  const t = raw.trim();
+  if (!t.startsWith('/') || t.startsWith('//') || /^https?:/i.test(t)) return '';
+  return t.slice(0, 500);
+}
+
+function shopifyOAuthFrontendRedirect(pending, { success = false, errorCode = '' } = {}) {
+  const frontendUrl = FRONTEND_URL().replace(/\/+$/, '');
+  const returnTo = sanitizeOAuthReturnTo(pending?.returnTo);
+  if (returnTo) {
+    const u = new URL(returnTo, `${frontendUrl}/`);
+    if (success) u.searchParams.set('shopify_connected', 'true');
+    else if (errorCode) u.searchParams.set('shopify_error', errorCode);
+    return `${u.pathname}${u.search}`;
+  }
+  if (success) return '/settings?tab=store&shopify_connected=true';
+  if (errorCode) return `/settings?tab=store&shopify_error=${encodeURIComponent(errorCode)}`;
+  return '/settings?tab=store';
+}
+
 // ── Helper: Extract shopDomain from install link ──────────────────────────────
 function extractShopDomainFromLink(link) {
   if (!link) return null;
@@ -439,7 +461,7 @@ router.post('/assign-link', async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 router.post('/auth', async (req, res) => {
   try {
-    const { shopDomain, clientId, additionalStore } = req.body;
+    const { shopDomain, clientId, additionalStore, returnTo } = req.body;
 
     if (!shopDomain || !clientId) {
       return res.status(400).json({ success: false, error: 'Missing shopDomain or clientId' });
@@ -470,6 +492,7 @@ router.post('/auth', async (req, res) => {
       clientId,
       shop: cleanShop,
       additionalStore: !!additionalStore,
+      returnTo: sanitizeOAuthReturnTo(returnTo),
       createdAt: Date.now(),
     });
 
@@ -838,13 +861,15 @@ router.get('/callback', async (req, res) => {
     }).catch(e => console.log(`ℹ️ [ShopifyOAuth] Background order sync skipped:`, e.message));
 
     console.log(`🎉 [ShopifyOAuth] OAuth complete for ${clientId}! Redirecting to frontend...`);
-    return res.redirect(`${frontendUrl}/settings?tab=store&shopify_connected=true`);
+    const dest = shopifyOAuthFrontendRedirect(oauthPending, { success: true });
+    return res.redirect(`${frontendUrl}${dest.startsWith('/') ? dest : `/${dest}`}`);
 
   } catch (error) {
     console.error('❌ [ShopifyOAuth] Callback error:', error.response?.data || error.message);
     res.clearCookie('shopify_oauth_client');
     const frontendUrl = FRONTEND_URL();
-    return res.redirect(`${frontendUrl}/settings?tab=store&shopify_error=callback_failed`);
+    const dest = shopifyOAuthFrontendRedirect(null, { errorCode: 'callback_failed' });
+    return res.redirect(`${frontendUrl}${dest.startsWith('/') ? dest : `/${dest}`}`);
   }
 });
 
