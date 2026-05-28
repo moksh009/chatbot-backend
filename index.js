@@ -125,6 +125,10 @@ const bulkLimiter = rateLimit({
 const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:3000',
+  'https://dash.topedgeai.com',
+  'https://www.dash.topedgeai.com',
+  'https://topedgeai.com',
+  'https://www.topedgeai.com',
   'https://api.topedgeai.com',
   'https://chatbot-dashboard-frontend-main.onrender.com',
   /\.onrender\.com$/,
