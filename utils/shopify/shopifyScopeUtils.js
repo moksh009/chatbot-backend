@@ -1,9 +1,9 @@
 'use strict';
 
 const DEFAULT_APP_SCOPES =
-  'read_products,write_products,read_orders,write_orders,read_customers,write_customers,read_checkouts,write_checkouts,read_themes,write_themes,read_price_rules,write_price_rules,read_discounts,write_discounts,read_shopify_payments_payouts,write_pixels,read_customer_events';
+  'read_products,write_products,read_orders,write_orders,read_customers,write_customers,read_checkouts,write_checkouts,read_themes,write_themes,read_price_rules,write_price_rules,read_discounts,write_discounts,read_shopify_payments_payouts,read_pixels,write_pixels,read_customer_events';
 
-const PIXEL_SCOPE_KEYS = ['write_pixels', 'read_customer_events'];
+const PIXEL_SCOPE_KEYS = ['read_pixels', 'write_pixels', 'read_customer_events'];
 
 function parseShopifyScopes(scopesRaw) {
   if (!scopesRaw) return [];

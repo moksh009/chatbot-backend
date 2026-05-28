@@ -124,7 +124,7 @@ async function getWebPixelInstallStatus(clientId) {
     };
   } catch (e) {
     const msg = String(e.message || '');
-    if (/access denied|write_pixels|read_customer_events|ACCESS_DENIED/i.test(msg)) {
+    if (/access denied|read_pixels|write_pixels|read_customer_events|ACCESS_DENIED/i.test(msg)) {
       return {
         installed: false,
         reason: hasPixelScopes ? 'api_error' : 'missing_pixel_scopes',
@@ -132,7 +132,7 @@ async function getWebPixelInstallStatus(clientId) {
         hasPixelScopes,
         message: hasPixelScopes
           ? msg
-          : 'Token is missing write_pixels or read_customer_events — reconnect the store from Settings.',
+          : 'Token is missing read_pixels/write_pixels/read_customer_events — reconnect the store from Settings.',
       };
     }
     throw e;
@@ -163,7 +163,7 @@ async function installWebPixel(clientId, options = {}) {
       success: false,
       reason: 'missing_pixel_scopes',
       message:
-        'This store token is missing pixel scopes. Disconnect and reconnect Shopify from Settings so the app can register checkout capture.',
+        'This store token is missing pixel scopes (read_pixels/write_pixels/read_customer_events). Disconnect and reconnect Shopify from Settings so the app can register checkout capture.',
     };
   }
   if (existing.reason === 'api_error') {

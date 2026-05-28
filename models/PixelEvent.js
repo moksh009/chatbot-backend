@@ -4,10 +4,22 @@ const PixelEventSchema = new mongoose.Schema({
     clientId: { type: String, required: true, index: true },
     leadId: { type: mongoose.Schema.Types.ObjectId, ref: 'AdLead', default: null },
     sessionId: { type: String, index: true }, // From cookie/localstorage
-    eventName: { 
-        type: String, 
-        enum: ['page_view', 'product_view', 'add_to_cart', 'checkout_started', 'checkout_completed', 'search', 'contact'],
-        required: true 
+    eventName: {
+        type: String,
+        enum: [
+            'page_view',
+            'product_view',
+            'add_to_cart',
+            'product_added_to_cart',
+            'checkout_started',
+            'checkout_completed',
+            'checkout_contact_identified',
+            'checkout_contact_info_submitted',
+            'contact',
+            'contact_identified',
+            'search',
+        ],
+        required: true
     },
     url: String,
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} },

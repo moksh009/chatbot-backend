@@ -1,8 +1,9 @@
 const axios = require('axios');
 const Client = require('../../models/Client');
-const { encrypt, decrypt } = require('../core/encryption');
+const { decrypt } = require('../core/encryption');
 const shopifyAdminApiVersion = require('./shopifyAdminApiVersion');
 const log = require('../core/logger')('ShopifyGraphQL');
+const { getPrimaryStore } = require('./shopifyStoreHelpers');
 
 /**
  * Executes a GraphQL mutation/query on Shopify Admin API.
@@ -12,9 +13,10 @@ async function executeGraphQL(clientId, query, variables = {}) {
     const client = await Client.findOne({ clientId });
     if (!client) throw new Error('Client not found');
 
-    const domain = client.shopDomain;
+    const primaryStore = getPrimaryStore(client);
+    const domain = primaryStore?.shopDomain || client.shopDomain;
     const apiVersion = client.shopifyApiVersion || shopifyAdminApiVersion;
-    const token = decrypt(client.shopifyAccessToken);
+    const token = decrypt(primaryStore?.accessToken || client.shopifyAccessToken);
 
     if (!token || !domain) {
         throw new Error('Shopify credentials incomplete (GraphQL)');

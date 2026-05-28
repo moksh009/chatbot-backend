@@ -432,30 +432,43 @@ const WhatsApp = {
     const { token, phoneNumberId } = this.getCredentials(client);
     const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
+    const interactiveSafe = { ...(interactive || {}) };
+    if (
+      interactiveSafe.header?.type === 'text' &&
+      !String(interactiveSafe.header?.text || '').trim()
+    ) {
+      delete interactiveSafe.header;
+    }
+
+    const resolvedBodyText = String(bodyText || interactiveSafe.body?.text || '').trim();
+    if (!resolvedBodyText) {
+      throw new Error('[WhatsApp] Interactive body text cannot be empty');
+    }
+
     const payload = {
       messaging_product: 'whatsapp',
       to: validPhone,
       type: 'interactive',
       interactive: {
-        ...interactive,
-        body: { text: (bodyText || "").substring(0, 1024) }
+        ...interactiveSafe,
+        body: { text: resolvedBodyText.substring(0, 1024) }
       }
     };
 
     // Strict Meta Validation Engine
-    if (interactive.type === 'button') {
-      if (!interactive.action?.buttons || interactive.action.buttons.length === 0) {
+    if (interactiveSafe.type === 'button') {
+      if (!interactiveSafe.action?.buttons || interactiveSafe.action.buttons.length === 0) {
         log.error(`[WhatsApp] Interactive button message has no buttons. Dropping.`);
         return;
       }
       // Enforce max 3 buttons
-      if (interactive.action.buttons.length > 3) {
+      if (interactiveSafe.action.buttons.length > 3) {
         log.warn(`[WhatsApp] Truncating buttons to 3 for ${phone}`);
-        interactive.action.buttons = interactive.action.buttons.slice(0, 3);
+        interactiveSafe.action.buttons = interactiveSafe.action.buttons.slice(0, 3);
       }
       // Enforce 20 char limit on button titles and ensure unique IDs
       const seenIds = new Set();
-      interactive.action.buttons.forEach((btn, index) => {
+      interactiveSafe.action.buttons.forEach((btn, index) => {
         if (!btn.reply.id) btn.reply.id = `btn_${index}`;
         if (seenIds.has(btn.reply.id)) btn.reply.id = `${btn.reply.id}_${index}`;
         seenIds.add(btn.reply.id);
@@ -464,15 +477,15 @@ const WhatsApp = {
           btn.reply.title = btn.reply.title.substring(0, 20);
         }
       });
-    } else if (interactive.type === 'list') {
-      if (!interactive.action?.sections || interactive.action.sections.length === 0) {
+    } else if (interactiveSafe.type === 'list') {
+      if (!interactiveSafe.action?.sections || interactiveSafe.action.sections.length === 0) {
         log.error(`[WhatsApp] Interactive list message has no sections. Dropping.`);
         return;
       }
       // Enforce max 10 rows across all sections
       let totalRows = 0;
       const seenIds = new Set();
-      for (const section of interactive.action.sections) {
+      for (const section of interactiveSafe.action.sections) {
         section.title = String(section.title || "Options").substring(0, 24);
         if (section.rows) {
           if (totalRows + section.rows.length > 10) {
@@ -504,14 +517,14 @@ const WhatsApp = {
       log.warn(`[WhatsApp] sendInteractive failed for ${phone}. Falling back to plain text.`);
       
       let fallbackText = bodyText || "";
-      if (interactive.header?.text) fallbackText = `*${interactive.header.text}*\n\n` + fallbackText;
+      if (interactiveSafe.header?.text) fallbackText = `*${interactiveSafe.header.text}*\n\n` + fallbackText;
       
       // Convert buttons/rows to a numbered list
       const options = [];
-      if (interactive.action?.buttons) {
-        interactive.action.buttons.forEach(b => options.push(b.reply?.title));
-      } else if (interactive.action?.sections) {
-        interactive.action.sections.forEach(s => {
+      if (interactiveSafe.action?.buttons) {
+        interactiveSafe.action.buttons.forEach(b => options.push(b.reply?.title));
+      } else if (interactiveSafe.action?.sections) {
+        interactiveSafe.action.sections.forEach(s => {
             s.rows?.forEach(r => options.push(r.title));
         });
       }

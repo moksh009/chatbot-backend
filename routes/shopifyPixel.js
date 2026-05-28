@@ -378,7 +378,7 @@ router.post('/pixel/:clientId/install-web-pixel', protect, async (req, res) => {
         message:
           themeInject?.message ||
           webPixel?.message ||
-          'Install failed. Paste the theme script manually or reconnect Shopify with write_themes + write_pixels.',
+          'Install failed. Paste the theme script manually or reconnect Shopify with write_themes + read_pixels + write_pixels + read_customer_events.',
       });
     }
 
@@ -482,7 +482,10 @@ async function buildPixelStatusPayload(clientId, req) {
   }
 
   const webPixelOnShopify = webPixelApi?.installed === true;
-  const isInstalled = themeMarkedInstalled || webPixelRegistered || webPixelOnShopify;
+  const webPixelScopeMissing =
+    webPixelApi?.reason === 'missing_pixel_scopes' && webPixelApi?.hasPixelScopes === false;
+  const isInstalled =
+    !webPixelScopeMissing && (themeMarkedInstalled || webPixelRegistered || webPixelOnShopify);
   const connectionState = eventsLive ? 'live' : isInstalled ? 'connected' : 'not_connected';
 
   const health = await buildTrackingHealth(clientId, 30).catch(() => null);
@@ -495,7 +498,9 @@ async function buildPixelStatusPayload(clientId, req) {
     checkoutStatus = null;
   }
 
-  const storefrontHint = eventsLive
+  const storefrontHint = webPixelScopeMissing
+    ? 'Store token is missing pixel scopes (read_pixels/write_pixels/read_customer_events). Reconnect Shopify from Settings before tracking can work.'
+    : eventsLive
     ? 'Receiving storefront signals.'
     : isInstalled
       ? 'Tracking is connected — visit your storefront to confirm live signals (page views appear within seconds).'
@@ -510,10 +515,9 @@ async function buildPixelStatusPayload(clientId, req) {
     eventsLive,
     themeInjected: themeMarkedInstalled,
     webPixelActive: eventsLive,
-    webPixelRegistered: webPixelRegistered || webPixelOnShopify,
+    webPixelRegistered: !webPixelScopeMissing && (webPixelRegistered || webPixelOnShopify),
     webPixelOnShopify,
-      webPixelScopeMissing:
-        webPixelApi?.reason === 'missing_pixel_scopes' && webPixelApi?.hasPixelScopes === false,
+    webPixelScopeMissing,
     webPixelScopeMessage: webPixelApi?.message || null,
     webPixelId: clientDoc?.shopifyWebPixelId || webPixelApi?.webPixelId || null,
     lastWebPixelEventAt: lastEvent?.timestamp || null,
