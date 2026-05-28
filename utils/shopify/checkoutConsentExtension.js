@@ -3,6 +3,7 @@
 const Client = require('../../models/Client');
 const { executeGraphQL } = require('./shopifyGraphQL');
 const log = require('../core/logger')('CheckoutConsentExtension');
+const { buildScopeSummary } = require('./shopifyScopeUtils');
 
 const CHECKOUT_CONFIG_METAFIELD = {
   namespace: 'topedge',
@@ -113,7 +114,7 @@ function buildCheckoutCustomizeAppsUrl(shopDomain) {
 async function getCheckoutOptInInstallStatus(clientId, options = {}) {
   const client = await Client.findOne({ clientId })
     .select(
-      'clientId shopDomain shopifyAccessToken shopifyConnectionStatus shopifyThemePixelInstalledAt shopifyWebPixelId checkoutConsentConfigSyncedAt audienceContext'
+      'clientId shopDomain shopifyAccessToken shopifyConnectionStatus shopifyThemePixelInstalledAt shopifyWebPixelId checkoutConsentConfigSyncedAt audienceContext shopifyScopes'
     )
     .lean();
 
@@ -148,32 +149,30 @@ async function getCheckoutOptInInstallStatus(clientId, options = {}) {
     /* ignore */
   }
 
-  const extensionDeployed = Boolean(process.env.SHOPIFY_CHECKOUT_EXTENSION_DEPLOYED === 'true');
+  const extensionReleased = process.env.SHOPIFY_CHECKOUT_EXTENSION_DEPLOYED !== 'false';
   const themeInjected = Boolean(client.shopifyThemePixelInstalledAt);
   const webPixelRegistered =
     Boolean(client.shopifyWebPixelId) || webPixelApi.installed === true;
   const configSynced = Boolean(client.checkoutConsentConfigSyncedAt);
+  const scopeSummary = buildScopeSummary(client.shopifyScopes);
+  const usesNativeCheckout = !thirdParty || thirdParty === 'unknown';
+  const checkoutBlockRequired = usesNativeCheckout;
 
   const checkoutEditorUrl = buildCheckoutEditorUrl(client.shopDomain);
   const checkoutCustomizeUrl = buildCheckoutCustomizeAppsUrl(client.shopDomain);
 
   const nextSteps = [];
-  if (!extensionDeployed) nextSteps.push('deploy_app_extensions');
-  if (!webPixelRegistered) nextSteps.push('register_web_pixel');
-  if (!themeInjected) nextSteps.push('inject_theme_script');
   if (!configSynced) nextSteps.push('save_consent_config');
-  if (extensionDeployed) nextSteps.push('activate_checkout_block');
+  if (!webPixelRegistered) nextSteps.push('register_web_pixel');
+  if (checkoutBlockRequired) nextSteps.push('activate_checkout_block');
 
   let statusHint =
-    'Registering a Web Pixel does not add a visible checkbox. Deploy the TopEdge checkout extension and add the block in Shopify Checkout Editor.';
+    'API install does not show a checkbox by itself. After registering, open Checkout Editor and add the TopEdge app block on the Contact step, then publish.';
   if (thirdParty && thirdParty !== 'unknown') {
-    statusHint = `This store uses ${thirdParty} checkout — use Audience → Third-party checkout webhooks instead of Shopify checkout UI.`;
-  } else if (!extensionDeployed) {
+    statusHint = `This store uses ${thirdParty} checkout — the Shopify checkout checkbox will not appear there. Use Audience → Third-party checkout webhooks for abandons on that flow.`;
+  } else if (configSynced && webPixelRegistered) {
     statusHint =
-      'TopEdge checkout extension is not deployed to your Shopify app yet. Run shopify app deploy, then add the opt-in block in Checkout Editor.';
-  } else if (extensionDeployed && configSynced) {
-    statusHint =
-      'Open Checkout Editor → Contact page → Apps → add “TopEdge WhatsApp opt-in”, then save and publish checkout.';
+      'Registered with Shopify. Add “TopEdge WhatsApp opt-in” in Checkout Editor → Contact → Apps, then Save and Publish checkout.';
   }
 
   return {
@@ -181,15 +180,24 @@ async function getCheckoutOptInInstallStatus(clientId, options = {}) {
     shopDomain: client.shopDomain,
     checkoutEditorUrl,
     checkoutCustomizeUrl,
-    extensionDeployed,
+    extensionDeployed: extensionReleased,
+    extensionReleased,
     webPixelRegistered,
     themeInjected,
     configSynced,
-    checkoutBlockRequired: !thirdParty || thirdParty === 'unknown',
+    checkoutBlockRequired,
     thirdPartyCheckout: thirdParty,
-    webPixelScopeMissing: webPixelApi.reason === 'missing_pixel_scopes',
+    usesNativeCheckout,
+    webPixelScopeMissing:
+      webPixelApi.reason === 'missing_pixel_scopes' && !scopeSummary.hasPixelScopes,
+    hasPixelScopes: scopeSummary.hasPixelScopes,
+    grantedScopes: scopeSummary.granted,
+    appConfiguredScopes: scopeSummary.appConfigured,
+    missingPixelScopes: scopeSummary.missingFromGrant,
     statusHint,
     nextSteps,
+    checkboxNote:
+      'The WhatsApp opt-in checkbox is a Checkout UI app block. It only appears after you add it in Checkout Editor (not from API success alone).',
   };
 }
 

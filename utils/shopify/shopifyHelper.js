@@ -328,6 +328,45 @@ module.exports = {
         });
     },
 
+    removePixelScript: async (clientId, backendUrl) => {
+        return await withShopifyRetry(clientId, async (shop) => {
+            const themesRes = await shop.get('/themes.json');
+            const mainTheme = (themesRes.data.themes || []).find((t) => t.role === 'main');
+            if (!mainTheme) throw new Error('Main theme not found');
+
+            const assetRes = await shop.get(`/themes/${mainTheme.id}/assets.json`, {
+                params: { 'asset[key]': 'layout/theme.liquid' },
+            });
+            let liquid = assetRes.data.asset?.value;
+            if (!liquid) throw new Error('Could not read theme.liquid');
+
+            const finalBackendUrl = backendUrl || process.env.BACKEND_URL || 'https://topedgeai.com';
+            const marker = `/api/shopify-pixel/pixel/${clientId}/script.js`;
+            if (!liquid.includes(marker)) {
+                return { success: true, removed: false, message: 'Theme script not found in theme.liquid' };
+            }
+
+            const blockRe = new RegExp(
+                `\\n?<!-- TopEdge Pixel -->\\s*\\n?<script[^>]*${clientId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^>]*script\\.js[^>]*>\\s*</script>\\s*`,
+                'gi'
+            );
+            liquid = liquid.replace(blockRe, '\n');
+            liquid = liquid.replace(
+                new RegExp(
+                    `<script[^>]*${clientId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^>]*script\\.js[^>]*>\\s*</script>\\s*`,
+                    'gi'
+                ),
+                ''
+            );
+
+            await shop.put(`/themes/${mainTheme.id}/assets.json`, {
+                asset: { key: 'layout/theme.liquid', value: liquid },
+            });
+
+            return { success: true, removed: true, message: 'Storefront tracking script removed from theme.liquid' };
+        });
+    },
+
     /**
      * Phase 3: Dynamic Discount Generator
      * Creates a unique Shopify discount code for a specific customer.

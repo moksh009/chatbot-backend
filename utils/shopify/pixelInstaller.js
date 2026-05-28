@@ -4,6 +4,7 @@ const Client = require('../../models/Client');
 const { executeGraphQL } = require('./shopifyGraphQL');
 const { generateWebPixelScript } = require('../commerce/pixelEventProcessor');
 const log = require('../core/logger')('PixelInstaller');
+const { hasPixelScopes: tokenHasPixelScopes } = require('./shopifyScopeUtils');
 
 const WEB_PIXEL_CREATE = `
   mutation WebPixelCreate($webPixel: WebPixelInput!) {
@@ -97,9 +98,7 @@ async function getWebPixelInstallStatus(clientId) {
     return { installed: false, reason: 'shopify_not_connected', apiConnected: false };
   }
 
-  const scopes = String(client.shopifyScopes || '');
-  const hasPixelScopes =
-    scopes.includes('write_pixels') && scopes.includes('read_customer_events');
+  const hasPixelScopes = tokenHasPixelScopes(client.shopifyScopes);
 
   try {
     const data = await executeGraphQL(clientId, WEB_PIXEL_QUERY);
@@ -128,10 +127,12 @@ async function getWebPixelInstallStatus(clientId) {
     if (/access denied|write_pixels|read_customer_events|ACCESS_DENIED/i.test(msg)) {
       return {
         installed: false,
-        reason: 'missing_pixel_scopes',
+        reason: hasPixelScopes ? 'api_error' : 'missing_pixel_scopes',
         apiConnected: true,
-        hasPixelScopes: false,
-        message: msg,
+        hasPixelScopes,
+        message: hasPixelScopes
+          ? msg
+          : 'Token is missing write_pixels or read_customer_events — reconnect the store from Settings.',
       };
     }
     throw e;
@@ -162,7 +163,14 @@ async function installWebPixel(clientId, options = {}) {
       success: false,
       reason: 'missing_pixel_scopes',
       message:
-        'Reconnect Shopify to grant write_pixels and read_customer_events scopes.',
+        'This store token is missing pixel scopes. Disconnect and reconnect Shopify from Settings so the app can register checkout capture.',
+    };
+  }
+  if (existing.reason === 'api_error') {
+    return {
+      success: false,
+      reason: 'api_error',
+      message: existing.message || 'Shopify API error while registering the web pixel.',
     };
   }
 

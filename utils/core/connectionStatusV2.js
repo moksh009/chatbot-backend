@@ -1,6 +1,11 @@
 'use strict';
 
 const { buildConnectionStatusPayload, decryptToken, isValidShopDomain } = require('./connectionStatus');
+const {
+  parseShopifyScopes,
+  getShopifyAppConfiguredScopes,
+  hasPixelScopes,
+} = require('../shopify/shopifyScopeUtils');
 const MetaTemplate = require('../../models/MetaTemplate');
 
 function tokenStatusFrom(tok, probed) {
@@ -78,8 +83,10 @@ async function buildConnectionStatusContract(client) {
       connected: flags.shopify_connected,
       shopDomain: shopDomain || null,
       tokenStatus: tokenStatusFrom(shopifyTok, shopifyProbe),
-      scopes: client.shopifyScopes || [],
-      hasPixelScopes: !!(client.shopifyScopes || []).some((s) => String(s).includes('read_customer_events')),
+      scopes: parseShopifyScopes(client.shopifyScopes),
+      scopesRaw: client.shopifyScopes || '',
+      appConfiguredScopes: getShopifyAppConfiguredScopes(),
+      hasPixelScopes: hasPixelScopes(client.shopifyScopes),
       issues: !isValidShopDomain(shopDomain) ? ['invalid_shop_domain'] : [],
     },
     meta: {
