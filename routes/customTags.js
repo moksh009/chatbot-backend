@@ -45,7 +45,9 @@ router.post('/', protect, async (req, res) => {
     }
     const count = await CustomUsageTag.countDocuments({ clientId });
     if (count >= MAX_TAGS_PER_WORKSPACE) {
-      return res.status(400).json({ error: 'You can create a maximum of 10 usage tags.' });
+      return res.status(400).json({
+        error: 'You have reached the maximum of 20 usage tags. Delete an unused tag to create a new one.',
+      });
     }
     const existing = await CustomUsageTag.findOne({
       clientId,

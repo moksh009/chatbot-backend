@@ -21,7 +21,7 @@ const consentChannelSchema = new mongoose.Schema(
     timestamp: { type: Date, default: null },
     lastUpdated: { type: Date, default: Date.now },
     unsubscribeAt: { type: Date, default: null },
-    unsubscribeToken: { type: String, default: null },
+    unsubscribeToken: { type: String, default: undefined },
   },
   { _id: false }
 );
@@ -360,7 +360,15 @@ adLeadSchema.index({ clientId: 1, leadScore: -1 });        // Lead scoring leade
 adLeadSchema.index({ clientId: 1, optStatus: 1 });         // Opt-in/out management queries
 adLeadSchema.index({ clientId: 1, optStatus: 1, updatedAt: -1 });
 adLeadSchema.index({ clientId: 1, _id: 1 });
-adLeadSchema.index({ 'channelConsent.email.unsubscribeToken': 1 }, { unique: true, sparse: true });
+adLeadSchema.index(
+  { 'channelConsent.email.unsubscribeToken': 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      'channelConsent.email.unsubscribeToken': { $type: 'string' },
+    },
+  }
+);
 
 // Static Helper for Phase 25 Customer Journey Map
 adLeadSchema.statics.pushJourneyEvent = async function(clientId, phoneNumber, eventName, metadata = {}) {

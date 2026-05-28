@@ -9,6 +9,13 @@ const { tenantClientId } = require('../../utils/core/queryHelpers');
 
 const META_GRAPH_VERSION = 'v19.0';
 
+function formatInternalNameFromMetaName(raw) {
+  return String(raw || '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim();
+}
+
 async function resolveClientForTenant(clientId, userId) {
   const user = await User.findById(userId);
   if (!user) throw new Error('User not found');
@@ -204,9 +211,7 @@ async function submitTemplateToMeta(req, res) {
     }
 
     const internalTrimmed = String(internalName || '').trim();
-    if (!internalTrimmed) {
-      return res.status(400).json({ error: 'Please give this template a name.' });
-    }
+    const internalNamePersist = internalTrimmed || formatInternalNameFromMetaName(name);
     if (internalTrimmed.length > 150) {
       return res.status(400).json({ error: 'Internal name cannot exceed 150 characters.' });
     }
@@ -402,7 +407,7 @@ async function submitTemplateToMeta(req, res) {
     const persistBase = {
       clientId,
       name,
-      internalName: internalTrimmed,
+      internalName: internalNamePersist || null,
       category,
       language,
       usageTags: usageTagsPersist,

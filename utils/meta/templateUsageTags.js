@@ -2,7 +2,7 @@ const CustomUsageTag = require('../../models/CustomUsageTag');
 const MetaTemplate = require('../../models/MetaTemplate');
 
 const MAX_TAGS_PER_TEMPLATE = 3;
-const MAX_TAGS_PER_WORKSPACE = 10;
+const MAX_TAGS_PER_WORKSPACE = 20;
 
 async function listWorkspaceTagNames(clientId) {
   const rows = await CustomUsageTag.find({ clientId }).sort({ name: 1 }).lean();

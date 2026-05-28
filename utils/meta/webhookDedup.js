@@ -3,7 +3,9 @@
 const log = require('../core/logger')("WebhookDedup");
 const { getAppRedis } = require('../core/redisFactory');
 
-const DEDUP_TTL_SEC = Number(process.env.WEBHOOK_DEDUP_TTL_SEC || 120);
+const DEDUP_TTL_SEC = Number(
+  process.env.WEBHOOK_DEDUP_TTL_SEC || process.env.WEBHOOK_DEDUP_RETENTION_SEC || 7 * 24 * 60 * 60
+);
 
 /**
  * Atomic inbound dedup — call ONCE per webhook path (e.g. dynamicClientRouter only).

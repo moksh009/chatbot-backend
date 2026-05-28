@@ -4,8 +4,25 @@ const MetaTemplate = require('../../models/MetaTemplate');
 const { tenantClientId } = require('../../utils/core/queryHelpers');
 const { extractVariablesRaw, resolveClientForTenant } = require('./templateSubmitController');
 const { validateUsageTagsForClient } = require('../../utils/meta/templateUsageTags');
+const CustomUsageTag = require('../../models/CustomUsageTag');
 
 const META_GRAPH_VERSION = 'v19.0';
+
+function toSafeMetaName(raw) {
+  return String(raw || 'draft')
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_]/g, '_')
+    .replace(/_+/g, '_')
+    .slice(0, 512);
+}
+
+function formatInternalNameFromMetaName(raw) {
+  return String(raw || '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim();
+}
 
 async function saveDraft(req, res) {
   try {
@@ -57,12 +74,7 @@ async function saveDraft(req, res) {
       formData.bodySamples = bTok.map((t) => String(variableSamples[t] || ''));
     }
 
-    const safeName = String(name || 'draft')
-      .toLowerCase()
-      .replace(/\s+/g, '_')
-      .replace(/[^a-z0-9_]/g, '_')
-      .replace(/_+/g, '_')
-      .slice(0, 512) || `draft_${Date.now()}`;
+    const safeName = toSafeMetaName(name) || `draft_${Date.now()}`;
 
     let usageTagsPersist = [];
     if (Array.isArray(usageTags) && usageTags.length) {
@@ -72,10 +84,11 @@ async function saveDraft(req, res) {
     }
 
     const internalTrimmed = internalName != null ? String(internalName).trim() : '';
+    const internalNamePersist = internalTrimmed || formatInternalNameFromMetaName(safeName) || null;
     const persist = {
       clientId,
       name: safeName,
-      internalName: internalTrimmed || null,
+      internalName: internalNamePersist,
       category: ['MARKETING', 'UTILITY', 'AUTHENTICATION'].includes(category) ? category : 'MARKETING',
       language: language || 'en',
       usageTags: usageTagsPersist,
@@ -145,18 +158,94 @@ async function listTemplates(req, res) {
     const tenantId = tenantClientId(req);
     const clientId = req.query.clientId || tenantId;
     const status = (req.query.status || 'all').toLowerCase();
+    const statusesRaw = String(req.query.statuses || '')
+      .split(',')
+      .map((v) => String(v || '').trim().toLowerCase())
+      .filter(Boolean);
+    const usageTagFilters = String(req.query.usageTags || '')
+      .split(',')
+      .map((v) => String(v || '').trim())
+      .filter(Boolean);
+    const search = String(req.query.search || '').trim();
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = 100;
 
     if (!tenantId || tenantId !== clientId) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
     const q = { clientId };
-    if (status && status !== 'all') {
+    const statusMap = {
+      approved: 'approved',
+      in_review: 'pending_meta_review',
+      pending: 'pending_meta_review',
+      rejected: 'rejected',
+      draft: 'draft',
+      failed: 'submission_failed',
+      not_on_meta: '__NOT_ON_META__',
+    };
+    const mappedStatuses = statusesRaw
+      .map((s) => statusMap[s] || s)
+      .filter(Boolean);
+
+    if (mappedStatuses.length > 0) {
+      if (mappedStatuses.includes('__NOT_ON_META__')) {
+        const nonMissing = mappedStatuses.filter((s) => s !== '__NOT_ON_META__');
+        q.$or = [
+          ...(q.$or || []),
+          { metaTemplateId: { $in: [null, ''] } },
+          ...(nonMissing.length ? [{ submissionStatus: { $in: nonMissing } }] : []),
+        ];
+      } else {
+        q.submissionStatus = { $in: mappedStatuses };
+      }
+    } else if (status && status !== 'all') {
       q.submissionStatus = status;
     }
+    if (usageTagFilters.length > 0) {
+      q.usageTags = { $in: usageTagFilters };
+    }
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const searchRegex = new RegExp(escaped, 'i');
+      const searchOr = [{ internalName: searchRegex }, { name: searchRegex }];
+      if (Array.isArray(q.$or) && q.$or.length > 0) {
+        q.$and = [{ $or: q.$or }, { $or: searchOr }];
+        delete q.$or;
+      } else {
+        q.$or = searchOr;
+      }
+    }
 
-    const rows = await MetaTemplate.find(q).sort({ updatedAt: -1 }).lean();
-    return res.json({ success: true, data: rows });
+    const [total, rows, workspaceTagRows] = await Promise.all([
+      MetaTemplate.countDocuments(q),
+      MetaTemplate.find(q)
+        .sort({ updatedAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      CustomUsageTag.find({ clientId }).sort({ name: 1 }).lean(),
+    ]);
+
+    const normalized = rows.map((row) => {
+      const fallback = formatInternalNameFromMetaName(row?.name);
+      return {
+        ...row,
+        internalName: String(row?.internalName || '').trim() || fallback || null,
+      };
+    });
+
+    return res.json({
+      success: true,
+      data: normalized,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(Math.ceil(total / limit), 1),
+      },
+      availableUsageTags: workspaceTagRows.map((tag) => tag.name),
+    });
   } catch (err) {
     console.error('[meta-templates list]', err);
     return res.status(500).json({ error: 'Failed to list templates.' });
@@ -230,11 +319,10 @@ async function patchTemplate(req, res) {
 
     if (updates.internalName !== undefined && !hasFlat) {
       const trimmed = String(updates.internalName || '').trim();
-      if (!trimmed) return res.status(400).json({ error: 'Please give this template a name.' });
       if (trimmed.length > 150) {
         return res.status(400).json({ error: 'Internal name cannot exceed 150 characters.' });
       }
-      $set.internalName = trimmed;
+      $set.internalName = trimmed || formatInternalNameFromMetaName(updates.name || doc.name) || null;
     }
 
     if (updates.usageTags !== undefined && !hasFlat) {
@@ -280,12 +368,7 @@ async function patchTemplate(req, res) {
         formData.bodySamples = bTok.map((t) => String(variableSamples[t] || ''));
       }
 
-      const safeName = String(name || 'draft')
-        .toLowerCase()
-        .replace(/\s+/g, '_')
-        .replace(/[^a-z0-9_]/g, '_')
-        .replace(/_+/g, '_')
-        .slice(0, 512) || doc.name;
+      const safeName = toSafeMetaName(name) || doc.name;
 
       let usageTagsPersist = Array.isArray(doc.usageTags) ? doc.usageTags : [];
       if (updates.usageTags !== undefined) {
@@ -297,13 +380,10 @@ async function patchTemplate(req, res) {
       let internalNamePersist = doc.internalName;
       if (updates.internalName !== undefined) {
         const internalTrimmed = String(internalName || '').trim();
-        if (!internalTrimmed) {
-          return res.status(400).json({ error: 'Please give this template a name.' });
-        }
         if (internalTrimmed.length > 150) {
           return res.status(400).json({ error: 'Internal name cannot exceed 150 characters.' });
         }
-        internalNamePersist = internalTrimmed;
+        internalNamePersist = internalTrimmed || formatInternalNameFromMetaName(safeName) || null;
       }
 
       $set = {
