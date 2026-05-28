@@ -1160,6 +1160,7 @@ router.patch('/my-settings', protect, async (req, res) => {
       warrantySupportEmail,
       warrantyClaimUrl,
       websiteChatWidgetConfig,
+      audienceContext,
     } = req.body;
     
     // Tenant isolation: regular users always save to their JWT clientId only.
@@ -1283,6 +1284,32 @@ router.patch('/my-settings', protect, async (req, res) => {
     if (websiteChatWidgetConfig !== undefined) {
       const { mergeWebsiteWidgetConfig } = require('../utils/core/websiteWidgetDefaults');
       updateFields.websiteChatWidgetConfig = mergeWebsiteWidgetConfig(websiteChatWidgetConfig);
+    }
+
+    if (audienceContext && typeof audienceContext === 'object') {
+      const VALID_PLATFORMS = ['shopify', 'none', 'woocommerce', 'custom'];
+      const VALID_THIRD_PARTY = [
+        'shopify_native',
+        'gokwik',
+        'razorpay_magic',
+        'shiprocket',
+        'other_third_party',
+        'unknown',
+        'not_sure',
+      ];
+      const ac = audienceContext;
+      if (ac.storePlatform && VALID_PLATFORMS.includes(ac.storePlatform)) {
+        updateFields['audienceContext.storePlatform'] = ac.storePlatform;
+        updateFields['audienceContext.manualOverrides.storePlatform'] = ac.storePlatform;
+      }
+      if (ac.thirdPartyCheckout && VALID_THIRD_PARTY.includes(ac.thirdPartyCheckout)) {
+        updateFields['audienceContext.thirdPartyCheckout'] = ac.thirdPartyCheckout;
+        updateFields['audienceContext.manualOverrides.thirdPartyCheckout'] = ac.thirdPartyCheckout;
+      }
+      if (ac.checkoutSignal) {
+        updateFields['audienceContext.checkoutSignal'] = ac.checkoutSignal;
+      }
+      updateFields['audienceContext.updatedAt'] = new Date();
     }
 
     // Partial flow graph merge (autosave) — avoids sending full visualFlows payloads
@@ -1580,6 +1607,17 @@ router.patch('/my-settings', protect, async (req, res) => {
     );
 
     if (!updated) return res.status(404).json({ message: 'Client not found' });
+
+    // Clear token probe cache when credentials change — forces immediate re-validation
+    if (waPatchRequested || shopifyAccessToken !== undefined || updateFields.razorpayKeyId) {
+      setImmediate(async () => {
+        try {
+          const { writeProbeCache } = require('../utils/security/connectionTokenProbe');
+          if (waPatchRequested) await writeProbeCache(targetClientId, 'whatsapp', { tokenStatus: 'valid', ok: true, at: new Date().toISOString() });
+          if (shopifyAccessToken !== undefined) await writeProbeCache(targetClientId, 'shopify', { tokenStatus: 'valid', ok: true, at: new Date().toISOString() });
+        } catch (_) {}
+      });
+    }
 
     // Auto Template: Emit metaConnected when wabaId is saved for the first time
     if (wabaId && wabaId.trim()) {

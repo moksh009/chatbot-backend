@@ -35,17 +35,39 @@ async function writeProbeCache(clientId, channel, payload) {
 async function probeWhatsApp(client) {
   const token = decryptToken(client.whatsappToken || client.whatsapp?.accessToken || '');
   if (!token || token.length < 8) return { tokenStatus: 'missing', ok: false };
+
+  // Use the WABA or phone-number endpoint — more accurate for System User tokens
+  const phoneNumberId = client.phoneNumberId || client.whatsapp?.phoneNumberId;
+  const wabaId = client.wabaId || client.whatsapp?.wabaId;
+  const probeUrl = phoneNumberId
+    ? `${graphUrl()}/${phoneNumberId}`
+    : wabaId
+      ? `${graphUrl()}/${wabaId}`
+      : `${graphUrl()}/me`;
+
   try {
-    const res = await axios.get(`${graphUrl()}/me`, {
-      params: { access_token: token },
-      timeout: 2000,
+    const res = await axios.get(probeUrl, {
+      params: { access_token: token, fields: 'id' },
+      timeout: 4000,          // slightly longer — avoids false positives on slow Meta API
       validateStatus: () => true,
     });
     if (res.status === 200) return { tokenStatus: 'valid', ok: true };
-    if (res.status === 401) return { tokenStatus: 'unauthorized', ok: false };
-    return { tokenStatus: 'expired', ok: false };
-  } catch {
-    return { tokenStatus: 'expired', ok: false };
+    const errCode = res.data?.error?.code;
+    // 190 = token expired/invalid; 100 = param error (token issue); 4 = too many calls
+    if (res.status === 401 || errCode === 190 || errCode === 100) {
+      return { tokenStatus: 'expired', ok: false };
+    }
+    // Meta rate-limit (code 4 / 80) or temporary outage — don't mark as expired
+    if (errCode === 4 || errCode === 80 || res.status >= 500) {
+      return { tokenStatus: 'valid', ok: true };   // assume valid, retry later
+    }
+    return { tokenStatus: 'unauthorized', ok: false };
+  } catch (err) {
+    // Network error / timeout — CANNOT determine token validity; treat as valid to avoid false banner
+    const isTimeout = err.code === 'ECONNABORTED' || err.message?.includes('timeout');
+    const isNetwork = err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT';
+    if (isTimeout || isNetwork) return { tokenStatus: 'valid', ok: true };
+    return { tokenStatus: 'unknown', ok: false };
   }
 }
 
@@ -56,13 +78,15 @@ async function probeShopify(client) {
   try {
     const res = await axios.get(
       `https://${domain}/admin/api/${shopifyAdminApiVersion}/shop.json`,
-      { headers: { 'X-Shopify-Access-Token': token }, timeout: 2000, validateStatus: () => true }
+      { headers: { 'X-Shopify-Access-Token': token }, timeout: 4000, validateStatus: () => true }
     );
-    return res.status === 200
-      ? { tokenStatus: 'valid', ok: true }
-      : { tokenStatus: 'expired', ok: false };
-  } catch {
-    return { tokenStatus: 'expired', ok: false };
+    if (res.status === 200) return { tokenStatus: 'valid', ok: true };
+    if (res.status === 401 || res.status === 403) return { tokenStatus: 'expired', ok: false };
+    // 5xx or rate limit — assume valid
+    return { tokenStatus: 'valid', ok: true };
+  } catch (err) {
+    const isNetwork = err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT' || err.code === 'ECONNABORTED';
+    return isNetwork ? { tokenStatus: 'valid', ok: true } : { tokenStatus: 'unknown', ok: false };
   }
 }
 

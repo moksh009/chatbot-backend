@@ -38,15 +38,12 @@ async function sendShopifyEmail({ to, subject, html }) {
 
 const { encrypt } = require('../utils/core/encryption');
 const shopifyAdminApiVersion = require('../utils/shopify/shopifyAdminApiVersion');
+const { getShopifyOAuthScopeCsv } = require('../utils/shopify/shopifyScopeUtils');
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 const SHOPIFY_CLIENT_ID = () => process.env.SHOPIFY_CLIENT_ID;
 const SHOPIFY_CLIENT_SECRET = () => process.env.SHOPIFY_CLIENT_SECRET;
-const SHOPIFY_SCOPES = () =>
-  (
-    process.env.SHOPIFY_SCOPES ||
-    'read_products,write_products,read_orders,write_orders,read_customers,write_customers,read_checkouts,write_checkouts,read_themes,write_themes,read_price_rules,write_price_rules,read_discounts,write_discounts,read_shopify_payments_payouts,read_pixels,write_pixels,read_customer_events'
-  ).replace(/\s+/g, '');
+const SHOPIFY_SCOPES = () => getShopifyOAuthScopeCsv().replace(/\s+/g, '');
 
 /**
  * Canonical callback URL — MUST match Shopify Partner Dashboard "Allowed redirection URL(s)" exactly.
