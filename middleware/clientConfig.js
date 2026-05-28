@@ -32,7 +32,8 @@ const loadClientConfig = async (req, res, next) => {
     }
 
     const url = String(req.originalUrl || req.path || '');
-    const isWebhookPath = url.includes('/webhook/');
+    // Treat both `/webhook` and `/webhook/...` as webhook paths.
+    const isWebhookPath = /\/webhook(?:\/|\?|$)/.test(url);
     let select = DEFAULT_SELECT;
     if (isWebhookPath) {
       select = null;
