@@ -1,4 +1,5 @@
 const Subscription = require('../../models/Subscription');
+const Client = require('../../models/Client');
 const { isPaidPlanSlug } = require('../../config/planCatalog');
 
 /** Admin unchecked "Has access" — stored as trialActive:false (legacy). */
