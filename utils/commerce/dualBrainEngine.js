@@ -640,6 +640,80 @@ async function runDualBrainEngine(parsedMessage, client) {
     }
     perf.checkpoint("session_upserted");
 
+    // If a user messages us again after opting out, treat that inbound as renewed consent.
+    // This is tenant-scoped and applies only to WhatsApp inbound traffic.
+    if (channel === "whatsapp") {
+      const waConsentStatus = String(
+        lead?.channelConsent?.whatsapp?.status || lead?.optStatus || ""
+      ).toLowerCase();
+      const wasOptedOut = waConsentStatus === "opted_out";
+      if (wasOptedOut) {
+        try {
+          const now = new Date();
+          await Promise.all([
+            AdLead.updateOne(
+              { _id: lead._id },
+              {
+                $set: {
+                  optStatus: "opted_in",
+                  whatsappMarketingEligible: true,
+                  optOutDate: null,
+                  optOutSource: "",
+                  optOutReason: "",
+                  optOutKeyword: "",
+                  "channelConsent.whatsapp.status": "opted_in",
+                  "channelConsent.whatsapp.source": "inbound_message",
+                  "channelConsent.whatsapp.lastUpdated": now,
+                  "channelConsent.whatsapp.timestamp": now,
+                  "channelConsent.whatsapp.unsubscribeAt": null,
+                },
+                $push: {
+                  optInHistory: {
+                    event: "opted_in",
+                    action: "opted_in",
+                    source: "inbound_message",
+                    method: "single",
+                    timestamp: now,
+                    note: "Auto re-opt-in on inbound user message",
+                  },
+                },
+              }
+            ),
+            Conversation.updateOne(
+              { _id: convo._id },
+              {
+                $set: {
+                  botPaused: false,
+                  isBotPaused: false,
+                  botStatus: "active",
+                  status: "BOT_ACTIVE",
+                  requiresAttention: false,
+                },
+              }
+            ),
+            SuppressionList.deleteOne({ clientId: client.clientId, phone }),
+          ]);
+
+          lead.optStatus = "opted_in";
+          if (!lead.channelConsent) lead.channelConsent = {};
+          if (!lead.channelConsent.whatsapp) lead.channelConsent.whatsapp = {};
+          lead.channelConsent.whatsapp.status = "opted_in";
+          convo.botPaused = false;
+          convo.status = "BOT_ACTIVE";
+          convo.isBotPaused = false;
+          convo.botStatus = "active";
+
+          log.info(
+            `[DualBrain] Auto re-opted-in on inbound for ${client.clientId}:${phone}`
+          );
+        } catch (reoptErr) {
+          log.warn(
+            `[DualBrain] Auto re-opt-in failed for ${client.clientId}:${phone}: ${reoptErr.message}`
+          );
+        }
+      }
+    }
+
     // ── LIVE CHAT FAST PATH: persist + socket emit before language/AI/rules ──
     try {
       await saveInboundMessage(phone, client.clientId, parsedMessage, io, channel, convo._id, convo);
