@@ -14,6 +14,56 @@ function resolveAdminAlertChannel(client, explicitChannel) {
   return 'both';
 }
 
+const ADMIN_ALERT_TEMPLATE_CANDIDATES = ['admin_human_alert', 'admin_handoff', 'admin_notification_v1'];
+
+function resolveAdminAlertTemplateName(client = {}) {
+  const synced = Array.isArray(client.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
+  for (const name of ADMIN_ALERT_TEMPLATE_CANDIDATES) {
+    const hit = synced.find(
+      (t) => String(t?.name || '') === name && String(t?.status || '').toUpperCase() === 'APPROVED'
+    );
+    if (hit) return name;
+  }
+  return 'admin_human_alert';
+}
+
+function buildAdminAlertWhatsAppComponents(templateName, { customerPhone, topic, triggerSource, customerQuery }) {
+  const phoneText = String(customerPhone || '—').slice(0, 256);
+  const issueContext = String(
+    [topic, triggerSource].filter(Boolean).join(' — ') || 'Needs urgent support'
+  ).slice(0, 256);
+
+  if (templateName === 'admin_notification_v1') {
+    return [
+      {
+        type: 'body',
+        parameters: [
+          { type: 'text', text: String(topic || 'New Request').slice(0, 256) },
+          { type: 'text', text: String(triggerSource || 'Manual Trigger').slice(0, 256) },
+        ],
+      },
+      {
+        type: 'button',
+        sub_type: 'url',
+        index: '0',
+        parameters: [{ type: 'text', text: phoneText.slice(0, 2000) }],
+      },
+    ];
+  }
+
+  const customerLabel = String(customerQuery || topic || 'Customer').slice(0, 256);
+  return [
+    {
+      type: 'body',
+      parameters: [
+        { type: 'text', text: customerLabel },
+        { type: 'text', text: phoneText },
+        { type: 'text', text: issueContext },
+      ],
+    },
+  ];
+}
+
 /**
  * NotificationService
  * Handles high-priority admin alerts triggered by flows or system events.
@@ -83,26 +133,21 @@ const NotificationService = {
         }
         try {
           log.info(`Sending WhatsApp Admin Alert to ${number}`);
+          const templateName = resolveAdminAlertTemplateName(client);
+          const components = buildAdminAlertWhatsAppComponents(templateName, {
+            customerPhone,
+            topic,
+            triggerSource,
+            customerQuery,
+          });
           const res = await WhatsApp.sendTemplate(
-            client, 
-            number, 
-            'admin_notification_v1', 
+            client,
+            number,
+            templateName,
             'en',
-            [
-              {
-                type: 'body',
-                parameters: [
-                  { type: 'text', text: topic || 'New Request' },
-                  { type: 'text', text: triggerSource || 'Manual Trigger' }
-                ]
-              },
-              {
-                type: 'button', sub_type: 'url', index: '0',
-                parameters: [{ type: 'text', text: customerPhone }]
-              }
-            ]
+            components
           );
-          results.whatsapp.push({ number, status: 'success', res });
+          results.whatsapp.push({ number, status: 'success', res, templateName });
         } catch (err) {
           log.error(`WhatsApp Admin Alert failed for ${number}, falling back to text`, { error: err.message });
           try {
@@ -227,3 +272,5 @@ const NotificationService = {
 };
 
 module.exports = NotificationService;
+module.exports.resolveAdminAlertTemplateName = resolveAdminAlertTemplateName;
+module.exports.buildAdminAlertWhatsAppComponents = buildAdminAlertWhatsAppComponents;

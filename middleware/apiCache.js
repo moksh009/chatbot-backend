@@ -1,12 +1,13 @@
 const NodeCache = require('node-cache');
 const log = require('../utils/core/logger')('ApiCache');
-const { getAppRedis } = require('../utils/core/redisFactory');
+const { getAppRedis, isRedisReady } = require('../utils/core/redisFactory');
 
 const memoryCache = new NodeCache({ stdTTL: 60, checkperiod: 120 });
 
-/** Lazily resolve Redis — same singleton as locks / dedupe (not a second connection). */
+/** Lazily resolve Redis — skip when connection is dead (use memory fallback). */
 function getRedisForCache() {
-  return getAppRedis();
+  const redis = getAppRedis();
+  return isRedisReady(redis) ? redis : null;
 }
 
 /**
@@ -66,7 +67,9 @@ const apiCache = (ttlSeconds = 60) => {
             ),
           ]);
         } catch (redisReadErr) {
-          log.error(`[ApiCache] Cache read timeout/error for ${cacheKey}:`, redisReadErr.message);
+          if (process.env.DEBUG_API_CACHE === '1') {
+            log.warn(`[ApiCache] Cache read skipped for ${cacheKey}:`, redisReadErr.message);
+          }
         }
         if (cachedData) {
           return res.setHeader('X-Cache', 'HIT-REDIS').json(JSON.parse(cachedData));
@@ -87,9 +90,11 @@ const apiCache = (ttlSeconds = 60) => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           const rc = getRedisForCache();
           if (rc) {
-            rc.setex(cacheKey, ttlSeconds, JSON.stringify(body)).catch((err) =>
-              log.error(`[ApiCache] Redis write error for ${cacheKey}:`, err.message)
-            );
+            rc.setex(cacheKey, ttlSeconds, JSON.stringify(body)).catch((err) => {
+              if (process.env.DEBUG_API_CACHE === '1') {
+                log.warn(`[ApiCache] Redis write skipped for ${cacheKey}:`, err.message);
+              }
+            });
           } else {
             memoryCache.set(cacheKey, body, ttlSeconds);
           }

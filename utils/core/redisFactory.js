@@ -1,13 +1,6 @@
 /**
  * Central Redis connection factory — reduces duplicate ioredis instances across
  * workers, queues, api cache, and webhook dedupe.
- *
- * Two singletons:
- *   • App Redis — general commands (cache, idempotency, socket pub when shared).
- *     In production, connects only when REDIS_URL is set (same as legacy redisClient).
- *   • Queue Redis — BullMQ + chat buffer; falls back to localhost when REDIS_URL
- *     is unset (matches legacy TaskQueue/MessageBuffer/NlpWorker behavior).
- * Both are skipped when Render internal Redis URL is used from a non-Render machine.
  */
 
 const Redis = require('ioredis');
@@ -31,25 +24,27 @@ function resolveQueueRedisUrl() {
 
 let appRedisSingleton = null;
 let queueRedisSingleton = null;
-/** @type {import('ioredis').Redis | object | null | undefined} Test override (phase 2 E2E). */
 let appRedisTestOverride = null;
-/** @type {import('ioredis').Redis | object | null | undefined} undefined = normal; null = force off. */
 let queueRedisTestOverride = undefined;
 
+/** Never return null — permanent reconnect (avoids stuck "Connection is closed"). */
 function sharedRetryStrategy(times) {
-  if (times > 3) {
-    log.warn('[Redis] Max retries reached, giving up.');
-    return null;
+  const delay = Math.min(times * 200, 10000);
+  if (times > 0 && times % 15 === 0) {
+    log.warn(`[Redis] Reconnect attempt #${times} (next in ${delay}ms)`);
   }
-  return Math.min(times * 50, 2000);
+  return delay;
 }
 
-function queueRetryStrategy(times) {
-  if (times > 3) {
-    log.error('[Redis] Queue connection failed persistently.');
-    return null;
-  }
-  return Math.min(times * 100, 3000);
+function reconnectOnError(err) {
+  const msg = String(err?.message || err || '');
+  return (
+    msg.includes('READONLY') ||
+    msg.includes('ECONNRESET') ||
+    msg.includes('ETIMEDOUT') ||
+    msg.includes('Connection is closed') ||
+    msg.includes('Socket closed')
+  );
 }
 
 let evictionWarningSent = false;
@@ -72,7 +67,55 @@ async function ensureNoEviction(redis, label) {
   }
 }
 
-/** Startup health — ping + log policy once */
+function isTerminalRedisStatus(status) {
+  return status === 'end' || status === 'close';
+}
+
+function isRedisReady(redis) {
+  if (!redis) return false;
+  const st = redis.status;
+  return st === 'ready' || st === 'connect' || st === 'connecting' || st === 'reconnecting';
+}
+
+function createRedisClient(url, label) {
+  const client = new Redis(url, {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: true,
+    lazyConnect: false,
+    retryStrategy: sharedRetryStrategy,
+    reconnectOnError,
+  });
+
+  client.on('error', (err) => {
+    if (err?.code === 'ENOTFOUND' || err?.code === 'ECONNREFUSED') {
+      log.warn(`[Redis/${label}] Unreachable:`, err.message);
+    } else {
+      log.warn(`[Redis/${label}] Error:`, err.message);
+    }
+  });
+
+  client.on('connect', () => {
+    log.info(`[Redis/${label}] Connected.`);
+    ensureNoEviction(client, label);
+  });
+
+  client.on('ready', () => {
+    log.info(`[Redis/${label}] Ready.`);
+  });
+
+  client.on('close', () => {
+    log.warn(`[Redis/${label}] Connection closed — will reconnect.`);
+  });
+
+  client.on('end', () => {
+    log.warn(`[Redis/${label}] Connection ended — next use will recreate client.`);
+    if (label === 'App' && appRedisSingleton === client) appRedisSingleton = null;
+    if (label === 'Queue' && queueRedisSingleton === client) queueRedisSingleton = null;
+  });
+
+  return client;
+}
+
 async function logRedisHealth() {
   const redis = getAppRedis();
   if (!redis) {
@@ -100,51 +143,39 @@ async function logRedisHealth() {
   }
 }
 
-/**
- * App/session Redis — caching, dedupe, optional general use.
- * @returns {import('ioredis').Redis | null}
- */
 function getAppRedis() {
   if (appRedisTestOverride) return appRedisTestOverride;
   const url = resolveAppRedisUrl();
   if (!url) return null;
-  if (appRedisSingleton) return appRedisSingleton;
-  appRedisSingleton = new Redis(url, {
-    maxRetriesPerRequest: null,
-    retryStrategy: sharedRetryStrategy
-  });
-  appRedisSingleton.on('error', (err) => log.warn('[Redis/App] Connection error:', err.message));
-  appRedisSingleton.on('connect', () => {
-    log.info('[Redis/App] Connected successfully.');
-    ensureNoEviction(appRedisSingleton, 'App');
-  });
+  if (appRedisSingleton && isTerminalRedisStatus(appRedisSingleton.status)) {
+    try {
+      appRedisSingleton.disconnect();
+    } catch (_) {
+      /* ignore */
+    }
+    appRedisSingleton = null;
+  }
+  if (!appRedisSingleton) {
+    appRedisSingleton = createRedisClient(url, 'App');
+  }
   return appRedisSingleton;
 }
 
-/**
- * BullMQ + high-volume Redis ops — localhost fallback in dev.
- * @returns {import('ioredis').Redis | null}
- */
 function getQueueRedis() {
   if (queueRedisTestOverride !== undefined) return queueRedisTestOverride;
   const url = resolveQueueRedisUrl();
   if (!url) return null;
-  if (queueRedisSingleton) return queueRedisSingleton;
-  queueRedisSingleton = new Redis(url, {
-    maxRetriesPerRequest: null,
-    retryStrategy: queueRetryStrategy
-  });
-  queueRedisSingleton.on('error', (err) => {
-    if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED') {
-      log.warn('[Redis/Queue] Unreachable:', err.message);
-    } else {
-      log.warn('[Redis/Queue] Error:', err.message);
+  if (queueRedisSingleton && isTerminalRedisStatus(queueRedisSingleton.status)) {
+    try {
+      queueRedisSingleton.disconnect();
+    } catch (_) {
+      /* ignore */
     }
-  });
-  queueRedisSingleton.on('connect', () => {
-    log.info('[Redis/Queue] Connected.');
-    ensureNoEviction(queueRedisSingleton, 'Queue');
-  });
+    queueRedisSingleton = null;
+  }
+  if (!queueRedisSingleton) {
+    queueRedisSingleton = createRedisClient(url, 'Queue');
+  }
   return queueRedisSingleton;
 }
 
@@ -155,6 +186,8 @@ function __setAppRedisForTests(client) {
 function __resetAppRedisForTests() {
   appRedisTestOverride = null;
   queueRedisTestOverride = undefined;
+  appRedisSingleton = null;
+  queueRedisSingleton = null;
 }
 
 function __setQueueRedisForTests(client) {
@@ -168,6 +201,7 @@ module.exports = {
   resolveQueueRedisUrl,
   getAppRedis,
   getQueueRedis,
+  isRedisReady,
   logRedisHealth,
   __setAppRedisForTests,
   __setQueueRedisForTests,

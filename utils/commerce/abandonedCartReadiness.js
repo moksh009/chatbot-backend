@@ -244,10 +244,10 @@ function buildChecklist(ctx) {
     },
     {
       id: 'pixel',
-      label: 'Checkout pixel receiving events',
+      label: 'Deep pixel receiving checkout events',
       status: ctx.pixelInstalled && ctx.lastEventAt ? 'ok' : ctx.pixelInstalled ? 'warn' : 'error',
-      href: '/audience-hub?tab=cart-recovery',
-      actionLabel: 'Deep sync',
+      href: '/commerce-hub?tab=tracking',
+      actionLabel: 'Set up Deep pixel',
     },
     {
       id: 'pcd',

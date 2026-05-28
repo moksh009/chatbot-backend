@@ -1,29 +1,32 @@
 const { Queue } = require('bullmq');
-const { getQueueRedis } = require('../utils/core/redisFactory');
+const { getQueueRedis, isRedisReady } = require('../utils/core/redisFactory');
 
-const redisConnection = getQueueRedis();
+let nlpQueueSingleton = null;
 
-const nlpQueue = redisConnection
-  ? new Queue('nlp-queue', {
-      connection: redisConnection
-    })
-  : null;
+function getNlpQueue() {
+  const redisConnection = getQueueRedis();
+  if (!redisConnection || !isRedisReady(redisConnection)) return null;
+  if (!nlpQueueSingleton) {
+    nlpQueueSingleton = new Queue('nlp-queue', { connection: redisConnection });
+  }
+  return nlpQueueSingleton;
+}
 
 /**
- * MessageBufferService
- * Implements a 10-second sliding window for WhatsApp message aggregation.
- * Prevents fragmented processing of multiple short messages.
+ * MessageBufferService — 3s sliding window for WhatsApp message aggregation.
+ * Falls back to immediate NLP if Redis is down so bots keep replying.
  */
 class MessageBufferService {
-  /**
-   * Ingests a new message and (re)starts the 10-second aggregation timer.
-   */
   async ingestWebhookMessage(clientId, phoneNumber, incomingText) {
-    if (!redisConnection || !nlpQueue) {
+    const redisConnection = getQueueRedis();
+    const nlpQueue = getNlpQueue();
+
+    if (!redisConnection || !nlpQueue || !isRedisReady(redisConnection)) {
       const NlpEngineService = require('./NlpEngineService');
       await NlpEngineService.processIncomingText(clientId, phoneNumber, incomingText);
       return;
     }
+
     try {
       const redisKey = `chat_buffer:${clientId}:${phoneNumber}`;
       const jobId = `process_nlp:${clientId}:${phoneNumber}`;
@@ -48,25 +51,26 @@ class MessageBufferService {
           attempts: 3,
           backoff: {
             type: 'exponential',
-            delay: 1000
-          }
+            delay: 1000,
+          },
         }
       );
-
-      console.log(`[MessageBuffer] Aggregated message for ${phoneNumber}. Delay set to 3s.`);
     } catch (error) {
-      console.error('[MessageBuffer] Error in ingestWebhookMessage:', error);
-      throw error;
+      console.error('[MessageBuffer] Redis unavailable — processing immediately:', error.message);
+      const NlpEngineService = require('./NlpEngineService');
+      await NlpEngineService.processIncomingText(clientId, phoneNumber, incomingText);
     }
   }
 
-  /**
-   * Utility to clear the buffer manually if needed.
-   */
   async clearBuffer(clientId, phoneNumber) {
-    if (!redisConnection) return;
-    const redisKey = `chat_buffer:${clientId}:${phoneNumber}`;
-    await redisConnection.del(redisKey);
+    const redisConnection = getQueueRedis();
+    if (!redisConnection || !isRedisReady(redisConnection)) return;
+    try {
+      const redisKey = `chat_buffer:${clientId}:${phoneNumber}`;
+      await redisConnection.del(redisKey);
+    } catch (_) {
+      /* ignore */
+    }
   }
 }
 

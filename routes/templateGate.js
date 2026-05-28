@@ -51,6 +51,22 @@ const TEMPLATE_BLUEPRINTS = {
       }
     ]
   },
+  admin_human_alert: {
+    category: 'UTILITY',
+    language: 'en',
+    components: [
+      {
+        type: 'BODY',
+        text:
+          'Admin alert: {{1}} ({{2}}) needs urgent support. Context: {{3}} Please open the inbox in the dashboard.',
+        example: { body_text: [['Priya Sharma', '+919876543210', 'Asked for a human on checkout']] }
+      },
+      {
+        type: 'BUTTONS',
+        buttons: [{ type: 'QUICK_REPLY', text: 'Open Inbox' }]
+      }
+    ]
+  },
   /** RTO Protection — NDR rescue (must match `rtoProtectionService` body variable order). */
   rto_ndr_rescue: {
     category: 'UTILITY',

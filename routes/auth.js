@@ -25,6 +25,10 @@ const {
   recordFailedAttempt,
   clearFailedAttempts,
 } = require('../utils/auth/loginSecurity');
+const {
+  getGoogleAuthRedirectUri,
+  getGoogleOAuthPublicConfig,
+} = require('../utils/auth/googleOAuthConfig');
 
 function applyBootstrapSuperAdmin(user) {
   const allow = process.env.ALLOW_BOOTSTRAP_SUPER_ADMIN === 'true';
@@ -152,27 +156,6 @@ const generateToken = (id, clientId, role) => {
     { expiresIn }
   );
 };
-
-/**
- * Must exactly match an "Authorized redirect URI" on the same Google OAuth client as GOOGLE_CLIENT_ID.
- * Calendar uses /api/oauth/google/callback — login uses /api/auth/google/callback (add both in Google Cloud Console).
- */
-function getGoogleAuthRedirectUri() {
-  const explicit = String(process.env.GOOGLE_OAUTH_REDIRECT_URI || '').trim();
-  if (explicit) return explicit.replace(/\s+/g, '');
-  const raw =
-    process.env.GOOGLE_OAUTH_BACKEND_URL ||
-    process.env.SERVER_URL ||
-    process.env.BACKEND_URL ||
-    process.env.API_BASE ||
-    '';
-  let base = String(raw).trim().replace(/\/$/, '');
-  if (!base) base = 'https://chatbot-backend-lg5y.onrender.com';
-  if (!/^https:\/\//i.test(base)) {
-    base = `https://${base.replace(/^https?:\/\//i, '')}`;
-  }
-  return `${base}/api/auth/google/callback`;
-}
 
 function getGoogleOAuthStateSecret() {
   return (
@@ -734,6 +717,14 @@ router.post('/update-password', protect, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // GOOGLE OAUTH — Google-Only Auth (no password needed)
 // ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * GET /api/auth/google/oauth-config — Safe diagnostic (no secrets).
+ * Use to verify which redirect_uri production sends to Google.
+ */
+router.get('/google/oauth-config', (req, res) => {
+  res.json(getGoogleOAuthPublicConfig());
+});
 
 /**
  * GET /api/auth/google/login — Initiate Google OAuth
