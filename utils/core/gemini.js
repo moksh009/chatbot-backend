@@ -28,8 +28,11 @@ function getStudioClient(apiKey) {
 // Initialize Vertex AI for the Platform (Uses GCP Credits)
 let vertexPlatformInstance = null;
 let vertexDeprecationLogged = false;
+let vertexDisabledUntilMs = 0;
+const VERTEX_AUTH_BACKOFF_MS = Number(process.env.VERTEX_AUTH_BACKOFF_MS || 10 * 60 * 1000);
 
 function getVertexInstance() {
+    if (Date.now() < vertexDisabledUntilMs) return null;
     if (vertexPlatformInstance) return vertexPlatformInstance;
     
     const projectId = process.env.GCP_PROJECT_ID;
@@ -172,6 +175,13 @@ async function generateText(prompt, apiKey, options = {}) {
             // Failover: If Vertex failed on attempt 1, immediately retry with AI Studio (if we have a platform key)
             if (useVertex && attempt === 1 && isKeyValid(platformKey)) {
                 logger.warn(`Vertex AI failed, falling back to AI Studio: ${msg}`);
+                if (/Unable to authenticate|GoogleAuthError|permission|auth/i.test(msg)) {
+                    // Avoid paying a 2-4s auth failure tax on every inbound message.
+                    vertexDisabledUntilMs = Date.now() + VERTEX_AUTH_BACKOFF_MS;
+                    logger.warn(
+                      `Vertex temporarily disabled for ${Math.round(VERTEX_AUTH_BACKOFF_MS / 1000)}s due to auth failure`
+                    );
+                }
                 // Switch strategy to AI Studio for the next loop iteration
                 // We just continue and the loop handles the retry
                 continue; 
