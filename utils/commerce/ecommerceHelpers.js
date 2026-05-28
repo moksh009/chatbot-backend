@@ -38,7 +38,7 @@ async function sendCODToPrepaidNudge(order, client, phone) {
                             customer_email: order.customerEmail || order.email || "customer@example.com"
                         },
                         link_meta: {
-                            return_url: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/r/cashfree-callback/${order._id}?link_id={link_id}`
+                            return_url: `${process.env.SERVER_URL || 'https://api.topedgeai.com'}/r/cashfree-callback/${order._id}?link_id={link_id}`
                         }
                     },
                     {
@@ -79,7 +79,7 @@ async function sendCODToPrepaidNudge(order, client, phone) {
                     },
                     notify: { sms: false, email: false },
                     reminder_enable: true,
-                    callback_url: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/r/razorpay-callback/${order._id}`,
+                    callback_url: `${process.env.SERVER_URL || 'https://api.topedgeai.com'}/r/razorpay-callback/${order._id}`,
                     callback_method: 'get'
                 });
 
@@ -106,7 +106,7 @@ async function sendCODToPrepaidNudge(order, client, phone) {
                 params.append('line_items[0][price_data][unit_amount]', Math.round(order.totalPrice * 100));
                 params.append('line_items[0][quantity]', '1');
                 params.append('mode', 'payment');
-                params.append('success_url', `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/r/stripe-callback/${order._id}?session_id={CHECKOUT_SESSION_ID}`);
+                params.append('success_url', `${process.env.SERVER_URL || 'https://api.topedgeai.com'}/r/stripe-callback/${order._id}?session_id={CHECKOUT_SESSION_ID}`);
                 params.append('cancel_url', `https://${client.shopDomain || 'store'}/cart`);
 
                 const response = await axios.post('https://api.stripe.com/v1/checkout/sessions', params, {
@@ -164,9 +164,9 @@ async function sendCODToPrepaidNudge(order, client, phone) {
                     merchantTransactionId: `T${Date.now()}`,
                     merchantUserId: `U${order._id}`,
                     amount: Math.round(order.totalPrice * 100),
-                    redirectUrl: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/r/phonepe-callback/${order._id}`,
+                    redirectUrl: `${process.env.SERVER_URL || 'https://api.topedgeai.com'}/r/phonepe-callback/${order._id}`,
                     redirectMode: 'POST',
-                    callbackUrl: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/api/payment/phonepe/webhook`,
+                    callbackUrl: `${process.env.SERVER_URL || 'https://api.topedgeai.com'}/api/payment/phonepe/webhook`,
                     paymentInstrument: { type: 'PAY_PAGE' }
                 };
 

@@ -20,7 +20,7 @@ async function getShopifyWebhookHealth({ shopDomain, shopifyAccessToken }) {
     };
   }
 
-  const webhookUrl = `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/api/shopify/webhook`;
+  const webhookUrl = `${process.env.SERVER_URL || 'https://api.topedgeai.com'}/api/shopify/webhook`;
 
   try {
     const res = await axios.get(

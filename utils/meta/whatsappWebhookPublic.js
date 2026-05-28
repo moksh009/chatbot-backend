@@ -10,8 +10,13 @@ function inferWebhookOrigin() {
     process.env.RENDER_EXTERNAL_URL ||
     '';
   const trimmed = String(raw).trim().replace(/\/+$/, '');
-  if (trimmed) return trimmed;
-  return 'https://chatbot-backend-lg5y.onrender.com';
+  if (trimmed) {
+    if (trimmed.includes('chatbot-backend-lg5y.onrender.com')) {
+      return 'https://api.topedgeai.com';
+    }
+    return trimmed;
+  }
+  return 'https://api.topedgeai.com';
 }
 
 function getMasterVerifyToken() {

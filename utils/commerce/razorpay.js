@@ -21,7 +21,7 @@ async function createCODPaymentLink(order, client) {
     key_secret: client.razorpaySecret
   });
 
-  const baseUrl = process.env.BASE_URL || process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com';
+  const baseUrl = process.env.BASE_URL || process.env.SERVER_URL || 'https://api.topedgeai.com';
   const expiryTimestamp = Math.floor(Date.now() / 1000) + (2 * 60 * 60); // 2 hours
 
   const link = await rzp.paymentLink.create({

@@ -16,7 +16,7 @@ async function createCashfreePaymentLink(order, client) {
     throw new Error(`[Cashfree] Invalid order amount: ${order.totalPrice}`);
   }
 
-  const baseUrl = process.env.BASE_URL || process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com';
+  const baseUrl = process.env.BASE_URL || process.env.SERVER_URL || 'https://api.topedgeai.com';
   // Use v3 API for Cashfree payment links
   const cashfreeEndpoint = 'https://sandbox.cashfree.com/pg/links'; // Will default to sandbox for safety if not overridden. Can be configured to PROD below.
   const isProd = process.env.NODE_ENV === 'production' && !client.cashfreeAppId.includes('test');

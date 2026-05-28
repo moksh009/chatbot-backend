@@ -25,7 +25,7 @@ const internalOrProtect = (req, res, next) => {
 
 async function registerWebhooks(shopDomain, accessToken, clientId) {
   const topics = SHOPIFY_APP_WEBHOOK_TOPICS;
-  const webhookUrl = `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/api/shopify/webhook`;
+  const webhookUrl = `${process.env.SERVER_URL || 'https://api.topedgeai.com'}/api/shopify/webhook`;
 
   for (const topic of topics) {
     try {

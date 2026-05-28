@@ -55,7 +55,7 @@ router.get("/instagram/initiate/:clientId", protect, async (req, res) => {
 
     const authUrl = new URL("https://www.facebook.com/v21.0/dialog/oauth");
     authUrl.searchParams.set("client_id",     process.env.META_APP_ID);
-    const base = (process.env.BACKEND_URL || "https://chatbot-backend-lg5y.onrender.com").replace(/\/$/, "");
+    const base = (process.env.BACKEND_URL || "https://api.topedgeai.com").replace(/\/$/, "");
     authUrl.searchParams.set("redirect_uri",  process.env.META_APP_REDIRECT_URI || `${base}/api/oauth/instagram/callback`);
     authUrl.searchParams.set("scope",         scope);
     authUrl.searchParams.set("response_type", "code");
@@ -96,7 +96,7 @@ router.get("/instagram/callback", async (req, res) => {
 
   try {
     const redirectUri = process.env.META_APP_REDIRECT_URI ||
-      `${process.env.BACKEND_URL || "https://chatbot-backend-lg5y.onrender.com"}/api/oauth/instagram/callback`;
+      `${process.env.BACKEND_URL || "https://api.topedgeai.com"}/api/oauth/instagram/callback`;
 
     // ── Exchange code for short-lived user token ──────────────────────────
     const tokenResp = await axios.get("https://graph.facebook.com/v21.0/oauth/access_token", {
@@ -422,7 +422,7 @@ router.get("/meta-ads/callback", async (req, res) => {
   }
 
   try {
-    const base = (process.env.BACKEND_URL || process.env.API_BASE || "https://chatbot-backend-lg5y.onrender.com").replace(/\/$/, "");
+    const base = (process.env.BACKEND_URL || process.env.API_BASE || "https://api.topedgeai.com").replace(/\/$/, "");
     const redirectUri = `${base}/api/oauth/meta-ads/callback`;
 
     // 1. Exchange code for user access token
@@ -502,7 +502,7 @@ router.get("/google/start/:clientId", protect, async (req, res) => {
     if (!client) return res.status(404).json({ error: "Client not found" });
 
     const state = Buffer.from(JSON.stringify({ clientId, timestamp: Date.now() })).toString("base64");
-    const base = (process.env.BACKEND_URL || "https://chatbot-backend-lg5y.onrender.com").replace(/\/$/, "");
+    const base = (process.env.BACKEND_URL || "https://api.topedgeai.com").replace(/\/$/, "");
     const redirectUri = `${base}/api/oauth/google/callback`;
 
     if (!process.env.GCAL_CLIENT_ID) {
@@ -558,7 +558,7 @@ router.get("/google/callback", async (req, res) => {
       return res.redirect(`${frontendUrl}/settings?tab=integrations&google_error=config_error`);
     }
 
-    const base = (process.env.BACKEND_URL || "https://chatbot-backend-lg5y.onrender.com").replace(/\/$/, "");
+    const base = (process.env.BACKEND_URL || "https://api.topedgeai.com").replace(/\/$/, "");
     const redirectUri = `${base}/api/oauth/google/callback`;
 
     // Exchange code for tokens

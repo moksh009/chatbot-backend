@@ -18,7 +18,7 @@
 
 async function logRestoreFailed(uid, details) {
     try {
-        await fetch('https://chatbot-backend-lg5y.onrender.com/api/client/delitech_smarthomes/webhook/shopify/log-restore-event', {
+        await fetch('https://api.topedgeai.com/api/client/delitech_smarthomes/webhook/shopify/log-restore-event', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ uid, action: 'restore_failed', details })
@@ -32,7 +32,7 @@ async function restoreCart(uid) {
     try {
         // 1️⃣ Fetch cart snapshot from backend
         const res = await fetch(
-            `https://chatbot-backend-lg5y.onrender.com/api/client/delitech_smarthomes/cart-snapshot?uid=${uid}`
+            `https://api.topedgeai.com/api/client/delitech_smarthomes/cart-snapshot?uid=${uid}`
         );
 
         if (!res.ok) {

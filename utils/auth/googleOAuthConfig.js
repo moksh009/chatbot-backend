@@ -48,7 +48,7 @@ function resolvePublicBackendOrigin() {
     }
   }
 
-  return 'https://chatbot-backend-lg5y.onrender.com';
+  return 'https://api.topedgeai.com';
 }
 
 function getGoogleAuthRedirectUri() {
@@ -64,10 +64,7 @@ function getGoogleOAuthRedirectUriChecklist() {
   const origin = resolvePublicBackendOrigin();
   const set = new Set([primary, `${origin}${CALENDAR_CALLBACK_PATH}`]);
 
-  const legacyHosts = [
-    'https://chatbot-backend-lg5y.onrender.com',
-    'https://api.topedgeai.com',
-  ];
+  const legacyHosts = ['https://api.topedgeai.com'];
   for (const host of legacyHosts) {
     set.add(`${host}${LOGIN_CALLBACK_PATH}`);
     set.add(`${host}${CALENDAR_CALLBACK_PATH}`);

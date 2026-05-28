@@ -53,7 +53,7 @@ const SHOPIFY_SCOPES = () =>
  */
 function resolveShopifyRedirectUri() {
   const explicit = String(process.env.SHOPIFY_REDIRECT_URI || '').trim();
-  const base = String(process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com')
+  const base = String(process.env.SERVER_URL || 'https://api.topedgeai.com')
     .trim()
     .replace(/\/+$/, '');
   const candidate = explicit || `${base}/api/shopify/callback`;
@@ -201,7 +201,7 @@ const { SHOPIFY_APP_WEBHOOK_TOPICS } = require('../constants/shopifyWebhookTopic
 
 async function registerWebhooks(shopDomain, accessToken, clientId) {
   const topics = SHOPIFY_APP_WEBHOOK_TOPICS;
-  const webhookUrl = `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/api/shopify/webhook`;
+  const webhookUrl = `${process.env.SERVER_URL || 'https://api.topedgeai.com'}/api/shopify/webhook`;
 
   for (const topic of topics) {
     try {
@@ -828,7 +828,7 @@ router.get('/callback', async (req, res) => {
       console.error(`⚠️ [ShopifyOAuth] Webhook registration failed (non-fatal):`, webhookErr.message);
     }
 
-    const serverUrl = process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com';
+    const serverUrl = process.env.SERVER_URL || 'https://api.topedgeai.com';
     axios.post(`${serverUrl}/api/shopify/${clientId}/sync-products`, {}, {
       headers: { 'Authorization': `Bearer INTERNAL_SYNC` }
     }).catch(e => console.log(`ℹ️ [ShopifyOAuth] Background product sync skipped:`, e.message));

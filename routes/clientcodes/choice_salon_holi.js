@@ -30,7 +30,7 @@ const GREETING_WORDS = [
 ];
 
 const HOLI_DATES = 'Feb 24 - March 5';
-const SERVER_URL = process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com';
+const SERVER_URL = process.env.SERVER_URL || 'https://api.topedgeai.com';
 const HOLI_IMG = `${SERVER_URL}/public/images/12.png`;
 
 // Add at the top for topic list
@@ -1547,7 +1547,7 @@ Reply in short, friendly English:`;
       await sendWhatsAppImage({
         ...helperParams,
         to: from,
-        imageUrl: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/public/images/pfinal1.png`,
+        imageUrl: `${process.env.SERVER_URL || 'https://api.topedgeai.com'}/public/images/pfinal1.png`,
         caption: 'Choice Salon – Premium Services & Pricing ✨'
       });
 

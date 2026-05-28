@@ -800,7 +800,7 @@ async function sendWhatsAppText({ phoneNumberId, to, body, io, clientConfig }) {
     } catch (err) { console.error('Text Error:', err.message); return false; }
 }
 
-const LOGO_URL = 'https://chatbot-backend-lg5y.onrender.com/public/images/logo.png';
+const LOGO_URL = 'https://api.topedgeai.com/public/images/logo.png';
 
 async function sendWhatsAppImage({ phoneNumberId, to, imageUrl, caption = '', io, clientConfig }) {
     const token = clientConfig.whatsappToken;

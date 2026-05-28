@@ -10,7 +10,7 @@ const { verifyToken }   = require("../middleware/auth");
 router.get("/config", async (req, res) => {
   try {
     const hostname = req.hostname;
-    const MAIN_DOMAIN = process.env.MAIN_DOMAIN || "chatbot-backend-lg5y.onrender.com";
+    const MAIN_DOMAIN = process.env.MAIN_DOMAIN || "api.topedgeai.com";
 
     if (!hostname || hostname === MAIN_DOMAIN || hostname === "localhost") {
       return res.json({ success: true, whitelabel: null });

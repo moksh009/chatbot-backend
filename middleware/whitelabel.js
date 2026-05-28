@@ -2,7 +2,7 @@
 
 const WhitelabelConfig = require("../models/WhitelabelConfig");
 
-const MAIN_DOMAIN = process.env.MAIN_DOMAIN || "chatbot-backend-lg5y.onrender.com";
+const MAIN_DOMAIN = process.env.MAIN_DOMAIN || "api.topedgeai.com";
 
 /**
  * Detect and attach white-label config based on request hostname.

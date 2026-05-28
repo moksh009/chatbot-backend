@@ -9,7 +9,7 @@ embedded = false
 api_version = "2026-04"
 
   [[webhooks.subscriptions]]
-  uri = "https://chatbot-backend-lg5y.onrender.com/api/shopify/compliance"
+  uri = "https://api.topedgeai.com/api/shopify/compliance"
   compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
 
 [access_scopes]
@@ -20,5 +20,5 @@ use_legacy_install_flow = false
 
 [auth]
 redirect_urls = [
-  "https://chatbot-backend-lg5y.onrender.com/api/shopify/callback"
+  "https://api.topedgeai.com/api/shopify/callback"
 ]

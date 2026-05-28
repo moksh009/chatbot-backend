@@ -56,7 +56,7 @@ async function createRazorpayLink(client, amount, orderId, name, phone, email, d
         description,
         customer: { name, contact: phone, email },
         notify: { sms: false, email: false },
-        callback_url: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/r/razorpay-callback/${orderId}`,
+        callback_url: `${process.env.SERVER_URL || 'https://api.topedgeai.com'}/r/razorpay-callback/${orderId}`,
         callback_method: 'get'
     });
 
@@ -86,7 +86,7 @@ async function createCashfreeLink(client, amount, orderId, name, phone, email, d
                 customer_email: email
             },
             link_meta: {
-                return_url: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/r/cashfree-callback/${orderId}?link_id={link_id}`
+                return_url: `${process.env.SERVER_URL || 'https://api.topedgeai.com'}/r/cashfree-callback/${orderId}?link_id={link_id}`
             }
         },
         {
@@ -116,7 +116,7 @@ async function createStripeLink(client, amount, orderId, name, phone, email, des
     params.append('line_items[0][price_data][unit_amount]', Math.round(amount * 100));
     params.append('line_items[0][quantity]', '1');
     params.append('mode', 'payment');
-    params.append('success_url', `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/r/stripe-callback/${orderId}?session_id={CHECKOUT_SESSION_ID}`);
+    params.append('success_url', `${process.env.SERVER_URL || 'https://api.topedgeai.com'}/r/stripe-callback/${orderId}?session_id={CHECKOUT_SESSION_ID}`);
 
     const response = await axios.post('https://api.stripe.com/v1/checkout/sessions', params, {
         headers: {
@@ -145,9 +145,9 @@ async function createPhonePeLink(client, amount, orderId, name, phone, email, de
         merchantTransactionId: transactionId,
         merchantUserId: `U${orderId}`,
         amount: Math.round(amount * 100),
-        redirectUrl: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/r/phonepe-callback/${orderId}`,
+        redirectUrl: `${process.env.SERVER_URL || 'https://api.topedgeai.com'}/r/phonepe-callback/${orderId}`,
         redirectMode: 'POST',
-        callbackUrl: `${process.env.SERVER_URL || 'https://chatbot-backend-lg5y.onrender.com'}/api/payment/phonepe/webhook`,
+        callbackUrl: `${process.env.SERVER_URL || 'https://api.topedgeai.com'}/api/payment/phonepe/webhook`,
         paymentInstrument: { type: 'PAY_PAGE' }
     };
 
