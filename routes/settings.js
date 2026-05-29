@@ -190,11 +190,17 @@ router.put('/:clientId/website-chat-widget', protect, verifyClientAccess, async 
       { clientId },
       { $set: { websiteChatWidgetConfig: merged } },
       { new: true }
-    ).select('websiteChatWidgetConfig');
+    )
+      .select('websiteChatWidgetConfig visualFlows businessName brand.businessName businessLogo')
+      .lean();
     if (!doc) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    const origin = `${req.protocol}://${req.get('host')}`;
+    const bundle = buildWebsiteWidgetSettingsBundle(doc, { clientId, origin });
+
     res.json({
       success: true,
-      websiteChatWidgetConfig: mergeWebsiteWidgetConfig(doc.websiteChatWidgetConfig),
+      ...bundle,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

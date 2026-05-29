@@ -204,9 +204,14 @@
     if (!data || !data.widget) return;
     var w = data.widget;
     var b = data.branding || {};
+    if (w.enabled === false) {
+      CONFIG.disabled = true;
+      return;
+    }
     CONFIG.theme = w.theme || CONFIG.theme;
     CONFIG.themeSecondary = w.themeSecondary || CONFIG.themeSecondary;
     CONFIG.mode = w.mode || CONFIG.mode;
+    CONFIG.experience = w.experience || CONFIG.experience;
     CONFIG.position = w.position || CONFIG.position;
     CONFIG.delay = typeof w.delaySeconds === 'number' ? w.delaySeconds : CONFIG.delay;
     CONFIG.greeting = w.greeting || b.greeting || CONFIG.greeting;
@@ -231,7 +236,7 @@
       })
       .then(function (data) {
         applyRemoteConfig(data);
-        if (data.widget && data.widget.enabled === false) return;
+        if (CONFIG.disabled || (data.widget && data.widget.enabled === false)) return;
         mount();
       })
       .catch(function () {

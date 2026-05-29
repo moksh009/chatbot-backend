@@ -174,6 +174,7 @@ async function sendAutomationTemplate({ clientConfig, order, automation, item })
     shipped: 'order_fulfilled',
     delivered: 'order_delivered',
     cancelled: 'order_cancelled',
+    cod: 'cod_order_placed',
   };
   const trigger = triggerMap[automation.event] || null;
 
@@ -328,6 +329,90 @@ function syncSystemOrderRulesFromNicheMap(automations = [], nicheData = {}) {
   });
 }
 
+const CART_SLOT_TEMPLATE_NAMES = {
+  followup_1: 'cart_recovery_1',
+  followup_2: 'cart_recovery_2',
+  followup_3: 'cart_recovery_3',
+};
+
+function findApprovedSyncedTemplateName(syncedTemplates = [], templateName) {
+  const target = String(templateName || '').trim();
+  if (!target) return null;
+  let resolveCanonicalTemplateName = (n) => String(n || '').trim();
+  try {
+    resolveCanonicalTemplateName = require('../constants/templateCatalog/catalog').resolveCanonicalTemplateName;
+  } catch (_) { /* catalog optional in tests */ }
+  const targetCanon = resolveCanonicalTemplateName(target);
+
+  for (const t of syncedTemplates || []) {
+    const name = String(t?.name || '').trim();
+    if (!name) continue;
+    const st = String(t.status || t.metaStatus || t.submissionStatus || '').toUpperCase();
+    if (st !== 'APPROVED' && st !== 'ACTIVE') continue;
+    const nameCanon = resolveCanonicalTemplateName(name);
+    if (name === target || nameCanon === targetCanon || name === targetCanon) {
+      return name;
+    }
+  }
+  return null;
+}
+
+/** Wire system SAC rules to approved WABA templates when Meta name matches catalog (eco / cart_recovery_*). */
+function autoLinkApprovedTemplatesToSystemRules(automations = [], syncedTemplates = []) {
+  if (!Array.isArray(automations) || !syncedTemplates?.length) return automations;
+
+  const { ORDER_STATUS_ECO_REGISTRY } = require('./orderStatusTemplatePolicy');
+  const { cartRecoveryVariableMappings } = require('../../constants/cartRecoverySlotPresets');
+
+  return automations.map((rule) => {
+    if (!rule?.meta?.system || String(rule.templateName || '').trim()) return rule;
+
+    if (rule.meta?.category === 'order_notification') {
+      const event = normalizeEvent(rule.event);
+      if (event === 'cod') {
+        const { getPrebuiltByKey } = require('../../constants/prebuiltTemplateLibrary');
+        const prebuilt = getPrebuiltByKey('cod_confirmation_v1');
+        const approvedName = findApprovedSyncedTemplateName(syncedTemplates, 'cod_confirmation_v1');
+        if (!approvedName) return rule;
+        const body = rule.variableMappings?.body || {};
+        const hasMappings = Object.values(body).some((v) => v != null && v !== '');
+        return {
+          ...rule,
+          templateName: approvedName,
+          variableMappings: hasMappings ? rule.variableMappings : prebuilt?.variableMappings || { body: {} },
+        };
+      }
+      const preset = ORDER_STATUS_ECO_REGISTRY[event];
+      if (!preset) return rule;
+      const approvedName = findApprovedSyncedTemplateName(syncedTemplates, preset.templateName);
+      if (!approvedName) return rule;
+      const body = rule.variableMappings?.body || {};
+      const hasMappings = Object.values(body).some((v) => v != null && v !== '');
+      return {
+        ...rule,
+        templateName: approvedName,
+        variableMappings: hasMappings ? rule.variableMappings : preset.variableMappings,
+      };
+    }
+
+    if (rule.meta?.category === 'abandoned_cart') {
+      const tplName = CART_SLOT_TEMPLATE_NAMES[rule.meta?.systemSlot];
+      const approvedName = tplName ? findApprovedSyncedTemplateName(syncedTemplates, tplName) : null;
+      if (!approvedName) return rule;
+      const step = Number(rule.meta?.followupStep) || 1;
+      const body = rule.variableMappings?.body || {};
+      const hasMappings = Object.values(body).some((v) => v != null && v !== '');
+      return {
+        ...rule,
+        templateName: approvedName,
+        variableMappings: hasMappings ? rule.variableMappings : cartRecoveryVariableMappings(step),
+      };
+    }
+
+    return rule;
+  });
+}
+
 async function ensureMigration(clientConfig = {}, { persist = true } = {}) {
   if (Array.isArray(clientConfig.commerceAutomations) && clientConfig.commerceAutomations.length > 0) {
     return clientConfig.commerceAutomations;
@@ -419,8 +504,13 @@ function pruneDuplicateOrderNotificationRules(automations = []) {
 
 async function ensureSystemAutomationsPersisted(clientConfig = {}) {
   const base = await ensureMigration(clientConfig, { persist: false });
+  const withSystem = mergeSystemAutomations(base);
+  const linked = autoLinkApprovedTemplatesToSystemRules(
+    withSystem,
+    clientConfig?.syncedMetaTemplates || []
+  );
   const merged = pruneDuplicateOrderNotificationRules(
-    syncSystemOrderRulesFromNicheMap(mergeSystemAutomations(base), clientConfig?.nicheData || {})
+    syncSystemOrderRulesFromNicheMap(linked, clientConfig?.nicheData || {})
   );
   const changed =
     merged.length !== base.length ||
@@ -434,7 +524,31 @@ async function ensureSystemAutomationsPersisted(clientConfig = {}) {
       );
     });
   if (clientConfig.clientId && changed) {
-    await persistAutomations(clientConfig.clientId, merged);
+    const clientUpdate = {
+      commerceAutomations: merged,
+      commerceAutomationVersion: COMMERCE_AUTOMATION_VERSION,
+    };
+    for (const rule of merged) {
+      if (rule.meta?.category !== 'abandoned_cart' || !rule.templateName) continue;
+      const cartPatch = cartFollowupSyncPatch(rule);
+      if (cartPatch.wizardFeatures && Object.keys(cartPatch.wizardFeatures).length) {
+        Object.assign(
+          clientUpdate,
+          Object.fromEntries(
+            Object.entries(cartPatch.wizardFeatures).map(([k, v]) => [`wizardFeatures.${k}`, v])
+          )
+        );
+      }
+      if (cartPatch.nicheData && Object.keys(cartPatch.nicheData).length) {
+        Object.assign(
+          clientUpdate,
+          Object.fromEntries(
+            Object.entries(cartPatch.nicheData).map(([k, v]) => [`nicheData.${k}`, v])
+          )
+        );
+      }
+    }
+    await Client.findOneAndUpdate({ clientId: clientConfig.clientId }, { $set: clientUpdate });
   }
   return merged;
 }
@@ -789,6 +903,7 @@ module.exports = {
   normalizeEvent,
   ensureMigration,
   ensureSystemAutomationsPersisted,
+  sendAutomationTemplate,
   pruneDuplicateOrderNotificationRules,
   listAutomations,
   upsertAutomation,

@@ -1280,6 +1280,36 @@ router.post('/push-standard', protect, async (req, res) => {
     }
 });
 
+// Submit a single workspace template (MetaTemplate / messageTemplates) to Meta for review
+router.post('/submit-workspace', protect, async (req, res) => {
+    try {
+        const { clientId, templateName } = req.body || {};
+        if (!clientId || !templateName) {
+            return res.status(400).json({ success: false, message: 'clientId and templateName are required' });
+        }
+        const tenantId = tenantClientId(req);
+        if (!tenantId || tenantId !== clientId) {
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
+        const { submitWorkspaceTemplateToMeta } = require('../utils/meta/submitWorkspaceTemplateToMeta');
+        const out = await submitWorkspaceTemplateToMeta({
+            clientId,
+            templateName: String(templateName).trim(),
+            userId: req.user?.id || req.user?._id,
+        });
+        if (out.success) {
+            return res.json({ success: true, message: out.message || 'Submitted to Meta for review.' });
+        }
+        return res.status(400).json({
+            success: false,
+            message: out.message || 'Submit failed',
+            duplicate: !!out.duplicate,
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
 // 8. Upload Media to Meta (Resumable Upload API)
 router.post('/upload-media', protect, upload.single('file'), async (req, res) => {
     try {

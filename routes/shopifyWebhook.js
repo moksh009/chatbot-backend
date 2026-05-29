@@ -802,6 +802,25 @@ async function handleOrder(client, data, storeKey = '') {
       log.warn(`[ShopifyWebhook] order template send skipped: ${tplErr.message}`);
     }
 
+    // Commerce automation: COD confirmation rule (sys_order_cod)
+    if (isCODOrder) {
+      try {
+        const { dispatchOrderStatusAutomation } = require('../utils/commerce/orderEventDispatcher');
+        const orderPlain = typeof newOrder.toObject === 'function' ? newOrder.toObject() : newOrder;
+        await dispatchOrderStatusAutomation({
+          clientConfig: client,
+          order: orderPlain,
+          previousStatus: '',
+          newStatus: 'cod',
+          io: null,
+          source: 'shopify_webhook:orders/create:cod',
+          options: { force: true },
+        });
+      } catch (codErr) {
+        log.warn(`[ShopifyWebhook] COD automation dispatch skipped: ${codErr.message}`);
+      }
+    }
+
     // Eco order-status templates (paid / confirmed) — same pipeline as shipped/fulfilled webhooks
     try {
       const fin = String(data.financial_status || '').toLowerCase();

@@ -1,6 +1,6 @@
 'use strict';
 
-const ORDER_NOTIFICATION_SLOTS = ['pending', 'paid', 'shipped', 'delivered', 'cancelled'];
+const ORDER_NOTIFICATION_SLOTS = ['pending', 'paid', 'shipped', 'delivered', 'cancelled', 'cod'];
 
 const ABANDONED_CART_SLOTS = ['followup_1', 'followup_2', 'followup_3'];
 
@@ -26,6 +26,7 @@ function orderNotificationRule(slot) {
     shipped: 'Order Shipped',
     delivered: 'Order Delivered',
     cancelled: 'Order Cancelled',
+    cod: 'COD confirmation',
   };
   return {
     id: `sys_order_${slot}`,

@@ -14,19 +14,59 @@ const { checkLimit, incrementUsage } = require('../utils/core/planLimits');
 const { tenantClientId } = require('../utils/core/queryHelpers');
 const { apiCache } = require('../middleware/apiCache');
 
+const TEN_MIN_MS = 10 * 60 * 1000;
+
+async function buildTeamWithMetrics(clientId) {
+    const [users, performanceMetrics] = await Promise.all([
+        User.find({ clientId }).select('-password').lean(),
+        Conversation.aggregate([
+            { $match: { clientId, assignedTo: { $exists: true, $ne: null } } },
+            {
+                $group: {
+                    _id: '$assignedTo',
+                    totalAssigned: { $sum: 1 },
+                    resolvedCount: { $sum: { $cond: [{ $eq: ['$status', 'CLOSED'] }, 1, 0] } },
+                    avgCsat: { $avg: '$csatScore.rating' },
+                    lastActive: { $max: '$lastInteraction' },
+                },
+            },
+        ]),
+    ]);
+
+    const metricByUser = new Map(performanceMetrics.map((m) => [String(m._id), m]));
+
+    return users.map((user) => {
+        const metric = metricByUser.get(String(user._id));
+        const pendingTasks = (user.tasks || []).filter((t) => t.status === 'pending').length;
+        const lastActive = metric?.lastActive || null;
+        const isOnline = lastActive && Date.now() - new Date(lastActive).getTime() < TEN_MIN_MS;
+
+        return {
+            ...user,
+            id: user._id.toString(),
+            metrics: {
+                assignedChats: metric ? metric.totalAssigned : 0,
+                resolvedChats: metric ? metric.resolvedCount : 0,
+                avgCsat: metric && metric.avgCsat ? Number(metric.avgCsat.toFixed(1)) : 0,
+                lastActive,
+                pendingTasks,
+                isOnline,
+            },
+        };
+    });
+}
+
 // @route   GET /api/team
 // @route   GET /api/users/team
-// @desc    Get all team members for a client (root handler)
-router.get('/', protect, apiCache(60), async (req, res) => {
+// @desc    Team directory with Live Chat performance metrics
+router.get('/', protect, apiCache(30), async (req, res) => {
     const { createTimer } = require('../utils/core/perfLogger');
     const timer = createTimer('GET /api/team', req.user?.clientId || '');
     try {
         const clientId = req.user.clientId;
-        const users = await timer.time('User.find', () =>
-            User.find({ clientId }).select('-password').lean()
-        );
-        res.json({ success: true, team: users });
-        timer.finish(`200 ok | count=${users.length}`);
+        const team = await timer.time('team.metrics', () => buildTeamWithMetrics(clientId));
+        res.json({ success: true, team });
+        timer.finish(`200 ok | count=${team.length}`);
     } catch (error) {
         timer.finish(`500 error=${error.message}`);
         res.status(500).json({ success: false, message: error.message });
@@ -35,93 +75,22 @@ router.get('/', protect, apiCache(60), async (req, res) => {
 
 router.get('/team', protect, async (req, res) => {
     try {
-        const clientId = req.user.clientId;
-        console.log(`[TeamAPI] Fetching team for authenticated user clientId: ${clientId}`);
-        
-        const [users, performanceMetrics] = await Promise.all([
-            User.find({ clientId }).select('-password').lean(),
-            Conversation.aggregate([
-                { $match: { clientId, assignedTo: { $exists: true, $ne: null } } },
-                {
-                    $group: {
-                        _id: '$assignedTo',
-                        totalAssigned: { $sum: 1 },
-                        resolvedCount: { $sum: { $cond: [{ $eq: ['$status', 'CLOSED'] }, 1, 0] } },
-                        avgCsat: { $avg: '$csatScore.rating' },
-                        lastActive: { $max: '$lastInteraction' }
-                    }
-                }
-            ])
-        ]);
-
-        const metricByUser = new Map(
-            performanceMetrics.map((m) => [String(m._id), m])
-        );
-
-        const teamWithMetrics = users.map((user) => {
-            const metric = metricByUser.get(String(user._id));
-            return {
-                ...user,
-                id: user._id.toString(),
-                metrics: {
-                    assignedChats: metric ? metric.totalAssigned : 0,
-                    resolvedChats: metric ? metric.resolvedCount : 0,
-                    avgCsat: metric && metric.avgCsat ? Number(metric.avgCsat.toFixed(1)) : 0,
-                    lastActive: metric ? metric.lastActive : null
-                }
-            };
-        });
-
-        res.json({ success: true, team: teamWithMetrics });
+        const team = await buildTeamWithMetrics(req.user.clientId);
+        res.json({ success: true, team });
     } catch (error) {
-        console.error('[TeamAPI] Root Fetch Error:', error);
+        console.error('[TeamAPI] Fetch Error:', error);
         res.status(500).json({ message: 'Server Error', error: error.message });
     }
 });
+
 router.get('/:clientId', protect, verifyTenantScope(), async (req, res) => {
     try {
         const clientId = tenantClientId(req);
         if (!clientId || clientId !== req.params.clientId) {
-           console.warn(`[TeamAPI] Unauthorized access attempt for tenant lookup`);
-           return res.status(403).json({ success: false, message: 'Unauthorized' });
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
-        console.log(`[TeamAPI] Fetching team for explicitly provided clientId: ${clientId}`);
-
-        const [users, performanceMetrics] = await Promise.all([
-            User.find({ clientId }).select('-password').lean(),
-            Conversation.aggregate([
-                { $match: { clientId, assignedTo: { $exists: true, $ne: null } } },
-                {
-                    $group: {
-                        _id: '$assignedTo',
-                        totalAssigned: { $sum: 1 },
-                        resolvedCount: { $sum: { $cond: [{ $eq: ['$status', 'CLOSED'] }, 1, 0] } },
-                        avgCsat: { $avg: '$csatScore.rating' },
-                        lastActive: { $max: '$lastInteraction' }
-                    }
-                }
-            ])
-        ]);
-
-        const metricByUser = new Map(
-            performanceMetrics.map((m) => [String(m._id), m])
-        );
-
-        const teamWithMetrics = users.map((user) => {
-            const metric = metricByUser.get(String(user._id));
-            return {
-                ...user,
-                id: user._id.toString(),
-                metrics: {
-                    assignedChats: metric ? metric.totalAssigned : 0,
-                    resolvedChats: metric ? metric.resolvedCount : 0,
-                    avgCsat: metric && metric.avgCsat ? Number(metric.avgCsat.toFixed(1)) : 0,
-                    lastActive: metric ? metric.lastActive : null
-                }
-            };
-        });
-
-        res.json({ success: true, team: teamWithMetrics });
+        const team = await buildTeamWithMetrics(clientId);
+        res.json({ success: true, team });
     } catch (error) {
         console.error('[TeamAPI] Fetch Error:', error);
         res.status(500).json({ message: 'Server Error', error: error.message });
@@ -200,6 +169,57 @@ router.post('/invite', ...teamAdmin, async (req, res) => {
         });
     } catch (error) {
         console.error('[TeamAPI] Invite Error:', error);
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+});
+
+// @route   POST /api/team/assign-task
+// @desc    Assign an internal task to an agent (stored on User.tasks)
+router.post('/assign-task', ...teamAdmin, async (req, res) => {
+    try {
+        const { agentId, title, description, priority = 'medium', dueDate } = req.body;
+        if (!agentId || !title) {
+            return res.status(400).json({ message: 'agentId and title are required' });
+        }
+
+        const agent = await User.findById(agentId);
+        if (!agent) return res.status(404).json({ message: 'Agent not found' });
+        if (agent.clientId !== req.user.clientId) {
+            return res.status(403).json({ message: 'Unauthorized' });
+        }
+
+        const dueAt = dueDate ? new Date(dueDate) : null;
+        const descParts = [];
+        if (priority) descParts.push(`Priority: ${priority}`);
+        if (description) descParts.push(description);
+        const fullDescription = descParts.join('\n\n') || '';
+
+        agent.tasks.push({
+            title: String(title).trim(),
+            description: fullDescription,
+            type: 'custom',
+            assignedBy: req.user._id,
+            assignedAt: new Date(),
+            dueAt: dueAt && !Number.isNaN(dueAt.getTime()) ? dueAt : undefined,
+            status: 'pending',
+        });
+        await agent.save();
+
+        await logActivity(req.user.clientId, {
+            type: 'TEAM',
+            status: 'info',
+            title: 'Task assigned',
+            message: `${req.user.name} assigned "${title}" to ${agent.name}`,
+            metadata: { agentId: agent._id, priority },
+        });
+
+        res.status(201).json({
+            success: true,
+            message: 'Task assigned',
+            pendingTasks: agent.tasks.filter((t) => t.status === 'pending').length,
+        });
+    } catch (error) {
+        console.error('[TeamAPI] Assign task error:', error);
         res.status(500).json({ message: 'Server Error', error: error.message });
     }
 });

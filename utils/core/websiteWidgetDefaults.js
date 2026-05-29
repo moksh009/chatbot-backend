@@ -30,10 +30,13 @@ function mergeWebsiteWidgetConfig(stored) {
 
 function pickWebsiteWidgetForPublic(cfg) {
   const c = mergeWebsiteWidgetConfig(cfg);
+  const mode = c.mode || 'both';
+  const experience =
+    mode === 'guided' ? 'guided' : c.experience === 'guided' ? 'guided' : c.experience || 'classic';
   return {
     enabled: c.enabled !== false,
-    mode: c.mode || 'both',
-    experience: c.experience || 'classic',
+    mode,
+    experience,
     flowId: c.flowId || '',
     theme: c.theme || DEFAULT_WEBSITE_CHAT_WIDGET.theme,
     themeSecondary: c.themeSecondary || DEFAULT_WEBSITE_CHAT_WIDGET.themeSecondary,

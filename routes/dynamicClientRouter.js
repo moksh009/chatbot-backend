@@ -218,7 +218,7 @@ router.patch('/config', ...secure, async (req, res) => {
   }
 });
 
-router.get('/commerce-automations', ...secure, apiCache(90), async (req, res) => {
+router.get('/commerce-automations', ...secure, async (req, res) => {
   try {
     const { clientId } = req.params;
     const isAuthorized = req.user.role === 'SUPER_ADMIN' ||

@@ -1090,7 +1090,7 @@ function resolveOrderStatusTemplateKey(status) {
  */
 async function sendMappedOrderStatusWhatsApp({ clientConfig, order, status, trackingNumber, trackingUrl, io }) {
     const nicheData = clientConfig.nicheData || {};
-    const automations = await commerceAutomationService.ensureMigration(clientConfig, { persist: true });
+    const automations = await commerceAutomationService.ensureSystemAutomationsPersisted(clientConfig);
     const statusMap = commerceAutomationService.getOrderStatusTemplateMap(automations);
     const mapKey = resolveOrderStatusTemplateKey(status);
     const templateName = statusMap[mapKey];
@@ -1144,6 +1144,28 @@ async function sendMappedOrderStatusWhatsApp({ clientConfig, order, status, trac
                     }
                 })
                 .catch(() => {});
+        }
+    }
+
+    if (!ok && !isEcoTemplateName(templateName)) {
+        const matchedRule = automations.find(
+            (a) =>
+                a.triggerType === 'order_status' &&
+                commerceAutomationService.normalizeEvent(a.event) === mapKey &&
+                String(a.templateName || '') === String(templateName) &&
+                a.isActive
+        );
+        if (matchedRule) {
+            try {
+                ok = await commerceAutomationService.sendAutomationTemplate({
+                    clientConfig,
+                    order,
+                    automation: matchedRule,
+                    item: null,
+                });
+            } catch (nonEcoErr) {
+                console.warn(`[OrderStatusWA] sendAutomationTemplate: ${nonEcoErr.message}`);
+            }
         }
     }
 

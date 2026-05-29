@@ -282,7 +282,18 @@ Return ONLY a JSON array with this schema:
 // ─── POST /api/meta-ads/test-template — send test message ──────────────────
 router.post("/test-template", verifyToken, async (req, res) => {
   try {
-    const { clientId, phone, templateName, language } = req.body;
+    const {
+      clientId,
+      phone,
+      templateName,
+      language,
+      variableMappings,
+      triggerType,
+      event,
+      ruleId,
+      followupStep,
+      customVariableValues,
+    } = req.body;
     if (!clientId || !phone || !templateName) {
       return res.status(400).json({ success: false, message: "Missing required fields" });
     }
@@ -292,6 +303,7 @@ router.post("/test-template", verifyToken, async (req, res) => {
 
     const { sendWhatsAppTemplate } = require('../utils/meta/whatsappHelpers');
     const { getEffectiveWhatsAppAccessToken, getEffectiveWhatsAppPhoneNumberId } = require('../utils/meta/clientWhatsAppCreds');
+    const { buildTestTemplatePayload } = require('../utils/meta/buildTestTemplatePayload');
 
     const token = await getEffectiveWhatsAppAccessToken(client);
     const phoneNumberId = await getEffectiveWhatsAppPhoneNumberId(client);
@@ -299,6 +311,17 @@ router.post("/test-template", verifyToken, async (req, res) => {
     if (!token || !phoneNumberId) {
       return res.status(400).json({ success: false, message: "WhatsApp credentials not configured" });
     }
+
+    const { components, mode } = await buildTestTemplatePayload({
+      clientId,
+      templateName,
+      variableMappings,
+      triggerType,
+      event,
+      ruleId,
+      followupStep,
+      customVariableValues,
+    });
 
     const primaryLanguage = await resolveTemplateLanguage({
       client,
@@ -322,7 +345,7 @@ router.post("/test-template", verifyToken, async (req, res) => {
         to: phone,
         templateName,
         languageCode: langCode,
-        components: [],
+        components: components || [],
         token,
         clientId,
       });
@@ -336,12 +359,14 @@ router.post("/test-template", verifyToken, async (req, res) => {
         success: true,
         message: "Test template dispatched",
         languageUsed: attemptedLanguages[attemptedLanguages.length - 1] || primaryLanguage,
+        componentMode: mode,
       });
     } else {
       res.status(400).json({
         success: false,
         message: humanizeMetaError(result.error) || "Meta API Error",
         attemptedLanguages,
+        componentMode: mode,
       });
     }
   } catch (err) {
