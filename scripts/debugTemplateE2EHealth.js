@@ -88,23 +88,20 @@ function main() {
     cartRecovery3InRequired: (catalogs.backend?.prebuiltRequiredMetaNames || []).includes('cart_recovery_3'),
   });
 
-  const { buildSystemAutomations, ORDER_NOTIFICATION_SLOTS, ABANDONED_CART_SLOTS } = require('../utils/commerce/commerceAutomationPresets');
-  const { ORDER_STATUS_ECO_REGISTRY } = require('../utils/commerce/orderStatusTemplatePolicy');
+  const {
+    buildSystemAutomations,
+    FULFILLMENT_STATUS_RULES,
+    PAYMENT_STATUS_RULES,
+  } = require('../utils/commerce/commerceAutomationPresets');
   const systemRules = buildSystemAutomations();
 
   const orderRules = systemRules.filter((r) => r.meta?.category === 'order_notification');
   const cartRules = systemRules.filter((r) => r.meta?.category === 'abandoned_cart');
 
-  const ecoStatuses = Object.keys(ORDER_STATUS_ECO_REGISTRY);
-  const sacOrderEvents = orderRules.map((r) => r.event);
-  const missingEcoInSac = ecoStatuses.filter((s) => !sacOrderEvents.includes(s));
-
-  log('H4', 'order_status_sac_vs_eco', {
-    sacOrderEvents,
-    ecoStatuses,
-    missingEcoInSac,
+  log('H4', 'order_status_rules', {
     sacOrderRuleCount: orderRules.length,
-    expectedOrderSlots: ORDER_NOTIFICATION_SLOTS,
+    fulfillmentStatuses: FULFILLMENT_STATUS_RULES.map((r) => r.status),
+    paymentStatuses: PAYMENT_STATUS_RULES.map((r) => r.status),
     cartRuleCount: cartRules.length,
     cartDelays: cartRules.map((r) => ({
       slot: r.meta?.systemSlot,

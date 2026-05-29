@@ -1,8 +1,80 @@
 'use strict';
 
-const ORDER_NOTIFICATION_SLOTS = ['pending', 'paid', 'shipped', 'delivered', 'cancelled', 'cod'];
+/** Legacy order-notification slots (pending/paid/shipped/delivered/cancelled/cod). Retired in
+ *  May 2026 in favour of the new fulfillment + payment status rule sets below. We keep the slot
+ *  list around for the migration / cleanup helpers (they detect and drop these from existing
+ *  client documents on the next list call). */
+const LEGACY_ORDER_NOTIFICATION_SLOTS = ['pending', 'paid', 'shipped', 'delivered', 'cancelled', 'cod'];
 
 const ABANDONED_CART_SLOTS = ['followup_1', 'followup_2', 'followup_3'];
+
+/** Fulfillment status rules surfaced in the Order Updates tab. Mirror frontend
+ *  src/utils/commerceAutomationCatalog.js for tooltip + label parity. */
+const FULFILLMENT_STATUS_RULES = [
+  {
+    status: 'unfulfilled',
+    label: 'Unfulfilled',
+    tooltip: 'The order has been placed, but no items have been packed or shipped yet',
+  },
+  {
+    status: 'partial',
+    label: 'Partially Fulfilled',
+    tooltip: 'Only some items in the order have been shipped',
+  },
+  {
+    status: 'fulfilled',
+    label: 'Fulfilled',
+    tooltip: 'All items in the order have been packed, assigned a tracking number, and shipped',
+  },
+  {
+    status: 'on_hold',
+    label: 'On Hold',
+    tooltip: 'Fulfillment is temporarily paused by an app or by the merchant',
+  },
+  {
+    status: 'scheduled',
+    label: 'Scheduled',
+    tooltip: 'The fulfillment is set for a specific future date, typical for subscriptions',
+  },
+];
+
+const PAYMENT_STATUS_RULES = [
+  {
+    status: 'pending',
+    label: 'Pending',
+    tooltip: 'Payment is being processed, or it is a Cash on Delivery',
+  },
+  {
+    status: 'authorized',
+    label: 'Authorized',
+    tooltip: 'Payment is verified but not yet captured by the merchant',
+  },
+  {
+    status: 'paid',
+    label: 'Paid',
+    tooltip: 'Payment successfully captured and completed',
+  },
+  {
+    status: 'partially_paid',
+    label: 'Partially Paid',
+    tooltip: 'Only a portion of the order total has been paid',
+  },
+  {
+    status: 'refunded',
+    label: 'Refunded',
+    tooltip: 'The full payment amount was sent back to the customer',
+  },
+  {
+    status: 'partially_refunded',
+    label: 'Partially Refunded',
+    tooltip: 'Only a portion of the payment was sent back',
+  },
+  {
+    status: 'voided',
+    label: 'Voided',
+    tooltip: 'The payment authorization was cancelled before any money changed hands',
+  },
+];
 
 const { cartRecoveryVariableMappings } = require('../../constants/cartRecoverySlotPresets');
 
@@ -19,24 +91,19 @@ const CART_FOLLOWUP_DEFAULT_MINUTES = {
   followup_3: 36 * 60,
 };
 
-function orderNotificationRule(slot) {
-  const labels = {
-    pending: 'Order Pending',
-    paid: 'Order Paid',
-    shipped: 'Order Shipped',
-    delivered: 'Order Delivered',
-    cancelled: 'Order Cancelled',
-    cod: 'COD confirmation',
-  };
+function fulfillmentStatusRule({ status, label, tooltip }) {
   return {
-    id: `sys_order_${slot}`,
-    name: labels[slot] || `Order ${slot}`,
+    id: `sys_fulfillment_${status}`,
+    name: label,
     triggerType: 'order_status',
-    event: slot,
+    triggerStatusType: 'fulfillment',
+    triggerStatus: status,
+    event: status,
     matchType: 'exact',
     sku: '',
     triggerScope: 'every_order',
     targetProductIds: [],
+    productIds: [],
     productId: '',
     productTitle: '',
     variantId: '',
@@ -49,13 +116,60 @@ function orderNotificationRule(slot) {
     isActive: false,
     variableMappings: { body: {} },
     customVariableValues: {},
+    isDeletable: false,
     meta: {
       system: true,
       category: 'order_notification',
-      systemSlot: slot,
+      group: 'fulfillment_status',
+      systemSlot: `fulfillment_${status}`,
+      tooltip,
       locked: true,
     },
   };
+}
+
+function paymentStatusRule({ status, label, tooltip }) {
+  return {
+    id: `sys_financial_${status}`,
+    name: label,
+    triggerType: 'order_status',
+    triggerStatusType: 'financial',
+    triggerStatus: status,
+    event: status,
+    matchType: 'exact',
+    sku: '',
+    triggerScope: 'every_order',
+    targetProductIds: [],
+    productIds: [],
+    productId: '',
+    productTitle: '',
+    variantId: '',
+    actionType: 'send_template',
+    templateName: '',
+    sequenceId: '',
+    language: 'en',
+    delayMinutes: 0,
+    imageUrl: '',
+    isActive: false,
+    variableMappings: { body: {} },
+    customVariableValues: {},
+    isDeletable: false,
+    meta: {
+      system: true,
+      category: 'order_notification',
+      group: 'payment_status',
+      systemSlot: `financial_${status}`,
+      tooltip,
+      locked: true,
+    },
+  };
+}
+
+/** ID prefix of every legacy order-notification rule we now retire. */
+const LEGACY_ORDER_RULE_ID_PREFIX = 'sys_order_';
+
+function isLegacyOrderRuleId(id) {
+  return String(id || '').startsWith(LEGACY_ORDER_RULE_ID_PREFIX);
 }
 
 function abandonedCartRule(slot, stepNum) {
@@ -99,7 +213,8 @@ function abandonedCartRule(slot, stepNum) {
 
 function buildSystemAutomations() {
   return [
-    ...ORDER_NOTIFICATION_SLOTS.map(orderNotificationRule),
+    ...FULFILLMENT_STATUS_RULES.map(fulfillmentStatusRule),
+    ...PAYMENT_STATUS_RULES.map(paymentStatusRule),
     ...ABANDONED_CART_SLOTS.map((slot, i) => abandonedCartRule(slot, i + 1)),
   ];
 }
@@ -120,7 +235,6 @@ function mergeSystemAutomations(existing = []) {
       continue;
     }
     const curBody = cur.variableMappings?.body || {};
-    const presetBody = preset.variableMappings?.body || {};
     const hasCurMappings = Object.values(curBody).some((v) => v != null && v !== '');
     const variableMappings = hasCurMappings
       ? cur.variableMappings
@@ -131,14 +245,21 @@ function mergeSystemAutomations(existing = []) {
       ...cur,
       name: preset.name,
       triggerType: preset.triggerType,
+      triggerStatus: preset.triggerStatus,
+      triggerStatusType: preset.triggerStatusType,
       event: preset.event,
       variableMappings,
+      isDeletable: false,
       meta: { ...preset.meta, ...(cur.meta || {}) },
     });
   }
 
+  /** Surface custom rules merchants created in the past, but quietly drop the retired
+   *  legacy `sys_order_*` rules so the UI never shows them again. */
   for (const rule of existing) {
-    if (!presets.some((p) => p.id === rule.id)) merged.push(rule);
+    if (presets.some((p) => p.id === rule.id)) continue;
+    if (isLegacyOrderRuleId(rule.id)) continue;
+    merged.push(rule);
   }
 
   return merged;
@@ -184,12 +305,15 @@ function cartFollowupSyncPatch(automation) {
 }
 
 module.exports = {
-  ORDER_NOTIFICATION_SLOTS,
+  LEGACY_ORDER_NOTIFICATION_SLOTS,
   ABANDONED_CART_SLOTS,
+  FULFILLMENT_STATUS_RULES,
+  PAYMENT_STATUS_RULES,
   CART_FOLLOWUP_MIN_MINUTES,
   CART_FOLLOWUP_DEFAULT_MINUTES,
   buildSystemAutomations,
   isSystemAutomation,
+  isLegacyOrderRuleId,
   mergeSystemAutomations,
   validateCartFollowupDelay,
   cartFollowupSyncPatch,

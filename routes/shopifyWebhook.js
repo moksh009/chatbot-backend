@@ -14,6 +14,7 @@ const { logActivity } = require('../utils/core/activityLogger');
 const { recalculateLeadScore } = require('../utils/core/scoringHelper');
 const log = require('../utils/core/logger')('ShopifyWebhook');
 const commerceAutomationService = require('../utils/commerce/commerceAutomationService');
+const { processOrderStatusAutomations } = require('../utils/commerce/orderStatusAutomationHandler');
 const shopifyAdminApiVersion = require('../utils/shopify/shopifyAdminApiVersion');
 
 /** Push reconciled order to dashboard (Orders page) without manual refresh */
@@ -252,6 +253,12 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                 await fireEventFlow(client, 'order_placed', data).catch(e =>
                   log.warn(`[FlowTrigger] order_placed flow fire failed: ${e.message}`)
                 );
+                /** New fulfillment + payment status rules — runs alongside legacy order_status pipeline. */
+                processOrderStatusAutomations({
+                  client,
+                  payload: data,
+                  source: 'shopify_webhook:orders/create',
+                }).catch((e) => log.error(`OrderStatus automation orders/create failed: ${e.message}`));
                 const { dispatchOrderStatusAutomation } = require('../utils/commerce/orderEventDispatcher');
                 const lineItems = (data.line_items || []).map((i) => ({
                   sku: i.sku,
@@ -296,6 +303,11 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                 await fireEventFlow(client, 'order_status_changed', data, data.financial_status === 'refunded' ? 'returned' : 'cancelled').catch(e =>
                   log.warn(`[FlowTrigger] order_status_changed flow fire failed: ${e.message}`)
                 );
+                processOrderStatusAutomations({
+                  client,
+                  payload: data,
+                  source: `shopify_webhook:${topic}`,
+                }).catch((e) => log.error(`OrderStatus automation ${topic} failed: ${e.message}`));
                 await commerceAutomationService.runAutomationsForEvent({
                   clientConfig: client,
                   eventType: 'cancelled',
@@ -310,11 +322,42 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                 break;
             case 'orders/updated':
                 await reconcileLocalOrderFromShopifyAdmin(client, data, topic, io, storeKey);
+                processOrderStatusAutomations({
+                  client,
+                  payload: data,
+                  source: 'shopify_webhook:orders/updated',
+                }).catch((e) => log.error(`OrderStatus automation orders/updated failed: ${e.message}`));
                 break;
             case 'fulfillments/create':
             case 'fulfillments/update':
                 await handleFulfillmentWebhookForAdmin(client, data, topic, io);
                 break;
+            case 'refunds/create': {
+                /** refund payloads are partial — refetch the order so we have an authoritative
+                 *  financial_status (paid → partially_refunded vs paid → refunded). */
+                const refundOrderId = data?.order_id;
+                if (!refundOrderId || !client.shopDomain || !client.shopifyAccessToken) {
+                    log.warn(`[refunds/create] missing order_id or Shopify creds — skipping`);
+                    break;
+                }
+                try {
+                    const orderRes = await axios.get(
+                        `https://${client.shopDomain}/admin/api/${shopifyAdminApiVersion}/orders/${refundOrderId}.json`,
+                        { headers: { 'X-Shopify-Access-Token': client.shopifyAccessToken } }
+                    );
+                    const fullOrder = orderRes.data?.order;
+                    if (fullOrder) {
+                        processOrderStatusAutomations({
+                            client,
+                            payload: fullOrder,
+                            source: 'shopify_webhook:refunds/create',
+                        }).catch((e) => log.error(`OrderStatus automation refunds/create failed: ${e.message}`));
+                    }
+                } catch (refundErr) {
+                    log.warn(`[refunds/create] order fetch failed: ${refundErr.message}`);
+                }
+                break;
+            }
             case 'orders/fulfilled': {
                 await reconcileLocalOrderFromShopifyAdmin(client, data, topic, io, storeKey);
                 const { schedulePostPurchaseEnrollment } = require('../services/postPurchaseJourneys/enroll');

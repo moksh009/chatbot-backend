@@ -357,60 +357,11 @@ function findApprovedSyncedTemplateName(syncedTemplates = [], templateName) {
   return null;
 }
 
-/** Wire system SAC rules to approved WABA templates when Meta name matches catalog (eco / cart_recovery_*). */
-function autoLinkApprovedTemplatesToSystemRules(automations = [], syncedTemplates = []) {
-  if (!Array.isArray(automations) || !syncedTemplates?.length) return automations;
-
-  const { ORDER_STATUS_ECO_REGISTRY } = require('./orderStatusTemplatePolicy');
-  const { cartRecoveryVariableMappings } = require('../../constants/cartRecoverySlotPresets');
-
-  return automations.map((rule) => {
-    if (!rule?.meta?.system || String(rule.templateName || '').trim()) return rule;
-
-    if (rule.meta?.category === 'order_notification') {
-      const event = normalizeEvent(rule.event);
-      if (event === 'cod') {
-        const { getPrebuiltByKey } = require('../../constants/prebuiltTemplateLibrary');
-        const prebuilt = getPrebuiltByKey('cod_confirmation_v1');
-        const approvedName = findApprovedSyncedTemplateName(syncedTemplates, 'cod_confirmation_v1');
-        if (!approvedName) return rule;
-        const body = rule.variableMappings?.body || {};
-        const hasMappings = Object.values(body).some((v) => v != null && v !== '');
-        return {
-          ...rule,
-          templateName: approvedName,
-          variableMappings: hasMappings ? rule.variableMappings : prebuilt?.variableMappings || { body: {} },
-        };
-      }
-      const preset = ORDER_STATUS_ECO_REGISTRY[event];
-      if (!preset) return rule;
-      const approvedName = findApprovedSyncedTemplateName(syncedTemplates, preset.templateName);
-      if (!approvedName) return rule;
-      const body = rule.variableMappings?.body || {};
-      const hasMappings = Object.values(body).some((v) => v != null && v !== '');
-      return {
-        ...rule,
-        templateName: approvedName,
-        variableMappings: hasMappings ? rule.variableMappings : preset.variableMappings,
-      };
-    }
-
-    if (rule.meta?.category === 'abandoned_cart') {
-      const tplName = CART_SLOT_TEMPLATE_NAMES[rule.meta?.systemSlot];
-      const approvedName = tplName ? findApprovedSyncedTemplateName(syncedTemplates, tplName) : null;
-      if (!approvedName) return rule;
-      const step = Number(rule.meta?.followupStep) || 1;
-      const body = rule.variableMappings?.body || {};
-      const hasMappings = Object.values(body).some((v) => v != null && v !== '');
-      return {
-        ...rule,
-        templateName: approvedName,
-        variableMappings: hasMappings ? rule.variableMappings : cartRecoveryVariableMappings(step),
-      };
-    }
-
-    return rule;
-  });
+/** Auto-attach of "recommended" templates was retired in May 2026 — merchants now pick the
+ *  template per rule themselves (free dropdown in the rule editor). This helper is kept only
+ *  as a no-op so any existing call sites continue to work without modification. */
+function autoLinkApprovedTemplatesToSystemRules(automations = []) {
+  return automations;
 }
 
 async function ensureMigration(clientConfig = {}, { persist = true } = {}) {

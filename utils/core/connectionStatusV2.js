@@ -10,7 +10,9 @@ const {
 } = require('../shopify/shopifyScopeUtils');
 const MetaTemplate = require('../../models/MetaTemplate');
 
-function tokenStatusFrom(tok, probed) {
+function tokenStatusFrom(tok, probed, clientStatusOverride) {
+  // If backend explicitly flagged the connection as broken, surface it immediately
+  if (clientStatusOverride === 'error') return 'revoked';
   if (probed?.tokenStatus) return probed.tokenStatus;
   if (!tok || tok.length < 6) return 'missing';
   return 'valid';
@@ -89,10 +91,12 @@ async function buildConnectionStatusContract(client) {
     },
     shopify: (() => {
       const scopeSummary = buildScopeSummary(client.shopifyScopes);
-      const shopifyTokenStatus = tokenStatusFrom(shopifyTok, shopifyProbe);
+      const shopifyStatusOverride = String(client.shopifyConnectionStatus || '').toLowerCase();
+      const shopifyTokenStatus = tokenStatusFrom(shopifyTok, shopifyProbe, shopifyStatusOverride);
       const issues = [];
       if (!isValidShopDomain(shopDomain)) issues.push('invalid_shop_domain');
       if (scopeSummary.missingFromGrant.length > 0) issues.push('missing_scopes');
+      if (shopifyStatusOverride === 'error') issues.push('token_outdated');
       return {
         connected: flags.shopify_connected,
         shopDomain: shopDomain || null,

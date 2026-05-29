@@ -856,6 +856,15 @@ router.get('/callback', async (req, res) => {
     await Client.findOneAndUpdate({ clientId }, { $set: updatePayload }, { new: true });
     invalidateClientCache(clientId);
 
+    // Invalidate Redis connection-status cache so frontend immediately sees connected state
+    try {
+      const { getAppRedis, isRedisReady } = require('../utils/core/redisFactory');
+      const redis = getAppRedis();
+      if (redis && isRedisReady(redis)) {
+        await redis.del(`workspace:connection:${clientId}`);
+      }
+    } catch (_) {}
+
     const { seedPlaybooksForClient } = require('../services/postPurchaseJourneys/seedPlaybooks');
     seedPlaybooksForClient(clientId).catch((e) =>
       console.warn(`[ShopifyOAuth] Playbook seed: ${e.message}`)
