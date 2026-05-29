@@ -128,6 +128,38 @@ router.post('/:clientId/sync-orders', internalOrProtect, async (req, res) => {
   }
 });
 
+// GET /api/shopify/:clientId/store-profile — shop business details for Settings connect modal
+router.get('/:clientId/store-profile', protect, verifyClientAccess, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const shop = await withShopifyRetry(clientId, async (client) => {
+      const response = await client.get('/shop.json');
+      const s = response.data?.shop || {};
+      return {
+        name: s.name || null,
+        email: s.email || null,
+        domain: s.domain || null,
+        myshopifyDomain: s.myshopify_domain || null,
+        plan: s.plan_display_name || s.plan_name || null,
+        country: s.country_name || null,
+        currency: s.currency || null,
+        timezone: s.iana_timezone || null,
+      };
+    });
+    res.json({ success: true, shop });
+  } catch (err) {
+    const isAuthError =
+      err.response?.status === 401 ||
+      err.response?.status === 403 ||
+      /incomplete|invalid|not connected|reconnect/i.test(String(err.message || ''));
+    res.status(isAuthError ? 400 : 500).json({
+      success: false,
+      error: err.message || 'Could not load store profile',
+      isShopifyAuthError: isAuthError,
+    });
+  }
+});
+
 // GET /api/shopify/:clientId/payouts
 router.get('/:clientId/payouts', protect, verifyClientAccess, async (req, res) => {
   try {
