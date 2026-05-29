@@ -343,6 +343,26 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
             case 'inventory_items/update':
                 await handleInventoryUpdate(client, data);
                 break;
+            case 'app/uninstalled': {
+                log.info(`[Uninstall] App uninstalled from ${storeKey} (client: ${client.clientId})`);
+                const { invalidateClientCache } = require('../utils/core/clientCache');
+                await Client.updateOne(
+                  { clientId: client.clientId },
+                  {
+                    $set: {
+                      shopifyConnectionStatus: 'disconnected',
+                      lastShopifyError: 'App uninstalled by merchant',
+                      shopifyAccessToken: '',
+                      'commerce.shopify.accessToken': '',
+                    },
+                  }
+                );
+                invalidateClientCache(client.clientId);
+                if (io) {
+                  io.to(`client_${client.clientId}`).emit('integration_token_expired', { channel: 'shopify' });
+                }
+                break;
+            }
             default:
                 log.info(`Unhandled topic: ${topic}`);
         }

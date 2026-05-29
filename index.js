@@ -321,6 +321,7 @@ app.use('/api/meta-templates', require('./routes/metaTemplates'));
 app.use('/api/custom-tags', require('./routes/customTags'));
 app.use('/api/auto-templates', require('./routes/autoTemplates'));
 app.use('/api/whatsapp', whatsappRoutes);
+app.use('/api/whatsapp/embedded-signup', require('./routes/embeddedSignup'));
 const whatsappFlowsRoutes = require('./routes/whatsappFlows');
 app.use('/api/whatsapp-flows', whatsappFlowsRoutes);
 app.use('/api/campaigns', bulkLimiter, campaignsRoutes); // ✅ Phase R3: Bulk send protection
@@ -391,6 +392,8 @@ app.use('/api/intents', intentRoutes);
 app.use('/api/webhooks', intentWebhookRoutes); // POST /api/webhooks/meta
 app.use('/api/webhooks', require('./routes/webhooks')); // Resend inbound only
 app.use('/api/webhooks', require('./routes/thirdPartyCheckoutWebhooks'));
+// Unified Meta master webhook — handles account_update, quality updates, ES merchants
+app.use('/api/webhooks/meta-master', require('./routes/metaMasterWebhook'));
 
 app.use('/api/razorpay', require('./routes/razorpayWebhook'));
 const shopifyPixelRoutes = require('./routes/shopifyPixel');

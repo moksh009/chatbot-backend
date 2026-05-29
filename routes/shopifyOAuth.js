@@ -216,35 +216,39 @@ function isValidShopDomain(shop) {
 /**
  * Register essential webhooks after successful OAuth
  */
-const { SHOPIFY_APP_WEBHOOK_TOPICS } = require('../constants/shopifyWebhookTopics');
+const { SHOPIFY_WEBHOOK_TOPICS_WITH_SCOPES } = require('../constants/shopifyWebhookTopics');
+const { expandImpliedScopes, parseShopifyScopes } = require('../utils/shopify/shopifyScopeUtils');
 
-async function registerWebhooks(shopDomain, accessToken, clientId) {
-  const topics = SHOPIFY_APP_WEBHOOK_TOPICS;
+async function registerWebhooks(shopDomain, accessToken, clientId, grantedScopesStr) {
+  const effectiveScopes = expandImpliedScopes(parseShopifyScopes(grantedScopesStr));
   const webhookUrl = `${process.env.SERVER_URL || 'https://api.topedgeai.com'}/api/shopify/webhook`;
+  const results = [];
 
-  for (const topic of topics) {
+  for (const { topic, requiredScope } of SHOPIFY_WEBHOOK_TOPICS_WITH_SCOPES) {
+    if (requiredScope && !effectiveScopes.includes(requiredScope)) {
+      console.log(`ℹ️ [ShopifyOAuth] Skipped webhook ${topic} — missing scope ${requiredScope} for ${clientId}`);
+      results.push({ topic, status: 'skipped_no_scope', requiredScope });
+      continue;
+    }
     try {
       await axios.post(
         `https://${shopDomain}/admin/api/${shopifyAdminApiVersion}/webhooks.json`,
-        {
-          webhook: {
-            topic,
-            address: webhookUrl,
-            format: 'json'
-          }
-        },
+        { webhook: { topic, address: webhookUrl, format: 'json' } },
         { headers: { 'X-Shopify-Access-Token': accessToken } }
       );
       console.log(`✅ [ShopifyOAuth] Registered webhook ${topic} for ${clientId}`);
+      results.push({ topic, status: 'subscribed' });
     } catch (err) {
-      // 422 usually means webhook already exists — not a real error
       if (err.response?.status === 422) {
         console.log(`ℹ️ [ShopifyOAuth] Webhook ${topic} already exists for ${clientId}`);
+        results.push({ topic, status: 'already_exists' });
       } else {
-        console.error(`❌ [ShopifyOAuth] Failed to register webhook ${topic} for ${clientId}:`, err.response?.data || err.message);
+        console.error(`❌ [ShopifyOAuth] Failed webhook ${topic} for ${clientId}:`, err.response?.data || err.message);
+        results.push({ topic, status: 'failed', error: err.response?.data?.errors || err.message });
       }
     }
   }
+  return results;
 }
 
 
@@ -843,19 +847,42 @@ router.get('/callback', async (req, res) => {
 
     // ── 7. Background Tasks ──────────────────────────────────────────────────────
     try {
-      await registerWebhooks(shop, access_token, clientId);
+      const webhookResults = await registerWebhooks(shop, access_token, clientId, scope);
+      const subscribed = webhookResults.filter((r) => r.status === 'subscribed' || r.status === 'already_exists').length;
+      console.log(`✅ [ShopifyOAuth] Webhooks: ${subscribed}/${webhookResults.length} subscribed for ${clientId}`);
     } catch (webhookErr) {
       console.error(`⚠️ [ShopifyOAuth] Webhook registration failed (non-fatal):`, webhookErr.message);
     }
 
-    const serverUrl = process.env.SERVER_URL || 'https://api.topedgeai.com';
-    axios.post(`${serverUrl}/api/shopify/${clientId}/sync-products`, {}, {
-      headers: { 'Authorization': `Bearer INTERNAL_SYNC` }
-    }).catch(e => console.log(`ℹ️ [ShopifyOAuth] Background product sync skipped:`, e.message));
-
-    axios.post(`${serverUrl}/api/shopify/${clientId}/sync-orders`, {}, {
-      headers: { 'Authorization': `Bearer INTERNAL_SYNC` }
-    }).catch(e => console.log(`ℹ️ [ShopifyOAuth] Background order sync skipped:`, e.message));
+    // Direct in-process sync (avoids self-call HTTP failures on containerized deploys)
+    const { hasScopeEffective } = require('../utils/shopify/shopifyScopeUtils');
+    const grantedScopes = scope || '';
+    setImmediate(async () => {
+      try {
+        if (hasScopeEffective(grantedScopes, 'read_products')) {
+          const { syncNicheDataProducts } = require('../utils/shopify/shopifyNicheProductSync');
+          await syncNicheDataProducts(clientId);
+          console.log(`✅ [ShopifyOAuth] Product sync complete for ${clientId}`);
+        } else {
+          console.log(`ℹ️ [ShopifyOAuth] Skipped product sync — read_products not granted for ${clientId}`);
+        }
+      } catch (e) {
+        console.error(`⚠️ [ShopifyOAuth] Product sync failed for ${clientId}:`, e.message);
+      }
+      try {
+        if (hasScopeEffective(grantedScopes, 'read_orders')) {
+          const { syncShopifyOrdersToMongo } = require('../utils/shopify/shopifyOrderSync');
+          const { getShopifyClient } = require('../utils/shopify/shopifyHelper');
+          const shopClient = await getShopifyClient(clientId);
+          const result = await syncShopifyOrdersToMongo(clientId, shopClient);
+          console.log(`✅ [ShopifyOAuth] Order sync complete for ${clientId}: ${result.synced} synced, ${result.total} total`);
+        } else {
+          console.log(`ℹ️ [ShopifyOAuth] Skipped order sync — read_orders not granted for ${clientId}`);
+        }
+      } catch (e) {
+        console.error(`⚠️ [ShopifyOAuth] Order sync failed for ${clientId}:`, e.message);
+      }
+    });
 
     console.log(`🎉 [ShopifyOAuth] OAuth complete for ${clientId}! Redirecting to frontend...`);
     const dest = shopifyOAuthFrontendRedirect(oauthPending, { success: true });

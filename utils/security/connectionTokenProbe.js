@@ -81,8 +81,11 @@ async function probeShopify(client) {
       { headers: { 'X-Shopify-Access-Token': token }, timeout: 4000, validateStatus: () => true }
     );
     if (res.status === 200) return { tokenStatus: 'valid', ok: true };
-    if (res.status === 401 || res.status === 403) return { tokenStatus: 'expired', ok: false };
-    // 5xx or rate limit — assume valid
+    // Shopify offline tokens don't expire. 401 = revoked (app uninstalled or token rotated).
+    // 403 = scope insufficient or app blocked. Neither means "expired."
+    if (res.status === 401) return { tokenStatus: 'revoked', ok: false };
+    if (res.status === 403) return { tokenStatus: 'scope_insufficient', ok: false };
+    // 5xx or rate limit — assume valid, retry later
     return { tokenStatus: 'valid', ok: true };
   } catch (err) {
     const isNetwork = err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT' || err.code === 'ECONNABORTED';

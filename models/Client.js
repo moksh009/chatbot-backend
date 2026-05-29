@@ -513,6 +513,24 @@ const ClientSchema = new mongoose.Schema({
   whatsappToken: { type: String }, // Store the client's specific WhatsApp token
   wabaId: { type: String }, // WhatsApp Business Account ID (Required for Templates)
   verifyToken: { type: String }, // Store the client's specific Webhook Verify Token
+
+  // ── Embedded Signup v4 fields ─────────────────────────────────────────────
+  whatsappConnectionType: { type: String, enum: ['manual', 'embedded_signup'], default: 'manual' },
+  whatsappCoexistence: { type: Boolean, default: false }, // WA Business App + Cloud API on same number
+  whatsappDisplayPhoneNumber: { type: String, default: '' },
+  whatsappVerifiedName: { type: String, default: '' },
+  whatsappQualityRating: { type: String, enum: ['GREEN', 'YELLOW', 'RED', 'UNKNOWN'], default: 'UNKNOWN' },
+  whatsappQualityHistory: { type: [{ rating: String, changedAt: Date }], default: [] },
+  whatsappWebhookSubscribed: { type: Boolean, default: false },
+  whatsappConnectedAt: { type: Date, default: null },
+  whatsappConnectionMethod: { type: String, default: '' }, // 'embedded_signup_v4' | 'manual'
+  whatsappAccountStatus: { type: String, default: 'active' }, // active | restricted | under_review
+  whatsappRestricted: { type: Boolean, default: false },
+  whatsappMessagingLimit: { type: String, default: '' }, // tier from Meta
+  whatsappOnboardingCompleted: { type: Boolean, default: false },
+  whatsappRegistrationPin: { type: String, default: '' }, // encrypted via pre-save
+  // ─────────────────────────────────────────────────────────────────────────
+
   googleCalendarId: { type: String }, // Store the client's specific Google Calendar ID
   geminiApiKey: { type: String }, // Store the client's specific Gemini API Key
   openaiApiKey: { type: String }, // Legacy field (aliased to geminiApiKey in middleware)
@@ -1205,7 +1223,7 @@ function encryptUpdateQuery(update) {
     'whatsappToken', 'metaCatalogAccessToken', 'shopifyAccessToken', 'shopifyRefreshToken', 'shopifyWebhookSecret', 'shopifyClientSecret',
     'geminiApiKey', 'openaiApiKey', 'instagramAccessToken', 
     'instagramAppSecret', 'igAccessToken', 'razorpaySecret', 'cashfreeSecretKey', 'stripeSecretKey', 
-    'payuMerchantSalt', 'phonepeSaltKey', 'emailAppPassword'
+    'payuMerchantSalt', 'phonepeSaltKey', 'emailAppPassword', 'whatsappRegistrationPin'
   ];
 
   for (const path of encPaths) {

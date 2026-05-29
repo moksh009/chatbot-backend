@@ -3,8 +3,10 @@
 const { buildConnectionStatusPayload, decryptToken, isValidShopDomain } = require('./connectionStatus');
 const {
   parseShopifyScopes,
+  expandImpliedScopes,
   getShopifyAppConfiguredScopes,
   hasPixelScopes,
+  buildScopeSummary,
 } = require('../shopify/shopifyScopeUtils');
 const MetaTemplate = require('../../models/MetaTemplate');
 
@@ -70,6 +72,12 @@ async function buildConnectionStatusContract(client) {
       wabaId,
       tokenStatus: tokenStatusFrom(waTok, waProbe),
       lastVerifiedAt: client.whatsappLastVerifiedAt || null,
+      connectionType: client.whatsappConnectionType || (flags.whatsapp_connected ? 'manual' : null),
+      connectionMethod: client.whatsappConnectionMethod || null,
+      displayPhoneNumber: client.whatsappDisplayPhoneNumber || null,
+      coexistence: !!client.whatsappCoexistence,
+      qualityRating: client.whatsappQualityRating || null,
+      webhookSubscribed: !!client.whatsappWebhookSubscribed,
       issues: waIssues,
     },
     instagram: {
@@ -79,16 +87,25 @@ async function buildConnectionStatusContract(client) {
       tokenStatus: tokenStatusFrom(igTok, await getCachedOrProbe(client, 'instagram').catch(() => null)),
       issues: igTok.length < 6 ? ['missing_instagram_token'] : [],
     },
-    shopify: {
-      connected: flags.shopify_connected,
-      shopDomain: shopDomain || null,
-      tokenStatus: tokenStatusFrom(shopifyTok, shopifyProbe),
-      scopes: parseShopifyScopes(client.shopifyScopes),
-      scopesRaw: client.shopifyScopes || '',
-      appConfiguredScopes: getShopifyAppConfiguredScopes(),
-      hasPixelScopes: hasPixelScopes(client.shopifyScopes),
-      issues: !isValidShopDomain(shopDomain) ? ['invalid_shop_domain'] : [],
-    },
+    shopify: (() => {
+      const scopeSummary = buildScopeSummary(client.shopifyScopes);
+      const shopifyTokenStatus = tokenStatusFrom(shopifyTok, shopifyProbe);
+      const issues = [];
+      if (!isValidShopDomain(shopDomain)) issues.push('invalid_shop_domain');
+      if (scopeSummary.missingFromGrant.length > 0) issues.push('missing_scopes');
+      return {
+        connected: flags.shopify_connected,
+        shopDomain: shopDomain || null,
+        tokenStatus: shopifyTokenStatus,
+        scopes: scopeSummary.effectiveGranted,
+        scopesRaw: client.shopifyScopes || '',
+        appConfiguredScopes: getShopifyAppConfiguredScopes(),
+        hasPixelScopes: scopeSummary.hasPixelScopes,
+        missingScopes: scopeSummary.missingFromGrant,
+        isFullyAuthorized: scopeSummary.isFullyAuthorized,
+        issues,
+      };
+    })(),
     meta: {
       connected: flags.meta_connected,
       businessId: client.metaBusinessId || client.metaAdAccountId || null,

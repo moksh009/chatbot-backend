@@ -7,42 +7,39 @@ const { getShopifyClient, withShopifyRetry, exchangeShopifyToken } = require('..
 const { buildConnectionStatusPayload } = require('../utils/core/connectionStatus');
 const { syncShopifyOrdersToMongo } = require('../utils/shopify/shopifyOrderSync');
 const shopifyAdminApiVersion = require('../utils/shopify/shopifyAdminApiVersion');
-const { SHOPIFY_APP_WEBHOOK_TOPICS } = require('../constants/shopifyWebhookTopics');
+const { SHOPIFY_WEBHOOK_TOPICS_WITH_SCOPES } = require('../constants/shopifyWebhookTopics');
+const { expandImpliedScopes, parseShopifyScopes } = require('../utils/shopify/shopifyScopeUtils');
 
 /** In-process cache so dashboard polls do not block the event loop on slow Shopify APIs */
 const recentOrdersCache = new Map();
 const RECENT_ORDERS_TTL_MS = 90_000;
 
 // ── INTERNAL SYNC AUTH BYPASS ────────────────────────────────────────────────
-// Allows the server to call its own sync routes during OAuth callback
 const internalOrProtect = (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader === 'Bearer INTERNAL_SYNC') {
-    return next(); // Bypass JWT check for internal calls
+    return next();
   }
   return protect(req, res, next);
 };
 
-async function registerWebhooks(shopDomain, accessToken, clientId) {
-  const topics = SHOPIFY_APP_WEBHOOK_TOPICS;
+async function registerWebhooks(shopDomain, accessToken, clientId, grantedScopesStr) {
+  const effectiveScopes = expandImpliedScopes(parseShopifyScopes(grantedScopesStr || ''));
   const webhookUrl = `${process.env.SERVER_URL || 'https://api.topedgeai.com'}/api/shopify/webhook`;
 
-  for (const topic of topics) {
+  for (const { topic, requiredScope } of SHOPIFY_WEBHOOK_TOPICS_WITH_SCOPES) {
+    if (requiredScope && !effectiveScopes.includes(requiredScope)) continue;
     try {
       await axios.post(
         `https://${shopDomain}/admin/api/${shopifyAdminApiVersion}/webhooks.json`,
-        {
-          webhook: {
-            topic,
-            address: webhookUrl,
-            format: 'json'
-          }
-        },
+        { webhook: { topic, address: webhookUrl, format: 'json' } },
         { headers: { 'X-Shopify-Access-Token': accessToken } }
       );
       console.log(`✅ Registered webhook ${topic} for ${clientId}`);
     } catch (err) {
-      console.error(`❌ Failed to register webhook ${topic} for ${clientId}:`, err.response?.data || err.message);
+      if (err.response?.status !== 422) {
+        console.error(`❌ Failed webhook ${topic} for ${clientId}:`, err.response?.data || err.message);
+      }
     }
   }
 }

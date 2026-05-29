@@ -171,7 +171,7 @@ async function saveAndEmitMessage({ clientId, from, to, body, type, direction, s
 
 async function sendWhatsAppText({ phoneNumberId, to, body, token, io, clientId }) {
   if (clientId === 'choice_salon') {
-    console.log(`[DEBUG sendWhatsAppText] Token: '${token ? token.substring(0, 15) + '...' : 'undefined'}' (Length: ${token ? token.length : 0})`);
+    // [token debug removed — never log credentials]
   }
 
   const apiVersion = process.env.API_VERSION || 'v21.0';
