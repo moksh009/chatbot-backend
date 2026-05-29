@@ -3,7 +3,15 @@
 const Client = require('../../models/Client');
 const { withShopifyRetry } = require('./shopifyHelper');
 const { invalidateClientCache } = require('../core/clientCache');
+const {
+  resolveShopifyCredentials,
+  isShopifyCredentialConnected,
+  repairLegacyShopifyFields,
+} = require('./resolveShopifyCredentials');
 const log = require('../core/logger')('ShopifyNicheSync');
+
+const CLIENT_SELECT =
+  'shopDomain shopifyAccessToken shopifyConnectionStatus shopifyStores shopifyScopes commerce';
 
 /**
  * Paginated Shopify Admin products fetch (active catalog).
@@ -59,17 +67,27 @@ function mapProductForNiche(product, shopDomain) {
 async function syncNicheDataProducts(clientId) {
   if (!clientId) throw new Error('clientId is required');
 
-  const client = await Client.findOne({ clientId }).select(
-    'shopDomain shopifyAccessToken shopifyConnectionStatus'
-  );
+  let client = await Client.findOne({ clientId }).select(CLIENT_SELECT).lean();
   if (!client) throw new Error('Client not found');
-  if (!client.shopDomain || !client.shopifyAccessToken) {
-    throw new Error('Shopify not connected');
+
+  if (!isShopifyCredentialConnected(client)) {
+    await repairLegacyShopifyFields(clientId);
+    invalidateClientCache(clientId);
+    client = await Client.findOne({ clientId }).select(CLIENT_SELECT).lean();
   }
+
+  const creds = resolveShopifyCredentials(client);
+  if (!isShopifyCredentialConnected(client)) {
+    throw new Error(
+      'Shopify not connected. Open Settings → Connections, reconnect your store, then try again.'
+    );
+  }
+
+  const shopDomain = creds.shopDomain;
 
   const mapped = await withShopifyRetry(clientId, async (shop) => {
     const raw = await fetchAllShopifyProducts(shop);
-    return raw.map((p) => mapProductForNiche(p, client.shopDomain));
+    return raw.map((p) => mapProductForNiche(p, shopDomain));
   });
 
   await Client.updateOne(

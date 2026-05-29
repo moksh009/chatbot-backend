@@ -1140,6 +1140,11 @@ function encryptSubDocs(doc) {
   if (doc.amazonConfig?.lwaClientSecret) {
     doc.amazonConfig.lwaClientSecret = enc(doc.amazonConfig.lwaClientSecret);
   }
+  if (Array.isArray(doc.shopifyStores)) {
+    doc.shopifyStores.forEach((store) => {
+      if (store?.accessToken) store.accessToken = enc(store.accessToken);
+    });
+  }
 }
 
 function syncSocialFields(doc) {
@@ -1242,6 +1247,15 @@ function encryptUpdateQuery(update) {
 
   if (setOps.instagramUsername) setOps['social.instagram.username'] = setOps.instagramUsername;
   if (setOps['social.instagram.username']) setOps.instagramUsername = setOps['social.instagram.username'];
+
+  if (Array.isArray(setOps.shopifyStores)) {
+    setOps.shopifyStores = setOps.shopifyStores.map((store) => {
+      if (!store || typeof store !== 'object') return store;
+      const next = { ...store };
+      if (next.accessToken) next.accessToken = enc(next.accessToken);
+      return next;
+    });
+  }
 }
 
 ClientSchema.pre('save', function(next) {

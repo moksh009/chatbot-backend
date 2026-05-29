@@ -44,7 +44,7 @@ function buildConnectionStatusPayload(client) {
     client.commerce?.shopify?.accessToken ||
     '';
   const shopifyTok = decryptToken(shopifyEnc);
-  /** True if a non-trivial credential is on file (decrypted session token or encrypted blob). */
+  /** @deprecated inline — prefer isShopifyCredentialConnected */
   const shopifyCredentialPresent =
     (typeof shopifyTok === 'string' && shopifyTok.length > 8) ||
     (typeof shopifyEnc === 'string' && shopifyEnc.trim().length > 12);
@@ -83,19 +83,49 @@ function buildConnectionStatusPayload(client) {
   const bypassShopifyConnected = SHOPIFY_CONNECTION_BYPASS_CLIENTS.has(
     String(client.clientId || '').trim()
   );
+  const { isShopifyCredentialConnected } = require('../shopify/resolveShopifyCredentials');
 
   return {
     shopify_connected: bypassShopifyConnected
       ? true
-      : !!(shopifyCredentialPresent && isValidShopDomain(shopDomain)),
+      : isShopifyCredentialConnected(client),
     whatsapp_connected: !!(waTok.length > 5 && phoneId && waba),
     meta_connected: !!metaAdsOk,
     instagram_connected: !!(decryptToken(instagramTok).length > 10 && instagramPage),
   };
 }
 
+/**
+ * Resolve WhatsApp IDs/tokens from a Client doc (top-level + legacy nested paths).
+ */
+function resolveWhatsAppFields(client) {
+  if (!client) {
+    return { phoneNumberId: '', wabaId: '', tokenPlain: '', tokenEnc: '' };
+  }
+  const phoneNumberId =
+    client.phoneNumberId ||
+    client.whatsapp?.phoneNumberId ||
+    client.config?.phoneNumberId ||
+    '';
+  const wabaId =
+    client.wabaId || client.whatsapp?.wabaId || client.config?.wabaId || '';
+  const tokenEnc =
+    client.whatsappToken ||
+    client.whatsapp?.accessToken ||
+    client.config?.whatsappToken ||
+    '';
+  const tokenPlain = decryptToken(tokenEnc);
+  return { phoneNumberId, wabaId, tokenPlain, tokenEnc };
+}
+
+function isWhatsAppClientConnected(client) {
+  return buildConnectionStatusPayload(client).whatsapp_connected;
+}
+
 module.exports = {
   buildConnectionStatusPayload,
   decryptToken,
   isValidShopDomain,
+  resolveWhatsAppFields,
+  isWhatsAppClientConnected,
 };

@@ -105,6 +105,7 @@ router.post('/:clientId/sync-products', internalOrProtect, async (req, res) => {
     res.status(isAuthError ? 400 : 500).json({
       success: false,
       error: err.message || 'Product sync failed',
+      message: err.message || 'Product sync failed',
       isShopifyAuthError: isAuthError,
     });
   }

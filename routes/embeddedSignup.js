@@ -31,6 +31,11 @@ const {
 } = require('../utils/meta/embeddedSignupService');
 const { logActivity } = require('../utils/core/activityLogger');
 const log = require('../utils/core/logger')('EmbeddedSignupRoute');
+const {
+  resolveWhatsAppFields,
+  isWhatsAppClientConnected,
+} = require('../utils/core/connectionStatus');
+const { invalidateClientCache } = require('../utils/core/clientCache');
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -172,6 +177,7 @@ router.post('/complete', protect, async (req, res) => {
 
   try {
     await Client.findOneAndUpdate({ clientId }, { $set: updatePayload }, { new: true });
+    invalidateClientCache(clientId);
   } catch (dbErr) {
     log.error('Client update failed after successful ES', { clientId, error: dbErr.message });
     await logEvent(clientId, sessionId, 'failed', errorEvent('other', 'Database write failed after successful Meta connection.'));
@@ -241,9 +247,14 @@ router.delete('/disconnect', protect, async (req, res) => {
     return res.status(400).json({ success: false, message: 'Confirmation string must be "DISCONNECT".' });
   }
 
-  const client = await Client.findOne({ clientId }).select('wabaId whatsappToken whatsappConnectionType').lean();
-  if (!client?.wabaId) {
-    return res.status(400).json({ success: false, message: 'No WhatsApp connection found.' });
+  const client = await Client.findOne({ clientId })
+    .select('wabaId phoneNumberId whatsappToken whatsappConnectionType whatsappConnectionMethod')
+    .lean();
+  if (!isWhatsAppClientConnected(client)) {
+    const partial = resolveWhatsAppFields(client);
+    if (!partial.wabaId && !partial.phoneNumberId && !partial.tokenEnc) {
+      return res.status(400).json({ success: false, message: 'No WhatsApp connection found.' });
+    }
   }
 
   // Best-effort unsubscribe (don't fail disconnect if Meta call fails)
@@ -264,7 +275,7 @@ router.delete('/disconnect', protect, async (req, res) => {
         whatsappToken: '',
         whatsappDisplayPhoneNumber: '',
         whatsappVerifiedName: '',
-        whatsappConnectionType: 'manual',
+        whatsappConnectionType: '',
         whatsappCoexistence: false,
         whatsappWebhookSubscribed: false,
         whatsappConnectedAt: null,
@@ -273,6 +284,12 @@ router.delete('/disconnect', protect, async (req, res) => {
         whatsappRestricted: false,
         whatsappQualityRating: 'UNKNOWN',
         whatsappRegistrationPin: '',
+        'whatsapp.accessToken': '',
+        'whatsapp.phoneNumberId': '',
+        'whatsapp.wabaId': '',
+        'config.phoneNumberId': '',
+        'config.wabaId': '',
+        'config.whatsappToken': '',
       },
     }
   );
@@ -283,6 +300,16 @@ router.delete('/disconnect', protect, async (req, res) => {
     description: `WhatsApp connection removed by user.`,
     severity: 'warn',
   }).catch(() => {});
+
+  invalidateClientCache(clientId);
+  try {
+    const { clearClientCache } = require('../middleware/apiCache');
+    await clearClientCache(clientId);
+    const { invalidateBootstrapCache } = require('../utils/core/bootstrapCache');
+    if (req.user?.id) invalidateBootstrapCache(req.user.id);
+  } catch (_) {
+    /* non-fatal */
+  }
 
   return res.json({ success: true, message: 'WhatsApp disconnected.' });
 });
@@ -304,12 +331,22 @@ router.get('/status', protect, async (req, res) => {
 
   if (!client) return res.status(404).json({ success: false });
 
-  const isConnected = !!(client.wabaId && client.phoneNumberId);
+  const resolved = resolveWhatsAppFields(client);
+  const isConnected = isWhatsAppClientConnected(client);
+  const connectionType = client.whatsappConnectionType || '';
+  let connectionMethod = client.whatsappConnectionMethod || null;
+  if (!connectionMethod && isConnected) {
+    connectionMethod =
+      connectionType === 'embedded_signup' ? 'embedded_signup_v4' : 'manual';
+  }
 
   return res.json({
     success: true,
     connected: isConnected,
-    connectionMethod: client.whatsappConnectionMethod || (isConnected ? 'manual' : null),
+    connectionMethod,
+    connectionType: connectionType || (isConnected ? 'manual' : null),
+    phoneNumberId: resolved.phoneNumberId || null,
+    wabaId: resolved.wabaId || null,
     coexistence: client.whatsappCoexistence || false,
     qualityRating: client.whatsappQualityRating || null,
     webhookSubscribed: client.whatsappWebhookSubscribed || false,

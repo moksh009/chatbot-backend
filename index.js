@@ -124,7 +124,9 @@ const bulkLimiter = rateLimit({
 // CORS must be first to handle pre-flight OPTIONS requests from any origin
 const allowedOrigins = [
   'http://localhost:5173',
+  'https://localhost:5173',
   'http://localhost:3000',
+  'https://localhost:3000',
   'https://dash.topedgeai.com',
   'https://www.dash.topedgeai.com',
   'https://topedgeai.com',

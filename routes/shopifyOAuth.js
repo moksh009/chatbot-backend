@@ -519,7 +519,7 @@ router.post('/auth', async (req, res) => {
       return res.status(500).json({ success: false, error: e.message || 'OAuth URL build failed — check SERVER_URL / SHOPIFY_REDIRECT_URI' });
     }
 
-    console.log(`🔄 [ShopifyOAuth] OAuth URL built for clientId=${clientId} shop=${cleanShop}`);
+    console.log(`🔄 [ShopifyOAuth] OAuth URL built for clientId=${clientId} shop=${cleanShop} redirect_uri=${resolveShopifyRedirectUri()}`);
 
     return res.json({
       success: true,
@@ -748,14 +748,28 @@ router.get('/callback', async (req, res) => {
     const clientId = client.clientId;
     console.log(`🔄 [ShopifyOAuth] Exchanging authorization code for access token... (shop: ${shop}, clientId: ${clientId})`);
 
-    // ── 5. Token Exchange ───────────────────────────────────────────────────────
-    const tokenResponse = await axios.post(`https://${shop}/admin/oauth/access_token`, {
-      client_id: SHOPIFY_CLIENT_ID(),
-      client_secret: clientSecret,
-      code: code
-    });
+    // ── 5. Token Exchange (expiring offline access token) ───────────────────────
+    const {
+      exchangeShopifyAuthorizationCode,
+      shopifyTokenExpiryDate,
+    } = require('../utils/shopify/shopifyOAuthTokenExchange');
 
-    const { access_token, scope } = tokenResponse.data;
+    let tokenResponse;
+    try {
+      tokenResponse = {
+        data: await exchangeShopifyAuthorizationCode(shop, {
+          clientId: SHOPIFY_CLIENT_ID(),
+          clientSecret,
+          code,
+        }),
+      };
+    } catch (tokenErr) {
+      console.error('❌ [ShopifyOAuth] Token exchange failed:', tokenErr.response?.data || tokenErr.message);
+      res.clearCookie('shopify_oauth_client');
+      return res.redirect(`${frontendUrl}/settings?tab=store&shopify_error=token_exchange_failed`);
+    }
+
+    const { access_token, scope, refresh_token, expires_in } = tokenResponse.data;
 
     if (!access_token) {
       console.error('❌ [ShopifyOAuth] No access_token in Shopify response:', tokenResponse.data);
@@ -764,6 +778,11 @@ router.get('/callback', async (req, res) => {
     }
 
     console.log(`✅ [ShopifyOAuth] Access token received for ${clientId}. Scopes: ${scope}`);
+    if (refresh_token) {
+      console.log(`✅ [ShopifyOAuth] Expiring offline token with refresh support saved for ${clientId}`);
+    } else {
+      console.warn(`⚠️ [ShopifyOAuth] No refresh_token in token response for ${clientId} — merchant may need to reconnect if API calls fail`);
+    }
     console.log(`✅ [ShopifyOAuth] Note: Shopify Billing API skipped. Client billed via Razorpay.`);
 
     // ── 6. Save to Database (multi-store MVP) ───────────────────────────────────
@@ -819,14 +838,16 @@ router.get('/callback', async (req, res) => {
       shopifyAccessToken: clientDoc.shopifyAccessToken,
       shopDomain: clientDoc.shopDomain,
       shopifyScopes: scope || '',
+      shopifyRefreshToken: refresh_token || '',
       shopifyClientId: SHOPIFY_CLIENT_ID(),
       shopifyClientSecret: clientSecret,
       shopifyConnectionStatus: 'connected',
       lastShopifyError: '',
-      shopifyTokenExpiresAt: null,
+      shopifyTokenExpiresAt: shopifyTokenExpiryDate(expires_in),
       storeType: 'shopify',
       'commerce.shopify.domain': clientDoc.shopDomain || shop,
       'commerce.shopify.accessToken': clientDoc.shopifyAccessToken,
+      'commerce.shopify.refreshToken': refresh_token || '',
       'commerce.shopify.clientId': SHOPIFY_CLIENT_ID(),
       'commerce.shopify.clientSecret': clientSecret,
       'commerce.storeType': 'shopify',
