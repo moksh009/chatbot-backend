@@ -409,13 +409,6 @@ router.post('/login', sanitizeMiddleware, async (req, res) => {
       user = applyBootstrapSuperAdmin(user);
       await user.save();
 
-      if (user.role === 'SUPER_ADMIN' && !user.twoFactorEnabled) {
-        return res.status(403).json({
-          code: '2FA_SETUP_REQUIRED',
-          message: 'SUPER_ADMIN accounts must enable two-factor authentication.',
-        });
-      }
-
       if (
         user.twoFactorEnabled &&
         ['CLIENT_ADMIN', 'SUPER_ADMIN'].includes(user.role)
