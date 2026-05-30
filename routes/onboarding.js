@@ -14,6 +14,7 @@ const { denyUnlessTenant } = require('../utils/core/queryHelpers');
 const { mapFeatureToggle } = require('../utils/flow/wizardMapper');
 const { syncPersonaAcrossSystem } = require('../utils/core/personaEngine');
 const { sanitizeWizardStepData } = require('../utils/flow/wizardStepSanitize');
+const { applySettingsSyncMirrors } = require('../utils/core/settingsSyncMapper');
 
 /** v2 (8 steps) → v3 (7 steps): features before products; cart_timing merged into features. */
 const V2_TO_V3_INDEX = { 0: 0, 1: 1, 2: 4, 3: 3, 4: 5, 5: 2, 6: 2, 7: 6 };
@@ -254,18 +255,27 @@ router.patch('/step/:stepKey', protect, async (req, res) => {
       personaSync = { ...(personaSync || {}), ...partial };
     };
 
-    // business — persona socket only when persona-facing fields actually change
+    // business — mirror Settings PATCH paths + persona socket on meaningful changes
     if (stepId === 'business' && safeStepData) {
-      if (safeStepData.businessName)        { pvUpdate.businessName = safeStepData.businessName; pvUpdate['platformVars.brandName'] = safeStepData.businessName; }
-      if (safeStepData.industry)            pvUpdate.industry = safeStepData.industry;
-      if (safeStepData.supportPhone) {
-        pvUpdate['platformVars.supportWhatsapp'] = safeStepData.supportPhone;
-        pvUpdate.supportPhone = safeStepData.supportPhone;
+      applySettingsSyncMirrors(pvUpdate, safeStepData);
+
+      if (safeStepData.websiteUrl !== undefined) {
+        pvUpdate.websiteUrl = String(safeStepData.websiteUrl || '').trim();
       }
-      if (safeStepData.googleReviewUrl && String(safeStepData.googleReviewUrl).trim()) {
-        pvUpdate.googleReviewUrl = String(safeStepData.googleReviewUrl).trim();
-        pvUpdate['platformVars.googleReviewUrl'] = String(safeStepData.googleReviewUrl).trim();
+      if (safeStepData.currency) {
+        pvUpdate['platformVars.baseCurrency'] = safeStepData.currency;
       }
+      if (safeStepData.shippingTime !== undefined) {
+        pvUpdate['platformVars.shippingTime'] = String(safeStepData.shippingTime || '').trim();
+      }
+      if (safeStepData.businessType) {
+        pvUpdate.businessType = safeStepData.businessType;
+      }
+      if (safeStepData.adminPhone) {
+        pvUpdate['platformVars.adminWhatsappNumber'] = safeStepData.adminPhone;
+        pvUpdate.adminPhone = safeStepData.adminPhone;
+      }
+
       if (safeStepData.botName !== undefined && wizardStepFieldChanged(prevStepBlob, safeStepData, 'botName')) {
         queuePersona({ name: safeStepData.botName });
       }
@@ -278,25 +288,40 @@ router.patch('/step/:stepKey', protect, async (req, res) => {
       if (safeStepData.tone && wizardStepFieldChanged(prevStepBlob, safeStepData, 'tone')) {
         queuePersona({ tone: safeStepData.tone });
       }
-      if (safeStepData.adminPhone)          { pvUpdate['platformVars.adminWhatsappNumber'] = safeStepData.adminPhone; pvUpdate.adminPhone = safeStepData.adminPhone; }
-      if (safeStepData.currency)            pvUpdate['platformVars.baseCurrency'] = safeStepData.currency;
-      if (safeStepData.shippingTime)        pvUpdate['platformVars.shippingTime'] = safeStepData.shippingTime;
-      if (safeStepData.websiteUrl)          pvUpdate.websiteUrl = safeStepData.websiteUrl;
       if (safeStepData.activePersona && wizardStepFieldChanged(prevStepBlob, safeStepData, 'activePersona')) {
         queuePersona({ role: safeStepData.activePersona });
       }
     }
 
+    // products / catalog — mirror Settings catalog fields
+    if (stepId === 'products' && safeStepData) {
+      applySettingsSyncMirrors(pvUpdate, safeStepData);
+      if (
+        safeStepData.metaCatalogAccessToken !== undefined &&
+        safeStepData.metaCatalogAccessToken !== '••••••••'
+      ) {
+        const tok = String(safeStepData.metaCatalogAccessToken || '').trim();
+        if (tok) pvUpdate.metaCatalogAccessToken = tok;
+      }
+      if (
+        safeStepData.shopifyStorefrontToken !== undefined &&
+        safeStepData.shopifyStorefrontToken !== '••••••••'
+      ) {
+        pvUpdate.shopifyStorefrontToken = String(safeStepData.shopifyStorefrontToken || '').trim();
+      }
+    }
+
     // intelligence (tone / language / keys / prompt live on shared flat `data`)
     if (stepId === 'ai' && safeStepData) {
-      if (safeStepData.faqUrl && String(safeStepData.faqUrl).trim()) {
-        pvUpdate.faqUrl = String(safeStepData.faqUrl).trim();
+      if (safeStepData.faqUrl !== undefined) {
+        pvUpdate.faqUrl = String(safeStepData.faqUrl || '').trim();
       }
       const kbRaw =
-        safeStepData.aiKnowledgeBase || safeStepData.faqText || safeStepData.knowledgeBase;
-      if (kbRaw && String(kbRaw).trim()) {
-        const kb = String(kbRaw).trim().slice(0, 5000);
+        safeStepData.aiKnowledgeBase ?? safeStepData.faqText ?? safeStepData.knowledgeBase;
+      if (kbRaw !== undefined) {
+        const kb = String(kbRaw || '').trim().slice(0, 5000);
         pvUpdate['ai.persona.knowledgeBase'] = kb;
+        pvUpdate.faqText = kb;
       }
       if (safeStepData.activePersona && wizardStepFieldChanged(prevStepBlob, safeStepData, 'activePersona')) {
         queuePersona({ role: safeStepData.activePersona });
@@ -359,15 +384,18 @@ router.patch('/step/:stepKey', protect, async (req, res) => {
     }
 
     if (stepId === 'escalation' && safeStepData) {
-      if (safeStepData.adminPhone) {
-        pvUpdate['platformVars.adminWhatsappNumber'] = safeStepData.adminPhone;
-        pvUpdate.adminPhone = safeStepData.adminPhone;
-        pvUpdate.adminAlertWhatsapp = safeStepData.adminPhone;
+      if (safeStepData.adminPhone !== undefined) {
+        const digits = String(safeStepData.adminPhone || '').trim();
+        pvUpdate['platformVars.adminWhatsappNumber'] = digits;
+        pvUpdate.adminPhone = digits;
+        pvUpdate.adminAlertWhatsapp = digits;
+        pvUpdate['brand.adminPhone'] = digits;
       }
-      if (safeStepData.adminEmail && String(safeStepData.adminEmail).trim()) {
-        const em = String(safeStepData.adminEmail).trim();
+      if (safeStepData.adminEmail !== undefined) {
+        const em = String(safeStepData.adminEmail || '').trim();
         pvUpdate.adminEmail = em;
         pvUpdate.adminAlertEmail = em;
+        pvUpdate['platformVars.supportEmail'] = em;
       }
       if (['whatsapp', 'email', 'both'].includes(safeStepData.adminAlertPreferences)) {
         pvUpdate.adminAlertPreferences = safeStepData.adminAlertPreferences;
@@ -384,6 +412,9 @@ router.patch('/step/:stepKey', protect, async (req, res) => {
       if (safeStepData.razorpaySecret)        pvUpdate.razorpaySecret = safeStepData.razorpaySecret;
       if (safeStepData.cashfreeAppId)         pvUpdate.cashfreeAppId = safeStepData.cashfreeAppId;
       if (safeStepData.cashfreeSecretKey)     pvUpdate.cashfreeSecretKey = safeStepData.cashfreeSecretKey;
+      if (safeStepData.commerceFlowPack !== undefined) {
+        pvUpdate.commerceFlowPack = safeStepData.commerceFlowPack !== false;
+      }
     }
 
     if (Object.keys(pvUpdate).length > 0) {

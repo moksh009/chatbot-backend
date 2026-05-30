@@ -60,6 +60,15 @@ const parseDurationMonths = (raw) => {
     return match ? Number(match[1]) : 12;
 };
 
+function buildPhoneVariants(phone = '') {
+    const normalized = normalizePhone(phone || '');
+    if (!normalized) return [];
+    const variants = new Set([normalized]);
+    if (normalized.startsWith('91') && normalized.length === 12) variants.add(normalized.slice(2));
+    if (!normalized.startsWith('91') && normalized.length === 10) variants.add(`91${normalized}`);
+    return [...variants];
+}
+
 /**
  * @route   GET /api/warranty/batches
  * @desc    Fetch all warranty batches for a client
@@ -189,6 +198,29 @@ router.patch('/batches/:id', protect, featureWarranty, async (req, res) => {
 });
 
 /**
+ * @route   DELETE /api/warranty/batches/:id
+ * @desc    Delete a warranty batch and all linked warranty records
+ */
+router.delete('/batches/:id', protect, featureWarranty, async (req, res) => {
+    try {
+        const clientId = req.user.clientId;
+        const { id } = req.params;
+
+        const batch = await WarrantyBatch.findOne({ _id: id, clientId }).select('_id');
+        if (!batch) return res.status(404).json({ success: false, message: 'Batch not found' });
+
+        await Promise.all([
+            WarrantyRecord.deleteMany({ clientId, batchId: batch._id }),
+            WarrantyBatch.deleteOne({ _id: batch._id, clientId }),
+        ]);
+
+        return res.json({ success: true });
+    } catch (err) {
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+/**
  * @route   GET /api/warranty/records
  * @desc    Fetch all live warranty records
  */
@@ -282,6 +314,41 @@ router.get('/records', protect, featureWarranty, async (req, res) => {
         res.json({ success: true, records: enriched });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+/**
+ * @route   GET /api/warranty/stats
+ * @desc    Snapshot all-time warranty stats for dashboard metrics
+ */
+router.get('/stats', protect, featureWarranty, async (req, res) => {
+    try {
+        const clientId = req.user.clientId;
+        const [statusCounts, customerIds] = await Promise.all([
+            WarrantyRecord.aggregate([
+                { $match: { clientId } },
+                { $group: { _id: '$status', count: { $sum: 1 } } },
+            ]),
+            WarrantyRecord.distinct('customerId', { clientId }),
+        ]);
+
+        const byStatus = statusCounts.reduce((acc, row) => {
+            acc[String(row._id || '').toLowerCase()] = Number(row.count || 0);
+            return acc;
+        }, {});
+
+        return res.json({
+            success: true,
+            stats: {
+                totalCustomerRecords: customerIds.length,
+                activeCoverage: byStatus.active || 0,
+                expiredWarranty: byStatus.expired || 0,
+                terminatedWarranty: byStatus.terminated || 0,
+                voidRefunded: byStatus.void || 0,
+            },
+        });
+    } catch (err) {
+        return res.status(500).json({ success: false, message: err.message });
     }
 });
 
@@ -459,6 +526,128 @@ router.patch('/records/:id', protect, featureWarranty, async (req, res) => {
 });
 
 /**
+ * @route   POST /api/warranty/records/upsert
+ * @desc    Create/update warranty record for a specific customer order item
+ */
+router.post('/records/upsert', protect, featureWarranty, async (req, res) => {
+    try {
+        const clientId = req.user.clientId;
+        const {
+            recordId,
+            phoneNumber,
+            shopifyOrderId,
+            productId,
+            productName,
+            purchaseDate,
+            expiryDate,
+            status = 'active',
+        } = req.body || {};
+
+        const normalizedPhone = normalizePhone(phoneNumber || '');
+        if (!normalizedPhone || !shopifyOrderId || !productName) {
+            return res.status(400).json({
+                success: false,
+                message: 'phoneNumber, shopifyOrderId, and productName are required',
+            });
+        }
+
+        let contact = await Contact.findOne({ clientId, phoneNumber: normalizedPhone });
+        if (!contact) {
+            contact = await Contact.create({
+                clientId,
+                phoneNumber: normalizedPhone,
+                name: 'Customer',
+            });
+        }
+
+        let batch = await WarrantyBatch.findOne({ clientId, status: 'active' }).sort({ createdAt: -1 });
+        if (!batch) {
+            batch = await WarrantyBatch.create({
+                clientId,
+                batchName: 'Manual Registrations',
+                shopifyProductIds: [],
+                durationMonths: 12,
+                validFrom: new Date(),
+                status: 'active',
+            });
+        }
+
+        const safePurchase = purchaseDate ? new Date(purchaseDate) : new Date();
+        const safeExpiry = expiryDate ? new Date(expiryDate) : new Date(safePurchase);
+        if (!expiryDate) safeExpiry.setMonth(safeExpiry.getMonth() + 12);
+
+        const filter = recordId
+            ? { _id: recordId, clientId }
+            : {
+                  clientId,
+                  customerId: contact._id,
+                  shopifyOrderId: String(shopifyOrderId),
+                  productId: String(productId || productName),
+              };
+
+        const record = await WarrantyRecord.findOneAndUpdate(
+            filter,
+            {
+                $set: {
+                    clientId,
+                    customerId: contact._id,
+                    shopifyOrderId: String(shopifyOrderId),
+                    productId: String(productId || productName),
+                    productName: String(productName),
+                    purchaseDate: safePurchase,
+                    expiryDate: safeExpiry,
+                    status,
+                    batchId: batch._id,
+                },
+            },
+            { new: true, upsert: true, setDefaultsOnInsert: true }
+        );
+
+        return res.json({ success: true, record });
+    } catch (err) {
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+/**
+ * @route   DELETE /api/warranty/records/customer/:phone
+ * @desc    Delete all warranty records for a customer profile (phone/contact)
+ */
+router.delete('/records/customer/:phone', protect, featureWarranty, async (req, res) => {
+    try {
+        const clientId = req.user.clientId;
+        const rawPhone = decodeURIComponent(req.params.phone || '');
+        const phoneVariants = buildPhoneVariants(rawPhone);
+        if (!phoneVariants.length) {
+            return res.status(400).json({ success: false, message: 'Valid phone is required' });
+        }
+
+        const contacts = await Contact.find({
+            clientId,
+            phoneNumber: { $in: phoneVariants },
+        })
+            .select('_id')
+            .lean();
+        const customerIds = contacts.map((c) => c._id);
+        if (!customerIds.length) {
+            return res.json({ success: true, deletedCount: 0 });
+        }
+
+        const result = await WarrantyRecord.deleteMany({
+            clientId,
+            customerId: { $in: customerIds },
+        });
+
+        return res.json({
+            success: true,
+            deletedCount: Number(result.deletedCount || 0),
+        });
+    } catch (err) {
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+/**
  * Legacy Support / Redirects
  * We keep some old endpoint names but point them to the new logic if appropriate
  */
@@ -504,9 +693,9 @@ router.post('/manual-register', protect, featureWarranty, async (req, res) => {
         const {
             phoneNumber,
             productName,
-            serialNumber,
             orderId,
             duration,
+            durationMonths,
             purchaseDate
         } = req.body || {};
 
@@ -515,7 +704,7 @@ router.post('/manual-register', protect, featureWarranty, async (req, res) => {
         }
 
         const normalizedPhone = normalizePhone(phoneNumber);
-        const months = parseDurationMonths(duration);
+        const months = Math.max(1, Math.min(120, Number(durationMonths) || parseDurationMonths(duration)));
         const purchase = purchaseDate ? new Date(purchaseDate) : new Date();
         const expiry = new Date(purchase);
         expiry.setMonth(expiry.getMonth() + months);
@@ -545,7 +734,7 @@ router.post('/manual-register', protect, featureWarranty, async (req, res) => {
             clientId,
             customerId: contact._id,
             shopifyOrderId: String(orderId || `manual-${Date.now()}`),
-            productId: String(serialNumber || productName),
+            productId: String(req.body.shopifyProductId || productName),
             productName: String(productName),
             purchaseDate: purchase,
             expiryDate: expiry,

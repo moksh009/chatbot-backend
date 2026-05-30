@@ -16,6 +16,10 @@ const log = require('../utils/core/logger')('ShopifyWebhook');
 const commerceAutomationService = require('../utils/commerce/commerceAutomationService');
 const { processOrderStatusAutomations } = require('../utils/commerce/orderStatusAutomationHandler');
 const shopifyAdminApiVersion = require('../utils/shopify/shopifyAdminApiVersion');
+const {
+    applyWarrantyVoidFromOrder,
+    parseRefundedProductIds,
+} = require('../utils/commerce/warrantyVoidAutomation');
 
 /** Push reconciled order to dashboard (Orders page) without manual refresh */
 function emitOrderUpdatedToDashboard(io, clientId, orderDoc) {
@@ -347,6 +351,17 @@ router.post('/', verifyShopifyWebhook, shopifyReplay, async (req, res) => {
                     );
                     const fullOrder = orderRes.data?.order;
                     if (fullOrder) {
+                        const financial = String(fullOrder.financial_status || '').toLowerCase();
+                        const partialRefundIds =
+                            financial === 'partially_refunded' ? parseRefundedProductIds(data) : [];
+                        await applyWarrantyVoidFromOrder({
+                            clientId: client.clientId,
+                            orderPayload: fullOrder,
+                            refundedProductIds: partialRefundIds,
+                            source: 'shopify_webhook:refunds/create',
+                        }).catch((e) =>
+                            log.error(`Warranty void refunds/create failed: ${e.message}`)
+                        );
                         processOrderStatusAutomations({
                             client,
                             payload: fullOrder,
@@ -1107,6 +1122,16 @@ async function handleRefund(client, data) {
     log.info(`Processing refund/cancellation for order ${orderId}`, { clientId: client.clientId });
 
     try {
+        const topicLikeStatus = String(data.financial_status || '').toLowerCase();
+        const partialRefundIds =
+            topicLikeStatus === 'partially_refunded' ? parseRefundedProductIds(data) : [];
+        await applyWarrantyVoidFromOrder({
+            clientId: client.clientId,
+            orderPayload: data,
+            refundedProductIds: partialRefundIds,
+            source: 'shopify_webhook:orders/refund_or_cancel',
+        });
+
         const phoneRaw = data.phone || data.customer?.phone || data.billing_address?.phone;
         if (phoneRaw) {
             const { normalizePhone } = require('../utils/core/helpers');

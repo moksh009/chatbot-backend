@@ -1457,6 +1457,13 @@ router.patch('/my-settings', protect, async (req, res) => {
     }
     if (shopifyConnectionStatus !== undefined) {
       updateFields.shopifyConnectionStatus = shopifyConnectionStatus;
+      if (String(shopifyConnectionStatus).toLowerCase() === 'disconnected') {
+        updateFields.shopifyStores = [];
+        updateFields.shopifyRefreshToken = '';
+        updateFields['commerce.shopify.refreshToken'] = '';
+        updateFields.shopifyTokenExpiresAt = null;
+        updateFields.lastShopifyError = '';
+      }
     }
 
     if (facebookCatalogId !== undefined) {

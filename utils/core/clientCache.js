@@ -16,7 +16,7 @@ const WHATSAPP_SEND_SELECT =
   'clientId phoneNumberId whatsappToken premiumAccessToken premiumPhoneId whatsapp translationConfig geminiApiKey config';
 /** Connection flags for workspace + ConnectionContext */
 const CONNECTION_STATUS_SELECT =
-  'clientId shopDomain shopifyAccessToken shopifyScopes commerce phoneNumberId wabaId whatsappToken whatsappConnectionType whatsappConnectionMethod whatsappDisplayPhoneNumber whatsappCoexistence whatsappQualityRating whatsappWebhookSubscribed whatsapp instagramAccessToken instagramPageId social metaAdsConnected metaAdsToken metaAdAccountId';
+  'clientId shopDomain shopifyAccessToken shopifyScopes shopifyStores shopifyConnectionStatus commerce phoneNumberId wabaId whatsappToken whatsappConnectionType whatsappConnectionMethod whatsappDisplayPhoneNumber whatsappCoexistence whatsappQualityRating whatsappWebhookSubscribed whatsapp instagramAccessToken instagramPageId social metaAdsConnected metaAdsToken metaAdAccountId';
 /** Settings validation / automation health */
 const VALIDATION_SELECT =
   'automationFlows syncedMetaTemplates shopDomain shopifyAccessToken whatsappToken phoneNumberId wabaId commerce';

@@ -72,8 +72,10 @@ async function probeWhatsApp(client) {
 }
 
 async function probeShopify(client) {
-  const token = decryptToken(client.shopifyAccessToken || '');
-  const domain = client.shopDomain || client.commerce?.shopify?.domain;
+  const { resolveShopifyCredentials } = require('../shopify/resolveShopifyCredentials');
+  const creds = resolveShopifyCredentials(client);
+  const token = creds.tokenPlain || decryptToken(creds.tokenEnc || '');
+  const domain = creds.shopDomain || client.shopDomain || client.commerce?.shopify?.domain;
   if (!token || !domain) return { tokenStatus: 'missing', ok: false };
   try {
     const res = await axios.get(

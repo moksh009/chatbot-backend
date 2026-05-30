@@ -65,6 +65,7 @@ function applySettingsSyncMirrors(updateFields, body = {}) {
     const sup = String(body.supportPhone || "").trim();
     updateFields["platformVars.supportWhatsapp"] = sup;
     updateFields["platformVars.supportPhone"] = sup;
+    updateFields.supportPhone = sup;
   }
 
   if (body.tone !== undefined) {

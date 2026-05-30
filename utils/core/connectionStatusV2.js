@@ -11,9 +11,9 @@ const {
 const MetaTemplate = require('../../models/MetaTemplate');
 
 function tokenStatusFrom(tok, probed, clientStatusOverride) {
-  // If backend explicitly flagged the connection as broken, surface it immediately
-  if (clientStatusOverride === 'error') return 'revoked';
+  // Prefer live probe over stale DB status flag
   if (probed?.tokenStatus) return probed.tokenStatus;
+  if (clientStatusOverride === 'error') return 'revoked';
   if (!tok || tok.length < 6) return 'missing';
   return 'valid';
 }

@@ -23,7 +23,28 @@ router.get('/:clientId/connection-status', protect, verifyTenantScope(), async (
   const { clientId } = req.params;
   const forceRefresh = req.query.refresh === '1' || req.query.force === '1';
 
-  const client = await getCachedClient(clientId, CONNECTION_STATUS_SELECT);
+  let client = await getCachedClient(clientId, CONNECTION_STATUS_SELECT);
+
+  // Heal false "expired" states for embedded Shopify installs (expiring offline tokens + refresh)
+  if (client?.shopDomain && client?.shopifyAccessToken) {
+    const shopifySt = String(client.shopifyConnectionStatus || '').toLowerCase();
+    const shouldHeal =
+      forceRefresh ||
+      shopifySt === 'error' ||
+      (client.shopifyTokenExpiresAt &&
+        new Date(client.shopifyTokenExpiresAt).getTime() - Date.now() < 30 * 60 * 1000);
+    if (shouldHeal) {
+      try {
+        const { reconcileShopifyConnection } = require('../utils/shopify/shopifyConnectionHeal');
+        await reconcileShopifyConnection(clientId, { tryRefresh: true });
+        invalidateClientCache(clientId);
+        client = await getCachedClient(clientId, CONNECTION_STATUS_SELECT);
+      } catch (healErr) {
+        console.warn('[workspace] shopify heal:', healErr.message);
+      }
+    }
+  }
+
   const contract = await buildConnectionStatusContract(client);
   const legacy = contract._legacy || buildConnectionStatusPayload(client);
   delete contract._legacy;

@@ -67,11 +67,13 @@ function isShopifyCredentialConnected(client) {
   const { shopDomain, tokenPlain, tokenEnc } = resolveShopifyCredentials(client);
   if (!isValidShopDomain(shopDomain)) return false;
   const connStatus = String(client?.shopifyConnectionStatus || '').toLowerCase();
-  if (connStatus === 'disconnected' || connStatus === 'error') return false;
-  return (
+  if (connStatus === 'disconnected') return false;
+  const hasToken =
     (typeof tokenPlain === 'string' && tokenPlain.length > 8) ||
-    (typeof tokenEnc === 'string' && tokenEnc.trim().length > 20)
-  );
+    (typeof tokenEnc === 'string' && tokenEnc.trim().length > 20);
+  if (!hasToken) return false;
+  // 'error' may be stale — credentials on file mean connected until probe proves revoked
+  return true;
 }
 
 /**

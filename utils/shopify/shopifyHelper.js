@@ -43,87 +43,46 @@ async function getShopifyClient(clientId, forceRefresh = false) {
         throw new Error('Shopify credentials incomplete or invalid domain configuration');
     }
 
-    // 1. Check if token needs refresh
+    // 1. Proactive refresh for expiring offline tokens (Shopify embedded app / OAuth 2026).
+    // Only rotate when a refresh token exists — never mark "error" solely because expiry date passed.
+    const { refreshShopifyAccessToken, probeShopifyAccess } = require('./shopifyConnectionHeal');
     const fiveMinutes = 5 * 60 * 1000;
-    const isNextToExpiry = client.shopifyTokenExpiresAt && (new Date(client.shopifyTokenExpiresAt).getTime() - Date.now()) < fiveMinutes;
-    const hasCredentials = client.shopifyClientId && client.shopifyClientSecret;
+    const expiresAtMs = client.shopifyTokenExpiresAt
+      ? new Date(client.shopifyTokenExpiresAt).getTime()
+      : null;
+    const isNextToExpiry =
+      Number.isFinite(expiresAtMs) && expiresAtMs - Date.now() < fiveMinutes;
+    const hasRefreshToken = !!(
+      client.shopifyRefreshToken && String(client.shopifyRefreshToken).trim()
+    );
+    const shouldAttemptRefresh =
+      forceRefresh || (isNextToExpiry && hasRefreshToken) || (forceRefresh && hasRefreshToken);
 
-    // FORCE: If forceRefresh is true, we ignore the current token and fetch a new one
-    if (forceRefresh || isNextToExpiry || (!token && hasCredentials)) {
-        console.log(`[ShopifyRotation] ${forceRefresh ? 'FORCED' : 'Auto'} Renewer triggered for ${clientId}...`);
-        
-        let success = false;
-        let lastError = null;
-
-        // --- SEQUENTIAL RECOVERY FLOW ---
-        
-        // Step A: Try Refresh Token (Standard OAuth)
-        if (client.shopifyRefreshToken) {
-            try {
-                console.log(`[ShopifyRotation] Attempting Refresh Token rotation for ${clientId}...`);
-                const res = await axios.post(`https://${domain}/admin/oauth/access_token`, {
-                    client_id: decrypt(client.shopifyClientId),
-                    client_secret: decrypt(client.shopifyClientSecret),
-                    grant_type: 'refresh_token',
-                    refresh_token: decrypt(client.shopifyRefreshToken)
-                });
-
-                if (res.data.access_token) {
-                    token = res.data.access_token;
-                    client.shopifyAccessToken = token;
-                    client.shopifyRefreshToken = res.data.refresh_token || decrypt(client.shopifyRefreshToken);
-                    
-                    if (!client.commerce) client.commerce = {};
-                    if (!client.commerce.shopify) client.commerce.shopify = {};
-                    client.commerce.shopify.accessToken = token;
-                    client.commerce.shopify.refreshToken = res.data.refresh_token || decrypt(client.shopifyRefreshToken);
-                    if (res.data.expires_in) {
-                        client.shopifyTokenExpiresAt = new Date(Date.now() + (res.data.expires_in * 1000));
-                    } else {
-                        client.shopifyTokenExpiresAt = null; 
-                    }
-                    success = true;
-                    console.log(`✅ [ShopifyRotation] Token restored via Refresh Token for ${clientId}`);
-                }
-            } catch (err) {
-                const eData = err.response?.data;
-                lastError = typeof eData === 'string' && eData.length > 200 ? `${eData.substring(0, 100)}... [HTML truncated]` : (eData || err.message);
-                console.warn(`[ShopifyRotation] Refresh token attempt failed for ${clientId}:`, JSON.stringify(lastError));
-            }
+    if (shouldAttemptRefresh) {
+      console.log(
+        `[ShopifyRotation] ${forceRefresh ? 'FORCED' : 'Auto'} refresh for ${clientId}...`
+      );
+      const refreshResult = await refreshShopifyAccessToken(clientId, { force: forceRefresh });
+      if (refreshResult.ok && !refreshResult.skipped) {
+        invalidateClientCache(clientId);
+        client = await getCachedClient(clientId, SHOPIFY_CLIENT_SELECT);
+        creds = resolveShopifyCredentials(client);
+        token = creds.tokenPlain;
+      } else if (forceRefresh && !refreshResult.ok) {
+        const probe = await probeShopifyAccess(client);
+        if (!probe.ok) {
+          const errorMsg = `Shopify refresh failed: ${refreshResult.reason || 'unknown'}`;
+          await Client.updateOne(
+            { clientId },
+            { $set: { shopifyConnectionStatus: 'error', lastShopifyError: errorMsg } }
+          );
+          invalidateClientCache(clientId);
+          throw new Error(errorMsg);
         }
-
-
-
-        if (success) {
-            const tokenSet = {
-              shopifyAccessToken: token,
-              shopifyRefreshToken: client.shopifyRefreshToken,
-              shopifyTokenExpiresAt: client.shopifyTokenExpiresAt,
-              shopifyConnectionStatus: 'connected',
-              lastShopifyError: '',
-              'commerce.shopify.accessToken': token,
-            };
-            if (client.commerce?.shopify?.refreshToken) {
-              tokenSet['commerce.shopify.refreshToken'] = client.commerce.shopify.refreshToken;
-            }
-            await Client.updateOne({ clientId }, { $set: tokenSet });
-            invalidateClientCache(clientId);
-            client = await getCachedClient(clientId, SHOPIFY_CLIENT_SELECT);
-            creds = resolveShopifyCredentials(client);
-            token = creds.tokenPlain;
-        } else if (forceRefresh || isNextToExpiry) {
-            const errorReason = lastError ? JSON.stringify(lastError) : (hasCredentials && !client.shopifyRefreshToken ? 'Custom App (No Refresh Token)' : 'Unknown');
-            const errorMsg = `Self-Healing Failed for ${clientId}: ${errorReason}`;
-            console.error(`❌ [ShopifyRotation] ${errorMsg}`);
-            await Client.updateOne({ clientId }, {
-                $set: {
-                    shopifyConnectionStatus: 'error',
-                    lastShopifyError: errorMsg
-                }
-            });
-            invalidateClientCache(clientId);
-            if (forceRefresh) throw new Error(`Shopify rotation failed: ${errorReason}`);
-        }
+        console.warn(
+          `[ShopifyRotation] Refresh failed for ${clientId} but existing token still valid — continuing`
+        );
+      }
     }
 
     if (!token || !domain) {
@@ -146,12 +105,22 @@ async function getShopifyClient(clientId, forceRefresh = false) {
         response => response,
         async (error) => {
             if (error.response?.status === 401) {
-                console.warn(`[ShopifyAuth] 401 Unauthorized detected for ${clientId}. Flagging for recovery.`);
-                await Client.updateOne(
-                    { clientId },
-                    { $set: { shopifyConnectionStatus: 'error', lastShopifyError: 'Session Expired (401)' } }
-                );
-                invalidateClientCache(clientId);
+                console.warn(`[ShopifyAuth] 401 for ${clientId} — attempting heal before flagging error`);
+                const { reconcileShopifyConnection } = require('./shopifyConnectionHeal');
+                const healed = await reconcileShopifyConnection(clientId, { tryRefresh: true });
+                if (!healed.connected) {
+                    await Client.updateOne(
+                        { clientId },
+                        {
+                          $set: {
+                            shopifyConnectionStatus: 'error',
+                            lastShopifyError:
+                              'Shopify access revoked — open Settings → Connections and reconnect your store.',
+                          },
+                        }
+                    );
+                    invalidateClientCache(clientId);
+                }
             }
             return Promise.reject(error);
         }
@@ -338,12 +307,22 @@ async function exchangeShopifyToken(clientId, shopDomain, shopifyClientId, shopi
 
 async function refreshShopifyToken(client) {
   try {
-    console.log(`[ShopifyRotation] Proactively refreshing token for ${client.clientId}...`);
-    await getShopifyClient(client.clientId, true); // Force refresh
-    console.log(`✅ [ShopifyRotation] Proactive token refresh successful for ${client.clientId}`);
-    return { success: true };
+    const { refreshShopifyAccessToken, reconcileShopifyConnection } = require('./shopifyConnectionHeal');
+    const clientId = client?.clientId;
+    if (!clientId) return { success: false, error: 'missing_client_id' };
+    console.log(`[ShopifyRotation] Proactively refreshing token for ${clientId}...`);
+    const refreshResult = await refreshShopifyAccessToken(clientId, { force: true });
+    if (refreshResult.ok) {
+      console.log(`✅ [ShopifyRotation] Proactive token refresh successful for ${clientId}`);
+      return { success: true };
+    }
+    const reconciled = await reconcileShopifyConnection(clientId, { tryRefresh: true });
+    if (reconciled.connected) {
+      return { success: true };
+    }
+    return { success: false, error: refreshResult.reason || reconciled.reason || 'refresh_failed' };
   } catch (error) {
-    console.error(`❌ [ShopifyRotation] Proactive token refresh failed for ${client.clientId}:`, error.message);
+    console.error(`❌ [ShopifyRotation] Proactive token refresh failed for ${client?.clientId}:`, error.message);
     return { success: false, error: error.message };
   }
 }

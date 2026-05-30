@@ -856,6 +856,11 @@ router.get('/callback', async (req, res) => {
     await Client.findOneAndUpdate({ clientId }, { $set: updatePayload }, { new: true });
     invalidateClientCache(clientId);
 
+    try {
+      const { reconcileShopifyConnection } = require('../utils/shopify/shopifyConnectionHeal');
+      await reconcileShopifyConnection(clientId, { tryRefresh: false });
+    } catch (_) {}
+
     // Invalidate Redis connection-status cache so frontend immediately sees connected state
     try {
       const { getAppRedis, isRedisReady } = require('../utils/core/redisFactory');

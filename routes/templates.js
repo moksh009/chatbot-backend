@@ -497,18 +497,46 @@ router.get('/unified', protect, apiCache(60), (req, res) => {
 });
 
 /** Per-feature readiness (order messages, flows, commerce) — Phase 2 unified API. */
+/** WhatsApp optional — return empty readiness instead of 500 when WA not configured. */
+async function safeTemplateContext(req, clientId) {
+  try {
+    await getClientCredentials(clientId, req.user.id);
+    const { getCachedClient } = require('../utils/core/clientCache');
+    const client = await getCachedClient(clientId, 'syncedMetaTemplates');
+    const synced = Array.isArray(client?.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
+    return { synced, whatsappConfigured: true };
+  } catch (error) {
+    const msg = String(error?.message || '');
+    const waMissing =
+      msg.includes('WABA') ||
+      msg.includes('WhatsApp') ||
+      msg.includes('not configured');
+    if (waMissing) {
+      return { synced: [], whatsappConfigured: false };
+    }
+    throw error;
+  }
+}
+
 router.get('/readiness', protect, apiCache(20), async (req, res) => {
     try {
         const clientId = tenantClientId(req) || req.query.clientId;
         if (!clientId) {
             return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
-        await getClientCredentials(clientId, req.user.id);
-        const { getCachedClient } = require('../utils/core/clientCache');
-        const client = await getCachedClient(clientId, 'syncedMetaTemplates');
-        const synced = Array.isArray(client?.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
+        const { synced, whatsappConfigured } = await safeTemplateContext(req, clientId);
+        if (!whatsappConfigured) {
+            return res.json({
+                success: true,
+                data: {
+                    whatsappConfigured: false,
+                    slots: {},
+                    summary: { approved: 0, pending: 0, missing: 0 },
+                },
+            });
+        }
         const data = await getUnifiedTemplateReadiness(clientId, { syncedTemplates: synced });
-        return res.json({ success: true, data });
+        return res.json({ success: true, data: { ...data, whatsappConfigured: true } });
     } catch (error) {
         return res.status(500).json({ success: false, message: error.message });
     }
@@ -522,11 +550,29 @@ router.get('/slots', protect, apiCache(30), async (req, res) => {
             return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
 
-        await getClientCredentials(clientId, req.user.id);
-
-        const { getCachedClient } = require('../utils/core/clientCache');
-        const client = await getCachedClient(clientId, 'syncedMetaTemplates');
-        const synced = Array.isArray(client?.syncedMetaTemplates) ? client.syncedMetaTemplates : [];
+        const { synced, whatsappConfigured } = await safeTemplateContext(req, clientId);
+        if (!whatsappConfigured) {
+            const catalog = loadCatalog();
+            return res.json({
+                success: true,
+                data: {
+                    version: getCatalogVersion(),
+                    clientId,
+                    summary: { total: 0, approved: 0, pending: 0, missing: 0 },
+                    groups: [],
+                    nameAliases: catalog.nameAliases || {},
+                    prebuiltRequiredMetaNames: catalog.prebuiltRequiredMetaNames || [],
+                    featureAutomations: catalog.featureAutomations || [],
+                    multiStoreModel: MULTI_STORE_MODEL,
+                    whatsappConfigured: false,
+                },
+                meta: {
+                    catalogVersion: getCatalogVersion(),
+                    multiStoreModel: MULTI_STORE_MODEL,
+                    ecoPackValid: true,
+                },
+            });
+        }
 
         const resolved = await resolveSlotsForClient(clientId, { syncedTemplates: synced });
         const catalog = loadCatalog();

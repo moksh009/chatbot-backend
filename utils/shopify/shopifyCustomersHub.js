@@ -123,14 +123,18 @@ function filterCustomers(list, { tier, topedge, search }) {
   return out;
 }
 
-function summarizeCustomers(list) {
+function summarizeCustomers(list, whatsappChatPhones = null) {
   let totalLtv = 0;
   let whatsappLinked = 0;
   let withLeadScore = 0;
   let vipCount = 0;
+  const chatPhones = whatsappChatPhones instanceof Set ? whatsappChatPhones : null;
   for (const c of list) {
     totalLtv += Number(c.total_spent) || 0;
-    if (c.workspacePhone) whatsappLinked += 1;
+    if (c.workspacePhone && chatPhones) {
+      const p = normalizePhone(c.workspacePhone);
+      if (p && chatPhones.has(p)) whatsappLinked += 1;
+    }
     if (c.leadScore != null && Number(c.leadScore) > 0) withLeadScore += 1;
     if (getSpendTier(c.total_spent) === 'vip') vipCount += 1;
   }
@@ -141,6 +145,17 @@ function summarizeCustomers(list) {
     withLeadScore,
     vipCount,
   };
+}
+
+async function loadWhatsAppChatPhoneSet(clientId) {
+  const Conversation = require('../../models/Conversation');
+  const docs = await Conversation.find({ clientId }).select('phone').lean();
+  const set = new Set();
+  for (const doc of docs || []) {
+    const p = normalizePhone(doc.phone);
+    if (p) set.add(p);
+  }
+  return set;
 }
 
 function encodeCursor(offset) {
@@ -228,10 +243,11 @@ async function listShopifyCustomersForClient(clientId, query = {}) {
     cursor: query.cursor,
     limit: query.limit,
   });
+  const whatsappChatPhones = await loadWhatsAppChatPhoneSet(clientId);
 
   return {
     ...page,
-    summary: summarizeCustomers(filtered),
+    summary: summarizeCustomers(filtered, whatsappChatPhones),
     syncedAt: client?.customersSyncedAt || null,
     cacheCount: client?.shopifyCustomersCacheCount ?? source.length,
     needsSync: false,

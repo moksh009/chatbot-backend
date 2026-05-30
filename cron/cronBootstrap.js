@@ -93,6 +93,9 @@ function registerAllCrons() {
   const scheduleIgTokenRefresher = require("./igTokenRefresher");
   if (typeof scheduleIgTokenRefresher === "function") scheduleIgTokenRefresher();
 
+  const { registerShopifyTokenRefreshCron } = require('./shopifyTokenRefreshCron');
+  registerShopifyTokenRefreshCron();
+
   const scheduleAutoResolutionCron = require("./autoResolutionCron");
   if (typeof scheduleAutoResolutionCron === "function") scheduleAutoResolutionCron();
 

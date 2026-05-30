@@ -538,11 +538,11 @@ router.get("/google/callback", async (req, res) => {
 
   if (error) {
     console.error("[Google OAuth] Auth denied:", error);
-    return res.redirect(`${frontendUrl}/settings?tab=integrations&google_error=${encodeURIComponent(error)}`);
+    return res.redirect(`${frontendUrl}/settings?tab=email&google_error=${encodeURIComponent(error)}`);
   }
 
   if (!code || !state) {
-    return res.redirect(`${frontendUrl}/settings?tab=integrations&google_error=missing_params`);
+    return res.redirect(`${frontendUrl}/settings?tab=email&google_error=missing_params`);
   }
 
   let clientId;
@@ -550,12 +550,12 @@ router.get("/google/callback", async (req, res) => {
     const decoded = JSON.parse(Buffer.from(state, "base64").toString());
     clientId = decoded.clientId;
   } catch (_) {
-    return res.redirect(`${frontendUrl}/settings?tab=integrations&google_error=invalid_state`);
+    return res.redirect(`${frontendUrl}/settings?tab=email&google_error=invalid_state`);
   }
 
   try {
     if (!process.env.GCAL_CLIENT_ID || !process.env.GCAL_CLIENT_SECRET) {
-      return res.redirect(`${frontendUrl}/settings?tab=integrations&google_error=config_error`);
+      return res.redirect(`${frontendUrl}/settings?tab=email&google_error=config_error`);
     }
 
     const base = (process.env.BACKEND_URL || "https://api.topedgeai.com").replace(/\/$/, "");
@@ -595,10 +595,10 @@ router.get("/google/callback", async (req, res) => {
     invalidateClientCache(clientId);
 
     console.log(`[Google OAuth] Gmail connected for ${clientId}: ${gmailAddress}`);
-    return res.redirect(`${frontendUrl}/settings?tab=integrations&google_connected=true`);
+    return res.redirect(`${frontendUrl}/settings?tab=email&google_connected=true`);
   } catch (err) {
     console.error("[Google OAuth] Callback error:", err.response?.data || err.message);
-    return res.redirect(`${frontendUrl}/settings?tab=integrations&google_error=callback_failed`);
+    return res.redirect(`${frontendUrl}/settings?tab=email&google_error=callback_failed`);
   }
 });
 
