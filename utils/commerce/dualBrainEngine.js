@@ -42,7 +42,7 @@ const { analyzeSentiment } = require('../core/sentimentEngine');
 const { extractOrderDetails } = require('./orderParser'); // Phase 28 Track 5
 const { executeNativeOrder } = require('./orderCreator'); // Phase 28 Track 5
 const BotAnalytics = require("../../models/BotAnalytics");
-const { buildPersonaSystemPrompt, applyPersonaPostProcess } = require('../core/personaEngine'); // Phase 29 Track 3
+const { buildPersonaSystemPrompt, applyPersonaPostProcess, resolveQuickFaqReply, buildQuickFaqDirective } = require('../core/personaEngine'); // Phase 29 Track 3
 const { getRelevantExamples, buildFewShotPrompt } = require('../core/trainingEngine'); // Phase 29 Track 4
 const { generatePaymentLink } = require('./paymentLinkGenerator'); // Phase 29 Track 7
 const MessageBufferService = require('../../services/MessageBufferService');
@@ -2919,53 +2919,80 @@ async function executeNode(nodeId, flowNodes, flowEdges, client, convo, lead, ph
         rawNode.data?.text || rawNode.data?.message || rawNode.data?.body || ""
       ).trim();
       const userIssue = String(ctx.customer_issue || ctx.last_input || "").trim();
-      const brand = ctx.brand_name || client.businessName || "our store";
-      const tone = client.ai?.persona?.tone || "friendly";
-      let ragContext = "";
-      try {
-        const { retrieveKnowledge } = require('../core/ragEngine');
-        const ragChunks = await retrieveKnowledge(client.clientId, userIssue, 3);
-        if (ragChunks.length) {
-          ragContext = ragChunks.map((c, i) => `[${i + 1}] ${c.title}: ${c.text}`).join('\n');
+      const faqResolved = resolveQuickFaqReply(client, userIssue, client.ai?.persona);
+      let reply = '';
+      let ragBlocked = false;
+
+      if (faqResolved.direct) {
+        reply = faqResolved.reply;
+      } else {
+        const { retrieveKnowledge, getActiveKnowledgeHealth, notifyRagFailure, isRagUnavailableError } = require('../core/ragEngine');
+        const health = await getActiveKnowledgeHealth(client.clientId);
+        let ragContext = '';
+        if (health.active > 0) {
+          try {
+            const ragChunks = await retrieveKnowledge(client.clientId, userIssue, 3);
+            ragContext = ragChunks.map((c, i) => `[${i + 1}] ${c.title}: ${c.text}`).join('\n');
+          } catch (ragErr) {
+            if (isRagUnavailableError(ragErr)) {
+              await notifyRagFailure(client.clientId, ragErr.reason);
+              ctx.ai_response = staticFallback || "Our knowledge base is temporarily unavailable. Please try again shortly.";
+              ctx.ai_needs_human = "true";
+              ragBlocked = true;
+            } else {
+              throw ragErr;
+            }
+          }
         }
-      } catch (_) {}
-      const kbFallback = String(
-        client.ai?.persona?.knowledgeBase || client.nicheData?.aiPromptContext || ""
-      ).slice(0, 600);
-      const prompt =
-        `You are ${ctx.bot_name || "Assistant"} for ${brand}. Tone: ${tone}.\n` +
-        (ragContext ? `Knowledge:\n${ragContext}\n\n` : kbFallback ? `Context:\n${kbFallback}\n\n` : "") +
-        `Customer says: "${userIssue}"\n` +
-        `Reply in under 280 characters for WhatsApp.\n` +
-        `If you cannot answer from the context above, reply exactly: NEEDS_HUMAN`;
-      let reply = "";
-      try {
-        const { callAI } = require('../core/aiGateway');
-        const aiResult = await Promise.race([
-          callAI({
-            clientId: client.clientId,
-            feature: 'whatsapp_bot',
-            prompt,
-            maxTokens: 120,
-            temperature: 0.4,
-            fast: true,
-          }),
-          new Promise((_, rej) => setTimeout(() => rej(new Error("ai_timeout")), AI_BOT_TIMEOUT_MS)),
-        ]);
-        reply = aiResult?.content || "";
-      } catch (_) {
-        reply = "";
+        if (!ragBlocked) {
+          const systemPrompt = buildPersonaSystemPrompt(
+            client,
+            ragContext ? `RETRIEVED KNOWLEDGE:\n${ragContext}` : (client.nicheData?.aiPromptContext || "")
+          );
+          const prompt =
+            `Customer says: "${userIssue}"${buildQuickFaqDirective(faqResolved.faqMatch)}\n` +
+            `Reply in under 280 characters for WhatsApp. Match your tone. Use FAQ and retrieved knowledge when they answer the question.\n` +
+            `If you cannot answer from the context above, reply exactly: NEEDS_HUMAN`;
+          try {
+            const { callAI } = require('../core/aiGateway');
+            const aiResult = await Promise.race([
+              callAI({
+                clientId: client.clientId,
+                feature: 'whatsapp_bot',
+                systemPrompt,
+                prompt,
+                maxTokens: 120,
+                temperature: 0.35,
+                fast: true,
+              }),
+              new Promise((_, rej) => setTimeout(() => rej(new Error("ai_timeout")), AI_BOT_TIMEOUT_MS)),
+            ]);
+            reply = aiResult?.content || "";
+          } catch (_) {
+            reply = "";
+          }
+        }
       }
-      const clean = String(reply || "").trim();
-      const needs = !clean || clean.toUpperCase().includes("NEEDS_HUMAN");
-      ctx.ai_response = needs ? staticFallback : clean.slice(0, 500);
-      ctx.ai_needs_human = needs && !staticFallback ? "true" : "false";
-      await Conversation.findByIdAndUpdate(convo._id, {
-        $set: {
-          "metadata.ai_response": ctx.ai_response,
-          "metadata.ai_needs_human": ctx.ai_needs_human,
-        },
-      }).catch(() => {});
+
+      if (!ragBlocked) {
+        const clean = faqResolved.direct ? reply : applyPersonaPostProcess(String(reply || "").trim(), client.ai?.persona);
+        const needs = !clean || clean.toUpperCase().includes("NEEDS_HUMAN");
+        ctx.ai_response = needs ? staticFallback : clean.slice(0, 500);
+        ctx.ai_needs_human = needs && !staticFallback ? "true" : "false";
+        await Conversation.findByIdAndUpdate(convo._id, {
+          $set: {
+            "metadata.ai_response": ctx.ai_response,
+            "metadata.ai_needs_human": ctx.ai_needs_human,
+          },
+        }).catch(() => {});
+      } else {
+        await Conversation.findByIdAndUpdate(convo._id, {
+          $set: {
+            "metadata.ai_response": ctx.ai_response,
+            "metadata.ai_needs_human": ctx.ai_needs_human,
+          },
+        }).catch(() => {});
+      }
     }
     node = injectNodeVariables(rawNode, ctx);
     if (node?.data) {
@@ -5232,18 +5259,36 @@ async function runAIFallback(parsedMessage, client, phone, lead, channel = 'what
     const productCatalog = buildRelevantProductSnippet(client.nicheData?.products || [], text, 8);
     const policyStore = String(client.nicheData?.policies || "Standard 7-day return policy applies unless specified.").slice(0, 600);
 
+    const faqResolved = resolveQuickFaqReply(client, text, client.ai?.persona);
+    let reply;
+
+    if (faqResolved.direct) {
+      reply = faqResolved.reply;
+    } else {
+    const { retrieveKnowledge, getActiveKnowledgeHealth, notifyRagFailure, isRagUnavailableError } = require('../core/ragEngine');
+    const health = await getActiveKnowledgeHealth(client.clientId);
     let ragContext = '';
-    try {
-      const { retrieveKnowledge } = require('../core/ragEngine');
-      const ragChunks = await retrieveKnowledge(client.clientId, text, 3);
-      if (ragChunks.length > 0) {
+    if (health.active > 0) {
+      try {
+        const ragChunks = await retrieveKnowledge(client.clientId, text, 3);
         ragContext = ragChunks
           .map((c, i) => `[${i + 1}] ${c.title}: ${c.text}`)
           .join('\n');
+      } catch (ragErr) {
+        if (isRagUnavailableError(ragErr)) {
+          await notifyRagFailure(client.clientId, ragErr.reason);
+          await sendWhatsAppText(
+            client,
+            phone,
+            "I'm unable to access our knowledge base right now. Our team will follow up with you shortly."
+          );
+          return true;
+        }
+        throw ragErr;
       }
-    } catch (ragErr) {
-      log.warn('[AI Fallback] RAG retrieval skipped:', ragErr.message);
     }
+
+    const faqMatch = faqResolved.faqMatch;
 
     const systemPrompt = buildPersonaSystemPrompt(client, client.nicheData?.aiPromptContext);
 
@@ -5313,9 +5358,7 @@ CUSTOMER CONTEXT:
 - Cart Status: ${lead.cartStatus || 'Empty'}
 `.trim();
 
-    const prompt = `${systemPrompt}
-
-${personalization}
+    const prompt = `${personalization}
 
 KNOWLEDGE BASE:
 ${ragContext ? `[Retrieved knowledge]\n${ragContext}\n\n` : ''}[Products]
@@ -5323,6 +5366,7 @@ ${productCatalog || "General inquiry handling."}
 
 [Policies]
 ${policyStore}
+${buildQuickFaqDirective(faqMatch)}
 
 ${fewShot}
 
@@ -5353,15 +5397,15 @@ REPLY:
       });
     } catch (_) {}
 
-    let reply;
     try {
       const { callAI } = require('../core/aiGateway');
       const aiResult = await withTimeout(
         callAI({
           clientId: client.clientId,
           feature: 'whatsapp_bot',
+          systemPrompt,
           prompt,
-          temperature: 0.4,
+          temperature: 0.35,
           fast: true,
           model: aiResolved.model,
         }),
@@ -5408,6 +5452,9 @@ REPLY:
       await sendWhatsAppText(client, phone, fallMsg);
       return true; // Halt standard flow but don't necessarily kill the bot status
     }
+
+    reply = applyPersonaPostProcess(reply, persona);
+    }
     
     // --- PHASE 30: LOG AI SUCCESS ---
     try {
@@ -5419,9 +5466,6 @@ REPLY:
       });
     } catch (_) {}
     
-    // Phase 29 Track 3: Post-Process Persona Consistency
-    reply = applyPersonaPostProcess(reply, persona);
-
     await Conversation.findOneAndUpdate({ phone, clientId: client.clientId }, { $set: { consecutiveFailedMessages: 0 } });
     
     // Phase 26: Voice Reply Logic

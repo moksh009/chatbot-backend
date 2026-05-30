@@ -13,9 +13,9 @@ if (redisConnection) {
   const worker = new Worker(
     'knowledge-embedding',
     async (job) => {
-      const { documentId } = job.data || {};
+      const { documentId, force } = job.data || {};
       if (!documentId) return;
-      await processDocumentEmbedding(documentId);
+      await processDocumentEmbedding(documentId, { force: !!force });
     },
     { connection: redisConnection, concurrency: 2 }
   );

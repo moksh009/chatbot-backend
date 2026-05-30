@@ -1,4 +1,5 @@
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const axios = require('axios');
 const logger = require('./logger')("Gemini");
 const { geminiBreaker } = require('./circuitBreaker');
 
@@ -480,30 +481,166 @@ async function generateTextWithUsage(prompt, apiKey, options = {}) {
     });
 }
 
-const EMBEDDING_MODEL = process.env.GEMINI_EMBEDDING_MODEL || 'text-embedding-004';
-const EMBEDDING_DIM = 768;
+function resolveEmbeddingModel() {
+    const raw = String(process.env.GEMINI_EMBEDDING_MODEL || 'gemini-embedding-001').trim();
+    const deprecated = new Set([
+        'text-embedding-004',
+        'embedding-001',
+        'models/text-embedding-004',
+        'models/embedding-001',
+        'gemini-embedding-exp-03-07',
+    ]);
+    if (deprecated.has(raw) || deprecated.has(raw.replace(/^models\//, ''))) {
+        logger.warn(`GEMINI_EMBEDDING_MODEL=${raw} is retired — using gemini-embedding-001`);
+        return 'gemini-embedding-001';
+    }
+    return raw.replace(/^models\//, '');
+}
+
+const EMBEDDING_MODEL = resolveEmbeddingModel();
+const EMBEDDING_DIM = Number(process.env.GEMINI_EMBEDDING_DIMENSIONS || 3072);
+const EMBED_BATCH_SIZE = Math.min(32, Math.max(4, Number(process.env.GEMINI_EMBED_BATCH_SIZE || 16)));
+
+function buildEmbedRequest(text, taskType = 'RETRIEVAL_DOCUMENT') {
+    const req = {
+        content: { parts: [{ text: String(text || '').trim().slice(0, 8000) }] },
+        taskType,
+    };
+    if (EMBEDDING_DIM && EMBEDDING_DIM !== 3072) {
+        req.outputDimensionality = EMBEDDING_DIM;
+    }
+    return req;
+}
+
+function parseEmbedResponse(data, modelLabel) {
+    const values = data?.embedding?.values;
+    if (!Array.isArray(values) || values.length === 0) {
+        throw new Error(`Empty embedding response from ${modelLabel}`);
+    }
+    return { embedding: values, dimensions: values.length };
+}
+
+/**
+ * Primary embedding path — Gemini v1beta REST (matches current API docs).
+ */
+async function embedContentRest(text, apiKey, options = {}) {
+    const model = (options.model || EMBEDDING_MODEL).replace(/^models\//, '');
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent`;
+    const input = String(text || '').trim().slice(0, 8000);
+    if (!input) throw new Error('Empty text — nothing to embed');
+
+    const { data } = await axios.post(
+        url,
+        buildEmbedRequest(input, options.taskType),
+        {
+            headers: {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': apiKey,
+            },
+            timeout: options.timeout || 20000,
+        }
+    );
+    return parseEmbedResponse(data, model);
+}
+
+async function batchEmbedContentsRest(texts, apiKey, options = {}) {
+    const model = (options.model || EMBEDDING_MODEL).replace(/^models\//, '');
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:batchEmbedContents`;
+    const inputs = (texts || [])
+        .map((t) => String(t || '').trim().slice(0, 8000))
+        .filter(Boolean);
+    if (!inputs.length) throw new Error('No text chunks to embed');
+
+    const batchSize = options.batchSize || EMBED_BATCH_SIZE;
+    const all = [];
+
+    for (let offset = 0; offset < inputs.length; offset += batchSize) {
+        const slice = inputs.slice(offset, offset + batchSize);
+        const { data } = await axios.post(
+            url,
+            {
+                requests: slice.map((input) => buildEmbedRequest(input, options.taskType)),
+            },
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-goog-api-key': apiKey,
+                },
+                timeout: options.timeout || 45000,
+            }
+        );
+        const embeddings = data?.embeddings || [];
+        if (embeddings.length !== slice.length) {
+            throw new Error(`Batch embedding incomplete (${embeddings.length}/${slice.length}) for ${model}`);
+        }
+        for (let i = 0; i < embeddings.length; i++) {
+            const values = embeddings[i]?.values;
+            if (!Array.isArray(values) || !values.length) {
+                throw new Error(`Empty embedding for chunk ${offset + i + 1}`);
+            }
+            all.push({ embedding: values, dimensions: values.length });
+        }
+    }
+    return all;
+}
 
 async function embedText(text, apiKey, options = {}) {
     const key = typeof apiKey === 'string' ? apiKey.trim() : '';
-    if (!isKeyValid(key)) return null;
-
-    const input = String(text || '').trim().slice(0, 8000);
-    if (!input) return null;
+    if (!isKeyValid(key)) {
+        throw new Error('Invalid Gemini API key for embeddings');
+    }
 
     return safeBreakerCall(async () => {
         try {
+            return await embedContentRest(text, key, options);
+        } catch (restErr) {
+            logger.warn(`Gemini REST embed failed (${restErr.message}) — trying SDK fallback`);
             const genAI = getStudioClient(key);
             const model = genAI.getGenerativeModel({ model: options.model || EMBEDDING_MODEL });
             const result = await Promise.race([
-                model.embedContent(input),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('Embedding timeout')), options.timeout || 15000)),
+                model.embedContent(buildEmbedRequest(text, options.taskType)),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Embedding timeout')), options.timeout || 20000)),
             ]);
-            const values = result?.embedding?.values;
-            if (!Array.isArray(values) || values.length === 0) return null;
-            return { embedding: values, dimensions: values.length };
-        } catch (err) {
-            logger.error('embedText failed:', err.message);
-            return null;
+            return parseEmbedResponse({ embedding: result?.embedding }, EMBEDDING_MODEL);
+        }
+    });
+}
+
+/**
+ * Embed many chunks in batched Gemini REST calls (1 round-trip per batch).
+ */
+async function embedTextsBatch(texts, apiKey, options = {}) {
+    const key = typeof apiKey === 'string' ? apiKey.trim() : '';
+    if (!isKeyValid(key)) {
+        throw new Error('Invalid Gemini API key for embeddings');
+    }
+
+    return safeBreakerCall(async () => {
+        try {
+            return await batchEmbedContentsRest(texts, key, options);
+        } catch (restErr) {
+            logger.warn(`Gemini REST batch embed failed (${restErr.message}) — trying SDK fallback`);
+            const genAI = getStudioClient(key);
+            const model = genAI.getGenerativeModel({ model: options.model || EMBEDDING_MODEL });
+            const inputs = (texts || [])
+                .map((t) => String(t || '').trim().slice(0, 8000))
+                .filter(Boolean);
+            const requests = inputs.map((input) => buildEmbedRequest(input, options.taskType));
+            const result = await Promise.race([
+                model.batchEmbedContents({ requests }),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Batch embedding timeout')), options.timeout || 45000)),
+            ]);
+            const embeddings = result?.embeddings || [];
+            if (embeddings.length !== inputs.length) {
+                throw new Error(`Batch embedding incomplete (${embeddings.length}/${inputs.length} chunks)`);
+            }
+            return embeddings.map((item, i) => {
+                const values = item?.values;
+                if (!Array.isArray(values) || !values.length) {
+                    throw new Error(`Empty embedding for chunk ${i + 1}`);
+                }
+                return { embedding: values, dimensions: values.length };
+            });
         }
     });
 }
@@ -517,6 +654,7 @@ module.exports = {
     generateTextWithUsage,
     generateMultimodal,
     embedText,
+    embedTextsBatch,
     platformGenerateText,
     platformGenerateJSON,
     botGenerateText,

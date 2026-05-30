@@ -4,6 +4,7 @@ const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
 const { tenantClientId } = require('../utils/core/queryHelpers');
+const { formatReplyForWhatsApp } = require('../utils/core/personaEngine');
 const AiTokenTransaction = require('../models/AiTokenTransaction');
 const {
   saveValidatedKey,
@@ -127,7 +128,7 @@ router.post('/test-prompt', protect, async (req, res) => {
       prompt: prompt.trim(),
       temperature: 0.5,
     });
-    res.json({ success: true, reply: result.content, usage: result.usage, provider: result.provider });
+    res.json({ success: true, reply: formatReplyForWhatsApp(result.content), usage: result.usage, provider: result.provider });
   } catch (err) {
     if (err.code === 'AI_NOT_CONFIGURED') {
       return res.status(400).json({ error: 'Connect an API key first.', code: 'AI_NOT_CONFIGURED' });
@@ -141,16 +142,52 @@ router.get('/transaction-history', protect, async (req, res) => {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
 
-    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const page = Math.max(1, Number.parseInt(String(req.query.page || '1'), 10) || 1);
+    const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit || '20'), 10) || 20));
     const skip = (page - 1) * limit;
+    const includeEmbeddings = req.query.includeEmbeddings === 'true';
+
+    const filter = {
+      clientId,
+      success: true,
+      ...(includeEmbeddings ? {} : { feature: { $ne: 'embedding' } }),
+    };
 
     const [items, total] = await Promise.all([
-      AiTokenTransaction.find({ clientId }).sort({ timestamp: -1 }).skip(skip).limit(limit).lean(),
-      AiTokenTransaction.countDocuments({ clientId }),
+      AiTokenTransaction.find(filter)
+        .sort({ timestamp: -1, _id: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      AiTokenTransaction.countDocuments(filter),
     ]);
 
-    res.json({ items, total, page, limit });
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+
+    res.json({
+      items,
+      total,
+      page,
+      limit,
+      totalPages,
+      hasMore: page < totalPages,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/purge-embedding-noise', protect, async (req, res) => {
+  try {
+    const clientId = tenantClientId(req);
+    if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
+
+    const result = await AiTokenTransaction.deleteMany({
+      clientId,
+      feature: 'embedding',
+    });
+
+    res.json({ success: true, deleted: result.deletedCount || 0 });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -180,7 +217,7 @@ router.get('/usage-summary', protect, async (req, res) => {
         },
       ]),
       AiTokenTransaction.aggregate([
-        { $match: { clientId, success: true } },
+        { $match: { clientId, success: true, feature: { $ne: 'embedding' } } },
         {
           $group: {
             _id: '$feature',

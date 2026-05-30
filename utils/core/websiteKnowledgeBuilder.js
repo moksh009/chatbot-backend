@@ -324,7 +324,7 @@ async function maybeEnhanceWithAI(clientId, draft) {
   try {
     const result = await callAI({
       clientId,
-      feature: 'knowledge_import',
+      feature: 'other',
       maxTokens: 3500,
       temperature: 0.2,
       systemPrompt:
@@ -334,6 +334,10 @@ async function maybeEnhanceWithAI(clientId, draft) {
       prompt: `Improve formatting only — do not invent data:\n\n${draft.slice(0, 14000)}`,
     });
     const improved = String(result?.content || '').trim();
+    const hasCatalog = /## Product Catalog/i.test(improved);
+    const draftHasCatalog = /## Product Catalog/i.test(draft);
+    if (improved.length < draft.length * 0.75) return draft;
+    if (draftHasCatalog && !hasCatalog) return draft;
     return improved.length > 400 ? improved.slice(0, 20000) : draft;
   } catch (_) {
     return draft;

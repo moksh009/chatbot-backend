@@ -321,6 +321,7 @@ async function updateWalletSettings(clientId, { aiSupportEnabled, maxOutputWords
     patch.maxOutputWords = n;
   }
   if (Object.keys(patch).length) {
+    await getOrCreateWallet(clientId);
     await AiWallet.updateOne({ clientId }, { $set: patch });
     await mirrorAiSettingsToClient(clientId, patch);
   }
@@ -343,7 +344,7 @@ async function getUsageBreakdown(clientId) {
       },
     ]),
     AiTokenTransaction.aggregate([
-      { $match: { clientId, success: true } },
+      { $match: { clientId, success: true, feature: { $ne: 'embedding' } } },
       {
         $group: {
           _id: null,

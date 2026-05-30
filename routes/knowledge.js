@@ -7,9 +7,11 @@ const { tenantClientId } = require('../utils/core/queryHelpers');
 const KnowledgeDocument = require('../models/KnowledgeDocument');
 const { buildKnowledgeFromWebsite } = require('../utils/core/websiteKnowledgeBuilder');
 const {
-  processDocumentEmbedding,
   getKnowledgeStats,
   runKnowledgeTest,
+  failStaleProcessingDocuments,
+  notifyRagFailure,
+  isRagUnavailableError,
 } = require('../utils/core/ragEngine');
 
 router.get('/stats', protect, async (req, res) => {
@@ -27,6 +29,8 @@ router.get('/documents', protect, async (req, res) => {
   try {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
+
+    await failStaleProcessingDocuments(clientId);
 
     const docs = await KnowledgeDocument.find({ clientId })
       .select('-chunks.embedding')
@@ -60,7 +64,7 @@ router.post('/documents', protect, async (req, res) => {
       embeddingStatus: 'pending',
     });
 
-    await embedDocumentNow(doc._id.toString());
+    await embedDocumentNow(doc._id.toString(), clientId);
     res.status(201).json({ document: doc });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -91,9 +95,9 @@ router.put('/documents/:id', protect, async (req, res) => {
     const updated = await KnowledgeDocument.findById(doc._id).select('-chunks.embedding').lean();
 
     if (content?.trim()) {
-      await embedDocumentNow(doc._id.toString());
-    } else if (status === 'active' && (doc.embeddingStatus === 'pending' || doc.embeddingStatus === 'failed')) {
-      await embedDocumentNow(doc._id.toString());
+      await embedDocumentNow(doc._id.toString(), clientId);
+    } else if (status === 'active' && doc.embeddingStatus === 'pending') {
+      await embedDocumentNow(doc._id.toString(), clientId);
     }
 
     res.json({ document: updated });
@@ -132,7 +136,7 @@ router.post('/import-url', protect, async (req, res) => {
 
     const built = await buildKnowledgeFromWebsite(parsed.href, {
       clientId,
-      useAiEnhance: true,
+      useAiEnhance: false,
     });
 
     const docTitle = (title || built.title || parsed.hostname).slice(0, 200);
@@ -179,7 +183,7 @@ router.post('/import-url', protect, async (req, res) => {
       });
     }
 
-    await embedDocumentNow(doc._id.toString());
+    await embedDocumentNow(doc._id.toString(), clientId);
     res.status(existing ? 200 : 201).json({
       document: doc,
       productCount: built.productCount,
@@ -190,12 +194,19 @@ router.post('/import-url', protect, async (req, res) => {
   }
 });
 
-async function embedDocumentNow(documentId) {
-  try {
-    await processDocumentEmbedding(documentId);
-  } catch (err) {
-    console.warn(`[knowledge] embed ${documentId}:`, err.message);
+const { queueDocumentEmbedding } = require('../workers/knowledgeEmbeddingQueues');
+
+async function embedDocumentNow(documentId, clientId, { force = false } = {}) {
+  if (force) {
+    const { processDocumentEmbedding } = require('../utils/core/ragEngine');
+    try {
+      await processDocumentEmbedding(documentId, { force: true });
+    } catch (err) {
+      console.warn(`[knowledge] embed ${documentId}:`, err.message);
+    }
+    return;
   }
+  await queueDocumentEmbedding(documentId, clientId, { force: false });
 }
 
 router.post('/documents/:id/reembed', protect, async (req, res) => {
@@ -208,10 +219,18 @@ router.post('/documents/:id/reembed', protect, async (req, res) => {
 
     await KnowledgeDocument.updateOne(
       { _id: doc._id },
-      { $set: { embeddingStatus: 'pending', updatedAt: new Date() } }
+      {
+        $set: {
+          embeddingStatus: 'pending',
+          embeddingError: null,
+          updatedAt: new Date(),
+        },
+      }
     );
-    await embedDocumentNow(doc._id.toString());
-    res.json({ success: true, message: 'Embedding processed.' });
+
+    await embedDocumentNow(doc._id.toString(), clientId, { force: true });
+    const updated = await KnowledgeDocument.findById(doc._id).select('-chunks.embedding').lean();
+    res.json({ success: true, message: 'Embedding processed.', document: updated });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -222,24 +241,30 @@ router.post('/process-pending-embeddings', protect, async (req, res) => {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
 
+    await failStaleProcessingDocuments(clientId);
+
     const pending = await KnowledgeDocument.find({
       clientId,
       status: 'active',
-      embeddingStatus: { $in: ['pending', 'failed'] },
-    }).limit(8);
+      embeddingStatus: 'pending',
+    }).limit(4);
 
+    let queued = 0;
     for (const doc of pending) {
-      await embedDocumentNow(doc._id.toString());
+      const before = doc.embeddingStatus;
+      await embedDocumentNow(doc._id.toString(), clientId);
+      const after = await KnowledgeDocument.findById(doc._id).select('embeddingStatus').lean();
+      if (before === 'pending' && after?.embeddingStatus !== 'pending') queued += 1;
     }
-    res.json({ success: true, processed: pending.length });
+    res.json({ success: true, processed: queued });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 router.post('/test', protect, async (req, res) => {
+  const clientId = tenantClientId(req);
   try {
-    const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
 
     const { question } = req.body || {};
@@ -248,6 +273,15 @@ router.post('/test', protect, async (req, res) => {
     const result = await runKnowledgeTest(clientId, question.trim());
     res.json(result);
   } catch (err) {
+    if (isRagUnavailableError(err)) {
+      await notifyRagFailure(clientId, err.reason);
+      return res.status(503).json({
+        error: err.userMessage,
+        code: err.code,
+        reason: err.reason,
+        ragBlocked: true,
+      });
+    }
     if (err.code === 'AI_NOT_CONFIGURED' || err.message === 'AI_NOT_CONFIGURED') {
       return res.status(400).json({ error: 'Add a Gemini or OpenAI key in AI Setup to generate answers.' });
     }

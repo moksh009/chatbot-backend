@@ -9,6 +9,7 @@ const CREDIT_RATE = {
   gemini: {
     'gemini-2.5-flash-lite': { inputPer1k: 0.000075, outputPer1k: 0.0003 },
     'gemini-2.5-flash': { inputPer1k: 0.000125, outputPer1k: 0.0005 },
+    'gemini-embedding-001': { inputPer1k: 0.00001, outputPer1k: 0 },
     'text-embedding-004': { inputPer1k: 0.00001, outputPer1k: 0 },
   },
   openai: {
@@ -172,10 +173,13 @@ async function callAIJSON(options) {
 }
 
 async function logEmbeddingUsage(clientId, textLength = 0, success = true, errorCode = null, provider = 'gemini') {
+  if (!success) return;
   const estimatedTokens = Math.max(1, Math.ceil(textLength / 4));
+  const rawModel = process.env.GEMINI_EMBEDDING_MODEL || 'gemini-embedding-001';
+  const deprecated = new Set(['text-embedding-004', 'embedding-001']);
   const model = provider === 'openai'
     ? 'text-embedding-3-small'
-    : (process.env.GEMINI_EMBEDDING_MODEL || 'text-embedding-004');
+    : (deprecated.has(rawModel) ? 'gemini-embedding-001' : rawModel);
   const costUsd = calculateCost(provider, model, estimatedTokens, 0) || 0;
   await logTransaction({
     clientId,

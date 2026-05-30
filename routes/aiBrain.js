@@ -5,9 +5,9 @@ const router = express.Router();
 const { protect } = require('../middleware/auth');
 const { tenantClientId } = require('../utils/core/queryHelpers');
 const Client = require('../models/Client');
-const { normalizePersonaTone } = require('../utils/core/personaEngine');
+const { normalizePersonaTone, buildPersonaSystemPrompt, applyPersonaPostProcess, syncPersonaAcrossSystem, resolveQuickFaqReply, buildQuickFaqDirective } = require('../utils/core/personaEngine');
 const { callAI } = require('../utils/core/aiGateway');
-const { buildPersonaSystemPrompt } = require('../utils/core/personaEngine');
+const { retrieveKnowledge, notifyRagFailure, isRagUnavailableError, getActiveKnowledgeHealth } = require('../utils/core/ragEngine');
 
 const TONE_OPTIONS = [
   'Professional & Helpful',
@@ -62,6 +62,12 @@ router.put('/persona', protect, async (req, res) => {
     }
 
     await Client.updateOne({ clientId }, { $set: updates });
+    await syncPersonaAcrossSystem(clientId, {
+      ...(name !== undefined ? { name: String(name).slice(0, 120) } : {}),
+      ...(tone !== undefined && normalizePersonaTone(tone) ? { tone: normalizePersonaTone(tone) } : {}),
+      ...(description !== undefined ? { description: String(description).slice(0, 4000) } : {}),
+    });
+
     const client = await Client.findOne({ clientId }).select('ai.persona knowledgeBase.faqs').lean();
 
     res.json({
@@ -79,23 +85,78 @@ router.post('/persona/preview', protect, async (req, res) => {
     const clientId = tenantClientId(req);
     if (!clientId) return res.status(403).json({ error: 'Unauthorized' });
 
-    const { message } = req.body || {};
+    const { message, quickFaqs: draftQuickFaqs } = req.body || {};
     if (!message?.trim()) return res.status(400).json({ error: 'Message is required.' });
 
     const client = await Client.findOne({ clientId }).lean();
     if (!client) return res.status(404).json({ error: 'Client not found.' });
 
-    const systemPrompt = buildPersonaSystemPrompt(client, '');
+    const faqResolved = resolveQuickFaqReply(
+      client,
+      message.trim(),
+      client.ai?.persona,
+      Array.isArray(draftQuickFaqs) ? draftQuickFaqs : null
+    );
+
+    if (faqResolved.direct) {
+      return res.json({
+        reply: faqResolved.reply,
+        usage: null,
+        tone: client.ai?.persona?.tone || null,
+        chunks: [],
+        retrievalMode: 'none',
+        matchedFaq: { question: faqResolved.faqMatch.question, direct: true },
+      });
+    }
+
+    const health = await getActiveKnowledgeHealth(clientId);
+    let ragChunks = [];
+    let ragContext = '';
+
+    if (health.active > 0) {
+      try {
+        ragChunks = await retrieveKnowledge(clientId, message.trim(), 3);
+        ragContext = ragChunks.map((c, i) => `[${i + 1}] ${c.title}: ${c.text}`).join('\n');
+      } catch (err) {
+        if (isRagUnavailableError(err)) {
+          await notifyRagFailure(clientId, err.reason);
+          return res.status(503).json({
+            error: err.userMessage,
+            code: err.code,
+            reason: err.reason,
+            ragBlocked: true,
+          });
+        }
+        throw err;
+      }
+    }
+
+    const faqMatch = faqResolved.faqMatch;
+
+    const systemPrompt = buildPersonaSystemPrompt(
+      client,
+      ragContext ? `RETRIEVED KNOWLEDGE (use when relevant — do not invent facts):\n${ragContext}` : ''
+    );
+
     const result = await callAI({
       clientId,
       feature: 'persona_preview',
       systemPrompt,
-      prompt: `Customer message: "${message.trim()}"\n\nReply in character (under 80 words):`,
+      prompt: `Customer message: "${message.trim()}"${buildQuickFaqDirective(faqMatch)}\n\nReply in character using the tone above. Under 80 words. If a FAQ was matched, keep those facts exactly. If knowledge was provided, answer from it only; otherwise be honest that you need more store details.`,
       maxTokens: 200,
-      temperature: 0.6,
+      temperature: 0.55,
     });
 
-    res.json({ reply: result.content, usage: result.usage });
+    const reply = applyPersonaPostProcess(result.content, client.ai?.persona);
+
+    res.json({
+      reply,
+      usage: result.usage,
+      tone: client.ai?.persona?.tone || null,
+      chunks: ragChunks,
+      retrievalMode: ragChunks.some((c) => c.mode === 'vector') ? 'hybrid' : ragChunks.length ? 'keyword' : 'none',
+      matchedFaq: faqMatch ? { question: faqMatch.question } : null,
+    });
   } catch (err) {
     if (err.code === 'AI_NOT_CONFIGURED' || err.message === 'AI_NOT_CONFIGURED') {
       return res.status(400).json({ error: 'Configure your Gemini API key in AI Setup first.' });
